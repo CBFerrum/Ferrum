@@ -11,12 +11,14 @@ name = "ferrum"
 path = "src/bin/main.rs"
 
 [features]
-# Functional packages compiled in (all by default). A build without one refuses to start while its
-# YAML package is still in packages/, so documents never run without their business logic.
-default = ["crm", "projects", "support"]
-crm = ["dep:ferrum-pkg-crm"]
-projects = ["dep:ferrum-pkg-projects"]
-support = ["dep:ferrum-pkg-support"]
+# Native apps compiled into this server (all official ones by default; docs/plan/apps.md). Most live
+# in their own repositories; a workspace whose installed app is not in a build keeps its data and
+# loses the app until it is back.
+default = ["crm", "projects", "helpdesk", "pos"]
+crm = ["dep:ferrum-app-crm"]
+projects = ["dep:ferrum-app-projects"]
+helpdesk = ["dep:ferrum-app-helpdesk"]
+pos = ["dep:ferrum-app-pos"]
 
 [dependencies]
 ferrum-kernel = { path = "../crates/kernel" }
@@ -24,9 +26,10 @@ ferrum-meta = { path = "../crates/meta" }
 ferrum-domain = { path = "../crates/domain" }
 ferrum-plugins = { path = "../crates/plugins" }
 ferrum-mcp = { path = "../crates/mcp" }
-ferrum-pkg-crm = { path = "../crates/pkg-crm", optional = true }
-ferrum-pkg-projects = { path = "../crates/pkg-projects", optional = true }
-ferrum-pkg-support = { path = "../crates/pkg-support", optional = true }
+ferrum-app-crm = { git = "https://github.com/CBFerrum/ferrum-app-crm", branch = "main", optional = true }
+ferrum-app-projects = { git = "https://github.com/CBFerrum/ferrum-app-projects", branch = "main", optional = true }
+ferrum-app-helpdesk = { git = "https://github.com/CBFerrum/ferrum-app-helpdesk", branch = "main", optional = true }
+ferrum-app-pos = { git = "https://github.com/CBFerrum/ferrum-app-pos", branch = "main", optional = true }
 base64 = "0.22"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 migration = { path = "migration", package = "ferrum-migration" }
