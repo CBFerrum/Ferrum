@@ -25,6 +25,12 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `PUBLIC_URL`, `PORT`, `BINDING`, `LOG_LEVEL` | no | Usual meanings; logs are JSON on stdout |
 | `MAILER_*` | no | SMTP for notifications |
 
+**Database role.** Ferrum must connect as an ordinary role that owns its database, never as a
+superuser or a role with `BYPASSRLS`: those bypass PostgreSQL row-level security and with it tenant
+isolation, so the server refuses to start with them. CloudNativePG's `ferrum` application user and
+the Compose setup (`deploy/postgres-init`) are already set up this way. The role needs to create the
+trusted extensions `btree_gist`, `citext` and `pg_trgm`, which a database owner can do.
+
 Each replica opens up to `FERRUM_DB_MAX_CONNECTIONS` connections plus 4 for short side writes
 (document numbering). Keep `replicas × (FERRUM_DB_MAX_CONNECTIONS + 4)` below the database's
 `max_connections` minus ~20 for administration and replication (the manifests use 400 and 30, so

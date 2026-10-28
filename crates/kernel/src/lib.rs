@@ -75,6 +75,17 @@ pub struct Kernel {
 impl Kernel {
     /// Migrates the kernel schema, syncs entity tables for the catalog, and returns a ready kernel.
     pub async fn boot(db: Db, catalog: Catalog, hooks: HookRegistry, settings: KernelSettings, mailer: Option<Arc<dyn Mailer>>) -> Result<Arc<Kernel>> {
+        // Superusers and BYPASSRLS roles ignore row-level security, which would silently remove
+        // tenant isolation. Refuse to run that way.
+        let (superuser, bypass): (bool, bool) =
+            sqlx::query_as("select rolsuper, rolbypassrls from pg_roles where rolname = current_user").fetch_one(&db.pool).await?;
+        if superuser || bypass {
+            return Err(Error::Invalid(
+                "the database role is a superuser or has BYPASSRLS, which bypasses row-level security and with it tenant \
+                 isolation; connect as an ordinary role that owns the database (see docs/operations.md)"
+                    .into(),
+            ));
+        }
         db.migrate().await?;
         let report = ddl::sync(&db, &catalog, false).await?;
         if !report.skipped {

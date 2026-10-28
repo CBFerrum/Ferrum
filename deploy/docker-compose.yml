@@ -11,14 +11,17 @@ services:
     image: postgres:17
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ferrum
-      POSTGRES_USER: ferrum
+      # The superuser is only for administration; Ferrum connects as the ordinary role `ferrum`
+      # created by postgres-init (superusers bypass row-level security).
+      POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+      FERRUM_DB_PASSWORD: ${FERRUM_DB_PASSWORD:?set FERRUM_DB_PASSWORD in deploy/.env}
     command: ["postgres", "-c", "max_connections=200", "-c", "shared_buffers=512MB", "-c", "wal_level=replica"]
     volumes:
       - db:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ferrum -d ferrum"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ferrum"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -32,7 +35,7 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://ferrum:${POSTGRES_PASSWORD}@db:5432/ferrum
+      DATABASE_URL: postgres://ferrum:${FERRUM_DB_PASSWORD}@db:5432/ferrum
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET (openssl rand -base64 48)}
       FERRUM_BOOTSTRAP_TOKEN: ${FERRUM_BOOTSTRAP_TOKEN:-}
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}

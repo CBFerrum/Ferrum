@@ -1,0 +1,9 @@
+# Advisories reviewed and accepted, with the reason. Re-check whenever dependencies change.
+[advisories]
+ignore = [
+  # rsa (Marvin timing attack, no fixed version) and crypto-bigint (timing variability) arrive only
+  # through jsonwebtoken's RSA/ECDSA support, which loco-rs enables. Ferrum signs and verifies HMAC
+  # (HS*) tokens only, so neither code path ever runs. Drop these once jsonwebtoken/loco-rs upgrade.
+  "RUSTSEC-2023-0071",
+  "RUSTSEC-2026-0387",
+]
