@@ -16,6 +16,7 @@ pub mod doc;
 pub mod error;
 pub mod hooks;
 pub mod numbering;
+pub mod oauth;
 pub mod outbox;
 pub mod print;
 pub mod query;
@@ -120,7 +121,7 @@ impl Kernel {
     pub async fn maintenance(&self) -> Result<()> {
         let yesterday = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
         audit::anchor_day(&self.db, yesterday).await?;
-        let purged = self.purge_old_events(self.settings.event_retention_days).await?;
+        let purged = self.purge_old_events(self.settings.event_retention_days).await? + self.oauth_purge().await?;
         if purged > 0 {
             tracing::info!(purged, "old events purged");
         }

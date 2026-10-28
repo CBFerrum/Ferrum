@@ -173,6 +173,34 @@ async fn scenario() {
     let prompt = a.rpc("prompts/get", json!({"name": "record-sale", "arguments": {"customer": "Initech", "items": "2 staplers"}})).await;
     assert!(prompt["result"]["messages"][0]["content"]["text"].as_str().unwrap().contains("Initech"));
 
+    // ───────────── OAuth for hosted agents ─────────────
+    let refused = k.oauth_register(Some("Evil".into()), vec!["http://evil.example/cb".into()]).await;
+    assert!(refused.is_err(), "only https, loopback or app-scheme redirects");
+    let client = k.oauth_register(Some("Claude".into()), vec!["https://claude.ai/api/mcp/auth_callback".into()]).await.unwrap();
+    let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    let challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+    let redirect = "https://claude.ai/api/mcp/auth_callback";
+    assert!(k.oauth_issue_code(&a.ctx, &client.id, "https://claude.ai/other", challenge, "S256").await.is_err(), "unregistered redirect");
+    assert!(k.oauth_issue_code(&a.ctx, &client.id, redirect, challenge, "plain").await.is_err(), "S256 only");
+    let code = k.oauth_issue_code(&a.ctx, &client.id, redirect, challenge, "S256").await.unwrap();
+    assert!(k.oauth_redeem_code(&client.id, &code, redirect, "wrong-verifier-wrong-verifier-wrong-verifier-x").await.is_err(), "PKCE");
+    let grant = k.oauth_redeem_code(&client.id, &code, redirect, verifier).await.expect("redeem");
+    assert_eq!((grant.tenant, grant.user), (tenant, session.user));
+    assert!(k.oauth_redeem_code(&client.id, &code, redirect, verifier).await.is_err(), "codes are single-use");
+    // The replay revoked the refresh token it had produced.
+    assert!(k.oauth_refresh(&client.id, &grant.refresh_token).await.is_err(), "a replayed code revokes its tokens");
+    let code2 = k.oauth_issue_code(&a.ctx, &client.id, redirect, challenge, "S256").await.unwrap();
+    let g2 = k.oauth_redeem_code(&client.id, &code2, redirect, verifier).await.unwrap();
+    let g3 = k.oauth_refresh(&client.id, &g2.refresh_token).await.expect("rotation");
+    assert_ne!(g2.refresh_token, g3.refresh_token);
+    assert!(k.oauth_refresh(&client.id, &g2.refresh_token).await.is_err(), "rotated tokens cannot be reused");
+    assert!(k.oauth_refresh(&client.id, &g3.refresh_token).await.is_err(), "reuse revokes the whole family");
+    let code3 = k.oauth_issue_code(&a.ctx, &client.id, redirect, challenge, "S256").await.unwrap();
+    let g4 = k.oauth_redeem_code(&client.id, &code3, redirect, verifier).await.unwrap();
+    k.oauth_revoke(&g4.refresh_token).await.unwrap();
+    assert!(k.oauth_refresh(&client.id, &g4.refresh_token).await.is_err(), "revoked");
+    assert!(k.oauth_refresh("fc_someone_else", &g4.refresh_token).await.is_err(), "bound to its client");
+
     // ───────────── a sales clerk's agent has the clerk's limits ─────────────
     let clerk = k.create_user(&a.ctx, "clerk@agents.test", "Clerk", Some("Correct-Horse-9"), &["Sales User".into()], false).await.unwrap();
     let clerk_ctx = k.load_ctx(tenant, clerk, None, "mcp-it".into()).await.unwrap();

@@ -7,7 +7,7 @@ use crate::extract::Auth;
 use crate::state::app_state;
 use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use loco_rs::app::AppContext;
 use loco_rs::controller::Routes;
@@ -15,16 +15,20 @@ use serde_json::{Value, json};
 
 const MAX_BATCH: usize = 50;
 
-fn unauthorized(message: String) -> Response {
+/// 401 that tells OAuth-capable clients where to find the authorization server (RFC 9728).
+fn unauthorized(headers: &HeaderMap, message: String) -> Response {
     let mut resp = (StatusCode::UNAUTHORIZED, axum::Json(json!({"error": "unauthorized", "message": message}))).into_response();
-    resp.headers_mut().insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer realm=\"ferrum\""));
+    let challenge = format!("Bearer realm=\"ferrum\", resource_metadata=\"{}\"", super::oauth::resource_metadata_url(headers));
+    if let Ok(v) = HeaderValue::from_str(&challenge) {
+        resp.headers_mut().insert(header::WWW_AUTHENTICATE, v);
+    }
     resp
 }
 
-async fn post(State(app): State<AppContext>, auth: Result<Auth, ApiError>, body: Bytes) -> Response {
+async fn post(State(app): State<AppContext>, headers: HeaderMap, auth: Result<Auth, ApiError>, body: Bytes) -> Response {
     let ctx = match auth {
         Ok(Auth(ctx)) => ctx,
-        Err(ApiError(e)) if e.status() == 401 => return unauthorized(e.to_string()),
+        Err(ApiError(e)) if e.status() == 401 => return unauthorized(&headers, e.to_string()),
         Err(e) => return e.into_response(),
     };
     let st = match app_state(&app) {
