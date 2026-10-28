@@ -167,30 +167,6 @@ pub async fn anchor_day(db: &Db, day: NaiveDate) -> Result<usize> {
     Ok(tenants.len())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn diffs_fields_and_rows() {
-        let old: Doc = serde_json::from_value(json!({"a": 1, "b": "x", "items": [{"id": "r1", "q": 1}, {"id": "r2", "q": 2}]})).unwrap();
-        let new: Doc = serde_json::from_value(json!({"a": 2, "b": "x", "items": [{"id": "r1", "q": 5}, {"id": "r3", "q": 1}]})).unwrap();
-        let d = diff(Some(&old), Some(&new));
-        assert_eq!(d["a"], json!([1, 2]));
-        assert!(d.get("b").is_none());
-        assert_eq!(d["items"], json!({"added": ["r3"], "removed": ["r2"], "changed": ["r1"]}));
-    }
-
-    #[test]
-    fn hash_chains() {
-        let b = json!({"x": 1});
-        let h1 = event_hash(None, &b);
-        let h2 = event_hash(Some(&h1), &b);
-        assert_ne!(h1, h2);
-        assert_eq!(h1, event_hash(None, &json!({"x": 1})));
-    }
-}
-
 impl crate::Kernel {
     /// A record's audit trail with the result of verifying its hash chain. Requires read access.
     pub async fn audit_trail(&self, ctx: &crate::Ctx, entity: &str, id: Uuid) -> Result<Value> {
@@ -216,5 +192,29 @@ impl crate::Kernel {
             })
             .collect();
         Ok(serde_json::json!({"events": events, "chain_valid": broken_at.is_none(), "broken_at": broken_at}))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diffs_fields_and_rows() {
+        let old: Doc = serde_json::from_value(json!({"a": 1, "b": "x", "items": [{"id": "r1", "q": 1}, {"id": "r2", "q": 2}]})).unwrap();
+        let new: Doc = serde_json::from_value(json!({"a": 2, "b": "x", "items": [{"id": "r1", "q": 5}, {"id": "r3", "q": 1}]})).unwrap();
+        let d = diff(Some(&old), Some(&new));
+        assert_eq!(d["a"], json!([1, 2]));
+        assert!(d.get("b").is_none());
+        assert_eq!(d["items"], json!({"added": ["r3"], "removed": ["r2"], "changed": ["r1"]}));
+    }
+
+    #[test]
+    fn hash_chains() {
+        let b = json!({"x": 1});
+        let h1 = event_hash(None, &b);
+        let h2 = event_hash(Some(&h1), &b);
+        assert_ne!(h1, h2);
+        assert_eq!(h1, event_hash(None, &json!({"x": 1})));
     }
 }
