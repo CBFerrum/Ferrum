@@ -182,16 +182,7 @@ async fn execute(
                 return Err(Error::invalid("notify.to must be owner, role:<name> or user:<id>"));
             };
             for u in users {
-                sqlx::query("insert into notification (tenant_id, id, user_id, title, body, entity, record_id) values ($1, $2, $3, $4, $5, $6, $7)")
-                    .bind(ctx.tenant)
-                    .bind(Uuid::now_v7())
-                    .bind(u)
-                    .bind(&title)
-                    .bind(&body)
-                    .bind(entity)
-                    .bind(record)
-                    .execute(&mut **tx)
-                    .await?;
+                crate::notify::send(tx, ctx.tenant, u, &title, body.as_deref(), Some(entity), record).await?;
             }
         }
         AutomationAction::Email { to, subject, body } => {

@@ -165,7 +165,7 @@ async fn scenario() {
     // ───────────── configuration, disabling, removal ─────────────
     let mut config = Map::new();
     config.insert("blocked_word".into(), json!("evil"));
-    host.set_config(&k, &admin, plugin_id, config).await.unwrap();
+    host.set_config(&k, &admin, plugin_id, config, false).await.unwrap();
     k.insert(&admin, "Customer", obj(json!({"customer_name": "Blocked Again Ltd"}))).await.expect("old word allowed now");
     assert!(k.insert(&admin, "Customer", obj(json!({"customer_name": "Evil Corp"}))).await.is_err(), "new word refused");
     host.set_enabled(&k, &admin, plugin_id, false).await.unwrap();
@@ -173,6 +173,12 @@ async fn scenario() {
     assert!(matches!(host.handle_http(&k, tenant, "device-gateway", call("GET", "/status", ""), None).await, Err(Error::NotFound(_))));
     let listed = host.list(&k, &admin).await.unwrap();
     assert_eq!(listed[0]["config_keys"], json!(["blocked_word"]), "secrets are never listed, only their keys");
+    // A merge patch changes one key and keeps the others; null removes one.
+    let patch = |v: Value| v.as_object().unwrap().clone();
+    host.set_config(&k, &admin, plugin_id, patch(json!({"api_key": "s3cret"})), true).await.unwrap();
+    assert_eq!(host.list(&k, &admin).await.unwrap()[0]["config_keys"], json!(["api_key", "blocked_word"]));
+    host.set_config(&k, &admin, plugin_id, patch(json!({"blocked_word": null})), true).await.unwrap();
+    assert_eq!(host.list(&k, &admin).await.unwrap()[0]["config_keys"], json!(["api_key"]));
     host.remove(&k, &admin, plugin_id).await.unwrap();
     assert!(host.list(&k, &admin).await.unwrap().is_empty());
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();

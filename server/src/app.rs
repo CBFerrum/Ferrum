@@ -93,12 +93,21 @@ impl Hooks for App {
             .await
             .map_err(|e| Error::Message(format!("database: {e}")))?;
         let catalog = Catalog::load_dir(Path::new(&settings.packages_dir)).map_err(|e| Error::Message(format!("packages: {e}")))?;
+        let missing = crate::packages::missing_logic(&catalog);
+        if !missing.is_empty() {
+            return Err(Error::Message(format!(
+                "packages {} are in {} but this build does not include their logic; build with those features or remove them",
+                missing.join(", "),
+                settings.packages_dir
+            )));
+        }
         let mut hooks = HookRegistry::default();
         ferrum_domain::register(&mut hooks);
         crate::packages::register(&mut hooks);
         let plugins = ferrum_plugins::PluginHost::new(settings.webhooks_allow_private).map_err(|e| Error::Message(format!("plugins: {e}")))?;
         hooks.register("*", Arc::new(ferrum_plugins::PluginHook(plugins.clone())));
         hooks.add_event_sink(Arc::new(ferrum_plugins::PluginEvents(plugins.clone())));
+        hooks.add_event_sink(Arc::new(crate::live::LiveEvents));
         let mailer: Option<Arc<dyn Mailer>> = ctx.mailer.clone().map(|sender| Arc::new(LocoMailer { sender, from: None }) as Arc<dyn Mailer>);
         let kernel = Kernel::boot(db, catalog, hooks, KernelSettings { webhooks_allow_private: settings.webhooks_allow_private, ..Default::default() }, mailer)
             .await
@@ -118,6 +127,7 @@ impl Hooks for App {
         let state = AppState {
             kernel,
             plugins,
+            live: crate::live::LiveHub::new(),
             settings,
             shutdown: Arc::new(tx),
             background: Arc::new(tokio::sync::Mutex::new(Vec::new())),
@@ -132,6 +142,11 @@ impl Hooks for App {
 
     async fn before_run(ctx: &AppContext) -> Result<()> {
         let Some(state) = ctx.shared_store.get::<AppState>() else { return Ok(()) };
+        // Every replica that serves requests: cache invalidation and delivery to the sockets it holds.
+        let mut listeners = state.kernel.spawn_listeners(state.shutdown.subscribe());
+        listeners.push(state.plugins.sockets.spawn_listener(state.kernel.db.clone(), state.shutdown.subscribe()));
+        listeners.push(state.live.spawn_listener(state.kernel.clone(), state.shutdown.subscribe()));
+        state.background.lock().await.extend(listeners);
         if state.settings.run_background {
             let mut handles = state.kernel.spawn_background(state.shutdown.subscribe());
             // Domain upkeep (ledger partitions for the coming year) on the same cadence.
@@ -148,9 +163,8 @@ impl Hooks for App {
                 }
             }));
             handles.push(crate::packages::spawn(state.kernel.clone(), state.shutdown.subscribe()));
-            // Plugin schedules and cross-replica socket delivery.
+            // Plugin schedules.
             handles.push(ferrum_plugins::schedule::spawn_scheduler(state.plugins.clone(), state.kernel.clone(), state.shutdown.subscribe()));
-            handles.push(state.plugins.sockets.spawn_listener(state.kernel.db.clone(), state.shutdown.subscribe()));
             state.background.lock().await.extend(handles);
             tracing::info!("background loops started (outbox, webhooks, metadata listener, maintenance)");
         }
@@ -181,6 +195,8 @@ impl Hooks for App {
             .add_route(controllers::mcp::routes())
             .add_route(controllers::oauth::routes())
             .add_route(controllers::plugins::routes())
+            .add_route(crate::live::routes())
+            .add_route(controllers::sites::routes())
     }
 
     async fn connect_workers(_ctx: &AppContext, _queue: &Queue) -> Result<()> {

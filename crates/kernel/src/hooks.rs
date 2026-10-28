@@ -64,10 +64,53 @@ pub trait EventSink: Send + Sync {
     async fn on_event(&self, kernel: &Kernel, event: &crate::outbox::Event) -> Result<()>;
 }
 
+/// An HTTP request to a package's own endpoints: `/api/app/{package}/{path}` for signed-in users
+/// (`user` is set) or `/api/site/{tenant}/{package}/{path}` for the public — booking pages, web
+/// forms, storefronts, calendar feeds, inbound webhooks. Public requests carry no user: the package
+/// decides what an anonymous caller may do and acts with a system or service context itself.
+#[derive(Debug, Clone)]
+pub struct SiteRequest {
+    pub tenant: uuid::Uuid,
+    pub user: Option<Ctx>,
+    pub method: String,
+    /// Starts with `/`, relative to the package's prefix.
+    pub path: String,
+    pub query: serde_json::Map<String, Value>,
+    /// Request headers without credentials (authorization, cookie).
+    pub headers: serde_json::Map<String, Value>,
+    pub body: Vec<u8>,
+    /// The caller's address, for rate limits and audit.
+    pub client_ip: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SiteResponse {
+    pub status: u16,
+    pub content_type: String,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+impl SiteResponse {
+    pub fn json(status: u16, value: &Value) -> Self {
+        Self { status, content_type: "application/json".into(), headers: vec![], body: value.to_string().into_bytes() }
+    }
+    pub fn text(status: u16, content_type: &str, body: impl Into<String>) -> Self {
+        Self { status, content_type: content_type.into(), headers: vec![], body: body.into().into_bytes() }
+    }
+}
+
+/// A package's HTTP endpoints (see `SiteRequest`). Errors map to the usual API error responses.
+#[async_trait]
+pub trait Site: Send + Sync {
+    async fn handle(&self, kernel: &Kernel, req: SiteRequest) -> Result<SiteResponse>;
+}
+
 #[derive(Default, Clone)]
 pub struct HookRegistry {
     by_entity: HashMap<String, Vec<Arc<dyn DocHook>>>,
     sinks: Vec<Arc<dyn EventSink>>,
+    sites: HashMap<String, Arc<dyn Site>>,
 }
 
 impl HookRegistry {
@@ -97,5 +140,15 @@ impl HookRegistry {
 
     pub fn entities(&self) -> impl Iterator<Item = &String> {
         self.by_entity.keys()
+    }
+
+    /// Mounts `site` under the package's name; it answers only tenants that installed the package.
+    pub fn add_site(&mut self, package: &str, site: Arc<dyn Site>) -> &mut Self {
+        self.sites.insert(package.to_string(), site);
+        self
+    }
+
+    pub fn site(&self, package: &str) -> Option<&Arc<dyn Site>> {
+        self.sites.get(package)
     }
 }

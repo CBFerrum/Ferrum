@@ -6,4 +6,5 @@ pub mod mcp;
 pub mod meta;
 pub mod oauth;
 pub mod plugins;
+pub mod sites;
 pub mod system;
