@@ -2,7 +2,10 @@
 resolver = "3"
 members = ["crates/calc", "crates/meta", "crates/kernel", "crates/domain",
     "crates/plugins",
-    "crates/mcp", "server", "server/migration"]
+    "crates/mcp",
+    "crates/pkg-crm",
+    "crates/pkg-projects",
+    "crates/pkg-support", "server", "server/migration"]
 
 [workspace.package]
 version = "0.1.0"

@@ -95,6 +95,7 @@ impl Hooks for App {
         let catalog = Catalog::load_dir(Path::new(&settings.packages_dir)).map_err(|e| Error::Message(format!("packages: {e}")))?;
         let mut hooks = HookRegistry::default();
         ferrum_domain::register(&mut hooks);
+        crate::packages::register(&mut hooks);
         let plugins = ferrum_plugins::PluginHost::new(settings.webhooks_allow_private).map_err(|e| Error::Message(format!("plugins: {e}")))?;
         hooks.register("*", Arc::new(ferrum_plugins::PluginHook(plugins.clone())));
         hooks.add_event_sink(Arc::new(ferrum_plugins::PluginEvents(plugins.clone())));
@@ -146,6 +147,7 @@ impl Hooks for App {
                     }
                 }
             }));
+            handles.push(crate::packages::spawn(state.kernel.clone(), state.shutdown.subscribe()));
             // Plugin schedules and cross-replica socket delivery.
             handles.push(ferrum_plugins::schedule::spawn_scheduler(state.plugins.clone(), state.kernel.clone(), state.shutdown.subscribe()));
             handles.push(state.plugins.sockets.spawn_listener(state.kernel.db.clone(), state.shutdown.subscribe()));
