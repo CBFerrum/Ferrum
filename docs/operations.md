@@ -2,11 +2,16 @@
 
 ## Components
 
+Ferrum keeps no state on its own disks or in its memory that matters beyond a request: data,
+documents, plugin modules and their key-value state live in PostgreSQL, files in object storage,
+sessions are signed tokens, and caches (schemas, users, plugins) are invalidated across replicas
+through PostgreSQL `NOTIFY`. Any replica can be killed or added at any time.
+
 | Component | Role | Failure behaviour |
 |---|---|---|
 | API replicas (`ferrum start`) | Stateless HTTP API; each also runs the outbox dispatcher, webhook sender, metadata listener and maintenance loops | Any replica may die at any time; work is claimed with `SKIP LOCKED` / advisory locks and retried by the others |
 | PostgreSQL 17 (CloudNativePG) | All state: documents, ledgers, audit, outbox, plugins | Synchronous replica + automatic failover; WAL archiving for point-in-time recovery |
-| Object storage (S3) | Attachments (`FERRUM_S3_BUCKET`) | Required with more than one replica; local disk only for single-host installs |
+| Object storage (S3 or compatible) | Attachments (`FERRUM_S3_BUCKET`, `FERRUM_S3_ENDPOINT`) | Required in production; checked with a write/delete probe at boot (logged, not fatal) |
 
 ## Configuration
 
@@ -18,7 +23,9 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `JWT_SECRET` | yes | Base64, ≥ 32 random bytes: `openssl rand -base64 48`. Rotating it signs everyone out |
 | `FERRUM_BOOTSTRAP_TOKEN` | no | Enables `POST /api/tenants` with header `X-Ferrum-Bootstrap-Token`; empty disables it |
 | `FERRUM_METRICS_TOKEN` | recommended | `/metrics` then requires `Authorization: Bearer <token>` |
-| `FERRUM_S3_BUCKET`, `FERRUM_S3_REGION`, `AWS_*` | multi-replica | Attachment storage |
+| `FERRUM_S3_BUCKET`, `FERRUM_S3_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | multi-replica | Attachment storage on S3 (region `auto` if empty) |
+| `FERRUM_S3_ENDPOINT` | no | Any S3-compatible store: MinIO, Cloudflare R2, Wasabi, Backblaze B2, DigitalOcean Spaces, GCS interoperability |
+| `FERRUM_REQUIRE_OBJECT_STORAGE` | no | Production default `true`: refuse to start without object storage, so no replica keeps files locally. `false` only for single-server installs |
 | `FERRUM_FILES_DIR` | no | Local attachment directory (default `/var/lib/ferrum/files`) |
 | `FERRUM_DB_MAX_CONNECTIONS` | no | Pool size per replica (default 30) |
 | `FERRUM_RUN_BACKGROUND` | no | `false` turns a replica into API-only |

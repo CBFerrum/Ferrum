@@ -40,6 +40,14 @@ services:
       FERRUM_BOOTSTRAP_TOKEN: ${FERRUM_BOOTSTRAP_TOKEN:-}
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Single server: attachments on the local volume. Set FERRUM_S3_BUCKET (and FERRUM_S3_ENDPOINT,
+      # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY for MinIO/R2/...) to use object storage instead.
+      FERRUM_REQUIRE_OBJECT_STORAGE: ${FERRUM_REQUIRE_OBJECT_STORAGE:-false}
+      FERRUM_S3_BUCKET: ${FERRUM_S3_BUCKET:-}
+      FERRUM_S3_ENDPOINT: ${FERRUM_S3_ENDPOINT:-}
+      FERRUM_S3_REGION: ${FERRUM_S3_REGION:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
     volumes:
       - files:/var/lib/ferrum/files
 
