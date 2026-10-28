@@ -109,11 +109,18 @@ impl Hooks for App {
         hooks.add_event_sink(Arc::new(ferrum_plugins::PluginEvents(plugins.clone())));
         hooks.add_event_sink(Arc::new(crate::live::LiveEvents));
         let mailer: Option<Arc<dyn Mailer>> = ctx.mailer.clone().map(|sender| Arc::new(LocoMailer { sender, from: None }) as Arc<dyn Mailer>);
-        let kernel = Kernel::boot(db, catalog, hooks, KernelSettings { webhooks_allow_private: settings.webhooks_allow_private, ..Default::default() }, mailer)
-            .await
-            .map_err(|e| Error::Message(format!("kernel boot: {e}")))?;
-        ferrum_domain::maintenance(&kernel).await.map_err(|e| Error::Message(format!("domain maintenance: {e}")))?;
         let jwt = ctx.config.auth.as_ref().and_then(|a| a.jwt.as_ref()).ok_or_else(|| Error::Message("auth.jwt is not configured".into()))?;
+        let secret_key = secret_key(&settings, &jwt.secret, &ctx.environment)?;
+        let kernel = Kernel::boot(
+            db,
+            catalog,
+            hooks,
+            KernelSettings { webhooks_allow_private: settings.webhooks_allow_private, secret_key: Some(secret_key), ..Default::default() },
+            mailer,
+        )
+        .await
+        .map_err(|e| Error::Message(format!("kernel boot: {e}")))?;
+        ferrum_domain::maintenance(&kernel).await.map_err(|e| Error::Message(format!("domain maintenance: {e}")))?;
         // Loco signs with the base64-decoded secret: reject anything that is not valid base64 at boot.
         if loco_rs::auth::jwt::JWT::new(&jwt.secret).generate_token(60, "probe".into(), serde_json::Map::new()).is_err() {
             return Err(Error::Message("auth.jwt.secret must be base64 (generate one with `openssl rand -base64 48`)".into()));
@@ -219,6 +226,19 @@ impl Hooks for App {
     async fn seed(_ctx: &AppContext, _base: &Path) -> Result<()> {
         Ok(())
     }
+}
+
+/// The key sealing secret fields: configured (`FERRUM_SECRET_KEY`), required in production; in
+/// development derived from the JWT secret so secret fields work out of the box.
+fn secret_key(settings: &Settings, jwt_secret: &str, env: &Environment) -> Result<ferrum_kernel::secret::SecretKey> {
+    if !settings.secret_key.trim().is_empty() {
+        return ferrum_kernel::secret::SecretKey::from_base64(&settings.secret_key).map_err(|e| Error::Message(format!("settings.secret_key: {e}")));
+    }
+    if *env == Environment::Production {
+        return Err(Error::Message("FERRUM_SECRET_KEY is required in production (openssl rand -base64 32)".into()));
+    }
+    use sha2::Digest;
+    Ok(ferrum_kernel::secret::SecretKey::new(sha2::Sha256::digest(format!("ferrum-secret-fields:{jwt_secret}")).into()))
 }
 
 #[cfg(test)]

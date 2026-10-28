@@ -83,7 +83,11 @@ impl EffEntity {
 
     /// Fields that hold a value (everything but `table` fields).
     pub fn value_fields(&self) -> impl Iterator<Item = &FieldDef> {
-        self.def.fields.iter().filter(|f| f.ftype != FieldType::Table)
+        self.def.fields.iter().filter(|f| f.ftype.is_stored())
+    }
+
+    pub fn secret_fields(&self) -> impl Iterator<Item = &FieldDef> {
+        self.def.fields.iter().filter(|f| f.ftype == FieldType::Secret)
     }
 
     pub fn table_fields(&self) -> impl Iterator<Item = &FieldDef> {
@@ -188,6 +192,9 @@ pub(crate) fn apply_op(def: &mut EntityDef, op: &OverlayOp, source: OverlaySourc
             }
             if field.ftype == FieldType::Table {
                 return Err("customizations cannot add child tables".into());
+            }
+            if field.ftype == FieldType::Secret && source == OverlaySource::Tenant {
+                return Err("secret fields come with packages (they need code that uses them)".into());
             }
             if source == OverlaySource::Tenant && !field.name.starts_with("x_") {
                 return Err(format!("custom field {} must start with 'x_'", field.name));
@@ -314,8 +321,8 @@ fn validate_custom_entity(e: &EntityDef) -> Result<(), String> {
         return Err("custom entities cannot declare tables, unique keys, indexes or exclusions".into());
     }
     for f in &e.fields {
-        if f.ftype == FieldType::Table || f.unique {
-            return Err(format!("custom entity field {} cannot be a table or unique", f.name));
+        if matches!(f.ftype, FieldType::Table | FieldType::Secret) || f.unique {
+            return Err(format!("custom entity field {} cannot be a table, a secret or unique", f.name));
         }
     }
     Ok(())
@@ -332,7 +339,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
 
     for pkg in catalog.packages().filter(|p| set.contains(p.name())) {
         for e in &pkg.entities {
-            let storage = e.fields.iter().filter(|f| f.ftype != FieldType::Table).map(|f| (f.name.clone(), Storage::Column)).collect();
+            let storage = e.fields.iter().filter(|f| f.ftype.is_stored()).map(|f| (f.name.clone(), Storage::Column)).collect();
             let print_template = pkg.print_formats.iter().find(|(n, _)| n == &e.name).map(|(_, t)| t.clone());
             building.insert(e.name.clone(), Building { package: pkg.name().into(), def: e.clone(), storage, custom: false, workflow: None, print_template });
         }
@@ -442,7 +449,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
                 building.remove(&name);
             } else if let Some(base) = catalog.entity(&name) {
                 b.def = base.clone();
-                b.storage = base.fields.iter().filter(|f| f.ftype != FieldType::Table).map(|f| (f.name.clone(), Storage::Column)).collect();
+                b.storage = base.fields.iter().filter(|f| f.ftype.is_stored()).map(|f| (f.name.clone(), Storage::Column)).collect();
             }
         }
     }

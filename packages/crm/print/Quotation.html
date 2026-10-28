@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Quotation {{ doc.number or "" }}</title>
+<style>
+ body{font:13px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;color:#111;margin:32px}
+ h1{font-size:20px;margin:0} h2{font-size:22px;margin:0;letter-spacing:.04em;text-transform:uppercase;color:#444}
+ .head,.parties{display:flex;justify-content:space-between;align-items:flex-start;gap:32px}
+ .head{margin-bottom:24px} .parties{margin-bottom:16px}
+ .muted{color:#666} .right{text-align:right}
+ table{border-collapse:collapse;width:100%} th,td{padding:6px 8px;text-align:left;vertical-align:top}
+ .items th{background:#f6f6f6;border-bottom:1px solid #ccc} .items td{border-bottom:1px solid #eee}
+ .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+ .totals{width:auto;margin:12px 0 0 auto} .totals td{padding:3px 8px} .grand td{border-top:2px solid #111;font-weight:700}
+ .terms{white-space:pre-line;margin-top:24px}
+ @media print{body{margin:0}}
+</style></head><body>
+{% set t = doc._titles or {} %}
+<div class="head">
+ <div><h1>{{ t.company or "" }}</h1></div>
+ <div class="right"><h2>Quotation</h2><div>{{ doc.number or "Draft" }}</div></div>
+</div>
+<div class="parties">
+ <div><div class="muted">To</div><strong>{{ doc.party_name or "" }}</strong>{% if t.contact %}<div>Attn: {{ t.contact }}</div>{% endif %}</div>
+ <div class="right">
+  <div><span class="muted">Date</span> {{ doc.posting_date }}</div>
+  {% if doc.valid_till %}<div><span class="muted">Valid till</span> {{ doc.valid_till }}</div>{% endif %}
+ </div>
+</div>
+<table class="items">
+ <thead><tr><th>#</th><th>Description</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead>
+ <tbody>
+ {% for r in doc["items"] or [] %}{% set rt = r._titles or {} %}
+ <tr>
+  <td>{{ loop.index }}</td>
+  <td>{{ r.item_name or rt.item or "" }}{% if r.description %}<div class="muted">{{ r.description }}</div>{% endif %}</td>
+  <td class="num">{{ r.qty }}{% if rt.uom %} {{ rt.uom }}{% endif %}</td>
+  <td class="num">{{ r.rate | money }}</td>
+  <td class="num">{{ r.amount | money }}</td>
+ </tr>
+ {% endfor %}
+ </tbody>
+</table>
+<table class="totals">
+ <tr><td>Total</td><td class="num">{{ doc.total | money }}</td></tr>
+ {% if doc.discount_amount and doc.discount_amount != "0" %}<tr><td>Discount</td><td class="num">-{{ doc.discount_amount | money }}</td></tr>{% endif %}
+ {% for x in doc.taxes or [] %}<tr><td>{{ x.description or "Tax" }}</td><td class="num">{{ x.tax_amount | money }}</td></tr>{% endfor %}
+ {% if doc.rounding_adjustment and doc.rounding_adjustment != "0" %}<tr><td>Rounding</td><td class="num">{{ doc.rounding_adjustment | money }}</td></tr>{% endif %}
+ <tr class="grand"><td>Grand Total {{ t.currency or "" }}</td><td class="num">{{ (doc.rounded_total or doc.grand_total) | money }}</td></tr>
+</table>
+{% if doc.terms %}<div class="terms"><strong>Terms and Conditions</strong>
+{{ doc.terms }}</div>{% endif %}
+</body></html>

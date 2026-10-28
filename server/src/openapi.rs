@@ -16,6 +16,7 @@ fn field_schema(f: &FieldDef) -> Value {
         FieldType::Check => json!({"type": "boolean"}),
         FieldType::Link => json!({"type": "string", "format": "uuid", "description": format!("Id of a {}", f.to.clone().unwrap_or_default())}),
         FieldType::Json => json!({}),
+        FieldType::Secret => json!({"type": ["string", "boolean", "null"], "writeOnly": true, "description": "Write-only secret: text sets it, null removes it; reads show true when set"}),
         FieldType::Select => json!({"type": "string", "enum": f.options}),
         FieldType::Email => json!({"type": "string", "format": "email"}),
         FieldType::Url => json!({"type": "string", "format": "uri"}),

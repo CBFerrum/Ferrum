@@ -69,3 +69,4 @@ settings:
   s3_region: "<%= get_env(name="FERRUM_S3_REGION", default="") %>"
   s3_endpoint: "<%= get_env(name="FERRUM_S3_ENDPOINT", default="") %>"
   require_object_storage: false
+  secret_key: "<%= get_env(name="FERRUM_SECRET_KEY", default="") %>"

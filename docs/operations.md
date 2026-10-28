@@ -21,6 +21,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 |---|---|---|
 | `DATABASE_URL` | yes | `postgres://user:pass@host:5432/db` |
 | `JWT_SECRET` | yes | Base64, ≥ 32 random bytes: `openssl rand -base64 48`. Rotating it signs everyone out |
+| `FERRUM_SECRET_KEY` | yes | Base64 of exactly 32 random bytes: `openssl rand -base64 32`. Seals secret fields (mail passwords, API keys) with AES-256-GCM; every replica needs the same key. Back it up: values sealed with a lost key must be entered again |
 | `FERRUM_BOOTSTRAP_TOKEN` | no | Enables `POST /api/tenants` with header `X-Ferrum-Bootstrap-Token`; empty disables it |
 | `FERRUM_METRICS_TOKEN` | recommended | `/metrics` then requires `Authorization: Bearer <token>` |
 | `FERRUM_S3_BUCKET`, `FERRUM_S3_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | multi-replica | Attachment storage on S3 (region `auto` if empty) |

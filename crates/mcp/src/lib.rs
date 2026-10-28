@@ -584,6 +584,8 @@ fn field_schema(ctx: &Ctx, f: &FieldDef, depth: usize) -> Value {
         FieldType::Email => json!({"type": "string", "format": "email"}),
         FieldType::Url => json!({"type": "string", "format": "uri"}),
         FieldType::Json => json!({"type": ["object", "array"]}),
+        FieldType::Secret => json!({"type": ["string", "boolean", "null"], "writeOnly": true,
+            "description": "Write-only secret: send text to set it, null to remove it; reads show true when one is set"}),
         FieldType::Link => {
             json!({"type": "string", "format": "uuid", "description": format!("Id of a {} record", f.to.as_deref().unwrap_or("linked"))})
         }
