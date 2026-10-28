@@ -23,6 +23,7 @@ pub mod outbox;
 pub mod print;
 pub mod query;
 pub mod registry;
+pub mod secret;
 pub mod store;
 pub mod tenant;
 pub mod value;
@@ -58,11 +59,13 @@ pub struct KernelSettings {
     pub ctx_ttl: Duration,
     /// Processed outbox events and delivered webhooks are kept this long.
     pub event_retention_days: i32,
+    /// Seals secret fields; without it they cannot be set or read.
+    pub secret_key: Option<secret::SecretKey>,
 }
 
 impl Default for KernelSettings {
     fn default() -> Self {
-        KernelSettings { webhooks_allow_private: false, ctx_ttl: Duration::from_secs(30), event_retention_days: 30 }
+        KernelSettings { webhooks_allow_private: false, ctx_ttl: Duration::from_secs(30), event_retention_days: 30, secret_key: None }
     }
 }
 

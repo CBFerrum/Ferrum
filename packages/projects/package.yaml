@@ -1,0 +1,80 @@
+package: projects
+version: 0.1.0
+label: Projects
+description: Projects with task trees, dependencies and milestones, timesheets with costing and billing, activity rates, milestone and time-and-materials invoicing, and project profitability.
+depends: [core, accounting, selling]
+field_prefix: proj_
+
+overlays:
+  - entity: Project
+    ops:
+      - {op: add_options, field: status, options: [On Hold]}
+      - {op: set_property, field: start_date, property: label, value: Expected Start Date}
+      - {op: set_property, field: end_date, property: label, value: Expected End Date}
+      - {op: add_field, after: status, field: {name: proj_priority, type: select, label: Priority, options: [Low, Medium, High, Urgent], default: Medium, in_filter: true}}
+      - {op: add_field, after: proj_priority, field: {name: proj_project_manager, type: email, label: Project Manager, in_filter: true, description: Email of the user who manages the project}}
+      - {op: add_field, after: end_date, field: {name: proj_actual_start_date, type: date, label: Actual Start Date, read_only: true, no_copy: true, description: First submitted time log}}
+      - {op: add_field, after: proj_actual_start_date, field: {name: proj_actual_end_date, type: date, label: Actual End Date, read_only: true, no_copy: true, description: Last submitted time log}}
+      - {op: add_field, after: customer, field: {name: proj_billing_method, type: select, label: Billing Method, options: [Time and Materials, Fixed Price, Non-billable], default: Time and Materials, required: true, in_filter: true}}
+      - {op: add_field, after: proj_billing_method, field: {name: proj_contract_value, type: currency, currency: currency, label: Contract Value, min: "0", visible_if: "doc.proj_billing_method == 'Fixed Price'", required_if: "doc.proj_billing_method == 'Fixed Price'"}}
+      - {op: add_field, after: proj_contract_value, field: {name: proj_billing_item, type: link, to: Item, label: Milestone Billing Item, link_filters: {is_stock_item: false, disabled: false}, visible_if: "doc.proj_billing_method == 'Fixed Price'", description: Service item used on milestone invoices}}
+      - {op: add_field, after: proj_billing_item, field: {name: proj_cost_center, type: link, to: CostCenter, label: Cost Center, link_filters: {is_group: false}, description: Used on this project's invoices}}
+      - {op: add_field, after: budget, field: {name: proj_estimated_cost, type: currency, currency: currency, label: Estimated Cost, min: "0"}}
+      - {op: add_field, after: proj_estimated_cost, field: {name: proj_estimated_hours, type: decimal, label: Estimated Hours, min: "0"}}
+      - {op: add_field, after: proj_estimated_hours, field: {name: proj_percent_complete_method, type: select, label: "% Complete Method", options: [Task Progress, Manual], default: Task Progress, description: Task Progress weighs each task's progress by its expected hours}}
+      - {op: add_field, after: proj_percent_complete_method, field: {name: proj_percent_complete, type: percent, label: "% Complete", min: "0", max: "100", read_only_if: "doc.proj_percent_complete_method != 'Manual'", in_list: true}}
+      - {op: add_field, field: {name: proj_actual_hours, type: decimal, label: Actual Hours, read_only: true, no_copy: true}}
+      - {op: add_field, field: {name: proj_costing_amount, type: currency, currency: currency, label: Timesheet Cost, read_only: true, no_copy: true}}
+      - {op: add_field, field: {name: proj_billable_amount, type: currency, currency: currency, label: Billable Time, read_only: true, no_copy: true}}
+      - {op: add_field, field: {name: proj_billed_amount, type: currency, currency: currency, label: Billed Amount, read_only: true, no_copy: true, description: Invoiced time and milestones}}
+      - {op: add_rule, rule: {name: proj_contract_value, check: "doc.proj_billing_method != 'Fixed Price' || doc.proj_contract_value > 0.0", message: "A fixed price project needs a contract value"}}
+      - {op: add_action, action: {name: make_sales_invoice, label: Create Sales Invoice, permission: read, condition: "doc.proj_billing_method == 'Time and Materials'", confirm: "Invoice the project's unbilled time (optionally only up to a date)?"}}
+      - {op: add_action, action: {name: complete, label: Complete Project, permission: write, condition: "doc.status != 'Completed' && doc.status != 'Cancelled'", confirm: "Complete the project? With force, its open tasks are cancelled."}}
+      - {op: set_entity_property, property: list, value: {columns: [number, project_name, customer, status, proj_percent_complete], sort: created_at desc}}
+  - entity: SalesInvoiceItem
+    ops:
+      - {op: add_field, field: {name: proj_time_logs, type: json, label: Billed Time Logs, hidden: true, description: Timesheet log ids this line bills; marked billed when the invoice is submitted}}
+      - {op: add_field, field: {name: proj_milestone, type: link, to: Task, label: Billed Milestone, hidden: true}}
+
+modules:
+  - name: projects
+    label: Projects
+    icon: briefcase
+    order: 50
+    items: [Project, Task, Timesheet, ActivityType, ActivityCost, report:project_profitability, report:timesheet_summary, report:task_overview]
+
+roles:
+  - name: Projects Manager
+    description: Plans projects and tasks, sees costs, and bills customers for time and milestones.
+    permissions:
+      - {entity: Project, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: Task, read: true, write: true, create: true, delete: true, export: true, import: true, read_groups: [billing], write_groups: [billing]}
+      - {entity: Timesheet, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, read_groups: [costing], write_groups: [costing]}
+      - {entity: TimesheetDetail, read_groups: [costing], write_groups: [costing]}
+      - {entity: ActivityType, read: true, write: true, create: true, delete: true, read_groups: [costing], write_groups: [costing]}
+      - {entity: ActivityCost, read: true, write: true, create: true, delete: true, import: true}
+      - {entity: SalesInvoice, read: true, write: true, create: true, delete: true}
+      - {entity: Customer, read: true}
+      - {entity: Company, read: true}
+      - {entity: Currency, read: true}
+      - {entity: Item, read: true}
+      - {entity: CostCenter, read: true}
+      - {entity: Account, read: true}
+      - {entity: PriceList, read: true}
+      - {entity: TaxTemplate, read: true}
+  - name: Projects User
+    description: Records own time and works on the tasks assigned to them.
+    permissions:
+      - {entity: Project, read: true}
+      - {entity: Task, read: true, write: true, create: true, if_owner: true, read_groups: [billing]}
+      - {entity: Timesheet, read: true, write: true, create: true, delete: true, submit: true, cancel: true, if_owner: true}
+      - {entity: ActivityType, read: true}
+      - {entity: Company, read: true}
+      - {entity: Customer, read: true}
+  - name: Accounts Manager
+    permissions:
+      - {entity: Timesheet, read: true, export: true, read_groups: [costing]}
+      - {entity: TimesheetDetail, read_groups: [costing]}
+      - {entity: Task, read: true, read_groups: [billing]}
+      - {entity: ActivityType, read: true, read_groups: [costing]}
+      - {entity: ActivityCost, read: true}

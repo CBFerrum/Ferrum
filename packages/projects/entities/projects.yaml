@@ -1,0 +1,130 @@
+- name: ActivityType
+  label: Activity Type
+  kind: master
+  module: projects
+  title_field: activity_type
+  description: Kinds of work time is booked against, with default hourly rates and the service item used to invoice them.
+  fields:
+    - {name: activity_type, type: data, required: true, unique: true, in_list: true}
+    - {name: billing_rate, type: currency, min: "0", in_list: true, label: Default Billing Rate (per hour)}
+    - {name: costing_rate, type: currency, min: "0", perm_group: costing, label: Default Costing Rate (per hour)}
+    - {name: item, type: link, to: Item, link_filters: {is_stock_item: false, disabled: false}, in_list: true, label: Service Item, description: Invoiced for billable time of this activity}
+    - {name: disabled, type: check, in_filter: true}
+  list: {columns: [activity_type, billing_rate, item], sort: activity_type asc}
+
+- name: ActivityCost
+  label: Activity Cost
+  kind: master
+  module: projects
+  title_field: user
+  description: Per-user hourly rates for an activity type; they override the activity type's defaults.
+  fields:
+    - {name: user, type: email, required: true, in_list: true, in_filter: true}
+    - {name: activity_type, type: link, to: ActivityType, required: true, in_list: true, in_filter: true}
+    - {name: billing_rate, type: currency, min: "0", in_list: true, label: Billing Rate (per hour), description: Empty or 0 uses the activity type's rate}
+    - {name: costing_rate, type: currency, min: "0", in_list: true, label: Costing Rate (per hour), description: Empty or 0 uses the activity type's rate}
+  unique: [[user, activity_type]]
+  list: {columns: [user, activity_type, billing_rate, costing_rate], sort: user asc}
+
+- name: TaskAssignee
+  label: Task Assignee
+  kind: child
+  fields:
+    - {name: user, type: email, required: true, in_list: true}
+
+- name: TaskDependency
+  label: Task Dependency
+  kind: child
+  fields:
+    - {name: task, type: link, to: Task, required: true, in_list: true, label: Depends On}
+    - {name: subject, type: data, fetch_from: task.subject, read_only: true, in_list: true}
+
+- name: Task
+  label: Task
+  kind: master
+  module: projects
+  title_field: subject
+  company_scoped: true
+  numbering: {template: "TASK-{seq:5}"}
+  owner_fields: [assigned_to.user]
+  fields:
+    - {name: subject, type: data, required: true, in_list: true}
+    - {name: project, type: link, to: Project, required: true, in_list: true, in_filter: true}
+    - {name: company, type: link, to: Company, fetch_from: project.company, read_only: true, in_filter: true}
+    - {name: status, type: select, options: [Open, Working, Pending Review, Overdue, Completed, Cancelled], default: Open, required: true, in_list: true, in_filter: true}
+    - {name: priority, type: select, options: [Low, Medium, High, Urgent], default: Medium, in_list: true, in_filter: true}
+    - {name: parent_task, type: link, to: Task, in_filter: true, description: Makes this a sub-task}
+    - {name: is_milestone, type: check, in_filter: true}
+    - {name: exp_start_date, type: date, label: Expected Start Date}
+    - {name: exp_end_date, type: date, label: Expected End Date, in_list: true, in_filter: true}
+    - {name: expected_hours, type: decimal, min: "0"}
+    - {name: progress, type: percent, min: "0", max: "100", label: "% Progress", in_list: true}
+    - {name: actual_hours, type: decimal, read_only: true, no_copy: true, description: From submitted timesheets}
+    - {name: completed_on, type: date, no_copy: true}
+    - {name: assigned_to, type: table, of: TaskAssignee}
+    - {name: depends_on, type: table, of: TaskDependency, description: Tasks that must be completed before this one starts}
+    - {name: description, type: text}
+    - {name: billing_percent, type: percent, min: "0", max: "100", perm_group: billing, label: "Billing % of Contract Value", visible_if: "doc.is_milestone"}
+    - {name: sales_invoice, type: link, to: SalesInvoice, read_only: true, no_copy: true, on_delete: set_null, visible_if: "doc.is_milestone", label: Milestone Invoice}
+    - {name: billed_amount, type: currency, read_only: true, no_copy: true, visible_if: "doc.is_milestone"}
+  form:
+    - {label: Task, fields: [subject, project, company, status, priority, parent_task, is_milestone]}
+    - {label: Schedule, fields: [exp_start_date, exp_end_date, expected_hours, progress, actual_hours, completed_on]}
+    - {label: People and Dependencies, fields: [assigned_to, depends_on]}
+    - {label: Details, fields: [description]}
+    - {label: Milestone Billing, collapsible: true, fields: [billing_percent, sales_invoice, billed_amount]}
+  rules:
+    - {name: expected_dates, check: "doc.exp_end_date == null || doc.exp_start_date == null || doc.exp_end_date >= doc.exp_start_date", message: "Expected end date is before the expected start date"}
+  actions:
+    - {name: make_milestone_invoice, label: Create Milestone Invoice, permission: read, condition: "doc.is_milestone && doc.billing_percent > 0.0", confirm: "Create a draft sales invoice for this milestone's share of the contract value?"}
+  list: {columns: [number, subject, project, status, exp_end_date, progress], sort: created_at desc}
+
+- name: TimesheetDetail
+  label: Time Log
+  kind: child
+  fields:
+    - {name: activity_type, type: link, to: ActivityType, required: true, link_filters: {disabled: false}, in_list: true}
+    - {name: project, type: link, to: Project, in_list: true, description: Defaults to the task's or the timesheet's project}
+    - {name: task, type: link, to: Task, in_list: true}
+    - {name: from_time, type: datetime, required: true, in_list: true}
+    - {name: to_time, type: datetime, in_list: true, description: Leave empty to derive it from the hours}
+    - {name: hours, type: decimal, min: "0", in_list: true, description: Derived from the time span}
+    - {name: is_billable, type: check, default: true, in_list: true, label: Billable, description: Only time on Time and Materials projects is billable}
+    - {name: billing_hours, type: decimal, min: "0", description: Follows the hours unless changed}
+    - {name: billing_rate, type: currency, min: "0", description: Defaults to the user's activity cost or the activity type rate}
+    - {name: billing_amount, type: currency, read_only: true, in_list: true}
+    - {name: costing_rate, type: currency, read_only: true, perm_group: costing}
+    - {name: costing_amount, type: currency, read_only: true, perm_group: costing}
+    - {name: billed, type: check, read_only: true, no_copy: true}
+    - {name: sales_invoice, type: link, to: SalesInvoice, read_only: true, no_copy: true, on_delete: set_null}
+    - {name: description, type: text}
+
+- name: Timesheet
+  label: Timesheet
+  kind: document
+  module: projects
+  submittable: true
+  company_scoped: true
+  title_field: user
+  numbering: {template: "TS-{FY}-{seq:5}", date_field: start_date}
+  owner_fields: [user]
+  fields:
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: user, type: email, required: true, default_expr: "user.email", in_list: true, in_filter: true}
+    - {name: project, type: link, to: Project, in_filter: true, description: Default project for the time logs}
+    - {name: start_date, type: date, read_only: true, in_list: true}
+    - {name: end_date, type: date, read_only: true}
+    - {name: time_logs, type: table, of: TimesheetDetail, required: true}
+    - {name: total_hours, type: decimal, read_only: true, in_list: true}
+    - {name: total_billable_hours, type: decimal, read_only: true}
+    - {name: total_billed_hours, type: decimal, read_only: true, no_copy: true}
+    - {name: total_billable_amount, type: currency, read_only: true}
+    - {name: total_billed_amount, type: currency, read_only: true, no_copy: true}
+    - {name: total_costing_amount, type: currency, read_only: true, perm_group: costing}
+    - {name: per_billed, type: percent, read_only: true, no_copy: true}
+    - {name: status, type: select, options: [Draft, Submitted, Partly Billed, Billed, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: note, type: text}
+  indexes: [[user]]
+  actions:
+    - {name: make_sales_invoice, label: Create Sales Invoice, docstatus: [1], permission: read}
+  list: {columns: [number, user, start_date, total_hours, status], sort: start_date desc}

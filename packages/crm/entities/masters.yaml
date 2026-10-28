@@ -1,0 +1,160 @@
+- name: SalesStage
+  label: Sales Stage
+  kind: master
+  module: crm
+  title_field: stage_name
+  description: Steps of the sales pipeline with the win probability opportunities default to.
+  fields:
+    - {name: stage_name, type: data, required: true, unique: true, in_list: true}
+    - {name: probability, type: percent, required: true, default: 0, min: "0", max: "100", in_list: true, description: Default win probability of opportunities in this stage}
+    - {name: stage_order, type: int, required: true, default: 0, label: Order, in_list: true}
+    - {name: outcome, type: select, options: [Open, Won, Lost], required: true, default: Open, in_list: true, in_filter: true, description: Won and Lost stages close the opportunity}
+    - {name: disabled, type: check, in_filter: true}
+  list: {columns: [stage_name, probability, stage_order, outcome], sort: stage_order asc}
+
+- name: LostReason
+  label: Lost Reason
+  kind: master
+  module: crm
+  title_field: reason
+  fields:
+    - {name: reason, type: data, required: true, unique: true, in_list: true}
+    - {name: description, type: text}
+  list: {sort: reason asc}
+
+- name: Territory
+  label: Territory
+  label_plural: Territories
+  kind: master
+  module: crm
+  title_field: territory_name
+  fields:
+    - {name: territory_name, type: data, required: true, unique: true, in_list: true}
+    - {name: parent_territory, type: link, to: Territory, link_filters: {is_group: true}, in_list: true}
+    - {name: is_group, type: check, in_list: true}
+  list: {sort: territory_name asc}
+
+- name: Campaign
+  label: Campaign
+  kind: master
+  module: crm
+  title_field: campaign_name
+  company_scoped: true
+  description: Marketing campaigns; amounts are in the company currency.
+  fields:
+    - {name: campaign_name, type: data, required: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - name: campaign_type
+      type: select
+      in_list: true
+      in_filter: true
+      options: [Email, Social Media, Webinar, Event, Trade Show, Advertising, Content, Referral Program, Direct Mail, Telemarketing, Other]
+    - {name: status, type: select, options: [Planned, Active, Completed, Cancelled], required: true, default: Planned, in_list: true, in_filter: true}
+    - {name: start_date, type: date, in_list: true}
+    - {name: end_date, type: date}
+    - {name: budget, type: currency, min: "0"}
+    - {name: actual_cost, type: currency, min: "0"}
+    - {name: expected_revenue, type: currency, min: "0"}
+    - {name: description, type: text}
+  unique: [[company, campaign_name]]
+  rules:
+    - {name: dates, check: "doc.end_date == null || doc.start_date == null || doc.end_date >= doc.start_date", message: "The end date is before the start date"}
+  list: {columns: [campaign_name, campaign_type, status, start_date], sort: start_date desc}
+
+- name: Prospect
+  label: Prospect
+  kind: master
+  module: crm
+  title_field: prospect_name
+  description: An organization being pursued through one or more leads and opportunities.
+  search_fields: [email, phone]
+  fields:
+    - {name: prospect_name, type: data, required: true, unique: true, label: Organization, in_list: true}
+    - name: industry
+      type: select
+      in_list: true
+      in_filter: true
+      options: [Agriculture, Automotive, Banking and Finance, Construction, Consulting, Education, Energy and Utilities, Government, Healthcare,
+                Hospitality, Information Technology, Insurance, Logistics, Manufacturing, Media and Entertainment, Non-Profit, Pharmaceuticals,
+                Real Estate, Retail, Services, Telecommunications, Wholesale and Distribution, Other]
+    - {name: company_size, type: select, options: ["1-10", "11-50", "51-200", "201-500", "501-1000", "1001+"], label: Employees}
+    - {name: annual_revenue, type: currency, min: "0"}
+    - {name: territory, type: link, to: Territory, in_filter: true}
+    - {name: website, type: url}
+    - {name: email, type: email}
+    - {name: phone, type: phone}
+    - {name: assigned_to, type: email, default_expr: "user.email", label: Account Owner, in_list: true, in_filter: true}
+    - {name: customer, type: link, to: Customer, read_only: true, no_copy: true, in_filter: true, description: Set when one of its leads is converted}
+    - {name: notes, type: text}
+  list: {columns: [prospect_name, industry, territory, assigned_to], sort: prospect_name asc}
+
+- name: ContactEmail
+  label: Contact Email
+  kind: child
+  fields:
+    - {name: email, type: email, required: true, in_list: true}
+    - {name: is_primary, type: check, in_list: true}
+
+- name: ContactPhone
+  label: Contact Phone
+  kind: child
+  fields:
+    - {name: phone, type: phone, required: true, in_list: true}
+    - {name: phone_type, type: select, options: [Mobile, Work, Home, Other], default: Mobile, in_list: true}
+    - {name: is_primary, type: check, in_list: true}
+
+- name: Contact
+  label: Contact
+  kind: master
+  module: crm
+  title_field: full_name
+  search_fields: [email, phone]
+  fields:
+    - {name: first_name, type: data, required: true}
+    - {name: last_name, type: data}
+    - {name: full_name, type: data, read_only: true, in_list: true}
+    - {name: designation, type: data, in_list: true}
+    - {name: department, type: data}
+    - {name: email, type: email, read_only: true, label: Primary Email, in_list: true}
+    - {name: phone, type: phone, read_only: true, label: Primary Phone, in_list: true}
+    - {name: emails, type: table, of: ContactEmail}
+    - {name: phones, type: table, of: ContactPhone}
+    - {name: customer, type: link, to: Customer, in_filter: true}
+    - {name: supplier, type: link, to: Supplier, in_filter: true}
+    - {name: lead, type: link, to: Lead, in_filter: true}
+    - {name: prospect, type: link, to: Prospect, in_filter: true}
+    - {name: unsubscribed, type: check, in_filter: true, description: Do not send marketing communication}
+    - {name: notes, type: text}
+  form:
+    - {label: Contact, fields: [first_name, last_name, full_name, designation, department, email, phone, unsubscribed]}
+    - {label: Emails and Phones, fields: [emails, phones]}
+    - {label: Links, fields: [customer, supplier, lead, prospect]}
+    - {label: Notes, collapsible: true, fields: [notes]}
+  list: {columns: [full_name, designation, email, phone], sort: full_name asc}
+
+- name: Address
+  label: Address
+  label_plural: Addresses
+  kind: master
+  module: crm
+  title_field: address_title
+  search_fields: [city, postal_code]
+  fields:
+    - {name: address_title, type: data, in_list: true}
+    - {name: address_type, type: select, options: [Billing, Shipping, Office, Other], required: true, default: Billing, in_list: true, in_filter: true}
+    - {name: address_line1, type: data, required: true}
+    - {name: address_line2, type: data}
+    - {name: city, type: data, required: true, in_list: true, in_filter: true}
+    - {name: state, type: data, in_filter: true}
+    - {name: postal_code, type: data}
+    - {name: country, type: data, in_filter: true}
+    - {name: email, type: email}
+    - {name: phone, type: phone}
+    - {name: is_primary, type: check, in_list: true, description: The party's preferred address of this type}
+    - {name: customer, type: link, to: Customer, in_filter: true}
+    - {name: supplier, type: link, to: Supplier, in_filter: true}
+    - {name: lead, type: link, to: Lead, in_filter: true}
+    - {name: display, type: text, read_only: true, label: Formatted Address}
+  rules:
+    - {name: linked, check: "doc.customer != null || doc.supplier != null || doc.lead != null", message: "Link the address to a customer, supplier or lead"}
+  list: {columns: [address_title, address_type, city, is_primary], sort: address_title asc}

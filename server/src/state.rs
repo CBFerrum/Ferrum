@@ -57,6 +57,9 @@ pub struct Settings {
     /// Refuse to start without object storage, so replicas never keep attachments on local disk.
     #[serde(default)]
     pub require_object_storage: bool,
+    /// Base64 of 32 random bytes sealing secret fields; required in production.
+    #[serde(default)]
+    pub secret_key: String,
     /// When set, `/metrics` requires `Authorization: Bearer <token>`.
     #[serde(default)]
     pub metrics_token: String,

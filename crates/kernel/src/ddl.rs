@@ -35,7 +35,7 @@ pub fn column_type(f: &FieldDef) -> &'static str {
         FieldType::Check => "boolean",
         FieldType::Link => "uuid",
         FieldType::Json => "jsonb",
-        FieldType::Table => "",
+        FieldType::Table | FieldType::Secret => "",
         _ => "text",
     }
 }

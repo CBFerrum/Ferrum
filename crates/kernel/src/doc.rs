@@ -75,7 +75,7 @@ impl Kernel {
         let ent = self.entity(ctx, entity)?;
         guard_kind(&ent)?;
         let scope = row_scope(ctx, &ent, Action::Read)?;
-        let doc = store::load(tx, &ctx.schema, &ent, ctx.tenant, id, lock).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
+        let doc = self.load_marked(tx, ctx, &ent, id, lock).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
         if !scope.matches(&doc) {
             return Err(Error::NotFound(ent.def.label.clone()));
         }
@@ -320,12 +320,12 @@ impl Kernel {
         ctx.require(entity, Action::Read)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let existing = match uuid_of(input.get("id")) {
-            Some(id) => store::load(&mut tx, &ctx.schema, &ent, ctx.tenant, id, false).await?,
+            Some(id) => self.load_marked(&mut tx, ctx, &ent, id, false).await?,
             None => None,
         };
         let mut doc = existing.clone().unwrap_or_default();
         let mut errors = Vec::new();
-        self.apply_input(ctx, &ent, &mut doc, &input, existing.as_ref(), &mut errors, false);
+        self.apply_input(ctx, &ent, &mut doc, &input, existing.as_ref(), &mut errors, false, &mut Vec::new());
         if !errors.is_empty() {
             return Err(Error::Validation(errors));
         }
@@ -352,7 +352,8 @@ impl Kernel {
         let mut errors = Vec::new();
         // An amendment copies the cancelled original: its read-only values (links to the documents
         // it was made from, derived fields) are the server's own, not user input.
-        self.apply_input(ctx, &ent, &mut doc, &input, None, &mut errors, amended_from.is_some());
+        let mut secrets = Vec::new();
+        self.apply_input(ctx, &ent, &mut doc, &input, None, &mut errors, amended_from.is_some(), &mut secrets);
         if !errors.is_empty() {
             return Err(Error::Validation(errors));
         }
@@ -380,7 +381,8 @@ impl Kernel {
             doc.insert("number".into(), json!(n));
         }
         store::insert_row(tx, &ctx.schema, &ent, ctx.tenant, &doc).await?;
-        let stored = store::load(tx, &ctx.schema, &ent, ctx.tenant, id, false).await?.ok_or_else(|| Error::internal("insert vanished"))?;
+        self.write_secrets(ctx, tx, &ent, id, &secrets).await?;
+        let stored = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::internal("insert vanished"))?;
         self.hook_after_save(ctx, tx, &ent, &stored, None).await?;
         self.emit(ctx, tx, &ent, id, "created", "create", Some(1), None, Some(&stored)).await?;
         Ok(self.mask(ctx, &ent, stored))
@@ -400,7 +402,7 @@ impl Kernel {
         let ent = self.entity(ctx, entity)?;
         guard_kind(&ent)?;
         let scope = row_scope(ctx, &ent, Action::Write)?;
-        let old = store::load(tx, &ctx.schema, &ent, ctx.tenant, id, true).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
+        let old = self.load_marked(tx, ctx, &ent, id, true).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
         if !scope.matches(&old) {
             return Err(Error::NotFound(ent.def.label.clone()));
         }
@@ -415,7 +417,8 @@ impl Kernel {
         self.check_workflow_edit(ctx, &ent, &old)?;
         let mut doc = old.clone();
         let mut errors = Vec::new();
-        self.apply_input(ctx, &ent, &mut doc, &patch, Some(&old), &mut errors, false);
+        let mut secrets = Vec::new();
+        self.apply_input(ctx, &ent, &mut doc, &patch, Some(&old), &mut errors, false, &mut secrets);
         if !errors.is_empty() {
             return Err(Error::Validation(errors));
         }
@@ -431,7 +434,8 @@ impl Kernel {
         doc.insert("version".into(), json!(version));
         doc.insert("updated_by".into(), if !ctx.user.is_nil() { json!(ctx.user.to_string()) } else { Value::Null });
         store::update_row(tx, &ctx.schema, &ent, ctx.tenant, &doc, &old).await?;
-        let stored = store::load(tx, &ctx.schema, &ent, ctx.tenant, id, false).await?.ok_or_else(|| Error::internal("update vanished"))?;
+        self.write_secrets(ctx, tx, &ent, id, &secrets).await?;
+        let stored = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::internal("update vanished"))?;
         self.hook_after_save(ctx, tx, &ent, &stored, Some(&old)).await?;
         self.emit(ctx, tx, &ent, id, "updated", "update", Some(version), Some(&old), Some(&stored)).await?;
         Ok(self.mask(ctx, &ent, stored))
@@ -451,7 +455,7 @@ impl Kernel {
         let ent = self.entity(ctx, entity)?;
         guard_kind(&ent)?;
         let scope = row_scope(ctx, &ent, Action::Delete)?;
-        let old = store::load(tx, &ctx.schema, &ent, ctx.tenant, id, true).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
+        let old = self.load_marked(tx, ctx, &ent, id, true).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
         if !scope.matches(&old) {
             return Err(Error::NotFound(ent.def.label.clone()));
         }
@@ -465,7 +469,7 @@ impl Kernel {
         }
         store::delete_row(tx, &ent, ctx.tenant, id).await?;
         // Collaboration on the record goes with it (followers are told by the deleted event first).
-        for table in ["record_comment", "record_assignment", "record_tag"] {
+        for table in ["record_comment", "record_assignment", "record_tag", "record_secret"] {
             sqlx::query(AssertSqlSafe(format!("delete from {table} where tenant_id = $1 and entity = $2 and record_id = $3")))
                 .bind(ctx.tenant)
                 .bind(&ent.def.name)
@@ -500,7 +504,7 @@ impl Kernel {
             return Err(Error::invalid("this document is controlled by a workflow; use a workflow action"));
         }
         let scope = row_scope(ctx, &ent, Action::Submit)?;
-        let old = store::load(tx, &ctx.schema, &ent, ctx.tenant, id, true).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
+        let old = self.load_marked(tx, ctx, &ent, id, true).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
         if !scope.matches(&old) {
             return Err(Error::NotFound(ent.def.label.clone()));
         }
@@ -529,13 +533,13 @@ impl Kernel {
         doc.insert("version".into(), json!(version));
         doc.insert("updated_by".into(), if !ctx.user.is_nil() { json!(ctx.user.to_string()) } else { Value::Null });
         store::update_row(tx, &ctx.schema, &ent, ctx.tenant, &doc, &old).await?;
-        let stored = store::load(tx, &ctx.schema, &ent, ctx.tenant, id, false).await?.ok_or_else(|| Error::internal("submit vanished"))?;
+        let stored = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::internal("submit vanished"))?;
         for h in self.hooks.for_entity(&ent.def.name) {
             let mut hc = HookCtx { kernel: self, ctx, tx: &mut *tx, entity: &ent };
             h.on_submit(&mut hc, &stored).await?;
         }
         // Hooks derive values (status, outstanding, progress); return and publish the final state.
-        let stored = store::load(tx, &ctx.schema, &ent, ctx.tenant, id, false).await?.ok_or_else(|| Error::internal("submit vanished"))?;
+        let stored = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::internal("submit vanished"))?;
         self.emit(ctx, tx, &ent, id, "submitted", "submit", Some(version), Some(&old), Some(&stored)).await?;
         Ok(self.mask(ctx, &ent, stored))
     }
@@ -564,7 +568,7 @@ impl Kernel {
             return Err(Error::invalid("this document is controlled by a workflow; use a workflow action"));
         }
         let scope = row_scope(ctx, &ent, Action::Cancel)?;
-        let old = store::load(tx, &ctx.schema, &ent, ctx.tenant, id, true).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
+        let old = self.load_marked(tx, ctx, &ent, id, true).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
         if !scope.matches(&old) {
             return Err(Error::NotFound(ent.def.label.clone()));
         }
@@ -585,13 +589,13 @@ impl Kernel {
         doc.insert("version".into(), json!(version));
         doc.insert("updated_by".into(), if !ctx.user.is_nil() { json!(ctx.user.to_string()) } else { Value::Null });
         store::update_row(tx, &ctx.schema, &ent, ctx.tenant, &doc, &old).await?;
-        let stored = store::load(tx, &ctx.schema, &ent, ctx.tenant, id, false).await?.ok_or_else(|| Error::internal("cancel vanished"))?;
+        let stored = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::internal("cancel vanished"))?;
         for h in self.hooks.for_entity(&ent.def.name) {
             let mut hc = HookCtx { kernel: self, ctx, tx: &mut *tx, entity: &ent };
             h.on_cancel(&mut hc, &stored).await?;
         }
         // Hooks derive values (status, outstanding, progress); return and publish the final state.
-        let stored = store::load(tx, &ctx.schema, &ent, ctx.tenant, id, false).await?.ok_or_else(|| Error::internal("cancel vanished"))?;
+        let stored = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::internal("cancel vanished"))?;
         self.emit(ctx, tx, &ent, id, "cancelled", "cancel", Some(version), Some(&old), Some(&stored)).await?;
         Ok(self.mask(ctx, &ent, stored))
     }
@@ -630,7 +634,7 @@ impl Kernel {
         let def = ent.def.actions.iter().find(|a| a.name == action).ok_or_else(|| Error::NotFound(format!("action {action}")))?;
         let perm = Action::parse(&def.permission).unwrap_or(Action::Write);
         let scope = row_scope(ctx, &ent, perm)?;
-        let doc = store::load(tx, &ctx.schema, &ent, ctx.tenant, id, true).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
+        let doc = self.load_marked(tx, ctx, &ent, id, true).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
         if !scope.matches(&doc) {
             return Err(Error::NotFound(ent.def.label.clone()));
         }
@@ -669,7 +673,7 @@ impl Kernel {
         let ent = self.entity(ctx, entity)?;
         let wf = ent.workflow.clone().ok_or_else(|| Error::invalid(format!("{} has no workflow", ent.def.label)))?;
         let scope = row_scope(ctx, &ent, Action::Read)?;
-        let doc = store::load(tx, &ctx.schema, &ent, ctx.tenant, id, true).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
+        let doc = self.load_marked(tx, ctx, &ent, id, true).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
         if !scope.matches(&doc) {
             return Err(Error::NotFound(ent.def.label.clone()));
         }
@@ -716,7 +720,7 @@ impl Kernel {
         .bind((!ctx.user.is_nil()).then_some(ctx.user))
         .execute(&mut **tx)
         .await?;
-        let stored = store::load(tx, &ctx.schema, &ent, ctx.tenant, id, false).await?.ok_or_else(|| Error::internal("transition vanished"))?;
+        let stored = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::internal("transition vanished"))?;
         self.emit(ctx, tx, &ent, id, "transitioned", &format!("workflow:{action}"), Some(version + 1), Some(&doc), Some(&stored)).await?;
         Ok(self.mask(ctx, &ent, stored))
     }
@@ -746,6 +750,15 @@ impl Kernel {
         store::set_values_in(tx, &info.table, &cent, ctx.tenant, row_id, &normalized).await
     }
 
+    /// Loads a stored record and marks which of its secret fields are set.
+    async fn load_marked(&self, tx: &mut Tx, ctx: &Ctx, ent: &EffEntity, id: Uuid, lock: bool) -> Result<Option<Doc>> {
+        let mut doc = store::load(tx, &ctx.schema, ent, ctx.tenant, id, lock).await?;
+        if let Some(d) = doc.as_mut() {
+            self.mark_secrets(tx, ctx.tenant, ent, d).await?;
+        }
+        Ok(doc)
+    }
+
     // ───────────────────────────── pipeline ─────────────────────────────
 
     fn check_workflow_edit(&self, ctx: &Ctx, ent: &EffEntity, doc: &Doc) -> Result<()> {
@@ -763,7 +776,17 @@ impl Kernel {
     /// `trusted`: the input is a copy made by the server (amend), so read-only and field-permission
     /// limits that guard user input do not apply.
     #[allow(clippy::too_many_arguments)]
-    fn apply_input(&self, ctx: &Ctx, ent: &EffEntity, doc: &mut Doc, input: &Doc, old: Option<&Doc>, errors: &mut Vec<FieldError>, trusted: bool) {
+    fn apply_input(
+        &self,
+        ctx: &Ctx,
+        ent: &EffEntity,
+        doc: &mut Doc,
+        input: &Doc,
+        old: Option<&Doc>,
+        errors: &mut Vec<FieldError>,
+        trusted: bool,
+        secrets: &mut Vec<crate::secret::SecretChange>,
+    ) {
         for (k, v) in input {
             if SYSTEM_KEYS.contains(&k.as_str()) || k.starts_with('_') {
                 continue;
@@ -779,6 +802,16 @@ impl Kernel {
                 let unchanged = old.map(|o| o.get(k) == Some(v)).unwrap_or(v.is_null());
                 if !unchanged {
                     errors.push(FieldError::new(k, "you are not permitted to change this field"));
+                }
+                continue;
+            }
+            if f.ftype == FieldType::Secret {
+                match crate::secret::take_input(k, v, secrets) {
+                    Ok(Some(marker)) => {
+                        doc.insert(k.clone(), marker);
+                    }
+                    Ok(None) => {}
+                    Err(m) => errors.push(FieldError::new(k, m)),
                 }
                 continue;
             }
@@ -1200,7 +1233,7 @@ async fn fetch_for(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: &mu
 pub fn copy_for_new(ent: &EffEntity, schema: &ferrum_meta::Schema, src: &Doc) -> Doc {
     let mut out = Doc::new();
     for f in &ent.def.fields {
-        if f.no_copy || f.computed.is_some() {
+        if f.no_copy || f.computed.is_some() || f.ftype == FieldType::Secret {
             continue;
         }
         let Some(v) = src.get(&f.name) else { continue };

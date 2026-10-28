@@ -1,0 +1,121 @@
+package: crm
+version: 0.1.0
+label: CRM
+description: Leads, opportunities and the sales pipeline, prospects, contacts and addresses, campaigns, activities and quotations.
+depends: [core, selling]
+field_prefix: crm_
+
+overlays:
+  - entity: SalesOrder
+    ops:
+      - {op: add_field, after: customer_name, field: {name: crm_quotation, type: link, to: Quotation, label: Quotation, read_only: true, in_filter: true}}
+  - entity: SalesOrderItem
+    ops:
+      - {op: add_field, field: {name: crm_quotation, type: link, to: Quotation, label: Quotation, read_only: true}}
+      - {op: add_field, field: {name: crm_quotation_line, type: data, label: Quotation Line, read_only: true, hidden: true}}
+
+modules:
+  - name: crm
+    label: CRM
+    icon: handshake
+    order: 35
+    items: [Lead, Opportunity, Quotation, Activity, Prospect, Contact, Address, Campaign, SalesStage, Territory, LostReason,
+            report:sales_pipeline, report:lead_funnel, report:campaign_performance, report:quotation_register]
+
+roles:
+  - name: Sales User
+    description: Works the leads, opportunities and activities they own, and their quotations.
+    permissions:
+      - {entity: Lead, read: true, write: true, create: true, delete: true, export: true, if_owner: true}
+      - {entity: Opportunity, read: true, write: true, create: true, delete: true, export: true, if_owner: true}
+      - {entity: Activity, read: true, write: true, create: true, delete: true, if_owner: true}
+      - {entity: Quotation, read: true, write: true, create: true, delete: true, submit: true, cancel: true, if_owner: true}
+      - {entity: Prospect, read: true, write: true, create: true}
+      - {entity: Contact, read: true, write: true, create: true}
+      - {entity: Address, read: true, write: true, create: true}
+      - {entity: Campaign, read: true}
+      - {entity: SalesStage, read: true}
+      - {entity: Territory, read: true}
+      - {entity: LostReason, read: true}
+  - name: Sales Manager
+    description: The whole team's CRM records, pipeline and quotations.
+    permissions:
+      - {entity: Lead, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: Opportunity, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: Activity, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: Quotation, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: Prospect, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: Contact, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: Address, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: Campaign, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: SalesStage, read: true, write: true, create: true, delete: true}
+      - {entity: Territory, read: true, write: true, create: true, delete: true}
+      - {entity: LostReason, read: true, write: true, create: true, delete: true}
+      - {entity: Customer, read: true, write: true, create: true, export: true}
+      - {entity: CustomerGroup, read: true}
+      - {entity: Item, read: true}
+      - {entity: ItemGroup, read: true}
+      - {entity: ItemPrice, read: true}
+      - {entity: PriceList, read: true}
+      - {entity: Warehouse, read: true}
+      - {entity: Company, read: true}
+      - {entity: Currency, read: true}
+      - {entity: Uom, read: true}
+      - {entity: TaxTemplate, read: true}
+  - name: Marketing Manager
+    description: Campaigns and lead generation.
+    permissions:
+      - {entity: Campaign, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: Lead, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: Prospect, read: true, write: true, create: true, export: true, import: true}
+      - {entity: Contact, read: true, write: true, create: true, export: true, import: true}
+      - {entity: Address, read: true, write: true, create: true}
+      - {entity: Activity, read: true, write: true, create: true}
+      - {entity: Opportunity, read: true}
+      - {entity: SalesStage, read: true}
+      - {entity: Territory, read: true, write: true, create: true}
+      - {entity: LostReason, read: true}
+      - {entity: Company, read: true}
+      - {entity: Currency, read: true}
+  - name: CRM Viewer
+    description: Read-only access to CRM records and reports.
+    permissions:
+      - {entity: Lead, read: true}
+      - {entity: Opportunity, read: true}
+      - {entity: Activity, read: true}
+      - {entity: Quotation, read: true}
+      - {entity: Prospect, read: true}
+      - {entity: Contact, read: true}
+      - {entity: Address, read: true}
+      - {entity: Campaign, read: true}
+      - {entity: SalesStage, read: true}
+      - {entity: Territory, read: true}
+      - {entity: LostReason, read: true}
+
+seed:
+  - entity: SalesStage
+    key: [stage_name]
+    records:
+      - {stage_name: Prospecting, probability: 10, stage_order: 1}
+      - {stage_name: Qualification, probability: 20, stage_order: 2}
+      - {stage_name: Needs Analysis, probability: 40, stage_order: 3}
+      - {stage_name: Proposal, probability: 60, stage_order: 4}
+      - {stage_name: Negotiation, probability: 80, stage_order: 5}
+      - {stage_name: Won, probability: 100, stage_order: 6, outcome: Won}
+      - {stage_name: Lost, probability: 0, stage_order: 7, outcome: Lost}
+  - entity: LostReason
+    key: [reason]
+    records:
+      - {reason: Price}
+      - {reason: Lost to Competitor}
+      - {reason: No Budget}
+      - {reason: No Decision}
+      - {reason: Timing}
+      - {reason: Requirements Not Met}
+      - {reason: Not Interested}
+      - {reason: Unresponsive}
+      - {reason: Other}
+  - entity: Territory
+    key: [territory_name]
+    records:
+      - {territory_name: All Territories, is_group: true}

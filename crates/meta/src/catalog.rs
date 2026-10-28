@@ -307,7 +307,7 @@ pub(crate) fn validate_entity(e: &EntityDef, all: &HashMap<&str, &EntityDef>) ->
         validate_field(e, f, all)?;
     }
     let field = |n: &str| e.fields.iter().find(|f| f.name == n);
-    let storable = |n: &str| field(n).is_some_and(|f| f.ftype != FieldType::Table);
+    let storable = |n: &str| field(n).is_some_and(|f| f.ftype.is_stored());
     if e.company_scoped && !field("company").is_some_and(|f| f.ftype == FieldType::Link && f.to.as_deref() == Some("Company")) {
         return Err("company_scoped entities need a 'company' link to Company".into());
     }
@@ -402,6 +402,17 @@ pub(crate) fn validate_entity(e: &EntityDef, all: &HashMap<&str, &EntityDef>) ->
 
 fn validate_field(e: &EntityDef, f: &FieldDef, all: &HashMap<&str, &EntityDef>) -> Result<(), String> {
     let fname = &f.name;
+    if f.ftype == FieldType::Secret {
+        if e.kind == EntityKind::Child {
+            return Err(format!("secret field '{fname}' must be on a top-level entity of a package"));
+        }
+        if f.in_list || f.in_filter || f.unique || f.default.is_some() || f.default_expr.is_some() || f.computed.is_some() || f.fetch_from.is_some() {
+            return Err(format!("secret field '{fname}' cannot be listed, filtered, unique, defaulted, computed or fetched"));
+        }
+        if e.search_fields.contains(fname) {
+            return Err(format!("secret field '{fname}' cannot be searched"));
+        }
+    }
     match f.ftype {
         FieldType::Link => {
             let to = f.to.as_deref().ok_or_else(|| format!("link field '{fname}' needs 'to'"))?;
@@ -511,7 +522,7 @@ fn validate_numbering(e: &EntityDef, n: &NumberingDef) -> Result<(), String> {
             }
             _ if token.starts_with("field:") => {
                 let f = &token[6..];
-                if !e.fields.iter().any(|x| x.name == f && x.ftype != FieldType::Table) {
+                if !e.fields.iter().any(|x| x.name == f && x.ftype.is_stored()) {
                     return Err(format!("numbering field {f} not found"));
                 }
             }

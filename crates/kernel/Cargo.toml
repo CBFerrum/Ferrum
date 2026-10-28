@@ -25,6 +25,7 @@ argon2 = "0.5"
 rand = "0.9"
 hmac = "0.12"
 base64 = "0.22"
+ring = "0.17"
 minijinja = { version = "2", features = ["loader", "fuel"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 

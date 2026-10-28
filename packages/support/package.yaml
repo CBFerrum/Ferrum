@@ -1,0 +1,76 @@
+package: support
+version: 0.1.0
+label: Support
+description: Helpdesk tickets with business-hours SLAs, teams with automatic assignment, a knowledge base, warranty claims and maintenance contracts with planned visits.
+depends: [core, selling]
+field_prefix: sup_
+
+overlays:
+  - entity: Item
+    ops:
+      - {op: add_field, after: has_batch_no, field: {name: sup_warranty_days, type: int, label: Warranty Period (Days), min: 0, max: 36500, description: "Warranty from the delivery date; warranty claims check against it"}}
+
+modules:
+  - name: support
+    label: Support
+    icon: life-buoy
+    order: 45
+    items: [Ticket, WarrantyClaim, MaintenanceSchedule, MaintenanceVisit, KbArticle, KbCategory, ServiceLevelAgreement, SupportTeam, TicketAssignmentRule,
+            TicketType, SupportSettings, report:support_ticket_summary, report:support_sla_compliance, report:support_response_times,
+            report:support_agent_workload, report:support_customer_satisfaction]
+
+roles:
+  - name: Support Agent
+    description: Works tickets, writes knowledge base articles, logs warranty claims and maintenance visits. Give the user Support Team scopes to limit them to their teams' tickets.
+    permissions:
+      - {entity: Ticket, read: true, write: true, create: true, export: true}
+      - {entity: TicketType, read: true}
+      - {entity: SupportTeam, read: true}
+      - {entity: ServiceLevelAgreement, read: true}
+      - {entity: SupportSettings, read: true}
+      - {entity: KbArticle, read: true, write: true, create: true}
+      - {entity: KbCategory, read: true}
+      - {entity: WarrantyClaim, read: true, write: true, create: true}
+      - {entity: MaintenanceSchedule, read: true}
+      - {entity: MaintenanceVisit, read: true, write: true, create: true, submit: true}
+      - {entity: Customer, read: true}
+      - {entity: CustomerGroup, read: true}
+      - {entity: Item, read: true}
+  - name: Support Manager
+    description: Everything in support, including SLAs, assignment rules, teams and maintenance contracts.
+    permissions:
+      - {entity: Ticket, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: TicketType, read: true, write: true, create: true, delete: true}
+      - {entity: SupportTeam, read: true, write: true, create: true, delete: true}
+      - {entity: TicketAssignmentRule, read: true, write: true, create: true, delete: true}
+      - {entity: ServiceLevelAgreement, read: true, write: true, create: true, delete: true}
+      - {entity: SupportSettings, read: true, write: true, create: true}
+      - {entity: KbArticle, read: true, write: true, create: true, delete: true}
+      - {entity: KbCategory, read: true, write: true, create: true, delete: true}
+      - {entity: WarrantyClaim, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: MaintenanceSchedule, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: MaintenanceVisit, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: Customer, read: true}
+      - {entity: CustomerGroup, read: true}
+      - {entity: Item, read: true}
+      - {entity: SalesOrder, read: true}
+      - {entity: SalesInvoice, read: true}
+  - name: Knowledge Base Editor
+    description: Writes and publishes knowledge base articles and organizes their categories.
+    permissions:
+      - {entity: KbArticle, read: true, write: true, create: true, delete: true}
+      - {entity: KbCategory, read: true, write: true, create: true, delete: true}
+
+seed:
+  - entity: TicketType
+    key: [type_name]
+    records:
+      - {type_name: Question}
+      - {type_name: Incident}
+      - {type_name: Problem}
+      - {type_name: Feature Request}
+  - entity: KbCategory
+    key: [category_name]
+    records:
+      - {category_name: All Categories, is_group: true}
+      - {category_name: General, parent_category: "@KbCategory:category_name=All Categories"}

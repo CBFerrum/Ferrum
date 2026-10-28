@@ -250,9 +250,16 @@ pub enum FieldType {
     Url,
     Attach,
     Color,
+    /// Write-only text (passwords, API keys): encrypted at rest outside the record; reads only
+    /// show whether one is set (`true`). Server code reads it with `Kernel::secret`.
+    Secret,
 }
 
 impl FieldType {
+    /// Whether values live in the record's own row (child tables and secrets live elsewhere).
+    pub fn is_stored(self) -> bool {
+        !matches!(self, FieldType::Table | FieldType::Secret)
+    }
     pub fn is_numeric(self) -> bool {
         matches!(self, FieldType::Int | FieldType::Decimal | FieldType::Currency | FieldType::Percent)
     }

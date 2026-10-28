@@ -171,6 +171,7 @@ pub fn normalize(f: &FieldDef, v: &Value) -> Result<Value, String> {
             v.clone()
         }
         FieldType::Table => return Err("table values must be lists of rows".into()),
+        FieldType::Secret => return Err("secrets are stored apart from the record".into()),
     };
     Ok(out)
 }

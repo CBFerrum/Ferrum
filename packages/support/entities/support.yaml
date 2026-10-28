@@ -1,0 +1,303 @@
+- name: SupportSettings
+  label: Support Settings
+  kind: settings
+  module: support
+  fields:
+    - {name: auto_close_days, type: int, label: Close Resolved Tickets After (Days), default: 7, min: 0, max: 3650, description: "Resolved tickets without a customer reply close automatically after this many days; 0 = never"}
+
+- name: TicketType
+  label: Ticket Type
+  kind: master
+  module: support
+  title_field: type_name
+  fields:
+    - {name: type_name, type: data, required: true, unique: true, in_list: true}
+    - {name: description, type: text}
+  list: {columns: [type_name], sort: type_name asc}
+
+- name: SupportTeamMember
+  label: Support Team Member
+  kind: child
+  fields:
+    - {name: agent, type: email, required: true, in_list: true, description: "Email address the agent signs in with"}
+    - {name: active, type: check, default: true, in_list: true, description: "Inactive members keep their tickets but get no new ones"}
+    - {name: max_open_tickets, type: int, default: 0, min: 0, in_list: true, description: "Automatic assignment skips the agent at this many open tickets; 0 = no limit"}
+
+- name: SupportTeam
+  label: Support Team
+  kind: master
+  module: support
+  title_field: team_name
+  description: "Agents who share a ticket queue. Restrict an agent to their teams' tickets with a Support Team scope on the user."
+  fields:
+    - {name: team_name, type: data, required: true, unique: true, in_list: true}
+    - {name: description, type: text}
+    - {name: members, type: table, of: SupportTeamMember}
+  list: {columns: [team_name], sort: team_name asc}
+
+- name: TicketAssignmentRule
+  label: Assignment Rule
+  kind: master
+  module: support
+  title_field: rule_name
+  description: "Routes new unassigned tickets: the enabled rule with the highest priority whose condition matches picks the team and an agent in it."
+  fields:
+    - {name: rule_name, type: data, required: true, unique: true, in_list: true}
+    - {name: team, type: link, to: SupportTeam, required: true, in_list: true, in_filter: true}
+    - {name: condition, type: code, description: "CEL condition on the ticket, e.g. doc.priority == 'Urgent' && doc.channel == 'Email'; empty = every ticket"}
+    - {name: rule_type, type: select, label: Rule, options: [Round Robin, Load Balancing], required: true, default: Round Robin, in_list: true, description: "Round Robin takes turns through the team; Load Balancing picks the agent with the fewest open tickets"}
+    - {name: priority, type: int, default: 1, min: 1, max: 1000, in_list: true, description: "Rules with a higher priority are tried first"}
+    - {name: enabled, type: check, default: true, in_list: true, in_filter: true}
+    - {name: last_assigned_to, type: email, read_only: true, no_copy: true, description: "Round-robin position: the agent who got the previous ticket"}
+  list: {columns: [rule_name, team, rule_type, priority, enabled], sort: priority desc}
+
+- name: SlaPriority
+  label: SLA Target
+  kind: child
+  fields:
+    - {name: priority, type: select, options: [Low, Medium, High, Urgent], required: true, in_list: true}
+    - {name: response_hours, type: decimal, label: Response Time (Hours), required: true, min: "0.01", max: "87600", in_list: true}
+    - {name: resolution_hours, type: decimal, label: Resolution Time (Hours), required: true, min: "0.01", max: "87600", in_list: true}
+  rules:
+    - {name: resolution_after_response, check: "doc.resolution_hours >= doc.response_hours", message: "The resolution time cannot be shorter than the response time"}
+
+- name: SlaWorkingHour
+  label: SLA Working Hours
+  kind: child
+  fields:
+    - {name: weekday, type: select, options: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday], required: true, in_list: true}
+    - {name: start_time, type: data, required: true, max_length: 5, in_list: true, description: "HH:MM, 24-hour clock"}
+    - {name: end_time, type: data, required: true, max_length: 5, in_list: true, description: "HH:MM; 24:00 = midnight. A night shift is one row per day, e.g. Monday 22:00-24:00 and Tuesday 00:00-06:00"}
+
+- name: SlaHoliday
+  label: SLA Holiday
+  kind: child
+  fields:
+    - {name: holiday_date, type: date, required: true, in_list: true}
+    - {name: description, type: data, in_list: true}
+
+- name: ServiceLevelAgreement
+  label: Service Level Agreement
+  kind: master
+  module: support
+  title_field: sla_name
+  description: "Response and resolution targets per priority in business hours. The most specific enabled agreement applies: customer, then customer group (nearest), then ticket type, then the default one without criteria."
+  fields:
+    - {name: sla_name, type: data, label: Name, required: true, unique: true, in_list: true}
+    - {name: enabled, type: check, default: true, in_list: true, in_filter: true}
+    - {name: customer, type: link, to: Customer, in_list: true, description: "Applies only to this customer"}
+    - {name: customer_group, type: link, to: CustomerGroup, in_list: true, description: "Applies to customers in this group and its sub-groups"}
+    - {name: ticket_type, type: link, to: TicketType, in_list: true}
+    - {name: time_zone_offset, type: int, label: Time Zone (UTC Offset in Minutes), default: 0, min: -720, max: 840, description: "Working hours and holidays are read in this fixed offset, e.g. 330 for India or -300 for US Eastern standard time"}
+    - {name: pause_on_hold, type: check, label: Pause While On Hold, default: true}
+    - {name: pause_on_replied, type: check, label: Pause While Awaiting the Customer (Replied), default: true}
+    - {name: priorities, type: table, of: SlaPriority, label: Targets, required: true}
+    - {name: working_hours, type: table, of: SlaWorkingHour, description: "Leave empty for round-the-clock (24x7) support"}
+    - {name: holidays, type: table, of: SlaHoliday}
+    - {name: description, type: text}
+  list: {columns: [sla_name, customer, customer_group, ticket_type, enabled], sort: sla_name asc}
+
+- name: TicketMessage
+  label: Ticket Message
+  kind: child
+  fields:
+    - {name: author_kind, type: select, label: From, options: [Agent, Customer], required: true, default: Agent, in_list: true}
+    - {name: author, type: email, required: true, in_list: true}
+    - {name: body, type: markdown, required: true, in_list: true}
+    - {name: is_internal, type: check, label: Internal Note, in_list: true, description: "Visible to agents only; does not count as a response"}
+    - {name: sent_at, type: datetime, default_expr: now, in_list: true}
+
+- name: Ticket
+  label: Ticket
+  kind: document
+  module: support
+  title_field: subject
+  numbering: {template: "TKT-{YYYY}-{seq:6}", date_field: opened_at}
+  search_fields: [contact_email, contact_name, customer_name]
+  owner_fields: [assigned_to]
+  fields:
+    - {name: subject, type: data, required: true, in_list: true, max_length: 300}
+    - {name: description, type: markdown}
+    - {name: status, type: select, options: [Open, Replied, On Hold, Resolved, Closed], required: true, default: Open, in_list: true, in_filter: true, index: true}
+    - {name: priority, type: select, options: [Low, Medium, High, Urgent], required: true, default: Medium, in_list: true, in_filter: true}
+    - {name: ticket_type, type: link, to: TicketType, label: Type, in_filter: true}
+    - {name: channel, type: select, options: [Email, Portal, Phone, Chat, Web Form], required: true, default: Email, in_filter: true}
+    - {name: customer, type: link, to: Customer, in_filter: true}
+    - {name: customer_name, type: data, fetch_from: customer.customer_name, read_only: true, in_list: true}
+    - {name: contact_name, type: data}
+    - {name: contact_email, type: email, description: "Defaults to the customer's email"}
+    - {name: team, type: link, to: SupportTeam, in_list: true, in_filter: true}
+    - {name: assigned_to, type: email, in_list: true, in_filter: true, index: true}
+    - {name: opened_at, type: datetime, required: true, default_expr: now, in_filter: true, index: true}
+    - {name: first_responded_at, type: datetime, read_only: true, no_copy: true}
+    - {name: resolved_at, type: datetime, read_only: true, no_copy: true, index: true}
+    - {name: closed_at, type: datetime, read_only: true, no_copy: true}
+    - {name: resolution_details, type: markdown, no_copy: true, required_if: "doc.status == 'Resolved' || doc.status == 'Closed'"}
+    - {name: satisfaction_rating, type: int, label: Satisfaction (1-5), min: 1, max: 5, no_copy: true}
+    - {name: feedback, type: text, no_copy: true}
+    - {name: item, type: link, to: Item}
+    - {name: serial_no, type: data, label: Serial No}
+    - {name: sales_invoice, type: link, to: SalesInvoice}
+    - {name: conversation, type: table, of: TicketMessage, no_copy: true, description: "Append-only: sent messages cannot be edited or removed"}
+    - {name: service_level_agreement, type: link, to: ServiceLevelAgreement, label: SLA, read_only: true, no_copy: true, in_filter: true}
+    - {name: sla_status, type: select, label: SLA Status, options: [On Track, At Risk, Breached, Fulfilled], read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: response_by, type: datetime, read_only: true, no_copy: true}
+    - {name: resolution_by, type: datetime, read_only: true, no_copy: true}
+    - {name: response_breached, type: check, read_only: true, no_copy: true, in_filter: true}
+    - {name: resolution_breached, type: check, read_only: true, no_copy: true, in_filter: true}
+    - {name: first_response_hours, type: decimal, precision: 2, read_only: true, no_copy: true, description: "Business hours from opening to the first response, pauses excluded"}
+    - {name: resolution_hours, type: decimal, precision: 2, read_only: true, no_copy: true, description: "Business hours from opening to resolution, pauses excluded"}
+    - {name: paused_hours, type: decimal, precision: 2, read_only: true, no_copy: true, description: "Business hours the SLA clock was stopped"}
+    - {name: status_history, type: json, read_only: true, hidden: true, no_copy: true}
+  form:
+    - {label: Ticket, fields: [subject, status, priority, ticket_type, channel, description]}
+    - {label: Customer, fields: [customer, customer_name, contact_name, contact_email]}
+    - {label: Assignment, fields: [team, assigned_to]}
+    - {label: Conversation, fields: [conversation]}
+    - {label: Resolution, fields: [resolution_details, satisfaction_rating, feedback]}
+    - {label: Service Level, collapsible: true, fields: [service_level_agreement, sla_status, response_by, resolution_by, response_breached, resolution_breached, opened_at, first_responded_at, resolved_at, closed_at, first_response_hours, resolution_hours, paused_hours]}
+    - {label: Product, collapsible: true, fields: [item, serial_no, sales_invoice]}
+  actions:
+    - {name: make_warranty_claim, label: Create Warranty Claim, permission: write, condition: "doc.item != null && doc.customer != null"}
+  list: {columns: [number, subject, customer_name, priority, status, assigned_to, sla_status], sort: opened_at desc}
+
+- name: KbCategory
+  label: Knowledge Base Category
+  label_plural: Knowledge Base Categories
+  kind: master
+  module: support
+  title_field: category_name
+  fields:
+    - {name: category_name, type: data, required: true, unique: true, in_list: true}
+    - {name: parent_category, type: link, to: KbCategory, link_filters: {is_group: true}, in_list: true}
+    - {name: is_group, type: check, in_list: true}
+    - {name: description, type: text}
+
+- name: KbArticle
+  label: Knowledge Base Article
+  kind: master
+  module: support
+  title_field: title
+  numbering: {template: "KB-{seq:5}"}
+  fields:
+    - {name: title, type: data, required: true, in_list: true, max_length: 300}
+    - {name: category, type: link, to: KbCategory, required: true, link_filters: {is_group: false}, in_list: true, in_filter: true}
+    - {name: status, type: select, options: [Draft, Published, Archived], required: true, default: Draft, in_list: true, in_filter: true}
+    - {name: content, type: markdown, required: true}
+    - {name: published_at, type: datetime, read_only: true, no_copy: true, in_list: true}
+    - {name: helpful_count, type: int, label: Helpful, default: 0, read_only: true, no_copy: true, in_list: true}
+    - {name: not_helpful_count, type: int, label: Not Helpful, default: 0, read_only: true, no_copy: true}
+  actions:
+    - {name: mark_helpful, label: Helpful, permission: read, condition: "doc.status == 'Published'"}
+    - {name: mark_not_helpful, label: Not Helpful, permission: read, condition: "doc.status == 'Published'"}
+  list: {columns: [number, title, category, status, helpful_count], sort: title asc}
+
+- name: WarrantyClaim
+  label: Warranty Claim
+  kind: document
+  module: support
+  title_field: customer_name
+  numbering: {template: "WC-{YYYY}-{seq:5}", date_field: claim_date}
+  search_fields: [serial_no]
+  fields:
+    - {name: claim_date, type: date, required: true, default_expr: today, in_list: true}
+    - {name: status, type: select, options: [Open, Work In Progress, Closed], required: true, default: Open, in_list: true, in_filter: true}
+    - {name: customer, type: link, to: Customer, required: true, in_filter: true}
+    - {name: customer_name, type: data, fetch_from: customer.customer_name, read_only: true, in_list: true}
+    - {name: item, type: link, to: Item, required: true, in_filter: true}
+    - {name: item_name, type: data, fetch_from: item.item_name, read_only: true, in_list: true}
+    - {name: serial_no, type: data, label: Serial No, in_list: true}
+    - {name: complaint, type: text, required: true}
+    - {name: delivery_date, type: date, description: "Taken from the serial number's delivery when it left stock on a delivery note or invoice; enter it otherwise"}
+    - {name: delivery_reference, type: data, read_only: true, no_copy: true}
+    - {name: warranty_expiry_date, type: date, read_only: true, no_copy: true}
+    - {name: warranty_status, type: select, options: [Under Warranty, Out of Warranty, Under AMC], read_only: true, no_copy: true, in_list: true, in_filter: true, description: "Under AMC when an active maintenance schedule covers the item"}
+    - {name: ticket, type: link, to: Ticket, read_only: true}
+    - {name: resolution, type: text, no_copy: true, required_if: "doc.status == 'Closed'"}
+    - {name: resolution_date, type: date, read_only: true, no_copy: true}
+  rules:
+    - {name: delivered_before_claim, check: "doc.delivery_date == null || doc.delivery_date <= doc.claim_date", message: "The delivery date is after the claim date"}
+  actions:
+    - {name: make_maintenance_visit, label: Create Maintenance Visit, permission: write, condition: "doc.status != 'Closed'"}
+  list: {columns: [number, customer_name, item_name, serial_no, warranty_status, status], sort: claim_date desc}
+
+- name: MaintenanceScheduleItem
+  label: Maintenance Schedule Item
+  kind: child
+  fields:
+    - {name: item, type: link, to: Item, required: true, in_list: true}
+    - {name: item_name, type: data, fetch_from: item.item_name, read_only: true, in_list: true}
+    - {name: serial_no, type: data, label: Serial No, in_list: true}
+    - {name: start_date, type: date, required: true, in_list: true}
+    - {name: end_date, type: date, required: true, in_list: true}
+    - {name: periodicity, type: select, options: [Weekly, Monthly, Quarterly, Half-yearly, Yearly], required: true, in_list: true}
+    - {name: no_of_visits, type: int, label: Number of Visits, read_only: true, in_list: true}
+  rules:
+    - {name: end_after_start, check: "doc.end_date >= doc.start_date", message: "The end date is before the start date"}
+
+- name: MaintenanceScheduleDetail
+  label: Planned Visit
+  kind: child
+  fields:
+    - {name: item, type: link, to: Item, in_list: true}
+    - {name: item_name, type: data, in_list: true}
+    - {name: serial_no, type: data, label: Serial No, in_list: true}
+    - {name: scheduled_date, type: date, in_list: true}
+    - {name: assigned_to, type: email, in_list: true}
+    - {name: completion_status, type: select, options: [Pending, Partially Completed, Fully Completed], in_list: true}
+    - {name: visit, type: link, to: MaintenanceVisit, in_list: true}
+    - {name: actual_date, type: date, in_list: true}
+
+- name: MaintenanceSchedule
+  label: Maintenance Schedule
+  kind: document
+  module: support
+  submittable: true
+  title_field: customer_name
+  numbering: {template: "MS-{YYYY}-{seq:5}", on: submit, date_field: transaction_date}
+  description: "A maintenance contract (AMC): submitting plans the visits; cancelling drops the visits not yet made."
+  fields:
+    - {name: customer, type: link, to: Customer, required: true, in_filter: true}
+    - {name: customer_name, type: data, fetch_from: customer.customer_name, read_only: true, in_list: true}
+    - {name: transaction_date, type: date, required: true, default_expr: today, in_list: true}
+    - {name: sales_order, type: link, to: SalesOrder, description: "The sales order of the maintenance contract"}
+    - {name: assigned_to, type: email, in_list: true, description: "Engineer for the planned visits"}
+    - {name: items, type: table, of: MaintenanceScheduleItem, required: true}
+    - {name: schedules, type: table, of: MaintenanceScheduleDetail, label: Visit Plan, read_only: true, no_copy: true}
+    - {name: status, type: select, options: [Draft, Active, Completed, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
+  actions:
+    - {name: make_visit, label: Create Maintenance Visit, docstatus: [1], permission: read, condition: "doc.status == 'Active'"}
+  list: {columns: [number, customer_name, transaction_date, assigned_to, status], sort: transaction_date desc}
+
+- name: MaintenanceVisitPurpose
+  label: Work Done
+  kind: child
+  fields:
+    - {name: item, type: link, to: Item, in_list: true}
+    - {name: item_name, type: data, fetch_from: item.item_name, read_only: true}
+    - {name: serial_no, type: data, label: Serial No, in_list: true}
+    - {name: work_done, type: text, required: true, in_list: true}
+    - {name: service_person, type: email, in_list: true}
+
+- name: MaintenanceVisit
+  label: Maintenance Visit
+  kind: document
+  module: support
+  submittable: true
+  title_field: customer_name
+  numbering: {template: "MV-{YYYY}-{seq:5}", on: submit, date_field: visit_date}
+  fields:
+    - {name: customer, type: link, to: Customer, required: true, in_filter: true}
+    - {name: customer_name, type: data, fetch_from: customer.customer_name, read_only: true, in_list: true}
+    - {name: visit_date, type: date, required: true, default_expr: today, in_list: true}
+    - {name: maintenance_type, type: select, options: [Scheduled, Unscheduled, Breakdown], required: true, default: Unscheduled, in_list: true, in_filter: true}
+    - {name: maintenance_schedule, type: link, to: MaintenanceSchedule, in_filter: true}
+    - {name: schedule_detail, type: data, label: Planned Visit, description: "Id of the visit-plan row this visit carries out"}
+    - {name: warranty_claim, type: link, to: WarrantyClaim}
+    - {name: completion_status, type: select, options: [Partially Completed, Fully Completed], in_list: true}
+    - {name: work_done, type: table, of: MaintenanceVisitPurpose, required: true}
+    - {name: customer_feedback, type: text}
+  rules:
+    - {name: scheduled_needs_schedule, check: "doc.maintenance_type != 'Scheduled' || doc.maintenance_schedule != null", message: "A scheduled visit needs its maintenance schedule"}
+    - {name: completion_needed, check: "doc.completion_status != null", message: "Set the completion status before submitting", on: submit}
+  list: {columns: [number, customer_name, visit_date, maintenance_type, completion_status], sort: visit_date desc}
