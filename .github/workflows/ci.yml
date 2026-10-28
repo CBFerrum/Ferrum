@@ -30,14 +30,17 @@ jobs:
       CARGO_TERM_COLOR: always
       FERRUM_TEST_DATABASE_URL: postgres://ferrum:ferrum@localhost:5432/ferrum_test
       FERRUM_DOMAIN_TEST_DATABASE_URL: postgres://ferrum:ferrum@localhost:5432/ferrum_domain_test
+      FERRUM_MCP_TEST_DATABASE_URL: postgres://ferrum:ferrum@localhost:5432/ferrum_mcp_test
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Create the second test database
-        run: psql "$FERRUM_TEST_DATABASE_URL" -c 'create database ferrum_domain_test'
+      - name: Create the other test databases
+        run: |
+          psql "$FERRUM_TEST_DATABASE_URL" -c 'create database ferrum_domain_test'
+          psql "$FERRUM_TEST_DATABASE_URL" -c 'create database ferrum_mcp_test'
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked

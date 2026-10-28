@@ -1,0 +1,23 @@
+[package]
+name = "ferrum-mcp"
+description = "Model Context Protocol server: AI agents operate everything a user may use"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferrum-kernel = { path = "../kernel" }
+ferrum-meta = { path = "../meta" }
+ferrum-domain = { path = "../domain" }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+sqlx = { workspace = true }
+
+[lints]
+workspace = true

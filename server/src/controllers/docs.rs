@@ -176,29 +176,7 @@ async fn print(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity, id)
 
 async fn audit_trail(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity, id)): Path<(String, Uuid)>) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    // Reading the record proves read permission (and tenant ownership) before showing its history.
-    st.kernel.get(&ctx, &entity, id, false).await?;
-    let mut tx = st.kernel.db.tenant_tx(ctx.tenant).await?;
-    let rows: Vec<(i64, chrono::DateTime<chrono::Utc>, Option<Uuid>, String, Option<i32>, Option<Value>, Option<String>)> = sqlx::query_as(
-        "select e.id, e.at, e.actor, e.action, e.version, e.diff, u.full_name from audit_event e \
-         left join app_user u on u.tenant_id = e.tenant_id and u.id = e.actor \
-         where e.tenant_id = $1 and e.entity = $2 and e.record_id = $3 order by e.id",
-    )
-    .bind(ctx.tenant)
-    .bind(&entity)
-    .bind(id)
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(Error::from)?;
-    let broken_at = ferrum_kernel::audit::verify_record(&mut tx, ctx.tenant, &entity, id).await?;
-    tx.commit().await.map_err(Error::from)?;
-    let events: Vec<Value> = rows
-        .into_iter()
-        .map(|(eid, at, actor, action, version, diff, name)| {
-            json!({"id": eid, "at": at, "actor": actor, "actor_name": name, "action": action, "version": version, "diff": diff})
-        })
-        .collect();
-    Ok(Json(json!({"events": events, "chain_valid": broken_at.is_none(), "broken_at": broken_at})).into_response())
+    Ok(Json(st.kernel.audit_trail(&ctx, &entity, id).await?).into_response())
 }
 
 async fn calc(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Path<String>, Json(body): Json<Value>) -> ApiResult<Response> {

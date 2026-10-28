@@ -77,6 +77,16 @@ Plugins (sandboxed WebAssembly, see README): `GET /api/admin/plugins` → `{plug
 
 Notifications (own): `GET /api/notifications`, `POST /api/notifications/{id}/read`.
 
+## AI agents (MCP)
+
+`POST /mcp` — Model Context Protocol, Streamable HTTP, stateless (JSON responses, no session id;
+`GET`/`DELETE` → 405). Auth as above (`Bearer` session token or API key); 401 carries
+`WWW-Authenticate`. Methods: `initialize` (versions 2025-06-18, 2025-03-26, 2024-11-05), `ping`,
+`tools/list`, `tools/call`, `resources/list`, `resources/templates/list`, `resources/read`
+(`ferrum://overview`, `ferrum://entity/{name}`, `ferrum://record/{entity}/{id}`), `prompts/list`,
+`prompts/get`. Tool failures come back as results with `isError: true` and the same error JSON as
+the REST API; unknown tools or bad arguments are JSON-RPC errors (-32602).
+
 ## Files
 
 `POST /api/files` (multipart: `file`, optional `entity`, `record_id`; ≤25 MB) → `{id, url: "/files/<id>", file_name, size, sha256}`; `GET /files/{id}` (authenticated download).
