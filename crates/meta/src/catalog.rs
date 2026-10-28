@@ -168,6 +168,20 @@ impl Catalog {
                         if !ok {
                             return invalid(format!("{name}: field '{}' added to {} must start with the package field_prefix", field.name, ov.entity));
                         }
+                        // A child table added to another package's entity: its rows' entity must be
+                        // a child entity this package defines or depends on.
+                        if field.ftype == FieldType::Table {
+                            let of = field.of.as_deref().unwrap_or_default();
+                            match self.entities.get(of) {
+                                Some((owner, child)) if child.kind == EntityKind::Child && deps.contains(owner) => {}
+                                _ => {
+                                    return invalid(format!(
+                                        "{name}: table field '{}' on {} needs 'of' naming a child entity of this package or its dependencies",
+                                        field.name, ov.entity
+                                    ));
+                                }
+                            }
+                        }
                     }
                     crate::effective::apply_op(&mut merged, op, OverlaySource::Package)
                         .map_err(|m| MetaError::Invalid(format!("{name}: overlay on {}: {m}", ov.entity)))?;

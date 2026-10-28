@@ -7,7 +7,7 @@ use axum::Json;
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use ferrum_kernel::Error;
+use ferrum_kernel::{Action, Error};
 use ferrum_kernel::tenant::NewTenant;
 use loco_rs::app::AppContext;
 use loco_rs::controller::Routes;
@@ -120,11 +120,13 @@ async fn upload(Auth(ctx): Auth, State(app): State<AppContext>, mut mp: Multipar
     let st = app_state(&app)?;
     let mut entity: Option<String> = None;
     let mut record: Option<Uuid> = None;
+    let mut public = false;
     let mut file: Option<(String, String, bytes::Bytes)> = None;
     while let Some(field) = mp.next_field().await.map_err(|e| ApiError(Error::invalid(format!("multipart: {e}"))))? {
         match field.name().unwrap_or_default() {
             "entity" => entity = Some(field.text().await.map_err(|e| ApiError(Error::invalid(e.to_string())))?),
             "record_id" => record = field.text().await.ok().and_then(|s| s.parse().ok()),
+            "public" => public = field.text().await.ok().is_some_and(|s| s == "true" || s == "1"),
             "file" => {
                 let name =
                     field.file_name().unwrap_or("upload.bin").chars().filter(|c| !c.is_control() && *c != '/' && *c != '\\').take(200).collect::<String>();
@@ -143,14 +145,25 @@ async fn upload(Auth(ctx): Auth, State(app): State<AppContext>, mut mp: Multipar
     if let (Some(e), Some(r)) = (&entity, record) {
         st.kernel.get(&ctx, e, r, false).await?;
     }
+    // Public files (served without signing in) must be images or PDFs attached to a record the
+    // uploader may edit, so nothing private or active leaks onto the open internet.
+    if public {
+        let (Some(e), Some(_)) = (&entity, record) else {
+            return Err(ApiError(Error::field("public", "public files must be attached to a record")));
+        };
+        ctx.require(e, Action::Write)?;
+        if !(PUBLIC_TYPES.contains(&ctype.as_str())) {
+            return Err(ApiError(Error::field("public", "only images (PNG, JPEG, WebP, GIF, AVIF) and PDFs can be public")));
+        }
+    }
     let id = Uuid::now_v7();
     let key = format!("tenants/{}/{}", ctx.tenant, id);
     app.storage.upload(std::path::Path::new(&key), &data).await.map_err(|e| ApiError(Error::Unavailable(format!("storage: {e}"))))?;
     let sha = hex::encode(Sha256::digest(&data));
     let mut tx = st.kernel.db.tenant_tx(ctx.tenant).await?;
     sqlx::query(
-        "insert into file_object (tenant_id, id, entity, record_id, file_name, content_type, size_bytes, storage_key, sha256, created_by) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        "insert into file_object (tenant_id, id, entity, record_id, file_name, content_type, size_bytes, storage_key, sha256, created_by, is_public) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(ctx.tenant)
     .bind(id)
@@ -162,11 +175,42 @@ async fn upload(Auth(ctx): Auth, State(app): State<AppContext>, mut mp: Multipar
     .bind(&key)
     .bind(&sha)
     .bind(ctx.user)
+    .bind(public)
     .execute(&mut *tx)
     .await
     .map_err(Error::from)?;
     tx.commit().await.map_err(Error::from)?;
-    Ok((StatusCode::CREATED, Json(json!({"id": id, "url": format!("/files/{id}"), "file_name": name, "size": data.len(), "sha256": sha}))).into_response())
+    let url = if public { format!("/files/public/{id}") } else { format!("/files/{id}") };
+    Ok((StatusCode::CREATED, Json(json!({"id": id, "url": url, "file_name": name, "size": data.len(), "sha256": sha, "public": public}))).into_response())
+}
+
+const PUBLIC_TYPES: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/gif", "image/avif", "application/pdf"];
+
+/// A public file, without signing in. Content never changes for an id, so it caches forever.
+async fn download_public(State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    let mut tx = st.kernel.db.system_tx().await?;
+    let row: Option<(String, String, String)> = sqlx::query_as(
+        "select f.file_name, f.content_type, f.storage_key from file_object f join tenant t on t.id = f.tenant_id \
+                        where f.id = $1 and f.is_public and t.status = 'active'",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(Error::from)?;
+    tx.commit().await.map_err(Error::from)?;
+    let (name, ctype, key) = row.ok_or_else(|| ApiError(Error::NotFound("file".into())))?;
+    let data: Vec<u8> = app.storage.download(std::path::Path::new(&key)).await.map_err(|e| ApiError(Error::Unavailable(format!("storage: {e}"))))?;
+    let mut resp = data.into_response();
+    let h = resp.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_str(&ctype).unwrap_or(HeaderValue::from_static("application/octet-stream")));
+    h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=31536000, immutable"));
+    h.insert("content-security-policy", HeaderValue::from_static("default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox"));
+    if let Ok(v) = HeaderValue::from_str(&format!("inline; filename=\"{}\"", name.replace('"', ""))) {
+        h.insert(header::CONTENT_DISPOSITION, v);
+    }
+    Ok(resp)
 }
 
 async fn download(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
@@ -208,4 +252,5 @@ pub fn routes() -> Routes {
         .add("/api/openapi.json", get(openapi))
         .add("/api/files", post(upload))
         .add("/files/{id}", get(download))
+        .add("/files/public/{id}", get(download_public))
 }
