@@ -271,4 +271,26 @@ async fn collaboration_follows_record_access() {
     assert_eq!(r["failed"], json!(2), "outsiders change nothing");
     assert_eq!(k.get(&admin, "Customer", ids[0], false).await.unwrap()["disabled"], json!(true));
     assert!(k.bulk(&bea_ctx, "Customer", BulkTarget::Ids(vec![]), &BulkOp::Submit).await.is_err(), "an empty selection is refused");
+
+    // ── filters, sorts and link paths never reveal what the caller cannot read ──
+    let list =
+        |filters: Value, sort: Option<&str>| ListQuery { filters: parse_filters(&filters).unwrap(), sort: sort.map(str::to_string), ..Default::default() };
+    k.update(&admin, "Customer", ids[0], obj(json!({"credit_limit": "5000"})), None).await.unwrap();
+    let rich = json!([["credit_limit", ">", "1000"]]);
+    assert_eq!(k.list(&admin, "Customer", &list(rich.clone(), None)).await.unwrap().rows.len(), 1);
+    assert!(matches!(k.list(&bea_ctx, "Customer", &list(rich, None)).await, Err(Error::Forbidden(_))), "credit_limit is in a group Bea cannot read");
+    assert!(matches!(k.list(&bea_ctx, "Customer", &list(json!([]), Some("credit_limit desc"))).await, Err(Error::Forbidden(_))), "nor sort by it");
+    let vip = k.insert(&admin, "CustomerGroup", obj(json!({"group_name": "VIP"}))).await.unwrap();
+    k.update(&admin, "Customer", ids[0], obj(json!({"customer_group": vip["id"]})), None).await.unwrap();
+    let in_vip = json!([["customer_group.group_name", "=", "VIP"]]);
+    assert!(matches!(k.list(&bea_ctx, "Customer", &list(in_vip.clone(), None)).await, Err(Error::Forbidden(_))), "no read access to groups");
+    // Read access to her own groups only: the admin's VIP group stays invisible through the path.
+    let own_groups = PermissionDef { entity: "CustomerGroup".into(), read: true, create: true, if_owner: true, ..Default::default() };
+    k.set_role_permission(&admin, "Sales", &own_groups).await.unwrap();
+    let bea_ctx = k.load_ctx(tenant, bea, None, "it".into()).await.unwrap();
+    assert!(k.list(&bea_ctx, "Customer", &list(in_vip, None)).await.unwrap().rows.is_empty(), "the VIP group is not hers");
+    let retail = k.insert(&bea_ctx, "CustomerGroup", obj(json!({"group_name": "Retail"}))).await.unwrap();
+    k.update(&admin, "Customer", ids[1], obj(json!({"customer_group": retail["id"]})), None).await.unwrap();
+    let in_retail = json!([["customer_group.group_name", "=", "Retail"]]);
+    assert_eq!(k.list(&bea_ctx, "Customer", &list(in_retail, None)).await.unwrap().rows.len(), 1);
 }
