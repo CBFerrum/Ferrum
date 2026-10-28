@@ -5,8 +5,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[lib]
-crate-type = ["rlib", "cdylib"]
+# A plain rlib: a cdylib output has no hash in its file name, so builds with different feature sets
+# overwrite each other's copy. For the browser:
+#   cargo rustc -p ferrum-calc --release --features wasm --target wasm32-unknown-unknown --crate-type cdylib
 
 [features]
 default = []
