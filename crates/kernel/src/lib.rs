@@ -16,6 +16,7 @@ pub mod ddl;
 pub mod describe;
 pub mod doc;
 pub mod error;
+pub mod files;
 pub mod hooks;
 pub mod notify;
 pub mod numbering;
@@ -77,6 +78,7 @@ pub struct Kernel {
     pub settings: KernelSettings,
     pub mailer: Option<Arc<dyn Mailer>>,
     pub(crate) users: DashMap<(Uuid, Uuid), (Arc<auth::CtxCore>, Instant)>,
+    pub(crate) files: std::sync::OnceLock<Arc<dyn files::FileStore>>,
 }
 
 impl Kernel {
@@ -104,7 +106,7 @@ impl Kernel {
             tracing::info!(statements = report.statements, sql = ?report.sql_files_applied, warnings = report.warnings.len(), "schema synced");
         }
         let registry = Arc::new(Registry::new(&catalog, Arc::new(full), db.clone()));
-        Ok(Arc::new(Kernel { db, registry, hooks, settings, mailer, users: DashMap::new() }))
+        Ok(Arc::new(Kernel { db, registry, hooks, settings, mailer, users: DashMap::new(), files: std::sync::OnceLock::new() }))
     }
 
     /// Cache invalidation (metadata, users) — every replica that serves requests needs these, or it

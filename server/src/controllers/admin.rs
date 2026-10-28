@@ -363,10 +363,21 @@ async fn remove_plugin(Auth(ctx): Auth, State(app): State<AppContext>, Path(id):
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+async fn get_settings(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    Ok(Json(st.kernel.tenant_settings(&ctx).await?).into_response())
+}
+
+async fn put_settings(Auth(ctx): Auth, State(app): State<AppContext>, Json(body): Json<serde_json::Map<String, Value>>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    Ok(Json(st.kernel.update_tenant_settings(&ctx, &body).await?).into_response())
+}
+
 pub fn routes() -> Routes {
     use axum::routing::{delete, get, post, put};
     Routes::new()
         .prefix("/api")
+        .add("/admin/settings", get(get_settings).put(put_settings))
         .add("/admin/users", get(list_users).post(create_user))
         .add("/admin/users/{id}/roles", put(set_roles))
         .add("/admin/users/{id}/scopes", put(set_scopes))

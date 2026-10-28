@@ -72,9 +72,12 @@ impl Expr {
         bind(&mut ctx, "old", scope.old.unwrap_or(&Value::Null))?;
         bind(&mut ctx, "parent", scope.parent.unwrap_or(&Value::Null))?;
         bind(&mut ctx, "user", scope.user)?;
+        // "today" and "now" are local to the workspace: the kernel puts them in `user` (its time
+        // zone); without them (no workspace context) UTC is used.
         let now = chrono::Utc::now();
-        ctx.add_variable_from_value("today".to_string(), now.format("%Y-%m-%d").to_string());
-        ctx.add_variable_from_value("now".to_string(), now.to_rfc3339());
+        let local = |key: &str| scope.user.get(key).and_then(Value::as_str).map(str::to_string);
+        ctx.add_variable_from_value("today".to_string(), local("today").unwrap_or_else(|| now.format("%Y-%m-%d").to_string()));
+        ctx.add_variable_from_value("now".to_string(), local("now").unwrap_or_else(|| now.to_rfc3339()));
         let out = self.program.execute(&ctx).map_err(|e| e.to_string())?;
         Ok(cel_to_json(&out))
     }

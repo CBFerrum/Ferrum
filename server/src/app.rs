@@ -141,7 +141,9 @@ impl Hooks for App {
             jwt_expiration: jwt.expiration,
             login_limiter: Arc::new(RateLimiter::new(Duration::from_secs(60), 20)),
         };
-        let ctx = ctx.into_builder().storage(Arc::new(storage)).build();
+        let storage = Arc::new(storage);
+        state.kernel.set_file_store(Arc::new(crate::mailer::StorageFiles(storage.clone())));
+        let ctx = ctx.into_builder().storage(storage).build();
         ctx.shared_store.insert(state);
         Ok(ctx)
     }

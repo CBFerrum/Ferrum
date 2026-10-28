@@ -44,6 +44,8 @@ async fn me(Auth(ctx): Auth) -> ApiResult<Response> {
         "default_company": ctx.default_company,
         "scopes": ctx.scopes,
         "fiscal_year_start_month": ctx.fy_start_month,
+        "timezone": ctx.schema.timezone,
+        "today": ctx.today(),
         "packages": ctx.schema.packages,
     }))
     .into_response())

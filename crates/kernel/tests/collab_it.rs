@@ -34,6 +34,25 @@ async fn unread(k: &Kernel, ctx: &Ctx) -> Vec<String> {
     titles
 }
 
+/// An in-memory object store standing in for S3.
+#[derive(Default)]
+struct MemFiles(std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>);
+
+#[async_trait::async_trait]
+impl ferrum_kernel::files::FileStore for MemFiles {
+    async fn put(&self, key: &str, data: &[u8]) -> ferrum_kernel::Result<()> {
+        self.0.lock().unwrap().insert(key.to_string(), data.to_vec());
+        Ok(())
+    }
+    async fn get(&self, key: &str) -> ferrum_kernel::Result<Vec<u8>> {
+        self.0.lock().unwrap().get(key).cloned().ok_or_else(|| Error::NotFound("object".into()))
+    }
+    async fn delete(&self, key: &str) -> ferrum_kernel::Result<()> {
+        self.0.lock().unwrap().remove(key);
+        Ok(())
+    }
+}
+
 async fn drain(k: &Kernel) {
     while k.dispatch_outbox_once().await.unwrap() > 0 {}
 }
@@ -189,4 +208,15 @@ async fn collaboration_follows_record_access() {
     // ── attachments listing follows the record too ──
     assert!(k.attachments(&bea_ctx, "Customer", cid).await.unwrap().is_empty());
     assert!(k.attachments(&otto_ctx, "Customer", cid).await.is_err());
+
+    // ── files packages store land with the uploads and follow the record's access ──
+    assert!(k.store_file(&admin, Some(("Customer", cid)), "a.txt", "text/plain", b"x").await.is_err(), "no store configured yet");
+    k.set_file_store(Arc::new(MemFiles::default()));
+    let f = k.store_file(&admin, Some(("Customer", cid)), "quote.html", "text/html", b"<p>hi</p>").await.unwrap();
+    let fid: Uuid = f["id"].as_str().unwrap().parse().unwrap();
+    let (name, ctype, data) = k.read_file(&bea_ctx, fid).await.unwrap();
+    assert_eq!((name.as_str(), ctype.as_str(), data.as_slice()), ("quote.html", "application/octet-stream", b"<p>hi</p>".as_slice()), "active content is never served as such");
+    assert!(k.read_file(&otto_ctx, fid).await.is_err());
+    assert_eq!(k.attachments(&bea_ctx, "Customer", cid).await.unwrap().len(), 1);
+    assert!(k.store_file(&otto_ctx, Some(("Customer", cid)), "x.txt", "text/plain", b"x").await.is_err(), "attaching needs read access");
 }

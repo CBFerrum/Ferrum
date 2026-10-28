@@ -399,7 +399,7 @@ impl MrpRunHook {
         let tenant = hc.ctx.tenant;
         let cid = id(doc, "company").ok_or_else(|| Error::field("company", "is required"))?;
         let wh = id(doc, "warehouse").ok_or_else(|| Error::field("warehouse", "is required"))?;
-        let today = chrono::Utc::now().date_naive();
+        let today = hc.ctx.today();
         let mut gross: HashMap<Uuid, Decimal> = HashMap::new();
         let mut need_by: HashMap<Uuid, NaiveDate> = HashMap::new();
         let add = |gross: &mut HashMap<Uuid, Decimal>, need_by: &mut HashMap<Uuid, NaiveDate>, item: Uuid, qty: Decimal, by: NaiveDate| {

@@ -182,6 +182,16 @@ pub struct ReportCompany {
     pub precision: u32,
 }
 
+tokio::task_local! {
+    /// Today where the workspace running the report is; set by `run`.
+    static TODAY: NaiveDate;
+}
+
+/// The workspace's local date while a report runs (UTC outside one).
+pub fn today() -> NaiveDate {
+    TODAY.try_with(|d| *d).unwrap_or_else(|_| chrono::Utc::now().date_naive())
+}
+
 pub async fn resolve_company(tx: &mut Tx, ctx: &Ctx, p: &Params<'_>) -> Result<ReportCompany> {
     let cid = match p.uuid("company")?.or(ctx.default_company) {
         Some(c) => c,
@@ -224,10 +234,6 @@ pub fn fy_start(on: NaiveDate, month: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(year, month, 1).unwrap_or(on)
 }
 
-fn today() -> NaiveDate {
-    chrono::Utc::now().date_naive()
-}
-
 pub fn period(p: &Params<'_>, co: &ReportCompany) -> Result<(NaiveDate, NaiveDate)> {
     let to = p.date("to_date")?.unwrap_or_else(today);
     let from = p.date("from_date")?.unwrap_or_else(|| fy_start(to, co.fy_month));
@@ -238,6 +244,11 @@ pub fn period(p: &Params<'_>, co: &ReportCompany) -> Result<(NaiveDate, NaiveDat
 }
 
 pub async fn run(k: &Kernel, ctx: &Ctx, name: &str, raw: &HashMap<String, String>) -> Result<Value> {
+    // Periods and "as of" dates default to the workspace's today, for packages' reports too.
+    TODAY.scope(ctx.today(), run_report(k, ctx, name, raw)).await
+}
+
+async fn run_report(k: &Kernel, ctx: &Ctx, name: &str, raw: &HashMap<String, String>) -> Result<Value> {
     let Some(def) = DEFS.iter().find(|d| d.name == name) else { return run_source(k, ctx, name, raw).await };
     if ctx.schema.entity(def.entity).is_none() {
         return Err(Error::NotFound(format!("report {name} (its package is not installed)")));

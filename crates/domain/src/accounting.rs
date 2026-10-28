@@ -107,7 +107,7 @@ impl DocHook for JournalEntryHook {
                 ledger::cancel_open_item(hc.tx, hc.ctx, lid).await?;
             }
         }
-        ledger::reverse(hc.tx, hc.ctx, "JournalEntry", jid, chrono::Utc::now().date_naive(), co.precision).await?;
+        ledger::reverse(hc.tx, hc.ctx, "JournalEntry", jid, hc.ctx.today(), co.precision).await?;
         Ok(())
     }
 }

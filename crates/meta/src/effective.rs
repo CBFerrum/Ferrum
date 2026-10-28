@@ -152,6 +152,8 @@ pub struct Schema {
     pub warnings: Vec<SchemaWarning>,
     /// The tenant's fiscal year start month (1-12), for contexts that act without a user.
     pub fy_start_month: u32,
+    /// The tenant's IANA time zone (`Asia/Kolkata`); "today" and "now" are local to it.
+    pub timezone: String,
 }
 
 impl Schema {
@@ -510,7 +512,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         );
     }
     modules.sort_by(|a, b| a.order.cmp(&b.order).then(a.name.cmp(&b.name)));
-    Ok(Schema { version, entities, packages, modules, roles, warnings, fy_start_month: 1 })
+    Ok(Schema { version, entities, packages, modules, roles, warnings, fy_start_month: 1, timezone: "UTC".into() })
 }
 
 fn compile_exprs(def: &EntityDef) -> Result<Exprs, String> {
