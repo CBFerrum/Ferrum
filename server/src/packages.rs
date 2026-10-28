@@ -2,7 +2,8 @@
 //! endpoints and periodic upkeep.
 
 use ferrum_kernel::{HookRegistry, Kernel};
-use ferrum_meta::Catalog;
+use ferrum_meta::{Catalog, Package};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
@@ -12,15 +13,29 @@ const EVERY: Duration = Duration::from_secs(60);
 /// Session advisory lock: one replica runs upkeep at a time; the others skip that round.
 const LOCK: i64 = 0x6665_7272_756d_0001;
 
-macro_rules! packages {
-    ($($feature:literal => $krate:ident [$($yaml:literal),+]),* $(,)?) => {
-        /// Registers every compiled package's hooks, reports and endpoints.
+/// Two kinds of compiled apps: `native` ones carry their packages and manifest (built in their
+/// own repositories, docs/plan/apps.md); `legacy` ones still keep their YAML in `packages/`.
+macro_rules! apps {
+    (
+        native { $($nfeature:literal => $nkrate:ident),* $(,)? }
+        legacy { $($lfeature:literal => $lkrate:ident [$($yaml:literal),+]),* $(,)? }
+    ) => {
+        /// Registers every compiled app's hooks, reports and endpoints.
         pub fn register(hooks: &mut HookRegistry) {
             $(
-                #[cfg(feature = $feature)]
+                #[cfg(feature = $nfeature)]
                 {
-                    $krate::register(hooks);
-                    for source in $krate::reports() {
+                    $nkrate::register(hooks);
+                    for source in $nkrate::reports() {
+                        ferrum_domain::reports::add_source(source);
+                    }
+                }
+            )*
+            $(
+                #[cfg(feature = $lfeature)]
+                {
+                    $lkrate::register(hooks);
+                    for source in $lkrate::reports() {
                         ferrum_domain::reports::add_source(source);
                     }
                 }
@@ -28,23 +43,52 @@ macro_rules! packages {
             let _ = hooks;
         }
 
-        /// Runs every compiled package's upkeep once; failures are logged and do not stop the others.
+        /// Runs every compiled app's upkeep once; failures are logged and do not stop the others.
         pub async fn maintenance(k: &Kernel) {
             $(
-                #[cfg(feature = $feature)]
-                if let Err(e) = $krate::maintenance(k).await {
-                    tracing::warn!(package = $feature, "package maintenance failed: {e}");
+                #[cfg(feature = $nfeature)]
+                if let Err(e) = $nkrate::maintenance(k).await {
+                    tracing::warn!(app = $nfeature, "app maintenance failed: {e}");
+                }
+            )*
+            $(
+                #[cfg(feature = $lfeature)]
+                if let Err(e) = $lkrate::maintenance(k).await {
+                    tracing::warn!(app = $lfeature, "app maintenance failed: {e}");
                 }
             )*
             let _ = k;
         }
 
-        /// YAML packages whose business logic is not compiled into this build.
-        pub fn missing_logic(catalog: &Catalog) -> Vec<String> {
+        /// Packages embedded in the compiled native apps.
+        pub fn native_packages() -> Result<Vec<Package>, String> {
+            #[allow(unused_mut)]
             let mut out = Vec::new();
             $(
-                if !cfg!(feature = $feature) {
-                    out.extend([$($yaml),+].into_iter().filter(|p| catalog.packages().any(|x| x.manifest.package == *p)).map(String::from));
+                #[cfg(feature = $nfeature)]
+                out.extend($nkrate::packages().map_err(|e| format!("app {}: {e}", $nfeature))?);
+            )*
+            Ok(out)
+        }
+
+        /// Manifests (`app.yaml`) of the compiled native apps.
+        pub fn native_manifests() -> Vec<&'static str> {
+            #[allow(unused_mut)]
+            let mut out = Vec::new();
+            $(
+                #[cfg(feature = $nfeature)]
+                out.push($nkrate::MANIFEST);
+            )*
+            out
+        }
+
+        /// YAML packages of legacy apps whose code is not compiled into this build.
+        pub fn missing_logic(catalog: &Catalog) -> Vec<String> {
+            #[allow(unused_mut)]
+            let mut out: Vec<String> = Vec::new();
+            $(
+                if !cfg!(feature = $lfeature) {
+                    out.extend([$($yaml),+].into_iter().filter(|p| catalog.package(p).is_some()).map(String::from));
                 }
             )*
             out
@@ -52,10 +96,36 @@ macro_rules! packages {
     };
 }
 
-packages! {
-    "crm" => ferrum_pkg_crm ["crm"],
-    "projects" => ferrum_pkg_projects ["projects"],
-    "support" => ferrum_pkg_support ["support"],
+apps! {
+    native {}
+    legacy {
+        "crm" => ferrum_pkg_crm ["crm"],
+        "projects" => ferrum_pkg_projects ["projects"],
+        "support" => ferrum_pkg_support ["support"],
+    }
+}
+
+/// The catalog this build starts from: the platform's embedded packages, the native apps'
+/// embedded packages, and extra packages from `dir` (metadata-only packages an operator adds, and
+/// legacy apps' YAML). An embedded package wins over a directory copy of the same name.
+pub fn base_catalog(dir: &Path) -> Result<Catalog, String> {
+    let mut pkgs = ferrum_domain::packages().map_err(|e| format!("platform packages: {e}"))?;
+    pkgs.extend(native_packages()?);
+    if dir.is_dir() {
+        let mut dirs: Vec<_> = std::fs::read_dir(dir)
+            .map_err(|e| format!("{}: {e}", dir.display()))?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.join("package.yaml").is_file())
+            .collect();
+        dirs.sort();
+        for d in dirs {
+            let p = ferrum_meta::catalog::load_package_dir(&d).map_err(|e| e.to_string())?;
+            if !pkgs.iter().any(|x| x.name() == p.name()) {
+                pkgs.push(p);
+            }
+        }
+    }
+    Catalog::from_packages(pkgs).map_err(|e| e.to_string())
 }
 
 /// Upkeep under the advisory lock, held on one pooled connection for the round.

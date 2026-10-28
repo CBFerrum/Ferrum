@@ -35,31 +35,62 @@ fn sorted_files(dir: &Path, ext: &str) -> Result<Vec<std::path::PathBuf>, MetaEr
 
 /// Reads `package.yaml`, `entities/*.yaml` (one entity or a list per file), `sql/*.sql`, `print/<Entity>.html`.
 pub fn load_package_dir(dir: &Path) -> Result<Package, MetaError> {
-    let manifest_path = dir.join("package.yaml");
-    let manifest: PackageManifest =
-        serde_yaml::from_str(&read(&manifest_path)?).map_err(|e| MetaError::Yaml { path: manifest_path.display().to_string(), msg: e.to_string() })?;
-    let mut entities = Vec::new();
-    for f in sorted_files(&dir.join("entities"), "yaml")? {
-        let text = read(&f)?;
-        let yaml_err = |e: serde_yaml::Error| MetaError::Yaml { path: f.display().to_string(), msg: e.to_string() };
-        if text.trim_start().starts_with('-') {
-            let list: Vec<EntityDef> = serde_yaml::from_str(&text).map_err(yaml_err)?;
-            entities.extend(list);
-        } else {
-            entities.push(serde_yaml::from_str(&text).map_err(yaml_err)?);
+    let mut files = BTreeMap::new();
+    files.insert("package.yaml".to_string(), read(&dir.join("package.yaml"))?);
+    for (sub, ext) in [("entities", "yaml"), ("sql", "sql"), ("print", "html")] {
+        for f in sorted_files(&dir.join(sub), ext)? {
+            let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            files.insert(format!("{sub}/{name}"), read(&f)?);
         }
     }
-    let mut sql = Vec::new();
-    for f in sorted_files(&dir.join("sql"), "sql")? {
-        let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        sql.push((name, read(&f)?));
-    }
-    let mut print_formats = Vec::new();
-    for f in sorted_files(&dir.join("print"), "html")? {
-        let entity = f.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        print_formats.push((entity, read(&f)?));
+    load_package_files(&files).map_err(|e| match e {
+        MetaError::Yaml { path, msg } => MetaError::Yaml { path: dir.join(path).display().to_string(), msg },
+        other => other,
+    })
+}
+
+/// A package from its files, keyed by path relative to the package directory (`package.yaml`,
+/// `entities/x.yaml`, `sql/001.sql`, `print/Entity.html`) — as shipped inside app bundles, stored
+/// in the database or embedded in native apps. Other paths are ignored.
+pub fn load_package_files(files: &BTreeMap<String, String>) -> Result<Package, MetaError> {
+    let manifest_text = files.get("package.yaml").ok_or_else(|| MetaError::Invalid("package.yaml is missing".into()))?;
+    let manifest: PackageManifest = serde_yaml::from_str(manifest_text).map_err(|e| MetaError::Yaml { path: "package.yaml".into(), msg: e.to_string() })?;
+    let (mut entities, mut sql, mut print_formats) = (Vec::new(), Vec::new(), Vec::new());
+    for (path, text) in files {
+        if let Some(name) = path.strip_prefix("entities/").filter(|n| n.ends_with(".yaml") && !n.contains('/')) {
+            let yaml_err = |e: serde_yaml::Error| MetaError::Yaml { path: format!("entities/{name}"), msg: e.to_string() };
+            if text.trim_start().starts_with('-') {
+                let list: Vec<EntityDef> = serde_yaml::from_str(text).map_err(yaml_err)?;
+                entities.extend(list);
+            } else {
+                entities.push(serde_yaml::from_str(text).map_err(yaml_err)?);
+            }
+        } else if let Some(name) = path.strip_prefix("sql/").filter(|n| n.ends_with(".sql") && !n.contains('/')) {
+            sql.push((name.to_string(), text.clone()));
+        } else if let Some(name) = path.strip_prefix("print/").and_then(|n| n.strip_suffix(".html")).filter(|n| !n.contains('/')) {
+            print_formats.push((name.to_string(), text.clone()));
+        }
     }
     Ok(Package { manifest, entities, sql, print_formats })
+}
+
+/// Packages embedded in a binary as `(package, path inside the package, content)` — the platform's
+/// own and native apps', generated at build time from their `packages/` directories.
+pub fn load_embedded(files: &[(&str, &str, &str)]) -> Result<Vec<Package>, MetaError> {
+    let mut by_package: BTreeMap<&str, BTreeMap<String, String>> = BTreeMap::new();
+    for (pkg, path, text) in files {
+        by_package.entry(pkg).or_default().insert(path.to_string(), text.to_string());
+    }
+    by_package
+        .into_iter()
+        .map(|(name, files)| {
+            let p = load_package_files(&files).map_err(|e| MetaError::Invalid(format!("embedded package {name}: {e}")))?;
+            if p.name() != name {
+                return invalid(format!("embedded directory {name} holds package {}", p.name()));
+            }
+            Ok(p)
+        })
+        .collect()
 }
 
 impl Catalog {

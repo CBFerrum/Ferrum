@@ -56,7 +56,7 @@ impl Task for SyncSchema {
     }
     async fn run(&self, ctx: &AppContext, _vars: &Vars) -> Result<()> {
         let k = kernel(ctx)?;
-        let report = ferrum_kernel::ddl::sync(&k.db, &k.registry.catalog, true).await.map_err(|e| Error::Message(e.to_string()))?;
+        let report = ferrum_kernel::ddl::sync(&k.db, &k.registry.catalog(), true).await.map_err(|e| Error::Message(e.to_string()))?;
         println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
         Ok(())
     }

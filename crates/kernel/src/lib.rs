@@ -4,6 +4,7 @@
 //! tenant can do (CRUD, lifecycle, customization, automation) goes through it, with tenant
 //! isolation enforced twice: by the code (scopes) and by Postgres row-level security.
 
+pub mod apps;
 pub mod audit;
 pub mod auth;
 pub mod automation;
@@ -93,11 +94,16 @@ impl Kernel {
             ));
         }
         db.migrate().await?;
-        let report = ddl::sync(&db, &catalog, false).await?;
+        // The platform's packages plus those of apps made available on this cluster.
+        let (full, skipped) = Registry::combine(&catalog.packages().cloned().collect::<Vec<_>>(), Registry::app_packages(&db).await?);
+        for (app, why) in skipped {
+            tracing::error!(app = %app, "app left out of the catalog: {why}");
+        }
+        let report = ddl::sync(&db, &full, false).await?;
         if !report.skipped {
             tracing::info!(statements = report.statements, sql = ?report.sql_files_applied, warnings = report.warnings.len(), "schema synced");
         }
-        let registry = Arc::new(Registry::new(Arc::new(catalog), db.clone()));
+        let registry = Arc::new(Registry::new(&catalog, Arc::new(full), db.clone()));
         Ok(Arc::new(Kernel { db, registry, hooks, settings, mailer, users: DashMap::new() }))
     }
 
