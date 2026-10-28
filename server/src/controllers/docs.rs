@@ -268,6 +268,28 @@ async fn import(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Pa
     Ok((status, Json(json!({"created": created.len(), "ids": created, "errors": errors}))).into_response())
 }
 
+#[derive(Deserialize)]
+struct BulkRequest {
+    #[serde(default)]
+    ids: Option<Vec<Uuid>>,
+    #[serde(default)]
+    filters: Option<Value>,
+    #[serde(flatten)]
+    op: ferrum_kernel::bulk::BulkOp,
+}
+
+/// One operation on a selection (`ids`) or on everything `filters` match, record by record.
+async fn bulk(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Path<String>, Json(b): Json<BulkRequest>) -> ApiResult<Response> {
+    use ferrum_kernel::bulk::BulkTarget;
+    let st = app_state(&app)?;
+    let target = match (b.ids, b.filters) {
+        (Some(ids), None) => BulkTarget::Ids(ids),
+        (None, Some(f)) => BulkTarget::Filters(parse_filters(&f)?),
+        _ => return Err(ApiError(Error::invalid("send either ids or filters"))),
+    };
+    Ok(Json(st.kernel.bulk(&ctx, &entity, target, &b.op).await?).into_response())
+}
+
 pub fn routes() -> Routes {
     use axum::routing::{get, post};
     Routes::new()
@@ -276,6 +298,7 @@ pub fn routes() -> Routes {
         .add("/{entity}/_calc", post(calc))
         .add("/{entity}/_export", get(export))
         .add("/{entity}/_import", post(import))
+        .add("/{entity}/_bulk", post(bulk))
         .add("/{entity}/{id}", get(read).patch(update).put(update).delete(remove))
         .add("/{entity}/{id}/submit", post(submit))
         .add("/{entity}/{id}/cancel", post(cancel))
