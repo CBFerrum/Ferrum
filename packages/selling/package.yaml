@@ -1,0 +1,31 @@
+package: selling
+version: 0.1.0
+label: Selling
+description: Sales orders, deliveries and invoices with exact tax maths, receivables and pricing rules.
+depends: [accounting, inventory]
+
+modules:
+  - name: selling
+    label: Selling
+    icon: shopping-cart
+    order: 40
+    items: [SalesOrder, DeliveryNote, SalesInvoice, PaymentEntry, Customer, PricingRule, report:receivables, report:sales_register]
+
+roles:
+  - name: Sales User
+    permissions:
+      - {entity: SalesOrder, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: DeliveryNote, read: true, write: true, create: true, delete: true, submit: true, cancel: true}
+      - {entity: SalesInvoice, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: PricingRule, read: true}
+  - name: Sales Manager
+    permissions:
+      - {entity: SalesOrder, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: DeliveryNote, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: SalesInvoice, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: PricingRule, read: true, write: true, create: true, delete: true}
+  - name: Accounts Manager
+    permissions:
+      - {entity: SalesInvoice, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: SalesOrder, read: true}
+      - {entity: DeliveryNote, read: true}

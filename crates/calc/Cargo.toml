@@ -1,0 +1,27 @@
+[package]
+name = "ferrum-calc"
+description = "Pure decimal pricing, discount, tax and totals engine shared by server and browser (WASM)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = []
+wasm = ["dep:wasm-bindgen"]
+
+[dependencies]
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+wasm-bindgen = { version = "0.2", optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+rust_decimal_macros = "1"
+
+[lints]
+workspace = true

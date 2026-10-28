@@ -1,0 +1,137 @@
+package: core
+version: 0.1.0
+label: Core
+description: Master data shared by every module — companies, chart of accounts, parties, items, warehouses, taxes.
+
+modules:
+  - name: setup
+    label: Setup
+    icon: settings
+    order: 90
+    items: [Company, FiscalYear, Currency, ExchangeRate, Uom, CostCenter, Project]
+  - name: masters
+    label: Masters
+    icon: database
+    order: 10
+    items: [Customer, CustomerGroup, Supplier, SupplierGroup, Item, ItemGroup, Warehouse, PriceList, ItemPrice, Account, TaxTemplate]
+
+roles:
+  - name: Accounts Manager
+    description: Full access to finance masters and documents.
+    permissions:
+      - {entity: Company, read: true, write: true, create: true}
+      - {entity: FiscalYear, read: true, write: true, create: true, delete: true}
+      - {entity: Account, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: CostCenter, read: true, write: true, create: true, delete: true}
+      - {entity: Project, read: true, write: true, create: true, delete: true}
+      - {entity: Currency, read: true, write: true, create: true}
+      - {entity: ExchangeRate, read: true, write: true, create: true, delete: true, import: true}
+      - {entity: TaxTemplate, read: true, write: true, create: true, delete: true}
+      - {entity: Customer, read: true, write: true, create: true, delete: true, export: true, import: true, read_groups: [credit], write_groups: [credit]}
+      - {entity: CustomerGroup, read: true, write: true, create: true, delete: true}
+      - {entity: Supplier, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: SupplierGroup, read: true, write: true, create: true, delete: true}
+      - {entity: Item, read: true, export: true}
+      - {entity: ItemGroup, read: true}
+      - {entity: Warehouse, read: true}
+      - {entity: Uom, read: true}
+      - {entity: PriceList, read: true}
+      - {entity: ItemPrice, read: true}
+  - name: Sales User
+    description: Day-to-day selling.
+    permissions:
+      - {entity: Customer, read: true, write: true, create: true}
+      - {entity: CustomerGroup, read: true}
+      - {entity: Item, read: true}
+      - {entity: ItemGroup, read: true}
+      - {entity: ItemPrice, read: true}
+      - {entity: PriceList, read: true}
+      - {entity: Warehouse, read: true}
+      - {entity: Company, read: true}
+      - {entity: Currency, read: true}
+      - {entity: Uom, read: true}
+      - {entity: TaxTemplate, read: true}
+      - {entity: Project, read: true}
+      - {entity: CostCenter, read: true}
+      - {entity: Account, read: true}
+  - name: Purchase User
+    description: Day-to-day buying.
+    permissions:
+      - {entity: Supplier, read: true, write: true, create: true}
+      - {entity: SupplierGroup, read: true}
+      - {entity: Item, read: true}
+      - {entity: ItemGroup, read: true}
+      - {entity: ItemPrice, read: true}
+      - {entity: PriceList, read: true}
+      - {entity: Warehouse, read: true}
+      - {entity: Company, read: true}
+      - {entity: Currency, read: true}
+      - {entity: Uom, read: true}
+      - {entity: TaxTemplate, read: true}
+      - {entity: Project, read: true}
+      - {entity: CostCenter, read: true}
+      - {entity: Account, read: true}
+  - name: Stock Manager
+    description: Items, warehouses and price lists.
+    permissions:
+      - {entity: Item, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: ItemGroup, read: true, write: true, create: true, delete: true}
+      - {entity: Warehouse, read: true, write: true, create: true, delete: true}
+      - {entity: Uom, read: true, write: true, create: true}
+      - {entity: PriceList, read: true, write: true, create: true, delete: true}
+      - {entity: ItemPrice, read: true, write: true, create: true, delete: true, import: true}
+      - {entity: Company, read: true}
+      - {entity: Account, read: true}
+      - {entity: Currency, read: true}
+      - {entity: CostCenter, read: true}
+
+seed:
+  - entity: Currency
+    key: [code]
+    records:
+      - {code: INR, currency_name: Indian Rupee, symbol: "₹", precision: 2}
+      - {code: USD, currency_name: US Dollar, symbol: "$", precision: 2}
+      - {code: EUR, currency_name: Euro, symbol: "€", precision: 2}
+      - {code: GBP, currency_name: Pound Sterling, symbol: "£", precision: 2}
+      - {code: AED, currency_name: UAE Dirham, symbol: "AED", precision: 2}
+      - {code: SGD, currency_name: Singapore Dollar, symbol: "S$", precision: 2}
+      - {code: JPY, currency_name: Japanese Yen, symbol: "¥", precision: 0}
+      - {code: KWD, currency_name: Kuwaiti Dinar, symbol: "KD", precision: 3}
+      - {code: CNY, currency_name: Chinese Yuan, symbol: "¥", precision: 2}
+  - entity: Uom
+    key: [uom_name]
+    records:
+      - {uom_name: Nos, whole_number: true}
+      - {uom_name: Unit, whole_number: true}
+      - {uom_name: Box, whole_number: true}
+      - {uom_name: Set, whole_number: true}
+      - {uom_name: Kg, whole_number: false}
+      - {uom_name: Gram, whole_number: false}
+      - {uom_name: Meter, whole_number: false}
+      - {uom_name: Litre, whole_number: false}
+      - {uom_name: Hour, whole_number: false}
+  - entity: CustomerGroup
+    key: [group_name]
+    records:
+      - {group_name: All Customer Groups, is_group: true}
+      - {group_name: Commercial, parent_group: "@CustomerGroup:group_name=All Customer Groups"}
+      - {group_name: Individual, parent_group: "@CustomerGroup:group_name=All Customer Groups"}
+  - entity: SupplierGroup
+    key: [group_name]
+    records:
+      - {group_name: All Supplier Groups, is_group: true}
+      - {group_name: Raw Material, parent_group: "@SupplierGroup:group_name=All Supplier Groups"}
+      - {group_name: Services, parent_group: "@SupplierGroup:group_name=All Supplier Groups"}
+  - entity: ItemGroup
+    key: [group_name]
+    records:
+      - {group_name: All Item Groups, is_group: true}
+      - {group_name: Products, parent_group: "@ItemGroup:group_name=All Item Groups"}
+      - {group_name: Raw Material, parent_group: "@ItemGroup:group_name=All Item Groups"}
+      - {group_name: Sub Assemblies, parent_group: "@ItemGroup:group_name=All Item Groups"}
+      - {group_name: Services, parent_group: "@ItemGroup:group_name=All Item Groups"}
+  - entity: PriceList
+    key: [price_list_name]
+    records:
+      - {price_list_name: Standard Selling, selling: true, buying: false}
+      - {price_list_name: Standard Buying, selling: false, buying: true}

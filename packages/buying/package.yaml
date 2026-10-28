@@ -1,0 +1,29 @@
+package: buying
+version: 0.1.0
+label: Buying
+description: Purchase orders, receipts and supplier invoices with three-way matching against orders and receipts.
+depends: [accounting, inventory]
+
+modules:
+  - name: buying
+    label: Buying
+    icon: truck
+    order: 50
+    items: [PurchaseOrder, PurchaseReceipt, PurchaseInvoice, PaymentEntry, Supplier, report:payables, report:purchase_register]
+
+roles:
+  - name: Purchase User
+    permissions:
+      - {entity: PurchaseOrder, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: PurchaseReceipt, read: true, write: true, create: true, delete: true, submit: true, cancel: true}
+      - {entity: PurchaseInvoice, read: true, write: true, create: true, delete: true}
+  - name: Purchase Manager
+    permissions:
+      - {entity: PurchaseOrder, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: PurchaseReceipt, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: PurchaseInvoice, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+  - name: Accounts Manager
+    permissions:
+      - {entity: PurchaseInvoice, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: PurchaseOrder, read: true}
+      - {entity: PurchaseReceipt, read: true}

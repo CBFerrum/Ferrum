@@ -1,0 +1,140 @@
+- name: Currency
+  label: Currency
+  label_plural: Currencies
+  kind: master
+  module: setup
+  title_field: code
+  search_fields: [currency_name]
+  fields:
+    - {name: code, type: data, required: true, unique: true, max_length: 3, in_list: true, locked: true, description: ISO 4217 code}
+    - {name: currency_name, type: data, required: true, in_list: true}
+    - {name: symbol, type: data, max_length: 8}
+    - {name: precision, type: int, default: 2, min: 0, max: 6, required: true, description: Decimal places used for amounts}
+    - {name: enabled, type: check, default: true}
+  rules:
+    - {name: iso_code, check: "doc.code.matches('^[A-Z]{3}$')", message: "Currency code must be three upper-case letters"}
+  list: {columns: [code, currency_name, precision], sort: code asc}
+
+- name: Uom
+  label: Unit of Measure
+  label_plural: Units of Measure
+  kind: master
+  module: setup
+  title_field: uom_name
+  fields:
+    - {name: uom_name, type: data, required: true, unique: true, in_list: true}
+    - {name: whole_number, type: check, description: Quantities must be whole numbers}
+  list: {sort: uom_name asc}
+
+- name: Company
+  label: Company
+  label_plural: Companies
+  kind: master
+  module: setup
+  title_field: company_name
+  search_fields: [abbr]
+  fields:
+    - {name: company_name, type: data, required: true, unique: true, in_list: true}
+    - {name: abbr, type: data, required: true, unique: true, max_length: 10, in_list: true, description: Short code used in account names}
+    - {name: default_currency, type: link, to: Currency, required: true, locked: true, in_list: true}
+    - {name: country, type: data}
+    - {name: tax_id, type: data, label: Tax ID}
+    - {name: fy_start_month, type: int, default: 4, min: 1, max: 12, label: Fiscal Year Starts In (Month)}
+    - {name: allow_negative_stock, type: check}
+    - {name: rounding_mode, type: select, options: [Half Up, Half Even], default: Half Up}
+    - {name: round_total_to, type: decimal, description: "Cash rounding step for invoice totals, e.g. 1 (empty = off)"}
+    - {name: default_cost_center, type: link, to: CostCenter}
+    - {name: default_receivable_account, type: link, to: Account, link_filters: {is_group: false}}
+    - {name: default_payable_account, type: link, to: Account, link_filters: {is_group: false}}
+    - {name: default_income_account, type: link, to: Account, link_filters: {is_group: false}}
+    - {name: default_expense_account, type: link, to: Account, link_filters: {is_group: false}}
+    - {name: default_cash_account, type: link, to: Account, link_filters: {is_group: false}}
+    - {name: default_bank_account, type: link, to: Account, link_filters: {is_group: false}}
+    - {name: default_inventory_account, type: link, to: Account, link_filters: {is_group: false}}
+    - {name: cogs_account, type: link, to: Account, link_filters: {is_group: false}, label: Cost of Goods Sold Account}
+    - {name: srbnb_account, type: link, to: Account, link_filters: {is_group: false}, label: Stock Received But Not Billed}
+    - {name: stock_adjustment_account, type: link, to: Account, link_filters: {is_group: false}}
+    - {name: round_off_account, type: link, to: Account, link_filters: {is_group: false}}
+    - {name: exchange_gain_loss_account, type: link, to: Account, link_filters: {is_group: false}}
+    - {name: retained_earnings_account, type: link, to: Account, link_filters: {is_group: false}}
+    - {name: opening_balance_account, type: link, to: Account, link_filters: {is_group: false}, description: Offset for opening stock and balances}
+    - {name: overhead_absorbed_account, type: link, to: Account, link_filters: {is_group: false}, label: Manufacturing Overheads Absorbed Account}
+  form:
+    - {label: Company, fields: [company_name, abbr, default_currency, country, tax_id, fy_start_month]}
+    - {label: Policies, fields: [allow_negative_stock, rounding_mode, round_total_to, default_cost_center]}
+    - {label: Default Accounts, collapsible: true, fields: [default_receivable_account, default_payable_account, default_income_account,
+        default_expense_account, default_cash_account, default_bank_account, default_inventory_account, cogs_account, srbnb_account,
+        stock_adjustment_account, round_off_account, exchange_gain_loss_account, retained_earnings_account, opening_balance_account,
+        overhead_absorbed_account]}
+  actions:
+    - {name: setup_chart_of_accounts, label: Create Standard Chart of Accounts, permission: write, confirm: "Create the standard chart of accounts for this company?"}
+  list: {columns: [company_name, abbr, default_currency], sort: company_name asc}
+
+- name: FiscalYear
+  label: Fiscal Year
+  kind: master
+  module: setup
+  title_field: year_name
+  company_scoped: true
+  fields:
+    - {name: year_name, type: data, required: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, in_list: true, in_filter: true}
+    - {name: start_date, type: date, required: true, in_list: true}
+    - {name: end_date, type: date, required: true, in_list: true}
+  unique: [[company, year_name]]
+  exclusion:
+    - {fields: [company], from: start_date, to: end_date}
+  rules:
+    - {name: ordered_dates, check: "doc.end_date > doc.start_date", message: "End date must be after start date"}
+  actions:
+    - {name: close_period, label: Close Accounting Period, permission: write, confirm: "Close the selected month? Postings into it will be refused."}
+    - {name: reopen_period, label: Reopen Accounting Period, permission: write}
+  list: {sort: start_date desc}
+
+- name: ExchangeRate
+  label: Exchange Rate
+  kind: master
+  module: setup
+  fields:
+    - {name: from_currency, type: link, to: Currency, required: true, in_list: true, in_filter: true}
+    - {name: to_currency, type: link, to: Currency, required: true, in_list: true, in_filter: true}
+    - {name: rate, type: decimal, required: true, min: "0.000000001", in_list: true}
+    - {name: valid_from, type: date, required: true, in_list: true}
+  unique: [[from_currency, to_currency, valid_from]]
+  rules:
+    - {name: different, check: "doc.from_currency != doc.to_currency", message: "Currencies must differ"}
+  list: {sort: valid_from desc}
+
+- name: CostCenter
+  label: Cost Center
+  kind: master
+  module: setup
+  title_field: cost_center_name
+  company_scoped: true
+  fields:
+    - {name: cost_center_name, type: data, required: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, in_filter: true}
+    - {name: parent_cost_center, type: link, to: CostCenter, link_filters: {is_group: true}}
+    - {name: is_group, type: check}
+    - {name: disabled, type: check}
+  unique: [[company, cost_center_name]]
+
+- name: Project
+  label: Project
+  kind: master
+  module: setup
+  title_field: project_name
+  company_scoped: true
+  numbering: {template: "PROJ-{seq:4}"}
+  fields:
+    - {name: project_name, type: data, required: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, in_filter: true}
+    - {name: status, type: select, options: [Open, Completed, Cancelled], default: Open, in_list: true, in_filter: true}
+    - {name: start_date, type: date}
+    - {name: end_date, type: date}
+    - {name: customer, type: link, to: Customer}
+    - {name: budget, type: currency, currency: currency}
+    - {name: currency, type: link, to: Currency, fetch_from: company.default_currency, read_only: true}
+    - {name: notes, type: text}
+  rules:
+    - {name: dates, check: "doc.end_date == null || doc.start_date == null || doc.end_date >= doc.start_date", message: "End date is before start date"}

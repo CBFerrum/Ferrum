@@ -1,0 +1,32 @@
+# Only the ingress controller and Prometheus may reach the API; the API may reach the
+# database, DNS and HTTPS endpoints (object storage, webhooks, mail).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ferrum
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: ferrum}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: ingress-nginx}
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: monitoring}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ferrum-web}
+      ports:
+        - {port: 5150}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {cnpg.io/cluster: ferrum-db}
+      ports:
+        - {port: 5432}
+    - ports:
+        - {port: 53, protocol: UDP}
+        - {port: 53, protocol: TCP}
+    - ports:
+        - {port: 443}
+        - {port: 587}

@@ -1,0 +1,67 @@
+# Development configuration. Every value can be overridden with environment variables.
+logger:
+  enable: true
+  pretty_backtrace: true
+  level: <%= get_env(name="LOG_LEVEL", default="info") %>
+  format: compact
+
+server:
+  port: <%= get_env(name="PORT", default="5150") %>
+  binding: <%= get_env(name="BINDING", default="127.0.0.1") %>
+  host: http://localhost
+  middlewares:
+    # Unknown routes get a plain 404, never Loco's demo page.
+    fallback:
+      enable: false
+    limit_payload:
+      enable: true
+      body_limit: 30mb
+    timeout_request:
+      enable: true
+      timeout: 120000
+    compression:
+      enable: true
+    cors:
+      enable: true
+      allow_origins: ["http://localhost:5173", "http://127.0.0.1:5173"]
+      allow_headers: ["*"]
+      allow_methods: ["*"]
+      max_age: 3600
+    static:
+      enable: true
+      must_exist: false
+      precompressed: false
+      folder:
+        uri: "/app"
+        path: "../web/dist"
+      fallback: "../web/dist/index.html"
+
+workers:
+  mode: BackgroundAsync
+
+mailer:
+  stub: true
+
+database:
+  uri: <%= get_env(name="DATABASE_URL", default="postgres://ferrum:ferrum@localhost:5432/ferrum_dev") %>
+  enable_logging: false
+  connect_timeout: 5000
+  idle_timeout: 600000
+  min_connections: 1
+  max_connections: 2
+  auto_migrate: true
+  dangerously_truncate: false
+  dangerously_recreate: false
+
+auth:
+  jwt:
+    secret: <%= get_env(name="JWT_SECRET", default="ZGV2LW9ubHktc2VjcmV0LWNoYW5nZS1tZS0wMTIzNDU2Nzg5YWJjZGVm") %>
+    expiration: 43200
+
+settings:
+  packages_dir: <%= get_env(name="FERRUM_PACKAGES_DIR", default="../packages") %>
+  db_max_connections: <%= get_env(name="FERRUM_DB_MAX_CONNECTIONS", default="20") %>
+  bootstrap_token: <%= get_env(name="FERRUM_BOOTSTRAP_TOKEN", default="dev-bootstrap-token") %>
+  webhooks_allow_private: true
+  run_background: true
+  files_dir: <%= get_env(name="FERRUM_FILES_DIR", default="../storage") %>

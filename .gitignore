@@ -1,0 +1,14 @@
+# Build output and local state
+/target
+**/target
+/storage/
+**/node_modules
+.DS_Store
+*.log
+
+# The web frontend is its own repository (CBFerrum/Ferrum-Frontend); clone it into web/ for local development.
+/web/
+
+# Local secrets and tooling
+deploy/.env
+server/.claude/

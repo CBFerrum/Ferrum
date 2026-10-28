@@ -1,0 +1,192 @@
+- name: PurchaseOrderItem
+  label: Purchase Order Item
+  kind: child
+  fields:
+    - {name: item, type: link, to: Item, required: true, in_list: true}
+    - {name: item_name, type: data, fetch_from: item.item_name, read_only: true}
+    - {name: uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true}
+    - {name: qty, type: decimal, required: true, min: "0.000000001", in_list: true}
+    - {name: price_list_rate, type: currency, min: "0", in_list: true, description: Agreed unit price}
+    - {name: discount_percent, type: percent, min: "0", max: "100"}
+    - {name: rate, type: currency, read_only: true}
+    - {name: amount, type: currency, read_only: true, in_list: true}
+    - {name: net_amount, type: currency, read_only: true}
+    - {name: warehouse, type: link, to: Warehouse, link_filters: {is_group: false}}
+    - {name: schedule_date, type: date, label: Required By}
+    - {name: received_qty, type: decimal, read_only: true, no_copy: true, in_list: true}
+    - {name: billed_qty, type: decimal, read_only: true, no_copy: true}
+    - {name: item_tax_rates, type: json, read_only: true}
+
+- name: PurchaseOrder
+  label: Purchase Order
+  kind: document
+  module: buying
+  submittable: true
+  company_scoped: true
+  title_field: supplier_name
+  numbering: {template: "PO-{FY}-{seq:5}", on: submit, date_field: posting_date}
+  fields:
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: supplier, type: link, to: Supplier, required: true, in_filter: true}
+    - {name: supplier_name, type: data, fetch_from: supplier.supplier_name, read_only: true, in_list: true}
+    - {name: posting_date, type: date, required: true, default_expr: today, label: Order Date, in_list: true, in_filter: true}
+    - {name: schedule_date, type: date, label: Required By}
+    - {name: currency, type: link, to: Currency}
+    - {name: conversion_rate, type: decimal, default: 1, min: "0.000000001"}
+    - {name: set_warehouse, type: link, to: Warehouse, link_filters: {is_group: false}}
+    - {name: tax_template, type: link, to: TaxTemplate}
+    - {name: items, type: table, of: PurchaseOrderItem, required: true}
+    - {name: taxes, type: table, of: TaxRow}
+    - {name: discount_percent, type: percent, min: "0", max: "100"}
+    - {name: total, type: currency, read_only: true}
+    - {name: net_total, type: currency, read_only: true}
+    - {name: total_taxes, type: currency, read_only: true}
+    - {name: grand_total, type: currency, read_only: true, in_list: true}
+    - {name: rounding_adjustment, type: currency, read_only: true}
+    - {name: rounded_total, type: currency, read_only: true}
+    - {name: base_grand_total, type: currency, read_only: true}
+    - {name: per_received, type: percent, read_only: true, no_copy: true}
+    - {name: per_billed, type: percent, read_only: true, no_copy: true}
+    - {name: status, type: select, options: [Draft, To Receive and Bill, To Receive, To Bill, Completed, Closed, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: project, type: link, to: Project}
+    - {name: terms, type: text}
+  actions:
+    - {name: make_purchase_receipt, label: Create Purchase Receipt, docstatus: [1], permission: read, condition: "doc.per_received < 100.0 && doc.status != 'Closed'"}
+    - {name: make_purchase_invoice, label: Create Purchase Invoice, docstatus: [1], permission: read, condition: "doc.per_billed < 100.0 && doc.status != 'Closed'"}
+    - {name: close, label: Close, docstatus: [1], permission: submit}
+    - {name: reopen, label: Re-open, docstatus: [1], permission: submit, condition: "doc.status == 'Closed'"}
+  list: {columns: [number, supplier_name, posting_date, grand_total, status], sort: posting_date desc}
+
+- name: PurchaseReceiptItem
+  label: Purchase Receipt Item
+  kind: child
+  fields:
+    - {name: item, type: link, to: Item, required: true, in_list: true}
+    - {name: item_name, type: data, fetch_from: item.item_name, read_only: true}
+    - {name: uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true}
+    - {name: qty, type: decimal, required: true, min: "0.000000001", in_list: true}
+    - {name: rejected_qty, type: decimal, default: 0, min: "0"}
+    - {name: price_list_rate, type: currency, min: "0", in_list: true}
+    - {name: discount_percent, type: percent, min: "0", max: "100"}
+    - {name: rate, type: currency, read_only: true}
+    - {name: amount, type: currency, read_only: true, in_list: true}
+    - {name: net_amount, type: currency, read_only: true}
+    - {name: warehouse, type: link, to: Warehouse, link_filters: {is_group: false}, in_list: true}
+    - {name: purchase_order, type: link, to: PurchaseOrder, read_only: true}
+    - {name: po_line, type: data, read_only: true}
+    - {name: billed_qty, type: decimal, read_only: true, no_copy: true}
+    - {name: batch_no, type: data}
+    - {name: serial_no, type: text}
+    - {name: item_tax_rates, type: json, read_only: true}
+
+- name: PurchaseReceipt
+  label: Purchase Receipt
+  kind: document
+  module: buying
+  submittable: true
+  company_scoped: true
+  title_field: supplier_name
+  numbering: {template: "PR-{FY}-{seq:5}", on: submit, date_field: posting_date}
+  fields:
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: supplier, type: link, to: Supplier, required: true, in_filter: true}
+    - {name: supplier_name, type: data, fetch_from: supplier.supplier_name, read_only: true, in_list: true}
+    - {name: posting_date, type: date, required: true, default_expr: today, in_list: true, in_filter: true}
+    - {name: posting_time, type: data, default: "23:59:59"}
+    - {name: supplier_delivery_note, type: data}
+    - {name: is_return, type: check, in_filter: true}
+    - {name: return_against, type: link, to: PurchaseReceipt, visible_if: "doc.is_return"}
+    - {name: currency, type: link, to: Currency}
+    - {name: conversion_rate, type: decimal, default: 1, min: "0.000000001"}
+    - {name: set_warehouse, type: link, to: Warehouse, link_filters: {is_group: false}}
+    - {name: tax_template, type: link, to: TaxTemplate}
+    - {name: items, type: table, of: PurchaseReceiptItem, required: true}
+    - {name: taxes, type: table, of: TaxRow}
+    - {name: discount_percent, type: percent, min: "0", max: "100"}
+    - {name: total, type: currency, read_only: true}
+    - {name: net_total, type: currency, read_only: true}
+    - {name: total_taxes, type: currency, read_only: true}
+    - {name: grand_total, type: currency, read_only: true, in_list: true}
+    - {name: rounding_adjustment, type: currency, read_only: true}
+    - {name: rounded_total, type: currency, read_only: true}
+    - {name: base_grand_total, type: currency, read_only: true}
+    - {name: per_billed, type: percent, read_only: true, no_copy: true}
+    - {name: status, type: select, options: [Draft, To Bill, Completed, Return, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
+  actions:
+    - {name: make_purchase_invoice, label: Create Purchase Invoice, docstatus: [1], permission: read, condition: "doc.per_billed < 100.0 && !doc.is_return"}
+  list: {columns: [number, supplier_name, posting_date, grand_total, status], sort: posting_date desc}
+
+- name: PurchaseInvoiceItem
+  label: Purchase Invoice Item
+  kind: child
+  fields:
+    - {name: item, type: link, to: Item, required: true, in_list: true}
+    - {name: item_name, type: data, fetch_from: item.item_name, read_only: true}
+    - {name: uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true}
+    - {name: qty, type: decimal, required: true, in_list: true}
+    - {name: price_list_rate, type: currency, min: "0", in_list: true}
+    - {name: discount_percent, type: percent, min: "0", max: "100"}
+    - {name: rate, type: currency, read_only: true}
+    - {name: amount, type: currency, read_only: true, in_list: true}
+    - {name: net_amount, type: currency, read_only: true}
+    - {name: base_net_amount, type: currency, read_only: true}
+    - {name: expense_account, type: link, to: Account, link_filters: {is_group: false}}
+    - {name: cost_center, type: link, to: CostCenter}
+    - {name: warehouse, type: link, to: Warehouse, link_filters: {is_group: false}}
+    - {name: purchase_order, type: link, to: PurchaseOrder, read_only: true}
+    - {name: po_line, type: data, read_only: true}
+    - {name: purchase_receipt, type: link, to: PurchaseReceipt, read_only: true}
+    - {name: pr_line, type: data, read_only: true}
+    - {name: batch_no, type: data}
+    - {name: serial_no, type: text}
+    - {name: item_tax_rates, type: json, read_only: true}
+
+- name: PurchaseInvoice
+  label: Purchase Invoice
+  kind: document
+  module: buying
+  submittable: true
+  company_scoped: true
+  title_field: supplier_name
+  numbering: {template: "PINV-{FY}-{seq:5}", on: submit, date_field: posting_date}
+  search_fields: [bill_no]
+  fields:
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: supplier, type: link, to: Supplier, required: true, in_filter: true}
+    - {name: supplier_name, type: data, fetch_from: supplier.supplier_name, read_only: true, in_list: true}
+    - {name: bill_no, type: data, label: Supplier Invoice No, required: true, in_list: true}
+    - {name: bill_date, type: date, label: Supplier Invoice Date}
+    - {name: posting_date, type: date, required: true, default_expr: today, in_list: true, in_filter: true}
+    - {name: posting_time, type: data, default: "23:59:59"}
+    - {name: due_date, type: date, in_list: true}
+    - {name: is_return, type: check, label: Is Return (Debit Note), in_filter: true}
+    - {name: return_against, type: link, to: PurchaseInvoice, visible_if: "doc.is_return"}
+    - {name: update_stock, type: check, description: Receive stock with this invoice}
+    - {name: set_warehouse, type: link, to: Warehouse, link_filters: {is_group: false}, visible_if: "doc.update_stock"}
+    - {name: currency, type: link, to: Currency}
+    - {name: conversion_rate, type: decimal, default: 1, min: "0.000000001"}
+    - {name: tax_template, type: link, to: TaxTemplate}
+    - {name: items, type: table, of: PurchaseInvoiceItem, required: true}
+    - {name: taxes, type: table, of: TaxRow}
+    - {name: discount_percent, type: percent, min: "0", max: "100"}
+    - {name: total, type: currency, currency: currency, read_only: true}
+    - {name: discount_amount, type: currency, currency: currency, read_only: true}
+    - {name: net_total, type: currency, currency: currency, read_only: true}
+    - {name: total_taxes, type: currency, currency: currency, read_only: true}
+    - {name: grand_total, type: currency, currency: currency, read_only: true, in_list: true}
+    - {name: rounding_adjustment, type: currency, currency: currency, read_only: true}
+    - {name: rounded_total, type: currency, currency: currency, read_only: true}
+    - {name: base_net_total, type: currency, read_only: true}
+    - {name: base_grand_total, type: currency, read_only: true}
+    - {name: base_rounded_total, type: currency, read_only: true}
+    - {name: outstanding_amount, type: currency, currency: currency, read_only: true, no_copy: true, in_list: true}
+    - {name: credit_to, type: link, to: Account, read_only: true, label: Payable Account}
+    - {name: status, type: select, options: [Draft, Unpaid, Partly Paid, Paid, Return, Debit Note Issued, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: project, type: link, to: Project}
+    - {name: cost_center, type: link, to: CostCenter}
+    - {name: remarks, type: text}
+  rules:
+    - {name: due_after_posting, check: "doc.due_date == null || doc.due_date >= doc.posting_date", message: "Due date cannot be before the posting date"}
+  actions:
+    - {name: make_payment, label: Record Payment, docstatus: [1], permission: read, condition: "doc.outstanding_amount > 0.0"}
+  list: {columns: [number, supplier_name, bill_no, posting_date, grand_total, outstanding_amount, status], sort: posting_date desc}

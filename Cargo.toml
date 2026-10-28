@@ -1,0 +1,49 @@
+[workspace]
+resolver = "3"
+members = ["crates/calc", "crates/meta", "crates/kernel", "crates/domain",
+    "crates/plugins", "server", "server/migration"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+repository = "https://example.invalid/ferrum"
+
+[workspace.dependencies]
+rust_decimal = { version = "1.43", features = ["serde-with-str", "maths"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+proptest = "1.12"
+serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
+cel = "0.15"
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
+sha2 = "0.10"
+hex = "0.4"
+uuid = { version = "1.10", features = ["v4", "v7", "serde"] }
+dashmap = "6"
+tokio = { version = "1.45", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+tracing = "0.1"
+async-trait = "0.1"
+futures = "0.3"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "uuid", "chrono", "rust_decimal", "json", "migrate", "macros"] }
+
+[profile.dev]
+# Keep target/ small (disk is constrained) and builds fast; line tables are enough for backtraces.
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = "debuginfo"
+
+[workspace.lints.clippy]
+# Deliberate patterns: sqlx row tuples, index-based allocation maths, engine entry points.
+type_complexity = "allow"
+too_many_arguments = "allow"
+needless_range_loop = "allow"
+large_enum_variant = "allow"

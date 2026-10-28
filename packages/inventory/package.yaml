@@ -1,0 +1,25 @@
+package: inventory
+version: 0.1.0
+label: Inventory
+description: Append-only stock ledger with moving-average and FIFO cost layers. Backdated entries post forward; nothing is ever reposted.
+depends: [core]
+
+modules:
+  - name: inventory
+    label: Inventory
+    icon: package
+    order: 30
+    items: [StockEntry, Item, Warehouse, ItemPrice, report:stock_balance, report:stock_ledger]
+
+roles:
+  - name: Stock Manager
+    permissions:
+      - {entity: StockEntry, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+  - name: Stock User
+    permissions:
+      - {entity: StockEntry, read: true, write: true, create: true, delete: true, submit: true}
+      - {entity: Item, read: true}
+      - {entity: Warehouse, read: true}
+      - {entity: Company, read: true}
+      - {entity: Uom, read: true}
+      - {entity: Account, read: true}

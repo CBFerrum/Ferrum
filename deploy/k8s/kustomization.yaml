@@ -1,0 +1,24 @@
+# kubectl apply -k deploy/k8s   (after creating the secrets described in secret.example.yaml)
+# Requires: CloudNativePG operator, an ingress controller, cert-manager (for TLS),
+# metrics-server (for the autoscaler) and optionally the Prometheus operator.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ferrum
+resources:
+  - namespace.yaml
+  - database.yaml
+  - deployment.yaml
+  - web.yaml
+  - service.yaml
+  - ingress.yaml
+  - pdb.yaml
+  - hpa.yaml
+  - networkpolicy.yaml
+  - servicemonitor.yaml
+images:
+  - name: ferrum
+    newName: ghcr.io/cbferrum/ferrum
+    newTag: latest
+  - name: ferrum-frontend
+    newName: ghcr.io/cbferrum/ferrum-frontend
+    newTag: latest

@@ -1,0 +1,66 @@
+# The web app (CBFerrum/Ferrum-Frontend): stateless nginx serving /app/. The ingress sends API,
+# file, MCP and WebSocket paths straight to the Ferrum server, everything else here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ferrum-web
+  labels: {app.kubernetes.io/name: ferrum-web}
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app.kubernetes.io/name: ferrum-web}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: ferrum-web}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        seccompProfile: {type: RuntimeDefault}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {app.kubernetes.io/name: ferrum-web}
+      containers:
+        - name: web
+          image: ferrum-frontend
+          ports:
+            - {name: http, containerPort: 8080}
+          env:
+            - {name: FERRUM_API_URL, value: "http://ferrum"}
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+            limits: {memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ferrum-web
+  labels: {app.kubernetes.io/name: ferrum-web}
+spec:
+  selector: {app.kubernetes.io/name: ferrum-web}
+  ports:
+    - {name: http, port: 80, targetPort: http}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ferrum-web
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: ferrum-web}

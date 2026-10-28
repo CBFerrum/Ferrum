@@ -1,0 +1,31 @@
+package: accounting
+version: 0.1.0
+label: Accounting
+description: Universal journal (append-only, balanced in the database), payments with open-item allocation, period close, financial reports.
+depends: [core]
+
+modules:
+  - name: accounting
+    label: Accounting
+    icon: book
+    order: 20
+    items: [JournalEntry, PaymentEntry, Account, CostCenter, FiscalYear, TaxTemplate, report:trial_balance, report:general_ledger,
+            report:profit_and_loss, report:balance_sheet, report:receivables, report:payables]
+
+roles:
+  - name: Accounts Manager
+    permissions:
+      - {entity: JournalEntry, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: PaymentEntry, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+  - name: Accounts User
+    description: Enters vouchers; a manager approves.
+    permissions:
+      - {entity: JournalEntry, read: true, write: true, create: true, delete: true, if_owner: false}
+      - {entity: PaymentEntry, read: true, write: true, create: true, delete: true, submit: true}
+      - {entity: Account, read: true}
+      - {entity: Company, read: true}
+      - {entity: Customer, read: true}
+      - {entity: Supplier, read: true}
+      - {entity: CostCenter, read: true}
+      - {entity: Project, read: true}
+      - {entity: Currency, read: true}
