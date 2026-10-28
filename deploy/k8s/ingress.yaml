@@ -23,5 +23,8 @@ spec:
           - {path: /files, pathType: Prefix, backend: {service: {name: ferrum, port: {name: http}}}}
           - {path: /mcp, pathType: Prefix, backend: {service: {name: ferrum, port: {name: http}}}}
           - {path: /ws, pathType: Prefix, backend: {service: {name: ferrum, port: {name: http}}}}
+          - {path: /oauth, pathType: Prefix, backend: {service: {name: ferrum, port: {name: http}}}}
+          - {path: /.well-known/oauth-protected-resource, pathType: Prefix, backend: {service: {name: ferrum, port: {name: http}}}}
+          - {path: /.well-known/oauth-authorization-server, pathType: Exact, backend: {service: {name: ferrum, port: {name: http}}}}
           # …everything else is the web app.
           - {path: /, pathType: Prefix, backend: {service: {name: ferrum-web, port: {name: http}}}}

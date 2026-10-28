@@ -102,6 +102,12 @@ claude mcp add --transport http ferrum https://erp.example.com/mcp --header "Aut
 
 Create the API key under the user menu (or `POST /api/auth/api_keys`).
 
+Hosted assistants (for example a claude.ai custom connector pointed at `https://erp.example.com/mcp`)
+use OAuth 2.1 instead: the server advertises itself through the standard discovery documents,
+clients register themselves, and the user signs in and approves the client on a consent page.
+Access tokens last an hour and refresh tokens rotate; revoking them or signing out everywhere cuts
+the client off.
+
 ## Customizing without code
 
 | Need | How |

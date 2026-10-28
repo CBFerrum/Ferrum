@@ -87,6 +87,21 @@ Notifications (own): `GET /api/notifications`, `POST /api/notifications/{id}/rea
 `prompts/get`. Tool failures come back as results with `isError: true` and the same error JSON as
 the REST API; unknown tools or bad arguments are JSON-RPC errors (-32602).
 
+### OAuth 2.1 (for hosted MCP clients)
+
+Discovery: `GET /.well-known/oauth-protected-resource` (RFC 9728) and
+`GET /.well-known/oauth-authorization-server` (RFC 8414); a 401 from `/mcp` carries
+`WWW-Authenticate: Bearer resource_metadata="…"`. `POST /oauth/register` (RFC 7591, public clients;
+redirect URIs must be https, loopback http — any port — or an app scheme). Authorization endpoint:
+the web app's consent page `/app/oauth/authorize` (`response_type=code`, `client_id`, `redirect_uri`,
+`code_challenge`, `code_challenge_method=S256`, `state`), which calls `GET /api/oauth/clients/{id}`
+and, after the user approves, `POST /api/oauth/authorize` → `{redirect_to}` (adds `code`, `state`,
+`iss`). `POST /oauth/token` (form): `grant_type=authorization_code` (`code`, `redirect_uri`,
+`client_id`, `code_verifier`) or `grant_type=refresh_token` (`refresh_token`, `client_id`) →
+`{access_token, token_type: "Bearer", expires_in: 3600, refresh_token, scope}`. Codes are single-use
+(a replay revokes the tokens it produced); refresh tokens rotate and reuse revokes the family.
+`POST /oauth/revoke` (`token`). Access tokens work for `/mcp` and the whole REST API.
+
 ## Files
 
 `POST /api/files` (multipart: `file`, optional `entity`, `record_id`; ≤25 MB) → `{id, url: "/files/<id>", file_name, size, sha256}`; `GET /files/{id}` (authenticated download).

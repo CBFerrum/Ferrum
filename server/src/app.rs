@@ -136,6 +136,7 @@ impl Hooks for App {
             .add_route(controllers::admin::routes())
             .add_route(controllers::compat::routes())
             .add_route(controllers::mcp::routes())
+            .add_route(controllers::oauth::routes())
     }
 
     async fn connect_workers(_ctx: &AppContext, _queue: &Queue) -> Result<()> {
