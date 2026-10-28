@@ -412,13 +412,7 @@ pub(crate) fn validate_entity(e: &EntityDef, all: &HashMap<&str, &EntityDef>) ->
             return Err(format!("invalid list sort '{sort}'"));
         }
     }
-    for s in &e.form {
-        for n in &s.fields {
-            if field(n).is_none() {
-                return Err(format!("form section references unknown field '{n}'"));
-            }
-        }
-    }
+    crate::effective::validate_form(e, &e.form)?;
     let mut rule_names = HashSet::new();
     for r in &e.rules {
         if !rule_names.insert(r.name.as_str()) {
