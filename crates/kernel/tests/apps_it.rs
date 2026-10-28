@@ -42,7 +42,7 @@ fn release(version: &str, extra_field: bool) -> NewRelease {
     let extra = if extra_field { "    - {name: odometer, type: int}\n    - {name: services, type: table, of: FleetService}\n" } else { "" };
     let child = if extra_field {
         "- name: FleetService\n  label: Service\n  kind: child\n  fields:\n    - {name: note, type: data}\n    - {name: active, type: check, default: true}\n\
-         - name: FleetTrip\n  label: Trip\n  kind: document\n  submittable: true\n  fields:\n    - {name: purpose, type: data, required: true}\n\
+         - name: FleetTrip\n  label: Trip\n  kind: document\n  submittable: true\n  fields:\n    - {name: purpose, type: data, required: true}\n    - {name: ticket, type: data, unique: true}\n\
          - name: FleetDriver\n  label: Driver\n  kind: child\n  fields:\n    - {name: driver_name, type: data, required: true}\n"
     } else {
         ""
@@ -120,6 +120,11 @@ async fn apps_join_the_catalog_at_runtime() {
     assert_eq!((first["docstatus"].clone(), replayed, replayed_again), (json!(1), false, true));
     assert_eq!(first["id"], again["id"]);
     assert_eq!(k.list(&c, "FleetTrip", &ListQuery::default()).await.unwrap().rows.len(), 2);
+    // Unique values ignore cancelled documents (they are void), so a cancelled trip's ticket is free again.
+    let t1 = k.insert_submit(&c, "FleetTrip", obj(json!({"purpose": "audit", "ticket": "T-1"}))).await.unwrap();
+    assert!(k.insert(&c, "FleetTrip", obj(json!({"purpose": "audit", "ticket": "T-1"}))).await.is_err(), "unique while submitted");
+    k.cancel(&c, "FleetTrip", t1["id"].as_str().unwrap().parse().unwrap(), None).await.unwrap();
+    k.insert(&c, "FleetTrip", obj(json!({"purpose": "audit again", "ticket": "T-1"}))).await.expect("free once cancelled");
     // The child table the app added to Customer works like any other.
     let cust = k.insert(&c, "Customer", obj(json!({"customer_name": "Hauliers", "fleet_drivers": [{"driver_name": "Ravi"}]}))).await.unwrap();
     let cid: uuid::Uuid = cust["id"].as_str().unwrap().parse().unwrap();

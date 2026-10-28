@@ -82,4 +82,12 @@ impl Kernel {
         }
         Ok((name, ctype, self.file_store()?.get(&key).await?))
     }
+
+    /// Copies a file the caller can read onto another record (a mail attachment kept on the record
+    /// it concerns, a signed PDF filed with its contract). A new object, so deleting either copy
+    /// never affects the other.
+    pub async fn copy_file(&self, ctx: &Ctx, id: Uuid, attach_to: Option<(&str, Uuid)>) -> Result<Value> {
+        let (name, ctype, data) = self.read_file(ctx, id).await?;
+        self.store_file(ctx, attach_to, &name, &ctype, &data).await
+    }
 }

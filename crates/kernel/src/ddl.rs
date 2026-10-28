@@ -163,10 +163,21 @@ impl Ddl<'_> {
     }
 
     async fn index(&mut self, table: &str, cols: &[&str], unique: bool, partial: Option<&str>) -> Result<()> {
-        let name = obj_name(if unique { "uq" } else { "ix" }, table, cols);
+        self.index_named(&obj_name(if unique { "uq" } else { "ix" }, table, cols), table, cols, unique, partial).await
+    }
+
+    /// A unique index over documents that are not cancelled: a cancelled document is void, so its
+    /// values must not block new or amended ones. Replaces the plain one earlier versions created.
+    async fn unique_live(&mut self, table: &str, cols: &[&str], partial: Option<&str>) -> Result<()> {
+        self.exec(format!("drop index if exists {}", q(&obj_name("uq", table, cols)))).await?;
+        let cond = partial.map_or("docstatus <> 2".to_string(), |p| format!("{p} and docstatus <> 2"));
+        self.index_named(&obj_name("uqv", table, cols), table, cols, true, Some(&cond)).await
+    }
+
+    async fn index_named(&mut self, name: &str, table: &str, cols: &[&str], unique: bool, partial: Option<&str>) -> Result<()> {
         let collist = std::iter::once("tenant_id").chain(cols.iter().copied()).map(q).collect::<Vec<_>>().join(", ");
         let where_ = partial.map(|p| format!(" where {p}")).unwrap_or_default();
-        self.exec(format!("create {}index if not exists {} on {} ({collist}){where_}", if unique { "unique " } else { "" }, q(&name), q(table))).await
+        self.exec(format!("create {}index if not exists {} on {} ({collist}){where_}", if unique { "unique " } else { "" }, q(name), q(table))).await
     }
 
     async fn links(&mut self, table: &str, ent: &EffEntity, schema: &Schema) -> Result<()> {
@@ -304,15 +315,22 @@ async fn sync_locked(conn: &mut PgConnection, catalog: &Catalog, force: bool) ->
             }
         }
         for f in ent.value_fields().filter(|f| ent.storage_of(&f.name) == Some(Storage::Column)) {
-            if f.unique {
-                ddl.index(&t, &[&f.name], true, Some(&format!("{} is not null", q(&f.name)))).await?;
+            let not_null = format!("{} is not null", q(&f.name));
+            if f.unique && ent.def.submittable {
+                ddl.unique_live(&t, &[&f.name], Some(&not_null)).await?;
+            } else if f.unique {
+                ddl.index(&t, &[&f.name], true, Some(&not_null)).await?;
             } else if f.index {
                 ddl.index(&t, &[&f.name], false, None).await?;
             }
         }
         for group in &ent.def.unique {
             let cols: Vec<&str> = group.iter().map(String::as_str).collect();
-            ddl.index(&t, &cols, true, None).await?;
+            if ent.def.submittable {
+                ddl.unique_live(&t, &cols, None).await?;
+            } else {
+                ddl.index(&t, &cols, true, None).await?;
+            }
         }
         for group in &ent.def.indexes {
             let cols: Vec<&str> = group.iter().map(String::as_str).collect();
@@ -324,8 +342,10 @@ async fn sync_locked(conn: &mut PgConnection, catalog: &Catalog, force: bool) ->
                 continue;
             }
             let eq: Vec<String> = std::iter::once("tenant_id".to_string()).chain(x.fields.iter().cloned()).map(|c| format!("{} with =", q(&c))).collect();
+            // Cancelled documents are void and never overlap anything.
+            let live = if ent.def.submittable { " where (docstatus <> 2)" } else { "" };
             ddl.exec(format!(
-                "alter table {} add constraint {} exclude using gist ({}, daterange({}, {}, '[]') with &&)",
+                "alter table {} add constraint {} exclude using gist ({}, daterange({}, {}, '[]') with &&){live}",
                 q(&t),
                 q(&name),
                 eq.join(", "),

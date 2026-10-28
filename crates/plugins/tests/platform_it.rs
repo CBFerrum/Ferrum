@@ -77,6 +77,10 @@ async fn scenario() {
     assert!(matches!(host.install(&k, &clerk_ctx, manifest.clone(), WASM).await, Err(Error::Forbidden(_))), "admins only");
     let bad: NewPlugin = serde_json::from_value(json!({"name": "bad", "schedules": [{"name": "x", "every_seconds": 5}], "http_hosts": ["*"]})).unwrap();
     assert!(matches!(host.install(&k, &admin, bad, WASM).await, Err(Error::Validation(_))), "manifest is validated");
+    for (fuel, mem) in [(Some(2_000_000_000), None), (None, Some(512))] {
+        let greedy = NewPlugin { fuel_limit: fuel, memory_limit_mb: mem, ..manifest.clone() };
+        assert!(matches!(host.install(&k, &admin, greedy, WASM).await, Err(Error::Validation(_))), "resource caps: {fuel:?} {mem:?}");
+    }
     let plugin_id = host.install(&k, &admin, manifest, WASM).await.expect("install");
     let admin = k.load_ctx(tenant, session.user, Some(session.token_version), "it".into()).await.unwrap();
     assert!(admin.schema.entity("XDevice").is_some() && admin.schema.entity("XReading").is_some(), "the plugin's entities exist");
