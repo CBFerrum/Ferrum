@@ -117,7 +117,14 @@ impl Kernel {
         if offset > MAX_OFFSET {
             return Err(Error::invalid(format!("offset is limited to {MAX_OFFSET}; use cursor pagination")));
         }
-        let (sort_field, desc) = query::parse_sort(&ent, q.sort.as_deref())?;
+        let (mut sort_field, mut desc) = query::parse_sort(&ent, q.sort.as_deref())?;
+        if !query::readable(ctx, &ent, &sort_field) {
+            // The order would reveal the field's values; a default sort the caller cannot see falls back.
+            if q.sort.is_some() {
+                return Err(Error::Forbidden(format!("you cannot sort by '{sort_field}'")));
+            }
+            (sort_field, desc) = ("created_at".to_string(), true);
+        }
         let keyset_ok = matches!(sort_field.as_str(), "created_at" | "updated_at");
         if let Some(fields) = &q.fields {
             for f in fields {
@@ -128,7 +135,7 @@ impl Kernel {
         }
         let mut tx = self.db.tenant_tx_with_timeout(ctx.tenant, self.db.config.report_timeout_ms).await?;
         let mut qb = QueryBuilder::new(format!("select to_jsonb(x) from (select {}", store::select_list(&ent, "a")));
-        query::push_from_where(&mut qb, &ctx.schema, &ent, ctx.tenant, &scope, &q.filters, q.search.as_deref())?;
+        query::push_from_where_for(&mut qb, ctx, &ent, &scope, &q.filters, q.search.as_deref())?;
         let dir = if desc { "desc" } else { "asc" };
         if let Some(c) = &q.cursor {
             if !keyset_ok {
@@ -158,7 +165,7 @@ impl Kernel {
         };
         let total = if q.with_count {
             let mut cq = QueryBuilder::new("select count(*)");
-            query::push_from_where(&mut cq, &ctx.schema, &ent, ctx.tenant, &scope, &q.filters, q.search.as_deref())?;
+            query::push_from_where_for(&mut cq, ctx, &ent, &scope, &q.filters, q.search.as_deref())?;
             Some(cq.build_query_scalar::<i64>().fetch_one(&mut *tx).await?)
         } else {
             None

@@ -4,7 +4,7 @@
 //! `items.item` (any child row matches) or `customer.customer_group` (linked record matches).
 //! Ops: `=`, `!=`, `>`, `>=`, `<`, `<=`, `in`, `not in`, `like`, `not like`, `between`, `is` (`set`/`not set`).
 
-use crate::ctx::RowScope;
+use crate::ctx::{Action, Ctx, RowScope, row_scope};
 use crate::ddl::q;
 use crate::error::{Error, Result};
 use crate::store::{SYSTEM_KEYS, entity_predicate, field_expr};
@@ -288,9 +288,27 @@ fn push_condition(qb: &mut QueryBuilder<Postgres>, expr: &str, kind: Kind, field
     Ok(())
 }
 
-/// Appends ` and <condition>` for one filter on table alias `a`.
+/// Appends ` and <condition>` for one filter on table alias `a`, without permission checks: for
+/// trusted callers (hooks, engines). Requests from people go through [`push_filter_for`].
 pub fn push_filter(qb: &mut QueryBuilder<Postgres>, schema: &Schema, ent: &EffEntity, alias: &str, f: &Filter) -> Result<()> {
+    push_filter_impl(qb, schema, None, ent, alias, f)
+}
+
+/// [`push_filter`] for a caller: a filter on a field the caller cannot read is refused (which
+/// records match would reveal its values), and a linked record matches only within the caller's
+/// read scope of the linked entity.
+pub fn push_filter_for(qb: &mut QueryBuilder<Postgres>, ctx: &Ctx, ent: &EffEntity, alias: &str, f: &Filter) -> Result<()> {
+    push_filter_impl(qb, &ctx.schema, Some(ctx), ent, alias, f)
+}
+
+/// Whether the caller may read `name` on `ent`; system keys carry nothing protected.
+pub fn readable(ctx: &Ctx, ent: &EffEntity, name: &str) -> bool {
+    SYSTEM_KEYS.contains(&name) || ent.field(name).is_some_and(|f| ctx.perms.can_read_field(&ent.def.name, f))
+}
+
+fn push_filter_impl(qb: &mut QueryBuilder<Postgres>, schema: &Schema, ctx: Option<&Ctx>, ent: &EffEntity, alias: &str, f: &Filter) -> Result<()> {
     let unknown = || Error::invalid(format!("cannot filter on '{}'", f.field));
+    let hidden = || Error::Forbidden(format!("you cannot filter on '{}'", f.field));
     // Records carrying a tag (collaboration): `["_tag", "=", "urgent"]`, `["_tag", "in", [...]]`.
     if f.field == "_tag" {
         qb.push(format!(" and exists (select 1 from record_tag t where t.tenant_id = {alias}.tenant_id and t.record_id = {alias}.id and t.entity = "));
@@ -302,10 +320,16 @@ pub fn push_filter(qb: &mut QueryBuilder<Postgres>, schema: &Schema, ent: &EffEn
     }
     if let Some((head, tail)) = f.field.split_once('.') {
         let hf = ent.field(head).ok_or_else(unknown)?;
+        if ctx.is_some_and(|c| !c.perms.can_read_field(&ent.def.name, hf)) {
+            return Err(hidden());
+        }
         match hf.ftype {
             FieldType::Table => {
                 let info = ent.children.get(head).ok_or_else(unknown)?;
                 let cent = schema.entity(&info.entity).ok_or_else(unknown)?;
+                if ctx.is_some_and(|c| !readable(c, cent, tail)) {
+                    return Err(hidden());
+                }
                 let kind = kind_of(cent, tail).ok_or_else(unknown)?;
                 let expr = field_expr(cent, tail, "c").ok_or_else(unknown)?;
                 qb.push(format!(" and exists (select 1 from {} c where c.tenant_id = {alias}.tenant_id and c.parent_id = {alias}.id and ", q(&info.table)));
@@ -317,20 +341,38 @@ pub fn push_filter(qb: &mut QueryBuilder<Postgres>, schema: &Schema, ent: &EffEn
                 if target.table.is_empty() {
                     return Err(unknown());
                 }
+                // The caller sees linked records only as far as they may read them.
+                let target_scope = match ctx {
+                    Some(c) => {
+                        let scope = row_scope(c, target, Action::Read).map_err(|_| hidden())?;
+                        if !readable(c, target, tail) {
+                            return Err(hidden());
+                        }
+                        Some(scope)
+                    }
+                    None => None,
+                };
                 let kind = kind_of(target, tail).ok_or_else(unknown)?;
                 let expr = field_expr(target, tail, "l").ok_or_else(unknown)?;
                 let link = field_expr(ent, head, alias).ok_or_else(unknown)?;
                 qb.push(format!(
-                    " and {link} in (select l.id from {} l where l.tenant_id = {alias}.tenant_id{} and ",
+                    " and {link} in (select l.id from {} l where l.tenant_id = {alias}.tenant_id{}",
                     q(&target.table),
                     entity_predicate(target, "l")
                 ));
+                if let Some(scope) = &target_scope {
+                    scope.push_sql(qb, "l");
+                }
+                qb.push(" and ");
                 push_condition(qb, &expr, kind, target.field(tail), f)?;
                 qb.push(")");
             }
             _ => return Err(unknown()),
         }
         return Ok(());
+    }
+    if ctx.is_some_and(|c| !readable(c, ent, &f.field)) {
+        return Err(hidden());
     }
     let kind = kind_of(ent, &f.field).ok_or_else(unknown)?;
     let expr = field_expr(ent, &f.field, alias).ok_or_else(unknown)?;
@@ -367,10 +409,38 @@ pub fn decode_cursor(c: &str) -> Result<(String, Uuid)> {
     Ok((ts, id))
 }
 
-/// Builds `from <table> a where tenant and entity and scope and filters and search`.
+/// Builds `from <table> a where tenant and entity and scope and filters and search`, without
+/// field permission checks (trusted callers); requests from people use [`push_from_where_for`].
 pub fn push_from_where(
     qb: &mut QueryBuilder<Postgres>,
     schema: &Schema,
+    ent: &EffEntity,
+    tenant: Uuid,
+    scope: &RowScope,
+    filters: &[Filter],
+    search: Option<&str>,
+) -> Result<()> {
+    push_from_where_impl(qb, schema, None, ent, tenant, scope, filters, search)
+}
+
+/// [`push_from_where`] for a caller: filters as in [`push_filter_for`], and search only looks at
+/// fields the caller can read.
+pub fn push_from_where_for(
+    qb: &mut QueryBuilder<Postgres>,
+    ctx: &Ctx,
+    ent: &EffEntity,
+    scope: &RowScope,
+    filters: &[Filter],
+    search: Option<&str>,
+) -> Result<()> {
+    push_from_where_impl(qb, &ctx.schema, Some(ctx), ent, ctx.tenant, scope, filters, search)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_from_where_impl(
+    qb: &mut QueryBuilder<Postgres>,
+    schema: &Schema,
+    ctx: Option<&Ctx>,
     ent: &EffEntity,
     tenant: Uuid,
     scope: &RowScope,
@@ -381,7 +451,7 @@ pub fn push_from_where(
     qb.push(entity_predicate(ent, "a"));
     scope.push_sql(qb, "a");
     for f in filters {
-        push_filter(qb, schema, ent, "a", f)?;
+        push_filter_impl(qb, schema, ctx, ent, "a", f)?;
     }
     if let Some(s) = search.map(str::trim).filter(|s| !s.is_empty()) {
         if s.len() > 100 {
@@ -389,6 +459,9 @@ pub fn push_from_where(
         }
         let mut cols: Vec<String> = vec!["a.number".into()];
         for name in ent.def.title_field.iter().chain(ent.def.search_fields.iter()) {
+            if ctx.is_some_and(|c| !readable(c, ent, name)) {
+                continue;
+            }
             if let Some(e) = field_expr(ent, name, "a") {
                 cols.push(format!("{e}::text"));
             }
