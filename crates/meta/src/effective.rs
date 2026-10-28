@@ -172,6 +172,16 @@ fn as_opt_string(v: &Value, prop: &str) -> Result<Option<String>, String> {
 /// Applies one overlay op to an entity definition. Returns the name of a field it added.
 pub(crate) fn apply_op(def: &mut EntityDef, op: &OverlayOp, source: OverlaySource) -> Result<Option<String>, String> {
     match op {
+        OverlayOp::AddAction { action } => {
+            if source == OverlaySource::Tenant {
+                return Err("actions need code behind them: only packages can add them".into());
+            }
+            if def.actions.iter().any(|a| a.name == action.name) {
+                return Err(format!("action {} already exists", action.name));
+            }
+            def.actions.push(action.clone());
+            Ok(None)
+        }
         OverlayOp::AddField { field, after } => {
             if def.fields.iter().any(|f| f.name == field.name) {
                 return Err(format!("field {} already exists", field.name));
@@ -560,6 +570,16 @@ mod tests {
 
     fn ov(entity: &str, ops: serde_json::Value) -> Overlay {
         Overlay { entity: entity.into(), ops: serde_json::from_value(ops).unwrap() }
+    }
+
+    #[test]
+    fn only_packages_add_actions() {
+        let mut def: EntityDef = serde_yaml::from_str("{name: Project, label: Project, kind: master, fields: [{name: title, type: data}]}").unwrap();
+        let op: OverlayOp = serde_json::from_value(json!({"op": "add_action", "action": {"name": "make_sales_invoice", "label": "Make Sales Invoice"}})).unwrap();
+        assert!(apply_op(&mut def.clone(), &op, OverlaySource::Tenant).is_err(), "actions need code");
+        apply_op(&mut def, &op, OverlaySource::Package).unwrap();
+        assert_eq!(def.actions[0].permission, "write");
+        assert!(apply_op(&mut def, &op, OverlaySource::Package).is_err(), "no duplicates");
     }
 
     #[test]

@@ -190,6 +190,7 @@ impl Hooks for App {
             .add_route(controllers::auth::routes())
             .add_route(controllers::meta::routes())
             .add_route(controllers::docs::routes())
+            .add_route(controllers::collab::routes())
             .add_route(controllers::admin::routes())
             .add_route(controllers::compat::routes())
             .add_route(controllers::mcp::routes())

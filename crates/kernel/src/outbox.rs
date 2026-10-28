@@ -85,6 +85,18 @@ impl Kernel {
     }
 
     async fn handle_event(&self, ev: &Event) -> Result<()> {
+        // Followers hear about changes made by others; first and best effort:
+        // a retry must not notify twice.
+        if let (Some(entity), Some(id)) = (&ev.entity, ev.record_id) {
+            let event = ev.payload.get("event").and_then(Value::as_str).unwrap_or("updated");
+            let actor = ev.payload.get("actor").and_then(Value::as_str).and_then(|s| s.parse().ok());
+            let doc = ev.payload.get("doc").and_then(Value::as_object);
+            if ev.attempts == 0
+                && let Err(e) = self.notify_followers(ev.tenant_id, entity, id, event, actor, doc).await
+            {
+                tracing::warn!(topic = %ev.topic, "follower notifications failed: {e}");
+            }
+        }
         let mut tx = self.db.tenant_tx(ev.tenant_id).await?;
         let entity_wildcard = format!("{}.*", ev.topic.split('.').next().unwrap_or_default());
         sqlx::query(

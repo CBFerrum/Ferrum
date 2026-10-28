@@ -105,7 +105,7 @@ async fn is_stock_item(hc: &mut HookCtx<'_>, cache: &mut HashMap<Uuid, bool>, it
 /// Creates a follow-up document for the user. The links back to the source lines are read-only
 /// fields, which only the engine may set, so the insert runs elevated after checking that the
 /// user may create the target.
-async fn create_for_user(hc: &mut HookCtx<'_>, entity: &str, input: Doc) -> Result<Doc> {
+pub async fn create_for_user(hc: &mut HookCtx<'_>, entity: &str, input: Doc) -> Result<Doc> {
     hc.ctx.require(entity, Action::Create)?;
     hc.kernel.insert_tx(&elevated(hc.ctx), hc.tx, entity, input).await
 }

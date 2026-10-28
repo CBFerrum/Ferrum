@@ -293,6 +293,58 @@ fn tools(ctx: &Ctx) -> Vec<Value> {
             false,
             true,
         ),
+        tool(
+            "get_collaboration",
+            "Comments, assignments and tags",
+            "The discussion on a record: comments (oldest first), who it is assigned to and its tags.",
+            json!({"entity": entity_prop(), "id": id_prop()}),
+            &["entity", "id"],
+            true,
+            false,
+            true,
+        ),
+        tool(
+            "add_comment",
+            "Comment on a record",
+            "Adds a comment (markdown) to any record you can read. Mention people by user id in `mentions` to notify them; followers are notified too.",
+            json!({"entity": entity_prop(), "id": id_prop(), "body": {"type": "string", "maxLength": 20000},
+                   "mentions": {"type": "array", "items": {"type": "string", "format": "uuid"}, "maxItems": 20}}),
+            &["entity", "id", "body"],
+            false,
+            false,
+            false,
+        ),
+        tool(
+            "assign_record",
+            "Assign a record",
+            "Assigns a record to a user as a to-do (they must be able to open it); they are notified.",
+            json!({"entity": entity_prop(), "id": id_prop(), "user": {"type": "string", "format": "uuid"}, "note": {"type": "string", "maxLength": 2000},
+                   "due_date": {"type": "string", "format": "date"}, "priority": {"type": "string", "enum": ["Low", "Medium", "High"]}}),
+            &["entity", "id", "user"],
+            false,
+            false,
+            false,
+        ),
+        tool(
+            "my_assignments",
+            "My to-do list",
+            "Records assigned to the signed-in user (open ones by default), soonest due first.",
+            json!({"status": {"type": "string", "enum": ["Open", "Done", "Cancelled"]}}),
+            &[],
+            true,
+            false,
+            true,
+        ),
+        tool(
+            "set_tags",
+            "Tag a record",
+            "Replaces a record's tags (needs write access). List records by tag with the filter [\"_tag\", \"=\", \"name\"].",
+            json!({"entity": entity_prop(), "id": id_prop(), "tags": {"type": "array", "items": {"type": "string", "maxLength": 60}, "maxItems": 20}}),
+            &["entity", "id", "tags"],
+            false,
+            false,
+            true,
+        ),
     ];
     if ctx.is_admin {
         out.push(tool(
@@ -442,6 +494,34 @@ async fn run_tool(k: &Kernel, ctx: &Ctx, name: &str, args: &Value) -> Result<Val
             Ok(ferrum_domain::reports::run(k, ctx, arg(args, "name")?, &params).await?)
         }
         "get_audit_trail" => Ok(k.audit_trail(ctx, arg(args, "entity")?, uuid_arg(args, "id")?).await?),
+        "get_collaboration" => {
+            let (entity, id) = (arg(args, "entity")?, uuid_arg(args, "id")?);
+            Ok(
+                json!({"comments": k.comments(ctx, entity, id).await?, "assignments": k.assignments(ctx, entity, id).await?, "tags": k.tags(ctx, entity, id).await?}),
+            )
+        }
+        "add_comment" => {
+            let mentions: Vec<Uuid> =
+                args.get("mentions").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str()?.parse().ok()).collect()).unwrap_or_default();
+            let id = k.add_comment(ctx, arg(args, "entity")?, uuid_arg(args, "id")?, arg(args, "body")?, &mentions).await?;
+            Ok(json!({"comment_id": id}))
+        }
+        "assign_record" => {
+            let due = match args.get("due_date").and_then(Value::as_str) {
+                Some(d) => Some(d.parse::<chrono::NaiveDate>().map_err(|_| Fail::Rpc(-32602, "due_date must be YYYY-MM-DD".into()))?),
+                None => None,
+            };
+            let note = args.get("note").and_then(Value::as_str);
+            let priority = args.get("priority").and_then(Value::as_str);
+            let id = k.assign(ctx, arg(args, "entity")?, uuid_arg(args, "id")?, uuid_arg(args, "user")?, note, due, priority).await?;
+            Ok(json!({"assignment_id": id}))
+        }
+        "my_assignments" => Ok(json!({"assignments": k.my_assignments(ctx, args.get("status").and_then(Value::as_str)).await?})),
+        "set_tags" => {
+            let tags: Vec<String> =
+                args.get("tags").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
+            Ok(json!({"tags": k.set_tags(ctx, arg(args, "entity")?, uuid_arg(args, "id")?, &tags).await?}))
+        }
         "customize_entity" if ctx.is_admin => {
             let op: OverlayOp = serde_json::from_value(args.get("op").cloned().unwrap_or(Value::Null))
                 .map_err(|e| Fail::Rpc(-32602, format!("invalid customization op: {e}")))?;

@@ -291,6 +291,15 @@ fn push_condition(qb: &mut QueryBuilder<Postgres>, expr: &str, kind: Kind, field
 /// Appends ` and <condition>` for one filter on table alias `a`.
 pub fn push_filter(qb: &mut QueryBuilder<Postgres>, schema: &Schema, ent: &EffEntity, alias: &str, f: &Filter) -> Result<()> {
     let unknown = || Error::invalid(format!("cannot filter on '{}'", f.field));
+    // Records carrying a tag (collaboration): `["_tag", "=", "urgent"]`, `["_tag", "in", [...]]`.
+    if f.field == "_tag" {
+        qb.push(format!(" and exists (select 1 from record_tag t where t.tenant_id = {alias}.tenant_id and t.record_id = {alias}.id and t.entity = "));
+        qb.push_bind(ent.def.name.clone());
+        qb.push(" and ");
+        push_condition(qb, "t.tag", Kind::Text, None, f)?;
+        qb.push(")");
+        return Ok(());
+    }
     if let Some((head, tail)) = f.field.split_once('.') {
         let hf = ent.field(head).ok_or_else(unknown)?;
         match hf.ftype {

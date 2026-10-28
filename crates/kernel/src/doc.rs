@@ -325,7 +325,7 @@ impl Kernel {
         };
         let mut doc = existing.clone().unwrap_or_default();
         let mut errors = Vec::new();
-        self.apply_input(ctx, &ent, &mut doc, &input, existing.as_ref(), &mut errors);
+        self.apply_input(ctx, &ent, &mut doc, &input, existing.as_ref(), &mut errors, false);
         if !errors.is_empty() {
             return Err(Error::Validation(errors));
         }
@@ -350,7 +350,9 @@ impl Kernel {
         };
         let mut doc = Doc::new();
         let mut errors = Vec::new();
-        self.apply_input(ctx, &ent, &mut doc, &input, None, &mut errors);
+        // An amendment copies the cancelled original: its read-only values (links to the documents
+        // it was made from, derived fields) are the server's own, not user input.
+        self.apply_input(ctx, &ent, &mut doc, &input, None, &mut errors, amended_from.is_some());
         if !errors.is_empty() {
             return Err(Error::Validation(errors));
         }
@@ -413,7 +415,7 @@ impl Kernel {
         self.check_workflow_edit(ctx, &ent, &old)?;
         let mut doc = old.clone();
         let mut errors = Vec::new();
-        self.apply_input(ctx, &ent, &mut doc, &patch, Some(&old), &mut errors);
+        self.apply_input(ctx, &ent, &mut doc, &patch, Some(&old), &mut errors, false);
         if !errors.is_empty() {
             return Err(Error::Validation(errors));
         }
@@ -462,6 +464,15 @@ impl Kernel {
             h.before_delete(&mut hc, &old).await?;
         }
         store::delete_row(tx, &ent, ctx.tenant, id).await?;
+        // Collaboration on the record goes with it (followers are told by the deleted event first).
+        for table in ["record_comment", "record_assignment", "record_tag"] {
+            sqlx::query(AssertSqlSafe(format!("delete from {table} where tenant_id = $1 and entity = $2 and record_id = $3")))
+                .bind(ctx.tenant)
+                .bind(&ent.def.name)
+                .bind(id)
+                .execute(&mut **tx)
+                .await?;
+        }
         self.emit(ctx, tx, &ent, id, "deleted", "delete", None, Some(&old), None).await
     }
 
@@ -749,7 +760,10 @@ impl Kernel {
         Ok(())
     }
 
-    fn apply_input(&self, ctx: &Ctx, ent: &EffEntity, doc: &mut Doc, input: &Doc, old: Option<&Doc>, errors: &mut Vec<FieldError>) {
+    /// `trusted`: the input is a copy made by the server (amend), so read-only and field-permission
+    /// limits that guard user input do not apply.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_input(&self, ctx: &Ctx, ent: &EffEntity, doc: &mut Doc, input: &Doc, old: Option<&Doc>, errors: &mut Vec<FieldError>, trusted: bool) {
         for (k, v) in input {
             if SYSTEM_KEYS.contains(&k.as_str()) || k.starts_with('_') {
                 continue;
@@ -758,10 +772,10 @@ impl Kernel {
                 errors.push(FieldError::new(k, "unknown field"));
                 continue;
             };
-            if f.computed.is_some() || (f.read_only && !ctx.is_system) {
+            if f.computed.is_some() || (f.read_only && !ctx.is_system && !trusted) {
                 continue;
             }
-            if !ctx.perms.can_write_field(&ent.def.name, f) {
+            if !trusted && !ctx.perms.can_write_field(&ent.def.name, f) {
                 let unchanged = old.map(|o| o.get(k) == Some(v)).unwrap_or(v.is_null());
                 if !unchanged {
                     errors.push(FieldError::new(k, "you are not permitted to change this field"));
@@ -780,7 +794,7 @@ impl Kernel {
                             continue;
                         }
                         let old_rows = old.and_then(|o| o.get(k)).and_then(Value::as_array).cloned().unwrap_or_default();
-                        let merged = self.merge_rows(ctx, &cent, k, rows, &old_rows, errors);
+                        let merged = self.merge_rows(ctx, &cent, k, rows, &old_rows, errors, trusted);
                         doc.insert(k.clone(), Value::Array(merged));
                     }
                     _ => errors.push(FieldError::new(k, "must be a list of rows")),
@@ -796,7 +810,17 @@ impl Kernel {
         }
     }
 
-    fn merge_rows(&self, ctx: &Ctx, cent: &EffEntity, table: &str, rows: &[Value], old_rows: &[Value], errors: &mut Vec<FieldError>) -> Vec<Value> {
+    #[allow(clippy::too_many_arguments)]
+    fn merge_rows(
+        &self,
+        ctx: &Ctx,
+        cent: &EffEntity,
+        table: &str,
+        rows: &[Value],
+        old_rows: &[Value],
+        errors: &mut Vec<FieldError>,
+        trusted: bool,
+    ) -> Vec<Value> {
         let old_by_id: HashMap<String, &Map<String, Value>> =
             old_rows.iter().filter_map(Value::as_object).filter_map(|r| r.get("id").and_then(Value::as_str).map(|i| (i.to_string(), r))).collect();
         let mut seen = HashSet::new();
@@ -820,10 +844,10 @@ impl Kernel {
                     errors.push(FieldError::new(k, "unknown field").in_row(table, idx));
                     continue;
                 };
-                if f.computed.is_some() || (f.read_only && !ctx.is_system) {
+                if f.computed.is_some() || (f.read_only && !ctx.is_system && !trusted) {
                     continue;
                 }
-                if !ctx.perms.can_write_field(&cent.def.name, f) {
+                if !trusted && !ctx.perms.can_write_field(&cent.def.name, f) {
                     continue;
                 }
                 match normalize(f, v) {

@@ -254,13 +254,59 @@ pub struct ScopeCond {
 
 #[derive(Debug, Clone, Default)]
 pub struct RowScope {
+    /// Own-records access: the user, matched against `created_by` ...
     pub owner: Option<Uuid>,
+    /// ... or, by email, against the entity's `owner_fields`.
+    pub owner_email: Option<String>,
+    pub owner_fields: Vec<OwnerField>,
     pub conds: Vec<ScopeCond>,
+}
+
+/// An owner field and its SQL test (`{a}`: the table alias; the email is bound after `prefix`).
+#[derive(Debug, Clone)]
+pub struct OwnerField {
+    pub field: String,
+    pub child: Option<String>,
+    prefix: String,
+    suffix: String,
+}
+
+fn owner_fields(ctx: &Ctx, ent: &EffEntity) -> Vec<OwnerField> {
+    ent.def
+        .owner_fields
+        .iter()
+        .filter_map(|o| match o.split_once('.') {
+            None => {
+                let expr = crate::store::field_expr(ent, o, "{a}")?;
+                Some(OwnerField { field: o.clone(), child: None, prefix: format!("lower({expr}) = "), suffix: String::new() })
+            }
+            Some((table, cf)) => {
+                let info = ent.children.get(table)?;
+                let cent = ctx.schema.entity(&info.entity)?;
+                let expr = crate::store::field_expr(cent, cf, "oc")?;
+                Some(OwnerField {
+                    field: cf.to_string(),
+                    child: Some(table.to_string()),
+                    prefix: format!(
+                        "exists (select 1 from {} oc where oc.tenant_id = {{a}}.tenant_id and oc.parent_id = {{a}}.id and lower({expr}) = ",
+                        crate::ddl::q(&info.table)
+                    ),
+                    suffix: ")".into(),
+                })
+            }
+        })
+        .collect()
 }
 
 pub fn row_scope(ctx: &Ctx, ent: &EffEntity, action: Action) -> Result<RowScope> {
     let access = ctx.require(&ent.def.name, action)?;
-    let mut scope = RowScope { owner: (access == Access::Own).then_some(ctx.user), conds: vec![] };
+    let own = access == Access::Own;
+    let mut scope = RowScope {
+        owner: own.then_some(ctx.user),
+        owner_email: (own && !ctx.email.is_empty()).then(|| ctx.email.to_lowercase()),
+        owner_fields: if own { owner_fields(ctx, ent) } else { vec![] },
+        conds: vec![],
+    };
     if ctx.is_admin || ctx.is_system {
         return Ok(scope);
     }
@@ -281,10 +327,20 @@ impl RowScope {
         self.owner.is_none() && self.conds.is_empty()
     }
 
+    /// Whether the user is named on the record in one of its owner fields.
+    fn named_owner(&self, doc: &Doc) -> bool {
+        let Some(email) = &self.owner_email else { return false };
+        let is_me = |v: Option<&Value>| v.and_then(Value::as_str).is_some_and(|s| s.trim().eq_ignore_ascii_case(email));
+        self.owner_fields.iter().any(|o| match &o.child {
+            None => is_me(doc.get(&o.field)),
+            Some(t) => doc.get(t).and_then(Value::as_array).is_some_and(|rows| rows.iter().any(|r| is_me(r.get(&o.field)))),
+        })
+    }
+
     pub fn matches(&self, doc: &Doc) -> bool {
         if let Some(owner) = self.owner {
             let created_by = doc.get("created_by").and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok());
-            if created_by.is_some_and(|c| c != owner) {
+            if created_by.is_some_and(|c| c != owner) && !self.named_owner(doc) {
                 return false;
             }
         }
@@ -300,7 +356,13 @@ impl RowScope {
     /// Appends ` and (...)` predicates for table alias `a`.
     pub fn push_sql(&self, qb: &mut QueryBuilder<Postgres>, alias: &str) {
         if let Some(owner) = self.owner {
-            qb.push(format!(" and {alias}.created_by = ")).push_bind(owner);
+            qb.push(format!(" and ({alias}.created_by = ")).push_bind(owner);
+            if let Some(email) = &self.owner_email {
+                for o in &self.owner_fields {
+                    qb.push(format!(" or {}", o.prefix.replace("{a}", alias))).push_bind(email.clone()).push(o.suffix.clone());
+                }
+            }
+            qb.push(")");
         }
         for c in &self.conds {
             let col = match (&c.field, c.ext) {
@@ -335,7 +397,7 @@ mod tests {
     fn row_scope_matches() {
         let c1 = Uuid::now_v7();
         let c2 = Uuid::now_v7();
-        let scope = RowScope { owner: None, conds: vec![ScopeCond { field: Some("company".into()), ext: false, ids: vec![c1], strict: true }] };
+        let scope = RowScope { conds: vec![ScopeCond { field: Some("company".into()), ext: false, ids: vec![c1], strict: true }], ..Default::default() };
         let mut doc = Doc::new();
         doc.insert("company".into(), json!(c1.to_string()));
         assert!(scope.matches(&doc));
@@ -343,5 +405,27 @@ mod tests {
         assert!(!scope.matches(&doc));
         doc.remove("company");
         assert!(!scope.matches(&doc), "strict scopes reject empty values");
+    }
+
+    #[test]
+    fn owners_are_creators_or_named_assignees() {
+        let me = Uuid::now_v7();
+        let someone = Uuid::now_v7();
+        let field =
+            |f: &str, child: Option<&str>| OwnerField { field: f.into(), child: child.map(str::to_string), prefix: String::new(), suffix: String::new() };
+        let scope = RowScope {
+            owner: Some(me),
+            owner_email: Some("me@x.test".into()),
+            owner_fields: vec![field("assigned_to", None), field("user", Some("assignees"))],
+            conds: vec![],
+        };
+        let doc = |v: Value| v.as_object().cloned().unwrap();
+        assert!(scope.matches(&doc(json!({"created_by": me.to_string()}))));
+        assert!(!scope.matches(&doc(json!({"created_by": someone.to_string()}))));
+        assert!(scope.matches(&doc(json!({"created_by": someone.to_string(), "assigned_to": " ME@x.test "}))));
+        assert!(scope.matches(&doc(json!({"created_by": someone.to_string(), "assignees": [{"user": "other@x.test"}, {"user": "me@x.test"}]}))));
+        assert!(!scope.matches(&doc(json!({"created_by": someone.to_string(), "assignees": [{"user": "other@x.test"}]}))));
+        let creator_only = RowScope { owner: Some(me), ..Default::default() };
+        assert!(!creator_only.matches(&doc(json!({"created_by": someone.to_string(), "assigned_to": "me@x.test"}))));
     }
 }
