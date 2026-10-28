@@ -233,4 +233,42 @@ async fn collaboration_follows_record_access() {
     let copy = k.copy_file(&bea_ctx, fid, None).await.unwrap();
     assert_ne!(copy["id"], f["id"]);
     assert_eq!((copy["file_name"].as_str(), copy["sha256"].as_str()), (Some("quote.html"), f["sha256"].as_str()));
+
+    // ── preferences: per user, versioned ──
+    let cols = json!({"columns": ["customer_name", "email"], "sort": "customer_name asc"});
+    assert_eq!(k.set_pref(&bea_ctx, "list:Customer", &cols, None).await.unwrap(), 1);
+    assert_eq!(k.set_pref(&bea_ctx, "list:Customer", &cols, Some(1)).await.unwrap(), 2);
+    assert!(matches!(k.set_pref(&bea_ctx, "list:Customer", &json!({}), Some(1)).await, Err(Error::Conflict(_))), "a stale tab cannot overwrite");
+    assert!(k.set_pref(&bea_ctx, "list Customer", &cols, None).await.is_err());
+    assert_eq!(k.prefs(&bea_ctx).await.unwrap()["list:Customer"], json!({"value": cols, "version": 2}));
+    assert_eq!(k.prefs(&otto_ctx).await.unwrap(), json!({}), "each user sees only their own");
+    k.delete_pref(&bea_ctx, "list:Customer").await.unwrap();
+    assert_eq!(k.prefs(&bea_ctx).await.unwrap(), json!({}));
+
+    // ── bulk: record by record, with the caller's permissions ──
+    use ferrum_kernel::bulk::{BulkOp, BulkTarget};
+    let mut ids = vec![];
+    for name in ["Initech", "Umbrella"] {
+        let d = k.insert(&admin, "Customer", obj(json!({"customer_name": name}))).await.unwrap();
+        ids.push(d["id"].as_str().unwrap().parse::<Uuid>().unwrap());
+    }
+    let disable = BulkOp::Update { values: obj(json!({"disabled": true})) };
+    let r = k.bulk(&bea_ctx, "Customer", BulkTarget::Ids(vec![ids[0], ids[1], Uuid::now_v7()]), &disable).await.unwrap();
+    assert_eq!((r["succeeded"].clone(), r["failed"].clone()), (json!(2), json!(1)), "{r}");
+    assert_eq!(r["results"].as_array().unwrap().iter().filter(|x| x["error"]["error"] == json!("not_found")).count(), 1);
+    let bad = BulkOp::Update { values: obj(json!({"customer_type": "Martian"})) };
+    let r = k.bulk(&bea_ctx, "Customer", BulkTarget::Ids(vec![ids[0]]), &bad).await.unwrap();
+    assert_eq!(r["results"][0]["error"]["error"], json!("validation_failed"));
+    let r = k.bulk(&bea_ctx, "Customer", BulkTarget::Ids(ids.clone()), &BulkOp::Delete).await.unwrap();
+    assert_eq!(r["failed"], json!(2), "no delete permission, nothing deleted");
+    let disabled = parse_filters(&json!([["disabled", "=", true]])).unwrap();
+    let r = k.bulk(&bea_ctx, "Customer", BulkTarget::Filters(disabled.clone()), &BulkOp::AddTags { tags: vec!["vip".into()] }).await.unwrap();
+    assert_eq!(r["succeeded"], json!(2));
+    assert_eq!(k.tags(&bea_ctx, "Customer", ids[1]).await.unwrap(), vec!["vip".to_string()]);
+    k.bulk(&bea_ctx, "Customer", BulkTarget::Filters(disabled), &BulkOp::RemoveTags { tags: vec!["vip".into()] }).await.unwrap();
+    assert!(k.tags(&bea_ctx, "Customer", ids[1]).await.unwrap().is_empty());
+    let r = k.bulk(&otto_ctx, "Customer", BulkTarget::Ids(ids.clone()), &BulkOp::Update { values: obj(json!({"disabled": false})) }).await.unwrap();
+    assert_eq!(r["failed"], json!(2), "outsiders change nothing");
+    assert_eq!(k.get(&admin, "Customer", ids[0], false).await.unwrap()["disabled"], json!(true));
+    assert!(k.bulk(&bea_ctx, "Customer", BulkTarget::Ids(vec![]), &BulkOp::Submit).await.is_err(), "an empty selection is refused");
 }
