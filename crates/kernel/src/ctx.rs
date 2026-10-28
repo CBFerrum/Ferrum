@@ -232,6 +232,7 @@ impl Ctx {
         json!({
             "today": now.format("%Y-%m-%d").to_string(),
             "now": now.to_rfc3339(),
+            "time": now.format("%H:%M:%S").to_string(),
             "timezone": self.schema.timezone,
             "id": self.user.to_string(),
             "email": self.email,

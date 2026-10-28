@@ -156,6 +156,23 @@ pub struct Schema {
     pub timezone: String,
 }
 
+/// An empty schema (for tests); build literals with `..Default::default()` so new fields don't
+/// break callers in other repositories.
+impl Default for Schema {
+    fn default() -> Self {
+        Schema {
+            version: 0,
+            entities: BTreeMap::new(),
+            packages: vec![],
+            modules: vec![],
+            roles: vec![],
+            warnings: vec![],
+            fy_start_month: 1,
+            timezone: "UTC".into(),
+        }
+    }
+}
+
 impl Schema {
     pub fn entity(&self, name: &str) -> Option<&Arc<EffEntity>> {
         self.entities.get(name)
@@ -292,7 +309,11 @@ pub(crate) fn apply_op(def: &mut EntityDef, op: &OverlayOp, source: OverlaySourc
                 "title_field" => def.title_field = as_opt_string(value, property)?,
                 "list" => def.list = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?,
                 "search_fields" => def.search_fields = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?,
-                "form" => def.form = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?,
+                "form" => {
+                    let form: Vec<SectionDef> = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+                    validate_form(def, &form)?;
+                    def.form = form;
+                }
                 other => return Err(format!("entity property {other} cannot be customized")),
             }
             Ok(None)
@@ -546,6 +567,29 @@ fn compile_exprs(def: &EntityDef) -> Result<Exprs, String> {
     Ok(x)
 }
 
+/// A form layout may only place existing fields, each once, in at most 4 columns per section,
+/// with valid section conditions.
+pub(crate) fn validate_form(def: &EntityDef, form: &[SectionDef]) -> Result<(), String> {
+    let mut seen = std::collections::HashSet::new();
+    for s in form {
+        if s.columns.is_some_and(|c| !(1..=4).contains(&c)) {
+            return Err("a section has 1 to 4 columns".into());
+        }
+        if let Some(c) = &s.visible_if {
+            crate::expr::Expr::compile(c).map_err(|e| format!("section condition '{c}': {e}"))?;
+        }
+        for f in &s.fields {
+            if !def.fields.iter().any(|x| &x.name == f) {
+                return Err(format!("the layout places unknown field {f}"));
+            }
+            if !seen.insert(f.as_str()) {
+                return Err(format!("the layout places {f} twice"));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -590,6 +634,24 @@ mod tests {
         apply_op(&mut def, &op, OverlaySource::Package).unwrap();
         assert_eq!(def.actions[0].permission, "write");
         assert!(apply_op(&mut def, &op, OverlaySource::Package).is_err(), "no duplicates");
+    }
+
+    #[test]
+    fn form_layouts_are_validated() {
+        let mut def: EntityDef =
+            serde_yaml::from_str("{name: Project, label: Project, kind: master, fields: [{name: title, type: data}, {name: notes, type: text}]}").unwrap();
+        let set = |form: Value| -> OverlayOp { serde_json::from_value(json!({"op": "set_entity_property", "property": "form", "value": form})).unwrap() };
+        let ok = json!([{"label": "Main", "fields": ["title"], "tab": "Details"}, {"fields": ["notes"], "visible_if": "doc.title != ''"}]);
+        apply_op(&mut def, &set(ok), OverlaySource::Tenant).unwrap();
+        assert_eq!(def.form[0].tab.as_deref(), Some("Details"));
+        for bad in [
+            json!([{"fields": ["nope"]}]),
+            json!([{"fields": ["title"]}, {"fields": ["title"]}]),
+            json!([{"fields": ["title"], "columns": 5}]),
+            json!([{"fields": ["title"], "visible_if": "doc.title ==="}]),
+        ] {
+            assert!(apply_op(&mut def.clone(), &set(bad.clone()), OverlaySource::Tenant).is_err(), "{bad}");
+        }
     }
 
     #[test]

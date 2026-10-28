@@ -203,6 +203,12 @@ pub struct SectionDef {
     pub columns: Option<u8>,
     #[serde(default)]
     pub collapsible: bool,
+    /// Sections with the same tab label are shown together under that tab (in order).
+    #[serde(default)]
+    pub tab: Option<String>,
+    /// CEL condition on `doc`: the section shows only when it holds.
+    #[serde(default)]
+    pub visible_if: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

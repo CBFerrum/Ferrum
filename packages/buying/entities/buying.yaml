@@ -92,7 +92,7 @@
     - {name: supplier, type: link, to: Supplier, required: true, in_filter: true}
     - {name: supplier_name, type: data, fetch_from: supplier.supplier_name, read_only: true, in_list: true}
     - {name: posting_date, type: date, required: true, default_expr: today, in_list: true, in_filter: true}
-    - {name: posting_time, type: data, default: "23:59:59"}
+    - {name: posting_time, type: data, default_expr: time, description: "HH:MM:SS, local time (orders documents of the same day)"}
     - {name: supplier_delivery_note, type: data}
     - {name: is_return, type: check, in_filter: true}
     - {name: return_against, type: link, to: PurchaseReceipt, visible_if: "doc.is_return"}
@@ -157,7 +157,7 @@
     - {name: bill_no, type: data, label: Supplier Invoice No, required: true, in_list: true}
     - {name: bill_date, type: date, label: Supplier Invoice Date}
     - {name: posting_date, type: date, required: true, default_expr: today, in_list: true, in_filter: true}
-    - {name: posting_time, type: data, default: "23:59:59"}
+    - {name: posting_time, type: data, default_expr: time, description: "HH:MM:SS, local time (orders documents of the same day)"}
     - {name: due_date, type: date, in_list: true}
     - {name: is_return, type: check, label: Is Return (Debit Note), in_filter: true}
     - {name: return_against, type: link, to: PurchaseInvoice, visible_if: "doc.is_return"}

@@ -78,6 +78,7 @@ impl Expr {
         let local = |key: &str| scope.user.get(key).and_then(Value::as_str).map(str::to_string);
         ctx.add_variable_from_value("today".to_string(), local("today").unwrap_or_else(|| now.format("%Y-%m-%d").to_string()));
         ctx.add_variable_from_value("now".to_string(), local("now").unwrap_or_else(|| now.to_rfc3339()));
+        ctx.add_variable_from_value("time".to_string(), local("time").unwrap_or_else(|| now.format("%H:%M:%S").to_string()));
         let out = self.program.execute(&ctx).map_err(|e| e.to_string())?;
         Ok(cel_to_json(&out))
     }
