@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod auth;
+pub mod collab;
 pub mod compat;
 pub mod docs;
 pub mod mcp;

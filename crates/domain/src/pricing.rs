@@ -131,10 +131,15 @@ async fn default_template(k: &Kernel, ctx: &Ctx, tx: &mut Tx, company: Uuid, sid
     )
     .await?;
     let user = ctx.user_value();
-    Ok(templates.into_iter().find(|t| match s(t, "condition") {
+    let chosen = templates.into_iter().find(|t| match s(t, "condition") {
         None => true,
         Some(c) => Expr::compile(c).ok().is_some_and(|e| e.eval_bool(&Scope { doc: cel_doc, old: None, parent: None, user: &user }).unwrap_or(false)),
-    }))
+    });
+    // Lists carry no child rows: load the chosen template whole, with its tax rows.
+    match chosen.and_then(|t| id(&t, "id")) {
+        Some(t) => Ok(Some(get(k, ctx, tx, "TaxTemplate", t).await?)),
+        None => Ok(None),
+    }
 }
 
 fn copy_tax_rows(template: &Doc) -> Vec<Value> {

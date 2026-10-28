@@ -316,6 +316,20 @@ pub(crate) fn validate_entity(e: &EntityDef, all: &HashMap<&str, &EntityDef>) ->
     {
         return Err(format!("title_field '{t}' is not a field"));
     }
+    let emailish = |f: &FieldDef| matches!(f.ftype, FieldType::Data | FieldType::Email);
+    for o in &e.owner_fields {
+        let ok = match o.split_once('.') {
+            None => field(o).is_some_and(emailish),
+            Some((t, cf)) => field(t)
+                .filter(|f| f.ftype == FieldType::Table)
+                .and_then(|f| f.of.as_deref())
+                .and_then(|child| all.get(child))
+                .is_some_and(|c| c.fields.iter().any(|f| f.name == cf && emailish(f))),
+        };
+        if !ok {
+            return Err(format!("owner field '{o}' must be a data/email field holding a user's email, or table.field of one"));
+        }
+    }
     for group in e.unique.iter().chain(e.indexes.iter()) {
         if group.is_empty() {
             return Err("empty unique/index definition".into());

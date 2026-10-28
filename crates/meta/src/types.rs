@@ -125,6 +125,11 @@ pub struct EntityDef {
     pub description: Option<String>,
     #[serde(default)]
     pub icon: Option<String>,
+    /// Who else owns a record besides its creator, for own-records permissions (`if_owner`):
+    /// fields holding a user's email, or `table.field` for a child table of emails. Assignees of
+    /// leads, tasks or tickets then see and edit them like their creators.
+    #[serde(default)]
+    pub owner_fields: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -503,5 +508,10 @@ pub enum OverlayOp {
     /// Tenant-only: replace the HTML print template of an entity.
     SetPrintTemplate {
         template: String,
+    },
+    /// Package-only: a document action on another package's entity, implemented by the overlaying
+    /// package's hooks (e.g. Projects adds "Make Sales Invoice" to core's Project).
+    AddAction {
+        action: ActionDef,
     },
 }

@@ -2067,6 +2067,7 @@ dependencies = [
 name = "ferrum-mcp"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "ferrum-domain",
  "ferrum-kernel",
  "ferrum-meta",

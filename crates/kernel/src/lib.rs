@@ -7,6 +7,7 @@
 pub mod audit;
 pub mod auth;
 pub mod automation;
+pub mod collab;
 pub mod ctx;
 pub mod customize;
 pub mod db;
