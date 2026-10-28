@@ -20,7 +20,8 @@ pub enum AutomationAction {
     SetFields { values: BTreeMap<String, String> },
     /// Create a new record; each value is a CEL expression over `doc` (the triggering record).
     CreateDocument { entity: String, values: BTreeMap<String, String> },
-    /// In-app notification. `to`: `owner`, `role:<name>` or `user:<uuid>`.
+    /// In-app notification. `to`: `owner`, `role:<name>`, `user:<uuid>`, or `field:<name>` — the
+    /// user whose email is in that field of the record (an assignee, an employee).
     Notify {
         to: String,
         title: String,
@@ -37,6 +38,15 @@ pub fn validate_actions(actions: &Value) -> Result<Vec<AutomationAction>> {
         return Err(Error::invalid("an automation needs 1 to 20 actions"));
     }
     for a in &list {
+        if let AutomationAction::Notify { to, .. } = a {
+            let ok = to == "owner"
+                || to.strip_prefix("role:").is_some_and(|r| !r.trim().is_empty())
+                || to.strip_prefix("user:").is_some_and(|u| u.parse::<Uuid>().is_ok())
+                || to.strip_prefix("field:").is_some_and(|f| !f.trim().is_empty());
+            if !ok {
+                return Err(Error::invalid("notify.to must be owner, role:<name>, user:<id> or field:<name>"));
+            }
+        }
         let exprs: Vec<&String> = match a {
             AutomationAction::SetFields { values } | AutomationAction::CreateDocument { values, .. } => values.values().collect(),
             AutomationAction::Notify { title, body, .. } => std::iter::once(title).chain(body.iter()).collect(),
@@ -178,8 +188,19 @@ async fn execute(
                 sqlx::query_scalar("select user_id from user_role where tenant_id = $1 and role = $2").bind(ctx.tenant).bind(role).fetch_all(&mut **tx).await?
             } else if let Some(u) = to.strip_prefix("user:") {
                 vec![u.parse().map_err(|_| Error::invalid("notify: bad user id"))?]
+            } else if let Some(field) = to.strip_prefix("field:") {
+                match doc.get(field).and_then(Value::as_str).map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty()) {
+                    Some(email) => {
+                        sqlx::query_scalar("select id from app_user where tenant_id = $1 and lower(email) = $2 and is_active")
+                            .bind(ctx.tenant)
+                            .bind(email)
+                            .fetch_all(&mut **tx)
+                            .await?
+                    }
+                    None => vec![],
+                }
             } else {
-                return Err(Error::invalid("notify.to must be owner, role:<name> or user:<id>"));
+                return Err(Error::invalid("notify.to must be owner, role:<name>, user:<id> or field:<name>"));
             };
             for u in users {
                 crate::notify::send(tx, ctx.tenant, u, &title, body.as_deref(), Some(entity), record).await?;

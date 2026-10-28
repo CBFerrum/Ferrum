@@ -271,6 +271,24 @@ impl Kernel {
     /// transaction as the record, so a retried request returns the original result instead of
     /// creating a duplicate. Returns `(doc, replayed)`.
     pub async fn insert_idempotent(&self, ctx: &Ctx, entity: &str, input: Doc, key: &str, request_hash: &str) -> Result<(Doc, bool)> {
+        self.insert_idempotent_with(ctx, entity, input, key, request_hash, false).await
+    }
+
+    /// Creates and submits a document in one transaction: it is never left as a draft (offline
+    /// clients syncing finished sales, integrations posting final documents).
+    pub async fn insert_submit(&self, ctx: &Ctx, entity: &str, input: Doc) -> Result<Doc> {
+        with_retry(|| async {
+            let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+            let doc = self.insert_tx(ctx, &mut tx, entity, input.clone()).await?;
+            let doc = self.submit_tx(ctx, &mut tx, entity, store::doc_id(&doc)?, None).await?;
+            tx.commit().await?;
+            Ok(doc)
+        })
+        .await
+    }
+
+    /// Like `insert_idempotent`; with `submit` the document is also submitted in the same transaction.
+    pub async fn insert_idempotent_with(&self, ctx: &Ctx, entity: &str, input: Doc, key: &str, request_hash: &str, submit: bool) -> Result<(Doc, bool)> {
         if key.len() < 8 || key.len() > 200 {
             return Err(Error::invalid("Idempotency-Key must be 8-200 characters"));
         }
@@ -299,7 +317,10 @@ impl Kernel {
                     _ => Err(Error::Conflict("a request with this Idempotency-Key is still being processed".into())),
                 };
             }
-            let doc = self.insert_tx(ctx, &mut tx, entity, input.clone()).await?;
+            let mut doc = self.insert_tx(ctx, &mut tx, entity, input.clone()).await?;
+            if submit {
+                doc = self.submit_tx(ctx, &mut tx, entity, store::doc_id(&doc)?, None).await?;
+            }
             sqlx::query("update idempotency_key set status_code = 201, response = $3 where tenant_id = $1 and key = $2")
                 .bind(ctx.tenant)
                 .bind(key)
@@ -422,6 +443,7 @@ impl Kernel {
         if !errors.is_empty() {
             return Err(Error::Validation(errors));
         }
+        self.fill_new_row_defaults(ctx, &ent, &mut doc, &old)?;
         self.fetch_links(ctx, tx, &ent, &mut doc, Some(&old)).await?;
         self.hook_before_validate(ctx, tx, &ent, &mut doc).await?;
         self.compute(ctx, &ent, &mut doc)?;
@@ -906,6 +928,30 @@ impl Kernel {
             if let Some(Value::Array(rows)) = doc.get_mut(field) {
                 for r in rows.iter_mut() {
                     if let Value::Object(m) = r {
+                        fill_entity_defaults(cent, m, Some(&parent_view), &user, &ctx.schema)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Child rows added while editing get their defaults, like rows of a new document.
+    fn fill_new_row_defaults(&self, ctx: &Ctx, ent: &EffEntity, doc: &mut Doc, old: &Doc) -> Result<()> {
+        let user = ctx.user_value();
+        let parent_view = ent.cel_view(&Value::Object(doc.clone()), &ctx.schema);
+        for (field, info) in &ent.children {
+            let Some(cent) = ctx.schema.entity(&info.entity) else { continue };
+            let existing: HashSet<&str> = old
+                .get(field)
+                .and_then(Value::as_array)
+                .map(|rows| rows.iter().filter_map(|r| r.get("id").and_then(Value::as_str)).collect())
+                .unwrap_or_default();
+            if let Some(Value::Array(rows)) = doc.get_mut(field) {
+                for r in rows.iter_mut() {
+                    if let Value::Object(m) = r
+                        && !m.get("id").and_then(Value::as_str).is_some_and(|id| existing.contains(id))
+                    {
                         fill_entity_defaults(cent, m, Some(&parent_view), &user, &ctx.schema)?;
                     }
                 }

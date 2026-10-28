@@ -163,6 +163,29 @@ async fn collaboration_follows_record_access() {
     tx.commit().await.unwrap();
     assert_eq!(left, 0);
 
+    // ── automations can notify the user named in a field ──
+    let bad = ferrum_kernel::automation::save(
+        &k,
+        &admin,
+        json!({"name": "bad", "entity": "Customer", "event": "updated", "actions": [{"type": "notify", "to": "somebody", "title": "'x'"}]}).as_object().unwrap(),
+    )
+    .await;
+    assert!(bad.is_err(), "unknown notify targets are refused when saving");
+    ferrum_kernel::automation::save(
+        &k,
+        &admin,
+        json!({"name": "tell the contact", "entity": "Customer", "event": "updated",
+               "actions": [{"type": "notify", "to": "field:email", "title": "'Customer ' + doc.customer_name + ' changed'"}]})
+        .as_object()
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    drain(&k).await;
+    k.update(&admin, "Customer", cid, obj(json!({"email": "BEA@collab.test"})), None).await.unwrap();
+    drain(&k).await;
+    assert!(unread(&k, &bea_ctx).await.iter().any(|t| t == "Customer Globex changed"));
+
     // ── attachments listing follows the record too ──
     assert!(k.attachments(&bea_ctx, "Customer", cid).await.unwrap().is_empty());
     assert!(k.attachments(&otto_ctx, "Customer", cid).await.is_err());

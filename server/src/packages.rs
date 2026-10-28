@@ -104,6 +104,7 @@ apps! {
         "projects" => ferrum_app_projects,
         "helpdesk" => ferrum_app_helpdesk,
         "pos" => ferrum_app_pos,
+        "commerce" => ferrum_app_commerce,
     }
     legacy {
     }

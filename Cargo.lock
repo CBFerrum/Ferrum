@@ -2003,6 +2003,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
+name = "ferrum-app-commerce"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-commerce?branch=main#6ae91113d34d0b23e89d43482a5af1db8b452c65"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "ferrum-calc",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "hex",
+ "hmac 0.12.1",
+ "rand 0.9.5",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ferrum-app-crm"
 version = "0.1.0"
 source = "git+https://github.com/CBFerrum/ferrum-app-crm?branch=main#eb15686b7da87ae0ca5dd9e5a3149bbfdfbf50bc"
@@ -2210,6 +2234,7 @@ dependencies = [
  "bytes",
  "chrono",
  "dashmap",
+ "ferrum-app-commerce",
  "ferrum-app-crm",
  "ferrum-app-helpdesk",
  "ferrum-app-pos",

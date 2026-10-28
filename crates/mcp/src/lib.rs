@@ -192,11 +192,12 @@ fn tools(ctx: &Ctx) -> Vec<Value> {
         tool(
             "create_record",
             "Create record",
-            "Create a record (documents start as drafts). Child tables are arrays of row objects. Pass idempotency_key to make retries safe.",
+            "Create a record (documents start as drafts unless submit is true). Child tables are arrays of row objects. Pass idempotency_key to make retries safe.",
             json!({
                 "entity": entity_prop(),
                 "data": {"type": "object", "description": "Field values (see describe_entity)"},
                 "idempotency_key": s("Optional unique key (8-200 chars); repeating it returns the first result"),
+                "submit": {"type": "boolean", "description": "Also submit the document in the same transaction (never left as a draft)"},
             }),
             &["entity", "data"],
             false,
@@ -452,14 +453,17 @@ async fn run_tool(k: &Kernel, ctx: &Ctx, name: &str, args: &Value) -> Result<Val
         "create_record" => {
             let entity = arg(args, "entity")?;
             let data = object_arg(args, "data")?;
+            let submit = args.get("submit").and_then(Value::as_bool).unwrap_or(false);
             match args.get("idempotency_key").and_then(Value::as_str).filter(|k| !k.is_empty()) {
                 Some(key) => {
                     let mut h = Sha256::new();
                     h.update(entity.as_bytes());
+                    h.update(if submit { b"+submit".as_slice() } else { b"".as_slice() });
                     h.update(canonical_json(&Value::Object(data.clone())));
-                    let (doc, replayed) = k.insert_idempotent(ctx, entity, data, key, &hex::encode(h.finalize())).await?;
+                    let (doc, replayed) = k.insert_idempotent_with(ctx, entity, data, key, &hex::encode(h.finalize()), submit).await?;
                     Ok(json!({"record": doc, "replayed": replayed}))
                 }
+                None if submit => Ok(json!({"record": k.insert_submit(ctx, entity, data).await?, "replayed": false})),
                 None => Ok(json!({"record": k.insert(ctx, entity, data).await?, "replayed": false})),
             }
         }

@@ -190,7 +190,7 @@ pub(crate) fn apply_op(def: &mut EntityDef, op: &OverlayOp, source: OverlaySourc
             if def.fields.iter().any(|f| f.name == field.name) {
                 return Err(format!("field {} already exists", field.name));
             }
-            if field.ftype == FieldType::Table {
+            if field.ftype == FieldType::Table && source == OverlaySource::Tenant {
                 return Err("customizations cannot add child tables".into());
             }
             if field.ftype == FieldType::Secret && source == OverlaySource::Tenant {
@@ -582,7 +582,8 @@ mod tests {
     #[test]
     fn only_packages_add_actions() {
         let mut def: EntityDef = serde_yaml::from_str("{name: Project, label: Project, kind: master, fields: [{name: title, type: data}]}").unwrap();
-        let op: OverlayOp = serde_json::from_value(json!({"op": "add_action", "action": {"name": "make_sales_invoice", "label": "Make Sales Invoice"}})).unwrap();
+        let op: OverlayOp =
+            serde_json::from_value(json!({"op": "add_action", "action": {"name": "make_sales_invoice", "label": "Make Sales Invoice"}})).unwrap();
         assert!(apply_op(&mut def.clone(), &op, OverlaySource::Tenant).is_err(), "actions need code");
         apply_op(&mut def, &op, OverlaySource::Package).unwrap();
         assert_eq!(def.actions[0].permission, "write");

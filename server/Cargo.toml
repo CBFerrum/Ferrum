@@ -14,11 +14,12 @@ path = "src/bin/main.rs"
 # Native apps compiled into this server (all official ones by default; docs/plan/apps.md). Most live
 # in their own repositories; a workspace whose installed app is not in a build keeps its data and
 # loses the app until it is back.
-default = ["crm", "projects", "helpdesk", "pos"]
+default = ["crm", "projects", "helpdesk", "pos", "commerce"]
 crm = ["dep:ferrum-app-crm"]
 projects = ["dep:ferrum-app-projects"]
 helpdesk = ["dep:ferrum-app-helpdesk"]
 pos = ["dep:ferrum-app-pos"]
+commerce = ["dep:ferrum-app-commerce"]
 
 [dependencies]
 ferrum-kernel = { path = "../crates/kernel" }
@@ -30,6 +31,7 @@ ferrum-app-crm = { git = "https://github.com/CBFerrum/ferrum-app-crm", branch = 
 ferrum-app-projects = { git = "https://github.com/CBFerrum/ferrum-app-projects", branch = "main", optional = true }
 ferrum-app-helpdesk = { git = "https://github.com/CBFerrum/ferrum-app-helpdesk", branch = "main", optional = true }
 ferrum-app-pos = { git = "https://github.com/CBFerrum/ferrum-app-pos", branch = "main", optional = true }
+ferrum-app-commerce = { git = "https://github.com/CBFerrum/ferrum-app-commerce", branch = "main", optional = true }
 base64 = "0.22"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 migration = { path = "migration", package = "ferrum-migration" }

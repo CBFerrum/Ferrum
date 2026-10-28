@@ -27,11 +27,29 @@ async fn kernel(reset: bool) -> Arc<Kernel> {
 
 fn release(version: &str, extra_field: bool) -> NewRelease {
     let mut files = BTreeMap::new();
-    files.insert("package.yaml".to_string(), "package: fleet\nversion: '1'\nlabel: Fleet\ndepends: [core]\nroles:\n  - name: Fleet Manager\n    permissions:\n      - {entity: FleetVehicle, read: true, write: true, create: true, delete: true}\n".to_string());
-    let extra = if extra_field { "    - {name: odometer, type: int}\n" } else { "" };
+    // From 1.1 the app also adds a child table to core's Customer (a package overlay).
+    let overlay = if extra_field {
+        "field_prefix: fleet_\noverlays:\n  - entity: Customer\n    ops:\n      - {op: add_field, field: {name: fleet_drivers, type: table, of: FleetDriver}}\n"
+    } else {
+        ""
+    };
+    files.insert(
+        "package.yaml".to_string(),
+        format!(
+            "package: fleet\nversion: '1'\nlabel: Fleet\ndepends: [core]\n{overlay}roles:\n  - name: Fleet Manager\n    permissions:\n      - {{entity: FleetVehicle, read: true, write: true, create: true, delete: true}}\n"
+        ),
+    );
+    let extra = if extra_field { "    - {name: odometer, type: int}\n    - {name: services, type: table, of: FleetService}\n" } else { "" };
+    let child = if extra_field {
+        "- name: FleetService\n  label: Service\n  kind: child\n  fields:\n    - {name: note, type: data}\n    - {name: active, type: check, default: true}\n\
+         - name: FleetTrip\n  label: Trip\n  kind: document\n  submittable: true\n  fields:\n    - {name: purpose, type: data, required: true}\n\
+         - name: FleetDriver\n  label: Driver\n  kind: child\n  fields:\n    - {name: driver_name, type: data, required: true}\n"
+    } else {
+        ""
+    };
     files.insert(
         "entities/fleet.yaml".to_string(),
-        format!("- name: FleetVehicle\n  label: Vehicle\n  kind: master\n  title_field: plate\n  fields:\n    - {{name: plate, type: data, required: true}}\n{extra}"),
+        format!("{child}- name: FleetVehicle\n  label: Vehicle\n  kind: master\n  title_field: plate\n  fields:\n    - {{name: plate, type: data, required: true}}\n{extra}"),
     );
     NewRelease {
         app_id: "fleet".into(),
@@ -90,6 +108,22 @@ async fn apps_join_the_catalog_at_runtime() {
     let id: uuid::Uuid = v["id"].as_str().unwrap().parse().unwrap();
     let upd = k.update(&c, "FleetVehicle", id, obj(json!({"odometer": 1200})), None).await.unwrap();
     assert_eq!(upd["odometer"], json!(1200));
+    // Child rows added while editing get their defaults too.
+    let upd = k.update(&c, "FleetVehicle", id, obj(json!({"services": [{"note": "oil change"}]})), None).await.unwrap();
+    assert_eq!(upd["services"][0]["active"], json!(true));
+    // Created and submitted in one transaction; an idempotent replay returns the same document.
+    let trip = k.insert_submit(&c, "FleetTrip", obj(json!({"purpose": "delivery"}))).await.unwrap();
+    assert_eq!(trip["docstatus"], json!(1));
+    assert!(k.insert_submit(&c, "FleetTrip", obj(json!({}))).await.is_err(), "a failing document leaves nothing behind");
+    let (first, replayed) = k.insert_idempotent_with(&c, "FleetTrip", obj(json!({"purpose": "pickup"})), "trip-key-0001", "hash", true).await.unwrap();
+    let (again, replayed_again) = k.insert_idempotent_with(&c, "FleetTrip", obj(json!({"purpose": "pickup"})), "trip-key-0001", "hash", true).await.unwrap();
+    assert_eq!((first["docstatus"].clone(), replayed, replayed_again), (json!(1), false, true));
+    assert_eq!(first["id"], again["id"]);
+    assert_eq!(k.list(&c, "FleetTrip", &ListQuery::default()).await.unwrap().rows.len(), 2);
+    // The child table the app added to Customer works like any other.
+    let cust = k.insert(&c, "Customer", obj(json!({"customer_name": "Hauliers", "fleet_drivers": [{"driver_name": "Ravi"}]}))).await.unwrap();
+    let cid: uuid::Uuid = cust["id"].as_str().unwrap().parse().unwrap();
+    assert_eq!(k.get(&c, "Customer", cid, false).await.unwrap()["fleet_drivers"][0]["driver_name"], json!("Ravi"));
     let history = k.release_history("fleet").await.unwrap();
     assert_eq!(history.iter().map(|r| (r.version.as_str(), r.status.as_str())).collect::<Vec<_>>(), vec![("1.1.0", "active"), ("1.0.0", "superseded")]);
 

@@ -81,27 +81,37 @@ async fn list(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Path
     Ok(Json(st.kernel.list(&ctx, &entity, &p.to_query()?).await?).into_response())
 }
 
+#[derive(Deserialize, Default)]
+struct CreateParams {
+    /// Submit in the same transaction (submittable documents).
+    submit: Option<bool>,
+}
+
 async fn create(
     Auth(ctx): Auth,
     State(app): State<AppContext>,
     Path(entity): Path<String>,
+    Query(p): Query<CreateParams>,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let doc = body_doc(body)?;
+    let submit = p.submit.unwrap_or(false);
     if let Some(key) = headers.get("idempotency-key").and_then(|v| v.to_str().ok()) {
         let mut h = Sha256::new();
         h.update(entity.as_bytes());
+        h.update(if submit { b"+submit".as_slice() } else { b"".as_slice() });
         h.update(canonical_json(&Value::Object(doc.clone())));
-        let (d, replayed) = st.kernel.insert_idempotent(&ctx, &entity, doc, key, &hex::encode(h.finalize())).await?;
+        let (d, replayed) = st.kernel.insert_idempotent_with(&ctx, &entity, doc, key, &hex::encode(h.finalize()), submit).await?;
         let mut resp = doc_response(d, if replayed { StatusCode::OK } else { StatusCode::CREATED });
         if replayed {
             resp.headers_mut().insert("idempotent-replayed", HeaderValue::from_static("true"));
         }
         return Ok(resp);
     }
-    Ok(doc_response(st.kernel.insert(&ctx, &entity, doc).await?, StatusCode::CREATED))
+    let d = if submit { st.kernel.insert_submit(&ctx, &entity, doc).await? } else { st.kernel.insert(&ctx, &entity, doc).await? };
+    Ok(doc_response(d, StatusCode::CREATED))
 }
 
 async fn read(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity, id)): Path<(String, Uuid)>, Query(p): Query<ReadParams>) -> ApiResult<Response> {
