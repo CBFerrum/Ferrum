@@ -11,6 +11,7 @@ pub mod ctx;
 pub mod customize;
 pub mod db;
 pub mod ddl;
+pub mod describe;
 pub mod doc;
 pub mod error;
 pub mod hooks;

@@ -84,6 +84,24 @@ tenant customizations), checks permissions, runs the document pipeline (defaults
 `before_validate` hooks → computed fields → metadata rules → `validate` hooks → write → events)
 inside one transaction, and records an audit entry and an outbox event in that same transaction.
 
+## AI agents (MCP)
+
+Ferrum is an MCP server: `POST /mcp` speaks the Model Context Protocol (Streamable HTTP,
+stateless, so any replica answers). Agents get generic, metadata-driven tools that cover every
+entity, action, workflow and report of every installed package, customizations included:
+`ferrum_overview`, `describe_entity` (with a JSON Schema), `search_records`, `get_record`,
+`preview_record`, `create_record` (idempotent), `update_record`, `delete_record`,
+`submit_record`, `cancel_record`, `amend_record`, `run_action`, `workflow_transition`,
+`run_report`, `get_audit_trail` and, for administrators, `customize_entity`. Each call runs as
+the signed-in user with that user's permissions and lands in the audit trail; tools carry
+read-only/destructive hints so clients can ask before posting.
+
+```bash
+claude mcp add --transport http ferrum https://erp.example.com/mcp --header "Authorization: Bearer fk_..."
+```
+
+Create the API key under the user menu (or `POST /api/auth/api_keys`).
+
 ## Customizing without code
 
 | Need | How |
@@ -111,8 +129,8 @@ fuel budget and a memory cap; failures abort the operation (fail-closed) and are
 ## Testing
 
 ```bash
-createdb -O ferrum ferrum_test && createdb -O ferrum ferrum_domain_test
-cargo test --workspace                # unit + integration (resets the two test databases)
+createdb -O ferrum ferrum_test && createdb -O ferrum ferrum_domain_test && createdb -O ferrum ferrum_mcp_test
+cargo test --workspace                # unit + integration (resets the test databases)
 cd web && npm test
 ```
 

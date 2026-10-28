@@ -1,7 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/calc", "crates/meta", "crates/kernel", "crates/domain",
-    "crates/plugins", "server", "server/migration"]
+    "crates/plugins",
+    "crates/mcp", "server", "server/migration"]
 
 [workspace.package]
 version = "0.1.0"

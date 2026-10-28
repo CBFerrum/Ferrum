@@ -1997,6 +1997,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrum-mcp"
+version = "0.1.0"
+dependencies = [
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "hex",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ferrum-meta"
 version = "0.1.0"
 dependencies = [
@@ -2052,6 +2068,7 @@ dependencies = [
  "dashmap",
  "ferrum-domain",
  "ferrum-kernel",
+ "ferrum-mcp",
  "ferrum-meta",
  "ferrum-migration",
  "ferrum-plugins",
