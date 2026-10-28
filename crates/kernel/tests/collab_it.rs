@@ -229,4 +229,8 @@ async fn collaboration_follows_record_access() {
     assert!(k.read_file(&otto_ctx, fid).await.is_err());
     assert_eq!(k.attachments(&bea_ctx, "Customer", cid).await.unwrap().len(), 1);
     assert!(k.store_file(&otto_ctx, Some(("Customer", cid)), "x.txt", "text/plain", b"x").await.is_err(), "attaching needs read access");
+    assert!(k.copy_file(&otto_ctx, fid, None).await.is_err(), "copying needs read access to the source");
+    let copy = k.copy_file(&bea_ctx, fid, None).await.unwrap();
+    assert_ne!(copy["id"], f["id"]);
+    assert_eq!((copy["file_name"].as_str(), copy["sha256"].as_str()), (Some("quote.html"), f["sha256"].as_str()));
 }

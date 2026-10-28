@@ -398,6 +398,13 @@ impl PluginHost {
             errors.push(FieldError::new("hooks", "a plugin needs at least one hook, route, subscription, schedule or socket"));
         }
         errors.extend(m.validate(ctx));
+        // The same caps as app bundles (ferrum-apps MAX_PLUGIN_FUEL / MAX_PLUGIN_MEMORY_MB).
+        if p.fuel_limit.is_some_and(|f| !(10_000..=1_000_000_000).contains(&f)) {
+            errors.push(FieldError::new("fuel_limit", "must be between 10000 and 1000000000"));
+        }
+        if p.memory_limit_mb.is_some_and(|m| !(1..=256).contains(&m)) {
+            errors.push(FieldError::new("memory_limit_mb", "must be between 1 and 256"));
+        }
         if let Err(msg) = self.validate(wasm) {
             errors.push(FieldError::new("wasm", msg));
         }
