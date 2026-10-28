@@ -40,7 +40,7 @@ impl Kernel {
         if !email.contains('@') {
             return Err(Error::field("admin_email", "not a valid email address"));
         }
-        let packages = self.registry.catalog.closure(&t.packages).map_err(|e| Error::field("packages", e.to_string()))?;
+        let packages = self.registry.catalog().closure(&t.packages).map_err(|e| Error::field("packages", e.to_string()))?;
         let hash = hash_password(t.admin_password.clone()).await?;
         let tenant = Uuid::now_v7();
         let mut tx = self.db.system_tx().await?;
@@ -72,10 +72,11 @@ impl Kernel {
     /// Installs packages (and their dependencies) for a tenant. Idempotent; existing role
     /// permissions and seeded records are left untouched so tenant edits survive reinstalls.
     pub async fn install_packages(&self, tenant: Uuid, names: &[String]) -> Result<Vec<String>> {
-        let closure = self.registry.catalog.closure(names).map_err(|e| Error::invalid(e.to_string()))?;
+        let catalog = self.registry.catalog();
+        let closure = catalog.closure(names).map_err(|e| Error::invalid(e.to_string()))?;
         let mut tx = self.db.system_tenant_tx(tenant).await?;
         for name in &closure {
-            let pkg = self.registry.catalog.package(name).ok_or_else(|| Error::internal("package vanished"))?;
+            let pkg = catalog.package(name).ok_or_else(|| Error::internal("package vanished"))?;
             sqlx::query(
                 "insert into installed_package (tenant_id, name, version) values ($1, $2, $3) \
                  on conflict (tenant_id, name) do update set version = excluded.version",
@@ -124,7 +125,7 @@ impl Kernel {
         let schema = self.registry.schema(tenant).await?;
         let ctx = Ctx::system(tenant, schema);
         for name in &closure {
-            let pkg = self.registry.catalog.package(name).ok_or_else(|| Error::internal("package vanished"))?;
+            let pkg = catalog.package(name).ok_or_else(|| Error::internal("package vanished"))?;
             for seed in &pkg.manifest.seed {
                 for rec in &seed.records {
                     self.seed_record(&ctx, &seed.entity, &seed.key, rec)

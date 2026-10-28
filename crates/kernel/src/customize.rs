@@ -35,9 +35,9 @@ impl Kernel {
     /// Builds the schema with `extra` appended; rejects the change if it introduces new warnings.
     fn check_overlays(&self, ctx: &Ctx, base: &[Overlay], extra: &[Overlay]) -> Result<()> {
         let mut all = base.to_vec();
-        let before = effective::build(&self.registry.catalog, &ctx.schema.packages, &all, 0).map_err(|e| Error::invalid(e.to_string()))?;
+        let before = effective::build(&self.registry.catalog(), &ctx.schema.packages, &all, 0).map_err(|e| Error::invalid(e.to_string()))?;
         all.extend_from_slice(extra);
-        let after = effective::build(&self.registry.catalog, &ctx.schema.packages, &all, 0).map_err(|e| Error::invalid(e.to_string()))?;
+        let after = effective::build(&self.registry.catalog(), &ctx.schema.packages, &all, 0).map_err(|e| Error::invalid(e.to_string()))?;
         if after.warnings.len() > before.warnings.len() {
             let msgs: Vec<String> = after.warnings[before.warnings.len()..].iter().map(|w| format!("{}: {}", w.entity, w.message)).collect();
             return Err(Error::invalid(format!("customization rejected: {}", msgs.join("; "))));

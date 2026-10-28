@@ -136,7 +136,7 @@ async fn list_packages(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiRes
     let all: Vec<Value> = st
         .kernel
         .registry
-        .catalog
+        .catalog()
         .packages()
         .map(|p| {
             json!({"name": p.name(), "version": p.manifest.version, "label": p.manifest.label, "description": p.manifest.description,

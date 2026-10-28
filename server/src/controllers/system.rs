@@ -28,8 +28,8 @@ async fn ready(State(app): State<AppContext>) -> ApiResult<Response> {
 
 async fn version(State(app): State<AppContext>) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    let packages: Vec<Value> = st.kernel.registry.catalog.packages().map(|p| json!({"name": p.name(), "version": p.manifest.version})).collect();
-    Ok(Json(json!({"version": env!("CARGO_PKG_VERSION"), "catalog": st.kernel.registry.catalog.fingerprint(), "packages": packages})).into_response())
+    let packages: Vec<Value> = st.kernel.registry.catalog().packages().map(|p| json!({"name": p.name(), "version": p.manifest.version})).collect();
+    Ok(Json(json!({"version": env!("CARGO_PKG_VERSION"), "catalog": st.kernel.registry.catalog().fingerprint(), "packages": packages})).into_response())
 }
 
 /// Constant-time comparison for shared secrets.

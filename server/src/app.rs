@@ -6,7 +6,6 @@ use crate::mailer::LocoMailer;
 use crate::state::{AppState, RateLimiter, Settings};
 use async_trait::async_trait;
 use ferrum_kernel::{Db, DbConfig, HookRegistry, Kernel, KernelSettings, Mailer};
-use ferrum_meta::Catalog;
 use loco_rs::app::{AppContext, Hooks, Initializer};
 use loco_rs::bgworker::Queue;
 use loco_rs::boot::{BootResult, StartMode, create_app};
@@ -92,7 +91,7 @@ impl Hooks for App {
         let db = Db::connect(DbConfig { url: ctx.config.database.uri.clone(), max_connections: settings.db_max_connections, ..Default::default() })
             .await
             .map_err(|e| Error::Message(format!("database: {e}")))?;
-        let catalog = Catalog::load_dir(Path::new(&settings.packages_dir)).map_err(|e| Error::Message(format!("packages: {e}")))?;
+        let catalog = crate::packages::base_catalog(Path::new(&settings.packages_dir)).map_err(|e| Error::Message(format!("packages: {e}")))?;
         let missing = crate::packages::missing_logic(&catalog);
         if !missing.is_empty() {
             return Err(Error::Message(format!(
