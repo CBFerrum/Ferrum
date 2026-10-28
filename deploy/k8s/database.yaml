@@ -1,0 +1,59 @@
+# PostgreSQL 17 with synchronous replication across three instances, automatic failover,
+# continuous WAL archiving and daily base backups (point-in-time recovery). CloudNativePG
+# creates the `ferrum-db-app` secret holding the application connection URI.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: ferrum-db
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:17
+  primaryUpdateStrategy: unsupervised
+  minSyncReplicas: 1
+  maxSyncReplicas: 1
+  storage:
+    size: 100Gi
+  walStorage:
+    size: 20Gi
+  bootstrap:
+    initdb:
+      database: ferrum
+      owner: ferrum
+  postgresql:
+    parameters:
+      max_connections: "400"
+      shared_buffers: "2GB"
+      effective_cache_size: "6GB"
+      work_mem: "16MB"
+      idle_in_transaction_session_timeout: "60s"
+      lock_timeout: "15s"
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: required
+  resources:
+    requests: {cpu: "1", memory: 4Gi}
+    limits: {memory: 8Gi}
+  monitoring:
+    enablePodMonitor: true
+  backup:
+    retentionPolicy: "30d"
+    barmanObjectStore:
+      destinationPath: s3://CHANGE-ME-backup-bucket/ferrum
+      s3Credentials:
+        accessKeyId: {name: ferrum-backup-s3, key: ACCESS_KEY_ID}
+        secretAccessKey: {name: ferrum-backup-s3, key: ACCESS_SECRET_KEY}
+      wal:
+        compression: gzip
+      data:
+        compression: gzip
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: ferrum-db-daily
+spec:
+  schedule: "0 0 2 * * *"
+  backupOwnerReference: self
+  cluster:
+    name: ferrum-db

@@ -1,0 +1,239 @@
+- name: Account
+  label: Account
+  kind: master
+  module: masters
+  title_field: account_name
+  company_scoped: true
+  search_fields: [account_number]
+  fields:
+    - {name: account_name, type: data, required: true, in_list: true}
+    - {name: account_number, type: data, in_list: true}
+    - {name: company, type: link, to: Company, required: true, locked: true, in_filter: true}
+    - {name: parent_account, type: link, to: Account, link_filters: {is_group: true}, in_filter: true}
+    - {name: is_group, type: check, in_list: true, in_filter: true}
+    - {name: root_type, type: select, options: [Asset, Liability, Equity, Income, Expense], required: true, locked: true, in_list: true, in_filter: true}
+    - name: account_type
+      type: select
+      in_filter: true
+      options: [Receivable, Payable, Bank, Cash, Stock, Cost of Goods Sold, Stock Received But Not Billed, Tax, Income, Expense,
+                Round Off, Exchange Gain Loss, Stock Adjustment, Fixed Asset, Equity, Temporary]
+    - {name: account_currency, type: link, to: Currency, description: Leave empty for company currency}
+    - {name: frozen, type: check, description: Frozen accounts refuse new postings}
+    - {name: disabled, type: check}
+  unique: [[company, account_name], [company, account_number]]
+  rules:
+    - {name: party_accounts_are_leaves, check: "!(doc.is_group && (doc.account_type == 'Receivable' || doc.account_type == 'Payable'))", message: "Receivable/Payable accounts cannot be groups"}
+  list: {columns: [account_number, account_name, root_type, is_group], sort: account_number asc}
+
+- name: CustomerGroup
+  label: Customer Group
+  kind: master
+  module: masters
+  title_field: group_name
+  fields:
+    - {name: group_name, type: data, required: true, unique: true, in_list: true}
+    - {name: parent_group, type: link, to: CustomerGroup, link_filters: {is_group: true}}
+    - {name: is_group, type: check}
+
+- name: Customer
+  label: Customer
+  kind: master
+  module: masters
+  title_field: customer_name
+  numbering: {template: "CUST-{seq:5}"}
+  search_fields: [email, phone, tax_id]
+  fields:
+    - {name: customer_name, type: data, required: true, in_list: true}
+    - {name: customer_type, type: select, options: [Company, Individual], default: Company, in_filter: true}
+    - {name: customer_group, type: link, to: CustomerGroup, in_list: true, in_filter: true, link_filters: {is_group: false}}
+    - {name: email, type: email}
+    - {name: phone, type: phone}
+    - {name: tax_id, type: data, label: Tax ID}
+    - {name: billing_address, type: text}
+    - {name: shipping_address, type: text}
+    - {name: default_currency, type: link, to: Currency}
+    - {name: default_price_list, type: link, to: PriceList}
+    - {name: receivable_account, type: link, to: Account, link_filters: {account_type: Receivable, is_group: false}, description: Overrides the company default}
+    - {name: payment_terms_days, type: int, default: 0, min: 0, max: 3650}
+    - {name: credit_limit, type: currency, min: "0", perm_group: credit, description: 0 = no limit}
+    - {name: disabled, type: check, in_filter: true}
+  form:
+    - {label: Customer, fields: [customer_name, customer_type, customer_group, email, phone, tax_id]}
+    - {label: Addresses, collapsible: true, fields: [billing_address, shipping_address]}
+    - {label: Defaults & Credit, fields: [default_currency, default_price_list, receivable_account, payment_terms_days, credit_limit, disabled]}
+  list: {columns: [number, customer_name, customer_group, email], sort: customer_name asc}
+
+- name: SupplierGroup
+  label: Supplier Group
+  kind: master
+  module: masters
+  title_field: group_name
+  fields:
+    - {name: group_name, type: data, required: true, unique: true, in_list: true}
+    - {name: parent_group, type: link, to: SupplierGroup, link_filters: {is_group: true}}
+    - {name: is_group, type: check}
+
+- name: Supplier
+  label: Supplier
+  kind: master
+  module: masters
+  title_field: supplier_name
+  numbering: {template: "SUPP-{seq:5}"}
+  search_fields: [email, phone, tax_id]
+  fields:
+    - {name: supplier_name, type: data, required: true, in_list: true}
+    - {name: supplier_group, type: link, to: SupplierGroup, in_list: true, in_filter: true, link_filters: {is_group: false}}
+    - {name: email, type: email}
+    - {name: phone, type: phone}
+    - {name: tax_id, type: data, label: Tax ID}
+    - {name: address, type: text}
+    - {name: default_currency, type: link, to: Currency}
+    - {name: default_price_list, type: link, to: PriceList}
+    - {name: payable_account, type: link, to: Account, link_filters: {account_type: Payable, is_group: false}}
+    - {name: payment_terms_days, type: int, default: 0, min: 0, max: 3650}
+    - {name: disabled, type: check, in_filter: true}
+  list: {columns: [number, supplier_name, supplier_group, email], sort: supplier_name asc}
+
+- name: ItemGroup
+  label: Item Group
+  kind: master
+  module: masters
+  title_field: group_name
+  fields:
+    - {name: group_name, type: data, required: true, unique: true, in_list: true}
+    - {name: parent_group, type: link, to: ItemGroup, link_filters: {is_group: true}}
+    - {name: is_group, type: check}
+    - {name: default_income_account, type: link, to: Account, link_filters: {is_group: false}}
+    - {name: default_expense_account, type: link, to: Account, link_filters: {is_group: false}}
+
+- name: ItemTaxRate
+  label: Item Tax Rate
+  kind: child
+  fields:
+    - {name: tax_account, type: link, to: Account, required: true, link_filters: {account_type: Tax}, in_list: true}
+    - {name: rate, type: percent, required: true, min: "0", max: "100", in_list: true}
+
+- name: ItemSupplier
+  label: Approved Manufacturer / Supplier
+  kind: child
+  fields:
+    - {name: supplier, type: link, to: Supplier, in_list: true}
+    - {name: manufacturer, type: data, in_list: true}
+    - {name: manufacturer_part_no, type: data, label: MPN, in_list: true}
+    - {name: approved, type: check, default: true, in_list: true}
+    - {name: priority, type: int, default: 1, min: 1, in_list: true}
+
+- name: Item
+  label: Item
+  kind: master
+  module: masters
+  title_field: item_name
+  search_fields: [item_code, barcode]
+  fields:
+    - {name: item_code, type: data, required: true, unique: true, in_list: true, max_length: 140}
+    - {name: item_name, type: data, required: true, in_list: true}
+    - {name: item_group, type: link, to: ItemGroup, required: true, in_list: true, in_filter: true, link_filters: {is_group: false}}
+    - {name: stock_uom, type: link, to: Uom, required: true}
+    - {name: is_stock_item, type: check, default: true, in_filter: true}
+    - {name: is_purchased, type: check, default: true}
+    - {name: is_manufactured, type: check}
+    - {name: valuation_method, type: select, options: [Moving Average, FIFO], default: Moving Average}
+    - {name: standard_rate, type: currency, min: "0", description: Default selling rate when no price list rate exists}
+    - {name: last_purchase_rate, type: currency, read_only: true}
+    - {name: default_warehouse, type: link, to: Warehouse, link_filters: {is_group: false}}
+    - {name: income_account, type: link, to: Account, link_filters: {is_group: false}}
+    - {name: expense_account, type: link, to: Account, link_filters: {is_group: false}}
+    - {name: lead_time_days, type: int, default: 0, min: 0}
+    - {name: safety_stock, type: decimal, default: 0, min: "0"}
+    - {name: min_order_qty, type: decimal, default: 0, min: "0"}
+    - {name: has_serial_no, type: check}
+    - {name: has_batch_no, type: check}
+    - {name: barcode, type: data}
+    - {name: hsn_code, type: data, label: HSN/SAC Code}
+    - {name: description, type: text}
+    - {name: tax_rates, type: table, of: ItemTaxRate, label: Item Tax Rates}
+    - {name: suppliers, type: table, of: ItemSupplier, label: Approved Manufacturers / Suppliers}
+    - {name: disabled, type: check, in_filter: true}
+  form:
+    - {label: Item, fields: [item_code, item_name, item_group, stock_uom, description, barcode, hsn_code, disabled]}
+    - {label: Inventory, fields: [is_stock_item, valuation_method, default_warehouse, has_serial_no, has_batch_no, safety_stock]}
+    - {label: Buying & Manufacturing, fields: [is_purchased, is_manufactured, lead_time_days, min_order_qty, last_purchase_rate, suppliers]}
+    - {label: Selling & Accounting, fields: [standard_rate, income_account, expense_account, tax_rates]}
+  list: {columns: [item_code, item_name, item_group, stock_uom], sort: item_code asc}
+
+- name: Warehouse
+  label: Warehouse
+  kind: master
+  module: masters
+  title_field: warehouse_name
+  company_scoped: true
+  fields:
+    - {name: warehouse_name, type: data, required: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, locked: true, in_filter: true}
+    - {name: parent_warehouse, type: link, to: Warehouse, link_filters: {is_group: true}}
+    - {name: is_group, type: check}
+    - {name: account, type: link, to: Account, link_filters: {is_group: false}, description: Inventory account; defaults to the company inventory account}
+    - {name: disabled, type: check}
+  unique: [[company, warehouse_name]]
+
+- name: PriceList
+  label: Price List
+  kind: master
+  module: masters
+  title_field: price_list_name
+  fields:
+    - {name: price_list_name, type: data, required: true, unique: true, in_list: true}
+    - {name: currency, type: link, to: Currency}
+    - {name: selling, type: check, in_list: true}
+    - {name: buying, type: check, in_list: true}
+    - {name: enabled, type: check, default: true}
+
+- name: ItemPrice
+  label: Item Price
+  kind: master
+  module: masters
+  fields:
+    - {name: item, type: link, to: Item, required: true, in_list: true, in_filter: true}
+    - {name: price_list, type: link, to: PriceList, required: true, in_list: true, in_filter: true}
+    - {name: rate, type: currency, required: true, min: "0", in_list: true}
+    - {name: uom, type: link, to: Uom}
+    - {name: valid_from, type: date, required: true, default_expr: today, in_list: true}
+    - {name: valid_upto, type: date, in_list: true}
+  exclusion:
+    - {fields: [item, price_list], from: valid_from, to: valid_upto}
+  rules:
+    - {name: validity, check: "doc.valid_upto == null || doc.valid_upto >= doc.valid_from", message: "Valid up to is before valid from"}
+  list: {sort: valid_from desc}
+
+- name: TaxRow
+  label: Tax Row
+  kind: child
+  fields:
+    - {name: charge_type, type: select, options: [On Net Total, On Previous Row Amount, On Previous Row Total, Actual], required: true, default: On Net Total, in_list: true}
+    - {name: account, type: link, to: Account, required: true, link_filters: {is_group: false}, in_list: true}
+    - {name: description, type: data, in_list: true}
+    - {name: rate, type: percent, min: "0", max: "1000", in_list: true}
+    - {name: amount, type: currency, description: Fixed amount for Actual charges}
+    - {name: row_ref, type: int, min: 1, label: Reference Row, description: For "previous row" charges (1-based)}
+    - {name: included_in_price, type: check, label: Included in Rate}
+    - {name: deduct, type: check, description: Withholding taxes are deducted}
+    - {name: cost_center, type: link, to: CostCenter}
+    - {name: tax_amount, type: currency, read_only: true, in_list: true}
+    - {name: total, type: currency, read_only: true, in_list: true}
+    - {name: base_tax_amount, type: currency, read_only: true}
+    - {name: base_total, type: currency, read_only: true}
+
+- name: TaxTemplate
+  label: Tax Template
+  kind: master
+  module: masters
+  title_field: title
+  company_scoped: true
+  fields:
+    - {name: title, type: data, required: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, in_filter: true}
+    - {name: kind, type: select, options: [Sales, Purchase], required: true, in_list: true, in_filter: true}
+    - {name: is_default, type: check, in_list: true}
+    - {name: condition, type: code, description: "Optional CEL condition on the document, e.g. doc.place_of_supply == 'Karnataka'"}
+    - {name: rows, type: table, of: TaxRow, required: true}
+  unique: [[company, title]]

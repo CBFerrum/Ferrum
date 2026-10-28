@@ -1,0 +1,86 @@
+# Production: configure through environment variables (12-factor). Required:
+#   DATABASE_URL, JWT_SECRET (>= 32 chars), FERRUM_BOOTSTRAP_TOKEN (or empty to disable HTTP tenant creation)
+logger:
+  enable: true
+  pretty_backtrace: false
+  level: <%= get_env(name="LOG_LEVEL", default="info") %>
+  format: json
+
+server:
+  port: <%= get_env(name="PORT", default="5150") %>
+  binding: <%= get_env(name="BINDING", default="0.0.0.0") %>
+  host: <%= get_env(name="PUBLIC_URL", default="http://localhost") %>
+  middlewares:
+    # Unknown routes get a plain 404, never Loco's demo page.
+    fallback:
+      enable: false
+    # CSP allows only same-origin scripts (the built web app); print templates may use inline styles.
+    secure_headers:
+      enable: true
+      preset: github
+      overrides:
+        Content-Security-Policy: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
+        Strict-Transport-Security: "max-age=31536000; includeSubDomains"
+        Referrer-Policy: "strict-origin-when-cross-origin"
+    limit_payload:
+      enable: true
+      body_limit: 30mb
+    timeout_request:
+      enable: true
+      timeout: 120000
+    compression:
+      enable: true
+    cors:
+      enable: <%= get_env(name="CORS_ENABLED", default="false") %>
+      allow_origins: [<%= get_env(name="CORS_ORIGINS", default="\"https://example.invalid\"") %>]
+      allow_headers: ["authorization", "content-type", "if-match", "idempotency-key", "x-request-id"]
+      allow_methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+      max_age: 3600
+    static:
+      enable: true
+      must_exist: false
+      precompressed: false
+      folder:
+        uri: "/app"
+        path: <%= get_env(name="FERRUM_WEB_DIR", default="web/dist") %>
+      fallback: <%= get_env(name="FERRUM_WEB_INDEX", default="web/dist/index.html") %>
+
+workers:
+  mode: BackgroundAsync
+
+mailer:
+  smtp:
+    enable: <%= get_env(name="MAILER_ENABLED", default="false") %>
+    host: <%= get_env(name="MAILER_HOST", default="localhost") %>
+    port: <%= get_env(name="MAILER_PORT", default="587") %>
+    secure: <%= get_env(name="MAILER_SECURE", default="true") %>
+    auth:
+      user: "<%= get_env(name="MAILER_USER", default="") %>"
+      password: "<%= get_env(name="MAILER_PASSWORD", default="") %>"
+database:
+  uri: <%= get_env(name="DATABASE_URL") %>
+  enable_logging: false
+  connect_timeout: 5000
+  idle_timeout: 600000
+  min_connections: 1
+  max_connections: 2
+  auto_migrate: true
+  dangerously_truncate: false
+  dangerously_recreate: false
+
+auth:
+  jwt:
+    secret: "<%= get_env(name="JWT_SECRET") %>"
+    expiration: <%= get_env(name="JWT_EXPIRATION_SECONDS", default="28800") %>
+
+settings:
+  packages_dir: <%= get_env(name="FERRUM_PACKAGES_DIR", default="packages") %>
+  db_max_connections: <%= get_env(name="FERRUM_DB_MAX_CONNECTIONS", default="30") %>
+  bootstrap_token: "<%= get_env(name="FERRUM_BOOTSTRAP_TOKEN", default="") %>"
+  webhooks_allow_private: false
+  run_background: <%= get_env(name="FERRUM_RUN_BACKGROUND", default="true") %>
+  upload_max_bytes: 26214400
+  files_dir: <%= get_env(name="FERRUM_FILES_DIR", default="/var/lib/ferrum/files") %>
+  s3_bucket: "<%= get_env(name="FERRUM_S3_BUCKET", default="") %>"
+  s3_region: "<%= get_env(name="FERRUM_S3_REGION", default="") %>"
+  metrics_token: "<%= get_env(name="FERRUM_METRICS_TOKEN", default="") %>"

@@ -1,0 +1,24 @@
+[package]
+name = "ferrum-plugins"
+description = "Sandboxed tenant plugins: WebAssembly modules attached to document hooks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferrum-kernel = { path = "../kernel" }
+wasmtime = { version = "48.0.7", default-features = false, features = ["cranelift", "runtime", "std", "wat", "parallel-compilation"] }
+async-trait = { workspace = true }
+dashmap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+[lints]
+workspace = true

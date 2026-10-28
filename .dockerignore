@@ -1,0 +1,10 @@
+target
+**/target
+**/node_modules
+web
+storage
+deploy
+docs
+.git
+.github
+*.md

@@ -1,0 +1,46 @@
+logger:
+  enable: true
+  level: warn
+  format: compact
+
+server:
+  port: 5160
+  binding: 127.0.0.1
+  host: http://localhost
+  middlewares:
+    # Unknown routes get a plain 404, never Loco's demo page.
+    fallback:
+      enable: false
+    limit_payload:
+      enable: true
+      body_limit: 30mb
+
+workers:
+  mode: ForegroundBlocking
+
+mailer:
+  stub: true
+
+database:
+  uri: <%= get_env(name="DATABASE_URL", default="postgres://ferrum:ferrum@localhost:5432/ferrum_test") %>
+  enable_logging: false
+  connect_timeout: 5000
+  idle_timeout: 600000
+  min_connections: 1
+  max_connections: 2
+  auto_migrate: true
+  dangerously_truncate: false
+  dangerously_recreate: false
+
+auth:
+  jwt:
+    secret: dGVzdC1zZWNyZXQtMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+    expiration: 3600
+
+settings:
+  packages_dir: <%= get_env(name="FERRUM_PACKAGES_DIR", default="../packages") %>
+  db_max_connections: 10
+  bootstrap_token: test-bootstrap-token
+  webhooks_allow_private: true
+  run_background: false
+  files_dir: <%= get_env(name="FERRUM_FILES_DIR", default="../target/test-storage") %>

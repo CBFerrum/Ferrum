@@ -1,0 +1,232 @@
+- name: PricingRule
+  label: Pricing Rule
+  kind: master
+  module: selling
+  title_field: title
+  fields:
+    - {name: title, type: data, required: true, in_list: true}
+    - {name: apply_on, type: select, options: [Item, Item Group, All Items], required: true, default: Item, in_list: true}
+    - {name: item, type: link, to: Item, visible_if: "doc.apply_on == 'Item'", required_if: "doc.apply_on == 'Item'"}
+    - {name: item_group, type: link, to: ItemGroup, visible_if: "doc.apply_on == 'Item Group'", required_if: "doc.apply_on == 'Item Group'"}
+    - {name: customer, type: link, to: Customer}
+    - {name: customer_group, type: link, to: CustomerGroup}
+    - {name: min_qty, type: decimal, default: 0, min: "0"}
+    - {name: max_qty, type: decimal, default: 0, min: "0", description: 0 = no maximum}
+    - {name: valid_from, type: date}
+    - {name: valid_upto, type: date}
+    - {name: discount_percent, type: percent, min: "0", max: "100", in_list: true}
+    - {name: rate, type: currency, min: "0", description: Fixed rate (overrides the price list)}
+    - {name: priority, type: int, default: 1, min: 1, max: 100, in_list: true}
+    - {name: condition, type: code, description: "Optional CEL condition, e.g. doc.customer_name.startsWith('Acme')"}
+    - {name: disabled, type: check, in_filter: true}
+  rules:
+    - {name: something_to_apply, check: "doc.discount_percent > 0.0 || doc.rate > 0.0", message: "Set a discount or a rate"}
+
+- name: SalesOrderItem
+  label: Sales Order Item
+  kind: child
+  fields:
+    - {name: item, type: link, to: Item, required: true, in_list: true}
+    - {name: item_name, type: data, fetch_from: item.item_name, read_only: true}
+    - {name: uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true}
+    - {name: qty, type: decimal, required: true, min: "0.000000001", in_list: true}
+    - {name: price_list_rate, type: currency, read_only: true}
+    - {name: discount_percent, type: percent, min: "0", max: "100"}
+    - {name: rate, type: currency, read_only: true, in_list: true}
+    - {name: amount, type: currency, read_only: true, in_list: true}
+    - {name: net_amount, type: currency, read_only: true}
+    - {name: warehouse, type: link, to: Warehouse, link_filters: {is_group: false}}
+    - {name: delivery_date, type: date}
+    - {name: delivered_qty, type: decimal, read_only: true, no_copy: true, in_list: true}
+    - {name: billed_qty, type: decimal, read_only: true, no_copy: true}
+    - {name: item_tax_rates, type: json, read_only: true}
+
+- name: SalesOrder
+  label: Sales Order
+  kind: document
+  module: selling
+  submittable: true
+  company_scoped: true
+  title_field: customer_name
+  numbering: {template: "SO-{FY}-{seq:5}", on: submit, date_field: posting_date}
+  fields:
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: customer, type: link, to: Customer, required: true, in_filter: true}
+    - {name: customer_name, type: data, fetch_from: customer.customer_name, read_only: true, in_list: true}
+    - {name: posting_date, type: date, required: true, default_expr: today, label: Order Date, in_list: true, in_filter: true}
+    - {name: delivery_date, type: date}
+    - {name: po_no, type: data, label: Customer PO No}
+    - {name: currency, type: link, to: Currency}
+    - {name: conversion_rate, type: decimal, default: 1, min: "0.000000001"}
+    - {name: price_list, type: link, to: PriceList}
+    - {name: set_warehouse, type: link, to: Warehouse, link_filters: {is_group: false}}
+    - {name: tax_template, type: link, to: TaxTemplate}
+    - {name: items, type: table, of: SalesOrderItem, required: true}
+    - {name: taxes, type: table, of: TaxRow}
+    - {name: discount_percent, type: percent, min: "0", max: "100", label: Additional Discount %}
+    - {name: total, type: currency, read_only: true}
+    - {name: net_total, type: currency, read_only: true}
+    - {name: total_taxes, type: currency, read_only: true}
+    - {name: grand_total, type: currency, read_only: true, in_list: true}
+    - {name: rounding_adjustment, type: currency, read_only: true}
+    - {name: rounded_total, type: currency, read_only: true}
+    - {name: base_grand_total, type: currency, read_only: true}
+    - {name: per_delivered, type: percent, read_only: true, no_copy: true}
+    - {name: per_billed, type: percent, read_only: true, no_copy: true}
+    - {name: status, type: select, options: [Draft, To Deliver and Bill, To Deliver, To Bill, Completed, Closed, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: project, type: link, to: Project}
+    - {name: terms, type: text}
+  actions:
+    - {name: make_delivery_note, label: Create Delivery Note, docstatus: [1], permission: read, condition: "doc.per_delivered < 100.0 && doc.status != 'Closed'"}
+    - {name: make_sales_invoice, label: Create Sales Invoice, docstatus: [1], permission: read, condition: "doc.per_billed < 100.0 && doc.status != 'Closed'"}
+    - {name: close, label: Close, docstatus: [1], permission: submit}
+    - {name: reopen, label: Re-open, docstatus: [1], permission: submit, condition: "doc.status == 'Closed'"}
+  list: {columns: [number, customer_name, posting_date, grand_total, status], sort: posting_date desc}
+
+- name: DeliveryNoteItem
+  label: Delivery Note Item
+  kind: child
+  fields:
+    - {name: item, type: link, to: Item, required: true, in_list: true}
+    - {name: item_name, type: data, fetch_from: item.item_name, read_only: true}
+    - {name: uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true}
+    - {name: qty, type: decimal, required: true, min: "0.000000001", in_list: true}
+    - {name: price_list_rate, type: currency, read_only: true}
+    - {name: discount_percent, type: percent, min: "0", max: "100"}
+    - {name: rate, type: currency, read_only: true, in_list: true}
+    - {name: amount, type: currency, read_only: true, in_list: true}
+    - {name: net_amount, type: currency, read_only: true}
+    - {name: warehouse, type: link, to: Warehouse, link_filters: {is_group: false}, in_list: true}
+    - {name: sales_order, type: link, to: SalesOrder, read_only: true}
+    - {name: so_line, type: data, read_only: true}
+    - {name: billed_qty, type: decimal, read_only: true, no_copy: true}
+    - {name: valuation_rate, type: currency, read_only: true, no_copy: true}
+    - {name: batch_no, type: data}
+    - {name: serial_no, type: text}
+    - {name: item_tax_rates, type: json, read_only: true}
+
+- name: DeliveryNote
+  label: Delivery Note
+  kind: document
+  module: selling
+  submittable: true
+  company_scoped: true
+  title_field: customer_name
+  numbering: {template: "DN-{FY}-{seq:5}", on: submit, date_field: posting_date}
+  fields:
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: customer, type: link, to: Customer, required: true, in_filter: true}
+    - {name: customer_name, type: data, fetch_from: customer.customer_name, read_only: true, in_list: true}
+    - {name: posting_date, type: date, required: true, default_expr: today, in_list: true, in_filter: true}
+    - {name: posting_time, type: data, default: "23:59:59"}
+    - {name: is_return, type: check, in_filter: true}
+    - {name: return_against, type: link, to: DeliveryNote, visible_if: "doc.is_return"}
+    - {name: currency, type: link, to: Currency}
+    - {name: conversion_rate, type: decimal, default: 1, min: "0.000000001"}
+    - {name: price_list, type: link, to: PriceList}
+    - {name: set_warehouse, type: link, to: Warehouse, link_filters: {is_group: false}}
+    - {name: tax_template, type: link, to: TaxTemplate}
+    - {name: items, type: table, of: DeliveryNoteItem, required: true}
+    - {name: taxes, type: table, of: TaxRow}
+    - {name: discount_percent, type: percent, min: "0", max: "100"}
+    - {name: total, type: currency, read_only: true}
+    - {name: net_total, type: currency, read_only: true}
+    - {name: total_taxes, type: currency, read_only: true}
+    - {name: grand_total, type: currency, read_only: true, in_list: true}
+    - {name: rounding_adjustment, type: currency, read_only: true}
+    - {name: rounded_total, type: currency, read_only: true}
+    - {name: base_grand_total, type: currency, read_only: true}
+    - {name: per_billed, type: percent, read_only: true, no_copy: true}
+    - {name: status, type: select, options: [Draft, To Bill, Completed, Return, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: transporter, type: data}
+    - {name: vehicle_no, type: data}
+  actions:
+    - {name: make_sales_invoice, label: Create Sales Invoice, docstatus: [1], permission: read, condition: "doc.per_billed < 100.0 && !doc.is_return"}
+  list: {columns: [number, customer_name, posting_date, grand_total, status], sort: posting_date desc}
+
+- name: SalesInvoiceItem
+  label: Sales Invoice Item
+  kind: child
+  fields:
+    - {name: item, type: link, to: Item, required: true, in_list: true}
+    - {name: item_name, type: data, fetch_from: item.item_name, read_only: true}
+    - {name: description, type: text}
+    - {name: uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true}
+    - {name: qty, type: decimal, required: true, in_list: true}
+    - {name: price_list_rate, type: currency, read_only: true}
+    - {name: discount_percent, type: percent, min: "0", max: "100"}
+    - {name: rate, type: currency, read_only: true, in_list: true}
+    - {name: amount, type: currency, read_only: true, in_list: true}
+    - {name: net_amount, type: currency, read_only: true}
+    - {name: base_net_amount, type: currency, read_only: true}
+    - {name: income_account, type: link, to: Account, link_filters: {is_group: false}}
+    - {name: cost_center, type: link, to: CostCenter}
+    - {name: warehouse, type: link, to: Warehouse, link_filters: {is_group: false}}
+    - {name: sales_order, type: link, to: SalesOrder, read_only: true}
+    - {name: so_line, type: data, read_only: true}
+    - {name: delivery_note, type: link, to: DeliveryNote, read_only: true}
+    - {name: dn_line, type: data, read_only: true}
+    - {name: valuation_rate, type: currency, read_only: true, no_copy: true}
+    - {name: batch_no, type: data}
+    - {name: serial_no, type: text}
+    - {name: item_tax_rates, type: json, read_only: true}
+
+- name: SalesInvoice
+  label: Sales Invoice
+  kind: document
+  module: selling
+  submittable: true
+  company_scoped: true
+  title_field: customer_name
+  numbering: {template: "SINV-{FY}-{seq:5}", gapless: true, on: submit, date_field: posting_date}
+  search_fields: [po_no]
+  fields:
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: customer, type: link, to: Customer, required: true, in_filter: true}
+    - {name: customer_name, type: data, fetch_from: customer.customer_name, read_only: true, in_list: true}
+    - {name: posting_date, type: date, required: true, default_expr: today, in_list: true, in_filter: true}
+    - {name: posting_time, type: data, default: "23:59:59"}
+    - {name: due_date, type: date, in_list: true}
+    - {name: is_return, type: check, label: Is Return (Credit Note), in_filter: true}
+    - {name: return_against, type: link, to: SalesInvoice, visible_if: "doc.is_return"}
+    - {name: update_stock, type: check, description: Deliver stock with this invoice}
+    - {name: set_warehouse, type: link, to: Warehouse, link_filters: {is_group: false}, visible_if: "doc.update_stock"}
+    - {name: currency, type: link, to: Currency}
+    - {name: conversion_rate, type: decimal, default: 1, min: "0.000000001"}
+    - {name: price_list, type: link, to: PriceList}
+    - {name: tax_template, type: link, to: TaxTemplate}
+    - {name: items, type: table, of: SalesInvoiceItem, required: true}
+    - {name: taxes, type: table, of: TaxRow}
+    - {name: discount_percent, type: percent, min: "0", max: "100", label: Additional Discount %}
+    - {name: total, type: currency, currency: currency, read_only: true}
+    - {name: discount_amount, type: currency, currency: currency, read_only: true}
+    - {name: net_total, type: currency, currency: currency, read_only: true}
+    - {name: total_taxes, type: currency, currency: currency, read_only: true}
+    - {name: grand_total, type: currency, currency: currency, read_only: true, in_list: true}
+    - {name: rounding_adjustment, type: currency, currency: currency, read_only: true}
+    - {name: rounded_total, type: currency, currency: currency, read_only: true}
+    - {name: base_net_total, type: currency, read_only: true}
+    - {name: base_grand_total, type: currency, read_only: true}
+    - {name: base_rounded_total, type: currency, read_only: true}
+    - {name: outstanding_amount, type: currency, currency: currency, read_only: true, no_copy: true, in_list: true}
+    - {name: debit_to, type: link, to: Account, read_only: true, label: Receivable Account}
+    - {name: status, type: select, options: [Draft, Unpaid, Partly Paid, Paid, Return, Credit Note Issued, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: po_no, type: data, label: Customer PO No}
+    - {name: project, type: link, to: Project}
+    - {name: cost_center, type: link, to: CostCenter}
+    - {name: terms, type: text}
+    - {name: remarks, type: text}
+  form:
+    - {label: Invoice, fields: [company, customer, customer_name, posting_date, posting_time, due_date, po_no, is_return, return_against]}
+    - {label: Currency & Price, collapsible: true, fields: [currency, conversion_rate, price_list, update_stock, set_warehouse]}
+    - {label: Items, fields: [items]}
+    - {label: Taxes, fields: [tax_template, taxes, discount_percent]}
+    - {label: Totals, fields: [total, discount_amount, net_total, total_taxes, grand_total, rounding_adjustment, rounded_total, outstanding_amount, status]}
+    - {label: More, collapsible: true, fields: [debit_to, base_net_total, base_grand_total, base_rounded_total, project, cost_center, terms, remarks]}
+  rules:
+    - {name: due_after_posting, check: "doc.due_date == null || doc.due_date >= doc.posting_date", message: "Due date cannot be before the posting date"}
+    - {name: return_needs_source, check: "!doc.is_return || doc.return_against != null", message: "A credit note must reference the original invoice", on: submit}
+  actions:
+    - {name: make_payment, label: Record Payment, docstatus: [1], permission: read, condition: "doc.outstanding_amount > 0.0"}
+    - {name: make_credit_note, label: Create Credit Note, docstatus: [1], permission: read, condition: "!doc.is_return"}
+  list: {columns: [number, customer_name, posting_date, grand_total, outstanding_amount, status], sort: posting_date desc}

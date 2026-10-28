@@ -1,0 +1,36 @@
+- name: StockEntryItem
+  label: Stock Entry Item
+  kind: child
+  fields:
+    - {name: item, type: link, to: Item, required: true, in_list: true}
+    - {name: item_name, type: data, fetch_from: item.item_name, read_only: true}
+    - {name: uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true}
+    - {name: source_warehouse, type: link, to: Warehouse, link_filters: {is_group: false}, in_list: true}
+    - {name: target_warehouse, type: link, to: Warehouse, link_filters: {is_group: false}, in_list: true}
+    - {name: qty, type: decimal, required: true, min: "0.000000001", in_list: true}
+    - {name: basic_rate, type: currency, min: "0", in_list: true, description: Incoming rate for receipts; computed for issues and transfers}
+    - {name: amount, type: currency, read_only: true, in_list: true}
+    - {name: batch_no, type: data}
+    - {name: serial_no, type: text, description: One serial number per line}
+    - {name: expense_account, type: link, to: Account, link_filters: {is_group: false}, description: Offset account for receipts and issues}
+    - {name: cost_center, type: link, to: CostCenter}
+
+- name: StockEntry
+  label: Stock Entry
+  label_plural: Stock Entries
+  kind: document
+  module: inventory
+  submittable: true
+  company_scoped: true
+  numbering: {template: "STE-{FY}-{seq:5}", on: submit, date_field: posting_date}
+  fields:
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: purpose, type: select, options: [Material Receipt, Material Issue, Material Transfer, Opening Stock], required: true, default: Material Receipt, in_list: true, in_filter: true}
+    - {name: posting_date, type: date, required: true, default_expr: today, in_list: true, in_filter: true}
+    - {name: posting_time, type: data, default: "23:59:59", description: "HH:MM:SS (orders entries on the same day)"}
+    - {name: items, type: table, of: StockEntryItem, required: true}
+    - {name: total_amount, type: currency, read_only: true, in_list: true}
+    - {name: remarks, type: text}
+  rules:
+    - {name: time_format, check: "doc.posting_time == null || doc.posting_time.matches('^[0-2][0-9]:[0-5][0-9](:[0-5][0-9])?$')", message: "Posting time must be HH:MM or HH:MM:SS"}
+  list: {columns: [number, purpose, posting_date, total_amount], sort: posting_date desc}

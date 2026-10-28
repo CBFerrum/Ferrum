@@ -1,0 +1,18 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ferrum
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: ferrum}
+  minReplicas: 3
+  # Each replica may open 34 database connections (30 + 4 side); 10 × 34 fits the cluster's
+  # max_connections of 400. Add a PgBouncer pooler before raising this.
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: 70}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300

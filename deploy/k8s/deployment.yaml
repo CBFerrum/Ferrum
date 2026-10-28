@@ -1,0 +1,93 @@
+# Stateless API replicas. Every replica runs the outbox, webhook and maintenance loops;
+# they coordinate through the database (SKIP LOCKED, advisory locks), so any replica can
+# die at any time without losing work.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ferrum
+  labels: {app.kubernetes.io/name: ferrum}
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels: {app.kubernetes.io/name: ferrum}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: ferrum}
+    spec:
+      terminationGracePeriodSeconds: 40
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {app.kubernetes.io/name: ferrum}
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels: {app.kubernetes.io/name: ferrum}
+      containers:
+        - name: ferrum
+          image: ferrum
+          args: ["start"]
+          ports:
+            - {name: http, containerPort: 5150}
+          env:
+            - name: DATABASE_URL
+              valueFrom: {secretKeyRef: {name: ferrum-db-app, key: uri}}
+            - name: JWT_SECRET
+              valueFrom: {secretKeyRef: {name: ferrum-secrets, key: JWT_SECRET}}
+            - name: FERRUM_BOOTSTRAP_TOKEN
+              valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_BOOTSTRAP_TOKEN}}
+            - name: FERRUM_METRICS_TOKEN
+              valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_METRICS_TOKEN}}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom: {secretKeyRef: {name: ferrum-secrets, key: AWS_ACCESS_KEY_ID}}
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom: {secretKeyRef: {name: ferrum-secrets, key: AWS_SECRET_ACCESS_KEY}}
+            # Attachments must be shared by all replicas: use object storage.
+            - {name: FERRUM_S3_BUCKET, value: "CHANGE-ME-files-bucket"}
+            - {name: FERRUM_S3_REGION, value: "ap-south-1"}
+            - {name: PUBLIC_URL, value: "https://erp.example.com"}
+            - {name: FERRUM_DB_MAX_CONNECTIONS, value: "30"}
+            - {name: LOG_LEVEL, value: "info"}
+          resources:
+            requests: {cpu: 250m, memory: 256Mi}
+            limits: {memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+          startupProbe:
+            httpGet: {path: /_ping, port: http}
+            periodSeconds: 2
+            failureThreshold: 90
+          readinessProbe:
+            httpGet: {path: /api/ready, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            # Process health only: a database outage must not restart every replica.
+            httpGet: {path: /_ping, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          lifecycle:
+            preStop:  # the sleep action needs Kubernetes 1.30+
+              # Let the load balancer stop routing here before shutdown begins.
+              sleep: {seconds: 5}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 512Mi}

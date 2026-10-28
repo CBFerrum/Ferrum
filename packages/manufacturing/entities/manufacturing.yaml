@@ -1,0 +1,103 @@
+- name: BomItem
+  label: BOM Item
+  kind: child
+  fields:
+    - {name: item, type: link, to: Item, required: true, in_list: true}
+    - {name: item_name, type: data, fetch_from: item.item_name, read_only: true}
+    - {name: qty, type: decimal, required: true, min: "0.000000001", in_list: true, description: Quantity per BOM quantity}
+    - {name: uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true}
+    - {name: scrap_percent, type: percent, default: 0, min: "0", max: "99"}
+    - {name: rate, type: currency, read_only: true, description: Valuation rate used for costing}
+    - {name: amount, type: currency, read_only: true, in_list: true}
+    - {name: source_warehouse, type: link, to: Warehouse, link_filters: {is_group: false}}
+    - {name: reference_designators, type: text, description: "e.g. R1-R12, C3"}
+
+- name: Bom
+  label: Bill of Materials
+  label_plural: Bills of Materials
+  kind: document
+  module: manufacturing
+  submittable: true
+  company_scoped: true
+  title_field: item_name
+  numbering: {template: "BOM-{field:revision}-{seq:4}", on: submit}
+  fields:
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: item, type: link, to: Item, required: true, in_list: true, in_filter: true}
+    - {name: item_name, type: data, fetch_from: item.item_name, read_only: true, in_list: true}
+    - {name: revision, type: data, required: true, default: A, max_length: 10, in_list: true}
+    - {name: quantity, type: decimal, required: true, default: 1, min: "0.000000001", description: Quantity this BOM produces}
+    - {name: is_active, type: check, default: true, in_list: true}
+    - {name: is_default, type: check, default: true, in_list: true}
+    - {name: effective_from, type: date}
+    - {name: items, type: table, of: BomItem, required: true}
+    - {name: operating_cost, type: currency, default: 0, min: "0", description: Labour and overheads per BOM quantity}
+    - {name: raw_material_cost, type: currency, read_only: true, no_copy: true}
+    - {name: total_cost, type: currency, read_only: true, no_copy: true, in_list: true}
+    - {name: change_note, type: text, description: Engineering change description for this revision}
+  actions:
+    - {name: update_cost, label: Update Cost, docstatus: [0, 1], permission: write}
+  list: {columns: [number, item_name, revision, is_default, total_cost], sort: created_at desc}
+
+- name: WorkOrder
+  label: Work Order
+  kind: document
+  module: manufacturing
+  submittable: true
+  company_scoped: true
+  title_field: item_name
+  numbering: {template: "WO-{FY}-{seq:5}", on: submit, date_field: planned_start_date}
+  fields:
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: item, type: link, to: Item, required: true, in_filter: true}
+    - {name: item_name, type: data, fetch_from: item.item_name, read_only: true, in_list: true}
+    - {name: bom, type: link, to: Bom, required: true}
+    - {name: qty, type: decimal, required: true, min: "0.000000001", in_list: true}
+    - {name: produced_qty, type: decimal, read_only: true, no_copy: true, in_list: true}
+    - {name: source_warehouse, type: link, to: Warehouse, required: true, link_filters: {is_group: false}, label: Raw Material Warehouse}
+    - {name: target_warehouse, type: link, to: Warehouse, required: true, link_filters: {is_group: false}, label: Finished Goods Warehouse}
+    - {name: planned_start_date, type: date, required: true, default_expr: today}
+    - {name: expected_end_date, type: date}
+    - {name: sales_order, type: link, to: SalesOrder}
+    - {name: status, type: select, options: [Draft, Not Started, In Process, Completed, Stopped, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: actual_cost, type: currency, read_only: true, no_copy: true}
+  actions:
+    - {name: manufacture, label: Produce, docstatus: [1], permission: submit, condition: "doc.produced_qty < doc.qty && doc.status != 'Stopped'"}
+    - {name: stop, label: Stop, docstatus: [1], permission: submit}
+    - {name: resume, label: Resume, docstatus: [1], permission: submit, condition: "doc.status == 'Stopped'"}
+  list: {columns: [number, item_name, qty, produced_qty, status], sort: planned_start_date desc}
+
+- name: MrpLine
+  label: MRP Line
+  kind: child
+  fields:
+    - {name: item, type: link, to: Item, in_list: true}
+    - {name: item_name, type: data, read_only: true, in_list: true}
+    - {name: action, type: select, options: [Purchase, Manufacture], in_list: true}
+    - {name: gross_requirement, type: decimal, read_only: true}
+    - {name: available, type: decimal, read_only: true}
+    - {name: on_order, type: decimal, read_only: true}
+    - {name: safety_stock, type: decimal, read_only: true}
+    - {name: net_requirement, type: decimal, read_only: true, in_list: true}
+    - {name: suggested_qty, type: decimal, in_list: true}
+    - {name: supplier, type: link, to: Supplier}
+    - {name: warehouse, type: link, to: Warehouse}
+    - {name: required_by, type: date}
+    - {name: created_document, type: data, read_only: true}
+
+- name: MrpRun
+  label: MRP Run
+  kind: document
+  module: manufacturing
+  company_scoped: true
+  numbering: {template: "MRP-{YYYY}{MM}-{seq:4}"}
+  fields:
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: warehouse, type: link, to: Warehouse, required: true, link_filters: {is_group: false}, description: Planning warehouse}
+    - {name: include_sales_orders, type: check, default: true}
+    - {name: demand_until, type: date, description: Sales orders with delivery dates up to this date}
+    - {name: lines, type: table, of: MrpLine}
+    - {name: status, type: select, options: [Draft, Planned, Orders Created], default: Draft, read_only: true, in_list: true}
+  actions:
+    - {name: run, label: Run MRP, docstatus: [0], permission: write}
+    - {name: create_orders, label: Create Purchase Orders & Work Orders, docstatus: [0], permission: write, condition: "doc.status == 'Planned'"}
