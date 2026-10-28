@@ -16,6 +16,9 @@ ferrum-meta = { path = "../crates/meta" }
 ferrum-domain = { path = "../crates/domain" }
 ferrum-plugins = { path = "../crates/plugins" }
 ferrum-mcp = { path = "../crates/mcp" }
+ferrum-pkg-crm = { path = "../crates/pkg-crm" }
+ferrum-pkg-projects = { path = "../crates/pkg-projects" }
+ferrum-pkg-support = { path = "../crates/pkg-support" }
 base64 = "0.22"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 migration = { path = "migration", package = "ferrum-migration" }

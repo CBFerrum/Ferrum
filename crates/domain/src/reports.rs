@@ -58,7 +58,9 @@ const DEFS: &[Def] = &[
     },
 ];
 
-fn param_def(name: &str) -> Value {
+/// A standard parameter definition (`company`, `from_date`, `to_date`, `as_of`, or a link to
+/// `account`, `customer`, `supplier`, `warehouse`, `item`).
+pub fn param_def(name: &str) -> Value {
     match name {
         // Optional: the server uses the user's default company, or the only one.
         "company" => json!({"name": "company", "label": "Company", "type": "link", "to": "Company"}),
@@ -78,47 +80,109 @@ fn param_def(name: &str) -> Value {
     }
 }
 
-pub fn catalog() -> Value {
-    Value::Array(
-        DEFS.iter()
-            .map(|d| json!({"name": d.name, "label": d.label, "module": d.module, "params": d.params.iter().map(|p| param_def(p)).collect::<Vec<_>>()}))
-            .collect(),
-    )
+/// A read-only, tenant-isolated transaction with the report timeout, for report queries.
+pub async fn read_tx(k: &Kernel, ctx: &Ctx) -> Result<Tx> {
+    let mut tx = k.db.tenant_tx_with_timeout(ctx.tenant, REPORT_TIMEOUT_MS).await?;
+    sqlx::query("set transaction read only").execute(&mut *tx).await?;
+    Ok(tx)
 }
 
-fn col(name: &str, label: &str, ty: &str) -> Value {
+/// Reports contributed by packages outside this crate.
+#[async_trait::async_trait]
+pub trait ReportSource: Send + Sync {
+    /// `[{name, label, module, entity, params}]`: `entity` is the one the caller must be able to read.
+    fn catalog(&self) -> Vec<Value>;
+    /// Runs `name` (already permission-checked against its `entity`).
+    async fn run(&self, k: &Kernel, ctx: &Ctx, name: &str, params: &HashMap<String, String>) -> Result<Value>;
+}
+
+static SOURCES: std::sync::RwLock<Vec<std::sync::Arc<dyn ReportSource>>> = std::sync::RwLock::new(Vec::new());
+
+/// Registers a package's reports (at startup).
+pub fn add_source(source: std::sync::Arc<dyn ReportSource>) {
+    if let Ok(mut s) = SOURCES.write() {
+        s.push(source);
+    }
+}
+
+fn sources() -> Vec<std::sync::Arc<dyn ReportSource>> {
+    SOURCES.read().map(|s| s.clone()).unwrap_or_default()
+}
+
+pub fn catalog() -> Value {
+    let mut list: Vec<Value> = DEFS
+        .iter()
+        .map(|d| json!({"name": d.name, "label": d.label, "module": d.module, "params": d.params.iter().map(|p| param_def(p)).collect::<Vec<_>>()}))
+        .collect();
+    for s in sources() {
+        list.extend(s.catalog().into_iter().map(|mut e| {
+            if let Value::Object(m) = &mut e {
+                m.remove("entity");
+            }
+            e
+        }));
+    }
+    Value::Array(list)
+}
+
+/// Runs a report from a package source after checking the caller may read its entity.
+async fn run_source(k: &Kernel, ctx: &Ctx, name: &str, raw: &HashMap<String, String>) -> Result<Value> {
+    for s in sources() {
+        let Some(entry) = s.catalog().into_iter().find(|e| e["name"] == json!(name)) else { continue };
+        let entity = entry["entity"].as_str().unwrap_or_default().to_string();
+        if ctx.schema.entity(&entity).is_none() {
+            return Err(Error::NotFound(format!("report {name} (its package is not installed)")));
+        }
+        ctx.require(&entity, Action::Read)?;
+        let mut out = s.run(k, ctx, name, raw).await?;
+        if let Value::Object(m) = &mut out {
+            m.entry("name").or_insert_with(|| json!(name));
+            m.entry("label").or_insert_with(|| entry["label"].clone());
+        }
+        return Ok(out);
+    }
+    Err(Error::NotFound(format!("report {name}")))
+}
+
+pub fn col(name: &str, label: &str, ty: &str) -> Value {
     json!({"name": name, "label": label, "type": ty})
 }
 
-struct P<'a> {
-    raw: &'a HashMap<String, String>,
+/// A report's parameters as sent by the caller (all strings).
+pub struct Params<'a> {
+    pub raw: &'a HashMap<String, String>,
 }
 
-impl P<'_> {
-    fn date(&self, k: &str) -> Result<Option<NaiveDate>> {
+impl Params<'_> {
+    pub fn date(&self, k: &str) -> Result<Option<NaiveDate>> {
         match self.raw.get(k).map(|v| v.trim()).filter(|v| !v.is_empty()) {
             None => Ok(None),
             Some(v) => NaiveDate::parse_from_str(v, "%Y-%m-%d").map(Some).map_err(|_| Error::field(k, "use the format YYYY-MM-DD")),
         }
     }
 
-    fn uuid(&self, k: &str) -> Result<Option<Uuid>> {
+    pub fn uuid(&self, k: &str) -> Result<Option<Uuid>> {
         match self.raw.get(k).map(|v| v.trim()).filter(|v| !v.is_empty()) {
             None => Ok(None),
             Some(v) => v.parse().map(Some).map_err(|_| Error::field(k, "is not a valid id")),
         }
     }
+
+    pub fn str(&self, k: &str) -> Option<&str> {
+        self.raw.get(k).map(|v| v.trim()).filter(|v| !v.is_empty())
+    }
 }
 
-struct Co {
-    id: Uuid,
-    name: String,
-    currency: String,
-    fy_month: u32,
-    precision: u32,
+/// The company a report runs for (from the `company` parameter, the user's default, or the only one).
+pub struct ReportCompany {
+    pub id: Uuid,
+    pub name: String,
+    pub currency: String,
+    pub fy_month: u32,
+    pub precision: u32,
 }
 
-async fn resolve_company(tx: &mut Tx, ctx: &Ctx, p: &P<'_>) -> Result<Co> {
+pub async fn resolve_company(tx: &mut Tx, ctx: &Ctx, p: &Params<'_>) -> Result<ReportCompany> {
     let cid = match p.uuid("company")?.or(ctx.default_company) {
         Some(c) => c,
         None => {
@@ -145,7 +209,7 @@ async fn resolve_company(tx: &mut Tx, ctx: &Ctx, p: &P<'_>) -> Result<Co> {
     .fetch_optional(&mut **tx)
     .await?;
     let (name, fy, currency, precision) = row.ok_or_else(|| Error::NotFound("Company".into()))?;
-    Ok(Co {
+    Ok(ReportCompany {
         id: cid,
         name,
         currency: currency.unwrap_or_default(),
@@ -164,7 +228,7 @@ fn today() -> NaiveDate {
     chrono::Utc::now().date_naive()
 }
 
-fn period(p: &P<'_>, co: &Co) -> Result<(NaiveDate, NaiveDate)> {
+pub fn period(p: &Params<'_>, co: &ReportCompany) -> Result<(NaiveDate, NaiveDate)> {
     let to = p.date("to_date")?.unwrap_or_else(today);
     let from = p.date("from_date")?.unwrap_or_else(|| fy_start(to, co.fy_month));
     if from > to {
@@ -174,12 +238,12 @@ fn period(p: &P<'_>, co: &Co) -> Result<(NaiveDate, NaiveDate)> {
 }
 
 pub async fn run(k: &Kernel, ctx: &Ctx, name: &str, raw: &HashMap<String, String>) -> Result<Value> {
-    let def = DEFS.iter().find(|d| d.name == name).ok_or_else(|| Error::NotFound(format!("report {name}")))?;
+    let Some(def) = DEFS.iter().find(|d| d.name == name) else { return run_source(k, ctx, name, raw).await };
     if ctx.schema.entity(def.entity).is_none() {
         return Err(Error::NotFound(format!("report {name} (its package is not installed)")));
     }
     ctx.require(def.entity, Action::Read)?;
-    let p = P { raw };
+    let p = Params { raw };
     let mut tx = k.db.tenant_tx_with_timeout(ctx.tenant, REPORT_TIMEOUT_MS).await?;
     sqlx::query("set transaction read only").execute(&mut *tx).await?;
     let co = resolve_company(&mut tx, ctx, &p).await?;
@@ -232,7 +296,7 @@ fn label(a: &Acc) -> String {
     }
 }
 
-async fn accounts(tx: &mut Tx, ctx: &Ctx, co: &Co) -> Result<Vec<Acc>> {
+async fn accounts(tx: &mut Tx, ctx: &Ctx, co: &ReportCompany) -> Result<Vec<Acc>> {
     Ok(sqlx::query_as::<_, Acc>(
         "select id, parent_account, account_name, account_number, is_group, root_type from e_account where tenant_id = $1 and company = $2 \
          order by account_number nulls last, account_name",
@@ -244,7 +308,7 @@ async fn accounts(tx: &mut Tx, ctx: &Ctx, co: &Co) -> Result<Vec<Acc>> {
 }
 
 /// Debit-minus-credit per account over `[from, to]` (from = None: since the beginning).
-async fn balances(tx: &mut Tx, ctx: &Ctx, co: &Co, from: Option<NaiveDate>, to: NaiveDate) -> Result<HashMap<Uuid, Decimal>> {
+async fn balances(tx: &mut Tx, ctx: &Ctx, co: &ReportCompany, from: Option<NaiveDate>, to: NaiveDate) -> Result<HashMap<Uuid, Decimal>> {
     Ok(sqlx::query_as::<_, (Uuid, Decimal)>(
         "select account_id, sum(debit - credit) from journal_line where tenant_id = $1 and company_id = $2 \
          and ($3::date is null or posting_date >= $3) and posting_date <= $4 group by account_id",
@@ -299,7 +363,7 @@ fn tree(accs: &[Acc], bal: &HashMap<Uuid, Decimal>, root: &str, precision: u32) 
     (out, sum)
 }
 
-async fn trial_balance(tx: &mut Tx, ctx: &Ctx, co: &Co, p: &P<'_>) -> Result<Value> {
+async fn trial_balance(tx: &mut Tx, ctx: &Ctx, co: &ReportCompany, p: &Params<'_>) -> Result<Value> {
     let (from, to) = period(p, co)?;
     let year_start = fy_start(from, co.fy_month);
     let accs = accounts(tx, ctx, co).await?;
@@ -366,7 +430,7 @@ async fn trial_balance(tx: &mut Tx, ctx: &Ctx, co: &Co, p: &P<'_>) -> Result<Val
     }))
 }
 
-async fn general_ledger(tx: &mut Tx, ctx: &Ctx, co: &Co, p: &P<'_>) -> Result<Value> {
+async fn general_ledger(tx: &mut Tx, ctx: &Ctx, co: &ReportCompany, p: &Params<'_>) -> Result<Value> {
     let (from, to) = period(p, co)?;
     let (account, customer, supplier) = (p.uuid("account")?, p.uuid("customer")?, p.uuid("supplier")?);
     let opening: Decimal = sqlx::query_scalar(
@@ -426,7 +490,7 @@ async fn general_ledger(tx: &mut Tx, ctx: &Ctx, co: &Co, p: &P<'_>) -> Result<Va
     }))
 }
 
-async fn profit_and_loss(tx: &mut Tx, ctx: &Ctx, co: &Co, p: &P<'_>) -> Result<Value> {
+async fn profit_and_loss(tx: &mut Tx, ctx: &Ctx, co: &ReportCompany, p: &Params<'_>) -> Result<Value> {
     let (from, to) = period(p, co)?;
     let accs = accounts(tx, ctx, co).await?;
     let bal = balances(tx, ctx, co, Some(from), to).await?;
@@ -460,7 +524,7 @@ fn indent(r: &mut Value) {
     }
 }
 
-async fn balance_sheet(tx: &mut Tx, ctx: &Ctx, co: &Co, p: &P<'_>) -> Result<Value> {
+async fn balance_sheet(tx: &mut Tx, ctx: &Ctx, co: &ReportCompany, p: &Params<'_>) -> Result<Value> {
     let as_of = p.date("as_of")?.unwrap_or_else(today);
     let accs = accounts(tx, ctx, co).await?;
     let bal = balances(tx, ctx, co, None, as_of).await?;
@@ -501,7 +565,7 @@ async fn balance_sheet(tx: &mut Tx, ctx: &Ctx, co: &Co, p: &P<'_>) -> Result<Val
 
 // ─────────────────────────── receivables / payables ───────────────────────────
 
-async fn ageing(tx: &mut Tx, ctx: &Ctx, co: &Co, p: &P<'_>, kind: &str) -> Result<Value> {
+async fn ageing(tx: &mut Tx, ctx: &Ctx, co: &ReportCompany, p: &Params<'_>, kind: &str) -> Result<Value> {
     let as_of = p.date("as_of")?.unwrap_or_else(today);
     let party = p.uuid(kind)?;
     #[allow(clippy::type_complexity)]
@@ -570,7 +634,7 @@ async fn ageing(tx: &mut Tx, ctx: &Ctx, co: &Co, p: &P<'_>, kind: &str) -> Resul
 
 // ───────────────────────────── stock ─────────────────────────────
 
-async fn stock_balance(tx: &mut Tx, ctx: &Ctx, co: &Co, p: &P<'_>) -> Result<Value> {
+async fn stock_balance(tx: &mut Tx, ctx: &Ctx, co: &ReportCompany, p: &Params<'_>) -> Result<Value> {
     let (wh, item) = (p.uuid("warehouse")?, p.uuid("item")?);
     let as_of = p.date("as_of")?;
     let sql = if as_of.is_some() {
@@ -609,7 +673,7 @@ async fn stock_balance(tx: &mut Tx, ctx: &Ctx, co: &Co, p: &P<'_>) -> Result<Val
     }))
 }
 
-async fn stock_ledger(tx: &mut Tx, ctx: &Ctx, co: &Co, p: &P<'_>) -> Result<Value> {
+async fn stock_ledger(tx: &mut Tx, ctx: &Ctx, co: &ReportCompany, p: &Params<'_>) -> Result<Value> {
     let (from, to) = period(p, co)?;
     let (wh, item) = (p.uuid("warehouse")?, p.uuid("item")?);
     #[allow(clippy::type_complexity)]
@@ -650,7 +714,7 @@ async fn stock_ledger(tx: &mut Tx, ctx: &Ctx, co: &Co, p: &P<'_>) -> Result<Valu
 
 // ───────────────────────────── registers ─────────────────────────────
 
-async fn register(tx: &mut Tx, ctx: &Ctx, co: &Co, p: &P<'_>, kind: &str) -> Result<Value> {
+async fn register(tx: &mut Tx, ctx: &Ctx, co: &ReportCompany, p: &Params<'_>, kind: &str) -> Result<Value> {
     let (from, to) = period(p, co)?;
     let party = p.uuid(kind)?;
     let (table, party_name, extra) =

@@ -2105,6 +2105,60 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrum-pkg-crm"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "ferrum-pkg-projects"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "ferrum-pkg-support"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ferrum-plugins"
 version = "0.1.0"
 dependencies = [
@@ -2140,6 +2194,9 @@ dependencies = [
  "ferrum-mcp",
  "ferrum-meta",
  "ferrum-migration",
+ "ferrum-pkg-crm",
+ "ferrum-pkg-projects",
+ "ferrum-pkg-support",
  "ferrum-plugins",
  "futures-util",
  "hex",
