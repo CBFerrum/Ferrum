@@ -26,11 +26,47 @@ pub struct App;
 
 fn build_storage(settings: &Settings) -> Result<Storage> {
     if !settings.s3_bucket.is_empty() {
-        let driver = storage::drivers::aws::new(&settings.s3_bucket, &settings.s3_region).map_err(|e| Error::Message(format!("S3 storage: {e}")))?;
+        // OpenDAL talks HTTP through a process-wide transport that must be installed first.
+        opendal::install_default();
+        let region = if settings.s3_region.is_empty() { "auto" } else { settings.s3_region.as_str() };
+        let driver = if settings.s3_endpoint.is_empty() {
+            storage::drivers::aws::new(&settings.s3_bucket, region)
+        } else {
+            let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+            let credential = storage::drivers::aws::Credential {
+                key_id: env("AWS_ACCESS_KEY_ID").ok_or_else(|| Error::Message("AWS_ACCESS_KEY_ID is required with FERRUM_S3_ENDPOINT".into()))?,
+                secret_key: env("AWS_SECRET_ACCESS_KEY").ok_or_else(|| Error::Message("AWS_SECRET_ACCESS_KEY is required with FERRUM_S3_ENDPOINT".into()))?,
+                token: env("AWS_SESSION_TOKEN"),
+            };
+            storage::drivers::aws::with_credentials_and_endpoint(&settings.s3_bucket, region, &settings.s3_endpoint, credential)
+        }
+        .map_err(|e| Error::Message(format!("object storage: {e}")))?;
         return Ok(Storage::single(driver));
+    }
+    if settings.require_object_storage {
+        return Err(Error::Message(
+            "object storage is required so every replica sees the same attachments: set FERRUM_S3_BUCKET (and FERRUM_S3_ENDPOINT for \
+             S3-compatible stores), or FERRUM_REQUIRE_OBJECT_STORAGE=false for a single-server install"
+                .into(),
+        ));
     }
     std::fs::create_dir_all(&settings.files_dir).map_err(|e| Error::Message(format!("files_dir: {e}")))?;
     Ok(Storage::single(storage::drivers::local::new_with_prefix(&settings.files_dir).map_err(|e| Error::Message(e.to_string()))?))
+}
+
+/// Writes and deletes a probe object so a wrong bucket or credentials show up at boot, not at
+/// the first upload. Logged, not fatal: a store outage must not keep the API from starting.
+async fn probe_storage(storage: &Storage) {
+    let path = std::path::PathBuf::from(format!(".ferrum-probe/{}", uuid::Uuid::now_v7()));
+    let outcome = async {
+        storage.upload(&path, &bytes::Bytes::from_static(b"ok")).await?;
+        storage.delete(&path).await
+    }
+    .await;
+    match outcome {
+        Ok(()) => tracing::info!("object storage reachable"),
+        Err(e) => tracing::error!("object storage probe failed (uploads will fail until it is fixed): {e}"),
+    }
 }
 
 #[async_trait]
@@ -76,6 +112,7 @@ impl Hooks for App {
             return Err(Error::Message("auth.jwt.secret must encode at least 32 random bytes in production".into()));
         }
         let storage = build_storage(&settings)?;
+        probe_storage(&storage).await;
         let (tx, _rx) = watch::channel(false);
         let state = AppState {
             kernel,
@@ -162,5 +199,39 @@ impl Hooks for App {
 
     async fn seed(_ctx: &AppContext, _base: &Path) -> Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Round trip through an S3-compatible store. Runs when `FERRUM_TEST_S3_ENDPOINT` is set (CI
+    /// starts MinIO); `FERRUM_TEST_S3_BUCKET`, `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` go with it.
+    #[tokio::test]
+    async fn s3_compatible_storage_round_trip() {
+        let Ok(endpoint) = std::env::var("FERRUM_TEST_S3_ENDPOINT") else {
+            eprintln!("skipped: FERRUM_TEST_S3_ENDPOINT is not set");
+            return;
+        };
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "s3_bucket": std::env::var("FERRUM_TEST_S3_BUCKET").unwrap_or_else(|_| "ferrum-ci".into()),
+            "s3_region": "us-east-1",
+            "s3_endpoint": endpoint,
+        }))
+        .unwrap();
+        let storage = build_storage(&settings).expect("storage");
+        let path = std::path::PathBuf::from(format!("tests/{}", uuid::Uuid::now_v7()));
+        storage.upload(&path, &bytes::Bytes::from_static(b"ferrum")).await.expect("upload");
+        let back: Vec<u8> = storage.download(&path).await.expect("download");
+        assert_eq!(back, b"ferrum");
+        storage.delete(&path).await.expect("delete");
+        assert!(storage.download::<Vec<u8>>(&path).await.is_err(), "deleted");
+    }
+
+    #[test]
+    fn local_files_need_an_explicit_opt_out_when_object_storage_is_required() {
+        let settings: Settings = serde_json::from_value(serde_json::json!({"require_object_storage": true})).unwrap();
+        assert!(build_storage(&settings).is_err());
     }
 }

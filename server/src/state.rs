@@ -49,6 +49,14 @@ pub struct Settings {
     pub s3_bucket: String,
     #[serde(default)]
     pub s3_region: String,
+    /// Endpoint of an S3-compatible store (MinIO, Cloudflare R2, Wasabi, DigitalOcean Spaces,
+    /// GCS interoperability...); empty means AWS S3. Credentials come from `AWS_ACCESS_KEY_ID`,
+    /// `AWS_SECRET_ACCESS_KEY` and optionally `AWS_SESSION_TOKEN`.
+    #[serde(default)]
+    pub s3_endpoint: String,
+    /// Refuse to start without object storage, so replicas never keep attachments on local disk.
+    #[serde(default)]
+    pub require_object_storage: bool,
     /// When set, `/metrics` requires `Authorization: Bearer <token>`.
     #[serde(default)]
     pub metrics_token: String,

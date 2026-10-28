@@ -57,6 +57,8 @@ spec:
             # Attachments must be shared by all replicas: use object storage.
             - {name: FERRUM_S3_BUCKET, value: "CHANGE-ME-files-bucket"}
             - {name: FERRUM_S3_REGION, value: "ap-south-1"}
+            # For MinIO, Cloudflare R2 and other S3-compatible stores:
+            # - {name: FERRUM_S3_ENDPOINT, value: "https://<account>.r2.cloudflarestorage.com"}
             - {name: PUBLIC_URL, value: "https://erp.example.com"}
             - {name: FERRUM_DB_MAX_CONNECTIONS, value: "30"}
             - {name: LOG_LEVEL, value: "info"}

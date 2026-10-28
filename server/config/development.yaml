@@ -65,3 +65,7 @@ settings:
   webhooks_allow_private: true
   run_background: true
   files_dir: <%= get_env(name="FERRUM_FILES_DIR", default="../storage") %>
+  s3_bucket: "<%= get_env(name="FERRUM_S3_BUCKET", default="") %>"
+  s3_region: "<%= get_env(name="FERRUM_S3_REGION", default="") %>"
+  s3_endpoint: "<%= get_env(name="FERRUM_S3_ENDPOINT", default="") %>"
+  require_object_storage: false

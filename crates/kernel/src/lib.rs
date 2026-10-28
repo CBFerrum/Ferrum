@@ -114,7 +114,13 @@ impl Kernel {
                 }
             })
         };
-        vec![self.registry.spawn_listener(shutdown.clone()), self.spawn_outbox_dispatcher(shutdown.clone()), self.spawn_webhook_sender(shutdown), maintenance]
+        vec![
+            self.registry.spawn_listener(shutdown.clone()),
+            self.spawn_user_listener(shutdown.clone()),
+            self.spawn_outbox_dispatcher(shutdown.clone()),
+            self.spawn_webhook_sender(shutdown),
+            maintenance,
+        ]
     }
 
     /// Hourly: anchor yesterday's audit trail, purge expired events and idempotency keys.

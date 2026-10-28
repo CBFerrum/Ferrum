@@ -2,6 +2,7 @@
 
 use crate::Kernel;
 use crate::ctx::{Ctx, PermSet};
+use crate::db::Tx;
 use crate::error::{Error, Result};
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
@@ -10,7 +11,7 @@ use rand::Rng;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const MAX_FAILED_LOGINS: i32 = 5;
@@ -36,6 +37,19 @@ pub fn validate_password(p: &str) -> Result<()> {
 }
 
 /// Argon2id hashing on the blocking pool (it is deliberately slow).
+pub const USERS_CHANNEL: &str = "ferrum_users";
+
+/// Tells every replica, when `tx` commits, to drop its cached copy of a user (or of all the
+/// tenant's users when `user` is `None`).
+async fn notify_users(tx: &mut Tx, tenant: Uuid, user: Option<Uuid>) -> Result<()> {
+    let payload = match user {
+        Some(u) => format!("{tenant}:{u}"),
+        None => tenant.to_string(),
+    };
+    sqlx::query("select pg_notify($1, $2)").bind(USERS_CHANNEL).bind(payload).execute(&mut **tx).await?;
+    Ok(())
+}
+
 pub async fn hash_password(p: String) -> Result<String> {
     tokio::task::spawn_blocking(move || {
         let mut bytes = [0u8; 16];
@@ -297,6 +311,52 @@ impl Kernel {
         })
     }
 
+    /// Every replica drops cached users when another replica changes them (roles, scopes,
+    /// deactivation, passwords, sign-out everywhere, permissions), so changes apply at once.
+    pub fn spawn_user_listener(self: &std::sync::Arc<Self>, mut shutdown: tokio::sync::watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
+        let k = self.clone();
+        tokio::spawn(async move {
+            loop {
+                match sqlx::postgres::PgListener::connect_with(&k.db.pool).await {
+                    Ok(mut listener) => match listener.listen(USERS_CHANNEL).await {
+                        Ok(()) => {
+                            // Anything may have changed while we were not listening.
+                            k.users.clear();
+                            loop {
+                                tokio::select! {
+                                    _ = shutdown.changed() => return,
+                                    msg = listener.recv() => match msg {
+                                        Ok(n) => match n.payload().split_once(':') {
+                                            Some((t, u)) => {
+                                                if let (Ok(t), Ok(u)) = (t.parse(), u.parse()) {
+                                                    k.invalidate_user(t, u);
+                                                }
+                                            }
+                                            None => match n.payload().parse() {
+                                                Ok(t) => k.invalidate_tenant_users(t),
+                                                Err(_) => k.users.clear(),
+                                            },
+                                        },
+                                        Err(e) => {
+                                            tracing::warn!("user listener lost its connection: {e}");
+                                            break;
+                                        }
+                                    },
+                                }
+                            }
+                        }
+                        Err(e) => tracing::warn!("user listener failed to subscribe: {e}"),
+                    },
+                    Err(e) => tracing::warn!("user listener cannot connect: {e}"),
+                }
+                tokio::select! {
+                    _ = shutdown.changed() => return,
+                    _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                }
+            }
+        })
+    }
+
     pub fn invalidate_user(&self, tenant: Uuid, user: Uuid) {
         self.users.remove(&(tenant, user));
     }
@@ -359,6 +419,7 @@ impl Kernel {
                 .await
                 .map_err(|_| Error::field("roles", format!("unknown role {r}")))?;
         }
+        notify_users(&mut tx, ctx.tenant, Some(user)).await?;
         tx.commit().await?;
         self.invalidate_user(ctx.tenant, user);
         Ok(())
@@ -386,6 +447,7 @@ impl Kernel {
                 .execute(&mut *tx)
                 .await?;
         }
+        notify_users(&mut tx, ctx.tenant, Some(user)).await?;
         tx.commit().await?;
         self.invalidate_user(ctx.tenant, user);
         Ok(())
@@ -403,6 +465,7 @@ impl Kernel {
             .bind(active)
             .execute(&mut *tx)
             .await?;
+        notify_users(&mut tx, ctx.tenant, Some(user)).await?;
         tx.commit().await?;
         self.invalidate_user(ctx.tenant, user);
         Ok(())
@@ -440,6 +503,7 @@ impl Kernel {
         .bind(new_hash)
         .execute(&mut *tx)
         .await?;
+        notify_users(&mut tx, ctx.tenant, Some(user)).await?;
         tx.commit().await?;
         self.invalidate_user(ctx.tenant, user);
         Ok(())
@@ -453,6 +517,7 @@ impl Kernel {
             .bind(ctx.user)
             .execute(&mut *tx)
             .await?;
+        notify_users(&mut tx, ctx.tenant, Some(ctx.user)).await?;
         tx.commit().await?;
         self.invalidate_user(ctx.tenant, ctx.user);
         Ok(())
@@ -488,6 +553,7 @@ impl Kernel {
         .bind(&p.write_groups)
         .execute(&mut *tx)
         .await?;
+        notify_users(&mut tx, ctx.tenant, None).await?;
         tx.commit().await?;
         self.invalidate_tenant_users(ctx.tenant);
         Ok(())

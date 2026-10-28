@@ -34,6 +34,8 @@ dashmap = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 bytes = "1"
+# Loco builds OpenDAL without an HTTP client; S3 storage needs one installed.
+opendal = { version = "0.58", default-features = false, features = ["http-transport-reqwest"] }
 
 [dev-dependencies]
 loco-rs = { version = "1.2", default-features = false, features = ["auth", "cli", "with-db", "cache_inmem", "worker", "testing"] }
