@@ -24,12 +24,13 @@ async fn fresh_kernel() -> Arc<Kernel> {
 
 async fn unread(k: &Kernel, ctx: &Ctx) -> Vec<String> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await.unwrap();
-    let titles: Vec<String> = sqlx::query_scalar("select title from notification where tenant_id = $1 and user_id = $2 and read_at is null order by created_at")
-        .bind(ctx.tenant)
-        .bind(ctx.user)
-        .fetch_all(&mut *tx)
-        .await
-        .unwrap();
+    let titles: Vec<String> =
+        sqlx::query_scalar("select title from notification where tenant_id = $1 and user_id = $2 and read_at is null order by created_at")
+            .bind(ctx.tenant)
+            .bind(ctx.user)
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
     tx.commit().await.unwrap();
     titles
 }
@@ -140,7 +141,10 @@ async fn collaboration_follows_record_access() {
     let vip = k.list(&admin, "Customer", &ListQuery { filters: parse_filters(&json!([["_tag", "=", "vip"]])).unwrap(), ..Default::default() }).await.unwrap();
     assert_eq!(vip.rows.len(), 1);
     assert_eq!(vip.rows[0]["id"], c["id"]);
-    let any = k.list(&admin, "Customer", &ListQuery { filters: parse_filters(&json!([["_tag", "in", ["vip", "nope"]]])).unwrap(), ..Default::default() }).await.unwrap();
+    let any = k
+        .list(&admin, "Customer", &ListQuery { filters: parse_filters(&json!([["_tag", "in", ["vip", "nope"]]])).unwrap(), ..Default::default() })
+        .await
+        .unwrap();
     assert_eq!(any.rows.len(), 1);
     assert_eq!(k.tag_counts(&admin, "Customer").await.unwrap(), vec![json!({"tag": "key account", "count": 1}), json!({"tag": "vip", "count": 1})]);
     assert!(k.tag_counts(&otto_ctx, "Customer").await.is_err());
@@ -186,7 +190,9 @@ async fn collaboration_follows_record_access() {
     let bad = ferrum_kernel::automation::save(
         &k,
         &admin,
-        json!({"name": "bad", "entity": "Customer", "event": "updated", "actions": [{"type": "notify", "to": "somebody", "title": "'x'"}]}).as_object().unwrap(),
+        json!({"name": "bad", "entity": "Customer", "event": "updated", "actions": [{"type": "notify", "to": "somebody", "title": "'x'"}]})
+            .as_object()
+            .unwrap(),
     )
     .await;
     assert!(bad.is_err(), "unknown notify targets are refused when saving");
@@ -215,7 +221,11 @@ async fn collaboration_follows_record_access() {
     let f = k.store_file(&admin, Some(("Customer", cid)), "quote.html", "text/html", b"<p>hi</p>").await.unwrap();
     let fid: Uuid = f["id"].as_str().unwrap().parse().unwrap();
     let (name, ctype, data) = k.read_file(&bea_ctx, fid).await.unwrap();
-    assert_eq!((name.as_str(), ctype.as_str(), data.as_slice()), ("quote.html", "application/octet-stream", b"<p>hi</p>".as_slice()), "active content is never served as such");
+    assert_eq!(
+        (name.as_str(), ctype.as_str(), data.as_slice()),
+        ("quote.html", "application/octet-stream", b"<p>hi</p>".as_slice()),
+        "active content is never served as such"
+    );
     assert!(k.read_file(&otto_ctx, fid).await.is_err());
     assert_eq!(k.attachments(&bea_ctx, "Customer", cid).await.unwrap().len(), 1);
     assert!(k.store_file(&otto_ctx, Some(("Customer", cid)), "x.txt", "text/plain", b"x").await.is_err(), "attaching needs read access");

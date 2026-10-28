@@ -27,7 +27,7 @@
     - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
     - {name: purpose, type: select, options: [Material Receipt, Material Issue, Material Transfer, Opening Stock], required: true, default: Material Receipt, in_list: true, in_filter: true}
     - {name: posting_date, type: date, required: true, default_expr: today, in_list: true, in_filter: true}
-    - {name: posting_time, type: data, default: "23:59:59", description: "HH:MM:SS (orders entries on the same day)"}
+    - {name: posting_time, type: data, default_expr: time, description: "HH:MM:SS, local time (orders entries on the same day)"}
     - {name: items, type: table, of: StockEntryItem, required: true}
     - {name: total_amount, type: currency, read_only: true, in_list: true}
     - {name: remarks, type: text}

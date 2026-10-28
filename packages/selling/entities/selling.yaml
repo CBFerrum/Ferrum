@@ -118,7 +118,7 @@
     - {name: customer, type: link, to: Customer, required: true, in_filter: true}
     - {name: customer_name, type: data, fetch_from: customer.customer_name, read_only: true, in_list: true}
     - {name: posting_date, type: date, required: true, default_expr: today, in_list: true, in_filter: true}
-    - {name: posting_time, type: data, default: "23:59:59"}
+    - {name: posting_time, type: data, default_expr: time, description: "HH:MM:SS, local time (orders documents of the same day)"}
     - {name: is_return, type: check, in_filter: true}
     - {name: return_against, type: link, to: DeliveryNote, visible_if: "doc.is_return"}
     - {name: currency, type: link, to: Currency}
@@ -185,7 +185,7 @@
     - {name: customer, type: link, to: Customer, required: true, in_filter: true}
     - {name: customer_name, type: data, fetch_from: customer.customer_name, read_only: true, in_list: true}
     - {name: posting_date, type: date, required: true, default_expr: today, in_list: true, in_filter: true}
-    - {name: posting_time, type: data, default: "23:59:59"}
+    - {name: posting_time, type: data, default_expr: time, description: "HH:MM:SS, local time (orders documents of the same day)"}
     - {name: due_date, type: date, in_list: true}
     - {name: is_return, type: check, label: Is Return (Credit Note), in_filter: true}
     - {name: return_against, type: link, to: SalesInvoice, visible_if: "doc.is_return"}
