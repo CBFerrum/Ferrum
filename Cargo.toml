@@ -3,15 +3,13 @@ resolver = "3"
 members = ["crates/calc", "crates/meta", "crates/kernel", "crates/domain",
     "crates/plugins",
     "crates/mcp",
-    "crates/pkg-crm",
-    "crates/pkg-projects",
-    "crates/pkg-support", "server", "server/migration"]
+    "server", "server/migration"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
-repository = "https://example.invalid/ferrum"
+repository = "https://github.com/CBFerrum/Ferrum"
 
 [workspace.dependencies]
 rust_decimal = { version = "1.43", features = ["serde-with-str", "maths"] }
@@ -32,6 +30,14 @@ tracing = "0.1"
 async-trait = "0.1"
 futures = "0.3"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "uuid", "chrono", "rust_decimal", "json", "migrate", "macros"] }
+
+# Apps built in their own repositories depend on the platform by git; inside this workspace
+# they use these crates, so there is one copy of each.
+[patch."https://github.com/CBFerrum/Ferrum"]
+ferrum-kernel = { path = "crates/kernel" }
+ferrum-meta = { path = "crates/meta" }
+ferrum-domain = { path = "crates/domain" }
+ferrum-calc = { path = "crates/calc" }
 
 [profile.dev]
 # Keep target/ small (disk is constrained) and builds fast; line tables are enough for backtraces.

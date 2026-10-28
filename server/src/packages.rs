@@ -72,6 +72,7 @@ macro_rules! apps {
         }
 
         /// Manifests (`app.yaml`) of the compiled native apps.
+        #[allow(clippy::vec_init_then_push)]
         pub fn native_manifests() -> Vec<&'static str> {
             #[allow(unused_mut)]
             let mut out = Vec::new();
@@ -91,17 +92,20 @@ macro_rules! apps {
                     out.extend([$($yaml),+].into_iter().filter(|p| catalog.package(p).is_some()).map(String::from));
                 }
             )*
+            let _ = catalog;
             out
         }
     };
 }
 
 apps! {
-    native {}
+    native {
+        "crm" => ferrum_app_crm,
+        "projects" => ferrum_app_projects,
+        "helpdesk" => ferrum_app_helpdesk,
+        "pos" => ferrum_app_pos,
+    }
     legacy {
-        "crm" => ferrum_pkg_crm ["crm"],
-        "projects" => ferrum_pkg_projects ["projects"],
-        "support" => ferrum_pkg_support ["support"],
     }
 }
 
