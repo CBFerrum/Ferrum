@@ -339,6 +339,17 @@ async fn toggle_plugin(Auth(ctx): Auth, State(app): State<AppContext>, Path(id):
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+#[derive(Deserialize)]
+struct PluginConfig {
+    config: serde_json::Map<String, Value>,
+}
+
+async fn configure_plugin(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>, Json(body): Json<PluginConfig>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    st.plugins.set_config(&st.kernel, &ctx, id, body.config).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 async fn remove_plugin(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
     let st = app_state(&app)?;
     st.plugins.remove(&st.kernel, &ctx, id).await?;
@@ -364,6 +375,7 @@ pub fn routes() -> Routes {
         .add("/admin/plugins", get(list_plugins).post(install_plugin))
         .add("/admin/plugins/{id}", delete(remove_plugin))
         .add("/admin/plugins/{id}/enabled", put(toggle_plugin))
+        .add("/admin/plugins/{id}/config", put(configure_plugin))
         .add("/customize", get(list_custom).post(add_custom))
         .add("/customize/export", get(export_custom))
         .add("/customize/import", post(import_custom))

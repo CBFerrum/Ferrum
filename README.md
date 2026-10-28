@@ -32,9 +32,9 @@ built to scale out.
 | `crates/plugins` | WebAssembly plugin host (wasmtime) |
 | `packages/*` | Shipped packages: `core`, `accounting`, `inventory`, `selling`, `buying`, `manufacturing`, `india` |
 | `server` | HTTP API (Loco/Axum), auth, admin, OpenAPI, ERPNext-compatible `/api/resource` shim, CLI tasks |
-| `plugins/examples` | Example plugins |
+| `plugins/sdk`, `plugins/examples` | Rust plugin SDK and example plugins |
 | `deploy` | Docker Compose and Kubernetes manifests |
-| `docs` | [API contract](docs/api.md), [operations runbook](docs/operations.md), [plan and analysis](docs/plan/PLAN.md) |
+| `docs` | [API contract](docs/api.md), [plugins](docs/plugins.md), [operations runbook](docs/operations.md), [plan and analysis](docs/plan/PLAN.md) |
 
 The web app lives in its own repository, [CBFerrum/Ferrum-Frontend](https://github.com/CBFerrum/Ferrum-Frontend).
 
@@ -121,21 +121,21 @@ the client off.
 | Bundles | Packages: YAML entities, overlays, roles, seeds and SQL, installed per tenant |
 | Custom code | WebAssembly plugins bound to entity hooks — see below |
 
-### WebAssembly plugins
+### Plugins: turn Ferrum into any platform
 
-A plugin is a core WebAssembly module with **no imports** that exports `memory`,
-`ferrum_alloc(len) -> ptr` and `ferrum_hook(ptr, len) -> (ptr << 32 | len)`. It receives the
-document as JSON and answers `{}`, `{"patch": {...}}` (in `before_validate`) or a veto
-(`{"error": "..."}` / `{"errors": [{"field", "message", "row"?: ["items", 0]}]}`). Each call gets a fresh instance with a
-fuel budget and a memory cap; failures abort the operation (fail-closed) and are logged.
-`plugins/examples/discount-guard` is a complete Rust example; install with
-`POST /api/admin/plugins` (`{name, hooks: [{entity, stage}], wasm_base64}`), toggle with
-`PUT /api/admin/plugins/{id}/enabled`.
+Plugins are sandboxed WebAssembly modules with a manifest. Beyond document hooks they can bring
+their own entities, serve HTTP routes (signed-in or public), hold WebSocket connections to devices
+(with subprotocols such as `ocpp1.6`, delivered to whichever replica holds the socket), subscribe
+to events, run on schedules and call declared HTTPS hosts — always within the permissions the
+administrator approved, with a CPU budget, a memory cap and no other access. That is how Ferrum
+becomes an EV charging, IoT, payment or telephony platform without changing its code. See
+[docs/plugins.md](docs/plugins.md), the Rust SDK in `plugins/sdk` and the complete
+`plugins/examples/device-gateway`.
 
 ## Testing
 
 ```bash
-createdb -O ferrum ferrum_test && createdb -O ferrum ferrum_domain_test && createdb -O ferrum ferrum_mcp_test
+for db in ferrum_test ferrum_domain_test ferrum_mcp_test ferrum_plugins_test; do createdb -O ferrum $db; done
 cargo test --workspace                # unit + integration (resets the test databases)
 cd web && npm test
 ```

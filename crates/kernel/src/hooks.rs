@@ -57,9 +57,17 @@ pub trait DocHook: Send + Sync {
     }
 }
 
+/// Consumes outbox events after webhooks and automations (e.g. plugin subscriptions). Delivery is
+/// at least once: an error makes the event retry, so implementations must deduplicate.
+#[async_trait]
+pub trait EventSink: Send + Sync {
+    async fn on_event(&self, kernel: &Kernel, event: &crate::outbox::Event) -> Result<()>;
+}
+
 #[derive(Default, Clone)]
 pub struct HookRegistry {
     by_entity: HashMap<String, Vec<Arc<dyn DocHook>>>,
+    sinks: Vec<Arc<dyn EventSink>>,
 }
 
 impl HookRegistry {
@@ -76,6 +84,15 @@ impl HookRegistry {
             out.extend(self.by_entity.get("*").cloned().unwrap_or_default());
         }
         out
+    }
+
+    pub fn add_event_sink(&mut self, sink: Arc<dyn EventSink>) -> &mut Self {
+        self.sinks.push(sink);
+        self
+    }
+
+    pub fn event_sinks(&self) -> &[Arc<dyn EventSink>] {
+        &self.sinks
     }
 
     pub fn entities(&self) -> impl Iterator<Item = &String> {

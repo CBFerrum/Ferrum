@@ -101,7 +101,11 @@ impl Kernel {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        crate::automation::run_for_event(self, ev).await
+        crate::automation::run_for_event(self, ev).await?;
+        for sink in self.hooks.event_sinks() {
+            sink.on_event(self, ev).await?;
+        }
+        Ok(())
     }
 
     /// Wakes on NOTIFY (or every 2s) and drains the outbox until shutdown.

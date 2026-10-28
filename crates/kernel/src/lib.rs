@@ -28,7 +28,7 @@ pub mod value;
 pub use ctx::{Access, Action, Ctx, PermSet, row_scope};
 pub use db::{Db, DbConfig, Tx, with_retry};
 pub use error::{Error, FieldError, Result};
-pub use hooks::{DocHook, HookCtx, HookRegistry};
+pub use hooks::{DocHook, EventSink, HookCtx, HookRegistry};
 pub use query::{Filter, ListQuery, Op, Page};
 pub use registry::Registry;
 

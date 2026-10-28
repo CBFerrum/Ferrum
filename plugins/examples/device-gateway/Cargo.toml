@@ -1,0 +1,22 @@
+# Demo plugin: turns Ferrum into a small device platform (the shape of an OCPP charging plugin).
+#   cargo build --release --target wasm32-unknown-unknown
+# Install with manifest.json through POST /api/admin/plugins (see README.md).
+[package]
+name = "device-gateway"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ferrum-plugin-sdk = { path = "../../sdk" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+strip = true
+
+[workspace]
