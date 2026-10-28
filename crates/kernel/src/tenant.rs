@@ -190,3 +190,48 @@ impl Kernel {
         row.ok_or_else(|| Error::NotFound("tenant".into()))
     }
 }
+
+impl Kernel {
+    /// The workspace's settings administrators may change: `timezone` (IANA name) and
+    /// `fiscal_year_start_month` (1-12).
+    pub async fn tenant_settings(&self, ctx: &Ctx) -> Result<Value> {
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let settings: Value = sqlx::query_scalar("select settings from tenant where id = $1").bind(ctx.tenant).fetch_one(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(serde_json::json!({
+            "timezone": settings.get("timezone").cloned().unwrap_or_else(|| serde_json::json!("UTC")),
+            "fiscal_year_start_month": settings.get("fiscal_year_start_month").cloned().unwrap_or_else(|| serde_json::json!(1)),
+        }))
+    }
+
+    /// Changes workspace settings; every replica picks them up with the next schema load.
+    pub async fn update_tenant_settings(&self, ctx: &Ctx, patch: &serde_json::Map<String, Value>) -> Result<Value> {
+        if !ctx.is_admin {
+            return Err(Error::Forbidden("only administrators can change workspace settings".into()));
+        }
+        let mut clean = serde_json::Map::new();
+        for (k, v) in patch {
+            match k.as_str() {
+                "timezone" => {
+                    let tz = v
+                        .as_str()
+                        .filter(|t| t.parse::<chrono_tz::Tz>().is_ok())
+                        .ok_or_else(|| Error::field("timezone", "not a known time zone (e.g. Asia/Kolkata)"))?;
+                    clean.insert(k.clone(), serde_json::json!(tz));
+                }
+                "fiscal_year_start_month" => {
+                    let m = v.as_u64().filter(|m| (1..=12).contains(m)).ok_or_else(|| Error::field("fiscal_year_start_month", "must be 1 to 12"))?;
+                    clean.insert(k.clone(), serde_json::json!(m));
+                }
+                other => return Err(Error::field(other, "unknown setting")),
+            }
+        }
+        let mut tx = self.db.system_tenant_tx(ctx.tenant).await?;
+        sqlx::query("update tenant set settings = settings || $2 where id = $1").bind(ctx.tenant).bind(Value::Object(clean.clone())).execute(&mut *tx).await?;
+        crate::audit::record(&mut tx, ctx, "Tenant", ctx.tenant, "settings", None, Value::Object(clean)).await?;
+        Registry::bump_version(&mut tx, ctx.tenant).await?;
+        tx.commit().await?;
+        self.registry.invalidate(ctx.tenant);
+        self.tenant_settings(ctx).await
+    }
+}

@@ -217,8 +217,22 @@ impl Ctx {
     }
 
     /// The `user` variable visible to CEL expressions.
+    /// Now, in the workspace's time zone (its `timezone` setting; UTC when unset).
+    pub fn now_local(&self) -> chrono::DateTime<chrono::FixedOffset> {
+        local_now(&self.schema.timezone)
+    }
+
+    /// Today's date where the workspace is — documents dated "today" use this, not UTC.
+    pub fn today(&self) -> chrono::NaiveDate {
+        self.now_local().date_naive()
+    }
+
     pub fn user_value(&self) -> Value {
+        let now = self.now_local();
         json!({
+            "today": now.format("%Y-%m-%d").to_string(),
+            "now": now.to_rfc3339(),
+            "timezone": self.schema.timezone,
             "id": self.user.to_string(),
             "email": self.email,
             "full_name": self.full_name,
@@ -339,8 +353,10 @@ impl RowScope {
 
     pub fn matches(&self, doc: &Doc) -> bool {
         if let Some(owner) = self.owner {
+            // A record nobody created (system and background work) belongs to no one: with
+            // own-records access only its owner fields can grant it.
             let created_by = doc.get("created_by").and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok());
-            if created_by.is_some_and(|c| c != owner) && !self.named_owner(doc) {
+            if created_by != Some(owner) && !self.named_owner(doc) {
                 return false;
             }
         }
@@ -379,6 +395,15 @@ impl RowScope {
     }
 }
 
+/// Now in an IANA time zone; unknown zones fall back to UTC.
+pub fn local_now(tz: &str) -> chrono::DateTime<chrono::FixedOffset> {
+    let utc = chrono::Utc::now();
+    match tz.parse::<chrono_tz::Tz>() {
+        Ok(zone) => utc.with_timezone(&zone).fixed_offset(),
+        Err(_) => utc.fixed_offset(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,6 +433,15 @@ mod tests {
     }
 
     #[test]
+    fn local_time_follows_the_workspace_zone() {
+        let kolkata = local_now("Asia/Kolkata");
+        assert_eq!(kolkata.offset().local_minus_utc(), 5 * 3600 + 1800);
+        assert_eq!(local_now("Not/AZone").offset().local_minus_utc(), 0);
+        let utc = chrono::Utc::now();
+        assert_eq!(kolkata.date_naive(), (utc + chrono::Duration::minutes(330)).date_naive());
+    }
+
+    #[test]
     fn owners_are_creators_or_named_assignees() {
         let me = Uuid::now_v7();
         let someone = Uuid::now_v7();
@@ -427,5 +461,7 @@ mod tests {
         assert!(!scope.matches(&doc(json!({"created_by": someone.to_string(), "assignees": [{"user": "other@x.test"}]}))));
         let creator_only = RowScope { owner: Some(me), ..Default::default() };
         assert!(!creator_only.matches(&doc(json!({"created_by": someone.to_string(), "assigned_to": "me@x.test"}))));
+        assert!(!creator_only.matches(&doc(json!({"subject": "made by a background job"}))), "no creator is nobody's");
+        assert!(scope.matches(&doc(json!({"assigned_to": "me@x.test"}))), "owner fields still grant system-created records");
     }
 }

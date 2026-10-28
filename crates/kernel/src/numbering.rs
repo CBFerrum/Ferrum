@@ -9,7 +9,7 @@ use crate::ctx::Ctx;
 use crate::db::{Db, Tx};
 use crate::error::{Error, Result};
 use crate::value::parse_date;
-use chrono::{Datelike, NaiveDate, Utc};
+use chrono::{Datelike, NaiveDate};
 use ferrum_meta::{EffEntity, NumberingDef};
 use serde_json::Value;
 
@@ -28,7 +28,8 @@ fn sanitize(s: &str) -> String {
 }
 
 /// Splits the rendered template into `(prefix, width, suffix)`.
-pub fn render(def: &NumberingDef, doc: &Doc, fy_start_month: u32) -> Result<(String, usize, String)> {
+/// `today` (the workspace's local date) dates the number when the document has no date field.
+pub fn render(def: &NumberingDef, doc: &Doc, fy_start_month: u32, today: chrono::NaiveDate) -> Result<(String, usize, String)> {
     let date = def
         .date_field
         .as_ref()
@@ -37,7 +38,7 @@ pub fn render(def: &NumberingDef, doc: &Doc, fy_start_month: u32) -> Result<(Str
         .map(|s| parse_date(&s[..s.len().min(10)]))
         .transpose()
         .map_err(Error::invalid)?
-        .unwrap_or_else(|| Utc::now().date_naive());
+        .unwrap_or(today);
     let mut prefix = String::new();
     let mut suffix = String::new();
     let mut width = None;
@@ -87,7 +88,7 @@ const NEXT: &str = "insert into naming_counter (tenant_id, key, value) values ($
 
 pub async fn assign(db: &Db, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: &Doc) -> Result<String> {
     let def = ent.def.numbering.as_ref().ok_or_else(|| Error::Internal(format!("{} has no numbering", ent.def.name)))?;
-    let (prefix, width, suffix) = render(def, doc, ctx.fy_start_month)?;
+    let (prefix, width, suffix) = render(def, doc, ctx.fy_start_month, ctx.today())?;
     let key = format!("{}:{prefix}#{suffix}", ent.def.name);
     let seq: i64 = if def.gapless {
         sqlx::query_scalar(NEXT).bind(ctx.tenant).bind(&key).fetch_one(&mut **tx).await?
@@ -114,9 +115,15 @@ mod tests {
         let mut doc = Doc::new();
         doc.insert("posting_date".into(), json!("2026-02-10"));
         doc.insert("branch".into(), json!("BLR 1!"));
-        assert_eq!(render(&def("SINV-{FY}-{seq:5}"), &doc, 4).unwrap(), ("SINV-2025-26-".into(), 5, String::new()));
-        assert_eq!(render(&def("{YY}{MM}/{seq:3}/{field:branch}"), &doc, 1).unwrap(), ("2602/".into(), 3, "/BLR1".into()));
-        assert!(render(&def("INV-{seq:3}-{seq:3}"), &doc, 1).is_err());
+        assert_eq!(
+            render(&def("SINV-{FY}-{seq:5}"), &doc, 4, chrono::NaiveDate::from_ymd_opt(2026, 2, 1).unwrap()).unwrap(),
+            ("SINV-2025-26-".into(), 5, String::new())
+        );
+        assert_eq!(
+            render(&def("{YY}{MM}/{seq:3}/{field:branch}"), &doc, 1, chrono::NaiveDate::from_ymd_opt(2026, 2, 1).unwrap()).unwrap(),
+            ("2602/".into(), 3, "/BLR1".into())
+        );
+        assert!(render(&def("INV-{seq:3}-{seq:3}"), &doc, 1, chrono::NaiveDate::from_ymd_opt(2026, 2, 1).unwrap()).is_err());
         assert_eq!(fiscal_year_label(NaiveDate::from_ymd_opt(2026, 4, 1).unwrap(), 4), "2026-27");
         assert_eq!(fiscal_year_label(NaiveDate::from_ymd_opt(2026, 3, 31).unwrap(), 4), "2025-26");
     }

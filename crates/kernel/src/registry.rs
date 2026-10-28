@@ -109,6 +109,14 @@ impl Registry {
             schema.warnings.push(SchemaWarning { entity: m.clone(), message: format!("package {m} is installed but no longer available on this cluster") });
         }
         schema.fy_start_month = settings.get("fiscal_year_start_month").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 12) as u32;
+        schema.timezone = match settings.get("timezone").and_then(|v| v.as_str()) {
+            Some(tz) if tz.parse::<chrono_tz::Tz>().is_ok() => tz.to_string(),
+            Some(tz) => {
+                schema.warnings.push(SchemaWarning { entity: "tenant".into(), message: format!("unknown time zone '{tz}'; using UTC") });
+                "UTC".into()
+            }
+            None => "UTC".into(),
+        };
         for w in &schema.warnings {
             tracing::warn!(%tenant, entity = %w.entity, "customization skipped: {}", w.message);
         }

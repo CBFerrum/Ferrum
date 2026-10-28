@@ -43,6 +43,9 @@ pub struct Event {
     pub attempts: i32,
 }
 
+/// How long a claimed batch is reserved for the worker handling it.
+const LEASE_SECS: f64 = 600.0;
+
 fn backoff(attempts: i32) -> i64 {
     // 5s, 10s, 20s ... capped at 1h.
     (5i64 << attempts.clamp(0, 10)).min(3600)
@@ -50,16 +53,30 @@ fn backoff(attempts: i32) -> i64 {
 
 impl Kernel {
     /// Claims and handles one batch. Returns how many events were processed.
+    ///
+    /// The claim is a lease: a short transaction moves the batch's `available_at` into the
+    /// future, then each event is handled outside any long transaction (handlers call webhooks,
+    /// SMTP servers, plugins) and its outcome is recorded on its own. A worker that dies mid-batch
+    /// leaves leases that simply expire, and another replica picks the events up — delivery stays
+    /// at least once, never stuck behind a lock.
     pub async fn dispatch_outbox_once(&self) -> Result<usize> {
         let mut tx = self.db.system_tx().await?;
         let events: Vec<Event> = sqlx::query_as(
-            "select id, tenant_id, topic, entity, record_id, payload, attempts from outbox \
-             where processed_at is null and not dead and available_at <= now() order by id limit 50 for update skip locked",
+            "update outbox set available_at = now() + make_interval(secs => $1) where id in (\
+               select id from outbox where processed_at is null and not dead and available_at <= now() \
+               order by id limit 50 for update skip locked) \
+             returning id, tenant_id, topic, entity, record_id, payload, attempts",
         )
+        .bind(LEASE_SECS)
         .fetch_all(&mut *tx)
         .await?;
+        tx.commit().await?;
+        let mut events = events;
+        events.sort_by_key(|e| e.id);
         for ev in &events {
-            match self.handle_event(ev).await {
+            let outcome = self.handle_event(ev).await;
+            let mut tx = self.db.system_tx().await?;
+            match outcome {
                 Ok(()) => {
                     sqlx::query("update outbox set processed_at = now(), last_error = null where id = $1").bind(ev.id).execute(&mut *tx).await?;
                 }
@@ -79,8 +96,8 @@ impl Kernel {
                     .await?;
                 }
             }
+            tx.commit().await?;
         }
-        tx.commit().await?;
         Ok(events.len())
     }
 

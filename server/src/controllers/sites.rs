@@ -17,7 +17,8 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use uuid::Uuid;
 
-const MAX_BODY: usize = 1 << 20;
+/// No package may accept more than this per request.
+const MAX_BODY: usize = 32 << 20;
 
 /// Public endpoints are open to the internet: a generous per-address budget stops floods.
 fn public_limiter() -> &'static RateLimiter {
@@ -25,7 +26,9 @@ fn public_limiter() -> &'static RateLimiter {
     L.get_or_init(|| RateLimiter::new(Duration::from_secs(60), 300))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn request(
+    limit: usize,
     tenant: Uuid,
     user: Option<Ctx>,
     method: Method,
@@ -34,8 +37,9 @@ fn request(
     headers: &HeaderMap,
     body: Bytes,
 ) -> Result<SiteRequest, ApiError> {
-    if body.len() > MAX_BODY {
-        return Err(ApiError(Error::invalid("request body larger than 1 MB")));
+    let limit = limit.min(MAX_BODY);
+    if body.len() > limit {
+        return Err(ApiError(Error::invalid(format!("request body larger than {} KB", limit / 1024))));
     }
     let safe: Map<String, Value> = headers
         .iter()
@@ -83,7 +87,7 @@ async fn app(
     let site = st.kernel.hooks.site(&package).filter(|_| ctx.schema.packages.contains(&package)).cloned();
     let site = site.ok_or_else(|| ApiError(Error::NotFound(format!("package {package}"))))?;
     let tenant = ctx.tenant;
-    let req = request(tenant, Some(ctx), method, path, query, &headers, body)?;
+    let req = request(site.max_body(), tenant, Some(ctx), method, path, query, &headers, body)?;
     Ok(respond(site.handle(&st.kernel, req).await?))
 }
 
@@ -104,11 +108,14 @@ async fn public(
     let schema = st.kernel.registry.schema(tenant).await?;
     let site = st.kernel.hooks.site(&package).filter(|_| schema.packages.contains(&package)).cloned();
     let site = site.ok_or_else(|| ApiError(Error::NotFound(format!("package {package}"))))?;
-    let req = request(tenant, None, method, path, query, &headers, body)?;
+    let req = request(site.max_body(), tenant, None, method, path, query, &headers, body)?;
     Ok(respond(site.handle(&st.kernel, req).await?))
 }
 
 pub fn routes() -> Routes {
+    use axum::extract::DefaultBodyLimit;
     use axum::routing::any;
-    Routes::new().add("/api/app/{package}/{*path}", any(app)).add("/api/site/{tenant}/{package}/{*path}", any(public))
+    Routes::new()
+        .add("/api/app/{package}/{*path}", any(app).layer(DefaultBodyLimit::max(MAX_BODY)))
+        .add("/api/site/{tenant}/{package}/{*path}", any(public).layer(DefaultBodyLimit::max(MAX_BODY)))
 }
