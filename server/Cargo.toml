@@ -10,15 +10,23 @@ default-run = "ferrum"
 name = "ferrum"
 path = "src/bin/main.rs"
 
+[features]
+# Functional packages compiled in (all by default). A build without one refuses to start while its
+# YAML package is still in packages/, so documents never run without their business logic.
+default = ["crm", "projects", "support"]
+crm = ["dep:ferrum-pkg-crm"]
+projects = ["dep:ferrum-pkg-projects"]
+support = ["dep:ferrum-pkg-support"]
+
 [dependencies]
 ferrum-kernel = { path = "../crates/kernel" }
 ferrum-meta = { path = "../crates/meta" }
 ferrum-domain = { path = "../crates/domain" }
 ferrum-plugins = { path = "../crates/plugins" }
 ferrum-mcp = { path = "../crates/mcp" }
-ferrum-pkg-crm = { path = "../crates/pkg-crm" }
-ferrum-pkg-projects = { path = "../crates/pkg-projects" }
-ferrum-pkg-support = { path = "../crates/pkg-support" }
+ferrum-pkg-crm = { path = "../crates/pkg-crm", optional = true }
+ferrum-pkg-projects = { path = "../crates/pkg-projects", optional = true }
+ferrum-pkg-support = { path = "../crates/pkg-support", optional = true }
 base64 = "0.22"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 migration = { path = "migration", package = "ferrum-migration" }

@@ -15,6 +15,7 @@ pub mod describe;
 pub mod doc;
 pub mod error;
 pub mod hooks;
+pub mod notify;
 pub mod numbering;
 pub mod oauth;
 pub mod outbox;
@@ -28,7 +29,7 @@ pub mod value;
 pub use ctx::{Access, Action, Ctx, PermSet, row_scope};
 pub use db::{Db, DbConfig, Tx, with_retry};
 pub use error::{Error, FieldError, Result};
-pub use hooks::{DocHook, EventSink, HookCtx, HookRegistry};
+pub use hooks::{DocHook, EventSink, HookCtx, HookRegistry, Site, SiteRequest, SiteResponse};
 pub use query::{Filter, ListQuery, Op, Page};
 pub use registry::Registry;
 
@@ -96,8 +97,14 @@ impl Kernel {
         Ok(Arc::new(Kernel { db, registry, hooks, settings, mailer, users: DashMap::new() }))
     }
 
-    /// Background work every replica runs: metadata listener, outbox, webhooks, maintenance.
-    /// All of it is safe to run concurrently on many replicas (no single point of failure).
+    /// Cache invalidation (metadata, users) — every replica that serves requests needs these, or it
+    /// keeps answering from stale permissions and schemas.
+    pub fn spawn_listeners(self: &Arc<Self>, shutdown: watch::Receiver<bool>) -> Vec<tokio::task::JoinHandle<()>> {
+        vec![self.registry.spawn_listener(shutdown.clone()), self.spawn_user_listener(shutdown)]
+    }
+
+    /// Background work: outbox, webhooks, maintenance. Safe to run concurrently on many replicas
+    /// (no single point of failure); replicas that only serve requests may skip it.
     pub fn spawn_background(self: &Arc<Self>, shutdown: watch::Receiver<bool>) -> Vec<tokio::task::JoinHandle<()>> {
         let maintenance = {
             let k = self.clone();
@@ -114,13 +121,7 @@ impl Kernel {
                 }
             })
         };
-        vec![
-            self.registry.spawn_listener(shutdown.clone()),
-            self.spawn_user_listener(shutdown.clone()),
-            self.spawn_outbox_dispatcher(shutdown.clone()),
-            self.spawn_webhook_sender(shutdown),
-            maintenance,
-        ]
+        vec![self.spawn_outbox_dispatcher(shutdown.clone()), self.spawn_webhook_sender(shutdown), maintenance]
     }
 
     /// Hourly: anchor yesterday's audit trail, purge expired events and idempotency keys.

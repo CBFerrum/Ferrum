@@ -6,7 +6,7 @@ use crate::extract::Auth;
 use crate::state::app_state;
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use ferrum_kernel::{Ctx, Error};
 use ferrum_meta::{OverlayOp, PermissionDef};
@@ -344,9 +344,16 @@ struct PluginConfig {
     config: serde_json::Map<String, Value>,
 }
 
-async fn configure_plugin(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>, Json(body): Json<PluginConfig>) -> ApiResult<Response> {
+/// `PUT` replaces the configuration; `PATCH` merges it (`null` removes a key).
+async fn configure_plugin(
+    Auth(ctx): Auth,
+    State(app): State<AppContext>,
+    method: Method,
+    Path(id): Path<Uuid>,
+    Json(body): Json<PluginConfig>,
+) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    st.plugins.set_config(&st.kernel, &ctx, id, body.config).await?;
+    st.plugins.set_config(&st.kernel, &ctx, id, body.config, method == Method::PATCH).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -375,7 +382,7 @@ pub fn routes() -> Routes {
         .add("/admin/plugins", get(list_plugins).post(install_plugin))
         .add("/admin/plugins/{id}", delete(remove_plugin))
         .add("/admin/plugins/{id}/enabled", put(toggle_plugin))
-        .add("/admin/plugins/{id}/config", put(configure_plugin))
+        .add("/admin/plugins/{id}/config", put(configure_plugin).patch(configure_plugin))
         .add("/customize", get(list_custom).post(add_custom))
         .add("/customize/export", get(export_custom))
         .add("/customize/import", post(import_custom))

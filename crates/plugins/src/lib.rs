@@ -510,8 +510,8 @@ impl PluginHost {
     pub async fn list(&self, k: &Kernel, ctx: &Ctx) -> Result<Vec<Value>> {
         require_admin(ctx)?;
         let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-        let rows: Vec<(Uuid, String, String, Option<String>, String, Value, Value, i64, i32, bool, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
-            "select id, name, version, description, sha256, manifest, config, fuel_limit, memory_limit_mb, enabled, updated_at \
+        let rows: Vec<(Uuid, String, String, Option<String>, String, Value, Value, Value, i64, i32, bool, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+            "select id, name, version, description, sha256, manifest, hooks, config, fuel_limit, memory_limit_mb, enabled, updated_at \
              from plugin where tenant_id = $1 order by name",
         )
         .bind(ctx.tenant)
@@ -520,7 +520,11 @@ impl PluginHost {
         tx.commit().await?;
         Ok(rows
             .into_iter()
-            .map(|(id, name, version, description, sha, manifest, config, fuel, mem, enabled, updated)| {
+            .map(|(id, name, version, description, sha, mut manifest, hooks, config, fuel, mem, enabled, updated)| {
+                // Plugins installed before manifests existed declare only hooks (as `plugins` loads them).
+                if manifest.get("hooks").and_then(Value::as_array).is_none_or(|h| h.is_empty()) {
+                    manifest["hooks"] = hooks;
+                }
                 // Configuration may hold secrets: show which keys are set, never their values.
                 let config_keys: Vec<String> = config.as_object().map(|c| c.keys().cloned().collect()).unwrap_or_default();
                 json!({"id": id, "name": name, "version": version, "description": description, "sha256": sha, "manifest": manifest,
@@ -549,17 +553,27 @@ impl PluginHost {
         Ok(())
     }
 
-    /// Replaces the plugin's configuration (settings and secrets it reads from `config`).
-    pub async fn set_config(&self, k: &Kernel, ctx: &Ctx, id: Uuid, config: Map<String, Value>) -> Result<()> {
+    /// Replaces the plugin's configuration (settings and secrets it reads from `config`), or with
+    /// `merge` applies it as a merge patch: given keys are set, `null` removes one, others stay —
+    /// so an administrator can change one setting without re-entering secrets nobody can read back.
+    pub async fn set_config(&self, k: &Kernel, ctx: &Ctx, id: Uuid, config: Map<String, Value>, merge: bool) -> Result<()> {
         require_admin(ctx)?;
         let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-        let n = sqlx::query("update plugin set config = $3, updated_at = now() where tenant_id = $1 and id = $2")
-            .bind(ctx.tenant)
-            .bind(id)
-            .bind(Value::Object(config.clone()))
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+        let (removed, set): (Vec<(&String, &Value)>, Vec<(&String, &Value)>) = config.iter().partition(|(_, v)| merge && v.is_null());
+        let set: Map<String, Value> = set.into_iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let removed: Vec<String> = removed.into_iter().map(|(k, _)| k.clone()).collect();
+        let n = sqlx::query(
+            "update plugin set config = case when $5 then (config || $3) - $4::text[] else $3 end, updated_at = now() \
+             where tenant_id = $1 and id = $2",
+        )
+        .bind(ctx.tenant)
+        .bind(id)
+        .bind(Value::Object(set))
+        .bind(&removed)
+        .bind(merge)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
         if n == 0 {
             return Err(Error::NotFound("plugin".into()));
         }
