@@ -17,10 +17,11 @@ ferrum-domain = { path = "../crates/domain" }
 ferrum-plugins = { path = "../crates/plugins" }
 ferrum-mcp = { path = "../crates/mcp" }
 base64 = "0.22"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 migration = { path = "migration", package = "ferrum-migration" }
 loco-rs = { version = "1.2", default-features = false, features = ["auth", "cli", "with-db", "cache_inmem", "worker", "storage_aws_s3"] }
 sea-orm = { version = "2.0", features = ["sqlx-postgres", "runtime-tokio-rustls", "macros"] }
-axum = { version = "0.8", features = ["multipart"] }
+axum = { version = "0.8", features = ["multipart", "ws"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -1,42 +1,194 @@
-//! Tenant plugins: WebAssembly modules attached to document hooks, run in a sandbox.
+//! Tenant plugins: sandboxed WebAssembly that extends Ferrum or turns it into another platform
+//! (EV charging, IoT, payments, telephony...).
 //!
-//! A plugin is a core WebAssembly module with **no imports**: no WASI and no host calls, so it
-//! cannot reach files, the network, the clock or the database. It exports:
+//! A plugin is a core WebAssembly module. Its only possible import is `ferrum.host_call`; it
+//! exports `memory`, `ferrum_alloc(len) -> ptr` and `ferrum_hook(ptr, len) -> (ptr << 32 | len)`.
+//! Every entry point arrives as JSON with a `kind`:
 //!
-//! * `memory`
-//! * `ferrum_alloc(len: i32) -> i32` — a buffer the host writes the input into
-//! * `ferrum_hook(ptr: i32, len: i32) -> i64` — handles the input, returns `(out_ptr << 32) | out_len`
+//! * `hook` — a document lifecycle stage, inside the document's transaction, as the user;
+//!   reply `{}`, `{"patch": {...}}` (before_validate) or a veto `{"error"}` / `{"errors": [...]}`.
+//! * `http` — a request to one of its routes (`/api/ext/{plugin}/…`, or `/api/public/{tenant}/{plugin}/…`
+//!   for public ones such as payment webhooks); reply `{"status", "headers", "body"}` or `{"json"}`.
+//! * `event` — an outbox event it subscribed to (at least once, deduplicated per plugin).
+//! * `schedule` — a schedule it declared fired (multi-replica safe).
+//! * `socket` — a WebSocket it serves connected, sent a message or closed; reply
+//!   `{"send": text | [texts], "close": bool}`.
 //!
-//! Input: `{"entity", "stage", "doc", "user": {"id", "email", "roles"}}` (canonical JSON, decimals
-//! as strings). Output: `{}` (no opinion), `{"patch": {field: value}}` (only in `before_validate`),
-//! or a veto: `{"error": "message"}` / `{"errors": [{"field", "message", "row"?: [table, index]}]}`.
-//!
-//! Each call gets a fresh instance with a fuel budget (a deterministic CPU limit) and a memory
-//! cap, on the blocking pool so a busy plugin never stalls the async executor. Failures are
-//! fail-closed: a trapping or exhausted plugin aborts the operation with a clear message, and an
-//! administrator can disable it.
+//! Through `host_call` (`{"op", "args"}` → `{"ok"}` / `{"error": {"code", "message"}}`) it can read
+//! and write records (as its own service user with the permissions it declared, or as the calling
+//! user limited to those permissions), keep private key-value data, call declared HTTPS hosts,
+//! emit events, write to any of its sockets on any replica, log and read the clock. Each call is
+//! a fresh instance with a fuel budget and a memory cap on the blocking pool; failures are
+//! fail-closed and logged, and an administrator can disable the plugin at once.
 
-use async_trait::async_trait;
+pub mod events;
+pub mod hooks;
+pub mod host;
+pub mod http;
+pub mod runtime;
+pub mod schedule;
+pub mod sockets;
+
+pub use events::PluginEvents;
+pub use hooks::PluginHook;
+pub use sockets::{Outgoing, SocketHub};
+
 use dashmap::DashMap;
-use ferrum_kernel::{Ctx, Doc, DocHook, Error, FieldError, HookCtx, Kernel, Result, Tx};
+use ferrum_kernel::{Action, Ctx, Db, Error, FieldError, Kernel, Result};
+use ferrum_meta::{EntityDef, OverlayOp, PermissionDef};
+use runtime::HostApi;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
-use wasmtime::{Config, Engine, Instance, Module, Store, StoreLimits, StoreLimitsBuilder, Trap};
+use wasmtime::{Config, Engine, ExternType, Module};
 
 pub const STAGES: &[&str] = &["before_validate", "validate", "before_submit", "on_submit", "before_cancel", "on_cancel", "before_delete"];
 const MAX_WASM: usize = 8 << 20;
-const MAX_OUTPUT: usize = 1 << 20;
-const BINDINGS_TTL: Duration = Duration::from_secs(10);
+const CACHE_TTL: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HookBinding {
     /// An entity name, or `*` for every entity.
     pub entity: String,
     pub stage: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Route {
+    /// `/path`, or `/prefix/*` for everything below it.
+    pub path: String,
+    /// Callable without signing in (e.g. third-party webhooks); the plugin acts as itself.
+    #[serde(default)]
+    pub public: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Schedule {
+    pub name: String,
+    pub every_seconds: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SocketDef {
+    pub path: String,
+    #[serde(default)]
+    pub public: bool,
+    /// WebSocket subprotocols it speaks (e.g. `ocpp1.6`, `ocpp2.0.1`).
+    #[serde(default)]
+    pub subprotocols: Vec<String>,
+}
+
+/// What a plugin brings and may do; approved by the administrator who installs it.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Manifest {
+    pub hooks: Vec<HookBinding>,
+    pub routes: Vec<Route>,
+    /// Outbox topics: `SalesInvoice.submitted`, `SalesInvoice.*`, `plugin.ocpp.*`, `*`.
+    pub subscriptions: Vec<String>,
+    pub schedules: Vec<Schedule>,
+    pub sockets: Vec<SocketDef>,
+    /// Record access for its service user, and the most it may do on a user's behalf.
+    pub permissions: Vec<PermissionDef>,
+    /// Hosts it may call over HTTPS (`api.example.com`, `*.example.com`).
+    pub http_hosts: Vec<String>,
+    /// Entities it brings (stored without DDL like any custom entity; names start with `X`).
+    pub entities: Vec<EntityDef>,
+}
+
+fn path_matches(pattern: &str, path: &str) -> bool {
+    match pattern.strip_suffix("/*") {
+        Some(prefix) => path == prefix || path.starts_with(&format!("{prefix}/")),
+        None => pattern == path,
+    }
+}
+
+impl Manifest {
+    pub fn allows(&self, entity: &str, action: Action) -> bool {
+        self.permissions.iter().any(|p| {
+            (p.entity == entity || p.entity == "*")
+                && match action {
+                    Action::Read => p.read,
+                    Action::Write => p.write,
+                    Action::Create => p.create,
+                    Action::Delete => p.delete,
+                    Action::Submit => p.submit,
+                    Action::Cancel => p.cancel,
+                    Action::Export => p.export,
+                    Action::Import => p.import,
+                }
+        })
+    }
+
+    pub fn subscribes(&self, topic: &str) -> bool {
+        self.subscriptions.iter().any(|s| s == "*" || s == topic || s.strip_suffix(".*").is_some_and(|prefix| topic.starts_with(&format!("{prefix}."))))
+    }
+
+    pub fn route(&self, path: &str) -> Option<&Route> {
+        self.routes.iter().find(|r| path_matches(&r.path, path))
+    }
+
+    pub fn socket(&self, path: &str) -> Option<&SocketDef> {
+        self.sockets.iter().find(|s| path_matches(&s.path, path))
+    }
+
+    fn validate(&self, ctx: &Ctx) -> Vec<FieldError> {
+        let mut errors = Vec::new();
+        let own: Vec<&str> = self.entities.iter().map(|e| e.name.as_str()).collect();
+        let known = |e: &str| e == "*" || ctx.schema.entity(e).is_some() || own.contains(&e);
+        let path_ok = |p: &str| p.starts_with('/') && p.len() <= 100 && !p.contains("..") && !p.contains("//");
+        for (i, h) in self.hooks.iter().enumerate() {
+            if !STAGES.contains(&h.stage.as_str()) {
+                errors.push(FieldError::new("stage", format!("must be one of: {}", STAGES.join(", "))).in_row("hooks", i));
+            }
+            if !known(&h.entity) {
+                errors.push(FieldError::new("entity", format!("unknown entity {}", h.entity)).in_row("hooks", i));
+            }
+        }
+        for (i, r) in self.routes.iter().enumerate() {
+            if !path_ok(&r.path) {
+                errors.push(FieldError::new("path", "must start with / (at most 100 characters, no ..)").in_row("routes", i));
+            }
+        }
+        for (i, s) in self.sockets.iter().enumerate() {
+            if !path_ok(&s.path) {
+                errors.push(FieldError::new("path", "must start with / (at most 100 characters, no ..)").in_row("sockets", i));
+            }
+        }
+        for (i, s) in self.schedules.iter().enumerate() {
+            if s.every_seconds < 60 {
+                errors.push(FieldError::new("every_seconds", "must be at least 60").in_row("schedules", i));
+            }
+            if s.name.is_empty() || s.name.len() > 60 || self.schedules.iter().filter(|o| o.name == s.name).count() > 1 {
+                errors.push(FieldError::new("name", "needs a unique name of at most 60 characters").in_row("schedules", i));
+            }
+        }
+        for (i, t) in self.subscriptions.iter().enumerate() {
+            if t.is_empty() || t.len() > 120 || !t.chars().all(|c| c.is_ascii_alphanumeric() || "._-*".contains(c)) {
+                errors.push(FieldError::new("subscriptions", "use topics like SalesInvoice.submitted, SalesInvoice.* or *").in_row("subscriptions", i));
+            }
+        }
+        for (i, p) in self.permissions.iter().enumerate() {
+            if !known(&p.entity) {
+                errors.push(FieldError::new("entity", format!("unknown entity {}", p.entity)).in_row("permissions", i));
+            }
+        }
+        for (i, h) in self.http_hosts.iter().enumerate() {
+            let bare = h.strip_prefix("*.").unwrap_or(h);
+            if bare.is_empty() || bare.contains('*') || !bare.chars().all(|c| c.is_ascii_alphanumeric() || ".-".contains(c)) || !bare.contains('.') {
+                errors.push(FieldError::new("http_hosts", "use host names such as api.example.com or *.example.com").in_row("http_hosts", i));
+            }
+        }
+        for (i, e) in self.entities.iter().enumerate() {
+            if !e.name.starts_with('X') {
+                errors.push(FieldError::new("entities", "plugin entities must be named with an X prefix (like custom entities)").in_row("entities", i));
+            }
+        }
+        errors
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -46,54 +198,100 @@ pub struct NewPlugin {
     pub version: String,
     #[serde(default)]
     pub description: Option<String>,
-    pub hooks: Vec<HookBinding>,
     #[serde(default)]
     pub fuel_limit: Option<i64>,
     #[serde(default)]
     pub memory_limit_mb: Option<i32>,
+    /// Settings and secrets the plugin reads from its input (`config`), set by the administrator.
+    #[serde(default)]
+    pub config: Option<Map<String, Value>>,
+    #[serde(flatten)]
+    pub manifest: Manifest,
 }
 
 fn default_version() -> String {
     "0.1.0".into()
 }
 
+/// An enabled plugin, as cached per tenant.
 #[derive(Clone)]
-struct Bound {
-    name: String,
-    sha: String,
-    entity: String,
-    stage: String,
-    fuel: u64,
-    memory_mb: u32,
-}
-
-struct Limits {
-    limits: StoreLimits,
+pub struct Loaded {
+    pub id: Uuid,
+    pub name: String,
+    pub sha: String,
+    pub manifest: Arc<Manifest>,
+    pub config: Arc<Value>,
+    pub user_id: Option<Uuid>,
+    pub fuel: u64,
+    pub memory_mb: u32,
 }
 
 pub struct PluginHost {
     engine: Engine,
     modules: DashMap<String, Module>,
-    bindings: DashMap<Uuid, (Instant, Arc<Vec<Bound>>)>,
+    loaded: DashMap<Uuid, (Instant, Arc<Vec<Loaded>>)>,
+    pub sockets: Arc<SocketHub>,
+    allow_private_http: bool,
+}
+
+fn require_admin(ctx: &Ctx) -> Result<()> {
+    if ctx.is_admin { Ok(()) } else { Err(Error::Forbidden("only administrators manage plugins".into())) }
+}
+
+/// `{"error": …}` / `{"errors": […]}` in a plugin reply, as a kernel error.
+pub fn reply_error(reply: &Value) -> Option<Error> {
+    match reply.get("error") {
+        Some(Value::String(m)) => return Some(Error::Invalid(m.clone())),
+        Some(Value::Object(o)) => return Some(Error::Invalid(o.get("message").and_then(Value::as_str).unwrap_or("refused by a plugin").to_string())),
+        _ => {}
+    }
+    let list = reply.get("errors").and_then(Value::as_array)?;
+    let errs: Vec<FieldError> = list
+        .iter()
+        .map(|e| {
+            let err = FieldError::new(
+                e.get("field").and_then(Value::as_str).unwrap_or("_"),
+                e.get("message").and_then(Value::as_str).unwrap_or("refused by a plugin"),
+            );
+            // Optional `"row": ["items", 2]` points the error at a child row.
+            match e.get("row").and_then(Value::as_array).map(Vec::as_slice) {
+                Some([table, idx]) => match (table.as_str(), idx.as_u64()) {
+                    (Some(t), Some(i)) => err.in_row(t, i as usize),
+                    _ => err,
+                },
+                _ => err,
+            }
+        })
+        .collect();
+    (!errs.is_empty()).then_some(Error::Validation(errs))
+}
+
+pub fn user_json(ctx: &Ctx) -> Value {
+    json!({"id": ctx.user, "email": ctx.email, "full_name": ctx.full_name, "roles": ctx.roles, "is_admin": ctx.is_admin})
 }
 
 impl PluginHost {
-    pub fn new() -> Result<Arc<PluginHost>> {
+    /// `allow_private_http` lets plugins call private addresses and plain http (development only).
+    pub fn new(allow_private_http: bool) -> Result<Arc<PluginHost>> {
         let mut config = Config::new();
         config.consume_fuel(true);
         config.max_wasm_stack(512 << 10);
         let engine = Engine::new(&config).map_err(|e| Error::internal(format!("wasm engine: {e}")))?;
-        Ok(Arc::new(PluginHost { engine, modules: DashMap::new(), bindings: DashMap::new() }))
+        Ok(Arc::new(PluginHost { engine, modules: DashMap::new(), loaded: DashMap::new(), sockets: SocketHub::new(), allow_private_http }))
     }
 
-    /// Compiles a module and checks the plugin contract: no imports, the three exports.
+    /// Compiles a module and checks the contract: its only import may be `ferrum.host_call`.
     pub fn validate(&self, wasm: &[u8]) -> std::result::Result<Module, String> {
         if wasm.len() > MAX_WASM {
             return Err(format!("module is larger than {} MB", MAX_WASM >> 20));
         }
         let module = Module::new(&self.engine, wasm).map_err(|e| format!("not a valid WebAssembly module: {e}"))?;
-        if let Some(i) = module.imports().next() {
-            return Err(format!("plugins may not import anything (found {}::{})", i.module(), i.name()));
+        for i in module.imports() {
+            let ok =
+                i.module() == "ferrum" && i.name() == "host_call" && matches!(i.ty(), ExternType::Func(f) if f.params().len() == 2 && f.results().len() == 1);
+            if !ok {
+                return Err(format!("plugins may only import ferrum.host_call (found {}::{})", i.module(), i.name()));
+            }
         }
         for name in ["memory", "ferrum_alloc", "ferrum_hook"] {
             if module.get_export(name).is_none() {
@@ -103,117 +301,158 @@ impl PluginHost {
         Ok(module)
     }
 
-    /// Runs one call in a fresh, limited instance.
-    pub fn execute(&self, module: &Module, fuel: u64, memory_mb: u32, input: &[u8]) -> std::result::Result<Vec<u8>, String> {
-        let limits = StoreLimitsBuilder::new().memory_size((memory_mb as usize) << 20).instances(1).memories(1).tables(4).table_elements(100_000).build();
-        let mut store = Store::new(&self.engine, Limits { limits });
-        store.limiter(|s| &mut s.limits);
-        store.set_fuel(fuel).map_err(|e| e.to_string())?;
-        let describe = |e: wasmtime::Error| match e.downcast_ref::<Trap>() {
-            Some(Trap::OutOfFuel) => "exceeded its CPU budget".to_string(),
-            Some(t) => format!("trapped: {t}"),
-            None => e.to_string(),
-        };
-        let instance = Instance::new(&mut store, module, &[]).map_err(describe)?;
-        let memory = instance.get_memory(&mut store, "memory").ok_or("missing export `memory`")?;
-        let alloc = instance.get_typed_func::<i32, i32>(&mut store, "ferrum_alloc").map_err(describe)?;
-        let hook = instance.get_typed_func::<(i32, i32), i64>(&mut store, "ferrum_hook").map_err(describe)?;
-        let len = i32::try_from(input.len()).map_err(|_| "input too large".to_string())?;
-        let ptr = alloc.call(&mut store, len).map_err(describe)?;
-        memory.write(&mut store, ptr as u32 as usize, input).map_err(|_| "ferrum_alloc returned an invalid buffer".to_string())?;
-        let packed = hook.call(&mut store, (ptr, len)).map_err(describe)? as u64;
-        let (out_ptr, out_len) = ((packed >> 32) as usize, (packed & 0xffff_ffff) as usize);
-        if out_len > MAX_OUTPUT {
-            return Err(format!("output larger than {} KB", MAX_OUTPUT >> 10));
-        }
-        let mut out = vec![0; out_len];
-        memory.read(&store, out_ptr, &mut out).map_err(|_| "output points outside memory".to_string())?;
-        Ok(out)
+    /// Runs one call without host access (tests, pure plugins).
+    pub async fn execute(&self, module: &Module, fuel: u64, memory_mb: u32, input: &[u8]) -> std::result::Result<Vec<u8>, String> {
+        runtime::run(&self.engine, module, fuel, memory_mb, input.to_vec(), &mut runtime::NoHost).await
     }
 
     pub fn invalidate(&self, tenant: Uuid) {
-        self.bindings.remove(&tenant);
+        self.loaded.remove(&tenant);
     }
 
-    async fn bound(&self, tx: &mut Tx, tenant: Uuid) -> Result<Arc<Vec<Bound>>> {
-        if let Some(entry) = self.bindings.get(&tenant)
-            && entry.0.elapsed() < BINDINGS_TTL
+    /// The tenant's enabled plugins (cached briefly; read on the side pool so it never competes
+    /// with the caller's own transaction for a connection).
+    pub async fn plugins(&self, db: &Db, tenant: Uuid) -> Result<Arc<Vec<Loaded>>> {
+        if let Some(entry) = self.loaded.get(&tenant)
+            && entry.0.elapsed() < CACHE_TTL
         {
             return Ok(entry.1.clone());
         }
-        let rows: Vec<(String, String, Value, i64, i32)> =
-            sqlx::query_as("select name, sha256, hooks, fuel_limit, memory_limit_mb from plugin where tenant_id = $1 and enabled order by name")
-                .bind(tenant)
-                .fetch_all(&mut **tx)
-                .await?;
-        let mut out = Vec::new();
-        for (name, sha, hooks, fuel, mem) in rows {
-            for h in serde_json::from_value::<Vec<HookBinding>>(hooks).unwrap_or_default() {
-                out.push(Bound {
-                    name: name.clone(),
-                    sha: sha.clone(),
-                    entity: h.entity,
-                    stage: h.stage,
-                    fuel: fuel.max(0) as u64,
-                    memory_mb: mem.max(1) as u32,
-                });
-            }
-        }
-        let out = Arc::new(out);
-        self.bindings.insert(tenant, (Instant::now(), out.clone()));
-        Ok(out)
+        let mut tx = db.side_tenant_tx(tenant).await?;
+        let rows: Vec<(Uuid, String, String, Value, Value, Value, Option<Uuid>, i64, i32)> = sqlx::query_as(
+            "select id, name, sha256, hooks, manifest, config, user_id, fuel_limit, memory_limit_mb from plugin \
+             where tenant_id = $1 and enabled order by name",
+        )
+        .bind(tenant)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        let list: Vec<Loaded> = rows
+            .into_iter()
+            .map(|(id, name, sha, hooks, manifest, config, user_id, fuel, mem)| {
+                let mut m: Manifest = serde_json::from_value(manifest).unwrap_or_default();
+                if m.hooks.is_empty() {
+                    m.hooks = serde_json::from_value(hooks).unwrap_or_default();
+                }
+                Loaded { id, name, sha, manifest: Arc::new(m), config: Arc::new(config), user_id, fuel: fuel.max(0) as u64, memory_mb: mem.max(1) as u32 }
+            })
+            .collect();
+        let list = Arc::new(list);
+        self.loaded.insert(tenant, (Instant::now(), list.clone()));
+        Ok(list)
     }
 
-    async fn module(&self, tx: &mut Tx, tenant: Uuid, sha: &str) -> Result<Module> {
+    pub async fn plugin(&self, db: &Db, tenant: Uuid, name: &str) -> Result<Loaded> {
+        self.plugins(db, tenant).await?.iter().find(|p| p.name == name).cloned().ok_or_else(|| Error::NotFound(format!("plugin {name}")))
+    }
+
+    async fn module(&self, db: &Db, tenant: Uuid, sha: &str) -> Result<Module> {
         if let Some(m) = self.modules.get(sha) {
             return Ok(m.clone());
         }
+        let mut tx = db.side_tenant_tx(tenant).await?;
         let wasm: Vec<u8> =
-            sqlx::query_scalar("select wasm from plugin where tenant_id = $1 and sha256 = $2 limit 1").bind(tenant).bind(sha).fetch_one(&mut **tx).await?;
+            sqlx::query_scalar("select wasm from plugin where tenant_id = $1 and sha256 = $2 limit 1").bind(tenant).bind(sha).fetch_one(&mut *tx).await?;
+        tx.commit().await?;
         let module = self.validate(&wasm).map_err(|e| Error::internal(format!("stored plugin no longer loads: {e}")))?;
         self.modules.insert(sha.to_string(), module.clone());
         Ok(module)
     }
 
-    // ───────────────────────── administration ─────────────────────────
-
-    fn require_admin(ctx: &Ctx) -> Result<()> {
-        if ctx.is_admin { Ok(()) } else { Err(Error::Forbidden("only administrators manage plugins".into())) }
+    /// Runs `p` with `input`, serving its host calls through `api`. Returns the parsed reply.
+    pub async fn invoke(&self, db: &Db, tenant: Uuid, p: &Loaded, mut input: Value, api: &mut dyn HostApi) -> Result<Value> {
+        let module = self.module(db, tenant, &p.sha).await?;
+        input["config"] = (*p.config).clone();
+        let bytes = serde_json::to_vec(&input).map_err(Error::internal)?;
+        let out = runtime::run(&self.engine, &module, p.fuel, p.memory_mb, bytes, api).await.map_err(|m| {
+            tracing::warn!(plugin = %p.name, %tenant, "plugin failed: {m}");
+            Error::Invalid(format!("plugin '{}' failed: {m}", p.name))
+        })?;
+        if out.is_empty() {
+            return Ok(json!({}));
+        }
+        serde_json::from_slice(&out).map_err(|e| Error::Invalid(format!("plugin '{}' returned invalid JSON: {e}", p.name)))
     }
 
-    /// Installs a plugin, or replaces the module and bindings of one with the same name.
+    /// The plugin's own identity: its service user with the permissions it declared.
+    pub async fn service_ctx(&self, k: &Kernel, tenant: Uuid, p: &Loaded) -> Result<Ctx> {
+        let user = p.user_id.ok_or_else(|| Error::invalid(format!("plugin '{}' has no service user; reinstall it", p.name)))?;
+        k.load_ctx(tenant, user, None, format!("plugin-{}-{}", p.name, Uuid::now_v7())).await
+    }
+
+    // ───────────────────────── administration ─────────────────────────
+
+    /// Installs a plugin, or upgrades the one with the same name: module, manifest, entities,
+    /// service user and role, and schedules.
     pub async fn install(&self, k: &Kernel, ctx: &Ctx, p: NewPlugin, wasm: &[u8]) -> Result<Uuid> {
-        Self::require_admin(ctx)?;
+        require_admin(ctx)?;
         let mut errors = Vec::new();
-        let name_ok = p.name.len() >= 2 && p.name.len() <= 63 && p.name.starts_with(|c: char| c.is_ascii_lowercase());
-        if !name_ok || !p.name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-') {
-            errors.push(FieldError::new("name", "use 2-63 lower-case letters, digits, '-' or '_', starting with a letter"));
+        let name_ok = (2..=40).contains(&p.name.len())
+            && p.name.starts_with(|c: char| c.is_ascii_lowercase())
+            && p.name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        if !name_ok {
+            errors.push(FieldError::new("name", "use 2-40 lower-case letters, digits or '-', starting with a letter"));
         }
-        if p.hooks.is_empty() {
-            errors.push(FieldError::new("hooks", "bind the plugin to at least one entity and stage"));
+        let m = &p.manifest;
+        if m.hooks.is_empty() && m.routes.is_empty() && m.subscriptions.is_empty() && m.schedules.is_empty() && m.sockets.is_empty() {
+            errors.push(FieldError::new("hooks", "a plugin needs at least one hook, route, subscription, schedule or socket"));
         }
-        for (i, h) in p.hooks.iter().enumerate() {
-            if !STAGES.contains(&h.stage.as_str()) {
-                errors.push(FieldError::new("stage", format!("must be one of: {}", STAGES.join(", "))).in_row("hooks", i));
-            }
-            if h.entity != "*" && ctx.schema.entity(&h.entity).is_none() {
-                errors.push(FieldError::new("entity", format!("unknown entity {}", h.entity)).in_row("hooks", i));
-            }
-        }
-        if let Err(m) = self.validate(wasm) {
-            errors.push(FieldError::new("wasm", m));
+        errors.extend(m.validate(ctx));
+        if let Err(msg) = self.validate(wasm) {
+            errors.push(FieldError::new("wasm", msg));
         }
         if !errors.is_empty() {
             return Err(Error::Validation(errors));
         }
+
+        // Entities first, so its permissions can name them.
+        for def in &m.entities {
+            if ctx.schema.entity(&def.name).is_none() {
+                k.add_customization(ctx, &def.name, OverlayOp::DefineEntity { entity: Box::new(def.clone()) }, Some(format!("plugin {}", p.name))).await?;
+            }
+        }
+        let fresh;
+        let ctx = if m.entities.is_empty() {
+            ctx
+        } else {
+            fresh = k.load_ctx(ctx.tenant, ctx.user, None, ctx.request_id.clone()).await?;
+            &fresh
+        };
+
+        // The service user acts for the plugin outside users' requests; its role carries exactly
+        // the declared permissions.
+        let role = format!("plugin:{}", p.name);
+        let email = format!("{}@plugins.ferrum.invalid", p.name);
+        let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+        sqlx::query("insert into role (tenant_id, name) values ($1, $2) on conflict do nothing").bind(ctx.tenant).bind(&role).execute(&mut *tx).await?;
+        sqlx::query("delete from role_permission where tenant_id = $1 and role = $2").bind(ctx.tenant).bind(&role).execute(&mut *tx).await?;
+        let existing: Option<Uuid> =
+            sqlx::query_scalar("select id from app_user where tenant_id = $1 and email = $2").bind(ctx.tenant).bind(&email).fetch_optional(&mut *tx).await?;
+        tx.commit().await?;
+        let user = match existing {
+            Some(u) => {
+                k.set_user_active(ctx, u, true).await?;
+                k.set_user_roles(ctx, u, std::slice::from_ref(&role)).await?;
+                u
+            }
+            None => k.create_user(ctx, &email, &format!("Plugin: {}", p.name), None, std::slice::from_ref(&role), false).await?,
+        };
+        for perm in &m.permissions {
+            k.set_role_permission(ctx, &role, perm).await?;
+        }
+
         let sha = hex::encode(Sha256::digest(wasm));
-        let hooks = serde_json::to_value(&p.hooks).map_err(Error::internal)?;
+        let manifest = serde_json::to_value(m).map_err(Error::internal)?;
+        let hooks = serde_json::to_value(&m.hooks).map_err(Error::internal)?;
+        let config = Value::Object(p.config.clone().unwrap_or_default());
         let mut tx = k.db.tenant_tx(ctx.tenant).await?;
         let id: Uuid = sqlx::query_scalar(
-            "insert into plugin (tenant_id, id, name, version, description, sha256, wasm, hooks, fuel_limit, memory_limit_mb, created_by) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+            "insert into plugin (tenant_id, id, name, version, description, sha256, wasm, hooks, manifest, config, user_id, fuel_limit, memory_limit_mb, created_by) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
              on conflict (tenant_id, name) do update set version = excluded.version, description = excluded.description, sha256 = excluded.sha256, \
-             wasm = excluded.wasm, hooks = excluded.hooks, fuel_limit = excluded.fuel_limit, memory_limit_mb = excluded.memory_limit_mb, updated_at = now() \
+             wasm = excluded.wasm, hooks = excluded.hooks, manifest = excluded.manifest, \
+             config = case when $15 then excluded.config else plugin.config end, user_id = excluded.user_id, \
+             fuel_limit = excluded.fuel_limit, memory_limit_mb = excluded.memory_limit_mb, updated_at = now() \
              returning id",
         )
         .bind(ctx.tenant)
@@ -224,13 +463,44 @@ impl PluginHost {
         .bind(&sha)
         .bind(wasm)
         .bind(&hooks)
+        .bind(&manifest)
+        .bind(&config)
+        .bind(user)
         .bind(p.fuel_limit.unwrap_or(50_000_000))
         .bind(p.memory_limit_mb.unwrap_or(32))
         .bind((!ctx.user.is_nil()).then_some(ctx.user))
+        .bind(p.config.is_some())
         .fetch_one(&mut *tx)
         .await?;
-        ferrum_kernel::audit::record(&mut tx, ctx, "Plugin", id, "install", None, json!({"name": p.name, "version": p.version, "sha256": sha, "hooks": hooks}))
+        let names: Vec<String> = m.schedules.iter().map(|s| s.name.clone()).collect();
+        sqlx::query("delete from plugin_schedule where tenant_id = $1 and plugin_id = $2 and not (name = any($3))")
+            .bind(ctx.tenant)
+            .bind(id)
+            .bind(&names)
+            .execute(&mut *tx)
             .await?;
+        for s in &m.schedules {
+            sqlx::query(
+                "insert into plugin_schedule (tenant_id, plugin_id, name, every_secs) values ($1, $2, $3, $4) \
+                 on conflict (tenant_id, plugin_id, name) do update set every_secs = excluded.every_secs",
+            )
+            .bind(ctx.tenant)
+            .bind(id)
+            .bind(&s.name)
+            .bind(s.every_seconds as i32)
+            .execute(&mut *tx)
+            .await?;
+        }
+        ferrum_kernel::audit::record(
+            &mut tx,
+            ctx,
+            "Plugin",
+            id,
+            "install",
+            None,
+            json!({"name": p.name, "version": p.version, "sha256": sha, "manifest": manifest}),
+        )
+        .await?;
         tx.commit().await?;
         self.invalidate(ctx.tenant);
         tracing::info!(tenant = %ctx.tenant, plugin = %p.name, %sha, "plugin installed");
@@ -238,10 +508,11 @@ impl PluginHost {
     }
 
     pub async fn list(&self, k: &Kernel, ctx: &Ctx) -> Result<Vec<Value>> {
-        Self::require_admin(ctx)?;
+        require_admin(ctx)?;
         let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-        let rows: Vec<(Uuid, String, String, Option<String>, String, Value, i64, i32, bool, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
-            "select id, name, version, description, sha256, hooks, fuel_limit, memory_limit_mb, enabled, updated_at from plugin where tenant_id = $1 order by name",
+        let rows: Vec<(Uuid, String, String, Option<String>, String, Value, Value, i64, i32, bool, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+            "select id, name, version, description, sha256, manifest, config, fuel_limit, memory_limit_mb, enabled, updated_at \
+             from plugin where tenant_id = $1 order by name",
         )
         .bind(ctx.tenant)
         .fetch_all(&mut *tx)
@@ -249,15 +520,18 @@ impl PluginHost {
         tx.commit().await?;
         Ok(rows
             .into_iter()
-            .map(|(id, name, version, description, sha, hooks, fuel, mem, enabled, updated)| {
-                json!({"id": id, "name": name, "version": version, "description": description, "sha256": sha, "hooks": hooks,
-                    "fuel_limit": fuel, "memory_limit_mb": mem, "enabled": enabled, "updated_at": updated})
+            .map(|(id, name, version, description, sha, manifest, config, fuel, mem, enabled, updated)| {
+                // Configuration may hold secrets: show which keys are set, never their values.
+                let config_keys: Vec<String> = config.as_object().map(|c| c.keys().cloned().collect()).unwrap_or_default();
+                json!({"id": id, "name": name, "version": version, "description": description, "sha256": sha, "manifest": manifest,
+                    "hooks": manifest.get("hooks"), "config_keys": config_keys, "fuel_limit": fuel, "memory_limit_mb": mem, "enabled": enabled,
+                    "updated_at": updated})
             })
             .collect())
     }
 
     pub async fn set_enabled(&self, k: &Kernel, ctx: &Ctx, id: Uuid, enabled: bool) -> Result<()> {
-        Self::require_admin(ctx)?;
+        require_admin(ctx)?;
         let mut tx = k.db.tenant_tx(ctx.tenant).await?;
         let n = sqlx::query("update plugin set enabled = $3, updated_at = now() where tenant_id = $1 and id = $2")
             .bind(ctx.tenant)
@@ -275,119 +549,46 @@ impl PluginHost {
         Ok(())
     }
 
-    pub async fn remove(&self, k: &Kernel, ctx: &Ctx, id: Uuid) -> Result<()> {
-        Self::require_admin(ctx)?;
+    /// Replaces the plugin's configuration (settings and secrets it reads from `config`).
+    pub async fn set_config(&self, k: &Kernel, ctx: &Ctx, id: Uuid, config: Map<String, Value>) -> Result<()> {
+        require_admin(ctx)?;
         let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-        let n = sqlx::query("delete from plugin where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).execute(&mut *tx).await?.rows_affected();
+        let n = sqlx::query("update plugin set config = $3, updated_at = now() where tenant_id = $1 and id = $2")
+            .bind(ctx.tenant)
+            .bind(id)
+            .bind(Value::Object(config.clone()))
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
         if n == 0 {
             return Err(Error::NotFound("plugin".into()));
         }
-        ferrum_kernel::audit::record(&mut tx, ctx, "Plugin", id, "remove", None, json!({})).await?;
+        let keys: Vec<&String> = config.keys().collect();
+        ferrum_kernel::audit::record(&mut tx, ctx, "Plugin", id, "configure", None, json!({"keys": keys})).await?;
         tx.commit().await?;
         self.invalidate(ctx.tenant);
         Ok(())
     }
-}
 
-/// Dispatches every document hook to the tenant's plugins bound to that entity and stage.
-pub struct PluginHook(pub Arc<PluginHost>);
-
-impl PluginHook {
-    async fn run(&self, hc: &mut HookCtx<'_>, stage: &str, doc: &Doc) -> Result<Doc> {
-        let entity = hc.entity.def.name.clone();
-        let bound = self.0.bound(hc.tx, hc.ctx.tenant).await?;
-        let mine: Vec<Bound> = bound.iter().filter(|b| b.stage == stage && (b.entity == entity || b.entity == "*")).cloned().collect();
-        let mut patch = Doc::new();
-        if mine.is_empty() {
-            return Ok(patch);
+    /// Removes a plugin and its private data; its service user is deactivated. Records it created
+    /// (and entities it defined) stay.
+    pub async fn remove(&self, k: &Kernel, ctx: &Ctx, id: Uuid) -> Result<()> {
+        require_admin(ctx)?;
+        let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+        let row: Option<(String, Option<Uuid>)> = sqlx::query_as("delete from plugin where tenant_id = $1 and id = $2 returning name, user_id")
+            .bind(ctx.tenant)
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let (name, user) = row.ok_or_else(|| Error::NotFound("plugin".into()))?;
+        sqlx::query("delete from role_permission where tenant_id = $1 and role = $2").bind(ctx.tenant).bind(format!("plugin:{name}")).execute(&mut *tx).await?;
+        ferrum_kernel::audit::record(&mut tx, ctx, "Plugin", id, "remove", None, json!({"name": name})).await?;
+        tx.commit().await?;
+        if let Some(u) = user {
+            k.set_user_active(ctx, u, false).await?;
         }
-        let input = serde_json::to_vec(&json!({
-            "entity": entity,
-            "stage": stage,
-            "doc": doc,
-            "user": {"id": hc.ctx.user, "email": hc.ctx.email, "roles": hc.ctx.roles},
-        }))
-        .map_err(Error::internal)?;
-        for b in mine {
-            let module = self.0.module(hc.tx, hc.ctx.tenant, &b.sha).await?;
-            let (host, input, fuel, mem) = (self.0.clone(), input.clone(), b.fuel, b.memory_mb);
-            let out = tokio::task::spawn_blocking(move || host.execute(&module, fuel, mem, &input))
-                .await
-                .map_err(|e| Error::internal(format!("plugin task: {e}")))?
-                .map_err(|m| {
-                    tracing::warn!(plugin = %b.name, %stage, %entity, "plugin failed: {m}");
-                    Error::Invalid(format!("plugin '{}' failed: {m}", b.name))
-                })?;
-            let reply: Value = if out.is_empty() {
-                json!({})
-            } else {
-                serde_json::from_slice(&out).map_err(|e| Error::Invalid(format!("plugin '{}' returned invalid JSON: {e}", b.name)))?
-            };
-            if let Some(msg) = reply.get("error").and_then(Value::as_str) {
-                return Err(Error::Invalid(msg.to_string()));
-            }
-            if let Some(list) = reply.get("errors").and_then(Value::as_array) {
-                let errs: Vec<FieldError> = list
-                    .iter()
-                    .map(|e| {
-                        let err = FieldError::new(
-                            e.get("field").and_then(Value::as_str).unwrap_or("_"),
-                            e.get("message").and_then(Value::as_str).unwrap_or("refused by a plugin"),
-                        );
-                        // Optional `"row": ["items", 2]` points the error at a child row.
-                        match e.get("row").and_then(Value::as_array).map(Vec::as_slice) {
-                            Some([table, idx]) => match (table.as_str(), idx.as_u64()) {
-                                (Some(t), Some(i)) => err.in_row(t, i as usize),
-                                _ => err,
-                            },
-                            _ => err,
-                        }
-                    })
-                    .collect();
-                if !errs.is_empty() {
-                    return Err(Error::Validation(errs));
-                }
-            }
-            if let Some(p) = reply.get("patch").and_then(Value::as_object) {
-                if stage != "before_validate" {
-                    return Err(Error::Invalid(format!("plugin '{}' may only change documents in before_validate", b.name)));
-                }
-                for (k, v) in p {
-                    let f =
-                        hc.entity.field(k).filter(|f| f.of.is_none()).ok_or_else(|| Error::Invalid(format!("plugin '{}' set unknown field {k}", b.name)))?;
-                    let value = ferrum_kernel::value::normalize(f, v).map_err(|m| Error::field(k.clone(), m))?;
-                    patch.insert(k.clone(), value);
-                }
-            }
-        }
-        Ok(patch)
-    }
-}
-
-#[async_trait]
-impl DocHook for PluginHook {
-    async fn before_validate(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
-        let patch = self.run(hc, "before_validate", doc).await?;
-        doc.extend(patch);
+        self.invalidate(ctx.tenant);
         Ok(())
-    }
-    async fn validate(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
-        self.run(hc, "validate", doc).await.map(drop)
-    }
-    async fn before_submit(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
-        self.run(hc, "before_submit", doc).await.map(drop)
-    }
-    async fn on_submit(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
-        self.run(hc, "on_submit", doc).await.map(drop)
-    }
-    async fn before_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
-        self.run(hc, "before_cancel", doc).await.map(drop)
-    }
-    async fn on_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
-        self.run(hc, "on_cancel", doc).await.map(drop)
-    }
-    async fn before_delete(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
-        self.run(hc, "before_delete", doc).await.map(drop)
     }
 }
 
@@ -415,34 +616,34 @@ mod tests {
     use super::*;
 
     fn host() -> Arc<PluginHost> {
-        PluginHost::new().unwrap()
+        PluginHost::new(false).unwrap()
     }
 
     fn compile(h: &PluginHost, wat: &str) -> Module {
         h.validate(wat.as_bytes()).unwrap_or_else(|e| panic!("{e}"))
     }
 
-    #[test]
-    fn answers_through_linear_memory() {
+    #[tokio::test]
+    async fn answers_through_linear_memory() {
         let h = host();
         let m = compile(&h, &constant_plugin_wat(r#"{"error":"blocked"}"#));
-        let out = h.execute(&m, 1_000_000, 4, br#"{"doc":{}}"#).unwrap();
+        let out = h.execute(&m, 1_000_000, 4, br#"{"doc":{}}"#).await.unwrap();
         assert_eq!(out, br#"{"error":"blocked"}"#);
     }
 
-    #[test]
-    fn infinite_loops_run_out_of_fuel() {
+    #[tokio::test]
+    async fn infinite_loops_run_out_of_fuel() {
         let h = host();
         let wat = r#"(module (memory (export "memory") 1)
             (func (export "ferrum_alloc") (param i32) (result i32) (i32.const 0))
             (func (export "ferrum_hook") (param i32 i32) (result i64) (loop $l (br $l)) (i64.const 0)))"#;
         let m = compile(&h, wat);
-        let err = h.execute(&m, 100_000, 4, b"{}").unwrap_err();
+        let err = h.execute(&m, 100_000, 4, b"{}").await.unwrap_err();
         assert!(err.contains("CPU budget"), "{err}");
     }
 
-    #[test]
-    fn memory_is_capped() {
+    #[tokio::test]
+    async fn memory_is_capped() {
         let h = host();
         let wat = r#"(module (memory (export "memory") 1)
             (func (export "ferrum_alloc") (param i32) (result i32) (i32.const 0))
@@ -450,26 +651,43 @@ mod tests {
               (if (i32.eq (memory.grow (i32.const 200)) (i32.const -1)) (then unreachable))
               (i64.const 0)))"#;
         let m = compile(&h, wat);
-        let err = h.execute(&m, 1_000_000, 4, b"{}").unwrap_err();
+        let err = h.execute(&m, 1_000_000, 4, b"{}").await.unwrap_err();
         assert!(err.contains("trapped"), "{err}");
     }
 
     #[test]
-    fn imports_and_missing_exports_are_refused() {
+    fn only_host_call_may_be_imported() {
         let h = host();
-        let with_import = r#"(module (import "wasi_snapshot_preview1" "fd_write" (func (param i32 i32 i32 i32) (result i32))) (memory (export "memory") 1))"#;
-        assert!(h.validate(with_import.as_bytes()).unwrap_err().contains("may not import"));
+        let wasi = r#"(module (import "wasi_snapshot_preview1" "fd_write" (func (param i32 i32 i32 i32) (result i32))) (memory (export "memory") 1))"#;
+        assert!(h.validate(wasi.as_bytes()).unwrap_err().contains("may only import"));
+        let host_call = r#"(module (import "ferrum" "host_call" (func (param i32 i32) (result i64))) (memory (export "memory") 1)
+            (func (export "ferrum_alloc") (param i32) (result i32) (i32.const 0))
+            (func (export "ferrum_hook") (param i32 i32) (result i64) (i64.const 0)))"#;
+        assert!(h.validate(host_call.as_bytes()).is_ok());
         assert!(h.validate(br#"(module (memory (export "memory") 1))"#).unwrap_err().contains("missing export"));
         assert!(h.validate(b"not wasm").is_err());
     }
 
-    #[test]
-    fn outputs_outside_memory_are_rejected() {
+    #[tokio::test]
+    async fn outputs_outside_memory_are_rejected() {
         let h = host();
         let wat = r#"(module (memory (export "memory") 1)
             (func (export "ferrum_alloc") (param i32) (result i32) (i32.const 0))
             (func (export "ferrum_hook") (param i32 i32) (result i64) (i64.const 0x0000fff000000100)))"#;
         let m = compile(&h, wat);
-        assert!(h.execute(&m, 1_000_000, 4, b"{}").unwrap_err().contains("outside memory"));
+        assert!(h.execute(&m, 1_000_000, 4, b"{}").await.unwrap_err().contains("outside memory"));
+    }
+
+    #[test]
+    fn manifest_matching() {
+        let m: Manifest = serde_json::from_value(json!({
+            "subscriptions": ["SalesInvoice.*", "plugin.ocpp.boot"],
+            "routes": [{"path": "/webhook"}, {"path": "/api/*", "public": true}],
+            "permissions": [{"entity": "Customer", "read": true}],
+        }))
+        .unwrap();
+        assert!(m.subscribes("SalesInvoice.submitted") && m.subscribes("plugin.ocpp.boot") && !m.subscribes("SalesOrder.created"));
+        assert!(m.route("/webhook").is_some() && m.route("/api/x/y").is_some_and(|r| r.public) && m.route("/other").is_none());
+        assert!(m.allows("Customer", Action::Read) && !m.allows("Customer", Action::Write) && !m.allows("Item", Action::Read));
     }
 }

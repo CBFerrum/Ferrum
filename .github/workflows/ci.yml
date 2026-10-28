@@ -30,6 +30,7 @@ jobs:
       FERRUM_TEST_DATABASE_URL: postgres://ferrum:ferrum@localhost:5432/ferrum_test
       FERRUM_DOMAIN_TEST_DATABASE_URL: postgres://ferrum:ferrum@localhost:5432/ferrum_domain_test
       FERRUM_MCP_TEST_DATABASE_URL: postgres://ferrum:ferrum@localhost:5432/ferrum_mcp_test
+      FERRUM_PLUGINS_TEST_DATABASE_URL: postgres://ferrum:ferrum@localhost:5432/ferrum_plugins_test
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -44,6 +45,7 @@ jobs:
           create database ferrum_test owner ferrum;
           create database ferrum_domain_test owner ferrum;
           create database ferrum_mcp_test owner ferrum;
+          create database ferrum_plugins_test owner ferrum;
           SQL
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings

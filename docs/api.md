@@ -75,6 +75,11 @@ Plugins (sandboxed WebAssembly, see README): `GET /api/admin/plugins` → `{plug
 `POST /api/admin/plugins` `{name, version?, description?, hooks: [{entity|"*", stage: before_validate|validate|before_submit|on_submit|before_cancel|on_cancel|before_delete}], fuel_limit?, memory_limit_mb?, wasm_base64}` → `{id}` (same name replaces);
 `PUT /api/admin/plugins/{id}/enabled` `{enabled}`; `DELETE /api/admin/plugins/{id}`.
 
+`PUT /api/admin/plugins/{id}/config` `{config}` replaces a plugin's settings and secrets. Plugin endpoints:
+any method on `/api/ext/{plugin}/{path}` (signed in) or `/api/public/{tenant}/{plugin}/{path}` (public routes),
+and WebSockets at `/ws/ext/{tenant}/{plugin}/{path}` (token in `Authorization` or `access_token` unless public).
+Manifest, contract and host calls: [plugins.md](plugins.md).
+
 Notifications (own): `GET /api/notifications`, `POST /api/notifications/{id}/read`.
 
 ## AI agents (MCP)

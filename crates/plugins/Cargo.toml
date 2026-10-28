@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 ferrum-kernel = { path = "../kernel" }
+ferrum-meta = { path = "../meta" }
 wasmtime = { version = "48.0.7", default-features = false, features = ["cranelift", "runtime", "std", "wat", "parallel-compilation"] }
 async-trait = { workspace = true }
 dashmap = { workspace = true }
@@ -19,6 +20,10 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+[dev-dependencies]
+tokio = { workspace = true }
 
 [lints]
 workspace = true

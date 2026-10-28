@@ -1,0 +1,13 @@
+# Rust SDK for Ferrum plugins (compile with --target wasm32-unknown-unknown).
+[package]
+name = "ferrum-plugin-sdk"
+version = "0.2.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+description = "Write Ferrum plugins in Rust: entry point, host calls (records, key-value, HTTP, events, sockets)"
+
+[dependencies]
+serde_json = "1"
+
+# Not part of the server workspace.
+[workspace]

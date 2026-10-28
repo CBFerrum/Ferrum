@@ -1,0 +1,33 @@
+{
+  "name": "device-gateway",
+  "version": "0.1.0",
+  "description": "Connects devices over WebSocket, records their readings and sends them commands",
+  "config": {"blocked_word": "blocked"},
+  "entities": [
+    {"name": "XDevice", "label": "Device", "kind": "master", "title_field": "name",
+     "fields": [
+       {"name": "device_id", "type": "data", "required": true, "in_list": true},
+       {"name": "name", "type": "data", "in_list": true},
+       {"name": "firmware", "type": "data"},
+       {"name": "status", "type": "select", "options": ["Online", "Offline"], "default": "Offline", "in_list": true},
+       {"name": "last_seen", "type": "datetime", "in_list": true}
+     ]},
+    {"name": "XReading", "label": "Device Reading", "kind": "master",
+     "fields": [
+       {"name": "device", "type": "link", "to": "XDevice", "required": true, "in_list": true},
+       {"name": "metric", "type": "data", "required": true, "in_list": true},
+       {"name": "value", "type": "decimal", "in_list": true},
+       {"name": "at", "type": "datetime", "in_list": true}
+     ]}
+  ],
+  "hooks": [{"entity": "Customer", "stage": "validate"}],
+  "routes": [{"path": "/status", "public": true}, {"path": "/probe", "public": true}, {"path": "/devices/*"}],
+  "sockets": [{"path": "/devices/*", "public": true, "subprotocols": ["ferrum.device.v1"]}],
+  "subscriptions": ["Customer.created"],
+  "schedules": [{"name": "sweep", "every_seconds": 60}],
+  "permissions": [
+    {"entity": "XDevice", "read": true, "write": true, "create": true},
+    {"entity": "XReading", "read": true, "create": true},
+    {"entity": "Customer", "read": true}
+  ]
+}

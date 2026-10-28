@@ -59,8 +59,9 @@ impl Hooks for App {
         let catalog = Catalog::load_dir(Path::new(&settings.packages_dir)).map_err(|e| Error::Message(format!("packages: {e}")))?;
         let mut hooks = HookRegistry::default();
         ferrum_domain::register(&mut hooks);
-        let plugins = ferrum_plugins::PluginHost::new().map_err(|e| Error::Message(format!("plugins: {e}")))?;
+        let plugins = ferrum_plugins::PluginHost::new(settings.webhooks_allow_private).map_err(|e| Error::Message(format!("plugins: {e}")))?;
         hooks.register("*", Arc::new(ferrum_plugins::PluginHook(plugins.clone())));
+        hooks.add_event_sink(Arc::new(ferrum_plugins::PluginEvents(plugins.clone())));
         let mailer: Option<Arc<dyn Mailer>> = ctx.mailer.clone().map(|sender| Arc::new(LocoMailer { sender, from: None }) as Arc<dyn Mailer>);
         let kernel = Kernel::boot(db, catalog, hooks, KernelSettings { webhooks_allow_private: settings.webhooks_allow_private, ..Default::default() }, mailer)
             .await
@@ -108,6 +109,9 @@ impl Hooks for App {
                     }
                 }
             }));
+            // Plugin schedules and cross-replica socket delivery.
+            handles.push(ferrum_plugins::schedule::spawn_scheduler(state.plugins.clone(), state.kernel.clone(), state.shutdown.subscribe()));
+            handles.push(state.plugins.sockets.spawn_listener(state.kernel.db.clone(), state.shutdown.subscribe()));
             state.background.lock().await.extend(handles);
             tracing::info!("background loops started (outbox, webhooks, metadata listener, maintenance)");
         }
@@ -137,6 +141,7 @@ impl Hooks for App {
             .add_route(controllers::compat::routes())
             .add_route(controllers::mcp::routes())
             .add_route(controllers::oauth::routes())
+            .add_route(controllers::plugins::routes())
     }
 
     async fn connect_workers(_ctx: &AppContext, _queue: &Queue) -> Result<()> {
