@@ -1,0 +1,15 @@
+# The emulator listens on 5000, not on the 443 the production policy allows.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ferrum-ci-s3
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: ferrum}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: ci-s3}
+      ports:
+        - {port: 5000}

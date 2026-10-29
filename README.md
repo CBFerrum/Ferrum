@@ -187,8 +187,10 @@ balance sheet balance and that stock value equals the stock accounts.
 * Images: `ghcr.io/cbferrum/ferrum` (API server) and `ghcr.io/cbferrum/ferrum-frontend` (web app,
   which also proxies the API so browsers see one origin). Both are stateless.
 * Single host: `deploy/docker-compose.yml`.
-* Production: `deploy/k8s` (CloudNativePG with synchronous replica and PITR backups, 3+ API
-  replicas, PDB, HPA, NetworkPolicy, probes) — see [docs/operations.md](docs/operations.md).
+* Production: `deploy/k8s` (CloudNativePG with synchronous replica and PITR backups through the
+  Barman Cloud plugin, 3+ API replicas, Gateway API routes with cert-manager TLS, PDB, HPA,
+  NetworkPolicy, probes), deployed and exercised on a kind cluster in CI (`deploy/kind`) — see
+  [docs/operations.md](docs/operations.md).
 
 ## Scope and known limits
 

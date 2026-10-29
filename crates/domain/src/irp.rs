@@ -24,8 +24,6 @@ const INVOICE: &str = "/eicore/v1.03/Invoice";
 const BY_IRN: &str = "/eicore/v1.03/Invoice/irn/";
 const CANCEL: &str = "/eicore/v1.03/Invoice/Cancel";
 const EWB: &str = "/eiewb/v1.03/ewaybill";
-/// NIC's sandbox, for companies in sandbox mode that name no other address.
-pub const SANDBOX: &str = "https://einv-apisandbox.nic.in";
 /// NIC's error codes for an IRN already generated, and for a token it no longer knows.
 const DUPLICATE: &str = "2150";
 const STALE_TOKEN: &[&str] = &["1005", "1004"];
@@ -158,11 +156,12 @@ impl IrpConnector {
             return Ok(None);
         }
         let cid = id(company, "id").ok_or_else(|| Error::internal("company without id"))?;
-        let base = match (mode, s(company, "in_irp_url").map(str::trim).filter(|u| !u.is_empty())) {
-            (_, Some(u)) => u.trim_end_matches('/').to_string(),
-            ("Sandbox", None) => SANDBOX.to_string(),
-            _ => return Err(Error::invalid("set the IRP's API address (NIC's, or your GSP's) for production")),
-        };
+        // NIC hands out the API address (sandbox and production) when it registers the user.
+        let base = s(company, "in_irp_url")
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+            .map(|u| u.trim_end_matches('/').to_string())
+            .ok_or_else(|| Error::invalid("set the company's IRP API address: the one NIC gave at registration, or your GSP's"))?;
         let mut tx = k.db.tenant_tx(tenant).await?;
         let mut secret = async |field: &str| k.secret(&mut tx, tenant, "Company", cid, field).await;
         let client_secret = secret("in_irp_client_secret").await?;

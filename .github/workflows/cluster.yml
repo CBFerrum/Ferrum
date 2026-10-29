@@ -1,0 +1,58 @@
+name: cluster
+
+# Deploys an image with deploy/k8s to a Kubernetes cluster (kind: a control plane and three
+# workers) next to the database operator and its backup plugin, a Gateway API implementation and
+# cert-manager, and checks it as an operator would (deploy/kind/smoke.sh): failover, rolling
+# restarts under traffic, attachments across replicas, backup and restore. Runs for each image CI
+# publishes from main, and on demand for any image.
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Image to deploy
+        default: ghcr.io/cbferrum/ferrum:latest
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: cluster-${{ github.event.workflow_run.head_sha || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  kind:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      IMAGE: ${{ github.event_name == 'workflow_run' && format('ghcr.io/cbferrum/ferrum:{0}', github.event.workflow_run.head_sha) || inputs.image || 'ghcr.io/cbferrum/ferrum:latest' }}
+      KIND: v0.33.0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Images
+        run: |
+          docker pull "$IMAGE" && docker tag "$IMAGE" ferrum:ci
+          # The web app as its repository builds it.
+          docker build -q -t ferrum-frontend:ci https://github.com/CBFerrum/Ferrum-Frontend.git#main
+      - name: Cluster
+        run: |
+          curl -fsSLo kind "https://github.com/kubernetes-sigs/kind/releases/download/$KIND/kind-linux-amd64"
+          chmod +x kind && sudo mv kind /usr/local/bin/kind
+          kind create cluster --config deploy/kind/kind.yaml --wait 5m
+          kind load docker-image ferrum:ci ferrum-frontend:ci
+      - name: Install the operators, the gateway and cert-manager
+        run: deploy/kind/install.sh
+      - name: Deploy and check
+        run: deploy/kind/smoke.sh

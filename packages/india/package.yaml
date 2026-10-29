@@ -15,7 +15,7 @@ overlays:
       - {op: add_field, after: in_city, field: {name: in_pincode, type: data, label: PIN Code, max_length: 6}}
       - {op: add_section, after: tax_id, section: {label: GST Registration, fields: [in_gstin, in_state_code, in_address, in_city, in_pincode], collapsible: true}}
       - {op: add_field, after: in_pincode, field: {name: in_irp_mode, type: select, label: Send e-Invoices to the IRP, options: ["Off", Sandbox, Production], default: "Off", description: "Off: e-invoice JSON is uploaded on the portal (or a GSP plugin sends it)"}}
-      - {op: add_field, after: in_irp_mode, field: {name: in_irp_url, type: url, label: IRP API Address, description: "NIC's or your GSP's; blank in sandbox mode means NIC's sandbox"}}
+      - {op: add_field, after: in_irp_mode, field: {name: in_irp_url, type: url, label: IRP API Address, description: "The address NIC gave at registration (sandbox or production), or your GSP's"}}
       - {op: add_field, after: in_irp_url, field: {name: in_irp_client_id, type: data, label: IRP Client ID}}
       - {op: add_field, after: in_irp_client_id, field: {name: in_irp_client_secret, type: secret, label: IRP Client Secret}}
       - {op: add_field, after: in_irp_client_secret, field: {name: in_irp_username, type: data, label: IRP API User Name}}

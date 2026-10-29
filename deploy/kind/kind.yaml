@@ -1,0 +1,9 @@
+# The cluster CI deploys to: a control plane and three workers, so the database's three instances
+# land on different nodes as in production.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker
+  - role: worker

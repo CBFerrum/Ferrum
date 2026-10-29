@@ -24,17 +24,23 @@ spec:
         runAsUser: 10001
         fsGroup: 10001
         seccompProfile: {type: RuntimeDefault}
+      # Counted per revision (a rollout's new pods do not wait on the old ones) and over the nodes
+      # the pods may run on (a tainted node pool would otherwise count as a node with none, and
+      # block every rollout).
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: topology.kubernetes.io/zone
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels: {app.kubernetes.io/name: ferrum}
+          matchLabelKeys: [pod-template-hash]
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
           whenUnsatisfiable: DoNotSchedule
+          nodeTaintsPolicy: Honor
           labelSelector:
             matchLabels: {app.kubernetes.io/name: ferrum}
+          matchLabelKeys: [pod-template-hash]
       containers:
         - name: ferrum
           image: ferrum

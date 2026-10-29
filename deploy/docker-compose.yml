@@ -21,7 +21,8 @@ services:
       - db:/var/lib/postgresql/data
       - ./postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d ferrum"]
+      # Over TCP: while a new volume's init scripts run, the server listens on its socket only.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d ferrum"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -46,6 +47,9 @@ services:
       FERRUM_REQUIRE_OBJECT_STORAGE: ${FERRUM_REQUIRE_OBJECT_STORAGE:-false}
       # Requests a user may make per minute on each replica (0: no limit).
       FERRUM_USER_REQUESTS_PER_MINUTE: ${FERRUM_USER_REQUESTS_PER_MINUTE:-3000}
+      # Per client address, for requests through a proxy (the web container or one of your own).
+      FERRUM_ADDRESS_REQUESTS_PER_MINUTE: ${FERRUM_ADDRESS_REQUESTS_PER_MINUTE:-6000}
+      FERRUM_PROXY_HOPS: ${FERRUM_PROXY_HOPS:-1}
       FERRUM_S3_BUCKET: ${FERRUM_S3_BUCKET:-}
       FERRUM_S3_ENDPOINT: ${FERRUM_S3_ENDPOINT:-}
       FERRUM_S3_REGION: ${FERRUM_S3_REGION:-}

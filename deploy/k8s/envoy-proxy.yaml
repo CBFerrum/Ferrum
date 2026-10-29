@@ -1,0 +1,25 @@
+# Envoy Gateway's proxies for the Gateway: two on different nodes, at most one down at a time, and
+# the client's own address kept (externalTrafficPolicy: Local), which the server's per-address
+# limits count. With another Gateway API implementation, remove this file and the Gateway's
+# infrastructure.parametersRef, and give that implementation's proxies the same three properties.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: ferrum
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyDeployment:
+        replicas: 2
+        pod:
+          topologySpreadConstraints:
+            - maxSkew: 1
+              topologyKey: kubernetes.io/hostname
+              whenUnsatisfiable: ScheduleAnyway
+              labelSelector:
+                matchLabels: {gateway.envoyproxy.io/owning-gateway-name: ferrum}
+      envoyPDB:
+        minAvailable: 1
+      envoyService:
+        externalTrafficPolicy: Local

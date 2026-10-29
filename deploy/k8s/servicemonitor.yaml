@@ -1,4 +1,5 @@
-# Prometheus operator scrape config for /metrics (remove if the operator is not installed).
+# Prometheus operator scrape configs: the API's /metrics and the database instances' exporter
+# (remove this file if the operator is not installed).
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -10,4 +11,16 @@ spec:
     - port: http
       path: /metrics
       interval: 30s
-      bearerTokenSecret: {name: ferrum-secrets, key: FERRUM_METRICS_TOKEN}
+      authorization:
+        type: Bearer
+        credentials: {name: ferrum-secrets, key: FERRUM_METRICS_TOKEN}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: ferrum-db
+spec:
+  selector:
+    matchLabels: {cnpg.io/cluster: ferrum-db}
+  podMetricsEndpoints:
+    - port: metrics

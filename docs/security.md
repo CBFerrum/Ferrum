@@ -68,7 +68,9 @@ operator to know. Report a vulnerability privately to the maintainers rather tha
 
 **Availability**
 * Rate limits held in the database (sign-in, public endpoints, mail) work across replicas and
-  fail open if the database is briefly unreachable; the ingress limits requests per address.
+  fail open if the database is briefly unreachable. Every client address has a request budget too
+  (6000 a minute on each replica by default), taken from the entry `FERRUM_PROXY_HOPS` from the
+  right of `X-Forwarded-For`: what a client writes there itself is never counted as its address.
 * Every user has a request budget (3000 a minute on each replica by default, across all their
   sessions and API keys): a runaway script with a valid token is slowed down to `429`s instead of
   slowing everyone down.
@@ -101,6 +103,19 @@ Found and fixed:
 * The single sign-on start compared its return address with the request's host, which breaks
   behind proxies that rewrite it; the return address is safe without it (the provider sends the
   browser only to registered addresses, and only the browser holding the binding can finish).
+* The Kubernetes manifests relied on ingress-nginx, retired in March 2026 (no more security fixes),
+  for TLS, routing and the per-address request limit, and on CloudNativePG's built-in backups,
+  removed in 1.31. They now use Gateway API routes, a per-address budget in the server itself, and
+  the Barman Cloud plugin, and CI deploys them to a real cluster for every image.
+* Deploying the manifests to a real cluster showed two availability faults. Losing the database
+  primary held writes up for three minutes: CloudNativePG's smart shutdown waits for every client
+  to disconnect, and the API's pooled connections never do. The primary now ends sessions after
+  15 s and writes resume in about 25 s. And the API's spread across nodes counted a tainted node
+  (one pods may not run on) as a node without a replica, so a rolling update could never place
+  its first new pod; it now counts only usable nodes, per revision.
+* The client's address for sign-in limits was always the last `X-Forwarded-For` entry: behind a
+  CDN or an HTTP load balancer, every user shared the CDN's address and its sign-in budget.
+  `FERRUM_PROXY_HOPS` says how many proxies to trust.
 
 Known and accepted:
 * A signed QR code is checked against the IRP's signature only when the company has entered the

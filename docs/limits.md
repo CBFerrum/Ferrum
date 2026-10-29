@@ -40,7 +40,9 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   endpoints) are counted in the database, so they hold across replicas; apps use the same
   (`Kernel::rate_limit`). They are per address: Campaigns' tracking pixels and links opened
   through a mail provider's image proxy share that proxy's budget. Each user's own request budget
-  (`FERRUM_USER_REQUESTS_PER_MINUTE`) is counted per replica, not across the cluster.
+  (`FERRUM_USER_REQUESTS_PER_MINUTE`) and each address's (`FERRUM_ADDRESS_REQUESTS_PER_MINUTE`)
+  are counted per replica, not across the cluster. Addresses are what the proxies in front report
+  (`FERRUM_PROXY_HOPS`); requests that came through no proxy are not counted per address.
 - **GST e-invoices and e-way bills** (`india`): Sales Invoices to registered businesses, SEZs and
   buyers abroad, and their credit notes; debit notes, deemed exports, reverse charge and
   e-commerce operators' details are not built. The direct connection speaks the IRP's own API

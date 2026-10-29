@@ -38,6 +38,8 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_APP_TRUSTED_KEYS` | with stores | Comma-separated `store:<base64>` / `publisher:<base64>` Ed25519 public keys whose signatures this cluster trusts (`ferrum-app keygen` prints them). Store apps need a store countersignature by one of them; several keys may be trusted at once (rotation) |
 | `FERRUM_APP_UPLOADS` | no | Who may upload app bundles: `off`, `private` (production default: sandboxed apps without tables, visible only in the uploading workspace) or `cluster` (development default: available to every workspace) |
 | `FERRUM_USER_REQUESTS_PER_MINUTE` | no | Requests one user (with any of their sessions and API keys) may make per minute on each replica; beyond it they get `429` with `Retry-After`. Default 3000; `0` turns it off. It counts per replica, so the cluster-wide budget grows with the replica count |
+| `FERRUM_ADDRESS_REQUESTS_PER_MINUTE` | no | Requests one client address may make per minute on each replica, counted for requests that came through the proxy (`X-Forwarded-For`); default 6000, `0` turns it off. Health probes and in-cluster calls are not counted |
+| `FERRUM_PROXY_HOPS` | no | How many proxies in front append to `X-Forwarded-For`: 1 (default) for the gateway alone, 2 with a CDN or an HTTP load balancer before it. The client's address for sign-in and request limits is the entry that many from the right; set it wrong and everyone shares one address (too low) or clients choose their own (too high) |
 | `FERRUM_SSO_ALLOW_PRIVATE` | no | `true` lets single sign-on reach an identity provider on a private address or over plain http (one inside your own network, such as an in-cluster Keycloak); default `false` |
 | `FERRUM_APP_ALLOW_UNSIGNED` | no | `true` accepts uploads no trusted key signed (development default); production default `false` |
 
@@ -54,8 +56,12 @@ up to ~11 replicas without a pooler; raise both together).
 
 ## First deployment (Kubernetes)
 
-1. Install the CloudNativePG operator, an ingress controller, cert-manager and metrics-server
-   (and the Prometheus operator if you want the `ServiceMonitor`).
+1. Install the CloudNativePG operator with its Barman Cloud plugin (backups), a Gateway API
+   implementation, cert-manager with Gateway API support (`--enable-gateway-api`) and
+   metrics-server (and the Prometheus operator if you want the `ServiceMonitor`).
+   `deploy/kind/install.sh` installs the versions CI deploys with: CloudNativePG 1.30.1, Barman
+   Cloud plugin 0.15.1, Envoy Gateway 1.9.3, cert-manager 1.21.3. ingress-nginx is not supported:
+   it was retired in March 2026.
 2. Create the bucket for backups and the bucket for attachments. For uploads over 25 MB, which
    browsers send straight to the attachments bucket, allow them in its CORS configuration:
    `[{"AllowedOrigins": ["https://erp.example.com"], "AllowedMethods": ["PUT"], "AllowedHeaders": ["content-type"], "MaxAgeSeconds": 3600}]`.
@@ -63,7 +69,15 @@ up to ~11 replicas without a pooler; raise both together).
    abandoned uploads.
 3. Create the secrets as shown in `deploy/k8s/secret.example.yaml`.
 4. Edit `deploy/k8s/kustomization.yaml` (image), `deployment.yaml` (`PUBLIC_URL`, bucket, region),
-   `ingress.yaml` (host) and `database.yaml` (backup bucket, sizes).
+   `gateway.yaml` (host; `gatewayClassName` if not Envoy Gateway's `eg`) and `database.yaml` (the
+   `ObjectStore`'s backup bucket, sizes). `envoy-proxy.yaml` runs two of Envoy Gateway's proxies on
+   different nodes and keeps the client's address (`externalTrafficPolicy: Local`), which the
+   per-address limits count. With another gateway implementation, remove that file and the
+   Gateway's `infrastructure.parametersRef`, give its proxies the same properties, and allow the
+   namespace they run in (Envoy Gateway: `envoy-gateway-system`) in `networkpolicy.yaml`.
+   Create the `letsencrypt` ClusterIssuer the Gateway names, with an ACME HTTP-01 solver of type
+   `gatewayHTTPRoute` whose `parentRefs` is the Gateway `ferrum` in namespace `ferrum` (or use a DNS-01
+   solver). With a CDN or HTTP load balancer in front of the gateway, set `FERRUM_PROXY_HOPS=2`.
 5. `kubectl apply -k deploy/k8s` and wait for `kubectl -n ferrum get pods` to show the database
    cluster healthy and the API pods ready (`/api/ready` checks the database).
 6. Create the first tenant:
@@ -81,14 +95,46 @@ Single host: `cp deploy/.env.example deploy/.env`, fill it in, then
 `docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d`.
 
 **Checking an image before it goes out.** `deploy/smoke.sh` deploys the Compose stack (database,
-Ferrum, PDF renderer) from an image with freshly generated secrets, creates and seeds a
-workspace, signs in, submits a Sales Invoice and prints it as HTML and PDF, checks the audit
-chain and the security and caching headers, restarts the server and reads again with the same
-session, runs a short load test, and removes everything. CI runs it on every image it builds and
-publishes the image only when it passes. To run it yourself (Docker, curl, python3 with httpx):
+Ferrum, PDF renderer, web app) with freshly generated secrets. The workspace is created, seeded
+and invoiced by the release being replaced (`FERRUM_PREVIOUS_IMAGE`, if set), then the server's
+container is replaced with `FERRUM_IMAGE` as an upgrade does; the session, the data and the web
+app's route to the new container must survive. On the new image it then checks the security and
+caching headers; the web app's pages, scripts, API proxy and live-updates WebSocket; a Sales
+Invoice submitted and printed as HTML and PDF with its audit chain; recovery from a database
+restart; a backup, deletion of the stack with its volumes and a restore (data, session,
+attachment and numbering intact); and a short load test. Everything is removed afterwards. CI
+runs it on every image it builds, as an upgrade of `ghcr.io/cbferrum/ferrum:latest`, and
+Ferrum-Frontend's CI runs it on every web image; images are published only when it passes.
+(Ferrum-Frontend's CI pulls the server image when the `ferrum` package grants that repository
+read access under *Manage Actions access*; until then it builds the server from source, about 20
+minutes longer.) To run it yourself (Docker, curl, openssl, python3 with
+httpx; `SMOKE_PORT`, `SMOKE_WEB_PORT` and `SMOKE_LOAD_SECONDS` override the API port 5150, the
+web port 8080 and the 20-second load test):
 
 ```bash
-FERRUM_IMAGE=ghcr.io/cbferrum/ferrum:<tag> deploy/smoke.sh
+FERRUM_IMAGE=ghcr.io/cbferrum/ferrum:<tag> FERRUM_PREVIOUS_IMAGE=ghcr.io/cbferrum/ferrum:latest \
+  FERRUM_WEB_IMAGE=ghcr.io/cbferrum/ferrum-frontend:latest deploy/smoke.sh
+```
+
+**Checking the Kubernetes deployment.** `deploy/kind/smoke.sh` deploys `deploy/k8s` to a cluster
+(through `deploy/kind/kustomization.yaml`, which only swaps in local images and points
+attachments and backups at an S3 emulator) and checks it as an operator would: three database
+instances, the API, renderer and web app ready, the Gateway serving HTTPS with a certificate from
+cert-manager, HTTP redirected, no metrics outside; a workspace created and an invoice submitted,
+printed and given an attachment that every replica serves from object storage; the database
+primary killed (a standby is promoted and writes resume within 90 s — about 25 s in CI — with
+nothing lost); the API restarted replica by
+replica under traffic without a failed request; a backup taken and restored into a new cluster
+that holds the latest writes. CI runs it on kind (a control plane and three workers) for every
+image published from main (`.github/workflows/cluster.yml`). To run it yourself (Docker, kind,
+kubectl, curl, python3):
+
+```bash
+kind create cluster --config deploy/kind/kind.yaml
+docker pull ghcr.io/cbferrum/ferrum:<tag> && docker tag ghcr.io/cbferrum/ferrum:<tag> ferrum:ci
+docker build -t ferrum-frontend:ci https://github.com/CBFerrum/Ferrum-Frontend.git#main
+kind load docker-image ferrum:ci ferrum-frontend:ci
+deploy/kind/install.sh && deploy/kind/smoke.sh
 ```
 
 ## Upgrades
@@ -103,27 +149,51 @@ FERRUM_IMAGE=ghcr.io/cbferrum/ferrum:<tag> deploy/smoke.sh
 
 ## Backups and restore
 
-* CloudNativePG archives WAL continuously and takes a base backup daily (`ScheduledBackup`),
-  keeping 30 days. On-demand backup:
-  `kubectl -n ferrum cnpg backup ferrum-db` (or create a `Backup` resource).
-* Point-in-time restore: create a new cluster from the object store with
-  `bootstrap.recovery.recoveryTarget.targetTime: "2026-10-28 10:00:00+00"`, verify it, then point
-  the `ferrum-db-app` secret / `DATABASE_URL` at it and restart the API pods.
-* Docker Compose: schedule `docker compose exec db pg_dump -U ferrum -Fc ferrum > ferrum-$(date +%F).dump`
-  and copy it off the host; restore with `pg_restore -d ferrum --clean`.
+* CloudNativePG archives WAL continuously through the Barman Cloud plugin and takes a base backup
+  daily (`ScheduledBackup`), keeping 30 days (the `ObjectStore`'s `retentionPolicy`). On-demand
+  backup: `kubectl -n ferrum cnpg backup ferrum-db --method plugin --plugin-name barman-cloud.cloudnative-pg.io`
+  (or create a `Backup` resource with `method: plugin`).
+* Point-in-time restore: create a new cluster recovering from the object store, shaped like
+  `deploy/kind/restore.yaml` (`bootstrap.recovery.source` names an external cluster read through
+  the plugin, `barmanObjectName: ferrum-backups`, `serverName: ferrum-db`), adding
+  `recoveryTarget: {targetTime: "2026-10-28 10:00:00+00"}`; verify it, then point the
+  `ferrum-db-app` secret / `DATABASE_URL` at it and restart the API pods. CI restores every image's
+  backup this way.
+* Clusters set up with the earlier manifests (`spec.backup.barmanObjectStore`, removed in
+  CloudNativePG 1.31): install the plugin, then apply the new `database.yaml`. The `ObjectStore`
+  takes the same `destinationPath`, so earlier backups and WAL stay usable for recovery.
+* Docker Compose (commands run in `deploy/`): schedule a dump of the database as its superuser —
+  as `ferrum` it fails, since that role is held to the workspaces' row-level security, and
+  leaves a truncated file — and an archive of the attachments volume, and copy both off the host:
+
+  ```bash
+  docker compose exec -T db pg_dump -U postgres -Fc ferrum > ferrum-$(date +%F).dump
+  docker compose exec -T ferrum tar -C /var/lib/ferrum/files -czf - . > files-$(date +%F).tgz
+  ```
+
+  To restore onto a new host, start the database alone (`docker compose up -d db`), wait until
+  `docker compose exec db pg_isready -h 127.0.0.1` succeeds, then:
+
+  ```bash
+  docker compose exec -T db pg_restore -U postgres -d ferrum --clean --if-exists --exit-on-error < ferrum.dump
+  docker compose run --rm --no-deps -T --entrypoint tar ferrum -C /var/lib/ferrum/files -xzf - < files.tgz
+  docker compose up -d
+  ```
+
+  Restoring in place, `docker compose stop ferrum` first.
 * Test a restore at least quarterly. After restoring, run the audit verification below.
 
 ## Monitoring
 
 `/metrics` (Prometheus text) exposes `ferrum_up`, uptime, database pool size and idle
 connections, the outbox backlog (pending, dead, age of the oldest pending event), webhook
-deliveries (pending, dead) and the tenant count. Take request rates and latencies from the ingress
+deliveries (pending, dead) and the tenant count. Take request rates and latencies from the gateway
 controller's metrics. Suggested alerts:
 
 | Alert | Condition |
 |---|---|
 | API down | fewer ready pods than `minReplicas` for 5 min |
-| Error rate | ingress 5xx above 1 % for 10 min |
+| Error rate | gateway 5xx above 1 % for 10 min |
 | Pool saturation | `ferrum_db_pool_idle` at 0 for 5 min |
 | Outbox lag | oldest pending event older than 5 min |
 | Dead letters | any dead outbox events or webhook deliveries |
@@ -172,7 +242,8 @@ The script mixes lists, reads, metadata, live totals and draft creation and repo
 percentiles per call; one Python client tops out near 600 requests a second, so for higher rates
 run several, or `ab`/`oha` against single endpoints as above. It signs in as one user: raise that
 server's `FERRUM_USER_REQUESTS_PER_MINUTE` (or set it to `0`) for the run, or the per-user budget
-answers `429` long before the server is busy.
+answers `429` long before the server is busy; through the gateway, raise
+`FERRUM_ADDRESS_REQUESTS_PER_MINUTE` too.
 
 ## Incident playbooks
 
@@ -242,8 +313,9 @@ the invoice. Before the first one:
 Three ways to the IRP:
 
 * **The direct connection**: under the company's *e-Invoice Connection*, choose Sandbox or
-  Production and enter the API address (NIC's, or your GSP's when it passes NIC's API through;
-  blank in sandbox mode means `https://einv-apisandbox.nic.in`), the client ID and secret, the
+  Production and enter the API address (the one NIC gives at registration — its published
+  sandbox site serves documentation, not the API — or your GSP's when it passes NIC's API
+  through), the client ID and secret, the
   API user name and password, the IRP's public key (PEM) and, for a GSP, the extra headers it
   wants (JSON). *Generate e-Invoice* then registers the invoice within seconds: Ferrum signs in
   (one session per company and replica, renewed before its six hours run out), sends the invoice
