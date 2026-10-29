@@ -19,7 +19,20 @@ async fn fresh_kernel() -> Arc<Kernel> {
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
-    Kernel::boot(db, catalog, HookRegistry::default(), KernelSettings::default(), None).await.expect("boot")
+    Kernel::boot(db, catalog, HookRegistry::default(), KernelSettings::default(), Some(Arc::new(Captured))).await.expect("boot")
+}
+
+/// Mail the kernel sent, in order.
+static SENT: std::sync::Mutex<Vec<(String, String, String)>> = std::sync::Mutex::new(Vec::new());
+
+struct Captured;
+
+#[async_trait::async_trait]
+impl ferrum_kernel::Mailer for Captured {
+    async fn send(&self, to: &str, subject: &str, html: &str) -> ferrum_kernel::Result<()> {
+        SENT.lock().unwrap().push((to.into(), subject.into(), html.into()));
+        Ok(())
+    }
 }
 
 async fn unread(k: &Kernel, ctx: &Ctx) -> Vec<String> {
@@ -58,8 +71,14 @@ async fn drain(k: &Kernel) {
     while k.dispatch_outbox_once().await.unwrap() > 0 {}
 }
 
-#[tokio::test]
-async fn collaboration_follows_record_access() {
+#[test]
+fn collaboration_follows_record_access() {
+    // One long scenario: its async state machine needs more than the default 2 MiB test stack.
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
+    rt.block_on(async { tokio::spawn(scenario()).await.unwrap() });
+}
+
+async fn scenario() {
     let k = fresh_kernel().await;
     let tenant = k
         .create_tenant(NewTenant {
@@ -341,4 +360,17 @@ async fn collaboration_follows_record_access() {
     assert!(matches!(k.delete(&admin, "CustomerGroup", spare_id, None).await, Err(Error::Conflict(m)) if m.contains("x_referred_by")));
     k.update(&admin, "Customer", ids[0], obj(json!({"x_referred_by": null})), None).await.unwrap();
     k.delete(&admin, "CustomerGroup", spare_id, None).await.expect("nothing links to it any more");
+
+    // ── queued mail goes out once after commit, never after a rollback ──
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    k.queue_mail(&mut tx, tenant, "guest@example.test", "Your booking", "<p>See you</p>").await.unwrap();
+    tx.rollback().await.unwrap();
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    assert!(k.queue_mail(&mut tx, tenant, "a@x.test, b@x.test", "Hi", "x").await.is_err(), "one address");
+    assert!(k.queue_mail(&mut tx, tenant, "guest@example.test", "Hi\r\nBcc: spy@x.test", "x").await.is_err(), "no header injection");
+    k.queue_mail(&mut tx, tenant, "guest@example.test", "Your booking", "<p>See you</p>").await.unwrap();
+    tx.commit().await.unwrap();
+    drain(&k).await;
+    drain(&k).await;
+    assert_eq!(SENT.lock().unwrap().clone(), vec![("guest@example.test".to_string(), "Your booking".to_string(), "<p>See you</p>".to_string())]);
 }
