@@ -95,7 +95,32 @@ fn action_index(a: Action) -> usize {
     }
 }
 
+/// Every action, with the verb consents and declarations use for it.
+const ACTIONS: [(Action, &str); 8] = [
+    (Action::Read, "read"),
+    (Action::Write, "write"),
+    (Action::Create, "create"),
+    (Action::Delete, "delete"),
+    (Action::Submit, "submit"),
+    (Action::Cancel, "cancel"),
+    (Action::Export, "export"),
+    (Action::Import, "import"),
+];
+
 impl EntityAccess {
+    fn set(&mut self, a: Action, level: Access) {
+        *match a {
+            Action::Read => &mut self.read,
+            Action::Write => &mut self.write,
+            Action::Create => &mut self.create,
+            Action::Delete => &mut self.delete,
+            Action::Submit => &mut self.submit,
+            Action::Cancel => &mut self.cancel,
+            Action::Export => &mut self.export,
+            Action::Import => &mut self.import,
+        } = level;
+    }
+
     fn get(&self, a: Action) -> Access {
         match a {
             Action::Read => self.read,
@@ -221,6 +246,48 @@ impl PermSet {
             None => true,
             Some(g) => self.admin || self.groups(entity, true).contains(g.as_str()),
         }
+    }
+
+    /// What an app's screen may do for this user (docs/plugins.md, "Screens"): the user's access
+    /// narrowed to what the app declared (entity or `*` → actions as its consent lists them:
+    /// `read`, `write (own records)`, `read field group <g>`...) and to every action on `own`, the
+    /// app's own entities. Field groups only as declared; never administrator power.
+    pub fn limited_to(&self, declared: &BTreeMap<String, BTreeSet<String>>, own: &BTreeSet<String>) -> PermSet {
+        let mut out = PermSet::default();
+        let names: BTreeSet<&str> = self.entities.keys().chain(declared.keys()).chain(own).map(String::as_str).chain(["*"]).collect();
+        for name in names {
+            let decl: BTreeSet<&str> = [name, "*"].into_iter().filter_map(|k| declared.get(k)).flatten().map(String::as_str).collect();
+            let mut e = EntityAccess::default();
+            for (i, (action, verb)) in ACTIONS.into_iter().enumerate() {
+                let plugin = if own.contains(name) || decl.contains(verb) {
+                    Access::All
+                } else if decl.contains(format!("{verb} (own records)").as_str()) {
+                    Access::Own
+                } else {
+                    Access::None
+                };
+                let user = self.access(name, action);
+                let level = user.min(plugin);
+                // Partial access keeps every limit: the user's grants, each narrowed to their own
+                // records when the app is limited to those.
+                e.grants[i] = match (level, user, plugin) {
+                    (Access::Own, Access::All, _) => vec![Grant { owner: true, condition: vec![] }],
+                    (Access::Own, _, Access::All) => self.grants(name, action).unwrap_or_default(),
+                    (Access::Own, ..) => self.grants(name, action).unwrap_or_default().into_iter().map(|g| Grant { owner: true, ..g }).collect(),
+                    _ => vec![],
+                };
+                e.set(action, level);
+            }
+            let groups = |prefix: &str, mine: BTreeSet<&str>| -> BTreeSet<String> {
+                decl.iter().filter_map(|d| d.strip_prefix(prefix)).filter(|g| self.admin || mine.contains(g)).map(String::from).collect()
+            };
+            e.read_groups = groups("read field group ", self.groups(name, false));
+            e.write_groups = groups("write field group ", self.groups(name, true));
+            if ACTIONS.iter().any(|(a, _)| e.get(*a) != Access::None) || !e.read_groups.is_empty() || !e.write_groups.is_empty() {
+                out.entities.insert(name.to_string(), e);
+            }
+        }
+        out
     }
 }
 
@@ -574,6 +641,63 @@ pub fn local_now(tz: &str) -> chrono::DateTime<chrono::FixedOffset> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn decl(items: &[(&str, &[&str])]) -> BTreeMap<String, BTreeSet<String>> {
+        items.iter().map(|(e, a)| (e.to_string(), a.iter().map(|s| s.to_string()).collect())).collect()
+    }
+
+    #[test]
+    fn screens_get_the_user_narrowed_to_the_declaration() {
+        let own = Grant { owner: true, condition: vec![] };
+        let goods = Grant { owner: false, condition: vec![("kind".into(), vec!["goods".into()])] };
+        let mut user = PermSet::default();
+        let mut c = EntityAccess { read: Access::All, write: Access::All, ..Default::default() };
+        c.grants[0] = vec![Grant::default()];
+        c.grants[1] = vec![Grant::default()];
+        c.read_groups.insert("credit".into());
+        user.entities.insert("Customer".into(), c);
+        let mut o = EntityAccess { read: Access::Own, ..Default::default() };
+        o.grants[0] = vec![own.clone()];
+        user.entities.insert("Order".into(), o);
+        let mut i = EntityAccess { read: Access::Own, ..Default::default() };
+        i.grants[0] = vec![goods.clone()];
+        user.entities.insert("Item".into(), i);
+
+        let declared = decl(&[
+            ("Customer", &["read", "read field group credit", "read field group secret"]),
+            ("Order", &["read", "write"]),
+            ("Item", &["read (own records)"]),
+        ]);
+        let mine: BTreeSet<String> = ["XBoard".to_string()].into();
+        let p = user.limited_to(&declared, &mine);
+        assert!(!p.admin);
+        assert_eq!(p.access("Customer", Action::Read), Access::All);
+        assert_eq!(p.access("Customer", Action::Write), Access::None, "not declared");
+        assert_eq!(p.access("Order", Action::Read), Access::Own);
+        assert_eq!(p.grants("Order", Action::Read), Some(vec![own.clone()]));
+        assert_eq!(p.access("Order", Action::Write), Access::None, "the user may not");
+        assert_eq!(p.grants("Item", Action::Read), Some(vec![Grant { owner: true, ..goods.clone() }]), "both limits hold");
+        assert_eq!(p.access("XBoard", Action::Delete), Access::None, "own entities still need the user's right");
+        assert_eq!(p.access("Supplier", Action::Read), Access::None);
+        assert_eq!(p.groups("Customer", false), BTreeSet::from(["credit"]));
+
+        // An administrator gets exactly the declaration.
+        let a = PermSet { admin: true, entities: BTreeMap::new() }.limited_to(&declared, &mine);
+        assert!(!a.admin);
+        assert_eq!(a.access("Customer", Action::Read), Access::All);
+        assert_eq!(a.access("Customer", Action::Delete), Access::None);
+        assert_eq!(a.grants("Item", Action::Read), Some(vec![own.clone()]));
+        assert_eq!(a.access("XBoard", Action::Delete), Access::All);
+        assert_eq!(a.groups("Customer", false), BTreeSet::from(["credit", "secret"]));
+
+        // A wildcard declaration reaches entities named nowhere else, within the user's rights.
+        let mut u = PermSet::default();
+        u.entities.insert("*".into(), EntityAccess { read: Access::All, write: Access::All, ..Default::default() });
+        let w = u.limited_to(&decl(&[("*", &["read"])]), &BTreeSet::new());
+        assert_eq!(w.access("Anything", Action::Read), Access::All);
+        assert_eq!(w.access("Anything", Action::Write), Access::None);
+        assert_eq!(u.limited_to(&BTreeMap::new(), &BTreeSet::new()).access("Anything", Action::Read), Access::None);
+    }
 
     #[test]
     fn access_levels_combine() {

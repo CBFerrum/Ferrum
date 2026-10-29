@@ -14,7 +14,7 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use ferrum_apps::{AppError, AppManifest, Bundle, PLATFORM_VERSION, Permissions, Role, Runtime, TrustedKey, Uninstall};
 use ferrum_kernel::apps::{NewRelease, Release};
-use ferrum_kernel::{Ctx, Error, Kernel, Result, Tx};
+use ferrum_kernel::{Access, Action, Ctx, Error, Kernel, Result, Tx};
 use ferrum_plugins::{NewPlugin, PluginHost};
 use futures_util::future::join_all;
 use loco_rs::storage::Storage;
@@ -25,6 +25,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use uuid::Uuid;
@@ -42,6 +43,11 @@ const REVOCATIONS_LOCK: i64 = 0x6665_7272_756d_0002;
 const MAX_APPS: usize = 200;
 const README_MAX: usize = 4_000;
 const NOT_FOUND: &str = "HTTP 404";
+/// How long a replica trusts its list of a workspace's enabled apps (changes made on this
+/// replica clear it at once).
+const ENABLED_TTL: Duration = Duration::from_secs(10);
+/// Most bytes of screen files a replica keeps in memory.
+const SCREEN_CACHE_MAX: usize = 256 << 20;
 
 /// An app as the Apps page lists it.
 #[derive(Debug, Clone, Serialize)]
@@ -60,6 +66,9 @@ pub struct AppSummary {
     /// `native`, `upload` or `store:<url>`.
     pub source: String,
     pub private: bool,
+    /// The app this one is an add-on of (`parent` in its app.yaml).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
 }
 
 /// An app installed in the workspace.
@@ -242,6 +251,116 @@ pub struct AppManager {
     platform: Version,
     http: reqwest::Client,
     cache: DashMap<String, (Instant, std::result::Result<Value, String>)>,
+    /// Per workspace: its enabled apps, for screens and extension points.
+    enabled: DashMap<Uuid, (Instant, Arc<Vec<Enabled>>)>,
+    /// Per bundle digest: the files of its screens (`ui/…`).
+    screen_files: DashMap<String, Arc<BTreeMap<String, Bytes>>>,
+    screen_bytes: AtomicUsize,
+}
+
+/// An installed, enabled app as screens and extension points see it.
+struct Enabled {
+    id: String,
+    version: String,
+    manifest: AppManifest,
+    /// Apps from bundles: their consent (what their screens may reach) and stored release.
+    bundled: Option<(Permissions, Release)>,
+}
+
+/// Screens and extension points (docs/plugins.md): what a workspace's enabled apps contribute,
+/// what their screens may reach, and the files of those screens.
+impl AppManager {
+    async fn enabled_apps(&self, tenant: Uuid) -> Result<Arc<Vec<Enabled>>> {
+        if let Some(hit) = self.enabled.get(&tenant).filter(|e| e.0.elapsed() < ENABLED_TTL) {
+            return Ok(hit.1.clone());
+        }
+        let ws = self.workspace(tenant).await?;
+        let mut out = Vec::new();
+        for (id, inst) in ws.apps.iter().filter(|(_, i)| i.enabled) {
+            let version = inst.version.clone();
+            if let Some(m) = self.native(id) {
+                out.push(Enabled { id: id.clone(), version, manifest: m.clone(), bundled: None });
+            } else if let Some(r) = self.release_of(tenant, id, &inst.version).await?.filter(|r| r.status != "revoked")
+                && let Some(rec) = recorded(&r)
+            {
+                out.push(Enabled { id: id.clone(), version, manifest: rec.app, bundled: Some((rec.permissions, r)) });
+            }
+        }
+        let out = Arc::new(out);
+        self.enabled.insert(tenant, (Instant::now(), out.clone()));
+        Ok(out)
+    }
+
+    /// `GET /api/meta/contributions/{point}`: what the enabled apps contribute to a screen slot
+    /// or to an enabled app's extension point, each item with its `app` and `version`. Panels
+    /// only on entities the caller may read; the settings page only for administrators.
+    pub async fn contributions(&self, ctx: &Ctx, point: &str) -> Result<Vec<Value>> {
+        let apps = self.enabled_apps(ctx.tenant).await?;
+        if !ferrum_apps::UI_POINTS.contains(&point) {
+            let owner = point.split_once('.').map_or("", |(o, _)| o);
+            if !apps.iter().any(|a| a.id == owner && a.manifest.extension_points.contains_key(point)) {
+                return Err(Error::NotFound(format!("extension point {point}")));
+            }
+        }
+        if point == "ui.settings" && !ctx.is_admin {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        for a in apps.iter() {
+            for item in a.manifest.contributes.get(point).into_iter().flatten() {
+                if let Some(entity) = item.get("entity").and_then(Value::as_str)
+                    && point == "ui.panel"
+                    && ctx.perms.access(entity, Action::Read) == Access::None
+                {
+                    continue;
+                }
+                let mut v = item.clone();
+                if let Some(o) = v.as_object_mut() {
+                    o.insert("app".into(), json!(a.id));
+                    o.insert("version".into(), json!(a.version));
+                }
+                out.push(v);
+            }
+        }
+        Ok(out)
+    }
+
+    /// What an enabled app's screens may reach for a user: its consent's records (entity →
+    /// actions) and its own entities. `None` when it has no screens here (not installed, not
+    /// enabled, revoked, or native).
+    pub async fn screen_scope(&self, tenant: Uuid, app: &str) -> Result<Option<(BTreeMap<String, BTreeSet<String>>, BTreeSet<String>)>> {
+        let apps = self.enabled_apps(tenant).await?;
+        Ok(apps
+            .iter()
+            .find(|a| a.id == app && a.manifest.contributes.keys().any(|p| p.starts_with("ui.")))
+            .and_then(|a| a.bundled.as_ref())
+            .map(|(p, _)| (p.entities.clone(), p.new_entities.clone())))
+    }
+
+    /// A file of an enabled app's screens (`path` under its `ui/`), with the bundle digest that
+    /// validates it. Bundles come from object storage once per replica.
+    pub async fn screen_file(&self, tenant: Uuid, app: &str, version: &str, path: &str) -> Result<Option<(Bytes, String)>> {
+        let apps = self.enabled_apps(tenant).await?;
+        let Some((_, r)) = apps.iter().find(|a| a.id == app && a.version == version).and_then(|a| a.bundled.as_ref()) else { return Ok(None) };
+        let files = match self.screen_files.get(&r.digest).map(|f| f.clone()) {
+            Some(f) => f,
+            None => {
+                let b = self.load_bundle(r).await?;
+                let files: BTreeMap<String, Bytes> =
+                    b.paths().filter(|p| p.starts_with("ui/")).map(|p| (p.to_string(), Bytes::copy_from_slice(b.file(p).unwrap_or_default()))).collect();
+                let size: usize = files.values().map(Bytes::len).sum();
+                // ponytail: starts over when full; an LRU if many apps' screens are busy at once.
+                if self.screen_bytes.fetch_add(size, Ordering::Relaxed) + size > SCREEN_CACHE_MAX {
+                    self.screen_files.clear();
+                    self.screen_bytes.store(size, Ordering::Relaxed);
+                }
+                let files = Arc::new(files);
+                self.screen_files.insert(r.digest.clone(), files.clone());
+                files
+            }
+        };
+        Ok(files.get(&format!("ui/{path}")).map(|b| (b.clone(), r.digest.clone())))
+    }
 }
 
 /// The `app.yaml` of every native app compiled into this build. One that does not parse leaves
@@ -330,6 +449,7 @@ fn summary(m: &AppManifest, source: &str, verified: bool, private: bool, icon_ur
         icon_url,
         source: source.into(),
         private,
+        parent: m.parent.clone(),
     }
 }
 
@@ -449,6 +569,9 @@ impl AppManager {
             platform: Version::parse(PLATFORM_VERSION).map_err(|e| e.to_string())?,
             http,
             cache: DashMap::new(),
+            enabled: DashMap::new(),
+            screen_files: DashMap::new(),
+            screen_bytes: AtomicUsize::new(0),
         })
     }
 
@@ -949,6 +1072,28 @@ impl AppManager {
             });
         }
 
+        // A contribution to another app's extension point must meet that app's contract: the
+        // version this plan brings, or the one installed.
+        for s in steps.iter().filter(|s| s.action != StepAction::Already) {
+            for (point, items) in &s.manifest.contributes {
+                let Some((owner, _)) = point.split_once('.').filter(|(o, _)| *o != s.id && !ferrum_apps::UI_POINTS.contains(&point.as_str())) else { continue };
+                let manifest = match (steps.iter().find(|o| o.id == owner), ws.apps.get(owner)) {
+                    (Some(o), _) => Some(o.manifest.clone()),
+                    (None, Some(inst)) => self.manifest_of(ctx.tenant, owner, &inst.version).await?,
+                    // `requires` names the owner: the plan itself reports it missing.
+                    (None, None) => None,
+                };
+                let Some(o) = manifest else { continue };
+                let Some(ep) = o.extension_points.get(point) else {
+                    return Err(Error::invalid(format!("{} contributes to {point}, which {owner} {} does not offer", s.id, o.version)));
+                };
+                for item in items.iter().filter(|_| ep.schema.is_some()) {
+                    let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+                    ferrum_apps::contract::conforms(&ferrum_apps::contribution_body(item), ep.schema.as_ref().unwrap_or(&Value::Null))
+                        .map_err(|e| Error::invalid(format!("{} contributes {point} {id}, which breaks {owner}'s contract: {e}", s.id)))?;
+                }
+            }
+        }
         let root = steps.iter().find(|s| s.id == id).ok_or_else(|| Error::internal("the plan lost its app"))?;
         let changing: Vec<&StepData> = steps.iter().filter(|s| s.action != StepAction::Already).collect();
         for s in &changing {
@@ -1025,6 +1170,7 @@ impl AppManager {
         let lock = self.lock(ctx.tenant).await?;
         let out = self.install_locked(ctx, id, version, consent, upgrade).await;
         lock.release().await;
+        self.enabled.remove(&ctx.tenant);
         out
     }
 
@@ -1143,6 +1289,7 @@ impl AppManager {
         let lock = self.lock(ctx.tenant).await?;
         let out = self.set_enabled_locked(ctx, id, enabled).await;
         lock.release().await;
+        self.enabled.remove(&ctx.tenant);
         out
     }
 
@@ -1203,6 +1350,7 @@ impl AppManager {
         let lock = self.lock(ctx.tenant).await?;
         let out = self.uninstall_locked(ctx, id, delete_data).await;
         lock.release().await;
+        self.enabled.remove(&ctx.tenant);
         out
     }
 
@@ -1307,6 +1455,7 @@ impl AppManager {
                         icon_url: None,
                         source: "unknown".into(),
                         private: false,
+                        parent: None,
                     },
                 },
             };
@@ -1615,6 +1764,7 @@ pub mod store {
                 icon_url: self.icon_url.clone(),
                 source: format!("store:{store}"),
                 private: false,
+                parent: None,
             }
         }
     }

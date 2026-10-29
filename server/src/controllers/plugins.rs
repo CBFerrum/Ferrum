@@ -1,6 +1,7 @@
 //! Plugin endpoints: HTTP routes (`/api/ext/{plugin}/…` for signed-in callers,
 //! `/api/public/{tenant}/{plugin}/…` for public ones such as third-party webhooks) and the
-//! WebSocket gateway (`/ws/ext/{tenant}/{plugin}/…`) for device protocols like OCPP.
+//! WebSocket gateway (`/ws/ext/{tenant}/{plugin}/…`) for device protocols like OCPP; and the
+//! files of apps' screens (`/api/ext-ui/{tenant}/{app}/{version}/…`, docs/plugins.md "Screens").
 
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{Auth, bearer, ctx_from_token, request_id};
@@ -8,7 +9,7 @@ use crate::state::{AppState, app_state};
 use axum::body::Bytes;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use ferrum_kernel::{Ctx, Error};
 use ferrum_plugins::http::{HttpCall, HttpReply};
@@ -233,10 +234,74 @@ async fn serve(st: AppState, tenant: Uuid, p: Loaded, path: String, query: Map<S
     }
 }
 
+/// Every file of a screen runs sandboxed (scripts, but in an opaque origin without the app's
+/// storage or session) wherever it is opened, framed only by the web app, loading only from this
+/// server, posting no forms.
+const SCREEN_CSP: &str = "sandbox allow-scripts allow-downloads; default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; \
+    style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob:; \
+    connect-src 'self'; worker-src 'self' blob:; form-action 'none'; base-uri 'none'; frame-ancestors 'self'";
+
+fn screen_type(path: &str) -> &'static str {
+    match path.rsplit_once('.').map_or("", |(_, ext)| ext) {
+        "html" => "text/html; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "json" | "map" => "application/json",
+        "txt" => "text/plain; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "wasm" => "application/wasm",
+        "woff2" => "font/woff2",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        _ => "application/octet-stream",
+    }
+}
+
+/// `GET /api/ext-ui/{tenant}/{app}/{version}/{*path}`: a file of an enabled app's screens.
+/// Public, as a sandboxed frame sends no credentials; pages open only inside the web app.
+async fn screen_file(
+    State(app): State<AppContext>,
+    Path((tenant, plugin, version, path)): Path<(String, String, String, String)>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    let (tenant, status) = st.kernel.tenant_by_slug(&tenant).await?;
+    if status != "active" {
+        return Err(ApiError(Error::NotFound("tenant".into())));
+    }
+    // Opened on its own, a page would show this server's address: only frames get one.
+    if path.ends_with(".html") && headers.get("sec-fetch-dest").is_some_and(|d| d != "iframe") {
+        return Err(ApiError(Error::Forbidden("an app's screens open inside the web app".into())));
+    }
+    let Some((bytes, digest)) = st.apps.screen_file(tenant, &plugin, &version, &path).await? else {
+        return Err(ApiError(Error::NotFound(format!("{plugin} {version}: {path}"))));
+    };
+    let etag = HeaderValue::from_str(&format!("\"{}\"", digest.trim_start_matches("sha256:"))).map_err(|e| ApiError(Error::internal(e.to_string())))?;
+    let mut res = if headers.get(header::IF_NONE_MATCH) == Some(&etag) { StatusCode::NOT_MODIFIED.into_response() } else { bytes.into_response() };
+    let h = res.headers_mut();
+    for (name, value) in [
+        (header::CONTENT_TYPE, screen_type(&path)),
+        (header::CACHE_CONTROL, "no-cache"),
+        (header::CONTENT_SECURITY_POLICY, SCREEN_CSP),
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        (header::X_FRAME_OPTIONS, "sameorigin"),
+        (header::REFERRER_POLICY, "no-referrer"),
+        // Module scripts and WebAssembly are fetched with CORS from the frame's opaque origin.
+        (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+    ] {
+        h.insert(name, HeaderValue::from_static(value));
+    }
+    h.insert(header::ETAG, etag);
+    Ok(res)
+}
+
 pub fn routes() -> Routes {
     use axum::routing::{any, get};
     Routes::new()
         .add("/api/ext/{plugin}/{*path}", any(ext))
+        .add("/api/ext-ui/{tenant}/{plugin}/{version}/{*path}", get(screen_file))
         .add("/api/public/{tenant}/{plugin}/{*path}", any(public))
         .add("/ws/ext/{tenant}/{plugin}/{*path}", get(socket))
 }

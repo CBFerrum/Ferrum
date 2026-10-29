@@ -49,6 +49,12 @@ content}` makes the form save that file (e-invoice JSON, say).
   Types: `data text markdown code int decimal currency percent date datetime check select link table json email phone url attach color secret`.
   `visible_if`/`required_if`/`read_only_if` are CEL over `doc` (and `parent` in child rows); the server is the authority.
   CEL also sees `user` and `today`, `now`, `time` (local to the workspace).
+* `GET /api/meta/contributions/{point}` → `{point, items}`: what enabled apps contribute
+  ([plugins](plugins.md#extension-points-and-add-ons)). Each item is the contribution plus its
+  `app` and `version`. A point is either:
+  * a screen slot: `ui.page`; `ui.widget`; `ui.panel`, listing only panels on entities the caller
+    can read; `ui.settings`, for administrators only;
+  * an enabled app's extension point; 404 when no enabled app offers it.
 * Form sections: sections sharing a `tab` label show under that tab (untabbed sections form the first
   tab); a section's `visible_if` (CEL over `doc`) hides it while false.
 * `secret` fields are write-only: records carry `true` when a value is set (never the value). Send
@@ -111,6 +117,19 @@ Apps add HTTP endpoints under `/api/app/{package}/{path}` (signed in, any method
 `/api/site/{tenant}/{package}/{path}` (public pages, webhooks; rate-limited per IP, 300/min). Each
 app documents its own in `packages/<package>/README.md` of its repository. Request bodies are
 limited per app (1 MB unless the app allows more, at most 32 MB).
+
+## Screens of apps
+
+* `GET /api/ext-ui/{tenant}/{app}/{version}/{path}` → a file under the `ui/` of an enabled app, at
+  its installed version ([plugins](plugins.md#screens)).
+  * No sign-in is needed: sandboxed frames send none.
+  * Headers: `Content-Security-Policy: sandbox allow-scripts allow-downloads; default-src 'none';
+    … frame-ancestors 'self'`, `ETag` (the bundle digest) and `Cache-Control: no-cache`.
+  * HTML pages answer 403 unless they are loaded in a frame (`Sec-Fetch-Dest: iframe`).
+* `X-Ferrum-App: <app>` on a signed-in request marks a call from that app's screen.
+  * It may go only to `/api/v1/…`, `/api/meta/…` and `/api/ext/<app>/…`; anything else is 403.
+  * The caller's rights are narrowed to the app's declared permissions and its own entities, without
+    administrator power.
 
 ## Reports — `/api/reports`
 

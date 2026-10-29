@@ -13,11 +13,12 @@
 //! | `plugin.json`, `plugin.wasm` | wasm apps only: the plugin manifest and the core WebAssembly module |
 //! | `packages/<name>/package.yaml`, `README.md`, `entities/*.yaml`, `sql/*.sql`, `print/*.html` | the app's metadata packages |
 //! | `assets/**/*.{png,jpg,jpeg,gif,webp,svg}` | icon and screenshots |
+//! | `ui/**` | wasm and meta apps: screens (`html`, `js`, `mjs`, `css`, `json`, `map`, `txt`, `svg`, and `wasm`, `woff2` and raster images up to [`MAX_UI_BINARY`] bytes) |
 //! | `SIGNATURES.json` | signatures (not covered by the digest) |
 //!
 //! Limits: [`MAX_UNPACKED`] bytes unpacked, [`MAX_FILES`] files (not counting `SIGNATURES.json`),
 //! [`MAX_WASM`] bytes of WebAssembly, [`MAX_TEXT`] bytes per text file. Everything except
-//! `plugin.wasm` and raster images is UTF-8 text.
+//! `plugin.wasm`, raster images and the binary files of screens is UTF-8 text.
 //!
 //! **Digest** ([`Bundle::digest`]): lower-case hex SHA-256 over `ferrum-app-v1\n` followed by one
 //! line per file except `SIGNATURES.json`, sorted by the path's bytes: `<path>\0<sha256 hex of
@@ -69,6 +70,7 @@
 //!   downgrades, and backtracks to older versions when the newest ones conflict; see its docs.
 
 mod bundle;
+pub mod contract;
 mod manifest;
 mod permissions;
 mod resolve;
@@ -77,7 +79,7 @@ mod signing;
 mod testutil;
 
 pub use bundle::Bundle;
-pub use manifest::{AppManifest, CATEGORIES, Runtime, SETTING_TYPES, SettingDef, Uninstall};
+pub use manifest::{AppManifest, CATEGORIES, ExtensionPoint, Runtime, SETTING_TYPES, SettingDef, UI_POINTS, Uninstall, contribution_body};
 pub use permissions::Permissions;
 pub use resolve::{Release, resolve};
 pub use signing::{Role, SignatureEntry, Signatures, Signer, TrustedKey, key_id};
@@ -95,6 +97,8 @@ pub const MAX_FILES: usize = 2_000;
 pub const MAX_WASM: usize = 8 << 20;
 /// Largest text file (2 MiB).
 pub const MAX_TEXT: usize = 2 << 20;
+/// Largest binary file of a screen under `ui/` (16 MiB): WebAssembly, fonts, images.
+pub const MAX_UI_BINARY: usize = 16 << 20;
 /// Most signatures `SIGNATURES.json` may carry.
 pub const MAX_SIGNATURES: usize = 16;
 /// Highest `fuel_limit` an app's plugin may ask for (20 times the host's default).
