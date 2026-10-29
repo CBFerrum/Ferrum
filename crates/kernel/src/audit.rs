@@ -103,12 +103,14 @@ struct Row {
     diff: Option<Value>,
     prev_hash: Option<Vec<u8>>,
     hash: Vec<u8>,
+    /// Personal data erased from `diff` (see `privacy`): the chain is checked, not the content.
+    redacted: Option<Value>,
 }
 
 /// Recomputes a record's chain. Returns the index of the first broken event, if any.
 pub async fn verify_record(tx: &mut Tx, tenant: Uuid, entity: &str, record_id: Uuid) -> Result<Option<usize>> {
     let rows: Vec<Row> = sqlx::query_as(
-        "select to_char(at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') as at, actor, action, version, diff, prev_hash, hash \
+        "select to_char(at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') as at, actor, action, version, diff, prev_hash, hash, redacted \
          from audit_event where tenant_id = $1 and entity = $2 and record_id = $3 order by id",
     )
     .bind(tenant)
@@ -120,7 +122,7 @@ pub async fn verify_record(tx: &mut Tx, tenant: Uuid, entity: &str, record_id: U
     for (i, r) in rows.iter().enumerate() {
         let expected =
             event_hash(prev.as_deref(), &body(tenant, &r.at, r.actor, entity, record_id, &r.action, r.version, r.diff.as_ref().unwrap_or(&Value::Null)));
-        if r.prev_hash != prev || r.hash != expected {
+        if r.prev_hash != prev || (r.redacted.is_none() && r.hash != expected) {
             return Ok(Some(i));
         }
         prev = Some(r.hash.clone());

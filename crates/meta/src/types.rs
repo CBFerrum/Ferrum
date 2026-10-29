@@ -28,7 +28,28 @@ pub struct PackageManifest {
     pub overlays: Vec<Overlay>,
     #[serde(default)]
     pub seed: Vec<SeedDef>,
+    /// Where this package keeps people's personal data: what a personal-data request exports and
+    /// erases for a person (an email).
+    #[serde(default)]
+    pub personal_data: Vec<PersonalDataDef>,
 }
+
+/// Records of one entity that belong to a person: those whose `match` email field holds the
+/// person's email (and whose fields hold the `where` values); `erase` lists what erasure blanks.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PersonalDataDef {
+    pub entity: String,
+    #[serde(rename = "match")]
+    pub match_field: String,
+    pub erase: Vec<String>,
+    #[serde(default, rename = "where", skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub condition: std::collections::BTreeMap<String, Value>,
+}
+
+/// Field types erasure can blank (text, contact details and dates).
+pub const ERASABLE_TYPES: &[FieldType] =
+    &[FieldType::Data, FieldType::Text, FieldType::Markdown, FieldType::Email, FieldType::Phone, FieldType::Url, FieldType::Date];
 
 /// A fully loaded package: manifest + entity files + SQL + print templates.
 #[derive(Debug, Clone, Serialize, Deserialize)]

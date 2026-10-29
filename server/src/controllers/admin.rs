@@ -5,7 +5,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::extract::Auth;
 use crate::state::app_state;
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use ferrum_kernel::{Ctx, Error};
@@ -127,6 +127,28 @@ async fn set_permission(Auth(ctx): Auth, State(app): State<AppContext>, Path(rol
     }
     app_state(&app)?.kernel.set_role_permission(&ctx, role.trim(), &p).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+// ── personal data ──
+
+#[derive(Deserialize)]
+struct PersonQuery {
+    email: String,
+}
+
+/// Everything kept about a person (their email): records and login account.
+async fn personal_data(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query<PersonQuery>) -> ApiResult<Response> {
+    Ok(Json(app_state(&app)?.kernel.personal_data(&ctx, &q.email).await?).into_response())
+}
+
+#[derive(Deserialize)]
+struct EraseReq {
+    email: String,
+    reason: String,
+}
+
+async fn erase_personal_data(Auth(ctx): Auth, State(app): State<AppContext>, Json(req): Json<EraseReq>) -> ApiResult<Response> {
+    Ok(Json(app_state(&app)?.kernel.erase_personal_data(&ctx, &req.email, &req.reason).await?).into_response())
 }
 
 // ── packages ──
@@ -385,6 +407,8 @@ pub fn routes() -> Routes {
         .add("/admin/users/{id}/password", put(reset_password))
         .add("/admin/roles", get(list_roles))
         .add("/admin/roles/{role}/permissions", put(set_permission))
+        .add("/admin/personal-data", get(personal_data))
+        .add("/admin/personal-data/erase", post(erase_personal_data))
         .add("/admin/packages", get(list_packages).post(install))
         .add("/admin/webhooks", get(list_webhooks).post(create_webhook))
         .add("/admin/webhooks/{id}", delete(delete_webhook))

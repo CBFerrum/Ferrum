@@ -166,6 +166,18 @@ the password (`PUT /api/admin/users/{id}/password`) or deactivate the user.
 means rows were changed outside the application — restore from backup and investigate database
 access.
 
+## Personal-data requests
+
+A person (customer, supplier contact, employee, lead…) may ask for a copy of their data or its
+erasure. Administration → Personal data finds what the installed packages declare as theirs by
+email: download the JSON for an access request; for an erasure, give the request's reference as
+the reason and erase. Their details leave the records listed and those records' audit history
+(the events keep their place in the hash chain and record who redacted what, when and why), and
+their login account is anonymized and closed. Submitted documents keep the names they carry, as
+bookkeeping law requires; an administrator's account is not erased until it is no longer one. The
+same is available as `GET /api/admin/personal-data` and `POST /api/admin/personal-data/erase`;
+packages and apps declare their entities with `personal_data` in their manifests.
+
 ## Routine tasks
 
 ```bash

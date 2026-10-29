@@ -32,6 +32,9 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 - **Stock revaluation** is a stock reconciliation counting the same quantity at the new rate. Like
   every stock posting (and landed costs), it is valued when it is posted: a backdated document
   never re-values the ones after it (there is no reposting).
+- **Personal data** requests reach what packages declare (`personal_data`), matched by an email
+  field: data known only by name or phone is not found, and submitted documents keep their copies
+  of names. Backups taken before an erasure still hold the data until they expire.
 - **Rate limits** (sign-ins, documents emailed, 300 requests a minute per address on public
   endpoints) are counted in the database, so they hold across replicas; apps use the same
   (`Kernel::rate_limit`). They are per address: Campaigns' tracking pixels and links opened
