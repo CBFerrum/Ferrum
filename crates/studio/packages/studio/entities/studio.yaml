@@ -1,0 +1,128 @@
+- name: StudioRole
+  label: Shared With Role
+  kind: child
+  fields:
+    - {name: role, type: data, required: true, in_list: true, max_length: 100}
+
+- name: Report
+  label: Report
+  label_plural: Reports
+  kind: master
+  module: studio
+  icon: table
+  title_field: label
+  search_fields: [base_entity, module]
+  description: A saved report builder view over one entity — a record table, a grouped summary, a pivot or a chart.
+  fields:
+    - {name: label, type: data, required: true, in_list: true, max_length: 140}
+    - {name: kind, type: select, options: [table, group_by, pivot, chart], default: table, required: true, in_list: true, in_filter: true}
+    - {name: base_entity, type: data, read_only: true, in_list: true, in_filter: true, max_length: 63, description: The entity it queries (from the spec)}
+    - {name: spec, type: json, required: true, description: "The query: {entity, filters, fields | group_by + measures, pivot, sort, limit, time_series, date_range, compare}"}
+    - {name: columns, type: json, description: "Visible columns in order: [{name, label?, width?, hidden?, format?}]"}
+    - {name: chart, type: json, description: "Chart settings: {type, x?, y?, colors?, stacked?, show_legend?, show_values?, height?}"}
+    - {name: sharing, type: select, options: [private, roles, everyone], default: private, required: true, in_list: true, in_filter: true}
+    - {name: roles, type: table, of: StudioRole, visible_if: "doc.sharing == 'roles'"}
+    - {name: module, type: data, max_length: 63, in_filter: true, description: Module whose menu shows it}
+    - {name: space, type: link, to: Space, on_delete: set_null, description: Space it is pinned to}
+    - {name: is_standard, type: check, read_only: true, in_filter: true, description: Shipped by a package (duplicate it to customize)}
+    - {name: description, type: text}
+  actions:
+    - {name: run, label: Run, permission: read}
+  list: {columns: [label, kind, base_entity, sharing], sort: label asc}
+
+- name: DashboardChart
+  label: Dashboard Chart
+  label_plural: Dashboard Charts
+  kind: master
+  module: studio
+  icon: chart
+  title_field: label
+  search_fields: [base_entity, module]
+  description: A chart over a query, a saved report or a built-in report, placed on dashboards and spaces.
+  fields:
+    - {name: label, type: data, required: true, in_list: true, max_length: 140}
+    - {name: chart_type, type: select, options: [bar, stacked_bar, line, area, pie, donut, percentage, heatmap, scatter, funnel, number], default: bar, required: true, in_list: true, in_filter: true}
+    - {name: source, type: select, options: [query, report, builtin], default: query, required: true, in_list: true, in_filter: true}
+    - {name: base_entity, type: data, read_only: true, in_list: true, in_filter: true, max_length: 63, description: The entity its query or report reads}
+    - {name: spec, type: json, visible_if: "doc.source == 'query'", description: The query (source query)}
+    - {name: report, type: link, to: Report, visible_if: "doc.source == 'report'"}
+    - {name: builtin_report, type: data, max_length: 100, visible_if: "doc.source == 'builtin'", description: A report from /api/reports}
+    - {name: builtin_params, type: json, visible_if: "doc.source == 'builtin'", description: "Its parameters: {name: text}"}
+    - {name: x_field, type: data, max_length: 200, description: Column on the x axis (defaults to the first dimension)}
+    - {name: y_fields, type: json, description: "Columns plotted: [name, ...] (defaults to every measure)"}
+    - {name: colors, type: json, description: "[\"#336699\", \"teal\", ...]"}
+    - {name: accepts, type: json, description: "Dashboard filters it takes: {filter: field path | false}; unmapped filters apply to a field of the same name and date ranges to its date field"}
+    - {name: sharing, type: select, options: [private, roles, everyone], default: private, required: true, in_list: true, in_filter: true}
+    - {name: roles, type: table, of: StudioRole, visible_if: "doc.sharing == 'roles'"}
+    - {name: module, type: data, max_length: 63, in_filter: true}
+    - {name: is_standard, type: check, read_only: true, in_filter: true}
+    - {name: description, type: text}
+  list: {columns: [label, chart_type, source, base_entity], sort: label asc}
+
+- name: NumberCard
+  label: Number Card
+  label_plural: Number Cards
+  kind: master
+  module: studio
+  icon: hash
+  title_field: label
+  search_fields: [base_entity, module]
+  description: One number (a count, sum or average) with its change since the previous period and a drill-down to the records.
+  fields:
+    - {name: label, type: data, required: true, in_list: true, max_length: 140}
+    - {name: base_entity, type: data, read_only: true, in_list: true, in_filter: true, max_length: 63, description: The entity it counts (from the spec)}
+    - {name: spec, type: json, required: true, description: "One measure, no grouping; add date_range and compare: previous_period for the change"}
+    - {name: format, type: select, options: [int, decimal, currency, percent], default: decimal, required: true, in_list: true}
+    - {name: precision, type: int, min: 0, max: 9}
+    - {name: currency, type: link, to: Currency}
+    - {name: sparkline, type: select, options: [day, week, month, quarter, year, fiscal_quarter, fiscal_year], description: Trend under the number over the card's date range}
+    - {name: color, type: color}
+    - {name: accepts, type: json, description: "Dashboard filters it takes: {filter: field path | false}"}
+    - {name: sharing, type: select, options: [private, roles, everyone], default: private, required: true, in_list: true, in_filter: true}
+    - {name: roles, type: table, of: StudioRole, visible_if: "doc.sharing == 'roles'"}
+    - {name: module, type: data, max_length: 63, in_filter: true}
+    - {name: is_standard, type: check, read_only: true, in_filter: true}
+    - {name: description, type: text}
+  list: {columns: [label, base_entity, format], sort: label asc}
+
+- name: Dashboard
+  label: Dashboard
+  label_plural: Dashboards
+  kind: master
+  module: studio
+  icon: layout
+  title_field: label
+  search_fields: [module]
+  description: Charts, number cards, shortcuts, notes and lists on a 12-column grid, with filters applied to every widget.
+  fields:
+    - {name: label, type: data, required: true, in_list: true, max_length: 140}
+    - {name: layout, type: json, description: "Grid items: [{i?, x, y, w, h, type: chart|card|shortcut|markdown|list|heading, ...}]"}
+    - {name: filters, type: json, description: "Dashboard filters: [{name, label?, type: link|select|data|check|date|date_range, to?, options?, default?, field?}]"}
+    - {name: refresh_interval, type: int, default: 0, min: 0, max: 86400, description: Seconds between refreshes (0 = off; at least 30)}
+    - {name: sharing, type: select, options: [private, roles, everyone], default: private, required: true, in_list: true, in_filter: true}
+    - {name: roles, type: table, of: StudioRole, visible_if: "doc.sharing == 'roles'"}
+    - {name: module, type: data, max_length: 63, in_filter: true}
+    - {name: is_standard, type: check, read_only: true, in_filter: true}
+    - {name: description, type: text}
+  list: {columns: [label, module, sharing], sort: label asc}
+
+- name: Space
+  label: Space
+  label_plural: Spaces
+  kind: master
+  module: studio
+  icon: home
+  title_field: label
+  search_fields: [module]
+  description: A module home page — shortcuts with live counts, link cards, charts, number cards, recent records, notes and onboarding steps.
+  fields:
+    - {name: label, type: data, required: true, in_list: true, max_length: 140}
+    - {name: icon, type: data, max_length: 40}
+    - {name: module, type: data, max_length: 63, in_list: true, in_filter: true}
+    - {name: blocks, type: json, description: "Blocks in order: [{type: shortcut|links|chart|card|list|markdown|heading|onboarding, width?, ...}]"}
+    - {name: sequence, type: int, default: 0, description: Order in the sidebar}
+    - {name: sharing, type: select, options: [private, roles, everyone], default: private, required: true, in_list: true, in_filter: true}
+    - {name: roles, type: table, of: StudioRole, visible_if: "doc.sharing == 'roles'"}
+    - {name: is_standard, type: check, read_only: true, in_filter: true}
+    - {name: description, type: text}
+  list: {columns: [label, module, sequence, sharing], sort: sequence asc}

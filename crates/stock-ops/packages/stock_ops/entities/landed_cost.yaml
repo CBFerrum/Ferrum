@@ -1,0 +1,60 @@
+- name: LandedCostReceipt
+  label: Landed Cost Receipt
+  kind: child
+  fields:
+    - {name: receipt_type, type: select, options: [Purchase Receipt, Purchase Invoice], required: true, default: Purchase Receipt, in_list: true}
+    - {name: purchase_receipt, type: link, to: PurchaseReceipt, in_list: true, visible_if: "doc.receipt_type == 'Purchase Receipt'", required_if: "doc.receipt_type == 'Purchase Receipt'"}
+    - {name: purchase_invoice, type: link, to: PurchaseInvoice, in_list: true, visible_if: "doc.receipt_type == 'Purchase Invoice'", required_if: "doc.receipt_type == 'Purchase Invoice'", description: Invoices that updated stock}
+    - {name: supplier, type: link, to: Supplier, read_only: true, in_list: true}
+    - {name: posting_date, type: date, read_only: true, in_list: true}
+    - {name: grand_total, type: currency, read_only: true}
+
+- name: LandedCostItem
+  label: Landed Cost Item
+  kind: child
+  fields:
+    - {name: item, type: link, to: Item, read_only: true, in_list: true}
+    - {name: item_name, type: data, fetch_from: item.item_name, read_only: true}
+    - {name: warehouse, type: link, to: Warehouse, read_only: true, in_list: true}
+    - {name: receipt_type, type: data, read_only: true}
+    - {name: purchase_receipt, type: link, to: PurchaseReceipt, read_only: true}
+    - {name: purchase_invoice, type: link, to: PurchaseInvoice, read_only: true}
+    - {name: receipt_line, type: data, read_only: true, hidden: true}
+    - {name: qty, type: decimal, read_only: true, in_list: true}
+    - {name: amount, type: currency, read_only: true, in_list: true, description: Stock value received}
+    - {name: applicable_charges, type: currency, min: "0", in_list: true, description: Computed unless the charges are distributed manually}
+    - {name: on_hand_qty, type: decimal, read_only: true, no_copy: true, description: Received units still in the warehouse when the voucher was submitted}
+    - {name: capitalized_amount, type: currency, read_only: true, no_copy: true, in_list: true, description: Added to the value of the stock on hand}
+    - {name: consumed_amount, type: currency, read_only: true, no_copy: true, in_list: true, description: Share of stock that had already left the warehouse}
+
+- name: LandedCostCharge
+  label: Landed Cost Charge
+  kind: child
+  fields:
+    - {name: description, type: data, required: true, in_list: true}
+    - {name: expense_account, type: link, to: Account, label: Account, required: true, link_filters: {is_group: false}, in_list: true, description: Credited with the charge (e.g. freight or expenses included in valuation)}
+    - {name: amount, type: currency, required: true, min: "0.01", in_list: true}
+    - {name: cost_center, type: link, to: CostCenter}
+
+- name: LandedCostVoucher
+  label: Landed Cost Voucher
+  kind: document
+  module: stock_ops
+  submittable: true
+  company_scoped: true
+  description: Adds freight, duty and other charges to the value of received stock. Stock still on hand is revalued; the share that already left the warehouse is booked to the consumed cost account.
+  numbering: {template: "MAT-LCV-{FY}-{seq:5}", on: submit, date_field: posting_date}
+  fields:
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: posting_date, type: date, required: true, default_expr: today, in_list: true, in_filter: true}
+    - {name: posting_time, type: data, default: "23:59:59", description: "HH:MM:SS"}
+    - {name: distribute_charges_based_on, type: select, options: [Qty, Amount, Distribute Manually], required: true, default: Amount}
+    - {name: receipts, type: table, of: LandedCostReceipt, required: true}
+    - {name: items, type: table, of: LandedCostItem}
+    - {name: charges, type: table, of: LandedCostCharge, label: Taxes and Charges, required: true}
+    - {name: total_charges, type: currency, read_only: true, in_list: true}
+    - {name: consumed_cost_account, type: link, to: Account, link_filters: {is_group: false}, description: "Landed cost of stock already sold or used (default: cost of goods sold)"}
+    - {name: remarks, type: text}
+  rules:
+    - {name: time_format, check: "doc.posting_time == null || doc.posting_time.matches('^[0-2][0-9]:[0-5][0-9](:[0-5][0-9])?$')", message: "Posting time must be HH:MM or HH:MM:SS"}
+  list: {columns: [number, posting_date, total_charges], sort: posting_date desc}

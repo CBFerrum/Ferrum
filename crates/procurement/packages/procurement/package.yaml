@@ -1,0 +1,69 @@
+package: procurement
+version: 0.1.0
+label: Procurement
+description: >-
+  Material requests (purchase, transfer, issue, manufacture, customer provided) with ordered/received tracking and
+  auto-reorder, requests for quotation answered by suppliers on a signed web page, supplier quotations and
+  supplier scorecards that warn about or block poor suppliers.
+depends: [buying, selling]
+field_prefix: proc_
+
+overlays:
+  - entity: Item
+    ops:
+      - {op: add_field, field: {name: proc_reorder_levels, type: table, of: ProcItemReorder, label: Auto-Reorder Levels}}
+  - entity: PurchaseOrder
+    ops:
+      - {op: add_field, after: supplier_name, field: {name: proc_supplier_standing, type: data, label: Supplier Scorecard, read_only: true, no_copy: true,
+          description: Set when the supplier's scorecard standing asks for a warning}}
+  - entity: PurchaseOrderItem
+    ops:
+      - {op: add_field, field: {name: proc_material_request, type: link, to: MaterialRequest, label: Material Request, read_only: true, in_filter: true}}
+      - {op: add_field, field: {name: proc_mr_line, type: data, label: Material Request Line, read_only: true, hidden: true}}
+      - {op: add_field, field: {name: proc_supplier_quotation, type: link, to: SupplierQuotation, label: Supplier Quotation, read_only: true, in_filter: true}}
+      - {op: add_field, field: {name: proc_sq_line, type: data, label: Supplier Quotation Line, read_only: true, hidden: true}}
+  - entity: PurchaseReceiptItem
+    ops:
+      - {op: add_field, field: {name: proc_material_request, type: link, to: MaterialRequest, label: Material Request, read_only: true, in_filter: true}}
+      - {op: add_field, field: {name: proc_mr_line, type: data, label: Material Request Line, read_only: true, hidden: true}}
+  - entity: PurchaseInvoiceItem
+    ops:
+      - {op: add_field, field: {name: proc_material_request, type: link, to: MaterialRequest, label: Material Request, read_only: true, in_filter: true}}
+      - {op: add_field, field: {name: proc_mr_line, type: data, label: Material Request Line, read_only: true, hidden: true}}
+  - entity: StockEntryItem
+    ops:
+      - {op: add_field, field: {name: proc_material_request, type: link, to: MaterialRequest, label: Material Request, read_only: true, in_filter: true}}
+      - {op: add_field, field: {name: proc_mr_line, type: data, label: Material Request Line, read_only: true, hidden: true}}
+
+modules:
+  - name: procurement
+    label: Procurement
+    icon: clipboard-list
+    order: 45
+    items: [MaterialRequest, RequestForQuotation, SupplierQuotation, SupplierScorecard, SupplierScorecardPeriod, ProcurementSettings,
+            "report:material_request_status", "report:procurement_tracker", "report:supplier_quotation_comparison",
+            "report:supplier_scorecard_ranking", "report:purchase_analytics"]
+
+roles:
+  - name: Purchase User
+    permissions:
+      - {entity: MaterialRequest, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: RequestForQuotation, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: SupplierQuotation, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: SupplierScorecard, read: true}
+      - {entity: SupplierScorecardPeriod, read: true}
+      - {entity: ProcurementSettings, read: true}
+  - name: Purchase Manager
+    permissions:
+      - {entity: MaterialRequest, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: RequestForQuotation, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: SupplierQuotation, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: SupplierScorecard, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: SupplierScorecardPeriod, read: true, export: true}
+      - {entity: ProcurementSettings, read: true, write: true, create: true}
+  - name: Stock User
+    permissions:
+      - {entity: MaterialRequest, read: true, write: true, create: true, delete: true, submit: true}
+  - name: Stock Manager
+    permissions:
+      - {entity: MaterialRequest, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}

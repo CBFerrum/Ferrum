@@ -1,0 +1,135 @@
+- name: WorkstationType
+  label: Workstation Type
+  kind: master
+  module: shop_floor
+  title_field: workstation_type
+  description: Default hour rate components copied into workstations of this type.
+  fields:
+    - {name: workstation_type, type: data, required: true, unique: true, in_list: true}
+    - {name: hour_rate_electricity, type: currency, default: 0, min: "0", label: Electricity Cost per Hour}
+    - {name: hour_rate_consumable, type: currency, default: 0, min: "0", label: Consumables Cost per Hour}
+    - {name: hour_rate_rent, type: currency, default: 0, min: "0", label: Rent Cost per Hour}
+    - {name: hour_rate_labour, type: currency, default: 0, min: "0", label: Wages per Hour}
+    - {name: hour_rate, type: currency, read_only: true, in_list: true, description: Sum of the components}
+    - {name: description, type: text}
+  list: {columns: [workstation_type, hour_rate], sort: workstation_type asc}
+
+- name: WorkstationWorkingHour
+  label: Workstation Working Hour
+  kind: child
+  fields:
+    - {name: weekday, type: select, options: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday], required: true, in_list: true}
+    - {name: start_time, type: data, required: true, max_length: 5, in_list: true, description: "HH:MM"}
+    - {name: end_time, type: data, required: true, max_length: 5, in_list: true, description: "HH:MM; 24:00 is midnight"}
+  rules:
+    - {name: time_format, check: "(doc.start_time == null || doc.start_time.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$')) && (doc.end_time == null || doc.end_time.matches('^(([01][0-9]|2[0-3]):[0-5][0-9]|24:00)$'))",
+       message: "Working hours are HH:MM (the end may be 24:00)"}
+
+- name: WorkstationHoliday
+  label: Workstation Holiday
+  kind: child
+  fields:
+    - {name: holiday_date, type: date, required: true, in_list: true}
+    - {name: description, type: data, in_list: true}
+
+- name: Workstation
+  label: Workstation
+  kind: master
+  module: shop_floor
+  company_scoped: true
+  title_field: workstation_name
+  description: A machine or work centre. Its hour rate costs operations; working hours, holidays and capacity drive scheduling.
+  fields:
+    - {name: workstation_name, type: data, required: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: workstation_type, type: link, to: WorkstationType, in_list: true, in_filter: true, description: Empty rate components are taken from the type}
+    - {name: hour_rate_electricity, type: currency, min: "0", label: Electricity Cost per Hour}
+    - {name: hour_rate_consumable, type: currency, min: "0", label: Consumables Cost per Hour}
+    - {name: hour_rate_rent, type: currency, min: "0", label: Rent Cost per Hour}
+    - {name: hour_rate_labour, type: currency, min: "0", label: Wages per Hour}
+    - {name: hour_rate, type: currency, read_only: true, in_list: true}
+    - {name: production_capacity, type: int, required: true, default: 1, min: 1, max: 1000, in_list: true, description: Jobs it can run at the same time}
+    - {name: working_hours, type: table, of: WorkstationWorkingHour, description: Empty means available around the clock}
+    - {name: holidays, type: table, of: WorkstationHoliday}
+    - {name: description, type: text}
+    - {name: disabled, type: check, in_filter: true}
+  unique: [[company, workstation_name]]
+  form:
+    - {label: Workstation, fields: [workstation_name, company, workstation_type, production_capacity, disabled, description]}
+    - {label: Hour Rate, columns: 2, fields: [hour_rate_electricity, hour_rate_consumable, hour_rate_rent, hour_rate_labour, hour_rate]}
+    - {label: Working Time, fields: [working_hours, holidays]}
+  list: {columns: [workstation_name, workstation_type, hour_rate, production_capacity], sort: workstation_name asc}
+
+- name: Operation
+  label: Operation
+  kind: master
+  module: shop_floor
+  title_field: operation_name
+  fields:
+    - {name: operation_name, type: data, required: true, unique: true, in_list: true}
+    - {name: workstation, type: link, to: Workstation, label: Default Workstation, in_list: true}
+    - {name: batch_size, type: decimal, default: 1, min: "0.000000001", description: Units processed together when the time is per batch}
+    - {name: description, type: text}
+  list: {columns: [operation_name, workstation], sort: operation_name asc}
+
+- name: RoutingOperation
+  label: Routing Operation
+  kind: child
+  fields:
+    - {name: operation, type: link, to: Operation, required: true, in_list: true}
+    - {name: workstation, type: link, to: Workstation, in_list: true, description: Defaults to the operation's workstation}
+    - {name: time_basis, type: select, options: [Per Unit, Per Batch], required: true, default: Per Unit, in_list: true}
+    - {name: time_in_mins, type: decimal, required: true, default: 0, min: "0", in_list: true, label: Time (Minutes), description: Per unit or per batch}
+    - {name: batch_size, type: decimal, min: "0.000000001", description: Defaults to the operation's batch size}
+    - {name: setup_time, type: decimal, default: 0, min: "0", label: Setup Time (Minutes), description: Fixed time once per run}
+    - {name: description, type: data}
+  rules:
+    - {name: takes_time, check: "doc.time_in_mins + doc.setup_time > 0.0", message: "An operation needs a time or a setup time"}
+
+- name: Routing
+  label: Routing
+  kind: master
+  module: shop_floor
+  title_field: routing_name
+  description: Operations in sequence, with the workstation and time each takes.
+  fields:
+    - {name: routing_name, type: data, required: true, unique: true, in_list: true}
+    - {name: operations, type: table, of: RoutingOperation, required: true}
+    - {name: disabled, type: check, in_filter: true}
+  list: {columns: [routing_name, disabled], sort: routing_name asc}
+
+- name: BomOperation
+  label: BOM Operation
+  kind: child
+  fields:
+    - {name: operation, type: link, to: Operation, required: true, in_list: true}
+    - {name: workstation, type: link, to: Workstation, in_list: true, description: Defaults to the operation's workstation}
+    - {name: time_basis, type: select, options: [Per Unit, Per Batch], required: true, default: Per Unit}
+    - {name: time_in_mins, type: decimal, required: true, default: 0, min: "0", in_list: true, label: Time (Minutes), description: Per unit or per batch}
+    - {name: batch_size, type: decimal, min: "0.000000001", description: Defaults to the operation's batch size}
+    - {name: setup_time, type: decimal, default: 0, min: "0", label: Setup Time (Minutes), description: Once per BOM quantity (the costing lot)}
+    - {name: hour_rate, type: currency, read_only: true}
+    - {name: operating_cost, type: currency, read_only: true, in_list: true, description: For the BOM quantity}
+    - {name: description, type: data}
+  rules:
+    - {name: takes_time, check: "doc.time_in_mins + doc.setup_time > 0.0", message: "An operation needs a time or a setup time"}
+
+- name: WorkOrderOperation
+  label: Work Order Operation
+  kind: child
+  fields:
+    - {name: operation, type: link, to: Operation, required: true, in_list: true}
+    - {name: workstation, type: link, to: Workstation, in_list: true}
+    - {name: time_basis, type: select, options: [Per Unit, Per Batch], required: true, default: Per Unit}
+    - {name: unit_time_in_mins, type: decimal, required: true, default: 0, min: "0", label: Time per Unit or Batch (Minutes)}
+    - {name: batch_size, type: decimal, min: "0.000000001"}
+    - {name: setup_time, type: decimal, default: 0, min: "0", label: Setup Time (Minutes)}
+    - {name: time_in_mins, type: decimal, read_only: true, in_list: true, label: Planned Time (Minutes)}
+    - {name: hour_rate, type: currency, read_only: true}
+    - {name: planned_operating_cost, type: currency, read_only: true}
+    - {name: planned_start_time, type: datetime, read_only: true, no_copy: true, in_list: true}
+    - {name: planned_end_time, type: datetime, read_only: true, no_copy: true, in_list: true}
+    - {name: completed_qty, type: decimal, read_only: true, no_copy: true, in_list: true}
+    - {name: actual_time_in_mins, type: decimal, read_only: true, no_copy: true, label: Actual Time (Minutes)}
+    - {name: actual_operating_cost, type: currency, read_only: true, no_copy: true}
+    - {name: status, type: select, options: [Pending, Work in Progress, Completed], default: Pending, read_only: true, no_copy: true, in_list: true}

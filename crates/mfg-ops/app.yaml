@@ -1,0 +1,12 @@
+id: mfg-ops
+name: Manufacturing Operations
+version: 0.1.0
+publisher: cbferrum
+summary: Workstations, operations, routings, job cards, production planning and subcontracting
+description: README.md
+categories: [manufacturing]
+license: AGPL-3.0-only
+runtime: native
+platform: ">=0.3, <0.4"
+packages: [mfg_ops]
+uninstall: ask

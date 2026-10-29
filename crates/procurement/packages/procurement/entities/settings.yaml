@@ -1,0 +1,14 @@
+- name: ProcurementSettings
+  label: Procurement Settings
+  kind: settings
+  module: procurement
+  fields:
+    - {name: public_url, type: url, label: Public URL,
+       description: "Address this server is reached at from the internet (e.g. https://erp.example.com); used in the links emailed to suppliers"}
+    - {name: default_response_days, type: int, label: Quotations Due In (Days), default: 7, min: 1, max: 365}
+    - {name: quotation_validity_days, type: int, label: Quotation Validity (Days), default: 30, min: 1, max: 3650}
+    - {name: over_order_allowance, type: percent, label: Over-Order Allowance %, default: 0, min: "0", max: "100",
+       description: "How much more than requested may be ordered, transferred or issued against a material request"}
+    - {name: auto_reorder, type: check, label: Raise Material Requests Automatically, default: true,
+       description: "Raise requests for items whose projected quantity falls below their re-order level"}
+    - {name: signing_key, type: secret, read_only: true, hidden: true, description: Signs supplier links; created automatically}

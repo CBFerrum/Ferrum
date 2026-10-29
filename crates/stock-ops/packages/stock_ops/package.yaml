@@ -1,0 +1,130 @@
+package: stock_ops
+version: 0.1.0
+label: Stock Operations
+description: Stock reconciliation, landed costs, pick lists, packing, quality inspection, item variants and product bundles
+depends: [inventory, selling, buying, accounting]
+field_prefix: stk_
+
+overlays:
+  - entity: Item
+    ops:
+      - {op: add_field, field: {name: stk_has_variants, type: check, label: Has Variants, in_filter: true, description: "A template groups variants; it is never bought, sold or stocked itself"}}
+      - {op: add_field, after: stk_has_variants, field: {name: stk_variant_of, type: link, to: Item, label: Variant Of, read_only: true, in_filter: true}}
+      - {op: add_field, after: stk_variant_of, field: {name: stk_attributes, type: table, of: ItemVariantAttribute, label: Variant Attributes}}
+      - {op: add_field, field: {name: stk_inspection_required_before_purchase, type: check, label: Inspection Required Before Purchase}}
+      - {op: add_field, field: {name: stk_inspection_required_before_delivery, type: check, label: Inspection Required Before Delivery}}
+      - {op: add_field, field: {name: stk_quality_inspection_template, type: link, to: QualityInspectionTemplate, label: Quality Inspection Template}}
+      - {op: add_action, action: {name: make_variants, label: Create Variants, permission: create, condition: "doc.stk_has_variants"}}
+  - entity: SalesOrder
+    ops:
+      - {op: add_action, action: {name: make_pick_list, label: Create Pick List, docstatus: [1], permission: read, condition: "doc.per_delivered < 100.0 && doc.status != 'Closed'"}}
+  - entity: DeliveryNote
+    ops:
+      - {op: add_field, after: items, field: {name: stk_packed_items, type: table, of: PackedItem, label: Packed Items}}
+      - {op: add_action, action: {name: make_packing_slip, label: Create Packing Slip, docstatus: [0], permission: read}}
+      - {op: add_action, action: {name: make_quality_inspections, label: Create Quality Inspections, docstatus: [0], permission: read}}
+  - entity: DeliveryNoteItem
+    ops:
+      - {op: add_field, field: {name: stk_pick_list, type: link, to: PickList, label: Pick List, read_only: true}}
+      - {op: add_field, field: {name: stk_pick_list_item, type: data, label: Pick List Line, read_only: true}}
+  - entity: SalesInvoice
+    ops:
+      - {op: add_field, after: items, field: {name: stk_packed_items, type: table, of: PackedItem, label: Packed Items, visible_if: "doc.update_stock"}}
+      - {op: add_action, action: {name: make_quality_inspections, label: Create Quality Inspections, docstatus: [0], permission: read, condition: "doc.update_stock"}}
+  - entity: PurchaseReceipt
+    ops:
+      - {op: add_action, action: {name: make_quality_inspections, label: Create Quality Inspections, docstatus: [0], permission: read}}
+  - entity: PurchaseInvoice
+    ops:
+      - {op: add_action, action: {name: make_quality_inspections, label: Create Quality Inspections, docstatus: [0], permission: read, condition: "doc.update_stock"}}
+  - entity: StockEntry
+    ops:
+      - {op: add_action, action: {name: make_quality_inspections, label: Create Quality Inspections, docstatus: [0], permission: read}}
+  - entity: StockEntryItem
+    ops:
+      - {op: add_field, field: {name: stk_pick_list, type: link, to: PickList, label: Pick List, read_only: true}}
+      - {op: add_field, field: {name: stk_pick_list_item, type: data, label: Pick List Line, read_only: true}}
+
+modules:
+  - name: stock_ops
+    label: Stock Operations
+    icon: boxes
+    order: 35
+    items: [StockReconciliation, LandedCostVoucher, PickList, PackingSlip, QualityInspection, QualityInspectionTemplate, ProductBundle, ItemAttribute,
+            Batch, report:stock_reconciliation_variance, report:landed_cost_allocation, report:pick_list_status, report:quality_inspection_summary,
+            report:variant_stock_matrix, report:stock_ageing]
+
+roles:
+  - name: Stock Manager
+    permissions:
+      - {entity: StockReconciliation, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: LandedCostVoucher, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: PickList, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: PackingSlip, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: QualityInspection, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: QualityInspectionTemplate, read: true, write: true, create: true, delete: true}
+      - {entity: ProductBundle, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: ItemAttribute, read: true, write: true, create: true, delete: true}
+      - {entity: Batch, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: SalesOrder, read: true}
+      - {entity: DeliveryNote, read: true}
+      - {entity: PurchaseReceipt, read: true}
+      - {entity: PurchaseInvoice, read: true}
+      - {entity: Customer, read: true}
+      - {entity: Supplier, read: true}
+  - name: Stock User
+    permissions:
+      - {entity: StockReconciliation, read: true, write: true, create: true, delete: true, submit: true}
+      - {entity: PickList, read: true, write: true, create: true, delete: true, submit: true, cancel: true}
+      - {entity: PackingSlip, read: true, write: true, create: true, delete: true, submit: true, cancel: true}
+      - {entity: QualityInspection, read: true, write: true, create: true, delete: true, submit: true}
+      - {entity: QualityInspectionTemplate, read: true}
+      - {entity: LandedCostVoucher, read: true}
+      - {entity: ProductBundle, read: true}
+      - {entity: ItemAttribute, read: true}
+      - {entity: Batch, read: true, write: true, create: true}
+      - {entity: SalesOrder, read: true}
+      - {entity: DeliveryNote, read: true}
+      - {entity: PurchaseReceipt, read: true}
+      - {entity: Customer, read: true}
+  - name: Quality Manager
+    description: Inspection templates and quality inspections.
+    permissions:
+      - {entity: QualityInspectionTemplate, read: true, write: true, create: true, delete: true}
+      - {entity: QualityInspection, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: Item, read: true}
+      - {entity: Batch, read: true}
+      - {entity: Company, read: true}
+      - {entity: PurchaseReceipt, read: true}
+      - {entity: PurchaseInvoice, read: true}
+      - {entity: DeliveryNote, read: true}
+      - {entity: SalesInvoice, read: true}
+      - {entity: StockEntry, read: true}
+  - name: Sales User
+    permissions:
+      - {entity: PickList, read: true, write: true, create: true, delete: true, submit: true}
+      - {entity: PackingSlip, read: true, write: true, create: true, delete: true, submit: true, cancel: true}
+      - {entity: ProductBundle, read: true}
+      - {entity: QualityInspection, read: true}
+      - {entity: Batch, read: true}
+  - name: Sales Manager
+    permissions:
+      - {entity: PickList, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: PackingSlip, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: ProductBundle, read: true, write: true, create: true, delete: true}
+      - {entity: QualityInspection, read: true}
+      - {entity: Batch, read: true}
+  - name: Purchase User
+    permissions:
+      - {entity: LandedCostVoucher, read: true, write: true, create: true, delete: true}
+      - {entity: QualityInspection, read: true}
+      - {entity: Batch, read: true, write: true, create: true}
+  - name: Purchase Manager
+    permissions:
+      - {entity: LandedCostVoucher, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: QualityInspection, read: true}
+      - {entity: Batch, read: true, write: true, create: true}
+  - name: Accounts Manager
+    permissions:
+      - {entity: LandedCostVoucher, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: StockReconciliation, read: true, export: true}

@@ -2089,7 +2089,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 [[package]]
 name = "ferrum-app-commerce"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-commerce?branch=main#6ae91113d34d0b23e89d43482a5af1db8b452c65"
+source = "git+https://github.com/CBFerrum/ferrum-app-commerce?branch=main#5216bd112b7e72871dd51d3b6f83a8a9e0fbb5cc"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2290,6 +2290,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrum-finance"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrum-calc",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "minijinja",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ferrum-kernel"
 version = "0.1.0"
 dependencies = [
@@ -2353,6 +2374,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrum-mfg-ops"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "chrono-tz 0.10.4",
+ "ferrum-calc",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ferrum-migration"
 version = "0.1.0"
 dependencies = [
@@ -2382,6 +2423,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrum-procurement"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrum-calc",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "form_urlencoded",
+ "hex",
+ "hmac 0.12.1",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ferrum-server"
 version = "0.1.0"
 dependencies = [
@@ -2399,11 +2463,16 @@ dependencies = [
  "ferrum-app-pos",
  "ferrum-app-projects",
  "ferrum-domain",
+ "ferrum-finance",
  "ferrum-kernel",
  "ferrum-mcp",
  "ferrum-meta",
+ "ferrum-mfg-ops",
  "ferrum-migration",
  "ferrum-plugins",
+ "ferrum-procurement",
+ "ferrum-stock-ops",
+ "ferrum-studio",
  "futures-util",
  "hex",
  "loco-rs",
@@ -2413,6 +2482,46 @@ dependencies = [
  "serde_json",
  "serial_test",
  "sha2 0.10.9",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "ferrum-stock-ops"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrum-calc",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "ferrum-studio"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "chrono-tz 0.10.4",
+ "ferrum-calc",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "futures",
+ "rust_decimal",
+ "serde",
+ "serde_json",
  "sqlx",
  "tokio",
  "tracing",

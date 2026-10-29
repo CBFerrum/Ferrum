@@ -29,7 +29,14 @@ built to scale out.
 | `crates/meta` | Metadata model: packages, entities, overlays, CEL rules, effective schema per tenant |
 | `crates/kernel` | Document engine on PostgreSQL: CRUD, lifecycle, permissions, RLS, numbering, audit, outbox, webhooks, automations, print, customization |
 | `crates/domain` | ERP engines: ledger, open items, stock valuation, selling/buying flows, stock entries, manufacturing + MRP, India GST, reports |
-| `crates/plugins` | WebAssembly plugin host (wasmtime) |
+| `crates/plugins` | WebAssembly plugin host (wasmtime): hooks, routes, WebSockets, schedules, host calls, fuel and memory limits |
+| `crates/apps` | Signed `.fapp` app bundles, manifests, permissions and dependency resolution (shared by server, SDK and store) |
+| `crates/mcp` | MCP server: every entity, action and report available to AI agents |
+| `crates/procurement` | Material requests, auto-reorder, requests for quotation with supplier links, supplier quotations and scorecards |
+| `crates/stock-ops` | Stock reconciliation, landed costs, pick lists, packing slips, quality inspection, item variants, product bundles |
+| `crates/finance` | Budgets, bank reconciliation, period closing, payment terms, dunning, subscriptions |
+| `crates/mfg-ops` | Workstations, routings, job cards, production planning, subcontracting |
+| `crates/studio` | Analytics engine and the no-code report builder, charts, number cards, dashboards and Spaces |
 | `packages/*` | Shipped packages: `core`, `accounting`, `inventory`, `selling`, `buying`, `manufacturing`, `india` |
 | `server` | HTTP API (Loco/Axum), auth, admin, OpenAPI, ERPNext-compatible `/api/resource` shim, CLI tasks |
 | `plugins/sdk`, `plugins/examples` | Rust plugin SDK and example plugins |
@@ -37,6 +44,24 @@ built to scale out.
 | `docs` | [API contract](docs/api.md), [plugins](docs/plugins.md), [operations runbook](docs/operations.md), [plan and analysis](docs/plan/PLAN.md) |
 
 The web app lives in its own repository, [CBFerrum/Ferrum-Frontend](https://github.com/CBFerrum/Ferrum-Frontend).
+
+### Apps
+
+Larger business areas are native apps in their own repositories, installed per workspace from
+**Apps** (or the app store) like a WordPress plugin; the server image ships them as cargo features.
+Third parties build wasm or metadata apps with the [SDK](https://github.com/CBFerrum/ferrum-sdk)
+(`ferrum-app new`, `pack`, `sign`, `publish`) — an EV-charging (OCPP) back end, a clinic, a school
+or any other vertical is a plugin, not a fork.
+
+| App | Repository |
+|---|---|
+| CRM | [ferrum-app-crm](https://github.com/CBFerrum/ferrum-app-crm) |
+| Projects and timesheets | [ferrum-app-projects](https://github.com/CBFerrum/ferrum-app-projects) |
+| Helpdesk | [ferrum-app-helpdesk](https://github.com/CBFerrum/ferrum-app-helpdesk) |
+| Point of sale | [ferrum-app-pos](https://github.com/CBFerrum/ferrum-app-pos) |
+| Commerce (online store) | [ferrum-app-commerce](https://github.com/CBFerrum/ferrum-app-commerce) |
+| HR and payroll | [ferrum-app-hr](https://github.com/CBFerrum/ferrum-app-hr) |
+| Mail, chat and calendar | [ferrum-app-comms](https://github.com/CBFerrum/ferrum-app-comms) |
 
 ## Quick start (development)
 
@@ -159,13 +184,16 @@ balance sheet balance and that stock value equals the stock accounts.
 ## Scope and known limits
 
 Included: multi-company accounting (journals, payments, multi-currency with exchange
-differences, periods, financial statements), receivables/payables with ageing, selling and buying
-cycles with returns, inventory with batches/serials, BOMs, work orders, MRP, India GST (GSTIN,
-place of supply, CGST/SGST/IGST templates, HSN checks), reports, customization, plugins.
+differences, periods, budgets, bank reconciliation, period closing, financial statements),
+receivables/payables with ageing and dunning, subscriptions, selling and buying cycles with
+returns, procurement (material requests, RFQs, supplier scorecards), inventory with batches/serials,
+landed costs, pick lists, quality inspection, BOMs, work orders, job cards, production planning,
+subcontracting, MRP, India GST (GSTIN, place of supply, CGST/SGST/IGST templates, HSN checks),
+analytics (Studio), collaboration (comments, assignments, tags, followers), live updates,
+customization, plugins and apps (see above), MCP for AI agents.
 
 Not yet included: e-invoice/e-way-bill submission to the GST network (fields only, needs a GSP),
-PDF rendering (HTML print only), payroll/HR, CRM, POS, GraphQL, SSO (OIDC), Citus sharding
-configuration. Plugins are pure functions today (no host data API).
+PDF rendering (HTML print only), GraphQL, SSO (OIDC), Citus sharding configuration, XLSX export.
 
 ## Licence
 
