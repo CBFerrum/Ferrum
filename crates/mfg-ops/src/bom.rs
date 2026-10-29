@@ -119,28 +119,43 @@ impl DocHook for BomOperationsHook {
         if errors.is_empty() { Ok(()) } else { Err(Error::Validation(errors)) }
     }
 
-    /// Re-costs the operations at today's hour rates (also on submitted BOMs, like the
-    /// platform's "Update Cost" does for materials).
+    /// Re-costs the operations at today's hour rates (also on submitted BOMs).
     async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, _params: &Value) -> Result<Option<Value>> {
         if name != "mfo_update_operating_cost" {
             return Ok(None);
         }
-        let bid = id(doc, "id").ok_or_else(|| Error::internal("no id"))?;
-        let mut fresh = doc.clone();
-        let total = cost_operations(hc, &mut fresh).await?.unwrap_or_default();
-        let sctx = sys(hc.ctx);
-        for r in rows(&fresh, "mfo_operations") {
-            let Some(line) = id(&r, "id") else { continue };
-            let mut v = Doc::new();
-            v.insert("hour_rate".into(), r.get("hour_rate").cloned().unwrap_or(Value::Null));
-            v.insert("operating_cost".into(), r.get("operating_cost").cloned().unwrap_or(Value::Null));
-            hc.kernel.set_child_values_tx(&sctx, hc.tx, "Bom", "mfo_operations", line, v).await?;
-        }
-        let total_cost = d(doc, "raw_material_cost") + total;
-        let mut v = Doc::new();
-        v.insert("operating_cost".into(), money(total));
-        v.insert("total_cost".into(), money(total_cost));
-        hc.kernel.set_values_tx(&sctx, hc.tx, "Bom", bid, v).await?;
-        Ok(Some(json!({"operating_cost": money(total), "total_cost": money(total_cost)})))
+        recost(hc, doc).await.map(Some)
     }
+
+    /// The platform's "Update Cost" re-costed the materials: the operations follow.
+    async fn after_action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, result: &mut Value) -> Result<()> {
+        if name != "update_cost" || !installed(hc.ctx) || rows(doc, "mfo_operations").is_empty() {
+            return Ok(());
+        }
+        if let (Value::Object(out), Value::Object(costs)) = (result, recost(hc, doc).await?) {
+            out.extend(costs);
+        }
+        Ok(())
+    }
+}
+
+/// Re-costs a BOM's operations at today's hour rates and makes them its operating cost.
+async fn recost(hc: &mut HookCtx<'_>, doc: &Doc) -> Result<Value> {
+    let bid = id(doc, "id").ok_or_else(|| Error::internal("no id"))?;
+    let mut fresh = doc.clone();
+    let total = cost_operations(hc, &mut fresh).await?.unwrap_or_default();
+    let sctx = sys(hc.ctx);
+    for r in rows(&fresh, "mfo_operations") {
+        let Some(line) = id(&r, "id") else { continue };
+        let mut v = Doc::new();
+        v.insert("hour_rate".into(), r.get("hour_rate").cloned().unwrap_or(Value::Null));
+        v.insert("operating_cost".into(), r.get("operating_cost").cloned().unwrap_or(Value::Null));
+        hc.kernel.set_child_values_tx(&sctx, hc.tx, "Bom", "mfo_operations", line, v).await?;
+    }
+    let total_cost = d(doc, "raw_material_cost") + total;
+    let mut v = Doc::new();
+    v.insert("operating_cost".into(), money(total));
+    v.insert("total_cost".into(), money(total_cost));
+    hc.kernel.set_values_tx(&sctx, hc.tx, "Bom", bid, v).await?;
+    Ok(json!({"operating_cost": money(total), "total_cost": money(total_cost)}))
 }

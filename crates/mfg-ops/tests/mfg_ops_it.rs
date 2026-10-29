@@ -375,6 +375,14 @@ async fn scenario() {
     assert_eq!((dec(&recost["operating_cost"]), dec(&recost["total_cost"])), (n("900"), n("1120")), "painting re-costed at 90 an hour");
     let bom_doc = t.get("Bom", chair_bom).await;
     assert_eq!((dec(&bom_doc["mfo_operations"][1]["hour_rate"]), dec(&bom_doc["total_cost"])), (n("90"), n("1120")));
+    // The platform's "Update Cost" re-costs the operations too.
+    t.update(&a, "Workstation", booth, json!({"hour_rate_labour": "75"})).await;
+    let updated = t.action(&a, "Bom", chair_bom, "update_cost", json!({})).await;
+    assert_eq!((dec(&updated["raw_material_cost"]), dec(&updated["operating_cost"]), dec(&updated["total_cost"])), (n("220"), n("870"), n("1090")));
+    assert_eq!(dec(&t.get("Bom", chair_bom).await["total_cost"]), n("1090"));
+    t.update(&a, "Workstation", booth, json!({"hour_rate_labour": "90"})).await;
+    let updated = t.action(&a, "Bom", chair_bom, "update_cost", json!({})).await;
+    assert_eq!(dec(&updated["total_cost"]), n("1120"));
 
     // ───────────── work orders: operations and forward scheduling ─────────────
     let wo = |qty: &str| json!({"company": s(cid), "item": s(chair), "qty": qty, "source_warehouse": s(wip), "target_warehouse": s(fg), "planned_start_date": "2026-11-02"});

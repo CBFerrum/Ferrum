@@ -305,6 +305,13 @@ async fn scenario() {
     t.cancel(&stock_manager, "StockReconciliation", uid(&reset)).await;
     assert_eq!(t.stock(reco_a, stores).await, (n("7"), n("77")));
     assert_eq!(t.gl("Stock Adjustment").await, n("23"));
+    // Revalued without moving quantity: the same count at a new rate.
+    let reval = t.insert(&stock_user, "StockReconciliation", reco("7", Some("12"))).await;
+    let reval = t.submit(&stock_user, "StockReconciliation", uid(&reval)).await;
+    assert_eq!(t.stock(reco_a, stores).await, (n("7"), n("84")));
+    assert_eq!((dec(&reval["difference_amount"]), t.gl("Stock Adjustment").await), (n("7"), n("16")));
+    t.cancel(&stock_manager, "StockReconciliation", uid(&reval)).await;
+    assert_eq!(t.stock(reco_a, stores).await, (n("7"), n("77")));
     let twice = t
         .refused(
             &stock_user,

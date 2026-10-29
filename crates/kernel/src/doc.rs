@@ -717,10 +717,16 @@ impl Kernel {
                 return Err(Error::invalid(format!("'{}' is not available for this document", def.label)));
             }
         }
-        for h in self.hooks.for_tenant(&ent.def.name, &ctx.schema.packages) {
+        let hooks = self.hooks.for_tenant(&ent.def.name, &ctx.schema.packages);
+        for h in &hooks {
             let mut hc = HookCtx { kernel: self, ctx, tx: &mut *tx, entity: &ent };
-            if let Some(out) = h.action(&mut hc, action, &doc, params).await? {
+            if let Some(mut out) = h.action(&mut hc, action, &doc, params).await? {
                 if !def.read_only {
+                    let now = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
+                    for other in &hooks {
+                        let mut hc = HookCtx { kernel: self, ctx, tx: &mut *tx, entity: &ent };
+                        other.after_action(&mut hc, action, &now, &mut out).await?;
+                    }
                     audit::record(tx, ctx, &ent.def.name, id, &format!("action:{action}"), None, params.clone()).await?;
                 }
                 return Ok(out);

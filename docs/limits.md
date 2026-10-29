@@ -29,8 +29,9 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   installs stay at the 25 MB request limit. Apps that read a file's bytes (`read_file`) still load
   it into memory, so their own size caps apply. Completing a direct upload reads the object once to
   record its SHA-256.
-- **Stock revaluation** without moving quantity is not supported; landed costs are posted forward.
-- **BOM costing**: apps cannot plug into "Update Cost"; Manufacturing Operations adds its own action.
+- **Stock revaluation** is a stock reconciliation counting the same quantity at the new rate. Like
+  every stock posting (and landed costs), it is valued when it is posted: a backdated document
+  never re-values the ones after it (there is no reposting).
 - **Engine-maintained child tables**: apps that keep rows in another document's table (crew rows,
   allocations) write them with SQL rather than through a kernel API.
 - **SDK**: `ferrum-app dev --watch` uploads every change as a new pre-release; trying it still
