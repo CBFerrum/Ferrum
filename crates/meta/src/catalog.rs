@@ -208,8 +208,8 @@ impl Catalog {
                     return invalid(format!("{name}: personal data of unknown entity {}", pd.entity));
                 };
                 let field = |f: &str| e.fields.iter().find(|x| x.name == f);
-                if field(&pd.match_field).is_none_or(|f| f.ftype != FieldType::Email) {
-                    return invalid(format!("{name}: personal data of {}: match must be an email field", pd.entity));
+                if field(&pd.match_field).is_none_or(|f| !matches!(f.ftype, FieldType::Email | FieldType::Data)) {
+                    return invalid(format!("{name}: personal data of {}: match must be an email (or data) field holding the address", pd.entity));
                 }
                 if pd.erase.is_empty() {
                     return invalid(format!("{name}: personal data of {}: list the fields to erase", pd.entity));

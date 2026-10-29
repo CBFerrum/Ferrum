@@ -34,8 +34,8 @@ pub struct PackageManifest {
     pub personal_data: Vec<PersonalDataDef>,
 }
 
-/// Records of one entity that belong to a person: those whose `match` email field holds the
-/// person's email (and whose fields hold the `where` values); `erase` lists what erasure blanks
+/// Records of one entity that belong to a person: those whose `match` field (an email field, or a
+/// data field holding an address) holds the person's email (and whose fields hold the `where` values); `erase` lists what erasure blanks
 /// (a child table listed there loses its rows).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
