@@ -239,8 +239,20 @@ the invoice. Before the first one:
   workspace can choose another series (a `numbering` customization of Sales Invoice) as long as it
   stays within 16; a year with more than 99,999 invoices needs a shorter prefix.
 
-Two ways to the IRP:
+Three ways to the IRP:
 
+* **The direct connection**: under the company's *e-Invoice Connection*, choose Sandbox or
+  Production and enter the API address (NIC's, or your GSP's when it passes NIC's API through;
+  blank in sandbox mode means `https://einv-apisandbox.nic.in`), the client ID and secret, the
+  API user name and password, the IRP's public key (PEM) and, for a GSP, the extra headers it
+  wants (JSON). *Generate e-Invoice* then registers the invoice within seconds: Ferrum signs in
+  (one session per company and replica, renewed before its six hours run out), sends the invoice
+  encrypted, and records the answer — or the IRP's reason for refusing it on the invoice
+  (*e-Invoice Error*). When an answer is lost on the way back, the retry finds the IRN the IRP
+  already made and fetches it; when the IRP cannot be reached, the request is retried with
+  backoff. Cancellations and e-way bills by IRN go the same way. Enter the IRP's signing key
+  (PEM) too, and every signed QR code recorded — by the connection or by hand — must carry its
+  signature.
 * **Without a GSP**: *Download e-Invoice JSON* gives the invoice in the IRP's schema 1.1 (a list,
   as the portal's bulk upload takes it); upload it on the e-invoice portal and paste the signed
   JSON it returns into *Record e-Invoice from IRP*, which checks that the signed QR code is for
@@ -253,8 +265,8 @@ Two ways to the IRP:
   the same way (`india.e_invoice.cancel_requested`, `india.e_way_bill.requested`,
   `india.e_way_bill.cancel_requested`; `record_e_invoice_cancellation`, `record_e_way_bill`,
   `record_e_way_bill_cancellation` and their `…_failure` actions). Recording again with the same
-  answer is a no-op; a different IRN or e-way bill number is refused. No connector ships with
-  Ferrum: GSP APIs differ and need a contract with the GSP.
+  answer is a no-op; a different IRN or e-way bill number is refused. Use this for a GSP whose
+  API is its own rather than NIC's.
 
 E-way bills: *Set Transport Details* (mode, distance, vehicle or transporter, transport document)
 works on submitted invoices; the e-way bill is made by IRN when the invoice has one, otherwise from

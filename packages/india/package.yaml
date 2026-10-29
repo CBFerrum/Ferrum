@@ -14,6 +14,16 @@ overlays:
       - {op: add_field, after: in_address, field: {name: in_city, type: data, label: City, max_length: 50}}
       - {op: add_field, after: in_city, field: {name: in_pincode, type: data, label: PIN Code, max_length: 6}}
       - {op: add_section, after: tax_id, section: {label: GST Registration, fields: [in_gstin, in_state_code, in_address, in_city, in_pincode], collapsible: true}}
+      - {op: add_field, after: in_pincode, field: {name: in_irp_mode, type: select, label: Send e-Invoices to the IRP, options: ["Off", Sandbox, Production], default: "Off", description: "Off: e-invoice JSON is uploaded on the portal (or a GSP plugin sends it)"}}
+      - {op: add_field, after: in_irp_mode, field: {name: in_irp_url, type: url, label: IRP API Address, description: "NIC's or your GSP's; blank in sandbox mode means NIC's sandbox"}}
+      - {op: add_field, after: in_irp_url, field: {name: in_irp_client_id, type: data, label: IRP Client ID}}
+      - {op: add_field, after: in_irp_client_id, field: {name: in_irp_client_secret, type: secret, label: IRP Client Secret}}
+      - {op: add_field, after: in_irp_client_secret, field: {name: in_irp_username, type: data, label: IRP API User Name}}
+      - {op: add_field, after: in_irp_username, field: {name: in_irp_password, type: secret, label: IRP API Password}}
+      - {op: add_field, after: in_irp_password, field: {name: in_irp_public_key, type: text, label: IRP Public Key (PEM), description: The key the IRP gave you for encrypting the sign-in}}
+      - {op: add_field, after: in_irp_public_key, field: {name: in_irp_gsp_headers, type: secret, label: GSP Headers (JSON), description: "Extra headers a GSP needs, e.g. {\"gspappid\": \"…\", \"gspappsecret\": \"…\"}"}}
+      - {op: add_field, after: in_irp_gsp_headers, field: {name: in_irp_qr_key, type: text, label: IRP Signing Key (PEM), description: "The IRP's public key for signed invoices and QR codes: answers recorded here are checked against it"}}
+      - {op: add_section, after: in_pincode, section: {label: e-Invoice Connection, fields: [in_irp_mode, in_irp_url, in_irp_client_id, in_irp_client_secret, in_irp_username, in_irp_password, in_irp_public_key, in_irp_gsp_headers, in_irp_qr_key], collapsible: true}}
   - entity: Customer
     ops:
       - {op: add_field, after: tax_id, field: {name: in_gstin, type: data, label: GSTIN, max_length: 15}}
