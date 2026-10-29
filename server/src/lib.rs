@@ -9,6 +9,7 @@ pub mod extract;
 pub mod importer;
 pub mod live;
 pub mod mailer;
+pub mod objects;
 pub mod openapi;
 pub mod packages;
 pub mod state;

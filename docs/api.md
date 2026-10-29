@@ -180,7 +180,15 @@ and, after the user approves, `POST /api/oauth/authorize` → `{redirect_to}` (a
 
 ## Files
 
-`POST /api/files` (multipart: `file`, optional `entity`, `record_id`, `public`; ≤25 MB) → `{id, url: "/files/<id>", file_name, size, sha256}`; `GET /files/{id}` (authenticated download).
+`POST /api/files` (multipart: `file`, optional `entity`, `record_id`, `public`; ≤25 MB) → `{id, url: "/files/<id>", file_name, size, sha256}`; `GET /files/{id}` (authenticated download, streamed).
+
+Larger files (up to 2 GB by default, S3-compatible storage only) go straight from the client to the bucket:
+
+1. `POST /api/files/uploads` `{file_name, content_type, size, entity?, record_id?}` → `201 {upload_id, method: "PUT", url, headers, expires_at}`. `409` when the server stores files on a local disk.
+2. Send the bytes with that method, URL and headers (valid for an hour).
+3. `POST /api/files/uploads/{upload_id}/complete` → `201` and the same body as `POST /api/files`. The server copies the object to the file's own key (later requests to the upload URL cannot change it), checks its size against `size` (a mismatch discards it) and records its SHA-256. `409` if nothing has arrived yet or the upload expired.
+
+Uploads never completed are deleted with their bytes after they expire. `GET /api/version` → `uploads: {max_bytes, direct, direct_max_bytes}` tells clients which way a file goes.
 Public files (`public=true`; images and PDFs only — logos, product photos, brochures) are served without signing in at `GET /files/public/{id}` with an immutable cache and a sandboxing CSP. Files live in S3-compatible storage in production.
 
 ## System
