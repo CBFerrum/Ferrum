@@ -13,7 +13,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use ferrum_apps::{Bundle, PLATFORM_VERSION, Role, Signer, TrustedKey, Uninstall};
 use ferrum_kernel::tenant::NewTenant;
-use ferrum_kernel::{Ctx, Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings};
+use ferrum_kernel::{Access, Action, Ctx, Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::Catalog;
 use ferrum_plugins::PluginHost;
 use ferrum_server::appmgr::{AppManager, Refusal, StepAction, store};
@@ -108,6 +108,55 @@ fn plugin_only(id: &str) -> BTreeMap<String, Vec<u8>> {
         ("plugin.json", &json!({"name": id, "routes": [{"path": "/ping"}]}).to_string()),
     ]);
     f.insert("plugin.wasm".into(), wasm());
+    f
+}
+
+/// An app with screens and an extension point (docs/plugins.md).
+const BOARD_YAML: &str = r#"id: board
+name: Board
+version: 1.0.0
+publisher: acme
+summary: A board of cards
+categories: [productivity]
+runtime: meta
+platform: "^0.3"
+packages: [board]
+prefix: Bd
+extension_points:
+  board.card:
+    description: A card on the board
+    schema: {type: object, required: [label], additionalProperties: false, properties: {label: {type: string, maxLength: 20}}}
+contributes:
+  ui.page:
+    - {id: board, title: Board, entry: ui/board.html, icon: layout-grid}
+  ui.widget:
+    - {id: count, title: Cards, entry: ui/count.html, size: [3, 2]}
+  ui.panel:
+    - {id: cards, title: Cards, entity: BdCard, entry: ui/panel.html}
+  ui.settings:
+    - {id: settings, entry: ui/settings.html}
+"#;
+
+fn board() -> BTreeMap<String, Vec<u8>> {
+    let page = "<!doctype html><title>Board</title><script src=board.js></script>";
+    files(&[
+        ("app.yaml", BOARD_YAML),
+        ("packages/board/package.yaml", "package: board\nversion: 1.0.0\ndepends: [core]\nfield_prefix: bd_\n"),
+        ("packages/board/entities/card.yaml", "name: BdCard\nlabel: Card\nkind: master\nfields:\n  - {name: title, type: data, required: true}\n"),
+        ("ui/board.html", page),
+        ("ui/board.js", "parent.postMessage('ready', '*')"),
+        ("ui/count.html", page),
+        ("ui/panel.html", page),
+        ("ui/settings.html", page),
+    ])
+}
+
+/// An add-on of `board` contributing one card.
+fn board_card(label: &str, version: &str) -> BTreeMap<String, Vec<u8>> {
+    let mut f = plugin_only("board-late");
+    let yaml = String::from_utf8(f["app.yaml"].clone()).unwrap().replace("version: 1.0.0", &format!("version: {version}"))
+        + &format!("requires: {{board: \"^1.0\"}}\nparent: board\ncontributes:\n  board.card:\n    - {{id: late, label: \"{label}\"}}\n");
+    f.insert("app.yaml".into(), yaml.into_bytes());
     f
 }
 
@@ -597,4 +646,46 @@ async fn scenario() {
     *fake.revocations.lock().unwrap() = list(json!([{"app": "gw", "version": "2.1.0"}]), "2026-10-29T11:00:00Z");
     assert_eq!(dev.sync_revocations().await.unwrap(), 1, "a newer one applies");
     assert_eq!(k.release_history("gw").await.unwrap()[1].status, "revoked");
+
+    // ── screens, extension points and add-ons (docs/plugins.md) ──
+    let (_, up) = dev.upload(&admin, bundle(board(), &[]).write().unwrap().into()).await.unwrap();
+    dev.install(&admin, "board", None, &up.digest, false).await.unwrap();
+    let pages = dev.contributions(&admin, "ui.page").await.unwrap();
+    assert_eq!(pages, [json!({"id": "board", "title": "Board", "entry": "ui/board.html", "icon": "layout-grid", "app": "board", "version": "1.0.0"})]);
+    assert_eq!(dev.contributions(&admin, "ui.widget").await.unwrap()[0]["size"], json!([3, 2]));
+    assert_eq!(dev.contributions(&admin, "ui.settings").await.unwrap().len(), 1);
+    assert!(dev.contributions(&clerk, "ui.settings").await.unwrap().is_empty(), "settings pages are for administrators");
+    assert_eq!(dev.contributions(&admin, "ui.panel").await.unwrap().len(), 1);
+    assert!(dev.contributions(&clerk, "ui.panel").await.unwrap().is_empty(), "the clerk cannot read cards");
+    assert!(dev.contributions(&admin, "board.card").await.unwrap().is_empty());
+    assert!(matches!(dev.contributions(&admin, "kit.card").await, Err(Error::NotFound(_))), "no such point");
+
+    let late = |label: &str, version: &str| bundle(board_card(label, version), &[]).write().unwrap();
+    let err = dev.upload(&admin, late("a label far too long for a card", "0.9.0").into()).await.unwrap_err();
+    assert!(err.to_string().contains("board-late contributes board.card late, which breaks board's contract: label is longer than 20"), "{err}");
+    let (app, up) = dev.upload(&admin, late("Late", "1.0.0").into()).await.unwrap();
+    assert_eq!(app.parent.as_deref(), Some("board"));
+    dev.install(&admin, "board-late", None, &up.digest, false).await.unwrap();
+    let cards = dev.contributions(&admin, "board.card").await.unwrap();
+    assert_eq!(cards, [json!({"id": "late", "label": "Late", "app": "board-late", "version": "1.0.0"})]);
+    assert_eq!(installed(&dev.overview(&admin).await.unwrap(), "board-late").unwrap()["parent"], json!("board"));
+    let err = dev.uninstall(&admin, "board", false).await.unwrap_err();
+    assert!(err.to_string().contains("board-late need board"), "an add-on keeps its parent: {err}");
+
+    // The files of screens, and what a screen may reach for its user.
+    let (page, digest) = dev.screen_file(tenant, "board", "1.0.0", "board.html").await.unwrap().expect("the page");
+    assert!(std::str::from_utf8(&page).unwrap().contains("<title>Board</title>") && !digest.is_empty());
+    assert!(dev.screen_file(tenant, "board", "1.0.0", "missing.html").await.unwrap().is_none());
+    assert!(dev.screen_file(tenant, "board", "0.1.0", "board.html").await.unwrap().is_none(), "only the installed version");
+    assert!(dev.screen_file(other, "board", "1.0.0", "board.html").await.unwrap().is_none(), "only where it is installed");
+    assert!(dev.screen_scope(tenant, "board-late").await.unwrap().is_none(), "an app without screens has no bridge");
+    let (entities, own) = dev.screen_scope(tenant, "board").await.unwrap().expect("board has screens");
+    assert!(entities.is_empty() && own.contains("BdCard"), "{entities:?} {own:?}");
+    let screen = admin.perms.limited_to(&entities, &own);
+    assert_eq!(screen.access("BdCard", Action::Read), Access::All);
+    assert_eq!(screen.access("Customer", Action::Read), Access::None, "an administrator's screen reaches only what the app declared");
+    dev.set_enabled(&admin, "board-late", false).await.unwrap();
+    dev.set_enabled(&admin, "board", false).await.unwrap();
+    assert!(dev.contributions(&admin, "ui.page").await.unwrap().is_empty(), "disabled apps contribute nothing");
+    assert!(dev.screen_scope(tenant, "board").await.unwrap().is_none());
 }

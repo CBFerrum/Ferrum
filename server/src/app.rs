@@ -240,7 +240,7 @@ impl Hooks for App {
     }
 
     async fn after_routes(router: axum::Router, _ctx: &AppContext) -> Result<axum::Router> {
-        Ok(router.layer(axum::middleware::from_fn(api_no_store)))
+        Ok(router.layer(axum::middleware::from_fn(api_no_store)).layer(axum::middleware::from_fn(screen_paths)))
     }
 
     fn routes(_ctx: &AppContext) -> AppRoutes {
@@ -289,6 +289,19 @@ impl Hooks for App {
 /// API answers belong to one user and can change without a new version (an engine-set status, a
 /// recorded IRN): browsers must not reuse them. Handlers that do want caching set their own
 /// `Cache-Control`.
+/// A call marked as coming from an app's screen (`X-Ferrum-App`) goes only where screens may, on
+/// every route whatever its extractor; `Auth` then narrows its rights (extract.rs).
+async fn screen_paths(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    if let Some(app) = req.headers().get("x-ferrum-app") {
+        let app = app.to_str().unwrap_or_default();
+        if !crate::extract::screen_may_call(app, req.uri().path()) {
+            let msg = format!("screens of {app} may not call {}", req.uri().path());
+            return axum::response::IntoResponse::into_response(crate::error::ApiError(ferrum_kernel::Error::Forbidden(msg)));
+        }
+    }
+    next.run(req).await
+}
+
 async fn api_no_store(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
     let api = req.uri().path().starts_with("/api/");
     let mut res = next.run(req).await;

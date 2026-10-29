@@ -3,14 +3,16 @@
 use crate::error::ApiError;
 use crate::state::app_state;
 use axum::extract::FromRequestParts;
-use axum::http::HeaderMap;
 use axum::http::request::Parts;
+use axum::http::{HeaderMap, HeaderValue};
 use ferrum_kernel::{Ctx, Error};
 use loco_rs::app::AppContext;
 use loco_rs::auth::jwt::JWT;
+use std::sync::Arc;
 use uuid::Uuid;
 
-/// An authenticated caller.
+/// An authenticated caller. A call from an app's screen (the web app's bridge names the app in
+/// `X-Ferrum-App`) is narrowed to what that app may do: see [`screen_ctx`].
 pub struct Auth(pub Ctx);
 
 pub fn request_id(headers: &HeaderMap) -> String {
@@ -68,8 +70,30 @@ impl FromRequestParts<AppContext> for Auth {
         let st = app_state(state)?;
         let rid = request_id(&parts.headers);
         let token = bearer(&parts.headers).ok_or_else(|| ApiError(Error::Unauthorized("sign in required".into())))?;
-        Ok(Auth(ctx_from_token(&st, &token, rid).await?))
+        let ctx = ctx_from_token(&st, &token, rid).await?;
+        match parts.headers.get("x-ferrum-app") {
+            Some(app) => Ok(Auth(screen_ctx(&st, ctx, app, parts.uri.path()).await?)),
+            None => Ok(Auth(ctx)),
+        }
     }
+}
+
+/// A call made from an app's screen (docs/plugins.md, "Screens"): only to records, metadata
+/// and the app's own endpoints; with the user's rights narrowed to what the app declared; never
+/// as an administrator.
+async fn screen_ctx(st: &crate::state::AppState, mut ctx: Ctx, app: &HeaderValue, path: &str) -> Result<Ctx, ApiError> {
+    let app = app.to_str().map_err(|_| ApiError(Error::invalid("bad X-Ferrum-App header")))?;
+    // The app.rs middleware refuses other paths before any handler runs; this keeps the rule
+    // where the narrowing is, for routers built without it (tests).
+    if !screen_may_call(app, path) {
+        return Err(ApiError(Error::Forbidden(format!("screens of {app} may not call {path}"))));
+    }
+    let Some((entities, own_entities)) = st.apps.screen_scope(ctx.tenant, app).await? else {
+        return Err(ApiError(Error::Forbidden(format!("{app} has no screens in this workspace"))));
+    };
+    ctx.perms = Arc::new(ctx.perms.limited_to(&entities, &own_entities));
+    ctx.is_admin = false;
+    Ok(ctx)
 }
 
 /// A caller whose session may also be one that can only set up two-factor sign-in (then `.1`
@@ -89,6 +113,13 @@ impl FromRequestParts<AppContext> for SetupAuth {
     }
 }
 
+/// Where an app's screens may send requests: records, metadata and the app's own endpoints.
+pub(crate) fn screen_may_call(app: &str, path: &str) -> bool {
+    path.starts_with("/api/v1/")
+        || path.starts_with("/api/meta/")
+        || path.strip_prefix("/api/ext/").and_then(|r| r.strip_prefix(app)).is_some_and(|r| r.starts_with('/'))
+}
+
 /// `If-Match: "v3"` / `If-Match: 3` → expected document version.
 pub fn if_match(headers: &HeaderMap) -> Result<Option<i64>, ApiError> {
     let Some(v) = headers.get(axum::http::header::IF_MATCH) else { return Ok(None) };
@@ -104,4 +135,19 @@ pub fn client_ip(headers: &HeaderMap) -> String {
         .and_then(|s| s.rsplit(',').next())
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| "local".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn screens_call_records_metadata_and_their_own_endpoints() {
+        for path in ["/api/v1/Customer", "/api/meta/Customer", "/api/meta/contributions/ui.page", "/api/ext/board/cards"] {
+            assert!(screen_may_call("board", path), "{path}");
+        }
+        for path in ["/api/admin/users", "/api/auth/me", "/api/apps", "/api/ext/other/x", "/api/ext/boardx/x", "/api/ext/board", "/api/v1"] {
+            assert!(!screen_may_call("board", path), "{path}");
+        }
+    }
 }

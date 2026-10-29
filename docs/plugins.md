@@ -100,6 +100,75 @@ role is exactly its declared permissions. Everything it changes lands in the aud
 | `log` | `{level?, message}`: `info` (default), `warn` or `error`, to the server log with the plugin and tenant |
 | `time.now` | → RFC 3339 UTC |
 
+## Extension points and add-ons
+
+An app can offer **extension points**, named places other apps plug into, and contribute to those
+of the apps it requires. `app.yaml` declares both; they are checked when a bundle is read and
+again by the installation plan:
+
+```yaml
+# Office offers a point...
+id: office
+extension_points:
+  office.editor:
+    description: Opens and edits files of given types
+    schema: {type: object, required: [kind, types], properties: {kind: {enum: [wopi, bridge]}, types: {type: array, items: {type: string}}}}
+
+# ...and an add-on contributes to it.
+id: office-collabora
+parent: office
+requires: {office: "^1.0"}
+contributes:
+  office.editor:
+    - {id: collabora, kind: wopi, types: [docx, xlsx, pptx]}
+```
+
+* A point is named `<owner app>.<name>`. Its `schema` describes what each contribution holds besides
+  its `id`, in a JSON Schema subset: `type`, `description`, `properties`, `required`,
+  `additionalProperties: false`, `items`, `enum`, `maxLength`, `maxItems`. Other keywords are
+  refused rather than ignored. A contribution that breaks the schema fails the installation plan,
+  which names the field.
+* Contributions go to the screen slots below, to the app's own points, or to points of apps in its
+  `requires`. Ids are unique within a point.
+* The owner reads them with `GET /api/meta/contributions/{point}`. Only enabled apps count, and each
+  item carries its `app` and `version`.
+* An incompatible change to a point is a new major version of its owner, so `requires` ranges keep
+  owners and add-ons in step.
+* **Add-ons**: `parent` (also listed in `requires`) shows an app under the one it extends on the
+  Apps page. Nesting needs no other rules: an add-on installs after its parent, and the parent
+  cannot be disabled or removed while an add-on needs it.
+
+## Screens
+
+Wasm and meta apps can bring screens: HTML pages under `ui/` in the bundle, with their scripts,
+styles, WebAssembly, fonts and images. They plug into four slots:
+
+| Slot | Shows | Item |
+|---|---|---|
+| `ui.page` | a page with a sidebar entry, `/app/x/<app>/<id>` | `title`, `entry`, `icon` |
+| `ui.widget` | a card on Home | `title`, `entry`, `size: [w, h]` (12-column grid, 80 px rows) |
+| `ui.panel` | a tab on the forms of `entity` | `title`, `entry`, `entity` |
+| `ui.settings` | the app's settings screen, for administrators, from the Apps page | `entry` |
+
+A screen runs in a sandboxed frame with an opaque origin, so it cannot read the web app's page,
+storage or session.
+* Its Content Security Policy lets it load only its own files: no other network and no form posts.
+* A page opened outside a frame is refused.
+* It talks to Ferrum through `ferrum.js` (ferrum-sdk `examples/board/ui/ferrum.js`). The host hands
+  it a `MessagePort` and answers `context`, `api`, `navigate`, `openRecord`, `toast`, `confirm`
+  and `resize`; it sends `theme` and `record` events.
+
+`api` reaches `/api/v1/…`, `/api/meta/…` and the app's own `/api/ext/<app>/…`, and nothing else.
+* The host marks these calls with `X-Ferrum-App`.
+* The server runs them with the user's rights narrowed to what the app declared: its plugin's
+  permissions and its own entities. They never run with administrator power. A screen can do
+  neither more than its app was approved for nor more than its user can.
+* A panel receives only its record's entity and id and reads the record through `api`, so it sees
+  only the fields its app may read.
+
+`examples/board` in ferrum-sdk is a complete example: a page, a widget, a panel, a settings screen
+and an extension point.
+
 ## Limits and guarantees
 
 * No ambient access: no WASI, no files, no network except declared hosts, no clock except `time.now`.

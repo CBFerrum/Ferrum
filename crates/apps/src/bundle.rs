@@ -3,7 +3,7 @@
 use crate::manifest::{AppManifest, Runtime};
 use crate::permissions::PluginManifest;
 use crate::signing::Signatures;
-use crate::{AppError, FORMAT, MAX_FILES, MAX_TEXT, MAX_UNPACKED, MAX_WASM};
+use crate::{AppError, FORMAT, MAX_FILES, MAX_TEXT, MAX_UI_BINARY, MAX_UNPACKED, MAX_WASM};
 use ferrum_meta::{OverlayOp, Package};
 use flate2::{Compression, GzBuilder};
 use sha2::{Digest, Sha256};
@@ -17,6 +17,9 @@ pub(crate) const PLUGIN_WASM: &str = "plugin.wasm";
 pub(crate) const SIGNATURES_FILE: &str = "SIGNATURES.json";
 const DOCS: &[&str] = &["README.md", "CHANGELOG.md", "LICENSE"];
 const IMAGES: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg"];
+/// Files of screens under `ui/`: text, then binary.
+const UI_TEXT: &[&str] = &["html", "js", "mjs", "css", "json", "map", "txt", "svg"];
+const UI_BINARY: &[&str] = &["wasm", "woff2", "png", "jpg", "jpeg", "gif", "webp"];
 const MAX_PATH: usize = 255;
 /// Room for tar headers, long-name records and padding on top of the content.
 const TAR_OVERHEAD: u64 = 8 << 20;
@@ -105,6 +108,8 @@ enum Kind {
     Text,
     Wasm,
     Image(&'static str),
+    /// A file of a screen, by extension.
+    Screen(&'static str),
 }
 
 fn is_package_file(file: &str) -> bool {
@@ -126,6 +131,16 @@ fn kind(path: &str) -> Result<Kind, AppError> {
     {
         return Ok(Kind::Text);
     }
+    if path.starts_with("ui/") {
+        let ext = path.rsplit('/').next().and_then(|n| n.rsplit_once('.')).filter(|(stem, _)| !stem.is_empty()).map_or("", |(_, e)| e);
+        return UI_TEXT
+            .iter()
+            .chain(UI_BINARY)
+            .copied()
+            .find(|e| *e == ext)
+            .map(Kind::Screen)
+            .ok_or_else(|| AppError::Bundle(format!("{path}: ui/ holds {} and {} files", UI_TEXT.join(", "), UI_BINARY.join(", "))));
+    }
     if path.starts_with("assets/") {
         return image_ext(path)
             .map(Kind::Image)
@@ -133,7 +148,7 @@ fn kind(path: &str) -> Result<Kind, AppError> {
     }
     bad(format!(
         "unexpected file {path}: a bundle holds app.yaml, README.md, CHANGELOG.md, LICENSE, plugin.json, plugin.wasm, \
-         packages/<name>/ (package.yaml, README.md, entities/*.yaml, sql/*.sql, print/*.html) and images under assets/"
+         packages/<name>/ (package.yaml, README.md, entities/*.yaml, sql/*.sql, print/*.html), images under assets/ and screens under ui/"
     ))
 }
 
@@ -162,6 +177,21 @@ fn check_file(path: &str, data: &[u8]) -> Result<(), AppError> {
         Kind::Image(ext) => {
             if !image_ok(ext, data) {
                 return bad(format!("{path} is not a valid {ext} image"));
+            }
+        }
+        Kind::Screen(ext) => {
+            if data.len() > MAX_UI_BINARY {
+                return bad(format!("{path} is larger than {} MiB, the limit for files of screens", MAX_UI_BINARY >> 20));
+            }
+            let ok = match ext {
+                "wasm" => data.starts_with(WASM_MAGIC),
+                "woff2" => data.starts_with(b"wOF2"),
+                "svg" => std::str::from_utf8(data).is_ok_and(|t| t.contains("<svg")),
+                e if UI_TEXT.contains(&e) => std::str::from_utf8(data).is_ok(),
+                e => image_ok(e, data),
+            };
+            if !ok {
+                return bad(format!("{path} is not a valid {ext} file"));
             }
         }
         Kind::Text => {
@@ -367,6 +397,12 @@ impl Bundle {
                 }
             }
         }
+        if m.runtime == Runtime::Native && self.files.keys().any(|p| p.starts_with("ui/")) {
+            return bad("native apps put their screens in the web app, not under ui/");
+        }
+        if let Some(e) = m.screen_entries().into_iter().find(|e| !has(e)) {
+            return bad(format!("app.yaml opens {e}, which is not in the bundle"));
+        }
         let dirs: BTreeSet<&str> = self.files.keys().filter_map(|p| Some(p.strip_prefix("packages/")?.split_once('/')?.0)).collect();
         if let Some(dir) = dirs.iter().find(|d| !m.packages.iter().any(|p| p == *d)) {
             return bad(format!("packages/{dir}/ is not listed in app.yaml (packages)"));
@@ -498,6 +534,41 @@ mod tests {
     use super::*;
     use crate::testutil::*;
     use tar::EntryType;
+
+    #[test]
+    fn screens_under_ui() {
+        let mut files = meta_app();
+        let yaml = String::from_utf8(files["app.yaml"].clone()).unwrap() + "contributes:\n  ui.page:\n    - {id: board, title: Board, entry: ui/board.html}\n";
+        files.insert("app.yaml".into(), yaml.into_bytes());
+        refused(files.clone(), "app.yaml opens ui/board.html, which is not in the bundle");
+        files.insert("ui/board.html".into(), b"<!doctype html><script src=app.js></script>".to_vec());
+        files.insert("ui/app.js".into(), b"console.log(1)".to_vec());
+        files.insert("ui/editor.wasm".into(), WASM_MAGIC.to_vec());
+        files.insert("ui/fonts/inter.woff2".into(), b"wOF2....".to_vec());
+        files.insert("ui/logo.svg".into(), b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>".to_vec());
+        let b = Bundle::from_files(files.clone()).unwrap();
+        assert_eq!(Bundle::read(&b.write().unwrap()).unwrap(), b);
+        assert_eq!(b.file("ui/editor.wasm"), Some(WASM_MAGIC));
+        let big = [WASM_MAGIC, &vec![0; MAX_UI_BINARY]].concat();
+        for (path, data, needle) in [
+            ("ui/setup.exe", b"MZ".to_vec(), "ui/ holds html"),
+            ("ui/.hidden.js", b"1".to_vec(), "hidden files are not allowed"),
+            ("ui/bad.wasm", b"nope".to_vec(), "ui/bad.wasm is not a valid wasm file"),
+            ("ui/bad.js", vec![0xff, 0xfe], "ui/bad.js is not a valid js file"),
+            ("ui/big.wasm", big, "larger than 16 MiB"),
+        ] {
+            let mut f = files.clone();
+            f.insert(path.into(), data);
+            refused(f, needle);
+        }
+        let mut native = files.clone();
+        let yaml = String::from_utf8(native["app.yaml"].clone())
+            .unwrap()
+            .replace("runtime: meta", "runtime: native")
+            .replace("contributes:\n  ui.page:\n    - {id: board, title: Board, entry: ui/board.html}\n", "");
+        native.insert("app.yaml".into(), yaml.into_bytes());
+        refused(native, "native apps put their screens in the web app");
+    }
 
     fn refused(files: BTreeMap<String, Vec<u8>>, needle: &str) {
         let err = Bundle::from_files(files).expect_err(&format!("should be refused: {needle}")).to_string();

@@ -3,10 +3,11 @@
 use crate::error::{ApiError, ApiResult};
 use crate::extract::Auth;
 use axum::Json;
-use axum::extract::Path;
+use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use ferrum_kernel::describe::{describe, permissions};
 use ferrum_kernel::{Access, Action, Error};
+use loco_rs::app::AppContext;
 use loco_rs::controller::Routes;
 use serde_json::{Value, json};
 
@@ -44,7 +45,13 @@ async fn entity(Auth(ctx): Auth, Path(name): Path<String>) -> ApiResult<Response
     Ok(Json(describe(&ctx, &ent)).into_response())
 }
 
+/// `GET /api/meta/contributions/{point}` (docs/api.md, "Extension points").
+async fn contributions(Auth(ctx): Auth, State(app): State<AppContext>, Path(point): Path<String>) -> ApiResult<Response> {
+    let items = crate::state::app_state(&app)?.apps.contributions(&ctx, &point).await?;
+    Ok(Json(json!({"point": point, "items": items})).into_response())
+}
+
 pub fn routes() -> Routes {
     use axum::routing::get;
-    Routes::new().prefix("/api/meta").add("/", get(index)).add("/{entity}", get(entity))
+    Routes::new().prefix("/api/meta").add("/", get(index)).add("/contributions/{point}", get(contributions)).add("/{entity}", get(entity))
 }
