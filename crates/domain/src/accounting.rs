@@ -119,6 +119,13 @@ fn party(doc: &Doc) -> (Option<Uuid>, Option<Uuid>, bool) {
     if receive { (id(doc, "customer"), None, true) } else { (None, id(doc, "supplier"), false) }
 }
 
+/// What a payment settles with its parties: the bank amount, plus deductions (debits) on a receipt
+/// or minus them on a payment, so that 98 received with 2 of bank charges settles 100.
+fn settled(doc: &Doc, receive: bool) -> Decimal {
+    let deductions = d(doc, "total_deductions");
+    d(doc, "paid_amount") + if receive { deductions } else { -deductions }
+}
+
 #[async_trait]
 impl DocHook for PaymentEntryHook {
     async fn before_validate(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
@@ -177,14 +184,18 @@ impl DocHook for PaymentEntryHook {
             allocated += d(r, "allocated_amount");
         }
         set(doc, "references", Value::Array(refs.into_iter().map(Value::Object).collect()));
-        set(doc, "unallocated_amount", money(d(doc, "paid_amount") - allocated));
+        let deductions: Decimal = rows(doc, "deductions").iter().map(|r| d(r, "amount")).sum();
+        set(doc, "total_deductions", money(deductions));
+        set(doc, "unallocated_amount", money(settled(doc, receive) - allocated));
         Ok(())
     }
 
     async fn validate(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
         let cid = id(doc, "company").ok_or_else(|| Error::field("company", "is required"))?;
         if d(doc, "unallocated_amount") < Decimal::ZERO {
-            return Err(Error::field("references", "allocations exceed the paid amount"));
+            let msg =
+                if d(doc, "total_deductions").is_zero() { "allocations exceed the paid amount" } else { "allocations exceed the paid amount and deductions" };
+            return Err(Error::field("references", msg));
         }
         if let Some(bank) = id(doc, "bank_account") {
             let a = get(hc.kernel, hc.ctx, hc.tx, "Account", bank).await?;
@@ -194,6 +205,28 @@ impl DocHook for PaymentEntryHook {
         }
         if id(doc, "party_account").is_none() {
             return Err(Error::field("party_account", "no receivable/payable account found for this party or company"));
+        }
+        for (i, r) in rows(doc, "deductions").iter().enumerate() {
+            let bad = |field: &str, msg: &str| Err(Error::Validation(vec![FieldError::new(field, msg).in_row("deductions", i)]));
+            if d(r, "amount").is_zero() {
+                return bad("amount", "cannot be zero");
+            }
+            let Some(acc) = id(r, "account") else { return bad("account", "is required") };
+            if Some(acc) == id(doc, "bank_account") || Some(acc) == id(doc, "party_account") {
+                return bad("account", "use an account other than the bank and party accounts");
+            }
+            let a = get(hc.kernel, hc.ctx, hc.tx, "Account", acc).await?;
+            if id(&a, "company") != Some(cid) {
+                return bad("account", "belongs to another company");
+            }
+            if matches!(s(&a, "account_type"), Some("Receivable" | "Payable")) {
+                return bad("account", "receivable and payable accounts need a party; allocate to an invoice instead");
+            }
+            if let Some(cc) = id(r, "cost_center")
+                && id(&get(hc.kernel, hc.ctx, hc.tx, "CostCenter", cc).await?, "company") != Some(cid)
+            {
+                return bad("cost_center", "belongs to another company");
+            }
         }
         let (customer, supplier, _) = party(doc);
         for (i, r) in rows(doc, "references").iter().enumerate() {
@@ -223,7 +256,6 @@ impl DocHook for PaymentEntryHook {
         let paid = d(doc, "paid_amount");
         let base_paid = d(doc, "base_paid_amount");
         let party_account = id(doc, "party_account").ok_or_else(|| Error::field("party_account", "is required"))?;
-        let mut party_base = Decimal::ZERO;
         let mut lines = Vec::new();
         let mut touched = Vec::new();
         for r in rows(doc, "references") {
@@ -235,7 +267,6 @@ impl DocHook for PaymentEntryHook {
             let item = ledger::load_open_item(hc.tx, hc.ctx.tenant, inv, true).await?.ok_or_else(|| Error::invalid("invoice is no longer open"))?;
             let base_at_invoice = round(amount * item.exchange_rate, co.precision);
             ledger::allocate(hc.tx, hc.ctx, co.id, inv, "PaymentEntry", pid, on, amount, base_at_invoice).await?;
-            party_base += base_at_invoice;
             let sign = if receive { -Decimal::ONE } else { Decimal::ONE };
             lines.push(
                 Line::new(party_account, sign * base_at_invoice, &co.currency_code)
@@ -249,7 +280,6 @@ impl DocHook for PaymentEntryHook {
         let unallocated = d(doc, "unallocated_amount");
         if unallocated > Decimal::ZERO {
             let base_un = round(unallocated * rate, co.precision);
-            party_base += base_un;
             let sign = if receive { -Decimal::ONE } else { Decimal::ONE };
             lines.push(
                 Line::new(party_account, sign * base_un, &co.currency_code)
@@ -282,11 +312,21 @@ impl DocHook for PaymentEntryHook {
         let bank = id(doc, "bank_account").ok_or_else(|| Error::field("bank_account", "is required"))?;
         let bank_sign = if receive { Decimal::ONE } else { -Decimal::ONE };
         lines.push(Line::new(bank, bank_sign * base_paid, &co.currency_code).txn(bank_sign * paid, &code, rate));
-        // Exchange difference between the invoices' booked rates and today's rate.
-        let diff = if receive { base_paid - party_base } else { party_base - base_paid };
+        for r in rows(doc, "deductions") {
+            let (amount, Some(account)) = (d(&r, "amount"), id(&r, "account")) else { continue };
+            lines.push(
+                Line::new(account, round(amount * rate, co.precision), &co.currency_code)
+                    .txn(amount, &code, rate)
+                    .cost_center(id(&r, "cost_center"))
+                    .remarks(s(&r, "remarks").unwrap_or("Payment deduction")),
+            );
+        }
+        // What is left is the exchange difference between the invoices' booked rates and today's
+        // rate: positive is a gain, credited; negative a loss, debited.
+        let diff: Decimal = lines.iter().map(|l| l.amount).sum();
         if !diff.is_zero() {
             let gl = co.require("exchange_gain_loss_account", "exchange gain/loss account")?;
-            lines.push(Line::new(gl, if receive { -diff } else { diff }, &co.currency_code).remarks("Exchange difference"));
+            lines.push(Line::new(gl, -diff, &co.currency_code).remarks("Exchange difference"));
             let mut v = Doc::new();
             v.insert("exchange_difference".into(), money(diff));
             hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "PaymentEntry", pid, v).await?;
@@ -325,7 +365,7 @@ impl DocHook for PaymentEntryHook {
         }
         let pid = id(doc, "id").ok_or_else(|| Error::internal("no id"))?;
         let cid = id(doc, "company").ok_or_else(|| Error::field("company", "is required"))?;
-        let (customer, supplier, _) = party(doc);
+        let (customer, supplier, receive) = party(doc);
         let co = company(hc.kernel, hc.ctx, hc.tx, cid).await?;
         let (code, _) = crate::util::currency(hc.kernel, hc.ctx, hc.tx, id(doc, "currency").unwrap_or(co.currency_id)).await?;
         let items: Vec<(Uuid, String, Option<String>, Decimal, Option<chrono::NaiveDate>)> = sqlx::query_as(
@@ -340,8 +380,9 @@ impl DocHook for PaymentEntryHook {
         .bind(&code)
         .fetch_all(&mut **hc.tx)
         .await?;
-        let mut budget = d(doc, "paid_amount");
-        let fill_all = budget.is_zero();
+        // Deductions settle invoices too, so they count towards what can be allocated.
+        let mut budget = settled(doc, receive);
+        let fill_all = d(doc, "paid_amount").is_zero();
         let mut refs = Vec::new();
         let mut total = Decimal::ZERO;
         for (inv, entity, number, outstanding, due) in items {
@@ -357,7 +398,8 @@ impl DocHook for PaymentEntryHook {
         let mut patch = Doc::new();
         patch.insert("references".into(), Value::Array(refs));
         if fill_all {
-            patch.insert("paid_amount".into(), json!(total.to_string()));
+            let bank_amount = total - (settled(doc, receive) - d(doc, "paid_amount"));
+            patch.insert("paid_amount".into(), json!(bank_amount.to_string()));
         }
         let updated = hc.kernel.update_tx(hc.ctx, hc.tx, "PaymentEntry", pid, patch, None).await?;
         Ok(Some(Value::Object(updated)))
