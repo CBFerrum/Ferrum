@@ -46,6 +46,20 @@ pub struct Spec {
     pub date_range: Option<DateRange>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compare: Option<Compare>,
+    /// Calculated columns over the result's other columns (see [`crate::formula`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub formulas: Vec<FormulaSel>,
+    /// With two or more groupings: the measures per value of the first one, as `subtotals`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub subtotals: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct FormulaSel {
+    pub label: String,
+    /// E.g. `[Revenue] - [Cost]`: other columns by name or label in brackets.
+    pub expr: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -1,6 +1,6 @@
 //! Runs a compiled [`Plan`] in one read-only transaction (statement timeout, workspace isolation)
 //! and shapes the answer the UI and agents consume:
-//! `{columns: [{name, label, type, role, ...}], rows: [{name: value, _titles?}], totals, meta}`.
+//! `{columns: [{name, label, type, role, ...}], rows: [{name: value, _titles?}], totals, subtotals?, meta}`.
 //! Decimals stay exact strings; links and users carry display titles in `_titles`.
 
 use crate::query::{Dim, Meas, Mode, Plan, Ty, USERS, bad, compile};
@@ -42,6 +42,8 @@ struct Shaped {
     empties: Vec<(String, Value)>,
     rows: Vec<Row>,
     totals: Option<Map<String, Value>>,
+    /// Per value of the first dimension (`subtotals` specs).
+    subtotals: Option<Vec<Map<String, Value>>>,
     truncated: bool,
 }
 
@@ -102,13 +104,36 @@ async fn execute(tx: &mut Tx, ctx: &Ctx, plan: &Plan) -> Result<Value> {
     if let Some(kind) = plan.compare {
         compare(tx, plan, kind, &mut timer, &mut shaped, &mut meta).await?;
     }
+    calculate(plan, &mut shaped);
     let titled: Vec<(String, String)> = plan.dims.iter().chain(plan.raw.iter()).filter_map(|d| d.titled().map(|t| (d.name.clone(), t))).collect();
     let mut rows: Vec<Map<String, Value>> = shaped.rows.into_iter().map(|r| r.cells).collect();
     add_titles(tx, ctx, &titled, &mut rows).await?;
     meta.insert("sql_ms".into(), json!((timer.0 * 10.0).round() / 10.0));
     meta.insert("truncated".into(), json!(shaped.truncated));
     meta.insert("row_count".into(), json!(rows.len()));
-    Ok(json!({"columns": shaped.columns, "rows": rows, "totals": shaped.totals, "meta": meta}))
+    let mut out = json!({"columns": shaped.columns, "rows": rows, "totals": shaped.totals, "meta": meta});
+    if let Some(mut subtotals) = shaped.subtotals {
+        add_titles(tx, ctx, &titled, &mut subtotals).await?;
+        out["subtotals"] = json!(subtotals);
+    }
+    Ok(out)
+}
+
+/// Works out the calculated columns on every row, the totals and the subtotals.
+fn calculate(plan: &Plan, shaped: &mut Shaped) {
+    if plan.formulas.is_empty() {
+        return;
+    }
+    let eval = |cells: &mut Map<String, Value>| {
+        for (name, _, f) in &plan.formulas {
+            let v = f.eval(cells).map(|d| decimal_value(d.round_dp(9).normalize())).unwrap_or(Value::Null);
+            cells.insert(name.clone(), v);
+        }
+    };
+    shaped.rows.iter_mut().for_each(|r| eval(&mut r.cells));
+    shaped.totals.iter_mut().for_each(eval);
+    shaped.subtotals.iter_mut().flatten().for_each(eval);
+    shaped.columns.extend(plan.formulas.iter().map(|(name, label, _)| json!({"name": name, "label": label, "type": "decimal", "role": "formula"})));
 }
 
 async fn raw(tx: &mut Tx, plan: &Plan, timer: &mut Timer) -> Result<Shaped> {
@@ -138,7 +163,7 @@ async fn raw(tx: &mut Tx, plan: &Plan, timer: &mut Timer) -> Result<Shaped> {
         }),
         None => None,
     };
-    Ok(Shaped { columns: plan.raw.iter().map(|d| d.column("field")).collect(), empties: vec![], rows, totals, truncated })
+    Ok(Shaped { columns: plan.raw.iter().map(|d| d.column("field")).collect(), empties: vec![], rows, totals, subtotals: None, truncated })
 }
 
 /// Dimensions that identify a row across periods: all of them, or all but the time bucket.
@@ -148,11 +173,17 @@ fn key_dims(plan: &Plan) -> Vec<usize> {
 }
 
 async fn grouped(tx: &mut Tx, plan: &Plan, timer: &mut Timer) -> Result<Shaped> {
-    let keyed = if plan.compare.is_some() { key_dims(plan) } else { vec![] };
+    let keyed = if plan.compare.is_some() {
+        key_dims(plan)
+    } else if plan.subtotals {
+        vec![0]
+    } else {
+        vec![]
+    };
     let mut data = timer.fetch(tx, plan.grouped(None, &keyed, None, plan.limit)?).await?;
     let truncated = data.len() > plan.limit as usize;
     data.truncate(plan.limit as usize);
-    let rows = data
+    let rows: Vec<Row> = data
         .into_iter()
         .map(|src| {
             let mut cells = Map::new();
@@ -166,9 +197,27 @@ async fn grouped(tx: &mut Tx, plan: &Plan, timer: &mut Timer) -> Result<Shaped> 
         measures_of(plan, &src, |m| m.name.clone(), &mut t);
         t
     });
+    let subtotals = if plan.subtotals {
+        let mut seen = HashSet::new();
+        let keys: Vec<Value> = rows.iter().filter_map(|r| r.key.clone()).filter(|k| seen.insert(k.to_string())).collect();
+        let data = timer.fetch(tx, plan.subtotals(&Value::Array(keys))?).await?;
+        let first = &plan.dims[0];
+        Some(
+            data.into_iter()
+                .map(|src| {
+                    let mut m = Map::new();
+                    m.insert(first.name.clone(), decode(src.get("d0").cloned().unwrap_or(Value::Null), first.ty()));
+                    measures_of(plan, &src, |x| x.name.clone(), &mut m);
+                    m
+                })
+                .collect(),
+        )
+    } else {
+        None
+    };
     let mut columns: Vec<Value> = plan.dims.iter().map(|d| d.column("dimension")).collect();
     columns.extend(plan.measures.iter().map(Meas::column));
-    Ok(Shaped { columns, empties: plan.measures.iter().map(|m| (m.name.clone(), m.empty())).collect(), rows, totals, truncated })
+    Ok(Shaped { columns, empties: plan.measures.iter().map(|m| (m.name.clone(), m.empty())).collect(), rows, totals, subtotals, truncated })
 }
 
 fn label_of(v: &Value, d: &Dim, titles: &HashMap<Uuid, String>) -> String {
@@ -257,7 +306,7 @@ async fn pivot(tx: &mut Tx, ctx: &Ctx, plan: &Plan, timer: &mut Timer, meta: &mu
     if let Some(src) = timer.fetch(tx, plan.totals(None)?).await?.into_iter().next() {
         measures_of(plan, &src, |m| m.name.clone(), &mut totals);
     }
-    Ok(Shaped { columns, empties, rows, totals: Some(totals), truncated })
+    Ok(Shaped { columns, empties, rows, totals: Some(totals), subtotals: None, truncated })
 }
 
 fn date_of(v: Option<&Value>) -> Option<NaiveDate> {
@@ -526,6 +575,7 @@ mod tests {
             empties: plan.measures.iter().map(|m| (m.name.clone(), m.empty())).collect(),
             rows: vec![row(json!({"month(posting_date)": "2026-08-01", "count": 2, "sum(grand_total)": "450.3", "avg(grand_total)": "225.15"}))],
             totals: None,
+            subtotals: None,
             truncated: false,
         };
         fill(&plan, &mut shaped).unwrap();

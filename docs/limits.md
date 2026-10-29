@@ -32,8 +32,6 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 - **Stock revaluation** is a stock reconciliation counting the same quantity at the new rate. Like
   every stock posting (and landed costs), it is valued when it is posted: a backdated document
   never re-values the ones after it (there is no reposting).
-- **SDK**: `ferrum-app dev --watch` uploads every change as a new pre-release; trying it still
-  means updating the app on the Apps page (there is no automatic reinstall).
 - **Rate limits** (sign-ins, documents emailed, 300 requests a minute per address on public
   endpoints) are counted in the database, so they hold across replicas; apps use the same
   (`Kernel::rate_limit`). They are per address: Campaigns' tracking pixels and links opened
@@ -61,8 +59,9 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 
 ## Studio (reports, dashboards, spaces)
 
-- One child table per query; field paths go at most `table.link.field` deep; no subtotals or
-  calculated columns; comparison periods and pivots cannot be combined.
+- One child table per query; field paths go at most `table.link.field` deep; comparison periods
+  and pivots cannot be combined. Calculated columns work on the result's columns (not on each
+  record before grouping) and cannot be sorted on; subtotals go by the first grouping only.
 - Running a Studio query through `/api/reports` needs read access to Report (the Studio roles);
   placing a widget on a dashboard or space shares it with that container's audience.
 
