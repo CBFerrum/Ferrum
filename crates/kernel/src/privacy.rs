@@ -165,11 +165,17 @@ impl Kernel {
             for id in ids {
                 let mut values = Doc::new();
                 for f in &def.erase {
-                    if let Some(fd) = ent.field(f) {
-                        values.insert(f.clone(), blank(fd, id));
+                    match ent.field(f) {
+                        Some(fd) if fd.ftype == FieldType::Table => self.set_child_rows_tx(&engine, &mut tx, &def.entity, f, id, vec![]).await?,
+                        Some(fd) => {
+                            values.insert(f.clone(), blank(fd, id));
+                        }
+                        None => {}
                     }
                 }
-                self.set_values_tx(&engine, &mut tx, &def.entity, id, values).await?;
+                if !values.is_empty() {
+                    self.set_values_tx(&engine, &mut tx, &def.entity, id, values).await?;
+                }
                 events += redact(&mut tx, ctx, &def.entity, id, &def.erase, reason).await?;
                 audit::record(&mut tx, ctx, &def.entity, id, "erase_personal_data", None, json!({"fields": def.erase, "reason": reason})).await?;
                 erased.push(json!({"entity": def.entity, "id": id}));
