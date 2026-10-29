@@ -39,7 +39,7 @@
     - {name: item, type: link, to: Item, required: true, in_list: true}
     - {name: item_name, type: data, fetch_from: item.item_name, read_only: true, in_list: true}
     - {name: qty, type: decimal, required: true, min: "0.000000001", in_list: true, description: Quantity per bundle}
-    - {name: uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true}
+    - {name: uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true, label: Unit}
     - {name: description, type: text}
 
 - name: ProductBundle
@@ -64,7 +64,7 @@
     - {name: item, type: link, to: Item, label: Component, required: true, read_only: true, in_list: true}
     - {name: item_name, type: data, fetch_from: item.item_name, read_only: true}
     - {name: qty, type: decimal, read_only: true, in_list: true}
-    - {name: uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true}
+    - {name: uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true, label: Unit}
     - {name: warehouse, type: link, to: Warehouse, link_filters: {is_group: false}, in_list: true}
     - {name: batch_no, type: data, in_list: true}
     - {name: serial_no, type: text, description: One serial number per line}

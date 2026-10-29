@@ -5,7 +5,7 @@
     - {name: item, type: link, to: Item, required: true, in_list: true}
     - {name: item_name, type: data, fetch_from: item.item_name, read_only: true}
     - {name: qty, type: decimal, required: true, min: "0.000000001", in_list: true, description: Quantity per BOM quantity}
-    - {name: uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true}
+    - {name: uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true, label: Unit}
     - {name: scrap_percent, type: percent, default: 0, min: "0", max: "99"}
     - {name: rate, type: currency, read_only: true, description: Valuation rate used for costing}
     - {name: amount, type: currency, read_only: true, in_list: true}

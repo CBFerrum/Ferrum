@@ -29,7 +29,7 @@
     - {name: warehouse, type: link, to: Warehouse, link_filters: {is_group: false}, in_list: true}
     - {name: qty, type: decimal, label: Qty to Pick, required: true, min: "0.000000001", in_list: true}
     - {name: picked_qty, type: decimal, min: "0", in_list: true, description: Defaults to the quantity to pick}
-    - {name: uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true}
+    - {name: uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true, label: Unit}
     - {name: batch_no, type: data, in_list: true}
     - {name: serial_no, type: text, description: One serial number per line}
     - {name: sales_order, type: link, to: SalesOrder, read_only: true}
@@ -70,9 +70,9 @@
     - {name: item, type: link, to: Item, required: true, in_list: true}
     - {name: item_name, type: data, fetch_from: item.item_name, read_only: true, in_list: true}
     - {name: qty, type: decimal, required: true, min: "0.000000001", in_list: true}
-    - {name: uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true}
+    - {name: uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true, label: Unit}
     - {name: net_weight, type: decimal, min: "0", in_list: true, description: Net weight per unit}
-    - {name: weight_uom, type: link, to: Uom}
+    - {name: weight_uom, type: link, to: Uom, label: Weight Unit}
     - {name: batch_no, type: data}
     - {name: dn_line, type: data, label: Delivery Note Line, description: Filled in when the delivery note has one line for the item}
     - {name: description, type: text}
