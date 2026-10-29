@@ -270,6 +270,34 @@ pub struct ActionDef {
     /// writing an audit entry, in a read-only transaction when run on its own.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub read_only: bool,
+    /// What the action asks for before it runs (the UI shows a dialog; the API takes them as the
+    /// action's parameters).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<ActionParam>,
+    /// Actions of one group show under one menu (e.g. "e-Invoice").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+}
+
+/// One input an action asks for.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActionParam {
+    pub name: String,
+    pub label: String,
+    /// `data` (one line), `text` (several lines), `select` (one of `options`), `int` or `date`.
+    #[serde(rename = "type", default = "default_param_type")]
+    pub ptype: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+fn default_param_type() -> String {
+    "data".into()
 }
 
 fn default_action_perm() -> String {
@@ -646,5 +674,12 @@ pub enum OverlayOp {
     /// package's hooks (e.g. Projects adds "Make Sales Invoice" to core's Project).
     AddAction {
         action: ActionDef,
+    },
+    /// Package-only: a form section for fields the package adds, after the section holding the
+    /// field `after` (or last).
+    AddSection {
+        section: SectionDef,
+        #[serde(default)]
+        after: Option<String>,
     },
 }

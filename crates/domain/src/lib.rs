@@ -5,6 +5,7 @@
 //! entity whose package is not installed simply never triggers its hooks.
 
 pub mod accounting;
+pub mod einvoice;
 pub mod flow;
 pub mod india;
 pub mod ledger;
@@ -56,6 +57,7 @@ pub fn register(h: &mut HookRegistry) {
             .register(shipment, Arc::new(trade::ShipmentHook(side)))
             .register(invoice, Arc::new(trade::InvoiceHook(side)));
     }
+    h.register("SalesInvoice", Arc::new(einvoice::EInvoiceHook));
 }
 
 /// Periodic domain upkeep, safe to run on every replica at once: yearly journal partitions.

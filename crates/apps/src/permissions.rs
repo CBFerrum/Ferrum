@@ -237,6 +237,7 @@ fn describe(op: &OverlayOp) -> String {
         OverlayOp::SetWorkflow { workflow } => format!("sets workflow {}", workflow.name),
         OverlayOp::SetPrintTemplate { .. } => "replaces the print template".into(),
         OverlayOp::AddAction { action } => format!("adds action {}", action.name),
+        OverlayOp::AddSection { section, .. } => format!("adds form section {}", section.label.as_deref().unwrap_or("(untitled)")),
     }
 }
 

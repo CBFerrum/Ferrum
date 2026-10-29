@@ -281,6 +281,20 @@ pub(crate) fn apply_op(def: &mut EntityDef, op: &OverlayOp, source: OverlaySourc
             }
             Ok(None)
         }
+        OverlayOp::AddSection { section, after } => {
+            if source == OverlaySource::Tenant {
+                return Err("customizations change the form with the form layout".into());
+            }
+            if let Some(f) = section.fields.iter().find(|f| !def.fields.iter().any(|d| &d.name == *f)) {
+                return Err(format!("section field {f} is not a field of the entity"));
+            }
+            for s in &mut def.form {
+                s.fields.retain(|f| !section.fields.contains(f));
+            }
+            let pos = after.as_ref().and_then(|a| def.form.iter().position(|s| s.fields.contains(a))).map_or(def.form.len(), |i| i + 1);
+            def.form.insert(pos, section.clone());
+            Ok(None)
+        }
         OverlayOp::AddRule { rule } => {
             if def.rules.iter().any(|r| r.name == rule.name) {
                 return Err(format!("rule {} already exists", rule.name));
@@ -316,6 +330,19 @@ pub(crate) fn apply_op(def: &mut EntityDef, op: &OverlayOp, source: OverlaySourc
                     let form: Vec<SectionDef> = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
                     validate_form(def, &form)?;
                     def.form = form;
+                }
+                "numbering" => {
+                    let n: crate::types::NumberingDef = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+                    if !n.template.contains("{seq") || n.template.chars().count() > 60 {
+                        return Err("a number series needs {seq:<width>} in a template of at most 60 characters".into());
+                    }
+                    if let Some(f) = n.date_field.as_ref().filter(|f| !def.fields.iter().any(|d| &d.name == *f)) {
+                        return Err(format!("the series' date field {f} is not a field of the entity"));
+                    }
+                    if def.numbering.as_ref().is_some_and(|o| o.gapless) && !n.gapless {
+                        return Err("this series is gapless (as invoice numbers must be): keep gapless".into());
+                    }
+                    def.numbering = Some(n);
                 }
                 other => return Err(format!("entity property {other} cannot be customized")),
             }
@@ -373,6 +400,15 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         modules.extend(pkg.manifest.modules.iter().cloned());
         roles.extend(pkg.manifest.roles.iter().cloned());
         personal_data.extend(pkg.manifest.personal_data.iter().cloned());
+    }
+    // A package may print an entity of a package it depends on its own way (India's tax invoice);
+    // the last in dependency order wins.
+    for pkg in catalog.packages().filter(|p| set.contains(p.name())) {
+        for (name, template) in &pkg.print_formats {
+            if let Some(b) = building.get_mut(name).filter(|b| b.package != pkg.name()) {
+                b.print_template = Some(template.clone());
+            }
+        }
     }
     // Package overlays and workflows, in dependency order (validated by the catalog already).
     for pkg in catalog.packages().filter(|p| set.contains(p.name())) {

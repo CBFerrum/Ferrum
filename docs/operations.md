@@ -179,6 +179,49 @@ bookkeeping law requires; an administrator's account is not erased until it is n
 same is available as `GET /api/admin/personal-data` and `POST /api/admin/personal-data/erase`;
 packages and apps declare their entities with `personal_data` in their manifests.
 
+## India: e-invoices and e-way bills
+
+With the `india` package, a submitted Sales Invoice to a registered business, an SEZ unit or a
+buyer abroad gets its e-invoice from the Invoice Registration Portal (IRP); the actions are on
+the invoice. Before the first one:
+
+* **Company**: GSTIN, and under GST Registration the address, city and PIN code.
+* **Customers**: GSTIN (or GST category Overseas), billing address, city and PIN code.
+* **Items**: HSN/SAC codes (4–8 digits); **units of measure**: a GST unit code (UQC), or a name
+  Ferrum recognises (Nos, Kg, Box, Litre…; anything else is OTH).
+* **Numbering**: GST caps invoice numbers at 16 characters (the IRP: capitals, digits, `/` and
+  `-`), so with `india` Sales Invoices are numbered `SI/{FY}/{seq:5}` (`SI/2026-27/00001`). A
+  workspace can choose another series (a `numbering` customization of Sales Invoice) as long as it
+  stays within 16; a year with more than 99,999 invoices needs a shorter prefix.
+
+Two ways to the IRP:
+
+* **Without a GSP**: *Download e-Invoice JSON* gives the invoice in the IRP's schema 1.1 (a list,
+  as the portal's bulk upload takes it); upload it on the e-invoice portal and paste the signed
+  JSON it returns into *Record e-Invoice from IRP*, which checks that the signed QR code is for
+  this invoice, its number and the company's GSTIN, and records the IRN, acknowledgement and QR.
+* **Through a GSP connector plugin**: *Generate e-Invoice* sets the invoice Pending and queues
+  `india.e_invoice.requested` (`{invoice, number, company, payload}`); the connector sends the
+  payload with its GSP credentials and answers with the `record_e_invoice` action (`{response:
+  <the IRP's answer>}`, or `Irn`, `AckNo`, `AckDt`, `SignedQRCode` as parameters) or
+  `record_e_invoice_failure` (`{message}`). Cancellation, e-way bills and their cancellation work
+  the same way (`india.e_invoice.cancel_requested`, `india.e_way_bill.requested`,
+  `india.e_way_bill.cancel_requested`; `record_e_invoice_cancellation`, `record_e_way_bill`,
+  `record_e_way_bill_cancellation` and their `…_failure` actions). Recording again with the same
+  answer is a no-op; a different IRN or e-way bill number is refused. No connector ships with
+  Ferrum: GSP APIs differ and need a contract with the GSP.
+
+E-way bills: *Set Transport Details* (mode, distance, vehicle or transporter, transport document)
+works on submitted invoices; the e-way bill is made by IRN when the invoice has one, otherwise from
+the e-way bill portal's own JSON (*Download e-Way Bill JSON* for its bulk upload). The tax invoice
+print shows the IRN, the acknowledgement, the signed QR code and the e-way bill.
+
+Cancellation: an e-invoice can be cancelled at the IRP within 24 hours of its acknowledgement
+(*Cancel e-Invoice*, then *Record e-Invoice Cancellation* if done on the portal), an e-way bill
+within 24 hours of being made — and the e-way bill before the e-invoice. A Sales Invoice with a
+live (or pending) e-invoice or e-way bill cannot be cancelled in Ferrum; after 24 hours issue a
+credit note, which gets its own e-invoice (type CRN, referring to the original).
+
 ## Sign-in security
 
 **Two-factor sign-in.** Anyone turns it on from the account menu (Two-factor sign-in) with an

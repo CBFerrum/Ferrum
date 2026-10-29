@@ -1,0 +1,99 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>{{ "Credit Note" if doc.is_return else "Tax Invoice" }} {{ doc.number or "" }}</title>
+<style>
+ body{font:12px/1.45 system-ui,-apple-system,Segoe UI,sans-serif;color:#111;margin:28px}
+ h1{font-size:18px;margin:0} h2{font-size:13px;margin:0 0 4px} .muted{color:#555} .small{font-size:11px}
+ .head{display:flex;justify-content:space-between;gap:24px;border-bottom:2px solid #111;padding-bottom:10px}
+ .parties{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin:14px 0}
+ .einv{display:flex;gap:16px;align-items:flex-start;border:1px solid #ccc;padding:8px;margin:10px 0}
+ .einv .irn{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;word-break:break-all}
+ table{border-collapse:collapse;width:100%;margin:8px 0} th,td{border:1px solid #ccc;padding:5px 6px;text-align:left;vertical-align:top}
+ th{background:#f3f3f3;font-weight:600} .num{text-align:right;font-variant-numeric:tabular-nums}
+ .totals{width:45%;margin-left:auto} .totals td{border:0;padding:3px 6px} .grand td{border-top:2px solid #111;font-weight:700}
+ .status{display:inline-block;padding:1px 8px;border-radius:10px;background:#eee;font-size:10.5px}
+ .addr{white-space:pre-line}
+ @media print{body{margin:0}}
+</style></head><body>
+{% set co = links.company or {} %}{% set cu = links.customer or {} %}
+<div class="head">
+ <div>
+  <h1>{{ co.company_name or doc._titles.company }}</h1>
+  {% if co.in_address %}<div class="addr">{{ co.in_address }}</div>{% endif %}
+  <div>{{ co.in_city or "" }}{% if co.in_pincode %} {{ co.in_pincode }}{% endif %}</div>
+  {% if co.in_gstin %}<div><b>GSTIN</b> {{ co.in_gstin }} · State code {{ co.in_state_code }}</div>{% endif %}
+ </div>
+ <div style="text-align:right">
+  <h1>{{ "Credit Note" if doc.is_return else "Tax Invoice" }}</h1>
+  <div><b>{{ doc.number or "Draft" }}</b></div>
+  <div>Date {{ doc.posting_date }}</div>
+  {% if doc.due_date %}<div class="muted">Due {{ doc.due_date }}</div>{% endif %}
+  {% if doc.is_return and doc.return_against %}<div class="muted">Against {{ doc._titles.return_against or doc.return_against }}</div>{% endif %}
+  {% if doc.docstatus == 2 %}<span class="status">Cancelled</span>{% elif doc.docstatus != 1 %}<span class="status">Draft</span>{% endif %}
+ </div>
+</div>
+
+{% if doc.in_irn %}
+<div class="einv">
+ {% if doc.in_signed_qr_code and doc.in_e_invoice_status != "Cancelled" %}{{ qr(doc.in_signed_qr_code) }}{% endif %}
+ <div>
+  <h2>e-Invoice{% if doc.in_e_invoice_status == "Cancelled" %} (cancelled){% endif %}</h2>
+  <div class="irn"><b>IRN</b> {{ doc.in_irn }}</div>
+  <div><b>Ack No</b> {{ doc.in_ack_no }} · <b>Ack Date</b> {{ doc.in_ack_date }}</div>
+  {% if doc.in_ewaybill_no %}<div><b>e-Way Bill</b> {{ doc.in_ewaybill_no }}{% if doc.in_e_way_bill_valid_till %} · valid till {{ doc.in_e_way_bill_valid_till }}{% endif %}</div>{% endif %}
+ </div>
+</div>
+{% elif doc.in_ewaybill_no %}
+<div class="einv"><div><b>e-Way Bill</b> {{ doc.in_ewaybill_no }}{% if doc.in_e_way_bill_valid_till %} · valid till {{ doc.in_e_way_bill_valid_till }}{% endif %}</div></div>
+{% endif %}
+
+<div class="parties">
+ <div>
+  <h2>Bill to</h2>
+  <div><b>{{ cu.customer_name or doc.customer_name }}</b></div>
+  {% if cu.billing_address %}<div class="addr">{{ cu.billing_address }}</div>{% endif %}
+  <div>{{ cu.in_city or "" }}{% if cu.in_pincode %} {{ cu.in_pincode }}{% endif %}</div>
+  {% if cu.in_gstin %}<div><b>GSTIN</b> {{ cu.in_gstin }}</div>{% endif %}
+ </div>
+ <div>
+  <h2>Supply</h2>
+  {% if doc.in_place_of_supply %}<div><b>Place of supply</b> state code {{ doc.in_place_of_supply }}</div>{% endif %}
+  {% if doc.po_no %}<div><b>Customer PO</b> {{ doc.po_no }}</div>{% endif %}
+  {% if doc.in_vehicle_no %}<div><b>Vehicle</b> {{ doc.in_vehicle_no }}{% if doc.in_transporter_name %} · {{ doc.in_transporter_name }}{% endif %}</div>{% endif %}
+ </div>
+</div>
+
+<table>
+ <thead><tr><th>#</th><th>Description</th><th>HSN/SAC</th><th class="num">Qty</th><th>Unit</th><th class="num">Rate</th><th class="num">Disc %</th><th class="num">Taxable value</th></tr></thead>
+ <tbody>
+ {% for row in doc["items"] %}
+  <tr>
+   <td>{{ loop.index }}</td>
+   <td>{{ row.item_name or row._titles.item }}{% if row.description %}<div class="muted small">{{ row.description }}</div>{% endif %}</td>
+   <td>{{ row.in_hsn_code or "" }}</td>
+   <td class="num">{{ row.qty }}</td>
+   <td>{{ row._titles.uom or "" }}</td>
+   <td class="num">{{ row.rate | money }}</td>
+   <td class="num">{{ row.discount_percent or "" }}</td>
+   <td class="num">{{ (row.net_amount or row.amount) | money }}</td>
+  </tr>
+ {% endfor %}
+ </tbody>
+</table>
+
+{% if doc.taxes %}
+<table style="width:60%">
+ <thead><tr><th>Tax</th><th class="num">Rate %</th><th class="num">Amount</th></tr></thead>
+ <tbody>{% for t in doc.taxes %}<tr><td>{{ t.description or t._titles.account }}</td><td class="num">{{ t.rate or "" }}</td><td class="num">{{ t.tax_amount | money }}</td></tr>{% endfor %}</tbody>
+</table>
+{% endif %}
+
+<table class="totals">
+ <tr><td>Taxable value</td><td class="num">{{ doc.net_total | money }}</td></tr>
+ <tr><td>Taxes</td><td class="num">{{ doc.total_taxes | money }}</td></tr>
+ {% if doc.rounding_adjustment and doc.rounding_adjustment != "0" %}<tr><td>Rounding</td><td class="num">{{ doc.rounding_adjustment | money }}</td></tr>{% endif %}
+ <tr class="grand"><td>Total {{ doc._titles.currency or "" }}</td><td class="num">{{ (doc.rounded_total or doc.grand_total) | money }}</td></tr>
+</table>
+
+{% if doc.terms %}<h2>Terms</h2><div class="small">{{ doc.terms }}</div>{% endif %}
+<p class="muted small">This is a computer-generated invoice. Printed {{ now }}.</p>
+</body></html>
