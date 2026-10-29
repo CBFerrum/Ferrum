@@ -496,6 +496,7 @@ impl Kernel {
             let mut hc = HookCtx { kernel: self, ctx, tx: &mut *tx, entity: &ent };
             h.before_delete(&mut hc, &old).await?;
         }
+        self.refuse_if_linked_in_ext(ctx, tx, &ent, id).await?;
         store::delete_row(tx, &ent, ctx.tenant, id).await?;
         // Collaboration on the record goes with it (followers are told by the deleted event first).
         for table in ["record_comment", "record_assignment", "record_tag", "record_secret"] {
@@ -507,6 +508,40 @@ impl Kernel {
                 .await?;
         }
         self.emit(ctx, tx, &ent, id, "deleted", "delete", None, Some(&old), None).await
+    }
+
+    /// Link fields stored in the JSON column (custom fields, fields apps add to other packages'
+    /// entities) have no foreign keys, so a delete checks them as a key would: a record that
+    /// another record still links to stays.
+    // ponytail: one scan per such field; add expression indexes on `ext->>field` if deletes of
+    // heavily referenced records get slow.
+    async fn refuse_if_linked_in_ext(&self, ctx: &Ctx, tx: &mut Tx, target: &EffEntity, id: Uuid) -> Result<()> {
+        let key = id.to_string();
+        let mut checks: Vec<(String, String, &'static str)> = Vec::new();
+        for e in ctx.schema.entities.values().filter(|e| !e.table.is_empty()) {
+            for f in e.value_fields().filter(|f| f.ftype == FieldType::Link && f.to.as_deref() == Some(&target.def.name)) {
+                if e.storage_of(&f.name) == Some(ferrum_meta::Storage::Ext) {
+                    checks.push((e.table.clone(), f.name.clone(), "id"));
+                }
+            }
+            for info in e.children.values() {
+                let Some(c) = ctx.schema.entity(&info.entity) else { continue };
+                for f in c.value_fields().filter(|f| f.ftype == FieldType::Link && f.to.as_deref() == Some(&target.def.name)) {
+                    if c.storage_of(&f.name) == Some(ferrum_meta::Storage::Ext) {
+                        checks.push((info.table.clone(), f.name.clone(), "parent_id"));
+                    }
+                }
+            }
+        }
+        for (table, field, own) in checks {
+            // The record's own rows (a self-link, its child rows) go with it.
+            let sql = format!("select exists(select 1 from {} where tenant_id = $1 and ext->>$2 = $3 and {own} <> $4)", crate::ddl::q(&table));
+            let linked: bool = sqlx::query_scalar(AssertSqlSafe(sql)).bind(ctx.tenant).bind(&field).bind(&key).bind(id).fetch_one(&mut **tx).await?;
+            if linked {
+                return Err(Error::Conflict(format!("cannot delete this {}: other records link to it ({field})", target.def.label.to_lowercase())));
+            }
+        }
+        Ok(())
     }
 
     pub async fn submit(&self, ctx: &Ctx, entity: &str, id: Uuid, expected_version: Option<i64>) -> Result<Doc> {
