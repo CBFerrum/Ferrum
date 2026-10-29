@@ -63,6 +63,34 @@ pub struct Settings {
     /// When set, `/metrics` requires `Authorization: Bearer <token>`.
     #[serde(default)]
     pub metrics_token: String,
+    #[serde(default)]
+    pub apps: AppsSettings,
+}
+
+/// Who may upload app bundles (`settings.apps.uploads`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Uploads {
+    /// Uploads are refused.
+    #[default]
+    Off,
+    /// Sandboxed apps without tables, visible only in the uploading workspace.
+    Private,
+    /// Any app; it becomes available to every workspace of the cluster.
+    Cluster,
+}
+
+/// `settings.apps`: app stores, trusted signing keys and uploads (docs/operations.md).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct AppsSettings {
+    /// Store base URLs, comma-separated; empty means no store.
+    pub registries: String,
+    /// Trusted keys, comma-separated `store:<base64>` / `publisher:<base64>`.
+    pub trusted_keys: String,
+    pub uploads: Uploads,
+    /// Accept uploads that no trusted key signed (development).
+    pub allow_unsigned_uploads: bool,
 }
 
 impl Settings {
@@ -112,6 +140,7 @@ pub struct AppState {
     pub jwt_secret: String,
     pub jwt_expiration: u64,
     pub login_limiter: Arc<RateLimiter>,
+    pub apps: Arc<crate::appmgr::AppManager>,
 }
 
 pub fn app_state(ctx: &AppContext) -> Result<AppState, ApiError> {

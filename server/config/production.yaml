@@ -87,3 +87,10 @@ settings:
   s3_endpoint: "<%= get_env(name="FERRUM_S3_ENDPOINT", default="") %>"
   require_object_storage: <%= get_env(name="FERRUM_REQUIRE_OBJECT_STORAGE", default="true") %>
   secret_key: "<%= get_env(name="FERRUM_SECRET_KEY", default="") %>"
+  apps:
+    # App stores (comma-separated base URLs) and the keys whose signatures this server trusts
+    # (comma-separated store:<base64> / publisher:<base64>). Uploads: off | private | cluster.
+    registries: "<%= get_env(name="FERRUM_APP_STORES", default="") %>"
+    trusted_keys: "<%= get_env(name="FERRUM_APP_TRUSTED_KEYS", default="") %>"
+    uploads: <%= get_env(name="FERRUM_APP_UPLOADS", default="private") %>
+    allow_unsigned_uploads: <%= get_env(name="FERRUM_APP_ALLOW_UNSIGNED", default="false") %>

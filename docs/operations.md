@@ -32,6 +32,10 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_RUN_BACKGROUND` | no | `false` turns a replica into API-only |
 | `PUBLIC_URL`, `PORT`, `BINDING`, `LOG_LEVEL` | no | Usual meanings; logs are JSON on stdout |
 | `MAILER_*` | no | SMTP for notifications |
+| `FERRUM_APP_STORES` | no | App stores, comma-separated base URLs (`https://store.example`); empty: no store, only apps built in or uploaded |
+| `FERRUM_APP_TRUSTED_KEYS` | with stores | Comma-separated `store:<base64>` / `publisher:<base64>` Ed25519 public keys whose signatures this cluster trusts (`ferrum-app keygen` prints them). Store apps need a store countersignature by one of them; several keys may be trusted at once (rotation) |
+| `FERRUM_APP_UPLOADS` | no | Who may upload app bundles: `off`, `private` (production default: sandboxed apps without tables, visible only in the uploading workspace) or `cluster` (development default: available to every workspace) |
+| `FERRUM_APP_ALLOW_UNSIGNED` | no | `true` accepts uploads no trusted key signed (development default); production default `false` |
 
 **Database role.** Ferrum must connect as an ordinary role that owns its database, never as a
 superuser or a role with `BYPASSRLS`: those bypass PostgreSQL row-level security and with it tenant
@@ -132,6 +136,14 @@ endpoint and recreate the webhook if its secret changed.
 Disable it at once with `PUT /api/admin/plugins/{id}/enabled {"enabled": false}`, then fix and
 re-upload (same name replaces the module).
 
+**A store revokes an app, or an app must be stopped now.** Every replica with background loops
+polls each store's signed revocation list every ten minutes (one replica at a time); a revoked
+release leaves the catalog, its plugin is disabled and the app is marked disabled in every
+workspace that runs it — data is kept, and it cannot be enabled again until the workspace updates
+to a fixed release. To act without a store: `ferrum task app_revoke app:<id> version:<v> reason:"..."`
+(all versions without `version`). A list whose signature does not verify is ignored and logged
+(`revocation list not applied`): check `FERRUM_APP_TRUSTED_KEYS`.
+
 **"Accounting period is closed".** Intended: postings into a closed month are refused. An Accounts
 Manager can reopen it from the fiscal year (`reopen_period` action) if the correction must land
 there; otherwise post the correction in an open period.
@@ -156,4 +168,18 @@ ferrum task sync_schema              # force the metadata → DDL sync (normally
 ferrum task create_tenant slug:... name:... email:... password:... packages:...
 ferrum task seed_demo tenant:<slug>  # demo data (never in production tenants)
 ferrum task import_erpnext src:<erpnext app dir> out:packages/erpnext-import
+ferrum task app_make_available file:<app.fapp> [allow_unsigned:true]   # make a bundle available to every workspace (verified against FERRUM_APP_TRUSTED_KEYS)
+ferrum task app_upgrade [app:<id>]   # make the newest compatible store releases of the cluster's store apps (or of one app) available
+ferrum task app_revoke app:<id> [version:<v>] reason:"..."   # take a release out of service and disable it everywhere (data kept)
+ferrum task app_releases [app:<id>]  # every release recorded on the cluster, with status and source
 ```
+
+**Apps.** A release made available on the cluster is shared by every workspace (its tables are
+created once, under the cluster DDL lock); each workspace then installs, upgrades or removes it
+from its Apps page with an explicit consent to the permissions shown. Bundles are kept in object
+storage under `apps/<id>/<version>-<digest>.fapp` so any replica can install the plugin; the
+database alone rebuilds every replica's catalog. With `FERRUM_APP_UPLOADS=cluster` a workspace
+administrator's upgrade from a store also upgrades the cluster's release; otherwise store upgrades
+reach the cluster through `app_upgrade`, and workspaces then move to them from their Apps page.
+Native apps upgrade with the server image; each workspace applies the new roles and seed data with
+"Update" on its Apps page.
