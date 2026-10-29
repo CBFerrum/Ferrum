@@ -23,23 +23,84 @@ const MAX_WEBHOOK_BODY: usize = 256 * 1024;
 /// Outbox topic of mail queued with [`Kernel::queue_mail`]; never fanned out to webhooks.
 pub const MAIL_TOPIC: &str = "ferrum.mail";
 
+/// The most a queued mail may attach.
+const MAX_ATTACHED: i64 = 20 << 20;
+
+/// What [`Kernel::queue_mail`] accepts: one address, and a one-line subject of at most 300 characters.
+pub fn check_mail(to: &str, subject: &str) -> Result<()> {
+    let to = to.trim();
+    let one_address = to.len() <= 254 && to.split('@').count() == 2 && !to.contains([',', ';', ' ', '<', '>', '\r', '\n']);
+    if !one_address || to.starts_with('@') || to.ends_with('@') {
+        return Err(Error::field("to", "must be one e-mail address"));
+    }
+    if subject.trim().is_empty() || subject.len() > 300 || subject.contains(['\r', '\n']) {
+        return Err(Error::field("subject", "must be one line of at most 300 characters"));
+    }
+    Ok(())
+}
+
 impl Kernel {
     /// Queues an e-mail in the caller's transaction: it goes out through the server's mailer once
     /// the transaction commits (never if it rolls back), retried while the mailer fails. For
     /// apps' own messages (confirmations, reminders) whether or not the Mail app is installed.
     pub async fn queue_mail(&self, tx: &mut Tx, tenant: Uuid, to: &str, subject: &str, html: &str) -> Result<()> {
+        self.queue_mail_with(tx, tenant, to, subject, html, &[]).await
+    }
+
+    /// [`queue_mail`](Self::queue_mail) with stored files attached (up to 10, 20 MB together). The
+    /// files are read when the mail goes out; one deleted by then fails the delivery, never
+    /// sends without it.
+    pub async fn queue_mail_with(&self, tx: &mut Tx, tenant: Uuid, to: &str, subject: &str, html: &str, files: &[Uuid]) -> Result<()> {
         let to = to.trim();
-        let one_address = to.len() <= 254 && to.split('@').count() == 2 && !to.contains([',', ';', ' ', '<', '>', '\r', '\n']);
-        if !one_address || to.starts_with('@') || to.ends_with('@') {
-            return Err(Error::field("to", "must be one e-mail address"));
-        }
-        if subject.trim().is_empty() || subject.len() > 300 || subject.contains(['\r', '\n']) {
-            return Err(Error::field("subject", "must be one line of at most 300 characters"));
-        }
+        check_mail(to, subject)?;
         if html.len() > 1 << 20 {
             return Err(Error::field("html", "is larger than 1 MB"));
         }
-        enqueue(tx, tenant, MAIL_TOPIC, None, None, serde_json::json!({"to": to, "subject": subject.trim(), "html": html})).await
+        if files.len() > 10 {
+            return Err(Error::field("attachments", "at most 10 files"));
+        }
+        if !files.is_empty() && !self.mailer.as_ref().is_some_and(|m| m.can_attach()) {
+            return Err(Error::Unavailable("this server's mailer cannot attach files (it needs an SMTP server)".into()));
+        }
+        if !files.is_empty() {
+            let (found, bytes): (i64, Option<i64>) =
+                sqlx::query_as("select count(*), sum(size_bytes)::int8 from file_object where tenant_id = $1 and id = any($2)")
+                    .bind(tenant)
+                    .bind(files)
+                    .fetch_one(&mut **tx)
+                    .await?;
+            if found as usize != files.iter().collect::<std::collections::HashSet<_>>().len() {
+                return Err(Error::field("attachments", "a file to attach does not exist"));
+            }
+            if bytes.unwrap_or(0) > MAX_ATTACHED {
+                return Err(Error::field("attachments", "attachments are larger than 20 MB together"));
+            }
+        }
+        enqueue(tx, tenant, MAIL_TOPIC, None, None, serde_json::json!({"to": to, "subject": subject.trim(), "html": html, "files": files})).await
+    }
+
+    /// The files a queued mail attaches, read from storage.
+    async fn mail_attachments(&self, tenant: Uuid, payload: &Value) -> Result<Vec<crate::MailAttachment>> {
+        let ids: Vec<Uuid> =
+            payload.get("files").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str()?.parse().ok()).collect()).unwrap_or_default();
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut tx = self.db.system_tx().await?;
+        let rows: Vec<(Uuid, String, String, String)> =
+            sqlx::query_as("select id, file_name, content_type, storage_key from file_object where tenant_id = $1 and id = any($2)")
+                .bind(tenant)
+                .bind(&ids)
+                .fetch_all(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        let store = self.files.get().ok_or_else(|| Error::Unavailable("no file storage is configured".into()))?;
+        let mut out = Vec::with_capacity(ids.len());
+        for id in &ids {
+            let (_, name, ctype, key) = rows.iter().find(|r| r.0 == *id).ok_or_else(|| Error::Invalid(format!("attachment {id} was deleted")))?;
+            out.push(crate::MailAttachment { file_name: name.clone(), content_type: ctype.clone(), data: store.get(key).await? });
+        }
+        Ok(out)
     }
 }
 
@@ -128,7 +189,8 @@ impl Kernel {
         if ev.topic == MAIL_TOPIC {
             let mailer = self.mailer.as_ref().ok_or_else(|| Error::Unavailable("no mailer is configured; queued mail waits for one".into()))?;
             let field = |k: &str| ev.payload.get(k).and_then(Value::as_str).unwrap_or_default();
-            return mailer.send(field("to"), field("subject"), field("html")).await;
+            let attachments = self.mail_attachments(ev.tenant_id, &ev.payload).await?;
+            return mailer.send_with(field("to"), field("subject"), field("html"), &attachments).await;
         }
         // Followers hear about changes made by others; first and best effort:
         // a retry must not notify twice.

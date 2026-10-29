@@ -150,6 +150,8 @@ pub struct AppState {
     pub jwt_secret: String,
     pub jwt_expiration: u64,
     pub login_limiter: Arc<RateLimiter>,
+    /// Documents a user may email per minute (per replica).
+    pub mail_limiter: Arc<RateLimiter>,
     pub apps: Arc<crate::appmgr::AppManager>,
     pub objects: Arc<crate::objects::Objects>,
 }

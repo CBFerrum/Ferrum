@@ -14,11 +14,12 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 - **Units of measure**: material request lines convert with a factor per line; there is no
   per-item conversion table that sales and purchase documents pick factors from.
 - **PDFs** come from a separate renderer service (Gotenberg, shipped in both deployments); without
-  it, printing is the browser's. Apps make PDFs with `Kernel::print_pdf` and store them as files;
-  the Mail app can attach files to emails, the platform mail queue cannot. Print formats use inline
-  (data:) images, as the renderer fetches nothing.
-- **Platform mail** (`Kernel::queue_mail`, used when the Mail app is not installed) sends one HTML
-  message to one address, without attachments, through the server's SMTP settings.
+  it, printing is the browser's. Print formats use inline (data:) images, as the renderer fetches
+  nothing.
+- **Platform mail** (`Kernel::queue_mail`, `queue_mail_with` for stored files, and "Email" on any
+  document) sends one HTML message to one address through the server's SMTP settings: no cc,
+  threading or bounce handling (the Mail app has those). Attachments need an SMTP server (not
+  the development stub), up to 10 files and 20 MB per message.
 - **Large files**: browsers upload up to 2 GiB straight to S3-compatible storage; local-disk
   installs stay at the 25 MB request limit. Apps that read a file's bytes (`read_file`) still load
   it into memory, so their own size caps apply. Completing a direct upload reads the object once to

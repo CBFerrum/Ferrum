@@ -71,7 +71,19 @@ impl ferrum_kernel::Mailer for Captured {
         SENT.lock().unwrap().push((to.into(), subject.into(), html.into()));
         Ok(())
     }
+
+    fn can_attach(&self) -> bool {
+        true
+    }
+
+    async fn send_with(&self, to: &str, subject: &str, html: &str, attachments: &[ferrum_kernel::MailAttachment]) -> ferrum_kernel::Result<()> {
+        ATTACHED.lock().unwrap().extend(attachments.iter().map(|a| (a.file_name.clone(), a.content_type.clone(), a.data.clone())));
+        self.send(to, subject, html).await
+    }
 }
+
+/// Files the kernel attached to mail, in order.
+static ATTACHED: std::sync::Mutex<Vec<(String, String, Vec<u8>)>> = std::sync::Mutex::new(Vec::new());
 
 async fn unread(k: &Kernel, ctx: &Ctx) -> Vec<String> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await.unwrap();
@@ -418,4 +430,15 @@ async fn scenario() {
     drain(&k).await;
     drain(&k).await;
     assert_eq!(SENT.lock().unwrap().clone(), vec![("guest@example.test".to_string(), "Your booking".to_string(), "<p>See you</p>".to_string())]);
+
+    // ── queued mail can carry stored files, read when it goes out ──
+    let pdf = k.store_file(&admin, Some(("Customer", cid)), "quote.pdf", "application/pdf", b"%PDF-1.7 quote").await.unwrap();
+    let pdf_id: Uuid = pdf["id"].as_str().unwrap().parse().unwrap();
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    assert!(k.queue_mail_with(&mut tx, tenant, "guest@example.test", "Quote", "x", &[Uuid::now_v7()]).await.is_err(), "only stored files");
+    k.queue_mail_with(&mut tx, tenant, "guest@example.test", "Your quote", "<p>Attached</p>", &[pdf_id]).await.unwrap();
+    tx.commit().await.unwrap();
+    drain(&k).await;
+    assert_eq!(SENT.lock().unwrap().last().map(|m| m.1.clone()), Some("Your quote".to_string()));
+    assert_eq!(ATTACHED.lock().unwrap().clone(), vec![("quote.pdf".to_string(), "application/pdf".to_string(), b"%PDF-1.7 quote".to_vec())]);
 }

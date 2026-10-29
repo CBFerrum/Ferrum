@@ -40,6 +40,8 @@ async fn version(State(app): State<AppContext>) -> ApiResult<Response> {
         "packages": packages,
         "uploads": uploads,
         "pdf": st.kernel.pdf_enabled(),
+        "mail": st.kernel.mailer.is_some(),
+        "mail_attachments": st.kernel.mailer.as_ref().is_some_and(|m| m.can_attach()),
     }))
     .into_response())
 }

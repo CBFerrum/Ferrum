@@ -54,6 +54,27 @@ pub type Doc = serde_json::Map<String, serde_json::Value>;
 #[async_trait]
 pub trait Mailer: Send + Sync {
     async fn send(&self, to: &str, subject: &str, html: &str) -> Result<()>;
+
+    /// Whether [`send_with`](Self::send_with) can attach files.
+    fn can_attach(&self) -> bool {
+        false
+    }
+
+    /// Sends with files attached. Mailers that cannot attach refuse, so nothing goes out without them.
+    async fn send_with(&self, to: &str, subject: &str, html: &str, attachments: &[MailAttachment]) -> Result<()> {
+        if attachments.is_empty() {
+            return self.send(to, subject, html).await;
+        }
+        Err(Error::Unavailable("this mailer cannot attach files".into()))
+    }
+}
+
+/// A file attached to an e-mail.
+#[derive(Debug, Clone)]
+pub struct MailAttachment {
+    pub file_name: String,
+    pub content_type: String,
+    pub data: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]

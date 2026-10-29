@@ -83,6 +83,8 @@ hex = { workspace = true }
 bytes = "1"
 # App Manager: store client (already built for the kernel), semantic versions, revocation-list signatures.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# Mail with attachments, over the same SMTP settings Loco's mailer uses (same features as Loco's).
+lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1-rustls-tls"] }
 semver = "1"
 # Excel export of record lists.
 rust_xlsxwriter = "0.102"
