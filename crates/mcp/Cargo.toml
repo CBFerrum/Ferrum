@@ -10,6 +10,7 @@ ferrum-kernel = { path = "../kernel" }
 ferrum-meta = { path = "../meta" }
 ferrum-domain = { path = "../domain" }
 serde_json = { workspace = true }
+async-trait = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 uuid = { workspace = true }

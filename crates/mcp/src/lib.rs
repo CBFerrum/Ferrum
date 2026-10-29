@@ -48,8 +48,38 @@ fn rpc_error(id: Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 
+/// Tools a host adds beside the built-in ones (the server's App Manager): listed in `tools/list`
+/// and called by name. Failures reach the model as tool results, like the built-in tools'.
+#[async_trait::async_trait]
+pub trait ToolProvider: Send + Sync {
+    /// This caller's tools, each shaped like [`tool_definition`]'s result.
+    fn tools(&self, ctx: &Ctx) -> Vec<Value>;
+    /// Runs `name` if it is one of this provider's tools (`None` otherwise).
+    async fn call(&self, k: &Kernel, ctx: &Ctx, name: &str, args: &Value) -> Option<Result<Value, Error>>;
+}
+
+/// A tool definition with its JSON Schema input and behaviour hints (for [`ToolProvider`]s).
+#[allow(clippy::too_many_arguments)]
+pub fn tool_definition(
+    name: &str,
+    title: &str,
+    description: &str,
+    properties: Value,
+    required: &[&str],
+    read_only: bool,
+    destructive: bool,
+    idempotent: bool,
+) -> Value {
+    tool(name, title, description, properties, required, read_only, destructive, idempotent)
+}
+
 /// Handles one JSON-RPC message. Returns `None` for notifications and client responses.
 pub async fn handle(k: &Kernel, ctx: &Ctx, msg: Value) -> Option<Value> {
+    handle_with(k, ctx, msg, &[]).await
+}
+
+/// [`handle`] with tools from the host's `providers` too.
+pub async fn handle_with(k: &Kernel, ctx: &Ctx, msg: Value, providers: &[&dyn ToolProvider]) -> Option<Value> {
     let id = msg.get("id").cloned().filter(|v| v.is_string() || v.is_number());
     let Some(method) = msg.get("method").and_then(Value::as_str) else {
         return id.map(|id| rpc_error(id, -32600, "invalid request: missing method"));
@@ -62,8 +92,8 @@ pub async fn handle(k: &Kernel, ctx: &Ctx, msg: Value) -> Option<Value> {
     let outcome = match method {
         "initialize" => Ok(initialize(&params)),
         "ping" | "logging/setLevel" => Ok(json!({})),
-        "tools/list" => Ok(json!({"tools": tools(ctx)})),
-        "tools/call" => call_tool(k, ctx, &params).await,
+        "tools/list" => Ok(json!({"tools": tools(ctx).into_iter().chain(providers.iter().flat_map(|p| p.tools(ctx))).collect::<Vec<_>>()})),
+        "tools/call" => call_tool(k, ctx, &params, providers).await,
         "resources/list" => Ok(resources(ctx)),
         "resources/templates/list" => Ok(json!({"resourceTemplates": [
             {"uriTemplate": "ferrum://entity/{name}", "name": "Entity schema", "mimeType": "application/json",
@@ -409,11 +439,24 @@ fn entity_of(ctx: &Ctx, name: &str) -> Result<std::sync::Arc<EffEntity>, Fail> {
     Ok(ent)
 }
 
-async fn call_tool(k: &Kernel, ctx: &Ctx, params: &Value) -> Result<Value, Fail> {
+async fn call_tool(k: &Kernel, ctx: &Ctx, params: &Value, providers: &[&dyn ToolProvider]) -> Result<Value, Fail> {
     let name = params.get("name").and_then(Value::as_str).ok_or_else(|| Fail::Rpc(-32602, "tool name is required".into()))?;
     let empty = json!({});
     let args = params.get("arguments").filter(|a| a.is_object()).unwrap_or(&empty);
-    let value = run_tool(k, ctx, name, args).await?;
+    let value = match run_tool(k, ctx, name, args).await {
+        Err(Fail::Rpc(code, m)) if m.starts_with("unknown tool") => {
+            let mut found = None;
+            for p in providers {
+                if let Some(out) = p.call(k, ctx, name, args).await {
+                    tracing::info!(tenant = %ctx.tenant, user = %ctx.user, tool = name, "mcp tool call");
+                    found = Some(out?);
+                    break;
+                }
+            }
+            found.ok_or(Fail::Rpc(code, m))?
+        }
+        other => other?,
+    };
     Ok(tool_result(&value, false))
 }
 

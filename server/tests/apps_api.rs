@@ -392,6 +392,23 @@ async fn scenario() {
     let clerk = k.load_ctx(tenant, clerk, None, "it".into()).await.unwrap();
     assert!(matches!(dev.overview(&clerk).await, Err(Error::Forbidden(_))), "administrators only");
 
+    // ── the same over MCP: administrators get the app tools, others don't ──
+    use ferrum_mcp::ToolProvider;
+    let tools = ferrum_server::appmgr_mcp::AppTools(Arc::new(manager(Uploads::Cluster, true)));
+    let names = |ctx: &Ctx| tools.tools(ctx).iter().map(|t| t["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert_eq!(names(&admin), ["list_apps", "plan_app", "install_app", "set_app_enabled", "uninstall_app"]);
+    assert!(names(&clerk).is_empty());
+    let listed = ferrum_mcp::handle_with(&k, &admin, json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}), &[&tools]).await.unwrap();
+    assert!(listed["result"]["tools"].as_array().unwrap().iter().any(|t| t["name"] == json!("plan_app")), "listed beside the platform's tools");
+    let called = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "list_apps", "arguments": {}}});
+    let reply = ferrum_mcp::handle_with(&k, &admin, called, &[&tools]).await.unwrap();
+    assert_eq!(reply["result"]["isError"], json!(false), "{reply}");
+    let stale = tools.call(&k, &admin, "install_app", &json!({"app": "gw", "consent": "not-the-digest"})).await.unwrap().unwrap();
+    assert_eq!(stale["installed"], json!(false), "a wrong consent installs nothing and hands back the plan to review");
+    assert!(stale["plan"]["digest"].is_string());
+    assert!(matches!(tools.call(&k, &clerk, "list_apps", &json!({})).await, Some(Err(Error::Forbidden(_)))));
+    assert!(tools.call(&k, &admin, "no_such_tool", &json!({})).await.is_none());
+
     // ── a plan: the dependency comes first; permissions of both; nothing changes yet ──
     let plan = dev.plan(&admin, "gw", None).await.unwrap();
     let steps: Vec<(String, String, StepAction, String)> = plan.steps.iter().map(|s| (s.id.clone(), s.version.clone(), s.action, s.source.clone())).collect();
