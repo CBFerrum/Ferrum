@@ -81,8 +81,7 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   day are kept for review.
 - **Learn**: learners see draft course titles and summaries (not content); instructors read all
   learners unless their course is scoped; certificates are print templates; no paid courses or SCORM.
-- **Drive**: public links outlive their creator's access; one copy handles up to 1,000 items or 1 GB;
-  bytes of deleted files stay in storage until Drive adopts the kernel's file removal API.
+- **Drive**: public links outlive their creator's access; one copy handles up to 1,000 items or 1 GB.
 - **Campaigns**: templated links are not tracked; imports are set-based (no per-contact audit or
   attribute-change journeys); anniversary journeys check the current day only; automatic clicks by
   security scanners are not detected.
