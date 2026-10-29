@@ -88,6 +88,7 @@ impl Hooks for App {
 
     async fn after_context(ctx: AppContext) -> Result<AppContext> {
         let settings = Settings::from_ctx(&ctx)?;
+        crate::extract::PROXY_HOPS.store(settings.proxy_hops, std::sync::atomic::Ordering::Relaxed);
         let db = Db::connect(DbConfig { url: ctx.config.database.uri.clone(), max_connections: settings.db_max_connections, ..Default::default() })
             .await
             .map_err(|e| Error::Message(format!("database: {e}")))?;
@@ -151,6 +152,7 @@ impl Hooks for App {
         let (tx, _rx) = watch::channel(false);
         let db = kernel.db.clone();
         let user_requests = settings.user_requests_per_minute;
+        let address_requests = settings.address_requests_per_minute;
         let state = AppState {
             kernel,
             plugins,
@@ -166,6 +168,8 @@ impl Hooks for App {
             public_limiter: Arc::new(RateLimiter::shared("public", Duration::from_secs(60), 300, db)),
             // A runaway script with a valid token slows down instead of slowing everyone down.
             user_limiter: Arc::new(RateLimiter::local_only("user", Duration::from_secs(60), user_requests)),
+            // One address flooding the API is turned away cheaply, whatever proxy is in front.
+            address_limiter: Arc::new(RateLimiter::local_only("address", Duration::from_secs(60), address_requests)),
             apps: Arc::new(apps),
             objects,
         };
@@ -239,8 +243,12 @@ impl Hooks for App {
         }
     }
 
-    async fn after_routes(router: axum::Router, _ctx: &AppContext) -> Result<axum::Router> {
-        Ok(router.layer(axum::middleware::from_fn(api_no_store)).layer(axum::middleware::from_fn(screen_paths)))
+    async fn after_routes(router: axum::Router, ctx: &AppContext) -> Result<axum::Router> {
+        let limiter = crate::state::app_state(ctx).map_err(|e| Error::Message(e.0.to_string()))?.address_limiter;
+        Ok(router
+            .layer(axum::middleware::from_fn(move |req, next| per_address(limiter.clone(), req, next)))
+            .layer(axum::middleware::from_fn(api_no_store))
+            .layer(axum::middleware::from_fn(screen_paths)))
     }
 
     fn routes(_ctx: &AppContext) -> AppRoutes {
@@ -286,9 +294,18 @@ impl Hooks for App {
     }
 }
 
-/// API answers belong to one user and can change without a new version (an engine-set status, a
-/// recorded IRN): browsers must not reuse them. Handlers that do want caching set their own
-/// `Cache-Control`.
+/// Each client address's budget. Only requests that came through the proxy (`X-Forwarded-For`)
+/// count: probes, port-forwards and the cluster's own calls have no address to tell apart.
+async fn per_address(limiter: Arc<RateLimiter>, req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if req.headers().contains_key("x-forwarded-for")
+        && let Err(e) = limiter.check_local(&crate::extract::client_ip(req.headers()))
+    {
+        return crate::error::ApiError(e).into_response();
+    }
+    next.run(req).await
+}
+
 /// A call marked as coming from an app's screen (`X-Ferrum-App`) goes only where screens may, on
 /// every route whatever its extractor; `Auth` then narrows its rights (extract.rs).
 async fn screen_paths(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
@@ -302,6 +319,9 @@ async fn screen_paths(req: axum::extract::Request, next: axum::middleware::Next)
     next.run(req).await
 }
 
+/// API answers belong to one user and can change without a new version (an engine-set status, a
+/// recorded IRN): browsers must not reuse them. Handlers that do want caching set their own
+/// `Cache-Control`.
 async fn api_no_store(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
     let api = req.uri().path().starts_with("/api/");
     let mut res = next.run(req).await;
@@ -329,7 +349,7 @@ mod tests {
     use super::*;
 
     /// Round trip through an S3-compatible store. Runs when `FERRUM_TEST_S3_ENDPOINT` is set (CI
-    /// starts MinIO); `FERRUM_TEST_S3_BUCKET`, `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` go with it.
+    /// starts an S3 emulator); `FERRUM_TEST_S3_BUCKET`, `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` go with it.
     #[tokio::test]
     async fn s3_compatible_storage_round_trip() {
         let Ok(endpoint) = std::env::var("FERRUM_TEST_S3_ENDPOINT") else {
@@ -355,5 +375,29 @@ mod tests {
     fn local_files_need_an_explicit_opt_out_when_object_storage_is_required() {
         let settings: Settings = serde_json::from_value(serde_json::json!({"require_object_storage": true})).unwrap();
         assert!(build_storage(&settings).is_err());
+    }
+
+    #[tokio::test]
+    async fn each_address_through_the_proxy_has_a_budget() {
+        use tower::ServiceExt;
+        let limiter = Arc::new(RateLimiter::local_only("address", Duration::from_secs(60), 2));
+        let app = axum::Router::new()
+            .route("/api/x", axum::routing::get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(move |req, next| per_address(limiter.clone(), req, next)));
+        let call = |forwarded: Option<&str>| {
+            let mut req = axum::http::Request::get("/api/x");
+            if let Some(v) = forwarded {
+                req = req.header("x-forwarded-for", v);
+            }
+            let app = app.clone();
+            async move { app.oneshot(req.body(axum::body::Body::empty()).unwrap()).await.unwrap().status().as_u16() }
+        };
+        assert_eq!((call(Some("203.0.113.7")).await, call(Some("203.0.113.7")).await), (200, 200));
+        assert_eq!(call(Some("203.0.113.7")).await, 429);
+        assert_eq!(call(Some("198.51.100.1, 203.0.113.7")).await, 429, "an address the client made up does not help: the proxy's own entry counts");
+        assert_eq!(call(Some("203.0.113.7, 203.0.113.8")).await, 200, "another address");
+        for _ in 0..10 {
+            assert_eq!(call(None).await, 200, "not through the proxy: not counted");
+        }
     }
 }

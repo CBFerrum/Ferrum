@@ -97,6 +97,7 @@ loco-rs = { version = "1.2", default-features = false, features = ["auth", "cli"
 serial_test = "3"
 wat = "1"
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
+tower = { version = "0.5", features = ["util"] }
 
 [lints]
 workspace = true

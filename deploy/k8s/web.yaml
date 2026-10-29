@@ -1,4 +1,4 @@
-# The web app (CBFerrum/Ferrum-Frontend): stateless nginx serving /app/. The ingress sends API,
+# The web app (CBFerrum/Ferrum-Frontend): stateless nginx serving /app/. The gateway sends API,
 # file, MCP and WebSocket paths straight to the Ferrum server, everything else here.
 apiVersion: apps/v1
 kind: Deployment

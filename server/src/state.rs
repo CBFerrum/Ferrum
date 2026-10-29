@@ -28,6 +28,12 @@ fn default_true() -> bool {
 fn default_user_requests() -> u32 {
     3000
 }
+fn default_address_requests() -> u32 {
+    6000
+}
+fn default_proxy_hops() -> usize {
+    1
+}
 fn default_files_dir() -> String {
     "storage".into()
 }
@@ -51,6 +57,14 @@ pub struct Settings {
     /// Requests a user (or one of their API keys) may make per minute on each replica; 0: no limit.
     #[serde(default = "default_user_requests")]
     pub user_requests_per_minute: u32,
+    /// Requests one client address may make per minute on each replica, counted for requests that
+    /// came through the proxy (`X-Forwarded-For`); 0: no limit.
+    #[serde(default = "default_address_requests")]
+    pub address_requests_per_minute: u32,
+    /// Proxies in front that append to `X-Forwarded-For` (the gateway: 1; a CDN or load balancer
+    /// before it: 2): whose entry is the client's address for rate limits.
+    #[serde(default = "default_proxy_hops")]
+    pub proxy_hops: usize,
     /// Run outbox/webhook/maintenance loops in this process.
     #[serde(default = "default_true")]
     pub run_background: bool,
@@ -200,6 +214,7 @@ pub struct AppState {
     pub public_limiter: Arc<RateLimiter>,
     /// Requests per minute a user may make (on this replica), whatever the token.
     pub user_limiter: Arc<RateLimiter>,
+    pub address_limiter: Arc<RateLimiter>,
     pub apps: Arc<crate::appmgr::AppManager>,
     pub objects: Arc<crate::objects::Objects>,
 }

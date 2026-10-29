@@ -1,6 +1,7 @@
 # PostgreSQL 17 with synchronous replication across three instances, automatic failover,
-# continuous WAL archiving and daily base backups (point-in-time recovery). CloudNativePG
-# creates the `ferrum-db-app` secret holding the application connection URI.
+# continuous WAL archiving and daily base backups (point-in-time recovery) through the Barman
+# Cloud plugin. CloudNativePG creates the `ferrum-db-app` secret holding the application
+# connection URI.
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
@@ -9,6 +10,11 @@ spec:
   instances: 3
   imageName: ghcr.io/cloudnative-pg/postgresql:17
   primaryUpdateStrategy: unsupervised
+  # Upgrades move the primary to an already updated standby rather than restarting it in place.
+  primaryUpdateMethod: switchover
+  # The API's pooled connections never end on their own: give running statements a moment, then
+  # end the sessions so a standby takes over (the default, 180 s, held writes up for 3 minutes).
+  smartShutdownTimeout: 15
   minSyncReplicas: 1
   maxSyncReplicas: 1
   storage:
@@ -34,19 +40,11 @@ spec:
   resources:
     requests: {cpu: "1", memory: 4Gi}
     limits: {memory: 8Gi}
-  monitoring:
-    enablePodMonitor: true
-  backup:
-    retentionPolicy: "30d"
-    barmanObjectStore:
-      destinationPath: s3://CHANGE-ME-backup-bucket/ferrum
-      s3Credentials:
-        accessKeyId: {name: ferrum-backup-s3, key: ACCESS_KEY_ID}
-        secretAccessKey: {name: ferrum-backup-s3, key: ACCESS_SECRET_KEY}
-      wal:
-        compression: gzip
-      data:
-        compression: gzip
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: ferrum-backups
 ---
 apiVersion: postgresql.cnpg.io/v1
 kind: ScheduledBackup
@@ -57,3 +55,24 @@ spec:
   backupOwnerReference: self
   cluster:
     name: ferrum-db
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
+---
+# Where base backups and WAL go, kept for 30 days.
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: ferrum-backups
+spec:
+  retentionPolicy: "30d"
+  configuration:
+    destinationPath: s3://CHANGE-ME-backup-bucket/ferrum
+    # For S3-compatible stores: endpointURL: https://<account>.r2.cloudflarestorage.com
+    s3Credentials:
+      accessKeyId: {name: ferrum-backup-s3, key: ACCESS_KEY_ID}
+      secretAccessKey: {name: ferrum-backup-s3, key: ACCESS_SECRET_KEY}
+    wal:
+      compression: gzip
+    data:
+      compression: gzip

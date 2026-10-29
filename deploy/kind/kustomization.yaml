@@ -1,0 +1,51 @@
+# deploy/k8s as CI deploys it to kind (smoke.sh): images loaded into the cluster, attachments
+# and database backups in the S3 emulator (s3.yaml). Everything else is as in production.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ferrum
+resources:
+  - ../k8s
+  - s3-egress.yaml
+images:
+  - name: ghcr.io/cbferrum/ferrum
+    newName: ferrum
+    newTag: ci
+  - name: ghcr.io/cbferrum/ferrum-frontend
+    newName: ferrum-frontend
+    newTag: ci
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: ferrum
+      spec:
+        template:
+          spec:
+            containers:
+              - name: ferrum
+                env:
+                  - {name: FERRUM_S3_BUCKET, value: ferrum-files}
+                  - {name: FERRUM_S3_REGION, value: us-east-1}
+                  - {name: FERRUM_S3_ENDPOINT, value: "http://s3.ci-s3.svc.cluster.local:5000"}
+  # kind has no load balancers: the proxies get a cluster address (smoke.sh port-forwards to it).
+  - patch: |-
+      apiVersion: gateway.envoyproxy.io/v1alpha1
+      kind: EnvoyProxy
+      metadata:
+        name: ferrum
+      spec:
+        provider:
+          kubernetes:
+            envoyService:
+              type: ClusterIP
+              externalTrafficPolicy: null
+  - patch: |-
+      apiVersion: barmancloud.cnpg.io/v1
+      kind: ObjectStore
+      metadata:
+        name: ferrum-backups
+      spec:
+        configuration:
+          destinationPath: s3://ferrum-backups/ci
+          endpointURL: "http://s3.ci-s3.svc.cluster.local:5000"

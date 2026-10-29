@@ -1,6 +1,8 @@
 # kubectl apply -k deploy/k8s   (after creating the secrets described in secret.example.yaml)
-# Requires: CloudNativePG operator, an ingress controller, cert-manager (for TLS),
-# metrics-server (for the autoscaler) and optionally the Prometheus operator.
+# Requires the CloudNativePG operator with its Barman Cloud plugin, a Gateway API implementation,
+# cert-manager with Gateway API support (for TLS and the plugin), metrics-server (for the
+# autoscaler) and optionally the Prometheus operator (ServiceMonitor). CI deploys these manifests
+# to a kind cluster with the versions in deploy/kind/install.sh; see docs/operations.md.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: ferrum
@@ -11,7 +13,8 @@ resources:
   - web.yaml
   - pdf.yaml
   - service.yaml
-  - ingress.yaml
+  - gateway.yaml
+  - envoy-proxy.yaml
   - pdb.yaml
   - hpa.yaml
   - networkpolicy.yaml

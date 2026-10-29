@@ -128,18 +128,46 @@ pub fn if_match(headers: &HeaderMap) -> Result<Option<i64>, ApiError> {
     n.parse::<i64>().map(Some).map_err(|_| ApiError(Error::invalid("If-Match must carry the document version, e.g. \"v3\"")))
 }
 
+/// How many proxies in front of the server append to `X-Forwarded-For`: the gateway alone is 1; a
+/// CDN or a load balancer before it makes 2 (`settings.proxy_hops`, set once at boot).
+pub static PROXY_HOPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+
+/// The client's address as the outermost trusted proxy saw it (`"local"` without proxies).
 pub fn client_ip(headers: &HeaderMap) -> String {
-    headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.rsplit(',').next())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "local".into())
+    client_ip_behind(headers, PROXY_HOPS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// The entry `hops` from the right of `X-Forwarded-For`: what a client puts there itself lies to
+/// its left and is never taken; behind fewer proxies than that, the leftmost entry.
+fn client_ip_behind(headers: &HeaderMap, hops: usize) -> String {
+    let entries: Vec<&str> =
+        headers.get_all("x-forwarded-for").iter().filter_map(|v| v.to_str().ok()).flat_map(|v| v.split(',')).map(str::trim).filter(|e| !e.is_empty()).collect();
+    entries.get(entries.len().saturating_sub(hops.max(1))).map_or_else(|| "local".into(), |e| e.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_client_is_where_the_trusted_proxies_say() {
+        let headers = |values: &[&str]| {
+            let mut h = HeaderMap::new();
+            for v in values {
+                h.append("x-forwarded-for", v.parse().unwrap());
+            }
+            h
+        };
+        assert_eq!(client_ip_behind(&headers(&[]), 1), "local");
+        assert_eq!(client_ip_behind(&headers(&["203.0.113.7"]), 1), "203.0.113.7");
+        // The client wrote 198.51.100.1 itself; the gateway appended what it saw.
+        assert_eq!(client_ip_behind(&headers(&["198.51.100.1, 203.0.113.7"]), 1), "203.0.113.7");
+        // Behind a CDN: the client, then the CDN's edge as the gateway saw it.
+        let cdn = headers(&["198.51.100.1, 203.0.113.7", "192.0.2.10"]);
+        assert_eq!((client_ip_behind(&cdn, 1), client_ip_behind(&cdn, 2)), ("192.0.2.10".into(), "203.0.113.7".into()));
+        assert_eq!(client_ip_behind(&headers(&["203.0.113.7"]), 2), "203.0.113.7", "fewer proxies than configured");
+        assert_eq!(client_ip_behind(&headers(&[" , "]), 1), "local");
+    }
 
     #[test]
     fn screens_call_records_metadata_and_their_own_endpoints() {
