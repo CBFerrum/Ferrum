@@ -114,6 +114,11 @@ impl DocHook for JournalEntryHook {
 
 pub struct PaymentEntryHook;
 
+/// What an open item is, for people: its entity's label ("Sales Invoice", "Journal Entry").
+fn item_kind(ctx: &ferrum_kernel::Ctx, entity: &str) -> String {
+    ctx.schema.entity(entity).map(|e| e.def.label.clone()).unwrap_or_else(|| entity.to_string())
+}
+
 fn party(doc: &Doc) -> (Option<Uuid>, Option<Uuid>, bool) {
     let receive = s(doc, "payment_type") != Some("Pay");
     if receive { (id(doc, "customer"), None, true) } else { (None, id(doc, "supplier"), false) }
@@ -174,6 +179,7 @@ impl DocHook for PaymentEntryHook {
         for r in refs.iter_mut() {
             let Some(inv) = id(r, "invoice") else { continue };
             if let Some(item) = ledger::load_open_item(hc.tx, hc.ctx.tenant, inv, false).await? {
+                set(r, "invoice_type", item_kind(hc.ctx, &item.entity));
                 set(r, "invoice_number", item.number.clone().map(Value::String).unwrap_or(Value::Null));
                 set(r, "outstanding", money(item.outstanding));
                 set(r, "due_date", item.due_date.map(|x| json!(x.to_string())).unwrap_or(Value::Null));
@@ -392,7 +398,7 @@ impl DocHook for PaymentEntryHook {
             }
             budget -= take;
             total += take;
-            let kind = if entity == "PurchaseInvoice" { "Purchase Invoice" } else { "Sales Invoice" };
+            let kind = item_kind(hc.ctx, &entity);
             refs.push(json!({"invoice_type": kind, "invoice": inv.to_string(), "invoice_number": number, "due_date": due, "outstanding": outstanding.to_string(), "allocated_amount": take.to_string()}));
         }
         let mut patch = Doc::new();
