@@ -23,6 +23,7 @@ pub mod notify;
 pub mod numbering;
 pub mod oauth;
 pub mod outbox;
+mod pdf;
 pub mod prefs;
 pub mod print;
 pub mod query;
@@ -65,11 +66,13 @@ pub struct KernelSettings {
     pub event_retention_days: i32,
     /// Seals secret fields; without it they cannot be set or read.
     pub secret_key: Option<secret::SecretKey>,
+    /// Base URL of a Gotenberg-compatible PDF renderer; without it there are no PDFs.
+    pub pdf_url: Option<String>,
 }
 
 impl Default for KernelSettings {
     fn default() -> Self {
-        KernelSettings { webhooks_allow_private: false, ctx_ttl: Duration::from_secs(30), event_retention_days: 30, secret_key: None }
+        KernelSettings { webhooks_allow_private: false, ctx_ttl: Duration::from_secs(30), event_retention_days: 30, secret_key: None, pdf_url: None }
     }
 }
 

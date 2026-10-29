@@ -49,8 +49,17 @@ services:
       FERRUM_S3_REGION: ${FERRUM_S3_REGION:-}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      # PDFs of print formats (Download PDF, apps that attach documents); empty turns them off.
+      FERRUM_PDF_URL: ${FERRUM_PDF_URL:-http://pdf:3000}
     volumes:
       - files:/var/lib/ferrum/files
+
+  # Lays print formats out as PDFs. JavaScript is off and Chromium may load only the page itself
+  # and inline images, so a template cannot make the renderer fetch anything.
+  pdf:
+    image: gotenberg/gotenberg:8
+    restart: unless-stopped
+    command: ["gotenberg", "--chromium-disable-javascript=true", "--chromium-allow-list=^(data:|file:///tmp/).*", "--api-timeout=60s"]
 
   web:
     image: ${FERRUM_WEB_IMAGE:-ghcr.io/cbferrum/ferrum-frontend:latest}

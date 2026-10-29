@@ -13,8 +13,10 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   field (or number) is exposed, never its other fields.
 - **Units of measure**: material request lines convert with a factor per line; there is no
   per-item conversion table that sales and purchase documents pick factors from.
-- **Printing** is HTML print templates rendered by the browser (print or save as PDF). There is no
-  server-side PDF renderer, so emails cannot attach a generated invoice PDF yet.
+- **PDFs** come from a separate renderer service (Gotenberg, shipped in both deployments); without
+  it, printing is the browser's. Apps make PDFs with `Kernel::print_pdf` and store them as files;
+  the Mail app can attach files to emails, the platform mail queue cannot. Print formats use inline
+  (data:) images, as the renderer fetches nothing.
 - **Platform mail** (`Kernel::queue_mail`, used when the Mail app is not installed) sends one HTML
   message to one address, without attachments, through the server's SMTP settings.
 - **Large files**: browsers upload up to 2 GiB straight to S3-compatible storage; local-disk
@@ -64,8 +66,11 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   if its total was shown before the connection dropped (it then waits on the device and is sent
   later); no customer display, cash drawer or card terminal integration; receipts print through
   the browser. Closing a session uses the POS Closing Entry form.
-- **Team chat** (a Zoho Cliq counterpart) is not built; comments, @mentions, followers and in-app
-  notifications carry discussion on records.
+- **Chat and calendar** (the Mail app): the chat screen (`/app/chat`) covers channels, direct
+  messages, threads, mentions, edits and search, but not file attachments in messages. Calendar
+  events have no dedicated screen yet: the Calendar Events list has the generic calendar view
+  (single events), while recurring events, invitations and RSVPs go through the Mail app's
+  calendar API (and its iCalendar feed in any calendar app).
 - **Bookings**: the write throttle is in memory per replica; one resource per booking; no recurring
   bookings, deposits or external calendar sync; notices can be up to a minute late. Without the Mail
   app, guest emails carry an add-to-calendar link instead of an invitation.

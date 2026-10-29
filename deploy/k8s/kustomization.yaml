@@ -9,6 +9,7 @@ resources:
   - database.yaml
   - deployment.yaml
   - web.yaml
+  - pdf.yaml
   - service.yaml
   - ingress.yaml
   - pdb.yaml

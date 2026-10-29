@@ -722,6 +722,15 @@ async fn scenario() {
     let nobody = t.k.create_user(&t.ctx, "nobody@reports.test", "No Body", Some("Correct-Horse-9"), &[], false).await.unwrap();
     let nobody_ctx = t.k.load_ctx(tenant, nobody, None, "it".into()).await.unwrap();
     assert!(names(ferrum_domain::reports::catalog_for(&nobody_ctx)).is_empty(), "no permissions, no reports");
+    // Someone who may read only their own invoices gets no report that sums up everyone's.
+    let own: ferrum_meta::types::PermissionDef = serde_json::from_value(json!({"entity": "SalesInvoice", "read": true, "if_owner": true})).unwrap();
+    t.k.set_role_permission(&t.ctx, "Own Invoices", &own).await.expect("role");
+    let rep = t.k.create_user(&t.ctx, "rep@reports.test", "Field Rep", Some("Correct-Horse-9"), &["Own Invoices".into()], false).await.unwrap();
+    let rep_ctx = t.k.load_ctx(tenant, rep, None, "it".into()).await.unwrap();
+    assert!(!names(ferrum_domain::reports::catalog_for(&rep_ctx)).contains(&"sales_register".to_string()));
+    let params: HashMap<String, String> = company_param.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+    let refused = ferrum_domain::reports::run(&t.k, &rep_ctx, "sales_register", &params).await;
+    assert!(matches!(refused, Err(Error::Forbidden(_))), "own-records access cannot sum up everyone's invoices: {refused:?}");
     let ar = t.report("receivables", &company_param).await;
     assert_eq!(dec(&ar["totals"]["outstanding_base"]), n("-770") + dec(&direct["grand_total"]), "customer credit plus the unpaid direct sale");
     let sb = t.report("stock_balance", &company_param).await;

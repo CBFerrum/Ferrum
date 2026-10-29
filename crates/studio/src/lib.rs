@@ -49,9 +49,10 @@ struct StudioReports;
 impl ReportSource for StudioReports {
     fn catalog(&self) -> Vec<Value> {
         vec![
-            json!({"name": "studio_query", "label": "Analytics Query", "module": "studio", "entity": builder::REPORT,
+            // The query engine applies every queried entity's row scope itself.
+            json!({"name": "studio_query", "label": "Analytics Query", "module": "studio", "entity": builder::REPORT, "scoped": true,
                 "params": [{"name": "spec", "label": "Query spec (JSON, see /api/app/studio/fields/{entity})", "type": "data", "required": true}]}),
-            json!({"name": "studio_report", "label": "Saved Report", "module": "studio", "entity": builder::REPORT,
+            json!({"name": "studio_report", "label": "Saved Report", "module": "studio", "entity": builder::REPORT, "scoped": true,
                 "params": [{"name": "report", "label": "Report", "type": "link", "to": builder::REPORT, "required": true},
                            {"name": "filters", "label": "Extra filters (JSON)", "type": "data"},
                            {"name": "from", "label": "From", "type": "data"}, {"name": "to", "label": "To", "type": "data"}]}),

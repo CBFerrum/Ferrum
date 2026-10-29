@@ -90,7 +90,11 @@ pub async fn read_tx(k: &Kernel, ctx: &Ctx) -> Result<Tx> {
 /// Reports contributed by packages outside this crate.
 #[async_trait::async_trait]
 pub trait ReportSource: Send + Sync {
-    /// `[{name, label, module, entity, params}]`: `entity` is the one the caller must be able to read.
+    /// `[{name, label, module, entity, params, scoped?}]`: `entity` is the one the caller must be
+    /// able to read. A package report is expected to apply the caller's row scope to its rows
+    /// (`ferrum_kernel::row_scope(..).push_sql`), as `"scoped": true` (the default) says. One that
+    /// only narrows to the caller's own records says `"scoped": "owner"`, and one that sums up every
+    /// record says `"scoped": false`: callers who may read only some records are then refused it.
     fn catalog(&self) -> Vec<Value>;
     /// Runs `name` (already permission-checked against its `entity`).
     async fn run(&self, k: &Kernel, ctx: &Ctx, name: &str, params: &HashMap<String, String>) -> Result<Value>;
@@ -118,6 +122,7 @@ pub fn catalog() -> Value {
         list.extend(s.catalog().into_iter().map(|mut e| {
             if let Value::Object(m) = &mut e {
                 m.remove("entity");
+                m.remove("scoped");
             }
             e
         }));
@@ -125,19 +130,53 @@ pub fn catalog() -> Value {
     Value::Array(list)
 }
 
-/// [`catalog`] for one caller: only reports of installed packages whose entity the caller may
-/// read (the ones [`run`] would let them run).
+/// How a report narrows its rows to the caller (its catalog entry's `scoped`).
+#[derive(Clone, Copy, PartialEq)]
+enum Narrows {
+    Nothing,
+    Owner,
+    RowScope,
+}
+
+/// What a package report's catalog entry says about narrowing (see [`ReportSource::catalog`]).
+fn narrows(entry: &Value) -> Narrows {
+    match &entry["scoped"] {
+        Value::Bool(false) => Narrows::Nothing,
+        Value::String(s) if s == "owner" => Narrows::Owner,
+        _ => Narrows::RowScope,
+    }
+}
+
+/// Whether `ctx` may run a report over `entity`, which sums up its records. Unless the report
+/// applies the caller's row scope itself, the caller must read all of them: a company scope is
+/// fine, as reports run per company and check it ([`resolve_company`]); own-records access only
+/// when the report narrows to the caller's records; any other scope never.
+fn may_run(ctx: &Ctx, entity: &str, narrows: Narrows) -> Result<()> {
+    let Some(ent) = ctx.schema.entity(entity) else { return Err(Error::NotFound(format!("{entity} is not installed"))) };
+    let scope = ferrum_kernel::row_scope(ctx, ent, Action::Read)?;
+    if narrows == Narrows::RowScope {
+        return Ok(());
+    }
+    let other_scopes = scope.conds.iter().any(|c| c.field.as_deref() != Some("company"));
+    if other_scopes || (scope.owner.is_some() && narrows != Narrows::Owner) {
+        return Err(Error::Forbidden(format!("this report sums up every {}; it needs access to all of them, not only some", ent.def.label)));
+    }
+    Ok(())
+}
+
+/// [`catalog`] for one caller: only reports of installed packages that the caller may run.
 pub fn catalog_for(ctx: &Ctx) -> Value {
-    let allowed = |entity: &str| ctx.schema.entity(entity).is_some() && ctx.require(entity, Action::Read).is_ok();
+    let allowed = |entity: &str, n: Narrows| may_run(ctx, entity, n).is_ok();
     let mut list: Vec<Value> = DEFS
         .iter()
-        .filter(|d| allowed(d.entity))
+        .filter(|d| allowed(d.entity, Narrows::Nothing))
         .map(|d| json!({"name": d.name, "label": d.label, "module": d.module, "params": d.params.iter().map(|p| param_def(p)).collect::<Vec<_>>()}))
         .collect();
     for s in sources() {
-        list.extend(s.catalog().into_iter().filter(|e| e.get("entity").and_then(Value::as_str).is_some_and(allowed)).map(|mut e| {
+        list.extend(s.catalog().into_iter().filter(|e| e.get("entity").and_then(Value::as_str).is_some_and(|ent| allowed(ent, narrows(e)))).map(|mut e| {
             if let Value::Object(m) = &mut e {
                 m.remove("entity");
+                m.remove("scoped");
             }
             e
         }));
@@ -145,7 +184,7 @@ pub fn catalog_for(ctx: &Ctx) -> Value {
     Value::Array(list)
 }
 
-/// Runs a report from a package source after checking the caller may read its entity.
+/// Runs a report from a package source after checking the caller may run it.
 async fn run_source(k: &Kernel, ctx: &Ctx, name: &str, raw: &HashMap<String, String>) -> Result<Value> {
     for s in sources() {
         let Some(entry) = s.catalog().into_iter().find(|e| e["name"] == json!(name)) else { continue };
@@ -153,7 +192,7 @@ async fn run_source(k: &Kernel, ctx: &Ctx, name: &str, raw: &HashMap<String, Str
         if ctx.schema.entity(&entity).is_none() {
             return Err(Error::NotFound(format!("report {name} (its package is not installed)")));
         }
-        ctx.require(&entity, Action::Read)?;
+        may_run(ctx, &entity, narrows(&entry))?;
         let mut out = s.run(k, ctx, name, raw).await?;
         if let Value::Object(m) = &mut out {
             m.entry("name").or_insert_with(|| json!(name));
@@ -273,7 +312,7 @@ async fn run_report(k: &Kernel, ctx: &Ctx, name: &str, raw: &HashMap<String, Str
     if ctx.schema.entity(def.entity).is_none() {
         return Err(Error::NotFound(format!("report {name} (its package is not installed)")));
     }
-    ctx.require(def.entity, Action::Read)?;
+    may_run(ctx, def.entity, Narrows::Nothing)?;
     let p = Params { raw };
     let mut tx = k.db.tenant_tx_with_timeout(ctx.tenant, REPORT_TIMEOUT_MS).await?;
     sqlx::query("set transaction read only").execute(&mut *tx).await?;

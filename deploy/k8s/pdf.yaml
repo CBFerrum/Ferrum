@@ -1,0 +1,72 @@
+# The PDF renderer (Gotenberg: Chromium behind an HTTP API) that lays print formats out as PDFs.
+# Stateless; only the API may call it, and it may call nothing: JavaScript is off and Chromium may
+# load only the page it is given and inline images.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ferrum-pdf
+  labels: {app.kubernetes.io/name: ferrum-pdf}
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app.kubernetes.io/name: ferrum-pdf}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: ferrum-pdf}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        seccompProfile: {type: RuntimeDefault}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {app.kubernetes.io/name: ferrum-pdf}
+      containers:
+        - name: gotenberg
+          image: gotenberg/gotenberg:8
+          args: ["gotenberg", "--chromium-disable-javascript=true", "--chromium-allow-list=^(data:|file:///tmp/).*", "--api-timeout=60s"]
+          ports:
+            - {name: http, containerPort: 3000}
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 30
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ferrum-pdf
+spec:
+  selector: {app.kubernetes.io/name: ferrum-pdf}
+  ports:
+    - {name: http, port: 3000, targetPort: http}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ferrum-pdf
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: ferrum-pdf}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ferrum}
+      ports:
+        - {port: 3000}
+  egress: []

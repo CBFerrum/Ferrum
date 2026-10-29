@@ -24,6 +24,11 @@ spec:
             matchLabels: {cnpg.io/cluster: ferrum-db}
       ports:
         - {port: 5432}
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ferrum-pdf}
+      ports:
+        - {port: 3000}
     - ports:
         - {port: 53, protocol: UDP}
         - {port: 53, protocol: TCP}

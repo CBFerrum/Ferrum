@@ -85,6 +85,7 @@ settings:
   s3_bucket: "<%= get_env(name="FERRUM_S3_BUCKET", default="") %>"
   s3_region: "<%= get_env(name="FERRUM_S3_REGION", default="") %>"
   metrics_token: "<%= get_env(name="FERRUM_METRICS_TOKEN", default="") %>"
+  pdf_url: "<%= get_env(name="FERRUM_PDF_URL", default="") %>"
   s3_endpoint: "<%= get_env(name="FERRUM_S3_ENDPOINT", default="") %>"
   require_object_storage: <%= get_env(name="FERRUM_REQUIRE_OBJECT_STORAGE", default="true") %>
   secret_key: "<%= get_env(name="FERRUM_SECRET_KEY", default="") %>"
