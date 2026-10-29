@@ -1,13 +1,14 @@
-//! Sign-in, session info, password changes, API keys.
+//! Sign-in (with its second step), session info, two-factor setup, password changes, API keys.
 
 use crate::error::{ApiError, ApiResult};
-use crate::extract::{Auth, client_ip};
-use crate::state::app_state;
+use crate::extract::{Auth, SetupAuth, client_ip};
+use crate::state::{AppState, app_state};
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use ferrum_kernel::Error;
+use ferrum_kernel::auth::{Session, SignIn};
 use loco_rs::app::AppContext;
 use loco_rs::auth::jwt::JWT;
 use loco_rs::controller::Routes;
@@ -22,22 +23,75 @@ struct LoginReq {
     password: String,
 }
 
+/// The ticket between the two steps of signing in lasts five minutes.
+const TICKET_SECS: u64 = 300;
+/// A session that may only set up two-factor sign-in lasts fifteen.
+const SETUP_SECS: u64 = 900;
+
+/// A signed token for a session; `extra` marks a ticket (`mfa`) or a setup-only session.
+fn token(st: &AppState, s: &Session, ttl: u64, extra: Option<&str>) -> Result<String, ApiError> {
+    let mut claims = Map::new();
+    claims.insert("tenant".into(), json!(s.tenant.to_string()));
+    claims.insert("tv".into(), json!(s.token_version));
+    if let Some(flag) = extra {
+        claims.insert(flag.into(), json!(true));
+    }
+    JWT::new(&st.jwt_secret).generate_token(ttl, s.user.to_string(), claims).map_err(|e| ApiError(Error::Internal(format!("token: {e}"))))
+}
+
+fn session_response(st: &AppState, s: &Session) -> ApiResult<Response> {
+    Ok(Json(json!({"token": token(st, s, st.jwt_expiration, None)?, "token_type": "Bearer", "expires_in": st.jwt_expiration})).into_response())
+}
+
 async fn login(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<LoginReq>) -> ApiResult<Response> {
     let st = app_state(&app)?;
     st.login_limiter.check(&format!("{}|{}", client_ip(&headers), req.tenant.to_lowercase())).await?;
     if req.password.len() > 256 || req.email.len() > 254 || req.tenant.len() > 63 {
         return Err(ApiError(Error::Unauthorized("invalid tenant, email or password".into())));
     }
-    let s = st.kernel.login(&req.tenant, &req.email, &req.password).await?;
-    let mut claims = Map::new();
-    claims.insert("tenant".into(), json!(s.tenant.to_string()));
-    claims.insert("tv".into(), json!(s.token_version));
-    let token =
-        JWT::new(&st.jwt_secret).generate_token(st.jwt_expiration, s.user.to_string(), claims).map_err(|e| ApiError(Error::Internal(format!("token: {e}"))))?;
-    Ok(Json(json!({"token": token, "token_type": "Bearer", "expires_in": st.jwt_expiration})).into_response())
+    match st.kernel.sign_in(&req.tenant, &req.email, &req.password).await? {
+        SignIn::Session(s) => session_response(&st, &s),
+        SignIn::SecondFactor(s) => {
+            Ok(Json(json!({"second_factor": true, "ticket": token(&st, &s, TICKET_SECS, Some("mfa"))?, "expires_in": TICKET_SECS})).into_response())
+        }
+        SignIn::SetupRequired(s) => Ok(Json(json!({
+            "two_factor_setup": true,
+            "token": token(&st, &s, SETUP_SECS, Some("setup_2fa"))?,
+            "token_type": "Bearer",
+            "expires_in": SETUP_SECS,
+        }))
+        .into_response()),
+    }
 }
 
-async fn me(Auth(ctx): Auth) -> ApiResult<Response> {
+#[derive(Deserialize)]
+struct SecondFactorReq {
+    ticket: String,
+    code: String,
+}
+
+/// The second step of signing in: the ticket from the first and a code from the authenticator
+/// app (or a recovery code).
+async fn login_second_factor(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<SecondFactorReq>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    st.login_limiter.check(&format!("{}|second-factor", client_ip(&headers))).await?;
+    let again = || ApiError(Error::Unauthorized("sign in again".into()));
+    if req.code.len() > 64 {
+        return Err(ApiError(Error::field("code", "is too long")));
+    }
+    let data = JWT::new(&st.jwt_secret).validate(&req.ticket).map_err(|_| again())?;
+    let claims = &data.claims.claims;
+    if claims.get("mfa").and_then(Value::as_bool) != Some(true) {
+        return Err(again());
+    }
+    let user: Uuid = data.claims.pid.parse().map_err(|_| again())?;
+    let tenant: Uuid = claims.get("tenant").and_then(Value::as_str).and_then(|s| s.parse().ok()).ok_or_else(again)?;
+    let tv = claims.get("tv").and_then(Value::as_i64).ok_or_else(again)? as i32;
+    let s = st.kernel.second_factor(tenant, user, tv, &req.code).await?;
+    session_response(&st, &s)
+}
+
+async fn me(SetupAuth(ctx, setup_only): SetupAuth) -> ApiResult<Response> {
     Ok(Json(json!({
         "tenant": ctx.tenant,
         "user": {"id": ctx.user, "email": ctx.email, "full_name": ctx.full_name, "is_admin": ctx.is_admin, "roles": ctx.roles},
@@ -47,8 +101,49 @@ async fn me(Auth(ctx): Auth) -> ApiResult<Response> {
         "timezone": ctx.schema.timezone,
         "today": ctx.today(),
         "packages": ctx.schema.packages,
+        "two_factor_setup": setup_only.is_some(),
     }))
     .into_response())
+}
+
+async fn two_factor_status(SetupAuth(ctx, _): SetupAuth, State(app): State<AppContext>) -> ApiResult<Response> {
+    Ok(Json(app_state(&app)?.kernel.two_factor_status(&ctx).await?).into_response())
+}
+
+async fn two_factor_begin(SetupAuth(ctx, _): SetupAuth, State(app): State<AppContext>) -> ApiResult<Response> {
+    Ok(Json(app_state(&app)?.kernel.begin_two_factor(&ctx).await?).into_response())
+}
+
+#[derive(Deserialize)]
+struct CodeReq {
+    code: String,
+}
+
+/// Turns two-factor sign-in on; a session that could only set it up gets a full one.
+async fn two_factor_enable(SetupAuth(ctx, setup_only): SetupAuth, State(app): State<AppContext>, Json(req): Json<CodeReq>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    let codes = st.kernel.enable_two_factor(&ctx, &req.code).await?;
+    let mut out = json!({"recovery_codes": codes});
+    if let Some(s) = setup_only {
+        out["token"] = json!(token(&st, &s, st.jwt_expiration, None)?);
+        out["expires_in"] = json!(st.jwt_expiration);
+    }
+    Ok(Json(out).into_response())
+}
+
+async fn two_factor_recovery_codes(Auth(ctx): Auth, State(app): State<AppContext>, Json(req): Json<CodeReq>) -> ApiResult<Response> {
+    Ok(Json(json!({"recovery_codes": app_state(&app)?.kernel.new_recovery_codes(&ctx, &req.code).await?})).into_response())
+}
+
+#[derive(Deserialize)]
+struct DisableReq {
+    password: Option<String>,
+    code: Option<String>,
+}
+
+async fn two_factor_disable(Auth(ctx): Auth, State(app): State<AppContext>, Json(req): Json<DisableReq>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.disable_two_factor(&ctx, req.password.as_deref(), req.code.as_deref()).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 async fn logout_all(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
@@ -120,7 +215,13 @@ pub fn routes() -> Routes {
     Routes::new()
         .prefix("/api/auth")
         .add("/login", post(login))
+        .add("/login/second-factor", post(login_second_factor))
         .add("/me", get(me))
+        .add("/2fa", get(two_factor_status))
+        .add("/2fa/begin", post(two_factor_begin))
+        .add("/2fa/enable", post(two_factor_enable))
+        .add("/2fa/disable", post(two_factor_disable))
+        .add("/2fa/recovery-codes", post(two_factor_recovery_codes))
         .add("/logout_all", post(logout_all))
         .add("/password", post(change_password))
         .add("/api_keys", get(list_keys).post(create_key))
