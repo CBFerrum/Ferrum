@@ -577,6 +577,25 @@ async fn scenario() {
     t.submit("PurchaseInvoice", uid(&bill)).await;
     assert_eq!(t.stock(raw, stores).await.0, raw_qty + n("10"));
     assert_eq!(t.gl("Creditors").await - creditors_before, n("-177"), "150 + CGST 13.5 + SGST 13.5");
+    // Paying with tax withheld: 167 leaves the bank, 10 is owed to the tax office, all 177 is settled.
+    let bank_before = t.gl("Primary Bank").await;
+    let tds = t.find_one("Account", json!({"account_name": "TDS Payable"})).await;
+    let pay = t
+        .insert(
+            "PaymentEntry",
+            json!({"company": cid.to_string(), "payment_type": "Pay", "supplier": acme.to_string(), "bank_account": bank, "currency": inr["id"], "paid_amount": "167",
+                   "deductions": [{"account": tds["id"], "amount": "-10", "remarks": "TDS u/s 194C"}],
+                   "references": [{"invoice_type": "Purchase Invoice", "invoice": bill["id"], "allocated_amount": "177"}]}),
+        )
+        .await;
+    assert_eq!((dec(&pay["total_deductions"]), dec(&pay["unallocated_amount"])), (n("-10"), Decimal::ZERO));
+    let over = t.k.update(&t.ctx, "PaymentEntry", uid(&pay), obj(json!({"paid_amount": "150"})), None).await;
+    assert!(matches!(over, Err(Error::Validation(ref e)) if e.iter().any(|f| f.field == "references")), "over-allocation: {over:?}");
+    t.submit("PaymentEntry", uid(&pay)).await;
+    assert_eq!(dec(&t.get("PurchaseInvoice", uid(&bill)).await["outstanding_amount"]), Decimal::ZERO);
+    assert_eq!(t.gl("Creditors").await, creditors_before);
+    assert_eq!(t.gl("TDS Payable").await, n("-10"));
+    assert_eq!(t.gl("Primary Bank").await - bank_before, n("-167"));
 
     // ───────────── foreign currency: invoiced at 83, paid at 84 ─────────────
     let usd = t.find_one("Currency", json!({"code": "USD"})).await;
@@ -592,18 +611,46 @@ async fn scenario() {
     let (usd_total, inr_total) = (dec(&export["grand_total"]), dec(&export["base_grand_total"]));
     assert_eq!(dec(&export["total_taxes"]), Decimal::ZERO, "zero-rated export under LUT");
     let gain_before = t.gl("Exchange Gain or Loss").await;
+    let charges = t.find_one("Account", json!({"account_name": "Bank Charges"})).await;
     let paid = t
         .insert(
             "PaymentEntry",
             json!({"company": cid.to_string(), "payment_type": "Receive", "customer": abroad.to_string(), "bank_account": bank, "currency": usd["id"],
-                   "exchange_rate": "84", "paid_amount": usd_total.to_string(),
+                   "exchange_rate": "84", "paid_amount": (usd_total - n("5")).to_string(),
+                   "deductions": [{"account": charges["id"], "amount": "5", "remarks": "Correspondent bank fee"}],
                    "references": [{"invoice_type": "Sales Invoice", "invoice": export["id"], "allocated_amount": usd_total.to_string()}]}),
         )
         .await;
     t.submit("PaymentEntry", uid(&paid)).await;
     assert_eq!(dec(&t.get("SalesInvoice", uid(&export)).await["outstanding_amount"]), Decimal::ZERO);
+    assert_eq!(t.gl("Bank Charges").await, n("420"), "5 dollars of charges at 84");
     let gain = (usd_total * n("84")).round_dp(2) - inr_total;
     assert_eq!(t.gl("Exchange Gain or Loss").await - gain_before, -gain, "the extra rupees are an exchange gain");
+    // An import bill booked at 83 and paid at 84 costs more rupees: an exchange loss.
+    let import = t
+        .insert(
+            "PurchaseInvoice",
+            json!({"company": cid.to_string(), "supplier": acme.to_string(), "bill_no": "ACME/USD-1", "currency": usd["id"], "update_stock": true,
+                   "items": [{"item": raw.to_string(), "qty": "1", "price_list_rate": "10", "warehouse": stores.to_string()}]}),
+        )
+        .await;
+    assert_eq!(dec(&import["conversion_rate"]), n("83"));
+    let import = t.submit("PurchaseInvoice", uid(&import)).await;
+    let usd_bill = dec(&import["grand_total"]);
+    let loss_before = t.gl("Exchange Gain or Loss").await;
+    let settle = t
+        .insert(
+            "PaymentEntry",
+            json!({"company": cid.to_string(), "payment_type": "Pay", "supplier": acme.to_string(), "bank_account": bank, "currency": usd["id"],
+                   "exchange_rate": "84", "paid_amount": usd_bill.to_string(),
+                   "references": [{"invoice_type": "Purchase Invoice", "invoice": import["id"], "allocated_amount": usd_bill.to_string()}]}),
+        )
+        .await;
+    t.submit("PaymentEntry", uid(&settle)).await;
+    assert_eq!(dec(&t.get("PurchaseInvoice", uid(&import)).await["outstanding_amount"]), Decimal::ZERO);
+    let loss = (usd_bill * n("84")).round_dp(2) - dec(&import["base_grand_total"]);
+    assert!(loss > Decimal::ZERO);
+    assert_eq!(t.gl("Exchange Gain or Loss").await - loss_before, loss, "the extra rupees paid are an exchange loss");
 
     // ───────────── reports and reconciliation ─────────────
     let company_param = [("company", cid.to_string())];
