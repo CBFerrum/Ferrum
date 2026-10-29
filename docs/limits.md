@@ -32,8 +32,6 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 - **Stock revaluation** is a stock reconciliation counting the same quantity at the new rate. Like
   every stock posting (and landed costs), it is valued when it is posted: a backdated document
   never re-values the ones after it (there is no reposting).
-- **Engine-maintained child tables**: apps that keep rows in another document's table (crew rows,
-  allocations) write them with SQL rather than through a kernel API.
 - **SDK**: `ferrum-app dev --watch` uploads every change as a new pre-release; trying it still
   means updating the app on the Apps page (there is no automatic reinstall).
 - **Rate limits** (sign-ins, documents emailed, 300 requests a minute per address on public

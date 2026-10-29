@@ -506,4 +506,44 @@ async fn scenario() {
     let rita_ctx = k.load_ctx(tenant, rita, None, "it".into()).await.unwrap();
     k.insert(&rita_ctx, "Customer", obj(json!({"customer_name": "Rita Firm", "customer_type": "Company"}))).await.unwrap();
     assert_eq!(names(rita_ctx.clone()).await, ["Pat Person", "Rita Firm"], "her own firm, not other firms");
+
+    // ── engine-kept child rows: replaced whole, ids kept, other parents' rows untouched ──
+    let find = |entity: &'static str, name: &'static str| {
+        let k = k.clone();
+        let admin = admin.clone();
+        async move {
+            let field = if entity == "Uom" { "uom_name" } else { "group_name" };
+            let page = k
+                .list(&admin, entity, &ListQuery { filters: ferrum_kernel::query::parse_filters(&json!({field: name})).unwrap(), ..Default::default() })
+                .await
+                .unwrap();
+            page.rows[0]["id"].as_str().unwrap().to_string()
+        }
+    };
+    let (nos, boxes, sets, group) = (find("Uom", "Nos").await, find("Uom", "Box").await, find("Uom", "Set").await, find("ItemGroup", "Products").await);
+    let item = |code: &str| json!({"item_code": code, "item_name": code, "item_group": group, "stock_uom": nos});
+    let a = id_of(&k.insert(&admin, "Item", obj(item("KEPT-A"))).await.unwrap());
+    let b = id_of(&k.insert(&admin, "Item", obj(item("KEPT-B"))).await.unwrap());
+    let sys = Ctx::system(tenant, k.registry.schema(tenant).await.unwrap());
+    let set = |parent: Uuid, rows: Vec<Value>| {
+        let (k, sys) = (k.clone(), sys.clone());
+        async move {
+            let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+            k.set_child_rows_tx(&sys, &mut tx, "Item", "uoms", parent, rows.into_iter().map(obj).collect()).await?;
+            tx.commit().await.unwrap();
+            Ok::<_, Error>(())
+        }
+    };
+    set(a, vec![json!({"uom": boxes, "conversion_factor": "12"}), json!({"uom": sets, "conversion_factor": 4})]).await.unwrap();
+    let units = k.get(&admin, "Item", a, false).await.unwrap()["uoms"].as_array().unwrap().clone();
+    assert_eq!(units.len(), 2);
+    assert_eq!(units[1]["conversion_factor"].as_str().map(|v| v.parse::<rust_decimal::Decimal>().unwrap()), Some(4.into()), "values are normalized");
+    let kept = units[0]["id"].clone();
+    set(a, vec![json!({"id": kept, "uom": boxes, "conversion_factor": "10"})]).await.unwrap();
+    let units = k.get(&admin, "Item", a, false).await.unwrap()["uoms"].as_array().unwrap().clone();
+    assert_eq!((units.len(), units[0]["id"].clone()), (1, kept.clone()), "replaced whole, the id kept");
+    assert!(set(a, vec![json!({"uom": boxes, "factor": "1"})]).await.is_err(), "unknown fields are refused");
+    set(b, vec![json!({"id": kept, "uom": sets, "conversion_factor": "2"})]).await.unwrap();
+    let a_units = k.get(&admin, "Item", a, false).await.unwrap()["uoms"].as_array().unwrap().clone();
+    assert_eq!((a_units.len(), a_units[0]["uom"].as_str()), (1, Some(boxes.as_str())), "another parent cannot take a row by its id");
 }

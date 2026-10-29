@@ -348,6 +348,19 @@ async fn upsert_children(tx: &mut Tx, cent: &EffEntity, table: &str, rows: Vec<V
     Ok(())
 }
 
+/// Replaces the rows of one child table of `parent` with `rows` (ids and idx set): engine-kept rows.
+pub async fn set_child_rows(tx: &mut Tx, table: &str, cent: &EffEntity, tenant: Uuid, parent: Uuid, rows: Vec<Value>) -> Result<()> {
+    let keep: Vec<Uuid> = rows.iter().filter_map(|r| r.get("id").and_then(Value::as_str)).filter_map(|s| s.parse().ok()).collect();
+    let sql = format!("delete from {} where tenant_id = $1 and parent_id = $2 and not (id = any($3))", q(table));
+    sqlx::query(AssertSqlSafe(sql)).bind(tenant).bind(parent).bind(&keep).execute(&mut **tx).await?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let ext = existing_ext(tx, table, tenant, &keep).await?;
+    let rows = child_rows_json(cent, Some(&Value::Array(rows)), tenant, parent, &ext);
+    upsert_children(tx, cent, table, rows).await
+}
+
 pub async fn delete_row(tx: &mut Tx, ent: &EffEntity, tenant: Uuid, id: Uuid) -> Result<u64> {
     let sql = format!("delete from {} a where a.tenant_id = $1 and a.id = $2{}", q(&ent.table), entity_predicate(ent, "a"));
     Ok(sqlx::query(AssertSqlSafe(sql)).bind(tenant).bind(id).execute(&mut **tx).await?.rows_affected())
