@@ -16,9 +16,13 @@
 //!
 //! Build with `cargo build --release --target wasm32-unknown-unknown` and install the `.wasm`
 //! with a manifest through `POST /api/admin/plugins`.
+//!
+//! A plugin's own unit tests run natively (`cargo test`): there, host calls go to a fake host the
+//! test installs with [`testing::host`].
 
 pub use serde_json::{self, Value, json};
 
+#[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "ferrum")]
 unsafe extern "C" {
     fn host_call(ptr: i32, len: i32) -> i64;
@@ -109,10 +113,7 @@ impl std::fmt::Display for HostError {
 
 /// Calls the host API.
 pub fn call(op: &str, args: Value) -> Result<Value, HostError> {
-    let req = json!({"op": op, "args": args}).to_string();
-    let packed = unsafe { host_call(req.as_ptr() as i32, req.len() as i32) } as u64;
-    let bytes = unsafe { take((packed >> 32) as usize, (packed & 0xffff_ffff) as usize) };
-    let v: Value = serde_json::from_slice(&bytes).map_err(|e| HostError { code: "invalid".into(), message: e.to_string(), detail: Value::Null })?;
+    let v = host_reply(op, args)?;
     match v.get("error") {
         Some(e) => Err(HostError {
             code: e["code"].as_str().unwrap_or("error").into(),
@@ -120,6 +121,47 @@ pub fn call(op: &str, args: Value) -> Result<Value, HostError> {
             detail: e.clone(),
         }),
         None => Ok(v.get("ok").cloned().unwrap_or(Value::Null)),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn host_reply(op: &str, args: Value) -> Result<Value, HostError> {
+    let req = json!({"op": op, "args": args}).to_string();
+    let packed = unsafe { host_call(req.as_ptr() as i32, req.len() as i32) } as u64;
+    let bytes = unsafe { take((packed >> 32) as usize, (packed & 0xffff_ffff) as usize) };
+    serde_json::from_slice(&bytes).map_err(|e| HostError { code: "invalid".into(), message: e.to_string(), detail: Value::Null })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn host_reply(op: &str, args: Value) -> Result<Value, HostError> {
+    Ok(testing::reply(op, args))
+}
+
+/// A fake host for a plugin's native unit tests.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod testing {
+    use super::*;
+    use std::cell::RefCell;
+
+    type Host = Box<dyn FnMut(&str, &Value) -> Result<Value, (String, String)>>;
+
+    thread_local! {
+        static HOST: RefCell<Option<Host>> = RefCell::new(None);
+    }
+
+    /// Answers this thread's host calls with `f(op, args)`: `Ok(value)` or `Err((code, message))`.
+    pub fn host(f: impl FnMut(&str, &Value) -> Result<Value, (String, String)> + 'static) {
+        HOST.with(|h| *h.borrow_mut() = Some(Box::new(f)));
+    }
+
+    pub(crate) fn reply(op: &str, args: Value) -> Value {
+        HOST.with(|h| match h.borrow_mut().as_mut() {
+            Some(f) => match f(op, &args) {
+                Ok(v) => json!({"ok": v}),
+                Err((code, message)) => json!({"error": {"code": code, "message": message}}),
+            },
+            None => json!({"error": {"code": "unavailable", "message": "no Ferrum host outside WebAssembly; install one with testing::host"}}),
+        })
     }
 }
 
@@ -189,6 +231,11 @@ pub fn close(connection: &str, reason: &str) -> Result<(), HostError> {
 
 pub fn log(message: &str) {
     let _ = call("log", json!({"message": message}));
+}
+
+/// Logs something an operator must act on (a payment to refund, say).
+pub fn warn(message: &str) {
+    let _ = call("log", json!({"level": "warn", "message": message}));
 }
 
 /// The current time (RFC 3339, UTC).
