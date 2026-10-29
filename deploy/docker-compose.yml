@@ -44,6 +44,8 @@ services:
       # Single server: attachments on the local volume. Set FERRUM_S3_BUCKET (and FERRUM_S3_ENDPOINT,
       # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY for MinIO/R2/...) to use object storage instead.
       FERRUM_REQUIRE_OBJECT_STORAGE: ${FERRUM_REQUIRE_OBJECT_STORAGE:-false}
+      # Requests a user may make per minute on each replica (0: no limit).
+      FERRUM_USER_REQUESTS_PER_MINUTE: ${FERRUM_USER_REQUESTS_PER_MINUTE:-3000}
       FERRUM_S3_BUCKET: ${FERRUM_S3_BUCKET:-}
       FERRUM_S3_ENDPOINT: ${FERRUM_S3_ENDPOINT:-}
       FERRUM_S3_REGION: ${FERRUM_S3_REGION:-}

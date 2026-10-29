@@ -39,7 +39,8 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 - **Rate limits** (sign-ins, documents emailed, 300 requests a minute per address on public
   endpoints) are counted in the database, so they hold across replicas; apps use the same
   (`Kernel::rate_limit`). They are per address: Campaigns' tracking pixels and links opened
-  through a mail provider's image proxy share that proxy's budget.
+  through a mail provider's image proxy share that proxy's budget. Each user's own request budget
+  (`FERRUM_USER_REQUESTS_PER_MINUTE`) is counted per replica, not across the cluster.
 - **GST e-invoices and e-way bills** (`india`): Sales Invoices to registered businesses, SEZs and
   buyers abroad, and their credit notes; debit notes, deemed exports, reverse charge and
   e-commerce operators' details are not built. GSP connectors are plugins Ferrum does not ship;

@@ -150,6 +150,7 @@ impl Hooks for App {
             .map_err(Error::Message)?;
         let (tx, _rx) = watch::channel(false);
         let db = kernel.db.clone();
+        let user_requests = settings.user_requests_per_minute;
         let state = AppState {
             kernel,
             plugins,
@@ -163,6 +164,8 @@ impl Hooks for App {
             mail_limiter: Arc::new(RateLimiter::shared("mail", Duration::from_secs(60), 30, db.clone())),
             // Public endpoints are open to the internet: a generous per-address budget stops floods.
             public_limiter: Arc::new(RateLimiter::shared("public", Duration::from_secs(60), 300, db)),
+            // A runaway script with a valid token slows down instead of slowing everyone down.
+            user_limiter: Arc::new(RateLimiter::local_only("user", Duration::from_secs(60), user_requests)),
             apps: Arc::new(apps),
             objects,
         };

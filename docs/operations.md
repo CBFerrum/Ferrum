@@ -37,6 +37,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_APP_STORES` | no | App stores, comma-separated base URLs (`https://store.example`); empty: no store, only apps built in or uploaded |
 | `FERRUM_APP_TRUSTED_KEYS` | with stores | Comma-separated `store:<base64>` / `publisher:<base64>` Ed25519 public keys whose signatures this cluster trusts (`ferrum-app keygen` prints them). Store apps need a store countersignature by one of them; several keys may be trusted at once (rotation) |
 | `FERRUM_APP_UPLOADS` | no | Who may upload app bundles: `off`, `private` (production default: sandboxed apps without tables, visible only in the uploading workspace) or `cluster` (development default: available to every workspace) |
+| `FERRUM_USER_REQUESTS_PER_MINUTE` | no | Requests one user (with any of their sessions and API keys) may make per minute on each replica; beyond it they get `429` with `Retry-After`. Default 3000; `0` turns it off. It counts per replica, so the cluster-wide budget grows with the replica count |
 | `FERRUM_SSO_ALLOW_PRIVATE` | no | `true` lets single sign-on reach an identity provider on a private address or over plain http (one inside your own network, such as an in-cluster Keycloak); default `false` |
 | `FERRUM_APP_ALLOW_UNSIGNED` | no | `true` accepts uploads no trusted key signed (development default); production default `false` |
 
@@ -78,6 +79,17 @@ up to ~11 replicas without a pooler; raise both together).
 
 Single host: `cp deploy/.env.example deploy/.env`, fill it in, then
 `docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d`.
+
+**Checking an image before it goes out.** `deploy/smoke.sh` deploys the Compose stack (database,
+Ferrum, PDF renderer) from an image with freshly generated secrets, creates and seeds a
+workspace, signs in, submits a Sales Invoice and prints it as HTML and PDF, checks the audit
+chain and the security and caching headers, restarts the server and reads again with the same
+session, runs a short load test, and removes everything. CI runs it on every image it builds and
+publishes the image only when it passes. To run it yourself (Docker, curl, python3 with httpx):
+
+```bash
+FERRUM_IMAGE=ghcr.io/cbferrum/ferrum:<tag> deploy/smoke.sh
+```
 
 ## Upgrades
 
@@ -158,7 +170,9 @@ FERRUM_URL=https://staging.example.com FERRUM_TENANT=load FERRUM_EMAIL=load@exam
 
 The script mixes lists, reads, metadata, live totals and draft creation and reports errors and
 percentiles per call; one Python client tops out near 600 requests a second, so for higher rates
-run several, or `ab`/`oha` against single endpoints as above.
+run several, or `ab`/`oha` against single endpoints as above. It signs in as one user: raise that
+server's `FERRUM_USER_REQUESTS_PER_MINUTE` (or set it to `0`) for the run, or the per-user budget
+answers `429` long before the server is busy.
 
 ## Incident playbooks
 
