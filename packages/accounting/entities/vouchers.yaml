@@ -40,8 +40,8 @@
   label: Payment Allocation
   kind: child
   fields:
-    - {name: invoice_type, type: select, options: [Sales Invoice, Purchase Invoice], required: true, in_list: true}
-    - {name: invoice, type: data, required: true, label: Invoice ID}
+    - {name: invoice_type, type: data, read_only: true, in_list: true, label: Document Type, description: "Set from the open item: an invoice, a journal entry line, a dunning..."}
+    - {name: invoice, type: data, required: true, label: Open Item ID, description: "An open invoice, journal entry line or other open item of the party"}
     - {name: invoice_number, type: data, read_only: true, in_list: true}
     - {name: due_date, type: date, read_only: true, in_list: true}
     - {name: outstanding, type: currency, read_only: true, in_list: true}

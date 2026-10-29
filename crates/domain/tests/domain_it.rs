@@ -596,6 +596,38 @@ async fn scenario() {
     assert_eq!(t.gl("Creditors").await, creditors_before);
     assert_eq!(t.gl("TDS Payable").await, n("-10"));
     assert_eq!(t.gl("Primary Bank").await - bank_before, n("-167"));
+    // An opening balance entered as a journal entry line is offered and paid like a bill.
+    let creditors = t.find_one("Account", json!({"account_name": "Creditors"})).await;
+    let equity = t.find_one("Account", json!({"account_name": "Opening Balance Equity"})).await;
+    let opening = t
+        .insert(
+            "JournalEntry",
+            json!({"company": cid.to_string(), "accounts": [{"account": equity["id"], "debit": "500"},
+                   {"account": creditors["id"], "credit": "500", "party_type": "Supplier", "supplier": acme.to_string()}]}),
+        )
+        .await;
+    let opening = t.submit("JournalEntry", uid(&opening)).await;
+    let line = opening["accounts"].as_array().unwrap().iter().find(|l| l["party_type"] == json!("Supplier")).unwrap()["id"].clone();
+    let offer = t
+        .insert(
+            "PaymentEntry",
+            json!({"company": cid.to_string(), "payment_type": "Pay", "supplier": acme.to_string(), "bank_account": bank, "currency": inr["id"], "paid_amount": "1000000"}),
+        )
+        .await;
+    let offered = t.action("PaymentEntry", uid(&offer), "get_outstanding_invoices", json!({})).await;
+    let row = offered["references"].as_array().unwrap().iter().find(|r| r["invoice"] == line).cloned().expect("the opening balance is offered");
+    assert_eq!((row["invoice_type"].clone(), dec(&row["outstanding"])), (json!("Journal Entry"), n("500")));
+    t.k.delete(&t.ctx, "PaymentEntry", uid(&offer), None).await.expect("discard the draft");
+    let pay = t
+        .insert(
+            "PaymentEntry",
+            json!({"company": cid.to_string(), "payment_type": "Pay", "supplier": acme.to_string(), "bank_account": bank, "currency": inr["id"], "paid_amount": "500",
+                   "references": [{"invoice_type": "Purchase Invoice", "invoice": line, "allocated_amount": "500"}]}),
+        )
+        .await;
+    assert_eq!(pay["references"][0]["invoice_type"], json!("Journal Entry"), "the type comes from the open item, not the request");
+    t.submit("PaymentEntry", uid(&pay)).await;
+    assert_eq!(t.gl("Creditors").await, creditors_before, "the opening balance is settled");
 
     // ───────────── foreign currency: invoiced at 83, paid at 84 ─────────────
     let usd = t.find_one("Currency", json!({"code": "USD"})).await;
