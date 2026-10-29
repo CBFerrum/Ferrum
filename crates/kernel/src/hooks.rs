@@ -112,25 +112,53 @@ pub trait Site: Send + Sync {
 
 #[derive(Default, Clone)]
 pub struct HookRegistry {
-    by_entity: HashMap<String, Vec<Arc<dyn DocHook>>>,
+    by_entity: HashMap<String, Vec<ScopedHook>>,
     sinks: Vec<Arc<dyn EventSink>>,
     sites: HashMap<String, Arc<dyn Site>>,
+    /// The packages owning what is being registered (see [`HookRegistry::scoped`]).
+    scope: Option<Arc<[String]>>,
+}
+
+#[derive(Clone)]
+struct ScopedHook {
+    /// `None`: runs for every tenant; otherwise only for tenants with one of these packages.
+    packages: Option<Arc<[String]>>,
+    hook: Arc<dyn DocHook>,
 }
 
 impl HookRegistry {
     pub fn register(&mut self, entity: &str, hook: Arc<dyn DocHook>) -> &mut Self {
-        self.by_entity.entry(entity.to_string()).or_default().push(hook);
+        let packages = self.scope.clone();
+        self.by_entity.entry(entity.to_string()).or_default().push(ScopedHook { packages, hook });
         self
     }
 
-    /// Hooks for `entity`, followed by hooks registered for every entity (`"*"`, e.g. plugins),
-    /// so those see the values the entity's own hooks derived.
+    /// Registers what `f` adds as belonging to `packages`: those document hooks run only for
+    /// tenants that installed one of them, so an app's hooks on shared entities (Item, Sales
+    /// Invoice) never fire — or fail — in workspaces without the app.
+    pub fn scoped(&mut self, packages: &[String], f: impl FnOnce(&mut Self)) -> &mut Self {
+        let outer = self.scope.replace(packages.iter().cloned().collect());
+        f(self);
+        self.scope = outer;
+        self
+    }
+
+    /// Every hook for `entity`, followed by hooks registered for every entity (`"*"`, e.g.
+    /// plugins), so those see the values the entity's own hooks derived.
     pub fn for_entity(&self, entity: &str) -> Vec<Arc<dyn DocHook>> {
-        let mut out = self.by_entity.get(entity).cloned().unwrap_or_default();
-        if entity != "*" {
-            out.extend(self.by_entity.get("*").cloned().unwrap_or_default());
-        }
-        out
+        self.matching(entity, |_| true)
+    }
+
+    /// [`HookRegistry::for_entity`] for a tenant with the `installed` packages: hooks scoped to
+    /// packages it lacks are left out.
+    pub fn for_tenant(&self, entity: &str, installed: &[String]) -> Vec<Arc<dyn DocHook>> {
+        self.matching(entity, |h| h.packages.as_ref().is_none_or(|ps| ps.iter().any(|p| installed.contains(p))))
+    }
+
+    fn matching(&self, entity: &str, keep: impl Fn(&ScopedHook) -> bool) -> Vec<Arc<dyn DocHook>> {
+        let own = self.by_entity.get(entity).into_iter().flatten();
+        let all = if entity != "*" { self.by_entity.get("*") } else { None };
+        own.chain(all.into_iter().flatten()).filter(|h| keep(h)).map(|h| h.hook.clone()).collect()
     }
 
     pub fn add_event_sink(&mut self, sink: Arc<dyn EventSink>) -> &mut Self {
@@ -154,5 +182,33 @@ impl HookRegistry {
 
     pub fn site(&self, package: &str) -> Option<&Arc<dyn Site>> {
         self.sites.get(package)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Noop;
+    impl DocHook for Noop {}
+
+    #[test]
+    fn scoped_hooks_run_only_where_their_package_is_installed() {
+        let mut r = HookRegistry::default();
+        let platform: Arc<dyn DocHook> = Arc::new(Noop);
+        let app: Arc<dyn DocHook> = Arc::new(Noop);
+        let everywhere: Arc<dyn DocHook> = Arc::new(Noop);
+        r.register("Item", platform.clone());
+        r.scoped(&["procurement".to_string()], |h| {
+            h.register("Item", app.clone());
+        });
+        r.register("*", everywhere.clone());
+        let ids = |hooks: Vec<Arc<dyn DocHook>>| hooks.iter().map(|h| Arc::as_ptr(h) as *const () as usize).collect::<Vec<_>>();
+        let id = |h: &Arc<dyn DocHook>| Arc::as_ptr(h) as *const () as usize;
+        assert_eq!(ids(r.for_tenant("Item", &["core".into()])), [id(&platform), id(&everywhere)]);
+        assert_eq!(ids(r.for_tenant("Item", &["core".into(), "procurement".into()])), [id(&platform), id(&app), id(&everywhere)]);
+        assert_eq!(ids(r.for_entity("Item")).len(), 3, "for_entity still lists every hook");
+        r.register("Item", platform.clone());
+        assert_eq!(ids(r.for_tenant("Item", &[])).len(), 3, "the scope ends with the closure");
     }
 }

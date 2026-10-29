@@ -134,7 +134,7 @@ pub fn row_to_doc(ent: &EffEntity, schema: &Schema, row: Value) -> Doc {
     m
 }
 
-fn load_sql(ent: &EffEntity, schema: &Schema, lock: bool) -> String {
+fn load_sql(ent: &EffEntity, schema: &Schema) -> String {
     let mut children = Vec::new();
     for (field, info) in &ent.children {
         if let Some(cent) = schema.entity(&info.entity) {
@@ -148,17 +148,26 @@ fn load_sql(ent: &EffEntity, schema: &Schema, lock: bool) -> String {
     }
     let build = if children.is_empty() { String::new() } else { format!(" || jsonb_build_object({})", children.join(", ")) };
     format!(
-        "select to_jsonb(x){build} from (select {}, a.tenant_id from {} a where a.tenant_id = $1 and a.id = $2{}{}) x",
+        "select to_jsonb(x){build} from (select {}, a.tenant_id from {} a where a.tenant_id = $1 and a.id = $2{}) x",
         select_list(ent, "a"),
         q(&ent.table),
-        entity_predicate(ent, "a"),
-        if lock { " for update" } else { "" }
+        entity_predicate(ent, "a")
     )
 }
 
 /// Loads one record with its child rows; `lock` takes a row lock for the rest of the transaction.
 pub async fn load(tx: &mut Tx, schema: &Schema, ent: &EffEntity, tenant: Uuid, id: Uuid, lock: bool) -> Result<Option<Doc>> {
-    let row: Option<Value> = sqlx::query_scalar(AssertSqlSafe(load_sql(ent, schema, lock))).bind(tenant).bind(id).fetch_optional(&mut **tx).await?;
+    if lock {
+        // Lock first, read in a new statement: under read committed, a statement that had to wait
+        // for the lock still sees child rows from its own (older) snapshot, and writing them back
+        // would undo the other writer's changes.
+        let sql = format!("select a.id from {} a where a.tenant_id = $1 and a.id = $2{} for update", q(&ent.table), entity_predicate(ent, "a"));
+        let locked: Option<Uuid> = sqlx::query_scalar(AssertSqlSafe(sql)).bind(tenant).bind(id).fetch_optional(&mut **tx).await?;
+        if locked.is_none() {
+            return Ok(None);
+        }
+    }
+    let row: Option<Value> = sqlx::query_scalar(AssertSqlSafe(load_sql(ent, schema))).bind(tenant).bind(id).fetch_optional(&mut **tx).await?;
     Ok(row.map(|r| row_to_doc(ent, schema, r)))
 }
 

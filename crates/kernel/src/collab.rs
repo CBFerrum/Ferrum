@@ -388,15 +388,23 @@ impl Kernel {
     }
 
     /// Tags used on an entity with how many records carry each (for filters and suggestions).
+    /// Tags of the records the caller can read, with counts (others' records never show).
     pub async fn tag_counts(&self, ctx: &Ctx, entity: &str) -> Result<Vec<Value>> {
-        ctx.require(entity, Action::Read)?;
+        let ent = self.entity(ctx, entity)?;
+        let scope = crate::ctx::row_scope(ctx, &ent, Action::Read)?;
+        if ent.table.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut qb = sqlx::QueryBuilder::new(format!(
+            "select t.tag, count(*) from record_tag t join {} a on a.tenant_id = t.tenant_id and a.id = t.record_id",
+            crate::ddl::q(&ent.table)
+        ));
+        qb.push(" where t.tenant_id = ").push_bind(ctx.tenant).push(" and t.entity = ").push_bind(entity.to_string());
+        qb.push(crate::store::entity_predicate(&ent, "a"));
+        scope.push_sql(&mut qb, "a");
+        qb.push(" group by t.tag order by count(*) desc, t.tag limit 200");
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let rows: Vec<(String, i64)> =
-            sqlx::query_as("select tag, count(*) from record_tag where tenant_id = $1 and entity = $2 group by tag order by count(*) desc, tag limit 200")
-                .bind(ctx.tenant)
-                .bind(entity)
-                .fetch_all(&mut *tx)
-                .await?;
+        let rows: Vec<(String, i64)> = qb.build_query_as().fetch_all(&mut *tx).await?;
         tx.commit().await?;
         Ok(rows.into_iter().map(|(t, n)| json!({"tag": t, "count": n})).collect())
     }
@@ -511,12 +519,18 @@ impl Kernel {
                 .fetch_optional(&mut *tx)
                 .await?;
         let (entity, record, by, key) = row.ok_or_else(|| Error::NotFound("file".into()))?;
+        // An attachment belongs to its record: only someone who can edit the record removes it
+        // (an uploader who lost access must not delete evidence). Loose uploads are their uploader's.
         let allowed = match (&entity, record) {
-            (Some(e), Some(r)) => by == Some(ctx.user) || (ctx.require(e, Action::Write).is_ok() && self.get(ctx, e, r, false).await.is_ok()),
+            (Some(e), Some(r)) => ctx.require(e, Action::Write).is_ok() && self.get(ctx, e, r, false).await.is_ok(),
             _ => by == Some(ctx.user) || ctx.is_admin,
         };
         if !allowed {
-            return Err(Error::Forbidden("only its uploader or someone who can edit the record can delete this file".into()));
+            return Err(Error::Forbidden(if entity.is_some() {
+                "only someone who can edit the record can delete its files".into()
+            } else {
+                "only its uploader can delete this file".into()
+            }));
         }
         sqlx::query("delete from file_object where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(file).execute(&mut *tx).await?;
         if let (Some(e), Some(r)) = (&entity, record) {

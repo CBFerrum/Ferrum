@@ -3,7 +3,7 @@
 //! they are recorded in `file_object` like any upload, with the same access rules.
 
 use crate::error::{Error, Result};
-use crate::{Ctx, Kernel};
+use crate::{Ctx, Kernel, Tx};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -81,6 +81,43 @@ impl Kernel {
             self.get(ctx, &e, r, false).await?;
         }
         Ok((name, ctype, self.file_store()?.get(&key).await?))
+    }
+
+    /// Deletes a stored file — its record and its bytes — if the caller may: its uploader, or
+    /// someone who can edit the record it is attached to. An object the store cannot delete is
+    /// only logged (the record is gone, so nothing can read it).
+    pub async fn remove_file(&self, ctx: &Ctx, id: Uuid) -> Result<()> {
+        let key = self.delete_file(ctx, id).await?;
+        if let Ok(store) = self.file_store()
+            && let Err(e) = store.delete(&key).await
+        {
+            tracing::warn!(%key, "could not delete a file's object: {e}");
+        }
+        Ok(())
+    }
+
+    /// Attaches a file nobody attached yet to a record the caller can read, inside the caller's
+    /// transaction (an upload that becomes an attachment when its document is saved). Only the
+    /// uploader, or a system context, may attach it.
+    pub async fn attach_file_tx(&self, ctx: &Ctx, tx: &mut Tx, id: Uuid, entity: &str, record: Uuid) -> Result<()> {
+        self.get_tx(ctx, tx, entity, record, false).await?;
+        let attached = sqlx::query(
+            "update file_object set entity = $3, record_id = $4 where tenant_id = $1 and id = $2 and entity is null and record_id is null \
+             and (created_by = $5 or $6)",
+        )
+        .bind(ctx.tenant)
+        .bind(id)
+        .bind(entity)
+        .bind(record)
+        .bind(ctx.user)
+        .bind(ctx.is_system)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+        if attached == 0 {
+            return Err(Error::NotFound("file".into()));
+        }
+        Ok(())
     }
 
     /// Copies a file the caller can read onto another record (a mail attachment kept on the record

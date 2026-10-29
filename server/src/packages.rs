@@ -25,7 +25,13 @@ macro_rules! apps {
             $(
                 #[cfg(feature = $nfeature)]
                 {
-                    $nkrate::register(hooks);
+                    // An app's document hooks run only for workspaces that installed one of its packages.
+                    let packages: Vec<String> = $nkrate::packages().map(|ps| ps.iter().map(|p| p.name().to_string()).collect()).unwrap_or_default();
+                    if packages.is_empty() {
+                        $nkrate::register(hooks);
+                    } else {
+                        hooks.scoped(&packages, |h| $nkrate::register(h));
+                    }
                     for source in $nkrate::reports() {
                         ferrum_domain::reports::add_source(source);
                     }
@@ -112,6 +118,14 @@ apps! {
         "finance" => ferrum_finance,
         "mfg-ops" => ferrum_mfg_ops,
         "studio" => ferrum_studio,
+        "assets" => ferrum_app_assets,
+        "bookings" => ferrum_app_bookings,
+        "field-service" => ferrum_app_field_service,
+        "forms" => ferrum_app_forms,
+        "lms" => ferrum_app_lms,
+        "drive" => ferrum_app_drive,
+        "campaigns" => ferrum_app_campaigns,
+        "sign" => ferrum_app_sign,
     }
     legacy {
     }
@@ -164,4 +178,21 @@ pub fn spawn(k: Arc<Kernel>, mut shutdown: watch::Receiver<bool>) -> tokio::task
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    /// Every compiled app's manifest is valid, and the platform's packages and every compiled
+    /// app's load together as one catalog (no clashing entity names, valid overlays).
+    #[test]
+    fn compiled_apps_fit_together() {
+        for m in super::native_manifests() {
+            ferrum_apps::AppManifest::parse(m).unwrap_or_else(|e| panic!("{e}\n{m}"));
+        }
+        let empty = std::env::temp_dir().join(format!("ferrum-no-packages-{}", std::process::id()));
+        std::fs::create_dir_all(&empty).unwrap();
+        let catalog = super::base_catalog(&empty).unwrap_or_else(|e| panic!("catalog: {e}"));
+        assert!(catalog.package("core").is_some());
+        let _ = std::fs::remove_dir(&empty);
+    }
 }

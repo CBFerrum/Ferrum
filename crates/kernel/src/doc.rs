@@ -492,7 +492,7 @@ impl Kernel {
         if ent.is_submittable() && docstatus_of(&old) == 1 {
             return Err(Error::invalid("submitted documents cannot be deleted; cancel first"));
         }
-        for h in self.hooks.for_entity(&ent.def.name) {
+        for h in self.hooks.for_tenant(&ent.def.name, &ctx.schema.packages) {
             let mut hc = HookCtx { kernel: self, ctx, tx: &mut *tx, entity: &ent };
             h.before_delete(&mut hc, &old).await?;
         }
@@ -546,7 +546,7 @@ impl Kernel {
         self.compute(ctx, &ent, &mut doc)?;
         self.validate(ctx, tx, &ent, &doc, Some(&old), RuleOn::Submit).await?;
         self.hook_validate(ctx, tx, &ent, &doc).await?;
-        for h in self.hooks.for_entity(&ent.def.name) {
+        for h in self.hooks.for_tenant(&ent.def.name, &ctx.schema.packages) {
             let mut hc = HookCtx { kernel: self, ctx, tx: &mut *tx, entity: &ent };
             h.before_submit(&mut hc, &mut doc).await?;
         }
@@ -563,7 +563,7 @@ impl Kernel {
         doc.insert("updated_by".into(), if !ctx.user.is_nil() { json!(ctx.user.to_string()) } else { Value::Null });
         store::update_row(tx, &ctx.schema, &ent, ctx.tenant, &doc, &old).await?;
         let stored = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::internal("submit vanished"))?;
-        for h in self.hooks.for_entity(&ent.def.name) {
+        for h in self.hooks.for_tenant(&ent.def.name, &ctx.schema.packages) {
             let mut hc = HookCtx { kernel: self, ctx, tx: &mut *tx, entity: &ent };
             h.on_submit(&mut hc, &stored).await?;
         }
@@ -605,7 +605,7 @@ impl Kernel {
         if docstatus_of(&old) != 1 {
             return Err(Error::invalid("only submitted documents can be cancelled"));
         }
-        for h in self.hooks.for_entity(&ent.def.name) {
+        for h in self.hooks.for_tenant(&ent.def.name, &ctx.schema.packages) {
             let mut hc = HookCtx { kernel: self, ctx, tx: &mut *tx, entity: &ent };
             h.before_cancel(&mut hc, &old).await?;
         }
@@ -619,7 +619,7 @@ impl Kernel {
         doc.insert("updated_by".into(), if !ctx.user.is_nil() { json!(ctx.user.to_string()) } else { Value::Null });
         store::update_row(tx, &ctx.schema, &ent, ctx.tenant, &doc, &old).await?;
         let stored = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::internal("cancel vanished"))?;
-        for h in self.hooks.for_entity(&ent.def.name) {
+        for h in self.hooks.for_tenant(&ent.def.name, &ctx.schema.packages) {
             let mut hc = HookCtx { kernel: self, ctx, tx: &mut *tx, entity: &ent };
             h.on_cancel(&mut hc, &stored).await?;
         }
@@ -677,7 +677,7 @@ impl Kernel {
                 return Err(Error::invalid(format!("'{}' is not available for this document", def.label)));
             }
         }
-        for h in self.hooks.for_entity(&ent.def.name) {
+        for h in self.hooks.for_tenant(&ent.def.name, &ctx.schema.packages) {
             let mut hc = HookCtx { kernel: self, ctx, tx: &mut *tx, entity: &ent };
             if let Some(out) = h.action(&mut hc, action, &doc, params).await? {
                 audit::record(tx, ctx, &ent.def.name, id, &format!("action:{action}"), None, params.clone()).await?;
@@ -1159,7 +1159,7 @@ impl Kernel {
     }
 
     async fn hook_before_validate(&self, ctx: &Ctx, tx: &mut Tx, ent: &Arc<EffEntity>, doc: &mut Doc) -> Result<()> {
-        for h in self.hooks.for_entity(&ent.def.name) {
+        for h in self.hooks.for_tenant(&ent.def.name, &ctx.schema.packages) {
             let mut hc = HookCtx { kernel: self, ctx, tx: &mut *tx, entity: ent };
             h.before_validate(&mut hc, doc).await?;
         }
@@ -1167,7 +1167,7 @@ impl Kernel {
     }
 
     async fn hook_validate(&self, ctx: &Ctx, tx: &mut Tx, ent: &Arc<EffEntity>, doc: &Doc) -> Result<()> {
-        for h in self.hooks.for_entity(&ent.def.name) {
+        for h in self.hooks.for_tenant(&ent.def.name, &ctx.schema.packages) {
             let mut hc = HookCtx { kernel: self, ctx, tx: &mut *tx, entity: ent };
             h.validate(&mut hc, doc).await?;
         }
@@ -1175,7 +1175,7 @@ impl Kernel {
     }
 
     async fn hook_after_save(&self, ctx: &Ctx, tx: &mut Tx, ent: &Arc<EffEntity>, doc: &Doc, old: Option<&Doc>) -> Result<()> {
-        for h in self.hooks.for_entity(&ent.def.name) {
+        for h in self.hooks.for_tenant(&ent.def.name, &ctx.schema.packages) {
             let mut hc = HookCtx { kernel: self, ctx, tx: &mut *tx, entity: ent };
             h.after_save(&mut hc, doc, old).await?;
         }

@@ -111,6 +111,21 @@ async fn apps_join_the_catalog_at_runtime() {
     // Child rows added while editing get their defaults too.
     let upd = k.update(&c, "FleetVehicle", id, obj(json!({"services": [{"note": "oil change"}]})), None).await.unwrap();
     assert_eq!(upd["services"][0]["active"], json!(true));
+    // A locked read that had to wait for another writer sees that writer's child rows.
+    let mut writer = k.db.tenant_tx(tenant).await.unwrap();
+    k.update_tx(&c, &mut writer, "FleetVehicle", id, obj(json!({"services": [{"note": "tyres"}]})), None).await.unwrap();
+    let (k2, c2) = (k.clone(), c.clone());
+    let waiter = tokio::spawn(async move {
+        let mut tx = k2.db.tenant_tx(tenant).await.unwrap();
+        let seen = k2.get_tx(&c2, &mut tx, "FleetVehicle", id, true).await.unwrap();
+        tx.commit().await.unwrap();
+        seen
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await; // the waiter is blocked on the row lock
+    writer.commit().await.unwrap();
+    let seen = waiter.await.unwrap();
+    assert_eq!(seen["services"].as_array().unwrap().len(), 1);
+    assert_eq!(seen["services"][0]["note"], json!("tyres"), "not the child rows from before the wait");
     // Created and submitted in one transaction; an idempotent replay returns the same document.
     let trip = k.insert_submit(&c, "FleetTrip", obj(json!({"purpose": "delivery"}))).await.unwrap();
     assert_eq!(trip["docstatus"], json!(1));
