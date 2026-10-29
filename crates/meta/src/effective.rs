@@ -149,6 +149,8 @@ pub struct Schema {
     pub packages: Vec<String>,
     pub modules: Vec<ModuleDef>,
     pub roles: Vec<RoleDef>,
+    /// Where the installed packages keep people's personal data.
+    pub personal_data: Vec<PersonalDataDef>,
     pub warnings: Vec<SchemaWarning>,
     /// The tenant's fiscal year start month (1-12), for contexts that act without a user.
     pub fy_start_month: u32,
@@ -166,6 +168,7 @@ impl Default for Schema {
             packages: vec![],
             modules: vec![],
             roles: vec![],
+            personal_data: vec![],
             warnings: vec![],
             fy_start_month: 1,
             timezone: "UTC".into(),
@@ -358,6 +361,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
     let mut building: BTreeMap<String, Building> = BTreeMap::new();
     let mut modules = Vec::new();
     let mut roles = Vec::new();
+    let mut personal_data = Vec::new();
     let mut warnings = Vec::new();
 
     for pkg in catalog.packages().filter(|p| set.contains(p.name())) {
@@ -368,6 +372,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         }
         modules.extend(pkg.manifest.modules.iter().cloned());
         roles.extend(pkg.manifest.roles.iter().cloned());
+        personal_data.extend(pkg.manifest.personal_data.iter().cloned());
     }
     // Package overlays and workflows, in dependency order (validated by the catalog already).
     for pkg in catalog.packages().filter(|p| set.contains(p.name())) {
@@ -533,7 +538,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         );
     }
     modules.sort_by(|a, b| a.order.cmp(&b.order).then(a.name.cmp(&b.name)));
-    Ok(Schema { version, entities, packages, modules, roles, warnings, fy_start_month: 1, timezone: "UTC".into() })
+    Ok(Schema { version, entities, packages, modules, roles, personal_data, warnings, fy_start_month: 1, timezone: "UTC".into() })
 }
 
 fn compile_exprs(def: &EntityDef) -> Result<Exprs, String> {

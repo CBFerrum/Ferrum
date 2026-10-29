@@ -203,6 +203,26 @@ impl Catalog {
             for wf in &p.manifest.workflows {
                 validate_workflow(wf, &self.entities).map_err(|m| MetaError::Invalid(format!("{name}: workflow {}: {m}", wf.name)))?;
             }
+            for pd in &p.manifest.personal_data {
+                let Some((_, e)) = self.entities.get(&pd.entity) else {
+                    return invalid(format!("{name}: personal data of unknown entity {}", pd.entity));
+                };
+                let field = |f: &str| e.fields.iter().find(|x| x.name == f);
+                if field(&pd.match_field).is_none_or(|f| f.ftype != FieldType::Email) {
+                    return invalid(format!("{name}: personal data of {}: match must be an email field", pd.entity));
+                }
+                if pd.erase.is_empty() {
+                    return invalid(format!("{name}: personal data of {}: list the fields to erase", pd.entity));
+                }
+                for f in &pd.erase {
+                    if field(f).is_none_or(|x| !crate::types::ERASABLE_TYPES.contains(&x.ftype)) {
+                        return invalid(format!("{name}: personal data of {}: {f} is not a text, contact or date field", pd.entity));
+                    }
+                }
+                if let Some(c) = pd.condition.keys().find(|c| field(c).is_none()) {
+                    return invalid(format!("{name}: personal data of {}: {c} is not a field", pd.entity));
+                }
+            }
             for seed in &p.manifest.seed {
                 let Some((_, e)) = self.entities.get(&seed.entity) else {
                     return invalid(format!("{name}: seed for unknown entity {}", seed.entity));

@@ -546,4 +546,57 @@ async fn scenario() {
     set(b, vec![json!({"id": kept, "uom": sets, "conversion_factor": "2"})]).await.unwrap();
     let a_units = k.get(&admin, "Item", a, false).await.unwrap()["uoms"].as_array().unwrap().clone();
     assert_eq!((a_units.len(), a_units[0]["uom"].as_str()), (1, Some(boxes.as_str())), "another parent cannot take a row by its id");
+
+    // ── personal-data requests: export, erasure, audit redaction, the login account ──
+    let pat = id_of(
+        &k.insert(
+            &admin,
+            "Customer",
+            obj(json!({"customer_name": "Pat Private", "customer_type": "Individual", "email": "Pat@Private.test", "phone": "+44 20 7946 0000"})),
+        )
+        .await
+        .unwrap(),
+    );
+    k.update(&admin, "Customer", pat, obj(json!({"billing_address": "1 Quiet Lane"})), None).await.unwrap();
+    let firm = id_of(
+        &k.insert(&admin, "Customer", obj(json!({"customer_name": "Pat's Firm Ltd", "customer_type": "Company", "email": "pat@private.test"}))).await.unwrap(),
+    );
+    k.create_user(&admin, "pat@private.test", "Pat Private", Some("Correct-Horse-9"), &["Retail Desk".into()], false).await.unwrap();
+    let refused = k.personal_data(&rita_ctx, "pat@private.test").await;
+    assert!(matches!(refused, Err(Error::Forbidden(_))), "administrators only");
+    let found = k.personal_data(&admin, "PAT@private.test").await.unwrap();
+    let ids: Vec<&str> = found["records"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap()).collect();
+    assert_eq!(ids.len(), 2, "{found}");
+    assert_eq!(found["account"]["full_name"], json!("Pat Private"));
+    assert!(k.erase_personal_data(&admin, "pat@private.test", " ").await.is_err(), "a reason is required");
+    let done = k.erase_personal_data(&admin, "pat@private.test", "Request #42").await.unwrap();
+    assert_eq!((done["erased"].as_array().unwrap().len(), done["account_erased"].clone()), (2, json!(true)), "{done}");
+    let person = k.get(&admin, "Customer", pat, false).await.unwrap();
+    assert!(person["customer_name"].as_str().unwrap().starts_with("Erased "), "{person:?}");
+    assert!(person["email"].is_null() && person["phone"].is_null() && person["billing_address"].is_null());
+    let company = k.get(&admin, "Customer", firm, false).await.unwrap();
+    assert_eq!((company["customer_name"].clone(), company["email"].clone()), (json!("Pat's Firm Ltd"), Value::Null), "a company keeps its name");
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let history: Vec<String> = sqlx::query_scalar("select diff::text from audit_event where tenant_id = $1 and record_id = $2")
+        .bind(tenant)
+        .bind(pat)
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    assert!(!history.iter().any(|d| d.contains("Pat Private") || d.contains("Quiet Lane") || d.contains("7946")), "{history:?}");
+    assert_eq!(ferrum_kernel::audit::verify_record(&mut tx, tenant, "Customer", pat).await.unwrap(), None, "the chain still holds");
+    let tamper = sqlx::query("update audit_event set diff = '{}' where tenant_id = $1 and record_id = $2").bind(tenant).bind(pat).execute(&mut *tx).await;
+    assert!(tamper.is_err(), "only a recorded redaction may change history");
+    drop(tx);
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let account: (String, bool) = sqlx::query_as("select full_name, is_active from app_user where tenant_id = $1 and email::text like 'erased-%'")
+        .bind(tenant)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    drop(tx);
+    assert!(account.0.starts_with("Erased user") && !account.1);
+    assert!(k.login("collab", "pat@private.test", "Correct-Horse-9").await.is_err(), "the account no longer signs in");
+    let again = k.personal_data(&admin, "pat@private.test").await.unwrap();
+    assert!(again["records"].as_array().unwrap().is_empty() && again["account"].is_null(), "nothing is left to find");
 }

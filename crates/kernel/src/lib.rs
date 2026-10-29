@@ -26,6 +26,7 @@ pub mod outbox;
 mod pdf;
 pub mod prefs;
 pub mod print;
+pub mod privacy;
 pub mod query;
 pub mod registry;
 pub mod secret;
