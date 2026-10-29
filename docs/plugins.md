@@ -32,6 +32,11 @@ rustup target add wasm32-unknown-unknown
 cargo build --release --target wasm32-unknown-unknown
 ```
 
+Unit tests run natively (`cargo test`): `ferrum_plugin_sdk::testing::host(|op, args| …)` answers
+the plugin's host calls (`Ok(value)` or `Err((code, message))`), so a test can feed an input to
+the handler and check every record, key-value and HTTP call it made. The Commerce app's payment
+gateways (`gateways/` in its repository: Razorpay and Stripe) are complete examples.
+
 Any language that compiles to a core WebAssembly module works: the contract is below.
 
 ## Installing
@@ -92,7 +97,7 @@ role is exactly its declared permissions. Everything it changes lands in the aud
 | `http.fetch` | `{method, url, headers?, body?}` → `{status, headers, body}`; declared hosts only, https only, never private addresses, no redirects, 15 s, 1 MB |
 | `events.emit` | `{topic, payload}` → publishes `plugin.{name}.{topic}` (inside the document's transaction for hooks) |
 | `sockets.send` / `sockets.close` | `{connection, message}` / `{connection, reason}` — on whichever replica holds the socket |
-| `log` | `{level?, message}` |
+| `log` | `{level?, message}`: `info` (default), `warn` or `error`, to the server log with the plugin and tenant |
 | `time.now` | → RFC 3339 UTC |
 
 ## Limits and guarantees
