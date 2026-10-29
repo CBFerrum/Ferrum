@@ -20,6 +20,29 @@ const MAX_ATTEMPTS: i32 = 15;
 const WEBHOOK_MAX_ATTEMPTS: i32 = 12;
 const MAX_WEBHOOK_BODY: usize = 256 * 1024;
 
+/// Outbox topic of mail queued with [`Kernel::queue_mail`]; never fanned out to webhooks.
+pub const MAIL_TOPIC: &str = "ferrum.mail";
+
+impl Kernel {
+    /// Queues an e-mail in the caller's transaction: it goes out through the server's mailer once
+    /// the transaction commits (never if it rolls back), retried while the mailer fails. For
+    /// apps' own messages (confirmations, reminders) whether or not the Mail app is installed.
+    pub async fn queue_mail(&self, tx: &mut Tx, tenant: Uuid, to: &str, subject: &str, html: &str) -> Result<()> {
+        let to = to.trim();
+        let one_address = to.len() <= 254 && to.split('@').count() == 2 && !to.contains([',', ';', ' ', '<', '>', '\r', '\n']);
+        if !one_address || to.starts_with('@') || to.ends_with('@') {
+            return Err(Error::field("to", "must be one e-mail address"));
+        }
+        if subject.trim().is_empty() || subject.len() > 300 || subject.contains(['\r', '\n']) {
+            return Err(Error::field("subject", "must be one line of at most 300 characters"));
+        }
+        if html.len() > 1 << 20 {
+            return Err(Error::field("html", "is larger than 1 MB"));
+        }
+        enqueue(tx, tenant, MAIL_TOPIC, None, None, serde_json::json!({"to": to, "subject": subject.trim(), "html": html})).await
+    }
+}
+
 pub async fn enqueue(tx: &mut Tx, tenant: Uuid, topic: &str, entity: Option<&str>, record_id: Option<Uuid>, payload: Value) -> Result<()> {
     sqlx::query("insert into outbox (tenant_id, topic, entity, record_id, payload) values ($1, $2, $3, $4, $5)")
         .bind(tenant)
@@ -102,6 +125,11 @@ impl Kernel {
     }
 
     async fn handle_event(&self, ev: &Event) -> Result<()> {
+        if ev.topic == MAIL_TOPIC {
+            let mailer = self.mailer.as_ref().ok_or_else(|| Error::Unavailable("no mailer is configured; queued mail waits for one".into()))?;
+            let field = |k: &str| ev.payload.get(k).and_then(Value::as_str).unwrap_or_default();
+            return mailer.send(field("to"), field("subject"), field("html")).await;
+        }
         // Followers hear about changes made by others; first and best effort:
         // a retry must not notify twice.
         if let (Some(entity), Some(id)) = (&ev.entity, ev.record_id) {
