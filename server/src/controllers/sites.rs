@@ -87,7 +87,7 @@ async fn app(
     let site = st.kernel.hooks.site(&package).filter(|_| ctx.schema.packages.contains(&package)).cloned();
     let site = site.ok_or_else(|| ApiError(Error::NotFound(format!("package {package}"))))?;
     let tenant = ctx.tenant;
-    let req = request(site.max_body(), tenant, Some(ctx), method, path, query, &headers, body)?;
+    let req = request(site.max_body_for(method.as_str(), &path), tenant, Some(ctx), method, path, query, &headers, body)?;
     Ok(respond(site.handle(&st.kernel, req).await?))
 }
 
@@ -108,7 +108,7 @@ async fn public(
     let schema = st.kernel.registry.schema(tenant).await?;
     let site = st.kernel.hooks.site(&package).filter(|_| schema.packages.contains(&package)).cloned();
     let site = site.ok_or_else(|| ApiError(Error::NotFound(format!("package {package}"))))?;
-    let req = request(site.max_body(), tenant, None, method, path, query, &headers, body)?;
+    let req = request(site.max_body_for(method.as_str(), &path), tenant, None, method, path, query, &headers, body)?;
     Ok(respond(site.handle(&st.kernel, req).await?))
 }
 

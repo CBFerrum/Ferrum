@@ -83,7 +83,7 @@
     - {name: end_date, type: date, required: true, in_list: true}
   unique: [[company, year_name]]
   exclusion:
-    - {fields: [company], from: start_date, to: end_date}
+    - {fields: [company], from: start_date, to: end_date, message: Fiscal years of a company cannot overlap}
   rules:
     - {name: ordered_dates, check: "doc.end_date > doc.start_date", message: "End date must be after start date"}
   actions:

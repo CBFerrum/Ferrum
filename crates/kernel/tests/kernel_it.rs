@@ -115,7 +115,7 @@ async fn kernel_end_to_end() {
         .expect("fiscal year");
     let overlap =
         k.insert(&ctx, "FiscalYear", obj(json!({"year_name": "X", "company": company_id, "start_date": "2026-06-01", "end_date": "2027-05-31"}))).await;
-    assert!(matches!(overlap, Err(Error::Conflict(_))), "exclusion constraint: {overlap:?}");
+    assert!(matches!(&overlap, Err(Error::Conflict(m)) if m == "Fiscal years of a company cannot overlap"), "exclusion constraint: {overlap:?}");
     let del = k.delete(&ctx, "Company", company_id.parse().unwrap(), None).await;
     assert!(matches!(del, Err(Error::Conflict(_))), "{del:?}");
     let _ = fy;

@@ -648,8 +648,13 @@ impl Kernel {
 
     /// Runs a custom action declared in metadata and implemented by a hook.
     pub async fn run_action(&self, ctx: &Ctx, entity: &str, id: Uuid, action: &str, params: Value) -> Result<Value> {
+        let read_only = self.entity(ctx, entity).is_ok_and(|e| e.def.actions.iter().any(|a| a.name == action && a.read_only));
         with_retry(|| async {
             let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+            if read_only {
+                // The action promised not to write; the database holds it to that.
+                sqlx::query("set transaction read only").execute(&mut *tx).await?;
+            }
             let out = self.run_action_tx(ctx, &mut tx, entity, id, action, &params).await?;
             tx.commit().await?;
             Ok(out)
@@ -663,7 +668,7 @@ impl Kernel {
         let def = ent.def.actions.iter().find(|a| a.name == action).ok_or_else(|| Error::NotFound(format!("action {action}")))?;
         let perm = Action::parse(&def.permission).unwrap_or(Action::Write);
         let scope = row_scope(ctx, &ent, perm)?;
-        let doc = self.load_marked(tx, ctx, &ent, id, true).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
+        let doc = self.load_marked(tx, ctx, &ent, id, !def.read_only).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
         if !scope.matches(&doc) {
             return Err(Error::NotFound(ent.def.label.clone()));
         }
@@ -680,7 +685,9 @@ impl Kernel {
         for h in self.hooks.for_tenant(&ent.def.name, &ctx.schema.packages) {
             let mut hc = HookCtx { kernel: self, ctx, tx: &mut *tx, entity: &ent };
             if let Some(out) = h.action(&mut hc, action, &doc, params).await? {
-                audit::record(tx, ctx, &ent.def.name, id, &format!("action:{action}"), None, params.clone()).await?;
+                if !def.read_only {
+                    audit::record(tx, ctx, &ent.def.name, id, &format!("action:{action}"), None, params.clone()).await?;
+                }
                 return Ok(out);
             }
         }

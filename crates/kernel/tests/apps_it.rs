@@ -22,7 +22,25 @@ async fn kernel(reset: bool) -> Arc<Kernel> {
         sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
     }
     let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core")).expect("core");
-    Kernel::boot(db, Catalog::from_packages(vec![core]).unwrap(), HookRegistry::default(), KernelSettings::default(), None).await.expect("boot")
+    let mut hooks = HookRegistry::default();
+    hooks.register("FleetVehicle", Arc::new(Peek));
+    Kernel::boot(db, Catalog::from_packages(vec![core]).unwrap(), hooks, KernelSettings::default(), None).await.expect("boot")
+}
+
+/// A read-only action: answers from the record, and tries to write when asked to.
+struct Peek;
+
+#[async_trait::async_trait]
+impl ferrum_kernel::DocHook for Peek {
+    async fn action(&self, hc: &mut ferrum_kernel::HookCtx<'_>, name: &str, doc: &ferrum_kernel::Doc, params: &Value) -> ferrum_kernel::Result<Option<Value>> {
+        if name != "peek" {
+            return Ok(None);
+        }
+        if params.get("write").is_some() {
+            sqlx::query("create temp table fleet_peek_write (x int)").execute(&mut **hc.tx).await?;
+        }
+        Ok(Some(json!({"plate": doc.get("plate")})))
+    }
 }
 
 fn release(version: &str, extra_field: bool) -> NewRelease {
@@ -49,7 +67,7 @@ fn release(version: &str, extra_field: bool) -> NewRelease {
     };
     files.insert(
         "entities/fleet.yaml".to_string(),
-        format!("{child}- name: FleetVehicle\n  label: Vehicle\n  kind: master\n  title_field: plate\n  fields:\n    - {{name: plate, type: data, required: true}}\n{extra}"),
+        format!("{child}- name: FleetVehicle\n  label: Vehicle\n  kind: master\n  title_field: plate\n  actions:\n    - {{name: peek, label: Peek, permission: read, read_only: true}}\n  fields:\n    - {{name: plate, type: data, required: true}}\n{extra}"),
     );
     NewRelease {
         app_id: "fleet".into(),
@@ -111,6 +129,11 @@ async fn apps_join_the_catalog_at_runtime() {
     // Child rows added while editing get their defaults too.
     let upd = k.update(&c, "FleetVehicle", id, obj(json!({"services": [{"note": "oil change"}]})), None).await.unwrap();
     assert_eq!(upd["services"][0]["active"], json!(true));
+    // A read-only action answers without locking or auditing, and cannot write.
+    assert_eq!(k.run_action(&c, "FleetVehicle", id, "peek", json!({})).await.unwrap(), json!({"plate": upd["plate"]}));
+    assert!(k.run_action(&c, "FleetVehicle", id, "peek", json!({"write": true})).await.is_err(), "a read-only transaction refuses writes");
+    let trail = k.audit_trail(&c, "FleetVehicle", id).await.unwrap();
+    assert!(!trail["events"].as_array().unwrap().iter().any(|e| e["action"] == json!("action:peek")), "no audit entry for a read");
     // A locked read that had to wait for another writer sees that writer's child rows.
     let mut writer = k.db.tenant_tx(tenant).await.unwrap();
     k.update_tx(&c, &mut writer, "FleetVehicle", id, obj(json!({"services": [{"note": "tyres"}]})), None).await.unwrap();

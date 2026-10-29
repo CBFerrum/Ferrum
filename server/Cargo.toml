@@ -84,6 +84,8 @@ bytes = "1"
 # App Manager: store client (already built for the kernel), semantic versions, revocation-list signatures.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 semver = "1"
+# Excel export of record lists.
+rust_xlsxwriter = "0.102"
 ring = "0.17"
 # Loco builds OpenDAL without an HTTP client; S3 storage needs one installed.
 opendal = { version = "0.58", default-features = false, features = ["http-transport-reqwest"] }

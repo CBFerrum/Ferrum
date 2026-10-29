@@ -200,7 +200,7 @@
     - {name: valid_from, type: date, required: true, default_expr: today, in_list: true}
     - {name: valid_upto, type: date, in_list: true}
   exclusion:
-    - {fields: [item, price_list], from: valid_from, to: valid_upto}
+    - {fields: [item, price_list], from: valid_from, to: valid_upto, message: Another price for this item in this price list covers these dates}
   rules:
     - {name: validity, check: "doc.valid_upto == null || doc.valid_upto >= doc.valid_from", message: "Valid up to is before valid from"}
   list: {sort: valid_from desc}

@@ -108,6 +108,12 @@ pub trait Site: Send + Sync {
     fn max_body(&self) -> usize {
         1 << 20
     }
+    /// Largest body for one route (`path` is relative to the package, e.g. `upload/abc`), so
+    /// only the routes that take files accept large bodies. Defaults to [`Site::max_body`].
+    fn max_body_for(&self, method: &str, path: &str) -> usize {
+        let _ = (method, path);
+        self.max_body()
+    }
 }
 
 #[derive(Default, Clone)]
