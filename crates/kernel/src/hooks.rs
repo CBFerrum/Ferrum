@@ -60,6 +60,12 @@ pub trait DocHook: Send + Sync {
     async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
         Ok(None)
     }
+    /// After any hook handled action `name`, in the same transaction, with the document as the
+    /// action left it: lets an app extend a platform action (re-costing a BOM's operations when
+    /// "Update Cost" re-costs its materials) and add to its `result`.
+    async fn after_action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, result: &mut Value) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Consumes outbox events after webhooks and automations (e.g. plugin subscriptions). Delivery is
