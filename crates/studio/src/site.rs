@@ -105,17 +105,24 @@ impl Site for StudioSite {
             }
             ("GET" | "POST", ["reports", id, "run"]) => ok(builder::run_report(k, ctx, uuid(id)?, &Runtime::parse(&settings(&req)?)?).await?),
             ("GET" | "POST", ["reports", id, "export"]) => {
-                match param(&req, "format").unwrap_or("csv") {
-                    "csv" => {}
-                    "xlsx" => return Err(Error::field("format", "xlsx export is not available in this build; use csv")),
-                    other => return Err(Error::field("format", format!("unknown format '{other}'; use csv"))),
+                let format = param(&req, "format").unwrap_or("csv");
+                if !matches!(format, "csv" | "xlsx") {
+                    return Err(Error::field("format", format!("unknown format '{format}'; use csv or xlsx")));
                 }
-                let (file, text) = builder::export_report(k, ctx, uuid(id)?, &Runtime::parse(&settings(&req)?)?).await?;
+                let (label, data) = builder::export_report(k, ctx, uuid(id)?, &Runtime::parse(&settings(&req)?)?).await?;
+                let stem: String = label.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
+                let (content_type, body) = match format {
+                    "xlsx" => ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", crate::run::xlsx(&data, &label)?),
+                    _ => ("text/csv; charset=utf-8", crate::run::csv(&data).into_bytes()),
+                };
                 SiteResponse {
                     status: 200,
-                    content_type: "text/csv; charset=utf-8".into(),
-                    headers: vec![("content-disposition".into(), format!("attachment; filename=\"{file}\"")), ("cache-control".into(), "no-store".into())],
-                    body: text.into_bytes(),
+                    content_type: content_type.into(),
+                    headers: vec![
+                        ("content-disposition".into(), format!("attachment; filename=\"{stem}-{}.{format}\"", ctx.today())),
+                        ("cache-control".into(), "no-store".into()),
+                    ],
+                    body,
                 }
             }
             ("POST", [seg @ ("charts" | "cards"), "preview"]) => {

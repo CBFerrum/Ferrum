@@ -2830,12 +2830,14 @@ dependencies = [
  "ferrum-meta",
  "futures",
  "rust_decimal",
+ "rust_xlsxwriter",
  "serde",
  "serde_json",
  "sqlx",
  "tokio",
  "tracing",
  "uuid",
+ "zip",
 ]
 
 [[package]]
