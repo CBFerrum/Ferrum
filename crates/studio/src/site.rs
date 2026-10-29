@@ -87,7 +87,7 @@ fn sources(ctx: &Ctx) -> Value {
         .filter(|e| ctx.perms.access(&e.def.name, Action::Read) != Access::None)
         .map(|e| json!({"name": e.def.name, "label": e.def.label, "module": e.def.module}))
         .collect();
-    json!({"builtin": ferrum_domain::reports::catalog(), "entities": entities})
+    json!({"builtin": ferrum_domain::reports::catalog_for(ctx), "entities": entities})
 }
 
 #[async_trait]

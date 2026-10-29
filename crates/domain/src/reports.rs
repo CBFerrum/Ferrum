@@ -125,6 +125,26 @@ pub fn catalog() -> Value {
     Value::Array(list)
 }
 
+/// [`catalog`] for one caller: only reports of installed packages whose entity the caller may
+/// read (the ones [`run`] would let them run).
+pub fn catalog_for(ctx: &Ctx) -> Value {
+    let allowed = |entity: &str| ctx.schema.entity(entity).is_some() && ctx.require(entity, Action::Read).is_ok();
+    let mut list: Vec<Value> = DEFS
+        .iter()
+        .filter(|d| allowed(d.entity))
+        .map(|d| json!({"name": d.name, "label": d.label, "module": d.module, "params": d.params.iter().map(|p| param_def(p)).collect::<Vec<_>>()}))
+        .collect();
+    for s in sources() {
+        list.extend(s.catalog().into_iter().filter(|e| e.get("entity").and_then(Value::as_str).is_some_and(allowed)).map(|mut e| {
+            if let Value::Object(m) = &mut e {
+                m.remove("entity");
+            }
+            e
+        }));
+    }
+    Value::Array(list)
+}
+
 /// Runs a report from a package source after checking the caller may read its entity.
 async fn run_source(k: &Kernel, ctx: &Ctx, name: &str, raw: &HashMap<String, String>) -> Result<Value> {
     for s in sources() {

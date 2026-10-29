@@ -399,7 +399,7 @@ impl Kernel {
         self.hook_before_validate(ctx, tx, &ent, &mut doc).await?;
         self.compute(ctx, &ent, &mut doc)?;
         self.validate(ctx, tx, &ent, &doc, None, RuleOn::Save).await?;
-        self.hook_validate(ctx, tx, &ent, &doc).await?;
+        self.hook_validate(ctx, tx, &ent, &doc, None).await?;
         let scope = row_scope(ctx, &ent, Action::Create)?;
         if !scope.matches(&doc) {
             return Err(Error::Forbidden("this record is outside the companies or scopes you are permitted to use".into()));
@@ -455,7 +455,7 @@ impl Kernel {
         self.hook_before_validate(ctx, tx, &ent, &mut doc).await?;
         self.compute(ctx, &ent, &mut doc)?;
         self.validate(ctx, tx, &ent, &doc, Some(&old), RuleOn::Save).await?;
-        self.hook_validate(ctx, tx, &ent, &doc).await?;
+        self.hook_validate(ctx, tx, &ent, &doc, Some(&old)).await?;
         if !scope.matches(&doc) {
             return Err(Error::Forbidden("you cannot move this record outside your permitted scope".into()));
         }
@@ -545,7 +545,7 @@ impl Kernel {
         self.hook_before_validate(ctx, tx, &ent, &mut doc).await?;
         self.compute(ctx, &ent, &mut doc)?;
         self.validate(ctx, tx, &ent, &doc, Some(&old), RuleOn::Submit).await?;
-        self.hook_validate(ctx, tx, &ent, &doc).await?;
+        self.hook_validate(ctx, tx, &ent, &doc, Some(&old)).await?;
         for h in self.hooks.for_tenant(&ent.def.name, &ctx.schema.packages) {
             let mut hc = HookCtx { kernel: self, ctx, tx: &mut *tx, entity: &ent };
             h.before_submit(&mut hc, &mut doc).await?;
@@ -1173,10 +1173,11 @@ impl Kernel {
         Ok(())
     }
 
-    async fn hook_validate(&self, ctx: &Ctx, tx: &mut Tx, ent: &Arc<EffEntity>, doc: &Doc) -> Result<()> {
+    async fn hook_validate(&self, ctx: &Ctx, tx: &mut Tx, ent: &Arc<EffEntity>, doc: &Doc, old: Option<&Doc>) -> Result<()> {
         for h in self.hooks.for_tenant(&ent.def.name, &ctx.schema.packages) {
             let mut hc = HookCtx { kernel: self, ctx, tx: &mut *tx, entity: ent };
             h.validate(&mut hc, doc).await?;
+            h.validate_change(&mut hc, old, doc).await?;
         }
         Ok(())
     }

@@ -555,7 +555,7 @@ fn overview(ctx: &Ctx) -> Value {
         "packages": ctx.schema.packages,
         "modules": modules,
         "entities": entities,
-        "reports": ferrum_domain::reports::catalog(),
+        "reports": ferrum_domain::reports::catalog_for(ctx),
     })
 }
 

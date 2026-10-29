@@ -629,6 +629,12 @@ async fn scenario() {
     assert_eq!(after["totals"]["net_profit"], pl["totals"]["net_profit"], "closing entries never change the income statement");
     assert_eq!(t.report("balance_sheet", &company_param).await["meta"]["balanced"], json!(true));
     assert_eq!(t.report("trial_balance", &company_param).await["meta"]["balanced"], json!(true));
+    // The report list only offers what the caller may run.
+    let names = |v: Value| v.as_array().unwrap().iter().map(|r| r["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert!(names(ferrum_domain::reports::catalog_for(&t.ctx)).contains(&"trial_balance".to_string()));
+    let nobody = t.k.create_user(&t.ctx, "nobody@reports.test", "No Body", Some("Correct-Horse-9"), &[], false).await.unwrap();
+    let nobody_ctx = t.k.load_ctx(tenant, nobody, None, "it".into()).await.unwrap();
+    assert!(names(ferrum_domain::reports::catalog_for(&nobody_ctx)).is_empty(), "no permissions, no reports");
     let ar = t.report("receivables", &company_param).await;
     assert_eq!(dec(&ar["totals"]["outstanding_base"]), n("-770") + dec(&direct["grand_total"]), "customer credit plus the unpaid direct sale");
     let sb = t.report("stock_balance", &company_param).await;

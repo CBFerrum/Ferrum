@@ -41,6 +41,21 @@ impl ferrum_kernel::DocHook for Peek {
         }
         Ok(Some(json!({"plate": doc.get("plate")})))
     }
+
+    async fn validate_change(
+        &self,
+        _hc: &mut ferrum_kernel::HookCtx<'_>,
+        old: Option<&ferrum_kernel::Doc>,
+        doc: &ferrum_kernel::Doc,
+    ) -> ferrum_kernel::Result<()> {
+        if let Some(old) = old
+            && old.get("plate") == Some(&json!("FROZEN-1"))
+            && doc.get("plate") != old.get("plate")
+        {
+            return Err(Error::field("plate", "a frozen plate cannot change"));
+        }
+        Ok(())
+    }
 }
 
 fn release(version: &str, extra_field: bool) -> NewRelease {
@@ -129,6 +144,12 @@ async fn apps_join_the_catalog_at_runtime() {
     // Child rows added while editing get their defaults too.
     let upd = k.update(&c, "FleetVehicle", id, obj(json!({"services": [{"note": "oil change"}]})), None).await.unwrap();
     assert_eq!(upd["services"][0]["active"], json!(true));
+    // validate_change sees the stored version: new records pass, edits are checked against it.
+    let frozen = k.insert(&c, "FleetVehicle", obj(json!({"plate": "FROZEN-1"}))).await.unwrap();
+    let frozen_id: uuid::Uuid = frozen["id"].as_str().unwrap().parse().unwrap();
+    k.update(&c, "FleetVehicle", frozen_id, obj(json!({"odometer": 5})), None).await.expect("other fields may change");
+    assert!(matches!(k.update(&c, "FleetVehicle", frozen_id, obj(json!({"plate": "NEW-2"})), None).await, Err(Error::Validation(_))));
+    k.delete(&c, "FleetVehicle", frozen_id, None).await.unwrap();
     // A read-only action answers without locking or auditing, and cannot write.
     assert_eq!(k.run_action(&c, "FleetVehicle", id, "peek", json!({})).await.unwrap(), json!({"plate": upd["plate"]}));
     assert!(k.run_action(&c, "FleetVehicle", id, "peek", json!({"write": true})).await.is_err(), "a read-only transaction refuses writes");
