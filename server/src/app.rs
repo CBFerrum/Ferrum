@@ -129,6 +129,7 @@ impl Hooks for App {
         }
         let storage = build_storage(&settings)?;
         probe_storage(&storage).await;
+        let objects = Arc::new(crate::objects::Objects::new(&settings).map_err(|e| Error::Message(format!("object storage: {e}")))?);
         let storage = Arc::new(storage);
         let apps = crate::appmgr::AppManager::new(kernel.clone(), plugins.clone(), storage.clone(), &settings.apps, crate::appmgr::compiled_natives())
             .map_err(Error::Message)?;
@@ -144,6 +145,7 @@ impl Hooks for App {
             jwt_expiration: jwt.expiration,
             login_limiter: Arc::new(RateLimiter::new(Duration::from_secs(60), 20)),
             apps: Arc::new(apps),
+            objects,
         };
         state.kernel.set_file_store(Arc::new(crate::mailer::StorageFiles(storage.clone())));
         let ctx = ctx.into_builder().storage(storage).build();
@@ -178,6 +180,21 @@ impl Hooks for App {
             handles.push(ferrum_plugins::schedule::spawn_scheduler(state.plugins.clone(), state.kernel.clone(), state.shutdown.subscribe()));
             // App stores' revocation lists.
             handles.push(state.apps.clone().spawn_revocations(state.shutdown.subscribe()));
+            // Direct uploads that were never completed, with their bytes.
+            let (k, objects, mut stop) = (state.kernel.clone(), state.objects.clone(), state.shutdown.subscribe());
+            handles.push(tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = stop.changed() => return,
+                        _ = tokio::time::sleep(Duration::from_secs(600)) => {}
+                    }
+                    match crate::objects::sweep(&k, &objects).await {
+                        Ok(0) => {}
+                        Ok(n) => tracing::info!("removed {n} expired direct uploads"),
+                        Err(e) => tracing::warn!("sweeping expired uploads failed: {e}"),
+                    }
+                }
+            }));
             state.background.lock().await.extend(handles);
             tracing::info!("background loops started (outbox, webhooks, metadata listener, maintenance)");
         }

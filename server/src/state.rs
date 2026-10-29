@@ -18,6 +18,9 @@ fn default_db_max() -> u32 {
 fn default_upload_max() -> usize {
     25 * 1024 * 1024
 }
+fn default_direct_upload_max() -> u64 {
+    2 * 1024 * 1024 * 1024
+}
 fn default_true() -> bool {
     true
 }
@@ -42,6 +45,10 @@ pub struct Settings {
     pub run_background: bool,
     #[serde(default = "default_upload_max")]
     pub upload_max_bytes: usize,
+    /// Largest file the browser may upload straight to S3 (`POST /api/files/uploads`). Completing
+    /// one reads it back once to record its hash.
+    #[serde(default = "default_direct_upload_max")]
+    pub direct_upload_max_bytes: u64,
     /// Local directory for uploaded files when no S3 bucket is configured.
     #[serde(default = "default_files_dir")]
     pub files_dir: String,
@@ -141,6 +148,7 @@ pub struct AppState {
     pub jwt_expiration: u64,
     pub login_limiter: Arc<RateLimiter>,
     pub apps: Arc<crate::appmgr::AppManager>,
+    pub objects: Arc<crate::objects::Objects>,
 }
 
 pub fn app_state(ctx: &AppContext) -> Result<AppState, ApiError> {

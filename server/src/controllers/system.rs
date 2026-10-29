@@ -29,7 +29,13 @@ async fn ready(State(app): State<AppContext>) -> ApiResult<Response> {
 async fn version(State(app): State<AppContext>) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let packages: Vec<Value> = st.kernel.registry.catalog().packages().map(|p| json!({"name": p.name(), "version": p.manifest.version})).collect();
-    Ok(Json(json!({"version": env!("CARGO_PKG_VERSION"), "catalog": st.kernel.registry.catalog().fingerprint(), "packages": packages})).into_response())
+    let uploads = json!({
+        "max_bytes": st.settings.upload_max_bytes,
+        "direct": st.objects.direct_uploads(),
+        "direct_max_bytes": st.objects.direct_uploads().then_some(st.settings.direct_upload_max_bytes),
+    });
+    Ok(Json(json!({"version": env!("CARGO_PKG_VERSION"), "catalog": st.kernel.registry.catalog().fingerprint(), "packages": packages, "uploads": uploads}))
+        .into_response())
 }
 
 /// Constant-time comparison for shared secrets.
@@ -200,8 +206,7 @@ async fn download_public(State(app): State<AppContext>, Path(id): Path<Uuid>) ->
     .map_err(Error::from)?;
     tx.commit().await.map_err(Error::from)?;
     let (name, ctype, key) = row.ok_or_else(|| ApiError(Error::NotFound("file".into())))?;
-    let data: Vec<u8> = app.storage.download(std::path::Path::new(&key)).await.map_err(|e| ApiError(Error::Unavailable(format!("storage: {e}"))))?;
-    let mut resp = data.into_response();
+    let mut resp = streamed(&st, &key).await?;
     let h = resp.headers_mut();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_str(&ctype).unwrap_or(HeaderValue::from_static("application/octet-stream")));
     h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
@@ -211,6 +216,42 @@ async fn download_public(State(app): State<AppContext>, Path(id): Path<Uuid>) ->
         h.insert(header::CONTENT_DISPOSITION, v);
     }
     Ok(resp)
+}
+
+/// A stored object as a streamed response, so a large file never sits whole in memory.
+async fn streamed(st: &crate::state::AppState, key: &str) -> ApiResult<Response> {
+    let (size, body) = st.objects.stream(key).await?;
+    let mut resp = body.into_response();
+    resp.headers_mut().insert(header::CONTENT_LENGTH, HeaderValue::from(size));
+    Ok(resp)
+}
+
+#[derive(serde::Deserialize)]
+struct NewUploadBody {
+    file_name: String,
+    #[serde(default)]
+    content_type: String,
+    size: u64,
+    entity: Option<String>,
+    record_id: Option<Uuid>,
+}
+
+/// Starts an upload straight to object storage, for files larger than `POST /api/files` takes.
+async fn start_upload(Auth(ctx): Auth, State(app): State<AppContext>, Json(b): Json<NewUploadBody>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    let attach_to = match (b.entity, b.record_id) {
+        (Some(e), Some(r)) => Some((e, r)),
+        (None, None) => None,
+        _ => return Err(ApiError(Error::field("record_id", "entity and record_id go together"))),
+    };
+    let up = crate::objects::NewUpload { file_name: b.file_name, content_type: b.content_type, size: b.size, attach_to };
+    let v = crate::objects::start(&st.kernel, &st.objects, &ctx, st.settings.direct_upload_max_bytes, up).await?;
+    Ok((StatusCode::CREATED, Json(v)).into_response())
+}
+
+async fn complete_upload(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    Ok((StatusCode::CREATED, Json(crate::objects::complete(&st.kernel, &st.objects, &ctx, id).await?)).into_response())
 }
 
 async fn download(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
@@ -228,8 +269,7 @@ async fn download(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path
     if let (Some(e), Some(r)) = (entity, record) {
         st.kernel.get(&ctx, &e, r, false).await?;
     }
-    let data: Vec<u8> = app.storage.download(std::path::Path::new(&key)).await.map_err(|e| ApiError(Error::Unavailable(format!("storage: {e}"))))?;
-    let mut resp = data.into_response();
+    let mut resp = streamed(&st, &key).await?;
     let h = resp.headers_mut();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_str(&ctype).unwrap_or(HeaderValue::from_static("application/octet-stream")));
     h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
@@ -251,6 +291,8 @@ pub fn routes() -> Routes {
         .add("/api/reports/{name}", get(report))
         .add("/api/openapi.json", get(openapi))
         .add("/api/files", post(upload))
+        .add("/api/files/uploads", post(start_upload))
+        .add("/api/files/uploads/{id}/complete", post(complete_upload))
         .add("/files/{id}", get(download))
         .add("/files/public/{id}", get(download_public))
 }
