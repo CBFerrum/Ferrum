@@ -1,6 +1,8 @@
 # Online editing in Drive: Collabora Online beside the stack (docs/operations.md, "Online editing").
 #   docker compose -f deploy/docker-compose.yml -f deploy/office.yml --env-file deploy/.env up -d
 # OFFICE_PUBLIC_URL is the editor as browsers reach it (in production its own host name, behind TLS).
+# Make the WOPI proof key once (never commit it): ssh-keygen -t rsa -N "" -m PEM -f deploy/office-proof-key
+# With it, Ferrum refuses any WOPI call that the editor did not sign.
 # The image is the development edition (CODE); production runs Collabora Online under a subscription.
 services:
   office:
@@ -15,6 +17,8 @@ services:
         --o:ssl.enable=false
         --o:ssl.termination=${OFFICE_TLS_TERMINATED:-false}
         --o:net.frame_ancestors=${PUBLIC_URL:-http://localhost:8080}
+    volumes:
+      - ./office-proof-key:/etc/coolwsd/proof_key:ro
     ports:
       - "${OFFICE_PORT:-9980}:9980"
     cap_add: [MKNOD]

@@ -323,9 +323,15 @@ Set `OFFICE_PUBLIC_URL` and `OFFICE_PUBLIC_HOST` to the editor's public address.
 **Things to know**
 * **Production terms:** CODE, the image `deploy/office.yml` uses, is a development edition.
   Production use means a Collabora Online subscription or a build from source.
-* **Security:** the stock image publishes no WOPI proof key, so Ferrum does not check proof
-  signatures. It relies on the tokens (per person and file, ten hours) and on the network: keep the
-  WOPI endpoints reachable only from the editor (`FERRUM_OFFICE_IPS` or network policy).
+* **Proof key:** give the editor one, and every WOPI call must carry its signature over the token,
+  the URL and the time, so a leaked token alone opens nothing. `deploy/office.yml` mounts
+  `deploy/office-proof-key`; make it with `ssh-keygen -t rsa -N "" -m PEM -f deploy/office-proof-key`.
+  On Kubernetes, mount it at `/etc/coolwsd/proof_key` from a secret.
+* **Without a proof key**, Ferrum relies on the tokens (per person and file, ten hours) and on the
+  network: keep the WOPI endpoints reachable only from the editor (`FERRUM_OFFICE_IPS` or network
+  policy).
+* **Logs:** request logs record paths without query strings, so WOPI tokens and sign-in codes never
+  reach them.
 * **Size:** saves are limited by Drive's upload limit (at most 32 MB per file).
 * **Rate limits:** the editor calls Ferrum from one address, so the public endpoints' per-address
   limit applies to all of its sessions together. Raise it for busy editors, or exempt the editor's

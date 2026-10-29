@@ -70,6 +70,14 @@ async fn probe_storage(storage: &Storage) {
 
 #[async_trait]
 impl Hooks for App {
+    /// Loco's middleware, but our request log (queries are left out of the log).
+    fn middlewares(ctx: &AppContext) -> Vec<Box<dyn loco_rs::controller::middleware::MiddlewareLayer>> {
+        loco_rs::controller::middleware::default_middleware_stack(ctx)
+            .into_iter()
+            .map(|m| if m.name() == "logger" { Box::new(crate::request_log::RequestLog::new(ctx)) } else { m })
+            .collect()
+    }
+
     fn app_name() -> &'static str {
         "ferrum"
     }

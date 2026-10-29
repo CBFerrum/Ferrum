@@ -2802,6 +2802,7 @@ dependencies = [
  "sqlx",
  "tokio",
  "tower",
+ "tower-http",
  "tracing",
  "uuid",
  "wat",
