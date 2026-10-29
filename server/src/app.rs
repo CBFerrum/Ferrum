@@ -107,7 +107,16 @@ impl Hooks for App {
         hooks.register("*", Arc::new(ferrum_plugins::PluginHook(plugins.clone())));
         hooks.add_event_sink(Arc::new(ferrum_plugins::PluginEvents(plugins.clone())));
         hooks.add_event_sink(Arc::new(crate::live::LiveEvents));
-        let mailer: Option<Arc<dyn Mailer>> = ctx.mailer.clone().map(|sender| Arc::new(LocoMailer { sender, from: None }) as Arc<dyn Mailer>);
+        let smtp = ctx
+            .config
+            .mailer
+            .as_ref()
+            .and_then(|m| m.smtp.as_ref())
+            .filter(|s| s.enable)
+            .map(crate::mailer::smtp_transport)
+            .transpose()
+            .map_err(Error::Message)?;
+        let mailer: Option<Arc<dyn Mailer>> = ctx.mailer.clone().map(|sender| Arc::new(LocoMailer { sender, from: None, smtp }) as Arc<dyn Mailer>);
         let jwt = ctx.config.auth.as_ref().and_then(|a| a.jwt.as_ref()).ok_or_else(|| Error::Message("auth.jwt is not configured".into()))?;
         let secret_key = secret_key(&settings, &jwt.secret, &ctx.environment)?;
         let kernel = Kernel::boot(
@@ -149,6 +158,7 @@ impl Hooks for App {
             jwt_secret: jwt.secret.clone(),
             jwt_expiration: jwt.expiration,
             login_limiter: Arc::new(RateLimiter::new(Duration::from_secs(60), 20)),
+            mail_limiter: Arc::new(RateLimiter::new(Duration::from_secs(60), 30)),
             apps: Arc::new(apps),
             objects,
         };

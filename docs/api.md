@@ -55,6 +55,7 @@ OpenAPI 3.1 document is at `GET /api/openapi.json` (it includes every customizat
 | `POST /api/v1/{E}/{id}/workflow/{action}` | workflow transition |
 | `POST /api/v1/{E}/_calc` | preview: runs defaults, fetches and calculation hooks on an unsaved body (include `id` to start from a saved record) → computed document, nothing written. Use for live totals |
 | `GET /api/v1/{E}/{id}/print` | HTML print format; `?format=pdf` → the same as a PDF (`application/pdf`; `503` when the server has no PDF renderer, see `GET /api/version` → `pdf`) |
+| `POST /api/v1/{E}/{id}/email` | `{to, subject?, message?, pdf?: true}` → `202 {queued, to, subject, attachments}`: emails the document through the server's mailer, its print format attached as a PDF (stored on the record), and notes it on the record's timeline. Needs export permission on the entity; 30 per user per minute. `503` without a mailer, or for a PDF when the server has no PDF renderer or its mailer cannot attach (`GET /api/version` → `mail`, `mail_attachments`, `pdf`) |
 | `GET /api/v1/{E}/{id}/audit` | `{events: [{at, actor, actor_name, action, version, diff}], chain_valid}` |
 | `GET /api/v1/{E}/_export` | CSV (export permission), or Excel with `format=xlsx` (field labels as headers, numbers as numbers); same filters as list, at most 100,000 rows |
 | `POST /api/v1/{E}/_import` | JSON array (≤5000) → `{created, ids, errors: [{row, error, fields?}]}` (`207` if some failed) |

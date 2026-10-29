@@ -202,6 +202,62 @@ async fn print(
     Ok(resp)
 }
 
+#[derive(serde::Deserialize)]
+struct EmailBody {
+    to: String,
+    subject: Option<String>,
+    message: Option<String>,
+    /// Attach the print format as a PDF (the default).
+    pdf: Option<bool>,
+}
+
+fn esc(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// Emails a document through the server's mailer: its print format as a PDF attachment (kept on
+/// the record), a message, and a note on the record's timeline. Sending a document out of the
+/// workspace is exporting it, so it needs export permission.
+async fn email_doc(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity, id)): Path<(String, Uuid)>, Json(b): Json<EmailBody>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    let k = &st.kernel;
+    ctx.require(&entity, Action::Export)?;
+    if k.mailer.is_none() {
+        return Err(ApiError(Error::Unavailable("no mailer is configured on this server".into())));
+    }
+    st.mail_limiter.check(&format!("{}|{}", ctx.tenant, ctx.user)).map_err(ApiError)?;
+    let doc = k.get(&ctx, &entity, id, false).await?;
+    let label = k.entity(&ctx, &entity)?.def.label.clone();
+    let number = doc.get("number").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| id.to_string());
+    let title = format!("{label} {number}");
+    let subject = b.subject.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(&title).to_string();
+    ferrum_kernel::outbox::check_mail(&b.to, &subject)?;
+    let mut files = Vec::new();
+    if b.pdf.unwrap_or(true) {
+        if !k.mailer.as_ref().is_some_and(|m| m.can_attach()) {
+            return Err(ApiError(Error::Unavailable("this server's mailer cannot attach files; send without the PDF".into())));
+        }
+        let pdf = k.print_pdf(&ctx, &entity, id).await?;
+        let name: String = number.chars().map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' }).collect();
+        let stored = k.store_file(&ctx, Some((&entity, id)), &format!("{name}.pdf"), "application/pdf", &pdf).await?;
+        files.extend(stored.get("id").and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok()));
+    }
+    let message = b.message.as_deref().map(str::trim).filter(|m| !m.is_empty());
+    let html = match message {
+        Some(m) => format!("<p>{}</p>", esc(m).replace('\n', "<br>")),
+        None if files.is_empty() => format!("<p>{}</p>", esc(&title)),
+        None => format!("<p>Please find {} attached.</p>", esc(&title)),
+    };
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    k.queue_mail_with(&mut tx, ctx.tenant, &b.to, &subject, &html, &files).await?;
+    tx.commit().await.map_err(Error::from)?;
+    let to = b.to.trim().to_string();
+    if let Err(e) = k.add_comment(&ctx, &entity, id, &format!("Emailed to {to}: {subject}"), &[]).await {
+        tracing::warn!(%entity, %id, "could not note the email on the record: {e}");
+    }
+    Ok((StatusCode::ACCEPTED, Json(json!({"queued": true, "to": to, "subject": subject, "attachments": files}))).into_response())
+}
+
 async fn audit_trail(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity, id)): Path<(String, Uuid)>) -> ApiResult<Response> {
     let st = app_state(&app)?;
     Ok(Json(st.kernel.audit_trail(&ctx, &entity, id).await?).into_response())
@@ -375,6 +431,7 @@ pub fn routes() -> Routes {
         .add("/{entity}/{id}/actions/{action}", post(action))
         .add("/{entity}/{id}/workflow/{action}", post(transition))
         .add("/{entity}/{id}/print", get(print))
+        .add("/{entity}/{id}/email", post(email_doc))
         .add("/{entity}/{id}/audit", get(audit_trail))
 }
 
