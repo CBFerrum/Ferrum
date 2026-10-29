@@ -36,7 +36,8 @@ jobs:
       FERRUM_PLUGINS_TEST_DATABASE_URL: postgres://ferrum:ferrum@localhost:5432/ferrum_plugins_test
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # The Dockerfile's Rust: a new stable's lints must not fail unrelated changes. Bump both together.
+      - uses: dtolnay/rust-toolchain@1.95.0
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
