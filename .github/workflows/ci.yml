@@ -103,17 +103,19 @@ jobs:
       # The web app as its repository builds it: the Compose stack's front door.
       - name: Build the web app
         run: docker buildx build --load -q -t ferrum-frontend:ci https://github.com/CBFerrum/Ferrum-Frontend.git#main
-      # The image is deployed with the Compose stack and exercised before it is published.
-      - name: Deploy and check the image
-        run: |
-          python3 -m pip install --quiet httpx
-          FERRUM_IMAGE=ferrum:ci FERRUM_WEB_IMAGE=ferrum-frontend:ci deploy/smoke.sh
-      - if: github.event_name == 'push'
+      # Pull requests from forks get no registry token: their smoke test starts on the new image.
+      - if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # The image is deployed with the Compose stack and exercised before it is published, as an
+      # upgrade of the last published one.
+      - name: Deploy and check the image
+        run: |
+          python3 -m pip install --quiet httpx
+          FERRUM_IMAGE=ferrum:ci FERRUM_PREVIOUS_IMAGE=ghcr.io/cbferrum/ferrum:latest FERRUM_WEB_IMAGE=ferrum-frontend:ci deploy/smoke.sh
       - if: github.event_name == 'push'
         uses: docker/build-push-action@v6
         with:
