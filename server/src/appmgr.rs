@@ -1182,7 +1182,8 @@ impl AppManager {
             }
             let installed: Vec<String> = packages.into_iter().filter(|p| ws.packages.contains_key(p)).collect();
             if !installed.is_empty() {
-                self.kernel.uninstall_packages(&self.fresh(ctx).await?, &installed, false).await?;
+                // Disabling keeps who had which role, so enabling restores their access.
+                self.kernel.disable_packages(&self.fresh(ctx).await?, &installed).await?;
             }
             if let Some(p) = inst.plugin_id {
                 ignore_missing(self.plugins.set_enabled(&self.kernel, ctx, p, false).await)?;

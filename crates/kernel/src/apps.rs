@@ -297,6 +297,17 @@ impl Kernel {
     /// workspace's rows in their tables (child tables first). Tables stay — other workspaces may
     /// use them.
     pub async fn uninstall_packages(&self, ctx: &Ctx, names: &[String], delete_data: bool) -> Result<()> {
+        self.remove_packages(ctx, names, delete_data, false).await
+    }
+
+    /// Takes packages out of a workspace like [`Kernel::uninstall_packages`] but keeps their
+    /// roles, the roles' grants and users' assignments (and all data), so enabling the app again
+    /// gives everyone back exactly the access they had.
+    pub async fn disable_packages(&self, ctx: &Ctx, names: &[String]) -> Result<()> {
+        self.remove_packages(ctx, names, false, true).await
+    }
+
+    async fn remove_packages(&self, ctx: &Ctx, names: &[String], delete_data: bool, keep_roles: bool) -> Result<()> {
         if !ctx.is_admin && !ctx.is_system {
             return Err(Error::Forbidden("only administrators can remove apps".into()));
         }
@@ -321,6 +332,10 @@ impl Kernel {
             }
         }
         for name in names {
+            if keep_roles {
+                sqlx::query("delete from installed_package where tenant_id = $1 and name = $2").bind(ctx.tenant).bind(name).execute(&mut *tx).await?;
+                continue;
+            }
             sqlx::query("delete from role_permission where tenant_id = $1 and role in (select name from role where tenant_id = $1 and package = $2)")
                 .bind(ctx.tenant)
                 .bind(name)

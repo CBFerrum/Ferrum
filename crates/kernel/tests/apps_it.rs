@@ -213,6 +213,14 @@ async fn apps_join_the_catalog_at_runtime() {
     let c = ctx().await;
     assert_eq!(k.list(&c, "FleetVehicle", &ListQuery::default()).await.unwrap().rows.len(), 1);
     assert!(c.schema.roles.iter().any(|r| r.name == "Fleet Manager"));
+    // Disabling keeps who had which role: enabling again restores their access.
+    let driver = k.create_user(&c, "driver@fleetco.test", "Dee Driver", Some("Correct-Horse-9"), &["Fleet Manager".into()], false).await.unwrap();
+    k.disable_packages(&c, &["fleet".into()]).await.unwrap();
+    assert!(!ctx().await.schema.packages.contains(&"fleet".to_string()));
+    k.install_packages(tenant, &["fleet".into()]).await.unwrap();
+    let dc = k.load_ctx(tenant, driver, None, "it".into()).await.unwrap();
+    assert_eq!(k.list(&dc, "FleetVehicle", &ListQuery::default()).await.unwrap().rows.len(), 1, "the driver's role survived");
+    let c = ctx().await;
     let blocked = k.uninstall_packages(&c, &["core".into()], false).await;
     assert!(blocked.is_err(), "core is needed by fleet");
     k.uninstall_packages(&c, &["fleet".into()], true).await.unwrap();

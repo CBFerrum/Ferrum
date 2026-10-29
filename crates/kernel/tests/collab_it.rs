@@ -330,4 +330,15 @@ async fn collaboration_follows_record_access() {
     let tags = |v: Vec<Value>| v.iter().map(|t| t["tag"].as_str().unwrap().to_string()).collect::<Vec<_>>();
     assert_eq!(tags(k.tag_counts(&bea_ctx, "CustomerGroup").await.unwrap()), ["local"]);
     assert_eq!(tags(k.tag_counts(&admin, "CustomerGroup").await.unwrap()).len(), 2);
+
+    // A custom link field lives in the JSON column (no foreign key): deletes still respect it.
+    let op = serde_json::from_value(json!({"op": "add_field", "field": {"name": "x_referred_by", "type": "link", "to": "CustomerGroup"}})).unwrap();
+    k.add_customization(&admin, "Customer", op, None).await.unwrap();
+    let admin = k.load_ctx(tenant, s.user, Some(s.token_version), "it".into()).await.unwrap();
+    let spare = k.insert(&admin, "CustomerGroup", obj(json!({"group_name": "Referrals"}))).await.unwrap();
+    let spare_id: Uuid = spare["id"].as_str().unwrap().parse().unwrap();
+    k.update(&admin, "Customer", ids[0], obj(json!({"x_referred_by": spare["id"]})), None).await.unwrap();
+    assert!(matches!(k.delete(&admin, "CustomerGroup", spare_id, None).await, Err(Error::Conflict(m)) if m.contains("x_referred_by")));
+    k.update(&admin, "Customer", ids[0], obj(json!({"x_referred_by": null})), None).await.unwrap();
+    k.delete(&admin, "CustomerGroup", spare_id, None).await.expect("nothing links to it any more");
 }
