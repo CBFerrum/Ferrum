@@ -33,7 +33,9 @@ pub fn bearer(headers: &HeaderMap) -> Option<String> {
 /// the two steps of signing in is no session at all.
 async fn session_of(st: &crate::state::AppState, token: &str) -> Result<(ferrum_kernel::auth::Session, bool), ApiError> {
     if token.starts_with("fk_") {
-        return Ok((st.kernel.verify_api_key(token).await?, false));
+        let s = st.kernel.verify_api_key(token).await?;
+        st.user_limiter.check_local(&format!("{}|{}", s.tenant, s.user))?;
+        return Ok((s, false));
     }
     let data =
         JWT::new(&st.jwt_secret).validate(token).map_err(|_| ApiError(Error::Unauthorized("session expired or invalid; please sign in again".into())))?;
@@ -46,6 +48,7 @@ async fn session_of(st: &crate::state::AppState, token: &str) -> Result<(ferrum_
         claims.get("tenant").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).ok_or_else(|| ApiError(Error::Unauthorized("invalid session".into())))?;
     let tv = claims.get("tv").and_then(|v| v.as_i64()).unwrap_or(-1) as i32;
     let setup_only = claims.get("setup_2fa").and_then(|v| v.as_bool()).unwrap_or(false);
+    st.user_limiter.check_local(&format!("{tenant}|{user}"))?;
     Ok((ferrum_kernel::auth::Session { tenant, user, token_version: tv }, setup_only))
 }
 

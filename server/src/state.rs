@@ -24,6 +24,10 @@ fn default_direct_upload_max() -> u64 {
 fn default_true() -> bool {
     true
 }
+
+fn default_user_requests() -> u32 {
+    3000
+}
 fn default_files_dir() -> String {
     "storage".into()
 }
@@ -44,6 +48,9 @@ pub struct Settings {
     /// provider inside the operator's network).
     #[serde(default)]
     pub sso_allow_private: bool,
+    /// Requests a user (or one of their API keys) may make per minute on each replica; 0: no limit.
+    #[serde(default = "default_user_requests")]
+    pub user_requests_per_minute: u32,
     /// Run outbox/webhook/maintenance loops in this process.
     #[serde(default = "default_true")]
     pub run_background: bool,
@@ -122,13 +129,27 @@ pub struct RateLimiter {
     window: Duration,
     max: u32,
     hits: DashMap<String, (Instant, u32)>,
-    db: Db,
+    /// Where the count is shared; without it the limit is the replica's own.
+    db: Option<Db>,
 }
 
 impl RateLimiter {
     /// `name` keeps this limiter's counts apart from other limiters'.
     pub fn shared(name: &'static str, window: Duration, max: u32, db: Db) -> Self {
-        RateLimiter { name, window, max, hits: DashMap::new(), db }
+        RateLimiter { name, window, max, hits: DashMap::new(), db: Some(db) }
+    }
+
+    /// Counted on this replica only: cheap enough for every request.
+    pub fn local_only(name: &'static str, window: Duration, max: u32) -> Self {
+        RateLimiter { name, window, max, hits: DashMap::new(), db: None }
+    }
+
+    /// The replica's own count (`local_only` limiters).
+    pub fn check_local(&self, key: &str) -> Result<(), Error> {
+        if self.max > 0 && self.local(key) > self.max {
+            return Err(Error::TooManyRequests(format!("more than {} requests a minute; slow down", self.max)));
+        }
+        Ok(())
     }
 
     pub async fn check(&self, key: &str) -> Result<(), Error> {
@@ -136,7 +157,8 @@ impl RateLimiter {
         if self.local(key) > self.max {
             return refused();
         }
-        match self.db.count_hit(&format!("{}|{key}", self.name), self.window).await {
+        let Some(db) = &self.db else { return Ok(()) };
+        match db.count_hit(&format!("{}|{key}", self.name), self.window).await {
             Ok(n) if n > i64::from(self.max) => refused(),
             Ok(_) => Ok(()),
             // The replica's own count still applies; a database hiccup must not lock everyone out.
@@ -176,10 +198,33 @@ pub struct AppState {
     pub mail_limiter: Arc<RateLimiter>,
     /// Requests per minute a client may make to a workspace's public pages and endpoints.
     pub public_limiter: Arc<RateLimiter>,
+    /// Requests per minute a user may make (on this replica), whatever the token.
+    pub user_limiter: Arc<RateLimiter>,
     pub apps: Arc<crate::appmgr::AppManager>,
     pub objects: Arc<crate::objects::Objects>,
 }
 
 pub fn app_state(ctx: &AppContext) -> Result<AppState, ApiError> {
     ctx.shared_store.get::<AppState>().ok_or_else(|| ApiError(Error::Unavailable("server is still starting".into())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_users_budget_is_counted_per_window() {
+        let l = RateLimiter::local_only("user", Duration::from_secs(60), 3);
+        for _ in 0..3 {
+            assert!(l.check_local("t|alice").is_ok());
+        }
+        assert!(matches!(l.check_local("t|alice"), Err(Error::TooManyRequests(_))));
+        assert!(l.check_local("t|bob").is_ok(), "per user");
+        let off = RateLimiter::local_only("user", Duration::from_secs(60), 0);
+        assert!((0..10_000).all(|_| off.check_local("t|alice").is_ok()), "0 turns it off");
+        let short = RateLimiter::local_only("user", Duration::from_millis(30), 1);
+        assert!(short.check_local("k").is_ok() && short.check_local("k").is_err());
+        std::thread::sleep(Duration::from_millis(40));
+        assert!(short.check_local("k").is_ok(), "a new window");
+    }
 }

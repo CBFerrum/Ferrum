@@ -65,6 +65,9 @@ operator to know. Report a vulnerability privately to the maintainers rather tha
 **Availability**
 * Rate limits held in the database (sign-in, public endpoints, mail) work across replicas and
   fail open if the database is briefly unreachable; the ingress limits requests per address.
+* Every user has a request budget (3000 a minute on each replica by default, across all their
+  sessions and API keys): a runaway script with a valid token is slowed down to `429`s instead of
+  slowing everyone down.
 * Replicas are stateless (PostgreSQL, S3), behind a pod disruption budget and an autoscaler;
   background loops retry with backoff.
 
@@ -96,8 +99,6 @@ Found and fixed:
   browser only to registered addresses, and only the browser holding the binding can finish).
 
 Known and accepted:
-* There is no per-user request budget beyond the ingress's per-address limit and the statement
-  timeout; a runaway integration with a valid key is stopped by revoking the key.
 * An e-invoice's signed QR code is checked for this invoice, number and seller, not against the
   IRP's signing key; recording one needs submit permission and lands in the audit trail.
 * Session tokens are readable by script on the app's origin; the Content Security Policy is what

@@ -79,6 +79,7 @@ settings:
   bootstrap_token: "<%= get_env(name="FERRUM_BOOTSTRAP_TOKEN", default="") %>"
   webhooks_allow_private: false
   sso_allow_private: <%= get_env(name="FERRUM_SSO_ALLOW_PRIVATE", default="false") %>
+  user_requests_per_minute: <%= get_env(name="FERRUM_USER_REQUESTS_PER_MINUTE", default="3000") %>
   run_background: <%= get_env(name="FERRUM_RUN_BACKGROUND", default="true") %>
   upload_max_bytes: 26214400
   direct_upload_max_bytes: <%= get_env(name="FERRUM_DIRECT_UPLOAD_MAX_BYTES", default="2147483648") %>
