@@ -1,0 +1,27 @@
+# Online editing in Drive: Collabora Online beside the stack (docs/operations.md, "Online editing").
+#   docker compose -f deploy/docker-compose.yml -f deploy/office.yml --env-file deploy/.env up -d
+# OFFICE_PUBLIC_URL is the editor as browsers reach it (in production its own host name, behind TLS).
+# The image is the development edition (CODE); production runs Collabora Online under a subscription.
+services:
+  office:
+    image: collabora/code:${COLLABORA_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      # Ferrum's WOPI endpoints, as Collabora reaches them.
+      aliasgroup1: http://ferrum:5150
+      # How browsers reach the editor: the host it puts in its editor page addresses.
+      server_name: ${OFFICE_PUBLIC_HOST:-localhost:9980}
+      extra_params: >-
+        --o:ssl.enable=false
+        --o:ssl.termination=${OFFICE_TLS_TERMINATED:-false}
+        --o:net.frame_ancestors=${PUBLIC_URL:-http://localhost:8080}
+    ports:
+      - "${OFFICE_PORT:-9980}:9980"
+    cap_add: [MKNOD]
+  ferrum:
+    environment:
+      FERRUM_OFFICE_URL: http://office:9980
+      FERRUM_OFFICE_WOPI_URL: http://ferrum:5150
+  web:
+    environment:
+      FERRUM_OFFICE_ORIGIN: ${OFFICE_PUBLIC_URL:-http://localhost:9980}

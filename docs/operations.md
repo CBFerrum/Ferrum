@@ -295,6 +295,42 @@ bookkeeping law requires; an administrator's account is not erased until it is n
 same is available as `GET /api/admin/personal-data` and `POST /api/admin/personal-data/erase`;
 packages and apps declare their entities with `personal_data` in their manifests.
 
+## Online editing
+
+Drive opens documents, spreadsheets and presentations in an editor server you run beside Ferrum:
+Collabora Online, or ONLYOFFICE Docs in WOPI mode. The editor reads and saves through Drive's WOPI
+endpoints with each person's own rights, and every save becomes a new version. Details are in the
+Drive app's README.
+
+| Setting | On | Value |
+|---|---|---|
+| `FERRUM_OFFICE_URL` | server | the editor as the server reaches it, e.g. `http://office:9980` |
+| `FERRUM_OFFICE_WOPI_URL` | server | the server as the editor reaches it, e.g. `http://ferrum:5150` |
+| `FERRUM_OFFICE_IPS` | server | optional: the only addresses WOPI calls are accepted from |
+| `FERRUM_OFFICE_ORIGIN` | web app | the editor as browsers reach it; the app may frame it and post to it |
+
+**Compose.** `deploy/office.yml` adds Collabora:
+
+    docker compose -f deploy/docker-compose.yml -f deploy/office.yml --env-file deploy/.env up -d
+
+Set `OFFICE_PUBLIC_URL` and `OFFICE_PUBLIC_HOST` to the editor's public address.
+
+**Kubernetes.** Run Collabora with its own Helm chart (`collabora-online`). Then:
+* give it `aliasgroup1` (Ferrum's in-cluster URL) and `net.frame_ancestors` (the web app's URL);
+* set the four values above on the server and the web app;
+* let only the editor's pods reach `/api/site/*/drive/wopi/` (network policy).
+
+**Things to know**
+* **Production terms:** CODE, the image `deploy/office.yml` uses, is a development edition.
+  Production use means a Collabora Online subscription or a build from source.
+* **Security:** the stock image publishes no WOPI proof key, so Ferrum does not check proof
+  signatures. It relies on the tokens (per person and file, ten hours) and on the network: keep the
+  WOPI endpoints reachable only from the editor (`FERRUM_OFFICE_IPS` or network policy).
+* **Size:** saves are limited by Drive's upload limit (at most 32 MB per file).
+* **Rate limits:** the editor calls Ferrum from one address, so the public endpoints' per-address
+  limit applies to all of its sessions together. Raise it for busy editors, or exempt the editor's
+  address at the ingress.
+
 ## India: e-invoices and e-way bills
 
 With the `india` package, a submitted Sales Invoice to a registered business, an SEZ unit or a
