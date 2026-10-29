@@ -28,8 +28,12 @@
   fields:
     - {name: item, type: link, to: Item, required: true, in_list: true}
     - {name: item_name, type: data, fetch_from: item.item_name, read_only: true}
-    - {name: uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true}
+    - {name: uom, type: link, to: Uom, in_list: true, label: Unit, description: The item's stock unit unless another of its units is chosen}
     - {name: qty, type: decimal, required: true, min: "0.000000001", in_list: true}
+    - {name: conversion_factor, type: decimal, read_only: true, label: Stock Units per Unit}
+    - {name: stock_qty, type: decimal, read_only: true, label: Qty in Stock Unit}
+    - {name: stock_uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true, label: Stock Unit}
+    - {name: price_basis, type: data, hidden: true, no_copy: true, description: "What the price was set for: item, unit, factor and price"}
     - {name: price_list_rate, type: currency, read_only: true}
     - {name: discount_percent, type: percent, min: "0", max: "100"}
     - {name: rate, type: currency, read_only: true, in_list: true}
@@ -89,8 +93,12 @@
   fields:
     - {name: item, type: link, to: Item, required: true, in_list: true}
     - {name: item_name, type: data, fetch_from: item.item_name, read_only: true}
-    - {name: uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true}
+    - {name: uom, type: link, to: Uom, in_list: true, label: Unit, description: The item's stock unit unless another of its units is chosen}
     - {name: qty, type: decimal, required: true, min: "0.000000001", in_list: true}
+    - {name: conversion_factor, type: decimal, read_only: true, label: Stock Units per Unit}
+    - {name: stock_qty, type: decimal, read_only: true, label: Qty in Stock Unit}
+    - {name: stock_uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true, label: Stock Unit}
+    - {name: price_basis, type: data, hidden: true, no_copy: true, description: "What the price was set for: item, unit, factor and price"}
     - {name: price_list_rate, type: currency, read_only: true}
     - {name: discount_percent, type: percent, min: "0", max: "100"}
     - {name: rate, type: currency, read_only: true, in_list: true}
@@ -151,8 +159,12 @@
     - {name: item, type: link, to: Item, required: true, in_list: true}
     - {name: item_name, type: data, fetch_from: item.item_name, read_only: true}
     - {name: description, type: text}
-    - {name: uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true}
+    - {name: uom, type: link, to: Uom, in_list: true, label: Unit, description: The item's stock unit unless another of its units is chosen}
     - {name: qty, type: decimal, required: true, in_list: true}
+    - {name: conversion_factor, type: decimal, read_only: true, label: Stock Units per Unit}
+    - {name: stock_qty, type: decimal, read_only: true, label: Qty in Stock Unit}
+    - {name: stock_uom, type: link, to: Uom, fetch_from: item.stock_uom, read_only: true, label: Stock Unit}
+    - {name: price_basis, type: data, hidden: true, no_copy: true, description: "What the price was set for: item, unit, factor and price"}
     - {name: price_list_rate, type: currency, read_only: true}
     - {name: discount_percent, type: percent, min: "0", max: "100"}
     - {name: rate, type: currency, read_only: true, in_list: true}

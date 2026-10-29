@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use ferrum_domain::flow::created;
 use ferrum_domain::manufacturing::default_bom;
 use ferrum_domain::trade::create_for_user;
-use ferrum_domain::util::{b, d, elevated, get, id, money, rows, s, set, sys};
+use ferrum_domain::util::{b, d, elevated, get, id, money, rows, s, set, sys, to_stock, unit_factor};
 use ferrum_kernel::{Doc, DocHook, Error, FieldError, Filter, HookCtx, Op, Result};
 use ferrum_meta::{EffEntity, FieldType};
 use rust_decimal::Decimal;
@@ -324,7 +324,9 @@ impl ProductionPlanHook {
             for l in rows(&order, "items") {
                 let (Some(item), Some(line)) = (id(&l, "item"), s(&l, "id").map(str::to_string)) else { continue };
                 let elsewhere = planned_elsewhere(hc, plan, &line).await?;
-                let pending = d(&l, "qty") - d(&l, "delivered_qty").max(elsewhere);
+                // Planned in stock units, whatever unit the order line counts in.
+                let f = unit_factor(&l);
+                let pending = to_stock(d(&l, "qty"), f) - to_stock(d(&l, "delivered_qty"), f).max(elsewhere);
                 if pending <= Decimal::ZERO {
                     continue;
                 }

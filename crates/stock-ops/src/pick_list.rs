@@ -10,7 +10,7 @@ use crate::common::{ItemInfo, child_table, finish_rows, installed, items, rows_v
 use async_trait::async_trait;
 use ferrum_domain::flow::created;
 use ferrum_domain::trade::create_for_user;
-use ferrum_domain::util::{d, elevated, get, id, money, rows, s, set, sys};
+use ferrum_domain::util::{d, elevated, get, id, money, rows, s, set, stock_qty, sys, to_stock, unit_factor};
 use ferrum_kernel::ddl::q;
 use ferrum_kernel::{Doc, DocHook, Error, FieldError, HookCtx, Result};
 use rust_decimal::Decimal;
@@ -268,7 +268,9 @@ async fn order_needs(hc: &mut HookCtx<'_>, so: &Doc, exclude: Option<Uuid>) -> R
     let mut out = Vec::new();
     for r in &lines {
         let (Some(item), Some(line)) = (id(r, "item"), s(r, "id")) else { continue };
-        let open = d(r, "qty") - d(r, "delivered_qty");
+        // Picked in stock units, whatever unit the order line counts in.
+        let f = unit_factor(r);
+        let open = to_stock(d(r, "qty"), f) - to_stock(d(r, "delivered_qty"), f);
         if open <= Decimal::ZERO {
             continue;
         }
@@ -570,7 +572,8 @@ impl DocHook for PickListHook {
                 errors.push(FieldError::new("locations", "a sales order line no longer exists"));
                 continue;
             };
-            let open = ((d(&ol, "qty") - d(&ol, "delivered_qty")) * per).round_dp(9);
+            let f = unit_factor(&ol);
+            let open = ((to_stock(d(&ol, "qty"), f) - to_stock(d(&ol, "delivered_qty"), f)) * per).round_dp(9);
             let elsewhere = taken.order.get(&(line.clone(), *item)).copied().unwrap_or_default();
             if *qty + elsewhere > open {
                 let code = infos.get(item).map(|i| i.code.clone()).unwrap_or_default();
@@ -721,9 +724,12 @@ async fn make_delivery_notes(hc: &mut HookCtx<'_>, doc: &Doc) -> Result<Value> {
                 }
                 continue;
             }
+            // Delivered in the order line's unit, at its price.
             let src = priced(s(&r, "so_line"));
+            let f = src.as_ref().map(unit_factor).unwrap_or(Decimal::ONE);
             lines.push(json!({
-                "item": r.get("item"), "qty": q.normalize().to_string(), "warehouse": r.get("warehouse"), "batch_no": r.get("batch_no"),
+                "item": r.get("item"), "uom": src.as_ref().and_then(|l| l.get("uom").cloned()), "qty": (q / f).round_dp(9).normalize().to_string(),
+                "warehouse": r.get("warehouse"), "batch_no": r.get("batch_no"),
                 "serial_no": serials_left(hc, &r).await?, "sales_order": r.get("sales_order"), "so_line": r.get("so_line"),
                 "price_list_rate": src.as_ref().and_then(|l| l.get("price_list_rate").cloned()), "discount_percent": src.as_ref().and_then(|l| l.get("discount_percent").cloned()),
                 "stk_pick_list": pid.to_string(), "stk_pick_list_item": r.get("id"),
@@ -744,9 +750,11 @@ async fn make_delivery_notes(hc: &mut HookCtx<'_>, doc: &Doc) -> Result<Value> {
                 continue;
             }
             let src = priced(Some(line.as_str()));
+            let f = src.as_ref().map(unit_factor).unwrap_or(Decimal::ONE);
             let first_wh = comps.first().and_then(|(r, _)| r.get("warehouse").cloned()).unwrap_or(Value::Null);
             lines.push(json!({
-                "item": bundle.to_string(), "qty": kits_n.normalize().to_string(), "warehouse": first_wh, "sales_order": so.map(|o| o.to_string()),
+                "item": bundle.to_string(), "uom": src.as_ref().and_then(|l| l.get("uom").cloned()), "qty": (kits_n / f).round_dp(9).normalize().to_string(),
+                "warehouse": first_wh, "sales_order": so.map(|o| o.to_string()),
                 "so_line": line, "price_list_rate": src.as_ref().and_then(|l| l.get("price_list_rate").cloned()),
                 "discount_percent": src.as_ref().and_then(|l| l.get("discount_percent").cloned()), "stk_pick_list": pid.to_string(),
             }));
@@ -846,7 +854,7 @@ impl PickProgress {
         let lines = rows(doc, "items");
         for r in &lines {
             if let (Some(p), Some(row)) = (id(r, "stk_pick_list"), id(r, "stk_pick_list_item")) {
-                out.push((p, row, d(r, "qty")));
+                out.push((p, row, stock_qty(r)));
             }
         }
         if entity == "DeliveryNote" {

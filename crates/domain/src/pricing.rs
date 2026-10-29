@@ -1,7 +1,7 @@
 //! Prices, discounts, taxes and totals for transaction documents, computed by `ferrum-calc`
 //! (the same engine the browser can run as WASM), so every total is exact and reproducible.
 
-use crate::util::{Company, b, company, d, date, exchange_rate, find, get, id, money, rows, s, set};
+use crate::util::{Company, b, company, d, date, exchange_rate, find, get, id, money, rows, s, set, to_stock};
 use ferrum_calc::{CalcInput, ChargeType, DocDiscount, LineIn, TaxIn};
 use ferrum_kernel::{Ctx, Doc, Error, FieldError, Filter, Kernel, Op, Result, Tx};
 use ferrum_meta::{EffEntity, Expr, Scope};
@@ -46,22 +46,92 @@ fn charge_type(s: &str) -> ChargeType {
     }
 }
 
-async fn item_price(k: &Kernel, ctx: &Ctx, tx: &mut Tx, item: Uuid, price_list: Uuid, on: &str) -> Result<Option<Decimal>> {
+/// The price list's rate for one `uom` of an item: a price kept for that unit, else one for the
+/// stock unit (or for no unit in particular) times `factor`.
+#[allow(clippy::too_many_arguments)]
+async fn item_price(k: &Kernel, ctx: &Ctx, tx: &mut Tx, item: &Doc, price_list: Uuid, on: &str, uom: Option<Uuid>, factor: Decimal) -> Result<Option<Decimal>> {
+    let Some(item_id) = id(item, "id") else { return Ok(None) };
     let prices = find(
         k,
         ctx,
         tx,
         "ItemPrice",
         vec![
-            Filter::eq("item", item.to_string()),
+            Filter::eq("item", item_id.to_string()),
             Filter::eq("price_list", price_list.to_string()),
             Filter { field: "valid_from".into(), op: Op::Lte, value: json!(on) },
         ],
         Some("valid_from desc"),
-        5,
+        20,
     )
     .await?;
-    Ok(prices.iter().find(|p| s(p, "valid_upto").is_none_or(|u| u >= on)).map(|p| d(p, "rate")))
+    let valid: Vec<&Doc> = prices.iter().filter(|p| s(p, "valid_upto").is_none_or(|u| u >= on)).collect();
+    if let Some(p) = valid.iter().find(|p| uom.is_some() && id(p, "uom") == uom) {
+        return Ok(Some(d(p, "rate")));
+    }
+    let stock = id(item, "stock_uom");
+    Ok(valid.iter().find(|p| id(p, "uom").is_none() || id(p, "uom") == stock).map(|p| (d(p, "rate") * factor).round_dp(9)))
+}
+
+/// The line's unit (its item's stock unit unless another is chosen) and how many stock units it
+/// holds, from the item's units. A unit the item has no conversion for is refused, unless it was
+/// chosen for the item the line had before (then the line goes back to the stock unit).
+fn line_unit(row: &mut Doc, item: &Doc, i: usize, item_changed: bool) -> Result<(Option<Uuid>, Decimal)> {
+    let stock = id(item, "stock_uom");
+    let factor_of = |uom: Option<Uuid>| {
+        if uom == stock {
+            Some(Decimal::ONE)
+        } else {
+            rows(item, "uoms").iter().find(|u| uom.is_some() && id(u, "uom") == uom).map(|u| d(u, "conversion_factor")).filter(|f| *f > Decimal::ZERO)
+        }
+    };
+    let mut uom = id(row, "uom").or(stock);
+    let factor = match factor_of(uom) {
+        Some(f) => f,
+        None if item_changed => {
+            uom = stock;
+            Decimal::ONE
+        }
+        None => {
+            let name = s(item, "item_name").unwrap_or("this item");
+            return Err(Error::Validation(vec![
+                FieldError::new("uom", format!("{name} has no conversion from this unit to its stock unit; add the unit to the item")).in_row("items", i),
+            ]));
+        }
+    };
+    set(row, "uom", uom.map(|u| json!(u.to_string())).unwrap_or(Value::Null));
+    set(row, "conversion_factor", money(factor));
+    Ok((uom, factor))
+}
+
+/// What a line's price was set for: `item|uom|factor|price`.
+fn price_basis(item: Uuid, uom: Option<Uuid>, factor: Decimal, price: Decimal) -> String {
+    format!("{item}|{}|{}|{}", uom.map(|u| u.to_string()).unwrap_or_default(), factor.normalize(), price.normalize())
+}
+
+fn parse_basis(text: &str) -> Option<(Uuid, Option<Uuid>, Decimal, Decimal)> {
+    let mut p = text.split('|');
+    let item = p.next()?.parse().ok()?;
+    let uom = match p.next()? {
+        "" => None,
+        u => Some(u.parse().ok()?),
+    };
+    Some((item, uom, p.next()?.parse().ok()?, p.next()?.parse().ok()?))
+}
+
+/// A price set for another item or unit, and not changed since, no longer applies: it is looked
+/// up again (another item) or converted (another unit). A price the user changed stays theirs.
+fn restate_price(row: &mut Doc, item: Uuid, uom: Option<Uuid>, factor: Decimal) {
+    let price = d(row, "price_list_rate");
+    let Some((was_item, was_uom, was_factor, was_price)) = s(row, "price_basis").and_then(parse_basis) else { return };
+    if price.is_zero() || price != was_price {
+        return;
+    }
+    if was_item != item {
+        set(row, "price_list_rate", money(Decimal::ZERO));
+    } else if was_uom != uom && was_factor > Decimal::ZERO {
+        set(row, "price_list_rate", money((price / was_factor * factor).round_dp(9)));
+    }
 }
 
 async fn default_price_list(k: &Kernel, ctx: &Ctx, tx: &mut Tx, side: Side) -> Result<Option<Uuid>> {
@@ -206,16 +276,22 @@ pub async fn calculate(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc:
     let has_child = |f: &str| child_ent.as_ref().is_some_and(|c| c.field(f).is_some());
     let mut item_cache: HashMap<Uuid, Doc> = HashMap::new();
     let mut items = rows(doc, "items");
-    for row in items.iter_mut() {
+    for (i, row) in items.iter_mut().enumerate() {
         let Some(item_id) = id(row, "item") else { continue };
         if let std::collections::hash_map::Entry::Vacant(e) = item_cache.entry(item_id) {
             e.insert(get(k, ctx, tx, "Item", item_id).await?);
         }
         let item = item_cache[&item_id].clone();
         let qty = d(row, "qty");
+        // Units: quantities and prices are per the line's unit; stock moves count stock units.
+        let item_changed = s(row, "price_basis").and_then(parse_basis).is_some_and(|(was, ..)| was != item_id);
+        let (uom, factor) = if has_child("conversion_factor") { line_unit(row, &item, i, item_changed)? } else { (id(row, "uom"), Decimal::ONE) };
+        if has_child("price_basis") {
+            restate_price(row, item_id, uom, factor);
+        }
         if d(row, "price_list_rate").is_zero() {
             let mut price = match price_list {
-                Some(pl) => item_price(k, ctx, tx, item_id, pl, &on).await?,
+                Some(pl) => item_price(k, ctx, tx, &item, pl, &on, uom, factor).await?,
                 None => None,
             };
             if price.is_none() {
@@ -223,7 +299,7 @@ pub async fn calculate(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc:
                     Side::Selling => d(&item, "standard_rate"),
                     Side::Buying => d(&item, "last_purchase_rate"),
                 };
-                price = (!fallback.is_zero()).then_some(fallback);
+                price = (!fallback.is_zero()).then_some((fallback * factor).round_dp(9));
             }
             // Prices are kept per the document currency.
             if let Some(p) = price {
@@ -232,14 +308,21 @@ pub async fn calculate(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc:
         }
         if side == Side::Selling
             && row.get("discount_percent").is_none_or(Value::is_null)
-            && let Some(rule) = best_rule(&rules, &item, qty, party.as_ref(), &on, &cel_doc, &user)
+            && let Some(rule) = best_rule(&rules, &item, to_stock(qty, factor), party.as_ref(), &on, &cel_doc, &user)
         {
+            // Rules speak of stock units: quantities and rates.
             if d(rule, "rate") > Decimal::ZERO {
-                set(row, "price_list_rate", money(d(rule, "rate")));
+                set(row, "price_list_rate", money((d(rule, "rate") * factor).round_dp(9)));
             }
             if d(rule, "discount_percent") > Decimal::ZERO {
                 set(row, "discount_percent", money(d(rule, "discount_percent")));
             }
+        }
+        if has_child("stock_qty") {
+            set(row, "stock_qty", money(to_stock(qty, factor)));
+        }
+        if has_child("price_basis") {
+            set(row, "price_basis", price_basis(item_id, uom, factor, d(row, "price_list_rate")));
         }
         let tax_rates: Map<String, Value> =
             rows(&item, "tax_rates").iter().filter_map(|r| Some((s(r, "tax_account")?.to_string(), json!(d(r, "rate").to_string())))).collect();

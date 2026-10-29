@@ -11,7 +11,7 @@ use crate::{installed, scorecard, settings};
 use async_trait::async_trait;
 use ferrum_domain::flow::created;
 use ferrum_domain::trade::create_for_user;
-use ferrum_domain::util::{b, d, get, id, money, rows, s, set, sys};
+use ferrum_domain::util::{b, d, get, id, money, rows, s, set, stock_qty, sys};
 use ferrum_kernel::{Doc, DocHook, Error, FieldError, HookCtx, Result};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
@@ -616,7 +616,7 @@ impl DocHook for PurchaseOrderLinks {
                 ),
             ));
         }
-        apply(hc, linked(doc, |r| d(r, "qty")), Fulfil::Order, Decimal::ONE, false).await?;
+        apply(hc, linked(doc, stock_qty), Fulfil::Order, Decimal::ONE, false).await?;
         crate::quotation::check_order(hc, doc).await
     }
 
@@ -624,7 +624,7 @@ impl DocHook for PurchaseOrderLinks {
         if !installed(hc.ctx) {
             return Ok(());
         }
-        apply(hc, linked(doc, |r| d(r, "qty")), Fulfil::Order, Decimal::ONE, true).await?;
+        apply(hc, linked(doc, stock_qty), Fulfil::Order, Decimal::ONE, true).await?;
         crate::quotation::order_progress(hc, doc, Decimal::ONE).await
     }
 
@@ -632,7 +632,7 @@ impl DocHook for PurchaseOrderLinks {
         if !installed(hc.ctx) {
             return Ok(());
         }
-        apply(hc, linked(doc, |r| d(r, "qty")), Fulfil::Order, -Decimal::ONE, true).await?;
+        apply(hc, linked(doc, stock_qty), Fulfil::Order, -Decimal::ONE, true).await?;
         crate::quotation::order_progress(hc, doc, -Decimal::ONE).await
     }
 }
@@ -652,7 +652,7 @@ impl ReceiptLinks {
         }
         // Receipt returns flag the document; invoices carry negative quantities instead.
         let ret = !invoice && b(doc, "is_return");
-        apply(hc, linked(doc, |r| if ret { -d(r, "qty") } else { d(r, "qty") }), Fulfil::Receive, sign, true).await
+        apply(hc, linked(doc, |r| if ret { -stock_qty(r) } else { stock_qty(r) }), Fulfil::Receive, sign, true).await
     }
 }
 
@@ -708,7 +708,7 @@ impl StockEntryLinks {
         if s(doc, "purpose") == Some("Manufacture") {
             return produced(hc, doc, sign, write).await;
         }
-        let links = linked(doc, |r| d(r, "qty"));
+        let links = linked(doc, stock_qty);
         if links.is_empty() {
             return Ok(());
         }

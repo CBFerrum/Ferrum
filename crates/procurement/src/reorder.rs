@@ -88,7 +88,7 @@ const LEVELS: &str = "\
 select r.parent_id as item, coalesce(i.item_code, '') as item_code, r.warehouse, w.company, r.request_type, r.from_warehouse, \
   coalesce(r.reorder_level, 0) as reorder_level, coalesce(r.reorder_qty, 0) as reorder_qty, \
   i.min_order_qty, i.lead_time_days, coalesce(u.whole_number, false) as whole, coalesce(b.qty, 0) as on_hand, \
-  coalesce((select sum(l.qty - coalesce(l.received_qty, 0)) from e_purchase_order__items l \
+  coalesce((select sum((l.qty - coalesce(l.received_qty, 0)) * coalesce(nullif(l.conversion_factor, 0), 1)) from e_purchase_order__items l \
             join e_purchase_order o on o.tenant_id = l.tenant_id and o.id = l.parent_id \
             where l.tenant_id = r.tenant_id and l.item = r.parent_id and l.warehouse = r.warehouse \
               and o.docstatus = 1 and o.status <> 'Closed' and l.qty > coalesce(l.received_qty, 0)), 0) as ordered, \
@@ -97,7 +97,7 @@ select r.parent_id as item, coalesce(i.item_code, '') as item_code, r.warehouse,
             where l.tenant_id = r.tenant_id and l.item = r.parent_id and l.warehouse = r.warehouse \
               and m.docstatus = 1 and m.status <> 'Stopped' and l.stock_qty > coalesce(l.ordered_qty, 0)), 0) as requested, \
   greatest(coalesce(b.reserved_qty, 0), \
-           coalesce((select sum(l.qty - coalesce(l.delivered_qty, 0)) from e_sales_order__items l \
+           coalesce((select sum((l.qty - coalesce(l.delivered_qty, 0)) * coalesce(nullif(l.conversion_factor, 0), 1)) from e_sales_order__items l \
                      join e_sales_order o on o.tenant_id = l.tenant_id and o.id = l.parent_id \
                      where l.tenant_id = r.tenant_id and l.item = r.parent_id and l.warehouse = r.warehouse \
                        and o.docstatus = 1 and o.status <> 'Closed' and l.qty > coalesce(l.delivered_qty, 0)), 0)) as reserved, \

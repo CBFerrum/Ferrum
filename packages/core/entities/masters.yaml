@@ -113,6 +113,13 @@
     - {name: tax_account, type: link, to: Account, required: true, link_filters: {account_type: Tax}, in_list: true}
     - {name: rate, type: percent, required: true, min: "0", max: "100", in_list: true}
 
+- name: ItemUom
+  label: Item Unit
+  kind: child
+  fields:
+    - {name: uom, type: link, to: Uom, required: true, in_list: true, label: Unit}
+    - {name: conversion_factor, type: decimal, required: true, min: "0.000000001", in_list: true, description: Stock units in one of this unit (12 for a box of 12)}
+
 - name: ItemSupplier
   label: Approved Manufacturer / Supplier
   kind: child
@@ -151,12 +158,14 @@
     - {name: barcode, type: data}
     - {name: hsn_code, type: data, label: HSN/SAC Code}
     - {name: description, type: text}
+    - {name: uoms, type: table, of: ItemUom, label: Other Units, description: Units it is bought or sold in besides the stock unit}
     - {name: tax_rates, type: table, of: ItemTaxRate, label: Item Tax Rates}
     - {name: suppliers, type: table, of: ItemSupplier, label: Approved Manufacturers / Suppliers}
     - {name: disabled, type: check, in_filter: true}
   form:
     - {label: Item, fields: [item_code, item_name, item_group, stock_uom, description, barcode, hsn_code, disabled]}
     - {label: Inventory, fields: [is_stock_item, valuation_method, default_warehouse, has_serial_no, has_batch_no, safety_stock]}
+    - {label: Units, collapsible: true, fields: [uoms]}
     - {label: Buying & Manufacturing, fields: [is_purchased, is_manufactured, lead_time_days, min_order_qty, last_purchase_rate, suppliers]}
     - {label: Selling & Accounting, fields: [standard_rate, income_account, expense_account, tax_rates]}
   list: {columns: [item_code, item_name, item_group, stock_uom], sort: item_code asc}

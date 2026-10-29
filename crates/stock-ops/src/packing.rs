@@ -6,7 +6,7 @@ use crate::common::{child_table, installed, validation};
 use async_trait::async_trait;
 use ferrum_domain::flow::created;
 use ferrum_domain::trade::create_for_user;
-use ferrum_domain::util::{d, elevated, get, id, money, rows, s, set};
+use ferrum_domain::util::{d, elevated, get, id, money, rows, s, set, unit_factor};
 use ferrum_kernel::ddl::q;
 use ferrum_kernel::{Doc, DocHook, Error, FieldError, HookCtx, Result};
 use rust_decimal::Decimal;
@@ -82,7 +82,9 @@ impl DocHook for PackingSlipHook {
                     r.insert("dn_line".into(), only.get("id").cloned().unwrap_or(Value::Null));
                 }
             }
-            net += d(r, "qty") * d(r, "net_weight");
+            // Weights are per stock unit; the slip counts in the delivery line's unit.
+            let unit = dn_lines.iter().find(|l| s(l, "id").is_some() && s(l, "id") == s(r, "dn_line")).map(unit_factor).unwrap_or(Decimal::ONE);
+            net += d(r, "qty") * unit * d(r, "net_weight");
         }
         if id(doc, "weight_uom").is_none()
             && let Some(u) = lines.iter().find_map(|r| r.get("weight_uom").filter(|v| !v.is_null()).cloned())

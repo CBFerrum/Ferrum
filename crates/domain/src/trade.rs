@@ -3,11 +3,11 @@
 //! (SalesInvoice / PurchaseInvoice), including stock, ledger postings, open items, returns and
 //! the "create next document" actions.
 
-use crate::flow::{self, MapSpec, add_progress, created, refresh_billing, refresh_order, sync_invoice_outstanding};
+use crate::flow::{self, MapSpec, add_progress_in, created, refresh_billing, refresh_order, sync_invoice_outstanding};
 use crate::ledger::{self, Entry, Line, OpenItem};
 use crate::pricing::{Side, breakup, calculate};
 use crate::stock::{self, MoveIn, Posted, parse_serials};
-use crate::util::{Company, b, company, d, date, elevated, get, id, money, posting_ts, round, rows, s, set, sys};
+use crate::util::{Company, b, company, d, date, elevated, get, id, money, posting_ts, round, rows, s, set, stock_qty, sys, unit_factor};
 use async_trait::async_trait;
 use ferrum_kernel::{Action, Doc, DocHook, Error, FieldError, Filter, HookCtx, Result};
 use rust_decimal::Decimal;
@@ -82,7 +82,7 @@ fn header_fields(side: Side) -> Vec<&'static str> {
     h
 }
 
-const LINE_FIELDS: &[&str] = &["item", "price_list_rate", "discount_percent", "warehouse", "batch_no", "serial_no"];
+const LINE_FIELDS: &[&str] = &["item", "uom", "price_list_rate", "discount_percent", "warehouse", "batch_no", "serial_no"];
 
 async fn stock_account(hc: &mut HookCtx<'_>, co: &Company, warehouse: Uuid) -> Result<Uuid> {
     let w = get(hc.kernel, hc.ctx, hc.tx, "Warehouse", warehouse).await?;
@@ -140,7 +140,7 @@ async fn post_line_stock(hc: &mut HookCtx<'_>, co: &Company, entity: &str, doc: 
             continue;
         }
         let wh = id(r, "warehouse").ok_or_else(|| Error::Validation(vec![FieldError::new("warehouse", "is required for stock items").in_row("items", i)]))?;
-        let qty = d(r, "qty") * direction;
+        let qty = stock_qty(r) * direction;
         if qty.is_zero() {
             continue;
         }
@@ -154,7 +154,7 @@ async fn post_line_stock(hc: &mut HookCtx<'_>, co: &Company, entity: &str, doc: 
             }
         } else {
             let net = if r.get("base_net_amount").is_some_and(|v| !v.is_null()) { d(r, "base_net_amount") } else { d(r, "net_amount") * rate };
-            let q = d(r, "qty").abs();
+            let q = stock_qty(r).abs();
             Some(if q.is_zero() { Decimal::ZERO } else { (net.abs() / q).round_dp(12) })
         };
         moves.push(MoveIn {
@@ -312,7 +312,7 @@ impl DocHook for ShipmentHook {
         let mut orders = Vec::new();
         for r in rows(doc, "items") {
             if let (Some(o), Some(line)) = (id(&r, n.order_link), id(&r, n.order_line)) {
-                add_progress(hc.kernel, hc.ctx, hc.tx, n.order, o, line, n.fulfil_field, sign * d(&r, "qty")).await?;
+                add_progress_in(hc.kernel, hc.ctx, hc.tx, n.order, o, line, n.fulfil_field, sign * d(&r, "qty"), Some(unit_factor(&r))).await?;
                 if !orders.contains(&o) {
                     orders.push(o);
                 }
@@ -342,7 +342,7 @@ impl DocHook for ShipmentHook {
         let mut orders = Vec::new();
         for r in rows(doc, "items") {
             if let (Some(o), Some(line)) = (id(&r, n.order_link), id(&r, n.order_line)) {
-                add_progress(hc.kernel, hc.ctx, hc.tx, n.order, o, line, n.fulfil_field, sign * d(&r, "qty")).await?;
+                add_progress_in(hc.kernel, hc.ctx, hc.tx, n.order, o, line, n.fulfil_field, sign * d(&r, "qty"), Some(unit_factor(&r))).await?;
                 if !orders.contains(&o) {
                     orders.push(o);
                 }
@@ -542,7 +542,7 @@ impl DocHook for InvoiceHook {
                         .fetch_optional(&mut **hc.tx)
                         .await?;
                         if let Some((v, q)) = received.filter(|(_, q)| !q.is_zero()) {
-                            let srbnb_amount = round(v / q * d(r, "qty"), co.precision);
+                            let srbnb_amount = round(v / q * stock_qty(r), co.precision);
                             let srbnb = co.require("srbnb_account", "stock received but not billed account")?;
                             entry.lines.push(Line::new(srbnb, srbnb_amount, &co.currency_code).remarks("SRBNB clearing"));
                             let variance = *base - srbnb_amount;
@@ -646,18 +646,18 @@ impl DocHook for InvoiceHook {
         let mut orders = Vec::new();
         let mut shipments = Vec::new();
         for r in rows(doc, "items") {
-            let q = d(&r, "qty");
+            let (q, unit) = (d(&r, "qty"), Some(unit_factor(&r)));
             if let (Some(o), Some(line)) = (id(&r, n.order_link), id(&r, n.order_line)) {
-                add_progress(hc.kernel, hc.ctx, hc.tx, n.order, o, line, "billed_qty", q).await?;
+                add_progress_in(hc.kernel, hc.ctx, hc.tx, n.order, o, line, "billed_qty", q, unit).await?;
                 if update_stock {
-                    add_progress(hc.kernel, hc.ctx, hc.tx, n.order, o, line, n.fulfil_field, q).await?;
+                    add_progress_in(hc.kernel, hc.ctx, hc.tx, n.order, o, line, n.fulfil_field, q, unit).await?;
                 }
                 if !orders.contains(&o) {
                     orders.push(o);
                 }
             }
             if let (Some(sh), Some(line)) = (id(&r, n.shipment_link), id(&r, n.shipment_line)) {
-                add_progress(hc.kernel, hc.ctx, hc.tx, n.shipment, sh, line, "billed_qty", q).await?;
+                add_progress_in(hc.kernel, hc.ctx, hc.tx, n.shipment, sh, line, "billed_qty", q, unit).await?;
                 if !shipments.contains(&sh) {
                     shipments.push(sh);
                 }
@@ -671,7 +671,8 @@ impl DocHook for InvoiceHook {
         }
         if self.0 == Side::Buying && !b(doc, "is_return") {
             for (r, base) in &bk.lines {
-                let (Some(item), q) = (id(r, "item"), d(r, "qty")) else { continue };
+                // Per stock unit, as price lists and valuation count.
+                let (Some(item), q) = (id(r, "item"), stock_qty(r)) else { continue };
                 if q > Decimal::ZERO {
                     let mut v = Doc::new();
                     v.insert("last_purchase_rate".into(), money((*base / q).round_dp(9)));
@@ -718,18 +719,18 @@ impl DocHook for InvoiceHook {
         let mut orders = Vec::new();
         let mut shipments = Vec::new();
         for r in rows(doc, "items") {
-            let q = -d(&r, "qty");
+            let (q, unit) = (-d(&r, "qty"), Some(unit_factor(&r)));
             if let (Some(o), Some(line)) = (id(&r, n.order_link), id(&r, n.order_line)) {
-                add_progress(hc.kernel, hc.ctx, hc.tx, n.order, o, line, "billed_qty", q).await?;
+                add_progress_in(hc.kernel, hc.ctx, hc.tx, n.order, o, line, "billed_qty", q, unit).await?;
                 if b(doc, "update_stock") {
-                    add_progress(hc.kernel, hc.ctx, hc.tx, n.order, o, line, n.fulfil_field, q).await?;
+                    add_progress_in(hc.kernel, hc.ctx, hc.tx, n.order, o, line, n.fulfil_field, q, unit).await?;
                 }
                 if !orders.contains(&o) {
                     orders.push(o);
                 }
             }
             if let (Some(sh), Some(line)) = (id(&r, n.shipment_link), id(&r, n.shipment_line)) {
-                add_progress(hc.kernel, hc.ctx, hc.tx, n.shipment, sh, line, "billed_qty", q).await?;
+                add_progress_in(hc.kernel, hc.ctx, hc.tx, n.shipment, sh, line, "billed_qty", q, unit).await?;
                 if !shipments.contains(&sh) {
                     shipments.push(sh);
                 }
