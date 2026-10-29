@@ -259,8 +259,10 @@ Drive (today: files, folders, versions, sharing with people and teams, links, tr
   Microsoft's partner programme: not planned.
 * Each save is a Drive version; Drive's sharing decides who may open or edit; the engine provides
   co-editing; locks follow WOPI.
-* Security: tokens are per user and file, short-lived and accepted only on the WOPI endpoints; every
-  request from the engine carries its proof signature, checked against the keys in its discovery document.
+* Security: tokens are per user and file, short-lived and accepted only on the WOPI endpoints.
+  Proof signatures are checked when the engine publishes its keys; spike S1 found the stock
+  Collabora image publishes none, so deployments mount a proof key, and WOPI endpoints accept only
+  the editor server's address ([spike-s1-collabora.md](spike-s1-collabora.md)).
 * PDFs: viewing with the browser's own viewer; pdf.js (Apache-2.0) only if we add annotation; Gotenberg
   already converts to PDF; signing stays in the Sign app. Whether PdfCraft's Rust engine is worth using on
   the server (merge, split, fill) is part of spike S3.
