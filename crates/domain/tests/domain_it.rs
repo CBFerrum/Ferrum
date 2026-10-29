@@ -107,6 +107,18 @@ impl T {
         .unwrap();
         v
     }
+    async fn reserved(&self, item: Uuid, wh: Uuid) -> Decimal {
+        let mut tx = self.k.db.tenant_tx(self.ctx.tenant).await.unwrap();
+        let v: Option<Decimal> = sqlx::query_scalar("select reserved_qty from stock_balance where tenant_id = $1 and item_id = $2 and warehouse_id = $3")
+            .bind(self.ctx.tenant)
+            .bind(item)
+            .bind(wh)
+            .fetch_optional(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        v.unwrap_or_default()
+    }
     async fn stock(&self, item: Uuid, wh: Uuid) -> (Decimal, Decimal) {
         let mut tx = self.k.db.tenant_tx(self.ctx.tenant).await.unwrap();
         sqlx::query_as::<_, (Decimal, Decimal)>("select qty, value from stock_balance where tenant_id = $1 and item_id = $2 and warehouse_id = $3")
@@ -268,10 +280,13 @@ async fn scenario() {
     assert_eq!(dec(&so["net_total"]), n("1500"), "standard rate used");
     assert_eq!(dec(&so["grand_total"]), n("1770"), "IGST 18% on an inter-state supply");
     let so_id = uid(&so);
+    let reserved_before = t.reserved(widget, stores).await;
     t.submit("SalesOrder", so_id).await;
+    assert_eq!(t.reserved(widget, stores).await - reserved_before, n("10"), "a submitted order reserves its stock");
     let dn = t.action("SalesOrder", so_id, "make_delivery_note", json!({})).await;
     let dn_id = vid(&dn);
     t.submit("DeliveryNote", dn_id).await;
+    assert_eq!(t.reserved(widget, stores).await, reserved_before, "delivery releases the reservation");
     assert_eq!(t.stock(widget, stores).await, (n("40"), n("4000")));
     assert_eq!(t.gl("Cost of Goods Sold").await, n("1000"));
     assert_eq!(t.get("SalesOrder", so_id).await["status"], json!("To Bill"));
@@ -371,6 +386,11 @@ async fn scenario() {
         .insert("SalesOrder", json!({"company": cid.to_string(), "customer": local.to_string(), "set_warehouse": stores.to_string(), "items": [{"item": widget.to_string(), "qty": "100"}]}))
         .await;
     t.submit("SalesOrder", uid(&so2)).await;
+    let held = t.reserved(widget, stores).await;
+    t.action("SalesOrder", uid(&so2), "close", json!({})).await;
+    assert_eq!(held - t.reserved(widget, stores).await, n("100"), "closing an order releases its reservation");
+    t.action("SalesOrder", uid(&so2), "reopen", json!({})).await;
+    assert_eq!(t.reserved(widget, stores).await, held, "re-opening reserves again");
     let mrp = t.insert("MrpRun", json!({"company": cid.to_string(), "warehouse": stores.to_string()})).await;
     let mrp_id = uid(&mrp);
     t.action("MrpRun", mrp_id, "run", json!({})).await;

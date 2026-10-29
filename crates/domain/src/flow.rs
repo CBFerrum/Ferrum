@@ -70,7 +70,11 @@ pub async fn refresh_order(k: &Kernel, ctx: &Ctx, tx: &mut Tx, entity: &str, doc
     v.insert(pct_field.into(), money(pf));
     v.insert("per_billed".into(), money(pb));
     v.insert("status".into(), json!(status));
-    k.set_values_tx(&sctx, tx, entity, doc_id, v).await
+    k.set_values_tx(&sctx, tx, entity, doc_id, v).await?;
+    if entity == "SalesOrder" {
+        crate::reservation::refresh_for_order(tx, ctx.tenant, doc_id).await?;
+    }
+    Ok(())
 }
 
 /// Recomputes `per_billed` and status of a delivery note / purchase receipt.

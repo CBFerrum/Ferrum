@@ -11,6 +11,7 @@ pub mod ledger;
 pub mod manufacturing;
 pub mod pricing;
 pub mod reports;
+pub mod reservation;
 pub mod setup;
 pub mod stock;
 pub mod stock_entry;

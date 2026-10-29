@@ -231,6 +231,9 @@ impl DocHook for OrderHook {
             hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, n.order, oid, v).await?;
             if name == "reopen" {
                 refresh_order(hc.kernel, hc.ctx, hc.tx, n.order, oid, n.fulfil_field, n.fulfil_pct).await?;
+            } else if n.order == "SalesOrder" {
+                // A closed order no longer holds stock.
+                crate::reservation::refresh_for_order(hc.tx, hc.ctx.tenant, oid).await?;
             }
             return Ok(Some(json!({"status": if name == "close" { "Closed" } else { "reopened" }})));
         }
