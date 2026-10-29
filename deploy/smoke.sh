@@ -5,9 +5,10 @@
 # FERRUM_IMAGE as an upgrade does: the session, the data and the web app's route to the new
 # container must survive it. Then, on the new image: the security and caching headers; the web app
 # serves its pages and scripts and passes the API and live updates through; a Sales Invoice is
-# created, submitted and printed as HTML and PDF; the server recovers from a database restart; a
-# short load test runs without errors. Everything is removed afterwards. CI runs it on every image
-# it builds.
+# created, submitted and printed as HTML and PDF; the server recovers from a database restart; the
+# database and the attachments are backed up, the stack is deleted with its volumes and restored
+# from the backups, data, sessions and numbering intact; a short load test runs without errors.
+# Everything is removed afterwards. CI runs it on every image it builds.
 #
 #   FERRUM_IMAGE=ghcr.io/cbferrum/ferrum:latest FERRUM_WEB_IMAGE=ghcr.io/cbferrum/ferrum-frontend:latest \
 #     deploy/smoke.sh     # needs Docker, curl, openssl, python3 + httpx
@@ -147,7 +148,39 @@ for _ in $(seq 1 30); do
 done
 [ "$(curl -fsS "${auth[@]}" "$API/api/v1/SalesInvoice/$id" | json 'd["id"]')" = "$id" ] || fail "the server did not recover from the database restart"
 
-# Its draft invoices are written (and deleted) on the recovered connections too.
+# The Compose stack's backup and restore. The dump is taken as the superuser: the application role
+# is subject to the forced row-level security, so its pg_dump stops partway.
+step "backing up, losing the stack with its volumes, and restoring"
+attachment=$(curl -fsS "${auth[@]}" -F entity=SalesInvoice -F record_id="$id" -F "file=@$work/invoice.pdf;type=application/pdf" "$API/api/files") ||
+  fail "attaching a file"
+file_id=$(json 'd["id"]' <<<"$attachment")
+file_sha=$(json 'd["sha256"]' <<<"$attachment")
+compose exec -T db pg_dump -U postgres -Fc ferrum > "$work/ferrum.dump" || fail "the database backup"
+compose exec -T ferrum tar -C /var/lib/ferrum/files -czf - . > "$work/files.tgz" || fail "the attachments backup"
+compose down -v --remove-orphans
+compose up -d db
+# A new volume is initialized over the socket alone; the server is up once it listens on TCP.
+for _ in $(seq 1 60); do
+  compose exec -T db pg_isready -q -h 127.0.0.1 -U postgres -d ferrum && break
+  sleep 2
+done
+compose exec -T db pg_restore -U postgres -d ferrum --clean --if-exists --exit-on-error < "$work/ferrum.dump" || fail "the database restore"
+compose run --rm --no-deps -T --entrypoint tar ferrum -C /var/lib/ferrum/files -xzf - < "$work/files.tgz" || fail "the attachments restore"
+compose up -d --no-build ferrum pdf web
+wait_up "$API/_health" "the restored server"
+wait_up "$WEB/healthz" "the web app"
+[ "$(curl -fsS "${auth[@]}" "$API/api/auth/me" | json 'd["user"]["email"]')" = "smoke@smoke.test" ] || fail "the session after the restore"
+[ "$(curl -fsS "${auth[@]}" "$WEB/api/v1/SalesInvoice/$id" | json 'd["docstatus"]')" = "1" ] || fail "the invoice after the restore"
+[ "$(curl -fsS "${auth[@]}" "$API/api/v1/SalesInvoice/$id/audit" | json 'd["chain_valid"]')" = "True" ] || fail "the audit chain after the restore"
+curl -fsSL "${auth[@]}" "$API/files/$file_id" -o "$work/restored.pdf" || fail "the attachment after the restore"
+[ "$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$work/restored.pdf")" = "$file_sha" ] ||
+  fail "the attachment's content after the restore"
+# Numbering carries on from the restored series.
+restored=$(invoice restored) || fail "invoicing after the restore"
+[ "$(json 'd["docstatus"]' <<<"$restored")" = "1" ] || fail "the invoice after the restore was not submitted: $restored"
+echo "    $(json 'd["number"]' <<<"$restored") after the restore"
+
+# On the restored stack.
 step "load test"
 python3 ../tools/loadtest.py --url "$API" --tenant smoke --email smoke@smoke.test --password "$PASSWORD" --levels 10,50 --seconds "${SMOKE_LOAD_SECONDS:-20}"
 
