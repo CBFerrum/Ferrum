@@ -521,6 +521,12 @@ async fn scenario() {
     assert_eq!((mr["status"].clone(), dec(&mr["per_received"])), (json!("Manufactured"), n("100")), "production is received on the request");
     t.k.cancel(&a, "StockEntry", first_run, None).await.expect("cancel the first run");
     assert_eq!(t.get("MaterialRequest", make_id).await["status"], json!("Partially Received"));
+    // Stopping the work order takes back what it will no longer make; resuming orders it again.
+    let ordered = |mr: &Value| dec(&mr["items"][0]["ordered_qty"]);
+    t.action(&a, "WorkOrder", wo_id, "stop", json!({})).await;
+    assert_eq!(ordered(&json!(t.get("MaterialRequest", make_id).await)), n("4"), "4 of 6 were made before it stopped");
+    t.action(&a, "WorkOrder", wo_id, "resume", json!({})).await;
+    assert_eq!(ordered(&json!(t.get("MaterialRequest", make_id).await)), n("6"));
 
     // ───────────── request for quotation ─────────────
     let unaddressed = t.insert(&buyer, "RequestForQuotation", json!({"company": co, "items": [{"item": washer.to_string(), "qty": "5"}]})).await;
