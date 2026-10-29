@@ -48,7 +48,7 @@ async fn refresh(tx: &mut Tx, tenant: Uuid, item: Uuid, warehouse: Uuid, company
         .await?;
     // A new statement after the lock: it sees every order committed while this one waited.
     let reserved: Decimal = sqlx::query_scalar(
-        "select coalesce(sum(greatest(l.qty - coalesce(l.delivered_qty, 0), 0)), 0) from e_sales_order__items l \
+        "select coalesce(sum(greatest(l.qty - coalesce(l.delivered_qty, 0), 0) * coalesce(nullif(l.conversion_factor, 0), 1)), 0) from e_sales_order__items l \
          join e_sales_order o on o.tenant_id = l.tenant_id and o.id = l.parent_id \
          where l.tenant_id = $1 and l.item = $2 and coalesce(l.warehouse, o.set_warehouse) = $3 \
          and o.docstatus = 1 and o.status not in ('Closed', 'Completed')",

@@ -38,6 +38,7 @@ pub fn register(h: &mut HookRegistry) {
         .register("Customer", Arc::new(india::PartyGstHook))
         .register("Supplier", Arc::new(india::PartyGstHook))
         .register("Company", Arc::new(setup::CompanyHook))
+        .register("Item", Arc::new(setup::ItemHook))
         .register("FiscalYear", Arc::new(setup::FiscalYearHook))
         .register("JournalEntry", Arc::new(accounting::JournalEntryHook))
         .register("PaymentEntry", Arc::new(accounting::PaymentEntryHook))

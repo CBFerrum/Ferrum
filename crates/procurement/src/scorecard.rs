@@ -140,11 +140,13 @@ impl Metrics {
 }
 
 async fn metrics(tx: &mut Tx, tenant: Uuid, supplier: Uuid, from: NaiveDate, to: NaiveDate) -> Result<Metrics> {
-    // Receipts (returns excluded): on time when received by the order line's (or order's) required date.
+    // Receipts (returns excluded), in stock units: on time when received by the order line's (or
+    // order's) required date.
     let (accepted_qty, rejected_qty, on_time_qty): (Decimal, Decimal, Decimal) = sqlx::query_as(
-        "select coalesce(sum(i.qty), 0), coalesce(sum(coalesce(i.rejected_qty, 0)), 0), \
+        "select coalesce(sum(i.qty * coalesce(nullif(i.conversion_factor, 0), 1)), 0), \
+         coalesce(sum(coalesce(i.rejected_qty, 0) * coalesce(nullif(i.conversion_factor, 0), 1)), 0), \
          coalesce(sum(case when coalesce(ol.schedule_date, o.schedule_date) is null or r.posting_date <= coalesce(ol.schedule_date, o.schedule_date) \
-                      then i.qty + coalesce(i.rejected_qty, 0) else 0 end), 0) \
+                      then (i.qty + coalesce(i.rejected_qty, 0)) * coalesce(nullif(i.conversion_factor, 0), 1) else 0 end), 0) \
          from e_purchase_receipt r join e_purchase_receipt__items i on i.tenant_id = r.tenant_id and i.parent_id = r.id \
          left join e_purchase_order o on o.tenant_id = i.tenant_id and o.id = i.purchase_order \
          left join e_purchase_order__items ol on ol.tenant_id = i.tenant_id and ol.parent_id = i.purchase_order and ol.id::text = i.po_line \
@@ -167,10 +169,11 @@ async fn metrics(tx: &mut Tx, tenant: Uuid, supplier: Uuid, from: NaiveDate, to:
     .fetch_one(&mut **tx)
     .await?;
     // Ordered rate against the supplier's own latest quotation for the item before the order
-    // (company currency on both sides).
+    // (company currency on both sides, per stock unit).
     let (quoted_value, variance_value): (Decimal, Decimal) = sqlx::query_as(
         "select coalesce(sum(x.qty * x.quoted), 0), coalesce(sum(x.qty * (x.paid - x.quoted)), 0) from ( \
-           select l.qty, l.rate * coalesce(nullif(o.conversion_rate, 0), 1) as paid, \
+           select l.qty * coalesce(nullif(l.conversion_factor, 0), 1) as qty, \
+             l.rate / coalesce(nullif(l.conversion_factor, 0), 1) * coalesce(nullif(o.conversion_rate, 0), 1) as paid, \
              (select ql.rate * coalesce(nullif(q.conversion_rate, 0), 1) from e_supplier_quotation q \
               join e_supplier_quotation__items ql on ql.tenant_id = q.tenant_id and ql.parent_id = q.id \
               where q.tenant_id = o.tenant_id and q.supplier = o.supplier and q.docstatus = 1 and ql.item = l.item and q.posting_date <= o.posting_date \

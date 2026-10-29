@@ -1,23 +1,53 @@
 //! Document-to-document flows: progress counters on order lines, statuses, and mapping one
 //! document into the next (order → delivery → invoice) for the quantities still open.
 
-use crate::util::{d, id, money, rows, s, set, sys};
+use crate::util::{d, id, money, rows, s, set, sys, unit_factor};
 use ferrum_kernel::{Ctx, Doc, Error, Kernel, Result, Tx};
 use rust_decimal::Decimal;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
+/// Quantities counted through another unit can land a hair off; this close, they are equal.
+pub const QTY_TOLERANCE: Decimal = Decimal::from_parts(1, 0, 0, false, 6);
+
 /// Adds `delta` to a progress field on one order line, refusing to exceed the ordered quantity.
 #[allow(clippy::too_many_arguments)]
 pub async fn add_progress(k: &Kernel, ctx: &Ctx, tx: &mut Tx, entity: &str, doc_id: Uuid, line_id: Uuid, field: &str, delta: Decimal) -> Result<()> {
+    add_progress_in(k, ctx, tx, entity, doc_id, line_id, field, delta, None).await
+}
+
+/// [`add_progress`] for `delta` counted on a line whose unit holds `factor` stock units: a box of
+/// 12 delivered against an order line in pieces counts 12.
+#[allow(clippy::too_many_arguments)]
+pub async fn add_progress_in(
+    k: &Kernel,
+    ctx: &Ctx,
+    tx: &mut Tx,
+    entity: &str,
+    doc_id: Uuid,
+    line_id: Uuid,
+    field: &str,
+    delta: Decimal,
+    factor: Option<Decimal>,
+) -> Result<()> {
     let sctx = sys(ctx);
     let order = k.get_tx(&sctx, tx, entity, doc_id, true).await?;
     if d(&order, "docstatus") != Decimal::ONE {
         return Err(Error::invalid(format!("{entity} {} is not submitted", s(&order, "number").unwrap_or_default())));
     }
     let line = rows(&order, "items").into_iter().find(|r| id(r, "id") == Some(line_id)).ok_or_else(|| Error::invalid(format!("line not found on {entity}")))?;
+    let own = unit_factor(&line);
+    let delta = match factor {
+        Some(f) if f > Decimal::ZERO && f != own => (delta * f / own).round_dp(9),
+        _ => delta,
+    };
     let qty = d(&line, "qty");
-    let new = d(&line, field) + delta;
+    let mut new = d(&line, field) + delta;
+    if (new - qty).abs() <= QTY_TOLERANCE {
+        new = qty;
+    } else if new.abs() <= QTY_TOLERANCE {
+        new = Decimal::ZERO;
+    }
     if new > qty {
         let what = s(&line, "item_name").unwrap_or("item");
         return Err(Error::invalid(format!(
@@ -138,7 +168,7 @@ pub fn map_document_with(src: &Doc, spec: &MapSpec<'_>, extra: &[String]) -> Res
     let mut lines = Vec::new();
     for r in rows(src, "items") {
         let open = d(&r, "qty") - d(&r, spec.done_field);
-        if open <= Decimal::ZERO {
+        if open <= QTY_TOLERANCE {
             continue;
         }
         let mut line = Map::new();

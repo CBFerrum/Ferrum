@@ -63,6 +63,23 @@ pub fn money(v: Decimal) -> Value {
     decimal_value(v)
 }
 
+/// How many stock units one unit of a line holds (`conversion_factor`; 1 when unset).
+pub fn unit_factor(line: &Doc) -> Decimal {
+    let f = d(line, "conversion_factor");
+    if f > Decimal::ZERO { f } else { Decimal::ONE }
+}
+
+/// `qty` units of `factor` stock units each, in stock units. Converted quantities are rounded to
+/// six places, so a third of a box of 12 is 4 pieces rather than 3.999999996.
+pub fn to_stock(qty: Decimal, factor: Decimal) -> Decimal {
+    if factor == Decimal::ONE { qty } else { (qty * factor).round_dp(6) }
+}
+
+/// A line's quantity in its item's stock unit.
+pub fn stock_qty(line: &Doc) -> Decimal {
+    to_stock(d(line, "qty"), unit_factor(line))
+}
+
 pub fn date(doc: &Doc, k: &str) -> Result<NaiveDate> {
     let raw = s(doc, k).ok_or_else(|| Error::field(k, "is required"))?;
     parse_date(&raw[..raw.len().min(10)]).map_err(|m| Error::field(k, m))

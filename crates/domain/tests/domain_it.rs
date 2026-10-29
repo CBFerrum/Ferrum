@@ -795,4 +795,88 @@ async fn scenario() {
     let bad = plugins.install(&t.k, &t.ctx, plugin("bad", "NoSuchThing", "validate"), stamp.as_bytes()).await;
     assert!(matches!(bad, Err(Error::Validation(_))), "{bad:?}");
     assert_eq!(plugins.list(&t.k, &t.ctx).await.unwrap().len(), 2);
+
+    // ───────────── units: sold and bought by the box, stocked by the piece ─────────────
+    let boxes = t.find_one("Uom", json!({"uom_name": "Box"})).await;
+    let kg = t.find_one("Uom", json!({"uom_name": "Kg"})).await;
+    let twice =
+        t.k.insert(
+            &t.ctx,
+            "Item",
+            obj(json!({"item_code": "BOLT-2", "item_name": "Bolt 2", "item_group": products["id"], "stock_uom": nos["id"],
+                       "uoms": [{"uom": boxes["id"], "conversion_factor": "12"}, {"uom": boxes["id"], "conversion_factor": "10"}]})),
+        )
+        .await;
+    assert!(matches!(twice, Err(Error::Validation(ref e)) if e.iter().any(|f| f.field == "uom")), "{twice:?}");
+    let bolt = uid(&t
+        .insert(
+            "Item",
+            json!({"item_code": "BOLT", "item_name": "Bolt", "item_group": products["id"], "stock_uom": nos["id"], "hsn_code": "7318", "standard_rate": "10",
+                   "uoms": [{"uom": boxes["id"], "conversion_factor": "12"}]}),
+        )
+        .await);
+    let opening = t
+        .insert(
+            "StockEntry",
+            json!({"company": cid.to_string(), "purpose": "Opening Stock", "items": [{"item": bolt.to_string(), "qty": "100", "basic_rate": "4", "target_warehouse": stores.to_string()}]}),
+        )
+        .await;
+    t.submit("StockEntry", uid(&opening)).await;
+    let line = |v: Value| json!({"company": cid.to_string(), "customer": globex.to_string(), "set_warehouse": stores.to_string(), "items": [v]});
+    let in_kg = t.k.insert(&t.ctx, "SalesOrder", obj(line(json!({"item": bolt.to_string(), "qty": "1", "uom": kg["id"]})))).await;
+    assert!(matches!(in_kg, Err(Error::Validation(ref e)) if e.iter().any(|f| f.field == "uom")), "no conversion from Kg: {in_kg:?}");
+    let so = t.insert("SalesOrder", line(json!({"item": bolt.to_string(), "qty": "2", "uom": boxes["id"]}))).await;
+    let l = &so["items"][0];
+    assert_eq!(
+        (dec(&l["conversion_factor"]), dec(&l["stock_qty"]), dec(&l["price_list_rate"])),
+        (n("12"), n("24"), n("120")),
+        "a box is 12 pieces at the piece price"
+    );
+    let so_id = uid(&so);
+    t.submit("SalesOrder", so_id).await;
+    assert_eq!(t.reserved(bolt, stores).await, n("24"), "reserved in pieces");
+    // Half a box delivered as 6 pieces: the box price becomes a piece price, the order counts boxes.
+    let dn_id = vid(&t.action("SalesOrder", so_id, "make_delivery_note", json!({})).await);
+    let dn = t.get("DeliveryNote", dn_id).await;
+    assert_eq!(dn["items"][0]["uom"], boxes["id"], "the order's unit carries over");
+    let pieces = json!({"items": [{"id": dn["items"][0]["id"], "item": bolt.to_string(), "uom": nos["id"], "qty": "6", "warehouse": stores.to_string()}]});
+    let dn = t.k.update(&t.ctx, "DeliveryNote", dn_id, obj(pieces), None).await.expect("deliver in pieces");
+    assert_eq!((dec(&dn["items"][0]["price_list_rate"]), dec(&dn["items"][0]["stock_qty"])), (n("10"), n("6")));
+    t.submit("DeliveryNote", dn_id).await;
+    assert_eq!(t.stock(bolt, stores).await, (n("94"), n("376")));
+    assert_eq!(dec(&t.get("SalesOrder", so_id).await["items"][0]["delivered_qty"]), n("0.5"), "6 pieces are half a box");
+    assert_eq!(t.reserved(bolt, stores).await, n("18"));
+    let rest = vid(&t.action("SalesOrder", so_id, "make_delivery_note", json!({})).await);
+    let rest_doc = t.get("DeliveryNote", rest).await;
+    assert_eq!((dec(&rest_doc["items"][0]["qty"]), dec(&rest_doc["items"][0]["stock_qty"])), (n("1.5"), n("18")));
+    t.submit("DeliveryNote", rest).await;
+    assert_eq!(t.stock(bolt, stores).await.0, n("76"));
+    assert_eq!(t.reserved(bolt, stores).await, Decimal::ZERO);
+    assert_eq!(t.get("SalesOrder", so_id).await["status"], json!("To Bill"));
+    let si = vid(&t.action("SalesOrder", so_id, "make_sales_invoice", json!({})).await);
+    assert_eq!(dec(&t.submit("SalesInvoice", si).await["net_total"]), n("240"));
+    assert_eq!(t.get("SalesOrder", so_id).await["status"], json!("Completed"));
+    // Bought by the box at 36: stock and valuation count pieces at 3.
+    let srbnb = t.gl("Stock Received But Not Billed").await;
+    let po = t
+        .insert(
+            "PurchaseOrder",
+            json!({"company": cid.to_string(), "supplier": acme.to_string(), "items": [{"item": bolt.to_string(), "qty": "2", "uom": boxes["id"], "price_list_rate": "36", "warehouse": stores.to_string()}]}),
+        )
+        .await;
+    assert_eq!(dec(&po["items"][0]["stock_qty"]), n("24"));
+    t.submit("PurchaseOrder", uid(&po)).await;
+    let pr = vid(&t.action("PurchaseOrder", uid(&po), "make_purchase_receipt", json!({})).await);
+    t.submit("PurchaseReceipt", pr).await;
+    assert_eq!(t.stock(bolt, stores).await, (n("100"), n("376")));
+    let pi = vid(&t.action("PurchaseReceipt", pr, "make_purchase_invoice", json!({})).await);
+    t.k.update(&t.ctx, "PurchaseInvoice", pi, obj(json!({"bill_no": "ACME/BOLTS"})), None).await.expect("bill no");
+    t.submit("PurchaseInvoice", pi).await;
+    assert_eq!(t.gl("Stock Received But Not Billed").await, srbnb, "cleared at the receipt's value");
+    assert_eq!(dec(&t.get("Item", bolt).await["last_purchase_rate"]), n("3"), "per piece");
+    // A saved line given another item takes that item's price and unit.
+    let draft = t.insert("SalesOrder", line(json!({"item": bolt.to_string(), "qty": "1", "uom": boxes["id"]}))).await;
+    let other = json!({"items": [{"id": draft["items"][0]["id"], "item": widget.to_string(), "qty": "1"}]});
+    let changed = t.k.update(&t.ctx, "SalesOrder", uid(&draft), obj(other), None).await.expect("change the item");
+    assert_eq!((changed["items"][0]["uom"].clone(), dec(&changed["items"][0]["price_list_rate"])), (nos["id"].clone(), n("150")));
 }

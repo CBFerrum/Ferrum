@@ -12,8 +12,12 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 - **Linked-record titles** (`titles=true`) are shown even when the caller cannot open the linked
   record, as in ERPNext: a record you can read names what it links to. Only the target's title
   field (or number) is exposed, never its other fields.
-- **Units of measure**: material request lines convert with a factor per line; there is no
-  per-item conversion table that sales and purchase documents pick factors from.
+- **Units of measure**: an item lists its other units with a factor to its stock unit, and order,
+  delivery, receipt and invoice lines are entered in any of them (stock moves, valuation,
+  reservations and planning count stock units). The factor always comes from the item, not typed
+  per line; stock entries and BOMs work in stock units; material requests keep their own factor
+  per line. A line delivered in another unit than its order line counts against it through stock
+  units, rounded to six decimals.
 - **PDFs** come from a separate renderer service (Gotenberg, shipped in both deployments); without
   it, printing is the browser's. Print formats use inline (data:) images, as the renderer fetches
   nothing.

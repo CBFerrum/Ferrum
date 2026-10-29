@@ -11,7 +11,7 @@ use crate::common::{child_table, finish_rows, installed, items, rows_value, seri
 use async_trait::async_trait;
 use ferrum_domain::ledger::{self, Entry, Line};
 use ferrum_domain::stock::{self, MoveIn};
-use ferrum_domain::util::{b, company, d, date, id, money, posting_ts, rows, s, set, sys};
+use ferrum_domain::util::{b, company, d, date, id, money, posting_ts, rows, s, set, stock_qty, sys};
 use ferrum_kernel::ddl::q;
 use ferrum_kernel::{Doc, DocHook, Error, FieldError, HookCtx, Result, Tx};
 use rust_decimal::Decimal;
@@ -139,7 +139,7 @@ impl DocHook for PackedStock {
             let (Some(bundle), Some(line_id)) = (id(line, "item"), s(line, "id")) else { continue };
             let Some(comps) = kits.get(&bundle) else { continue };
             for (comp, per) in comps {
-                let required = (d(line, "qty") * per).round_dp(9);
+                let required = (stock_qty(line) * per).round_dp(9);
                 let mut group: Vec<Doc> = existing.iter().filter(|r| s(r, "parent_line") == Some(line_id) && id(r, "item") == Some(*comp)).cloned().collect();
                 if group.is_empty() {
                     group.push(Doc::new());
@@ -183,7 +183,7 @@ impl DocHook for PackedStock {
         for line in &lines {
             let (Some(bundle), Some(line_id)) = (id(line, "item"), s(line, "id")) else { continue };
             for (comp, per) in kits.get(&bundle).into_iter().flatten() {
-                let required = (d(line, "qty") * per).round_dp(9);
+                let required = (stock_qty(line) * per).round_dp(9);
                 let given: Decimal = packed.iter().filter(|r| s(r, "parent_line") == Some(line_id) && id(r, "item") == Some(*comp)).map(|r| d(r, "qty")).sum();
                 if given != required {
                     let code = infos.get(comp).map(|i| i.code.clone()).unwrap_or_default();
@@ -282,7 +282,7 @@ impl DocHook for PackedStock {
         }
         for line in rows(doc, "items") {
             let (Some(lid), Some(total)) = (id(&line, "id"), s(&line, "id").and_then(|k| per_line.get(k))) else { continue };
-            let q = d(&line, "qty").abs();
+            let q = stock_qty(&line).abs();
             if q.is_zero() {
                 continue;
             }

@@ -7,10 +7,10 @@ use crate::material_request::days_after;
 use crate::settings;
 use async_trait::async_trait;
 use chrono::NaiveDate;
-use ferrum_domain::flow::{MapSpec, add_progress, created, map_document};
+use ferrum_domain::flow::{MapSpec, add_progress_in, created, map_document};
 use ferrum_domain::pricing::{Side, calculate};
 use ferrum_domain::trade::create_for_user;
-use ferrum_domain::util::{d, date, get, id, money, rows, s, set, sys};
+use ferrum_domain::util::{d, date, get, id, money, rows, s, set, sys, unit_factor};
 use ferrum_kernel::{Ctx, Doc, DocHook, Error, FieldError, HookCtx, Kernel, Result};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
@@ -225,15 +225,15 @@ pub(crate) async fn check_order(hc: &mut HookCtx<'_>, po: &Doc) -> Result<()> {
 
 /// Moves the ordered quantity of the quotations a purchase order draws on (`sign` -1 on cancel).
 pub(crate) async fn order_progress(hc: &mut HookCtx<'_>, po: &Doc, sign: Decimal) -> Result<()> {
-    let mut by_quote: BTreeMap<Uuid, Vec<(Uuid, Decimal)>> = BTreeMap::new();
+    let mut by_quote: BTreeMap<Uuid, Vec<(Uuid, Decimal, Decimal)>> = BTreeMap::new();
     for r in rows(po, "items") {
         if let (Some(q), Some(line)) = (id(&r, "proc_supplier_quotation"), id(&r, "proc_sq_line")) {
-            by_quote.entry(q).or_default().push((line, d(&r, "qty")));
+            by_quote.entry(q).or_default().push((line, d(&r, "qty"), unit_factor(&r)));
         }
     }
     for (q, lines) in by_quote {
-        for (line, qty) in lines {
-            add_progress(hc.kernel, hc.ctx, hc.tx, "SupplierQuotation", q, line, "ordered_qty", sign * qty).await?;
+        for (line, qty, unit) in lines {
+            add_progress_in(hc.kernel, hc.ctx, hc.tx, "SupplierQuotation", q, line, "ordered_qty", sign * qty, Some(unit)).await?;
         }
         refresh(hc, q).await?;
     }

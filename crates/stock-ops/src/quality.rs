@@ -7,7 +7,7 @@ use crate::common::{finish_rows, installed, items, rows_value, validation};
 use async_trait::async_trait;
 use ferrum_domain::flow::created;
 use ferrum_domain::trade::create_for_user;
-use ferrum_domain::util::{b, d, get, id, money, rows, s, set};
+use ferrum_domain::util::{b, d, get, id, money, rows, s, set, stock_qty};
 use ferrum_kernel::ddl::q;
 use ferrum_kernel::{Doc, DocHook, Error, FieldError, HookCtx, Result};
 use ferrum_meta::{Expr, Scope};
@@ -146,7 +146,7 @@ async fn reference(hc: &mut HookCtx<'_>, doc: &Doc) -> Result<Option<(Doc, Vec<(
     let lines = rows(&rd, "items")
         .into_iter()
         .filter(|r| id(r, "item") == item && item.is_some())
-        .map(|r| (s(&r, "id").unwrap_or_default().to_string(), d(&r, "qty").abs()))
+        .map(|r| (s(&r, "id").unwrap_or_default().to_string(), stock_qty(&r).abs()))
         .collect();
     Ok(Some((rd, lines)))
 }
@@ -387,7 +387,7 @@ impl DocHook for InspectionGate {
             input.insert(field.into(), json!(did.to_string()));
             input.insert("reference_line".into(), json!(line));
             input.insert("item".into(), json!(info.id.to_string()));
-            input.insert("sample_size".into(), money(d(r, "qty").abs()));
+            input.insert("sample_size".into(), money(stock_qty(r).abs()));
             for k in ["batch_no", "serial_no"] {
                 if let Some(v) = r.get(k).filter(|v| !v.is_null()) {
                     input.insert(k.into(), v.clone());
