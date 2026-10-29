@@ -70,3 +70,13 @@ spec:
       ports:
         - {port: 3000}
   egress: []
+---
+# Node drains and upgrades take at most one renderer at a time.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ferrum-pdf
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: ferrum-pdf}
