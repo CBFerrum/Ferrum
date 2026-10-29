@@ -827,6 +827,32 @@ impl Kernel {
         store::set_values_in(tx, &info.table, &cent, ctx.tenant, row_id, &normalized).await
     }
 
+    /// Engine-kept rows of one child table (a work order's crew taken from its appointments, say):
+    /// replaces them with `rows`, each normalized by field type and keeping its `id` when given,
+    /// without the parent's hooks or a new version.
+    pub async fn set_child_rows_tx(&self, ctx: &Ctx, tx: &mut Tx, parent: &str, table_field: &str, parent_id: Uuid, rows: Vec<Doc>) -> Result<()> {
+        let ent = self.entity(ctx, parent)?;
+        let info = ent.children.get(table_field).ok_or_else(|| Error::Internal(format!("{parent} has no table {table_field}")))?;
+        let cent = self.entity(ctx, &info.entity)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (i, r) in rows.into_iter().enumerate() {
+            let mut row = Doc::new();
+            for (k, v) in r {
+                if k == "id" {
+                    let rid = uuid_of(Some(&v)).ok_or_else(|| Error::Internal("set_child_rows: id must be a UUID".into()))?;
+                    row.insert(k, json!(rid.to_string()));
+                    continue;
+                }
+                let f = cent.field(&k).ok_or_else(|| Error::Internal(format!("set_child_rows: unknown field {k}")))?;
+                row.insert(k.clone(), normalize(f, &v).map_err(|m| Error::Internal(format!("set_child_rows {k}: {m}")))?);
+            }
+            row.entry("id".to_string()).or_insert_with(|| json!(Uuid::now_v7().to_string()));
+            row.insert("idx".into(), json!(i));
+            out.push(Value::Object(row));
+        }
+        store::set_child_rows(tx, &info.table, &cent, ctx.tenant, parent_id, out).await
+    }
+
     /// Loads a stored record and marks which of its secret fields are set.
     async fn load_marked(&self, tx: &mut Tx, ctx: &Ctx, ent: &EffEntity, id: Uuid, lock: bool) -> Result<Option<Doc>> {
         let mut doc = store::load(tx, &ctx.schema, ent, ctx.tenant, id, lock).await?;
