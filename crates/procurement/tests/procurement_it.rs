@@ -220,7 +220,7 @@ async fn scenario() {
             admin_email: "admin@acme.test".into(),
             admin_password: "Correct-Horse-9".into(),
             admin_name: None,
-            packages: vec!["procurement".into()],
+            packages: vec!["procurement".into(), "manufacturing".into()],
             settings: Some(json!({"fiscal_year_start_month": 4})),
         })
         .await
@@ -479,6 +479,48 @@ async fn scenario() {
     t.submit(&keeper, "StockEntry", se).await;
     assert_eq!(t.get("MaterialRequest", uid(&provided)).await["status"], json!("Received"));
     assert_eq!(t.stock(mould, stores).await, (n("5"), n("0")));
+
+    // ───────────── manufacture requests become work orders ─────────────
+    let sheet = uid(&t.insert(&a, "Item", item("SHEET", json!({}))).await);
+    let frame = uid(&t.insert(&a, "Item", item("FRAME", json!({}))).await);
+    let sheets = t
+        .insert(
+            &a,
+            "StockEntry",
+            json!({"company": co, "purpose": "Opening Stock", "items": [{"item": sheet.to_string(), "qty": "50", "basic_rate": "4", "target_warehouse": stores.to_string()}]}),
+        )
+        .await;
+    t.submit(&a, "StockEntry", uid(&sheets)).await;
+    let make = t
+        .insert(
+            &a,
+            "MaterialRequest",
+            json!({"company": co, "material_request_type": "Manufacture", "schedule_date": day(7), "items": [{"item": frame.to_string(), "qty": "6", "warehouse": finished.to_string()}]}),
+        )
+        .await;
+    let make_id = uid(&make);
+    t.submit(&a, "MaterialRequest", make_id).await;
+    assert_refused(t.k.run_action(&a, "MaterialRequest", make_id, "make_work_order", json!({})).await, "no submitted, active BOM for frame");
+    let bom = t.insert(&a, "Bom", json!({"company": co, "item": frame.to_string(), "quantity": "1", "items": [{"item": sheet.to_string(), "qty": "2"}]})).await;
+    t.submit(&a, "Bom", uid(&bom)).await;
+    let made = t.action(&a, "MaterialRequest", make_id, "make_work_order", json!({"source_warehouse": stores.to_string()})).await;
+    let wo_id = vid(&made);
+    let wo = t.get("WorkOrder", wo_id).await;
+    assert_eq!(
+        (dec(&wo["qty"]), wo["material_request"].clone(), wo["target_warehouse"].clone()),
+        (n("6"), json!(make_id.to_string()), json!(finished.to_string()))
+    );
+    t.submit(&a, "WorkOrder", wo_id).await;
+    let mr = t.get("MaterialRequest", make_id).await;
+    assert_eq!((mr["status"].clone(), dec(&mr["per_ordered"])), (json!("Ordered"), n("100")), "the work order orders the request");
+    assert!(t.k.run_action(&a, "MaterialRequest", make_id, "make_work_order", json!({})).await.is_err(), "nothing left to make");
+    let first_run = vid(&t.action(&a, "WorkOrder", wo_id, "manufacture", json!({"qty": "2"})).await);
+    assert_eq!(t.get("MaterialRequest", make_id).await["status"], json!("Partially Received"));
+    t.action(&a, "WorkOrder", wo_id, "manufacture", json!({"qty": "4"})).await;
+    let mr = t.get("MaterialRequest", make_id).await;
+    assert_eq!((mr["status"].clone(), dec(&mr["per_received"])), (json!("Manufactured"), n("100")), "production is received on the request");
+    t.k.cancel(&a, "StockEntry", first_run, None).await.expect("cancel the first run");
+    assert_eq!(t.get("MaterialRequest", make_id).await["status"], json!("Partially Received"));
 
     // ───────────── request for quotation ─────────────
     let unaddressed = t.insert(&buyer, "RequestForQuotation", json!({"company": co, "items": [{"item": washer.to_string(), "qty": "5"}]})).await;

@@ -15,8 +15,8 @@
        visible_if: "parent.material_request_type == 'Material Transfer'"}
     - {name: schedule_date, type: date, label: Required By, in_list: true}
     - {name: ordered_qty, type: decimal, label: Ordered / Fulfilled Qty, read_only: true, no_copy: true, in_list: true,
-       description: "In stock units: on submitted purchase orders, or moved by stock entries for transfers, issues and customer-provided goods"}
-    - {name: received_qty, type: decimal, read_only: true, no_copy: true, description: In stock units}
+       description: "In stock units: on submitted purchase orders or work orders, or moved by stock entries for transfers, issues and customer-provided goods"}
+    - {name: received_qty, type: decimal, read_only: true, no_copy: true, description: "In stock units: received, or produced by the work orders"}
 
 - name: MaterialRequest
   label: Material Request
@@ -44,7 +44,7 @@
     - {name: per_ordered, type: percent, label: "% Ordered", read_only: true, no_copy: true, in_list: true}
     - {name: per_received, type: percent, label: "% Received", read_only: true, no_copy: true}
     - {name: status, type: select, default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true,
-       options: [Draft, Pending, Partially Ordered, Ordered, Partially Received, Received, Transferred, Issued, Stopped, Cancelled]}
+       options: [Draft, Pending, Partially Ordered, Ordered, Partially Received, Received, Transferred, Issued, Manufactured, Stopped, Cancelled]}
     - {name: auto_reorder, type: check, label: Raised by Auto-Reorder, read_only: true, no_copy: true, in_filter: true}
     - {name: remarks, type: text}
   rules:
@@ -55,6 +55,8 @@
        condition: "doc.material_request_type == 'Purchase' && doc.status != 'Stopped' && doc.per_ordered < 100.0"}
     - {name: make_rfq, label: Create Request for Quotation, docstatus: [1], permission: read,
        condition: "doc.material_request_type == 'Purchase' && doc.status != 'Stopped' && doc.per_ordered < 100.0"}
+    - {name: make_work_order, label: Create Work Orders, docstatus: [1], permission: read,
+       condition: "doc.material_request_type == 'Manufacture' && doc.status != 'Stopped' && doc.per_ordered < 100.0"}
     - {name: make_stock_entry, label: Create Stock Entry, docstatus: [1], permission: read,
        condition: "doc.material_request_type in ['Material Transfer', 'Material Issue', 'Customer Provided'] && doc.status != 'Stopped' && doc.per_ordered < 100.0"}
     - {name: stop, label: Stop, docstatus: [1], permission: submit, condition: "doc.status != 'Stopped' && doc.per_ordered < 100.0",

@@ -59,6 +59,9 @@
     - {name: planned_start_date, type: date, required: true, default_expr: today}
     - {name: expected_end_date, type: date}
     - {name: sales_order, type: link, to: SalesOrder}
+    - {name: material_request, type: data, read_only: true, no_copy: true, in_filter: true, label: Material Request,
+       description: "The manufacture request it fulfils (Material Requests come with the Procurement app)"}
+    - {name: material_request_item, type: data, read_only: true, no_copy: true, hidden: true}
     - {name: status, type: select, options: [Draft, Not Started, In Process, Completed, Stopped, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
     - {name: actual_cost, type: currency, read_only: true, no_copy: true}
   actions:

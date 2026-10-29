@@ -23,6 +23,7 @@ pub const PURCHASE: &str = "Purchase";
 pub const TRANSFER: &str = "Material Transfer";
 pub const ISSUE: &str = "Material Issue";
 pub const CUSTOMER_PROVIDED: &str = "Customer Provided";
+pub const MANUFACTURE: &str = "Manufacture";
 const STOPPED: &str = "Stopped";
 
 fn kind(doc: &Doc) -> &str {
@@ -34,13 +35,16 @@ fn pct(done: Decimal, total: Decimal) -> Decimal {
 }
 
 /// The status a submitted, running request's fulfilment gives it. Transfers and customer-provided
-/// goods are received when moved, issues issued; purchases go ordered → received.
+/// goods are received when moved, issues issued; purchases go ordered → received, manufacture
+/// requests ordered (work orders) → manufactured.
 pub fn status_of(kind: &str, per_ordered: Decimal, per_received: Decimal) -> &'static str {
     let full = Decimal::ONE_HUNDRED;
     let some = |p: Decimal| p > Decimal::ZERO;
     match kind {
         PURCHASE if per_received >= full => "Received",
         PURCHASE if some(per_received) => "Partially Received",
+        MANUFACTURE if per_received >= full => "Manufactured",
+        MANUFACTURE if some(per_received) => "Partially Received",
         TRANSFER if per_ordered >= full => "Transferred",
         ISSUE if per_ordered >= full => "Issued",
         CUSTOMER_PROVIDED if per_ordered >= full => "Received",
@@ -81,6 +85,8 @@ enum Fulfil {
     Receive,
     /// Stock entry lines move the goods: ordered and received, for requests of this type.
     Move(&'static str),
+    /// Work orders: ordered quantity of manufacture requests (their production is received).
+    Make,
 }
 
 struct Delta {
@@ -121,6 +127,9 @@ async fn progress(hc: &mut HookCtx<'_>, mr: Uuid, deltas: &[Delta], fulfil: Fulf
         Fulfil::Order if request_kind != PURCHASE => {
             return Err(Error::invalid(format!("Material Request {number} is a {request_kind} request; only purchase requests are ordered from suppliers")));
         }
+        Fulfil::Make if request_kind != MANUFACTURE => {
+            return Err(Error::invalid(format!("Material Request {number} is a {request_kind} request; only manufacture requests are made by work orders")));
+        }
         Fulfil::Move(expected) if request_kind != expected => {
             return Err(Error::invalid(format!("Material Request {number} is a {request_kind} request, which this kind of stock entry does not fulfil")));
         }
@@ -159,7 +168,7 @@ async fn progress(hc: &mut HookCtx<'_>, mr: Uuid, deltas: &[Delta], fulfil: Fulf
             }
             set(line, "ordered_qty", money(new.max(Decimal::ZERO)));
         }
-        if fulfil != Fulfil::Order {
+        if !matches!(fulfil, Fulfil::Order | Fulfil::Make) {
             let new = (d(line, "received_qty") + q).max(Decimal::ZERO);
             set(line, "received_qty", money(new));
         }
@@ -310,6 +319,7 @@ impl DocHook for MaterialRequestHook {
             "make_purchase_order" => make_purchase_order(hc, doc, params).await?,
             "make_rfq" => make_rfq(hc, doc, params).await?,
             "make_stock_entry" => make_stock_entry(hc, doc, params).await?,
+            "make_work_order" => make_work_order(hc, doc, params).await?,
             "stop" | "resume" => {
                 let stop = name == "stop";
                 if stop == (s(doc, "status") == Some(STOPPED)) {
@@ -441,6 +451,52 @@ async fn make_purchase_order(hc: &mut HookCtx<'_>, doc: &Doc, params: &Value) ->
         let mut c = created("PurchaseOrder", &po);
         c["supplier"] = json!(supplier.to_string());
         documents.push(c);
+    }
+    let mut out = documents.first().cloned().unwrap_or(Value::Null);
+    out["documents"] = Value::Array(documents);
+    Ok(out)
+}
+
+/// One work order per open line, from the item's default BOM, finishing into the line's warehouse.
+/// Raw materials come from `source_warehouse` (param), else that same warehouse.
+async fn make_work_order(hc: &mut HookCtx<'_>, doc: &Doc, params: &Value) -> Result<Value> {
+    ensure_open(doc, &[MANUFACTURE], "Work orders")?;
+    if hc.ctx.schema.entity("WorkOrder").is_none() {
+        return Err(Error::invalid("work orders come with the Manufacturing module, which is not installed"));
+    }
+    let mr = id(doc, "id").ok_or_else(|| Error::internal("no id"))?;
+    let company = id(doc, "company").ok_or_else(|| Error::field("company", "is required"))?;
+    let source = uuid_param(params, "source_warehouse")?;
+    let only = uuid_list(params, "items")?;
+    let lines = open_lines(doc, only.as_deref());
+    if lines.is_empty() {
+        return Err(Error::invalid("nothing is left to make on this request"));
+    }
+    let mut planned = Vec::new();
+    let mut missing = Vec::new();
+    for (l, open) in lines {
+        let Some(item) = id(&l, "item") else { continue };
+        let name = s(&l, "item_name").unwrap_or("an item").to_string();
+        let Some(bom) = ferrum_domain::manufacturing::default_bom(hc, company, item).await? else {
+            missing.push(name);
+            continue;
+        };
+        let target =
+            id(&l, "warehouse").or(id(doc, "set_warehouse")).ok_or_else(|| Error::field("warehouse", format!("{name} needs a warehouse to make it into")))?;
+        planned.push(json!({
+            "company": company.to_string(), "item": item.to_string(), "bom": bom.to_string(), "qty": money(open),
+            "source_warehouse": source.unwrap_or(target).to_string(), "target_warehouse": target.to_string(),
+            "expected_end_date": l.get("schedule_date").or(doc.get("schedule_date")),
+            "material_request": mr.to_string(), "material_request_item": l.get("id"),
+        }));
+    }
+    if !missing.is_empty() {
+        return Err(Error::invalid(format!("no submitted, active BOM for {}", missing.join(", "))));
+    }
+    let mut documents = Vec::new();
+    for input in planned {
+        let wo = create_for_user(hc, "WorkOrder", input.as_object().cloned().unwrap_or_default()).await?;
+        documents.push(created("WorkOrder", &wo));
     }
     let mut out = documents.first().cloned().unwrap_or(Value::Null);
     out["documents"] = Value::Array(documents);
@@ -649,6 +705,9 @@ impl StockEntryLinks {
         if !installed(hc.ctx) {
             return Ok(());
         }
+        if s(doc, "purpose") == Some("Manufacture") {
+            return produced(hc, doc, sign, write).await;
+        }
         let links = linked(doc, |r| d(r, "qty"));
         if links.is_empty() {
             return Ok(());
@@ -662,6 +721,63 @@ impl StockEntryLinks {
 
 #[async_trait]
 impl DocHook for StockEntryLinks {
+    async fn validate(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        self.apply(hc, doc, Decimal::ONE, false).await
+    }
+
+    async fn on_submit(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        self.apply(hc, doc, Decimal::ONE, true).await
+    }
+
+    async fn on_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        self.apply(hc, doc, -Decimal::ONE, true).await
+    }
+}
+
+/// A manufacture entry for a work order made from a request: what it finishes of the work order's
+/// item is received on the request line.
+async fn produced(hc: &mut HookCtx<'_>, doc: &Doc, sign: Decimal, write: bool) -> Result<()> {
+    let Some(wo) = id(doc, "mfg_work_order") else { return Ok(()) };
+    if hc.ctx.schema.entity("WorkOrder").is_none() {
+        return Ok(());
+    }
+    let w = get(hc.kernel, hc.ctx, hc.tx, "WorkOrder", wo).await?;
+    let Some(links) = work_order_link(&w, |item| {
+        rows(doc, "items").iter().filter(|r| id(r, "item") == item && id(r, "target_warehouse").is_some()).map(|r| d(r, "qty")).sum()
+    }) else {
+        return Ok(());
+    };
+    apply(hc, links, Fulfil::Receive, sign, write).await
+}
+
+/// The request line a work order makes, with `qty` of its item.
+fn work_order_link(w: &Doc, qty: impl Fn(Option<Uuid>) -> Decimal) -> Option<BTreeMap<Uuid, Vec<Delta>>> {
+    let (Some(mr), Some(line)) = (id(w, "material_request"), id(w, "material_request_item")) else { return None };
+    let item = id(w, "item");
+    let q = qty(item);
+    if q.is_zero() {
+        return None;
+    }
+    Some(BTreeMap::from([(mr, vec![Delta { line, item, qty: q, row: 0 }])]))
+}
+
+/// Work orders made from manufacture requests: they order the request line; refused beyond it.
+pub struct WorkOrderLinks;
+
+impl WorkOrderLinks {
+    async fn apply(&self, hc: &mut HookCtx<'_>, doc: &Doc, sign: Decimal, write: bool) -> Result<()> {
+        if !installed(hc.ctx) {
+            return Ok(());
+        }
+        match work_order_link(doc, |_| d(doc, "qty")) {
+            Some(links) => apply(hc, links, Fulfil::Make, sign, write).await,
+            None => Ok(()),
+        }
+    }
+}
+
+#[async_trait]
+impl DocHook for WorkOrderLinks {
     async fn validate(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
         self.apply(hc, doc, Decimal::ONE, false).await
     }

@@ -2,7 +2,9 @@
 //!
 //! * A `MaterialRequest` says what is needed, where and by when. Purchase requests are covered by
 //!   purchase orders (`make_purchase_order`, grouped by each item's preferred supplier) and then
-//!   receipts; transfers, issues and customer-provided goods by stock entries. Every linked line
+//!   receipts; transfers, issues and customer-provided goods by stock entries; manufacture requests
+//!   by work orders (`make_work_order`, from each item's default BOM), whose production is
+//!   received on the request. Every linked line
 //!   carries the request line it fulfils (`proc_*` overlay fields), and the hooks on those
 //!   documents keep the request's ordered/received quantities and status exact on submit and
 //!   cancel, refusing over-ordering and orders against stopped requests.
@@ -48,6 +50,7 @@ pub fn register(h: &mut HookRegistry) {
         .register("PurchaseReceipt", Arc::new(material_request::ReceiptLinks))
         .register("PurchaseInvoice", Arc::new(material_request::ReceiptLinks))
         .register("StockEntry", Arc::new(material_request::StockEntryLinks))
+        .register("WorkOrder", Arc::new(material_request::WorkOrderLinks))
         .register("RequestForQuotation", Arc::new(rfq::RfqHook))
         .register("SupplierQuotation", Arc::new(quotation::QuotationHook))
         .register("SupplierScorecard", Arc::new(scorecard::ScorecardHook))
