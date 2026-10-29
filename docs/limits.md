@@ -88,4 +88,5 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   security scanners are not detected.
 - **Sign**: an electronic signature with an audit trail (not PAdES); typed signatures use standard
   fonts, so non-Latin names render poorly; emailed links are readable by Mail managers (use access
-  codes); emails need the Mail app, because the completion email carries the signed PDF.
+  codes); without the Mail app, the signed PDF is emailed only when the server's mailer can
+  attach files.
