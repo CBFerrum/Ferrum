@@ -278,6 +278,12 @@ Drive (today: files, folders, versions, sharing with people and teams, links, tr
 
 ### 4.3 The ArtCraft path, if S3 passes
 
+Spike S3 ([spike-s3-artcraft.md](spike-s3-artcraft.md)) found go for GridCraft, without a fork. Its
+web build already has a host bridge (`?host=parent`: open, save, unsaved changes), and so does
+WordCraft. That bridge talks only to a same-origin parent, so the editors live on a separate editor
+origin with a small Ferrum relay page, not in a Tier 1 screen. The paragraph below is the original
+plan; read it with that correction.
+
 Fork the four repositories; add a small host bridge (open bytes and a file name, return bytes on save,
 report unsaved changes); remove the ArtCraft names and logos; build the web targets; publish them as
 `office-artcraft`, Tier 1 pages contributing to `office.editor` with `kind: bridge`. Editing is
