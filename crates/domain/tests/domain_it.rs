@@ -585,6 +585,30 @@ async fn scenario() {
     assert_eq!(bs["meta"]["balanced"], json!(true), "difference {}", bs["meta"]["difference"]);
     let pl = t.report("profit_and_loss", &company_param).await;
     assert!(pl["rows"].as_array().unwrap().iter().any(|r| r["account"] == json!("Net Profit") || r["account"] == json!("Net Loss")));
+    // Closing the year into Retained Earnings keeps the income statement's profit and the books balanced.
+    let sales = t.gl("Sales").await;
+    assert!(sales < Decimal::ZERO, "sales carry a credit balance");
+    let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
+    let ids: Vec<(String, Uuid)> = sqlx::query_as("select account_name, id from e_account where tenant_id = $1 and company = $2 and account_name = any($3)")
+        .bind(tenant)
+        .bind(cid)
+        .bind(vec!["Sales", "Retained Earnings"])
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let id_of = |name: &str| ids.iter().find(|(n, _)| n == name).map(|(_, id)| *id).unwrap();
+    let (sales_acc, retained) = (id_of("Sales"), id_of("Retained Earnings"));
+    let mut closing = ferrum_domain::ledger::Entry::new(cid, t.ctx.today(), "PeriodClosingVoucher", Uuid::now_v7(), None);
+    closing.lines.push(ferrum_domain::ledger::Line::new(sales_acc, -sales, "INR"));
+    closing.lines.push(ferrum_domain::ledger::Line::new(retained, sales, "INR"));
+    let mut tx = t.k.db.tenant_tx(tenant).await.unwrap();
+    ferrum_domain::ledger::post(&mut tx, &t.ctx, closing, 2).await.unwrap();
+    tx.commit().await.unwrap();
+    let after = t.report("profit_and_loss", &company_param).await;
+    assert_eq!(after["totals"]["net_profit"], pl["totals"]["net_profit"], "closing entries never change the income statement");
+    assert_eq!(t.report("balance_sheet", &company_param).await["meta"]["balanced"], json!(true));
+    assert_eq!(t.report("trial_balance", &company_param).await["meta"]["balanced"], json!(true));
     let ar = t.report("receivables", &company_param).await;
     assert_eq!(dec(&ar["totals"]["outstanding_base"]), n("-770") + dec(&direct["grand_total"]), "customer credit plus the unpaid direct sale");
     let sb = t.report("stock_balance", &company_param).await;
