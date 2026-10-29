@@ -30,6 +30,7 @@ pub mod privacy;
 pub mod query;
 pub mod registry;
 pub mod secret;
+pub mod sso;
 pub mod store;
 pub mod tenant;
 pub mod twofactor;
@@ -83,6 +84,9 @@ pub struct MailAttachment {
 pub struct KernelSettings {
     /// Allow webhooks to private/loopback addresses (development only).
     pub webhooks_allow_private: bool,
+    /// Allow single sign-on providers on private addresses, and over plain http (an identity
+    /// provider inside the operator's own network; development).
+    pub sso_allow_private: bool,
     /// How long a user's roles/permissions are cached per replica.
     pub ctx_ttl: Duration,
     /// Processed outbox events and delivered webhooks are kept this long.
@@ -95,7 +99,14 @@ pub struct KernelSettings {
 
 impl Default for KernelSettings {
     fn default() -> Self {
-        KernelSettings { webhooks_allow_private: false, ctx_ttl: Duration::from_secs(30), event_retention_days: 30, secret_key: None, pdf_url: None }
+        KernelSettings {
+            webhooks_allow_private: false,
+            sso_allow_private: false,
+            ctx_ttl: Duration::from_secs(30),
+            event_retention_days: 30,
+            secret_key: None,
+            pdf_url: None,
+        }
     }
 }
 

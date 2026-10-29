@@ -125,6 +125,7 @@ impl Hooks for App {
             hooks,
             KernelSettings {
                 webhooks_allow_private: settings.webhooks_allow_private,
+                sso_allow_private: settings.sso_allow_private,
                 secret_key: Some(secret_key),
                 pdf_url: Some(settings.pdf_url.trim().to_string()).filter(|u| !u.is_empty()),
                 ..Default::default()

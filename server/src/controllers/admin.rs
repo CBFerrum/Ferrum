@@ -37,7 +37,7 @@ async fn list_users(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult
         &ctx,
         "select jsonb_build_object('id', u.id, 'email', u.email, 'full_name', u.full_name, 'is_active', u.is_active, \
          'is_admin', u.is_admin, 'last_login_at', u.last_login_at, 'locked', coalesce(u.locked_until > now(), false), \
-         'two_factor', u.totp_enabled_at is not null, \
+         'two_factor', u.totp_enabled_at is not null, 'sso', u.sso_subject is not null, \
          'roles', coalesce((select jsonb_agg(r.role order by r.role) from user_role r where r.tenant_id = u.tenant_id and r.user_id = u.id), '[]'::jsonb), \
          'scopes', coalesce((select jsonb_agg(jsonb_build_object('entity', s.entity, 'value', s.value, 'is_default', s.is_default)) \
                     from user_scope s where s.tenant_id = u.tenant_id and s.user_id = u.id), '[]'::jsonb)) \
@@ -103,6 +103,38 @@ struct Password {
 async fn reset_password(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>, Json(p): Json<Password>) -> ApiResult<Response> {
     admin(&ctx)?;
     app_state(&app)?.kernel.set_password(&ctx, id, None, &p.password).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// Unlinks someone from their identity at a single sign-on provider.
+async fn unlink_sso(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.unlink_sso(&ctx, id).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+// ── single sign-on providers ──
+
+async fn list_sso(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    Ok(Json(json!({"providers": app_state(&app)?.kernel.sso_providers(&ctx).await?})).into_response())
+}
+
+async fn create_sso(Auth(ctx): Auth, State(app): State<AppContext>, Json(p): Json<ferrum_kernel::sso::SsoProviderInput>) -> ApiResult<Response> {
+    let id = app_state(&app)?.kernel.save_sso_provider(&ctx, None, p).await?;
+    Ok((StatusCode::CREATED, Json(json!({"id": id}))).into_response())
+}
+
+async fn update_sso(
+    Auth(ctx): Auth,
+    State(app): State<AppContext>,
+    Path(id): Path<Uuid>,
+    Json(p): Json<ferrum_kernel::sso::SsoProviderInput>,
+) -> ApiResult<Response> {
+    app_state(&app)?.kernel.save_sso_provider(&ctx, Some(id), p).await?;
+    Ok(Json(json!({"id": id})).into_response())
+}
+
+async fn delete_sso(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.delete_sso_provider(&ctx, id).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -413,6 +445,9 @@ pub fn routes() -> Routes {
         .add("/admin/users/{id}/active", put(set_active))
         .add("/admin/users/{id}/password", put(reset_password))
         .add("/admin/users/{id}/two-factor/reset", post(reset_two_factor))
+        .add("/admin/users/{id}/sso/unlink", post(unlink_sso))
+        .add("/admin/sso", get(list_sso).post(create_sso))
+        .add("/admin/sso/{id}", put(update_sso).delete(delete_sso))
         .add("/admin/roles", get(list_roles))
         .add("/admin/roles/{role}/permissions", put(set_permission))
         .add("/admin/personal-data", get(personal_data))

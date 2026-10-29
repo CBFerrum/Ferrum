@@ -4,7 +4,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::extract::{Auth, SetupAuth, client_ip};
 use crate::state::{AppState, app_state};
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use ferrum_kernel::Error;
@@ -88,6 +88,55 @@ async fn login_second_factor(State(app): State<AppContext>, headers: HeaderMap, 
     let tenant: Uuid = claims.get("tenant").and_then(Value::as_str).and_then(|s| s.parse().ok()).ok_or_else(again)?;
     let tv = claims.get("tv").and_then(Value::as_i64).ok_or_else(again)? as i32;
     let s = st.kernel.second_factor(tenant, user, tv, &req.code).await?;
+    session_response(&st, &s)
+}
+
+#[derive(Deserialize)]
+struct SsoOptionsQuery {
+    tenant: String,
+}
+
+/// The single sign-on buttons a workspace's sign-in page shows.
+async fn sso_options(State(app): State<AppContext>, Query(q): Query<SsoOptionsQuery>) -> ApiResult<Response> {
+    if q.tenant.len() > 63 {
+        return Ok(Json(json!({"providers": []})).into_response());
+    }
+    Ok(Json(json!({"providers": app_state(&app)?.kernel.sso_sign_in_options(&q.tenant).await?})).into_response())
+}
+
+#[derive(Deserialize)]
+struct SsoStartReq {
+    tenant: String,
+    provider: Uuid,
+    redirect_uri: String,
+    binding: String,
+}
+
+/// Starts signing in through a provider → `{url}` to send the browser to. The provider sends it
+/// back to `redirect_uri` only if that is registered with it, and only the browser holding
+/// `binding` can finish.
+async fn sso_start(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<SsoStartReq>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    st.login_limiter.check(&format!("{}|sso", client_ip(&headers))).await?;
+    let url = st.kernel.sso_begin(&req.tenant, req.provider, &req.redirect_uri, &req.binding).await?;
+    Ok(Json(json!({"url": url})).into_response())
+}
+
+#[derive(Deserialize)]
+struct SsoFinishReq {
+    state: String,
+    code: String,
+    binding: String,
+}
+
+/// Finishes signing in with what the provider sent the browser back with.
+async fn sso_finish(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<SsoFinishReq>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    st.login_limiter.check(&format!("{}|sso", client_ip(&headers))).await?;
+    if req.state.len() > 200 || req.code.len() > 4096 || req.binding.len() > 200 {
+        return Err(ApiError(Error::Unauthorized("sign in again".into())));
+    }
+    let s = st.kernel.sso_finish(&req.state, &req.code, &req.binding).await?;
     session_response(&st, &s)
 }
 
@@ -216,6 +265,9 @@ pub fn routes() -> Routes {
         .prefix("/api/auth")
         .add("/login", post(login))
         .add("/login/second-factor", post(login_second_factor))
+        .add("/sso", get(sso_options))
+        .add("/sso/start", post(sso_start))
+        .add("/sso/finish", post(sso_finish))
         .add("/me", get(me))
         .add("/2fa", get(two_factor_status))
         .add("/2fa/begin", post(two_factor_begin))

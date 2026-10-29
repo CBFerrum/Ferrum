@@ -21,6 +21,9 @@ OpenAPI 3.1 document is at `GET /api/openapi.json` (it includes every customizat
 | Method & path | Body → response |
 |---|---|
 | `POST /login` | `{tenant, email, password}` → `{token, token_type: "Bearer", expires_in}` (rate limited; 5 failures lock the user 15 min). With two-factor sign-in on → `{second_factor: true, ticket, expires_in: 300}`; in a workspace that requires it, for someone who has yet to set it up → `{two_factor_setup: true, token, expires_in: 900}`, a token good only for `/me` and `/2fa` (setup) |
+| `GET /sso?tenant=` | → `{providers: [{id, label}]}`: the workspace's single sign-on buttons (none for an unknown workspace) |
+| `POST /sso/start` | `{tenant, provider, redirect_uri, binding}` → `{url}` to send the browser to. `redirect_uri` is the sign-in page (registered with the provider, which sends the browser nowhere else); `binding` is a random secret (16–200 characters) the browser keeps to finish |
+| `POST /sso/finish` | `{state, code, binding}` (what the provider sent the browser back with) → `{token, …}`. Each sign-in works once, within ten minutes, in the browser that started it. The provider's own two-factor rules apply instead of Ferrum's |
 | `POST /login/second-factor` | `{ticket, code}` (six digits from the authenticator app, or a recovery code) → `{token, …}`. Each app code is accepted once; wrong codes count toward the same lockout as wrong passwords |
 | `GET /me` | → `{tenant, user: {id, email, full_name, is_admin, roles}, default_company, scopes, fiscal_year_start_month, timezone, today, packages, two_factor_setup}` |
 | `GET /2fa` | → `{enabled, pending, recovery_codes_left, required}` |
@@ -119,10 +122,17 @@ limited per app (1 MB unless the app allows more, at most 32 MB).
 
 Workspace settings: `GET /api/admin/settings` → `{timezone, fiscal_year_start_month, require_two_factor}`;
 `PUT` with any of them (`timezone` is an IANA name such as `Asia/Kolkata`; `require_two_factor`
-applies from each person's next sign-in).
+applies from each person's next sign-in; `require_sso` refuses password sign-in to everyone but
+administrators and needs an enabled single sign-on provider).
+
+Single sign-on: `/api/admin/sso` (GET → `{providers: [{id, label, issuer, client_id, has_secret,
+domains, auto_create, default_roles, enabled, linked_users}]}`; POST `{label, issuer, client_id,
+client_secret?, domains[], auto_create, default_roles[], enabled}` → `{id}`, the issuer's discovery
+document fetched to check it), `/api/admin/sso/{id}` (PUT the same — `client_secret` left out keeps
+the stored one, `""` clears it; DELETE unlinks the people linked through it).
 
 `/api/admin/users` (GET, POST `{email, full_name, password?, roles[], is_admin}`), `/api/admin/users/{id}/roles` (PUT `{roles}`),
-`/scopes` (PUT `{entity, ids[], default?}`), `/active` (PUT `{active}`), `/password` (PUT `{password}`), `/two-factor/reset` (POST: turns the person's two-factor sign-in off, lifts a lockout and signs them out everywhere — for a lost phone); the user list shows `two_factor` and `locked`;
+`/scopes` (PUT `{entity, ids[], default?}`), `/active` (PUT `{active}`), `/password` (PUT `{password}`), `/two-factor/reset` (POST: turns the person's two-factor sign-in off, lifts a lockout and signs them out everywhere — for a lost phone), `/sso/unlink` (POST: forgets the identity at a single sign-on provider the account is linked to); the user list shows `two_factor`, `sso` and `locked`;
 `/api/admin/personal-data?email=` (GET: every record the installed packages declare as the person's — `personal_data` in package manifests, `{entity, match: <email field>, erase: [fields], where?: {field: value}}` — with its data, and their login account) and `/api/admin/personal-data/erase` (POST `{email, reason}`: blanks the declared fields, a placeholder where a value is required, and empties declared child tables and JSON fields; redacts those fields in the records' audit history, each event keeping its hash and recording the redaction; anonymizes and closes the login account; refused for administrators and oneself) → `{erased: [{entity, id}], account_erased, audit_events_redacted}`;
 `/api/admin/roles` (GET), `/api/admin/roles/{role}/permissions` (PUT PermissionDef `{entity, read, write, create, delete, submit, cancel, export, import, if_owner, read_groups[], write_groups[], where?}`);
 `where` limits a rule to records whose fields hold given values, all of them: `{"customer_type": ["Individual"], "disabled": false}` (data, select, check, link, email and int fields; links by record id, an unset checkbox reads as `false`; up to 10 fields and 50 values each). A role can hold several rules for one entity with different conditions (and `if_owner`), and a record is reachable through any of them, in lists, reads, filters, reports and live updates alike;

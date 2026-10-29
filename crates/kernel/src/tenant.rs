@@ -195,8 +195,9 @@ impl Kernel {
 
 impl Kernel {
     /// The workspace's settings administrators may change: `timezone` (IANA name),
-    /// `fiscal_year_start_month` (1-12) and `require_two_factor` (everyone signs in with an
-    /// authenticator app; it applies from each person's next sign-in).
+    /// `fiscal_year_start_month` (1-12), `require_two_factor` (everyone signs in with an
+    /// authenticator app; it applies from each person's next sign-in) and `require_sso` (everyone
+    /// but administrators signs in through a single sign-on provider).
     pub async fn tenant_settings(&self, ctx: &Ctx) -> Result<Value> {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let settings: Value = sqlx::query_scalar("select settings from tenant where id = $1").bind(ctx.tenant).fetch_one(&mut *tx).await?;
@@ -205,6 +206,7 @@ impl Kernel {
             "timezone": settings.get("timezone").cloned().unwrap_or_else(|| serde_json::json!("UTC")),
             "fiscal_year_start_month": settings.get("fiscal_year_start_month").cloned().unwrap_or_else(|| serde_json::json!(1)),
             "require_two_factor": settings.get("require_two_factor").and_then(Value::as_bool).unwrap_or(false),
+            "require_sso": settings.get("require_sso").and_then(Value::as_bool).unwrap_or(false),
         }))
     }
 
@@ -227,14 +229,21 @@ impl Kernel {
                     let m = v.as_u64().filter(|m| (1..=12).contains(m)).ok_or_else(|| Error::field("fiscal_year_start_month", "must be 1 to 12"))?;
                     clean.insert(k.clone(), serde_json::json!(m));
                 }
-                "require_two_factor" => {
-                    let on = v.as_bool().ok_or_else(|| Error::field("require_two_factor", "must be true or false"))?;
+                "require_two_factor" | "require_sso" => {
+                    let on = v.as_bool().ok_or_else(|| Error::field(k.clone(), "must be true or false"))?;
                     clean.insert(k.clone(), serde_json::json!(on));
                 }
                 other => return Err(Error::field(other, "unknown setting")),
             }
         }
         let mut tx = self.db.system_tenant_tx(ctx.tenant).await?;
+        if clean.get("require_sso") == Some(&serde_json::json!(true)) {
+            let any: bool =
+                sqlx::query_scalar("select exists (select 1 from sso_provider where tenant_id = $1 and enabled)").bind(ctx.tenant).fetch_one(&mut *tx).await?;
+            if !any {
+                return Err(Error::field("require_sso", "set up and enable a single sign-on provider first"));
+            }
+        }
         sqlx::query("update tenant set settings = settings || $2 where id = $1").bind(ctx.tenant).bind(Value::Object(clean.clone())).execute(&mut *tx).await?;
         crate::audit::record(&mut tx, ctx, "Tenant", ctx.tenant, "settings", None, Value::Object(clean)).await?;
         Registry::bump_version(&mut tx, ctx.tenant).await?;

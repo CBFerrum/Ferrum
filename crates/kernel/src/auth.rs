@@ -150,11 +150,14 @@ impl Kernel {
             tenant_active: bool,
             two_factor: bool,
             two_factor_required: bool,
+            sso_required: bool,
+            is_admin: bool,
         }
         let user: Option<U> = sqlx::query_as(
             "select u.tenant_id, u.id, u.password_hash, u.is_active, u.token_version, \
              coalesce(u.locked_until > now(), false) as locked, t.status = 'active' as tenant_active, \
-             u.totp_enabled_at is not null as two_factor, coalesce(t.settings->'require_two_factor' = 'true'::jsonb, false) as two_factor_required \
+             u.totp_enabled_at is not null as two_factor, coalesce(t.settings->'require_two_factor' = 'true'::jsonb, false) as two_factor_required, \
+             coalesce(t.settings->'require_sso' = 'true'::jsonb, false) as sso_required, u.is_admin \
              from app_user u join tenant t on t.id = u.tenant_id where t.slug = $1 and u.email = $2",
         )
         .bind(tenant_slug.trim().to_lowercase())
@@ -178,6 +181,11 @@ impl Kernel {
             count_failure(&mut tx, u.tenant_id, u.id).await?;
             tx.commit().await?;
             return Err(denied());
+        }
+        if u.sso_required && !u.is_admin {
+            // Administrators keep their passwords, to get in when the provider is down.
+            tx.commit().await?;
+            return Err(Error::Forbidden("this workspace signs in through single sign-on; use its button on the sign-in page".into()));
         }
         let session = Session { tenant: u.tenant_id, user: u.id, token_version: u.token_version };
         if u.two_factor {
