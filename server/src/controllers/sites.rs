@@ -3,7 +3,7 @@
 
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{Auth, client_ip};
-use crate::state::{RateLimiter, app_state};
+use crate::state::app_state;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
@@ -13,18 +13,10 @@ use loco_rs::app::AppContext;
 use loco_rs::controller::Routes;
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
-use std::sync::OnceLock;
-use std::time::Duration;
 use uuid::Uuid;
 
 /// No package may accept more than this per request.
 const MAX_BODY: usize = 32 << 20;
-
-/// Public endpoints are open to the internet: a generous per-address budget stops floods.
-fn public_limiter() -> &'static RateLimiter {
-    static L: OnceLock<RateLimiter> = OnceLock::new();
-    L.get_or_init(|| RateLimiter::new(Duration::from_secs(60), 300))
-}
 
 #[allow(clippy::too_many_arguments)]
 fn request(
@@ -100,7 +92,7 @@ async fn public(
     body: Bytes,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    public_limiter().check(&format!("{}|{}", client_ip(&headers), tenant.to_lowercase()))?;
+    st.public_limiter.check(&format!("{}|{}", client_ip(&headers), tenant.to_lowercase())).await?;
     let (tenant, status) = st.kernel.tenant_by_slug(&tenant).await?;
     if status != "active" {
         return Err(ApiError(Error::NotFound("tenant".into())));

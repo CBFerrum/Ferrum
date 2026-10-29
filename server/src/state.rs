@@ -2,7 +2,7 @@
 
 use crate::error::ApiError;
 use dashmap::DashMap;
-use ferrum_kernel::{Error, Kernel};
+use ferrum_kernel::{Db, Error, Kernel};
 use loco_rs::app::AppContext;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -110,19 +110,40 @@ impl Settings {
     }
 }
 
-/// Fixed-window limiter keyed by e.g. client IP. Bounded so a flood of keys cannot exhaust memory.
+/// Fixed-window limiter keyed by e.g. client IP, its count shared by every replica on the
+/// database (`rate_window`). The replica's own count, bounded so a flood of keys cannot exhaust
+/// memory, turns a flood away before it reaches the database.
 pub struct RateLimiter {
+    name: &'static str,
     window: Duration,
     max: u32,
     hits: DashMap<String, (Instant, u32)>,
+    db: Db,
 }
 
 impl RateLimiter {
-    pub fn new(window: Duration, max: u32) -> Self {
-        RateLimiter { window, max, hits: DashMap::new() }
+    /// `name` keeps this limiter's counts apart from other limiters'.
+    pub fn shared(name: &'static str, window: Duration, max: u32, db: Db) -> Self {
+        RateLimiter { name, window, max, hits: DashMap::new(), db }
     }
 
-    pub fn check(&self, key: &str) -> Result<(), Error> {
+    pub async fn check(&self, key: &str) -> Result<(), Error> {
+        let refused = || Err(Error::TooManyRequests("too many requests; slow down".into()));
+        if self.local(key) > self.max {
+            return refused();
+        }
+        match self.db.count_hit(&format!("{}|{key}", self.name), self.window).await {
+            Ok(n) if n > i64::from(self.max) => refused(),
+            Ok(_) => Ok(()),
+            // The replica's own count still applies; a database hiccup must not lock everyone out.
+            Err(e) => {
+                tracing::warn!("shared rate limit unavailable: {e}");
+                Ok(())
+            }
+        }
+    }
+
+    fn local(&self, key: &str) -> u32 {
         if self.hits.len() > 100_000 {
             let window = self.window;
             self.hits.retain(|_, (t, _)| t.elapsed() < window);
@@ -132,10 +153,7 @@ impl RateLimiter {
             *e = (Instant::now(), 0);
         }
         e.1 += 1;
-        if e.1 > self.max {
-            return Err(Error::TooManyRequests("too many requests; slow down".into()));
-        }
-        Ok(())
+        e.1
     }
 }
 
@@ -150,8 +168,10 @@ pub struct AppState {
     pub jwt_secret: String,
     pub jwt_expiration: u64,
     pub login_limiter: Arc<RateLimiter>,
-    /// Documents a user may email per minute (per replica).
+    /// Documents a user may email per minute.
     pub mail_limiter: Arc<RateLimiter>,
+    /// Requests per minute a client may make to a workspace's public pages and endpoints.
+    pub public_limiter: Arc<RateLimiter>,
     pub apps: Arc<crate::appmgr::AppManager>,
     pub objects: Arc<crate::objects::Objects>,
 }

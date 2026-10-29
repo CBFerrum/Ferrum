@@ -24,7 +24,7 @@ struct LoginReq {
 
 async fn login(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<LoginReq>) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    st.login_limiter.check(&format!("{}|{}", client_ip(&headers), req.tenant.to_lowercase()))?;
+    st.login_limiter.check(&format!("{}|{}", client_ip(&headers), req.tenant.to_lowercase())).await?;
     if req.password.len() > 256 || req.email.len() > 254 || req.tenant.len() > 63 {
         return Err(ApiError(Error::Unauthorized("invalid tenant, email or password".into())));
     }
