@@ -48,9 +48,19 @@ pub struct PersonalDataDef {
     pub condition: std::collections::BTreeMap<String, Value>,
 }
 
-/// Field types erasure can blank (text, contact details and dates); a child table loses its rows.
-pub const ERASABLE_TYPES: &[FieldType] =
-    &[FieldType::Data, FieldType::Text, FieldType::Markdown, FieldType::Email, FieldType::Phone, FieldType::Url, FieldType::Date, FieldType::Table];
+/// Field types erasure can blank (text, contact details, dates and JSON such as form answers); a
+/// child table loses its rows.
+pub const ERASABLE_TYPES: &[FieldType] = &[
+    FieldType::Data,
+    FieldType::Text,
+    FieldType::Markdown,
+    FieldType::Email,
+    FieldType::Phone,
+    FieldType::Url,
+    FieldType::Date,
+    FieldType::Json,
+    FieldType::Table,
+];
 
 /// A fully loaded package: manifest + entity files + SQL + print templates.
 #[derive(Debug, Clone, Serialize, Deserialize)]

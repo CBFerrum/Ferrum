@@ -84,6 +84,7 @@ fn blank(f: &FieldDef, id: Uuid) -> Value {
         FieldType::Phone => json!("000"),
         FieldType::Url => json!("https://erased.invalid"),
         FieldType::Date => json!("1900-01-01"),
+        FieldType::Json => json!({}),
         _ => json!(format!("Erased {token}")),
     }
 }
