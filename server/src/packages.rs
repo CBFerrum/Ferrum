@@ -106,6 +106,11 @@ apps! {
         "pos" => ferrum_app_pos,
         "commerce" => ferrum_app_commerce,
         "hr" => ferrum_app_hr,
+        "procurement" => ferrum_procurement,
+        "stock-ops" => ferrum_stock_ops,
+        "finance" => ferrum_finance,
+        "mfg-ops" => ferrum_mfg_ops,
+        "studio" => ferrum_studio,
         "comms" => ferrum_app_comms,
     }
     legacy {

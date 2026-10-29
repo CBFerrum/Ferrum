@@ -1,0 +1,12 @@
+id: finance
+name: Finance
+version: 0.1.0
+publisher: cbferrum
+summary: Budgets, bank reconciliation, period closing, dunning, subscriptions and payment terms
+description: README.md
+categories: [finance]
+license: AGPL-3.0-only
+runtime: native
+platform: ">=0.3, <0.4"
+packages: [finance]
+uninstall: ask

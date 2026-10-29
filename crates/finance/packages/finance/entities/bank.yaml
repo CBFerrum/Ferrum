@@ -1,0 +1,72 @@
+- name: BankAccount
+  label: Bank Account
+  module: finance
+  kind: master
+  company_scoped: true
+  title_field: account_name
+  search_fields: [bank, masked_number]
+  description: A company's account at a bank, tied to its GL account; statements are imported against it and reconciled.
+  fields:
+    - {name: account_name, type: data, required: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: account, type: link, to: Account, required: true, link_filters: {is_group: false}, label: GL Account, in_list: true}
+    - {name: bank, type: data, in_list: true, label: Bank}
+    - {name: branch, type: data}
+    - {name: swift_code, type: data, max_length: 11, label: SWIFT / BIC}
+    - {name: account_number, type: data, max_length: 40, perm_group: bank_details}
+    - {name: iban, type: data, max_length: 42, perm_group: bank_details, label: IBAN}
+    - {name: masked_number, type: data, read_only: true, in_list: true, label: Account No.}
+    - {name: currency, type: link, to: Currency, description: The GL account's or the company's currency when empty}
+    - {name: opening_balance, type: currency, currency: currency, label: Statement Opening Balance, description: The bank's balance on the opening date; the reconciliation statement adds imported transactions to it}
+    - {name: opening_date, type: date, label: Statement Opening Date}
+    - {name: is_default, type: check, in_list: true}
+    - {name: disabled, type: check, in_filter: true}
+  unique: [[company, account_name]]
+  actions:
+    - {name: import_transactions, label: Import Bank Statement (CSV), permission: write}
+  list: {columns: [account_name, bank, masked_number, account, is_default], sort: account_name asc}
+
+- name: BankTransactionPayment
+  label: Bank Transaction Allocation
+  kind: child
+  fields:
+    - {name: payment_document, type: select, options: [PaymentEntry, JournalEntry], required: true, in_list: true, label: Voucher Type}
+    - {name: payment_entry, type: data, required: true, label: Voucher ID}
+    - {name: payment_number, type: data, in_list: true, label: Voucher}
+    - {name: posting_date, type: date, in_list: true}
+    - {name: allocated_amount, type: currency, currency: parent.currency, required: true, in_list: true}
+
+- name: BankTransaction
+  label: Bank Transaction
+  module: finance
+  kind: document
+  submittable: true
+  company_scoped: true
+  numbering: {template: "BTXN-{YYYY}-{seq:6}", date_field: date}
+  search_fields: [reference_number]
+  description: One line of a bank statement, reconciled against payment entries and journal entries on the bank's GL account.
+  fields:
+    - {name: bank_account, type: link, to: BankAccount, required: true, in_list: true, in_filter: true}
+    - {name: company, type: link, to: Company, fetch_from: bank_account.company, read_only: true, in_filter: true}
+    - {name: date, type: date, required: true, in_list: true, in_filter: true}
+    - {name: description, type: text}
+    - {name: reference_number, type: data, in_list: true}
+    - {name: deposit, type: currency, currency: currency, default: 0, min: "0", in_list: true}
+    - {name: withdrawal, type: currency, currency: currency, default: 0, min: "0", in_list: true}
+    - {name: currency, type: link, to: Currency, fetch_from: bank_account.currency, read_only: true}
+    - {name: allocated_amount, type: currency, currency: currency, read_only: true, no_copy: true}
+    - {name: unallocated_amount, type: currency, currency: currency, read_only: true, no_copy: true, in_list: true}
+    - {name: status, type: select, options: [Unreconciled, Partially Reconciled, Reconciled, Cancelled], default: Unreconciled, read_only: true, no_copy: true,
+       in_list: true, in_filter: true}
+    - {name: transaction_hash, type: data, read_only: true, no_copy: true, hidden: true}
+    - {name: allocations, type: table, of: BankTransactionPayment, read_only: true, label: Reconciled Vouchers}
+  unique: [[bank_account, transaction_hash]]
+  rules:
+    - {name: one_side, check: "(doc.deposit > 0.0) != (doc.withdrawal > 0.0)", message: "Enter either a deposit or a withdrawal"}
+  actions:
+    - {name: get_suggestions, label: Find Matching Vouchers, docstatus: [1], permission: read, condition: "doc.unallocated_amount > 0.0"}
+    - {name: reconcile, label: Reconcile, docstatus: [1], permission: write, condition: "doc.unallocated_amount > 0.0"}
+    - {name: unreconcile, label: Undo Reconciliation, docstatus: [1], permission: write, condition: "doc.allocated_amount > 0.0"}
+    - {name: make_payment_entry, label: Create Payment Entry, docstatus: [1], permission: write, condition: "doc.unallocated_amount > 0.0"}
+    - {name: make_journal_entry, label: Create Journal Entry, docstatus: [1], permission: write, condition: "doc.unallocated_amount > 0.0"}
+  list: {columns: [date, bank_account, reference_number, deposit, withdrawal, unallocated_amount, status], sort: date desc}

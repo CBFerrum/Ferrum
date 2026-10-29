@@ -1,0 +1,84 @@
+package: finance
+version: 0.1.0
+label: Finance
+description: Budgets with commitment control, bank accounts, statement import and reconciliation, period closing, payment terms and schedules, dunning, subscriptions and advance allocation.
+depends: [accounting, selling, buying]
+field_prefix: fin_
+
+modules:
+  - name: finance
+    label: Finance
+    icon: landmark
+    order: 25
+    items: [Budget, MonthlyDistribution, BankAccount, BankTransaction, PeriodClosingVoucher, PaymentTermsTemplate, DunningType, Dunning,
+            SubscriptionPlan, Subscription, report:budget_variance, report:bank_reconciliation_statement, report:cash_flow_forecast,
+            report:receivables_by_due_date, report:dunning_summary, report:subscription_metrics]
+
+roles:
+  - name: Accounts Manager
+    permissions:
+      - {entity: Budget, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: MonthlyDistribution, read: true, write: true, create: true, delete: true}
+      - {entity: BankAccount, read: true, write: true, create: true, delete: true, export: true, read_groups: [bank_details], write_groups: [bank_details]}
+      - {entity: BankTransaction, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true, import: true}
+      - {entity: PeriodClosingVoucher, read: true, write: true, create: true, delete: true, submit: true, cancel: true}
+      - {entity: PaymentTermsTemplate, read: true, write: true, create: true, delete: true}
+      - {entity: DunningType, read: true, write: true, create: true, delete: true}
+      - {entity: Dunning, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: SubscriptionPlan, read: true, write: true, create: true, delete: true}
+      - {entity: Subscription, read: true, write: true, create: true, delete: true, export: true}
+  - name: Accounts User
+    permissions:
+      - {entity: Budget, read: true}
+      - {entity: MonthlyDistribution, read: true}
+      - {entity: BankAccount, read: true}
+      - {entity: BankTransaction, read: true, write: true, create: true, delete: true, submit: true}
+      - {entity: PeriodClosingVoucher, read: true}
+      - {entity: PaymentTermsTemplate, read: true}
+      - {entity: DunningType, read: true}
+      - {entity: Dunning, read: true, write: true, create: true, delete: true}
+      - {entity: SubscriptionPlan, read: true}
+      - {entity: Subscription, read: true, write: true, create: true}
+
+overlays:
+  - entity: SalesInvoice
+    ops:
+      - {op: add_field, after: due_date, field: {name: fin_payment_terms_template, type: link, to: PaymentTermsTemplate, label: Payment Terms Template}}
+      - {op: add_field, after: fin_payment_terms_template, field: {name: fin_payment_schedule, type: table, of: PaymentSchedule, label: Payment Schedule}}
+      - {op: add_field, field: {name: fin_subscription, type: link, to: Subscription, read_only: true, label: Subscription}}
+      - {op: add_field, field: {name: fin_subscription_period_start, type: date, read_only: true, label: Subscription Period From}}
+      - {op: add_field, field: {name: fin_subscription_period_end, type: date, read_only: true, label: Subscription Period To}}
+      - op: add_action
+        action: {name: allocate_advances, label: Allocate Advance Payments, docstatus: [1], permission: submit, condition: "doc.outstanding_amount > 0.0"}
+  - entity: PurchaseInvoice
+    ops:
+      - {op: add_field, after: due_date, field: {name: fin_payment_terms_template, type: link, to: PaymentTermsTemplate, label: Payment Terms Template}}
+      - {op: add_field, after: fin_payment_terms_template, field: {name: fin_payment_schedule, type: table, of: PaymentSchedule, label: Payment Schedule}}
+      - op: add_action
+        action: {name: allocate_advances, label: Allocate Advance Payments, docstatus: [1], permission: submit, condition: "doc.outstanding_amount > 0.0"}
+  - entity: SalesOrder
+    ops:
+      - {op: add_field, field: {name: fin_payment_terms_template, type: link, to: PaymentTermsTemplate, label: Payment Terms Template}}
+      - {op: add_field, field: {name: fin_payment_schedule, type: table, of: PaymentSchedule, label: Payment Schedule}}
+  - entity: PurchaseOrder
+    ops:
+      - {op: add_field, field: {name: fin_cost_center, type: link, to: CostCenter, link_filters: {is_group: false}, label: Cost Center, description: Default cost center of the lines (budget commitments)}}
+      - {op: add_field, field: {name: fin_payment_terms_template, type: link, to: PaymentTermsTemplate, label: Payment Terms Template}}
+      - {op: add_field, field: {name: fin_payment_schedule, type: table, of: PaymentSchedule, label: Payment Schedule}}
+  - entity: PurchaseOrderItem
+    ops:
+      - {op: add_field, field: {name: fin_expense_account, type: link, to: Account, link_filters: {is_group: false}, label: Expense Account, description: Budget account this line commits (non-stock items default to the item's or company's expense account)}}
+      - {op: add_field, field: {name: fin_cost_center, type: link, to: CostCenter, link_filters: {is_group: false}, label: Cost Center}}
+  - entity: PaymentEntry
+    ops:
+      - {op: add_field, field: {name: fin_clearance_date, type: date, read_only: true, no_copy: true, label: Clearance Date, description: Set when bank reconciliation clears the whole amount}}
+  - entity: JournalEntry
+    ops:
+      - {op: add_field, field: {name: fin_clearance_date, type: date, read_only: true, no_copy: true, label: Clearance Date, description: Set when bank reconciliation clears the whole bank amount}}
+  - entity: Customer
+    ops:
+      - {op: add_field, field: {name: fin_payment_terms_template, type: link, to: PaymentTermsTemplate, label: Payment Terms Template}}
+      - {op: add_field, field: {name: fin_dunning_type, type: link, to: DunningType, label: Dunning Type, description: Overrides the company's default dunning type}}
+  - entity: Supplier
+    ops:
+      - {op: add_field, field: {name: fin_payment_terms_template, type: link, to: PaymentTermsTemplate, label: Payment Terms Template}}

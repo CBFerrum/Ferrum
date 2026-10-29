@@ -1,0 +1,30 @@
+package: studio
+version: 0.1.0
+label: Studio
+description: Analytics engine, report builder, charts, number cards, dashboards and spaces, all customizable without code
+depends: [core]
+
+modules:
+  - name: studio
+    label: Studio
+    icon: chart
+    order: 85
+    items: [Space, Dashboard, Report, DashboardChart, NumberCard]
+
+roles:
+  - name: Studio User
+    description: Builds their own reports, charts, number cards, dashboards and spaces, and shares them. Data always shows with each viewer's own permissions.
+    permissions:
+      - {entity: Report, read: true, write: true, create: true, delete: true, export: true, if_owner: true}
+      - {entity: DashboardChart, read: true, write: true, create: true, delete: true, if_owner: true}
+      - {entity: NumberCard, read: true, write: true, create: true, delete: true, if_owner: true}
+      - {entity: Dashboard, read: true, write: true, create: true, delete: true, if_owner: true}
+      - {entity: Space, read: true, write: true, create: true, delete: true, if_owner: true}
+  - name: Studio Manager
+    description: Manages every report, chart, number card, dashboard and space of the workspace.
+    permissions:
+      - {entity: Report, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: DashboardChart, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: NumberCard, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: Dashboard, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: Space, read: true, write: true, create: true, delete: true, export: true, import: true}

@@ -1,0 +1,82 @@
+- name: MaterialRequestItem
+  label: Material Request Item
+  kind: child
+  fields:
+    - {name: item, type: link, to: Item, required: true, in_list: true}
+    - {name: item_name, type: data, fetch_from: item.item_name, read_only: true, in_list: true}
+    - {name: qty, type: decimal, required: true, min: "0.000000001", in_list: true}
+    - {name: uom, type: link, to: Uom, label: UOM, description: Defaults to the item's stock unit}
+    - {name: conversion_factor, type: decimal, default: 1, min: "0.000000001", description: Stock units in one unit of this UOM}
+    - {name: stock_uom, type: link, to: Uom, label: Stock UOM, fetch_from: item.stock_uom, read_only: true}
+    - {name: stock_qty, type: decimal, label: Qty in Stock UOM, read_only: true}
+    - {name: warehouse, type: link, to: Warehouse, label: For Warehouse, link_filters: {is_group: false}, in_list: true,
+       description: "Where the goods are needed (the source for issues)"}
+    - {name: from_warehouse, type: link, to: Warehouse, label: Source Warehouse, link_filters: {is_group: false},
+       visible_if: "parent.material_request_type == 'Material Transfer'"}
+    - {name: schedule_date, type: date, label: Required By, in_list: true}
+    - {name: ordered_qty, type: decimal, label: Ordered / Fulfilled Qty, read_only: true, no_copy: true, in_list: true,
+       description: "In stock units: on submitted purchase orders, or moved by stock entries for transfers, issues and customer-provided goods"}
+    - {name: received_qty, type: decimal, read_only: true, no_copy: true, description: In stock units}
+
+- name: MaterialRequest
+  label: Material Request
+  kind: document
+  module: procurement
+  submittable: true
+  company_scoped: true
+  numbering: {template: "MAT-REQ-{FY}-{seq:5}", on: submit, date_field: transaction_date}
+  owner_fields: [requested_by]
+  search_fields: [requested_by]
+  description: "A request for goods: to buy, to move between warehouses, to issue, to make, or to receive from a customer."
+  fields:
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: material_request_type, type: select, label: Purpose, required: true, default: Purchase, in_list: true, in_filter: true,
+       options: [Purchase, Material Transfer, Material Issue, Manufacture, Customer Provided]}
+    - {name: transaction_date, type: date, label: Request Date, required: true, default_expr: today, in_list: true, in_filter: true}
+    - {name: schedule_date, type: date, label: Required By, required: true, in_list: true}
+    - {name: requested_by, type: data, default_expr: "user.email", in_filter: true}
+    - {name: customer, type: link, to: Customer, visible_if: "doc.material_request_type == 'Customer Provided'",
+       required_if: "doc.material_request_type == 'Customer Provided'"}
+    - {name: set_warehouse, type: link, to: Warehouse, label: Set Target Warehouse, link_filters: {is_group: false}}
+    - {name: set_from_warehouse, type: link, to: Warehouse, label: Set Source Warehouse, link_filters: {is_group: false},
+       visible_if: "doc.material_request_type == 'Material Transfer'"}
+    - {name: items, type: table, of: MaterialRequestItem, required: true}
+    - {name: per_ordered, type: percent, label: "% Ordered", read_only: true, no_copy: true, in_list: true}
+    - {name: per_received, type: percent, label: "% Received", read_only: true, no_copy: true}
+    - {name: status, type: select, default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true,
+       options: [Draft, Pending, Partially Ordered, Ordered, Partially Received, Received, Transferred, Issued, Stopped, Cancelled]}
+    - {name: auto_reorder, type: check, label: Raised by Auto-Reorder, read_only: true, no_copy: true, in_filter: true}
+    - {name: remarks, type: text}
+  rules:
+    - {name: required_after_request, check: "doc.schedule_date == null || doc.schedule_date >= doc.transaction_date",
+       message: "Required By cannot be before the request date"}
+  actions:
+    - {name: make_purchase_order, label: Create Purchase Order, docstatus: [1], permission: read,
+       condition: "doc.material_request_type == 'Purchase' && doc.status != 'Stopped' && doc.per_ordered < 100.0"}
+    - {name: make_rfq, label: Create Request for Quotation, docstatus: [1], permission: read,
+       condition: "doc.material_request_type == 'Purchase' && doc.status != 'Stopped' && doc.per_ordered < 100.0"}
+    - {name: make_stock_entry, label: Create Stock Entry, docstatus: [1], permission: read,
+       condition: "doc.material_request_type in ['Material Transfer', 'Material Issue', 'Customer Provided'] && doc.status != 'Stopped' && doc.per_ordered < 100.0"}
+    - {name: stop, label: Stop, docstatus: [1], permission: submit, condition: "doc.status != 'Stopped' && doc.per_ordered < 100.0",
+       confirm: "Stop this request? Nothing more can be ordered against it until it is resumed."}
+    - {name: resume, label: Resume, docstatus: [1], permission: submit, condition: "doc.status == 'Stopped'"}
+  form:
+    - {label: Request, columns: 2, fields: [company, material_request_type, transaction_date, schedule_date, requested_by, customer]}
+    - {label: Warehouses, columns: 2, fields: [set_warehouse, set_from_warehouse]}
+    - {label: Items, fields: [items]}
+    - {label: Progress, columns: 3, fields: [status, per_ordered, per_received, auto_reorder]}
+    - {label: More, collapsible: true, fields: [remarks]}
+  list: {columns: [number, material_request_type, transaction_date, schedule_date, per_ordered, status], sort: transaction_date desc}
+
+- name: ProcItemReorder
+  label: Item Reorder Level
+  kind: child
+  fields:
+    - {name: warehouse, type: link, to: Warehouse, required: true, link_filters: {is_group: false}, in_list: true}
+    - {name: reorder_level, type: decimal, label: Re-order Level, required: true, min: "0", in_list: true,
+       description: "A request is raised when the projected quantity (on hand + ordered + requested − reserved) falls below this"}
+    - {name: reorder_qty, type: decimal, label: Re-order Qty, required: true, min: "0.000000001", in_list: true}
+    - {name: request_type, type: select, label: Request Type, required: true, default: Purchase, in_list: true,
+       options: [Purchase, Material Transfer, Manufacture]}
+    - {name: from_warehouse, type: link, to: Warehouse, label: Source Warehouse, link_filters: {is_group: false},
+       visible_if: "doc.request_type == 'Material Transfer'", required_if: "doc.request_type == 'Material Transfer'"}

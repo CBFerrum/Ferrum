@@ -1,0 +1,64 @@
+- name: SubscriptionPlan
+  label: Subscription Plan
+  module: finance
+  kind: master
+  title_field: plan_name
+  description: What a subscription bills each period - an item at a price per billing interval.
+  fields:
+    - {name: plan_name, type: data, required: true, unique: true, in_list: true}
+    - {name: item, type: link, to: Item, required: true, in_list: true}
+    - {name: currency, type: link, to: Currency, required: true, in_list: true}
+    - {name: price, type: currency, currency: currency, required: true, min: "0", in_list: true, description: Price per billing interval}
+    - {name: billing_interval, type: select, options: [Day, Week, Month, Year], required: true, default: Month, in_list: true}
+    - {name: interval_count, type: int, required: true, default: 1, min: 1, max: 1000, in_list: true, label: Billing Interval Count}
+    - {name: disabled, type: check, in_filter: true}
+  list: {columns: [plan_name, item, price, currency, billing_interval, interval_count], sort: plan_name asc}
+
+- name: SubscriptionPlanDetail
+  label: Subscription Plan Line
+  kind: child
+  fields:
+    - {name: plan, type: link, to: SubscriptionPlan, required: true, in_list: true}
+    - {name: qty, type: decimal, required: true, default: 1, min: "0.000000001", in_list: true}
+
+- name: Subscription
+  label: Subscription
+  module: finance
+  kind: document
+  company_scoped: true
+  numbering: {template: "SUB-{seq:5}"}
+  title_field: customer_name
+  description: Bills a customer once per period for its plans - trial, billing anchor, proration on plan changes, cancellation at period end or at once with credit.
+  fields:
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: customer, type: link, to: Customer, required: true, in_filter: true}
+    - {name: customer_name, type: data, fetch_from: customer.customer_name, read_only: true, in_list: true}
+    - {name: plans, type: table, of: SubscriptionPlanDetail, required: true}
+    - {name: currency, type: link, to: Currency, read_only: true, description: The plans' currency}
+    - {name: start_date, type: date, required: true, default_expr: today, in_list: true}
+    - {name: trial_end, type: date, label: Trial Period End}
+    - {name: end_date, type: date, description: The last day billed (open-ended when empty)}
+    - {name: billing_anchor, type: date, description: Periods start on this date's day (e.g. the 1st) - the first period is prorated up to it; the billing start when empty}
+    - {name: generate_invoice_days_before, type: int, default: 0, min: 0, max: 365, description: Days before a period starts that its invoice is made}
+    - {name: days_until_due, type: int, default: 0, min: 0, max: 3650, description: Unless the customer's payment terms template sets the due dates}
+    - {name: submit_invoices, type: check, default: true}
+    - {name: prorate, type: check, default: true, description: "Partial periods, plan changes and immediate cancellations are charged or credited by the day"}
+    - {name: tax_template, type: link, to: TaxTemplate}
+    - {name: cost_center, type: link, to: CostCenter, link_filters: {is_group: false}}
+    - {name: status, type: select, options: [Trialling, Active, Past Due, Cancelled, Completed], default: Active, read_only: true, no_copy: true,
+       in_list: true, in_filter: true}
+    - {name: current_period_start, type: date, read_only: true, no_copy: true}
+    - {name: current_period_end, type: date, read_only: true, no_copy: true}
+    - {name: next_invoice_date, type: date, read_only: true, no_copy: true, index: true}
+    - {name: cancel_at_period_end, type: check, read_only: true, no_copy: true}
+    - {name: cancellation_date, type: date, read_only: true, no_copy: true}
+  rules:
+    - {name: trial_after_start, check: "doc.trial_end == null || doc.trial_end >= doc.start_date", message: "The trial cannot end before the start date"}
+    - {name: end_after_start, check: "doc.end_date == null || doc.end_date >= doc.start_date", message: "The end date cannot be before the start date"}
+    - {name: end_after_trial, check: "doc.end_date == null || doc.trial_end == null || doc.end_date > doc.trial_end", message: "The subscription must end after its trial"}
+  actions:
+    - {name: generate_invoices, label: Generate Due Invoices, permission: write}
+    - {name: change_plans, label: Change Plans, permission: write, condition: "doc.status != 'Cancelled' && doc.status != 'Completed'"}
+    - {name: cancel_subscription, label: Cancel Subscription, permission: write, condition: "doc.status != 'Cancelled' && doc.status != 'Completed'",
+       confirm: "Cancel this subscription?"}
+  list: {columns: [number, customer_name, start_date, next_invoice_date, status], sort: created_at desc}

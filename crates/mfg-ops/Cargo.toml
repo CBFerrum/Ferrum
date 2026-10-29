@@ -1,0 +1,28 @@
+[package]
+name = "ferrum-mfg-ops"
+description = "Workstations, operations, routings, job cards, production planning and subcontracting"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+ferrum-kernel = { path = "../kernel" }
+ferrum-meta = { path = "../meta" }
+ferrum-domain = { path = "../domain" }
+ferrum-calc = { path = "../calc" }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { version = "0.10", default-features = false }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

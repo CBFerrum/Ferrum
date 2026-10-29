@@ -1,0 +1,12 @@
+id: studio
+name: Studio
+version: 0.1.0
+publisher: cbferrum
+summary: Analytics engine, report builder, charts, number cards, dashboards and spaces, all customizable without code
+description: README.md
+categories: [analytics, productivity]
+license: AGPL-3.0-only
+runtime: native
+platform: ">=0.3, <0.4"
+packages: [studio]
+uninstall: ask

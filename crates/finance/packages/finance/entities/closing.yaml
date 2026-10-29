@@ -1,0 +1,18 @@
+- name: PeriodClosingVoucher
+  label: Period Closing Voucher
+  module: finance
+  kind: document
+  submittable: true
+  company_scoped: true
+  numbering: {template: "PCV-{seq:5}", gapless: true, on: submit}
+  description: Closes a fiscal year - moves every income and expense balance (per cost center) to the closing account and locks the year's periods.
+  fields:
+    - {name: company, type: link, to: Company, required: true, default_expr: "user.default_company", in_filter: true}
+    - {name: fiscal_year, type: link, to: FiscalYear, required: true, in_list: true, in_filter: true}
+    - {name: posting_date, type: date, read_only: true, in_list: true, label: Closing Date, description: The fiscal year's last day}
+    - {name: closing_account, type: link, to: Account, required: true, link_filters: {is_group: false}, label: Closing Account,
+       description: Equity or liability account receiving the result (the company's retained earnings account when empty)}
+    - {name: net_profit, type: currency, read_only: true, no_copy: true, in_list: true, label: Net Profit Closed}
+    - {name: closed_periods, type: json, read_only: true, no_copy: true, hidden: true}
+    - {name: remarks, type: text}
+  list: {columns: [number, fiscal_year, posting_date, net_profit], sort: created_at desc}
