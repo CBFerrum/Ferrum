@@ -201,11 +201,11 @@ supply, CGST/SGST/IGST templates, HSN checks), analytics (Studio: reports with c
 and subtotals, charts, dashboards), collaboration (comments, assignments, tags, followers, chat,
 calendar), PDFs and emailing any document, role rules down to records whose fields hold given
 values, rate limits that hold across replicas, two-factor sign-in (authenticator apps, recovery
-codes, a workspace policy), live updates, customization, plugins and apps (see above), MCP for AI
+codes, a workspace policy), single sign-on with OpenID Connect providers, live updates, customization, plugins and apps (see above), MCP for AI
 agents.
 
 Not yet included: e-invoice/e-way-bill submission to the GST network (fields only, needs a GSP),
-GraphQL, SSO (OIDC), Citus sharding configuration, XLSX export. What is deliberately simpler than
+GraphQL, Citus sharding configuration, XLSX export. What is deliberately simpler than
 you might expect is listed in [docs/limits.md](docs/limits.md).
 
 ## Licence

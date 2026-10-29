@@ -63,6 +63,7 @@ settings:
   db_max_connections: <%= get_env(name="FERRUM_DB_MAX_CONNECTIONS", default="20") %>
   bootstrap_token: <%= get_env(name="FERRUM_BOOTSTRAP_TOKEN", default="dev-bootstrap-token") %>
   webhooks_allow_private: true
+  sso_allow_private: true
   run_background: true
   files_dir: <%= get_env(name="FERRUM_FILES_DIR", default="../storage") %>
   s3_bucket: "<%= get_env(name="FERRUM_S3_BUCKET", default="") %>"

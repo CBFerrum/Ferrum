@@ -40,6 +40,11 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   endpoints) are counted in the database, so they hold across replicas; apps use the same
   (`Kernel::rate_limit`). They are per address: Campaigns' tracking pixels and links opened
   through a mail provider's image proxy share that proxy's budget.
+- **Sign-in**: two-factor sign-in uses authenticator apps (TOTP); there are no text-message codes
+  or security keys (WebAuthn). Single sign-on speaks OpenID Connect, not SAML; accounts come from
+  the first sign-in or an administrator (no SCIM provisioning), and someone removed at the
+  provider keeps the session they have until it expires unless deactivated here. An account is
+  linked to one identity at a time: the one at the provider it last signed in through.
 
 ## Accounting and finance
 

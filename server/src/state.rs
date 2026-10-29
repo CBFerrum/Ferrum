@@ -40,6 +40,10 @@ pub struct Settings {
     pub bootstrap_token: String,
     #[serde(default)]
     pub webhooks_allow_private: bool,
+    /// Single sign-on providers may sit on private addresses and speak plain http (an identity
+    /// provider inside the operator's network).
+    #[serde(default)]
+    pub sso_allow_private: bool,
     /// Run outbox/webhook/maintenance loops in this process.
     #[serde(default = "default_true")]
     pub run_background: bool,

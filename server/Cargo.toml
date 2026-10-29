@@ -96,6 +96,7 @@ opendal = { version = "0.58", default-features = false, features = ["http-transp
 loco-rs = { version = "1.2", default-features = false, features = ["auth", "cli", "with-db", "cache_inmem", "worker", "testing"] }
 serial_test = "3"
 wat = "1"
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 
 [lints]
 workspace = true

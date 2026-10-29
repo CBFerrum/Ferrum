@@ -42,5 +42,6 @@ settings:
   db_max_connections: 10
   bootstrap_token: test-bootstrap-token
   webhooks_allow_private: true
+  sso_allow_private: true
   run_background: false
   files_dir: <%= get_env(name="FERRUM_FILES_DIR", default="../target/test-storage") %>

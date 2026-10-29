@@ -37,6 +37,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_APP_STORES` | no | App stores, comma-separated base URLs (`https://store.example`); empty: no store, only apps built in or uploaded |
 | `FERRUM_APP_TRUSTED_KEYS` | with stores | Comma-separated `store:<base64>` / `publisher:<base64>` Ed25519 public keys whose signatures this cluster trusts (`ferrum-app keygen` prints them). Store apps need a store countersignature by one of them; several keys may be trusted at once (rotation) |
 | `FERRUM_APP_UPLOADS` | no | Who may upload app bundles: `off`, `private` (production default: sandboxed apps without tables, visible only in the uploading workspace) or `cluster` (development default: available to every workspace) |
+| `FERRUM_SSO_ALLOW_PRIVATE` | no | `true` lets single sign-on reach an identity provider on a private address or over plain http (one inside your own network, such as an in-cluster Keycloak); default `false` |
 | `FERRUM_APP_ALLOW_UNSIGNED` | no | `true` accepts uploads no trusted key signed (development default); production default `false` |
 
 **Database role.** Ferrum must connect as an ordinary role that owns its database, never as a
@@ -177,6 +178,39 @@ their login account is anonymized and closed. Submitted documents keep the names
 bookkeeping law requires; an administrator's account is not erased until it is no longer one. The
 same is available as `GET /api/admin/personal-data` and `POST /api/admin/personal-data/erase`;
 packages and apps declare their entities with `personal_data` in their manifests.
+
+## Sign-in security
+
+**Two-factor sign-in.** Anyone turns it on from the account menu (Two-factor sign-in) with an
+authenticator app, and keeps the ten recovery codes it shows once. Administration → Workspace →
+Two-factor sign-in requires it of everyone: people without it set it up at their next sign-in.
+Administration → Users → Reset 2FA is for a lost phone: it turns it off, lifts a lockout and ends
+the person's sessions. Wrong codes count toward the same lockout as wrong passwords (5 in a row,
+15 minutes). The secrets are sealed with `FERRUM_SECRET_KEY`.
+
+**Single sign-on (OpenID Connect).** Register Ferrum with the identity provider as a web
+application: redirect URI `https://<your host>/app/login` (Administration → Single sign-on shows
+it), scopes `openid email profile`. Then add the provider there with its issuer URL, client ID and
+client secret:
+
+| Provider | Issuer URL | Notes |
+|---|---|---|
+| Microsoft Entra ID | `https://login.microsoftonline.com/<tenant id>/v2.0` | Entra does not say whether an address is verified: list your email domains |
+| Okta | `https://<org>.okta.com` (or a custom authorization server's issuer) | |
+| Google Workspace | `https://accounts.google.com` | List your domain, or any Google account with a verified address of a known person gets in |
+| Keycloak | `https://<host>/realms/<realm>` | Inside your network: `FERRUM_SSO_ALLOW_PRIVATE=true` |
+| Auth0 | `https://<tenant>.auth0.com/` | |
+
+People sign in with the address the provider vouches for, and are linked to their identity there
+from the first sign-in: another identity bringing the same address later is refused until an
+administrator unlinks the account (Users → Unlink SSO). With "Create an account…" on, people
+without an account get one with the provider's default roles; otherwise an administrator adds them
+first. Workspace → Single sign-on → Require it turns password sign-in off for everyone but
+administrators, who keep it to get in when the provider is down.
+
+Removing someone at the provider stops their next sign-in, not the session they have (it lasts up
+to `JWT_EXPIRATION_SECONDS`, 8 hours by default): deactivate them in Ferrum to end it at once, which
+also stops their API keys.
 
 ## Routine tasks
 

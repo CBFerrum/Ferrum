@@ -33,13 +33,13 @@ pub struct Grant {
     pub refresh_token: String,
 }
 
-fn random_secret(prefix: &str) -> String {
+pub(crate) fn random_secret(prefix: &str) -> String {
     let mut bytes = [0u8; 32];
     rand::rng().fill(&mut bytes);
     format!("{prefix}{}", URL_SAFE_NO_PAD.encode(bytes))
 }
 
-fn hash(secret: &str) -> String {
+pub(crate) fn hash(secret: &str) -> String {
     hex::encode(Sha256::digest(secret.as_bytes()))
 }
 
