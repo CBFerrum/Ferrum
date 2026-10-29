@@ -158,7 +158,9 @@ fn may_run(ctx: &Ctx, entity: &str, narrows: Narrows) -> Result<()> {
         return Ok(());
     }
     let other_scopes = scope.conds.iter().any(|c| c.field.as_deref() != Some("company"));
-    if other_scopes || (scope.owner.is_some() && narrows != Narrows::Owner) {
+    // Narrowing to the caller's own records covers grants of exactly that, no conditions.
+    let covered = scope.grants.is_empty() || (narrows == Narrows::Owner && scope.grants.iter().all(|g| g.owner && g.fields.is_empty()));
+    if other_scopes || !covered {
         return Err(Error::Forbidden(format!("this report sums up every {}; it needs access to all of them, not only some", ent.def.label)));
     }
     Ok(())

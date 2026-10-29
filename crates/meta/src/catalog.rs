@@ -195,6 +195,9 @@ impl Catalog {
                     if perm.entity != "*" && !self.entities.contains_key(&perm.entity) {
                         return invalid(format!("{name}: role {} references unknown entity {}", role.name, perm.entity));
                     }
+                    let def = self.entities.get(&perm.entity).map(|(_, e)| e);
+                    perm.check_condition(|f| def.and_then(|e| e.fields.iter().find(|x| x.name == f)))
+                        .map_err(|m| MetaError::Invalid(format!("{name}: role {} on {}: {m}", role.name, perm.entity)))?;
                 }
             }
             for wf in &p.manifest.workflows {

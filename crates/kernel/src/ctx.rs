@@ -19,9 +19,23 @@ use uuid::Uuid;
 pub enum Access {
     #[default]
     None,
-    /// Only records the user created.
+    /// Only some records: the user's own and/or those matching a rule's condition.
     Own,
     All,
+}
+
+/// One rule's reach for an action: the user's own records (`owner`) and/or records whose fields
+/// hold given values (`condition`: field → accepted values, as text). Neither: every record.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct Grant {
+    pub owner: bool,
+    pub condition: Vec<(String, Vec<String>)>,
+}
+
+impl Grant {
+    fn is_whole(&self) -> bool {
+        !self.owner && self.condition.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +78,21 @@ pub struct EntityAccess {
     pub import: Access,
     pub read_groups: BTreeSet<String>,
     pub write_groups: BTreeSet<String>,
+    /// Per action (in [`Action`] order), the grants of the rules allowing it.
+    pub grants: [Vec<Grant>; 8],
+}
+
+fn action_index(a: Action) -> usize {
+    match a {
+        Action::Read => 0,
+        Action::Write => 1,
+        Action::Create => 2,
+        Action::Delete => 3,
+        Action::Submit => 4,
+        Action::Cancel => 5,
+        Action::Export => 6,
+        Action::Import => 7,
+    }
 }
 
 impl EntityAccess {
@@ -101,6 +130,7 @@ struct PermRow {
     if_owner: bool,
     read_groups: Vec<String>,
     write_groups: Vec<String>,
+    match_rule: Option<Value>,
 }
 
 impl PermSet {
@@ -110,7 +140,7 @@ impl PermSet {
         }
         let rows: Vec<PermRow> = sqlx::query_as(
             "select entity, can_read, can_write, can_create, can_delete, can_submit, can_cancel, can_export, can_import, \
-             if_owner, read_groups, write_groups from role_permission where tenant_id = $1 and role = any($2)",
+             if_owner, read_groups, write_groups, match_rule from role_permission where tenant_id = $1 and role = any($2)",
         )
         .bind(tenant)
         .bind(roles)
@@ -118,21 +148,29 @@ impl PermSet {
         .await?;
         let mut set = PermSet::default();
         for r in rows {
-            let level = if r.if_owner { Access::Own } else { Access::All };
-            let e = set.entities.entry(r.entity).or_default();
-            let up = |cur: &mut Access, allowed: bool| {
-                if allowed && level > *cur {
-                    *cur = level;
-                }
+            // A condition that no longer parses (its field was removed) grants nothing.
+            let condition = match r.match_rule {
+                None => Some(Vec::new()),
+                Some(v) => serde_json::from_value(v)
+                    .ok()
+                    .map(|condition| ferrum_meta::PermissionDef { entity: r.entity.clone(), condition, ..Default::default() }.condition_values()),
             };
-            up(&mut e.read, r.can_read);
-            up(&mut e.write, r.can_write);
-            up(&mut e.create, r.can_create);
-            up(&mut e.delete, r.can_delete);
-            up(&mut e.submit, r.can_submit);
-            up(&mut e.cancel, r.can_cancel);
-            up(&mut e.export, r.can_export);
-            up(&mut e.import, r.can_import);
+            let Some(condition) = condition else { continue };
+            let grant = Grant { owner: r.if_owner, condition };
+            let level = if grant.is_whole() { Access::All } else { Access::Own };
+            let e = set.entities.entry(r.entity).or_default();
+            let allowed = [r.can_read, r.can_write, r.can_create, r.can_delete, r.can_submit, r.can_cancel, r.can_export, r.can_import];
+            let levels = [&mut e.read, &mut e.write, &mut e.create, &mut e.delete, &mut e.submit, &mut e.cancel, &mut e.export, &mut e.import];
+            for (i, (yes, cur)) in allowed.into_iter().zip(levels).enumerate() {
+                if yes {
+                    if level > *cur {
+                        *cur = level;
+                    }
+                    if !e.grants[i].contains(&grant) {
+                        e.grants[i].push(grant.clone());
+                    }
+                }
+            }
             e.read_groups.extend(r.read_groups);
             e.write_groups.extend(r.write_groups);
         }
@@ -146,6 +184,18 @@ impl PermSet {
         let specific = self.entities.get(entity).map(|e| e.get(action)).unwrap_or_default();
         let wildcard = self.entities.get("*").map(|e| e.get(action)).unwrap_or_default();
         specific.max(wildcard)
+    }
+
+    /// The grants an action has on `entity` when access is partial (`None`: every record).
+    pub fn grants(&self, entity: &str, action: Action) -> Option<Vec<Grant>> {
+        if self.access(entity, action) == Access::All {
+            return None;
+        }
+        let i = action_index(action);
+        let mut out: Vec<Grant> = [entity, "*"].iter().filter_map(|k| self.entities.get(*k)).flat_map(|e| e.grants[i].iter().cloned()).collect();
+        out.sort();
+        out.dedup();
+        Some(out)
     }
 
     fn groups(&self, entity: &str, write: bool) -> BTreeSet<&str> {
@@ -269,12 +319,47 @@ pub struct ScopeCond {
 
 #[derive(Debug, Clone, Default)]
 pub struct RowScope {
-    /// Own-records access: the user, matched against `created_by` ...
+    /// The user, when some grant reaches only their own records: matched against `created_by` ...
     pub owner: Option<Uuid>,
     /// ... or, by email, against the entity's `owner_fields`.
     pub owner_email: Option<String>,
     pub owner_fields: Vec<OwnerField>,
+    /// Partial access: a record qualifies through any one of these (none: every record).
+    pub grants: Vec<ScopeGrant>,
     pub conds: Vec<ScopeCond>,
+}
+
+/// A rule's reach, ready to test: the user's own records and/or fields holding given values.
+#[derive(Debug, Clone, Default)]
+pub struct ScopeGrant {
+    pub owner: bool,
+    pub fields: Vec<GrantField>,
+}
+
+/// A field of a grant's condition: its accepted values as text, and its SQL (`{a}`: the alias).
+#[derive(Debug, Clone)]
+pub struct GrantField {
+    pub field: String,
+    pub values: Vec<String>,
+    expr: String,
+    /// A checkbox: unset reads as `false`, in SQL and in [`RowScope::matches`] alike.
+    check: bool,
+}
+
+impl ScopeGrant {
+    /// The user's own records, nothing else.
+    pub fn own() -> ScopeGrant {
+        ScopeGrant { owner: true, fields: vec![] }
+    }
+}
+
+/// A document value as the text a condition compares (empty when unset).
+fn condition_text(v: Option<&Value>) -> String {
+    match v {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(s)) => s.clone(),
+        Some(other) => other.to_string(),
+    }
 }
 
 /// An owner field and its SQL test (`{a}`: the table alias; the email is bound after `prefix`).
@@ -314,16 +399,42 @@ fn owner_fields(ctx: &Ctx, ent: &EffEntity) -> Vec<OwnerField> {
 }
 
 pub fn row_scope(ctx: &Ctx, ent: &EffEntity, action: Action) -> Result<RowScope> {
-    let access = ctx.require(&ent.def.name, action)?;
-    let own = access == Access::Own;
-    let mut scope = RowScope {
-        owner: own.then_some(ctx.user),
-        owner_email: (own && !ctx.email.is_empty()).then(|| ctx.email.to_lowercase()),
-        owner_fields: if own { owner_fields(ctx, ent) } else { vec![] },
-        conds: vec![],
-    };
+    ctx.require(&ent.def.name, action)?;
+    let mut scope = RowScope::default();
     if ctx.is_admin || ctx.is_system {
         return Ok(scope);
+    }
+    if let Some(mut grants) = ctx.perms.grants(&ent.def.name, action) {
+        if grants.is_empty() {
+            // Partial access with no grant recorded (a hand-made permission set): own records.
+            grants.push(Grant { owner: true, condition: vec![] });
+        }
+        if grants.iter().any(|g| g.owner) {
+            scope.owner = Some(ctx.user);
+            scope.owner_email = (!ctx.email.is_empty()).then(|| ctx.email.to_lowercase());
+            scope.owner_fields = owner_fields(ctx, ent);
+        }
+        for g in grants {
+            let fields: Option<Vec<GrantField>> = g
+                .condition
+                .into_iter()
+                .map(|(field, values)| {
+                    let check = ent.field(&field)?.ftype == FieldType::Check;
+                    let expr = crate::store::field_expr(ent, &field, "{a}")?;
+                    Some(GrantField { expr: if check { format!("coalesce({expr}, false)") } else { expr }, field, values, check })
+                })
+                .collect();
+            // A condition on a field the entity no longer has reaches nothing (never more).
+            if let Some(fields) = fields {
+                scope.grants.push(ScopeGrant { owner: g.owner, fields });
+            }
+        }
+        if scope.grants.is_empty() {
+            // Every grant pointed at a missing field: nothing qualifies.
+            scope
+                .grants
+                .push(ScopeGrant { owner: false, fields: vec![GrantField { field: "id".into(), values: vec![], expr: "{a}.id".into(), check: false }] });
+        }
     }
     for (scope_entity, ids) in &ctx.scopes {
         if scope_entity == &ent.def.name {
@@ -339,7 +450,12 @@ pub fn row_scope(ctx: &Ctx, ent: &EffEntity, action: Action) -> Result<RowScope>
 
 impl RowScope {
     pub fn is_unrestricted(&self) -> bool {
-        self.owner.is_none() && self.conds.is_empty()
+        self.grants.is_empty() && self.conds.is_empty()
+    }
+
+    /// Whether some grant limits access to the user's own records (no grant reaches them all).
+    pub fn owner_only(&self) -> bool {
+        self.grants.iter().any(|g| g.owner)
     }
 
     /// Whether the user is named on the record in one of its owner fields.
@@ -352,12 +468,21 @@ impl RowScope {
         })
     }
 
+    /// Whether the user owns the record: created it, or is named in an owner field. A record
+    /// nobody created (system and background work) belongs to no one but those named.
+    fn owns(&self, doc: &Doc) -> bool {
+        let created_by = doc.get("created_by").and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok());
+        self.owner.is_some_and(|o| created_by == Some(o)) || self.named_owner(doc)
+    }
+
     pub fn matches(&self, doc: &Doc) -> bool {
-        if let Some(owner) = self.owner {
-            // A record nobody created (system and background work) belongs to no one: with
-            // own-records access only its owner fields can grant it.
-            let created_by = doc.get("created_by").and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok());
-            if created_by != Some(owner) && !self.named_owner(doc) {
+        if !self.grants.is_empty() {
+            let holds = |f: &GrantField| {
+                let v = doc.get(&f.field).filter(|v| !v.is_null());
+                f.values.contains(&if f.check && v.is_none() { "false".into() } else { condition_text(v) })
+            };
+            let reached = self.grants.iter().any(|g| (!g.owner || self.owns(doc)) && g.fields.iter().all(holds));
+            if !reached {
                 return false;
             }
         }
@@ -370,16 +495,57 @@ impl RowScope {
         })
     }
 
+    /// `(created_by = user or <owner fields name them>)` for table alias `a`.
+    fn push_owner(&self, qb: &mut QueryBuilder<Postgres>, alias: &str) {
+        qb.push(format!("({alias}.created_by = ")).push_bind(self.owner.unwrap_or_else(Uuid::nil));
+        if let Some(email) = &self.owner_email {
+            for o in &self.owner_fields {
+                qb.push(format!(" or {}", o.prefix.replace("{a}", alias))).push_bind(email.clone()).push(o.suffix.clone());
+            }
+        }
+        qb.push(")");
+    }
+
+    /// One grant's predicate, parenthesized: `(owner)` for own records alone, else
+    /// `(owner and field = any(values) and ...)`.
+    fn push_grant(&self, qb: &mut QueryBuilder<Postgres>, g: &ScopeGrant, alias: &str) {
+        if g.owner && g.fields.is_empty() {
+            return self.push_owner(qb, alias);
+        }
+        qb.push("(");
+        if g.owner {
+            self.push_owner(qb, alias);
+        }
+        for (i, f) in g.fields.iter().enumerate() {
+            if g.owner || i > 0 {
+                qb.push(" and ");
+            }
+            qb.push(format!("({})::text = any(", f.expr.replace("{a}", alias))).push_bind(f.values.clone()).push(")");
+        }
+        if !g.owner && g.fields.is_empty() {
+            qb.push("true");
+        }
+        qb.push(")");
+    }
+
     /// Appends ` and (...)` predicates for table alias `a`.
     pub fn push_sql(&self, qb: &mut QueryBuilder<Postgres>, alias: &str) {
-        if let Some(owner) = self.owner {
-            qb.push(format!(" and ({alias}.created_by = ")).push_bind(owner);
-            if let Some(email) = &self.owner_email {
-                for o in &self.owner_fields {
-                    qb.push(format!(" or {}", o.prefix.replace("{a}", alias))).push_bind(email.clone()).push(o.suffix.clone());
-                }
+        match self.grants.as_slice() {
+            [] => {}
+            [one] => {
+                qb.push(" and ");
+                self.push_grant(qb, one, alias);
             }
-            qb.push(")");
+            many => {
+                qb.push(" and (");
+                for (i, g) in many.iter().enumerate() {
+                    if i > 0 {
+                        qb.push(" or ");
+                    }
+                    self.push_grant(qb, g, alias);
+                }
+                qb.push(")");
+            }
         }
         for c in &self.conds {
             let col = match (&c.field, c.ext) {
@@ -452,6 +618,7 @@ mod tests {
             owner: Some(me),
             owner_email: Some("me@x.test".into()),
             owner_fields: vec![field("assigned_to", None), field("user", Some("assignees"))],
+            grants: vec![ScopeGrant::own()],
             conds: vec![],
         };
         let doc = |v: Value| v.as_object().cloned().unwrap();
@@ -460,7 +627,7 @@ mod tests {
         assert!(scope.matches(&doc(json!({"created_by": someone.to_string(), "assigned_to": " ME@x.test "}))));
         assert!(scope.matches(&doc(json!({"created_by": someone.to_string(), "assignees": [{"user": "other@x.test"}, {"user": "me@x.test"}]}))));
         assert!(!scope.matches(&doc(json!({"created_by": someone.to_string(), "assignees": [{"user": "other@x.test"}]}))));
-        let creator_only = RowScope { owner: Some(me), ..Default::default() };
+        let creator_only = RowScope { owner: Some(me), grants: vec![ScopeGrant::own()], ..Default::default() };
         assert!(!creator_only.matches(&doc(json!({"created_by": someone.to_string(), "assigned_to": "me@x.test"}))));
         assert!(!creator_only.matches(&doc(json!({"subject": "made by a background job"}))), "no creator is nobody's");
         assert!(scope.matches(&doc(json!({"assigned_to": "me@x.test"}))), "owner fields still grant system-created records");

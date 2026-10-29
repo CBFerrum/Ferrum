@@ -116,7 +116,8 @@ of them (`timezone` is an IANA name such as `Asia/Kolkata`).
 
 `/api/admin/users` (GET, POST `{email, full_name, password?, roles[], is_admin}`), `/api/admin/users/{id}/roles` (PUT `{roles}`),
 `/scopes` (PUT `{entity, ids[], default?}`), `/active` (PUT `{active}`), `/password` (PUT `{password}`);
-`/api/admin/roles` (GET), `/api/admin/roles/{role}/permissions` (PUT PermissionDef `{entity, read, write, create, delete, submit, cancel, export, import, if_owner, read_groups[], write_groups[]}`);
+`/api/admin/roles` (GET), `/api/admin/roles/{role}/permissions` (PUT PermissionDef `{entity, read, write, create, delete, submit, cancel, export, import, if_owner, read_groups[], write_groups[], where?}`);
+`where` limits a rule to records whose fields hold given values, all of them: `{"customer_type": ["Individual"], "disabled": false}` (data, select, check, link, email and int fields; links by record id, an unset checkbox reads as `false`; up to 10 fields and 50 values each). A role can hold several rules for one entity with different conditions (and `if_owner`), and a record is reachable through any of them, in lists, reads, filters, reports and live updates alike;
 `/api/admin/packages` (GET, POST `{packages[]}`); `/api/admin/webhooks` (GET, POST `{name, url, topics[]}` → `{id, secret}`, DELETE `/{id}`);
 `/api/admin/automations` (GET, POST `{name, entity, event: created|updated|submitted|cancelled|deleted, condition?, actions: [...] , is_active}`, DELETE `/{id}`).
 Automation actions: `{"type":"set_fields","values":{field: CEL}}`, `{"type":"create_document","entity":E,"values":{field: CEL}}`, `{"type":"notify","to":"owner|role:<name>|user:<id>","title":CEL,"body"?:CEL}`, `{"type":"email","to":CEL,"subject":CEL,"body":CEL}`.
