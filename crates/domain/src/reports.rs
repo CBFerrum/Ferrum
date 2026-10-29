@@ -320,14 +320,27 @@ async fn accounts(tx: &mut Tx, ctx: &Ctx, co: &ReportCompany) -> Result<Vec<Acc>
 
 /// Debit-minus-credit per account over `[from, to]` (from = None: since the beginning).
 async fn balances(tx: &mut Tx, ctx: &Ctx, co: &ReportCompany, from: Option<NaiveDate>, to: NaiveDate) -> Result<HashMap<Uuid, Decimal>> {
+    balances_where(tx, ctx, co, from, to, &[]).await
+}
+
+/// Entries that close a year's income and expense into equity (the Finance module's Period
+/// Closing Voucher). An income statement leaves them out, or a closed year would show no profit;
+/// balance sheets and trial balances keep them.
+pub const CLOSING_SOURCES: &[&str] = &["PeriodClosingVoucher"];
+
+/// Account balances over a period, leaving out entries from the `skip` source entities.
+async fn balances_where(tx: &mut Tx, ctx: &Ctx, co: &ReportCompany, from: Option<NaiveDate>, to: NaiveDate, skip: &[&str]) -> Result<HashMap<Uuid, Decimal>> {
     Ok(sqlx::query_as::<_, (Uuid, Decimal)>(
-        "select account_id, sum(debit - credit) from journal_line where tenant_id = $1 and company_id = $2 \
-         and ($3::date is null or posting_date >= $3) and posting_date <= $4 group by account_id",
+        "select l.account_id, sum(l.debit - l.credit) from journal_line l where l.tenant_id = $1 and l.company_id = $2 \
+         and ($3::date is null or l.posting_date >= $3) and l.posting_date <= $4 \
+         and (cardinality($5::text[]) = 0 or not exists (select 1 from journal_entry e where e.tenant_id = l.tenant_id and e.id = l.entry_id and e.source_entity = any($5))) \
+         group by l.account_id",
     )
     .bind(ctx.tenant)
     .bind(co.id)
     .bind(from)
     .bind(to)
+    .bind(skip.iter().map(|s| s.to_string()).collect::<Vec<_>>())
     .fetch_all(&mut **tx)
     .await?
     .into_iter()
@@ -504,7 +517,7 @@ async fn general_ledger(tx: &mut Tx, ctx: &Ctx, co: &ReportCompany, p: &Params<'
 async fn profit_and_loss(tx: &mut Tx, ctx: &Ctx, co: &ReportCompany, p: &Params<'_>) -> Result<Value> {
     let (from, to) = period(p, co)?;
     let accs = accounts(tx, ctx, co).await?;
-    let bal = balances(tx, ctx, co, Some(from), to).await?;
+    let bal = balances_where(tx, ctx, co, Some(from), to, CLOSING_SOURCES).await?;
     let (inc_rows, income) = tree(&accs, &bal, "Income", co.precision);
     let (exp_rows, expense) = tree(&accs, &bal, "Expense", co.precision);
     let mut rows = vec![json!({"account": "Income", "_bold": true})];
