@@ -1,5 +1,6 @@
 //! Ferrum HTTP server (Loco).
 pub mod app;
+pub mod appmgr;
 pub mod controllers;
 pub mod demo;
 pub mod error;

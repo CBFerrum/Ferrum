@@ -113,3 +113,79 @@ impl Task for SeedDemo {
         Ok(())
     }
 }
+
+fn apps(ctx: &AppContext) -> Result<std::sync::Arc<crate::appmgr::AppManager>> {
+    app_state(ctx).map(|s| s.apps).map_err(|e| Error::Message(format!("{:?}", e.0)))
+}
+
+/// `app_make_available file:ev-charging-1.4.0.fapp [allow_unsigned:true]` — make a bundle available to every workspace.
+pub struct AppMakeAvailable;
+
+#[async_trait]
+impl Task for AppMakeAvailable {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "app_make_available".into(), detail: "Make an app bundle (.fapp) available on the cluster, verified against apps.trusted_keys".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let file = vars.cli_arg("file")?;
+        let size = std::fs::metadata(file).map_err(|e| Error::Message(format!("{file}: {e}")))?.len();
+        if size > crate::appmgr::MAX_BUNDLE as u64 {
+            return Err(Error::Message(format!("{file}: app bundles are limited to 50 MB")));
+        }
+        let bytes = std::fs::read(file).map_err(|e| Error::Message(format!("{file}: {e}")))?;
+        let allow_unsigned = vars.cli_arg("allow_unsigned").is_ok_and(|v| v == "true");
+        let r = apps(ctx)?.make_available_file(bytes.into(), allow_unsigned).await.map_err(|e| Error::Message(e.to_string()))?;
+        println!("{} {} available on the cluster (digest {})", r.app_id, r.version, r.digest);
+        Ok(())
+    }
+}
+
+/// `app_upgrade [app:<id>]` — make the newest compatible store releases of the cluster's store apps (or of one app) available.
+pub struct AppUpgrade;
+
+#[async_trait]
+impl Task for AppUpgrade {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "app_upgrade".into(), detail: "Make the newest compatible store releases available on the cluster".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let lines = apps(ctx)?.upgrade_from_stores(vars.cli_arg("app").ok()).await.map_err(|e| Error::Message(e.to_string()))?;
+        for l in lines {
+            println!("{l}");
+        }
+        Ok(())
+    }
+}
+
+/// `app_revoke app:<id> [version:<v>] reason:"..."` — take a release (or every release) out of service and disable it everywhere.
+pub struct AppRevoke;
+
+#[async_trait]
+impl Task for AppRevoke {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "app_revoke".into(), detail: "Revoke an app release on the cluster and disable it in every workspace (data kept)".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let app = vars.cli_arg("app")?;
+        let reason = vars.cli_arg("reason")?;
+        let n = apps(ctx)?.revoke(app, vars.cli_arg("version").ok(), reason).await.map_err(|e| Error::Message(e.to_string()))?;
+        println!("{n} release(s) of {app} revoked");
+        Ok(())
+    }
+}
+
+/// `app_releases [app:<id>]` — every release recorded on the cluster.
+pub struct AppReleases;
+
+#[async_trait]
+impl Task for AppReleases {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "app_releases".into(), detail: "List the app releases recorded on the cluster".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        for l in apps(ctx)?.release_lines(vars.cli_arg("app").ok()).await.map_err(|e| Error::Message(e.to_string()))? {
+            println!("{l}");
+        }
+        Ok(())
+    }
+}

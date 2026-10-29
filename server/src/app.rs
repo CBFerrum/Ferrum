@@ -129,6 +129,9 @@ impl Hooks for App {
         }
         let storage = build_storage(&settings)?;
         probe_storage(&storage).await;
+        let storage = Arc::new(storage);
+        let apps = crate::appmgr::AppManager::new(kernel.clone(), plugins.clone(), storage.clone(), &settings.apps, crate::appmgr::compiled_natives())
+            .map_err(Error::Message)?;
         let (tx, _rx) = watch::channel(false);
         let state = AppState {
             kernel,
@@ -140,8 +143,8 @@ impl Hooks for App {
             jwt_secret: jwt.secret.clone(),
             jwt_expiration: jwt.expiration,
             login_limiter: Arc::new(RateLimiter::new(Duration::from_secs(60), 20)),
+            apps: Arc::new(apps),
         };
-        let storage = Arc::new(storage);
         state.kernel.set_file_store(Arc::new(crate::mailer::StorageFiles(storage.clone())));
         let ctx = ctx.into_builder().storage(storage).build();
         ctx.shared_store.insert(state);
@@ -173,6 +176,8 @@ impl Hooks for App {
             handles.push(crate::packages::spawn(state.kernel.clone(), state.shutdown.subscribe()));
             // Plugin schedules.
             handles.push(ferrum_plugins::schedule::spawn_scheduler(state.plugins.clone(), state.kernel.clone(), state.shutdown.subscribe()));
+            // App stores' revocation lists.
+            handles.push(state.apps.clone().spawn_revocations(state.shutdown.subscribe()));
             state.background.lock().await.extend(handles);
             tracing::info!("background loops started (outbox, webhooks, metadata listener, maintenance)");
         }
@@ -201,6 +206,7 @@ impl Hooks for App {
             .add_route(controllers::collab::routes())
             .add_route(controllers::prefs::routes())
             .add_route(controllers::admin::routes())
+            .add_route(controllers::apps::routes())
             .add_route(controllers::compat::routes())
             .add_route(controllers::mcp::routes())
             .add_route(controllers::oauth::routes())
@@ -219,6 +225,10 @@ impl Hooks for App {
         tasks.register(crate::tasks::ImportErpnext);
         tasks.register(crate::tasks::RunMaintenance);
         tasks.register(crate::tasks::SeedDemo);
+        tasks.register(crate::tasks::AppMakeAvailable);
+        tasks.register(crate::tasks::AppUpgrade);
+        tasks.register(crate::tasks::AppRevoke);
+        tasks.register(crate::tasks::AppReleases);
     }
 
     async fn truncate(_ctx: &AppContext) -> Result<()> {

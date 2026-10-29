@@ -2462,6 +2462,7 @@ dependencies = [
  "ferrum-app-hr",
  "ferrum-app-pos",
  "ferrum-app-projects",
+ "ferrum-apps",
  "ferrum-domain",
  "ferrum-finance",
  "ferrum-kernel",
@@ -2477,7 +2478,10 @@ dependencies = [
  "hex",
  "loco-rs",
  "opendal",
+ "reqwest 0.12.28",
+ "ring",
  "sea-orm",
+ "semver",
  "serde",
  "serde_json",
  "serial_test",
@@ -2486,6 +2490,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "wat",
 ]
 
 [[package]]
