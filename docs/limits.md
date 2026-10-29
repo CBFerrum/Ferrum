@@ -35,9 +35,10 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   allocations) write them with SQL rather than through a kernel API.
 - **SDK**: `ferrum-app dev --watch` uploads every change as a new pre-release; trying it still
   means updating the app on the Apps page (there is no automatic reinstall).
-- **Rate limits** are per replica and per IP for public endpoints (300 per minute), including
-  Campaigns' tracking pixels and links behind a mail provider's image proxy, and for sign-ins.
-  Locking an account after repeated failed sign-ins is shared by all replicas (in the database).
+- **Rate limits** (sign-ins, documents emailed, 300 requests a minute per address on public
+  endpoints) are counted in the database, so they hold across replicas; apps use the same
+  (`Kernel::rate_limit`). They are per address: Campaigns' tracking pixels and links opened
+  through a mail provider's image proxy share that proxy's budget.
 
 ## Accounting and finance
 
@@ -76,7 +77,7 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   messages, threads, mentions, edits and search, but not file attachments in messages. The
   calendar screen (`/app/calendar`) is a month grid and phone agenda with RSVPs; there is no week
   view or drag-to-reschedule, and free/busy lookups are API-only.
-- **Bookings**: the write throttle is in memory per replica; one resource per booking; no recurring
+- **Bookings**: one resource per booking; no recurring
   bookings, deposits or external calendar sync; notices can be up to a minute late. Without the Mail
   app, guest emails carry an add-to-calendar link instead of an invitation.
 - **Field Service**: SLAs run in calendar hours; travel times are straight-line estimates.

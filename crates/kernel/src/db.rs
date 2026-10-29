@@ -80,6 +80,26 @@ impl Db {
         sqlx::migrate!("./migrations").run(&self.pool).await.map_err(|e| Error::Internal(format!("kernel migration failed: {e}")))
     }
 
+    /// Counts one request for `key` in the current fixed `window`, shared by every replica
+    /// (`rate_window`), and returns the window's count so far.
+    pub async fn count_hit(&self, key: &str, window: Duration) -> Result<i64> {
+        let key: String = key.chars().take(300).collect();
+        let n: i32 = sqlx::query_scalar(
+            "insert into rate_window (key, window_start, hits) values ($1, to_timestamp(floor(extract(epoch from now()) / $2) * $2), 1) \
+             on conflict (key, window_start) do update set hits = rate_window.hits + 1 returning hits",
+        )
+        .bind(key)
+        .bind(window.as_secs().max(1) as f64)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(n.into())
+    }
+
+    /// Forgets rate-limit windows that ended over an hour ago.
+    pub async fn sweep_rate_windows(&self) -> Result<u64> {
+        Ok(sqlx::query("delete from rate_window where window_start < now() - interval '1 hour'").execute(&self.pool).await?.rows_affected())
+    }
+
     /// A tenant transaction on the side pool, for a short autonomous write while another
     /// transaction of the same request is open.
     pub async fn side_tenant_tx(&self, tenant: Uuid) -> Result<Tx> {

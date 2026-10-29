@@ -336,6 +336,16 @@ async fn scenario() {
     let k = Kernel::boot(db, Catalog::from_packages(vec![core, notes_package()]).unwrap(), HookRegistry::default(), KernelSettings::default(), None)
         .await
         .expect("boot");
+    // Rate limits hold across replicas: two limiters on one database share their count.
+    let (a, b) = (
+        ferrum_server::state::RateLimiter::shared("it", std::time::Duration::from_secs(60), 3, k.db.clone()),
+        ferrum_server::state::RateLimiter::shared("it", std::time::Duration::from_secs(60), 3, k.db.clone()),
+    );
+    for l in [&a, &b, &a] {
+        l.check("10.0.0.1").await.expect("within the limit");
+    }
+    assert!(matches!(b.check("10.0.0.1").await, Err(Error::TooManyRequests(_))), "the fourth request, on another replica");
+    b.check("10.0.0.2").await.expect("another client has its own count");
     let host = PluginHost::new(false).unwrap();
     let mut tenants = Vec::new();
     for slug in ["acme", "other"] {

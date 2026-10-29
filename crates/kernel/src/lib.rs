@@ -108,6 +108,16 @@ pub struct Kernel {
 }
 
 impl Kernel {
+    /// Counts a request for `key` against `max` per fixed `window`, across every replica, and
+    /// refuses it past the limit (`message` says why). For apps' public endpoints; keys should
+    /// name the app, e.g. `bookings|{tenant}|{ip}`.
+    pub async fn rate_limit(&self, key: &str, window: std::time::Duration, max: u32, message: &str) -> Result<()> {
+        if self.db.count_hit(key, window).await? > i64::from(max) {
+            return Err(Error::TooManyRequests(message.into()));
+        }
+        Ok(())
+    }
+
     /// Migrates the kernel schema, syncs entity tables for the catalog, and returns a ready kernel.
     pub async fn boot(db: Db, catalog: Catalog, hooks: HookRegistry, settings: KernelSettings, mailer: Option<Arc<dyn Mailer>>) -> Result<Arc<Kernel>> {
         // Superusers and BYPASSRLS roles ignore row-level security, which would silently remove

@@ -148,6 +148,7 @@ impl Hooks for App {
         let apps = crate::appmgr::AppManager::new(kernel.clone(), plugins.clone(), storage.clone(), &settings.apps, crate::appmgr::compiled_natives())
             .map_err(Error::Message)?;
         let (tx, _rx) = watch::channel(false);
+        let db = kernel.db.clone();
         let state = AppState {
             kernel,
             plugins,
@@ -157,8 +158,10 @@ impl Hooks for App {
             background: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             jwt_secret: jwt.secret.clone(),
             jwt_expiration: jwt.expiration,
-            login_limiter: Arc::new(RateLimiter::new(Duration::from_secs(60), 20)),
-            mail_limiter: Arc::new(RateLimiter::new(Duration::from_secs(60), 30)),
+            login_limiter: Arc::new(RateLimiter::shared("login", Duration::from_secs(60), 20, db.clone())),
+            mail_limiter: Arc::new(RateLimiter::shared("mail", Duration::from_secs(60), 30, db.clone())),
+            // Public endpoints are open to the internet: a generous per-address budget stops floods.
+            public_limiter: Arc::new(RateLimiter::shared("public", Duration::from_secs(60), 300, db)),
             apps: Arc::new(apps),
             objects,
         };
@@ -195,7 +198,7 @@ impl Hooks for App {
             handles.push(ferrum_plugins::schedule::spawn_scheduler(state.plugins.clone(), state.kernel.clone(), state.shutdown.subscribe()));
             // App stores' revocation lists.
             handles.push(state.apps.clone().spawn_revocations(state.shutdown.subscribe()));
-            // Direct uploads that were never completed, with their bytes.
+            // Direct uploads that were never completed, with their bytes; finished rate-limit windows.
             let (k, objects, mut stop) = (state.kernel.clone(), state.objects.clone(), state.shutdown.subscribe());
             handles.push(tokio::spawn(async move {
                 loop {
@@ -207,6 +210,9 @@ impl Hooks for App {
                         Ok(0) => {}
                         Ok(n) => tracing::info!("removed {n} expired direct uploads"),
                         Err(e) => tracing::warn!("sweeping expired uploads failed: {e}"),
+                    }
+                    if let Err(e) = k.db.sweep_rate_windows().await {
+                        tracing::warn!("sweeping rate-limit windows failed: {e}");
                     }
                 }
             }));

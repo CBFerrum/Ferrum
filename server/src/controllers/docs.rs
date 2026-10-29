@@ -225,7 +225,7 @@ async fn email_doc(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity,
     if k.mailer.is_none() {
         return Err(ApiError(Error::Unavailable("no mailer is configured on this server".into())));
     }
-    st.mail_limiter.check(&format!("{}|{}", ctx.tenant, ctx.user)).map_err(ApiError)?;
+    st.mail_limiter.check(&format!("{}|{}", ctx.tenant, ctx.user)).await.map_err(ApiError)?;
     let doc = k.get(&ctx, &entity, id, false).await?;
     let label = k.entity(&ctx, &entity)?.def.label.clone();
     let number = doc.get("number").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| id.to_string());

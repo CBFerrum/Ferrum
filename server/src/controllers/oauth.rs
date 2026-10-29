@@ -88,7 +88,7 @@ async fn register(State(app): State<AppContext>, headers: HeaderMap, Json(req): 
         Ok(st) => st,
         Err(e) => return e.into_response(),
     };
-    if let Err(e) = st.login_limiter.check(&format!("oauth-register|{}", client_ip(&headers))) {
+    if let Err(e) = st.login_limiter.check(&format!("oauth-register|{}", client_ip(&headers))).await {
         return ApiError(e).into_response();
     }
     match st.kernel.oauth_register(req.client_name, req.redirect_uris).await {
@@ -178,7 +178,7 @@ async fn token(State(app): State<AppContext>, headers: HeaderMap, Form(req): For
         Ok(st) => st,
         Err(e) => return e.into_response(),
     };
-    if st.login_limiter.check(&format!("oauth-token|{}", client_ip(&headers))).is_err() {
+    if st.login_limiter.check(&format!("oauth-token|{}", client_ip(&headers))).await.is_err() {
         return oauth_error(StatusCode::TOO_MANY_REQUESTS, "slow_down", "too many token requests; try again shortly");
     }
     let Some(client_id) = req.client_id.as_deref().filter(|c| !c.is_empty()) else {
