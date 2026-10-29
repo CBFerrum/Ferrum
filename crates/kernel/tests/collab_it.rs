@@ -441,4 +441,22 @@ async fn scenario() {
     drain(&k).await;
     assert_eq!(SENT.lock().unwrap().last().map(|m| m.1.clone()), Some("Your quote".to_string()));
     assert_eq!(ATTACHED.lock().unwrap().clone(), vec![("quote.pdf".to_string(), "application/pdf".to_string(), b"%PDF-1.7 quote".to_vec())]);
+
+    // ── objects an app released go from storage once its transaction commits, only its own ──
+    let key = |id: Uuid| format!("tenants/{tenant}/{id}");
+    let gone = k.store_file(&admin, Some(("Customer", cid)), "old.txt", "text/plain", b"old").await.unwrap();
+    let gone: Uuid = gone["id"].as_str().unwrap().parse().unwrap();
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    ferrum_kernel::outbox::release_objects(&mut tx, tenant, &[key(gone)]).await.unwrap();
+    tx.rollback().await.unwrap();
+    drain(&k).await;
+    assert!(objects.0.lock().unwrap().contains_key(&key(gone)), "a rolled-back release deletes nothing");
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    assert!(ferrum_kernel::outbox::release_objects(&mut tx, tenant, &[format!("tenants/{}/x", Uuid::now_v7())]).await.is_err(), "another workspace's objects");
+    assert!(ferrum_kernel::outbox::release_objects(&mut tx, tenant, &[format!("tenants/{tenant}/../x")]).await.is_err());
+    sqlx::query("delete from file_object where tenant_id = $1 and id = $2").bind(tenant).bind(gone).execute(&mut *tx).await.unwrap();
+    ferrum_kernel::outbox::release_objects(&mut tx, tenant, &[key(gone)]).await.unwrap();
+    tx.commit().await.unwrap();
+    drain(&k).await;
+    assert!(!objects.0.lock().unwrap().contains_key(&key(gone)), "released after commit");
 }

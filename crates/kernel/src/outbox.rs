@@ -23,6 +23,9 @@ const MAX_WEBHOOK_BODY: usize = 256 * 1024;
 /// Outbox topic of mail queued with [`Kernel::queue_mail`]; never fanned out to webhooks.
 pub const MAIL_TOPIC: &str = "ferrum.mail";
 
+/// Stored objects whose records are gone, deleted from storage once their transaction commits.
+pub const RELEASE_TOPIC: &str = "ferrum.storage.release";
+
 /// The most a queued mail may attach.
 const MAX_ATTACHED: i64 = 20 << 20;
 
@@ -102,6 +105,20 @@ impl Kernel {
         }
         Ok(out)
     }
+}
+
+/// Deletes stored objects from storage once the caller's transaction commits (never if it rolls
+/// back), retried while storage fails: for apps that delete `file_object` rows in their own
+/// transactions. Only this tenant's objects (`tenants/{tenant}/...`).
+pub async fn release_objects(tx: &mut Tx, tenant: Uuid, keys: &[String]) -> Result<()> {
+    let own = format!("tenants/{tenant}/");
+    if let Some(bad) = keys.iter().find(|k| !k.starts_with(&own) || k.contains("..")) {
+        return Err(Error::internal(format!("not a stored object of this workspace: {bad}")));
+    }
+    for chunk in keys.chunks(500) {
+        enqueue(tx, tenant, RELEASE_TOPIC, None, None, serde_json::json!({"keys": chunk})).await?;
+    }
+    Ok(())
 }
 
 pub async fn enqueue(tx: &mut Tx, tenant: Uuid, topic: &str, entity: Option<&str>, record_id: Option<Uuid>, payload: Value) -> Result<()> {
@@ -186,6 +203,17 @@ impl Kernel {
     }
 
     async fn handle_event(&self, ev: &Event) -> Result<()> {
+        if ev.topic == RELEASE_TOPIC {
+            let store = self.files.get().ok_or_else(|| Error::Unavailable("no file storage is configured".into()))?;
+            let own = format!("tenants/{}/", ev.tenant_id);
+            for key in ev.payload.get("keys").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+                // Deleting an object that is already gone succeeds, so a retry is harmless.
+                if key.starts_with(&own) {
+                    store.delete(key).await?;
+                }
+            }
+            return Ok(());
+        }
         if ev.topic == MAIL_TOPIC {
             let mailer = self.mailer.as_ref().ok_or_else(|| Error::Unavailable("no mailer is configured; queued mail waits for one".into()))?;
             let field = |k: &str| ev.payload.get(k).and_then(Value::as_str).unwrap_or_default();
