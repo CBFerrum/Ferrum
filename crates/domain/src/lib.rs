@@ -8,6 +8,7 @@ pub mod accounting;
 pub mod einvoice;
 pub mod flow;
 pub mod india;
+pub mod irp;
 pub mod ledger;
 pub mod manufacturing;
 pub mod pricing;
@@ -58,6 +59,7 @@ pub fn register(h: &mut HookRegistry) {
             .register(invoice, Arc::new(trade::InvoiceHook(side)));
     }
     h.register("SalesInvoice", Arc::new(einvoice::EInvoiceHook));
+    h.add_event_sink(Arc::new(irp::IrpConnector::default()));
 }
 
 /// Periodic domain upkeep, safe to run on every replica at once: yearly journal partitions.

@@ -53,7 +53,11 @@ operator to know. Report a vulnerability privately to the maintainers rather tha
 * Templates (prints, mail): MiniJinja with HTML auto-escaping and a fuel limit; print pages are
   served with a Content Security Policy that runs no script and loads nothing but inline styles
   and images, also when shown from the browser.
-* Outbound requests (webhooks, plugins, identity providers): https, hosts resolved once and
+* E-invoices: the direct IRP connection signs in with the credentials RSA-encrypted under the
+  IRP's public key and exchanges payloads AES-encrypted under the session key the IRP returns
+  (its client secret and password are sealed secret fields); a signed QR code is checked for the
+  invoice, its number and the seller, and against the IRP's signing key when the company has it.
+* Outbound requests (webhooks, plugins, identity providers, the IRP): https, hosts resolved once and
   pinned, private and loopback addresses refused, no redirects, time and size limits. Plugins
   reach only the hosts they declare; identity providers on a private network need
   `FERRUM_SSO_ALLOW_PRIVATE`.
@@ -99,8 +103,9 @@ Found and fixed:
   browser only to registered addresses, and only the browser holding the binding can finish).
 
 Known and accepted:
-* An e-invoice's signed QR code is checked for this invoice, number and seller, not against the
-  IRP's signing key; recording one needs submit permission and lands in the audit trail.
+* A signed QR code is checked against the IRP's signature only when the company has entered the
+  IRP's signing key; without it, recording one by hand is checked for the invoice, number and
+  seller, needs submit permission and lands in the audit trail.
 * Session tokens are readable by script on the app's origin; the Content Security Policy is what
   keeps foreign script out.
 * Security keys (WebAuthn) and SAML are not supported.

@@ -22,7 +22,6 @@ use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::net::SocketAddr;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -170,27 +169,8 @@ impl Kernel {
     /// no redirects, ten seconds, a megabyte at most. → the status and the JSON answer.
     async fn idp_request(&self, url: &str, form: Option<&[(&str, &str)]>, basic: Option<(&str, &str)>) -> Result<(u16, Value)> {
         let unreachable = |e: String| Error::Unavailable(format!("the identity provider cannot be reached: {e}"));
-        let allow_private = self.settings.sso_allow_private;
-        let parsed = reqwest::Url::parse(url).map_err(|_| Error::invalid(format!("{url} is not a URL")))?;
-        if parsed.scheme() != "https" && !(allow_private && parsed.scheme() == "http") {
-            return Err(Error::invalid(format!("{url} must use https")));
-        }
-        let host = parsed.host_str().ok_or_else(|| Error::invalid(format!("{url} has no host")))?.to_string();
-        let port = parsed.port_or_known_default().unwrap_or(443);
-        let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), port)).await.map_err(|e| unreachable(e.to_string()))?.collect();
-        if addrs.is_empty() {
-            return Err(unreachable(format!("{host} does not resolve")));
-        }
-        if !allow_private && addrs.iter().any(|a| crate::outbox::is_private(a.ip())) {
-            return Err(Error::invalid(format!("{host} is a private address")));
-        }
-        let client = reqwest::Client::builder()
-            .resolve_to_addrs(&host, &addrs)
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(10))
-            .user_agent("Ferrum-SSO/1")
-            .build()
-            .map_err(|e| unreachable(e.to_string()))?;
+        let (client, parsed) = self.vetted_client(url, self.settings.sso_allow_private, Duration::from_secs(10), "Ferrum-SSO/1").await?;
+        let host = parsed.host_str().unwrap_or_default().to_string();
         let mut req = match form {
             Some(f) => client.post(parsed).form(f),
             None => client.get(parsed),

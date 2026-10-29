@@ -744,6 +744,11 @@ impl DocHook for EInvoiceHook {
                         ));
                     }
                 }
+                if let Some(pem) = s(&company, "in_irp_qr_key").filter(|k| !k.trim().is_empty())
+                    && !crate::irp::signed_by(pem, &qr)?
+                {
+                    return Err(Error::field("response", "the signed QR code does not carry the IRP's signature"));
+                }
                 let ack_no = answer_field(params, "AckNo").ok_or_else(|| Error::field("response", "the IRP's answer has no AckNo"))?;
                 let ack_dt = answer_field(params, "AckDt")
                     .filter(|t| irp_time(t).is_some())

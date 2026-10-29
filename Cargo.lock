@@ -2561,14 +2561,21 @@ dependencies = [
 name = "ferrum-domain"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "async-trait",
+ "axum",
  "base64 0.22.1",
  "chrono",
+ "dashmap",
  "ferrum-calc",
  "ferrum-kernel",
  "ferrum-meta",
  "ferrum-plugins",
  "hex",
+ "jsonwebtoken",
+ "rand_core 0.6.4",
+ "reqwest 0.12.28",
+ "rsa",
  "rust_decimal",
  "serde",
  "serde_json",

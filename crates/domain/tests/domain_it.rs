@@ -55,9 +55,193 @@ async fn fresh_kernel() -> (Arc<Kernel>, Arc<ferrum_plugins::PluginHost>) {
     ferrum_domain::register(&mut hooks);
     let plugins = ferrum_plugins::PluginHost::new(false).expect("plugin host");
     hooks.register("*", Arc::new(ferrum_plugins::PluginHook(plugins.clone())));
-    let k = Kernel::boot(db, catalog, hooks, KernelSettings::default(), None).await.expect("boot");
+    // Secret fields (the IRP credentials) need a key; the fake IRP listens on a local address.
+    let settings = KernelSettings { secret_key: Some(ferrum_kernel::secret::SecretKey::new([5u8; 32])), webhooks_allow_private: true, ..Default::default() };
+    let k = Kernel::boot(db, catalog, hooks, settings, None).await.expect("boot");
     ferrum_domain::maintenance(&k).await.expect("maintenance");
     (k, plugins)
+}
+
+// ───────────────────────────── a fake IRP ─────────────────────────────
+
+/// The IRP's API as NIC documents it, on a local port: an RSA-encrypted sign-in returning a
+/// session key under the caller's app key, AES-encrypted payloads and answers, RS256-signed QR
+/// codes, duplicate-IRN answers for invoices it registered before, and refusals on request.
+mod fake_irp {
+    use axum::extract::{Path, State};
+    use axum::http::HeaderMap;
+    use axum::routing::{get, post};
+    use axum::{Json, Router};
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD as B64;
+    use ferrum_domain::irp::{ecb_decrypt, ecb_encrypt};
+    use rsa::pkcs1::EncodeRsaPrivateKey;
+    use rsa::pkcs8::{EncodePublicKey, LineEnding};
+    use rsa::rand_core::{OsRng, RngCore};
+    use serde_json::{Value, json};
+    use sha2::{Digest, Sha256};
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    pub struct Books {
+        pub sessions: HashMap<String, [u8; 32]>,
+        /// Answers by document number, and by IRN.
+        pub registered: HashMap<String, Value>,
+        pub by_irn: HashMap<String, Value>,
+        pub refuse_next: bool,
+        pub sign_ins: usize,
+    }
+
+    pub struct Irp {
+        pub url: String,
+        pub public_pem: String,
+        pub qr_pem: String,
+        pub books: Arc<Mutex<Books>>,
+        key: Arc<rsa::RsaPrivateKey>,
+        qr_der: Arc<Vec<u8>>,
+    }
+
+    #[derive(Clone)]
+    struct S {
+        books: Arc<Mutex<Books>>,
+        key: Arc<rsa::RsaPrivateKey>,
+        qr_der: Arc<Vec<u8>>,
+    }
+
+    fn now_ist() -> String {
+        (chrono::Utc::now() + chrono::Duration::minutes(330)).format("%Y-%m-%d %H:%M:%S").to_string()
+    }
+
+    fn sealed(sek: &[u8; 32], v: &Value) -> Json<Value> {
+        Json(json!({"Status": 1, "Data": B64.encode(ecb_encrypt(sek, v.to_string().as_bytes()))}))
+    }
+
+    fn refused(code: &str, message: &str, info: Value) -> Json<Value> {
+        Json(json!({"Status": 0, "ErrorDetails": [{"ErrorCode": code, "ErrorMessage": message}], "InfoDtls": info}))
+    }
+
+    fn session(s: &S, h: &HeaderMap) -> Option<[u8; 32]> {
+        let token = h.get("authtoken")?.to_str().ok()?;
+        s.books.lock().unwrap().sessions.get(token).copied()
+    }
+
+    fn open(sek: &[u8; 32], body: &Value) -> Value {
+        let plain = ecb_decrypt(sek, &B64.decode(body["Data"].as_str().unwrap()).unwrap()).unwrap();
+        serde_json::from_slice(&plain).unwrap()
+    }
+
+    /// What the IRP answers for an invoice it registers: IRN, acknowledgement and signed QR code.
+    pub fn answer(qr_der: &[u8], seller: &str, buyer: &str, doc_no: &str) -> Value {
+        let irn = hex::encode(Sha256::digest(format!("{seller}|{doc_no}").as_bytes()));
+        let data = json!({"SellerGstin": seller, "BuyerGstin": buyer, "DocNo": doc_no, "DocTyp": "INV", "Irn": irn, "IrnDt": now_ist()}).to_string();
+        let key = jsonwebtoken::EncodingKey::from_rsa_der(qr_der);
+        let qr = jsonwebtoken::encode(&jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256), &json!({"data": data, "iss": "NIC"}), &key).unwrap();
+        json!({"AckNo": 112_610_000_000_042_u64, "AckDt": now_ist(), "Irn": irn, "SignedInvoice": qr, "SignedQRCode": qr, "Status": "ACT"})
+    }
+
+    async fn auth(State(s): State<S>, h: HeaderMap, Json(body): Json<Value>) -> Json<Value> {
+        if h.get("client_id").is_none() || h.get("client_secret").is_none() {
+            return refused("1001", "client credentials missing", Value::Null);
+        }
+        let raw = B64.decode(body["Data"].as_str().unwrap()).unwrap();
+        let inner = s.key.decrypt(rsa::Pkcs1v15Encrypt, &raw).expect("encrypted with our public key");
+        let creds: Value = serde_json::from_slice(&B64.decode(inner).unwrap()).unwrap();
+        if creds["UserName"] != "ti_api" || creds["Password"] != "Api-Passw0rd" {
+            return refused("1002", "Invalid UserName or Password", Value::Null);
+        }
+        let app_key: [u8; 32] = B64.decode(creds["AppKey"].as_str().unwrap()).unwrap().try_into().unwrap();
+        let mut sek = [0u8; 32];
+        OsRng.fill_bytes(&mut sek);
+        let mut b = s.books.lock().unwrap();
+        b.sign_ins += 1;
+        let token = format!("token-{}", b.sign_ins);
+        b.sessions.insert(token.clone(), sek);
+        let expiry = (chrono::Utc::now() + chrono::Duration::minutes(330 + 360)).format("%Y-%m-%d %H:%M:%S").to_string();
+        Json(
+            json!({"Status": 1, "Data": {"ClientId": "x", "UserName": "ti_api", "AuthToken": token, "Sek": B64.encode(ecb_encrypt(&app_key, &sek)), "TokenExpiry": expiry}}),
+        )
+    }
+
+    async fn invoice(State(s): State<S>, h: HeaderMap, Json(body): Json<Value>) -> Json<Value> {
+        let Some(sek) = session(&s, &h) else { return refused("1005", "Invalid Token", Value::Null) };
+        let inv = open(&sek, &body);
+        let (no, seller, buyer) =
+            (inv["DocDtls"]["No"].as_str().unwrap().to_string(), inv["SellerDtls"]["Gstin"].as_str().unwrap(), inv["BuyerDtls"]["Gstin"].as_str().unwrap());
+        assert_eq!(inv["Version"], "1.1", "schema 1.1");
+        let mut b = s.books.lock().unwrap();
+        if std::mem::take(&mut b.refuse_next) {
+            return refused("2265", "Recipient GSTIN state code does not match the state code passed in recipient details", Value::Null);
+        }
+        if let Some(prior) = b.registered.get(&no) {
+            let info = json!([{"InfCd": "DUPIRN", "Desc": {"AckNo": prior["AckNo"], "AckDt": prior["AckDt"], "Irn": prior["Irn"]}}]);
+            return refused("2150", "Duplicate IRN", info);
+        }
+        let a = answer(&s.qr_der, seller, buyer, &no);
+        b.registered.insert(no, a.clone());
+        b.by_irn.insert(a["Irn"].as_str().unwrap().to_string(), a.clone());
+        sealed(&sek, &a)
+    }
+
+    async fn by_irn(State(s): State<S>, h: HeaderMap, Path(irn): Path<String>) -> Json<Value> {
+        let Some(sek) = session(&s, &h) else { return refused("1005", "Invalid Token", Value::Null) };
+        match s.books.lock().unwrap().by_irn.get(&irn) {
+            Some(a) => sealed(&sek, a),
+            None => refused("2283", "IRN details are not found", Value::Null),
+        }
+    }
+
+    async fn cancel(State(s): State<S>, h: HeaderMap, Json(body): Json<Value>) -> Json<Value> {
+        let Some(sek) = session(&s, &h) else { return refused("1005", "Invalid Token", Value::Null) };
+        let c = open(&sek, &body);
+        sealed(&sek, &json!({"Irn": c["Irn"], "CancelDate": now_ist()}))
+    }
+
+    async fn ewb(State(s): State<S>, h: HeaderMap, Json(body): Json<Value>) -> Json<Value> {
+        let Some(sek) = session(&s, &h) else { return refused("1005", "Invalid Token", Value::Null) };
+        let e = open(&sek, &body);
+        assert!(e["Irn"].as_str().is_some_and(|i| i.len() == 64) && e["Distance"].is_number(), "{e}");
+        sealed(&sek, &json!({"EwbNo": 331_009_876_543_u64, "EwbDt": now_ist(), "EwbValidTill": "2026-12-31 23:59:00"}))
+    }
+
+    pub async fn start() -> Irp {
+        // NIC's key is 2048-bit: the sign-in payload does not fit a smaller one.
+        let key = rsa::RsaPrivateKey::new(&mut OsRng, 2048).unwrap();
+        let qr = rsa::RsaPrivateKey::new(&mut OsRng, 1024).unwrap();
+        let public_pem = key.to_public_key().to_public_key_pem(LineEnding::LF).unwrap();
+        let qr_pem = qr.to_public_key().to_public_key_pem(LineEnding::LF).unwrap();
+        let qr_der = Arc::new(qr.to_pkcs1_der().unwrap().as_bytes().to_vec());
+        let books = Arc::new(Mutex::new(Books::default()));
+        let key = Arc::new(key);
+        let state = S { books: books.clone(), key: key.clone(), qr_der: qr_der.clone() };
+        let app = Router::new()
+            .route("/eivital/v1.04/auth", post(auth))
+            .route("/eicore/v1.03/Invoice", post(invoice))
+            .route("/eicore/v1.03/Invoice/irn/{irn}", get(by_irn))
+            .route("/eicore/v1.03/Invoice/Cancel", post(cancel))
+            .route("/eiewb/v1.03/ewaybill", post(ewb))
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        Irp { url, public_pem, qr_pem, books, key, qr_der }
+    }
+
+    impl Irp {
+        /// Registers an invoice as if an earlier answer had been lost on the way back.
+        pub fn registered_before(&self, seller: &str, buyer: &str, doc_no: &str) -> String {
+            let a = answer(&self.qr_der, seller, buyer, doc_no);
+            let mut b = self.books.lock().unwrap();
+            b.registered.insert(doc_no.to_string(), a.clone());
+            b.by_irn.insert(a["Irn"].as_str().unwrap().to_string(), a.clone());
+            a["Irn"].as_str().unwrap().to_string()
+        }
+        pub fn forged_qr(&self, seller: &str, buyer: &str, doc_no: &str) -> Value {
+            let other = rsa::RsaPrivateKey::new(&mut OsRng, 1024).unwrap();
+            let _ = &self.key;
+            answer(other.to_pkcs1_der().unwrap().as_bytes(), seller, buyer, doc_no)
+        }
+    }
 }
 
 struct T {
@@ -438,6 +622,80 @@ async fn scenario() {
     assert_eq!((&cancel["status"], &cancel["payload"]["CnlRsn"], &cancel["payload"]["Irn"]), (&json!("Cancelling"), &json!("3"), &json!(irn)));
     assert_eq!(t.action("SalesInvoice", ein, "record_e_invoice_cancellation", json!({})).await["status"], json!("Cancelled"));
     t.k.cancel(&t.ctx, "SalesInvoice", ein, None).await.expect("cancelled once its e-invoice is");
+
+    // ───────────── e-invoices through a direct IRP connection ─────────────
+    let irp = fake_irp::start().await;
+    t.k.update(
+        &t.ctx,
+        "Company",
+        cid,
+        obj(json!({"in_irp_mode": "Sandbox", "in_irp_url": irp.url, "in_irp_client_id": "TI-ERP", "in_irp_client_secret": "client-secret",
+                   "in_irp_username": "ti_api", "in_irp_password": "Api-Passw0rd", "in_irp_public_key": irp.public_pem, "in_irp_qr_key": irp.qr_pem})),
+        None,
+    )
+    .await
+    .expect("IRP connection");
+    let drain = || async { while t.k.dispatch_outbox_once().await.expect("dispatch") > 0 {} };
+    let invoice_for_irp = || async {
+        let d = t
+            .insert("SalesInvoice", json!({"company": cid.to_string(), "customer": globex.to_string(), "items": [{"item": widget.to_string(), "qty": "1"}]}))
+            .await;
+        let id = uid(&d);
+        let number = t.submit("SalesInvoice", id).await["number"].as_str().unwrap().to_string();
+        (id, number)
+    };
+    let (sent, _) = invoice_for_irp().await;
+    t.action("SalesInvoice", sent, "request_e_invoice", json!({})).await;
+    drain().await;
+    let doc = t.get("SalesInvoice", sent).await;
+    assert_eq!((&doc["in_e_invoice_status"], &doc["in_ack_no"]), (&json!("Generated"), &json!("112610000000042")), "{:?}", doc.get("in_e_invoice_error"));
+    assert_eq!(doc["in_irn"].as_str().unwrap().len(), 64);
+
+    // An answer lost on the way back: the retry learns of the duplicate and fetches it by IRN.
+    let (lost, lost_no) = invoice_for_irp().await;
+    let irn = irp.registered_before("27AAPFU0939F1ZV", &globex_gstin, &lost_no);
+    t.action("SalesInvoice", lost, "request_e_invoice", json!({})).await;
+    drain().await;
+    let doc = t.get("SalesInvoice", lost).await;
+    assert_eq!((&doc["in_e_invoice_status"], &doc["in_irn"]), (&json!("Generated"), &json!(irn)));
+
+    // The IRP's refusal is the request's failure, with its reason.
+    let (refused, _) = invoice_for_irp().await;
+    irp.books.lock().unwrap().refuse_next = true;
+    t.action("SalesInvoice", refused, "request_e_invoice", json!({})).await;
+    drain().await;
+    let doc = t.get("SalesInvoice", refused).await;
+    assert_eq!(doc["in_e_invoice_status"], json!("Failed"));
+    assert!(doc["in_e_invoice_error"].as_str().unwrap().contains("2265"), "{:?}", doc["in_e_invoice_error"]);
+    assert_eq!(irp.books.lock().unwrap().sign_ins, 1, "one session for all of it");
+
+    // A cancellation, and an e-way bill by IRN, through the same connection.
+    t.action("SalesInvoice", sent, "cancel_e_invoice", json!({"reason": "Data entry mistake", "remark": "Wrong rate"})).await;
+    drain().await;
+    assert_eq!(t.get("SalesInvoice", sent).await["in_e_invoice_status"], json!("Cancelled"));
+    t.action("SalesInvoice", lost, "set_transport", json!({"in_transport_mode": "Road", "in_distance_km": 120, "in_vehicle_no": "KA01AB1234"})).await;
+    t.action("SalesInvoice", lost, "request_e_way_bill", json!({})).await;
+    drain().await;
+    let doc = t.get("SalesInvoice", lost).await;
+    assert_eq!((&doc["in_e_way_bill_status"], &doc["in_ewaybill_no"]), (&json!("Generated"), &json!("331009876543")));
+
+    // With the IRP's signing key set, an answer signed by another key is refused when recorded by hand.
+    let (by_hand, by_hand_no) = invoice_for_irp().await;
+    let forged = irp.forged_qr("27AAPFU0939F1ZV", &globex_gstin, &by_hand_no);
+    let refused_qr = t.k.run_action(&t.ctx, "SalesInvoice", by_hand, "record_e_invoice", json!({"response": forged.to_string()})).await;
+    assert!(matches!(refused_qr, Err(Error::Validation(ref f)) if f[0].message.contains("signature")), "{refused_qr:?}");
+    // Undone again: the e-way bill (cancelled on its portal, recorded here), then the e-invoices
+    // (through the connection), then the invoices.
+    t.action("SalesInvoice", lost, "cancel_e_way_bill", json!({"reason": "Order cancelled", "remark": "Withdrawn"})).await;
+    drain().await;
+    assert_eq!(t.get("SalesInvoice", lost).await["in_e_way_bill_status"], json!("Cancelling"), "the IRP does not cancel e-way bills");
+    t.action("SalesInvoice", lost, "record_e_way_bill_cancellation", json!({})).await;
+    t.action("SalesInvoice", lost, "cancel_e_invoice", json!({"reason": "Order cancelled", "remark": "Withdrawn"})).await;
+    drain().await;
+    for inv in [sent, lost, refused, by_hand] {
+        t.k.cancel(&t.ctx, "SalesInvoice", inv, None).await.expect("cancelled");
+    }
+    t.k.update(&t.ctx, "Company", cid, obj(json!({"in_irp_mode": "Off"})), None).await.expect("connection off");
 
     // Credit limit.
     t.k.update(&t.ctx, "Customer", local, obj(json!({"credit_limit": "1000"})), None).await.expect("limit");

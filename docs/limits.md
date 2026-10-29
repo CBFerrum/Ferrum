@@ -43,10 +43,11 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   (`FERRUM_USER_REQUESTS_PER_MINUTE`) is counted per replica, not across the cluster.
 - **GST e-invoices and e-way bills** (`india`): Sales Invoices to registered businesses, SEZs and
   buyers abroad, and their credit notes; debit notes, deemed exports, reverse charge and
-  e-commerce operators' details are not built. GSP connectors are plugins Ferrum does not ship;
-  without one, the JSON goes through the portals' bulk upload and their answers are pasted back.
-  E-way bills are made from Sales Invoices (outward supplies), not from delivery notes or stock
-  transfers. Tax rows are told apart by "CGST", "SGST"/"UTGST", "IGST" and "Cess" in their
+  e-commerce operators' details are not built. The direct connection speaks the IRP's own API
+  (NIC's, or a GSP's that passes it through unchanged); GSPs with APIs of their own need a plugin
+  on the documented events. The IRP makes e-way bills only for e-invoices: others, and every
+  e-way bill cancellation, go through the e-way bill portal and are recorded here. E-way bills
+  are made from Sales Invoices (outward supplies), not from delivery notes or stock transfers. Tax rows are told apart by "CGST", "SGST"/"UTGST", "IGST" and "Cess" in their
   description or account name; other rows count as other charges.
 - **Live pushes** (in-app notifications, chat messages) are NOTIFYs sent at commit, and PostgreSQL
   serializes the commits of notifying transactions: at very high message rates they queue. Record
