@@ -60,6 +60,12 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 
 ## Apps
 
+- **POS register** (`/app/pos`): pricing needs the server, so a sale can be completed offline only
+  if its total was shown before the connection dropped (it then waits on the device and is sent
+  later); no customer display, cash drawer or card terminal integration; receipts print through
+  the browser. Closing a session uses the POS Closing Entry form.
+- **Team chat** (a Zoho Cliq counterpart) is not built; comments, @mentions, followers and in-app
+  notifications carry discussion on records.
 - **Bookings**: the write throttle is in memory per replica; one resource per booking; no recurring
   bookings, deposits or external calendar sync; notices can be up to a minute late. Without the Mail
   app, guest emails carry an add-to-calendar link instead of an invitation.
