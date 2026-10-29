@@ -73,8 +73,8 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   later); no customer display, cash drawer or card terminal integration; receipts print through
   the browser. Closing a session uses the POS Closing Entry form.
 - **Chat and calendar** (the Mail app): the chat screen (`/app/chat`) covers channels, direct
-  messages, threads, mentions, edits and search, but not file attachments in messages. The
-  calendar screen (`/app/calendar`) is a month grid and phone agenda with RSVPs; there is no week
+  messages, threads, mentions, edits, search and files (up to 20 and 25 MB per message; images
+  are previewed). The calendar screen (`/app/calendar`) is a month grid and phone agenda with RSVPs; there is no week
   view or drag-to-reschedule, and free/busy lookups are API-only.
 - **Bookings**: one resource per booking; no recurring
   bookings, deposits or external calendar sync; notices can be up to a minute late. Without the Mail
