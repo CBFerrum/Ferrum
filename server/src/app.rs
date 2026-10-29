@@ -114,7 +114,12 @@ impl Hooks for App {
             db,
             catalog,
             hooks,
-            KernelSettings { webhooks_allow_private: settings.webhooks_allow_private, secret_key: Some(secret_key), ..Default::default() },
+            KernelSettings {
+                webhooks_allow_private: settings.webhooks_allow_private,
+                secret_key: Some(secret_key),
+                pdf_url: Some(settings.pdf_url.trim().to_string()).filter(|u| !u.is_empty()),
+                ..Default::default()
+            },
             mailer,
         )
         .await

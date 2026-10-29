@@ -54,7 +54,7 @@ OpenAPI 3.1 document is at `GET /api/openapi.json` (it includes every customizat
 | `POST /api/v1/{E}/{id}/actions/{action}` | custom actions from metadata (e.g. `make_delivery_note`); body = params; returns action JSON (often `{entity, id}` of a created record). A `read_only` action runs without locking or auditing, in a read-only transaction |
 | `POST /api/v1/{E}/{id}/workflow/{action}` | workflow transition |
 | `POST /api/v1/{E}/_calc` | preview: runs defaults, fetches and calculation hooks on an unsaved body (include `id` to start from a saved record) → computed document, nothing written. Use for live totals |
-| `GET /api/v1/{E}/{id}/print` | HTML print format |
+| `GET /api/v1/{E}/{id}/print` | HTML print format; `?format=pdf` → the same as a PDF (`application/pdf`; `503` when the server has no PDF renderer, see `GET /api/version` → `pdf`) |
 | `GET /api/v1/{E}/{id}/audit` | `{events: [{at, actor, actor_name, action, version, diff}], chain_valid}` |
 | `GET /api/v1/{E}/_export` | CSV (export permission), or Excel with `format=xlsx` (field labels as headers, numbers as numbers); same filters as list, at most 100,000 rows |
 | `POST /api/v1/{E}/_import` | JSON array (≤5000) → `{created, ids, errors: [{row, error, fields?}]}` (`207` if some failed) |
@@ -101,6 +101,12 @@ limited per app (1 MB unless the app allows more, at most 32 MB).
 
 * `GET /api/reports` → `{reports: [{name, label, module, params: [{name, label, type: "link"|"date"|"select"|"check", to?, options?, required?, default?}]}]}`
 * `GET /api/reports/{name}?param=value...` → `{name, label, columns: [{name, label, type}], rows: [{..., _indent?, _bold?}], totals?: {...}, meta?: {...}}`
+* The platform's own reports sum up all records of their entity, so they need access to all of
+  them: someone limited to their own records, or by a scope other than companies (reports run per
+  company and check that scope), gets `403` and does not see them in the list. Package reports
+  (and Studio queries) apply the caller's row scope to their rows instead. A package report source
+  that only narrows to the caller's own records declares `"scoped": "owner"` in its catalog entry,
+  and one that sums up everything `"scoped": false`; those get the same check.
 
 ## Administration (administrators only, except notifications)
 

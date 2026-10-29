@@ -70,6 +70,9 @@ pub struct Settings {
     /// When set, `/metrics` requires `Authorization: Bearer <token>`.
     #[serde(default)]
     pub metrics_token: String,
+    /// Base URL of a Gotenberg-compatible service that lays print formats out as PDFs.
+    #[serde(default)]
+    pub pdf_url: String,
     #[serde(default)]
     pub apps: AppsSettings,
 }

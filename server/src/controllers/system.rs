@@ -34,8 +34,14 @@ async fn version(State(app): State<AppContext>) -> ApiResult<Response> {
         "direct": st.objects.direct_uploads(),
         "direct_max_bytes": st.objects.direct_uploads().then_some(st.settings.direct_upload_max_bytes),
     });
-    Ok(Json(json!({"version": env!("CARGO_PKG_VERSION"), "catalog": st.kernel.registry.catalog().fingerprint(), "packages": packages, "uploads": uploads}))
-        .into_response())
+    Ok(Json(json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "catalog": st.kernel.registry.catalog().fingerprint(),
+        "packages": packages,
+        "uploads": uploads,
+        "pdf": st.kernel.pdf_enabled(),
+    }))
+    .into_response())
 }
 
 /// Constant-time comparison for shared secrets.

@@ -175,8 +175,24 @@ async fn transition(
     Ok(doc_response(st.kernel.transition(&ctx, &entity, id, &action, if_match(&headers)?).await?, StatusCode::OK))
 }
 
-async fn print(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity, id)): Path<(String, Uuid)>) -> ApiResult<Response> {
+async fn print(
+    Auth(ctx): Auth,
+    State(app): State<AppContext>,
+    Path((entity, id)): Path<(String, Uuid)>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Response> {
     let st = app_state(&app)?;
+    if q.get("format").map(String::as_str) == Some("pdf") {
+        let pdf = st.kernel.print_pdf(&ctx, &entity, id).await?;
+        let mut resp = pdf.into_response();
+        let h = resp.headers_mut();
+        h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/pdf"));
+        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+        if let Ok(v) = HeaderValue::from_str(&format!("inline; filename=\"{}-{}.pdf\"", entity.replace(['"', '\\'], ""), id)) {
+            h.insert(header::CONTENT_DISPOSITION, v);
+        }
+        return Ok(resp);
+    }
     let html = st.kernel.render_print(&ctx, &entity, id).await?;
     let mut resp = Html(html).into_response();
     resp.headers_mut().insert(

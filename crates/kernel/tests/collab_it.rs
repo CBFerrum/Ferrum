@@ -19,7 +19,45 @@ async fn fresh_kernel() -> Arc<Kernel> {
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
-    Kernel::boot(db, catalog, HookRegistry::default(), KernelSettings::default(), Some(Arc::new(Captured))).await.expect("boot")
+    let settings = KernelSettings { pdf_url: Some(fake_pdf_renderer().await), ..Default::default() };
+    Kernel::boot(db, catalog, HookRegistry::default(), settings, Some(Arc::new(Captured))).await.expect("boot")
+}
+
+/// Request bodies the stand-in PDF renderer received.
+static RENDERED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// A stand-in for Gotenberg: records each form it is sent and answers with a tiny PDF.
+async fn fake_pdf_renderer() -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 8192];
+            let body = loop {
+                let n = sock.read(&mut chunk).await.unwrap_or(0);
+                if n == 0 {
+                    break None;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
+                let head = String::from_utf8_lossy(&buf[..end]).to_lowercase();
+                let len: usize = head.lines().find_map(|l| l.strip_prefix("content-length:")).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+                if buf.len() >= end + 4 + len {
+                    break Some(String::from_utf8_lossy(&buf[end + 4..end + 4 + len]).to_string());
+                }
+            };
+            if let Some(b) = body {
+                RENDERED.lock().unwrap().push(b);
+            }
+            let pdf = b"%PDF-1.7 stand-in";
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/pdf\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", pdf.len());
+            let _ = sock.write_all(head.as_bytes()).await;
+            let _ = sock.write_all(pdf).await;
+        }
+    });
+    format!("http://{addr}")
 }
 
 /// Mail the kernel sent, in order.
@@ -105,6 +143,13 @@ async fn scenario() {
 
     let c = k.insert(&admin, "Customer", obj(json!({"customer_name": "Globex"}))).await.unwrap();
     let cid: Uuid = c["id"].as_str().unwrap().parse().unwrap();
+
+    // ── PDFs: the print format, laid out by the renderer, for those who may read the record ──
+    let pdf = k.print_pdf(&admin, "Customer", cid).await.expect("pdf");
+    assert!(pdf.starts_with(b"%PDF"));
+    let sent = RENDERED.lock().unwrap().last().cloned().unwrap_or_default();
+    assert!(sent.contains("filename=\"index.html\"") && sent.contains("Globex") && sent.contains("name=\"preferCssPageSize\""), "{sent}");
+    assert!(k.print_pdf(&otto_ctx, "Customer", cid).await.is_err(), "no PDF of a record you cannot read");
 
     // ── comments: mentions reach only people who can read the record ──
     let first = k.add_comment(&admin, "Customer", cid, "  Please call **Globex** today  ", &[bea, otto]).await.unwrap();

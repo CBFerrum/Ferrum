@@ -76,7 +76,11 @@ fn param(name: &str) -> Value {
 impl ReportSource for ProcurementReports {
     fn catalog(&self) -> Vec<Value> {
         DEFS.iter()
-            .map(|d| json!({"name": d.name, "label": d.label, "module": "procurement", "entity": d.entity, "params": d.params.iter().map(|p| param(p)).collect::<Vec<_>>()}))
+            .map(|d| {
+                // Requests are narrowed to the caller's own when that is all they may read.
+                let scoped = if d.entity == "MaterialRequest" { json!("owner") } else { json!(false) };
+                json!({"name": d.name, "label": d.label, "module": "procurement", "entity": d.entity, "scoped": scoped, "params": d.params.iter().map(|p| param(p)).collect::<Vec<_>>()})
+            })
             .collect()
     }
 
