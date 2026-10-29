@@ -47,6 +47,9 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   E-way bills are made from Sales Invoices (outward supplies), not from delivery notes or stock
   transfers. Tax rows are told apart by "CGST", "SGST"/"UTGST", "IGST" and "Cess" in their
   description or account name; other rows count as other charges.
+- **Live pushes** (in-app notifications, chat messages) are NOTIFYs sent at commit, and PostgreSQL
+  serializes the commits of notifying transactions: at very high message rates they queue. Record
+  changes do not (they reach live screens through the outbox, within about 250 ms).
 - **Sign-in**: two-factor sign-in uses authenticator apps (TOTP); there are no text-message codes
   or security keys (WebAuthn). Single sign-on speaks OpenID Connect, not SAML; accounts come from
   the first sign-in or an administrator (no SCIM provisioning), and someone removed at the

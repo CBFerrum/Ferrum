@@ -1,6 +1,7 @@
 //! Transactional outbox: events are written in the same transaction as the change that caused
 //! them, then dispatched at-least-once by any replica (`FOR UPDATE SKIP LOCKED`). Consumers are
 //! idempotent (unique delivery/run keys), so a crash between "handled" and "marked" is harmless.
+//! Dispatchers poll (no NOTIFY from writers: it would serialize their commits).
 
 use crate::Kernel;
 use crate::db::Tx;
@@ -8,14 +9,14 @@ use crate::error::{Error, Result};
 use hmac::{Hmac, Mac};
 use serde_json::Value;
 use sha2::Sha256;
-use sqlx::postgres::PgListener;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
 use uuid::Uuid;
 
-pub const OUTBOX_CHANNEL: &str = "ferrum_outbox";
+/// How often an idle dispatcher looks for new events.
+const OUTBOX_POLL: Duration = Duration::from_millis(250);
 const MAX_ATTEMPTS: i32 = 15;
 const WEBHOOK_MAX_ATTEMPTS: i32 = 12;
 const MAX_WEBHOOK_BODY: usize = 256 * 1024;
@@ -255,16 +256,10 @@ impl Kernel {
         Ok(())
     }
 
-    /// Wakes on NOTIFY (or every 2s) and drains the outbox until shutdown.
+    /// Drains the outbox until shutdown, looking again every 250 ms when it is empty.
     pub fn spawn_outbox_dispatcher(self: &Arc<Self>, mut shutdown: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
         let k = self.clone();
         tokio::spawn(async move {
-            let mut listener = PgListener::connect_with(&k.db.pool).await.ok();
-            if let Some(l) = listener.as_mut()
-                && l.listen(OUTBOX_CHANNEL).await.is_err()
-            {
-                listener = None;
-            }
             loop {
                 if *shutdown.borrow() {
                     return;
@@ -279,17 +274,9 @@ impl Kernel {
                         }
                     }
                 }
-                let wait = tokio::time::sleep(Duration::from_secs(2));
-                match listener.as_mut() {
-                    Some(l) => tokio::select! {
-                        _ = shutdown.changed() => return,
-                        _ = wait => {}
-                        r = l.recv() => if r.is_err() { listener = None; }
-                    },
-                    None => tokio::select! {
-                        _ = shutdown.changed() => return,
-                        _ = wait => {}
-                    },
+                tokio::select! {
+                    _ = shutdown.changed() => return,
+                    _ = tokio::time::sleep(OUTBOX_POLL) => {}
                 }
             }
         })
