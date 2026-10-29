@@ -1,18 +1,23 @@
 //! Item variants: attributes (a list of values with abbreviations, or a numeric range with an
 //! increment), templates that vary by some of them, and `make_variants`, which creates the missing
 //! variant items (code and name from the template's plus the abbreviations, every other field
-//! copied from the template). Templates themselves are never transacted.
+//! copied from the template). A later change to the template reaches each variant that still has
+//! the template's previous value; a value set on the variant itself stays. Templates themselves
+//! are never transacted.
 
 use crate::common::{child_table, installed, validation};
 use async_trait::async_trait;
 use ferrum_domain::trade::create_for_user;
-use ferrum_domain::util::{b, get, id, rows, s, set};
+use ferrum_domain::util::{b, elevated, get, id, rows, s, set};
 use ferrum_kernel::ddl::q;
 use ferrum_kernel::{Doc, DocHook, Error, FieldError, HookCtx, Result};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use uuid::Uuid;
+
+/// A variant's own fields, never taken from the template after it was made.
+const VARIANT_OWN: &[&str] = &["item_code", "item_name", "barcode", "last_purchase_rate", "disabled", "stk_has_variants", "stk_variant_of", "stk_attributes"];
 
 /// Most values a numeric attribute may produce, and most variants one call may create.
 const MAX_VALUES: usize = 1000;
@@ -281,6 +286,29 @@ impl DocHook for ItemHook {
 
     /// Creates the variants that do not exist yet: every combination, or the values chosen in
     /// `{"attributes": {"<attribute name>": ["value", ...]}}`. Calling it again creates nothing new.
+    /// Changes to a template reach its variants where they still had the template's old value.
+    async fn after_save(&self, hc: &mut HookCtx<'_>, doc: &Doc, old: Option<&Doc>) -> Result<()> {
+        let (Some(old), Some(tid)) = (old, id(doc, "id")) else { return Ok(()) };
+        if !installed(hc.ctx) || !b(doc, "stk_has_variants") {
+            return Ok(());
+        }
+        let copy = |d: &Doc| ferrum_kernel::doc::copy_for_new(hc.entity, &hc.ctx.schema, d);
+        let (now, before) = (copy(doc), copy(old));
+        let changed: Vec<&String> = now.keys().filter(|k| !VARIANT_OWN.contains(&k.as_str()) && now.get(*k) != before.get(*k)).collect();
+        if changed.is_empty() {
+            return Ok(());
+        }
+        let engine = elevated(hc.ctx);
+        for vid in variants_of(hc, tid).await?.into_keys() {
+            let variant = copy(&get(hc.kernel, hc.ctx, hc.tx, "Item", vid).await?);
+            let patch: Doc = changed.iter().filter(|k| variant.get(**k) == before.get(**k)).map(|k| ((*k).clone(), now[*k].clone())).collect();
+            if !patch.is_empty() {
+                hc.kernel.update_tx(&engine, hc.tx, "Item", vid, patch, None).await?;
+            }
+        }
+        Ok(())
+    }
+
     async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
         if name != "make_variants" || !installed(hc.ctx) {
             return Ok(None);

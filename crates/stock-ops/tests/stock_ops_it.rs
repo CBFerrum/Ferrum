@@ -828,6 +828,13 @@ async fn scenario() {
     assert_eq!((chosen["created"].as_array().unwrap().len(), chosen["existing"][0]["item_code"].clone()), (0, json!("TSHIRT-R-2")));
     let off_grid = t.k.run_action(&stock_manager, "Item", shirt, "make_variants", json!({"attributes": {"Size": ["2.5"]}})).await;
     assert!(off_grid.is_err(), "2.5 is not a size");
+    // The template's changes reach the variants that still follow it; a variant's own price stays.
+    let blue1 = uid(&t.find_one("Item", json!({"item_code": "TSHIRT-B-1"})).await);
+    t.k.update(&stock_manager, "Item", blue1, obj(json!({"standard_rate": "25"})), None).await.expect("a variant's own price");
+    t.k.update(&stock_manager, "Item", shirt, obj(json!({"standard_rate": "22", "description": "Cotton tee"})), None).await.expect("template change");
+    let (red2, blue1) = (t.get("Item", uid(&red2)).await, t.get("Item", blue1).await);
+    assert_eq!((dec(&red2["standard_rate"]), red2["description"].clone()), (n("22"), json!("Cotton tee")));
+    assert_eq!((dec(&blue1["standard_rate"]), blue1["description"].clone(), blue1["item_code"].clone()), (n("25"), json!("Cotton tee"), json!("TSHIRT-B-1")));
     for (entity, input) in [
         ("SalesOrder", json!({"company": co, "customer": customer.to_string(), "items": [line(shirt, "1", stores)]})),
         (
