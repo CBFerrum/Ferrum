@@ -236,6 +236,10 @@ impl Hooks for App {
         }
     }
 
+    async fn after_routes(router: axum::Router, _ctx: &AppContext) -> Result<axum::Router> {
+        Ok(router.layer(axum::middleware::from_fn(api_no_store)))
+    }
+
     fn routes(_ctx: &AppContext) -> AppRoutes {
         AppRoutes::with_default_routes()
             .add_route(controllers::system::routes())
@@ -277,6 +281,18 @@ impl Hooks for App {
     async fn seed(_ctx: &AppContext, _base: &Path) -> Result<()> {
         Ok(())
     }
+}
+
+/// API answers belong to one user and can change without a new version (an engine-set status, a
+/// recorded IRN): browsers must not reuse them. Handlers that do want caching set their own
+/// `Cache-Control`.
+async fn api_no_store(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    let api = req.uri().path().starts_with("/api/");
+    let mut res = next.run(req).await;
+    if api && !res.headers().contains_key(axum::http::header::CACHE_CONTROL) {
+        res.headers_mut().insert(axum::http::header::CACHE_CONTROL, axum::http::HeaderValue::from_static("no-store"));
+    }
+    res
 }
 
 /// The key sealing secret fields: configured (`FERRUM_SECRET_KEY`), required in production; in

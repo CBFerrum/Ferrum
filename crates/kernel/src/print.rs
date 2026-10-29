@@ -96,6 +96,16 @@ impl Kernel {
         let ent = self.entity(ctx, entity)?;
         let doc = self.get(ctx, entity, id, true).await?;
         let template = ent.print_template.clone().unwrap_or_else(|| DEFAULT_TEMPLATE.to_string());
+        // Linked records the template reads (`links.company.in_gstin`), as the caller may see them.
+        let mut links = serde_json::Map::new();
+        for f in ent.def.fields.iter().filter(|f| f.ftype == FieldType::Link && template.contains(&format!("links.{}", f.name))) {
+            let (Some(target), Some(linked)) = (f.to.as_deref(), doc.get(&f.name).and_then(Value::as_str).and_then(|v| v.parse::<Uuid>().ok())) else {
+                continue;
+            };
+            if let Ok(record) = self.get(ctx, target, linked, true).await {
+                links.insert(f.name.clone(), Value::Object(record));
+            }
+        }
         let mut env = Environment::new();
         env.set_auto_escape_callback(|_| AutoEscape::Html);
         env.set_fuel(Some(2_000_000));
@@ -127,11 +137,19 @@ impl Kernel {
                 (_, other) => other.to_string(),
             }
         });
+        env.add_function("qr", |text: String| -> JValue {
+            // A QR code as inline SVG (the signed QR code of an e-invoice, a payment link…).
+            match qrcode::QrCode::new(text.as_bytes()) {
+                Ok(code) => JValue::from_safe_string(code.render::<qrcode::render::svg::Color>().min_dimensions(150, 150).quiet_zone(true).build()),
+                Err(_) => JValue::from(""),
+            }
+        });
         env.add_template_owned("print".to_string(), template).map_err(|e| Error::invalid(format!("print template: {e}")))?;
         let tmpl = env.get_template("print").map_err(Error::internal)?;
         tmpl.render(minijinja::context! {
             doc => JValue::from_serialize(&doc),
             entity => JValue::from_serialize(field_meta(&ent, &ctx.schema)),
+            links => JValue::from_serialize(&links),
             now => chrono::Utc::now().format("%Y-%m-%d %H:%M UTC").to_string(),
         })
         .map_err(|e| Error::invalid(format!("print template failed: {e}")))

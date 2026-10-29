@@ -1,7 +1,7 @@
 package: india
 version: 0.1.0
 label: India Compliance
-description: GSTIN validation (checksum), place of supply, automatic CGST+SGST vs IGST selection, HSN on lines, e-invoice/e-way bill fields.
+description: GSTIN validation (checksum), place of supply, automatic CGST+SGST vs IGST selection, HSN on lines, GST e-invoices (IRN, signed QR) and e-way bills.
 depends: [selling, buying]
 field_prefix: in_
 
@@ -10,11 +10,18 @@ overlays:
     ops:
       - {op: add_field, after: tax_id, field: {name: in_gstin, type: data, label: GSTIN, max_length: 15}}
       - {op: add_field, after: in_gstin, field: {name: in_state_code, type: data, label: GST State Code, max_length: 2}}
+      - {op: add_field, after: in_state_code, field: {name: in_address, type: text, label: Address, description: "Registered address, as e-invoices and e-way bills print it (lines: street, area)"}}
+      - {op: add_field, after: in_address, field: {name: in_city, type: data, label: City, max_length: 50}}
+      - {op: add_field, after: in_city, field: {name: in_pincode, type: data, label: PIN Code, max_length: 6}}
+      - {op: add_section, after: tax_id, section: {label: GST Registration, fields: [in_gstin, in_state_code, in_address, in_city, in_pincode], collapsible: true}}
   - entity: Customer
     ops:
       - {op: add_field, after: tax_id, field: {name: in_gstin, type: data, label: GSTIN, max_length: 15}}
       - {op: add_field, after: in_gstin, field: {name: in_gst_category, type: select, label: GST Category, options: [Registered, Unregistered, Consumer, Overseas, SEZ], default: Unregistered}}
       - {op: add_field, after: in_gst_category, field: {name: in_state_code, type: data, label: GST State Code, max_length: 2}}
+      - {op: add_field, after: in_state_code, field: {name: in_city, type: data, label: City, max_length: 50, description: Of the billing address}}
+      - {op: add_field, after: in_city, field: {name: in_pincode, type: data, label: PIN Code, max_length: 6, description: Of the billing address}}
+      - {op: add_section, after: tax_id, section: {label: GST, fields: [in_gstin, in_gst_category, in_state_code, in_city, in_pincode], collapsible: true}}
   - entity: Supplier
     ops:
       - {op: add_field, after: tax_id, field: {name: in_gstin, type: data, label: GSTIN, max_length: 15}}
@@ -23,11 +30,71 @@ overlays:
   - entity: TaxTemplate
     ops:
       - {op: add_field, after: kind, field: {name: in_supply_type, type: select, label: GST Supply Type, options: [Intra-State, Inter-State, Export, Exempt]}}
+  - entity: Uom
+    ops:
+      - {op: add_field, after: uom_name, field: {name: in_uqc, type: select, label: GST Unit Code (UQC), description: "The unit e-invoices and e-way bills use; guessed from the name when empty (Nos, Kg, Box…), otherwise OTH", options: [BAG, BAL, BDL, BKL, BOU, BOX, BTL, BUN, CAN, CBM, CCM, CMS, CTN, DOZ, DRM, GGK, GMS, GRS, GYD, KGS, KLR, KME, LTR, MLT, MTR, MTS, NOS, OTH, PAC, PCS, PRS, QTL, ROL, SET, SQF, SQM, SQY, TBS, TGM, THD, TON, TUB, UGS, UNT, YDS]}}
+  - entity: SalesInvoiceItem
+    ops:
+      - {op: add_field, after: item_name, field: {name: in_hsn_code, type: data, label: HSN/SAC, fetch_from: item.hsn_code, read_only: true}}
   - entity: SalesInvoice
     ops:
+      # GST invoice numbers have at most 16 characters (rule 46): SI/2026-27/00001.
+      - {op: set_entity_property, property: numbering, value: {template: "SI/{FY}/{seq:5}", gapless: true, on: submit, date_field: posting_date}}
       - {op: add_field, after: customer_name, field: {name: in_place_of_supply, type: data, label: Place of Supply (State Code), max_length: 2}}
-      - {op: add_field, after: in_place_of_supply, field: {name: in_irn, type: data, label: e-Invoice IRN, read_only: true}}
-      - {op: add_field, after: in_irn, field: {name: in_ewaybill_no, type: data, label: e-Way Bill No}}
+      - {op: add_field, after: in_place_of_supply, field: {name: in_irn, type: data, label: e-Invoice IRN, read_only: true, no_copy: true}}
+      - {op: add_field, after: in_irn, field: {name: in_ewaybill_no, type: data, label: e-Way Bill No, read_only: true, no_copy: true}}
+      - {op: add_field, after: in_ewaybill_no, field: {name: in_e_invoice_status, type: select, label: e-Invoice Status, options: [Pending, Generated, Failed, Cancelling, Cancelled], read_only: true, no_copy: true, in_filter: true}}
+      - {op: add_field, after: in_e_invoice_status, field: {name: in_ack_no, type: data, label: Acknowledgement No, read_only: true, no_copy: true}}
+      - {op: add_field, after: in_ack_no, field: {name: in_ack_date, type: data, label: Acknowledged At (IST), read_only: true, no_copy: true}}
+      - {op: add_field, after: in_ack_date, field: {name: in_signed_qr_code, type: text, label: Signed QR Code, read_only: true, hidden: true, no_copy: true}}
+      - {op: add_field, after: in_signed_qr_code, field: {name: in_e_invoice_error, type: text, label: e-Invoice Error, read_only: true, no_copy: true}}
+      - {op: add_field, after: in_e_invoice_error, field: {name: in_e_invoice_cancelled_at, type: data, label: e-Invoice Cancelled At, read_only: true, no_copy: true}}
+      - {op: add_field, after: in_e_invoice_cancelled_at, field: {name: in_transport_mode, type: select, label: Transport Mode, options: [Road, Rail, Air, Ship], default: Road}}
+      - {op: add_field, after: in_transport_mode, field: {name: in_distance_km, type: int, label: Distance (km), min: 0, max: 4000, description: "0: the portal works it out from the PIN codes"}}
+      - {op: add_field, after: in_distance_km, field: {name: in_vehicle_no, type: data, label: Vehicle No, max_length: 20}}
+      - {op: add_field, after: in_vehicle_no, field: {name: in_vehicle_type, type: select, label: Vehicle Type, options: [Regular, Over Dimensional Cargo], default: Regular}}
+      - {op: add_field, after: in_vehicle_type, field: {name: in_transporter_gstin, type: data, label: Transporter ID (GSTIN/TRANSIN), max_length: 15}}
+      - {op: add_field, after: in_transporter_gstin, field: {name: in_transporter_name, type: data, label: Transporter Name}}
+      - {op: add_field, after: in_transporter_name, field: {name: in_transport_doc_no, type: data, label: Transport Document No, max_length: 15}}
+      - {op: add_field, after: in_transport_doc_no, field: {name: in_transport_doc_date, type: date, label: Transport Document Date}}
+      - {op: add_field, after: in_transport_doc_date, field: {name: in_e_way_bill_status, type: select, label: e-Way Bill Status, options: [Pending, Generated, Failed, Cancelling, Cancelled], read_only: true, no_copy: true, in_filter: true}}
+      - {op: add_field, after: in_e_way_bill_status, field: {name: in_e_way_bill_date, type: data, label: e-Way Bill Made At (IST), read_only: true, no_copy: true}}
+      - {op: add_field, after: in_e_way_bill_date, field: {name: in_e_way_bill_valid_till, type: data, label: e-Way Bill Valid Till, read_only: true, no_copy: true}}
+      - {op: add_field, after: in_e_way_bill_valid_till, field: {name: in_e_way_bill_error, type: text, label: e-Way Bill Error, read_only: true, no_copy: true}}
+      - {op: add_section, after: return_against, section: {label: GST e-Invoice, collapsible: true, fields: [in_place_of_supply, in_e_invoice_status, in_irn, in_ack_no, in_ack_date, in_e_invoice_error, in_e_invoice_cancelled_at]}}
+      - {op: add_section, after: in_e_invoice_cancelled_at, section: {label: Transport & e-Way Bill, collapsible: true, fields: [in_transport_mode, in_distance_km, in_vehicle_no, in_vehicle_type, in_transporter_gstin, in_transporter_name, in_transport_doc_no, in_transport_doc_date, in_e_way_bill_status, in_ewaybill_no, in_e_way_bill_date, in_e_way_bill_valid_till, in_e_way_bill_error]}}
+      - {op: add_action, action: {name: e_invoice_json, group: e-Invoice, label: Download e-Invoice JSON, docstatus: [1], permission: read, read_only: true, condition: "doc.in_e_invoice_status != 'Generated'"}}
+      - {op: add_action, action: {name: request_e_invoice, group: e-Invoice, label: Generate e-Invoice, docstatus: [1], permission: submit, condition: "doc.in_irn == null || doc.in_e_invoice_status == 'Cancelled'", confirm: "Send this invoice to the IRP through the GSP connector?"}}
+      - {op: add_action, action: {name: record_e_invoice, group: e-Invoice, label: Record e-Invoice from IRP, docstatus: [1], permission: submit, condition: "doc.in_e_invoice_status != 'Cancelled'",
+          params: [{name: response, label: "The IRP's answer (JSON)", type: text, required: true, description: "Paste the signed invoice JSON the portal returned: Irn, AckNo, AckDt and SignedQRCode"}]}}
+      - {op: add_action, action: {name: record_e_invoice_failure, group: e-Invoice, label: Record e-Invoice Failure, docstatus: [1], permission: submit, condition: "doc.in_e_invoice_status == 'Pending' || doc.in_e_invoice_status == 'Failed'",
+          params: [{name: message, label: What went wrong, type: text}]}}
+      - {op: add_action, action: {name: cancel_e_invoice, group: e-Invoice, label: Cancel e-Invoice, docstatus: [1], permission: cancel, condition: "doc.in_e_invoice_status == 'Generated'", confirm: "Cancel this e-invoice at the IRP? It can only be done within 24 hours of its acknowledgement.",
+          params: [{name: reason, label: Reason, type: select, options: [Duplicate, Data entry mistake, Order cancelled, Other], required: true}, {name: remark, label: Remark, type: data, required: true}]}}
+      - {op: add_action, action: {name: record_e_invoice_cancellation, group: e-Invoice, label: Record e-Invoice Cancellation, docstatus: [1], permission: cancel, condition: "doc.in_e_invoice_status == 'Generated' || doc.in_e_invoice_status == 'Cancelling' || doc.in_e_invoice_status == 'Cancelled'",
+          confirm: "Record that this e-invoice was cancelled at the IRP?"}}
+      - {op: add_action, action: {name: record_e_invoice_cancellation_failure, group: e-Invoice, label: Record e-Invoice Cancellation Failure, docstatus: [1], permission: cancel, condition: "doc.in_e_invoice_status == 'Cancelling' || doc.in_e_invoice_status == 'Generated'",
+          params: [{name: message, label: What went wrong, type: text}]}}
+      - {op: add_action, action: {name: set_transport, group: e-Way Bill, label: Set Transport Details, docstatus: [1], permission: submit, condition: "doc.in_e_way_bill_status != 'Generated' && doc.in_e_way_bill_status != 'Pending'",
+          params: [{name: in_transport_mode, label: Transport Mode, type: select, options: [Road, Rail, Air, Ship], required: true},
+                   {name: in_distance_km, label: Distance (km), type: int, description: "0: the portal works it out from the PIN codes"},
+                   {name: in_vehicle_no, label: Vehicle No, type: data},
+                   {name: in_vehicle_type, label: Vehicle Type, type: select, options: [Regular, Over Dimensional Cargo]},
+                   {name: in_transporter_gstin, label: Transporter ID (GSTIN/TRANSIN), type: data},
+                   {name: in_transporter_name, label: Transporter Name, type: data},
+                   {name: in_transport_doc_no, label: Transport Document No, type: data, description: "For rail, air and ship"},
+                   {name: in_transport_doc_date, label: Transport Document Date, type: date}]}}
+      - {op: add_action, action: {name: e_way_bill_json, group: e-Way Bill, label: Download e-Way Bill JSON, docstatus: [1], permission: read, read_only: true, condition: "doc.in_e_way_bill_status != 'Generated'"}}
+      - {op: add_action, action: {name: request_e_way_bill, group: e-Way Bill, label: Generate e-Way Bill, docstatus: [1], permission: submit, condition: "doc.in_e_way_bill_status != 'Generated' && doc.in_e_way_bill_status != 'Pending'",
+          confirm: "Send this invoice's e-way bill through the GSP connector?"}}
+      - {op: add_action, action: {name: record_e_way_bill, group: e-Way Bill, label: Record e-Way Bill, docstatus: [1], permission: submit, condition: "doc.in_e_way_bill_status != 'Cancelled'",
+          params: [{name: EwbNo, label: e-Way Bill No, type: data, required: true}, {name: EwbDt, label: "Made At (yyyy-MM-dd HH:mm:ss)", type: data}, {name: EwbValidTill, label: Valid Till, type: data}]}}
+      - {op: add_action, action: {name: record_e_way_bill_failure, group: e-Way Bill, label: Record e-Way Bill Failure, docstatus: [1], permission: submit, condition: "doc.in_e_way_bill_status == 'Pending' || doc.in_e_way_bill_status == 'Failed'",
+          params: [{name: message, label: What went wrong, type: text}]}}
+      - {op: add_action, action: {name: cancel_e_way_bill, group: e-Way Bill, label: Cancel e-Way Bill, docstatus: [1], permission: cancel, condition: "doc.in_e_way_bill_status == 'Generated'", confirm: "Cancel this e-way bill? It can only be done within 24 hours of making it.",
+          params: [{name: reason, label: Reason, type: select, options: [Duplicate, Order cancelled, Data entry mistake, Other], required: true}, {name: remark, label: Remark, type: data, required: true}]}}
+      - {op: add_action, action: {name: record_e_way_bill_cancellation, group: e-Way Bill, label: Record e-Way Bill Cancellation, docstatus: [1], permission: cancel, condition: "doc.in_e_way_bill_status == 'Generated' || doc.in_e_way_bill_status == 'Cancelling' || doc.in_e_way_bill_status == 'Cancelled'",
+          confirm: "Record that this e-way bill was cancelled on the portal?"}}
   - entity: PurchaseInvoice
     ops:
       - {op: add_field, after: supplier_name, field: {name: in_place_of_supply, type: data, label: Place of Supply (State Code), max_length: 2}}

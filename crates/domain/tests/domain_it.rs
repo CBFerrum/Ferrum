@@ -345,6 +345,100 @@ async fn scenario() {
     assert_eq!(dec(&t.get("SalesInvoice", vid(&cn)).await["outstanding_amount"]), n("-770"));
     assert_eq!(t.gl("Debtors").await, n("-770"));
 
+    // ───────────── GST e-invoice and e-way bill ─────────────
+    let ein_doc = t
+        .insert("SalesInvoice", json!({"company": cid.to_string(), "customer": globex.to_string(), "items": [{"item": widget.to_string(), "qty": "2"}]}))
+        .await;
+    let ein = uid(&ein_doc);
+    t.submit("SalesInvoice", ein).await;
+    let refused = t.k.run_action(&t.ctx, "SalesInvoice", ein, "e_invoice_json", json!({})).await;
+    let Err(Error::Invalid(m)) = refused else { panic!("{refused:?}") };
+    for part in ["PIN code", "needs an address", "city"] {
+        assert!(m.contains(part), "{part}: {m}");
+    }
+    t.k.update(&t.ctx, "Company", cid, obj(json!({"in_address": "Plot 7, MIDC\nAndheri East", "in_city": "Mumbai", "in_pincode": "400093"})), None)
+        .await
+        .expect("company address");
+    t.k.update(&t.ctx, "Customer", globex, obj(json!({"billing_address": "88 Residency Road", "in_city": "Bengaluru", "in_pincode": "560025"})), None)
+        .await
+        .expect("customer address");
+    // India numbers Sales Invoices the way GST wants them: at most 16 characters.
+    let number = t.get("SalesInvoice", ein).await["number"].as_str().unwrap().to_string();
+    assert!(number.starts_with("SI/") && ferrum_domain::einvoice::valid_doc_no(&number), "{number}");
+    let json_out = t.action("SalesInvoice", ein, "e_invoice_json", json!({})).await;
+    let p = &json_out["payload"];
+    assert_eq!((&p["TranDtls"]["SupTyp"], &p["DocDtls"]["No"], &p["BuyerDtls"]["Gstin"]), (&json!("B2B"), &json!(number), &json!(globex_gstin)));
+    assert_eq!((&p["BuyerDtls"]["Pos"], &p["BuyerDtls"]["Pin"], &p["SellerDtls"]["Loc"]), (&json!("29"), &json!(560_025), &json!("Mumbai")));
+    assert_eq!((&p["ItemList"][0]["HsnCd"], &p["ItemList"][0]["Unit"], &p["ItemList"][0]["GstRt"]), (&json!("8479"), &json!("NOS"), &json!(18.0)));
+    assert_eq!((&p["ValDtls"]["AssVal"], &p["ValDtls"]["IgstVal"], &p["ValDtls"]["TotInvVal"]), (&json!(300.0), &json!(54.0), &json!(354.0)));
+    assert!(json_out["file"]["content"].as_str().unwrap().trim_start().starts_with('['), "a list, as the portal's bulk upload takes");
+
+    assert_eq!(t.action("SalesInvoice", ein, "request_e_invoice", json!({})).await["status"], json!("Pending"));
+    let mut tx = t.k.db.tenant_tx(t.ctx.tenant).await.unwrap();
+    let queued: i64 = sqlx::query_scalar("select count(*) from outbox where tenant_id = $1 and topic = 'india.e_invoice.requested' and record_id = $2")
+        .bind(t.ctx.tenant)
+        .bind(ein)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(queued, 1, "for the GSP connector");
+    let held = t.k.cancel(&t.ctx, "SalesInvoice", ein, None).await;
+    assert!(matches!(held, Err(Error::Invalid(ref m)) if m.contains("e-invoice")), "{held:?}");
+
+    // The IRP's answer, as a connector (or someone pasting the portal's JSON) records it.
+    let irn = "a1".repeat(32);
+    let ist = chrono::Utc::now() + chrono::Duration::minutes(330);
+    let ack_at = ist.format("%Y-%m-%d %H:%M:%S").to_string();
+    let qr_for = |irn: &str, doc_no: &str| {
+        use base64::Engine as _;
+        let data =
+            json!({"data": json!({"Irn": irn, "DocNo": doc_no, "SellerGstin": "27AAPFU0939F1ZV", "BuyerGstin": globex_gstin}).to_string(), "iss": "NIC"});
+        format!("eyJhbGciOiJSUzI1NiJ9.{}.c2lnbmF0dXJl", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data.to_string()))
+    };
+    let answer = |irn: &str, doc_no: &str| json!({"response": json!({"data": {"Irn": irn, "AckNo": 112_010_036_563_310_u64, "AckDt": ack_at, "SignedQRCode": qr_for(irn, doc_no)}}).to_string()});
+    let wrong_doc = t.k.run_action(&t.ctx, "SalesInvoice", ein, "record_e_invoice", answer(&irn, "SI/1999-00/00099")).await;
+    assert!(matches!(wrong_doc, Err(Error::Validation(ref f)) if f[0].message.contains("another invoice number")), "{wrong_doc:?}");
+    assert_eq!(t.action("SalesInvoice", ein, "record_e_invoice", answer(&irn, &number)).await["status"], json!("Generated"));
+    assert_eq!(t.action("SalesInvoice", ein, "record_e_invoice", answer(&irn, &number)).await["replayed"], json!(true));
+    let other = t.k.run_action(&t.ctx, "SalesInvoice", ein, "record_e_invoice", answer(&"b2".repeat(32), &number)).await;
+    assert!(matches!(other, Err(Error::Conflict(_))), "{other:?}");
+    let doc = t.get("SalesInvoice", ein).await;
+    assert_eq!((&doc["in_irn"], &doc["in_ack_no"], &doc["in_e_invoice_status"]), (&json!(irn), &json!("112010036563310"), &json!("Generated")));
+    assert!(matches!(t.k.cancel(&t.ctx, "SalesInvoice", ein, None).await, Err(Error::Invalid(_))), "a live e-invoice holds the invoice");
+    let printed = t.k.render_print(&t.ctx, "SalesInvoice", ein).await.expect("print");
+    for part in ["Tax Invoice", number.rsplit('/').next().unwrap(), irn.as_str(), "<svg", "27AAPFU0939F1ZV", "Andheri East", "8479", "Bengaluru", "354.00"] {
+        assert!(printed.contains(part), "{part} on the tax invoice");
+    }
+
+    // Transport details after invoicing, then the e-way bill by IRN.
+    let no_vehicle = t.k.run_action(&t.ctx, "SalesInvoice", ein, "e_way_bill_json", json!({})).await;
+    assert!(matches!(no_vehicle, Err(Error::Invalid(ref m)) if m.contains("vehicle")), "{no_vehicle:?}");
+    let bad_mode = t.k.run_action(&t.ctx, "SalesInvoice", ein, "set_transport", json!({"in_transport_mode": "Teleport"})).await;
+    assert!(matches!(bad_mode, Err(Error::Validation(_))), "{bad_mode:?}");
+    t.action("SalesInvoice", ein, "set_transport", json!({"in_transport_mode": "Road", "in_distance_km": "320", "in_vehicle_no": "ka01ab1234"})).await;
+    let ewb = t.action("SalesInvoice", ein, "e_way_bill_json", json!({})).await;
+    assert_eq!(
+        (&ewb["by_irn"], &ewb["payload"]["Irn"], &ewb["payload"]["Distance"], &ewb["payload"]["VehNo"]),
+        (&json!(true), &json!(irn), &json!(320), &json!("KA01AB1234"))
+    );
+    let made =
+        t.action("SalesInvoice", ein, "record_e_way_bill", json!({"EwbNo": "331001234567", "EwbDt": ack_at, "EwbValidTill": "2026-12-31 23:59:00"})).await;
+    assert_eq!(made["status"], json!("Generated"));
+    let first_ewb = t.k.run_action(&t.ctx, "SalesInvoice", ein, "cancel_e_invoice", json!({"reason": "Order cancelled", "remark": "Customer withdrew"})).await;
+    assert!(matches!(first_ewb, Err(Error::Invalid(ref m)) if m.contains("e-way bill")), "{first_ewb:?}");
+
+    // Cancelling: the e-way bill, the e-invoice, then the invoice itself.
+    assert_eq!(
+        t.action("SalesInvoice", ein, "cancel_e_way_bill", json!({"reason": "Order cancelled", "remark": "Customer withdrew"})).await["status"],
+        json!("Cancelling")
+    );
+    assert_eq!(t.action("SalesInvoice", ein, "record_e_way_bill_cancellation", json!({})).await["status"], json!("Cancelled"));
+    let cancel = t.action("SalesInvoice", ein, "cancel_e_invoice", json!({"reason": "Order cancelled", "remark": "Customer withdrew"})).await;
+    assert_eq!((&cancel["status"], &cancel["payload"]["CnlRsn"], &cancel["payload"]["Irn"]), (&json!("Cancelling"), &json!("3"), &json!(irn)));
+    assert_eq!(t.action("SalesInvoice", ein, "record_e_invoice_cancellation", json!({})).await["status"], json!("Cancelled"));
+    t.k.cancel(&t.ctx, "SalesInvoice", ein, None).await.expect("cancelled once its e-invoice is");
+
     // Credit limit.
     t.k.update(&t.ctx, "Customer", local, obj(json!({"credit_limit": "1000"})), None).await.expect("limit");
     let big = t.insert("SalesInvoice", json!({"company": cid.to_string(), "customer": local.to_string(), "items": [{"item": widget.to_string(), "qty": "10", "warehouse": stores.to_string()}]})).await;

@@ -40,6 +40,13 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   endpoints) are counted in the database, so they hold across replicas; apps use the same
   (`Kernel::rate_limit`). They are per address: Campaigns' tracking pixels and links opened
   through a mail provider's image proxy share that proxy's budget.
+- **GST e-invoices and e-way bills** (`india`): Sales Invoices to registered businesses, SEZs and
+  buyers abroad, and their credit notes; debit notes, deemed exports, reverse charge and
+  e-commerce operators' details are not built. GSP connectors are plugins Ferrum does not ship;
+  without one, the JSON goes through the portals' bulk upload and their answers are pasted back.
+  E-way bills are made from Sales Invoices (outward supplies), not from delivery notes or stock
+  transfers. Tax rows are told apart by "CGST", "SGST"/"UTGST", "IGST" and "Cess" in their
+  description or account name; other rows count as other charges.
 - **Sign-in**: two-factor sign-in uses authenticator apps (TOTP); there are no text-message codes
   or security keys (WebAuthn). Single sign-on speaks OpenID Connect, not SAML; accounts come from
   the first sign-in or an administrator (no SCIM provisioning), and someone removed at the
