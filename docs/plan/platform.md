@@ -300,6 +300,13 @@ Comms (today: mail through any provider's SMTP/IMAP on records, templates, newsl
 Tenants on Google Workspace or Microsoft 365 keep using Comms as today; tenants who want Ferrum to host
 their mail install the sub-plugin.
 
+Spike S2 ([spike-s2-stalwart.md](spike-s2-stalwart.md)) checked Stalwart 1.0.1 and found go,
+with three corrections to this section:
+* administration is JMAP, not a REST API;
+* multi-tenancy and SCIM need the Enterprise edition, so the open-source setup is one instance per
+  workspace that hosts mail;
+* group accounts are the shared mailboxes.
+
 ### 5.2 What Stalwart does and what Ferrum adds
 
 Stalwart (Rust; AGPL-3.0, with a paid Enterprise edition) is a complete mail server: SMTP, IMAP, JMAP,
@@ -366,7 +373,7 @@ before Mail because it is smaller and proves the sub-plugin and separate-service
 
 | Risk | Answer |
 |---|---|
-| Hosting many tenants on one Stalwart, with quotas, may need its Enterprise edition | S2 settles it: an Enterprise licence, one instance per large tenant, or separation by domain enforced by Ferrum |
+| Hosting many tenants on one Stalwart needs its Enterprise edition (S2 confirmed: `x:Tenant` and SCIM are Enterprise) | one instance per workspace that hosts mail in the open-source edition; an Enterprise licence for shared hosting |
 | The free builds of Collabora and ONLYOFFICE limit or discourage production use | S1 checks current terms; budget a subscription or build from source; both sit behind the same WOPI host, so switching is a setting |
 | ONLYOFFICE's governance dispute | Collabora is the default |
 | ArtCraft: alpha, no embedding API, one vendor, trademarks | optional only; a pinned fork; the bridge offered upstream |
