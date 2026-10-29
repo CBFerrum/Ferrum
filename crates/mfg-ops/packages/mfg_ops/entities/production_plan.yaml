@@ -52,7 +52,7 @@
   fields:
     - {name: item, type: link, to: Item, required: true, in_list: true}
     - {name: item_name, type: data, read_only: true, fetch_from: item.item_name}
-    - {name: uom, type: link, to: Uom, read_only: true, fetch_from: item.stock_uom}
+    - {name: uom, type: link, to: Uom, read_only: true, fetch_from: item.stock_uom, label: Unit}
     - {name: required_qty, type: decimal, read_only: true, in_list: true}
     - {name: actual_qty, type: decimal, read_only: true, label: In Stock}
     - {name: projected_qty, type: decimal, read_only: true, in_list: true}

@@ -140,7 +140,7 @@
     - {name: item_code, type: data, required: true, unique: true, in_list: true, max_length: 140}
     - {name: item_name, type: data, required: true, in_list: true}
     - {name: item_group, type: link, to: ItemGroup, required: true, in_list: true, in_filter: true, link_filters: {is_group: false}}
-    - {name: stock_uom, type: link, to: Uom, required: true}
+    - {name: stock_uom, type: link, to: Uom, required: true, label: Stock Unit}
     - {name: is_stock_item, type: check, default: true, in_filter: true}
     - {name: is_purchased, type: check, default: true}
     - {name: is_manufactured, type: check}
@@ -205,7 +205,7 @@
     - {name: item, type: link, to: Item, required: true, in_list: true, in_filter: true}
     - {name: price_list, type: link, to: PriceList, required: true, in_list: true, in_filter: true}
     - {name: rate, type: currency, required: true, min: "0", in_list: true}
-    - {name: uom, type: link, to: Uom}
+    - {name: uom, type: link, to: Uom, label: Unit, description: The unit this price is for; empty for the stock unit}
     - {name: valid_from, type: date, required: true, default_expr: today, in_list: true}
     - {name: valid_upto, type: date, in_list: true}
   exclusion:
