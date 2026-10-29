@@ -161,7 +161,7 @@ Stores are configured in `apps.registries`. Only an app's `id` and a release's `
 `tools/list`, `tools/call`, `resources/list`, `resources/templates/list`, `resources/read`
 (`ferrum://overview`, `ferrum://entity/{name}`, `ferrum://record/{entity}/{id}`), `prompts/list`,
 `prompts/get`. Tool failures come back as results with `isError: true` and the same error JSON as
-the REST API; unknown tools or bad arguments are JSON-RPC errors (-32602).
+the REST API; unknown tools or bad arguments are JSON-RPC errors (-32602). Administrators also get the App Manager's tools — `list_apps`, `plan_app`, `install_app` (consent = the plan's digest, as on the Apps page), `set_app_enabled`, `uninstall_app` — so an agent can extend the workspace the same way a person does.
 
 ### OAuth 2.1 (for hosted MCP clients)
 

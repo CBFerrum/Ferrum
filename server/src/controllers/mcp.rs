@@ -42,6 +42,8 @@ async fn post(State(app): State<AppContext>, headers: HeaderMap, auth: Result<Au
             return (StatusCode::BAD_REQUEST, axum::Json(err)).into_response();
         }
     };
+    // The App Manager's tools (administrators only) beside the platform's.
+    let tools = crate::appmgr_mcp::AppTools(st.apps.clone());
     let reply = match msg {
         Value::Array(batch) if batch.len() > MAX_BATCH => {
             let err = json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": format!("at most {MAX_BATCH} messages per batch")}});
@@ -50,13 +52,13 @@ async fn post(State(app): State<AppContext>, headers: HeaderMap, auth: Result<Au
         Value::Array(batch) => {
             let mut out = Vec::new();
             for m in batch {
-                if let Some(r) = ferrum_mcp::handle(&st.kernel, &ctx, m).await {
+                if let Some(r) = ferrum_mcp::handle_with(&st.kernel, &ctx, m, &[&tools]).await {
                     out.push(r);
                 }
             }
             (!out.is_empty()).then_some(Value::Array(out))
         }
-        single => ferrum_mcp::handle(&st.kernel, &ctx, single).await,
+        single => ferrum_mcp::handle_with(&st.kernel, &ctx, single, &[&tools]).await,
     };
     match reply {
         Some(v) => axum::Json(v).into_response(),
