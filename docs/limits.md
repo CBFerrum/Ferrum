@@ -48,8 +48,6 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 
 - A template's later changes reach the variants that still have its previous value (a value set
   on the variant stays); pick-list deliveries ship whole bundles; landed costs are posted forward (no repost, the sold share goes to cost of goods sold).
-- A manufacture request line is ordered by its whole work-order quantity, even if the work order is
-  stopped before finishing.
 
 ## Assets
 

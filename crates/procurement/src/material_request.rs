@@ -789,6 +789,23 @@ impl DocHook for WorkOrderLinks {
     async fn on_cancel(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
         self.apply(hc, doc, -Decimal::ONE, true).await
     }
+
+    /// A stopped work order no longer orders what it will not make; resuming orders it again.
+    async fn after_action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, _result: &mut Value) -> Result<()> {
+        let sign = match name {
+            "stop" => -Decimal::ONE,
+            "resume" => Decimal::ONE,
+            _ => return Ok(()),
+        };
+        let left = d(doc, "qty") - d(doc, "produced_qty");
+        if !installed(hc.ctx) || left <= Decimal::ZERO {
+            return Ok(());
+        }
+        match work_order_link(doc, |_| left) {
+            Some(links) => apply(hc, links, Fulfil::Make, sign, true).await,
+            None => Ok(()),
+        }
+    }
 }
 
 /// `day` plus `days`, as a document date.
