@@ -31,6 +31,8 @@ pub struct ListParams {
     pub search: Option<String>,
     pub titles: Option<bool>,
     pub count: Option<bool>,
+    /// Export only: `csv` (default) or `xlsx`.
+    pub format: Option<String>,
 }
 
 impl ListParams {
@@ -219,29 +221,80 @@ async fn export(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Pa
         Some(f) => f.clone(),
         None => std::iter::once("number".to_string()).chain(ent.value_fields().filter(|f| !f.hidden).map(|f| f.name.clone())).collect(),
     };
-    let mut out = String::new();
-    out.push_str(&columns.iter().map(|c| csv_cell(&Value::String(c.clone()))).collect::<Vec<_>>().join(","));
-    out.push('\n');
-    let mut rows = 0usize;
+    let xlsx = match p.format.as_deref() {
+        None | Some("csv") => false,
+        Some("xlsx") => true,
+        Some(other) => return Err(ApiError(Error::invalid(format!("unknown export format '{other}' (csv or xlsx)")))),
+    };
+    let mut records: Vec<Doc> = Vec::new();
     loop {
         let page = st.kernel.list(&ctx, &entity, &q).await?;
-        for r in &page.rows {
-            out.push_str(&columns.iter().map(|c| csv_cell(r.get(c).unwrap_or(&Value::Null))).collect::<Vec<_>>().join(","));
-            out.push('\n');
-            rows += 1;
-        }
+        records.extend(page.rows);
         match page.next_cursor {
-            Some(c) if rows < EXPORT_MAX_ROWS => q.cursor = Some(c),
+            Some(c) if records.len() < EXPORT_MAX_ROWS => q.cursor = Some(c),
             _ => break,
         }
     }
-    let mut resp = out.into_response();
+    let (body, content_type, ext) = if xlsx {
+        (xlsx_sheet(&ent, &columns, &records)?, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx")
+    } else {
+        let mut out = String::new();
+        out.push_str(&columns.iter().map(|c| csv_cell(&Value::String(c.clone()))).collect::<Vec<_>>().join(","));
+        out.push('\n');
+        for r in &records {
+            out.push_str(&columns.iter().map(|c| csv_cell(r.get(c).unwrap_or(&Value::Null))).collect::<Vec<_>>().join(","));
+            out.push('\n');
+        }
+        (out.into_bytes(), "text/csv; charset=utf-8", "csv")
+    };
+    let mut resp = body.into_response();
     let h = resp.headers_mut();
-    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/csv; charset=utf-8"));
-    if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{entity}.csv\"")) {
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{entity}.{ext}\"")) {
         h.insert(header::CONTENT_DISPOSITION, v);
     }
     Ok(resp)
+}
+
+/// One worksheet: a bold header of field labels, numbers as numbers (Excel's own precision),
+/// checks as booleans, everything else as text exactly as the API returns it.
+fn xlsx_sheet(ent: &ferrum_meta::EffEntity, columns: &[String], records: &[Doc]) -> Result<Vec<u8>, ApiError> {
+    use ferrum_meta::FieldType;
+    use rust_xlsxwriter::{Format, Workbook};
+    let fail = |e: rust_xlsxwriter::XlsxError| ApiError(Error::internal(format!("xlsx: {e}")));
+    let mut wb = Workbook::new();
+    let ws = wb.add_worksheet();
+    let bold = Format::new().set_bold();
+    for (c, name) in columns.iter().enumerate() {
+        let label = ent.field(name).map(|f| f.label().to_string()).unwrap_or_else(|| name.clone());
+        ws.write_string_with_format(0, c as u16, label, &bold).map_err(fail)?;
+    }
+    for (r, rec) in records.iter().enumerate() {
+        let row = r as u32 + 1;
+        for (c, name) in columns.iter().enumerate() {
+            let col = c as u16;
+            let numeric = ent.field(name).is_some_and(|f| matches!(f.ftype, FieldType::Int | FieldType::Decimal | FieldType::Currency | FieldType::Percent));
+            match rec.get(name).unwrap_or(&Value::Null) {
+                Value::Null => {}
+                Value::Bool(b) => {
+                    ws.write_boolean(row, col, *b).map_err(fail)?;
+                }
+                Value::Number(n) if n.as_f64().is_some() => {
+                    ws.write_number(row, col, n.as_f64().unwrap_or_default()).map_err(fail)?;
+                }
+                Value::String(s) if numeric && s.parse::<f64>().is_ok() => {
+                    ws.write_number(row, col, s.parse::<f64>().unwrap_or_default()).map_err(fail)?;
+                }
+                Value::String(s) => {
+                    ws.write_string(row, col, s).map_err(fail)?;
+                }
+                other => {
+                    ws.write_string(row, col, other.to_string()).map_err(fail)?;
+                }
+            }
+        }
+    }
+    wb.save_to_buffer().map_err(fail)
 }
 
 async fn import(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Path<String>, Json(body): Json<Value>) -> ApiResult<Response> {
@@ -319,5 +372,18 @@ mod tests {
         assert_eq!(csv_cell(&json!("=SUM(A1)")), "'=SUM(A1)");
         assert_eq!(csv_cell(&json!("-12.5")), "-12.5");
         assert_eq!(csv_cell(&json!("say \"hi\"")), "\"say \"\"hi\"\"\"");
+    }
+
+    #[test]
+    fn xlsx_export_is_a_workbook() {
+        let catalog = ferrum_meta::Catalog::from_packages(ferrum_domain::packages().unwrap()).unwrap();
+        let schema = ferrum_meta::effective::build(&catalog, &["core".into()], &[], 1).unwrap();
+        let ent = schema.entity("Customer").unwrap();
+        let cols = vec!["number".to_string(), "customer_name".to_string(), "credit_limit".to_string(), "disabled".to_string()];
+        let rec = json!({"number": "CUST-00001", "customer_name": "=cmd|' /C calc'!A0", "credit_limit": "1250.50", "disabled": false});
+        let bytes = xlsx_sheet(ent, &cols, &[rec.as_object().cloned().unwrap()]).unwrap();
+        assert!(bytes.starts_with(b"PK\x03\x04"), "an xlsx file is a zip archive");
+        let empty = xlsx_sheet(ent, &cols, &[]).unwrap();
+        assert!(bytes.len() > empty.len(), "the row was written");
     }
 }

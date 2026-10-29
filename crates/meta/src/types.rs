@@ -181,6 +181,9 @@ pub struct ExclusionDef {
     pub from: String,
     /// Open-ended when the value is null.
     pub to: String,
+    /// What users read when a record would overlap another (default: "this overlaps an existing record").
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -227,6 +230,10 @@ pub struct ActionDef {
     /// CEL condition on `doc` for showing/allowing the action.
     #[serde(default)]
     pub condition: Option<String>,
+    /// The action only reads (a lookup, a preview): it runs without locking the record or
+    /// writing an audit entry, in a read-only transaction when run on its own.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
 }
 
 fn default_action_perm() -> String {

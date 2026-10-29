@@ -338,6 +338,9 @@ async fn sync_locked(conn: &mut PgConnection, catalog: &Catalog, force: bool) ->
         }
         for (i, x) in ent.def.exclusion.iter().enumerate() {
             let name = obj_name("ex", &t, &[&i.to_string()]);
+            if let Some(m) = &x.message {
+                crate::error::set_constraint_message(&name, m);
+            }
             if ddl.constraints.contains(&name) {
                 continue;
             }

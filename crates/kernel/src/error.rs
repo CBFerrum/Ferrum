@@ -106,14 +106,14 @@ impl From<sqlx::Error> for Error {
                 let msg = db.message().to_string();
                 let constraint = db.constraint().unwrap_or_default().to_string();
                 match db.code().as_deref().unwrap_or_default() {
-                    "23505" => Error::Conflict(friendly_unique(&constraint)),
+                    "23505" => Error::Conflict(constraint_message_for(&constraint).unwrap_or_else(|| friendly_unique(&constraint))),
                     "23503" if msg.starts_with("update or delete on table") || msg.contains("still referenced") => {
                         Error::Conflict("cannot delete or change this record: other records link to it".into())
                     }
                     "23503" => Error::Invalid(format!("a linked record does not exist ({constraint})")),
                     "23514" => Error::Invalid(format!("value violates rule {constraint}")),
                     "23502" => Error::Invalid(format!("missing required value: {msg}")),
-                    "23P01" => Error::Conflict("overlaps an existing record's validity period".into()),
+                    "23P01" => Error::Conflict(constraint_message_for(&constraint).unwrap_or_else(|| "this overlaps an existing record".into())),
                     "40001" | "40P01" | "55P03" => Error::Retryable(msg),
                     "57014" => Error::Unavailable("query took too long and was cancelled".into()),
                     "P0001" => Error::Invalid(msg.trim_start_matches("ferrum: ").to_string()),
@@ -127,6 +127,22 @@ impl From<sqlx::Error> for Error {
     }
 }
 
+static CONSTRAINT_MESSAGES: std::sync::LazyLock<std::sync::RwLock<std::collections::HashMap<String, String>>> = std::sync::LazyLock::new(Default::default);
+
+/// Sets what users read when the database constraint `constraint` (unique or exclusion) refuses a
+/// write, e.g. "This technician is already booked at that time". Packages call it from
+/// `register()` for constraints their SQL creates; metadata exclusions with a `message` register
+/// themselves.
+pub fn set_constraint_message(constraint: &str, message: &str) {
+    if let Ok(mut m) = CONSTRAINT_MESSAGES.write() {
+        m.insert(constraint.to_string(), message.to_string());
+    }
+}
+
+fn constraint_message_for(constraint: &str) -> Option<String> {
+    CONSTRAINT_MESSAGES.read().ok()?.get(constraint).cloned()
+}
+
 fn friendly_unique(constraint: &str) -> String {
     if constraint.contains("_number") {
         "this number is already used".into()
@@ -134,5 +150,15 @@ fn friendly_unique(constraint: &str) -> String {
         "duplicate value".into()
     } else {
         format!("duplicate value ({constraint})")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn constraint_messages() {
+        assert_eq!(super::constraint_message_for("bk_staff_overlap"), None);
+        super::set_constraint_message("bk_staff_overlap", "This staff member is already booked then");
+        assert_eq!(super::constraint_message_for("bk_staff_overlap").as_deref(), Some("This staff member is already booked then"));
     }
 }
