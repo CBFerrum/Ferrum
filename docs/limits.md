@@ -74,8 +74,10 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   the browser. Closing a session uses the POS Closing Entry form.
 - **Chat and calendar** (the Mail app): the chat screen (`/app/chat`) covers channels, direct
   messages, threads, mentions, edits, search and files (up to 20 and 25 MB per message; images
-  are previewed). The calendar screen (`/app/calendar`) is a month grid and phone agenda with RSVPs; there is no week
-  view or drag-to-reschedule, and free/busy lookups are API-only.
+  are previewed). The calendar screen
+  (`/app/calendar`) shows a month or a week of hours (an agenda on phones) with RSVPs; events
+  you organize move by dragging them with a mouse (a repeating event is changed in its form, for
+  the whole series); free/busy lookups are API-only.
 - **Bookings**: one resource per booking; no recurring
   bookings, deposits or external calendar sync; notices can be up to a minute late. Without the Mail
   app, guest emails carry an add-to-calendar link instead of an invitation.
