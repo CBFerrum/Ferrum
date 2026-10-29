@@ -31,7 +31,8 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   pre-release such as `0.1.0-dev.3`) when content changes, as the server refuses changed content
   under an installed version.
 - **Rate limits** are per replica and per IP for public endpoints (300 per minute), including
-  Campaigns' tracking pixels and links behind a mail provider's image proxy.
+  Campaigns' tracking pixels and links behind a mail provider's image proxy, and for sign-ins.
+  Locking an account after repeated failed sign-ins is shared by all replicas (in the database).
 
 ## Accounting and finance
 

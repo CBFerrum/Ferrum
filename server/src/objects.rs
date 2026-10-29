@@ -231,7 +231,9 @@ async fn forget(k: &Kernel, tenant: Uuid, id: Uuid) -> Result<()> {
 pub async fn sweep(k: &Kernel, objects: &Objects) -> Result<usize> {
     let mut tx = k.db.system_tx().await?;
     let gone: Vec<(Uuid, Uuid)> = sqlx::query_as(
-        "delete from file_upload where ctid in (select ctid from file_upload where expires_at < now() - interval '5 minutes' limit 500) \
+        // Replicas sweep at the same time: each takes rows nobody else holds.
+        "delete from file_upload where (tenant_id, id) in (select tenant_id, id from file_upload \
+           where expires_at < now() - interval '5 minutes' order by expires_at limit 500 for update skip locked) \
          returning tenant_id, id",
     )
     .fetch_all(&mut *tx)
