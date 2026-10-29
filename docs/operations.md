@@ -129,6 +129,37 @@ Logs are JSON. Clients may send an `x-request-id` header to correlate their call
 * Very large tenants or many tenants: shard on `tenant_id` (Citus), which the schema already
   allows (every key starts with `tenant_id`).
 
+## Capacity
+
+Measured on 2026-10-30 with one release build in production mode (`LOCO_ENV=production`, 30 database
+connections) and PostgreSQL 17 (default settings, `synchronous_commit` on) on one laptop (Apple M1
+Pro, 8 cores, 16 GB), the load generator on the same machine — so every figure is for one replica
+sharing its CPU with the database and the client. No request failed in any run.
+
+| Call | Concurrent clients | Requests/s | p50 | p95 | p99 |
+|---|---|---|---|---|---|
+| List 20 customers | 10 / 50 / 100 | 8,400 / 8,500 / 8,900 | 1 / 5 / 11 ms | 2 / 8 / 16 ms | 2 / 18 / 24 ms |
+| Live totals of an invoice (`_calc`) | 10 / 50 / 100 | 1,550 / 1,590 / 1,590 | 6 / 24 / 55 ms | 7 / 78 / 115 ms | 8 / 143 / 174 ms |
+| Create a draft Sales Invoice (2 lines, GST) | 10 / 50 / 100 / 200 | 790 / 870 / 880 / 870 | 12 / 44 / 101 / 217 ms | 15 / 164 / 219 / 334 ms | 17 / 184 / 237 / 352 ms |
+
+Writes hold their throughput as concurrency grows; queueing shows up as latency. One replica's
+event dispatcher drains about 600 outbox events a second (webhooks, automations, live updates);
+dispatchers on every replica share the outbox. The test found that a NOTIFY sent by each writing
+transaction serialized their commits (creates fell to 330/s at 100 clients); dispatchers now poll
+instead, which adds up to 250 ms before an event is handled.
+
+Rerun it against a staging copy after changes that touch the write path:
+
+```bash
+pip install httpx
+FERRUM_URL=https://staging.example.com FERRUM_TENANT=load FERRUM_EMAIL=load@example.com FERRUM_PASSWORD=... \
+  python3 tools/loadtest.py --levels 10,50,100 --seconds 60
+```
+
+The script mixes lists, reads, metadata, live totals and draft creation and reports errors and
+percentiles per call; one Python client tops out near 600 requests a second, so for higher rates
+run several, or `ab`/`oha` against single endpoints as above.
+
 ## Incident playbooks
 
 **Database failover.** Automatic. In-flight transactions fail with a retryable error (clients see

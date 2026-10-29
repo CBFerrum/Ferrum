@@ -41,7 +41,8 @@ built to scale out.
 | `server` | HTTP API (Loco/Axum), auth, admin, OpenAPI, ERPNext-compatible `/api/resource` shim, CLI tasks |
 | `plugins/sdk`, `plugins/examples` | Rust plugin SDK and example plugins |
 | `deploy` | Docker Compose and Kubernetes manifests |
-| `docs` | [API contract](docs/api.md), [plugins](docs/plugins.md), [operations runbook](docs/operations.md), [known limits](docs/limits.md), [plan and analysis](docs/plan/PLAN.md) |
+| `docs` | [API contract](docs/api.md), [plugins](docs/plugins.md), [operations runbook](docs/operations.md), [security](docs/security.md), [known limits](docs/limits.md), [plan and analysis](docs/plan/PLAN.md) |
+| `tools` | `loadtest.py`: a load test of a running server (see the runbook's Capacity section) |
 
 The web app lives in its own repository, [CBFerrum/Ferrum-Frontend](https://github.com/CBFerrum/Ferrum-Frontend).
 
