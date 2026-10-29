@@ -26,13 +26,15 @@ fn main() {
     let mut code = String::from("// (package, path inside the package, content)\npub static EMBEDDED: &[(&str, &str, &str)] = &[\n");
     for pkg in PACKAGES {
         let dir = root.join(pkg);
-        println!("cargo:rerun-if-changed={}", dir.display());
+        // Relative to the crate, like the paths below: checkouts at other paths can share a target
+        // directory (Cargo hashes path crates relative to their workspace) without mixing up files.
+        println!("cargo:rerun-if-changed=../../packages/{pkg}");
         let mut files = Vec::new();
         walk(&dir, "", &mut files);
         assert!(files.iter().any(|(r, _)| r == "package.yaml"), "{} has no package.yaml", dir.display());
-        for (rel, path) in files {
-            let abs = path.canonicalize().expect("package file");
-            writeln!(code, "    ({pkg:?}, {rel:?}, include_str!({abs:?})),").expect("write");
+        for (rel, _) in files {
+            let file = format!("/../../packages/{pkg}/{rel}");
+            writeln!(code, "    ({pkg:?}, {rel:?}, include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), {file:?}))),").expect("write");
         }
     }
     code.push_str("];\n");

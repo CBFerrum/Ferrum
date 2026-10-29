@@ -20,7 +20,9 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<(String, PathBuf)>) {
 
 fn main() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("packages");
-    println!("cargo:rerun-if-changed={}", root.display());
+    // Relative to the crate, like the paths below: checkouts at other paths can share a target
+    // directory (Cargo hashes path crates relative to their workspace) without mixing up files.
+    println!("cargo:rerun-if-changed=packages");
     let mut code = String::from("// (package, path inside the package, content)\npub static EMBEDDED: &[(&str, &str, &str)] = &[\n");
     let mut packages: Vec<_> =
         std::fs::read_dir(&root).expect("packages/").filter_map(|e| e.ok()).filter(|e| e.path().join("package.yaml").is_file()).collect();
@@ -29,9 +31,9 @@ fn main() {
         let name = pkg.file_name().to_string_lossy().to_string();
         let mut files = Vec::new();
         walk(&pkg.path(), "", &mut files);
-        for (rel, path) in files {
-            let abs = path.canonicalize().expect("package file");
-            writeln!(code, "    ({name:?}, {rel:?}, include_str!({abs:?})),").expect("write");
+        for (rel, _) in files {
+            let file = format!("/packages/{name}/{rel}");
+            writeln!(code, "    ({name:?}, {rel:?}, include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), {file:?}))),").expect("write");
         }
     }
     code.push_str("];\n");
