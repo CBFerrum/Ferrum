@@ -459,4 +459,51 @@ async fn scenario() {
     tx.commit().await.unwrap();
     drain(&k).await;
     assert!(!objects.0.lock().unwrap().contains_key(&key(gone)), "released after commit");
+
+    // ── rules with conditions reach only records whose fields hold the values; rules add up ──
+    let rule = |v: Value| serde_json::from_value::<PermissionDef>(v).unwrap();
+    let bad = rule(json!({"entity": "Customer", "read": true, "where": {"no_such_field": "x"}}));
+    assert!(k.set_role_permission(&admin, "Retail Desk", &bad).await.is_err(), "conditions name real fields");
+    let bad = rule(json!({"entity": "Customer", "read": true, "where": {"customer_group": "Retail"}}));
+    assert!(k.set_role_permission(&admin, "Retail Desk", &bad).await.is_err(), "links are tested by record id");
+    let bad = rule(json!({"entity": "Customer", "read": true, "where": {"customer_name": "x"}}));
+    assert!(k.set_role_permission(&admin, "Retail Desk", &bad).await.is_ok(), "data fields may be tested");
+    k.set_role_permission(&admin, "Retail Desk", &rule(json!({"entity": "Customer", "where": {"customer_name": "x"}}))).await.unwrap();
+    let people = rule(json!({"entity": "Customer", "read": true, "where": {"customer_type": ["Individual"], "disabled": false}}));
+    k.set_role_permission(&admin, "Retail Desk", &people).await.unwrap();
+    let rita = k.create_user(&admin, "rhea@collab.test", "Rhea Retail", Some("Correct-Horse-9"), &["Retail Desk".into()], false).await.unwrap();
+    let rita_ctx = k.load_ctx(tenant, rita, None, "it".into()).await.unwrap();
+    let id_of = |d: &ferrum_kernel::Doc| d["id"].as_str().unwrap().parse::<Uuid>().unwrap();
+    let person = k.insert(&admin, "Customer", obj(json!({"customer_name": "Pat Person", "customer_type": "Individual"}))).await.unwrap();
+    let firm = k.insert(&admin, "Customer", obj(json!({"customer_name": "Firm Ltd", "customer_type": "Company"}))).await.unwrap();
+    k.insert(&admin, "Customer", obj(json!({"customer_name": "Old Person", "customer_type": "Individual", "disabled": true}))).await.unwrap();
+    let names = |ctx: Ctx| {
+        let k = k.clone();
+        async move {
+            let page = k.list(&ctx, "Customer", &ListQuery { limit: Some(100), ..Default::default() }).await.unwrap();
+            let mut n: Vec<String> = page.rows.iter().map(|r| r["customer_name"].as_str().unwrap().to_string()).collect();
+            n.sort();
+            n
+        }
+    };
+    assert_eq!(names(rita_ctx.clone()).await, ["Pat Person"]);
+    assert!(k.get(&rita_ctx, "Customer", id_of(&person), false).await.is_ok());
+    assert!(k.get(&rita_ctx, "Customer", id_of(&firm), false).await.is_err(), "a firm is outside the rule");
+    let filtered = k
+        .list(
+            &rita_ctx,
+            "Customer",
+            &ListQuery { filters: ferrum_kernel::query::parse_filters(&json!({"customer_type": "Company"})).unwrap(), ..Default::default() },
+        )
+        .await
+        .unwrap();
+    assert!(filtered.rows.is_empty(), "filters cannot reach past the rule");
+    // A second rule: the firms she created herself. Creating needs no condition.
+    k.set_role_permission(&admin, "Retail Desk", &rule(json!({"entity": "Customer", "read": true, "if_owner": true, "where": {"customer_type": "Company"}})))
+        .await
+        .unwrap();
+    k.set_role_permission(&admin, "Retail Desk", &rule(json!({"entity": "Customer", "create": true}))).await.unwrap();
+    let rita_ctx = k.load_ctx(tenant, rita, None, "it".into()).await.unwrap();
+    k.insert(&rita_ctx, "Customer", obj(json!({"customer_name": "Rita Firm", "customer_type": "Company"}))).await.unwrap();
+    assert_eq!(names(rita_ctx.clone()).await, ["Pat Person", "Rita Firm"], "her own firm, not other firms");
 }

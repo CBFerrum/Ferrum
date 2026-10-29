@@ -5,9 +5,10 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 
 ## Platform
 
-- **Row-level rules** are owner-based (`if_owner`, with `owner_fields`) plus per-user scopes on
-  link values (a user limited to some companies, territories...). A role cannot carry an arbitrary
-  condition such as "published courses only"; apps enforce those in their hooks.
+- **Row-level rules**: a role's rule reaches all records, the user's own (`if_owner`, with
+  `owner_fields`), and/or those whose fields hold given values (`where`), plus per-user scopes on
+  link values. Conditions are equality tests on data, select, check, link, email and int fields;
+  ranges, dates and expressions ("due in the next week") are not supported.
 - **Linked-record titles** (`titles=true`) are shown even when the caller cannot open the linked
   record, as in ERPNext: a record you can read names what it links to. Only the target's title
   field (or number) is exposed, never its other fields.
@@ -28,9 +29,8 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 - **BOM costing**: apps cannot plug into "Update Cost"; Manufacturing Operations adds its own action.
 - **Engine-maintained child tables**: apps that keep rows in another document's table (crew rows,
   allocations) write them with SQL rather than through a kernel API.
-- **SDK**: `ferrum-app dev --watch` re-uploads under the same version; bump the version (or use a
-  pre-release such as `0.1.0-dev.3`) when content changes, as the server refuses changed content
-  under an installed version.
+- **SDK**: `ferrum-app dev --watch` uploads every change as a new pre-release; trying it still
+  means updating the app on the Apps page (there is no automatic reinstall).
 - **Rate limits** are per replica and per IP for public endpoints (300 per minute), including
   Campaigns' tracking pixels and links behind a mail provider's image proxy, and for sign-ins.
   Locking an account after repeated failed sign-ins is shared by all replicas (in the database).

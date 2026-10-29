@@ -442,6 +442,83 @@ pub struct PermissionDef {
     pub read_groups: Vec<String>,
     #[serde(default)]
     pub write_groups: Vec<String>,
+    /// Only records whose fields hold these values, all of them: `{field: value}` or
+    /// `{field: [values]}`. Combines with `if_owner`; a role may hold several rules for one
+    /// entity with different conditions, and a record qualifies through any of them.
+    #[serde(default, rename = "where", skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub condition: std::collections::BTreeMap<String, Value>,
+}
+
+/// Field types a permission condition may test (compared as text, so they must be exact).
+const CONDITION_TYPES: &[FieldType] = &[FieldType::Data, FieldType::Select, FieldType::Check, FieldType::Link, FieldType::Email, FieldType::Int];
+
+impl PermissionDef {
+    /// Checks `where` against the entity's fields (`field` looks one up by name).
+    pub fn check_condition<'a>(&self, field: impl Fn(&str) -> Option<&'a FieldDef>) -> Result<(), String> {
+        if self.condition.is_empty() {
+            return Ok(());
+        }
+        if self.entity == "*" {
+            return Err("a condition needs one entity, not *".into());
+        }
+        if self.condition.len() > 10 {
+            return Err("at most 10 fields in a condition".into());
+        }
+        for (name, v) in &self.condition {
+            let f = field(name).ok_or_else(|| format!("condition field {name} is not a field of {}", self.entity))?;
+            if !CONDITION_TYPES.contains(&f.ftype) {
+                return Err(format!("condition field {name} must be data, select, check, link, email or int"));
+            }
+            let values = match v {
+                Value::Array(a) if !a.is_empty() && a.len() <= 50 => a.as_slice(),
+                Value::Array(_) => return Err(format!("condition field {name}: give 1 to 50 values")),
+                one => std::slice::from_ref(one),
+            };
+            for x in values {
+                let ok = match f.ftype {
+                    FieldType::Check => x.is_boolean(),
+                    FieldType::Int => x.as_i64().is_some(),
+                    // A record id, as links store it: lowercase and hyphenated.
+                    FieldType::Link => x.as_str().is_some_and(|s| {
+                        s.len() == 36
+                            && s.char_indices()
+                                .all(|(i, c)| if matches!(i, 8 | 13 | 18 | 23) { c == '-' } else { c.is_ascii_digit() || ('a'..='f').contains(&c) })
+                    }),
+                    _ => x.as_str().is_some_and(|s| !s.trim().is_empty() && s.len() <= 200),
+                };
+                if !ok {
+                    return Err(format!("condition field {name}: {x} is not a value of a {:?} field", f.ftype).to_lowercase());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The condition as the values each field may hold, as text (how the database compares them).
+    pub fn condition_values(&self) -> Vec<(String, Vec<String>)> {
+        // Stored text values are trimmed, so conditions compare trimmed values too.
+        let text = |v: &Value| match v {
+            Value::String(s) => s.trim().to_string(),
+            other => other.to_string(),
+        };
+        self.condition
+            .iter()
+            .map(|(k, v)| {
+                let mut vals: Vec<String> = match v {
+                    Value::Array(a) => a.iter().map(text).collect(),
+                    one => vec![text(one)],
+                };
+                vals.sort();
+                vals.dedup();
+                (k.clone(), vals)
+            })
+            .collect()
+    }
+
+    /// The condition in one canonical form, telling apart rules of one role and entity ('' = none).
+    pub fn condition_key(&self) -> String {
+        if self.condition.is_empty() { String::new() } else { serde_json::to_string(&self.condition_values()).unwrap_or_default() }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

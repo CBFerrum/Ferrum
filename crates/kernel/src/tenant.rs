@@ -97,8 +97,8 @@ impl Kernel {
                 for p in &role.permissions {
                     sqlx::query(
                         "insert into role_permission (tenant_id, role, entity, can_read, can_write, can_create, can_delete, can_submit, \
-                         can_cancel, can_export, can_import, if_owner, read_groups, write_groups) \
-                         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) on conflict do nothing",
+                         can_cancel, can_export, can_import, if_owner, read_groups, write_groups, match_rule, rule_key) \
+                         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) on conflict do nothing",
                     )
                     .bind(tenant)
                     .bind(&role.name)
@@ -114,6 +114,8 @@ impl Kernel {
                     .bind(p.if_owner)
                     .bind(&p.read_groups)
                     .bind(&p.write_groups)
+                    .bind((!p.condition.is_empty()).then(|| serde_json::to_value(&p.condition).unwrap_or_default()))
+                    .bind(p.condition_key())
                     .execute(&mut *tx)
                     .await?;
                 }

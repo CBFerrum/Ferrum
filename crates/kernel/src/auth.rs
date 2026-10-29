@@ -528,12 +528,16 @@ impl Kernel {
         if p.entity != "*" && ctx.schema.entity(&p.entity).is_none() {
             return Err(Error::field("entity", "unknown entity"));
         }
+        let ent = ctx.schema.entity(&p.entity).cloned();
+        p.check_condition(|f| ent.as_deref().and_then(|e| e.field(f))).map_err(|m| Error::field("where", m))?;
+        let condition = (!p.condition.is_empty()).then(|| serde_json::to_value(&p.condition).unwrap_or_default());
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         sqlx::query("insert into role (tenant_id, name) values ($1, $2) on conflict do nothing").bind(ctx.tenant).bind(role).execute(&mut *tx).await?;
         sqlx::query(
             "insert into role_permission (tenant_id, role, entity, can_read, can_write, can_create, can_delete, can_submit, can_cancel, \
-             can_export, can_import, if_owner, read_groups, write_groups) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
-             on conflict (tenant_id, role, entity, if_owner) do update set can_read = excluded.can_read, can_write = excluded.can_write, \
+             can_export, can_import, if_owner, read_groups, write_groups, match_rule, rule_key) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) \
+             on conflict (tenant_id, role, entity, if_owner, rule_key) do update set can_read = excluded.can_read, can_write = excluded.can_write, \
              can_create = excluded.can_create, can_delete = excluded.can_delete, can_submit = excluded.can_submit, can_cancel = excluded.can_cancel, \
              can_export = excluded.can_export, can_import = excluded.can_import, read_groups = excluded.read_groups, write_groups = excluded.write_groups",
         )
@@ -551,6 +555,8 @@ impl Kernel {
         .bind(p.if_owner)
         .bind(&p.read_groups)
         .bind(&p.write_groups)
+        .bind(condition)
+        .bind(p.condition_key())
         .execute(&mut *tx)
         .await?;
         notify_users(&mut tx, ctx.tenant, None).await?;
