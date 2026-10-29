@@ -162,6 +162,12 @@ async fn scenario() {
     // Engine contexts number documents in the same fiscal-year series as users do.
     assert_eq!(Ctx::system(tenant, k.registry.schema(tenant).await.unwrap()).fy_start_month, ctx.fy_start_month);
     assert_eq!(ctx.fy_start_month, 4);
+    // A custom line field on orders, deliveries and invoices: it travels with the lines.
+    for line in ["SalesOrderItem", "DeliveryNoteItem", "SalesInvoiceItem"] {
+        let op = serde_json::from_value(json!({"op": "add_field", "field": {"name": "x_po_line", "type": "data"}})).unwrap();
+        k.add_customization(&ctx, line, op, None).await.unwrap_or_else(|e| panic!("custom field on {line}: {e:?}"));
+    }
+    let ctx = k.load_ctx(tenant, session.user, Some(session.token_version), "it".into()).await.expect("ctx");
     let t = T { k: k.clone(), ctx };
 
     // ───────────── company, chart of accounts, GST registration ─────────────
@@ -274,7 +280,7 @@ async fn scenario() {
     let so = t
         .insert(
             "SalesOrder",
-            json!({"company": cid.to_string(), "customer": globex.to_string(), "set_warehouse": stores.to_string(), "items": [{"item": widget.to_string(), "qty": "10"}]}),
+            json!({"company": cid.to_string(), "customer": globex.to_string(), "set_warehouse": stores.to_string(), "items": [{"item": widget.to_string(), "qty": "10", "x_po_line": "PO-7/1"}]}),
         )
         .await;
     assert_eq!(dec(&so["net_total"]), n("1500"), "standard rate used");
@@ -285,6 +291,7 @@ async fn scenario() {
     assert_eq!(t.reserved(widget, stores).await - reserved_before, n("10"), "a submitted order reserves its stock");
     let dn = t.action("SalesOrder", so_id, "make_delivery_note", json!({})).await;
     let dn_id = vid(&dn);
+    assert_eq!(t.get("DeliveryNote", dn_id).await["items"][0]["x_po_line"], json!("PO-7/1"), "custom line fields carry over");
     t.submit("DeliveryNote", dn_id).await;
     assert_eq!(t.reserved(widget, stores).await, reserved_before, "delivery releases the reservation");
     assert_eq!(t.stock(widget, stores).await, (n("40"), n("4000")));
@@ -292,6 +299,7 @@ async fn scenario() {
     assert_eq!(t.get("SalesOrder", so_id).await["status"], json!("To Bill"));
     let si = t.action("DeliveryNote", dn_id, "make_sales_invoice", json!({})).await;
     let si_id = vid(&si);
+    assert_eq!(t.get("SalesInvoice", si_id).await["items"][0]["x_po_line"], json!("PO-7/1"));
     let si_doc = t.submit("SalesInvoice", si_id).await;
     assert_eq!(si_doc["in_place_of_supply"], json!("29"));
     assert_eq!(dec(&si_doc["outstanding_amount"]), n("1770"));

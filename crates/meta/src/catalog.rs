@@ -391,9 +391,18 @@ pub(crate) fn validate_entity(e: &EntityDef, all: &HashMap<&str, &EntityDef>) ->
                 return Err(format!("exclusion field '{n}' is not a stored field"));
             }
         }
-        for n in [&x.from, &x.to] {
-            if !field(n).is_some_and(|f| f.ftype == FieldType::Date) {
-                return Err(format!("exclusion range field '{n}' must be a date"));
+        let kind = |n: &str| field(n).map(|f| f.ftype);
+        match (kind(&x.from), kind(&x.to)) {
+            (Some(FieldType::Date), Some(FieldType::Date)) | (Some(FieldType::Datetime), Some(FieldType::Datetime)) => {}
+            _ => return Err(format!("exclusion range fields '{}' and '{}' must both be dates or both date-times", x.from, x.to)),
+        }
+        for (n, values) in &x.when_not {
+            if !storable(n) || !field(n).is_some_and(|f| matches!(f.ftype, FieldType::Select | FieldType::Data)) {
+                return Err(format!("exclusion when_not field '{n}' must be a stored select or data field"));
+            }
+            let plain = |v: &String| !v.is_empty() && v.len() <= 60 && v.chars().all(|c| c.is_alphanumeric() || " _-.".contains(c));
+            if values.is_empty() || !values.iter().all(plain) {
+                return Err(format!("exclusion when_not values of '{n}' must be plain words (letters, digits, space, _ - .)"));
             }
         }
     }
