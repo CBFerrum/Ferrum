@@ -197,15 +197,15 @@ receivables/payables with ageing and dunning, subscriptions, selling and buying 
 returns in any of an item's units of measure, procurement (material requests, RFQs, supplier
 scorecards), inventory with batches/serials, variants, landed costs, pick lists, quality inspection,
 BOMs, work orders, job cards, production planning, subcontracting, MRP, India GST (GSTIN, place of
-supply, CGST/SGST/IGST templates, HSN checks), analytics (Studio: reports with calculated columns
-and subtotals, charts, dashboards), collaboration (comments, assignments, tags, followers, chat,
+supply, CGST/SGST/IGST templates, HSN checks), analytics (Studio: reports with calculated columns,
+subtotals and Excel export, charts, dashboards), collaboration (comments, assignments, tags, followers, chat,
 calendar), PDFs and emailing any document, role rules down to records whose fields hold given
 values, rate limits that hold across replicas, two-factor sign-in (authenticator apps, recovery
 codes, a workspace policy), single sign-on with OpenID Connect providers, live updates, customization, plugins and apps (see above), MCP for AI
 agents.
 
 Not yet included: e-invoice/e-way-bill submission to the GST network (fields only, needs a GSP),
-GraphQL, Citus sharding configuration, XLSX export. What is deliberately simpler than
+GraphQL, Citus sharding configuration. What is deliberately simpler than
 you might expect is listed in [docs/limits.md](docs/limits.md).
 
 ## Licence

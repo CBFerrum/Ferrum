@@ -575,8 +575,25 @@ async fn scenario() {
     assert!(csv.headers.iter().any(|(k, v)| k == "content-disposition" && v.contains("Sales_by_segment-")));
     let text = String::from_utf8(csv.body).unwrap();
     assert_eq!(text, "\u{feff}Revenue,Customer › Customer Group\r\n811,Commercial\r\n550,Individual\r\n1361,\r\n");
-    let xlsx = t.call(&viewer, "GET", &format!("/reports/{r1_id}/export"), &[("format", "xlsx")], Value::Null).await.unwrap_err();
-    assert!(matches!(&xlsx, Error::Validation(f) if f[0].field == "format"));
+    let xlsx = t.call(&viewer, "GET", &format!("/reports/{r1_id}/export"), &[("format", "xlsx")], Value::Null).await.unwrap();
+    assert!(xlsx.content_type.contains("spreadsheetml"));
+    assert!(xlsx.headers.iter().any(|(k, v)| k == "content-disposition" && v.contains("Sales_by_segment-") && v.ends_with(".xlsx\"")));
+    let mut book = zip::ZipArchive::new(std::io::Cursor::new(xlsx.body)).expect("an xlsx file is a zip archive");
+    let mut part = |name: &str| {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut book.by_name(name).unwrap(), &mut text).unwrap();
+        text
+    };
+    let (sheet, strings) = (part("xl/worksheets/sheet1.xml"), part("xl/sharedStrings.xml"));
+    for s in ["Revenue", "Customer › Customer Group", "Commercial", "Individual"] {
+        assert!(strings.contains(s), "{s} in {strings}");
+    }
+    for n in ["<v>811</v>", "<v>550</v>", "<v>1361</v>"] {
+        assert!(sheet.contains(n), "{n} as a number in {sheet}");
+    }
+    assert!(part("xl/workbook.xml").contains("name=\"Sales by segment\""), "the sheet is named after the report");
+    let odd = t.call(&viewer, "GET", &format!("/reports/{r1_id}/export"), &[("format", "pdf")], Value::Null).await.unwrap_err();
+    assert!(matches!(&odd, Error::Validation(f) if f[0].field == "format"));
     let no_export = t.call(&rep, "GET", &format!("/reports/{r1_id}/export"), &[], Value::Null).await.unwrap_err();
     assert!(matches!(no_export, Error::Forbidden(_)), "exports need export permission on the data");
     let action = t.k.run_action(&manager, "Report", r1_id, "run", json!({"from": "2026-09-01", "to": "2026-09-30"})).await.unwrap();

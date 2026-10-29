@@ -526,9 +526,103 @@ pub fn csv(result: &Value) -> String {
     format!("\u{feff}{}\r\n", lines.join("\r\n"))
 }
 
+/// The longest text an Excel cell holds.
+const XLSX_MAX_TEXT: usize = 32_767;
+
+/// A result as an Excel workbook: the same columns, rows (titles instead of ids) and totals line
+/// as [`csv`]; numbers as numbers (Excel's own precision), dates as dates, checks as booleans,
+/// everything else as text, which Excel never runs as a formula. `sheet` names the worksheet.
+pub fn xlsx(result: &Value, sheet: &str) -> Result<Vec<u8>> {
+    use rust_xlsxwriter::{ExcelDateTime, Format, Workbook, Worksheet, XlsxError};
+    let fail = |e: XlsxError| ferrum_kernel::Error::internal(format!("xlsx: {e}"));
+    let mut wb = Workbook::new();
+    let ws = wb.add_worksheet();
+    let name: String = sheet.chars().filter(|c| !"[]:*?/\\'".contains(*c)).take(31).collect();
+    if !name.trim().is_empty() {
+        // A name Excel refuses (a reserved one) leaves the default.
+        let _ = ws.set_name(name.trim());
+    }
+    let bold = Format::new().set_bold();
+    let date = Format::new().set_num_format("yyyy-mm-dd");
+    let cols: Vec<&Value> = result["columns"].as_array().map(|c| c.iter().collect()).unwrap_or_default();
+    let cell = |ws: &mut Worksheet, row: u32, col: u16, ty: &str, v: &Value, fmt: Option<&Format>| -> std::result::Result<(), XlsxError> {
+        let plain = Format::new();
+        let f = fmt.unwrap_or(&plain);
+        match v {
+            Value::Null => {}
+            Value::Bool(b) => {
+                ws.write_boolean_with_format(row, col, *b, f)?;
+            }
+            Value::Number(n) => {
+                ws.write_number_with_format(row, col, n.as_f64().unwrap_or_default(), f)?;
+            }
+            Value::String(s) => match (ty, s.parse::<f64>(), ExcelDateTime::parse_from_str(s)) {
+                ("int" | "decimal" | "currency" | "percent" | "float", Ok(n), _) => {
+                    ws.write_number_with_format(row, col, n, f)?;
+                }
+                ("date", _, Ok(d)) if s.len() == 10 => {
+                    ws.write_datetime_with_format(row, col, &d, fmt.map_or(&date, |b| b))?;
+                }
+                _ => {
+                    ws.write_string_with_format(row, col, s.chars().take(XLSX_MAX_TEXT).collect::<String>(), f)?;
+                }
+            },
+            other => {
+                ws.write_string_with_format(row, col, other.to_string().chars().take(XLSX_MAX_TEXT).collect::<String>(), f)?;
+            }
+        }
+        Ok(())
+    };
+    let name_of = |c: &Value| c["name"].as_str().unwrap_or_default().to_string();
+    let ty_of = |c: &Value| c["type"].as_str().unwrap_or("data").to_string();
+    for (i, c) in cols.iter().enumerate() {
+        let label = c.get("label").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| name_of(c));
+        ws.write_string_with_format(0, i as u16, label, &bold).map_err(fail)?;
+    }
+    let mut row = 0u32;
+    for r in result["rows"].as_array().into_iter().flatten() {
+        row += 1;
+        for (i, c) in cols.iter().enumerate() {
+            let name = name_of(c);
+            let v = r.get("_titles").and_then(|t| t.get(&name)).cloned().unwrap_or_else(|| r.get(&name).cloned().unwrap_or(Value::Null));
+            let ty = if r.get("_titles").and_then(|t| t.get(&name)).is_some() { "data".to_string() } else { ty_of(c) };
+            cell(ws, row, i as u16, &ty, &v, None).map_err(fail)?;
+        }
+    }
+    if let Some(t) = result["totals"].as_object().filter(|t| cols.iter().any(|c| t.contains_key(&name_of(c)))) {
+        row += 1;
+        for (i, c) in cols.iter().enumerate() {
+            match t.get(&name_of(c)) {
+                Some(v) => cell(ws, row, i as u16, &ty_of(c), v, Some(&bold)).map_err(fail)?,
+                None if i == 0 => {
+                    ws.write_string_with_format(row, 0, "Total", &bold).map_err(fail)?;
+                }
+                None => {}
+            }
+        }
+    }
+    ws.set_freeze_panes(1, 0).map_err(fail)?;
+    ws.autofit();
+    wb.save_to_buffer().map_err(fail)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xlsx_is_a_workbook() {
+        let result = json!({
+            "columns": [{"name": "customer", "label": "Customer", "type": "link"}, {"name": "posting_date", "label": "Date", "type": "date"},
+                        {"name": "sum(x)", "label": "Sum", "type": "currency"}, {"name": "note", "label": "Note", "type": "text"}],
+            "rows": [{"customer": "id-1", "posting_date": "2026-10-30", "sum(x)": "-0.3", "note": "=HYPERLINK(\"x\")", "_titles": {"customer": "Alpha"}},
+                     {"customer": null, "posting_date": null, "sum(x)": "10", "note": "x".repeat(40_000)}],
+            "totals": {"sum(x)": "9.7"},
+        });
+        let bytes = xlsx(&result, "Sales: by [customer]?").unwrap();
+        assert!(bytes.starts_with(b"PK\x03\x04"), "an xlsx file is a zip archive");
+        assert!(xlsx(&json!({"columns": [], "rows": []}), "History").unwrap().starts_with(b"PK"), "empty, and a name Excel reserves");
+    }
 
     #[test]
     fn values_decode_exactly() {

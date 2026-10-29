@@ -8,7 +8,7 @@
 //! the data inside is always computed with the viewer's own permissions.
 
 use crate::query::{Resolver, compile};
-use crate::run::{csv, run, title_map};
+use crate::run::{run, title_map};
 use crate::spec::{Bucket, DateRange, Sort, Spec, TimeSeries, filter_list, resolve_date};
 use async_trait::async_trait;
 use chrono::{NaiveDate, SecondsFormat, TimeZone};
@@ -1176,7 +1176,8 @@ async fn report_data(k: &Kernel, ctx: &Ctx, doc: &Doc, rt: &Runtime) -> Result<V
 }
 
 /// A saved report as CSV (export permission on its entity, like list exports).
-pub async fn export_report(k: &Kernel, ctx: &Ctx, id: Uuid, rt: &Runtime) -> Result<(String, String)> {
+/// Every row of a saved report (up to the export limit) for a download → its label and the result.
+pub async fn export_report(k: &Kernel, ctx: &Ctx, id: Uuid, rt: &Runtime) -> Result<(String, Value)> {
     let doc = load(k, ctx, REPORT, id).await?;
     if let Some(e) = s(&doc, "base_entity") {
         ctx.require(e, Action::Export)?;
@@ -1184,8 +1185,7 @@ pub async fn export_report(k: &Kernel, ctx: &Ctx, id: Uuid, rt: &Runtime) -> Res
     let mut rt = rt.clone();
     rt.limit = rt.limit.or(Some(crate::spec::MAX_LIMIT));
     let data = report_data(k, ctx, &doc, &rt).await?;
-    let stem: String = s(&doc, "label").unwrap_or("report").chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
-    Ok((format!("{stem}-{}.csv", ctx.today()), csv(&data)))
+    Ok((s(&doc, "label").unwrap_or("report").to_string(), data))
 }
 
 // ───────────────────────────── dashboard filters ─────────────────────────────

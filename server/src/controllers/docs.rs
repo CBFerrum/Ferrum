@@ -357,11 +357,12 @@ fn xlsx_sheet(ent: &ferrum_meta::EffEntity, columns: &[String], records: &[Doc])
                 Value::String(s) if numeric && s.parse::<f64>().is_ok() => {
                     ws.write_number(row, col, s.parse::<f64>().unwrap_or_default()).map_err(fail)?;
                 }
+                // Excel cells hold at most 32,767 characters.
                 Value::String(s) => {
-                    ws.write_string(row, col, s).map_err(fail)?;
+                    ws.write_string(row, col, s.chars().take(32_767).collect::<String>()).map_err(fail)?;
                 }
                 other => {
-                    ws.write_string(row, col, other.to_string()).map_err(fail)?;
+                    ws.write_string(row, col, other.to_string().chars().take(32_767).collect::<String>()).map_err(fail)?;
                 }
             }
         }
@@ -456,6 +457,8 @@ mod tests {
         let rec = json!({"number": "CUST-00001", "customer_name": "=cmd|' /C calc'!A0", "credit_limit": "1250.50", "disabled": false});
         let bytes = xlsx_sheet(ent, &cols, &[rec.as_object().cloned().unwrap()]).unwrap();
         assert!(bytes.starts_with(b"PK\x03\x04"), "an xlsx file is a zip archive");
+        let long = json!({cols[0].clone(): "x".repeat(40_000)});
+        assert!(xlsx_sheet(ent, &cols, &[long.as_object().cloned().unwrap()]).is_ok(), "text past Excel's cell limit is cut, not fatal");
         let empty = xlsx_sheet(ent, &cols, &[]).unwrap();
         assert!(bytes.len() > empty.len(), "the row was written");
     }

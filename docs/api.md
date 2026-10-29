@@ -117,6 +117,12 @@ limited per app (1 MB unless the app allows more, at most 32 MB).
   (and Studio queries) apply the caller's row scope to their rows instead. A package report source
   that only narrows to the caller's own records declares `"scoped": "owner"` in its catalog entry,
   and one that sums up everything `"scoped": false`; those get the same check.
+* Studio's saved reports run at `GET|POST /api/app/studio/reports/{id}/run` (runtime `filters`,
+  `search`, `from`, `to`, `sort`, `limit`) and download at `GET /api/app/studio/reports/{id}/export`
+  with `format=csv` (default) or `format=xlsx`: every row up to 10,000 with the same runtime
+  settings, titles instead of ids and a totals line; the workbook keeps numbers as numbers and
+  dates as dates in a sheet named after the report. Exports need export permission on the
+  report's entity.
 
 ## Administration (administrators only, except notifications)
 
