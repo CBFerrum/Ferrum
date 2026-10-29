@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const MAX_FAILED_LOGINS: i32 = 5;
-const LOCK_MINUTES: i32 = 15;
+pub(crate) const LOCK_MINUTES: i32 = 15;
 
 pub fn validate_password(p: &str) -> Result<()> {
     if p.chars().count() < 10 {
@@ -41,7 +41,7 @@ pub const USERS_CHANNEL: &str = "ferrum_users";
 
 /// Tells every replica, when `tx` commits, to drop its cached copy of a user (or of all the
 /// tenant's users when `user` is `None`).
-async fn notify_users(tx: &mut Tx, tenant: Uuid, user: Option<Uuid>) -> Result<()> {
+pub(crate) async fn notify_users(tx: &mut Tx, tenant: Uuid, user: Option<Uuid>) -> Result<()> {
     let payload = match user {
         Some(u) => format!("{tenant}:{u}"),
         None => tenant.to_string(),
@@ -94,8 +94,48 @@ fn sha256_hex(s: &str) -> String {
     hex::encode(Sha256::digest(s.as_bytes()))
 }
 
+/// Counts a failed sign-in attempt (a wrong password or second-step code); enough in a row lock
+/// the account for a while.
+pub(crate) async fn count_failure(tx: &mut Tx, tenant: Uuid, user: Uuid) -> Result<()> {
+    sqlx::query(
+        "update app_user set failed_logins = failed_logins + 1, \
+         locked_until = case when failed_logins + 1 >= $3 then now() + make_interval(mins => $4) else locked_until end \
+         where tenant_id = $1 and id = $2",
+    )
+    .bind(tenant)
+    .bind(user)
+    .bind(MAX_FAILED_LOGINS)
+    .bind(LOCK_MINUTES)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Where the password step of signing in leads.
+#[derive(Debug, Clone)]
+pub enum SignIn {
+    /// Signed in.
+    Session(Session),
+    /// The password was right; a code from the authenticator app or a recovery code completes the
+    /// sign-in ([`Kernel::second_factor`]).
+    SecondFactor(Session),
+    /// Signed in, but the workspace requires two-factor sign-in, which this person has yet to set
+    /// up: the session may do only that.
+    SetupRequired(Session),
+}
+
 impl Kernel {
+    /// Signs in with a password alone (tools, tests); an account with two-factor sign-in, or one
+    /// that must set it up, signs in through [`Kernel::sign_in`].
     pub async fn login(&self, tenant_slug: &str, email: &str, password: &str) -> Result<Session> {
+        match self.sign_in(tenant_slug, email, password).await? {
+            SignIn::Session(s) => Ok(s),
+            _ => Err(Error::Unauthorized("this account signs in with a second step; use the sign-in page".into())),
+        }
+    }
+
+    /// The password step of signing in.
+    pub async fn sign_in(&self, tenant_slug: &str, email: &str, password: &str) -> Result<SignIn> {
         let denied = || Error::Unauthorized("invalid tenant, email or password".into());
         let email = email.trim().to_lowercase();
         let mut tx = self.db.system_tx().await?;
@@ -108,10 +148,13 @@ impl Kernel {
             token_version: i32,
             locked: bool,
             tenant_active: bool,
+            two_factor: bool,
+            two_factor_required: bool,
         }
         let user: Option<U> = sqlx::query_as(
             "select u.tenant_id, u.id, u.password_hash, u.is_active, u.token_version, \
-             coalesce(u.locked_until > now(), false) as locked, t.status = 'active' as tenant_active \
+             coalesce(u.locked_until > now(), false) as locked, t.status = 'active' as tenant_active, \
+             u.totp_enabled_at is not null as two_factor, coalesce(t.settings->'require_two_factor' = 'true'::jsonb, false) as two_factor_required \
              from app_user u join tenant t on t.id = u.tenant_id where t.slug = $1 and u.email = $2",
         )
         .bind(tenant_slug.trim().to_lowercase())
@@ -132,19 +175,16 @@ impl Kernel {
             None => false,
         };
         if !ok || !u.is_active || !u.tenant_active {
-            sqlx::query(
-                "update app_user set failed_logins = failed_logins + 1, \
-                 locked_until = case when failed_logins + 1 >= $3 then now() + make_interval(mins => $4) else locked_until end \
-                 where tenant_id = $1 and id = $2",
-            )
-            .bind(u.tenant_id)
-            .bind(u.id)
-            .bind(MAX_FAILED_LOGINS)
-            .bind(LOCK_MINUTES)
-            .execute(&mut *tx)
-            .await?;
+            count_failure(&mut tx, u.tenant_id, u.id).await?;
             tx.commit().await?;
             return Err(denied());
+        }
+        let session = Session { tenant: u.tenant_id, user: u.id, token_version: u.token_version };
+        if u.two_factor {
+            // The failure count stands until the second step succeeds, so wrong codes add up to a
+            // lockout however often the password is entered again.
+            tx.commit().await?;
+            return Ok(SignIn::SecondFactor(session));
         }
         sqlx::query("update app_user set failed_logins = 0, locked_until = null, last_login_at = now() where tenant_id = $1 and id = $2")
             .bind(u.tenant_id)
@@ -152,7 +192,7 @@ impl Kernel {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
-        Ok(Session { tenant: u.tenant_id, user: u.id, token_version: u.token_version })
+        Ok(if u.two_factor_required { SignIn::SetupRequired(session) } else { SignIn::Session(session) })
     }
 
     /// API keys look like `fk_<prefix>_<secret>`; only a SHA-256 of the secret is stored.

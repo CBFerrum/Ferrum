@@ -32,6 +32,7 @@ pub mod registry;
 pub mod secret;
 pub mod store;
 pub mod tenant;
+pub mod twofactor;
 pub mod value;
 
 pub use ctx::{Access, Action, Ctx, PermSet, row_scope};

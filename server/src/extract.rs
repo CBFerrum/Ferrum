@@ -28,24 +28,33 @@ pub fn bearer(headers: &HeaderMap) -> Option<String> {
     (!token.is_empty()).then(|| token.to_string())
 }
 
+/// The session a bearer token (session JWT or `fk_` API key) carries, and whether it may only set
+/// up two-factor sign-in (the workspace requires it and the person has yet to). The ticket between
+/// the two steps of signing in is no session at all.
+async fn session_of(st: &crate::state::AppState, token: &str) -> Result<(ferrum_kernel::auth::Session, bool), ApiError> {
+    if token.starts_with("fk_") {
+        return Ok((st.kernel.verify_api_key(token).await?, false));
+    }
+    let data =
+        JWT::new(&st.jwt_secret).validate(token).map_err(|_| ApiError(Error::Unauthorized("session expired or invalid; please sign in again".into())))?;
+    let claims = &data.claims.claims;
+    if claims.contains_key("mfa") {
+        return Err(ApiError(Error::Unauthorized("finish signing in first".into())));
+    }
+    let user: Uuid = data.claims.pid.parse().map_err(|_| ApiError(Error::Unauthorized("invalid session".into())))?;
+    let tenant: Uuid =
+        claims.get("tenant").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).ok_or_else(|| ApiError(Error::Unauthorized("invalid session".into())))?;
+    let tv = claims.get("tv").and_then(|v| v.as_i64()).unwrap_or(-1) as i32;
+    let setup_only = claims.get("setup_2fa").and_then(|v| v.as_bool()).unwrap_or(false);
+    Ok((ferrum_kernel::auth::Session { tenant, user, token_version: tv }, setup_only))
+}
+
 /// Resolves a bearer token (session JWT or `fk_` API key) to the caller's context.
 pub async fn ctx_from_token(st: &crate::state::AppState, token: &str, request_id: String) -> Result<Ctx, ApiError> {
-    let session = if token.starts_with("fk_") {
-        st.kernel.verify_api_key(token).await?
-    } else {
-        let data =
-            JWT::new(&st.jwt_secret).validate(token).map_err(|_| ApiError(Error::Unauthorized("session expired or invalid; please sign in again".into())))?;
-        let user: Uuid = data.claims.pid.parse().map_err(|_| ApiError(Error::Unauthorized("invalid session".into())))?;
-        let tenant: Uuid = data
-            .claims
-            .claims
-            .get("tenant")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse().ok())
-            .ok_or_else(|| ApiError(Error::Unauthorized("invalid session".into())))?;
-        let tv = data.claims.claims.get("tv").and_then(|v| v.as_i64()).unwrap_or(-1) as i32;
-        ferrum_kernel::auth::Session { tenant, user, token_version: tv }
-    };
+    let (session, setup_only) = session_of(st, token).await?;
+    if setup_only {
+        return Err(ApiError(Error::Forbidden("set up two-factor sign-in first; this workspace requires it".into())));
+    }
     Ok(st.kernel.load_ctx(session.tenant, session.user, Some(session.token_version), request_id).await?)
 }
 
@@ -57,6 +66,23 @@ impl FromRequestParts<AppContext> for Auth {
         let rid = request_id(&parts.headers);
         let token = bearer(&parts.headers).ok_or_else(|| ApiError(Error::Unauthorized("sign in required".into())))?;
         Ok(Auth(ctx_from_token(&st, &token, rid).await?))
+    }
+}
+
+/// A caller whose session may also be one that can only set up two-factor sign-in (then `.1`
+/// holds that session).
+pub struct SetupAuth(pub Ctx, pub Option<ferrum_kernel::auth::Session>);
+
+impl FromRequestParts<AppContext> for SetupAuth {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppContext) -> Result<Self, Self::Rejection> {
+        let st = app_state(state)?;
+        let rid = request_id(&parts.headers);
+        let token = bearer(&parts.headers).ok_or_else(|| ApiError(Error::Unauthorized("sign in required".into())))?;
+        let (s, setup_only) = session_of(&st, &token).await?;
+        let ctx = st.kernel.load_ctx(s.tenant, s.user, Some(s.token_version), rid).await?;
+        Ok(SetupAuth(ctx, setup_only.then_some(s)))
     }
 }
 

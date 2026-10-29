@@ -194,8 +194,9 @@ impl Kernel {
 }
 
 impl Kernel {
-    /// The workspace's settings administrators may change: `timezone` (IANA name) and
-    /// `fiscal_year_start_month` (1-12).
+    /// The workspace's settings administrators may change: `timezone` (IANA name),
+    /// `fiscal_year_start_month` (1-12) and `require_two_factor` (everyone signs in with an
+    /// authenticator app; it applies from each person's next sign-in).
     pub async fn tenant_settings(&self, ctx: &Ctx) -> Result<Value> {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let settings: Value = sqlx::query_scalar("select settings from tenant where id = $1").bind(ctx.tenant).fetch_one(&mut *tx).await?;
@@ -203,6 +204,7 @@ impl Kernel {
         Ok(serde_json::json!({
             "timezone": settings.get("timezone").cloned().unwrap_or_else(|| serde_json::json!("UTC")),
             "fiscal_year_start_month": settings.get("fiscal_year_start_month").cloned().unwrap_or_else(|| serde_json::json!(1)),
+            "require_two_factor": settings.get("require_two_factor").and_then(Value::as_bool).unwrap_or(false),
         }))
     }
 
@@ -224,6 +226,10 @@ impl Kernel {
                 "fiscal_year_start_month" => {
                     let m = v.as_u64().filter(|m| (1..=12).contains(m)).ok_or_else(|| Error::field("fiscal_year_start_month", "must be 1 to 12"))?;
                     clean.insert(k.clone(), serde_json::json!(m));
+                }
+                "require_two_factor" => {
+                    let on = v.as_bool().ok_or_else(|| Error::field("require_two_factor", "must be true or false"))?;
+                    clean.insert(k.clone(), serde_json::json!(on));
                 }
                 other => return Err(Error::field(other, "unknown setting")),
             }
