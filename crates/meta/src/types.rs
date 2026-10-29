@@ -35,7 +35,8 @@ pub struct PackageManifest {
 }
 
 /// Records of one entity that belong to a person: those whose `match` email field holds the
-/// person's email (and whose fields hold the `where` values); `erase` lists what erasure blanks.
+/// person's email (and whose fields hold the `where` values); `erase` lists what erasure blanks
+/// (a child table listed there loses its rows).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PersonalDataDef {
@@ -47,9 +48,9 @@ pub struct PersonalDataDef {
     pub condition: std::collections::BTreeMap<String, Value>,
 }
 
-/// Field types erasure can blank (text, contact details and dates).
+/// Field types erasure can blank (text, contact details and dates); a child table loses its rows.
 pub const ERASABLE_TYPES: &[FieldType] =
-    &[FieldType::Data, FieldType::Text, FieldType::Markdown, FieldType::Email, FieldType::Phone, FieldType::Url, FieldType::Date];
+    &[FieldType::Data, FieldType::Text, FieldType::Markdown, FieldType::Email, FieldType::Phone, FieldType::Url, FieldType::Date, FieldType::Table];
 
 /// A fully loaded package: manifest + entity files + SQL + print templates.
 #[derive(Debug, Clone, Serialize, Deserialize)]

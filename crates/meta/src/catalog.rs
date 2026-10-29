@@ -216,7 +216,7 @@ impl Catalog {
                 }
                 for f in &pd.erase {
                     if field(f).is_none_or(|x| !crate::types::ERASABLE_TYPES.contains(&x.ftype)) {
-                        return invalid(format!("{name}: personal data of {}: {f} is not a text, contact or date field", pd.entity));
+                        return invalid(format!("{name}: personal data of {}: {f} is not a text, contact, date or table field", pd.entity));
                     }
                 }
                 if let Some(c) = pd.condition.keys().find(|c| field(c).is_none()) {
