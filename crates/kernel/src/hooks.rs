@@ -30,6 +30,11 @@ pub trait DocHook: Send + Sync {
     async fn validate(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
         Ok(())
     }
+    /// Validation that compares with the stored version (`old` is `None` for a new document), for
+    /// edit guards such as "the time of a confirmed booking cannot change". Runs after `validate`.
+    async fn validate_change(&self, hc: &mut HookCtx<'_>, old: Option<&Doc>, doc: &Doc) -> Result<()> {
+        Ok(())
+    }
     /// After insert/update was written (same transaction).
     async fn after_save(&self, hc: &mut HookCtx<'_>, doc: &Doc, old: Option<&Doc>) -> Result<()> {
         Ok(())

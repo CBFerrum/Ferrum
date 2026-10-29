@@ -111,7 +111,8 @@ pub async fn create_for_user(hc: &mut HookCtx<'_>, entity: &str, input: Doc) -> 
 }
 
 /// Unit cost at which an item left on the original document (None: use the current valuation).
-async fn returned_cost(hc: &mut HookCtx<'_>, entity: &str, original: Uuid, item: Uuid) -> Result<Option<Decimal>> {
+/// The valuation an earlier sale or receipt used for `item`, so a return goes back at that cost.
+pub async fn returned_cost(hc: &mut HookCtx<'_>, entity: &str, original: Uuid, item: Uuid) -> Result<Option<Decimal>> {
     let r: Option<Decimal> = sqlx::query_scalar(
         "select sum(value) / nullif(sum(qty), 0) from stock_move where tenant_id = $1 and source_entity = $2 and source_id = $3 \
          and item_id = $4 and qty < 0 and reversal_of is null",

@@ -106,8 +106,8 @@ async fn report(
     Ok(Json(ferrum_domain::reports::run(&st.kernel, &ctx, &name, &params).await?).into_response())
 }
 
-async fn list_reports(Auth(_ctx): Auth) -> ApiResult<Response> {
-    Ok(Json(json!({"reports": ferrum_domain::reports::catalog()})).into_response())
+async fn list_reports(Auth(ctx): Auth) -> ApiResult<Response> {
+    Ok(Json(json!({"reports": ferrum_domain::reports::catalog_for(&ctx)})).into_response())
 }
 
 async fn openapi(Auth(ctx): Auth) -> ApiResult<Response> {
