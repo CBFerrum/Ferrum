@@ -276,6 +276,10 @@ async fn collaboration_follows_record_access() {
     let list =
         |filters: Value, sort: Option<&str>| ListQuery { filters: parse_filters(&filters).unwrap(), sort: sort.map(str::to_string), ..Default::default() };
     k.update(&admin, "Customer", ids[0], obj(json!({"credit_limit": "5000"})), None).await.unwrap();
+    // The audit trail shows that the hidden field changed, never its values.
+    let changed = |trail: Value| trail["events"].as_array().unwrap().iter().rev().find_map(|e| e["diff"].get("credit_limit").cloned()).unwrap();
+    assert_eq!(changed(k.audit_trail(&bea_ctx, "Customer", ids[0]).await.unwrap()), json!({"hidden": true}));
+    assert_eq!(changed(k.audit_trail(&admin, "Customer", ids[0]).await.unwrap()), json!([null, "5000"]));
     let rich = json!([["credit_limit", ">", "1000"]]);
     assert_eq!(k.list(&admin, "Customer", &list(rich.clone(), None)).await.unwrap().rows.len(), 1);
     assert!(matches!(k.list(&bea_ctx, "Customer", &list(rich, None)).await, Err(Error::Forbidden(_))), "credit_limit is in a group Bea cannot read");

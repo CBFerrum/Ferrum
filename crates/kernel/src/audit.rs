@@ -172,6 +172,7 @@ impl crate::Kernel {
     pub async fn audit_trail(&self, ctx: &crate::Ctx, entity: &str, id: Uuid) -> Result<Value> {
         // Reading the record proves read permission (and tenant ownership) before showing its history.
         self.get(ctx, entity, id, false).await?;
+        let ent = self.entity(ctx, entity)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let rows: Vec<(i64, chrono::DateTime<chrono::Utc>, Option<Uuid>, String, Option<i32>, Option<Value>, Option<String>)> = sqlx::query_as(
             "select e.id, e.at, e.actor, e.action, e.version, e.diff, u.full_name from audit_event e \
@@ -188,11 +189,25 @@ impl crate::Kernel {
         let events: Vec<Value> = rows
             .into_iter()
             .map(|(eid, at, actor, action, version, diff, name)| {
+                let diff = diff.map(|d| mask_diff(ctx, &ent, d));
                 serde_json::json!({"id": eid, "at": at, "actor": actor, "actor_name": name, "action": action, "version": version, "diff": diff})
             })
             .collect();
         Ok(serde_json::json!({"events": events, "chain_valid": broken_at.is_none(), "broken_at": broken_at}))
     }
+}
+
+/// Values of fields the caller may not read become `{"hidden": true}`: the trail shows that they
+/// changed, never from or to what.
+fn mask_diff(ctx: &crate::Ctx, ent: &ferrum_meta::EffEntity, mut diff: Value) -> Value {
+    if let Value::Object(m) = &mut diff {
+        for (k, v) in m.iter_mut() {
+            if ent.field(k).is_some() && !crate::query::readable(ctx, ent, k) {
+                *v = json!({"hidden": true});
+            }
+        }
+    }
+    diff
 }
 
 #[cfg(test)]
