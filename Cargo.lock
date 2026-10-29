@@ -18,6 +18,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "aes"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35f0f96ce78e38c3dc6d8948aa8163d06385be74000f3c7a95bf1eef35d3ea32"
+dependencies = [
+ "cipher",
+ "cpubits",
+ "cpufeatures 0.3.1",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -48,9 +59,24 @@ checksum = "250f629c0161ad8107cf89319e990051fae62832fd343083bea452d93e2205fd"
 
 [[package]]
 name = "alloc-no-stdlib"
+version = "2.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc7bb162ec39d46ab1ca8c77bf72e890535becd1751bb45f64c597edb4c8c6b3"
+
+[[package]]
+name = "alloc-no-stdlib"
 version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2fb6cfd47bf496ff64095c20eaba0c201404ee38714d4142fcfa1dc334fcc7a"
+
+[[package]]
+name = "alloc-stdlib"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e76a019e91224d279006ff972f1e984179a6e9feb050adba6ce8274aef23195"
+dependencies = [
+ "alloc-no-stdlib 2.0.4",
+]
 
 [[package]]
 name = "alloc-stdlib"
@@ -58,7 +84,7 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b5c1865780388bfa186411ab5f247819487fc4864c6e9c3106611fa347586e1"
 dependencies = [
- "alloc-no-stdlib",
+ "alloc-no-stdlib 3.0.0",
 ]
 
 [[package]]
@@ -798,6 +824,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "block-padding"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "710f1dd022ef4e93f8a438b4ba958de7f64308434fa6a87104481645cc30068b"
+dependencies = [
+ "hybrid-array",
+]
+
+[[package]]
 name = "borsh"
 version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -827,9 +862,19 @@ version = "9.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "627b7cfb0578f0eafce087a90fcd40add1231900b69e4d4de2d456260a4f5d81"
 dependencies = [
- "alloc-no-stdlib",
- "alloc-stdlib",
- "brotli-decompressor",
+ "alloc-no-stdlib 3.0.0",
+ "alloc-stdlib 0.3.0",
+ "brotli-decompressor 6.2.0",
+]
+
+[[package]]
+name = "brotli-decompressor"
+version = "5.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a32acac15fe1967bc3986b2a6347dffc965602354ea6f450ad07e8bfd253583"
+dependencies = [
+ "alloc-no-stdlib 2.0.4",
+ "alloc-stdlib 0.2.4",
 ]
 
 [[package]]
@@ -838,8 +883,8 @@ version = "6.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34c6783f42c21c952ad7112b354f0ba2f10760e9decea5b1b60523d6e270faaf"
 dependencies = [
- "alloc-no-stdlib",
- "alloc-stdlib",
+ "alloc-no-stdlib 3.0.0",
+ "alloc-stdlib 0.3.0",
 ]
 
 [[package]]
@@ -907,6 +952,15 @@ dependencies = [
  "serde",
  "toml 1.1.8+spec-1.1.0",
  "url",
+]
+
+[[package]]
+name = "cbc"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce2dc9ee5f88d11e0beb842c88b33c8a5cf0d1329c4b19494af42b07dbfe8896"
+dependencies = [
+ "cipher",
 ]
 
 [[package]]
@@ -1006,6 +1060,16 @@ dependencies = [
  "parse-zoneinfo",
  "phf 0.11.3",
  "phf_codegen 0.11.3",
+]
+
+[[package]]
+name = "cipher"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8cf2a2c93cd704877c0858356ed03480ff301ee950b43f1cbe4573b088bfa6c"
+dependencies = [
+ "crypto-common 0.2.2",
+ "inout",
 ]
 
 [[package]]
@@ -1219,6 +1283,12 @@ checksum = "0667304c32ea56cb4cd6d2d7c0cfe9a2f8041229db8c033af7f8d69492429def"
 dependencies = [
  "cfg-if",
 ]
+
+[[package]]
+name = "cpubits"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15b85f9c39137c3a891689859392b1bd49812121d0d61c9caf00d46ed5ce06ae"
 
 [[package]]
 name = "cpufeatures"
@@ -1904,6 +1974,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
+name = "ecb"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26f2a8b3e564eba0877223dc343703ad0385794e882e6d13f3a4dd5c6b1f41ac"
+dependencies = [
+ "cipher",
+]
+
+[[package]]
 name = "ecdsa"
 version = "0.16.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2087,6 +2166,88 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
+name = "fdeflate"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c"
+dependencies = [
+ "simd-adler32",
+]
+
+[[package]]
+name = "ferrum-app-assets"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-assets?branch=main#4b5e3cd86eebbbe75f28fb9ab915f35178f867b1"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrum-calc",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "ferrum-app-bookings"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-bookings?branch=main#28888bc1b60e266fa3c66a80ffebc8a9bebbcf30"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "chrono-tz 0.10.4",
+ "ferrum-calc",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "hex",
+ "hmac 0.12.1",
+ "rand 0.9.5",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "ferrum-app-campaigns"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-campaigns?branch=main#f0aa288bddbeed9d24c8ff0db387809e3e899361"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "chrono-tz 0.10.4",
+ "ferrum-app-comms",
+ "ferrum-calc",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "form_urlencoded",
+ "hex",
+ "hmac 0.12.1",
+ "mail-parser",
+ "minijinja",
+ "rand 0.9.5",
+ "regex",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ferrum-app-commerce"
 version = "0.1.0"
 source = "git+https://github.com/CBFerrum/ferrum-app-commerce?branch=main#5216bd112b7e72871dd51d3b6f83a8a9e0fbb5cc"
@@ -2164,6 +2325,82 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrum-app-drive"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-drive?branch=main#bb059e892e4aa1ecd0bba8e8b2f301a7761a92a7"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "chrono-tz 0.10.4",
+ "ferrum-calc",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "hex",
+ "hmac 0.12.1",
+ "rand 0.9.5",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "ferrum-app-field-service"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-field-service?branch=main#57e6d49ada02cc321c8c7c5c09fbb32da40f3ca8"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "chrono-tz 0.10.4",
+ "ferrum-calc",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "hex",
+ "hmac 0.12.1",
+ "rand 0.9.5",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "ferrum-app-forms"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-forms?branch=main#e3e3bc2ca634d6d6ae83a93ec51d9f25acbd59e9"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "cel",
+ "chrono",
+ "chrono-tz 0.10.4",
+ "ferrum-calc",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "hex",
+ "hmac 0.12.1",
+ "rand 0.9.5",
+ "regex",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ferrum-app-helpdesk"
 version = "0.1.0"
 source = "git+https://github.com/CBFerrum/ferrum-app-helpdesk?branch=main#d48be3edea8f00f98671ff8078ea1d344a09e738"
@@ -2201,6 +2438,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrum-app-lms"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-lms?branch=main#c5e51339a859c8d5dbf7574220de8e3a6293efe6"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "chrono-tz 0.10.4",
+ "ferrum-calc",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "hex",
+ "rand 0.9.5",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "ferrum-app-pos"
 version = "0.1.0"
 source = "git+https://github.com/CBFerrum/ferrum-app-pos?branch=main#d361b11bf1a494707d11e57b85edc013d506fc8e"
@@ -2233,6 +2494,34 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "ferrum-app-sign"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-sign?branch=main#ba9c2d6cd0484217e11d37d84650db3171bf3d71"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "chrono-tz 0.10.4",
+ "ferrum-calc",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "hex",
+ "hmac 0.12.1",
+ "lopdf",
+ "png",
+ "rand 0.9.5",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tokio",
  "tracing",
  "uuid",
 ]
@@ -2455,13 +2744,21 @@ dependencies = [
  "bytes",
  "chrono",
  "dashmap",
+ "ferrum-app-assets",
+ "ferrum-app-bookings",
+ "ferrum-app-campaigns",
  "ferrum-app-commerce",
  "ferrum-app-comms",
  "ferrum-app-crm",
+ "ferrum-app-drive",
+ "ferrum-app-field-service",
+ "ferrum-app-forms",
  "ferrum-app-helpdesk",
  "ferrum-app-hr",
+ "ferrum-app-lms",
  "ferrum-app-pos",
  "ferrum-app-projects",
+ "ferrum-app-sign",
  "ferrum-apps",
  "ferrum-domain",
  "ferrum-finance",
@@ -2572,7 +2869,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb"
 dependencies = [
  "crc32fast",
- "miniz_oxide",
+ "miniz_oxide 0.9.1",
  "zlib-rs",
 ]
 
@@ -3362,6 +3659,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "inout"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b5cf4372d022092674a83b8febf5865f7a573cc0c5baec5e49c879b6a20978f"
+dependencies = [
+ "block-padding",
+ "hybrid-array",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3789,6 +4096,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
+name = "lopdf"
+version = "0.45.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bfffda0fe1ab0157e1a13c14bebd3f28671f2fccb7922f0722ec53926e6922d3"
+dependencies = [
+ "aes",
+ "bitflags 2.13.2",
+ "brotli-decompressor 5.0.3",
+ "cbc",
+ "ecb",
+ "encoding_rs",
+ "flate2",
+ "getrandom 0.4.3",
+ "indexmap",
+ "itoa",
+ "log",
+ "md-5",
+ "nom 8.0.0",
+ "rand 0.10.3",
+ "rangemap",
+ "sha2 0.11.1",
+ "stringprep",
+ "thiserror 2.0.21",
+ "weezl",
+]
+
+[[package]]
 name = "lru-slab"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3941,6 +4275,16 @@ name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+
+[[package]]
+name = "miniz_oxide"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
+dependencies = [
+ "adler2",
+ "simd-adler32",
+]
 
 [[package]]
 name = "miniz_oxide"
@@ -4763,6 +5107,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "png"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60769b8b31b2a9f263dae2776c37b1b28ae246943cf719eb6946a1db05128a61"
+dependencies = [
+ "bitflags 2.13.2",
+ "crc32fast",
+ "fdeflate",
+ "flate2",
+ "miniz_oxide 0.8.9",
+]
+
+[[package]]
 name = "portable-atomic"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5146,6 +5503,12 @@ checksum = "60aa6af80be32871323012e02e6e65f8a7cc7890931ae421d217ad8fe0df2ccf"
 dependencies = [
  "rand_core 0.10.1",
 ]
+
+[[package]]
+name = "rangemap"
+version = "1.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a611d15b50743feb4c76b7d03edcb0e64f399c26961e4efe6975bc398be6aa3d"
 
 [[package]]
 name = "rayon"
@@ -7844,6 +8207,12 @@ checksum = "f5f280bbb2b287bc8e7de7e3852945a0ff50d1bbcb5ed42b6c7a568c546df171"
 dependencies = [
  "rustls-pki-types",
 ]
+
+[[package]]
+name = "weezl"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4ca08e5ef825b65b056d9efbd95c8750683f0a6d0466d02e96dc2e4e360f3d2"
 
 [[package]]
 name = "whoami"

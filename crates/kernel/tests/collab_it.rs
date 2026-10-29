@@ -217,7 +217,8 @@ async fn collaboration_follows_record_access() {
 
     // ── files packages store land with the uploads and follow the record's access ──
     assert!(k.store_file(&admin, Some(("Customer", cid)), "a.txt", "text/plain", b"x").await.is_err(), "no store configured yet");
-    k.set_file_store(Arc::new(MemFiles::default()));
+    let objects = Arc::new(MemFiles::default());
+    k.set_file_store(objects.clone());
     let f = k.store_file(&admin, Some(("Customer", cid)), "quote.html", "text/html", b"<p>hi</p>").await.unwrap();
     let fid: Uuid = f["id"].as_str().unwrap().parse().unwrap();
     let (name, ctype, data) = k.read_file(&bea_ctx, fid).await.unwrap();
@@ -233,6 +234,32 @@ async fn collaboration_follows_record_access() {
     let copy = k.copy_file(&bea_ctx, fid, None).await.unwrap();
     assert_ne!(copy["id"], f["id"]);
     assert_eq!((copy["file_name"].as_str(), copy["sha256"].as_str()), (Some("quote.html"), f["sha256"].as_str()));
+    // Apps remove files completely (record and bytes) and attach uploads inside a transaction.
+    let copy_id: Uuid = copy["id"].as_str().unwrap().parse().unwrap();
+    let stored_before = objects.0.lock().unwrap().len();
+    assert!(k.remove_file(&otto_ctx, copy_id).await.is_err(), "only its uploader or an editor");
+    k.remove_file(&bea_ctx, copy_id).await.unwrap();
+    assert_eq!(objects.0.lock().unwrap().len(), stored_before - 1, "the bytes are gone too");
+    assert!(k.read_file(&bea_ctx, copy_id).await.is_err());
+    let loose = k.store_file(&bea_ctx, None, "photo.png", "image/png", b"\x89PNG").await.unwrap();
+    let loose_id: Uuid = loose["id"].as_str().unwrap().parse().unwrap();
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    assert!(k.attach_file_tx(&otto_ctx, &mut tx, loose_id, "Customer", cid).await.is_err(), "Otto cannot read the record");
+    tx.rollback().await.unwrap();
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    k.attach_file_tx(&bea_ctx, &mut tx, loose_id, "Customer", cid).await.unwrap();
+    assert!(k.attach_file_tx(&bea_ctx, &mut tx, loose_id, "Customer", cid).await.is_err(), "attached once");
+    tx.commit().await.unwrap();
+    assert!(k.attachments(&bea_ctx, "Customer", cid).await.unwrap().iter().any(|a| a["id"] == loose["id"]));
+    // An attachment belongs to its record: a reader who attached it cannot delete it, an editor can.
+    let readers = PermissionDef { entity: "Customer".into(), read: true, ..Default::default() };
+    k.set_role_permission(&admin, "Reader", &readers).await.unwrap();
+    let rita = k.create_user(&admin, "rita@collab.test", "Rita Reader", Some("Correct-Horse-9"), &["Reader".into()], false).await.unwrap();
+    let rita_ctx = k.load_ctx(tenant, rita, None, "it".into()).await.unwrap();
+    let note = k.store_file(&rita_ctx, Some(("Customer", cid)), "note.txt", "text/plain", b"seen").await.unwrap();
+    let note_id: Uuid = note["id"].as_str().unwrap().parse().unwrap();
+    assert!(matches!(k.remove_file(&rita_ctx, note_id).await, Err(Error::Forbidden(_))));
+    k.remove_file(&bea_ctx, note_id).await.unwrap();
 
     // ── preferences: per user, versioned ──
     let cols = json!({"columns": ["customer_name", "email"], "sort": "customer_name asc"});
@@ -289,7 +316,7 @@ async fn collaboration_follows_record_access() {
     let in_vip = json!([["customer_group.group_name", "=", "VIP"]]);
     assert!(matches!(k.list(&bea_ctx, "Customer", &list(in_vip.clone(), None)).await, Err(Error::Forbidden(_))), "no read access to groups");
     // Read access to her own groups only: the admin's VIP group stays invisible through the path.
-    let own_groups = PermissionDef { entity: "CustomerGroup".into(), read: true, create: true, if_owner: true, ..Default::default() };
+    let own_groups = PermissionDef { entity: "CustomerGroup".into(), read: true, write: true, create: true, if_owner: true, ..Default::default() };
     k.set_role_permission(&admin, "Sales", &own_groups).await.unwrap();
     let bea_ctx = k.load_ctx(tenant, bea, None, "it".into()).await.unwrap();
     assert!(k.list(&bea_ctx, "Customer", &list(in_vip, None)).await.unwrap().rows.is_empty(), "the VIP group is not hers");
@@ -297,4 +324,10 @@ async fn collaboration_follows_record_access() {
     k.update(&admin, "Customer", ids[1], obj(json!({"customer_group": retail["id"]})), None).await.unwrap();
     let in_retail = json!([["customer_group.group_name", "=", "Retail"]]);
     assert_eq!(k.list(&bea_ctx, "Customer", &list(in_retail, None)).await.unwrap().rows.len(), 1);
+    // Tag counts only count records the caller can read.
+    k.set_tags(&admin, "CustomerGroup", vip["id"].as_str().unwrap().parse().unwrap(), &["key-account".into()]).await.unwrap();
+    k.set_tags(&bea_ctx, "CustomerGroup", retail["id"].as_str().unwrap().parse().unwrap(), &["local".into()]).await.unwrap();
+    let tags = |v: Vec<Value>| v.iter().map(|t| t["tag"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert_eq!(tags(k.tag_counts(&bea_ctx, "CustomerGroup").await.unwrap()), ["local"]);
+    assert_eq!(tags(k.tag_counts(&admin, "CustomerGroup").await.unwrap()).len(), 2);
 }

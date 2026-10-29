@@ -70,9 +70,9 @@ OpenAPI 3.1 document is at `GET /api/openapi.json` (it includes every customizat
 | `GET /api/v1/{E}/{id}/assignments`, `POST …` | `{user, note?, due_date?, priority?}` → `201 {id}`; the assignee is notified |
 | `GET /api/assignments?status=Open\|Done\|all` | the caller's to-dos across records (open by default) |
 | `POST /api/assignments/{id}/close` | `{status: "Done" \| "Cancelled"}` |
-| `GET /api/v1/{E}/{id}/tags`, `PUT …` `{tags: [...]}` | tags; `GET /api/tags/{E}` → `{tags: [{tag, count}]}` |
+| `GET /api/v1/{E}/{id}/tags`, `PUT …` `{tags: [...]}` | tags; `GET /api/tags/{E}` → `{tags: [{tag, count}]}` over the records the caller can read |
 | `GET /api/v1/{E}/{id}/follow`, `PUT …` `{follow: bool}` | followers get a notification when the record changes |
-| `GET /api/v1/{E}/{id}/attachments` | → `{attachments: [{id, file_name, content_type, size_bytes, created_by, created_at, url}]}`; `DELETE /api/files/{id}` removes one |
+| `GET /api/v1/{E}/{id}/attachments` | → `{attachments: [{id, file_name, content_type, size_bytes, created_by, created_at, url}]}`; `DELETE /api/files/{id}` removes one (an attachment only by someone who can edit its record; a loose upload by its uploader) |
 | `GET /api/users` | directory of active users `[{id, full_name, email}]` for mentions and assignment |
 
 ## Preferences — `/api/prefs` (the signed-in user's own)

@@ -62,6 +62,14 @@ or any other vertical is a plugin, not a fork.
 | Commerce (online store) | [ferrum-app-commerce](https://github.com/CBFerrum/ferrum-app-commerce) |
 | HR and payroll | [ferrum-app-hr](https://github.com/CBFerrum/ferrum-app-hr) |
 | Mail, chat and calendar | [ferrum-app-comms](https://github.com/CBFerrum/ferrum-app-comms) |
+| Fixed assets | [ferrum-app-assets](https://github.com/CBFerrum/ferrum-app-assets) |
+| Bookings and appointments | [ferrum-app-bookings](https://github.com/CBFerrum/ferrum-app-bookings) |
+| Field service | [ferrum-app-field-service](https://github.com/CBFerrum/ferrum-app-field-service) |
+| Forms and surveys | [ferrum-app-forms](https://github.com/CBFerrum/ferrum-app-forms) |
+| Learn (courses, quizzes, certificates) | [ferrum-app-lms](https://github.com/CBFerrum/ferrum-app-lms) |
+| Drive (files and sharing) | [ferrum-app-drive](https://github.com/CBFerrum/ferrum-app-drive) |
+| Campaigns (email marketing) | [ferrum-app-campaigns](https://github.com/CBFerrum/ferrum-app-campaigns) |
+| Sign (electronic signatures) | [ferrum-app-sign](https://github.com/CBFerrum/ferrum-app-sign) |
 
 ## Quick start (development)
 
