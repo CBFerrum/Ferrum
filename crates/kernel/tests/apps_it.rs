@@ -76,7 +76,8 @@ fn release(version: &str, extra_field: bool) -> NewRelease {
     let child = if extra_field {
         "- name: FleetService\n  label: Service\n  kind: child\n  fields:\n    - {name: note, type: data}\n    - {name: active, type: check, default: true}\n\
          - name: FleetTrip\n  label: Trip\n  kind: document\n  submittable: true\n  fields:\n    - {name: purpose, type: data, required: true}\n    - {name: ticket, type: data, unique: true}\n\
-         - name: FleetDriver\n  label: Driver\n  kind: child\n  fields:\n    - {name: driver_name, type: data, required: true}\n"
+         - name: FleetDriver\n  label: Driver\n  kind: child\n  fields:\n    - {name: driver_name, type: data, required: true}\n\
+         - name: FleetSlot\n  label: Slot\n  kind: master\n  fields:\n    - {name: vehicle, type: data, required: true}\n    - {name: starts_at, type: datetime, required: true}\n    - {name: ends_at, type: datetime, required: true}\n    - {name: status, type: select, options: [Booked, Cancelled], default: Booked}\n  exclusion:\n    - {fields: [vehicle], from: starts_at, to: ends_at, when_not: {status: [Cancelled]}, message: This vehicle is booked then}\n"
     } else {
         ""
     };
@@ -144,6 +145,15 @@ async fn apps_join_the_catalog_at_runtime() {
     // Child rows added while editing get their defaults too.
     let upd = k.update(&c, "FleetVehicle", id, obj(json!({"services": [{"note": "oil change"}]})), None).await.unwrap();
     assert_eq!(upd["services"][0]["active"], json!(true));
+    // Date-time exclusions: half-open ranges, cancelled slots never overlap, a message of their own.
+    let slot =
+        |from: &str, to: &str| obj(json!({"vehicle": "KA-01", "starts_at": format!("2026-11-02T{from}:00Z"), "ends_at": format!("2026-11-02T{to}:00Z")}));
+    let first = k.insert(&c, "FleetSlot", slot("10:00", "11:00")).await.unwrap();
+    let clash = k.insert(&c, "FleetSlot", slot("10:30", "11:30")).await;
+    assert!(matches!(&clash, Err(Error::Conflict(m)) if m == "This vehicle is booked then"), "{clash:?}");
+    k.insert(&c, "FleetSlot", slot("11:00", "12:00")).await.expect("back-to-back slots do not overlap");
+    k.update(&c, "FleetSlot", first["id"].as_str().unwrap().parse().unwrap(), obj(json!({"status": "Cancelled"})), None).await.unwrap();
+    k.insert(&c, "FleetSlot", slot("09:30", "10:30")).await.expect("a cancelled slot does not count");
     // validate_change sees the stored version: new records pass, edits are checked against it.
     let frozen = k.insert(&c, "FleetVehicle", obj(json!({"plate": "FROZEN-1"}))).await.unwrap();
     let frozen_id: uuid::Uuid = frozen["id"].as_str().unwrap().parse().unwrap();

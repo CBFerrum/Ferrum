@@ -109,7 +109,25 @@ pub struct MapSpec<'a> {
     pub line_fields: &'a [&'a str],
 }
 
+/// Line fields the source and target documents share by name that carry over with the line, as
+/// ERPNext's mapper does: fields that apps or customizations add to both sides travel along.
+/// Fields the target computes, fetches or keeps read-only, and no-copy or secret fields, stay out.
+pub fn shared_line_fields(schema: &ferrum_meta::Schema, source: &str, target: &str) -> Vec<String> {
+    use ferrum_meta::FieldType;
+    let lines = |e: &str| schema.entity(e).and_then(|ent| ent.children.get("items")).and_then(|c| schema.entity(&c.entity));
+    let (Some(src), Some(dst)) = (lines(source), lines(target)) else { return vec![] };
+    let movable = |f: &ferrum_meta::FieldDef| {
+        !f.no_copy && !f.read_only && f.computed.is_none() && f.fetch_from.is_none() && !matches!(f.ftype, FieldType::Table | FieldType::Secret)
+    };
+    src.def.fields.iter().filter(|f| movable(f) && dst.field(&f.name).is_some_and(movable)).map(|f| f.name.clone()).collect()
+}
+
 pub fn map_document(src: &Doc, spec: &MapSpec<'_>) -> Result<Doc> {
+    map_document_with(src, spec, &[])
+}
+
+/// [`map_document`] also carrying `extra` line fields (see [`shared_line_fields`]).
+pub fn map_document_with(src: &Doc, spec: &MapSpec<'_>, extra: &[String]) -> Result<Doc> {
     let src_id = id(src, "id").ok_or_else(|| Error::internal("source without id"))?;
     let mut out = Doc::new();
     for h in spec.header {
@@ -124,9 +142,9 @@ pub fn map_document(src: &Doc, spec: &MapSpec<'_>) -> Result<Doc> {
             continue;
         }
         let mut line = Map::new();
-        for f in spec.line_fields {
-            if let Some(v) = r.get(*f).filter(|v| !v.is_null()) {
-                line.insert((*f).to_string(), v.clone());
+        for f in spec.line_fields.iter().copied().chain(extra.iter().map(String::as_str)) {
+            if let Some(v) = r.get(f).filter(|v| !v.is_null()) {
+                line.insert(f.to_string(), v.clone());
             }
         }
         line.insert("qty".into(), money(open));

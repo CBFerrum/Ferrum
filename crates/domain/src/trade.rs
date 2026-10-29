@@ -3,7 +3,7 @@
 //! (SalesInvoice / PurchaseInvoice), including stock, ledger postings, open items, returns and
 //! the "create next document" actions.
 
-use crate::flow::{self, MapSpec, add_progress, created, map_document, refresh_billing, refresh_order, sync_invoice_outstanding};
+use crate::flow::{self, MapSpec, add_progress, created, refresh_billing, refresh_order, sync_invoice_outstanding};
 use crate::ledger::{self, Entry, Line, OpenItem};
 use crate::pricing::{Side, breakup, calculate};
 use crate::stock::{self, MoveIn, Posted, parse_serials};
@@ -246,8 +246,12 @@ impl DocHook for OrderHook {
         } else {
             return Ok(None);
         };
-        let mut input =
-            map_document(doc, &MapSpec { done_field: done, link_field: n.order_link, line_field: n.order_line, header: &header, line_fields: LINE_FIELDS })?;
+        let extra = flow::shared_line_fields(&hc.ctx.schema, n.order, target);
+        let mut input = flow::map_document_with(
+            doc,
+            &MapSpec { done_field: done, link_field: n.order_link, line_field: n.order_line, header: &header, line_fields: LINE_FIELDS },
+            &extra,
+        )?;
         if target == n.invoice && self.0 == Side::Buying {
             input.insert("bill_no".into(), json!(format!("PENDING-{}", s(doc, "number").unwrap_or_default())));
         }
@@ -358,9 +362,11 @@ impl DocHook for ShipmentHook {
         let header = header_fields(self.0);
         let mut line_fields = LINE_FIELDS.to_vec();
         line_fields.extend([n.order_link, n.order_line]);
-        let mut input = map_document(
+        let extra = flow::shared_line_fields(&hc.ctx.schema, n.shipment, n.invoice);
+        let mut input = flow::map_document_with(
             doc,
             &MapSpec { done_field: "billed_qty", link_field: n.shipment_link, line_field: n.shipment_line, header: &header, line_fields: &line_fields },
+            &extra,
         )?;
         if self.0 == Side::Buying {
             input.insert("bill_no".into(), json!(format!("PENDING-{}", s(doc, "number").unwrap_or_default())));
@@ -760,7 +766,8 @@ impl DocHook for InvoiceHook {
                 Ok(Some(created("PaymentEntry", &p)))
             }
             "make_credit_note" => {
-                let mut input = map_document(
+                let extra = flow::shared_line_fields(&hc.ctx.schema, n.invoice, n.invoice);
+                let mut input = flow::map_document_with(
                     doc,
                     &MapSpec {
                         done_field: "__none__",
@@ -769,6 +776,7 @@ impl DocHook for InvoiceHook {
                         header: &header_fields(self.0),
                         line_fields: LINE_FIELDS,
                     },
+                    &extra,
                 )?;
                 if let Some(Value::Array(lines)) = input.get_mut("items") {
                     for l in lines.iter_mut() {

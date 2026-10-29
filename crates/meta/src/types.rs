@@ -184,6 +184,10 @@ pub struct ExclusionDef {
     /// What users read when a record would overlap another (default: "this overlaps an existing record").
     #[serde(default)]
     pub message: Option<String>,
+    /// Records whose field holds one of these values never count as overlapping, e.g.
+    /// `{status: [Cancelled, No Show]}` (select or data fields; plain words only).
+    #[serde(default)]
+    pub when_not: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

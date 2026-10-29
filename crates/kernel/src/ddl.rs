@@ -345,17 +345,24 @@ async fn sync_locked(conn: &mut PgConnection, catalog: &Catalog, force: bool) ->
                 continue;
             }
             let eq: Vec<String> = std::iter::once("tenant_id".to_string()).chain(x.fields.iter().cloned()).map(|c| format!("{} with =", q(&c))).collect();
-            // Cancelled documents are void and never overlap anything.
-            let live = if ent.def.submittable { " where (docstatus <> 2)" } else { "" };
-            ddl.exec(format!(
-                "alter table {} add constraint {} exclude using gist ({}, daterange({}, {}, '[]') with &&){live}",
-                q(&t),
-                q(&name),
-                eq.join(", "),
-                q(&x.from),
-                q(&x.to)
-            ))
-            .await?;
+            // Dates are whole days (both ends count); date-times are half-open, so back-to-back
+            // appointments (10:00-11:00, 11:00-12:00) do not overlap.
+            let datetime = ent.field(&x.from).is_some_and(|f| f.ftype == FieldType::Datetime);
+            let range =
+                if datetime { format!("tstzrange({}, {}, '[)')", q(&x.from), q(&x.to)) } else { format!("daterange({}, {}, '[]')", q(&x.from), q(&x.to)) };
+            // Cancelled documents are void and never overlap anything; nor do `when_not` values
+            // (validated as plain words when the package loads).
+            let mut conds: Vec<String> = Vec::new();
+            if ent.def.submittable {
+                conds.push("docstatus <> 2".into());
+            }
+            for (field, values) in &x.when_not {
+                let list = values.iter().map(|v| format!("'{}'", v.replace('\'', "''"))).collect::<Vec<_>>().join(", ");
+                conds.push(format!("{} is null or {} not in ({list})", q(field), q(field)));
+            }
+            let live =
+                if conds.is_empty() { String::new() } else { format!(" where ({})", conds.iter().map(|c| format!("({c})")).collect::<Vec<_>>().join(" and ")) };
+            ddl.exec(format!("alter table {} add constraint {} exclude using gist ({}, {range} with &&){live}", q(&t), q(&name), eq.join(", "))).await?;
             ddl.constraints.insert(name);
         }
         ddl.search_indexes(&t, ent).await?;
