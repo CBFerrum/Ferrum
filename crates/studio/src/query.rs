@@ -13,6 +13,7 @@
 //! Shape: the "source" is `select <per-row values> from base a [join child c] [left join link lN]
 //! where ...`; statements group or list over it (`... from (<source>) s`).
 
+use crate::formula::{Formula, MAX_FORMULAS};
 use crate::spec::{Agg, Bucket, Compare, Dir, MAX_PIVOT_CELLS, MAX_PIVOT_COLUMNS, Spec, resolve_date};
 use chrono::NaiveDate;
 use ferrum_kernel::ctx::RowScope;
@@ -503,6 +504,9 @@ pub struct Plan {
     pub(crate) limit: u32,
     pub(crate) time_series: Option<TimeSeries>,
     pub(crate) compare: Option<Compare>,
+    /// Calculated columns: name, label and formula, in the order they are worked out.
+    pub(crate) formulas: Vec<(String, String, Formula)>,
+    pub(crate) subtotals: bool,
 }
 
 struct Builder<'a> {
@@ -945,6 +949,11 @@ pub fn compile(ctx: &Ctx, spec: &Spec) -> Result<Plan> {
         }
     };
 
+    let formulas = formulas(spec, mode, &dims, &raw, &measures, pivot.is_some())?;
+    if spec.subtotals && (mode != Mode::Grouped || dims.len() < 2 || pivot.is_some() || spec.compare.is_some()) {
+        return Err(bad("subtotals", "subtotals need two or more groupings (a time series counts), without a pivot or a comparison"));
+    }
+
     let Builder { r, grain, joins, tz, .. } = b;
     let plan = Plan {
         tenant: ctx.tenant,
@@ -970,11 +979,52 @@ pub fn compile(ctx: &Ctx, spec: &Spec) -> Result<Plan> {
         limit,
         time_series,
         compare: spec.compare,
+        formulas,
+        subtotals: spec.subtotals,
     };
     // Filter values are typed by their fields; render once so bad values fail now.
     let mut probe = QueryBuilder::new("");
     plan.push_source(&mut probe, None)?;
     Ok(plan)
+}
+
+/// Compiles the calculated columns: references are the result's columns (and earlier formulas)
+/// by name or label.
+fn formulas(spec: &Spec, mode: Mode, dims: &[Dim], raw: &[Dim], measures: &[Meas], pivot: bool) -> Result<Vec<(String, String, Formula)>> {
+    if spec.formulas.is_empty() {
+        return Ok(vec![]);
+    }
+    if spec.formulas.len() > MAX_FORMULAS {
+        return Err(bad("formulas", format!("at most {MAX_FORMULAS} calculated columns")));
+    }
+    if pivot {
+        return Err(bad("formulas", "calculated columns cannot be combined with a pivot"));
+    }
+    let shown = if mode == Mode::Raw { raw } else { dims };
+    let mut known: Vec<(String, String)> = shown.iter().map(|d| (d.name.clone(), d.label.clone())).collect();
+    known.extend(measures.iter().map(|m| (m.name.clone(), m.label.clone())));
+    if spec.compare.is_some() {
+        known.extend(measures.iter().map(|m| (format!("previous({})", m.name), format!("{} (previous)", m.label))));
+    }
+    let mut out = Vec::new();
+    for (i, f) in spec.formulas.iter().enumerate() {
+        let label = f.label.trim().to_string();
+        if label.is_empty() || label.chars().count() > 100 {
+            return Err(bad("formulas", "each calculated column needs a label of at most 100 characters"));
+        }
+        let lookup = |r: &str| {
+            known
+                .iter()
+                .find(|(n, l)| n.eq_ignore_ascii_case(r) || l.eq_ignore_ascii_case(r))
+                .map(|(n, _)| n.clone())
+                .ok_or_else(|| format!("no column [{r}]: refer to a column by its name or label"))
+        };
+        let parsed = Formula::parse(&f.expr, &lookup).map_err(|m| bad("formulas", format!("{label}: {m}")))?;
+        let name = format!("calc{}", i + 1);
+        known.push((name.clone(), label.clone()));
+        out.push((name, label, parsed));
+    }
+    Ok(out)
 }
 
 impl Plan {
@@ -1157,6 +1207,20 @@ impl Plan {
         Ok(qb)
     }
 
+    /// The measures per value of the first dimension, for the first-dimension keys listed.
+    pub(crate) fn subtotals(&self, keys: &Value) -> Result<QueryBuilder<Postgres>> {
+        let first = self.dims.first().ok_or_else(|| Error::internal("subtotals without a dimension"))?;
+        let mut qb = QueryBuilder::new("select to_jsonb(x) from (select ");
+        let mut cols = vec![Self::dim_out(first, "d0"), format!("{} as _k", Self::key_sql(&[0]))];
+        cols.extend(self.measures_out());
+        qb.push(cols.join(", ")).push(" from ");
+        self.push_source(&mut qb, None)?;
+        qb.push(format!(" where {} in (select value from jsonb_array_elements(", Self::key_sql(&[0])))
+            .push_bind(keys.clone())
+            .push("::jsonb)) group by s.d0) x");
+        Ok(qb)
+    }
+
     /// The measures over every matching row.
     pub(crate) fn totals(&self, range: Option<(NaiveDate, NaiveDate)>) -> Result<QueryBuilder<Postgres>> {
         let mut qb = QueryBuilder::new("select to_jsonb(x) from (select ");
@@ -1307,7 +1371,9 @@ pub fn fields(ctx: &Ctx, entity: &str) -> Result<Value> {
         "buckets": Bucket::ALL,
         "compare": ["previous_period", "previous_year"],
         "dates": "YYYY-MM-DD or today, start_of_week|month|quarter|year|fiscal_year, end_of_..., with offsets such as -30d, +1w, -11m, -1q, -1y",
-        "limits": {"rows": crate::spec::MAX_LIMIT, "pivot_columns": MAX_PIVOT_COLUMNS, "pivot_cells": MAX_PIVOT_CELLS},
+        "formulas": "{label, expr}: arithmetic over the result's columns by name or label in brackets, e.g. round(([Revenue] - [Cost]) / [Revenue] * 100, 1); + - * /, round, abs, min, max, coalesce",
+        "subtotals": "true with two or more groupings: the measures per value of the first, returned as `subtotals`",
+        "limits": {"rows": crate::spec::MAX_LIMIT, "pivot_columns": MAX_PIVOT_COLUMNS, "pivot_cells": MAX_PIVOT_CELLS, "formulas": MAX_FORMULAS},
     }))
 }
 

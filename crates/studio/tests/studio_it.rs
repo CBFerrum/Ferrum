@@ -259,6 +259,38 @@ async fn scenario() {
     assert_eq!(by_group["columns"][0]["label"], json!("Customer › Customer Group"));
     assert_eq!(by_group["columns"][2]["type"], json!("currency"));
 
+    // Calculated columns (exact, over rows, totals and subtotals) and subtotals by the first grouping.
+    let sub = t
+        .q(
+            &manager,
+            json!({"entity": "SalesInvoice", "filters": base, "date_range": aug_sep,
+                   "group_by": [{"field": "customer.customer_group"}, {"field": "customer"}],
+                   "measures": [{"fn": "count"}, {"fn": "sum", "field": "grand_total"}],
+                   "formulas": [{"label": "Average", "expr": "[sum(grand_total)] / [Count]"}, {"label": "Doubled", "expr": "round([average] * 2, 2)"}],
+                   "subtotals": true}),
+        )
+        .await;
+    let subs = sub["subtotals"].as_array().expect("subtotals");
+    let firm = subs.iter().find(|s| s["customer.customer_group"] == json!(commercial.to_string())).expect("the Commercial subtotal");
+    assert_eq!(
+        (&firm["count"], &firm["sum(grand_total)"], &firm["calc1"], &firm["calc2"]),
+        (&json!(3), &json!("811"), &json!("270.333333333"), &json!("540.67")),
+        "{sub}"
+    );
+    assert_eq!(firm["_titles"]["customer.customer_group"], json!("Commercial"));
+    assert_eq!(subs.len(), 2);
+    assert_eq!(sub["totals"]["calc1"], json!("272.2"), "a ratio of the totals, not a sum of ratios");
+    assert_eq!(sub["columns"].as_array().unwrap().last().unwrap()["label"], json!("Doubled"));
+    let message = |e: Error| match e {
+        Error::Validation(errs) => errs.iter().map(|f| f.message.clone()).collect::<Vec<_>>().join("; "),
+        other => other.to_string(),
+    };
+    let typo = t.q_err(&manager, json!({"entity": "SalesInvoice", "measures": [{"fn": "count"}], "formulas": [{"label": "X", "expr": "[profit] * 2"}]})).await;
+    assert!(message(typo).contains("no column [profit]"));
+    let flat =
+        t.q_err(&manager, json!({"entity": "SalesInvoice", "group_by": [{"field": "customer"}], "measures": [{"fn": "count"}], "subtotals": true})).await;
+    assert!(message(flat).contains("two or more groupings"));
+
     // Users show by name.
     let by_creator = t
         .q(
