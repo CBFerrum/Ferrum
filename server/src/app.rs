@@ -166,6 +166,7 @@ impl Hooks for App {
             kernel,
             plugins,
             live: crate::live::LiveHub::new(),
+            docs: crate::coedit::Docs::new(),
             settings,
             shutdown: Arc::new(tx),
             background: Arc::new(tokio::sync::Mutex::new(Vec::new())),
@@ -194,6 +195,7 @@ impl Hooks for App {
         let mut listeners = state.kernel.spawn_listeners(state.shutdown.subscribe());
         listeners.push(state.plugins.sockets.spawn_listener(state.kernel.db.clone(), state.shutdown.subscribe()));
         listeners.push(state.live.spawn_listener(state.kernel.clone(), state.shutdown.subscribe()));
+        listeners.extend(state.docs.spawn(state.kernel.clone(), state.shutdown.subscribe()));
         state.background.lock().await.extend(listeners);
         if state.settings.run_background {
             let mut handles = state.kernel.spawn_background(state.shutdown.subscribe());
@@ -275,6 +277,7 @@ impl Hooks for App {
             .add_route(controllers::oauth::routes())
             .add_route(controllers::plugins::routes())
             .add_route(crate::live::routes())
+            .add_route(crate::coedit::routes())
             .add_route(controllers::sites::routes())
             .add_route(controllers::dav::routes())
     }

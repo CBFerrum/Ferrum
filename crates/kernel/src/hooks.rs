@@ -11,6 +11,7 @@ use ferrum_meta::EffEntity;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use uuid::Uuid;
 
 pub struct HookCtx<'a> {
     pub kernel: &'a Kernel,
@@ -127,11 +128,43 @@ pub trait Site: Send + Sync {
     }
 }
 
+/// What a person may do with a co-edited document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DocAccess {
+    None,
+    Read,
+    Write,
+}
+
+/// A package whose records are documents people edit together live, at `/ws/docs/{package}/{id}`
+/// (docs/plan/collaboration.md, C3). The server keeps the document itself (a Yjs document, its
+/// changes in PostgreSQL); the package says who may open it, gives its first content, and keeps
+/// what the server hands it after a stretch of editing.
+#[async_trait]
+pub trait DocHost: Send + Sync {
+    /// What `ctx` may do with document `doc`; [`DocAccess::None`] also for one that does not exist.
+    async fn access(&self, kernel: &Kernel, ctx: &Ctx, doc: Uuid) -> Result<DocAccess>;
+
+    /// The content a document starts from when it is first opened (a Yjs update), if any.
+    async fn initial(&self, kernel: &Kernel, tenant: Uuid, doc: Uuid) -> Result<Option<Vec<u8>>> {
+        let _ = (kernel, tenant, doc);
+        Ok(None)
+    }
+
+    /// The document after a stretch of editing: its whole state (a Yjs update), its plain text, and
+    /// who changed it since the last save. Called once per change, from one replica.
+    async fn saved(&self, kernel: &Kernel, tenant: Uuid, doc: Uuid, state: &[u8], text: &str, editors: &[Uuid]) -> Result<()> {
+        let _ = (kernel, tenant, doc, state, text, editors);
+        Ok(())
+    }
+}
+
 #[derive(Default, Clone)]
 pub struct HookRegistry {
     by_entity: HashMap<String, Vec<ScopedHook>>,
     sinks: Vec<Arc<dyn EventSink>>,
     sites: HashMap<String, Arc<dyn Site>>,
+    doc_hosts: HashMap<String, Arc<dyn DocHost>>,
     /// The packages owning what is being registered (see [`HookRegistry::scoped`]).
     scope: Option<Arc<[String]>>,
 }
@@ -199,6 +232,16 @@ impl HookRegistry {
 
     pub fn site(&self, package: &str) -> Option<&Arc<dyn Site>> {
         self.sites.get(package)
+    }
+
+    /// Lets the package's records be co-edited documents (see [`DocHost`]).
+    pub fn add_doc_host(&mut self, package: &str, host: Arc<dyn DocHost>) -> &mut Self {
+        self.doc_hosts.insert(package.to_string(), host);
+        self
+    }
+
+    pub fn doc_host(&self, package: &str) -> Option<&Arc<dyn DocHost>> {
+        self.doc_hosts.get(package)
     }
 }
 

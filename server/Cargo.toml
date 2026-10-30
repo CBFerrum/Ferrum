@@ -66,6 +66,8 @@ ferrum-app-campaigns = { git = "https://github.com/CBFerrum/ferrum-app-campaigns
 ferrum-app-sign = { git = "https://github.com/CBFerrum/ferrum-app-sign", branch = "main", optional = true }
 base64 = "0.22"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "alloc"] }
+# Documents edited together (coedit.rs): Yjs in Rust. Patched in the workspace (third_party/yrs/FERRUM.md).
+yrs = { version = "=0.28.0", features = ["sync"] }
 migration = { path = "migration", package = "ferrum-migration" }
 loco-rs = { version = "1.2", default-features = false, features = ["auth", "cli", "with-db", "cache_inmem", "worker", "storage_aws_s3"] }
 sea-orm = { version = "2.0", features = ["sqlx-postgres", "runtime-tokio-rustls", "macros"] }
