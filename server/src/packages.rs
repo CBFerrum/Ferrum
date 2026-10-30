@@ -123,6 +123,8 @@ macro_rules! apps {
             out.push(("drive", ferrum_app_drive::UI));
             #[cfg(feature = "docs")]
             out.push(("docs", ferrum_app_docs::UI));
+            #[cfg(feature = "crm")]
+            out.push(("crm", ferrum_app_crm::UI));
             out
         }
 
