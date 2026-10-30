@@ -68,7 +68,7 @@ or any other vertical is a plugin, not a fork.
 | Field service | [ferrum-app-field-service](https://github.com/CBFerrum/ferrum-app-field-service) |
 | Forms and surveys | [ferrum-app-forms](https://github.com/CBFerrum/ferrum-app-forms) |
 | Learn (courses, quizzes, certificates) | [ferrum-app-lms](https://github.com/CBFerrum/ferrum-app-lms) |
-| Drive (files, sharing, online editing of office documents) | [ferrum-app-drive](https://github.com/CBFerrum/ferrum-app-drive) |
+| Drive (files, sharing, online editing of office documents; browser editors as an add-on) | [ferrum-app-drive](https://github.com/CBFerrum/ferrum-app-drive) |
 | Campaigns (email marketing) | [ferrum-app-campaigns](https://github.com/CBFerrum/ferrum-app-campaigns) |
 | Sign (electronic signatures) | [ferrum-app-sign](https://github.com/CBFerrum/ferrum-app-sign) |
 
@@ -190,6 +190,8 @@ balance sheet balance and that stock value equals the stock accounts.
   which also proxies the API so browsers see one origin). Both are stateless. The published images
   are linux/amd64; for ARM hosts (Graviton, Ampere), `docker build .` on an arm64 machine produces
   a working image (checked on Apple Silicon: non-root, read-only root filesystem, no capabilities).
+* Optional: `ghcr.io/cbferrum/ferrum-editors`, the static server of Drive's browser editors
+  (`deploy/editors`, on an origin of its own).
 * Single host: `deploy/docker-compose.yml`.
 * Production: `deploy/k8s` (CloudNativePG with synchronous replica and PITR backups through the
   Barman Cloud plugin, 3+ API replicas, Gateway API routes with cert-manager TLS, PDB, HPA,
