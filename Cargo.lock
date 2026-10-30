@@ -2273,8 +2273,8 @@ dependencies = [
 
 [[package]]
 name = "ferrum-app-comms"
-version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-comms?branch=main#737367560eb155c4573ed385d97261d3667c2af1"
+version = "0.2.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-comms?branch=main#e6323f6c85971b86afbfb203c8e00d3d64fb0880"
 dependencies = [
  "ammonia",
  "async-imap",

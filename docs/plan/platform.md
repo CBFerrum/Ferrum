@@ -321,8 +321,10 @@ their mail install the sub-plugin.
 Spike S2 ([spike-s2-stalwart.md](spike-s2-stalwart.md)) checked Stalwart 1.0.1 and found go,
 with three corrections to this section:
 * administration is JMAP, not a REST API;
-* multi-tenancy and SCIM need the Enterprise edition, so the open-source setup is one instance per
-  workspace that hosts mail;
+* multi-tenancy and SCIM need the Enterprise edition. Without them, workspaces share one instance
+  kept apart by their domains: accounts carry `externalId = ferrum:<workspace>:<person>`, and
+  ordinary users cannot list other accounts, because directory queries are off by default. Hard
+  separation needs one instance per deployment, or Enterprise tenants;
 * group accounts are the shared mailboxes.
 
 ### 5.2 What Stalwart does and what Ferrum adds
@@ -391,7 +393,7 @@ before Mail because it is smaller and proves the sub-plugin and separate-service
 
 | Risk | Answer |
 |---|---|
-| Hosting many tenants on one Stalwart needs its Enterprise edition (S2 confirmed: `x:Tenant` and SCIM are Enterprise) | one instance per workspace that hosts mail in the open-source edition; an Enterprise licence for shared hosting |
+| Hosting many tenants on one Stalwart needs its Enterprise edition (S2 confirmed: `x:Tenant` and SCIM are Enterprise) | the open-source edition keeps workspaces apart by domain, with directory queries off; Enterprise tenants where hard separation is required |
 | The free builds of Collabora and ONLYOFFICE limit or discourage production use | S1 checks current terms; budget a subscription or build from source; both sit behind the same WOPI host, so switching is a setting |
 | ONLYOFFICE's governance dispute | Collabora is the default |
 | ArtCraft: alpha, no embedding API, one vendor, trademarks | optional only; a pinned fork; the bridge offered upstream |
