@@ -30,7 +30,7 @@ use axum::response::Response;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use dashmap::DashMap;
-use ferrum_kernel::coedit::{self, apply_stored, new_doc, plain_text};
+use ferrum_kernel::coedit::{self, CHANNEL, MAX_DOC, apply_stored, new_doc, plain_text};
 use ferrum_kernel::{Ctx, DocAccess, DocHost, Error, Kernel, Result};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
@@ -51,12 +51,9 @@ use yrs::updates::decoder::{Decode, DecoderV1};
 use yrs::updates::encoder::Encode;
 use yrs::{ReadTxn, StateVector, Transact, Update};
 
-const CHANNEL: &str = "ferrum_coedit";
 const SNAPSHOT_EVERY: i64 = 500;
 /// The largest message a client may send (a sync step after a long time offline included).
 const MAX_MESSAGE: usize = 8 << 20;
-/// The largest a document may grow, roughly its encoded size.
-const MAX_DOC: usize = 32 << 20;
 /// Changes are gathered this long into one stored row.
 const GATHER: Duration = Duration::from_millis(50);
 /// Upkeep: idle documents let go, periodic saves; every fifth round, the sweep for unsaved ones.
@@ -533,34 +530,10 @@ async fn store_batch(k: &Arc<Kernel>, replica: &str, room: &Room, batch: &[Pendi
     Ok(())
 }
 
-/// Appends a change to the document's sequence and announces it, in one transaction: the row lock
-/// on `coedit_doc` makes a document's changes commit in their order.
+/// Appends a change to the document's sequence and announces it (the kernel's `coedit::store`).
 async fn store(k: &Kernel, replica: &str, key: &Key, data: &[u8], authors: &[Uuid]) -> Result<i64> {
     let mut tx = k.db.tenant_tx(key.tenant).await?;
-    let seq: Option<i64> = sqlx::query_scalar(
-        "update coedit_doc set seq = seq + 1, updated_at = now(), editors = array(select distinct e from unnest(editors || $4) e) \
-         where tenant_id = $1 and package = $2 and id = $3 returning seq",
-    )
-    .bind(key.tenant)
-    .bind(&key.package)
-    .bind(key.doc)
-    .bind(authors)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let seq = seq.ok_or_else(|| Error::NotFound("document".into()))?;
-    sqlx::query("insert into coedit_update (tenant_id, package, doc, seq, data) values ($1, $2, $3, $4, $5)")
-        .bind(key.tenant)
-        .bind(&key.package)
-        .bind(key.doc)
-        .bind(seq)
-        .bind(data)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("select pg_notify($1, $2)")
-        .bind(CHANNEL)
-        .bind(json!({"t": key.tenant, "p": key.package, "d": key.doc, "r": replica, "s": seq}).to_string())
-        .execute(&mut *tx)
-        .await?;
+    let seq = coedit::store(&mut tx, key.tenant, &key.package, key.doc, data, authors, replica).await?.ok_or_else(|| Error::NotFound("document".into()))?;
     tx.commit().await?;
     Ok(seq)
 }
@@ -1420,6 +1393,21 @@ mod tests {
         let ahead = Message::Sync(SyncMessage::SyncStep2(typed(&other, "offline words"))).encode_v1();
         assert!(viewer_b.take(&ahead).unwrap().refusal.is_some(), "a viewer's sync step with new words is refused");
 
+        // ── added outside any editor (an AI agent through the package): both replicas show it ──
+        let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+        coedit::append(&mut tx, tenant, "notes", key.doc, None, "## From an agent\n\n- with **a list**", raj).await.unwrap();
+        tx.commit().await.unwrap();
+        until("A shows the agent's words", || text(&ra).contains("From an agent\nwith a list")).await;
+        until("B shows the agent's words", || text(&rb).contains("From an agent\nwith a list")).await;
+        let expected = text(&ra);
+        {
+            // The editors' copies stay in step with the agent's change.
+            let update =
+                Update::decode_v1(&ra.awareness.lock().unwrap().doc().transact().encode_state_as_update_v1(&client.transact().state_vector())).unwrap();
+            client.transact_mut().apply_update(update).unwrap();
+        }
+        assert_eq!(plain_text(&client), expected);
+
         // ── saves: claimed once; a failure leaves it for next time, crediting the same people ──
         host.fail.store(true, Ordering::SeqCst);
         assert!(save(&k, &key, Some(&ra), false).await.is_err());
@@ -1429,7 +1417,9 @@ mod tests {
         {
             let saved = host.saved.lock().unwrap();
             assert_eq!(saved.len(), 1);
-            assert_eq!((saved[0].0, saved[0].1.as_str(), saved[0].2.clone()), (key.doc, expected.as_str(), vec![ana]));
+            let mut both = vec![ana, raj];
+            both.sort();
+            assert_eq!((saved[0].0, saved[0].1.as_str(), saved[0].2.clone()), (key.doc, expected.as_str(), both), "the agent's person is credited too");
         }
         let mut on_b = conn(&k, &b, &rb, 5, raj, DocAccess::Write);
         on_b.take(&update_msg(typed(&client, "from B"))).unwrap();
