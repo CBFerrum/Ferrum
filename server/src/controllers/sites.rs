@@ -4,7 +4,7 @@
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{Auth, client_ip};
 use crate::state::app_state;
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
@@ -15,12 +15,24 @@ use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-/// No package may accept more than this per request.
-const MAX_BODY: usize = 32 << 20;
+/// No package may accept more than this per request. Each route's own limit
+/// (`Site::max_body_for`) is usually far lower, and a body is read only up to it.
+const MAX_BODY: usize = 1 << 30;
+
+/// Reads a request body up to the route's `limit`: refused at once when its declared length is
+/// larger, and as soon as it grows past the limit otherwise, so no route buffers more than it takes.
+async fn read_body(headers: &HeaderMap, body: Body, limit: usize) -> Result<Bytes, ApiError> {
+    let limit = limit.min(MAX_BODY);
+    let too_large = || ApiError(Error::invalid(format!("request body larger than {} KB", limit / 1024)));
+    let declared = headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok());
+    if declared.is_some_and(|n| n > limit as u64) {
+        return Err(too_large());
+    }
+    axum::body::to_bytes(body, limit).await.map_err(|_| too_large())
+}
 
 #[allow(clippy::too_many_arguments)]
 fn request(
-    limit: usize,
     tenant: Uuid,
     user: Option<Ctx>,
     method: Method,
@@ -30,10 +42,6 @@ fn request(
     headers: &HeaderMap,
     body: Bytes,
 ) -> Result<SiteRequest, ApiError> {
-    let limit = limit.min(MAX_BODY);
-    if body.len() > limit {
-        return Err(ApiError(Error::invalid(format!("request body larger than {} KB", limit / 1024))));
-    }
     let mut safe: Map<String, Value> = headers
         .iter()
         .filter(|(k, _)| !matches!(k.as_str(), "authorization" | "cookie" | "proxy-authorization" | "x-ferrum-uri"))
@@ -80,13 +88,14 @@ async fn app(
     uri: Uri,
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
-    body: Bytes,
+    body: Body,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let site = st.kernel.hooks.site(&package).filter(|_| ctx.schema.packages.contains(&package)).cloned();
     let site = site.ok_or_else(|| ApiError(Error::NotFound(format!("package {package}"))))?;
     let tenant = ctx.tenant;
-    let req = request(site.max_body_for(method.as_str(), &path), tenant, Some(ctx), method, &uri, path, query, &headers, body)?;
+    let body = read_body(&headers, body, site.max_body_for(method.as_str(), &path)).await?;
+    let req = request(tenant, Some(ctx), method, &uri, path, query, &headers, body)?;
     Ok(respond(site.handle(&st.kernel, req).await?))
 }
 
@@ -97,7 +106,7 @@ async fn public(
     uri: Uri,
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
-    body: Bytes,
+    body: Body,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
     st.public_limiter.check(&format!("{}|{}", client_ip(&headers), tenant.to_lowercase())).await?;
@@ -108,14 +117,35 @@ async fn public(
     let schema = st.kernel.registry.schema(tenant).await?;
     let site = st.kernel.hooks.site(&package).filter(|_| schema.packages.contains(&package)).cloned();
     let site = site.ok_or_else(|| ApiError(Error::NotFound(format!("package {package}"))))?;
-    let req = request(site.max_body_for(method.as_str(), &path), tenant, None, method, &uri, path, query, &headers, body)?;
+    let body = read_body(&headers, body, site.max_body_for(method.as_str(), &path)).await?;
+    let req = request(tenant, None, method, &uri, path, query, &headers, body)?;
     Ok(respond(site.handle(&st.kernel, req).await?))
 }
 
 pub fn routes() -> Routes {
-    use axum::extract::DefaultBodyLimit;
     use axum::routing::any;
-    Routes::new()
-        .add("/api/app/{package}/{*path}", any(app).layer(DefaultBodyLimit::max(MAX_BODY)))
-        .add("/api/site/{tenant}/{package}/{*path}", any(public).layer(DefaultBodyLimit::max(MAX_BODY)))
+    // Bodies are read by `read_body`, each up to its route's own limit.
+    Routes::new().add("/api/app/{package}/{*path}", any(app)).add("/api/site/{tenant}/{package}/{*path}", any(public))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn bodies_are_read_only_up_to_their_route_limit() {
+        let declared = |n: usize| {
+            let mut h = HeaderMap::new();
+            h.insert(header::CONTENT_LENGTH, HeaderValue::from(n));
+            h
+        };
+        // Refused on its declared length, before a byte is read.
+        assert!(read_body(&declared(2_000), Body::from(vec![0u8; 10]), 1_000).await.is_err());
+        // Without a length, refused once it grows past the limit.
+        assert!(read_body(&HeaderMap::new(), Body::from(vec![0u8; 2_000]), 1_000).await.is_err());
+        let ok = read_body(&declared(10), Body::from(vec![7u8; 10]), 1_000).await.unwrap();
+        assert_eq!(ok.as_ref(), [7u8; 10]);
+        // The ceiling holds whatever a route asks for.
+        assert!(read_body(&declared(MAX_BODY + 1), Body::empty(), usize::MAX).await.is_err());
+    }
 }

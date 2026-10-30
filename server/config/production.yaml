@@ -27,7 +27,7 @@ server:
       body_limit: 30mb
     timeout_request:
       enable: true
-      timeout: 120000
+      timeout: <%= get_env(name="FERRUM_REQUEST_TIMEOUT_MS", default="120000") %>
     compression:
       enable: true
     cors:
