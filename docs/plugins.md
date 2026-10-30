@@ -169,6 +169,56 @@ storage or session.
 `examples/board` in ferrum-sdk is a complete example: a page, a widget, a panel, a settings screen
 and an extension point.
 
+## Interfaces of their own
+
+An app may own a whole interface at addresses of its own, as `/deals/…`: a web app of any kind
+(React, Vue, plain HTML) that the platform serves and wraps in the shell. Screens (above) stay the
+way to add a page, card or panel to someone else's interface. The plan is
+[docs/plan/apps-ui.md](plan/apps-ui.md); two small working examples are in
+[docs/plan/spikes/u0](plan/spikes/u0).
+
+```yaml
+platform: ">=0.3.1, <0.4"
+ui:
+  dist: ui/dist                   # the built files, with an index.html
+  shell: ">=1.0"                  # the shell API it needs
+  csp:                            # origins beyond the workspace's host, reviewed by the store
+    connect: ["setting:meet_url", "wss://media.example.com"]
+contributes:
+  shell.app:                      # launcher entries; each owns a route
+    - {id: deals, route: deals, title: Deals, color: "#0f766e", roles: [Sales User], aliases: [pipeline]}
+  shell.open:                     # which screen shows a record (/open/{entity}/{id})
+    - {id: deal, entity: Deal, path: "deals/{id}"}
+  shell.create:                   # the bar's Create menu
+    - {id: deal, label: Deal, path: deals/new}
+  shell.intent:                   # what it does for other apps
+    - {id: pick, action: pick, type: note, path: notes/pick}
+```
+
+* **Routes** are `[a-z][a-z0-9-]{1,30}`, unique on a cluster with their aliases, and never one of the
+  names the core keeps (`api ws files mcp metrics oauth open data admin store account portal
+  accounts login logout s app home`, and anything starting with `_` or `.`). A release that takes
+  another app's route is refused when it is made available.
+* **`index.html`** has one `<head>` and one `<body>`; scripts are module files of the release
+  (no inline scripts, nothing from elsewhere), built with a relative base (Vite: `base: './'`);
+  no `<base>` and no Content-Security-Policy of its own. The release's files are named by the
+  SHA-256 of their contents and served from `/_ui/{app}/{digest}/…`, cached for good.
+* **Each page** gets, before the app's own scripts: the bootstrap (`#ferrum-bootstrap`: the
+  workspace, the person, the app's routes and release), the workspace's theme (CSS variables
+  `--ferrum-*`) and the shell runtime, which draws `<ferrum-bar>` and installs `ferrum.shell`.
+* **`ferrum.shell`**: `ready()` (call it once the app has drawn), `navigate(path | {entity, id})`,
+  `title()`, `breadcrumbs()`, `intent({action, type, data})` and `canIntent()`, `companion({kind,
+  url})` for windows that outlive page loads (calls), `leaveGuard(isDirty)`, `live.subscribe(topics,
+  onChange)`, `toast()`, `session.signOut()`, and `supports(capability)`. A page opened for an
+  intent reads `intent.request()` and answers with `intent.done(result)` or `intent.cancel()`.
+* **Sessions**: the page calls the API with the browser's session cookie; nothing to store.
+* **Access**: an entry with `roles` is for administrators and people with one of them; without,
+  for every member. Nobody else sees it in the launcher or opens its address.
+* **Trust**: an interface runs on the workspace's host with the person's session. Apps compiled
+  into the server, bundles signed by a key the server trusts, and apps an operator makes available
+  for the whole cluster may bring one; an unsigned app private to a workspace may not.
+* An app without packages may consist of an interface alone.
+
 ## Limits and guarantees
 
 * No ambient access: no WASI, no files, no network except declared hosts, no clock except `time.now`.

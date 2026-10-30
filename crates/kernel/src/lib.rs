@@ -32,6 +32,7 @@ pub mod privacy;
 pub mod query;
 pub mod registry;
 pub mod secret;
+pub mod shell;
 pub mod sso;
 pub mod store;
 pub mod tenant;
@@ -122,6 +123,10 @@ pub struct Kernel {
     pub settings: KernelSettings,
     pub mailer: Option<Arc<dyn Mailer>>,
     pub(crate) users: DashMap<(Uuid, Uuid), (Arc<auth::CtxCore>, Instant)>,
+    /// Browser sessions checked recently: (tenant, session) → (what a valid one adds, when checked).
+    pub(crate) sessions: DashMap<(Uuid, Uuid), (Option<(Uuid, shell::SessionState)>, Instant)>,
+    /// Host names looked up recently → where they lead.
+    pub(crate) hosts: DashMap<String, (shell::HostRoute, Instant)>,
     pub(crate) files: std::sync::OnceLock<Arc<dyn files::FileStore>>,
 }
 
@@ -160,7 +165,17 @@ impl Kernel {
             tracing::info!(statements = report.statements, sql = ?report.sql_files_applied, warnings = report.warnings.len(), "schema synced");
         }
         let registry = Arc::new(Registry::new(&catalog, Arc::new(full), db.clone()));
-        Ok(Arc::new(Kernel { db, registry, hooks, settings, mailer, users: DashMap::new(), files: std::sync::OnceLock::new() }))
+        Ok(Arc::new(Kernel {
+            db,
+            registry,
+            hooks,
+            settings,
+            mailer,
+            users: DashMap::new(),
+            sessions: DashMap::new(),
+            hosts: DashMap::new(),
+            files: std::sync::OnceLock::new(),
+        }))
     }
 
     /// Cache invalidation (metadata, users) — every replica that serves requests needs these, or it
@@ -194,7 +209,7 @@ impl Kernel {
     pub async fn maintenance(&self) -> Result<()> {
         let yesterday = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
         audit::anchor_day(&self.db, yesterday).await?;
-        let purged = self.purge_old_events(self.settings.event_retention_days).await? + self.oauth_purge().await?;
+        let purged = self.purge_old_events(self.settings.event_retention_days).await? + self.oauth_purge().await? + self.purge_sessions().await?;
         if purged > 0 {
             tracing::info!(purged, "old events purged");
         }

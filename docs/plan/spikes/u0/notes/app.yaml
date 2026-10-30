@@ -1,0 +1,15 @@
+id: u0-notes
+name: Notes (spike)
+version: 0.1.0
+publisher: cbferrum
+summary: A tiny app that handles an intent and hosts a companion window, for checking the shell
+categories: [developer]
+runtime: meta
+platform: ">=0.3.1, <0.4"
+ui:
+  dist: ui/dist
+contributes:
+  shell.app:
+    - {id: notes, route: notes, title: Notes, color: "#7c3aed"}
+  shell.intent:
+    - {id: pick_note, action: pick, type: note, path: notes/pick, title: Pick a note}

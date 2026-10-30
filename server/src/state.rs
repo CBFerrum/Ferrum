@@ -100,6 +100,22 @@ pub struct Settings {
     pub pdf_url: String,
     #[serde(default)]
     pub apps: AppsSettings,
+    /// Shape A of docs/plan/apps-ui.md: the slug of the one workspace every host of this server
+    /// serves (a single-workspace install). Empty: a host leads to the workspace it is registered
+    /// for, and on other hosts the workspace is chosen at sign-in (shape A′).
+    #[serde(default)]
+    pub default_workspace: String,
+    /// Interfaces of compiled-in apps: a directory holding one directory of built files per app
+    /// id (`{ui_dir}/{app}/index.html`), registered as interface releases at boot.
+    #[serde(default)]
+    pub ui_dir: String,
+    /// How long a browser stays signed in (days).
+    #[serde(default = "default_session_days")]
+    pub session_days: u32,
+}
+
+fn default_session_days() -> u32 {
+    14
 }
 
 /// Who may upload app bundles (`settings.apps.uploads`).
@@ -219,6 +235,8 @@ pub struct AppState {
     pub address_limiter: Arc<RateLimiter>,
     pub apps: Arc<crate::appmgr::AppManager>,
     pub objects: Arc<crate::objects::Objects>,
+    /// App pages, interface releases and browser sessions (docs/plan/apps-ui.md).
+    pub shell: Arc<crate::shell::Shell>,
 }
 
 pub fn app_state(ctx: &AppContext) -> Result<AppState, ApiError> {

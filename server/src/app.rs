@@ -158,6 +158,8 @@ impl Hooks for App {
         let storage = Arc::new(storage);
         let apps = crate::appmgr::AppManager::new(kernel.clone(), plugins.clone(), storage.clone(), &settings.apps, crate::appmgr::compiled_natives())
             .map_err(Error::Message)?;
+        let shell = Arc::new(crate::shell::Shell::new(kernel.clone(), storage.clone(), &settings, &ctx.config.server.host));
+        crate::shell::register_compiled(&kernel, &storage, &settings, &apps).await;
         let (tx, _rx) = watch::channel(false);
         let db = kernel.db.clone();
         let user_requests = settings.user_requests_per_minute;
@@ -182,6 +184,7 @@ impl Hooks for App {
             address_limiter: Arc::new(RateLimiter::local_only("address", Duration::from_secs(60), address_requests)),
             apps: Arc::new(apps),
             objects,
+            shell,
         };
         state.kernel.set_file_store(Arc::new(crate::mailer::StorageFiles(storage.clone())));
         let ctx = ctx.into_builder().storage(storage).build();
@@ -235,6 +238,24 @@ impl Hooks for App {
                     }
                 }
             }));
+            // Interface releases: mark those this replica served as used; purge the unused.
+            let (shell, mut stop) = (state.shell.clone(), state.shutdown.subscribe());
+            handles.push(tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = stop.changed() => return,
+                        _ = tokio::time::sleep(Duration::from_secs(3600)) => {}
+                    }
+                    if let Err(e) = shell.touch_used().await {
+                        tracing::warn!("marking interface releases as used failed: {e}");
+                    }
+                    match shell.purge().await {
+                        Ok(0) => {}
+                        Ok(n) => tracing::info!("removed {n} unused interface releases"),
+                        Err(e) => tracing::warn!("purging interface releases failed: {e}"),
+                    }
+                }
+            }));
             state.background.lock().await.extend(handles);
             tracing::info!("background loops started (outbox, webhooks, metadata listener, maintenance)");
         }
@@ -280,6 +301,7 @@ impl Hooks for App {
             .add_route(crate::coedit::routes())
             .add_route(controllers::sites::routes())
             .add_route(controllers::dav::routes())
+            .add_route(controllers::shell::routes())
     }
 
     async fn connect_workers(_ctx: &AppContext, _queue: &Queue) -> Result<()> {

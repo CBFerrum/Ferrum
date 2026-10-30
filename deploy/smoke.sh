@@ -122,6 +122,39 @@ for h in "cache-control: no-store" "x-content-type-options: nosniff" "strict-tra
   grep -qi "^$h" <<<"$headers" || fail "missing header $h"
 done
 
+step "the shell: browser sessions, the platform's files, app pages (docs/plan/apps-ui.md)"
+curl -fsS -D "$work/runtime.h" -o /dev/null "$API/_shell/v1/runtime.js" || fail "the shell's runtime"
+grep -qi "^content-type: text/javascript" "$work/runtime.h" || fail "the shell's runtime is not JavaScript"
+[ "$(curl -sS -o /dev/null -w '%{http_code}' "$API/login")" = 200 ] || fail "the sign-in page"
+creds="\"tenant\":\"smoke\",\"email\":\"smoke@smoke.test\",\"password\":\"$PASSWORD\""
+# An API client gets a token and no cookie; a page of the site gets the cookie.
+curl -fsS -D "$work/api-login.h" -o /dev/null -H 'content-type: application/json' -d "{$creds}" "$API/api/auth/login" || fail "signing in as an API client"
+! grep -qi "^set-cookie" "$work/api-login.h" || fail "an API client got a session cookie"
+page_login="{$creds,\"session\":\"cookie\"}"
+[ "$(curl -fsS -c "$work/jar" -D "$work/page-login.h" -H 'content-type: application/json' -H 'sec-fetch-site: same-origin' -d "$page_login" "$API/api/auth/login" | json 'd["cookie"]')" = True ] \
+  || fail "signing in from a page"
+grep -qi "^set-cookie: .*; Path=/; HttpOnly; SameSite=Lax" "$work/page-login.h" || fail "the session cookie's attributes"
+code() { curl -sS -o /dev/null -w '%{http_code}' "$@"; }
+[ "$(code -b "$work/jar" "$API/api/shell")" = 200 ] || fail "the shell's data with the cookie"
+# Changes on the strength of the cookie come only from the site's own pages.
+for site in cross-site same-site; do
+  [ "$(code -b "$work/jar" -X POST -H "sec-fetch-site: $site" -H 'content-type: application/json' -d '{"password":"x"}' "$API/api/auth/step-up")" = 403 ] \
+    || fail "a $site request with the cookie is let through"
+done
+[ "$(code -b "$work/jar" -X POST -H 'origin: https://evil.example' -H 'content-type: application/json' -d '{"password":"x"}' "$API/api/auth/step-up")" = 403 ] \
+  || fail "a request from another origin with the cookie is let through"
+cookie=$(awk '$6=="__Host-ferrum" || $6=="ferrum_session" {print $7}' "$work/jar")
+[ -n "$cookie" ] || fail "no session cookie in the jar"
+[ "$(code -H "authorization: Bearer $cookie" "$API/api/auth/me")" = 401 ] || fail "the cookie's token works as a bearer token"
+# App routes: sign-in first; then a page for what is not installed; the core's names are not apps.
+[[ "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$API/nothing-here/x")" =~ ^30[23]\ .*/login\?next=%2Fnothing-here%2Fx$ ]] || fail "a signed-out app route does not lead to sign-in"
+[ "$(code -b "$work/jar" "$API/nothing-here/")" = 404 ] || fail "a route nothing is installed at"
+[ "$(code -b "$work/jar" "$API/admin/")" = 404 ] || fail "a name the core keeps"
+grep -q "unregister" <<<"$(curl -fsS -b "$work/jar" "$API/nothing-here/sw.js")" || fail "the worker of an empty route does not remove itself"
+# Signing out ends the device's session: the cookie no longer works anywhere.
+[ "$(code -b "$work/jar" -X POST -H 'sec-fetch-site: same-origin' "$API/api/auth/logout")" = 204 ] || fail "signing out"
+[ "$(code -b "$work/jar" "$API/api/shell")" = 401 ] || fail "the cookie still works after signing out"
+
 if [ -n "${FERRUM_EDITORS_IMAGE:-}" ]; then
   step "the browser editors' server"
   EDITORS=$FERRUM_EDITORS_URL

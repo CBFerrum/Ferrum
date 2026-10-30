@@ -1,0 +1,51 @@
+/* The workspace's theme, loaded first on every page of every app (docs/plan/apps-ui.md §12.9):
+   design tokens the bar and the kit use, the bar's place, and smooth moves between apps.
+   Apps may read these tokens; their own styles come after and win. */
+:root {
+  color-scheme: light dark;
+  --ferrum-bg: light-dark(#f5f6f8, #0e1116);
+  --ferrum-surface: light-dark(#ffffff, #161a21);
+  --ferrum-surface-2: light-dark(#eef1f5, #1d222b);
+  --ferrum-border: light-dark(#d9dee5, #2c333f);
+  --ferrum-text: light-dark(#17191d, #e8ebf0);
+  --ferrum-muted: light-dark(#5b6472, #a0a9b8);
+  --ferrum-primary: light-dark(#2f5bea, #6d8ff5);
+  --ferrum-primary-hover: light-dark(#2449c4, #8aa5f8);
+  --ferrum-primary-soft: light-dark(#e7edfd, #1e2a4d);
+  --ferrum-primary-text: light-dark(#ffffff, #0b1020);
+  --ferrum-danger: light-dark(#c62828, #f07070);
+  --ferrum-warning-soft: light-dark(#fff3d6, #352a10);
+  --ferrum-focus-ring: 0 0 0 3px light-dark(rgb(47 91 234 / 0.35), rgb(109 143 245 / 0.45));
+  --ferrum-shadow: 0 8px 28px light-dark(rgb(16 24 40 / 0.14), rgb(0 0 0 / 0.5)), 0 2px 6px light-dark(rgb(16 24 40 / 0.06), rgb(0 0 0 / 0.4));
+  --ferrum-radius: 8px;
+  --ferrum-font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --ferrum-bar-height: 48px;
+}
+
+/* The bar keeps its place before its script runs, so nothing jumps when it draws. */
+ferrum-bar {
+  display: block;
+  position: sticky;
+  top: 0;
+  z-index: 2147483000;
+  height: var(--ferrum-bar-height);
+  background: var(--ferrum-surface);
+  border-bottom: 1px solid var(--ferrum-border);
+}
+ferrum-bar[compact] {
+  --ferrum-bar-height: 40px;
+}
+
+/* Going from one app to another animates where the browser can (cross-document view transitions). */
+@view-transition {
+  navigation: auto;
+}
+ferrum-bar {
+  view-transition-name: ferrum-bar;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  @view-transition {
+    navigation: none;
+  }
+}

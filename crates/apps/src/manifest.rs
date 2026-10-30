@@ -196,6 +196,9 @@ pub struct AppManifest {
     /// those of apps it requires. Point → items, each with an `id` unique within the point.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub contributes: BTreeMap<String, Vec<Value>>,
+    /// The app's own interface (docs/plan/apps-ui.md §10.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui: Option<crate::shell::UiSection>,
     #[serde(default)]
     pub uninstall: Uninstall,
 }
@@ -370,8 +373,10 @@ impl AppManifest {
                 return bad(format!("packages: '{p}' is listed twice"));
             }
         }
-        if self.runtime == Runtime::Meta && self.packages.is_empty() {
-            return bad("a meta app needs at least one package");
+        // An app of metadata brings tables, or at least an interface of its own (over other
+        // apps' records, through the API).
+        if self.runtime == Runtime::Meta && self.packages.is_empty() && self.ui.is_none() {
+            return bad("a meta app needs at least one package, or an interface of its own (ui)");
         }
 
         match (self.runtime, self.plugin.as_deref()) {
@@ -426,8 +431,8 @@ impl AppManifest {
     /// `parent`, `extension_points` and `contributes`. Contributions to another app's point are
     /// checked against its contract when a plan brings the two together.
     fn validate_extensions(&self) -> Result<(), AppError> {
-        if self.id == "ui" {
-            return bad("the id 'ui' is reserved for the screen slots");
+        if self.id == "ui" || self.id == "shell" {
+            return bad(format!("the id '{}' is reserved for the platform's points", self.id));
         }
         if let Some(p) = &self.parent
             && !self.requires.contains_key(p)
@@ -448,11 +453,13 @@ impl AppManifest {
         }
         for (point, items) in &self.contributes {
             let screen = UI_POINTS.contains(&point.as_str());
+            let shell = crate::shell::SHELL_POINTS.contains(&point.as_str());
             let foreign = point.split_once('.').is_some_and(|(owner, rest)| self.requires.contains_key(owner) && ferrum_meta::is_ident(rest));
-            if !screen && !foreign && !self.extension_points.contains_key(point) {
+            if !screen && !shell && !foreign && !self.extension_points.contains_key(point) {
                 return bad(format!(
-                    "contributes: '{point}' is not a screen slot ({}), an extension point of this app, or one of an app in requires",
-                    UI_POINTS.join(", ")
+                    "contributes: '{point}' is not a screen slot ({}), a shell point ({}), an extension point of this app, or one of an app in requires",
+                    UI_POINTS.join(", "),
+                    crate::shell::SHELL_POINTS.join(", ")
                 ));
             }
             if screen && self.runtime == Runtime::Native {
@@ -464,7 +471,13 @@ impl AppManifest {
             if point == "ui.settings" && items.len() > 1 {
                 return bad("contributes.ui.settings: an app has one settings page");
             }
-            let schema = if screen { Some(screen_contract(point)) } else { self.extension_points.get(point).and_then(|p| p.schema.clone()) };
+            let schema = if screen {
+                Some(screen_contract(point))
+            } else if shell {
+                Some(crate::shell::contract(point))
+            } else {
+                self.extension_points.get(point).and_then(|p| p.schema.clone())
+            };
             let mut ids = BTreeSet::new();
             for item in items {
                 let Some(id) = item.get("id").and_then(Value::as_str).filter(|i| ferrum_meta::is_ident(i)) else {
@@ -481,7 +494,7 @@ impl AppManifest {
                 }
             }
         }
-        Ok(())
+        crate::shell::check(self)
     }
 
     /// The pages (`ui/….html`) its screen contributions open.

@@ -1,4 +1,5 @@
-//! Request extractors: authentication (JWT session or API key) → kernel `Ctx`.
+//! Request extractors: authentication (a bearer token — session JWT or API key — or the
+//! browser's session cookie) → kernel `Ctx`.
 
 use crate::error::ApiError;
 use crate::state::app_state;
@@ -30,17 +31,36 @@ pub fn bearer(headers: &HeaderMap) -> Option<String> {
     (!token.is_empty()).then(|| token.to_string())
 }
 
-/// The session a bearer token (session JWT or `fk_` API key) carries, and whether it may only set
-/// up two-factor sign-in (the workspace requires it and the person has yet to). The ticket between
-/// the two steps of signing in is no session at all.
-async fn session_of(st: &crate::state::AppState, token: &str) -> Result<(ferrum_kernel::auth::Session, bool), ApiError> {
+/// What a token says about who is calling.
+struct TokenSession {
+    session: ferrum_kernel::auth::Session,
+    /// It may only set up two-factor sign-in (the workspace requires it and the person has yet to).
+    setup_only: bool,
+    /// The browser session a cookie's token names (`sid`, docs/plan/apps-ui.md §12.3).
+    sid: Option<Uuid>,
+    /// The browser session a bearer token given to a page is bound to (`bsid`): signing that
+    /// device out ends the token too.
+    bound: Option<Uuid>,
+}
+
+impl TokenSession {
+    /// The browser session behind the token, whichever kind it is.
+    fn device(&self) -> Option<Uuid> {
+        self.sid.or(self.bound)
+    }
+}
+
+/// The session a token (session JWT, cookie token or `fk_` API key) carries. The ticket between
+/// the two steps of signing in is no session at all; a cookie's token names a browser session
+/// that must still be valid.
+async fn session_of(st: &crate::state::AppState, token: &str) -> Result<TokenSession, ApiError> {
     if token.starts_with("fk_") {
         let (s, scope) = st.kernel.verify_api_key(token).await?;
         if scope.is_some() {
             return Err(ApiError(Error::Unauthorized("this key is an app password for calendar and contacts apps, and works only there".into())));
         }
         st.user_limiter.check_local(&format!("{}|{}", s.tenant, s.user))?;
-        return Ok((s, false));
+        return Ok(TokenSession { session: s, setup_only: false, sid: None, bound: None });
     }
     let data =
         JWT::new(&st.jwt_secret).validate(token).map_err(|_| ApiError(Error::Unauthorized("session expired or invalid; please sign in again".into())))?;
@@ -53,17 +73,106 @@ async fn session_of(st: &crate::state::AppState, token: &str) -> Result<(ferrum_
         claims.get("tenant").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()).ok_or_else(|| ApiError(Error::Unauthorized("invalid session".into())))?;
     let tv = claims.get("tv").and_then(|v| v.as_i64()).unwrap_or(-1) as i32;
     let setup_only = claims.get("setup_2fa").and_then(|v| v.as_bool()).unwrap_or(false);
+    let claim = |name: &str| -> Result<Option<Uuid>, ApiError> {
+        match claims.get(name) {
+            None => Ok(None),
+            Some(v) => Ok(Some(v.as_str().and_then(|s| s.parse::<Uuid>().ok()).ok_or_else(|| ApiError(Error::Unauthorized("invalid session".into())))?)),
+        }
+    };
+    let (sid, bound) = (claim("sid")?, claim("bsid")?);
     st.user_limiter.check_local(&format!("{tenant}|{user}"))?;
-    Ok((ferrum_kernel::auth::Session { tenant, user, token_version: tv }, setup_only))
+    if let Some(device) = sid.or(bound) {
+        st.kernel.check_session(tenant, user, device).await?;
+    }
+    Ok(TokenSession { session: ferrum_kernel::auth::Session { tenant, user, token_version: tv }, setup_only, sid, bound })
 }
 
-/// Resolves a bearer token (session JWT or `fk_` API key) to the caller's context.
+/// Resolves a token (session JWT, cookie token or `fk_` API key) to the caller's context. Sockets
+/// use it for both kinds; HTTP requests go through [`Auth`], which also checks where each kind
+/// may come from.
 pub async fn ctx_from_token(st: &crate::state::AppState, token: &str, request_id: String) -> Result<Ctx, ApiError> {
-    let (session, setup_only) = session_of(st, token).await?;
-    if setup_only {
+    let t = session_of(st, token).await?;
+    if t.setup_only {
         return Err(ApiError(Error::Forbidden("set up two-factor sign-in first; this workspace requires it".into())));
     }
-    Ok(st.kernel.load_ctx(session.tenant, session.user, Some(session.token_version), request_id).await?)
+    Ok(st.kernel.load_ctx(t.session.tenant, t.session.user, Some(t.session.token_version), request_id).await?)
+}
+
+/// The credential of an HTTP request: a bearer token, or the session cookie of a browser page.
+/// A cookie's token works only as the cookie, and a bearer token never as one. Requests that
+/// change something on the strength of the cookie must come from the site's own pages, and the
+/// cookie must be of the workspace the host serves.
+async fn caller(st: &crate::state::AppState, parts: &Parts) -> Result<(Ctx, Option<Uuid>), ApiError> {
+    caller_on(st, &parts.method, &parts.headers).await
+}
+
+/// See [`caller`]; for handlers that read the request themselves. `.1` is the browser session
+/// behind the credential (the cookie's, or the one a page's bearer token is bound to).
+pub async fn caller_on(st: &crate::state::AppState, method: &axum::http::Method, headers: &HeaderMap) -> Result<(Ctx, Option<Uuid>), ApiError> {
+    let parts = (method, headers);
+    let (method, headers) = parts;
+    let rid = request_id(headers);
+    let (token, from_cookie) = match bearer(headers) {
+        Some(t) => (t, false),
+        None => match crate::shell::session_cookie(headers, st.shell.secure) {
+            Some(c) => (c, true),
+            None => return Err(ApiError(Error::Unauthorized("sign in required".into()))),
+        },
+    };
+    if from_cookie && !crate::shell::may_change(method, headers) {
+        return Err(ApiError(Error::Forbidden("this request did not come from this site's own pages".into())));
+    }
+    let t = session_of(st, &token).await?;
+    let mismatch = if from_cookie { t.sid.is_none() || t.bound.is_some() } else { t.sid.is_some() };
+    if mismatch {
+        return Err(ApiError(Error::Unauthorized(
+            if from_cookie { "invalid session cookie" } else { "this token works only as the browser's session cookie" }.into(),
+        )));
+    }
+    if t.setup_only {
+        return Err(ApiError(Error::Forbidden("set up two-factor sign-in first; this workspace requires it".into())));
+    }
+    if from_cookie {
+        st.shell.check_host(headers, t.session.tenant).await?;
+    }
+    let ctx = st.kernel.load_ctx(t.session.tenant, t.session.user, Some(t.session.token_version), rid).await?;
+    Ok((ctx, t.device()))
+}
+
+/// The caller and the browser session behind its credential (`None` for tokens of API clients
+/// and apps): "this device" on the devices page, signing out, step-up.
+pub struct BrowserSession(pub Ctx, pub Option<Uuid>);
+
+impl FromRequestParts<AppContext> for BrowserSession {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppContext) -> Result<Self, Self::Rejection> {
+        let st = app_state(state)?;
+        let (ctx, sid) = caller(&st, parts).await?;
+        Ok(BrowserSession(ctx, sid))
+    }
+}
+
+/// A socket's credential at the upgrade: a bearer token, or the session cookie when the page
+/// asking is on this host (`Origin`). `None`: the client sends `{"auth": token}` first.
+pub async fn socket_credential(st: &crate::state::AppState, headers: &HeaderMap) -> Result<Option<(String, Ctx)>, ApiError> {
+    let rid = request_id(headers);
+    if let Some(token) = bearer(headers) {
+        let ctx = ctx_from_token(st, &token, rid).await?;
+        return Ok(Some((token, ctx)));
+    }
+    match crate::shell::session_cookie(headers, st.shell.secure) {
+        Some(token) if crate::shell::origin_is_host(headers) => {
+            let t = session_of(st, &token).await?;
+            if t.sid.is_none() || t.bound.is_some() || t.setup_only {
+                return Err(ApiError(Error::Unauthorized("invalid session cookie".into())));
+            }
+            st.shell.check_host(headers, t.session.tenant).await?;
+            let ctx = st.kernel.load_ctx(t.session.tenant, t.session.user, Some(t.session.token_version), rid).await?;
+            Ok(Some((token, ctx)))
+        }
+        _ => Ok(None),
+    }
 }
 
 impl FromRequestParts<AppContext> for Auth {
@@ -71,9 +180,7 @@ impl FromRequestParts<AppContext> for Auth {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppContext) -> Result<Self, Self::Rejection> {
         let st = app_state(state)?;
-        let rid = request_id(&parts.headers);
-        let token = bearer(&parts.headers).ok_or_else(|| ApiError(Error::Unauthorized("sign in required".into())))?;
-        let ctx = ctx_from_token(&st, &token, rid).await?;
+        let (ctx, _) = caller(&st, parts).await?;
         match parts.headers.get("x-ferrum-app") {
             Some(app) => Ok(Auth(screen_ctx(&st, ctx, app, parts.uri.path()).await?)),
             None => Ok(Auth(ctx)),
@@ -110,9 +217,12 @@ impl FromRequestParts<AppContext> for SetupAuth {
         let st = app_state(state)?;
         let rid = request_id(&parts.headers);
         let token = bearer(&parts.headers).ok_or_else(|| ApiError(Error::Unauthorized("sign in required".into())))?;
-        let (s, setup_only) = session_of(&st, &token).await?;
-        let ctx = st.kernel.load_ctx(s.tenant, s.user, Some(s.token_version), rid).await?;
-        Ok(SetupAuth(ctx, setup_only.then_some(s)))
+        let t = session_of(&st, &token).await?;
+        if t.sid.is_some() {
+            return Err(ApiError(Error::Unauthorized("this token works only as the browser's session cookie".into())));
+        }
+        let ctx = st.kernel.load_ctx(t.session.tenant, t.session.user, Some(t.session.token_version), rid).await?;
+        Ok(SetupAuth(ctx, t.setup_only.then_some(t.session)))
     }
 }
 

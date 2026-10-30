@@ -111,6 +111,24 @@ fn plugin_only(id: &str) -> BTreeMap<String, Vec<u8>> {
     f
 }
 
+/// An app that is only an interface of its own (docs/plan/apps-ui.md), at `/{route}/`.
+fn interface_app(id: &str, route: &str) -> BTreeMap<String, Vec<u8>> {
+    files(&[
+        (
+            "app.yaml",
+            &format!(
+                "id: {id}\nname: {id}\nversion: 1.0.0\npublisher: acme\nsummary: An interface\ncategories: [developer]\nruntime: meta\nplatform: \">=0.3.1, <0.4\"\n\
+                 ui:\n  dist: ui/dist\ncontributes:\n  shell.app:\n    - {{id: main, route: {route}, title: Main}}\n"
+            ),
+        ),
+        (
+            "ui/dist/index.html",
+            "<!doctype html><html><head><script type=\"module\" src=\"./app.js\"></script></head><body><main id=\"main\"></main></body></html>",
+        ),
+        ("ui/dist/app.js", "ferrum.shell.ready();"),
+    ])
+}
+
 /// An app with screens and an extension point (docs/plugins.md).
 const BOARD_YAML: &str = r#"id: board
 name: Board
@@ -571,6 +589,20 @@ async fn scenario() {
     assert!(matches!(&err, Error::Forbidden(m) if m.contains("packages")), "{err}");
     let off = manager(Uploads::Off, true);
     assert!(matches!(off.upload(&admin, bundle(plugin_only("nope"), &[]).write().unwrap().into()).await, Err(Error::Forbidden(_))));
+
+    // ── interfaces of their own: stored as releases; private ones only from trusted bundles ──
+    let lax_private = manager(Uploads::Private, true);
+    let err = lax_private.upload(&admin, bundle(interface_app("pvui", "pvui"), &[]).write().unwrap().into()).await.unwrap_err();
+    assert!(matches!(&err, Error::Forbidden(m) if m.contains("interface of its own")), "{err}");
+    let signed = bundle(interface_app("pvui-signed", "pvui-signed"), &[(&keys.publisher, Role::Publisher)]).write().unwrap();
+    let (app, _) = prod.upload(&admin, signed.into()).await.unwrap();
+    assert!(app.private);
+    assert!(k.ui_release_for("pvui-signed", "1.0.0").await.unwrap().is_some(), "a signed private app's interface is stored");
+    dev.upload(&admin, bundle(interface_app("clui", "clui"), &[]).write().unwrap().into()).await.unwrap();
+    let release = k.ui_release_for("clui", "1.0.0").await.unwrap().expect("stored");
+    assert!(release.files.get("app.js").is_some() && release.entry["head"].as_str().unwrap().contains("<head>"));
+    let err = dev.upload(&admin, bundle(interface_app("clui-two", "clui"), &[]).write().unwrap().into()).await.unwrap_err();
+    assert!(matches!(&err, Error::Conflict(m) if m.contains("/clui/")), "a route another app owns: {err}");
 
     // ── removing: data kept, unless deleting it was asked for and the app allows it ──
     assert!(!dev.uninstall(&admin, "gw", false).await.unwrap());
