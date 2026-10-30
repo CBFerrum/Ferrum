@@ -30,7 +30,8 @@ spec:
             matchLabels: {app.kubernetes.io/name: ferrum-editors}
       containers:
         - name: editors
-          image: ferrum-editors
+          # The published name: an overlay adding this component maps it (deploy/kind does).
+          image: ghcr.io/cbferrum/ferrum-editors:latest
           ports:
             - {name: http, containerPort: 8080}
           env:
