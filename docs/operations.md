@@ -118,8 +118,9 @@ app's route to the new container must survive. On the new image it then checks t
 caching headers; the web app's pages, scripts, API proxy and live-updates WebSocket; a Sales
 Invoice submitted and printed as HTML and PDF with its audit chain; recovery from a database
 restart; a backup, deletion of the stack with its volumes and a restore (data, session,
-attachment and numbering intact); and a short load test. Everything is removed afterwards. CI
-runs it on every image it builds, as an upgrade of `ghcr.io/cbferrum/ferrum:latest`, and
+attachment and numbering intact); and a short load test. Everything is removed afterwards. With
+`FERRUM_EDITORS_IMAGE` it also runs the browser editors' server (`deploy/editors.yml`) and checks its
+policies and its read-only filesystem. CI runs it on every image it builds, as an upgrade of `ghcr.io/cbferrum/ferrum:latest`, and
 Ferrum-Frontend's CI runs it on every web image; images are published only when it passes.
 (Ferrum-Frontend's CI pulls the server image when the `ferrum` package grants that repository
 read access under *Manage Actions access*; until then it builds the server from source, about 20

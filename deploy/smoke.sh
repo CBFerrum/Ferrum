@@ -8,7 +8,8 @@
 # created, submitted and printed as HTML and PDF; the server recovers from a database restart; the
 # database and the attachments are backed up, the stack is deleted with its volumes and restored
 # from the backups, data, sessions and numbering intact; a short load test runs without errors.
-# Everything is removed afterwards. CI runs it on every image it builds.
+# Everything is removed afterwards. CI runs it on every image it builds. With FERRUM_EDITORS_IMAGE,
+# the browser editors' server (editors.yml) runs beside the stack and is checked too.
 #
 #   FERRUM_IMAGE=ghcr.io/cbferrum/ferrum:latest FERRUM_WEB_IMAGE=ghcr.io/cbferrum/ferrum-frontend:latest \
 #     deploy/smoke.sh     # needs Docker, curl, openssl, python3 + httpx
@@ -38,12 +39,18 @@ services:
   ferrum:
     ports: ["127.0.0.1:${PORT}:5150"]
 EOF
-compose() { docker compose -f docker-compose.yml -f "$work/publish.yml" "$@"; }
+files=(-f docker-compose.yml -f "$work/publish.yml")
+if [ -n "${FERRUM_EDITORS_IMAGE:-}" ]; then
+  files+=(-f editors.yml)
+  export FERRUM_EDITORS_PORT=${SMOKE_EDITORS_PORT:-8090}
+  export FERRUM_EDITORS_URL="http://127.0.0.1:$FERRUM_EDITORS_PORT"
+fi
+compose() { docker compose "${files[@]}" "$@"; }
 cleanup() {
   status=$?
   if [ "$status" -ne 0 ]; then
     echo "--- smoke test failed; logs:"
-    compose logs --tail 200 ferrum web pdf db || true
+    compose logs --tail 200 ferrum web pdf db ${FERRUM_EDITORS_IMAGE:+editors} || true
   fi
   compose down -v --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$work"
@@ -77,7 +84,7 @@ if [ -n "${FERRUM_PREVIOUS_IMAGE:-}" ]; then
 fi
 
 step "starting the stack from $FERRUM_IMAGE and $FERRUM_WEB_IMAGE"
-compose up -d --no-build db ferrum pdf web
+compose up -d --no-build db ferrum pdf web ${FERRUM_EDITORS_IMAGE:+editors}
 wait_up "$API/_health" "the server"
 wait_up "$WEB/healthz" "the web app"
 
@@ -106,6 +113,17 @@ headers=$(curl -fsS -D - -o /dev/null "${auth[@]}" "$API/api/v1/Customer?limit=1
 for h in "cache-control: no-store" "x-content-type-options: nosniff" "strict-transport-security" "content-security-policy"; do
   grep -qi "^$h" <<<"$headers" || fail "missing header $h"
 done
+
+if [ -n "${FERRUM_EDITORS_IMAGE:-}" ]; then
+  step "the browser editors' server"
+  EDITORS=$FERRUM_EDITORS_URL
+  wait_up "$EDITORS/healthz" "the editor server"
+  grep -qi "frame-ancestors ${PUBLIC_URL:-http://localhost:8080}" <<<"$(curl -fsS -D - -o /dev/null "$EDITORS/relay.html")" || fail "the relay may be framed by others"
+  curl -fsS -D "$work/editor-headers" -o /dev/null "$EDITORS/gridcraft/index.html" || fail "an editor's page"
+  grep -qi "script-src 'self' 'wasm-unsafe-eval' 'sha256-" "$work/editor-headers" || fail "an editor's page allows other scripts"
+  [ "$(compose exec -T editors sh -c 'touch /etc/nginx/probe 2>/dev/null && echo writable || echo read-only')" = read-only ] || fail "the editor server can write its root filesystem"
+  [ "$(compose exec -T ferrum printenv FERRUM_EDITORS_URL)" = "$EDITORS" ] || fail "the server does not know the editor server"
+fi
 
 step "the web app and the API through it"
 [[ "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$WEB/")" =~ ^302\ .*/app/$ ]] || fail "/ does not lead to the app"
