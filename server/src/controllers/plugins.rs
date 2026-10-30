@@ -237,9 +237,28 @@ async fn serve(st: AppState, tenant: Uuid, p: Loaded, path: String, query: Map<S
 /// Every file of a screen runs sandboxed (scripts, but in an opaque origin without the app's
 /// storage or session) wherever it is opened, framed only by the web app, loading only from this
 /// server, posting no forms.
-const SCREEN_CSP: &str = "sandbox allow-scripts allow-downloads; default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; \
-    style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob:; \
-    connect-src 'self'; worker-src 'self' blob:; form-action 'none'; base-uri 'none'; frame-ancestors 'self'";
+fn screen_csp(origins: &[String]) -> String {
+    // `'self'` alone is not enough: WebKit matches it, for fetches, against the frame's opaque
+    // origin, so a screen could not load its own data or WebAssembly there (spike S4). The server's
+    // own origins are named too.
+    let own = std::iter::once("'self'").chain(origins.iter().map(String::as_str)).collect::<Vec<_>>().join(" ");
+    format!(
+        "sandbox allow-scripts allow-downloads; default-src 'none'; script-src {own} 'wasm-unsafe-eval'; \
+         style-src {own} 'unsafe-inline'; img-src {own} data: blob:; font-src {own} data:; media-src {own} blob:; \
+         connect-src {own}; worker-src {own} blob:; form-action 'none'; base-uri 'none'; frame-ancestors 'self'"
+    )
+}
+
+/// `scheme://host[:port]` of a URL, when it is a plain http(s) origin; anything else (a header a
+/// client wrote to inject directives, say) is dropped.
+fn plain_origin(url: &str) -> Option<String> {
+    let (scheme, rest) = url.trim().split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next()?.to_ascii_lowercase();
+    let host_ok = !authority.is_empty()
+        && authority.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']'))
+        && authority.split(':').next_back().is_some_and(|p| !p.is_empty());
+    (matches!(scheme, "http" | "https") && host_ok).then(|| format!("{scheme}://{authority}"))
+}
 
 fn screen_type(path: &str) -> &'static str {
     match path.rsplit_once('.').map_or("", |(_, ext)| ext) {
@@ -279,12 +298,20 @@ async fn screen_file(
         return Err(ApiError(Error::NotFound(format!("{plugin} {version}: {path}"))));
     };
     let etag = HeaderValue::from_str(&format!("\"{}\"", digest.trim_start_matches("sha256:"))).map_err(|e| ApiError(Error::internal(e.to_string())))?;
+    // The origins the frame was loaded from, as the browser sees them: the public address the
+    // operator configured, and the one the request names.
+    let mut origins: Vec<String> = Vec::new();
+    for o in [plain_origin(&app.config.server.host), plain_origin(&crate::controllers::oauth::base_url(&headers))].into_iter().flatten() {
+        if !origins.contains(&o) {
+            origins.push(o);
+        }
+    }
+    let csp = screen_csp(&origins);
     let mut res = if headers.get(header::IF_NONE_MATCH) == Some(&etag) { StatusCode::NOT_MODIFIED.into_response() } else { bytes.into_response() };
     let h = res.headers_mut();
     for (name, value) in [
         (header::CONTENT_TYPE, screen_type(&path)),
         (header::CACHE_CONTROL, "no-cache"),
-        (header::CONTENT_SECURITY_POLICY, SCREEN_CSP),
         (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
         (header::X_FRAME_OPTIONS, "sameorigin"),
         (header::REFERRER_POLICY, "no-referrer"),
@@ -293,6 +320,7 @@ async fn screen_file(
     ] {
         h.insert(name, HeaderValue::from_static(value));
     }
+    h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_str(&csp).map_err(|e| ApiError(Error::internal(e.to_string())))?);
     h.insert(header::ETAG, etag);
     Ok(res)
 }
@@ -304,4 +332,24 @@ pub fn routes() -> Routes {
         .add("/api/ext-ui/{tenant}/{plugin}/{version}/{*path}", get(screen_file))
         .add("/api/public/{tenant}/{plugin}/{*path}", any(public))
         .add("/ws/ext/{tenant}/{plugin}/{*path}", get(socket))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn screens_name_their_server_and_nothing_a_client_wrote() {
+        assert_eq!(plain_origin("https://erp.example.com/app/"), Some("https://erp.example.com".into()));
+        assert_eq!(plain_origin("http://localhost:5175"), Some("http://localhost:5175".into()));
+        assert_eq!(plain_origin("http://[::1]:5150/x"), Some("http://[::1]:5150".into()));
+        for bad in ["javascript:alert(1)", "https://x; script-src *", "https://", "ftp://erp.example.com", "https://x.com:", "erp.example.com"] {
+            assert_eq!(plain_origin(bad), None, "{bad}");
+        }
+        let csp = screen_csp(&["https://erp.example.com".into()]);
+        assert!(csp.contains("connect-src 'self' https://erp.example.com;"), "{csp}");
+        assert!(csp.contains("script-src 'self' https://erp.example.com 'wasm-unsafe-eval';"), "{csp}");
+        assert!(csp.starts_with("sandbox allow-scripts allow-downloads;") && csp.ends_with("frame-ancestors 'self'"), "{csp}");
+        assert!(screen_csp(&[]).contains("connect-src 'self';"));
+    }
 }

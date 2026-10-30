@@ -411,7 +411,7 @@ before Mail because it is smaller and proves the sub-plugin and separate-service
 | ONLYOFFICE's governance dispute | Collabora is the default |
 | ArtCraft: alpha, no embedding API, one vendor, trademarks | optional only; a pinned fork; the bridge offered upstream |
 | AGPL: changing Stalwart or ONLYOFFICE means publishing the changes | run them unchanged; Ferrum is AGPL already, so there is no licence conflict |
-| Sandboxed frames behave differently in WebKit | S4 tests all three engines first |
+| Sandboxed frames behave differently in WebKit | S4 tested all three engines ([spike-s4-frames.md](spike-s4-frames.md)): WebKit refused a screen's fetches of its own files under `'self'`, fixed by naming the server's origins in the screens' policy; all checks pass in Chromium, Firefox and WebKit |
 | Editor servers need a lot of memory | size them from a load test in Phase 2; scale them separately |
 | Deliverability | relay option and live checks (§5.4) |
 | "All in one" grows without end | one suite at a time, each with the done-criteria above |
