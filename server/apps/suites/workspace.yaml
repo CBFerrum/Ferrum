@@ -1,0 +1,11 @@
+# The suite for working together (docs/plan/apps-ui.md §13): mail, chat, calendar and meetings,
+# files with online editing, and live documents.
+id: workspace
+name: Workspace
+version: 0.1.0
+publisher: cbferrum
+summary: Mail, chat, calendar, meetings, files and documents
+categories: [suite, communication, productivity]
+runtime: meta
+platform: ">=0.3.2, <0.4"
+requires: {comms: ">=0.1", drive: ">=0.1", docs: ">=0.1"}

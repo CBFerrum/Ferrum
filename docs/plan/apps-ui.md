@@ -67,8 +67,19 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     demo workspace, quotations kept their taxes and sales orders their quotation links.
   * A column field the form does not list goes into the section of the field it follows (CRM's
     links on contacts). The app API version is 0.3.2.
-  * Next: Project into the Projects app with `projects-erp`; Helpdesk without selling; `hr-erp`
-    and `payroll-erp`; suites; the first-run picker.
+* **U3: Helpdesk on its own, suites and the first-run picker built.**
+  * Helpdesk 0.2.0 depends on core, parties and products. Its `helpdesk-erp` connector brings
+    tickets' sales invoices and maintenance contracts' sales orders; the `helpdesk-erp` upgrade
+    step installs it where Helpdesk and selling are. Connector steps are one table.
+  * Suites: a metadata app with only the apps it requires (category `suite`); Workspace, Business
+    and Retail, listed where the server has their members. Store categories `suite` and
+    `connector`.
+  * The first-run picker: an administrator of a workspace with no apps gets suites and apps to
+    install on Home (today's and the shell's). Checked in Chrome: a new workspace has only
+    Administration; installing Business brings ERP, CRM, Helpdesk, Projects and their connectors.
+  * Not yet: Project into the Projects app with `projects-erp`; `hr-erp` and `payroll-erp` (HR's
+    expense claims and payroll post to accounts); `requires: {erp}` on Commerce, POS, Field
+    service, Assets and Bookings; removing a suite's members nothing else needs.
 
 Contents: 1 where we are · 2 goals and targets · 3 what others do · 4 rules · 5 decisions ·
 6 the person's view · 7 addresses and deployment shapes · 8 the core shell · 9 people, sessions,
