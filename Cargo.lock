@@ -2322,7 +2322,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-crm"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-crm?branch=main#2d843060d53fff8f2136895cd82184b7100d2d47"
+source = "git+https://github.com/CBFerrum/ferrum-app-crm?branch=main#5219ff9cf0efd7a4e304969ec15fc98c4dae8ccd"
 dependencies = [
  "async-trait",
  "chrono",
