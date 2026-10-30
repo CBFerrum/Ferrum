@@ -36,6 +36,14 @@ ferrum-bar[compact] {
   --ferrum-bar-height: 40px;
 }
 
+/* A side panel the bar opened (docs/plan/apps-ui.md §11.4) takes room at the end of wide pages and
+   floats over narrow ones. Layouts that are fixed to the viewport can use the same width. */
+@media (min-width: 1024px) {
+  :root[data-ferrum-panel] body {
+    margin-inline-end: var(--ferrum-panel-width, 380px);
+  }
+}
+
 /* Going from one app to another animates where the browser can (cross-document view transitions). */
 @view-transition {
   navigation: auto;

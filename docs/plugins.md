@@ -205,10 +205,11 @@ way to add a page, card or panel to someone else's interface. The plan is
 [docs/plan/spikes/u0](plan/spikes/u0).
 
 ```yaml
-platform: ">=0.3.1, <0.4"
+platform: ">=0.3.2, <0.4"
 ui:
   dist: ui/dist                   # the built files, with an index.html
   shell: ">=1.0"                  # the shell API it needs
+  family: Sales                   # optional: the family it heads (its add-ons with interfaces join it)
   csp:                            # origins beyond the workspace's host, reviewed by the store
     connect: ["setting:meet_url", "wss://media.example.com"]
 contributes:
@@ -220,6 +221,11 @@ contributes:
     - {id: deal, label: Deal, path: deals/new}
   shell.intent:                   # what it does for other apps
     - {id: pick, action: pick, type: note, path: notes/pick}
+  shell.sidepanel:                # panels beside any app's page; `contextual` ones open from apps only
+    - {id: deals, title: Deals, path: deals/_panel}
+    - {id: deal, title: Deal, path: deals/_panel/deal, contextual: true}
+  shell.public:                   # pages anyone with a link opens, without signing in
+    - {id: quote, path: deals/q, title: Quote}
 ```
 
 * **Routes** are `[a-z][a-z0-9-]{1,30}`, unique on a cluster with their aliases, and never one of the
@@ -244,6 +250,35 @@ contributes:
 * **Trust**: an interface runs on the workspace's host with the person's session. Apps compiled
   into the server, bundles signed by a key the server trusts, and apps an operator makes available
   for the whole cluster may bring one; an unsigned app private to a workspace may not.
+* **`ferrum.shell`, more**: `sidepanel.open({id, context})` and `close()` (a panel's page reads
+  `sidepanel.context()` and hears `panel-context`); `uploads.start({file, url})` hands an upload to
+  the runtime, which keeps the file in IndexedDB until it is sent, carries on in the next page of any
+  app, shows it in the bar's tray and sends `Idempotency-Key` (the upload's id) so a resent upload is
+  stored once where the endpoint honours it; `family()` gives the app's family and its entries (the
+  kit's `FamilyNav` draws them); `apps()` the launcher's entries; `on(event, cb)` returns a function
+  that stops listening.
+* **Families**: an app with an interface heads a family when it names one (`ui.family`) or when its
+  add-ons (`parent`) bring interfaces too. They share its launcher group and navigation, and each
+  still ships and versions on its own (Drive and Docs are Workspace).
+* **Side panels** open beside the page from the bar (one at a time, resizable, again on the tab's
+  next page) or, `contextual`, from an app with something to show (`sidepanel.open({id: "drive.details",
+  context: {file}})`). On a phone the panel's app opens instead.
+* **Public pages** (`shell.public`) are below one of the app's routes and take the workspace in the
+  path: `/{path}/{workspace}/…` (`/drive/s/acme/{link}`). They have no bar and no person (the
+  bootstrap's `person` is null, `host.kind` is `public`), send no referrer and are kept out of
+  search engines; on a host that serves one workspace only that workspace's links work.
+* **CSP**: kinds are `connect`, `frame`, `img`, `media`, `font`, `worker` and `form` (where forms may
+  post); `https:` alone is allowed for `img` and `media`; apps compiled into the server may name a
+  server setting, `env:FERRUM_…`, whose addresses (several, space- or comma-separated) are read at
+  run time, and a `wss://` one adds its `https://` twin for `connect`.
+* **Building one** (first-party apps, until `@ferrum/*` are on npm): the app's `ui/` builds with
+  Ferrum-Frontend's packages from the sibling checkout, `node ../../ferrum/web/packages/build/cli.mjs
+  build|check|typecheck|test`, with `vite.config.mjs` = `ferrumApp(import.meta.url)`. Its code imports
+  `@ferrum/*` and libraries by name and never Ferrum-Frontend's own modules. `dist/` is committed and
+  embedded in the app's crate (`UI`); `check` (in CI) fails when `dist/` was not built from the sources
+  as they are. Comms, Drive and Docs are built this way.
+* **Design**: the shell owns only the bar; the kit (`@ferrum/kit`, shadcn components on the theme's
+  tokens) is what Ferrum's own apps use, and any app may bring its own look and framework instead.
 * An app without packages may consist of an interface alone.
 
 ## Limits and guarantees

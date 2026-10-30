@@ -212,6 +212,9 @@ async fn page(
     if !ferrum_apps::shell::is_route(first) || ferrum_apps::shell::is_reserved_route(first) {
         return Ok(not_found(uri.path()));
     }
+    if let Some((app_id, public, rest)) = shell::public_page(&path) {
+        return public_page(&st, &headers, &uri, app_id, public, rest).await;
+    }
     let (ctx, device, _) = match person(&st, &headers, &uri).await {
         Ok(p) => p,
         // Signed out: a worker of the route removes itself.
@@ -302,6 +305,68 @@ async fn page(
     };
     let res = shell::entry_page(&entry, &boot, &shell::csp(Some(app.manifest.as_ref()), &Value::Null));
     Ok(not_modified(&headers, res))
+}
+
+/// `/{page}/{workspace}/…`: a page anyone with a link may open (`shell.public`, §7.3), such as a
+/// shared file or a meeting's guest page. The workspace comes from the path; a host that serves one
+/// workspace serves only its own. No session is needed and none is used: no bar, no person.
+async fn public_page(st: &AppState, headers: &HeaderMap, uri: &Uri, app_id: &str, page: &str, rest: &str) -> ApiResult<Response> {
+    let gone = || {
+        status_page(
+            StatusCode::NOT_FOUND,
+            "This link does not work",
+            "It may have expired or been removed. Ask the person who sent it for a new one.",
+            &[],
+            None,
+        )
+    };
+    let slug = rest.split('/').next().unwrap_or_default();
+    st.public_limiter.check(&format!("{}|{}", crate::extract::client_ip(headers), slug.to_ascii_lowercase())).await?;
+    let Some(tenant) = st.shell.workspace_by_slug(slug).await? else { return Ok(gone()) };
+    match st.shell.place(headers).await? {
+        Place::Workspace(t) if t != tenant => return Ok(gone()),
+        Place::Moved(Some(to)) => {
+            let scheme = if st.shell.secure { "https" } else { "http" };
+            return Ok(Redirect::permanent(&format!("{scheme}://{to}{}", path_and_query(uri))).into_response());
+        }
+        Place::Moved(None) | Place::Elsewhere => return Ok(gone()),
+        Place::Workspace(_) | Place::Any => {}
+    }
+    let ws = st.shell.workspace(tenant).await?;
+    if ws.status != "active" {
+        return Ok(status_page(StatusCode::FORBIDDEN, "This workspace is suspended", "Its links work again once it is active.", &[], None));
+    }
+    let apps = st.apps.shell_apps(tenant).await?;
+    // Installed, enabled, and at a version that has this page.
+    let Some(app) = apps.iter().find(|a| a.id == app_id && a.manifest.public_paths().contains(&page)) else { return Ok(gone()) };
+    let Some(release) = st.shell.release_for(tenant, &app.id, &app.version).await? else {
+        return Ok(status_page(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "This page cannot open",
+            "The server has no interface for it yet. Try again in a while.",
+            &[],
+            None,
+        ));
+    };
+    let entry: ferrum_apps::ui::EntryTemplate = serde_json::from_value(release.entry.clone())
+        .map_err(|e| ApiError(Error::internal(format!("interface release {} of {}: {e}", release.digest, app.id))))?;
+    let title = app
+        .items("shell.public")
+        .find(|i| i.get("path").and_then(Value::as_str) == Some(page))
+        .and_then(|i| i.get("title").and_then(Value::as_str))
+        .unwrap_or(&app.manifest.name);
+    let app_json = json!({
+        "id": app.id,
+        "version": app.version,
+        "release": release.digest,
+        "routes": shell::routes_of(app),
+        "entry": page.split('/').next().unwrap_or(page),
+        "title": title,
+        "compact": true,
+    });
+    let timezone = st.kernel.registry.schema(tenant).await?.timezone.clone();
+    let boot = shell::public_bootstrap(&ws, shell::request_host(headers).unwrap_or_default(), &timezone, app_json, page);
+    Ok(not_modified(headers, shell::public_entry_page(&entry, &boot, &shell::csp(Some(app.manifest.as_ref()), &Value::Null))))
 }
 
 /// A 304 when the browser already has this page.
@@ -511,6 +576,7 @@ async fn shell_info(Auth(ctx): Auth, State(app): State<AppContext>, headers: Hea
     let kind = st.shell.kind(ctx.tenant, ctx.user).await?;
     let ws = st.shell.workspace(ctx.tenant).await?;
     let apps = st.apps.shell_apps(ctx.tenant).await?;
+    let (family_of, families) = shell::families(&apps);
     let (mut launcher, mut create, mut intents, mut panels) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for a in &apps {
         let usable: Vec<&Value> = a.items("shell.app").filter(|i| may_use(&ctx, &kind, i)).collect();
@@ -526,6 +592,7 @@ async fn shell_info(Auth(ctx): Auth, State(app): State<AppContext>, headers: Hea
             launcher.push(json!({
                 "id": item.get("id"), "app": a.id, "title": item.get("title"), "description": item.get("description"),
                 "icon": item.get("icon"), "color": item.get("color"), "compact": item.get("compact").and_then(Value::as_bool).unwrap_or(false), "url": url,
+                "family": family_of.get(&a.id),
             }));
         }
         for item in a.items("shell.create") {
@@ -535,16 +602,16 @@ async fn shell_info(Auth(ctx): Auth, State(app): State<AppContext>, headers: Hea
             intents.push(json!({"app": a.id, "action": item.get("action"), "type": item.get("type"), "title": item.get("title"), "url": format!("/{}", item.get("path").and_then(Value::as_str).unwrap_or_default())}));
         }
         for item in a.items("shell.sidepanel") {
-            panels.push(json!({"id": item.get("id"), "app": a.id, "title": item.get("title"), "icon": item.get("icon"), "url": format!("/{}", item.get("path").and_then(Value::as_str).unwrap_or_default())}));
+            panels.push(json!({
+                "id": item.get("id"), "app": a.id, "title": item.get("title"), "icon": item.get("icon"),
+                "contextual": item.get("contextual").and_then(Value::as_bool).unwrap_or(false),
+                "url": format!("/{}", item.get("path").and_then(Value::as_str).unwrap_or_default()),
+            }));
         }
     }
     // Apps whose pages are still in today's web app: entries into it, until they have their own.
     if ws.shell_v2 && kind == "member" {
-        for (app_id, title, path, color) in shell::CLASSIC_ENTRIES {
-            if apps.iter().any(|a| a.id == *app_id) {
-                launcher.push(json!({"id": format!("classic-{}", title.to_lowercase().replace(' ', "-")), "app": app_id, "title": title, "color": color, "compact": false, "url": path, "classic": true}));
-            }
-        }
+        launcher.extend(shell::classic_entries(&apps));
     }
     let body = json!({
         "v": 1,
@@ -555,6 +622,7 @@ async fn shell_info(Auth(ctx): Auth, State(app): State<AppContext>, headers: Hea
         "create": create,
         "intents": intents,
         "sidepanels": panels,
+        "families": families,
         "legacy": "/app/",
     });
     let text = body.to_string();
