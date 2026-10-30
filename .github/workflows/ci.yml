@@ -83,6 +83,54 @@ jobs:
       - name: RustSec advisories
         run: cargo install cargo-audit --locked && cargo audit
 
+  # The editor server for Drive's browser editors (deploy/editors, docs/plan/browser-editors.md):
+  # built from the pinned editor builds, exercised in Chromium, Firefox and WebKit as the cluster
+  # runs it (read-only, no capabilities), then published.
+  editors:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: deploy/editors
+          load: true
+          tags: ferrum-editors:ci
+          cache-from: type=gha,scope=editors
+          cache-to: type=gha,scope=editors,mode=max
+      - name: Browser tests
+        working-directory: deploy/editors/test
+        run: |
+          docker run -d --name editors -p 8090:8080 -e FERRUM_PUBLIC_URL=http://127.0.0.1:8091 \
+            --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges ferrum-editors:ci
+          mkdir -p site && python3 fixtures.py site
+          python3 -m http.server 8091 --bind 127.0.0.1 -d site > /dev/null 2>&1 &
+          npm i --no-save --no-audit --no-fund playwright@1.64.1
+          npx playwright install --with-deps chromium firefox webkit
+          for i in $(seq 30); do curl -fs http://127.0.0.1:8090/healthz && break; sleep 1; done
+          node relay.test.mjs
+      - if: failure()
+        run: docker logs editors
+      - if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - if: github.event_name == 'push'
+        uses: docker/build-push-action@v6
+        with:
+          context: deploy/editors
+          push: true
+          tags: |
+            ghcr.io/cbferrum/ferrum-editors:${{ github.sha }}
+            ghcr.io/cbferrum/ferrum-editors:latest
+          cache-from: type=gha,scope=editors
+
   image:
     needs: [rust]
     runs-on: ubuntu-latest

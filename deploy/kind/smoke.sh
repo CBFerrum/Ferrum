@@ -2,11 +2,12 @@
 # Deploys deploy/k8s (through deploy/kind/kustomization.yaml) to the current cluster, prepared by
 # install.sh with the images ferrum:ci and ferrum-frontend:ci loaded, and checks it the way an
 # operator would:
-#   * the database comes up as three instances, the API, the PDF renderer and the web app as two
-#     or three replicas each, the gateway as two proxies with a certificate from cert-manager;
-#   * through the gateway: HTTPS only, the API and the web app on their paths, no metrics; nothing
-#     else reaches the API (network policy); metrics only with their token; the autoscaler sees
-#     the API's CPU use;
+#   * the database comes up as three instances, the API, the PDF renderer, the web app and the
+#     browser editors' server as two or three replicas each, the gateway as two proxies with
+#     certificates from cert-manager;
+#   * through the gateway: HTTPS only, the API and the web app on their paths, no metrics, the
+#     editor server on its own host with its policies; nothing else reaches the API or the editor
+#     server (network policy); metrics only with their token; the autoscaler sees the API's CPU use;
 #   * a workspace is created and seeded; someone signs in, submits a Sales Invoice, prints it as
 #     HTML and PDF and attaches a file, which every replica then serves from object storage;
 #   * the database primary is killed: writes resume on the new primary, nothing is lost;
@@ -69,11 +70,11 @@ done
 step "waiting for the database (three instances)"
 k wait cluster/ferrum-db --for=condition=Ready --timeout=15m
 [ "$(k get cluster ferrum-db -o jsonpath='{.status.readyInstances}')" = 3 ] || fail "not three database instances"
-step "waiting for the API, the PDF renderer and the web app"
-for d in ferrum ferrum-pdf ferrum-web; do k rollout status "deploy/$d" --timeout=10m; done
+step "waiting for the API, the PDF renderer, the web app and the editor server"
+for d in ferrum ferrum-pdf ferrum-web ferrum-editors; do k rollout status "deploy/$d" --timeout=10m; done
 step "waiting for the gateway and its certificate"
 k wait gateway/ferrum --for=condition=Programmed --timeout=5m
-k wait certificate/ferrum-tls --for=condition=Ready --timeout=5m
+k wait certificate/ferrum-tls certificate/ferrum-editors-tls --for=condition=Ready --timeout=5m
 proxies="gateway.envoyproxy.io/owning-gateway-name=ferrum,gateway.envoyproxy.io/owning-gateway-namespace=$NS"
 kubectl -n envoy-gateway-system wait deploy -l "$proxies" --for=condition=Available --timeout=5m
 [ "$(kubectl -n envoy-gateway-system get deploy -l "$proxies" -o jsonpath='{.items[0].status.readyReplicas}')" = 2 ] || fail "not two gateway proxies"
@@ -106,6 +107,19 @@ grep -qi "<html" <<<"$(c -f "$API/app/")" || fail "the web app"
 c -fo /dev/null "$API/.well-known/oauth-authorization-server" || fail "the OAuth metadata"
 if grep -q "ferrum_up" <<<"$(c "$API/metrics")"; then fail "metrics are reachable from outside"; fi
 
+step "the editor server"
+EDITORS=editors.example.com
+e() { curl -sS --max-time 60 --cacert "$work/ca.crt" --resolve "$EDITORS:8443:127.0.0.1" --resolve "$EDITORS:8080:127.0.0.1" "$@"; }
+redirect=$(e -o /dev/null -w '%{http_code} %{redirect_url}' "http://$EDITORS:8080/relay.html")
+[ "$redirect" = "301 https://$EDITORS/relay.html" ] || fail "plain HTTP to the editor server is not redirected: $redirect"
+grep -qi "frame-ancestors https://$HOST" <<<"$(e -fsD - -o /dev/null "https://$EDITORS:8443/relay.html")" || fail "the relay may be framed by others"
+page=$(e -fsD "$work/editor-headers" "https://$EDITORS:8443/gridcraft/index.html")
+grep -qi "script-src 'self' 'wasm-unsafe-eval' 'sha256-" "$work/editor-headers" || fail "an editor's page allows other scripts"
+wasm=$(grep -o '[A-Za-z0-9._-]*_bg\.wasm' <<<"$page" | head -1)
+grep -qi "^content-type: application/wasm" <<<"$(e -fsI "https://$EDITORS:8443/gridcraft/$wasm")" || fail "the editor's WebAssembly"
+k get deploy ferrum ferrum-web -o jsonpath='{range .items[*]}{.spec.template.spec.containers[0].env[?(@.name=="FERRUM_EDITORS_URL")].value}{"\n"}{end}' |
+  grep -c "^https://$EDITORS$" | grep -qx 2 || fail "the API and the web app do not know the editor server"
+
 step "the network policy, metrics and the autoscaler"
 # A pod outside the gateway, the web app and monitoring reaches the web app (which no policy
 # guards) but gets no answer from the API.
@@ -119,6 +133,9 @@ for attempt in $(seq 1 15); do
 done
 for _ in 1 2 3; do
   [ "$(probe "http://ferrum.$NS.svc.cluster.local/api/ready")" != 200 ] || fail "a pod outside the gateway reached the API"
+done
+for _ in 1 2 3; do
+  [ "$(probe "http://ferrum-editors.$NS.svc.cluster.local/healthz")" != 200 ] || fail "a pod outside the gateway reached the editor server"
 done
 kubectl -n ci-s3 delete pod policy-probe --wait=false >/dev/null
 first=$(k get pods -l app.kubernetes.io/name=ferrum -o name | head -1)

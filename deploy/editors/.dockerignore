@@ -1,0 +1,2 @@
+# The image takes builds.txt, prepare.py and the server files; the browser test stays out.
+test/

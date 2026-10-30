@@ -34,8 +34,8 @@ Yes, at three levels:
 §2 turns this into a rule and applies it: Stalwart for mail, Collabora/ONLYOFFICE for office documents.
 
 **Can DeckCraft, GridCraft, WordCraft and PdfCraft become our office plugin?**
-Yes, as the add-on Browser editors under Drive, planned in [browser-editors.md](browser-editors.md)
-(Phase 4a). Office is built (**today**, §4) with Collabora Online or ONLYOFFICE through WOPI, inside
+Yes, as the add-on Browser editors under Drive (**today**, Phase 4a,
+[browser-editors.md](browser-editors.md)). Office is built (**today**, §4) with Collabora Online or ONLYOFFICE through WOPI, inside
 Drive.
 * The four apps are open source (MIT/Apache-2.0) and run in the browser.
 * There is no hosted web version to wrap, so Ferrum serves their official, unmodified web builds from
@@ -49,8 +49,8 @@ Drive.
 * Dashboards: without code, through package seeds of Studio spaces, dashboards and charts. No app
   does it yet; the first example proves it.
 * Endpoints: **today** for WebAssembly plugins, and an app's own `/api/ext/<app>/…`.
-* Custom screens and nesting: **today** (§3; ferrum-sdk `examples/board`). No real app uses nesting
-  yet; Browser editors is the first.
+* Custom screens and nesting: **today** (§3; ferrum-sdk `examples/board`). The first real add-on
+  and extension point are Browser editors under Drive's `drive.editor`.
 
 Naming: "workspace" already means a tenant in Ferrum, so the document suite is called **Office** below.
 
@@ -303,7 +303,11 @@ creates blank documents, sheets and presentations and lists recent files; templa
 
 ### 4.3 Browser editors (Phase 4a)
 
-Planned in [browser-editors.md](browser-editors.md); spike S3
+**Status, 30 October 2026: built.** Drive 0.4.0 with its add-on Browser editors, Ferrum's
+`deploy/editors`, and the web app's editor page. Checked end to end in Chrome: a workbook opened from
+Drive, edited and saved as a version. The editor server is tested in Chromium, Firefox and WebKit in
+CI. Still to come: DeckCraft, the fidelity note and the upstream pull requests
+([browser-editors.md](browser-editors.md) §8, §9). Spike S3
 ([spike-s3-artcraft.md](spike-s3-artcraft.md)) found go without a fork.
 * An editor server the operator runs, on an origin of its own, serves the official, unmodified web
   builds of GridCraft, WordCraft and PdfCraft, and a small Ferrum relay.
@@ -400,7 +404,7 @@ domain page shows whether outgoing mail works.
 | Phase 1 remainder | Commerce: its gateways under `commerce.gateway` and a seeded dashboard (the Tier 0 example, §3.4); plugins' OpenAPI fragments in the API docs and as MCP tools (§3.5) | when Commerce is next changed; the OpenAPI part when asked for |
 | 4. When asked for | DeckCraft in Browser editors (once its bridge is released); calendar and contacts sync over CalDAV/CardDAV; video meetings (LiveKit or Jitsi as a service); GSP connectors; Microsoft 365 and Google connectors; a marketplace for third-party plugins (signed OCI packages, architecture §7.5) | |
 
-Order: 0, 1, 2, 3, then 4a.
+Order: 0, 1, 2, 3, then 4a (built 30 October 2026).
 * The platform came first because Office and Mail are its first users.
 * Office came before Mail because it is smaller and proves the separate-service pattern.
 * 4a is the platform's first real add-on and extension point.

@@ -2,8 +2,12 @@
 
 Plan, 30 October 2026. It answers the request to make DeckCraft, GridCraft, WordCraft and PdfCraft
 workspace plugins. It builds on [platform.md](platform.md) §3 (plugin platform v2, built), §4 (Office
-over WOPI, built) and spike S3 ([spike-s3-artcraft.md](spike-s3-artcraft.md)). Nothing here is built
-yet.
+over WOPI, built) and spike S3 ([spike-s3-artcraft.md](spike-s3-artcraft.md)).
+
+**Status, 30 October 2026: built** (Drive 0.4.0 with the add-on, Ferrum `deploy/editors` and the
+web app's editor page), except DeckCraft, the fidelity note and the upstream pull requests (§8,
+§9). The sections below describe what was built; where it differs from the first draft of this
+plan, they say so.
 
 ## 1. The request, and where each part stands
 
@@ -79,6 +83,7 @@ Drive (today: files, versions, sharing, editing over WOPI)
                         (a manifest only, no code)
 
 Editor server           new, run by the operator like Collabora: ghcr.io/cbferrum/ferrum-editors
+                        (built from Ferrum's deploy/editors)
 ├── /relay.html         Ferrum's relay, about a hundred lines
 └── /gridcraft/ /wordcraft/ /pdfcraft/      the official builds, unmodified
 ```
@@ -96,30 +101,38 @@ Editor server           new, run by the operator like Collabora: ghcr.io/cbferru
 # Drive's app.yaml (0.4.0)
 extension_points:
   drive.editor:
-    description: An editor for files of given types, run on the editor server
+    description: An editor for files of given types, run in the browser from the editor server
     schema:
       type: object
-      required: [id, title, kind, app, types]
+      required: [title, kind, program, types]
+      additionalProperties: false
       properties:
-        id: {type: string}
-        title: {type: string}
-        kind: {enum: [bridge]}
-        app: {type: string, pattern: "^[a-z][a-z0-9-]*$"}
-        types: {type: array, items: {type: string}}
-        max_mb: {type: integer, minimum: 1}
+        title: {type: string, maxLength: 60}
+        kind: {enum: [browser]}
+        program: {type: string, maxLength: 40}
+        types: {type: array, maxItems: 20, items: {type: string, maxLength: 10}}
+        max_mb: {type: integer}
 
-# drive-editors/app.yaml (0.1.0)
+# addons/editors/app.yaml in ferrum-app-drive (0.1.0)
 id: drive-editors
 name: Browser editors
 parent: drive
 requires: { drive: ">=0.4, <0.5" }
-runtime: meta
+runtime: native
 contributes:
   drive.editor:
-    - { id: sheets, title: Spreadsheet (GridCraft), kind: bridge, app: gridcraft, types: [xlsx, csv, tsv], max_mb: 50 }
-    - { id: documents, title: Document (WordCraft), kind: bridge, app: wordcraft, types: [docx, odt, rtf], max_mb: 50 }
-    - { id: pdf, title: PDF (PdfCraft), kind: bridge, app: pdfcraft, types: [pdf], max_mb: 100 }
+    - { id: sheets, title: Spreadsheet (GridCraft), kind: browser, program: gridcraft, types: [xlsx, csv, tsv], max_mb: 50 }
+    - { id: documents, title: Document (WordCraft), kind: browser, program: wordcraft, types: [docx, odt, rtf], max_mb: 50 }
+    - { id: pdf, title: PDF (PdfCraft), kind: browser, program: pdfcraft, types: [pdf], max_mb: 100 }
 ```
+
+How the built version differs from this plan's first draft:
+* **The schema.** It uses only the keywords the platform's schema subset takes (no `pattern`,
+  no `minimum`), and leaves out `id`, which the platform checks itself.
+* **`program`, not `app`.** Each listed contribution already carries the contributing `app`.
+* **`kind: browser`.**
+* **The add-on ships with Drive.** It is a manifest compiled into the distribution, as native
+  apps are, so it needs no store. A workspace installs it from its Apps page.
 
 WOPI stays built into Drive and set by the operator. Rewriting working code into a contribution
 would gain nothing.
@@ -139,10 +152,11 @@ would gain nothing.
 ## 4. Opening and saving
 
 1. **Open.**
-   * "Open" uses the workspace's default editor for the file's type (Drive's settings; out of the
-     box, the online editor when the operator runs one).
-   * "Open with" lists every editor for the type, greyed out with the reason when one can't take the
-     file.
+   * `GET /api/app/drive/editors` says which kinds the server runs (`{online, browser}`).
+   * "Open" uses the online editor when the server runs one and it opens the type; otherwise the
+     first browser editor for it. A per-workspace default was left out: "Open with" covers the
+     choice.
+   * "Open with" lists every editor for the type; one that can't take the file says why.
 2. **Launch.** The web app calls `POST /api/app/drive/editor/{file}` with `editor: sheets`.
    * Drive checks that the add-on is enabled and contributes the type.
    * Editing needs Edit rights, no check-out by someone else, and no other editor session holding
@@ -206,8 +220,16 @@ would gain nothing.
 * For the editors: `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'
   'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self';
   worker-src 'self' blob:; form-action 'none'; base-uri 'none'; frame-ancestors 'self'`.
+* Each editor's page also names the SHA-256 of Trunk's one inline loader script in `script-src`.
+  The image build computes these sums, so no other inline script runs.
 * For the relay: the same, with `frame-ancestors` set to `FERRUM_PUBLIC_URL`.
-* Because of `connect-src 'self'`, an editor can't send a document anywhere, whatever its code does.
+* `frame-ancestors` is checked against every ancestor, so the editors' pages allow the web app's
+  origins (`FERRUM_PUBLIC_URL`) as well as `'self'`. Without that they would not load under the
+  relay.
+* Because of `connect-src 'self'`, an editor sends no requests elsewhere: no telemetry, no uploads.
+  A page can still navigate itself with data in the address, which browsers offer no policy
+  against. The defence there is the builds themselves: official, pinned, checked against their
+  sums, and their source is open.
 * Also `nosniff`, `Referrer-Policy: no-referrer`, and a `Permissions-Policy` that turns off the
   camera, microphone and location.
 
@@ -239,11 +261,15 @@ rights. The editor server is trusted with nothing.
 
 ## 7. Deployment and operations
 
-**The image.** `ghcr.io/cbferrum/ferrum-editors`, built from `ferrum-app-drive/editors/`.
+**The image.** `ghcr.io/cbferrum/ferrum-editors`, built from Ferrum's `deploy/editors/`. It lives
+there, not in Drive's repository, so Ferrum's CI builds, tests and publishes it beside the server,
+and the cluster test can deploy it.
 * Unprivileged nginx with the three builds (about 40 MB compressed), precompressed `.wasm` and `.js`,
   and the relay.
 * Non-root, a read-only root filesystem, no capabilities.
 * Its one setting is `FERRUM_PUBLIC_URL`: whose pages may frame the relay.
+  * The server refuses to start without it, or with anything but a plain address.
+  * It writes its configuration to `/tmp`, the only place it may write.
 
 **Ferrum's side.** `FERRUM_EDITORS_URL`, the editor server as browsers reach it, on both the server
 and the web container.
@@ -290,7 +316,7 @@ and it would become ours to maintain.
 
 | # | Where | What | Done when |
 |---|---|---|---|
-| 1 | ferrum-app-drive `editors/` | The editor server image: Dockerfile, pinned versions and checksums, the relay, the headers; CI that builds, tests and publishes it | The relay round-trips a file with each app in Chromium, Firefox and WebKit; the headers are checked |
+| 1 | Ferrum `deploy/editors/` | The editor server image: Dockerfile, pinned versions and checksums, the relay, the headers; CI that builds, tests and publishes it | The relay round-trips a file with each app in Chromium, Firefox and WebKit; the headers are checked |
 | 2 | ferrum-app-drive (Drive 0.4.0) | The `drive.editor` point; launching bridge editors; the shared lock (take, refresh, release, take over); the `base` check on new versions; uploads that respect editor locks | Unit and integration tests for every row of §5 the server decides |
 | 3 | ferrum-app-drive `addons/editors/` | The add-on: manifest, contributions, store listing without the ArtCraft name or logos | It installs under Drive, and removing Drive while it is installed is refused |
 | 4 | Ferrum-Frontend | Open and Open with; the editor page (frame, port, dirty, lock refresh, save, conflicts, read-only, failures); the default editor per type in Drive's settings; `frame-src` | Playwright tests for every row of §5 the browser decides, in the three engines |

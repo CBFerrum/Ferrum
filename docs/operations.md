@@ -357,6 +357,67 @@ Set `OFFICE_PUBLIC_URL` and `OFFICE_PUBLIC_HOST` to the editor's public address.
   limit applies to all of its sessions together. Raise it for busy editors, or exempt the editor's
   address at the ingress.
 
+## Browser editors
+
+Drive's add-on Browser editors opens spreadsheets, documents and PDFs in editors that run in the
+person's browser: GridCraft (xlsx, csv, tsv), WordCraft (docx, odt, rtf) and PdfCraft (pdf). The
+plan is [docs/plan/browser-editors.md](plan/browser-editors.md).
+* You run the editor server, `deploy/editors`, image `ghcr.io/cbferrum/ferrum-editors`. It holds
+  the editors' official builds, unmodified and checked against pinned checksums, and a small relay
+  page.
+* The web app downloads the file, hands it to the editor through the relay, and saves what the
+  editor returns as a new version through Drive, with the person's rights.
+* Files never reach the editor server. It holds no data and no secrets, and serves static files
+  only.
+
+The editor server needs an origin of its own: another host name, or on a single host another port.
+The editors must never share the web app's origin, where they could reach people's sessions.
+
+| Setting | On | Value |
+|---|---|---|
+| `FERRUM_EDITORS_URL` | server and web app | the editor server as browsers reach it, e.g. `https://editors.example.com` |
+| `FERRUM_PUBLIC_URL` | editor server | the web app's address, the only page that may frame the relay (several separated by spaces) |
+
+Each workspace that wants the editors then installs **Browser editors** from its Apps page (under
+Drive). Without the add-on, or with `FERRUM_EDITORS_URL` empty, Drive offers no browser editors.
+
+**Compose.** `deploy/editors.yml` adds the editor server on port 8090:
+
+    docker compose -f deploy/docker-compose.yml -f deploy/editors.yml --env-file deploy/.env up -d
+
+Set `FERRUM_EDITORS_URL` in `deploy/.env`. Copy and paste inside the editors need a secure page:
+HTTPS, or `localhost`.
+
+**Kubernetes.**
+1. List the component `editors` under `components:` in `deploy/k8s/kustomization.yaml`.
+2. Replace `editors.example.com` and `erp.example.com` in `deploy/k8s/editors/` with your hosts.
+
+The component adds:
+* the editor server: two replicas, read-only and without capabilities;
+* a Gateway listener with its own certificate, and the routes;
+* a network policy: only the gateway reaches the editor server, and it reaches nothing;
+* `FERRUM_EDITORS_URL` on the server and the web app.
+
+**Things to know**
+* **One editor at a time.** Browser and online editor sessions share each file's lock.
+  * While someone edits, others open the file read-only, and uploads and restores of that file wait.
+  * A lock lapses 30 minutes after the editor last refreshed it, for example after a browser crash.
+* **Conflicts.** A save made from an older version than the file's current one is refused. The
+  person saves a copy or replaces the file, and the other change stays in the history.
+* **Upgrades.** `deploy/editors/builds.txt` pins each editor's version and checksum.
+  * Moving a pin is a reviewed change: read the editor's release notes, and let CI's browser tests
+    pass in Chromium, Firefox and WebKit.
+  * Open editors keep the version they loaded.
+* **Size.** Editors hold the whole file in the browser's memory.
+  * The add-on caps what it offers them: 50 MB for sheets and documents, 100 MB for PDFs.
+  * Larger files open in the online editor, or download.
+* **What browsers need:** WebGL, available in current desktop browsers. On phones the editors work,
+  but they are made for a mouse and keyboard.
+* **Accessibility:** the editors draw on a canvas and offer little to screen readers. The online
+  editor stays available to everyone through "Open with".
+* **Names:** the add-on and its listing do not use the ArtCraft name or logos (their brand terms).
+  The editors show their own.
+
 ## Hosted mail
 
 The Mail, Chat and Calendar app (Comms) can give people mailboxes on a Stalwart mail server that

@@ -1,0 +1,48 @@
+# The editor server (docs/plan/browser-editors.md): static files only. 50-editors.sh writes this
+# to /tmp/editors.conf at start, with @ORIGINS@ replaced by FERRUM_PUBLIC_URL: the web app's
+# address, the only page that may frame the relay.
+
+# A person's name reaches GridCraft in its address (?author=), so requests are logged without it.
+log_format editors '$remote_addr - [$time_local] "$request_method $uri $server_protocol" $status $body_bytes_sent';
+
+# The builds' file names carry a content hash, so only their pages are revalidated.
+map $uri $editors_cache {
+    ~/index\.html$          "no-cache";
+    ~\.(wasm|js|ico)$       "public, max-age=31536000, immutable";
+    default                 "no-cache";
+}
+
+server {
+    listen 8080;
+    server_tokens off;
+    root /usr/share/nginx/html;
+    access_log /dev/stdout editors;
+    gzip_static on;
+    autoindex off;
+
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    # Ferrum's relay: framed by the web app only; it frames an editor on this origin.
+    location = /relay-config.js {
+        default_type text/javascript;
+        add_header Cache-Control "no-cache" always;
+        include /etc/nginx/editors/headers.conf;
+        return 200 'self.FERRUM_ORIGINS = "@ORIGINS@";\n';
+    }
+    location ~ ^/relay\.(html|js|css)$ {
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; frame-src 'self'; form-action 'none'; base-uri 'none'; object-src 'none'; frame-ancestors @ORIGINS@" always;
+        add_header Cache-Control "no-cache" always;
+        include /etc/nginx/editors/headers.conf;
+    }
+
+    # The editors (prepare.py): each under its own directory, with its own policy.
+    include /tmp/editors-programs.conf;
+
+    location / {
+        return 404;
+    }
+}
