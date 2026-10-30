@@ -95,7 +95,7 @@ pub(crate) fn contract(point: &str) -> Value {
             }),
             vec!["title"],
         ),
-        "shell.open" => (json!({"entity": text(80), "package": text(40), "path": text(200), "priority": {"type": "integer"}}), vec!["path"]),
+        "shell.open" => (json!({"entity": text(80), "package": text(40), "path": text(200), "list": text(200), "priority": {"type": "integer"}}), vec!["path"]),
         "shell.create" => (json!({"label": text(60), "path": text(200), "entity": text(80)}), vec!["label", "path"]),
         "shell.intent" => (json!({"action": text(31), "type": text(31), "path": text(200), "title": text(60)}), vec!["action", "type", "path"]),
         "shell.sidepanel" => (json!({"title": text(60), "path": text(200), "icon": text(200)}), vec!["title", "path"]),
@@ -279,6 +279,11 @@ pub(crate) fn check(m: &AppManifest) -> Result<(), AppError> {
                 };
                 check_ui_path(&at, path, &routes, placeholders)?;
             }
+            // shell.open's list of the records it opens (`/open/{entity}`).
+            if let Some(list) = field(item, "list") {
+                let placeholders: &[&str] = if field(item, "package").is_some() { &["{entity}"] } else { &[] };
+                check_ui_path(&format!("{at}.list"), list, &routes, placeholders)?;
+            }
             if let Some(endpoint) = field(item, "endpoint") {
                 check_endpoint(&at, endpoint, &m.id)?;
             }
@@ -404,6 +409,10 @@ mod tests {
         refused(&format!("{app}  shell.open:\n    - {{id: e, package: selling, path: \"mail/{{id}}\"}}\n"), "{entity}");
         refused(&format!("{app}  shell.open:\n    - {{id: e, entity: Deal, package: selling, path: \"mail/{{id}}\"}}\n"), "name an entity, or a package");
         parse(&format!("{app}  shell.open:\n    - {{id: e, package: selling, path: \"mail/e/{{entity}}/{{id}}\"}}\n")).expect("a package's records");
+        parse(&format!("{app}  shell.open:\n    - {{id: e, package: selling, path: \"mail/e/{{entity}}/{{id}}\", list: \"mail/e/{{entity}}\"}}\n"))
+            .expect("a package's lists");
+        refused(&format!("{app}  shell.open:\n    - {{id: e, package: selling, path: \"mail/e/{{entity}}/{{id}}\", list: mail/e}}\n"), "{entity}");
+        refused(&format!("{app}  shell.open:\n    - {{id: e, entity: Deal, path: \"mail/{{id}}\", list: \"mail/{{id}}\"}}\n"), "plain path segments");
         refused(&format!("{app}  shell.search:\n    - {{id: s, endpoint: /api/ext/drive/search}}\n"), "/api/ext/comms/");
         refused(&format!("{app}  shell.search:\n    - {{id: s, endpoint: /api/ext/comms/../admin}}\n"), "/api/ext/comms/");
         refused(&format!("{app}  shell.intent:\n    - {{id: a, action: Pick, type: file, path: mail/pick}}\n"), "lower-case");

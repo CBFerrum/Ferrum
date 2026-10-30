@@ -173,11 +173,14 @@ async fn shell_core(st: &AppState, headers: &HeaderMap, uri: &Uri, first: &str, 
     }
     let rest = rest.unwrap_or_default().trim_end_matches('/');
     let to = match first {
-        "store" => "/app/apps".to_string(),
+        "store" if rest.is_empty() => "/app/apps".to_string(),
+        // `apps/{app}/settings`: the same address there.
+        "store" => format!("/app/{rest}"),
         "admin" => format!("/app/admin{}", if rest.is_empty() { String::new() } else { format!("/{rest}") }),
         "account" => "/app/settings".to_string(),
         _ if rest.is_empty() => "/app/".to_string(),
-        _ => format!("/app/e/{rest}"),
+        // The shell's records (`e/{entity}[/{id}]`, `r/{report}`) have the same addresses there.
+        _ => format!("/app/{rest}"),
     };
     Ok(Redirect::to(&to).into_response())
 }
@@ -420,12 +423,12 @@ async fn login(st: &AppState, headers: &HeaderMap, uri: &Uri, q: &[(String, Stri
 /// use (§11.2): the app the link came from (`?via=`), then the highest priority, then install
 /// order; else today's records page when the person may read the entity.
 async fn open(st: &AppState, headers: &HeaderMap, uri: &Uri, rest: &str, q: &[(String, String)]) -> ApiResult<Response> {
-    let mut it = rest.splitn(2, '/');
-    let (Some(entity), Some(id)) = (it.next(), it.next()) else { return Ok(not_found(uri.path())) };
-    if !ferrum_meta::is_entity_name(entity) || id.is_empty() || id.contains('/') || id.len() > 200 {
+    // `/open/{entity}/{id}`: a record; `/open/{entity}`: the list of them.
+    let (entity, id) = rest.split_once('/').unwrap_or((rest, ""));
+    if !ferrum_meta::is_entity_name(entity) || id.contains('/') || id.len() > 200 {
         return Ok(not_found(uri.path()));
     }
-    let id = percent_decode(id);
+    let id = (!id.is_empty()).then(|| percent_decode(id));
     let (ctx, device, _) = match person(st, headers, uri).await {
         Ok(p) => p,
         Err(r) => return Ok(r),
@@ -445,21 +448,29 @@ async fn open(st: &AppState, headers: &HeaderMap, uri: &Uri, rest: &str, q: &[(S
             i.get("entity").and_then(Value::as_str) == Some(entity) || (package.is_some() && i.get("package").and_then(Value::as_str) == package.as_deref())
         };
         for item in app.items("shell.open").filter(shows) {
-            let Some(path) = item.get("path").and_then(Value::as_str) else { continue };
+            let Some(path) = item.get(if id.is_some() { "path" } else { "list" }).and_then(Value::as_str) else { continue };
             let exact = item.get("entity").is_some();
             let rank = if via == Some(app.id.as_str()) { i64::MAX } else { item.get("priority").and_then(Value::as_i64).unwrap_or(0) * 2 + i64::from(exact) };
             let better = best.as_ref().is_none_or(|b| rank > b.0 || (rank == b.0 && order < b.1));
             if better {
-                best = Some((rank, order, format!("/{}", path.replace("{entity}", &seg(entity)).replace("{id}", &seg(&id)))));
+                best = Some((rank, order, format!("/{}", path.replace("{entity}", &seg(entity)).replace("{id}", &id.as_deref().map(seg).unwrap_or_default()))));
             }
         }
     }
+    // The rest of the query (a list's view, a record's tab) goes along.
+    let tail: Vec<&str> = uri.query().unwrap_or_default().split('&').filter(|p| !p.is_empty() && *p != "via" && !p.starts_with("via=")).collect();
+    let tail = if tail.is_empty() { String::new() } else { format!("?{}", tail.join("&")) };
     if let Some((_, _, to)) = best {
-        return Ok(Redirect::to(&to).into_response());
+        return Ok(Redirect::to(&format!("{to}{tail}")).into_response());
+    }
+    // No app shows it and the workspace has no such entity.
+    if package.is_none() {
+        return Ok(not_found(uri.path()));
     }
     if ctx.perms.access(entity, ferrum_kernel::Action::Read) != ferrum_kernel::Access::None {
-        let records = if st.shell.workspace(ctx.tenant).await?.shell_v2 { "/data" } else { "/app/e" };
-        return Ok(Redirect::to(&format!("{records}/{}/{}", seg(entity), seg(&id))).into_response());
+        let records = if st.shell.workspace(ctx.tenant).await?.shell_v2 { "/data/e" } else { "/app/e" };
+        let id = id.as_deref().map(|id| format!("/{}", seg(id))).unwrap_or_default();
+        return Ok(Redirect::to(&format!("{records}/{}{id}{tail}", seg(entity))).into_response());
     }
     let boot = match page_bootstrap(st, headers, &ctx, device, json!(null), "status").await {
         Ok((b, _)) => b,

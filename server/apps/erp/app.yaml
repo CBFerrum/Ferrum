@@ -20,9 +20,9 @@ contributes:
       color: "#2f5bea"
       roles: [Accounts Manager, Accounts User, Sales Manager, Sales User, Purchase Manager, Purchase User, Stock Manager, Stock User, Manufacturing Manager, Manufacturing User]
   shell.open:
-    - {id: core, package: core, path: "erp/e/{entity}/{id}"}
-    - {id: accounting, package: accounting, path: "erp/e/{entity}/{id}"}
-    - {id: selling, package: selling, path: "erp/e/{entity}/{id}"}
-    - {id: buying, package: buying, path: "erp/e/{entity}/{id}"}
-    - {id: inventory, package: inventory, path: "erp/e/{entity}/{id}"}
-    - {id: manufacturing, package: manufacturing, path: "erp/e/{entity}/{id}"}
+    - {id: core, package: core, path: "erp/e/{entity}/{id}", list: "erp/e/{entity}"}
+    - {id: accounting, package: accounting, path: "erp/e/{entity}/{id}", list: "erp/e/{entity}"}
+    - {id: selling, package: selling, path: "erp/e/{entity}/{id}", list: "erp/e/{entity}"}
+    - {id: buying, package: buying, path: "erp/e/{entity}/{id}", list: "erp/e/{entity}"}
+    - {id: inventory, package: inventory, path: "erp/e/{entity}/{id}", list: "erp/e/{entity}"}
+    - {id: manufacturing, package: manufacturing, path: "erp/e/{entity}/{id}", list: "erp/e/{entity}"}
