@@ -34,21 +34,29 @@ Yes, at three levels:
 §2 turns this into a rule and applies it: Stalwart for mail, Collabora/ONLYOFFICE for office documents.
 
 **Can DeckCraft, GridCraft, WordCraft and PdfCraft become our office plugin?**
-Office is built (**today**, §4) with Collabora Online or ONLYOFFICE through WOPI, inside Drive. The ArtCraft
-editors are open source (MIT/Apache-2.0) and build to WebAssembly web apps. Spike S3 found they can be used
-without a fork, through their host bridge, from an editor origin of their own. They remain an optional
-lightweight provider for later; their names and logos are trademarks.
+Yes, as the add-on Browser editors under Drive, planned in [browser-editors.md](browser-editors.md)
+(Phase 4a). Office is built (**today**, §4) with Collabora Online or ONLYOFFICE through WOPI, inside
+Drive.
+* The four apps are open source (MIT/Apache-2.0) and run in the browser.
+* There is no hosted web version to wrap, so Ferrum serves their official, unmodified web builds from
+  an editor server on an origin of their own.
+* Drive opens and saves files through the host bridge GridCraft, WordCraft and PdfCraft have (spike
+  S3). DeckCraft follows once it has that bridge.
+* Collabora stays the default.
+* Their brand terms keep the ArtCraft name and logos out of the add-on's name, icon and listing.
 
 **Own dashboards, endpoints, custom screens, nested plugins?**
-Dashboards: without code, through package seeds of Studio spaces, dashboards and charts (no app does it
-yet; the first example proves it). Endpoints: **today** for WebAssembly plugins, and an app's own
-`/api/ext/<app>/…`. Custom screens and nesting: **today** (§3; ferrum-sdk `examples/board`).
+* Dashboards: without code, through package seeds of Studio spaces, dashboards and charts. No app
+  does it yet; the first example proves it.
+* Endpoints: **today** for WebAssembly plugins, and an app's own `/api/ext/<app>/…`.
+* Custom screens and nesting: **today** (§3; ferrum-sdk `examples/board`). No real app uses nesting
+  yet; Browser editors is the first.
 
 Naming: "workspace" already means a tenant in Ferrum, so the document suite is called **Office** below.
 
 ### Decisions to confirm
 1. Office: Collabora by default through a WOPI host we write once; ONLYOFFICE as a second provider on the
-   same host; ArtCraft optional, after a spike.
+   same host; the ArtCraft editors as an optional add-on (S3 passed; [browser-editors.md](browser-editors.md)).
 2. Mail: Stalwart as a separate service that Ferrum provisions; our own webmail over JMAP.
 3. Plugin screens: sandboxed frames for anyone's plugins; first-party screens stay in the web app.
 4. Nesting: a `parent` field on top of `requires`; no new lifecycle.
@@ -150,7 +158,7 @@ The first app-declared points, each with at least two providers:
 
 | Point | Owner | Providers |
 |---|---|---|
-| `office.editor` | Office | Collabora, ONLYOFFICE; ArtCraft later |
+| `drive.editor` | Drive (Office lives there) | Collabora and ONLYOFFICE, built in; GridCraft, WordCraft and PdfCraft from the Browser editors add-on ([browser-editors.md](browser-editors.md)); DeckCraft once it has a bridge |
 | `commerce.gateway` | Commerce | Razorpay, Stripe, PayPal (exist; registered here when next touched) |
 | `india.einvoice` | India | direct IRP connection (exists), GSP connectors |
 
@@ -248,24 +256,27 @@ can be as large as the operator allows (`FERRUM_DRIVE_MAX_FILE_MB`, up to 1 GiB)
 * Drive is its own WOPI host, and the web app has a Files page and an editor page.
 * One editor server per installation, set by the operator.
 * Collabora and ONLYOFFICE both speak WOPI, so they are one provider at the code level, not two.
-  The `office.editor` extension point below waits for a second kind of editor (ArtCraft's bridge,
-  §4.3), as rule 5 of §2 asks.
+  The second kind, browser editors over their host bridge, comes with the `drive.editor` point in
+  Phase 4a (§4.3), as rule 5 of §2 asks.
 * Checked end to end with Collabora Online 26.04: a new document, typing, and a version saved when
   the person left.
 
 ### 4.1 Shape
 
 ```
-Drive (today: files, folders, versions, sharing with people and teams, links, trash, quotas, search)
-└── Office                new: new document / sheet / presentation, templates, recent files,
-    │                     the office.editor point, the WOPI host
-    ├── office-collabora      editor over WOPI (default)
-    ├── office-onlyoffice     editor over WOPI
-    └── office-artcraft       browser-only editors, after spike S3
+Drive (today: files, folders, versions, sharing with people and teams, links, trash, quotas, search;
+│      Office: the WOPI host, a Files page and an editor page)
+├── drive.editor          Phase 4a: the editors offered for file types
+├── online editor         today: Collabora (default) or ONLYOFFICE over WOPI, set by the operator
+└── drive-editors         Phase 4a: the add-on Browser editors (GridCraft, WordCraft, PdfCraft)
 ```
 
-* Opening a file in Drive picks the editor contributed for its type and opens it in a frame: for WOPI, the
-  engine's page with a short-lived access token for that user and file; for ArtCraft, a Tier 1 page.
+As built, Office lives in Drive and the WOPI editor is set by the operator, not a sub-plugin. Drive
+creates blank documents, sheets and presentations and lists recent files; templates are still to do.
+
+* Opening a file in Drive opens its editor in a frame:
+  * for WOPI, the engine's page with a short-lived access token for that user and file;
+  * for a browser editor, a relay on the editor server ([browser-editors.md](browser-editors.md)).
 * The WOPI host (CheckFileInfo, GetFile, PutFile, Lock, Unlock, RefreshLock, GetLock, PutRelativeFile) is
   written once and serves Collabora and ONLYOFFICE alike. Microsoft 365 for the web speaks it too but needs
   Microsoft's partner programme: not planned.
@@ -283,25 +294,26 @@ Drive (today: files, folders, versions, sharing with people and teams, links, tr
 
 | | Collabora Online | ONLYOFFICE Docs | ArtCraft web builds |
 |---|---|---|---|
-| Licence | MPL-2.0 | AGPL-3.0 | MIT / Apache-2.0 |
-| Maturity | mature (LibreOffice core) | mature | alpha |
-| Embedding | WOPI | WOPI and its own Docs API | none; a fork must add it |
+| Licence | MPL-2.0 | AGPL-3.0 | MIT / Apache-2.0 (names and logos excluded) |
+| Maturity | mature (LibreOffice core) | mature | young (0.x; DeckCraft alpha) |
+| Embedding | WOPI | WOPI and its own Docs API | a host bridge to a same-origin parent (not DeckCraft yet) |
 | Co-editing | yes | yes | no |
-| Runs | server (container) | server (container) | in the browser, no server |
-| To know | Nextcloud's office suite is built on it | dispute around the Euro-Office fork | names and logos are trademarks |
+| Runs | server (container) | server (container) | in the browser; a static editor server |
+| To know | Nextcloud's office suite is built on it | dispute around the Euro-Office fork | canvas UI, little for screen readers; ArtCraft name and logos only inside the apps |
 
-### 4.3 The ArtCraft path, if S3 passes
+### 4.3 Browser editors (Phase 4a)
 
-Spike S3 ([spike-s3-artcraft.md](spike-s3-artcraft.md)) found go for GridCraft, without a fork. Its
-web build already has a host bridge (`?host=parent`: open, save, unsaved changes), and so does
-WordCraft. That bridge talks only to a same-origin parent, so the editors live on a separate editor
-origin with a small Ferrum relay page, not in a Tier 1 screen. The paragraph below is the original
-plan; read it with that correction.
-
-Fork the four repositories; add a small host bridge (open bytes and a file name, return bytes on save,
-report unsaved changes); remove the ArtCraft names and logos; build the web targets; publish them as
-`office-artcraft`, Tier 1 pages contributing to `office.editor` with `kind: bridge`. Editing is
-single-user: Drive locks the file while it is open. Offer the bridge upstream so the fork stays small.
+Planned in [browser-editors.md](browser-editors.md); spike S3
+([spike-s3-artcraft.md](spike-s3-artcraft.md)) found go without a fork.
+* An editor server the operator runs, on an origin of its own, serves the official, unmodified web
+  builds of GridCraft, WordCraft and PdfCraft, and a small Ferrum relay.
+* Drive declares `drive.editor`; the add-on Browser editors (`drive-editors`, a manifest only)
+  contributes the three editors.
+* Drive's editor page frames the relay, which frames the app and passes `open`, `save` and `dirty`
+  between them. Each save is a Drive version.
+* Editing is single-user: the 30-minute editor lock, now shared with WOPI sessions, keeps one session
+  per file.
+* DeckCraft, a Save button and read-only mode wait for changes proposed upstream, not a fork.
 
 ### 4.4 Not in Office
 
@@ -384,10 +396,14 @@ domain page shows whether outgoing mail works.
 | 1. Plugin platform v2 | §3.7 | an example plugin with a page, widget, panel and endpoint installs from the store under its parent; the permission tests pass |
 | 2. Office | §4 with Collabora and ONLYOFFICE, templates, Compose profile, Helm values | a document, a sheet and a presentation are created, co-edited and versioned from Drive in the browser; WOPI tests; the deployment smoke test covers it |
 | 3. Mail | §5 | a tenant adds its domain; users get mailboxes; mail flows both ways through a relay; spam lands in Junk and training works; a shared mailbox and a distribution list work; a mail is filed to a record |
-| 4. When asked for | ArtCraft editors (if S3 passed); calendar and contacts sync over CalDAV/CardDAV; video meetings (LiveKit or Jitsi as a service); GSP connectors; Microsoft 365 and Google connectors; a marketplace for third-party plugins (signed OCI packages, architecture §7.5) | |
+| 4a. Browser editors | [browser-editors.md](browser-editors.md): the editor server, Drive's `drive.editor` point and bridge editing, the add-on, the web app, deployment files, a fidelity note, upstream pull requests | a sheet, a document and a PDF open from Drive, are edited and saved as versions in Chromium, Firefox and WebKit; a second user gets read-only; online and browser editor sessions exclude each other |
+| Phase 1 remainder | Commerce: its gateways under `commerce.gateway` and a seeded dashboard (the Tier 0 example, §3.4); plugins' OpenAPI fragments in the API docs and as MCP tools (§3.5) | when Commerce is next changed; the OpenAPI part when asked for |
+| 4. When asked for | DeckCraft in Browser editors (once its bridge is released); calendar and contacts sync over CalDAV/CardDAV; video meetings (LiveKit or Jitsi as a service); GSP connectors; Microsoft 365 and Google connectors; a marketplace for third-party plugins (signed OCI packages, architecture §7.5) | |
 
-Order: 0, 1, 2, 3. The platform comes first because Office and Mail are its first users; Office comes
-before Mail because it is smaller and proves the sub-plugin and separate-service pattern.
+Order: 0, 1, 2, 3, then 4a.
+* The platform came first because Office and Mail are its first users.
+* Office came before Mail because it is smaller and proves the separate-service pattern.
+* 4a is the platform's first real add-on and extension point.
 
 ## 7. Not building
 
@@ -401,6 +417,8 @@ before Mail because it is smaller and proves the sub-plugin and separate-service
 * Marketplace billing before third parties publish plugins.
 * Lifecycle code for nesting beyond `parent`.
 * Production Office or Mail code before the spike notes.
+* A fork of the ArtCraft apps, or their names and logos anywhere outside the apps themselves.
+* An origin per plugin before a third-party plugin needs one (browser-editors.md §12).
 
 ## 8. Risks
 
@@ -409,7 +427,7 @@ before Mail because it is smaller and proves the sub-plugin and separate-service
 | Hosting many tenants on one Stalwart needs its Enterprise edition (S2 confirmed: `x:Tenant` and SCIM are Enterprise) | the open-source edition keeps workspaces apart by domain, with directory queries off; Enterprise tenants where hard separation is required |
 | The free builds of Collabora and ONLYOFFICE limit or discourage production use | S1 checks current terms; budget a subscription or build from source; both sit behind the same WOPI host, so switching is a setting |
 | ONLYOFFICE's governance dispute | Collabora is the default |
-| ArtCraft: alpha, no embedding API, one vendor, trademarks | optional only; a pinned fork; the bridge offered upstream |
+| ArtCraft: young (DeckCraft alpha), canvas UI with little for screen readers, one vendor, brand terms | an optional add-on with Collabora the default; unmodified pinned builds; what is missing proposed upstream; no ArtCraft name or logo in Ferrum ([browser-editors.md](browser-editors.md) §13) |
 | AGPL: changing Stalwart or ONLYOFFICE means publishing the changes | run them unchanged; Ferrum is AGPL already, so there is no licence conflict |
 | Sandboxed frames behave differently in WebKit | S4 tested all three engines ([spike-s4-frames.md](spike-s4-frames.md)): WebKit refused a screen's fetches of its own files under `'self'`, fixed by naming the server's origins in the screens' policy; all checks pass in Chromium, Firefox and WebKit |
 | Editor servers need a lot of memory | size them from a load test in Phase 2; scale them separately |
@@ -430,4 +448,5 @@ before Mail because it is smaller and proves the sub-plugin and separate-service
 * ArtCraft: https://getartcraft.com/apps/deckcraft, https://getartcraft.com/apps/gridcraft,
   https://getartcraft.com/apps/wordcraft, https://getartcraft.com/apps/pdfcraft,
   https://github.com/storytold/deckcraft, https://github.com/storytold/gridcraft,
-  https://github.com/storytold/wordcraft, https://github.com/storytold/pdfcraft
+  https://github.com/storytold/wordcraft, https://github.com/storytold/pdfcraft; brand terms
+  https://github.com/storytold/gridcraft/blob/main/docs/brand/LICENSE-brand.txt
