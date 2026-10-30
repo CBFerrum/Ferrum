@@ -205,7 +205,7 @@ would gain nothing.
 | The app is missing from the editor server (an older image) | The relay says so at once, and Drive logs it for the operator. |
 | No editor server (`FERRUM_EDITORS_URL` empty) | Browser editors are hidden, and the Apps page marks the add-on as needing the editor server. |
 | Leaving with unsaved changes | The browser's leave guard and the app's own ask first. |
-| Phones and narrow screens | The editors draw on a canvas meant for mouse and keyboard. On narrow screens "Open" views the file (PDFs in the browser's viewer); the editors stay in "Open with". |
+| Phones and narrow screens | The editors draw on a canvas meant for mouse and keyboard. On screens up to 640 px wide they are not the default: "Open with" still offers them, and the online editor stays the default where it runs. |
 | The add-on is removed while files are open | Open sessions finish, and their saves still check rights and the lock. New opens are refused. |
 | Types not contributed (macro workbooks, PPTX, encrypted files) | The online editor or Download. |
 
