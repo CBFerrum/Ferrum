@@ -86,6 +86,9 @@ macro_rules! apps {
                 #[cfg(feature = $nfeature)]
                 out.push($nkrate::MANIFEST);
             )*
+            // Drive's add-on Browser editors: a manifest without code, shipped with Drive.
+            #[cfg(feature = "drive")]
+            out.push(ferrum_app_drive::EDITORS_MANIFEST);
             out
         }
 
@@ -186,8 +189,18 @@ mod tests {
     /// app's load together as one catalog (no clashing entity names, valid overlays).
     #[test]
     fn compiled_apps_fit_together() {
-        for m in super::native_manifests() {
-            ferrum_apps::AppManifest::parse(m).unwrap_or_else(|e| panic!("{e}\n{m}"));
+        let natives: Vec<_> =
+            super::native_manifests().into_iter().map(|m| ferrum_apps::AppManifest::parse(m).unwrap_or_else(|e| panic!("{e}\n{m}"))).collect();
+        // What a compiled app contributes to another's extension point meets that point's schema.
+        for m in &natives {
+            for (point, items) in m.contributes.iter().filter(|(p, _)| !ferrum_apps::UI_POINTS.contains(&p.as_str())) {
+                let owner =
+                    natives.iter().find(|o| o.extension_points.contains_key(point)).unwrap_or_else(|| panic!("{}: no compiled app offers {point}", m.id));
+                let schema = owner.extension_points[point].schema.clone().unwrap_or_default();
+                for item in items {
+                    ferrum_apps::contract::conforms(&ferrum_apps::contribution_body(item), &schema).unwrap_or_else(|e| panic!("{} on {point}: {e}", m.id));
+                }
+            }
         }
         let empty = std::env::temp_dir().join(format!("ferrum-no-packages-{}", std::process::id()));
         std::fs::create_dir_all(&empty).unwrap();

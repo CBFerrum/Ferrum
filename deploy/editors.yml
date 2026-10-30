@@ -1,0 +1,37 @@
+# Browser editors (docs/operations.md, "Browser editors"): the editor server beside the stack, on
+# a port of its own (another port is another origin, so no DNS work on a single host).
+#   docker compose -f deploy/docker-compose.yml -f deploy/editors.yml --env-file deploy/.env up -d
+# Then install the add-on Browser editors in each workspace that wants them (Apps, under Drive).
+# FERRUM_EDITORS_URL in deploy/.env: the editor server as browsers reach it, such as
+# https://editors.example.com behind your TLS proxy, or http://<host>:8090 (copy and paste in the
+# editors need HTTPS, or localhost).
+services:
+  editors:
+    image: ${FERRUM_EDITORS_IMAGE:-ghcr.io/cbferrum/ferrum-editors:latest}
+    build:
+      context: editors
+    restart: unless-stopped
+    environment:
+      # The web app's address: the only page that may frame the editors' relay.
+      FERRUM_PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+    ports:
+      - "${FERRUM_EDITORS_PORT:-8090}:8080"
+    # Static files only: nothing to write but nginx's temporary files and its configuration.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  ferrum:
+    environment:
+      FERRUM_EDITORS_URL: ${FERRUM_EDITORS_URL:?set FERRUM_EDITORS_URL in deploy/.env (the editor server as browsers reach it)}
+
+  web:
+    environment:
+      FERRUM_EDITORS_URL: ${FERRUM_EDITORS_URL}

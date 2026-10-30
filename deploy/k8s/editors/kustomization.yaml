@@ -1,0 +1,53 @@
+# Browser editors (docs/operations.md, "Browser editors"): the editor server on a host of its own,
+# and the settings that point Ferrum and the web app at it. To use it, list it under `components:`
+# in deploy/k8s/kustomization.yaml, and replace editors.example.com here and in editors.yaml with
+# its host (and erp.example.com with the web app's).
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - editors.yaml
+patches:
+  # The Gateway serves the editors' host too; cert-manager issues its certificate.
+  - target: {kind: Gateway, name: ferrum}
+    patch: |-
+      - op: add
+        path: /spec/listeners/-
+        value:
+          name: editors-https
+          protocol: HTTPS
+          port: 443
+          hostname: editors.example.com
+          tls: {mode: Terminate, certificateRefs: [{name: ferrum-editors-tls}]}
+          allowedRoutes: {namespaces: {from: Same}}
+      - op: add
+        path: /spec/listeners/-
+        value:
+          name: editors-http
+          protocol: HTTP
+          port: 80
+          hostname: editors.example.com
+          allowedRoutes: {namespaces: {from: Same}}
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: ferrum
+      spec:
+        template:
+          spec:
+            containers:
+              - name: ferrum
+                env:
+                  - {name: FERRUM_EDITORS_URL, value: "https://editors.example.com"}
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: ferrum-web
+      spec:
+        template:
+          spec:
+            containers:
+              - name: web
+                env:
+                  - {name: FERRUM_EDITORS_URL, value: "https://editors.example.com"}

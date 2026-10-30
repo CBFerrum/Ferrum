@@ -19,10 +19,16 @@ resources:
   - hpa.yaml
   - networkpolicy.yaml
   - servicemonitor.yaml
+# Browser editors (docs/operations.md, "Browser editors"): uncomment, and set its hosts in editors/.
+# components:
+#   - editors
 images:
   - name: ferrum
     newName: ghcr.io/cbferrum/ferrum
     newTag: latest
   - name: ferrum-frontend
     newName: ghcr.io/cbferrum/ferrum-frontend
+    newTag: latest
+  - name: ferrum-editors
+    newName: ghcr.io/cbferrum/ferrum-editors
     newTag: latest

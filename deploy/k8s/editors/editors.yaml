@@ -1,0 +1,113 @@
+# The editor server for Drive's browser editors (deploy/editors, docs/plan/browser-editors.md):
+# static files on unprivileged nginx, on a host of its own (an origin of its own), reached only
+# through the gateway. It holds no data and no secrets, and reaches nothing.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ferrum-editors
+  labels: {app.kubernetes.io/name: ferrum-editors}
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app.kubernetes.io/name: ferrum-editors}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: ferrum-editors}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        seccompProfile: {type: RuntimeDefault}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {app.kubernetes.io/name: ferrum-editors}
+      containers:
+        - name: editors
+          image: ferrum-editors
+          ports:
+            - {name: http, containerPort: 8080}
+          env:
+            # The web app's address: the only page that may frame the editors' relay.
+            - {name: FERRUM_PUBLIC_URL, value: "https://erp.example.com"}
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 64Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            # nginx keeps its temporary files here, and its configuration is written here at start.
+            - {name: tmp, mountPath: /tmp}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 15
+      volumes:
+        - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ferrum-editors
+spec:
+  selector: {app.kubernetes.io/name: ferrum-editors}
+  ports:
+    - {name: http, port: 80, targetPort: http}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ferrum-editors
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: ferrum-editors}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ferrum-editors-https-redirect
+spec:
+  parentRefs: [{name: ferrum, sectionName: editors-http}]
+  hostnames: [editors.example.com]
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect: {scheme: https, statusCode: 301}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ferrum-editors
+spec:
+  parentRefs: [{name: ferrum, sectionName: editors-https}]
+  hostnames: [editors.example.com]
+  rules:
+    - backendRefs: [{name: ferrum-editors, port: 80}]
+---
+# Only the gateway's proxies reach it, and it reaches nothing.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ferrum-editors
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: ferrum-editors}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: envoy-gateway-system}
+      ports:
+        - {port: 8080}
+  egress: []

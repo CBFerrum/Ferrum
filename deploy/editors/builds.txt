@@ -1,0 +1,9 @@
+# The editors the editor server serves: each program's official web build, unmodified, from its
+# GitHub release, checked against the SHA-256 GitHub publishes for the asset. Moving a pin is a
+# reviewed change: read the release notes and the brand terms (docs/brand/LICENSE-brand.txt),
+# update the version, address and sum, and let CI's browser tests pass.
+#
+# program   version  release asset                                                                      sha256
+gridcraft   0.13.0   https://github.com/storytold/gridcraft/releases/download/v0.13.0/gridcraft-web-0.13.0.zip  e232edde1898459f13568ca7b1f3feecb4037f0cbb8f6aec86de1a3c096af5dc
+wordcraft   0.12.0   https://github.com/storytold/wordcraft/releases/download/v0.12.0/wordcraft-web-0.12.0.zip  4cf6808b762e6d1211a569dd0cac831b7f1e7eb1a41f70cae90bceeb2c6a6acf
+pdfcraft    0.15.0   https://github.com/storytold/pdfcraft/releases/download/v0.15.0/pdfcraft-web-0.15.0.zip    fdb2508030d7668cb5164db3b7d05baa1011a87497c95ef043844d90cbbc4da2

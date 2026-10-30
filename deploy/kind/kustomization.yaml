@@ -6,12 +6,18 @@ namespace: ferrum
 resources:
   - ../k8s
   - s3-egress.yaml
+# The browser editors' server too, with the example hosts (smoke.sh resolves them).
+components:
+  - ../k8s/editors
 images:
   - name: ghcr.io/cbferrum/ferrum
     newName: ferrum
     newTag: ci
   - name: ghcr.io/cbferrum/ferrum-frontend
     newName: ferrum-frontend
+    newTag: ci
+  - name: ghcr.io/cbferrum/ferrum-editors
+    newName: ferrum-editors
     newTag: ci
 patches:
   - patch: |-
