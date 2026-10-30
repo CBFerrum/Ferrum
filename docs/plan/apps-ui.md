@@ -100,7 +100,11 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     brings ERP whole.
   * Checked on new, empty workspaces: Commerce's plan installs ERP first; CRM installs alone (core,
     contacts, parties, products and crm, no ERP records).
-  * Not yet: removing a suite's members nothing else needs.
+  * Removing a suite offers its members that nothing else needs. Each installed app records the
+    app whose installation brought it in (`tenant_app.brought_by`); an app installed for itself
+    never counts. Checked on a new workspace: CRM installed alone, then Business, then removing
+    Business offered its six other apps in a safe order and left CRM.
+  * U3 is complete.
 
 * **U4a, Comms and Workspace: built** (31 October 2026).
   * Comms (Mail, Chat, Calendar, Meet at `/mail/`, `/chat/`, `/calendar/`, `/meet/`), Drive (`/drive/`,

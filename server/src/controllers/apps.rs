@@ -103,8 +103,18 @@ async fn uninstall(Auth(ctx): Auth, State(app): State<AppContext>, uri: Uri, Que
     let id = uri.path().trim_end_matches('/').rsplit('/').next().unwrap_or_default().to_string();
     let apps = app_state(&app)?.apps;
     let removed = id.clone();
-    let deleted = detached(async move { apps.uninstall(&ctx, &removed, r.delete_data).await }).await??;
-    Ok(Json(json!({"removed": id, "deleted_data": deleted})).into_response())
+    let tenant = ctx.tenant;
+    let deleted = detached({
+        let apps = apps.clone();
+        async move { apps.uninstall(&ctx, &removed, r.delete_data).await }
+    })
+    .await??;
+    // What it brought in that nothing needs now (a suite's members): the interface offers them.
+    let leftovers = apps.leftovers(tenant, &id).await.unwrap_or_else(|e| {
+        tracing::warn!(app = %id, "what it brought in could not be listed: {e}");
+        Vec::new()
+    });
+    Ok(Json(json!({"removed": id, "deleted_data": deleted, "leftovers": leftovers})).into_response())
 }
 
 fn bad_form(e: MultipartError) -> ApiError {
