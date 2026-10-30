@@ -422,10 +422,13 @@ pub fn bundle_ui(b: &ferrum_apps::Bundle) -> std::result::Result<Option<Prepared
     ferrum_apps::ui::prepare(&b.manifest.id, files).map(Some)
 }
 
-/// Registers the interfaces of compiled-in apps found in `settings.ui_dir`: one directory of
-/// built files per app id. Logged, not fatal: a broken interface leaves the rest of the server
-/// working, and its app's pages say what is missing.
+/// Registers the interfaces of compiled-in apps: those their crates carry (`ui/dist`, embedded),
+/// then those found in `settings.ui_dir` (one directory of built files per app id), which an
+/// operator uses to run another release; a release registered later for the same version wins.
+/// Logged, not fatal: a broken interface leaves the rest of the server working, and its app's
+/// pages say what is missing.
 pub async fn register_compiled(kernel: &Kernel, storage: &Storage, settings: &Settings, apps: &crate::appmgr::AppManager) {
+    register_embedded(kernel, storage, apps, crate::packages::native_uis()).await;
     let dir = settings.ui_dir.trim();
     if dir.is_empty() {
         return;
@@ -474,6 +477,31 @@ pub async fn register_compiled(kernel: &Kernel, storage: &Storage, settings: &Se
         match outcome {
             Ok(digest) => tracing::info!(app = %id, version = %m.version, %digest, "interface release registered"),
             Err(e) => tracing::error!(app = %id, "interface not registered: {e}"),
+        }
+    }
+}
+
+/// Registers the interfaces compiled in with their apps, for the version this server runs.
+/// Idempotent: a release stored already (by any replica, any earlier start) is only recorded again.
+pub async fn register_embedded(kernel: &Kernel, storage: &Storage, apps: &crate::appmgr::AppManager, uis: Vec<(&str, &[(&str, &[u8])])>) {
+    for (id, files) in uis {
+        let Some(m) = apps.native_manifest(id) else { continue };
+        if m.ui.is_none() {
+            tracing::warn!(app = %id, "the app's crate carries an interface, but its app.yaml has no ui section");
+            continue;
+        }
+        if files.is_empty() {
+            tracing::error!(app = %id, "the app was built without its interface (ui/dist): its pages cannot open");
+            continue;
+        }
+        let files: BTreeMap<String, Vec<u8>> = files.iter().map(|(p, b)| (p.to_string(), b.to_vec())).collect();
+        let outcome = match ferrum_apps::ui::prepare(id, files) {
+            Ok(ui) => store_release(kernel, storage, id, &m.version.to_string(), &ui).await.map(|()| ui.digest).map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        };
+        match outcome {
+            Ok(digest) => tracing::info!(app = %id, version = %m.version, %digest, "interface release registered (compiled in)"),
+            Err(e) => tracing::error!(app = %id, "the compiled-in interface was not registered: {e}"),
         }
     }
 }

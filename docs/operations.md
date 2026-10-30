@@ -47,7 +47,8 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_APP_ALLOW_UNSIGNED` | no | `true` accepts uploads no trusted key signed (development default); production default `false` |
 | `FERRUM_SESSION_DAYS` | no | How long a browser stays signed in with the session cookie (default 14); each browser is a session of its own that people and administrators sign out one by one |
 | `FERRUM_DEFAULT_WORKSPACE` | no | The slug of the one workspace this server serves on every host (a single-workspace install): sign-in then asks for no workspace. Empty: a host registered for a workspace leads to it, and elsewhere the workspace is chosen at sign-in |
-| `FERRUM_UI_DIR` | no | Interfaces of apps compiled into the server: a directory with one directory of built files per app id (`<dir>/<app>/index.html`), registered as interface releases at start-up |
+| `FERRUM_UI_DIR` | no | Other interfaces for apps compiled into the server (those that bring their own, Comms, Drive and Docs, carry it compiled in): a directory with one directory of built files per app id (`<dir>/<app>/index.html`), registered as interface releases at start-up, after the compiled-in ones, so they win for the same version |
+| `FERRUM_OFFICE_ORIGIN` | with online editing | The editor server as browsers reach it (`https://office.example.com`), when that is not `FERRUM_OFFICE_URL`: Drive's pages frame it and post to it, and their Content-Security-Policy names it (`deploy/office.yml` sets it from `OFFICE_PUBLIC_URL`) |
 | `FERRUM_UI_SOURCE` | with the shell | Where the web app's image offers the shell's and ERP's interfaces (`http://web:8080/_releases/` in Compose, `http://ferrum-web/_releases/` in Kubernetes): fetched at start-up and every ten minutes, files checked against their digests |
 
 **Database role.** Ferrum must connect as an ordinary role that owns its database, never as a
@@ -706,9 +707,14 @@ until the shell app replaces it.
 * **The switch.** Administration → Workspace → `shell_v2` (or `PUT /api/admin/settings
   {"shell_v2": true}`) gives a workspace the shell: Home at `/`, ERP at `/erp/`, the store,
   administration and the account at `/store/`, `/admin/`, `/account/`, records at `/data/`;
-  today's web app sends its people there. Turning it off goes back. Mail, Chat, Calendar, Meet,
-  Drive and Docs stay in today's web app, as launcher entries, until they have interfaces of their
-  own.
+  today's web app sends its people there. Turning it off goes back.
+* **Comms, Drive and Docs** have interfaces of their own for every workspace, switch or not: Mail,
+  Chat, Calendar and Meet at `/mail/`, `/chat/`, `/calendar/`, `/meet/`; Drive at `/drive/` with
+  Sheets, Slides and PDF; Docs at `/docs/`. Each app's crate carries its interface, registered at
+  start-up; nothing to configure. Today's web app sends its old addresses there (`/app/drive…`,
+  bookmarks and links in mail included), and the pages people outside the workspace open by link
+  are those apps' public pages (`/drive/s/…`, `/meet/guest/…`). Meetings need `FERRUM_MEET_URL` on the
+  server (calls connect there); online editing `FERRUM_OFFICE_ORIGIN` (above).
 * **Sessions.** Browsers sign in with an `HttpOnly` cookie, `__Host-ferrum` over https. The cookie
   is scoped to the host, so serve each workspace on one host, and set `PUBLIC_URL` to it.
 * **Interface files** are kept in the object storage, under `ui/{app}/{digest}/`, for 30 days after

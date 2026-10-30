@@ -2285,8 +2285,8 @@ dependencies = [
 
 [[package]]
 name = "ferrum-app-comms"
-version = "0.6.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-comms?branch=main#4d788396e3fd51d220d02da640adcc08d18be0bf"
+version = "0.7.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-comms?branch=main#25358006c65ed26372cf2b3b7a73ece30920ae17"
 dependencies = [
  "ammonia",
  "async-imap",
@@ -2339,8 +2339,8 @@ dependencies = [
 
 [[package]]
 name = "ferrum-app-docs"
-version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-docs?branch=main#3d28fcdc1b9eab5e8fbf05bdef67399c8d6959f2"
+version = "0.2.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-docs?branch=main#5152d63b53fae5bdf7e43750475bf54ee66064a8"
 dependencies = [
  "async-trait",
  "ferrum-domain",
@@ -2354,7 +2354,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-drive"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-drive?branch=main#b332dd212e65edd42a44e0177fd56e03fa8b28bb"
+source = "git+https://github.com/CBFerrum/ferrum-app-drive?branch=main#98b8538283cd6852d9105ad1fce21028315389c3"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
