@@ -77,9 +77,16 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
   * The first-run picker: an administrator of a workspace with no apps gets suites and apps to
     install on Home (today's and the shell's). Checked in Chrome: a new workspace has only
     Administration; installing Business brings ERP, CRM, Helpdesk, Projects and their connectors.
-  * Not yet: Project into the Projects app with `projects-erp`; `hr-erp` and `payroll-erp` (HR's
-    expense claims and payroll post to accounts); `requires: {erp}` on Commerce, POS, Field
-    service, Assets and Bookings; removing a suite's members nothing else needs.
+* **U3: HR and payroll on their own built.**
+  * HR 0.2.0: `hr` depends on core, `payroll` on `hr`. Payroll runs make and submit salary slips
+    and post only where ERP is.
+  * Its connector app `hr-erp` holds two packages: `hr_erp` (expense claims and advances moved
+    whole, the company's employee accounts, journal entries' HR references) and `payroll_erp`
+    (salary components' accounts, payroll cost centers, payroll entries' accounts and bank entry,
+    the company's payroll accounts). The `hr-erp` step installs them where HR and accounting are.
+  * The domain's company set-up creates warehouses only where inventory is.
+  * Not yet: Project into the Projects app with `projects-erp`; `requires: {erp}` on Commerce,
+    POS, Field service, Assets and Bookings; removing a suite's members nothing else needs.
 
 Contents: 1 where we are · 2 goals and targets · 3 what others do · 4 rules · 5 decisions ·
 6 the person's view · 7 addresses and deployment shapes · 8 the core shell · 9 people, sessions,
