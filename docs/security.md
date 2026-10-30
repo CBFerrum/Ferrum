@@ -46,6 +46,11 @@ operator to know. Report a vulnerability privately to the maintainers rather tha
 * The audit trail is a hash chain the database only appends to; personal-data erasure redacts
   values in it while keeping each event's place and hash.
 * API responses carry `Cache-Control: no-store`, so browsers keep neither stale nor private copies.
+* Request logs record the path without the query string: queries carry WOPI tokens, OAuth and
+  sign-on codes and signed grants.
+* Online editing (Drive over WOPI): the editor gets a token bound to the workspace, the file, the
+  person and ten hours. When the editor publishes a proof key, each call must also be signed with
+  it.
 
 **Input and output**
 * SQL: values are always bound; identifiers come only from metadata and are quoted; filters,
