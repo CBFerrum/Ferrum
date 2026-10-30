@@ -169,8 +169,13 @@ async fn shell_core(st: &AppState, headers: &HeaderMap, uri: &Uri, first: &str, 
         let apps = st.apps.shell_apps(ctx.tenant).await?;
         let q = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
         let Some((app, packages)) = shell::records_app(&apps, app_id) else {
-            // The app has an interface of its own now, or is gone: records and lists by `/open`.
-            let to = tail.strip_prefix("e/").map_or_else(|| "/data/".to_string(), |e| format!("/open/{e}"));
+            // The app has an interface of its own now: the same page there (an app's records have
+            // the same addresses under its route). Gone: records and lists by `/open`.
+            let route = apps.iter().find(|a| a.id == app_id).and_then(|a| a.items("shell.app").find_map(|i| i.get("route").and_then(Value::as_str)));
+            let to = match route {
+                Some(route) => format!("/{route}/{tail}"),
+                None => tail.strip_prefix("e/").map_or_else(|| "/data/".to_string(), |e| format!("/open/{e}")),
+            };
             return Ok(Redirect::to(&format!("{to}{q}")).into_response());
         };
         if rest == app_id {

@@ -2431,7 +2431,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-helpdesk"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-helpdesk?branch=main#a839b1a176e80f9e8792c15cad28563d15e44f6d"
+source = "git+https://github.com/CBFerrum/ferrum-app-helpdesk?branch=main#f82bd81c04a2d19e24018e0c13075cfc7866d98e"
 dependencies = [
  "async-trait",
  "chrono",

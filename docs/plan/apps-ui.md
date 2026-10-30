@@ -155,6 +155,13 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     providers, asked by the bar in parallel and drawn as they answer. Chat is the first provider
     (Comms 0.7.4). The bar keeps the shortcut before a page's own handlers. Point endpoints may be a
     native app's (`/api/app/{app}/…`). Checked in Chromium, Firefox and WebKit.
+  * Helpdesk 0.3.0 has its own interface at `/helpdesk/` (CRM's pattern): the agent inbox (your
+    tickets, the unassigned, SLA alerts and every open one, with counts, the most pressing first,
+    live) and the ticket view (the conversation with replies and internal notes; status, priority,
+    assignment and SLA beside it; resolving asks for the resolution). `/open` of a ticket goes to the
+    ticket view; its other records are lists and forms in the records frame. A bookmark of an app's
+    records-only pages (`/data/{app}/…`) goes to the same page in its interface once it has one.
+    Checked in Chrome on the demo workspace.
 
 * **U4a, Comms and Workspace: built** (31 October 2026).
   * Comms (Mail, Chat, Calendar, Meet at `/mail/`, `/chat/`, `/calendar/`, `/meet/`), Drive (`/drive/`,
