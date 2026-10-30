@@ -104,6 +104,26 @@ several people in the web app.
 
 **Order.** A spike first: two replicas, ten editors, a lost connection and a restart.
 
+**Spike, 30 October 2026: go** ([spike-c3-yjs.md](spike-c3-yjs.md)). Ten and thirty editors on two
+replicas stayed in step:
+* a few milliseconds across replicas;
+* offline edits merged;
+* nothing lost when a replica was killed or both restarted;
+* the document read back from PostgreSQL alone.
+
+Two conditions, both settled:
+* the server counts text in UTF-16, as Yjs clients do;
+* yrs must split emoji like Yjs. The fix is open upstream (y-crdt#715); Ferrum builds yrs with
+  it until a release does.
+
+The build (next):
+* a platform WebSocket per open document, signed in like `/ws/live`;
+* changes in one sequence per document, gathered for ~50 ms;
+* NOTIFY between replicas, and a snapshot every 500 changes;
+* documents as Drive files, so sharing, versions, comments, presence and search apply;
+* TipTap with y-prosemirror as the editor;
+* names and colours set by the server.
+
 ### C4. Meetings
 
 **Status, 30 October 2026: built** (Comms 0.5.0; the web app's Meet pages; `deploy/meet.yml`).

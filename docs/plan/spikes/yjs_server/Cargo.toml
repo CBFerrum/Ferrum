@@ -1,0 +1,20 @@
+# Spike C3 (docs/plan/spike-c3-yjs.md): a Yjs sync server on yrs, PostgreSQL and NOTIFY between
+# replicas. Not part of Ferrum's build; `cargo run --release -- <port>` from this folder.
+[package]
+name = "yjs-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# A workspace of its own: Ferrum's does not build it.
+[workspace]
+
+[dependencies]
+yrs = { version = "=0.28.0", features = ["sync"] }
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "net"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres", "macros"] }
+dashmap = "6"
+futures-util = "0.3"
+base64 = "0.22"
+serde_json = "1"
