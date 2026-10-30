@@ -71,7 +71,7 @@ up to ~11 replicas without a pooler; raise both together).
    Optionally expire objects under `uploads/` after a day as a backstop; the server already deletes
    abandoned uploads.
 3. Create the secrets as shown in `deploy/k8s/secret.example.yaml`.
-4. Edit `deploy/k8s/kustomization.yaml` (image), `deployment.yaml` (`PUBLIC_URL`, bucket, region),
+4. Edit `deploy/k8s/kustomization.yaml` (the images' tag: a commit's, see *Images* below), `deployment.yaml` (`PUBLIC_URL`, bucket, region),
    `gateway.yaml` (host; `gatewayClassName` if not Envoy Gateway's `eg`) and `database.yaml` (the
    `ObjectStore`'s backup bucket, sizes). `envoy-proxy.yaml` runs two of Envoy Gateway's proxies on
    different nodes and keeps the client's address (`externalTrafficPolicy: Local`), which the
@@ -96,6 +96,19 @@ up to ~11 replicas without a pooler; raise both together).
 
 Single host: `cp deploy/.env.example deploy/.env`, fill it in, then
 `docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d`.
+
+**Images.** For each commit on `main` whose images pass the checks below, CI publishes
+`ghcr.io/cbferrum/ferrum` (and Ferrum-Frontend's CI `ghcr.io/cbferrum/ferrum-frontend`) tagged
+with the commit's full SHA and `latest`. Deploy a commit's tag and change it to upgrade: `latest`
+moves, so pods started later (a rescheduled replica, a new node) would run another release. If
+pulling needs signing in (private packages, or your own mirror), use a token that may read
+packages: `docker login ghcr.io` on a single host; on Kubernetes,
+
+```bash
+kubectl -n ferrum create secret docker-registry ghcr --docker-server=ghcr.io \
+  --docker-username=<user> --docker-password="$GHCR_TOKEN"
+kubectl -n ferrum patch serviceaccount default -p '{"imagePullSecrets": [{"name": "ghcr"}]}'
+```
 
 **Checking an image before it goes out.** `deploy/smoke.sh` deploys the Compose stack (database,
 Ferrum, PDF renderer, web app) with freshly generated secrets. The workspace is created, seeded

@@ -17,6 +17,7 @@ spec:
     metadata:
       labels: {app.kubernetes.io/name: ferrum-pdf}
     spec:
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 1001
