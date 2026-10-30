@@ -8,7 +8,7 @@ platform) and [browser-editors.md](browser-editors.md).
 
 | Google Workspace | Ferrum today | Plan |
 |---|---|---|
-| Co-editing documents, sheets and presentations live, with others' cursors | The online editor (Collabora or ONLYOFFICE over WOPI) co-edits Office files live. Browser editors are single-user, one session at a time. | C2: co-editing as the visible default. C3: documents co-edited natively. |
+| Co-editing documents, sheets and presentations live, with others' cursors | Built (C3): Drive's own documents are co-edited in the web app, with no editor server. The online editor (Collabora or ONLYOFFICE over WOPI) co-edits Office files. Browser editors are single-user, one session at a time. | C2: co-editing Office files as the visible default |
 | Comments, suggestions and @mentions inside a document | In the online editor (comments, track changes) | C2 |
 | Comments on files, @mentions | Drive comments (Commenter access), no mentions, no screen | **C1** |
 | Sharing with people and groups as viewer, commenter or editor; links with expiry | Drive's server (people, teams, roles, links with expiry, password and download caps); no screen | **C1** |
@@ -116,13 +116,50 @@ Two conditions, both settled:
 * yrs must split emoji like Yjs. The fix is open upstream (y-crdt#715); Ferrum builds yrs with
   it until a release does.
 
-The build (next):
-* a platform WebSocket per open document, signed in like `/ws/live`;
-* changes in one sequence per document, gathered for ~50 ms;
-* NOTIFY between replicas, and a snapshot every 500 changes;
-* documents as Drive files, so sharing, versions, comments, presence and search apply;
-* TipTap with y-prosemirror as the editor;
-* names and colours set by the server.
+**Status, 30 October 2026: built** (the platform's `/ws/docs`, Drive 0.6.0, the web app's editor).
+* **Platform.** The kernel's `DocHost` and `coedit`: a package decides who may read or write its
+  documents. `/ws/docs/{package}/{id}` ([api.md](../api.md)):
+  * changes gathered for 50 ms into one row of the document's sequence, NOTIFY between replicas,
+    and a snapshot every 500;
+  * acknowledgements, so editors know what is stored;
+  * a viewer's changes refused, and access checked every minute;
+  * names and colours from the server, and, when a replica opens a document, the people already in
+    it on other replicas;
+  * saves to the package when the last editor leaves and every ten minutes, and a sweep for
+    documents a stopped replica left unsaved.
+* **Drive** ([its README](https://github.com/CBFerrum/ferrum-app-drive/blob/main/packages/drive/README.md)):
+  documents are `.fdoc` files.
+  * Sharing, trash, comments, presence and versions apply.
+  * A version is written when the content changed: `Edited live by N people`.
+  * Restoring a version makes a copy; uploads never replace a live document.
+  * Copies and downloads take the live content. Exports: HTML, PDF and text.
+  * Guests on a link see the document as a page.
+* **Web app.** New → Document opens `/app/doc/{id}`: TipTap 3.32 with Yjs, everyone's cursors and
+  names, and who is here. Formatting: headings, bold to code, links (web and mail only), lists,
+  checklists, quotes, code blocks, tables and alignment. Also: Saving…/Saved, offline typing kept
+  in the tab, a warning before leaving unsaved, renaming, sharing, comments and history beside it,
+  and Download and Print.
+
+Checked in Chrome with two people, each through another replica:
+* typing both ways, with cursors and names;
+* formatting, emoji and CJK;
+* one replica killed while its person typed: they typed offline, then nothing was lost;
+* access lowered to View: read-only within a minute;
+* the version Drive kept, the export, and the guest page;
+* phone width.
+
+Tests:
+* two replicas on one database (relay, acknowledgements, refusals, sync steps that add nothing,
+  cursors, a snapshot after 500 changes, saves claimed once and retried after a failure, the sweep,
+  a restart, a deleted document);
+* Drive's end-to-end test;
+* the client against a stand-in server.
+
+Not yet:
+* comments and suggestions inside the text (Drive's comments on the file stand in);
+* images in documents;
+* DOCX export;
+* keeping unsaved changes after a tab is closed while offline. The editor warns instead.
 
 ### C4. Meetings
 

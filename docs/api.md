@@ -111,6 +111,28 @@ Events: `{"event": "SalesOrder.updated", "entity", "id", "actor"}` for committed
 user may read, `{"notification": {id, title, entity, record_id}}` for the user's notifications and
 `{"push": {"kind", "data"}}` from apps (chat). Works on every replica (PostgreSQL LISTEN/NOTIFY).
 
+## Live documents — `GET /ws/docs/{package}/{id}` (WebSocket)
+
+A document several people edit at once: today Drive's documents (`.fdoc` files; package `drive`,
+id the file's). Sign in as on `/ws/live` (`{"auth": "<token>"}` first, or an `Authorization` header)
+→ `{"ready": true, "access": "write" | "read", "user": {"id", "name", "color"}}`. Closes before that:
+`4401` (sign in again), `4404` (no such document, or no access to it), `1011` (try again).
+
+Then binary frames carry the Yjs sync protocol (y-protocols 1.0: sync steps 1 and 2, updates,
+awareness, awareness queries) for the XML fragment `default`, as TipTap's Collaboration extension
+writes it. The server also sends text:
+* `{"stored": n}`: this connection's first `n` change messages (its sync step 2 and its updates) are
+  stored. Until then they are unsaved; after a reconnect, the sync step resends what the server lacks.
+* `{"access": "read" | "write"}` when the person's access changes (checked every minute). Access
+  taken away closes the socket with `4403`.
+* `{"error": "…"}` when a change is refused: anything new from a viewer, or growth past 32 MB.
+  Refused changes are never acknowledged. A viewer's sync step that adds nothing is fine.
+
+Cursor names and colours are the server's, whatever a client says; a cursor state is at most 4 KB.
+Limits: 8 MB per message and 1,200 messages per 10 seconds (closed with `1008`). A connection that
+falls 1,024 messages behind is closed with `1013` and resyncs. Other closes: `4400` for a message
+that is not the protocol. Exports: Drive's `GET /api/app/drive/files/{id}/content?format=html|pdf|txt`.
+
 ## App endpoints
 
 Apps add HTTP endpoints under `/api/app/{package}/{path}` (signed in, any method) and

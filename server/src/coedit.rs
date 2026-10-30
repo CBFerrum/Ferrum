@@ -245,6 +245,27 @@ impl Docs {
         };
         let Some(room) = self.rooms.get(&Key { tenant, package: package.into(), doc }).map(|r| r.clone()) else { return };
         let mine = v["r"].as_str() == Some(self.replica.as_str());
+        if v["q"].as_bool() == Some(true) {
+            // Another replica opened the document: its people are told who is here, now rather
+            // than when ours next move.
+            if !mine {
+                let updates: Vec<AwarenessUpdate> = {
+                    let owned: Vec<u64> = room.owners.lock().unwrap().keys().copied().collect();
+                    let aw = room.awareness.lock().unwrap();
+                    let ids: Vec<_> = aw.iter().filter(|(c, state)| state.data.is_some() && owned.contains(&c.get())).map(|(c, _)| c).collect();
+                    ids.into_iter().filter_map(|c| aw.update_with_clients([c]).ok()).collect()
+                };
+                let (k, key, replica) = (k.clone(), room.key.clone(), self.replica.clone());
+                tokio::spawn(async move {
+                    for u in updates {
+                        if let Err(e) = notify_awareness(&k, &replica, &key, &u).await {
+                            tracing::warn!(doc = %key.doc, "coedit awareness: {e}");
+                        }
+                    }
+                });
+            }
+            return;
+        }
         if let Some(a) = v["a"].as_str() {
             // This replica's own cursors reached its clients when they were sent.
             if mine {
@@ -380,19 +401,32 @@ impl Docs {
             changed: AtomicBool::new(false),
             owners: Mutex::new(HashMap::new()),
         });
-        let room = {
+        let (room, opened) = {
+            let mine = fresh.clone();
             let r = self.rooms.entry(key.clone()).or_insert(fresh);
             r.conns.fetch_add(1, Ordering::SeqCst);
-            r.clone()
+            (r.clone(), Arc::ptr_eq(&r, &mine))
         };
         // Changes stored between the load and the room joining the map were announced to nobody here.
         room.wake(k);
+        if opened {
+            // People already in it on other replicas: they answer with their cursors.
+            let payload = json!({"t": key.tenant, "p": key.package, "d": key.doc, "r": self.replica, "q": true}).to_string();
+            if let Err(e) = sqlx::query("select pg_notify($1, $2)").bind(CHANNEL).bind(payload).execute(&k.db.pool).await {
+                tracing::warn!(doc = %key.doc, "coedit: asking who is here: {e}");
+            }
+        }
         Ok(room)
     }
 }
 
 fn decode(data: &[u8]) -> Result<Update> {
     Update::decode_v1(data).map_err(|e| Error::invalid(format!("not a document change: {e}")))
+}
+
+/// Whether a change inserts anything a document at `sv` does not hold yet.
+fn inserts_beyond(update: &Update, sv: &StateVector) -> bool {
+    update.insertions(true).iter().any(|(client, ranges)| ranges.iter().any(|r| r.end > sv.get(client)))
 }
 
 async fn read_since(k: &Kernel, key: &Key, after: i64) -> Result<Vec<(i64, Option<Vec<u8>>)>> {
@@ -653,10 +687,10 @@ async fn save(k: &Kernel, key: &Key, room: Option<&Arc<Room>>, periodic: bool) -
 
 // ───────────────────────────── connections ─────────────────────────────
 
-/// A colour per person, the same everywhere.
+/// A colour per person, the same everywhere; white names on it read at 5:1 or better.
 fn colour(user: Uuid) -> &'static str {
     const COLOURS: [&str; 12] =
-        ["#e11d48", "#d97706", "#65a30d", "#059669", "#0891b2", "#2563eb", "#7c3aed", "#c026d3", "#db2777", "#ea580c", "#0d9488", "#4f46e5"];
+        ["#be123c", "#b45309", "#4d7c0f", "#047857", "#0e7490", "#1d4ed8", "#6d28d9", "#a21caf", "#be185d", "#c2410c", "#0f766e", "#4338ca"];
     COLOURS[(user.as_u128() % COLOURS.len() as u128) as usize]
 }
 
@@ -989,26 +1023,8 @@ impl Conn<'_> {
                     Message::Sync(SyncMessage::SyncStep1(sv)) => {
                         taken.replies.push(Message::Sync(SyncMessage::SyncStep2(aw.doc().transact().encode_state_as_update_v1(&sv))).encode_v1());
                     }
-                    Message::Sync(SyncMessage::SyncStep2(u) | SyncMessage::Update(u)) => {
-                        self.received += 1;
-                        let update = decode(&u)?;
-                        // A client with nothing new answers with an empty change.
-                        if update.is_empty() {
-                            continue;
-                        }
-                        if self.access != DocAccess::Write {
-                            taken.refusal = Some("You can only view this document; your changes were not saved.");
-                            continue;
-                        }
-                        if room.size.load(Ordering::Relaxed) + u.len() > MAX_DOC {
-                            taken.refusal = Some("The document is too large to grow further; your latest changes were not saved.");
-                            continue;
-                        }
-                        aw.doc().transact_mut().apply_update(update).map_err(|e| Error::invalid(format!("the change does not apply: {e}")))?;
-                        room.size.fetch_add(u.len(), Ordering::Relaxed);
-                        self.queued = self.received;
-                        changes.push(Pending { conn: self.id, author: self.author, n: self.received, data: u });
-                    }
+                    Message::Sync(SyncMessage::SyncStep2(u)) => self.change(&mut aw, u, true, &mut changes, &mut taken)?,
+                    Message::Sync(SyncMessage::Update(u)) => self.change(&mut aw, u, false, &mut changes, &mut taken)?,
                     Message::Awareness(u) => {
                         let u = self.own_clients(own_awareness(u, &self.user));
                         if !u.clients.is_empty() {
@@ -1043,6 +1059,42 @@ impl Conn<'_> {
             let _ = room.tx.send(Out::Msg(self.id, Arc::new(Message::Awareness(u.clone()).encode_v1())));
         }
         Ok(taken)
+    }
+
+    /// A change message (`step`: the client's sync step 2). Yjs sends every deletion it knows in a
+    /// sync step, so a change counts only when it adds something: a viewer's that adds nothing is
+    /// taken as read, and anything new from a viewer is refused.
+    fn change(&mut self, aw: &mut Awareness, u: Vec<u8>, step: bool, changes: &mut Vec<Pending>, taken: &mut Taken) -> Result<()> {
+        self.received += 1;
+        let update = decode(&u)?;
+        if update.is_empty() {
+            return Ok(());
+        }
+        let inserts = inserts_beyond(&update, &aw.doc().transact().state_vector());
+        if self.access != DocAccess::Write {
+            if !step || inserts {
+                taken.refusal = Some("You can only view this document; your changes were not saved.");
+            }
+            return Ok(());
+        }
+        // Deleting is always allowed: it is how a document too large shrinks.
+        if inserts && self.room.size.load(Ordering::Relaxed) + u.len() > MAX_DOC {
+            taken.refusal = Some("The document is too large to grow further; your latest changes were not saved.");
+            return Ok(());
+        }
+        let news = {
+            let mut txn = aw.doc().transact_mut();
+            txn.apply_update(update).map_err(|e| Error::invalid(format!("the change does not apply: {e}")))?;
+            // Parts waiting for what they build on are kept too: they are new to this document.
+            let store = ReadTxn::store(&txn);
+            !txn.insert_set().is_empty() || !txn.delete_set().is_empty() || store.pending_update().is_some() || store.pending_ds().is_some()
+        };
+        if news {
+            self.room.size.fetch_add(u.len(), Ordering::Relaxed);
+            self.queued = self.received;
+            changes.push(Pending { conn: self.id, author: self.author, n: self.received, data: u });
+        }
+        Ok(())
     }
 
     /// The states this connection may set: its own clients, or one the same person had on a
@@ -1341,6 +1393,29 @@ mod tests {
         until("B reads across the snapshot", || text(&rb) == expected).await;
         assert_eq!(text(&ra), expected);
 
+        // ── sync steps repeat every deletion Yjs knows: one that adds nothing is not a change ──
+        let gone = {
+            let fragment = client.get_or_insert_xml_fragment(FRAGMENT);
+            let mut txn = client.transact_mut();
+            fragment.remove_range(&mut txn, 1, 2);
+            txn.encode_update_v1()
+        };
+        on_a.take(&update_msg(gone)).unwrap();
+        let expected = plain_text(&client);
+        until("B reads A's deletion", || text(&rb) == expected).await;
+        let step = |room: &Room| {
+            let sv = room.awareness.lock().unwrap().doc().transact().state_vector();
+            Message::Sync(SyncMessage::SyncStep2(client.transact().encode_state_as_update_v1(&sv))).encode_v1()
+        };
+        let before = (on_a.received, on_a.queued);
+        assert!(on_a.take(&step(&ra)).unwrap().refusal.is_none());
+        assert_eq!((on_a.received, on_a.queued), (before.0 + 1, before.1), "counted, not stored");
+        assert!(ra.pending.lock().unwrap().is_empty());
+        let mut viewer_b = conn(&k, &b, &rb, 6, raj, DocAccess::Read);
+        assert!(viewer_b.take(&step(&rb)).unwrap().refusal.is_none(), "a viewer's sync step that adds nothing is fine");
+        let ahead = Message::Sync(SyncMessage::SyncStep2(typed(&other, "offline words"))).encode_v1();
+        assert!(viewer_b.take(&ahead).unwrap().refusal.is_some(), "a viewer's sync step with new words is refused");
+
         // ── saves: claimed once; a failure leaves it for next time, crediting the same people ──
         host.fail.store(true, Ordering::SeqCst);
         assert!(save(&k, &key, Some(&ra), false).await.is_err());
@@ -1372,10 +1447,14 @@ mod tests {
             assert!(saved[1].1.ends_with("from B") && saved[1].2 == vec![raj]);
         }
 
-        // ── a restarted replica reads it all back ──
+        // ── a restarted replica reads it all back, and hears at once who is in it elsewhere ──
         let c = Docs::new();
+        tasks.extend(c.spawn(k.clone(), stop.subscribe()));
+        tokio::time::sleep(Duration::from_millis(500)).await;
         let rc = c.join(&k, &dyn_host, &key).await.unwrap();
         assert_eq!(text(&rc), plain_text(&client));
+        until("C hears whose cursors A holds", || rc.awareness.lock().unwrap().iter().any(|(_, s)| s.data.as_deref().is_some_and(|d| d.contains("Ana Rao"))))
+            .await;
 
         // ── a document deleted under its editors: changes are dropped, not retried forever ──
         let mut tx = k.db.tenant_tx(tenant).await.unwrap();
