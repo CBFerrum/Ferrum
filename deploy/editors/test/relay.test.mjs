@@ -92,8 +92,12 @@ async function headers() {
 
 async function inEngine(name) {
   const options = name === "chromium" && process.env.CHANNEL ? { channel: process.env.CHANNEL } : {};
-  // CI machines have no GPU: Chromium and WebKit draw WebGL in software, Firefox only when told to.
-  if (name === "firefox") options.firefoxUserPrefs = { "webgl.force-enabled": true, "webgl.disable-fail-if-major-performance-caveat": true };
+  // CI machines have no GPU: Chromium and WebKit draw WebGL in software. Headless Firefox offers no
+  // WebGL2 there, so with a display (CI runs this under xvfb-run) it runs headed, on Mesa's software GL.
+  if (name === "firefox") {
+    options.firefoxUserPrefs = { "webgl.force-enabled": true, "webgl.disable-fail-if-major-performance-caveat": true };
+    if (process.env.DISPLAY) options.headless = false;
+  }
   const browser = await ENGINES[name].launch(options);
   try {
     const page = await (await browser.newContext({ viewport: { width: 1240, height: 800 } })).newPage();
