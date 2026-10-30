@@ -162,6 +162,12 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     ticket view; its other records are lists and forms in the records frame. A bookmark of an app's
     records-only pages (`/data/{app}/…`) goes to the same page in its interface once it has one.
     Checked in Chrome on the demo workspace.
+  * HR 0.3.0 has People at `/people/`: for the signed-in employee, check in and out, leave balances,
+    their requests and Ask for leave; the leave requests waiting for their approval, approved or
+    rejected in place; for those who see everyone, who is away today, who joined this month, work
+    anniversaries coming up, and the directory with search. Its other records (HR, payroll, the
+    hr-erp connector's) are lists and forms in the records frame. ERP 0.1.1 opens its add-ons'
+    records and projects. Checked in Chrome.
 
 * **U4a, Comms and Workspace: built** (31 October 2026).
   * Comms (Mail, Chat, Calendar, Meet at `/mail/`, `/chat/`, `/calendar/`, `/meet/`), Drive (`/drive/`,

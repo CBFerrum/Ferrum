@@ -127,6 +127,8 @@ macro_rules! apps {
             out.push(("crm", ferrum_app_crm::UI));
             #[cfg(feature = "helpdesk")]
             out.push(("helpdesk", ferrum_app_helpdesk::UI));
+            #[cfg(feature = "hr")]
+            out.push(("hr", ferrum_app_hr::UI));
             out
         }
 
