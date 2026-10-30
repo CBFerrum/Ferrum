@@ -190,8 +190,10 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     load mid-answer, stopping, a phone) in Chromium, Firefox and WebKit, and in the server's tests.
   * Picture-in-Picture: a call pops out into a window above every other (Document
     Picture-in-Picture in Chromium and recent Firefox; Safari floats the speaker's video). Checked
-    in Chrome in a two-person call on LiveKit; Playwright's Firefox and WebKit builds could not
-    reach the local LiveKit, so there only the choice of method was checked.
+    in two-person calls on LiveKit: in Chrome and Firefox the pop-out shows the other person, comes
+    back, and closes when the call ends from it; in WebKit the call connects and Pop out answers in
+    plain words when no camera is on, or when the browser cannot float a camera's stream (Comms
+    0.7.3).
   * Firefox and WebKit: the whole U4a run, the assistant, and light and dark screenshots pass in
     both. Safari's private windows keep no files in IndexedDB: an upload there goes only while its
     page lives, and leaving that page asks first.
