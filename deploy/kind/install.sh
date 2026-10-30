@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Installs what deploy/k8s needs into the current cluster, at the versions CI tests: Envoy Gateway
 # (Gateway API), cert-manager with Gateway API support, the CloudNativePG operator and its Barman
-# Cloud plugin, and the Prometheus operator's ServiceMonitor/PodMonitor definitions. For CI it also
+# Cloud plugin, metrics-server (for the autoscaler) and the Prometheus operator's
+# ServiceMonitor/PodMonitor definitions. For CI it also
 # adds a self-signed issuer named like the production one and an S3 emulator with the two buckets.
 #
 #   kind create cluster --config deploy/kind/kind.yaml && deploy/kind/install.sh
@@ -13,6 +14,7 @@ CERT_MANAGER=v1.21.3
 CNPG=1.30.1
 BARMAN_PLUGIN=v0.15.1
 PROMETHEUS_OPERATOR=v0.94.2
+METRICS_SERVER=v0.9.0
 
 step() { echo "==> $*"; }
 # Applies stdin or a file until the API accepts it (webhooks answer a little after their pods start).
@@ -82,6 +84,13 @@ kubectl apply --server-side -f "https://raw.githubusercontent.com/cloudnative-pg
 ready cnpg-system cnpg-controller-manager
 curl -fsSL "https://github.com/cloudnative-pg/plugin-barman-cloud/releases/download/$BARMAN_PLUGIN/manifest.yaml" | apply
 ready cnpg-system barman-cloud
+
+step "metrics-server $METRICS_SERVER"
+kubectl apply -f "https://github.com/kubernetes-sigs/metrics-server/releases/download/$METRICS_SERVER/components.yaml" >/dev/null
+# kind's kubelets serve self-signed certificates.
+kubectl -n kube-system patch deploy metrics-server --type=json \
+  -p '[{"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--kubelet-insecure-tls"}]'
+ready kube-system metrics-server
 
 step "Prometheus operator $PROMETHEUS_OPERATOR definitions"
 for crd in servicemonitors podmonitors; do
