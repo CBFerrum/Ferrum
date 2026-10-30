@@ -2327,7 +2327,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-drive"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-drive?branch=main#fd02d656c6e183c1919a21ee3c483ded2f985b18"
+source = "git+https://github.com/CBFerrum/ferrum-app-drive?branch=main#9a281e54a7272f6e31c4566829ade801e894b72a"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
