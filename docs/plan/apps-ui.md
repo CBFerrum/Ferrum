@@ -102,6 +102,33 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     contacts, parties, products and crm, no ERP records).
   * Not yet: removing a suite's members nothing else needs.
 
+* **U4a, Comms and Workspace: built** (31 October 2026).
+  * Comms (Mail, Chat, Calendar, Meet at `/mail/`, `/chat/`, `/calendar/`, `/meet/`), Drive (`/drive/`,
+    with Sheets, Slides and PDF as entries of their own) and Docs (`/docs/`, the editor at
+    `/docs/d/{file}`) have interfaces of their own in their repositories' `ui/`, embedded in their
+    crates; Ferrum-Frontend holds none of their code, and today's web app sends their old addresses
+    (bookmarks, links in mail, public links) to the new pages for every workspace.
+  * Workspace is a family (Drive heads it with `ui.family`; Docs joins with `parent: drive`): one
+    launcher group, one navigation (`FamilyNav`), separate releases.
+  * Intents: `pick`, `preview` and `share` a file (Drive); `compose` an email, `schedule` an event,
+    `share` a record to Chat (Comms). Mail attaches from Drive; Docs shares through Drive's dialog.
+  * Side panels: Chat from the bar; Drive's file details as a contextual panel (Docs opens it beside a
+    document). Meet calls open from Chat and Calendar in a companion window.
+  * Uploads go through the bar runtime (IndexedDB, a tray, resumed by the next page of any app, one
+    tab per upload by Web Locks); Drive stores an upload sent again once (`Idempotency-Key`, taken in
+    the transaction that makes the file), and site requests that change something finish even when
+    the browser leaves.
+  * Public pages (`shell.public`): Drive's shared links (`/drive/s/…`) and Meet's guest page
+    (`/meet/guest/…`), with no bar, no person, no referrer, no indexing.
+  * Policies name operator settings (`env:FERRUM_OFFICE_ORIGIN`, `env:FERRUM_MEET_URL`), forms
+    (`form`) and secure images (`https:`, Mail's remote images on request).
+  * Checked in Chrome: sign-in, the family, an upload across a page load stored once, Sheets, a new
+    document typed and saved, Drive's share intent and details panel in Docs, Chat in the panel kept
+    across a page load, the schedule, pick and share intents, a companion window across a page load,
+    a public link signed out.
+  * Not yet: Firefox and WebKit runs (their Playwright builds are not on this machine); the Assistant
+    panel (there is no assistant to put in it yet); Picture-in-Picture from the call window.
+
 Contents: 1 where we are · 2 goals and targets · 3 what others do · 4 rules · 5 decisions ·
 6 the person's view · 7 addresses and deployment shapes · 8 the core shell · 9 people, sessions,
 identity · 10 the app contract · 11 apps inside and alongside other apps · 12 platform services ·
@@ -237,6 +264,10 @@ Web platform facts that shape the design:
     threads, drafts), never only in a page.
 12. **Every phase ends usable** (platform.md rule 6); today's interface keeps working until the new
     one has replaced every page.
+13. **One look by default, any look allowed.** Ferrum's own apps share one design system (the theme's
+    tokens and `@ferrum/kit`, shadcn components), so the suite looks made by one hand; the shell owns
+    only the bar. Any app may bring its own design and framework: the contract is files, the
+    bootstrap, the shell API and the HTTP API, and an app's styles come after the theme's and win.
 
 ## 5. Decisions
 
@@ -643,10 +674,17 @@ Ferrum-Frontend becomes an npm workspace that publishes:
   Ferrum-Frontend `apps/erp` (ERP's packages are in the Ferrum repository).
 * Every other app: `ui/` in its own repository, built and tested in its CI, versioned with its backend.
 * Store apps (WebAssembly, metadata): `ui/dist` inside the signed bundle, as screens are today.
-* Compiled-in apps: the app's CI publishes `ui/dist` as a release artefact named by its SHA-256, and the
-  crate records that digest. The platform image build collects the artefacts of every compiled app and
-  of Ferrum-Frontend (shell, ERP) by digest and verifies them; at boot the server registers them as UI
-  releases, idempotently. An operator can run another UI release without rebuilding the image.
+* Compiled-in apps (built U4a): the app's `ui/dist` is committed and embedded in its crate (`UI`, by
+  its build script, as its packages are); at boot every replica registers it as the UI release of the
+  version it was compiled with, idempotently. The app's CI checks that `dist/` was built from `ui/` as
+  it is (`dist/.source`, a digest of the sources), so the crate never carries stale files. Nothing to
+  collect or fetch when an image is built, no network at boot, and the interface always matches its
+  backend. An operator can run another UI release without rebuilding the image (`FERRUM_UI_DIR`,
+  registered after, wins for the same version). The cost: built files in the app's git history.
+* Until `@ferrum/*` are on npm, an app's `ui/` builds with Ferrum-Frontend's toolchain and dependency
+  set from the sibling checkout (`packages/build`: `cli.mjs build|check|typecheck|test`, `vite.mjs`),
+  as app crates build against the sibling platform checkout; libraries resolve as Ferrum-Frontend's,
+  so an app and the kit share one React and one query client.
 * Storage: local disk on a single node, object storage in a cluster, object storage behind a CDN in the
   cloud.
 * Ferrum-Frontend's nginx image goes at the end of U4: the server answers every page; an edge proxy

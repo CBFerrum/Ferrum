@@ -153,6 +153,19 @@ cookie=$(awk '$6=="__Host-ferrum" || $6=="ferrum_session" {print $7}' "$work/jar
 # The shell's own pages lead a workspace that is not on the shell to today's web app.
 [[ "$(curl -sS -o /dev/null -b "$work/jar" -w '%{http_code} %{redirect_url}' "$API/admin/")" =~ ^30[23]\ .*/app/admin$ ]] || fail "the shell's administration for a workspace on the classic interface"
 grep -q "unregister" <<<"$(curl -fsS -b "$work/jar" "$API/nothing-here/sw.js")" || fail "the worker of an empty route does not remove itself"
+# Apps with interfaces of their own (U4a): Drive, installed through the App Manager, brings its
+# interface compiled in; its family, its pages under the bar, and its public page.
+consent=$(curl -fsS "${auth[@]}" "$API/api/admin/apps/drive/plan" | json 'd["digest"]') || fail "Drive's install plan"
+curl -fsS "${auth[@]}" -H 'content-type: application/json' -d "{\"consent\":\"$consent\"}" "$API/api/admin/apps/drive/install" >/dev/null || fail "installing Drive"
+shell=$(curl -fsS -b "$work/jar" "$API/api/shell")
+[ "$(json '[a["url"] for a in d["apps"] if a["app"] == "drive"]' <<<"$shell")" = "['/drive/', '/sheets/', '/slides/', '/pdf/']" ] || fail "Drive's launcher entries"
+[ "$(json '[f["title"] for f in d["families"]]' <<<"$shell")" = "['Workspace']" ] || fail "Drive's family"
+curl -fsS -b "$work/jar" -D "$work/drive.h" -o "$work/drive.html" "$API/drive/" || fail "Drive's page"
+grep -q '<ferrum-bar>' "$work/drive.html" && grep -q '"app":{"id":"drive"' "$work/drive.html" || fail "Drive's page lacks the bar or its bootstrap"
+curl -sS -D "$work/public.h" -o "$work/public.html" "$API/drive/s/smoke/no-such-link" || fail "Drive's public page"
+grep -qi "^x-robots-tag: noindex" "$work/public.h" && grep -qi "^referrer-policy: no-referrer" "$work/public.h" || fail "a public page may be indexed or leak its address"
+grep -q '"person":null' "$work/public.html" && ! grep -q '<ferrum-bar>' "$work/public.html" || fail "a public page knows a person or has the bar"
+[ "$(code "$API/drive/s/no-such-workspace/x")" = 404 ] || fail "a public page of no workspace"
 # Signing out ends the device's session: the cookie no longer works anywhere.
 [ "$(code -b "$work/jar" -X POST -H 'sec-fetch-site: same-origin' "$API/api/auth/logout")" = 204 ] || fail "signing out"
 [ "$(code -b "$work/jar" "$API/api/shell")" = 401 ] || fail "the cookie still works after signing out"

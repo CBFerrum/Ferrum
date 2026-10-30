@@ -111,6 +111,21 @@ macro_rules! apps {
             out
         }
 
+        /// The interfaces compiled in with their apps (an app crate's `ui/dist`, as `UI`): (app id,
+        /// its built files). Apps without an interface of their own are not listed.
+        #[allow(clippy::vec_init_then_push)]
+        pub fn native_uis() -> Vec<(&'static str, &'static [(&'static str, &'static [u8])])> {
+            #[allow(unused_mut)]
+            let mut out: Vec<(&'static str, &'static [(&'static str, &'static [u8])])> = Vec::new();
+            #[cfg(feature = "comms")]
+            out.push(("comms", ferrum_app_comms::UI));
+            #[cfg(feature = "drive")]
+            out.push(("drive", ferrum_app_drive::UI));
+            #[cfg(feature = "docs")]
+            out.push(("docs", ferrum_app_docs::UI));
+            out
+        }
+
         /// YAML packages of legacy apps whose code is not compiled into this build.
         pub fn missing_logic(catalog: &Catalog) -> Vec<String> {
             #[allow(unused_mut)]
