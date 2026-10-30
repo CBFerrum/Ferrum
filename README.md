@@ -62,13 +62,13 @@ or any other vertical is a plugin, not a fork.
 | Point of sale | [ferrum-app-pos](https://github.com/CBFerrum/ferrum-app-pos) |
 | Commerce (online store) | [ferrum-app-commerce](https://github.com/CBFerrum/ferrum-app-commerce) |
 | HR and payroll | [ferrum-app-hr](https://github.com/CBFerrum/ferrum-app-hr) |
-| Mail, chat and calendar | [ferrum-app-comms](https://github.com/CBFerrum/ferrum-app-comms) |
+| Mail (hosted mailboxes with webmail, or your own provider), chat and calendar | [ferrum-app-comms](https://github.com/CBFerrum/ferrum-app-comms) |
 | Fixed assets | [ferrum-app-assets](https://github.com/CBFerrum/ferrum-app-assets) |
 | Bookings and appointments | [ferrum-app-bookings](https://github.com/CBFerrum/ferrum-app-bookings) |
 | Field service | [ferrum-app-field-service](https://github.com/CBFerrum/ferrum-app-field-service) |
 | Forms and surveys | [ferrum-app-forms](https://github.com/CBFerrum/ferrum-app-forms) |
 | Learn (courses, quizzes, certificates) | [ferrum-app-lms](https://github.com/CBFerrum/ferrum-app-lms) |
-| Drive (files and sharing) | [ferrum-app-drive](https://github.com/CBFerrum/ferrum-app-drive) |
+| Drive (files, sharing, online editing of office documents) | [ferrum-app-drive](https://github.com/CBFerrum/ferrum-app-drive) |
 | Campaigns (email marketing) | [ferrum-app-campaigns](https://github.com/CBFerrum/ferrum-app-campaigns) |
 | Sign (electronic signatures) | [ferrum-app-sign](https://github.com/CBFerrum/ferrum-app-sign) |
 
@@ -164,7 +164,9 @@ to events, run on schedules and call declared HTTPS hosts — always within the 
 administrator approved, with a CPU budget, a memory cap and no other access. That is how Ferrum
 becomes an EV charging, IoT, payment or telephony platform without changing its code. See
 [docs/plugins.md](docs/plugins.md), the Rust SDK in `plugins/sdk` and the complete
-`plugins/examples/device-gateway`.
+`plugins/examples/device-gateway`. Apps can also bring their own screens (pages, Home widgets,
+panels on forms, settings) in sandboxed frames, and offer extension points for add-ons to fill;
+ferrum-sdk's `examples/board` shows both.
 
 ## Testing
 
