@@ -3,7 +3,7 @@
 # fields to them. Recorded as installed in every workspace that has accounting; India is its add-on.
 id: erp
 name: ERP
-version: 0.1.0
+version: 0.1.1
 publisher: cbferrum
 summary: Accounting, selling, buying, stock and manufacturing
 categories: [finance, inventory, manufacturing]
@@ -30,3 +30,10 @@ contributes:
     - {id: buying, package: buying, path: "erp/e/{entity}/{id}", list: "erp/e/{entity}"}
     - {id: inventory, package: inventory, path: "erp/e/{entity}/{id}", list: "erp/e/{entity}"}
     - {id: manufacturing, package: manufacturing, path: "erp/e/{entity}/{id}", list: "erp/e/{entity}"}
+    # Its add-ons' records (their modules are in ERP's sidebar), and the projects its accounting uses.
+    - {id: india, package: india, path: "erp/e/{entity}/{id}", list: "erp/e/{entity}"}
+    - {id: finance, package: finance, path: "erp/e/{entity}/{id}", list: "erp/e/{entity}"}
+    - {id: procurement, package: procurement, path: "erp/e/{entity}/{id}", list: "erp/e/{entity}"}
+    - {id: stock_ops, package: stock_ops, path: "erp/e/{entity}/{id}", list: "erp/e/{entity}"}
+    - {id: mfg_ops, package: mfg_ops, path: "erp/e/{entity}/{id}", list: "erp/e/{entity}"}
+    - {id: project_records, package: project_records, path: "erp/e/{entity}/{id}", list: "erp/e/{entity}"}
