@@ -190,7 +190,8 @@ deploy/kind/install.sh && deploy/kind/smoke.sh
   comes with Helpdesk 0.2.0: a workspace with Helpdesk and selling gets `helpdesk_erp` (a ticket's
   sales invoice, a maintenance contract's sales order). `hr-erp` comes with HR 0.2.0: a workspace
   with HR and accounting gets `hr_erp` (expense claims and advances) and `payroll_erp` (payroll's
-  accounts and postings).
+  accounts and postings). `projects-erp` comes with Projects 0.2.0: a workspace with Projects and
+  selling gets `projects_erp` (invoicing time and milestones).
 
   `project-records` comes with the release that moved Project out of `core` into the shared
   `project_records` package (ERP's accounting depends on it): a workspace with projects but

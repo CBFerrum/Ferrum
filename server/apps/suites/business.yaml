@@ -8,4 +8,4 @@ summary: ERP, CRM, helpdesk and projects, working together
 categories: [suite, finance, sales]
 runtime: meta
 platform: ">=0.3.2, <0.4"
-requires: {erp: ">=0.1", crm: ">=0.2", helpdesk: ">=0.2", projects: ">=0.1", crm-erp: ">=0.1", helpdesk-erp: ">=0.1"}
+requires: {erp: ">=0.1", crm: ">=0.2", helpdesk: ">=0.2", projects: ">=0.2", crm-erp: ">=0.1", helpdesk-erp: ">=0.1", projects-erp: ">=0.1"}

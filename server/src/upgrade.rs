@@ -23,12 +23,14 @@ pub const PROJECT_RECORDS: &str = "project-records";
 /// packages a workspace had it with)]). Such a workspace gets the connector, so it keeps them.
 /// * `crm-erp`: quotations' taxes, sales orders made from quotations (CRM 0.2.0);
 /// * `helpdesk-erp`: a ticket's sales invoice, a maintenance contract's sales order (Helpdesk 0.2.0);
-/// * `hr-erp`: expense claims and advances, payroll's accounts and postings (HR 0.2.0).
+/// * `hr-erp`: expense claims and advances, payroll's accounts and postings (HR 0.2.0);
+/// * `projects-erp`: invoicing projects' time and milestones (Projects 0.2.0).
 pub type Connector = (&'static str, &'static [(&'static str, &'static [&'static str])]);
 pub const CONNECTORS: &[Connector] = &[
     ("crm-erp", &[("crm_erp", &["crm", "selling"])]),
     ("helpdesk-erp", &[("helpdesk_erp", &["helpdesk", "selling"])]),
     ("hr-erp", &[("hr_erp", &["hr", "accounting"]), ("payroll_erp", &["payroll", "accounting"])]),
+    ("projects-erp", &[("projects_erp", &["projects", "selling"])]),
 ];
 
 /// Session advisory lock: one replica runs the steps; the others wait for it.
