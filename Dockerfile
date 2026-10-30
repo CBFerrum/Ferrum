@@ -1,7 +1,23 @@
 # syntax=docker/dockerfile:1.7
-# Ferrum API server with its packages. The web app ships separately (CBFerrum/Ferrum-Frontend).
+# Ferrum: the server with its packages and every page people open, including the shell's and ERP's
+# interfaces, built from CBFerrum/Ferrum-Frontend at FRONTEND_REV (or another checkout of it:
+# --build-context frontend=<dir>). Apps' own interfaces come compiled into their crates.
 #   docker build -t ferrum .
-#   docker run -e DATABASE_URL=... -e JWT_SECRET=$(openssl rand -base64 48) -p 5150:5150 ferrum
+#   docker run -e DATABASE_URL=... -e JWT_SECRET=$(openssl rand -base64 48) -p 8080:5150 ferrum
+
+# The Ferrum-Frontend commit this server's pages are built from (bumped like an app's pin).
+ARG FRONTEND_REV=311c05120a748a6a6ecc840b79587e6d87a3fe18
+
+FROM scratch AS frontend
+ARG FRONTEND_REV
+ADD https://github.com/CBFerrum/Ferrum-Frontend.git#${FRONTEND_REV} /
+
+FROM node:22-bookworm-slim AS ui
+WORKDIR /web
+COPY --from=frontend package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY --from=frontend . .
+RUN npm run build:apps
 
 FROM rust:1.95-bookworm AS build
 WORKDIR /src
@@ -26,10 +42,13 @@ WORKDIR /app
 COPY --from=build /usr/local/bin/ferrum /usr/local/bin/ferrum
 COPY --from=build /src/server/config ./config
 COPY --from=build /src/packages ./packages
+# One directory per interface (shell, erp), registered at start-up (settings.ui_dir).
+COPY --from=ui /web/dist-apps ./ui
 USER 10001
 ENV LOCO_ENV=production \
     BINDING=0.0.0.0 \
-    PORT=5150
+    PORT=5150 \
+    FERRUM_UI_DIR=/app/ui
 EXPOSE 5150
 ENTRYPOINT ["/usr/bin/tini", "--", "ferrum"]
 CMD ["start"]

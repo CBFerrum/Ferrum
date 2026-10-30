@@ -108,8 +108,7 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     (calendar and contacts apps read it), with or without CRM. Forms' and LMS' tests install what
     they use, now that core no longer has customers or ERP's roles.
   * U3 is complete.
-* **U4b, CRM: its interface built; apps without one have their records in the shell; new
-  workspaces start on the shell.**
+* **U4b, CRM: built; the shell for every workspace; Ferrum-Frontend's nginx image retired.**
   * CRM 0.3.0 has its own interface at /crm/, in its repository's `ui/` (built with
     Ferrum-Frontend's packages, `dist` committed, embedded as `UI`). Its home shows the pipeline
     (open deals by sales stage, worth and weight), your open activities and new leads. Its records
@@ -128,17 +127,26 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     (`/api/meta`), so a frame shows its app's modules and not others' that list shared records
     (CRM's module lists customers). Frames whose routes are the records pages (ERP's, the shell's)
     show Customize, Studio's builders and the POS till.
-  * New workspaces start on the shell (`shell_v2`); workspaces made before keep today's web app
-    until an administrator switches. Checked in Chrome (Home's icons, Helpdesk's and Studio's
-    records, /open, Customize, ERP's sidebar) and by the deploy smoke test (a new workspace on the
-    shell, switched back and forth; Helpdesk installed from the store, its records page and /open).
+  * Checked in Chrome (Home's icons, Helpdesk's and Studio's
+    records, /open, Customize, ERP's sidebar) and by the deploy smoke test (Helpdesk installed from
+    the store, its records page and /open).
   * Signing in sets up two-factor sign-in where the workspace requires it (the authenticator app's
     code, a code to turn it on, the recovery codes, then signing in with a code), and OAuth
     clients' consent is a page the server draws (`/oauth/authorize`, the discovery's authorization
     endpoint; no scripts, never framed, nothing sent to an address the client did not register).
     Neither needs today's web app now. Checked in Chrome and by the deploy smoke test.
-  * Next: `/app/` only redirecting and the nginx image retired: the server serves the shell's and
-    ERP's interfaces itself, and an upgrade step moves the remaining workspaces to the shell.
+  * Every workspace uses the shell; the `shell_v2` setting is kept only for going back to the
+    release before (which still had today's web app), so no upgrade step was needed. Today's web
+    app has left: the server answers `/app/…` with redirects to the new homes, query kept
+    (bookmarks, links in mail; `/app/login` stays the single sign-on return address providers have
+    registered, sent on to `/login`), and `/app/sw.js` is a worker that clears its cache and
+    removes itself. Ferrum-Frontend keeps the shell's and ERP's interfaces and the packages; its
+    classic entry, its sign-in and consent pages, its redirect map and its nginx image are gone.
+  * The server's image carries the shell's and ERP's interfaces, built from Ferrum-Frontend at the
+    commit the Dockerfile pins (`FRONTEND_REV`, bumped like an app's pin; another checkout with
+    `--build-context frontend=…`, which Ferrum-Frontend's CI uses to run Ferrum's smoke test on
+    its changes). Compose and the Kubernetes manifests have no web service: the server is the front
+    door (`/healthz` for load balancers).
 
 * **U4a, Comms and Workspace: built** (31 October 2026).
   * Comms (Mail, Chat, Calendar, Meet at `/mail/`, `/chat/`, `/calendar/`, `/meet/`), Drive (`/drive/`,

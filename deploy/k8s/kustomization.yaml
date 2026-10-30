@@ -10,7 +10,6 @@ resources:
   - namespace.yaml
   - database.yaml
   - deployment.yaml
-  - web.yaml
   - pdf.yaml
   - service.yaml
   - gateway.yaml
@@ -25,9 +24,6 @@ resources:
 images:
   - name: ferrum
     newName: ghcr.io/cbferrum/ferrum
-    newTag: latest
-  - name: ferrum-frontend
-    newName: ghcr.io/cbferrum/ferrum-frontend
     newTag: latest
   - name: ghcr.io/cbferrum/ferrum-editors
     newTag: latest

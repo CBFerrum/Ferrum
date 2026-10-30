@@ -35,7 +35,7 @@ spec:
           ports:
             - {name: http, containerPort: 8080}
           env:
-            # The web app's address: the only page that may frame the editors' relay.
+            # Ferrum's address: the only page that may frame the editors' relay.
             - {name: FERRUM_PUBLIC_URL, value: "https://erp.example.com"}
           resources:
             requests: {cpu: 10m, memory: 16Mi}

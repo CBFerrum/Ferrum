@@ -26,7 +26,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_METRICS_TOKEN` | recommended | `/metrics` then requires `Authorization: Bearer <token>` |
 | `FERRUM_S3_BUCKET`, `FERRUM_S3_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | multi-replica | Attachment storage on S3 (region `auto` if empty) |
 | `FERRUM_S3_ENDPOINT` | no | Any S3-compatible store: MinIO, Cloudflare R2, Wasabi, Backblaze B2, DigitalOcean Spaces, GCS interoperability |
-| `FERRUM_DRIVE_MAX_FILE_MB` | no | Largest file in one request to Drive: an upload, a new version or an editor save. Default 32, at most 1024. A replica holds each such file in memory while storing it, so allow `uploads at once × this` of memory per replica. Workspaces set their own limit within it. Raise the web app's `FERRUM_MAX_UPLOAD` (nginx, default `32m`) with it, and any proxy in front |
+| `FERRUM_DRIVE_MAX_FILE_MB` | no | Largest file in one request to Drive: an upload, a new version or an editor save. Default 32, at most 1024. A replica holds each such file in memory while storing it, so allow `uploads at once × this` of memory per replica. Workspaces set their own limit within it. Raise any proxy's body limit in front with it |
 | `FERRUM_REQUEST_TIMEOUT_MS` | no | How long one request may take, receiving its body included; default 120000 (2 minutes). Large files over slow links need more: allow the largest file divided by the slowest client's upload rate (200 MB at 10 Mbit/s is about 3 minutes). Keep the gateway's request timeout (600 s in `gateway.yaml`) above it |
 | `FERRUM_DIRECT_UPLOAD_MAX_BYTES` | no | Largest file browsers upload straight to the bucket (default 2 GiB). Needs the bucket CORS rule below |
 | `FERRUM_PDF_URL` | no | A Gotenberg-compatible renderer (`gotenberg/gotenberg:8`, included in both deployments as `pdf` / `ferrum-pdf`) for PDFs of print formats; empty turns PDFs off. Run it with JavaScript off and an allow-list of `^(data:\|file:///tmp/).*` so templates cannot make it fetch anything; print formats then use inline (data:) images |
@@ -42,14 +42,14 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_APP_UPLOADS` | no | Who may upload app bundles: `off`, `private` (production default: sandboxed apps without tables, visible only in the uploading workspace) or `cluster` (development default: available to every workspace) |
 | `FERRUM_USER_REQUESTS_PER_MINUTE` | no | Requests one user (with any of their sessions and API keys) may make per minute on each replica; beyond it they get `429` with `Retry-After`. Default 3000; `0` turns it off. It counts per replica, so the cluster-wide budget grows with the replica count |
 | `FERRUM_ADDRESS_REQUESTS_PER_MINUTE` | no | Requests one client address may make per minute on each replica, counted for requests that came through the proxy (`X-Forwarded-For`); default 6000, `0` turns it off. Health probes and in-cluster calls are not counted |
-| `FERRUM_PROXY_HOPS` | no | How many proxies in front append to `X-Forwarded-For`: 1 (default) for the gateway alone, 2 with a CDN or an HTTP load balancer before it. The client's address for sign-in and request limits is the entry that many from the right; set it wrong and everyone shares one address (too low) or clients choose their own (too high) |
+| `FERRUM_PROXY_HOPS` | no | How many proxies in front append to `X-Forwarded-For`: 1 (the default) for the Kubernetes gateway alone or your own TLS proxy, 0 when browsers reach the server directly (Compose sets it; set 1 there behind your proxy), 2 with a CDN or an HTTP load balancer before the proxy. The client's address for sign-in and request limits is the entry that many from the right; set it wrong and everyone shares one address (too low) or clients choose their own (too high) |
 | `FERRUM_SSO_ALLOW_PRIVATE` | no | `true` lets single sign-on reach an identity provider on a private address or over plain http (one inside your own network, such as an in-cluster Keycloak); default `false` |
 | `FERRUM_APP_ALLOW_UNSIGNED` | no | `true` accepts uploads no trusted key signed (development default); production default `false` |
 | `FERRUM_SESSION_DAYS` | no | How long a browser stays signed in with the session cookie (default 14); each browser is a session of its own that people and administrators sign out one by one |
 | `FERRUM_DEFAULT_WORKSPACE` | no | The slug of the one workspace this server serves on every host (a single-workspace install): sign-in then asks for no workspace. Empty: a host registered for a workspace leads to it, and elsewhere the workspace is chosen at sign-in |
-| `FERRUM_UI_DIR` | no | Other interfaces for apps compiled into the server (those that bring their own, Comms, Drive and Docs, carry it compiled in): a directory with one directory of built files per app id (`<dir>/<app>/index.html`), registered as interface releases at start-up, after the compiled-in ones, so they win for the same version |
+| `FERRUM_UI_DIR` | no | Interfaces registered at start-up from a directory with one directory of built files per app id (`<dir>/<app>/index.html`), after those compiled into apps' crates, so they win for the same version. The image sets it to `/app/ui`, which holds the shell's and ERP's (built from Ferrum-Frontend at the commit the Dockerfile pins); point it elsewhere to run others |
 | `FERRUM_OFFICE_ORIGIN` | with online editing | The editor server as browsers reach it (`https://office.example.com`), when that is not `FERRUM_OFFICE_URL`: Drive's pages frame it and post to it, and their Content-Security-Policy names it (`deploy/office.yml` sets it from `OFFICE_PUBLIC_URL`) |
-| `FERRUM_UI_SOURCE` | with the shell | Where the web app's image offers the shell's and ERP's interfaces (`http://web:8080/_releases/` in Compose, `http://ferrum-web/_releases/` in Kubernetes): fetched at start-up and every ten minutes, files checked against their digests |
+| `FERRUM_UI_SOURCE` | no | Development: a server listing built interfaces (`index.json`, as Ferrum-Frontend's `npm run build:apps` writes `dist-apps/`), fetched at start-up and every ten minutes, files checked against their digests |
 
 **Database role.** Ferrum must connect as an ordinary role that owns its database, never as a
 superuser or a role with `BYPASSRLS`: those bypass PostgreSQL row-level security and with it tenant
@@ -99,16 +99,18 @@ up to ~11 replicas without a pooler; raise both together).
 
 7. Optionally run `FERRUM_URL=https://<host> FERRUM_TENANT=... FERRUM_EMAIL=... FERRUM_PASSWORD=... python3 scripts/smoke.py`
    against a staging tenant (it creates a throw-away item and stock movements).
-8. Sign in at `https://<host>/app/`, create the company (its chart of accounts, warehouses and,
+8. Sign in at `https://<host>/`, create the company (its chart of accounts, warehouses and,
    with `india`, GST templates are set up automatically) and a fiscal year.
 
 Single host: `cp deploy/.env.example deploy/.env`, fill it in, then
 `docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d`.
 
 **Images.** For each commit on `main` whose images pass the checks below, CI publishes
-`ghcr.io/cbferrum/ferrum` and `ghcr.io/cbferrum/ferrum-editors` (Ferrum-Frontend's CI publishes
-`ghcr.io/cbferrum/ferrum-frontend`), tagged with the commit's full SHA and `latest`. On a single
-host, pin them with `FERRUM_IMAGE`, `FERRUM_WEB_IMAGE` and `FERRUM_EDITORS_IMAGE`. Deploy a commit's tag and change it to upgrade: `latest`
+`ghcr.io/cbferrum/ferrum` and `ghcr.io/cbferrum/ferrum-editors`, tagged with the commit's full SHA
+and `latest`. The server's image answers every page: it carries the shell's and ERP's interfaces,
+built from Ferrum-Frontend at the commit its Dockerfile pins (`FRONTEND_REV`), and apps' interfaces
+come compiled into their crates; Ferrum-Frontend publishes no image of its own. On a single host,
+pin them with `FERRUM_IMAGE` and `FERRUM_EDITORS_IMAGE`. Deploy a commit's tag and change it to upgrade: `latest`
 moves, so pods started later (a rescheduled replica, a new node) would run another release. If
 pulling needs signing in (private packages, or your own mirror), use a token that may read
 packages: `docker login ghcr.io` on a single host; on Kubernetes,
@@ -120,34 +122,32 @@ kubectl -n ferrum patch serviceaccount default -p '{"imagePullSecrets": [{"name"
 ```
 
 **Checking an image before it goes out.** `deploy/smoke.sh` deploys the Compose stack (database,
-Ferrum, PDF renderer, web app) with freshly generated secrets. The workspace is created, seeded
-and invoiced by the release being replaced (`FERRUM_PREVIOUS_IMAGE`, if set), then the server's
-container is replaced with `FERRUM_IMAGE` as an upgrade does; the session, the data and the web
-app's route to the new container must survive. On the new image it then checks the security and
-caching headers; the web app's pages, scripts, API proxy and live-updates WebSocket; a Sales
-Invoice submitted and printed as HTML and PDF with its audit chain; recovery from a database
+Ferrum, PDF renderer) with freshly generated secrets. The workspace is created, seeded and
+invoiced by the release being replaced (`FERRUM_PREVIOUS_IMAGE`, if set), then the server's
+container is replaced with `FERRUM_IMAGE` as an upgrade does; the session and the data must
+survive. On the new image it then checks the security headers; the shell's pages, apps' pages and
+public pages, the store installing apps, records-only apps, OAuth consent, and today's web app's
+old addresses (`/app/…`) leading to their new homes; the live-updates and live-documents
+WebSockets; a Sales Invoice submitted and printed as HTML and PDF with its audit chain; recovery from a database
 restart; a backup, deletion of the stack with its volumes and a restore (data, session,
 attachment and numbering intact); and a short load test. Everything is removed afterwards. With
 `FERRUM_EDITORS_IMAGE` it also runs the browser editors' server (`deploy/editors.yml`) and checks its
-policies and its read-only filesystem. CI runs it on every image it builds, as an upgrade of `ghcr.io/cbferrum/ferrum:latest`, and
-Ferrum-Frontend's CI runs it on every web image; images are published only when it passes.
-(Ferrum-Frontend's CI pulls the server image when the `ferrum` package grants that repository
-read access under *Manage Actions access*; until then it builds the server from source, about 20
-minutes longer.) To run it yourself (Docker, curl, openssl, python3 with
-httpx; `SMOKE_PORT`, `SMOKE_WEB_PORT` and `SMOKE_LOAD_SECONDS` override the API port 5150, the
-web port 8080 and the 20-second load test):
+policies and its read-only filesystem. CI runs it on every image it builds, as an upgrade of `ghcr.io/cbferrum/ferrum:latest`; images are
+published only when it passes. Ferrum-Frontend's CI runs it too, on a server image built with its
+own checkout as the interfaces' source (`--build-context frontend=<checkout>`). To run it yourself
+(Docker, curl, openssl, python3 with httpx; `SMOKE_PORT` and `SMOKE_LOAD_SECONDS` override the
+port 8080 and the 20-second load test):
 
 ```bash
-FERRUM_IMAGE=ghcr.io/cbferrum/ferrum:<tag> FERRUM_PREVIOUS_IMAGE=ghcr.io/cbferrum/ferrum:latest \
-  FERRUM_WEB_IMAGE=ghcr.io/cbferrum/ferrum-frontend:latest deploy/smoke.sh
+FERRUM_IMAGE=ghcr.io/cbferrum/ferrum:<tag> FERRUM_PREVIOUS_IMAGE=ghcr.io/cbferrum/ferrum:latest deploy/smoke.sh
 ```
 
 **Checking the Kubernetes deployment.** `deploy/kind/smoke.sh` deploys `deploy/k8s` to a cluster
 (through `deploy/kind/kustomization.yaml`, which only swaps in local images and points
 attachments and backups at an S3 emulator) and checks it as an operator would: three database
-instances, the API, renderer and web app ready, the Gateway serving HTTPS with a certificate from
-cert-manager, HTTP redirected, no metrics outside; no pod but the gateway's, the web app's and
-monitoring's reaching the API (the network policy), metrics only with their token, the
+instances, the server and renderer ready, the Gateway serving HTTPS with a certificate from
+cert-manager, HTTP redirected, no metrics outside; no pod but the gateway's and monitoring's
+reaching the server (the network policy), metrics only with their token, the
 autoscaler reading the API's CPU use (metrics-server); a workspace created and an invoice submitted,
 printed and given an attachment that every replica serves from object storage; the database
 primary killed (a standby is promoted and writes resume within 90 s — about 25 s in CI — with
@@ -160,8 +160,8 @@ kubectl, curl, python3):
 ```bash
 kind create cluster --config deploy/kind/kind.yaml
 docker pull ghcr.io/cbferrum/ferrum:<tag> && docker tag ghcr.io/cbferrum/ferrum:<tag> ferrum:ci
-docker build -t ferrum-frontend:ci https://github.com/CBFerrum/Ferrum-Frontend.git#main
-kind load docker-image ferrum:ci ferrum-frontend:ci
+docker build -t ferrum-editors:ci deploy/editors
+kind load docker-image ferrum:ci ferrum-editors:ci
 deploy/kind/install.sh && deploy/kind/smoke.sh
 ```
 
@@ -362,7 +362,7 @@ Drive app's README.
 | `FERRUM_OFFICE_URL` | server | the editor as the server reaches it, e.g. `http://office:9980` |
 | `FERRUM_OFFICE_WOPI_URL` | server | the server as the editor reaches it, e.g. `http://ferrum:5150` |
 | `FERRUM_OFFICE_IPS` | server | optional: the only addresses WOPI calls are accepted from |
-| `FERRUM_OFFICE_ORIGIN` | web app | the editor as browsers reach it; the app may frame it and post to it |
+| `FERRUM_OFFICE_ORIGIN` | server | the editor as browsers reach it; Drive's pages may frame it and post to it |
 
 **Compose.** `deploy/office.yml` adds Collabora:
 
@@ -371,13 +371,13 @@ Drive app's README.
 Set `OFFICE_PUBLIC_URL` and `OFFICE_PUBLIC_HOST` to the editor's public address.
 
 **Kubernetes.** Run Collabora with its own Helm chart (`collabora-online`). Then:
-* give it `aliasgroup1` (Ferrum's in-cluster URL) and `net.frame_ancestors` (the web app's URL);
-* set the four values above on the server and the web app;
+* give it `aliasgroup1` (Ferrum's in-cluster URL) and `net.frame_ancestors` (Ferrum's URL);
+* set the four values above on the server;
 * let only the editor's pods reach `/api/site/*/drive/wopi/` (network policy).
 
 **Things to know**
-* **People in the editor:** the editor tells the web app who is in a file. Its Share, version
-  history and close buttons open Drive's own, through messages to the web app's origin. The server
+* **People in the editor:** the editor tells Drive's page who is in a file. Its Share, version
+  history and close buttons open Drive's own, through messages to Ferrum's origin. The server
   names that origin from its `PUBLIC_URL`, which must be the address people open: without it, the
   editor keeps its own buttons.
 * **Production terms:** CODE, the image `deploy/office.yml` uses, is a development edition.
@@ -392,8 +392,7 @@ Set `OFFICE_PUBLIC_URL` and `OFFICE_PUBLIC_HOST` to the editor's public address.
 * **Logs:** request logs record paths without query strings, so WOPI tokens and sign-in codes never
   reach them.
 * **Size:** saves are limited by Drive's upload limit, at most the server's
-  `FERRUM_DRIVE_MAX_FILE_MB` (32 MB unless raised). Editor saves go straight to the server, not
-  through the web app's proxy.
+  `FERRUM_DRIVE_MAX_FILE_MB` (32 MB unless raised). Editor saves go straight to the server.
 * **Rate limits:** the editor calls Ferrum from one address, so the public endpoints' per-address
   limit applies to all of its sessions together. Raise it for busy editors, or exempt the editor's
   address at the ingress.
@@ -406,18 +405,18 @@ plan is [docs/plan/browser-editors.md](plan/browser-editors.md).
 * You run the editor server, `deploy/editors`, image `ghcr.io/cbferrum/ferrum-editors`. It holds
   the editors' official builds, unmodified and checked against pinned checksums, and a small relay
   page.
-* The web app downloads the file, hands it to the editor through the relay, and saves what the
+* Drive's page downloads the file, hands it to the editor through the relay, and saves what the
   editor returns as a new version through Drive, with the person's rights.
 * Files never reach the editor server. It holds no data and no secrets, and serves static files
   only.
 
 The editor server needs an origin of its own: another host name, or on a single host another port.
-The editors must never share the web app's origin, where they could reach people's sessions.
+The editors must never share Ferrum's origin, where they could reach people's sessions.
 
 | Setting | On | Value |
 |---|---|---|
-| `FERRUM_EDITORS_URL` | server and web app | the editor server as browsers reach it, e.g. `https://editors.example.com` |
-| `FERRUM_PUBLIC_URL` | editor server | the web app's address, the only page that may frame the relay (several separated by spaces) |
+| `FERRUM_EDITORS_URL` | server | the editor server as browsers reach it, e.g. `https://editors.example.com` |
+| `FERRUM_PUBLIC_URL` | editor server | Ferrum's address, the only page that may frame the relay (several separated by spaces) |
 
 Each workspace that wants the editors then installs **Browser editors** from its Apps page (under
 Drive). Without the add-on, or with `FERRUM_EDITORS_URL` empty, Drive offers no browser editors.
@@ -437,7 +436,7 @@ The component adds:
 * the editor server: two replicas, read-only and without capabilities;
 * a Gateway listener with its own certificate, and the routes;
 * a network policy: only the gateway reaches the editor server, and it reaches nothing;
-* `FERRUM_EDITORS_URL` on the server and the web app.
+* `FERRUM_EDITORS_URL` on the server.
 
 **Things to know**
 * **One editor at a time.** Browser and online editor sessions share each file's lock.
@@ -536,7 +535,7 @@ for any calendar event, and rooms people start from Meet. They run on a
 
 | Setting | On | Value |
 |---|---|---|
-| `FERRUM_MEET_URL` | server and web app | LiveKit as browsers reach it, `wss://meet.example.com` |
+| `FERRUM_MEET_URL` | server | LiveKit as browsers reach it, `wss://meet.example.com` |
 | `FERRUM_MEET_KEY`, `FERRUM_MEET_SECRET` | server | an API key (a name) and its secret, at least 32 characters (`openssl rand -hex 32`); LiveKit gets the same pair |
 
 With the three set, Chat shows a call button, Calendar offers "Add video meeting" to organizers,
@@ -556,14 +555,14 @@ and Meet appears under Communication. Only people with a Comms role can join.
   `FERRUM_MEET_EXTERNAL_IP=false`.
 
 `deploy/smoke.sh` with `SMOKE_MEET=1` runs LiveKit beside the stack. It checks that LiveKit accepts
-the passes Ferrum signs, refuses one signed with another secret, and that the web app's pages may
-reach it. CI runs it on every image.
+the passes Ferrum signs, refuses one signed with another secret, and that Meet's pages may reach
+it. CI runs it on every image.
 
 **Kubernetes.** Run LiveKit with its own Helm chart (`livekit/livekit-server`), as its
 documentation describes: host networking for the media ports, its load balancer or ingress for the
 WebSocket with TLS, and Redis when you run more than one LiveKit server. Then:
-* give it the key and secret, and put the three settings on Ferrum's Deployment from a secret;
-* set `FERRUM_MEET_URL` on the web app's Deployment, so its pages may connect to LiveKit.
+* give it the key and secret, and put the three settings on Ferrum's Deployment from a secret
+  (Comms' pages may then connect to LiveKit).
 
 The server's network policy needs no change: Ferrum never calls LiveKit.
 
@@ -628,7 +627,7 @@ It is off unless you set a key:
 ## Live documents
 
 Drive's documents (New → Document) are edited by everyone who has them open at once, with each
-other's cursors, in the web app. Nothing extra runs.
+other's cursors, in Docs. Nothing extra runs.
 * **Where they live.** A replica keeps the documents its clients have open in memory and stores
   each change in PostgreSQL (`coedit_doc`, `coedit_update`) within 50 ms. Replicas tell each other
   over LISTEN/NOTIFY (`ferrum_coedit`), as for live updates, so any replica serves anyone: no sticky
@@ -737,26 +736,23 @@ credit note, which gets its own e-invoice (type CRN, referring to the original).
 
 Apps may own whole interfaces at addresses of their own (`/deals/…`, [plan](plan/apps-ui.md)).
 The server answers those pages itself, with the shell put in: the bootstrap, the workspace's theme,
-the bar runtime (`/_shell/…`) and the app's files (`/_ui/…`). Today's web app stays at `/app/`
-until the shell app replaces it.
+the bar runtime (`/_shell/…`) and the app's files (`/_ui/…`).
 
-* **Routing.** Send the server everything that is not `/app/`: app routes, `/_ui/`, `/_shell/`,
-  `/open/`, `/login`, the shell's pages, besides `/api/`, `/ws/` and `/files/`. The web app's image
-  does this. A proxy or CDN may cache `/_ui/` for good (the paths are content digests) and
-  `/_shell/` briefly.
-* **The switch.** Administration → Workspace → `shell_v2` (or `PUT /api/admin/settings
-  {"shell_v2": true}`) gives a workspace the shell: Home at `/`, ERP at `/erp/`, the store,
-  administration and the account at `/store/`, `/admin/`, `/account/`, records at `/data/` (an
-  app without an interface of its own at `/data/{app}/`, Customize at `/data/customize/`); today's
-  web app sends its people there. Turning it off goes back. New workspaces (`ferrum task
-  create_tenant`) start with it on; workspaces made before keep today's web app until an
-  administrator switches.
-* **Comms, Drive and Docs** have interfaces of their own for every workspace, switch or not: Mail,
+* **Routing.** Send the server everything: every page, `/api/`, `/ws/` and `/files/` (long-lived
+  WebSockets on `/ws/` and `/mcp`). A proxy or CDN may cache `/_ui/` for good (the paths are
+  content digests) and `/_shell/` briefly. `/healthz` answers `ok` for load balancers.
+* **The shell, for every workspace.** Home at `/`, ERP at `/erp/`, the store, administration and
+  the account at `/store/`, `/admin/`, `/account/`, records at `/data/` (an app without an
+  interface of its own at `/data/{app}/`, Customize at `/data/customize/`). Today's web app has
+  left: its addresses (`/app/…`, in bookmarks and links in mail) lead to their new homes, and its
+  offline worker removes itself. The `shell_v2` setting no longer matters; it is kept for going
+  back to the release before, which still had today's web app.
+* **Comms, Drive and Docs** have interfaces of their own: Mail,
   Chat, Calendar and Meet at `/mail/`, `/chat/`, `/calendar/`, `/meet/`; Drive at `/drive/` with
   Sheets, Slides and PDF; Docs at `/docs/`. Each app's crate carries its interface, registered at
-  start-up; nothing to configure. Today's web app sends its old addresses there (`/app/drive…`,
-  bookmarks and links in mail included), and the pages people outside the workspace open by link
-  are those apps' public pages (`/drive/s/…`, `/meet/guest/…`). Meetings need `FERRUM_MEET_URL` on the
+  start-up; nothing to configure. Their old addresses (`/app/drive…`, bookmarks and links in mail
+  included) lead there, and the pages people outside the workspace open by link are those apps'
+  public pages (`/drive/s/…`, `/meet/guest/…`). Meetings need `FERRUM_MEET_URL` on the
   server (calls connect there); online editing `FERRUM_OFFICE_ORIGIN` (above).
 * **Sessions.** Browsers sign in with an `HttpOnly` cookie, `__Host-ferrum` over https. The cookie
   is scoped to the host, so serve each workspace on one host, and set `PUBLIC_URL` to it.
@@ -777,7 +773,7 @@ the person's sessions. Wrong codes count toward the same lockout as wrong passwo
 
 **Single sign-on (OpenID Connect).** Register Ferrum with the identity provider as a web
 application: redirect URI `https://<your host>/app/login` (Administration → Single sign-on shows
-it), scopes `openid email profile`. Then add the provider there with its issuer URL, client ID and
+it; the server sends the provider's answer on to the sign-in page), scopes `openid email profile`. Then add the provider there with its issuer URL, client ID and
 client secret:
 
 | Provider | Issuer URL | Notes |

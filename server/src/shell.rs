@@ -147,8 +147,8 @@ pub struct WorkspaceInfo {
     pub slug: String,
     pub name: String,
     pub status: String,
-    /// The workspace uses the shell and apps with interfaces of their own (the `shell_v2`
-    /// setting); otherwise today's web app at `/app/`.
+    /// The workspace uses the shell and apps with interfaces of their own: every workspace since
+    /// U4b (the `shell_v2` setting is for the release before).
     pub shell_v2: bool,
 }
 
@@ -157,18 +157,6 @@ pub struct WorkspaceInfo {
 pub const SHELL_APP: &str = "shell";
 /// The core's names the shell app answers (§6).
 pub const SHELL_ROUTES: &[&str] = &["store", "admin", "account", "data"];
-
-/// Apps whose pages were in today's web app before they brought interfaces of their own (phase
-/// U4): launcher entries into `/app/` for workspaces on the shell, while an installed version of
-/// the app has no launcher entries of its own. (app, title, path, colour).
-pub const CLASSIC_ENTRIES: &[(&str, &str, &str, &str)] = &[
-    ("comms", "Mail", "/app/mail", "#2563eb"),
-    ("comms", "Chat", "/app/chat", "#0891b2"),
-    ("comms", "Calendar", "/app/calendar", "#7c3aed"),
-    ("comms", "Meet", "/app/meet", "#16a34a"),
-    ("drive", "Drive", "/app/drive", "#ca8a04"),
-    ("docs", "Docs", "/app/docs", "#2f5bea"),
-];
 
 pub struct Shell {
     kernel: Arc<Kernel>,
@@ -653,17 +641,6 @@ pub fn routes_of(app: &ShellApp) -> serde_json::Map<String, Value> {
     app.manifest.routes().into_iter().map(|(r, _)| (r.clone(), json!(format!("/{r}/")))).collect()
 }
 
-/// Launcher entries into today's web app for installed apps that have none of their own yet.
-pub fn classic_entries(apps: &[ShellApp]) -> Vec<Value> {
-    CLASSIC_ENTRIES
-        .iter()
-        .filter(|(id, ..)| apps.iter().any(|a| a.id == *id && a.items("shell.app").next().is_none()))
-        .map(|(id, title, path, color)| {
-            json!({"id": format!("classic-{}", title.to_lowercase().replace(' ', "-")), "app": id, "title": title, "color": color, "compact": false, "url": path, "classic": true})
-        })
-        .collect()
-}
-
 /// An app without an interface or launcher entries of its own (§10.1, records-only): the shell
 /// shows its records, and its add-ons', at `/data/{app}/`. Returns the app and those packages.
 /// Connectors, suites and add-ons have no such place: an add-on's records are in its parent's.
@@ -809,7 +786,6 @@ pub fn bootstrap(ws: &WorkspaceInfo, host: &str, ctx: &Ctx, kind: &str, state: &
         "theme": {"appearance": "system", "hash": theme_hash()},
         "company": ctx.default_company,
         "flags": {},
-        "legacy": "/app/",
     })
 }
 
