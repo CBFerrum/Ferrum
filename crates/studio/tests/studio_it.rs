@@ -132,7 +132,7 @@ async fn scenario() {
     let admin = k.load_ctx(tenant, session.user, Some(session.token_version), "it".into()).await.expect("ctx");
     // A custom date-time field (stored in `ext`) to bucket in the workspace's time zone.
     let field = serde_json::from_value(json!({"name": "x_delivered_at", "type": "datetime", "label": "Delivered At"})).unwrap();
-    k.add_customization(&admin, "SalesInvoice", OverlayOp::AddField { field, after: None }, None).await.expect("custom field");
+    k.add_customization(&admin, "SalesInvoice", OverlayOp::AddField { field, after: None, column: false }, None).await.expect("custom field");
     let admin = k.load_ctx(tenant, session.user, Some(session.token_version), "it".into()).await.expect("ctx");
     let t = T { k: k.clone(), tenant, admin };
     let a = t.admin.clone();

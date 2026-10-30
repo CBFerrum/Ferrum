@@ -17,3 +17,4 @@ pub mod request_log;
 pub mod shell;
 pub mod state;
 pub mod tasks;
+pub mod upgrade;

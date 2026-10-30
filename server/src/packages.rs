@@ -89,8 +89,9 @@ macro_rules! apps {
             // Drive's add-on Browser editors: a manifest without code, shipped with Drive.
             #[cfg(feature = "drive")]
             out.push(ferrum_app_drive::EDITORS_MANIFEST);
-            // ERP, over the platform's own packages (docs/plan/apps-ui.md).
+            // ERP and its add-on for India, over the platform's own packages (docs/plan/apps-ui.md).
             out.push(ERP_MANIFEST);
+            out.push(INDIA_MANIFEST);
             out
         }
 
@@ -139,6 +140,9 @@ apps! {
 
 /// ERP's app manifest: its interface at /erp/ and the records it shows.
 pub const ERP_MANIFEST: &str = include_str!("../apps/erp/app.yaml");
+
+/// ERP's add-on for India.
+pub const INDIA_MANIFEST: &str = include_str!("../apps/india/app.yaml");
 
 /// The catalog this build starts from: the platform's embedded packages, the native apps'
 /// embedded packages, and extra packages from `dir` (metadata-only packages an operator adds, and
@@ -225,6 +229,18 @@ mod tests {
         std::fs::create_dir_all(&empty).unwrap();
         let catalog = super::base_catalog(&empty).unwrap_or_else(|e| panic!("catalog: {e}"));
         assert!(catalog.package("core").is_some());
+        assert_eq!(catalog.unknown_form_fields(), Vec::<String>::new(), "forms place fields nothing defines");
         let _ = std::fs::remove_dir(&empty);
+    }
+
+    /// Document hooks run only where their package is (docs/plan/apps-ui.md §13): a workspace
+    /// without ERP runs none of ERP's on the records it shares (companies, customers, items).
+    #[test]
+    fn hooks_run_only_with_their_packages() {
+        let mut hooks = ferrum_kernel::HookRegistry::default();
+        ferrum_domain::register(&mut hooks);
+        super::register(&mut hooks);
+        let everywhere: Vec<String> = hooks.scopes().into_iter().filter(|(entity, scope)| scope.is_none() && entity != "*").map(|(e, _)| e).collect();
+        assert!(everywhere.is_empty(), "hooks for every workspace on {everywhere:?}");
     }
 }

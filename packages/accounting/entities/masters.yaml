@@ -1,0 +1,101 @@
+- name: FiscalYear
+  label: Fiscal Year
+  kind: master
+  module: setup
+  title_field: year_name
+  company_scoped: true
+  fields:
+    - {name: year_name, type: data, required: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, in_list: true, in_filter: true}
+    - {name: start_date, type: date, required: true, in_list: true}
+    - {name: end_date, type: date, required: true, in_list: true}
+  unique: [[company, year_name]]
+  exclusion:
+    - {fields: [company], from: start_date, to: end_date, message: Fiscal years of a company cannot overlap}
+  rules:
+    - {name: ordered_dates, check: "doc.end_date > doc.start_date", message: "End date must be after start date"}
+  actions:
+    - {name: close_period, label: Close Accounting Period, permission: write, confirm: "Close the selected month? Postings into it will be refused."}
+    - {name: reopen_period, label: Reopen Accounting Period, permission: write}
+  list: {sort: start_date desc}
+
+- name: CostCenter
+  label: Cost Center
+  kind: master
+  module: setup
+  title_field: cost_center_name
+  company_scoped: true
+  fields:
+    - {name: cost_center_name, type: data, required: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, in_filter: true}
+    - {name: parent_cost_center, type: link, to: CostCenter, link_filters: {is_group: true}}
+    - {name: is_group, type: check}
+    - {name: disabled, type: check}
+  unique: [[company, cost_center_name]]
+
+- name: Account
+  label: Account
+  kind: master
+  module: masters
+  title_field: account_name
+  company_scoped: true
+  search_fields: [account_number]
+  fields:
+    - {name: account_name, type: data, required: true, in_list: true}
+    - {name: account_number, type: data, in_list: true}
+    - {name: company, type: link, to: Company, required: true, locked: true, in_filter: true}
+    - {name: parent_account, type: link, to: Account, link_filters: {is_group: true}, in_filter: true}
+    - {name: is_group, type: check, in_list: true, in_filter: true}
+    - {name: root_type, type: select, options: [Asset, Liability, Equity, Income, Expense], required: true, locked: true, in_list: true, in_filter: true}
+    - name: account_type
+      type: select
+      in_filter: true
+      options: [Receivable, Payable, Bank, Cash, Stock, Cost of Goods Sold, Stock Received But Not Billed, Tax, Income, Expense,
+                Round Off, Exchange Gain Loss, Stock Adjustment, Fixed Asset, Equity, Temporary]
+    - {name: account_currency, type: link, to: Currency, description: Leave empty for company currency}
+    - {name: frozen, type: check, description: Frozen accounts refuse new postings}
+    - {name: disabled, type: check}
+  unique: [[company, account_name], [company, account_number]]
+  rules:
+    - {name: party_accounts_are_leaves, check: "!(doc.is_group && (doc.account_type == 'Receivable' || doc.account_type == 'Payable'))", message: "Receivable/Payable accounts cannot be groups"}
+  list: {columns: [account_number, account_name, root_type, is_group], sort: account_number asc}
+
+- name: ItemTaxRate
+  label: Item Tax Rate
+  kind: child
+  fields:
+    - {name: tax_account, type: link, to: Account, required: true, link_filters: {account_type: Tax}, in_list: true}
+    - {name: rate, type: percent, required: true, min: "0", max: "100", in_list: true}
+
+- name: TaxRow
+  label: Tax Row
+  kind: child
+  fields:
+    - {name: charge_type, type: select, options: [On Net Total, On Previous Row Amount, On Previous Row Total, Actual], required: true, default: On Net Total, in_list: true}
+    - {name: account, type: link, to: Account, required: true, link_filters: {is_group: false}, in_list: true}
+    - {name: description, type: data, in_list: true}
+    - {name: rate, type: percent, min: "0", max: "1000", in_list: true}
+    - {name: amount, type: currency, description: Fixed amount for Actual charges}
+    - {name: row_ref, type: int, min: 1, label: Reference Row, description: For "previous row" charges (1-based)}
+    - {name: included_in_price, type: check, label: Included in Rate}
+    - {name: deduct, type: check, description: Withholding taxes are deducted}
+    - {name: cost_center, type: link, to: CostCenter}
+    - {name: tax_amount, type: currency, read_only: true, in_list: true}
+    - {name: total, type: currency, read_only: true, in_list: true}
+    - {name: base_tax_amount, type: currency, read_only: true}
+    - {name: base_total, type: currency, read_only: true}
+
+- name: TaxTemplate
+  label: Tax Template
+  kind: master
+  module: masters
+  title_field: title
+  company_scoped: true
+  fields:
+    - {name: title, type: data, required: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, in_filter: true}
+    - {name: kind, type: select, options: [Sales, Purchase], required: true, in_list: true, in_filter: true}
+    - {name: is_default, type: check, in_list: true}
+    - {name: condition, type: code, description: "Optional CEL condition on the document, e.g. doc.place_of_supply == 'Karnataka'"}
+    - {name: rows, type: table, of: TaxRow, required: true}
+  unique: [[company, title]]

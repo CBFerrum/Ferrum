@@ -27,38 +27,57 @@ use std::sync::Arc;
 
 include!(concat!(env!("OUT_DIR"), "/packages.rs"));
 
-/// The platform's metadata packages (core, accounting, buying, selling, inventory, manufacturing,
-/// india), embedded at build time.
+/// The platform's metadata packages (core, parties, products, accounting, buying, selling,
+/// inventory, manufacturing, india), embedded at build time.
 pub fn packages() -> std::result::Result<Vec<ferrum_meta::Package>, ferrum_meta::MetaError> {
     ferrum_meta::catalog::load_embedded(EMBEDDED)
 }
 
-/// Registers every domain hook. Order matters per entity: GST template selection runs before
-/// the pricing/posting hooks of the same document.
+/// Registers every domain hook, each for the workspaces with its package (a company without
+/// accounting gets no chart of accounts). Order matters per entity: GST template selection runs
+/// before the pricing/posting hooks of the same document.
 pub fn register(h: &mut HookRegistry) {
-    h.register("Company", Arc::new(india::PartyGstHook))
-        .register("Customer", Arc::new(india::PartyGstHook))
-        .register("Supplier", Arc::new(india::PartyGstHook))
-        .register("Company", Arc::new(setup::CompanyHook))
-        .register("Item", Arc::new(setup::ItemHook))
-        .register("FiscalYear", Arc::new(setup::FiscalYearHook))
-        .register("JournalEntry", Arc::new(accounting::JournalEntryHook))
-        .register("PaymentEntry", Arc::new(accounting::PaymentEntryHook))
-        .register("StockEntry", Arc::new(stock_entry::StockEntryHook))
-        .register("Bom", Arc::new(manufacturing::BomHook))
-        .register("WorkOrder", Arc::new(manufacturing::WorkOrderHook))
-        .register("MrpRun", Arc::new(manufacturing::MrpRunHook));
-    for (side, order, shipment, invoice) in
-        [(Side::Selling, "SalesOrder", "DeliveryNote", "SalesInvoice"), (Side::Buying, "PurchaseOrder", "PurchaseReceipt", "PurchaseInvoice")]
-    {
-        for entity in [order, shipment, invoice] {
-            h.register(entity, Arc::new(india::GstTemplateHook(side)));
-        }
-        h.register(order, Arc::new(trade::OrderHook(side)))
-            .register(shipment, Arc::new(trade::ShipmentHook(side)))
-            .register(invoice, Arc::new(trade::InvoiceHook(side)));
+    let only = |p: &str| vec![p.to_string()];
+    h.scoped(&only("india"), |h| {
+        h.register("Company", Arc::new(india::PartyGstHook))
+            .register("Customer", Arc::new(india::PartyGstHook))
+            .register("Supplier", Arc::new(india::PartyGstHook));
+    });
+    h.scoped(&only("accounting"), |h| {
+        h.register("Company", Arc::new(setup::CompanyHook))
+            .register("FiscalYear", Arc::new(setup::FiscalYearHook))
+            .register("JournalEntry", Arc::new(accounting::JournalEntryHook))
+            .register("PaymentEntry", Arc::new(accounting::PaymentEntryHook));
+    });
+    h.scoped(&only("products"), |h| {
+        h.register("Item", Arc::new(setup::ItemHook));
+    });
+    h.scoped(&only("inventory"), |h| {
+        h.register("StockEntry", Arc::new(stock_entry::StockEntryHook));
+    });
+    h.scoped(&only("manufacturing"), |h| {
+        h.register("Bom", Arc::new(manufacturing::BomHook))
+            .register("WorkOrder", Arc::new(manufacturing::WorkOrderHook))
+            .register("MrpRun", Arc::new(manufacturing::MrpRunHook));
+    });
+    for (side, package, order, shipment, invoice) in [
+        (Side::Selling, "selling", "SalesOrder", "DeliveryNote", "SalesInvoice"),
+        (Side::Buying, "buying", "PurchaseOrder", "PurchaseReceipt", "PurchaseInvoice"),
+    ] {
+        h.scoped(&only("india"), |h| {
+            for entity in [order, shipment, invoice] {
+                h.register(entity, Arc::new(india::GstTemplateHook(side)));
+            }
+        });
+        h.scoped(&only(package), |h| {
+            h.register(order, Arc::new(trade::OrderHook(side)))
+                .register(shipment, Arc::new(trade::ShipmentHook(side)))
+                .register(invoice, Arc::new(trade::InvoiceHook(side)));
+        });
     }
-    h.register("SalesInvoice", Arc::new(einvoice::EInvoiceHook));
+    h.scoped(&only("india"), |h| {
+        h.register("SalesInvoice", Arc::new(einvoice::EInvoiceHook));
+    });
     h.add_event_sink(Arc::new(irp::IrpConnector::default()));
 }
 
@@ -85,7 +104,8 @@ mod tests {
     fn embedded_platform_packages_form_a_valid_catalog() {
         let pkgs = super::packages().expect("embedded packages parse");
         let names: Vec<&str> = pkgs.iter().map(|p| p.name()).collect();
-        assert_eq!(names, ["accounting", "buying", "core", "india", "inventory", "manufacturing", "selling"]);
-        ferrum_meta::Catalog::from_packages(pkgs).expect("they validate together");
+        assert_eq!(names, ["accounting", "buying", "core", "india", "inventory", "manufacturing", "parties", "products", "selling"]);
+        let catalog = ferrum_meta::Catalog::from_packages(pkgs).expect("they validate together");
+        assert_eq!(catalog.unknown_form_fields(), Vec::<String>::new(), "forms place fields nothing defines");
     }
 }

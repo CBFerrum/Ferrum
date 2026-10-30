@@ -653,6 +653,12 @@ pub enum OverlayOp {
         field: FieldDef,
         #[serde(default)]
         after: Option<String>,
+        /// Package-only: the field is a column of the entity's own table, placed in the form right
+        /// after `after`, and needs no field prefix. How a package takes over a field that moves
+        /// out of the entity's definition (docs/plan/apps-ui.md §13): its name, column, data and
+        /// place stay as they were.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        column: bool,
     },
     SetProperty {
         field: String,

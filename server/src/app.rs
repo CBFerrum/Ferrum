@@ -159,6 +159,11 @@ impl Hooks for App {
         let apps = crate::appmgr::AppManager::new(kernel.clone(), plugins.clone(), storage.clone(), &settings.apps, crate::appmgr::compiled_natives())
             .map_err(Error::Message)?;
         let shell = Arc::new(crate::shell::Shell::new(kernel.clone(), storage.clone(), &settings, &ctx.config.server.host));
+        // Workspaces from before this release's package layout move onto it (logged, not fatal:
+        // the next start tries again).
+        if let Err(e) = crate::upgrade::run(&kernel).await {
+            tracing::error!("moving workspaces onto this release's packages failed: {e}");
+        }
         apps.ensure_erp().await;
         crate::shell::register_compiled(&kernel, &storage, &settings, &apps).await;
         let (tx, _rx) = watch::channel(false);
@@ -336,6 +341,8 @@ impl Hooks for App {
         tasks.register(crate::tasks::ImportErpnext);
         tasks.register(crate::tasks::RunMaintenance);
         tasks.register(crate::tasks::SeedDemo);
+        tasks.register(crate::tasks::DepsReport);
+        tasks.register(crate::tasks::UpgradeBack);
         tasks.register(crate::tasks::AppMakeAvailable);
         tasks.register(crate::tasks::AppUpgrade);
         tasks.register(crate::tasks::AppRevoke);

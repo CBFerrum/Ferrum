@@ -21,10 +21,11 @@ async fn kernel(reset: bool) -> Arc<Kernel> {
     if reset {
         sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
     }
-    let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core")).expect("core");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages");
+    let platform = ["core", "parties"].map(|p| ferrum_meta::catalog::load_package_dir(&dir.join(p)).expect(p));
     let mut hooks = HookRegistry::default();
     hooks.register("FleetVehicle", Arc::new(Peek));
-    Kernel::boot(db, Catalog::from_packages(vec![core]).unwrap(), hooks, KernelSettings::default(), None).await.expect("boot")
+    Kernel::boot(db, Catalog::from_packages(platform.to_vec()).unwrap(), hooks, KernelSettings::default(), None).await.expect("boot")
 }
 
 /// A read-only action: answers from the record, and tries to write when asked to.
@@ -69,7 +70,7 @@ fn release(version: &str, extra_field: bool) -> NewRelease {
     files.insert(
         "package.yaml".to_string(),
         format!(
-            "package: fleet\nversion: '1'\nlabel: Fleet\ndepends: [core]\n{overlay}roles:\n  - name: Fleet Manager\n    permissions:\n      - {{entity: FleetVehicle, read: true, write: true, create: true, delete: true}}\n"
+            "package: fleet\nversion: '1'\nlabel: Fleet\ndepends: [parties]\n{overlay}roles:\n  - name: Fleet Manager\n    permissions:\n      - {{entity: FleetVehicle, read: true, write: true, create: true, delete: true}}\n"
         ),
     );
     let extra = if extra_field { "    - {name: odometer, type: int}\n    - {name: services, type: table, of: FleetService}\n" } else { "" };

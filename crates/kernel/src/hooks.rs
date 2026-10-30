@@ -193,6 +193,14 @@ impl HookRegistry {
         self
     }
 
+    /// Each document hook's entity and the packages it runs for (`None`: every tenant), in
+    /// registration order (`ferrum task deps_report`).
+    pub fn scopes(&self) -> Vec<(String, Option<Vec<String>>)> {
+        let mut out: Vec<_> = self.by_entity.iter().flat_map(|(e, hs)| hs.iter().map(move |h| (e.clone(), h.packages.as_ref().map(|p| p.to_vec())))).collect();
+        out.sort();
+        out
+    }
+
     /// Every hook for `entity`, followed by hooks registered for every entity (`"*"`, e.g.
     /// plugins), so those see the values the entity's own hooks derived.
     pub fn for_entity(&self, entity: &str) -> Vec<Arc<dyn DocHook>> {

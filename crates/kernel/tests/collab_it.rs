@@ -137,7 +137,7 @@ async fn scenario() {
             admin_email: "admin@collab.test".into(),
             admin_password: "Correct-Horse-9".into(),
             admin_name: Some("Ada Admin".into()),
-            packages: vec!["core".into()],
+            packages: vec!["selling".into()],
             settings: None,
         })
         .await

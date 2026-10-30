@@ -40,7 +40,12 @@ impl Kernel {
         if !email.contains('@') {
             return Err(Error::field("admin_email", "not a valid email address"));
         }
-        let packages = self.registry.catalog().closure(&t.packages).map_err(|e| Error::field("packages", e.to_string()))?;
+        // Every workspace has the core; the rest comes with the apps it installs.
+        let mut wanted = t.packages.clone();
+        if !wanted.iter().any(|p| p == "core") {
+            wanted.push("core".into());
+        }
+        let packages = self.registry.catalog().closure(&wanted).map_err(|e| Error::field("packages", e.to_string()))?;
         let hash = hash_password(t.admin_password.clone()).await?;
         let tenant = Uuid::now_v7();
         let mut tx = self.db.system_tx().await?;

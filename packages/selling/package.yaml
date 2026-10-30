@@ -4,6 +4,11 @@ label: Selling
 description: Sales orders, deliveries and invoices with exact tax maths, receivables and pricing rules.
 depends: [accounting, inventory]
 
+overlays:
+  - entity: Customer
+    ops:
+      - {op: add_field, column: true, after: payment_terms_days, field: {name: credit_limit, type: currency, min: "0", perm_group: credit, description: 0 = no limit}}
+
 modules:
   - name: selling
     label: Selling
@@ -13,11 +18,26 @@ modules:
 
 roles:
   - name: Sales User
+    description: Day-to-day selling.
     permissions:
       - {entity: SalesOrder, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
       - {entity: DeliveryNote, read: true, write: true, create: true, delete: true, submit: true, cancel: true}
       - {entity: SalesInvoice, read: true, write: true, create: true, delete: true, export: true}
       - {entity: PricingRule, read: true}
+      - {entity: Customer, read: true, write: true, create: true}
+      - {entity: CustomerGroup, read: true}
+      - {entity: Item, read: true}
+      - {entity: ItemGroup, read: true}
+      - {entity: ItemPrice, read: true}
+      - {entity: PriceList, read: true}
+      - {entity: Warehouse, read: true}
+      - {entity: Company, read: true}
+      - {entity: Currency, read: true}
+      - {entity: Uom, read: true}
+      - {entity: TaxTemplate, read: true}
+      - {entity: Project, read: true}
+      - {entity: CostCenter, read: true}
+      - {entity: Account, read: true}
   - name: Sales Manager
     permissions:
       - {entity: SalesOrder, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}

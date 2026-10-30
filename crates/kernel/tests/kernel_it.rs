@@ -32,7 +32,7 @@ async fn kernel_end_to_end() {
             admin_email: "admin@acme.test".into(),
             admin_password: "Correct-Horse-9".into(),
             admin_name: None,
-            packages: vec!["core".into()],
+            packages: vec!["selling".into()],
             settings: Some(json!({"fiscal_year_start_month": 4})),
         })
         .await
@@ -141,7 +141,7 @@ async fn kernel_end_to_end() {
             admin_email: "admin@globex.test".into(),
             admin_password: "Correct-Horse-9".into(),
             admin_name: None,
-            packages: vec!["core".into()],
+            packages: vec!["selling".into()],
             settings: None,
         })
         .await

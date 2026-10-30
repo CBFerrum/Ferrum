@@ -62,7 +62,7 @@ async fn scenario() {
             admin_email: "admin@fleet.test".into(),
             admin_password: "Correct-Horse-9".into(),
             admin_name: None,
-            packages: vec!["core".into()],
+            packages: vec!["parties".into()],
             settings: None,
         })
         .await

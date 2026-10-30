@@ -135,10 +135,8 @@ impl Catalog {
                 }
             }
         }
-        let all: HashMap<&str, &EntityDef> = entities.iter().map(|(k, (_, e))| (k.as_str(), e)).collect();
-        for (pkg, e) in entities.values() {
-            validate_entity(e, &all).map_err(|m| MetaError::Invalid(format!("{pkg}/{}: {m}", e.name)))?;
-        }
+        // Each entity is validated with its package's dependencies installed (validate_packages),
+        // where the fields other packages add to the entities it names are there too.
         let mut cat = Catalog { packages, order, entities, fingerprint: String::new() };
         cat.validate_packages()?;
         cat.fingerprint = cat.compute_fingerprint();
@@ -146,6 +144,9 @@ impl Catalog {
     }
 
     fn validate_packages(&self) -> Result<(), MetaError> {
+        // Fields added to an entity, and by whom: two packages adding the same one would break
+        // every workspace that installs both.
+        let mut added: HashMap<(&str, &str), &str> = HashMap::new();
         for name in &self.order {
             let p = &self.packages[name];
             let deps = self.closure(std::slice::from_ref(name))?;
@@ -155,18 +156,22 @@ impl Catalog {
                 return invalid(format!("{name}: field_prefix must be an identifier ending in '_' (not 'x_')"));
             }
             for ov in &p.manifest.overlays {
-                let Some((owner, base)) = self.entities.get(&ov.entity) else {
+                let Some((owner, _)) = self.entities.get(&ov.entity) else {
                     return invalid(format!("{name}: overlay targets unknown entity {}", ov.entity));
                 };
                 if !deps.contains(owner) {
                     return invalid(format!("{name}: overlay on {} requires depending on package {owner}", ov.entity));
                 }
-                let mut merged = base.clone();
                 for op in &ov.ops {
-                    if let OverlayOp::AddField { field, .. } = op {
-                        let ok = p.manifest.field_prefix.as_deref().is_some_and(|px| field.name.starts_with(px));
+                    if let OverlayOp::AddField { field, column, .. } = op {
+                        // A column taken over from the entity keeps its name; anything else carries
+                        // the package's prefix.
+                        let ok = *column || p.manifest.field_prefix.as_deref().is_some_and(|px| field.name.starts_with(px));
                         if !ok {
                             return invalid(format!("{name}: field '{}' added to {} must start with the package field_prefix", field.name, ov.entity));
+                        }
+                        if let Some(other) = added.insert((ov.entity.as_str(), field.name.as_str()), name.as_str()) {
+                            return invalid(format!("{name}: field '{}' is added to {} by {other} too", field.name, ov.entity));
                         }
                         // A child table added to another package's entity: its rows' entity must be
                         // a child entity this package defines or depends on.
@@ -183,8 +188,6 @@ impl Catalog {
                             }
                         }
                     }
-                    crate::effective::apply_op(&mut merged, op, OverlaySource::Package)
-                        .map_err(|m| MetaError::Invalid(format!("{name}: overlay on {}: {m}", ov.entity)))?;
                 }
             }
             for role in &p.manifest.roles {
@@ -237,6 +240,24 @@ impl Catalog {
                 if !is_ident(&m.name) {
                     return invalid(format!("{name}: invalid module name {}", m.name));
                 }
+            }
+        }
+        // Every package works with only its dependencies installed: what it links to, overlays
+        // (in dependency order, so it may place fields after its dependencies' ones), runs
+        // workflows on and seeds is within reach.
+        for name in &self.order {
+            let schema = crate::effective::build(self, std::slice::from_ref(name), &[], 0)
+                .map_err(|e| MetaError::Invalid(format!("{name} with only its dependencies: {e}")))?;
+            if let Some(w) = schema.warnings.first() {
+                return invalid(format!("{name} with only its dependencies: {}: {}", w.entity, w.message));
+            }
+            let p = &self.packages[name];
+            let reach = |e: &str| schema.entities.contains_key(e);
+            if let Some(s) = p.manifest.seed.iter().find(|s| !reach(&s.entity)) {
+                return invalid(format!("{name}: seeds {}, which is not among its dependencies' entities", s.entity));
+            }
+            if let Some(d) = p.manifest.personal_data.iter().find(|d| !reach(&d.entity)) {
+                return invalid(format!("{name}: personal data of {}, which is not among its dependencies' entities", d.entity));
             }
         }
         Ok(())
@@ -298,6 +319,104 @@ impl Catalog {
             }
         }
         Ok(self.order.iter().filter(|n| want.contains(*n)).cloned().collect())
+    }
+}
+
+/// One package naming an entity another package defines (`ferrum task deps_report`).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+pub struct Reference {
+    pub from: String,
+    pub to: String,
+    /// `link`, `table`, `overlay`, `role`, `seed`, `workflow`, `personal_data`, `print` or `module`.
+    pub kind: &'static str,
+    pub what: String,
+}
+
+impl Catalog {
+    /// Names in entities' forms that neither the entity nor any package's overlay defines
+    /// (`Entity.field`): typos, since a form may place the fields other packages add (§13).
+    pub fn unknown_form_fields(&self) -> Vec<String> {
+        let mut added: HashSet<(&str, &str)> = HashSet::new();
+        for p in self.packages.values() {
+            for ov in &p.manifest.overlays {
+                for op in &ov.ops {
+                    if let OverlayOp::AddField { field, .. } = op {
+                        added.insert((ov.entity.as_str(), field.name.as_str()));
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for (name, (_, e)) in &self.entities {
+            for f in e.form.iter().flat_map(|s| &s.fields) {
+                if !e.fields.iter().any(|x| &x.name == f) && !added.contains(&(name.as_str(), f.as_str())) {
+                    out.push(format!("{name}.{f}"));
+                }
+            }
+        }
+        out
+    }
+
+    /// Everything a package names that another package defines: what ties packages together, and
+    /// what moving an entity or field between packages has to carry along.
+    pub fn references(&self) -> Vec<Reference> {
+        let mut out = Vec::new();
+        for name in &self.order {
+            let p = &self.packages[name];
+            let mut add = |kind: &'static str, entity: &str, what: String| {
+                if let Some((to, _)) = self.entities.get(entity).filter(|(to, _)| to != name) {
+                    out.push(Reference { from: name.clone(), to: to.clone(), kind, what });
+                }
+            };
+            let fields = |add: &mut dyn FnMut(&'static str, &str, String), entity: &str, f: &FieldDef| {
+                if let Some(t) = &f.to {
+                    add("link", t, format!("{entity}.{} → {t}", f.name));
+                }
+                if let Some(t) = &f.of {
+                    add("table", t, format!("{entity}.{} → {t}", f.name));
+                }
+            };
+            for e in &p.entities {
+                for f in &e.fields {
+                    fields(&mut add, &e.name, f);
+                }
+            }
+            for ov in &p.manifest.overlays {
+                for op in &ov.ops {
+                    let kind = serde_json::to_value(op).ok().and_then(|v| v.get("op").and_then(|o| o.as_str()).map(str::to_string)).unwrap_or_default();
+                    match op {
+                        OverlayOp::AddField { field, column, .. } => {
+                            add("overlay", &ov.entity, format!("{}.{}: {kind}{}", ov.entity, field.name, if *column { " (column)" } else { "" }));
+                            fields(&mut add, &ov.entity, field);
+                        }
+                        _ => add("overlay", &ov.entity, format!("{}: {kind}", ov.entity)),
+                    }
+                }
+            }
+            for r in &p.manifest.roles {
+                for perm in &r.permissions {
+                    add("role", &perm.entity, format!("{}: {}", r.name, perm.entity));
+                }
+            }
+            for s in &p.manifest.seed {
+                add("seed", &s.entity, format!("{} ({} records)", s.entity, s.records.len()));
+            }
+            for w in &p.manifest.workflows {
+                add("workflow", &w.entity, format!("{}: {}", w.name, w.entity));
+            }
+            for d in &p.manifest.personal_data {
+                add("personal_data", &d.entity, d.entity.clone());
+            }
+            for (e, _) in &p.print_formats {
+                add("print", e, e.clone());
+            }
+            for m in &p.manifest.modules {
+                for i in &m.items {
+                    add("module", i, format!("{}: {i}", m.name));
+                }
+            }
+        }
+        out
     }
 }
 
