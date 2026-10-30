@@ -51,9 +51,24 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
   * ERP's manifest lists its five packages; India is its add-on. New workspaces get the core only.
   * The one-time `core-split` step moves existing workspaces onto the split (operations.md,
     Upgrades). `ferrum task upgrade_back step:core-split` undoes it before going back.
-  * Next: `contacts` (Contact and Address out of CRM); CRM on core, contacts, parties and products
-    with the `crm-erp` connector; Project into the Projects app with `projects-erp`; `hr-erp` and
-    `payroll-erp`; suites; the first-run picker.
+* **U3 step 2 built: contacts, and CRM on its own.**
+  * `contacts` (Contact, Address, ContactEmail, ContactPhone) moved from CRM to the platform, with
+    the hooks for primary emails and phones, address titles and primary addresses. Those hooks
+    now cover whatever an address links to.
+  * `parties` adds the customer and supplier links on contacts and addresses, and copies a primary
+    address onto the customer or supplier. CRM adds the lead and prospect links and the address
+    rule.
+  * CRM 0.2.0 depends on core, contacts, parties and products. Its connector app `crm-erp`
+    (package `crm_erp`, shipped with CRM) brings quotations' tax templates and taxes, "Create
+    Sales Order", and sales orders' link to their quotation.
+  * CRM's test runs a workspace with CRM alone: quotations without taxes, no ERP records or hooks,
+    no sales-order action.
+  * The `crm-erp` upgrade step gives every workspace with CRM and selling the connector. On the
+    demo workspace, quotations kept their taxes and sales orders their quotation links.
+  * A column field the form does not list goes into the section of the field it follows (CRM's
+    links on contacts). The app API version is 0.3.2.
+  * Next: Project into the Projects app with `projects-erp`; Helpdesk without selling; `hr-erp`
+    and `payroll-erp`; suites; the first-run picker.
 
 Contents: 1 where we are · 2 goals and targets · 3 what others do · 4 rules · 5 decisions ·
 6 the person's view · 7 addresses and deployment shapes · 8 the core shell · 9 people, sessions,

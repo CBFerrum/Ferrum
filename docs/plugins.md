@@ -141,20 +141,25 @@ contributes:
 ## Records other apps share
 
 The core holds only what every app needs: companies, currencies and their exchange rates, units
-(and projects, until the Projects app takes them). Customers and suppliers are in `parties`, items
-and price lists in `products`; ERP's packages (accounting, inventory, buying, selling,
+(and projects, until the Projects app takes them). People outside the workspace and their
+addresses are in `contacts`, customers and suppliers in `parties`, items and price lists in
+`products`; ERP's packages (accounting, inventory, buying, selling,
 manufacturing) bring the accounting, stock and buying records and add their fields to the shared
 ones (a customer's receivable account, an item's stock settings). Depend on the least you need:
 `parties` for customers, `products` for items, ERP's packages only for their own records.
 
 * Every package must work with only its dependencies installed: the catalog refuses one whose
   links, overlays, workflows, seeds or personal-data rules reach further. What reaches further
-  belongs in a connector, an app that requires both sides.
+  belongs in a connector, an app that requires both sides and ships with one of them: CRM's
+  `crm-erp` (`requires: {crm, erp}`, package `crm_erp`) adds ERP's taxes to quotations and makes
+  sales orders from them; its hooks register under `HookRegistry::scoped(&["crm_erp"], …)` so they
+  run only where it is installed.
 * `ferrum task deps_report` lists what ties packages together: every entity a package names that
   another defines, and document hooks that run on another package's records or in every workspace.
 * A field a package takes over from another's entity keeps its name, column and place in the form:
   `{op: add_field, column: true, after: <field>, field: {...}}` (packages only; no prefix). The
-  entity's form may list it; it is left out where the package is not installed.
+  entity's form may list it, and leaves it out where the package is not installed; one the form
+  does not list goes into the section of the field it follows.
 
 ## Screens
 

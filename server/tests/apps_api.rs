@@ -400,10 +400,16 @@ async fn scenario() {
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let dir = FsPath::new(env!("CARGO_MANIFEST_DIR")).join("../packages");
-    let [core, parties] = ["core", "parties"].map(|p| ferrum_meta::catalog::load_package_dir(&dir.join(p)).expect(p));
-    let k = Kernel::boot(db, Catalog::from_packages(vec![core, parties, notes_package()]).unwrap(), HookRegistry::default(), KernelSettings::default(), None)
-        .await
-        .expect("boot");
+    let [core, contacts, parties] = ["core", "contacts", "parties"].map(|p| ferrum_meta::catalog::load_package_dir(&dir.join(p)).expect(p));
+    let k = Kernel::boot(
+        db,
+        Catalog::from_packages(vec![core, contacts, parties, notes_package()]).unwrap(),
+        HookRegistry::default(),
+        KernelSettings::default(),
+        None,
+    )
+    .await
+    .expect("boot");
     // Rate limits hold across replicas: two limiters on one database share their count.
     let (a, b) = (
         ferrum_server::state::RateLimiter::shared("it", std::time::Duration::from_secs(60), 3, k.db.clone()),

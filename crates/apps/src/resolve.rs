@@ -297,7 +297,7 @@ mod tests {
     fn platform_incompatibility() {
         let store = [rel("iot", "1.0.0", &[], ">=0.4"), rel("iot", "0.9.0", &[], "<0.3")];
         let err = run(&store, &[], &[("iot", "*")]).unwrap_err();
-        assert!(err.contains("iot 1.0.0 needs platform >=0.4, but this server provides 0.3.1"), "{err}");
+        assert!(err.contains("iot 1.0.0 needs platform >=0.4, but this server provides 0.3.2"), "{err}");
         // A dependency that does not fit the platform stops its dependent.
         let store = [rel("app", "1.0.0", &[("iot", "*")], P), rel("iot", "1.0.0", &[], ">=0.4")];
         assert!(run(&store, &[], &[("app", "*")]).unwrap_err().contains("needs platform"));

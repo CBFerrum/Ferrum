@@ -1,0 +1,61 @@
+- name: ContactEmail
+  label: Contact Email
+  kind: child
+  fields:
+    - {name: email, type: email, required: true, in_list: true}
+    - {name: is_primary, type: check, in_list: true}
+
+- name: ContactPhone
+  label: Contact Phone
+  kind: child
+  fields:
+    - {name: phone, type: phone, required: true, in_list: true}
+    - {name: phone_type, type: select, options: [Mobile, Work, Home, Other], default: Mobile, in_list: true}
+    - {name: is_primary, type: check, in_list: true}
+
+- name: Contact
+  label: Contact
+  kind: master
+  module: crm
+  title_field: full_name
+  search_fields: [email, phone]
+  fields:
+    - {name: first_name, type: data, required: true}
+    - {name: last_name, type: data}
+    - {name: full_name, type: data, read_only: true, in_list: true}
+    - {name: designation, type: data, in_list: true}
+    - {name: department, type: data}
+    - {name: email, type: email, read_only: true, label: Primary Email, in_list: true}
+    - {name: phone, type: phone, read_only: true, label: Primary Phone, in_list: true}
+    - {name: emails, type: table, of: ContactEmail}
+    - {name: phones, type: table, of: ContactPhone}
+    - {name: unsubscribed, type: check, in_filter: true, description: Do not send marketing communication}
+    - {name: notes, type: text}
+  form:
+    - {label: Contact, fields: [first_name, last_name, full_name, designation, department, email, phone, unsubscribed]}
+    - {label: Emails and Phones, fields: [emails, phones]}
+    - {label: Links, fields: [customer, supplier]}
+    - {label: Notes, collapsible: true, fields: [notes]}
+  list: {columns: [full_name, designation, email, phone], sort: full_name asc}
+
+- name: Address
+  label: Address
+  label_plural: Addresses
+  kind: master
+  module: crm
+  title_field: address_title
+  search_fields: [city, postal_code]
+  fields:
+    - {name: address_title, type: data, in_list: true}
+    - {name: address_type, type: select, options: [Billing, Shipping, Office, Other], required: true, default: Billing, in_list: true, in_filter: true}
+    - {name: address_line1, type: data, required: true}
+    - {name: address_line2, type: data}
+    - {name: city, type: data, required: true, in_list: true, in_filter: true}
+    - {name: state, type: data, in_filter: true}
+    - {name: postal_code, type: data}
+    - {name: country, type: data, in_filter: true}
+    - {name: email, type: email}
+    - {name: phone, type: phone}
+    - {name: is_primary, type: check, in_list: true, description: The party's preferred address of this type}
+    - {name: display, type: text, read_only: true, label: Formatted Address}
+  list: {columns: [address_title, address_type, city, is_primary], sort: address_title asc}

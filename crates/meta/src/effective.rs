@@ -266,6 +266,16 @@ pub(crate) fn apply_op(def: &mut EntityDef, op: &OverlayOp, source: OverlaySourc
                 None => def.fields.len(),
             };
             def.fields.insert(pos, field.clone());
+            // A column the entity's form does not place goes into the section of the field it
+            // follows (§13); one the form places keeps that place.
+            if *column
+                && let Some(a) = after
+                && !def.form.iter().any(|s| s.fields.contains(&field.name))
+                && let Some(s) = def.form.iter_mut().find(|s| s.fields.contains(a))
+            {
+                let i = s.fields.iter().position(|f| f == a).map_or(s.fields.len(), |i| i + 1);
+                s.fields.insert(i, field.name.clone());
+            }
             Ok(Some(field.name.clone()))
         }
         OverlayOp::SetProperty { field, property, value } => {
@@ -778,6 +788,14 @@ mod tests {
         .unwrap();
         assert!(w.warnings.iter().any(|w| w.message.contains("only packages add columns")));
         assert!(catalog.unknown_form_fields().is_empty());
+        // A column the form does not place goes into the section of the field it follows.
+        let crm = package(
+            "{package: crm, version: '1', depends: [accounting], overlays: [{entity: Customer, ops: [{op: add_field, column: true, after: receivable_account, field: {name: lead, type: data}}]}]}",
+            "[]",
+        );
+        let catalog = Catalog::from_packages(vec![parties.clone(), accounting("customer_name"), crm]).unwrap();
+        let c = build(&catalog, &["crm".into()], &[], 1).unwrap();
+        assert_eq!(c.entity("Customer").unwrap().def.form[1].fields, ["receivable_account", "lead"]);
         let mut typo = parties.clone();
         typo.entities[0].form[0].fields.push("phnoe".into());
         assert_eq!(Catalog::from_packages(vec![typo, accounting("customer_name")]).unwrap().unknown_form_fields(), ["Customer.phnoe"]);

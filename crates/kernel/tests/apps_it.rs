@@ -22,7 +22,7 @@ async fn kernel(reset: bool) -> Arc<Kernel> {
         sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
     }
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages");
-    let platform = ["core", "parties"].map(|p| ferrum_meta::catalog::load_package_dir(&dir.join(p)).expect(p));
+    let platform = ["core", "contacts", "parties"].map(|p| ferrum_meta::catalog::load_package_dir(&dir.join(p)).expect(p));
     let mut hooks = HookRegistry::default();
     hooks.register("FleetVehicle", Arc::new(Peek));
     Kernel::boot(db, Catalog::from_packages(platform.to_vec()).unwrap(), hooks, KernelSettings::default(), None).await.expect("boot")
