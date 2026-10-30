@@ -44,7 +44,9 @@ built to scale out.
 | `docs` | [API contract](docs/api.md), [plugins](docs/plugins.md), [operations runbook](docs/operations.md), [security](docs/security.md), [known limits](docs/limits.md), [plan and analysis](docs/plan/PLAN.md) |
 | `tools` | `loadtest.py`: a load test of a running server (see the runbook's Capacity section) |
 
-The web app lives in its own repository, [CBFerrum/Ferrum-Frontend](https://github.com/CBFerrum/Ferrum-Frontend).
+The shell's and ERP's interfaces, and the packages apps build theirs with, live in
+[CBFerrum/Ferrum-Frontend](https://github.com/CBFerrum/Ferrum-Frontend); the server's image builds
+them in.
 
 ### Apps
 
@@ -94,14 +96,16 @@ cd server && cargo run -- task create_tenant slug:demo name:"Demo Ltd" email:adm
 cd server && cargo run -- task seed_demo tenant:demo
 ```
 
+The shell's and ERP's interfaces, built from Ferrum-Frontend and registered when the server starts
+(rebuild and restart to see a change):
+
 ```bash
 git clone https://github.com/CBFerrum/Ferrum-Frontend web
-cd web && npm install && npm run dev  # http://localhost:5173/app/ (proxies the API to the server)
+cd web && npm install && npm run build:apps
+cd ../server && FERRUM_UI_DIR=../web/dist-apps cargo run -- start   # http://127.0.0.1:5150/
 ```
 
-Sign in with tenant `demo`, `admin@demo.test` / `Correct-Horse-9`. The server also serves a
-production build found in `web/dist` at `/app/` (set `FERRUM_WEB_DIR` elsewhere), which is handy
-for single-binary installs.
+Sign in with tenant `demo`, `admin@demo.test` / `Correct-Horse-9`.
 
 ## How it fits together
 
@@ -187,9 +191,9 @@ balance sheet balance and that stock value equals the stock accounts.
 
 ## Deployment
 
-* Images: `ghcr.io/cbferrum/ferrum` (API server) and `ghcr.io/cbferrum/ferrum-frontend` (web app,
-  which also proxies the API so browsers see one origin). Both are stateless. The published images
-  are linux/amd64; for ARM hosts (Graviton, Ampere), `docker build .` on an arm64 machine produces
+* Image: `ghcr.io/cbferrum/ferrum`, the server, which answers every page (the shell's and ERP's
+  interfaces built in from Ferrum-Frontend, apps' compiled into their crates) and the API on one
+  origin. It is stateless. The published images are linux/amd64; for ARM hosts (Graviton, Ampere), `docker build .` on an arm64 machine produces
   a working image (checked on Apple Silicon: non-root, read-only root filesystem, no capabilities).
 * Optional: `ghcr.io/cbferrum/ferrum-editors`, the static server of Drive's browser editors
   (`deploy/editors`, on an origin of its own).

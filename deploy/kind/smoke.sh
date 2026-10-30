@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Deploys deploy/k8s (through deploy/kind/kustomization.yaml) to the current cluster, prepared by
-# install.sh with the images ferrum:ci and ferrum-frontend:ci loaded, and checks it the way an
+# install.sh with the images ferrum:ci and ferrum-editors:ci loaded, and checks it the way an
 # operator would:
-#   * the database comes up as three instances, the API, the PDF renderer, the web app and the
-#     browser editors' server as two or three replicas each, the gateway as two proxies with
-#     certificates from cert-manager;
-#   * through the gateway: HTTPS only, the API and the web app on their paths, no metrics, the
+#   * the database comes up as three instances, the server, the PDF renderer and the browser
+#     editors' server as two or three replicas each, the gateway as two proxies with certificates
+#     from cert-manager;
+#   * through the gateway: HTTPS only, the server's pages and API, no metrics, the
 #     editor server on its own host with its policies; nothing else reaches the API or the editor
 #     server (network policy); metrics only with their token; the autoscaler sees the API's CPU use;
 #   * a workspace is created and seeded; someone signs in, submits a Sales Invoice, prints it as
@@ -70,8 +70,8 @@ done
 step "waiting for the database (three instances)"
 k wait cluster/ferrum-db --for=condition=Ready --timeout=15m
 [ "$(k get cluster ferrum-db -o jsonpath='{.status.readyInstances}')" = 3 ] || fail "not three database instances"
-step "waiting for the API, the PDF renderer, the web app and the editor server"
-for d in ferrum ferrum-pdf ferrum-web ferrum-editors; do k rollout status "deploy/$d" --timeout=10m; done
+step "waiting for the server, the PDF renderer and the editor server"
+for d in ferrum ferrum-pdf ferrum-editors; do k rollout status "deploy/$d" --timeout=10m; done
 step "waiting for the gateway and its certificate"
 k wait gateway/ferrum --for=condition=Programmed --timeout=5m
 k wait certificate/ferrum-tls certificate/ferrum-editors-tls --for=condition=Ready --timeout=5m
@@ -101,9 +101,10 @@ for attempt in $(seq 1 30); do
 done
 
 step "the gateway"
-redirect=$(c -o /dev/null -w '%{http_code} %{redirect_url}' "http://$HOST:8080/app/")
-[ "$redirect" = "301 https://$HOST/app/" ] || fail "plain HTTP is not redirected to HTTPS: $redirect"
-grep -qi "<html" <<<"$(c -f "$API/app/")" || fail "the web app"
+redirect=$(c -o /dev/null -w '%{http_code} %{redirect_url}' "http://$HOST:8080/login")
+[ "$redirect" = "301 https://$HOST/login" ] || fail "plain HTTP is not redirected to HTTPS: $redirect"
+grep -qi "<html" <<<"$(c -f "$API/login")" || fail "the sign-in page"
+[[ "$(c -o /dev/null -w '%{http_code} %{redirect_url}' "$API/app/e/Customer")" =~ ^30[23]\ .*/open/Customer$ ]] || fail "today's web app's old addresses"
 c -fo /dev/null "$API/.well-known/oauth-authorization-server" || fail "the OAuth metadata"
 if grep -q "ferrum_up" <<<"$(c "$API/metrics")"; then fail "metrics are reachable from outside"; fi
 
@@ -118,17 +119,17 @@ page=$(e -fsD "$work/editor-headers" "https://$EDITORS:8443/gridcraft/index.html
 grep -qi "script-src 'self' 'wasm-unsafe-eval' 'sha256-" "$work/editor-headers" || fail "an editor's page allows other scripts"
 wasm=$(grep -o '[A-Za-z0-9._-]*_bg\.wasm' <<<"$page" | head -1)
 grep -qi "^content-type: application/wasm" <<<"$(e -fsI "https://$EDITORS:8443/gridcraft/$wasm")" || fail "the editor's WebAssembly"
-k get deploy ferrum ferrum-web -o jsonpath='{range .items[*]}{.spec.template.spec.containers[0].env[?(@.name=="FERRUM_EDITORS_URL")].value}{"\n"}{end}' |
-  grep -c "^https://$EDITORS$" | grep -qx 2 || fail "the API and the web app do not know the editor server"
+[ "$(k get deploy ferrum -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="FERRUM_EDITORS_URL")].value}')" = "https://$EDITORS" ] ||
+  fail "the server does not know the editor server"
 
 step "the network policy, metrics and the autoscaler"
-# A pod outside the gateway, the web app and monitoring reaches the web app (which no policy
-# guards) but gets no answer from the API.
+# A pod outside the gateway and monitoring reaches the S3 emulator (which no policy guards) but
+# gets no answer from the API.
 kubectl -n ci-s3 run policy-probe --image=curlimages/curl:8.21.0 --restart=Never --command -- sleep 600 >/dev/null
 kubectl -n ci-s3 wait pod/policy-probe --for=condition=Ready --timeout=3m >/dev/null
 probe() { kubectl -n ci-s3 exec policy-probe -- curl -s -o /dev/null -m 5 -w '%{http_code}' "$1" 2>/dev/null || true; }
 for attempt in $(seq 1 15); do
-  [ "$(probe "http://ferrum-web.$NS.svc.cluster.local/healthz")" = 200 ] && break
+  [[ "$(probe "http://s3.ci-s3.svc.cluster.local:5000/")" =~ ^[1-5][0-9][0-9]$ ]] && break
   [ "$attempt" -lt 15 ] || fail "the probe pod reaches nothing, so it proves nothing about the policy"
   sleep 2
 done

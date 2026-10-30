@@ -28,6 +28,3 @@ services:
       FERRUM_OFFICE_WOPI_URL: http://ferrum:5150
       # As browsers reach it: Drive's pages frame the editor and post to it (their policy names it).
       FERRUM_OFFICE_ORIGIN: ${OFFICE_PUBLIC_URL:-http://localhost:9980}
-  web:
-    environment:
-      FERRUM_OFFICE_ORIGIN: ${OFFICE_PUBLIC_URL:-http://localhost:9980}

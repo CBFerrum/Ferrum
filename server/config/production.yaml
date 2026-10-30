@@ -36,14 +36,6 @@ server:
       allow_headers: ["authorization", "content-type", "if-match", "idempotency-key", "x-request-id"]
       allow_methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
       max_age: 3600
-    static:
-      enable: true
-      must_exist: false
-      precompressed: false
-      folder:
-        uri: "/app"
-        path: <%= get_env(name="FERRUM_WEB_DIR", default="web/dist") %>
-      fallback: <%= get_env(name="FERRUM_WEB_INDEX", default="web/dist/index.html") %>
 
 workers:
   mode: BackgroundAsync

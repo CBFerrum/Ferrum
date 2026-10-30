@@ -27,14 +27,6 @@ server:
       allow_headers: ["*"]
       allow_methods: ["*"]
       max_age: 3600
-    static:
-      enable: true
-      must_exist: false
-      precompressed: false
-      folder:
-        uri: "/app"
-        path: "../web/dist"
-      fallback: "../web/dist/index.html"
 
 workers:
   mode: BackgroundAsync

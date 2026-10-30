@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Deploys the Compose stack (database, Ferrum, PDF renderer, web app) and checks that it works as a
+# Deploys the Compose stack (database, Ferrum, PDF renderer) and checks that it works as a
 # deployment. A workspace is created, seeded and invoiced by the release being replaced
 # (FERRUM_PREVIOUS_IMAGE, when there is one), then the server's container is replaced with
-# FERRUM_IMAGE as an upgrade does: the session, the data and the web app's route to the new
-# container must survive it. Then, on the new image: the security and caching headers; the web app
-# serves its pages and scripts and passes the API and live updates through; a Sales Invoice is
-# created, submitted and printed as HTML and PDF; the server recovers from a database restart; the
+# FERRUM_IMAGE as an upgrade does: the session and the data must survive it. Then, on the new
+# image: the security headers; the shell's pages, apps' pages and today's web app's old addresses;
+# the API and live updates on the one origin; a Sales Invoice is created, submitted and printed as
+# HTML and PDF; the server recovers from a database restart; the
 # database and the attachments are backed up, the stack is deleted with its volumes and restored
 # from the backups, data, sessions and numbering intact; a short load test runs without errors.
 # Everything is removed afterwards. CI runs it on every image it builds. With FERRUM_EDITORS_IMAGE,
@@ -13,35 +13,26 @@
 # SMOKE_MEET=1, the meeting server (meet.yml), which must accept the passes Ferrum signs, and
 # calendar apps signing in with an app password.
 #
-#   FERRUM_IMAGE=ghcr.io/cbferrum/ferrum:latest FERRUM_WEB_IMAGE=ghcr.io/cbferrum/ferrum-frontend:latest \
-#     deploy/smoke.sh     # needs Docker, curl, openssl, python3 + httpx
+#   FERRUM_IMAGE=ghcr.io/cbferrum/ferrum:latest deploy/smoke.sh     # needs Docker, curl, openssl, python3 + httpx
 set -euo pipefail
 cd "$(dirname "$0")"
 
 NEW_IMAGE=${FERRUM_IMAGE:-ghcr.io/cbferrum/ferrum:latest}
-export FERRUM_WEB_IMAGE=${FERRUM_WEB_IMAGE:-ghcr.io/cbferrum/ferrum-frontend:latest}
 # One user drives the load test: lift the per-user budget for it.
 export FERRUM_USER_REQUESTS_PER_MINUTE=${FERRUM_USER_REQUESTS_PER_MINUTE:-0}
 export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-ferrum-smoke}
-# The web app's port, as the stack publishes it.
-export FERRUM_PORT=${SMOKE_WEB_PORT:-8080}
+# The server's port, as the stack publishes it.
+export FERRUM_PORT=${SMOKE_PORT:-8080}
 export POSTGRES_PASSWORD FERRUM_DB_PASSWORD JWT_SECRET FERRUM_SECRET_KEY
 POSTGRES_PASSWORD=$(openssl rand -hex 16)
 FERRUM_DB_PASSWORD=$(openssl rand -hex 16)
 JWT_SECRET=$(openssl rand -base64 48 | tr -d '\n')
 FERRUM_SECRET_KEY=$(openssl rand -base64 32 | tr -d '\n')
-PORT=${SMOKE_PORT:-5150}
-API="http://127.0.0.1:${PORT}"
-WEB="http://127.0.0.1:${FERRUM_PORT}"
+API="http://127.0.0.1:${FERRUM_PORT}"
 PASSWORD='Smoke-Test-Passw0rd'
 
 work=$(mktemp -d)
-cat > "$work/publish.yml" <<EOF
-services:
-  ferrum:
-    ports: ["127.0.0.1:${PORT}:5150"]
-EOF
-files=(-f docker-compose.yml -f "$work/publish.yml")
+files=(-f docker-compose.yml)
 if [ -n "${FERRUM_EDITORS_IMAGE:-}" ]; then
   files+=(-f editors.yml)
   export FERRUM_EDITORS_PORT=${SMOKE_EDITORS_PORT:-8090}
@@ -58,7 +49,7 @@ cleanup() {
   status=$?
   if [ "$status" -ne 0 ]; then
     echo "--- smoke test failed; logs:"
-    compose logs --tail 200 ferrum web pdf db ${FERRUM_EDITORS_IMAGE:+editors} ${SMOKE_MEET:+meet} || true
+    compose logs --tail 200 ferrum pdf db ${FERRUM_EDITORS_IMAGE:+editors} ${SMOKE_MEET:+meet} || true
   fi
   compose down -v --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$work"
@@ -91,10 +82,9 @@ if [ -n "${FERRUM_PREVIOUS_IMAGE:-}" ]; then
   fi
 fi
 
-step "starting the stack from $FERRUM_IMAGE and $FERRUM_WEB_IMAGE"
-compose up -d --no-build db ferrum pdf web ${FERRUM_EDITORS_IMAGE:+editors} ${SMOKE_MEET:+meet}
+step "starting the stack from $FERRUM_IMAGE"
+compose up -d --no-build db ferrum pdf ${FERRUM_EDITORS_IMAGE:+editors} ${SMOKE_MEET:+meet}
 wait_up "$API/_health" "the server"
-wait_up "$WEB/healthz" "the web app"
 
 step "creating, seeding and invoicing a workspace"
 compose exec -T ferrum ferrum task create_tenant slug:smoke name:"Smoke Co" email:smoke@smoke.test password:"$PASSWORD" \
@@ -114,7 +104,6 @@ wait_up "$API/_health" "the server"
 [ "$(curl -fsS "${auth[@]}" "$API/api/auth/me" | json 'd["user"]["email"]')" = "smoke@smoke.test" ] || fail "the session after the replacement"
 [ "$(curl -fsS "${auth[@]}" "$API/api/v1/SalesInvoice/$before" | json 'd["docstatus"]')" = "1" ] || fail "the invoice made before the replacement"
 [ "$(curl -fsS "${auth[@]}" "$API/api/v1/SalesInvoice/$before/audit" | json 'd["chain_valid"]')" = "True" ] || fail "the audit chain across the replacement"
-[ "$(curl -fsS --max-time 30 "${auth[@]}" "$WEB/api/v1/SalesInvoice/$before" | json 'd["id"]')" = "$before" ] || fail "the web app does not reach the new server container"
 
 step "checking headers"
 headers=$(curl -fsS -D - -o /dev/null "${auth[@]}" "$API/api/v1/Customer?limit=1")
@@ -150,13 +139,10 @@ cookie=$(awk '$6=="__Host-ferrum" || $6=="ferrum_session" {print $7}' "$work/jar
 [[ "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$API/nothing-here/x")" =~ ^30[23]\ .*/login\?next=%2Fnothing-here%2Fx$ ]] || fail "a signed-out app route does not lead to sign-in"
 [ "$(code -b "$work/jar" "$API/nothing-here/")" = 404 ] || fail "a route nothing is installed at"
 [ "$(code -b "$work/jar" "$API/portal/")" = 404 ] || fail "a name the core keeps"
-# A new workspace is on the shell: its pages are the shell's. Switched to the classic interface,
-# they lead to today's web app.
-grep -q '<ferrum-bar>' <<<"$(curl -fsS -b "$work/jar" "$API/admin/")" || fail "the shell's administration"
-settings() { curl -fsS "${auth[@]}" -X PUT -H 'content-type: application/json' -d "$1" "$API/api/admin/settings" >/dev/null || fail "changing the workspace's settings"; }
-settings '{"shell_v2":false}'
-[[ "$(curl -sS -o /dev/null -b "$work/jar" -w '%{http_code} %{redirect_url}' "$API/admin/")" =~ ^30[23]\ .*/app/admin$ ]] || fail "the shell's administration for a workspace on the classic interface"
-settings '{"shell_v2":true}'
+# Every workspace is on the shell: Home and the shell's pages, from the interfaces the image carries.
+for page in / /admin/ /store/ /account/ /data/; do
+  grep -q '<ferrum-bar>' <<<"$(curl -fsS -b "$work/jar" "$API$page")" || fail "the shell's page $page"
+done
 grep -q "unregister" <<<"$(curl -fsS -b "$work/jar" "$API/nothing-here/sw.js")" || fail "the worker of an empty route does not remove itself"
 # Apps with interfaces of their own (U4a): Drive, installed through the App Manager, brings its
 # interface compiled in; its family, its pages under the bar, and its public page.
@@ -177,7 +163,7 @@ grep -qi "^x-robots-tag: noindex" "$work/public.h" && grep -qi "^referrer-policy
 consent=$(curl -fsS "${auth[@]}" "$API/api/admin/apps/helpdesk/plan" | json 'd["digest"]') || fail "Helpdesk's install plan"
 curl -fsS "${auth[@]}" -H 'content-type: application/json' -d "{\"consent\":\"$consent\"}" "$API/api/admin/apps/helpdesk/install" >/dev/null || fail "installing Helpdesk"
 [ "$(curl -fsS -b "$work/jar" "$API/api/shell" | json '[a["url"] for a in d["apps"] if a["app"] == "helpdesk"]')" = "['/data/helpdesk/']" ] || fail "Helpdesk's records in the launcher"
-grep -q '"scope":{"app":"helpdesk"' <<<"$(curl -fsS -b "$work/jar" "$API/data/helpdesk/")" || fail "Helpdesk's records page"
+[ "$(curl -fsS -b "$work/jar" "$API/data/helpdesk/" | bootstrap | json 'd["app"]["scope"]["app"]')" = helpdesk ] || fail "Helpdesk's records page"
 [[ "$(curl -sS -o /dev/null -b "$work/jar" -w '%{http_code} %{redirect_url}' "$API/open/Ticket")" =~ ^30[23]\ .*/data/helpdesk/e/Ticket$ ]] || fail "/open of Helpdesk's tickets"
 # OAuth clients (MCP): the server's consent page, for the person signed in with the cookie.
 [[ "$(curl -fsS "$API/.well-known/oauth-authorization-server" | json 'd["authorization_endpoint"]')" == */oauth/authorize ]] || fail "the OAuth authorization endpoint"
@@ -210,37 +196,38 @@ if [ -n "${SMOKE_MEET:-}" ]; then
   [ "$(curl -fsS "$MEET/rtc/validate?access_token=$pass")" = success ] || fail "the meeting server refuses Ferrum's pass"
   forged="${pass%.*}.$(printf '%s' "${pass%.*}" | openssl dgst -sha256 -hmac not-the-secret -binary | base64 | tr '+/' '-_' | tr -d '=')"
   [ "$(curl -sS -o /dev/null -w '%{http_code}' "$MEET/rtc/validate?access_token=$forged")" = 401 ] || fail "the meeting server accepts a pass signed with another secret"
-  grep -qi "connect-src 'self' $FERRUM_MEET_URL $MEET;" <<<"$(curl -fsS -D - -o /dev/null "$WEB/app/")" || fail "the web app's pages may not reach the meeting server"
+  # Comms' pages may reach it (installed through the App Manager, with its interface).
+  consent=$(curl -fsS "${auth[@]}" "$API/api/admin/apps/comms/plan" | json 'd["digest"]') || fail "Comms' install plan"
+  curl -fsS "${auth[@]}" -H 'content-type: application/json' -d "{\"consent\":\"$consent\"}" "$API/api/admin/apps/comms/install" >/dev/null || fail "installing Comms"
+  curl -fsS -c "$work/meet-jar" -o /dev/null -H 'content-type: application/json' -H 'sec-fetch-site: same-origin' -d "$page_login" "$API/api/auth/login" || fail "signing in from a page"
+  grep -qi "connect-src 'self' $FERRUM_MEET_URL $MEET" <<<"$(curl -fsS -D - -o /dev/null -b "$work/meet-jar" "$API/meet/")" || fail "Meet's pages may not reach the meeting server"
 
-  step "calendar and contacts apps, through the web app, with an app password"
+  step "calendar and contacts apps, with an app password"
   key=$(curl -fsS "${auth[@]}" -H 'content-type: application/json' -d '{"name":"Smoke phone","scope":"dav"}' "$API/api/auth/api_keys" | json 'd["key"]') || fail "an app password"
-  [ "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' -X PROPFIND "$WEB/.well-known/caldav")" = "301 $WEB/api/dav/comms/" ] || fail "/.well-known/caldav does not lead to the calendars"
-  [ "$(curl -sS -o /dev/null -w '%{http_code}' -u "smoke@smoke.test:$key" -X PROPFIND -H 'depth: 0' "$WEB/api/dav/comms/")" = 207 ] || fail "a calendar app cannot sign in"
-  [ "$(curl -sS -o /dev/null -w '%{http_code}' -u "smoke@smoke.test:wrong" -X PROPFIND "$WEB/api/dav/comms/")" = 401 ] || fail "a wrong app password is let in"
+  [ "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' -X PROPFIND "$API/.well-known/caldav")" = "301 $API/api/dav/comms/" ] || fail "/.well-known/caldav does not lead to the calendars"
+  [ "$(curl -sS -o /dev/null -w '%{http_code}' -u "smoke@smoke.test:$key" -X PROPFIND -H 'depth: 0' "$API/api/dav/comms/")" = 207 ] || fail "a calendar app cannot sign in"
+  [ "$(curl -sS -o /dev/null -w '%{http_code}' -u "smoke@smoke.test:wrong" -X PROPFIND "$API/api/dav/comms/")" = 401 ] || fail "a wrong app password is let in"
   [ "$(curl -sS -o /dev/null -w '%{http_code}' -H "authorization: Bearer $key" "$API/api/auth/me")" = 401 ] || fail "an app password works as an API key"
 fi
 
-step "the web app and the API through it"
-[[ "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$WEB/")" =~ ^30[23]\ .*/app/$ ]] || fail "/ does not lead to the app"
-# A deep link: the app answers for its own routes.
-page=$(curl -fsS -D "$work/page.h" "$WEB/app/SalesInvoice")
-grep -q '<div id="root">' <<<"$page" || fail "the app's page"
-for h in "content-security-policy: .*script-src 'self'" "x-content-type-options: nosniff" "cache-control: no-cache"; do
-  grep -qi "^$h" "$work/page.h" || fail "the app's page lacks $h"
-done
-script=$(grep -o '/app/assets/[^"]*\.js' <<<"$page" | head -1)
-curl -fsS -D "$work/script.h" -o /dev/null "$WEB$script" || fail "the app's script $script"
-grep -qi "^cache-control: public, max-age=31536000, immutable" "$work/script.h" || fail "the app's script is not kept"
-[ -n "$(login "$WEB")" ] || fail "signing in through the web app"
-[ "$(curl -fsS "${auth[@]}" "$WEB/api/auth/me" | json 'd["user"]["email"]')" = "smoke@smoke.test" ] || fail "the API through the web app"
+step "today's web app's old addresses, and live updates"
+# /app/ is gone: its addresses lead to their new homes with their query (bookmarks, links in mail,
+# the single sign-on return address providers have registered), and its worker removes itself.
+[[ "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$API/app/e/SalesInvoice/$before?tab=1")" =~ ^30[23]\ .*/open/SalesInvoice/$before\?tab=1$ ]] || fail "an old record address"
+[[ "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$API/app/login?code=c&state=s")" =~ ^30[23]\ .*/login\?code=c\&state=s$ ]] || fail "the single sign-on return address"
+[[ "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$API/app/")" =~ ^30[23]\ .*/$ ]] || fail "/app/"
+grep -q "unregister" <<<"$(curl -fsS "$API/app/sw.js")" || fail "today's web app's worker does not remove itself"
+[ "$(curl -fsS "$API/healthz")" = ok ] || fail "/healthz"
+# Signed out, Home is the sign-in page first.
+[[ "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$API/")" =~ ^30[23]\ .*/login ]] || fail "/ signed out"
 # Live updates: the WebSocket handshake gets through (101); curl then gives up on the open socket.
 ws=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 3 --http1.1 "${auth[@]}" -H 'connection: Upgrade' -H 'upgrade: websocket' \
-  -H 'sec-websocket-version: 13' -H "sec-websocket-key: $(openssl rand -base64 16)" "$WEB/ws/live" 2>/dev/null || true)
-[ "$ws" = 101 ] || fail "live updates through the web app (HTTP $ws)"
+  -H 'sec-websocket-version: 13' -H "sec-websocket-key: $(openssl rand -base64 16)" "$API/ws/live" 2>/dev/null || true)
+[ "$ws" = 101 ] || fail "live updates (HTTP $ws)"
 # Live documents: the handshake of a document's socket (it closes then: no such document).
 ws=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 3 --http1.1 "${auth[@]}" -H 'connection: Upgrade' -H 'upgrade: websocket' \
-  -H 'sec-websocket-version: 13' -H "sec-websocket-key: $(openssl rand -base64 16)" "$WEB/ws/docs/drive/00000000-0000-0000-0000-000000000000" 2>/dev/null || true)
-[ "$ws" = 101 ] || fail "live documents through the web app (HTTP $ws)"
+  -H 'sec-websocket-version: 13' -H "sec-websocket-key: $(openssl rand -base64 16)" "$API/ws/docs/drive/00000000-0000-0000-0000-000000000000" 2>/dev/null || true)
+[ "$ws" = 101 ] || fail "live documents (HTTP $ws)"
 
 step "invoicing"
 created=$(invoice after) || fail "invoicing"
@@ -283,11 +270,10 @@ for _ in $(seq 1 60); do
 done
 compose exec -T db pg_restore -U postgres -d ferrum --clean --if-exists --exit-on-error < "$work/ferrum.dump" || fail "the database restore"
 compose run --rm --no-deps -T --entrypoint tar ferrum -C /var/lib/ferrum/files -xzf - < "$work/files.tgz" || fail "the attachments restore"
-compose up -d --no-build ferrum pdf web
+compose up -d --no-build ferrum pdf
 wait_up "$API/_health" "the restored server"
-wait_up "$WEB/healthz" "the web app"
 [ "$(curl -fsS "${auth[@]}" "$API/api/auth/me" | json 'd["user"]["email"]')" = "smoke@smoke.test" ] || fail "the session after the restore"
-[ "$(curl -fsS "${auth[@]}" "$WEB/api/v1/SalesInvoice/$id" | json 'd["docstatus"]')" = "1" ] || fail "the invoice after the restore"
+[ "$(curl -fsS "${auth[@]}" "$API/api/v1/SalesInvoice/$id" | json 'd["docstatus"]')" = "1" ] || fail "the invoice after the restore"
 [ "$(curl -fsS "${auth[@]}" "$API/api/v1/SalesInvoice/$id/audit" | json 'd["chain_valid"]')" = "True" ] || fail "the audit chain after the restore"
 curl -fsSL "${auth[@]}" "$API/files/$file_id" -o "$work/restored.pdf" || fail "the attachment after the restore"
 [ "$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$work/restored.pdf")" = "$file_sha" ] ||

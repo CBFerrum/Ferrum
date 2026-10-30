@@ -92,27 +92,19 @@ pub(crate) async fn page_bootstrap(
     Ok((shell::bootstrap(&ws, host, ctx, &kind, &state, app, kind_of_page), kind))
 }
 
-/// `GET /`: the shell's Home for a workspace on the shell (`shell_v2`); everyone else goes to
-/// today's web app, with its own sign-in (a temporary redirect, so no browser keeps it).
+/// `GET /`: the shell's Home; someone signed out signs in first.
 async fn home(State(app): State<AppContext>, headers: HeaderMap, uri: Uri) -> ApiResult<Response> {
     let st = app_state(&app)?;
     if shell::session_cookie(&headers, st.shell.secure).is_some()
         && let Ok((ctx, device)) = caller_on(&st, &Method::GET, &headers).await
-        && st.shell.workspace(ctx.tenant).await?.shell_v2
     {
         return shell_page(&st, &headers, ctx, device, "", None).await;
     }
-    // The server's one workspace (shape A) on the shell: its sign-in.
-    if let Place::Workspace(t) = st.shell.place(&headers).await?
-        && st.shell.workspace(t).await?.shell_v2
-    {
-        return Ok(to_login(&uri));
-    }
-    Ok(Redirect::to("/app/").into_response())
+    Ok(to_login(&uri))
 }
 
-/// The shell's own pages (`/`, `/store/`, `/admin/`, `/account/`, `/data/`) for a workspace on
-/// the shell, from the shell's interface release; `scope`, the app whose records `/data/{app}/`
+/// The shell's own pages (`/`, `/store/`, `/admin/`, `/account/`, `/data/`), from the shell's
+/// interface release; `scope`, the app whose records `/data/{app}/`
 /// shows (its name and packages).
 async fn shell_page(st: &AppState, headers: &HeaderMap, ctx: Ctx, device: Option<Uuid>, route: &str, scope: Option<Value>) -> ApiResult<Response> {
     let (boot_status, kind) = match page_bootstrap(st, headers, &ctx, device, json!(null), "status").await {
@@ -132,8 +124,8 @@ async fn shell_page(st: &AppState, headers: &HeaderMap, ctx: Ctx, device: Option
         return Ok(status_page(
             StatusCode::SERVICE_UNAVAILABLE,
             "Home cannot open",
-            "This server has no interface for the shell. An operator can add it (settings.ui_dir), or turn the workspace back to the classic interface.",
-            &[("Classic interface", "/app/")],
+            "This server has no interface for the shell. An operator can add it (settings.ui_dir, which the image sets).",
+            &[],
             Some(&boot_status),
         ));
     };
@@ -160,61 +152,46 @@ async fn shell_page(st: &AppState, headers: &HeaderMap, ctx: Ctx, device: Option
     Ok(not_modified(headers, shell::entry_page(&entry, &boot, &shell::csp(None, &Value::Null))))
 }
 
-/// `/store/`, `/admin/`, `/account/`, `/data/…`: the shell's pages for a workspace on the shell;
-/// for one that is not, their places in today's web app.
+/// `/store/`, `/admin/`, `/account/`, `/data/…`: the shell's pages.
 async fn shell_core(st: &AppState, headers: &HeaderMap, uri: &Uri, first: &str, rest: Option<&str>) -> ApiResult<Response> {
     let (ctx, device, _) = match person(st, headers, uri).await {
         Ok(p) => p,
         Err(r) => return Ok(r),
     };
-    if st.shell.workspace(ctx.tenant).await?.shell_v2 {
-        let Some(rest) = rest else {
-            return Ok(Redirect::permanent(&format!("/{first}/")).into_response());
-        };
-        let mut scope = None;
-        // `/data/{app}/…`: the records of an app without an interface of its own (beside the
-        // records of any entity, `e/` and `r/`, and Customize).
-        let (app_id, tail) = rest.split_once('/').unwrap_or((rest, ""));
-        if first == "data" && !matches!(app_id, "" | "e" | "r" | "customize") {
-            let apps = st.apps.shell_apps(ctx.tenant).await?;
-            let q = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
-            let Some((app, packages)) = shell::records_app(&apps, app_id) else {
-                // The app has an interface of its own now, or is gone: records and lists by `/open`.
-                let to = tail.strip_prefix("e/").map_or_else(|| "/data/".to_string(), |e| format!("/open/{e}"));
-                return Ok(Redirect::to(&format!("{to}{q}")).into_response());
-            };
-            if rest == app_id {
-                return Ok(Redirect::permanent(&format!("/data/{app_id}/{q}")).into_response());
-            }
-            if !shell::reads_any(&ctx, &packages) {
-                let boot = match page_bootstrap(st, headers, &ctx, device, json!(null), "status").await {
-                    Ok((b, _)) => b,
-                    Err(r) => return Ok(r),
-                };
-                return Ok(status_page(
-                    StatusCode::FORBIDDEN,
-                    "You cannot open this",
-                    "You do not have access to this app's records.",
-                    &[("Go to Home", "/")],
-                    Some(&boot),
-                ));
-            }
-            scope = Some(json!({"app": app.id, "title": app.manifest.name, "packages": packages}));
-        }
-        return shell_page(st, headers, ctx, device, first, scope).await;
-    }
-    let rest = rest.unwrap_or_default().trim_end_matches('/');
-    let to = match first {
-        "store" if rest.is_empty() => "/app/apps".to_string(),
-        // `apps/{app}/settings`: the same address there.
-        "store" => format!("/app/{rest}"),
-        "admin" => format!("/app/admin{}", if rest.is_empty() { String::new() } else { format!("/{rest}") }),
-        "account" => "/app/settings".to_string(),
-        _ if rest.is_empty() => "/app/".to_string(),
-        // The shell's records (`e/{entity}[/{id}]`, `r/{report}`) have the same addresses there.
-        _ => format!("/app/{rest}"),
+    let Some(rest) = rest else {
+        return Ok(Redirect::permanent(&format!("/{first}/")).into_response());
     };
-    Ok(Redirect::to(&to).into_response())
+    let mut scope = None;
+    // `/data/{app}/…`: the records of an app without an interface of its own (beside the
+    // records of any entity, `e/` and `r/`, and Customize).
+    let (app_id, tail) = rest.split_once('/').unwrap_or((rest, ""));
+    if first == "data" && !matches!(app_id, "" | "e" | "r" | "customize") {
+        let apps = st.apps.shell_apps(ctx.tenant).await?;
+        let q = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
+        let Some((app, packages)) = shell::records_app(&apps, app_id) else {
+            // The app has an interface of its own now, or is gone: records and lists by `/open`.
+            let to = tail.strip_prefix("e/").map_or_else(|| "/data/".to_string(), |e| format!("/open/{e}"));
+            return Ok(Redirect::to(&format!("{to}{q}")).into_response());
+        };
+        if rest == app_id {
+            return Ok(Redirect::permanent(&format!("/data/{app_id}/{q}")).into_response());
+        }
+        if !shell::reads_any(&ctx, &packages) {
+            let boot = match page_bootstrap(st, headers, &ctx, device, json!(null), "status").await {
+                Ok((b, _)) => b,
+                Err(r) => return Ok(r),
+            };
+            return Ok(status_page(
+                StatusCode::FORBIDDEN,
+                "You cannot open this",
+                "You do not have access to this app's records.",
+                &[("Go to Home", "/")],
+                Some(&boot),
+            ));
+        }
+        scope = Some(json!({"app": app.id, "title": app.manifest.name, "packages": packages}));
+    }
+    shell_page(st, headers, ctx, device, first, scope).await
 }
 
 /// `GET /{*path}`: everything under the root no other route answers.
@@ -239,6 +216,8 @@ async fn page(
         // Browsers ask for it on pages without an icon: the platform's.
         "favicon.ico" if rest.is_none() => return Ok(Redirect::permanent("/_shell/v1/icon.svg").into_response()),
         "open" => return open(&st, &headers, &uri, rest.unwrap_or_default(), &q).await,
+        // Today's web app's addresses (controllers/legacy.rs); `/app/` comes here, slash and all.
+        "app" => return Ok(super::legacy::answer(&uri)),
         // The assistant's page (controllers/assistant.rs), the side panel's and a phone's.
         "assistant" if rest.is_none_or(str::is_empty) => return super::assistant::page(&st, &headers, &uri).await,
         _ => {}
@@ -261,7 +240,7 @@ async fn page(
         return app_worker(&st, &ctx, found, first).await;
     }
     let Some((app, item, alias)) = found else {
-        let actions: Vec<(&str, &str)> = if ctx.is_admin { vec![("Open the App Manager", "/app/apps")] } else { vec![] };
+        let actions: Vec<(&str, &str)> = if ctx.is_admin { vec![("Open the App Manager", "/store/")] } else { vec![] };
         let (boot, _) = match page_bootstrap(&st, &headers, &ctx, device, json!(null), "status").await {
             Ok(b) => b,
             Err(r) => return Ok(r),
@@ -567,10 +546,8 @@ async fn open(st: &AppState, headers: &HeaderMap, uri: &Uri, rest: &str, q: &[(S
         return Ok(not_found(uri.path()));
     }
     if ctx.perms.access(entity, ferrum_kernel::Action::Read) != ferrum_kernel::Access::None {
-        // On the shell: in the records of the app it belongs to, when that app has no interface.
-        let records = if !st.shell.workspace(ctx.tenant).await?.shell_v2 {
-            "/app/e".to_string()
-        } else if let Some((a, _)) =
+        // In the records of the app it belongs to, when that app has no interface of its own.
+        let records = if let Some((a, _)) =
             apps.iter().find_map(|a| shell::records_app(&apps, &a.id).filter(|(_, p)| package.as_ref().is_some_and(|pk| p.contains(pk))))
         {
             format!("/data/{}/e", a.id)
@@ -629,7 +606,7 @@ async fn shell_info(Auth(ctx): Auth, State(app): State<AppContext>, headers: Hea
         for item in &usable {
             let url = match (item.get("route").and_then(Value::as_str), item.get("entity").and_then(Value::as_str)) {
                 (Some(r), _) => format!("/{r}/"),
-                (None, Some(e)) => format!("/app/e/{}", seg(e)),
+                (None, Some(e)) => format!("/open/{}", seg(e)),
                 _ => continue,
             };
             launcher.push(json!({
@@ -660,10 +637,8 @@ async fn shell_info(Auth(ctx): Auth, State(app): State<AppContext>, headers: Hea
             json!({"id": "assistant", "app": shell::SHELL_APP, "title": "Assistant", "icon": "sparkles", "contextual": false, "url": "/assistant/"}),
         );
     }
-    // Apps whose pages are still in today's web app: entries into it, until they have their own.
-    if ws.shell_v2 && kind == "member" {
-        launcher.extend(shell::classic_entries(&apps));
-        // Apps without an interface of their own: their records in the shell.
+    // Apps without an interface of their own: their records in the shell.
+    if kind == "member" {
         launcher.extend(shell::records_entries(&apps, &ctx));
     }
     let body = json!({
@@ -676,7 +651,6 @@ async fn shell_info(Auth(ctx): Auth, State(app): State<AppContext>, headers: Hea
         "intents": intents,
         "sidepanels": panels,
         "families": families,
-        "legacy": "/app/",
         "assistant": assistant,
     });
     let text = body.to_string();

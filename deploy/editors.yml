@@ -12,7 +12,7 @@ services:
       context: editors
     restart: unless-stopped
     environment:
-      # The web app's address: the only page that may frame the editors' relay.
+      # Ferrum's address: the only page that may frame the editors' relay.
       FERRUM_PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
     ports:
       - "${FERRUM_EDITORS_PORT:-8090}:8080"
@@ -31,7 +31,3 @@ services:
   ferrum:
     environment:
       FERRUM_EDITORS_URL: ${FERRUM_EDITORS_URL:?set FERRUM_EDITORS_URL in deploy/.env (the editor server as browsers reach it)}
-
-  web:
-    environment:
-      FERRUM_EDITORS_URL: ${FERRUM_EDITORS_URL}

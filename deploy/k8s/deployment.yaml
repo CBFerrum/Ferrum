@@ -70,8 +70,6 @@ spec:
             # - {name: FERRUM_S3_ENDPOINT, value: "https://<account>.r2.cloudflarestorage.com"}
             - {name: PUBLIC_URL, value: "https://erp.example.com"}
             - {name: FERRUM_PDF_URL, value: "http://ferrum-pdf:3000"}
-            # The shell's and ERP's interfaces, which the web app's image offers (docs/operations.md).
-            - {name: FERRUM_UI_SOURCE, value: "http://ferrum-web/_releases/"}
             - {name: FERRUM_DB_MAX_CONNECTIONS, value: "30"}
             - {name: LOG_LEVEL, value: "info"}
           resources:

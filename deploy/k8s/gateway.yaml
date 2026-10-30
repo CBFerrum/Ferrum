@@ -1,8 +1,8 @@
 # Traffic from outside, through the Gateway API (the ingress-nginx controller was retired in March
 # 2026). The Gateway terminates TLS with a certificate cert-manager issues for the host and
-# redirects plain HTTP to HTTPS; the API, downloads, the MCP endpoint, WebSockets and OAuth go
-# straight to the server, everything else to the web app. Request bodies are streamed (the server
-# limits their size) and every client address has a request budget in the server itself.
+# redirects plain HTTP to HTTPS; the server answers everything (long-lived sockets and the API with
+# timeouts of their own). Request bodies are streamed (the server limits their size) and every
+# client address has a request budget in the server itself.
 # Tested with Envoy Gateway (GatewayClass `eg`, its proxies set up in envoy-proxy.yaml). For
 # another implementation, set gatewayClassName, drop infrastructure.parametersRef and
 # envoy-proxy.yaml, and allow its proxies' namespace in networkpolicy.yaml.
@@ -69,10 +69,6 @@ spec:
         - path: {type: Exact, value: /.well-known/carddav}
       backendRefs: [{name: ferrum, port: 80}]
       timeouts: {request: 600s}
-    # Today's web app.
-    - matches:
-        - path: {type: PathPrefix, value: /app}
-      backendRefs: [{name: ferrum-web, port: 80}]
-    # Everything else is the server's: Home, apps' interfaces and the shell's files and pages
-    # (docs/plan/apps-ui.md).
+    # Everything else: Home, apps' interfaces and the shell's files and pages (docs/plan/apps-ui.md),
+    # and today's web app's old addresses (/app/…), which it sends on.
     - backendRefs: [{name: ferrum, port: 80}]

@@ -200,6 +200,12 @@ Pages, for browsers, with the session cookie:
   interface now, or is not installed, `e/{entity}[/{id}]` goes to `/open/…` and anything else to
   `/data/`. `/data/e/…`, `/data/r/…` and `/data/customize/…` are the records of any entity, its
   reports and Customize.
+* `GET /app/…` → `303` to where an address of today's web app (gone since U4b) lives now, with its
+  query: `/app/e/{E}[/{id}]` → `/open/…`, `/app/login` → `/login` (the single sign-on return address
+  providers have registered), `/app/admin…`, `/app/apps…` → `/admin/…`, `/store/…`, `/app/mail…` and
+  the other moved apps → their pages, anything else → `/`. `/app/sw.js` is a worker that clears
+  today's web app's cache and removes itself.
+* `GET /healthz` → `ok` (for load balancers).
 * `GET /login?next=` → the sign-in page.
 * `GET /_ui/{app}/{digest}/{path}` → a file of an interface release: public, `immutable`.
 * `GET /_shell/v1/{file}` → the shell's own files (`runtime.js`, `live-worker.js`, …), the newest of
@@ -210,9 +216,8 @@ For the bar, with the cookie or a token:
 * `GET /api/shell` → `{v, shell, workspace, person, apps: [{id, app, title, description, icon,
   color, compact, url, family}], create: [{app, label, entity, url}], intents: [{app, action, type,
   title, url}], sidepanels: [{id, app, title, icon, contextual, url}], families: [{id, title, apps}],
-  legacy}`: what the caller may use. `family` names the head of the entry's family (`families` lists
-  them, heads first). Entries into today's web app (`classic: true`) appear only for apps whose
-  installed version has no interface of its own; apps without one, without launcher entries of
+  assistant}`: what the caller may use. `family` names the head of the entry's family (`families`
+  lists them, heads first). Apps without an interface of their own, without launcher entries of
   their own, get one entry into their records (`/data/{app}/`, the manifest's name and summary) when
   the person may read one of their entities. `ETag`.
 * `GET /api/shell/version?app=` → `{app, version, release}`: the interface release the workspace

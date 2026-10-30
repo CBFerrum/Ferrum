@@ -13,9 +13,6 @@ images:
   - name: ghcr.io/cbferrum/ferrum
     newName: ferrum
     newTag: ci
-  - name: ghcr.io/cbferrum/ferrum-frontend
-    newName: ferrum-frontend
-    newTag: ci
   - name: ghcr.io/cbferrum/ferrum-editors
     newName: ferrum-editors
     newTag: ci

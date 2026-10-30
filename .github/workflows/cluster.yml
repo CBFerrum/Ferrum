@@ -44,15 +44,14 @@ jobs:
       - name: Images
         run: |
           docker pull "$IMAGE" && docker tag "$IMAGE" ferrum:ci
-          # The web app as its repository builds it, and the browser editors' server from this commit.
-          docker build -q -t ferrum-frontend:ci https://github.com/CBFerrum/Ferrum-Frontend.git#main
+          # The browser editors' server from this commit.
           docker build -q -t ferrum-editors:ci deploy/editors
       - name: Cluster
         run: |
           curl -fsSLo kind "https://github.com/kubernetes-sigs/kind/releases/download/$KIND/kind-linux-amd64"
           chmod +x kind && sudo mv kind /usr/local/bin/kind
           kind create cluster --config deploy/kind/kind.yaml --wait 5m
-          kind load docker-image ferrum:ci ferrum-frontend:ci ferrum-editors:ci
+          kind load docker-image ferrum:ci ferrum-editors:ci
       - name: Install the operators, the gateway and cert-manager
         run: deploy/kind/install.sh
       - name: Deploy and check

@@ -35,7 +35,3 @@ services:
       FERRUM_MEET_URL: ${FERRUM_MEET_URL:?set FERRUM_MEET_URL in deploy/.env (LiveKit as browsers reach it)}
       FERRUM_MEET_KEY: ${FERRUM_MEET_KEY}
       FERRUM_MEET_SECRET: ${FERRUM_MEET_SECRET}
-
-  web:
-    environment:
-      FERRUM_MEET_URL: ${FERRUM_MEET_URL}

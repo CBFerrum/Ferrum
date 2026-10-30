@@ -178,7 +178,9 @@ async function singleSignOn(tenant) {
       try {
         const binding = crypto.randomUUID();
         sessionStorage.setItem("ferrum.sso", JSON.stringify({ binding, next: boot.next }));
-        const { url } = await post("/api/auth/sso/start", { tenant, provider: p.id, redirect_uri: `${location.origin}/login`, binding });
+        // The return address providers have registered (today's web app's); the server sends it on
+        // to this page with the provider's answer.
+        const { url } = await post("/api/auth/sso/start", { tenant, provider: p.id, redirect_uri: `${location.origin}/app/login`, binding });
         location.assign(url);
       } catch (err) {
         say(err.message);

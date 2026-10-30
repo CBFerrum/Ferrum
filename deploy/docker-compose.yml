@@ -1,4 +1,4 @@
-# Single-host deployment: PostgreSQL + the Ferrum server + the web app (which also proxies the API). For production use the Kubernetes manifests
+# Single-host deployment: PostgreSQL + the Ferrum server (every page and the API) + the PDF renderer. For production use the Kubernetes manifests
 # (replicated database, several API replicas, backups) — see docs/operations.md.
 #   cp deploy/.env.example deploy/.env   # then edit the secrets
 #   docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d
@@ -48,9 +48,10 @@ services:
       FERRUM_REQUIRE_OBJECT_STORAGE: ${FERRUM_REQUIRE_OBJECT_STORAGE:-false}
       # Requests a user may make per minute on each replica (0: no limit).
       FERRUM_USER_REQUESTS_PER_MINUTE: ${FERRUM_USER_REQUESTS_PER_MINUTE:-3000}
-      # Per client address, for requests through a proxy (the web container or one of your own).
+      # Per client address. Behind your own proxy (TLS), set FERRUM_PROXY_HOPS to how many there are,
+      # so the server takes the address from X-Forwarded-For.
       FERRUM_ADDRESS_REQUESTS_PER_MINUTE: ${FERRUM_ADDRESS_REQUESTS_PER_MINUTE:-6000}
-      FERRUM_PROXY_HOPS: ${FERRUM_PROXY_HOPS:-1}
+      FERRUM_PROXY_HOPS: ${FERRUM_PROXY_HOPS:-0}
       FERRUM_S3_BUCKET: ${FERRUM_S3_BUCKET:-}
       FERRUM_S3_ENDPOINT: ${FERRUM_S3_ENDPOINT:-}
       FERRUM_S3_REGION: ${FERRUM_S3_REGION:-}
@@ -58,13 +59,20 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       # PDFs of print formats (Download PDF, apps that attach documents); empty turns them off.
       FERRUM_PDF_URL: ${FERRUM_PDF_URL:-http://pdf:3000}
-      # The shell's and ERP's interfaces, which the web app's image offers.
-      FERRUM_UI_SOURCE: ${FERRUM_UI_SOURCE:-http://web:8080/_releases/}
       # The largest file in one request (Drive upload, version, editor save), in MB; the server
-      # holds it in memory meanwhile. Raise FERRUM_MAX_UPLOAD on the web service with it.
+      # holds it in memory meanwhile. A proxy in front must let bodies that large through.
       FERRUM_DRIVE_MAX_FILE_MB: ${FERRUM_DRIVE_MAX_FILE_MB:-32}
       # How long one request may take, its body included (ms): raise it with the file size for slow links.
       FERRUM_REQUEST_TIMEOUT_MS: ${FERRUM_REQUEST_TIMEOUT_MS:-120000}
+      # The Assistant (off without a key; docs/operations.md, "Assistant").
+      FERRUM_ASSISTANT_API_KEY: ${FERRUM_ASSISTANT_API_KEY:-}
+      FERRUM_ASSISTANT_MODEL: ${FERRUM_ASSISTANT_MODEL:-}
+      FERRUM_ASSISTANT_URL: ${FERRUM_ASSISTANT_URL:-}
+      FERRUM_ASSISTANT_EFFORT: ${FERRUM_ASSISTANT_EFFORT:-}
+      FERRUM_ASSISTANT_FALLBACKS: ${FERRUM_ASSISTANT_FALLBACKS:-}
+      FERRUM_ASSISTANT_CALLS_PER_HOUR: ${FERRUM_ASSISTANT_CALLS_PER_HOUR:-}
+    ports:
+      - "${FERRUM_PORT:-8080}:5150"
     volumes:
       - files:/var/lib/ferrum/files
     # As in deploy/k8s: a read-only root filesystem, no capabilities, no privilege escalation.
@@ -80,19 +88,6 @@ services:
     image: gotenberg/gotenberg:8
     restart: unless-stopped
     command: ["gotenberg", "--chromium-disable-javascript=true", "--chromium-allow-list=^(data:|file:///tmp/).*", "--api-timeout=60s"]
-    cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
-
-  web:
-    image: ${FERRUM_WEB_IMAGE:-ghcr.io/cbferrum/ferrum-frontend:latest}
-    restart: unless-stopped
-    depends_on:
-      - ferrum
-    environment:
-      FERRUM_API_URL: http://ferrum:5150
-      FERRUM_MAX_UPLOAD: ${FERRUM_MAX_UPLOAD:-32m}
-    ports:
-      - "${FERRUM_PORT:-8080}:8080"
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
 

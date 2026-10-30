@@ -532,7 +532,6 @@ class FerrumBar extends HTMLElement {
       { class: "foot" },
       el("a", { href: "/" }, icon("layout-dashboard", 15), el("span", { text: "Home" })),
       boot?.person?.admin ? el("a", { href: "/store/" }, icon("shopping-bag", 15), el("span", { text: "Get apps" })) : null,
-      el("a", { href: shellData?.legacy ?? "/app/" }, icon("monitor", 15), el("span", { text: "Classic" })),
     );
     this.launcher.replaceChildren(el("div", { class: "find" }, icon("search", 16), search), grid, foot);
   }
@@ -550,7 +549,6 @@ class FerrumBar extends HTMLElement {
         el("div", {}, el("strong", { text: person.name ?? "" }), el("small", { text: person.email ?? "" }), el("small", { text: boot?.workspace?.name ?? "" })),
       ),
       el("a", { role: "menuitem", href: "/account/" }, icon("user", 16), el("span", { text: "Account and devices" })),
-      el("a", { role: "menuitem", href: shellData?.legacy ?? "/app/" }, icon("monitor", 16), el("span", { text: "Classic interface" })),
       el("hr"),
       el("button", { role: "menuitem", type: "button", onclick: () => guardedLeave(signOut) }, icon("log-out", 16), el("span", { text: "Sign out" })),
     );

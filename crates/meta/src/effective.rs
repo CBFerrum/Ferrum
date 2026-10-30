@@ -156,8 +156,8 @@ pub struct Schema {
     pub fy_start_month: u32,
     /// The tenant's IANA time zone (`Asia/Kolkata`); "today" and "now" are local to it.
     pub timezone: String,
-    /// The tenant's people use the shell and apps with interfaces of their own (the `shell_v2`
-    /// setting, docs/plan/apps-ui.md); every replica learns of a change with the schema's.
+    /// The tenant's people use the shell and apps with interfaces of their own (docs/plan/apps-ui.md):
+    /// every workspace since U4b, whatever its `shell_v2` setting says (kept for the release before).
     pub shell_v2: bool,
 }
 
