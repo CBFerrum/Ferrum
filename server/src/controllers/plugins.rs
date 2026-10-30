@@ -115,9 +115,15 @@ async fn socket(
     let user = if def.public {
         None
     } else {
-        // Browsers cannot set headers on WebSockets: accept the token as `access_token` too.
-        let token = bearer(&headers).or_else(|| query.get("access_token").cloned()).ok_or_else(|| ApiError(Error::Unauthorized("sign in required".into())))?;
-        let ctx = ctx_from_token(&st, &token, request_id(&headers)).await?;
+        // Browsers cannot set headers on WebSockets: accept the token as `access_token` too, or
+        // the browser's session cookie from a page of this site.
+        let ctx = match bearer(&headers).or_else(|| query.get("access_token").cloned()) {
+            Some(token) => ctx_from_token(&st, &token, request_id(&headers)).await?,
+            None => crate::extract::socket_credential(&st, &headers)
+                .await?
+                .map(|(_, ctx)| ctx)
+                .ok_or_else(|| ApiError(Error::Unauthorized("sign in required".into())))?,
+        };
         if ctx.tenant != tenant {
             return Err(ApiError(Error::Forbidden("this token belongs to another workspace".into())));
         }

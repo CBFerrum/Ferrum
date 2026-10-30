@@ -92,10 +92,94 @@ async fn page_bootstrap(
     Ok((shell::bootstrap(&ws, host, ctx, &kind, &state, app, kind_of_page), kind))
 }
 
-/// `GET /`: the shell's Home. Until the shell app ships its own (phase U2), today's web app,
-/// with its own sign-in (a temporary redirect: Home takes `/` over later).
-async fn home() -> Response {
-    Redirect::to("/app/").into_response()
+/// `GET /`: the shell's Home for a workspace on the shell (`shell_v2`); everyone else goes to
+/// today's web app, with its own sign-in (a temporary redirect, so no browser keeps it).
+async fn home(State(app): State<AppContext>, headers: HeaderMap, uri: Uri) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    if shell::session_cookie(&headers, st.shell.secure).is_some()
+        && let Ok((ctx, device)) = caller_on(&st, &Method::GET, &headers).await
+        && st.shell.workspace(ctx.tenant).await?.shell_v2
+    {
+        return shell_page(&st, &headers, ctx, device, "").await;
+    }
+    // The server's one workspace (shape A) on the shell: its sign-in.
+    if let Place::Workspace(t) = st.shell.place(&headers).await?
+        && st.shell.workspace(t).await?.shell_v2
+    {
+        return Ok(to_login(&uri));
+    }
+    Ok(Redirect::to("/app/").into_response())
+}
+
+/// The shell's own pages (`/`, `/store/`, `/admin/`, `/account/`, `/data/`) for a workspace on
+/// the shell, from the shell's interface release.
+async fn shell_page(st: &AppState, headers: &HeaderMap, ctx: Ctx, device: Option<Uuid>, route: &str) -> ApiResult<Response> {
+    let (boot_status, kind) = match page_bootstrap(st, headers, &ctx, device, json!(null), "status").await {
+        Ok(b) => b,
+        Err(r) => return Ok(r),
+    };
+    if kind != "member" {
+        return Ok(status_page(
+            StatusCode::FORBIDDEN,
+            "Nothing here for you",
+            "This workspace has shared particular things with you; open them from the links you were sent.",
+            &[],
+            Some(&boot_status),
+        ));
+    }
+    let Some(release) = st.shell.release_for(ctx.tenant, shell::SHELL_APP, shell::SHELL_VERSION).await? else {
+        return Ok(status_page(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Home cannot open",
+            "This server has no interface for the shell. An operator can add it (settings.ui_dir), or turn the workspace back to the classic interface.",
+            &[("Classic interface", "/app/")],
+            Some(&boot_status),
+        ));
+    };
+    let entry: ferrum_apps::ui::EntryTemplate =
+        serde_json::from_value(release.entry.clone()).map_err(|e| ApiError(Error::internal(format!("the shell's release {}: {e}", release.digest))))?;
+    let mut routes = serde_json::Map::new();
+    routes.insert(String::new(), json!("/"));
+    for r in shell::SHELL_ROUTES {
+        routes.insert((*r).to_string(), json!(format!("/{r}/")));
+    }
+    let title = match route {
+        "store" => "Apps",
+        "admin" => "Administration",
+        "account" => "Account",
+        "data" => "Records",
+        _ => "Home",
+    };
+    let app_json = json!({"id": shell::SHELL_APP, "version": shell::SHELL_VERSION, "release": release.digest, "routes": routes, "entry": route, "title": title, "compact": false});
+    let (boot, _) = match page_bootstrap(st, headers, &ctx, device, app_json, "page").await {
+        Ok(b) => b,
+        Err(r) => return Ok(r),
+    };
+    Ok(not_modified(headers, shell::entry_page(&entry, &boot, &shell::csp(None, &Value::Null))))
+}
+
+/// `/store/`, `/admin/`, `/account/`, `/data/…`: the shell's pages for a workspace on the shell;
+/// for one that is not, their places in today's web app.
+async fn shell_core(st: &AppState, headers: &HeaderMap, uri: &Uri, first: &str, rest: Option<&str>) -> ApiResult<Response> {
+    let (ctx, device, _) = match person(st, headers, uri).await {
+        Ok(p) => p,
+        Err(r) => return Ok(r),
+    };
+    if st.shell.workspace(ctx.tenant).await?.shell_v2 {
+        if rest.is_none() {
+            return Ok(Redirect::permanent(&format!("/{first}/")).into_response());
+        }
+        return shell_page(st, headers, ctx, device, first).await;
+    }
+    let rest = rest.unwrap_or_default().trim_end_matches('/');
+    let to = match first {
+        "store" => "/app/apps".to_string(),
+        "admin" => format!("/app/admin{}", if rest.is_empty() { String::new() } else { format!("/{rest}") }),
+        "account" => "/app/settings".to_string(),
+        _ if rest.is_empty() => "/app/".to_string(),
+        _ => format!("/app/e/{rest}"),
+    };
+    Ok(Redirect::to(&to).into_response())
 }
 
 /// `GET /{*path}`: everything under the root no other route answers.
@@ -110,6 +194,9 @@ async fn page(
     let mut parts = path.splitn(2, '/');
     let first = parts.next().unwrap_or_default();
     let rest = parts.next();
+    if shell::SHELL_ROUTES.contains(&first) {
+        return shell_core(&st, &headers, &uri, first, rest).await;
+    }
     match first {
         "_ui" => return ui_file(&st, rest.unwrap_or_default(), &headers).await,
         "_shell" => return platform_file(rest.unwrap_or_default()),
@@ -346,18 +433,24 @@ async fn open(st: &AppState, headers: &HeaderMap, uri: &Uri, rest: &str, q: &[(S
     let kind = st.shell.kind(ctx.tenant, ctx.user).await?;
     let apps = st.apps.shell_apps(ctx.tenant).await?;
     let via = query(q, "via");
+    let package = ctx.schema.entity(entity).map(|e| e.package.clone());
     let mut best: Option<(i64, usize, String)> = None;
     for (order, app) in apps.iter().enumerate() {
         let usable = app.items("shell.app").any(|item| may_use(&ctx, &kind, item));
         if !usable {
             continue;
         }
-        for item in app.items("shell.open").filter(|i| i.get("entity").and_then(Value::as_str) == Some(entity)) {
+        // An entry for this entity, or for every entity of its package (a records interface).
+        let shows = |i: &&Value| {
+            i.get("entity").and_then(Value::as_str) == Some(entity) || (package.is_some() && i.get("package").and_then(Value::as_str) == package.as_deref())
+        };
+        for item in app.items("shell.open").filter(shows) {
             let Some(path) = item.get("path").and_then(Value::as_str) else { continue };
-            let rank = if via == Some(app.id.as_str()) { i64::MAX } else { item.get("priority").and_then(Value::as_i64).unwrap_or(0) };
+            let exact = item.get("entity").is_some();
+            let rank = if via == Some(app.id.as_str()) { i64::MAX } else { item.get("priority").and_then(Value::as_i64).unwrap_or(0) * 2 + i64::from(exact) };
             let better = best.as_ref().is_none_or(|b| rank > b.0 || (rank == b.0 && order < b.1));
             if better {
-                best = Some((rank, order, format!("/{}", path.replace("{id}", &seg(&id)))));
+                best = Some((rank, order, format!("/{}", path.replace("{entity}", &seg(entity)).replace("{id}", &seg(&id)))));
             }
         }
     }
@@ -365,7 +458,8 @@ async fn open(st: &AppState, headers: &HeaderMap, uri: &Uri, rest: &str, q: &[(S
         return Ok(Redirect::to(&to).into_response());
     }
     if ctx.perms.access(entity, ferrum_kernel::Action::Read) != ferrum_kernel::Access::None {
-        return Ok(Redirect::to(&format!("/app/e/{}/{}", seg(entity), seg(&id))).into_response());
+        let records = if st.shell.workspace(ctx.tenant).await?.shell_v2 { "/data" } else { "/app/e" };
+        return Ok(Redirect::to(&format!("{records}/{}/{}", seg(entity), seg(&id))).into_response());
     }
     let boot = match page_bootstrap(st, headers, &ctx, device, json!(null), "status").await {
         Ok((b, _)) => b,
@@ -431,6 +525,14 @@ async fn shell_info(Auth(ctx): Auth, State(app): State<AppContext>, headers: Hea
         }
         for item in a.items("shell.sidepanel") {
             panels.push(json!({"id": item.get("id"), "app": a.id, "title": item.get("title"), "icon": item.get("icon"), "url": format!("/{}", item.get("path").and_then(Value::as_str).unwrap_or_default())}));
+        }
+    }
+    // Apps whose pages are still in today's web app: entries into it, until they have their own.
+    if ws.shell_v2 && kind == "member" {
+        for (app_id, title, path, color) in shell::CLASSIC_ENTRIES {
+            if apps.iter().any(|a| a.id == *app_id) {
+                launcher.push(json!({"id": format!("classic-{}", title.to_lowercase().replace(' ', "-")), "app": app_id, "title": title, "color": color, "compact": false, "url": path, "classic": true}));
+            }
         }
     }
     let body = json!({

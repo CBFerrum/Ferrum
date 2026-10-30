@@ -89,6 +89,8 @@ macro_rules! apps {
             // Drive's add-on Browser editors: a manifest without code, shipped with Drive.
             #[cfg(feature = "drive")]
             out.push(ferrum_app_drive::EDITORS_MANIFEST);
+            // ERP, over the platform's own packages (docs/plan/apps-ui.md).
+            out.push(ERP_MANIFEST);
             out
         }
 
@@ -134,6 +136,9 @@ apps! {
     legacy {
     }
 }
+
+/// ERP's app manifest: its interface at /erp/ and the records it shows.
+pub const ERP_MANIFEST: &str = include_str!("../apps/erp/app.yaml");
 
 /// The catalog this build starts from: the platform's embedded packages, the native apps'
 /// embedded packages, and extra packages from `dir` (metadata-only packages an operator adds, and
@@ -192,14 +197,27 @@ mod tests {
     fn compiled_apps_fit_together() {
         let natives: Vec<_> =
             super::native_manifests().into_iter().map(|m| ferrum_apps::AppManifest::parse(m).unwrap_or_else(|e| panic!("{e}\n{m}"))).collect();
-        // What a compiled app contributes to another's extension point meets that point's schema.
+        // What a compiled app contributes to another's extension point meets that point's schema
+        // (the platform's own points, screens and the shell's, are checked by the manifest).
+        let platform = |p: &str| ferrum_apps::UI_POINTS.contains(&p) || ferrum_apps::shell::SHELL_POINTS.contains(&p);
         for m in &natives {
-            for (point, items) in m.contributes.iter().filter(|(p, _)| !ferrum_apps::UI_POINTS.contains(&p.as_str())) {
+            for (point, items) in m.contributes.iter().filter(|(p, _)| !platform(p)) {
                 let owner =
                     natives.iter().find(|o| o.extension_points.contains_key(point)).unwrap_or_else(|| panic!("{}: no compiled app offers {point}", m.id));
                 let schema = owner.extension_points[point].schema.clone().unwrap_or_default();
                 for item in items {
                     ferrum_apps::contract::conforms(&ferrum_apps::contribution_body(item), &schema).unwrap_or_else(|e| panic!("{} on {point}: {e}", m.id));
+                }
+            }
+        }
+        // No two compiled apps share an address.
+        let mut routes = std::collections::BTreeMap::new();
+        for m in &natives {
+            for (route, aliases) in m.routes() {
+                for r in std::iter::once(route).chain(aliases) {
+                    if let Some(other) = routes.insert(r.clone(), m.id.clone()) {
+                        panic!("/{r}/ belongs to both {other} and {}", m.id);
+                    }
                 }
             }
         }

@@ -16,8 +16,23 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
   * Sessions: cookie sessions with Fetch-Metadata checks, and bound tokens for today's web app.
   * Runtime: the bar runtime (`server/shell/`), with the launcher, intents, companion windows, the
     shared live channel and version checks.
-  * Not yet: the App access and devices pages, which come with the shell app (U2) on top of
-    `/api/auth/sessions` and roles; `ferrum-app dev --ui`; `@ferrum/testing` (U2).
+  * Not yet: `ferrum-app dev --ui`.
+* **U2, frontend split: built.**
+  * Ferrum-Frontend packages: `@ferrum/client` (the bootstrap, the shell API with fallbacks,
+    requests with the browser's session) and `@ferrum/testing`. `@ferrum/kit`, `@ferrum/records`
+    and `@ferrum/bridge` are entry points over today's modules, which move as apps leave the web
+    app.
+  * Apps: `apps/shell` (Home, the store, administration, the account with signed-in browsers, and
+    records at `/data/e/{entity}/{id}`) and `apps/erp` (ERP at `/erp/`). They are built to
+    `dist-apps/` with an index of digests; the server fetches them from the web app's image
+    (`FERRUM_UI_SOURCE`).
+  * Today's web app picks up the browser's session and sends a workspace on the shell to its new
+    pages.
+  * Server: the `shell_v2` setting, carried in the schema so every replica knows at once; the
+    shell's pages; ERP as an app, installed wherever its packages are; records claimed by package
+    (`shell.open` with `package`); launcher entries into today's web app for Comms, Drive and Docs.
+  * Not yet: ERP's main script is 299 KB compressed, against a 200 KB budget; the packages are
+    built from source in Ferrum-Frontend, not yet published to npm.
 
 Contents: 1 where we are · 2 goals and targets · 3 what others do · 4 rules · 5 decisions ·
 6 the person's view · 7 addresses and deployment shapes · 8 the core shell · 9 people, sessions,

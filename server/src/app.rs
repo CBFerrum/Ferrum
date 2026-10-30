@@ -159,6 +159,7 @@ impl Hooks for App {
         let apps = crate::appmgr::AppManager::new(kernel.clone(), plugins.clone(), storage.clone(), &settings.apps, crate::appmgr::compiled_natives())
             .map_err(Error::Message)?;
         let shell = Arc::new(crate::shell::Shell::new(kernel.clone(), storage.clone(), &settings, &ctx.config.server.host));
+        apps.ensure_erp().await;
         crate::shell::register_compiled(&kernel, &storage, &settings, &apps).await;
         let (tx, _rx) = watch::channel(false);
         let db = kernel.db.clone();
@@ -199,6 +200,27 @@ impl Hooks for App {
         listeners.push(state.plugins.sockets.spawn_listener(state.kernel.db.clone(), state.shutdown.subscribe()));
         listeners.push(state.live.spawn_listener(state.kernel.clone(), state.shutdown.subscribe()));
         listeners.extend(state.docs.spawn(state.kernel.clone(), state.shutdown.subscribe()));
+        // The web app's image offers the shell's and its apps' interfaces: fetch them, then look
+        // for new ones every ten minutes (every replica: registering is idempotent).
+        if !state.settings.ui_source.trim().is_empty() {
+            let (st, mut stop) = (state.clone(), state.shutdown.subscribe());
+            let storage = ctx.storage.clone();
+            listeners.push(tokio::spawn(async move {
+                loop {
+                    let wait = match crate::shell::pull_releases(&st.kernel, &storage, &st.apps, &st.settings.ui_source).await {
+                        Ok(_) => Duration::from_secs(600),
+                        Err(e) => {
+                            tracing::warn!("fetching interfaces failed (retrying in 30 s): {e}");
+                            Duration::from_secs(30)
+                        }
+                    };
+                    tokio::select! {
+                        _ = stop.changed() => return,
+                        _ = tokio::time::sleep(wait) => {}
+                    }
+                }
+            }));
+        }
         state.background.lock().await.extend(listeners);
         if state.settings.run_background {
             let mut handles = state.kernel.spawn_background(state.shutdown.subscribe());
