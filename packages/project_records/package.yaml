@@ -1,0 +1,5 @@
+package: project_records
+version: 0.1.0
+label: Projects (records)
+description: The projects other apps share — ERP's journals, orders, invoices and budgets, expense claims, the Projects app's tasks and timesheets.
+depends: [core, parties]

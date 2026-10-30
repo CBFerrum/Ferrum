@@ -140,10 +140,10 @@ contributes:
 
 ## Records other apps share
 
-The core holds only what every app needs: companies, currencies and their exchange rates, units
-(and projects, until the Projects app takes them). People outside the workspace and their
-addresses are in `contacts`, customers and suppliers in `parties`, items and price lists in
-`products`; ERP's packages (accounting, inventory, buying, selling,
+The core holds only what every app needs: companies, currencies and their exchange rates, units.
+People outside the workspace and their addresses are in `contacts`, customers and suppliers in
+`parties`, items and price lists in `products`, projects in `project_records` (ERP's documents,
+budgets and expense claims carry a project; the Projects app adds the work on it); ERP's packages (accounting, inventory, buying, selling,
 manufacturing) bring the accounting, stock and buying records and add their fields to the shared
 ones (a customer's receivable account, an item's stock settings). Depend on the least you need:
 `parties` for customers, `products` for items, ERP's packages only for their own records.

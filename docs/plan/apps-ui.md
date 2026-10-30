@@ -85,8 +85,19 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     (salary components' accounts, payroll cost centers, payroll entries' accounts and bank entry,
     the company's payroll accounts). The `hr-erp` step installs them where HR and accounting are.
   * The domain's company set-up creates warehouses only where inventory is.
-  * Not yet: Project into the Projects app with `projects-erp`; `requires: {erp}` on Commerce,
-    POS, Field service, Assets and Bookings; removing a suite's members nothing else needs.
+* **U3: Project as a shared record (the §20.4 alternative), built.** Moving Project into the
+  Projects app proved costly: ERP's ledger has a foreign key to it, and Finance's budget engine
+  reads project columns across budgets, orders and journal lines in SQL. Every build or test
+  without the Projects app would break, with budgets and journals with them.
+  * Project left `core` for the hidden platform package `project_records`, which ERP's accounting
+    depends on. ERP's documents, budgets and expense claims keep their project fields.
+  * The Projects app 0.2.0 depends on core, parties and project_records. Its connector app
+    `projects-erp` (package `projects_erp`) brings only Projects' invoicing: "Create Sales
+    Invoice", service items, billing item and cost center, and the invoices' links.
+  * The `project-records` step installs the package in a workspace that has projects without
+    ERP. An entity's list columns, like its form, may name fields other packages add.
+  * Not yet: `requires: {erp}` on Commerce, POS, Field service, Assets and Bookings; removing a
+    suite's members nothing else needs.
 
 Contents: 1 where we are · 2 goals and targets · 3 what others do · 4 rules · 5 decisions ·
 6 the person's view · 7 addresses and deployment shapes · 8 the core shell · 9 people, sessions,
@@ -934,7 +945,7 @@ Field service, POS, Commerce and CRM's quotations link to accounting or inventor
 | `parties` (new, hidden) | Customer, CustomerGroup, Supplier, SupplierGroup | with CRM, Helpdesk, Commerce, POS, Field service, ERP |
 | `products` (new, hidden) | Item, ItemGroup, ItemUom, PriceList, ItemPrice | with CRM, Commerce, POS, Field service, ERP |
 | `accounting`, `inventory`, `selling`, `buying`, `manufacturing` | as today, plus Account, CostCenter, FiscalYear, TaxTemplate, TaxRow, ItemTaxRate (accounting), Warehouse and ItemSupplier (inventory, buying) | through the **ERP** app |
-| Project | moves to the Projects app; ERP's project fields (vouchers, orders, expenses) move to the `projects-erp` connector as overlays | with Projects |
+| Project | `project_records`, a shared record (§20.4's alternative, chosen in U3: ERP's ledger and budgets depend on it); the Projects app adds the work on it, `projects-erp` its invoicing | with ERP or Projects |
 | ERP-only fields on shared records (a customer's receivable account, an item's stock settings) | overlays from the ERP packages, which the kernel supports today | with ERP |
 
 Rules:

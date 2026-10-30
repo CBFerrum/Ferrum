@@ -15,6 +15,10 @@ pub const ERP_PACKAGES: &[&str] = &["accounting", "inventory", "buying", "sellin
 /// (the groups and price lists every workspace was seeded with don't count).
 pub const CORE_SPLIT: &str = "core-split";
 
+/// Project left `core` for `project_records`, which ERP's accounting depends on: a workspace with
+/// projects but without it (no ERP) gets it, so it keeps them.
+pub const PROJECT_RECORDS: &str = "project-records";
+
 /// Apps whose couplings with ERP moved into connector packages: (step, [(connector package, the
 /// packages a workspace had it with)]). Such a workspace gets the connector, so it keeps them.
 /// * `crm-erp`: quotations' taxes, sales orders made from quotations (CRM 0.2.0);
@@ -35,6 +39,7 @@ pub async fn run(k: &Kernel) -> Result<()> {
     sqlx::query("select pg_advisory_lock($1)").bind(LOCK).execute(&mut *conn).await?;
     let out = async {
         core_split(k).await?;
+        project_records(k).await?;
         for (step, connectors) in CONNECTORS {
             connector_step(k, step, connectors).await?;
         }
@@ -115,6 +120,22 @@ async fn core_split(k: &Kernel) -> Result<()> {
     }
     if moved > 0 {
         tracing::info!(workspaces = moved, "{CORE_SPLIT}: done");
+    }
+    Ok(())
+}
+
+async fn project_records(k: &Kernel) -> Result<()> {
+    for tenant in pending(k, PROJECT_RECORDS).await? {
+        let mut tx = k.db.system_tenant_tx(tenant).await?;
+        let installed: Vec<String> = sqlx::query_scalar("select name from installed_package where tenant_id = $1").bind(tenant).fetch_all(&mut *tx).await?;
+        let reach = k.registry.catalog().closure(&installed).unwrap_or_default();
+        let want = if !reach.iter().any(|p| p == "project_records") && has_records(&mut tx, tenant, &["Project"]).await? {
+            vec!["project_records".to_string()]
+        } else {
+            vec![]
+        };
+        tx.commit().await?;
+        finish(k, tenant, PROJECT_RECORDS, &installed, &want).await?;
     }
     Ok(())
 }

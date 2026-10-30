@@ -192,6 +192,10 @@ deploy/kind/install.sh && deploy/kind/smoke.sh
   with HR and accounting gets `hr_erp` (expense claims and advances) and `payroll_erp` (payroll's
   accounts and postings).
 
+  `project-records` comes with the release that moved Project out of `core` into the shared
+  `project_records` package (ERP's accounting depends on it): a workspace with projects but
+  without ERP gets it.
+
   To go back to a release before such a step, run `ferrum task upgrade_back step:<name>`
   (`core-split`) with every replica of the newer release stopped, then start the older image. The
   task takes out the packages the step installed and keeps the data.

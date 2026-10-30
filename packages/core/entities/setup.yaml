@@ -62,22 +62,3 @@
   rules:
     - {name: different, check: "doc.from_currency != doc.to_currency", message: "Currencies must differ"}
   list: {sort: valid_from desc}
-
-- name: Project
-  label: Project
-  kind: master
-  module: setup
-  title_field: project_name
-  company_scoped: true
-  numbering: {template: "PROJ-{seq:4}"}
-  fields:
-    - {name: project_name, type: data, required: true, in_list: true}
-    - {name: company, type: link, to: Company, required: true, in_filter: true}
-    - {name: status, type: select, options: [Open, Completed, Cancelled], default: Open, in_list: true, in_filter: true}
-    - {name: start_date, type: date}
-    - {name: end_date, type: date}
-    - {name: budget, type: currency, currency: currency}
-    - {name: currency, type: link, to: Currency, fetch_from: company.default_currency, read_only: true}
-    - {name: notes, type: text}
-  rules:
-    - {name: dates, check: "doc.end_date == null || doc.start_date == null || doc.end_date >= doc.start_date", message: "End date is before start date"}

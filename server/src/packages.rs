@@ -164,6 +164,22 @@ pub const INDIA_MANIFEST: &str = include_str!("../apps/india/app.yaml");
 pub fn base_catalog(dir: &Path) -> Result<Catalog, String> {
     let mut pkgs = ferrum_domain::packages().map_err(|e| format!("platform packages: {e}"))?;
     pkgs.extend(native_packages()?);
+    // A connector between two compiled apps ships with one of them: without the other in this
+    // build it is left out.
+    loop {
+        let names: std::collections::HashSet<String> = pkgs.iter().map(|p| p.name().to_string()).collect();
+        let before = pkgs.len();
+        pkgs.retain(|p| {
+            let ok = p.manifest.depends.iter().all(|d| names.contains(d));
+            if !ok {
+                tracing::warn!(package = p.name(), "left out: this build lacks a package it depends on");
+            }
+            ok
+        });
+        if pkgs.len() == before {
+            break;
+        }
+    }
     if dir.is_dir() {
         let mut dirs: Vec<_> = std::fs::read_dir(dir)
             .map_err(|e| format!("{}: {e}", dir.display()))?
