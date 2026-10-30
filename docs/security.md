@@ -61,7 +61,9 @@ operator to know. Report a vulnerability privately to the maintainers rather tha
 * E-invoices: the direct IRP connection signs in with the credentials RSA-encrypted under the
   IRP's public key and exchanges payloads AES-encrypted under the session key the IRP returns
   (its client secret and password are sealed secret fields); a signed QR code is checked for the
-  invoice, its number and the seller, and against the IRP's signing key when the company has it.
+  invoice, its number and the seller, and for its signature: under the key the company names, or
+  else, for codes NIC issued, under NIC's published signing keys (shipped in
+  `crates/domain/src/nic_keys`, verified against NIC's own signed sample).
 * Outbound requests (webhooks, plugins, identity providers, the IRP): https, hosts resolved once and
   pinned, private and loopback addresses refused, no redirects, time and size limits. Plugins
   reach only the hosts they declare; identity providers on a private network need
@@ -123,9 +125,11 @@ Found and fixed:
   `FERRUM_PROXY_HOPS` says how many proxies to trust.
 
 Known and accepted:
-* A signed QR code is checked against the IRP's signature only when the company has entered the
-  IRP's signing key; without it, recording one by hand is checked for the invoice, number and
-  seller, needs submit permission and lands in the audit trail.
+* NIC rotates its QR signing keys (the shipped ones run to 1 May 2027). A code under a NIC key a
+  release does not know is refused when entered by hand, until NIC's new key is added to
+  `nic_keys` or entered as the company's IRP QR key. From the direct connection, where the code
+  comes straight from the IRP, it is recorded and the gap logged so invoicing does not stop. A
+  private IRP's codes are checked only when the company enters that IRP's key.
 * Session tokens are readable by script on the app's origin; the Content Security Policy is what
   keeps foreign script out.
 * Security keys (WebAuthn) and SAML are not supported.

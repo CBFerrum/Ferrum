@@ -424,9 +424,13 @@ Three ways to the IRP:
   encrypted, and records the answer — or the IRP's reason for refusing it on the invoice
   (*e-Invoice Error*). When an answer is lost on the way back, the retry finds the IRN the IRP
   already made and fetches it; when the IRP cannot be reached, the request is retried with
-  backoff. Cancellations and e-way bills by IRN go the same way. Enter the IRP's signing key
-  (PEM) too, and every signed QR code recorded — by the connection or by hand — must carry its
-  signature.
+  backoff. Cancellations and e-way bills by IRN go the same way. Signed QR codes NIC issued are
+  checked against NIC's published signing keys, which Ferrum ships; a private IRP's are checked
+  when you enter its signing key (PEM) as the company's IRP QR key, which also overrides NIC's.
+  When NIC publishes a new key (einvoice1.gst.gov.in/Others/Publickeys; the current ones run to
+  1 May 2027), recording a QR code by hand under it fails with a message naming its key until
+  Ferrum ships the key or you enter it as the company's IRP QR key; codes from the direct
+  connection keep being recorded, with a warning in the log.
 
   Through a GSP that passes NIC's API through, the API address is the GSP's and *GSP Headers*
   holds its own credentials as a JSON object of header names and text values, for example
