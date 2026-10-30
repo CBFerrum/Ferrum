@@ -341,6 +341,10 @@ Set `OFFICE_PUBLIC_URL` and `OFFICE_PUBLIC_HOST` to the editor's public address.
 * let only the editor's pods reach `/api/site/*/drive/wopi/` (network policy).
 
 **Things to know**
+* **People in the editor:** the editor tells the web app who is in a file. Its Share, version
+  history and close buttons open Drive's own, through messages to the web app's origin. The server
+  names that origin from its `PUBLIC_URL`, which must be the address people open: without it, the
+  editor keeps its own buttons.
 * **Production terms:** CODE, the image `deploy/office.yml` uses, is a development edition.
   Production use means a Collabora Online subscription or a build from source.
 * **Proof key:** give the editor one, and every WOPI call must carry its signature over the token,

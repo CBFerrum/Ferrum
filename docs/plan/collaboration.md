@@ -8,8 +8,8 @@ platform) and [browser-editors.md](browser-editors.md).
 
 | Google Workspace | Ferrum today | Plan |
 |---|---|---|
-| Co-editing documents, sheets and presentations live, with others' cursors | Built (C3): Drive's own documents are co-edited in the web app, with no editor server. The online editor (Collabora or ONLYOFFICE over WOPI) co-edits Office files. Browser editors are single-user, one session at a time. | C2: co-editing Office files as the visible default |
-| Comments, suggestions and @mentions inside a document | In the online editor (comments, track changes) | C2 |
+| Co-editing documents, sheets and presentations live, with others' cursors | Built (C3): Drive's own documents are co-edited in the web app, with no editor server. Built (C2): the online editor (Collabora or ONLYOFFICE over WOPI) co-edits Office files, and the web app shows who is in them and offers to join. Browser editors are single-user, one session at a time. | |
+| Comments, suggestions and @mentions inside a document | In the online editor (comments, track changes). Not yet in live documents (C3). | |
 | Comments on files, @mentions | Drive comments (Commenter access), no mentions, no screen | **C1** |
 | Sharing with people and groups as viewer, commenter or editor; links with expiry | Drive's server (people, teams, roles, links with expiry, password and download caps); no screen | **C1** |
 | Request access | None | **C1** |
@@ -87,6 +87,43 @@ things.
   (`UI_FileVersions`, `UI_Share`).
 * Browser editors stay single-user. While someone holds a file in one, others are told so and
   offered the online editor in read-only.
+
+**Status, 30 October 2026: built** (Drive 0.7.1; the web app's editor page, Drive's list and
+details panel).
+* **Drive.** CheckFileInfo names the web app's origin (`PostMessageOrigin`, from the server's
+  `PUBLIC_URL`) and asks the editor to hand over its buttons: Share for people who may manage the
+  file (`EnableShare`, `FileSharingPostMessage`), version history (`FileVersionPostMessage`) and
+  close (`ClosePostMessage`). Collabora's page is opened with `closebutton=1` and
+  `revisionhistory=1`, without which it hides those two. Without `PUBLIC_URL` the editor keeps its
+  own buttons.
+* **The editor page** listens to its own frame only, at the editor's origin.
+  * Who else is in the file, in the editor's colours: the list after loading (`Get_Views`), then
+    every change (`Views_List` in Collabora 26, `View_Added` and `View_Removed` before). Each
+    person once, viewers marked. Where the editor does not list them (ONLYOFFICE), Drive's presence
+    stands in.
+  * Unsaved changes (`Doc_ModifiedStatus`).
+  * The editor's Share opens Drive's Share dialog, its version history opens Drive's versions
+    beside the editor, and its close button goes back.
+* **Drive's list** says Join, not Edit online, when others are editing a file in the online editor
+  or a live document. "Open with" says whom you would join, or that a browser editor would be read
+  only. The details panel says "Join them".
+* **Browser editors:** whoever finds a file held in one is offered the online editor, read only,
+  and told who holds it. Drive's presence marks that person (`"editor": "browser"`), so nobody is
+  offered to join them.
+
+Checked in Chrome against Collabora CODE 26.04.5.2, with two people:
+* Ana joining and leaving, in the administrator's bar;
+* Join in Drive's list and "Join them" in the details;
+* unsaved changes while typing, saved as a new version on closing;
+* the editor's version history, Share and close buttons opening Drive's versions, Share dialog
+  and Drive;
+* a file held in a browser editor: Open rather than Join, "read only while others edit", and the
+  online editor offered read only.
+
+Tests: Drive's end-to-end test (CheckFileInfo, the editor's address, presence in a browser editor)
+and the web app's reading of the editor's messages, from Collabora 26 and older.
+
+Things to know: Collabora shows first-run welcome slides and a short tour once per browser.
 
 ### C3. Documents co-edited natively
 
