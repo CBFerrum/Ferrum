@@ -8,7 +8,7 @@ logger:
 server:
   port: <%= get_env(name="PORT", default="5150") %>
   binding: <%= get_env(name="BINDING", default="127.0.0.1") %>
-  host: http://localhost
+  host: <%= get_env(name="PUBLIC_URL", default="http://localhost") %>
   middlewares:
     # Unknown routes get a plain 404, never Loco's demo page.
     fallback:
