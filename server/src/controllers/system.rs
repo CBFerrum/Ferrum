@@ -290,7 +290,6 @@ async fn download(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path
 pub fn routes() -> Routes {
     use axum::routing::{get, post};
     Routes::new()
-        .add("/", get(|| async { axum::response::Redirect::permanent("/app/") }))
         .add("/api/ready", get(ready))
         .add("/api/version", get(version))
         .add("/metrics", get(metrics))

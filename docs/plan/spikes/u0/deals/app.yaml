@@ -1,0 +1,15 @@
+id: u0-deals
+name: Deals (spike)
+version: 0.1.0
+publisher: cbferrum
+summary: A tiny app with an interface of its own, for checking the shell
+categories: [developer]
+runtime: meta
+platform: ">=0.3.1, <0.4"
+ui:
+  dist: ui/dist
+contributes:
+  shell.app:
+    - {id: deals, route: deals, title: Deals, description: Spike app for the shell, color: "#0f766e", aliases: [pipeline]}
+  shell.create:
+    - {id: deal, label: Deal, path: deals/new}

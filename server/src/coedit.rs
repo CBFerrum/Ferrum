@@ -21,7 +21,7 @@
 //! by a sweep for documents a stopped replica left unsaved.
 
 use crate::error::{ApiError, ApiResult};
-use crate::extract::{bearer, ctx_from_token, request_id};
+use crate::extract::ctx_from_token;
 use crate::state::{AppState, app_state};
 use axum::extract::ws::{CloseFrame, Message as Ws, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
@@ -697,13 +697,7 @@ async fn socket(
     upgrade: WebSocketUpgrade,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    let pre = match bearer(&headers) {
-        Some(token) => {
-            let ctx = ctx_from_token(&st, &token, request_id(&headers)).await?;
-            Some((token, ctx))
-        }
-        None => None,
-    };
+    let pre = crate::extract::socket_credential(&st, &headers).await?;
     Ok(upgrade.max_message_size(MAX_MESSAGE).on_upgrade(move |ws| serve(st, package, doc, pre, ws)))
 }
 

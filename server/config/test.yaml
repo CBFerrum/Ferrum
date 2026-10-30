@@ -38,6 +38,9 @@ auth:
     expiration: 3600
 
 settings:
+  default_workspace: "<%= get_env(name="FERRUM_DEFAULT_WORKSPACE", default="") %>"
+  ui_dir: "<%= get_env(name="FERRUM_UI_DIR", default="") %>"
+  session_days: <%= get_env(name="FERRUM_SESSION_DAYS", default="14") %>
   packages_dir: <%= get_env(name="FERRUM_PACKAGES_DIR", default="../packages") %>
   db_max_connections: 10
   bootstrap_token: test-bootstrap-token

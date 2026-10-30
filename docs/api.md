@@ -31,9 +31,29 @@ OpenAPI 3.1 document is at `GET /api/openapi.json` (it includes every customizat
 | `POST /2fa/enable` | `{code}` → `{recovery_codes}` (ten, shown once; and `token`, a full session, when called with a setup-only token) |
 | `POST /2fa/recovery-codes` | `{code}` → `{recovery_codes}`: new ones replace the old |
 | `POST /2fa/disable` | `{password}` or `{code}` → `204` |
-| `POST /logout_all` | revokes every session of the caller |
+| `POST /logout_all` | revokes every session of the caller (and clears the session cookie) |
+| `POST /logout` | signs this browser out: its session ends, with the tokens bound to it, and the cookie is cleared → `204` |
+| `POST /token` | (session cookie) → `{token, token_type, expires_in, tenant, email}`: a bearer token for a page that still sends one, bound to the browser's session |
+| `GET /sessions?user=` | → `{sessions: [{id, user_id, actor, created_at, last_seen_at, expires_at, user_agent, ip, current}]}`: the signed-in browsers of the caller (administrators: of `user`) |
+| `DELETE /sessions/{id}` | signs one browser out (one's own; administrators: anyone's) |
+| `POST /step-up` | `{password, code?}` → `204`: the person proved themselves again; sensitive actions accept the session for ten minutes |
 | `POST /password` | `{current_password, new_password}` (policy: ≥10 chars, 3 of lower/upper/digit/symbol) |
 | `GET /api_keys`, `POST /api_keys` `{name, expires_at?, scope?}` → `{id, key}`, `DELETE /api_keys/{id}` | API keys (secret shown once). `scope: "dav"` makes an app password for calendar and contacts apps: it signs them in at `/api/dav/…` over HTTP Basic (email and password) and is refused as a bearer token |
+
+**Browser sessions** ([plan](plan/apps-ui.md) §12.3). When a page of the site signs in
+(`Sec-Fetch-Site: same-origin`), the answer also sets the session cookie: `__Host-ferrum` where the
+server is reached over https, `ferrum_session` on a plain-http development server; `HttpOnly`,
+`SameSite=Lax`, `Path=/`, for `FERRUM_SESSION_DAYS` (14). Each browser is a session of its own,
+listed and signed out one by one. `session: "cookie"` in the body of `/login`,
+`/login/second-factor` or `/sso/finish` asks for the cookie alone (the page gets no token);
+otherwise the token returned is bound to the browser's session. API clients (no Fetch Metadata) get
+tokens only, as before. With the cookie:
+* requests that change something must come from the site's own pages: `Sec-Fetch-Site:
+  same-origin`, or, without that header, an `Origin` equal to the host; `same-site` and
+  `cross-site` are refused (403);
+* the cookie's token is refused as a bearer token, and a bearer token in place of the cookie;
+* sockets (`/ws/live`, `/ws/docs/…`) accept the cookie at the upgrade when `Origin` is the host;
+* on a host registered for a workspace, a cookie of another workspace is refused.
 
 Document actions may declare `params` (`[{name, label, type: data|text|select|int|date, options?,
 required?, description?}]`): the form asks for them, prefilled from the record's fields of the same
@@ -152,6 +172,33 @@ limited per app (1 MB unless the app allows more, at most 32 MB).
   * It may go only to `/api/v1/…`, `/api/meta/…` and `/api/ext/<app>/…`; anything else is 403.
   * The caller's rights are narrowed to the app's declared permissions and its own entities, without
     administrator power.
+
+## The shell ([plan](plan/apps-ui.md))
+
+Pages, for browsers, with the session cookie:
+
+* `GET /{route}/…` → an app's page: its `index.html` with the bootstrap, the theme, the shell
+  runtime and `<ferrum-bar>` put in, under a Content-Security-Policy of its release. Signed out →
+  `303` to `/login?next=…`. Otherwise a page saying what is wrong: nothing installed there (404), no
+  access (403), no interface for this version (503), the workspace suspended (403). `/{route}`
+  redirects to `/{route}/`; an alias, to the route.
+* `GET /{route}/sw.js` → the app's own service worker, or one that removes itself where nothing the
+  person may use lives any more.
+* `GET /open/{entity}/{id}` → `302` to the screen of an app that shows the record and that the
+  person may use (`?via={app}` first, then `priority`, then install order), else today's records
+  page if the person may read the entity, else 403.
+* `GET /login?next=` → the sign-in page.
+* `GET /_ui/{app}/{digest}/{path}` → a file of an interface release: public, `immutable`.
+* `GET /_shell/v1/{file}` → the shell's own files (`runtime.js`, `live-worker.js`, …), the newest of
+  v1; `GET /_shell/theme/{hash}.css` → the theme.
+
+For the bar, with the cookie or a token:
+
+* `GET /api/shell` → `{v, shell, workspace, person, apps: [{id, app, title, description, icon,
+  color, compact, url}], create: [{app, label, entity, url}], intents: [{app, action, type, title,
+  url}], sidepanels: [{id, app, title, icon, url}], legacy}`: what the caller may use. `ETag`.
+* `GET /api/shell/version?app=` → `{app, version, release}`: the interface release the workspace
+  runs, so an open tab can tell it is outdated.
 
 ## Reports — `/api/reports`
 

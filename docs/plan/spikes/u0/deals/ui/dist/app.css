@@ -1,0 +1,8 @@
+body { margin: 0; background: var(--ferrum-bg); color: var(--ferrum-text); font: 15px/1.5 var(--ferrum-font); }
+main { max-width: 52rem; margin: 24px auto; padding: 0 16px; }
+.card { padding: 16px 20px; margin: 0 0 16px; background: var(--ferrum-surface); border: 1px solid var(--ferrum-border); border-radius: var(--ferrum-radius); }
+button, a.btn { min-height: 2.25rem; padding: 0 14px; margin: 0 6px 6px 0; border: 1px solid var(--ferrum-border); border-radius: 6px; background: var(--ferrum-surface); color: inherit; font: inherit; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; }
+button.primary { background: var(--ferrum-primary); color: var(--ferrum-primary-text); border-color: transparent; }
+code { font-size: 0.9em; }
+ul.notes { padding: 0; list-style: none; }
+ul.notes li button { width: 100%; justify-content: flex-start; }

@@ -10,7 +10,7 @@
 //! `{"subscribe": ["SalesOrder"]}` / `{"unsubscribe": [...]}` → `{"subscribed": [...], "denied": [...]}`.
 
 use crate::error::{ApiError, ApiResult};
-use crate::extract::{bearer, ctx_from_token, request_id};
+use crate::extract::ctx_from_token;
 use crate::state::{AppState, app_state};
 use async_trait::async_trait;
 use axum::extract::State;
@@ -194,13 +194,7 @@ impl EventSink for LiveEvents {
 
 async fn live(State(app): State<AppContext>, headers: HeaderMap, upgrade: WebSocketUpgrade) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    let pre = match bearer(&headers) {
-        Some(token) => {
-            let ctx = ctx_from_token(&st, &token, request_id(&headers)).await?;
-            Some((token, ctx))
-        }
-        None => None,
-    };
+    let pre = crate::extract::socket_credential(&st, &headers).await?;
     Ok(upgrade.max_message_size(16 << 10).on_upgrade(move |ws| serve(st, pre, ws)))
 }
 

@@ -258,11 +258,11 @@ pub struct AppManager {
     screen_bytes: AtomicUsize,
 }
 
-/// An installed, enabled app as screens and extension points see it.
+/// An installed, enabled app as screens, extension points and the shell see it.
 struct Enabled {
     id: String,
     version: String,
-    manifest: AppManifest,
+    manifest: Arc<AppManifest>,
     /// Apps from bundles: their consent (what their screens may reach) and stored release.
     bundled: Option<(Permissions, Release)>,
 }
@@ -279,11 +279,11 @@ impl AppManager {
         for (id, inst) in ws.apps.iter().filter(|(_, i)| i.enabled) {
             let version = inst.version.clone();
             if let Some(m) = self.native(id) {
-                out.push(Enabled { id: id.clone(), version, manifest: m.clone(), bundled: None });
+                out.push(Enabled { id: id.clone(), version, manifest: Arc::new(m.clone()), bundled: None });
             } else if let Some(r) = self.release_of(tenant, id, &inst.version).await?.filter(|r| r.status != "revoked")
                 && let Some(rec) = recorded(&r)
             {
-                out.push(Enabled { id: id.clone(), version, manifest: rec.app, bundled: Some((rec.permissions, r)) });
+                out.push(Enabled { id: id.clone(), version, manifest: Arc::new(rec.app), bundled: Some((rec.permissions, r)) });
             }
         }
         let out = Arc::new(out);
@@ -360,6 +360,63 @@ impl AppManager {
             }
         };
         Ok(files.get(&format!("ui/{path}")).map(|b| (b.clone(), r.digest.clone())))
+    }
+}
+
+/// The shell (docs/plan/apps-ui.md): the workspace's apps with their launcher entries, routes and
+/// interfaces.
+impl AppManager {
+    /// A workspace's enabled apps, in install order.
+    pub async fn shell_apps(&self, tenant: Uuid) -> Result<Vec<crate::shell::ShellApp>> {
+        Ok(self
+            .enabled_apps(tenant)
+            .await?
+            .iter()
+            .map(|a| crate::shell::ShellApp { id: a.id.clone(), version: a.version.clone(), manifest: a.manifest.clone(), bundled: a.bundled.is_some() })
+            .collect())
+    }
+
+    /// The manifest of an app compiled into this build.
+    pub fn native_manifest(&self, id: &str) -> Option<&AppManifest> {
+        self.native(id)
+    }
+
+    /// Makes sure the interface of a workspace's enabled app from a bundle is a stored release
+    /// (bundles made available before interfaces existed, or whose release files were purged).
+    /// False when the app has none.
+    pub async fn ensure_ui_release(&self, tenant: Uuid, app: &str, version: &str) -> Result<bool> {
+        let apps = self.enabled_apps(tenant).await?;
+        let Some((_, r)) = apps.iter().find(|a| a.id == app && a.version == version).and_then(|a| a.bundled.as_ref()) else { return Ok(false) };
+        let b = self.load_bundle(r).await?;
+        let Some(ui) = crate::shell::bundle_ui(&b).map_err(app_err)? else { return Ok(false) };
+        crate::shell::store_release(&self.kernel, &self.storage, app, version, &ui).await?;
+        Ok(true)
+    }
+
+    /// Refuses routes another app already owns on this cluster (its routes and their aliases are
+    /// unique among available releases and compiled-in apps).
+    async fn check_routes(&self, m: &AppManifest) -> Result<()> {
+        let mine: Vec<String> = m.routes().into_iter().flat_map(|(r, aliases)| std::iter::once(r).chain(aliases)).collect();
+        if mine.is_empty() {
+            return Ok(());
+        }
+        let mut others: Vec<(String, AppManifest)> = self.natives.iter().filter(|n| n.id != m.id).map(|n| (n.id.clone(), n.clone())).collect();
+        for r in self.kernel.releases(None).await? {
+            if r.app_id != m.id
+                && r.status != "revoked"
+                && let Some(rec) = recorded(&r)
+            {
+                others.push((r.app_id.clone(), rec.app));
+            }
+        }
+        for (id, other) in others {
+            for (route, aliases) in other.routes() {
+                if let Some(clash) = std::iter::once(&route).chain(aliases.iter()).find(|r| mine.contains(r)) {
+                    return Err(Error::Conflict(format!("the address /{clash}/ belongs to {id} on this server; {} needs routes of its own", m.id)));
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -850,6 +907,19 @@ impl AppManager {
     /// or to one workspace (`private`).
     async fn publish(&self, b: &Bundle, key: &str, private: Option<Uuid>, source: &str, by: Option<Uuid>) -> Result<Release> {
         let plugin = b.plugin().map_err(app_err)?;
+        self.check_routes(&b.manifest).await?;
+        // An interface of its own runs on the workspace's host with the person's session (until
+        // third parties get origins of their own, docs/plan/apps-ui.md U8): only from bundles this
+        // server trusts, or uploaded for the whole cluster where its operator allows that.
+        if b.manifest.ui.is_some() && private.is_some() && !matches!(self.trust(b)?, Trust::Trusted) {
+            return Err(Error::Forbidden(format!(
+                "{} brings an interface of its own, which only apps signed by a key this server trusts may do when private to a workspace",
+                b.manifest.id
+            )));
+        }
+        if let Some(ui) = crate::shell::bundle_ui(b).map_err(app_err)? {
+            crate::shell::store_release(&self.kernel, &self.storage, &b.manifest.id, &b.manifest.version.to_string(), &ui).await?;
+        }
         let manifest = json!({
             "app": b.manifest,
             "permissions": b.permissions().map_err(app_err)?,

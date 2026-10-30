@@ -45,6 +45,9 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_PROXY_HOPS` | no | How many proxies in front append to `X-Forwarded-For`: 1 (default) for the gateway alone, 2 with a CDN or an HTTP load balancer before it. The client's address for sign-in and request limits is the entry that many from the right; set it wrong and everyone shares one address (too low) or clients choose their own (too high) |
 | `FERRUM_SSO_ALLOW_PRIVATE` | no | `true` lets single sign-on reach an identity provider on a private address or over plain http (one inside your own network, such as an in-cluster Keycloak); default `false` |
 | `FERRUM_APP_ALLOW_UNSIGNED` | no | `true` accepts uploads no trusted key signed (development default); production default `false` |
+| `FERRUM_SESSION_DAYS` | no | How long a browser stays signed in with the session cookie (default 14); each browser is a session of its own that people and administrators sign out one by one |
+| `FERRUM_DEFAULT_WORKSPACE` | no | The slug of the one workspace this server serves on every host (a single-workspace install): sign-in then asks for no workspace. Empty: a host registered for a workspace leads to it, and elsewhere the workspace is chosen at sign-in |
+| `FERRUM_UI_DIR` | no | Interfaces of apps compiled into the server: a directory with one directory of built files per app id (`<dir>/<app>/index.html`), registered as interface releases at start-up |
 
 **Database role.** Ferrum must connect as an ordinary role that owns its database, never as a
 superuser or a role with `BYPASSRLS`: those bypass PostgreSQL row-level security and with it tenant
@@ -657,6 +660,24 @@ Cancellation: an e-invoice can be cancelled at the IRP within 24 hours of its ac
 within 24 hours of being made — and the e-way bill before the e-invoice. A Sales Invoice with a
 live (or pending) e-invoice or e-way bill cannot be cancelled in Ferrum; after 24 hours issue a
 credit note, which gets its own e-invoice (type CRN, referring to the original).
+
+## Apps with interfaces of their own
+
+Apps may own whole interfaces at addresses of their own (`/deals/…`, [plan](plan/apps-ui.md)).
+The server answers those pages itself, with the shell put in: the bootstrap, the workspace's theme,
+the bar runtime (`/_shell/…`) and the app's files (`/_ui/…`). Today's web app stays at `/app/`
+until the shell app replaces it.
+
+* **Routing.** Send the server everything that is not `/app/`: app routes, `/_ui/`, `/_shell/`,
+  `/open/`, `/login`, besides `/api/`, `/ws/` and `/files/`. A proxy or CDN may cache `/_ui/` for
+  good (the paths are content digests) and `/_shell/` briefly.
+* **Sessions.** Browsers sign in with an `HttpOnly` cookie, `__Host-ferrum` over https. The cookie
+  is scoped to the host, so serve each workspace on one host, and set `PUBLIC_URL` to it.
+* **Interface files** are kept in the object storage, under `ui/{app}/{digest}/`, for 30 days after
+  no workspace uses them, so tabs open across an upgrade keep loading theirs.
+* **Who may bring one.** An interface runs on the workspace's host with the person's session. Apps
+  compiled in, bundles signed by a key in `FERRUM_APP_TRUSTED_KEYS`, and uploads for the whole
+  cluster (`FERRUM_APP_UPLOADS=cluster`) may; an unsigned app private to a workspace may not.
 
 ## Sign-in security
 

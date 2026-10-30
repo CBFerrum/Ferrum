@@ -74,9 +74,11 @@ pub mod contract;
 mod manifest;
 mod permissions;
 mod resolve;
+pub mod shell;
 mod signing;
 #[cfg(test)]
 mod testutil;
+pub mod ui;
 
 pub use bundle::Bundle;
 pub use manifest::{AppManifest, CATEGORIES, ExtensionPoint, Runtime, SETTING_TYPES, SettingDef, UI_POINTS, Uninstall, contribution_body};
@@ -87,7 +89,7 @@ pub use signing::{Role, SignatureEntry, Signatures, Signer, TrustedKey, key_id};
 /// Bundle format identifier; the first line hashed into every digest.
 pub const FORMAT: &str = "ferrum-app-v1";
 /// The app API version this platform build provides; apps declare `platform` requirements against it.
-pub const PLATFORM_VERSION: &str = "0.3.0";
+pub const PLATFORM_VERSION: &str = "0.3.1";
 
 /// Most bytes a bundle may hold unpacked (50 MiB).
 pub const MAX_UNPACKED: u64 = 50 << 20;

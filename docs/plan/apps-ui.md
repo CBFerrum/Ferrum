@@ -1,7 +1,23 @@
 # Ferrum as a suite of apps: an empty core, and apps that own their interfaces
 
-Plan, 30 October 2026, third revision. Nothing in it is built. It replaces the two drafts written
-earlier the same day (§22 lists what changed) and two decisions of [platform.md](platform.md) (§21).
+Plan, 30 October 2026, third revision. It replaces the two drafts written earlier the same day
+(§22 lists what changed) and two decisions of [platform.md](platform.md) (§21).
+
+**Status, 30 October 2026.**
+* **U0, spike: done in Chrome** ([spike-u0-apps-ui.md](spike-u0-apps-ui.md)); Firefox and WebKit
+  still to run.
+* **U1, shell platform: built.**
+  * Kernel: `crates/kernel/src/shell.rs` and migration 021, for sessions per device, hosts,
+    kinds of people and interface releases.
+  * Manifest: the `ui` section and the `shell.*` points (`crates/apps/src/shell.rs`), and releases
+    prepared from built files (`ui.rs`).
+  * Server: `server/src/shell.rs` and `controllers/shell.rs`, for entry pages, `/_ui/`, `/_shell/`,
+    `/api/shell`, `/open`, status pages and the self-removing worker.
+  * Sessions: cookie sessions with Fetch-Metadata checks, and bound tokens for today's web app.
+  * Runtime: the bar runtime (`server/shell/`), with the launcher, intents, companion windows, the
+    shared live channel and version checks.
+  * Not yet: the App access and devices pages, which come with the shell app (U2) on top of
+    `/api/auth/sessions` and roles; `ferrum-app dev --ui`; `@ferrum/testing` (U2).
 
 Contents: 1 where we are · 2 goals and targets · 3 what others do · 4 rules · 5 decisions ·
 6 the person's view · 7 addresses and deployment shapes · 8 the core shell · 9 people, sessions,

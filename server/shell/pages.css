@@ -1,0 +1,92 @@
+/* The shell's own pages: sign-in and status (not installed, no access, being updated…). */
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--ferrum-bg);
+  color: var(--ferrum-text);
+  font: 15px/1.5 var(--ferrum-font);
+}
+.ferrum-status,
+.ferrum-login {
+  box-sizing: border-box;
+  max-width: 34rem;
+  margin: clamp(32px, 10vh, 96px) auto;
+  padding: 32px clamp(20px, 5vw, 40px);
+  background: var(--ferrum-surface);
+  border: 1px solid var(--ferrum-border);
+  border-radius: var(--ferrum-radius);
+}
+.ferrum-status h1,
+.ferrum-login h1 {
+  margin: 0 0 12px;
+  font-size: 1.35rem;
+  font-weight: 650;
+}
+.ferrum-status p {
+  margin: 0 0 16px;
+  color: var(--ferrum-muted);
+}
+.ferrum-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ferrum-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.25rem;
+  padding: 0 16px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--ferrum-primary);
+  color: var(--ferrum-primary-text);
+  font: inherit;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+.ferrum-button:hover {
+  background: var(--ferrum-primary-hover);
+}
+.ferrum-button:focus-visible,
+.ferrum-login input:focus-visible {
+  outline: none;
+  box-shadow: var(--ferrum-focus-ring);
+}
+.ferrum-button[disabled] {
+  opacity: 0.6;
+  cursor: progress;
+}
+.ferrum-login form {
+  display: grid;
+  gap: 14px;
+}
+.ferrum-login label {
+  display: grid;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.ferrum-login input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 2.5rem;
+  padding: 0 10px;
+  border: 1px solid var(--ferrum-border);
+  border-radius: 6px;
+  background: var(--ferrum-surface);
+  color: var(--ferrum-text);
+  font: inherit;
+}
+.ferrum-error {
+  margin: 0;
+  min-height: 1.2em;
+  color: var(--ferrum-danger);
+}
+.ferrum-hint {
+  margin: 0;
+  color: var(--ferrum-muted);
+  font-size: 0.9rem;
+}
