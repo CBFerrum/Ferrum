@@ -89,9 +89,11 @@ macro_rules! apps {
             // Drive's add-on Browser editors: a manifest without code, shipped with Drive.
             #[cfg(feature = "drive")]
             out.push(ferrum_app_drive::EDITORS_MANIFEST);
-            // CRM's connector with ERP (its package and code are CRM's).
+            // Connectors with ERP that ship with their apps (their packages and code are the apps').
             #[cfg(feature = "crm")]
             out.push(ferrum_app_crm::CONNECTOR_MANIFEST);
+            #[cfg(feature = "helpdesk")]
+            out.push(ferrum_app_helpdesk::CONNECTOR_MANIFEST);
             // ERP and its add-on for India, over the platform's own packages (docs/plan/apps-ui.md).
             out.push(ERP_MANIFEST);
             out.push(INDIA_MANIFEST);
