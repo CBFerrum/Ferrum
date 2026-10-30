@@ -598,6 +598,8 @@ async fn shell_info(Auth(ctx): Auth, State(app): State<AppContext>, headers: Hea
     let apps = st.apps.shell_apps(ctx.tenant).await?;
     let (family_of, families) = shell::families(&apps);
     let (mut launcher, mut create, mut intents, mut panels) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    // The apps' providers for the bar's search, Home's My work and record cards (§11.6, §11.8).
+    let (mut search, mut work, mut cards) = (Vec::new(), Vec::new(), Vec::new());
     for a in &apps {
         let usable: Vec<&Value> = a.items("shell.app").filter(|i| may_use(&ctx, &kind, i)).collect();
         if usable.is_empty() {
@@ -620,6 +622,15 @@ async fn shell_info(Auth(ctx): Auth, State(app): State<AppContext>, headers: Hea
         }
         for item in a.items("shell.intent") {
             intents.push(json!({"app": a.id, "action": item.get("action"), "type": item.get("type"), "title": item.get("title"), "url": format!("/{}", item.get("path").and_then(Value::as_str).unwrap_or_default())}));
+        }
+        for item in a.items("shell.search") {
+            search.push(json!({"app": a.id, "id": item.get("id"), "title": item.get("title"), "endpoint": item.get("endpoint")}));
+        }
+        for item in a.items("shell.work") {
+            work.push(json!({"app": a.id, "id": item.get("id"), "title": item.get("title"), "endpoint": item.get("endpoint")}));
+        }
+        for item in a.items("shell.card") {
+            cards.push(json!({"app": a.id, "id": item.get("id"), "entity": item.get("entity"), "endpoint": item.get("endpoint")}));
         }
         for item in a.items("shell.sidepanel") {
             panels.push(json!({
@@ -652,6 +663,9 @@ async fn shell_info(Auth(ctx): Auth, State(app): State<AppContext>, headers: Hea
         "sidepanels": panels,
         "families": families,
         "assistant": assistant,
+        "search": search,
+        "work": work,
+        "cards": cards,
     });
     let text = body.to_string();
     let etag = format!("\"{}\"", hex::encode(&Sha256::digest(text.as_bytes())[..12]));
