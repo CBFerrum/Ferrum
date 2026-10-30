@@ -184,9 +184,11 @@ Pages, for browsers, with the session cookie:
   redirects to `/{route}/`; an alias, to the route.
 * `GET /{route}/sw.js` → the app's own service worker, or one that removes itself where nothing the
   person may use lives any more.
-* `GET /open/{entity}/{id}` → `302` to the screen of an app that shows the record and that the
-  person may use (`?via={app}` first, then `priority`, then install order), else today's records
-  page if the person may read the entity, else 403.
+* `GET /open/{entity}/{id}` → `303` to the screen of an app that shows the record and that the
+  person may use (`?via={app}` first, then `priority`, then install order), else the shell's
+  records page (today's, for a workspace not on the shell) if the person may read the entity, else
+  403 (404 for an entity the workspace does not have). `GET /open/{entity}` → the same for the list (an app's `shell.open` `list`). The rest of the
+  query goes along.
 * `GET /login?next=` → the sign-in page.
 * `GET /_ui/{app}/{digest}/{path}` → a file of an interface release: public, `immutable`.
 * `GET /_shell/v1/{file}` → the shell's own files (`runtime.js`, `live-worker.js`, …), the newest of

@@ -187,8 +187,8 @@ ui:
 contributes:
   shell.app:                      # launcher entries; each owns a route
     - {id: deals, route: deals, title: Deals, color: "#0f766e", roles: [Sales User], aliases: [pipeline]}
-  shell.open:                     # which screen shows a record (/open/{entity}/{id})
-    - {id: deal, entity: Deal, path: "deals/{id}"}
+  shell.open:                     # which screens show a record and the list (/open/{entity}[/{id}])
+    - {id: deal, entity: Deal, path: "deals/{id}", list: deals}
   shell.create:                   # the bar's Create menu
     - {id: deal, label: Deal, path: deals/new}
   shell.intent:                   # what it does for other apps
