@@ -481,6 +481,68 @@ accounts so that they follow the people. The app's README ("Hosted mail") has th
 * **Accounts Ferrum does not know:** an existing account at a person's address, made by hand or
   left from another workspace, is never taken over. Sync Mailboxes reports it under `failed`.
 
+## Meetings
+
+The Mail, Chat and Calendar app (Comms) has video meetings: a call in any chat channel, a meeting
+for any calendar event, and rooms people start from Meet. They run on a
+[LiveKit](https://livekit.io) server (Apache-2.0) that you run beside Ferrum. The plan is
+[docs/plan/collaboration.md](plan/collaboration.md), C4.
+* Browsers connect to LiveKit directly: signalling over a WebSocket, sound and pictures over UDP
+  (or TCP). Nothing of a call passes through Ferrum.
+* Ferrum decides who may join which meeting and signs a LiveKit access token for them, with an API
+  key and secret that you give both. It never calls LiveKit.
+* Who may join: a channel's call, whoever may read the channel; an event's meeting, its organizer
+  and guests (anyone for a public event); a room, anyone in the workspace with its link. The app's
+  README ("Meetings") has the details.
+
+| Setting | On | Value |
+|---|---|---|
+| `FERRUM_MEET_URL` | server and web app | LiveKit as browsers reach it, `wss://meet.example.com` |
+| `FERRUM_MEET_KEY`, `FERRUM_MEET_SECRET` | server | an API key (a name) and its secret, at least 32 characters (`openssl rand -hex 32`); LiveKit gets the same pair |
+
+With the three set, Chat shows a call button, Calendar offers "Add video meeting" to organizers,
+and Meet appears under Communication. Only people with a Comms role can join.
+
+**Compose.** `deploy/meet.yml` adds LiveKit:
+
+    docker compose -f deploy/docker-compose.yml -f deploy/meet.yml --env-file deploy/.env up -d
+
+* Put a TLS proxy in front of port 7880 (WebSocket) and set `FERRUM_MEET_URL` to its `wss://`
+  address. A page served over HTTPS cannot use `ws://`.
+* Open UDP 7882 and TCP 7881 to the internet: they carry the media. They must reach the host
+  directly, not through the proxy.
+* LiveKit tells browsers the host's address, found by STUN. Set `FERRUM_MEET_NODE_IP` to give it
+  yourself, and `FERRUM_MEET_EXTERNAL_IP=false` on a network without internet access.
+* To try it on one machine: `FERRUM_MEET_URL=ws://localhost:7880`, `FERRUM_MEET_NODE_IP=127.0.0.1`,
+  `FERRUM_MEET_EXTERNAL_IP=false`.
+
+`deploy/smoke.sh` with `SMOKE_MEET=1` runs LiveKit beside the stack. It checks that LiveKit accepts
+the passes Ferrum signs, refuses one signed with another secret, and that the web app's pages may
+reach it. CI runs it on every image.
+
+**Kubernetes.** Run LiveKit with its own Helm chart (`livekit/livekit-server`), as its
+documentation describes: host networking for the media ports, its load balancer or ingress for the
+WebSocket with TLS, and Redis when you run more than one LiveKit server. Then:
+* give it the key and secret, and put the three settings on Ferrum's Deployment from a secret;
+* set `FERRUM_MEET_URL` on the web app's Deployment, so its pages may connect to LiveKit.
+
+The server's network policy needs no change: Ferrum never calls LiveKit.
+
+**Things to know**
+* **Capacity:** LiveKit forwards streams without mixing them, so its load grows with the streams
+  each person receives. Size it from LiveKit's own benchmarks and watch its CPU
+  (`prometheus_port` in its configuration exposes metrics). More people need more LiveKit servers,
+  with Redis.
+* **Restrictive networks:** where UDP is blocked, browsers fall back to TCP 7881. Where only HTTPS
+  is allowed, turn on LiveKit's TURN server with a certificate (its `turn` settings).
+* **Access:** a token admits its holder for 6 hours. Someone who loses access, for example removed
+  from a private channel, gets no new token, but stays in a call they are already in until they
+  leave it.
+* **Privacy:** calls are encrypted between browsers and LiveKit, which sees the media. Ferrum
+  records nothing. Recording and end-to-end encryption are not built.
+* **Several workspaces** can share one LiveKit server: rooms are named after the workspace.
+* **People outside the workspace** cannot join yet (collaboration plan, C5).
+
 ## India: e-invoices and e-way bills
 
 With the `india` package, a submitted Sales Invoice to a registered business, an SEZ unit or a

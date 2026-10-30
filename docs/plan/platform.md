@@ -55,7 +55,10 @@ Planned and partly built in [collaboration.md](collaboration.md):
   * versions and activity;
   * who has a file open now;
   * requests for access.
-* **Next:** co-editing made visible (C2), documents co-edited natively (C3) and meetings (C4).
+* **Video meetings (**today**, C4):** calls in chat channels, meetings for calendar events and rooms
+  started from Meet, on a LiveKit server the operator runs.
+* **Next:** co-editing made visible (C2), documents co-edited natively (C3), calendar and contacts
+  sync and guests (C5).
 
 **Own dashboards, endpoints, custom screens, nested plugins?**
 * Dashboards: without code, through package seeds of Studio spaces, dashboards and charts. No app
@@ -415,9 +418,10 @@ domain page shows whether outgoing mail works.
 | 3. Mail | §5 | a tenant adds its domain; users get mailboxes; mail flows both ways through a relay; spam lands in Junk and training works; a shared mailbox and a distribution list work; a mail is filed to a record |
 | 4a. Browser editors | [browser-editors.md](browser-editors.md): the editor server, Drive's `drive.editor` point and bridge editing, the add-on, the web app, deployment files, a fidelity note, upstream pull requests | a sheet, a document and a PDF open from Drive, are edited and saved as versions in Chromium, Firefox and WebKit; a second user gets read-only; online and browser editor sessions exclude each other |
 | Phase 1 remainder | Commerce: its gateways under `commerce.gateway` and a seeded dashboard (the Tier 0 example, §3.4); plugins' OpenAPI fragments in the API docs and as MCP tools (§3.5) | when Commerce is next changed; the OpenAPI part when asked for |
-| 4. When asked for | DeckCraft in Browser editors (once its bridge is released); calendar and contacts sync over CalDAV/CardDAV; video meetings (LiveKit or Jitsi as a service); GSP connectors; Microsoft 365 and Google connectors; a marketplace for third-party plugins (signed OCI packages, architecture §7.5) | |
+| 4. When asked for | DeckCraft in Browser editors (once its bridge is released); calendar and contacts sync over CalDAV/CardDAV; GSP connectors; Microsoft 365 and Google connectors; a marketplace for third-party plugins (signed OCI packages, architecture §7.5) | |
 
-Order: 0, 1, 2, 3, then 4a (built 30 October 2026).
+Order: 0, 1, 2, 3, then 4a (built 30 October 2026). Video meetings were built as collaboration C4
+(collaboration.md).
 * The platform came first because Office and Mail are its first users.
 * Office came before Mail because it is smaller and proves the separate-service pattern.
 * 4a is the platform's first real add-on and extension point.

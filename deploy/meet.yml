@@ -1,0 +1,41 @@
+# Video meetings (docs/operations.md, "Meetings"): a LiveKit server beside the stack. Browsers reach
+# it directly: signalling over a WebSocket on 7880 (FERRUM_MEET_URL: wss://meet.example.com behind
+# your TLS proxy, or ws://localhost:7880 to try it on one machine) and sound and pictures over UDP
+# 7882, or TCP 7881 where UDP is blocked. Open those two ports to the internet; 7880 only through
+# your proxy.
+#   docker compose -f deploy/docker-compose.yml -f deploy/meet.yml --env-file deploy/.env up -d
+# In deploy/.env: FERRUM_MEET_URL, FERRUM_MEET_KEY (a name, such as ferrum) and FERRUM_MEET_SECRET
+# (at least 32 characters: openssl rand -hex 32). LiveKit finds the address it gives browsers by
+# STUN; set FERRUM_MEET_NODE_IP to give it yourself (and FERRUM_MEET_EXTERNAL_IP=false on a
+# network without internet access).
+services:
+  meet:
+    image: livekit/livekit-server:v1.13.10
+    restart: unless-stopped
+    environment:
+      LIVEKIT_KEYS: "${FERRUM_MEET_KEY:?set FERRUM_MEET_KEY in deploy/.env}: ${FERRUM_MEET_SECRET:?set FERRUM_MEET_SECRET in deploy/.env (at least 32 characters)}"
+      LIVEKIT_CONFIG: |
+        port: 7880
+        rtc:
+          tcp_port: 7881
+          udp_port: 7882
+          use_external_ip: ${FERRUM_MEET_EXTERNAL_IP:-true}
+          node_ip: "${FERRUM_MEET_NODE_IP:-}"
+    ports:
+      - "${FERRUM_MEET_PORT:-7880}:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
+    # Nothing to write: rooms live in memory (a second LiveKit server needs Redis, see docs).
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+  ferrum:
+    environment:
+      FERRUM_MEET_URL: ${FERRUM_MEET_URL:?set FERRUM_MEET_URL in deploy/.env (LiveKit as browsers reach it)}
+      FERRUM_MEET_KEY: ${FERRUM_MEET_KEY}
+      FERRUM_MEET_SECRET: ${FERRUM_MEET_SECRET}
+
+  web:
+    environment:
+      FERRUM_MEET_URL: ${FERRUM_MEET_URL}
