@@ -35,7 +35,10 @@ pub fn bearer(headers: &HeaderMap) -> Option<String> {
 /// the two steps of signing in is no session at all.
 async fn session_of(st: &crate::state::AppState, token: &str) -> Result<(ferrum_kernel::auth::Session, bool), ApiError> {
     if token.starts_with("fk_") {
-        let s = st.kernel.verify_api_key(token).await?;
+        let (s, scope) = st.kernel.verify_api_key(token).await?;
+        if scope.is_some() {
+            return Err(ApiError(Error::Unauthorized("this key is an app password for calendar and contacts apps, and works only there".into())));
+        }
         st.user_limiter.check_local(&format!("{}|{}", s.tenant, s.user))?;
         return Ok((s, false));
     }

@@ -64,6 +64,9 @@ spec:
         - path: {type: PathPrefix, value: /oauth}
         - path: {type: PathPrefix, value: /.well-known/oauth-protected-resource}
         - path: {type: Exact, value: /.well-known/oauth-authorization-server}
+        # Calendar and contacts apps look here first (docs/operations.md, "Calendar and contacts apps").
+        - path: {type: Exact, value: /.well-known/caldav}
+        - path: {type: Exact, value: /.well-known/carddav}
       backendRefs: [{name: ferrum, port: 80}]
       timeouts: {request: 600s}
     - backendRefs: [{name: ferrum-web, port: 80}]

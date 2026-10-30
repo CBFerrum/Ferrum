@@ -137,6 +137,7 @@ impl Hooks for App {
                 sso_allow_private: settings.sso_allow_private,
                 secret_key: Some(secret_key),
                 pdf_url: Some(settings.pdf_url.trim().to_string()).filter(|u| !u.is_empty()),
+                public_url: Some(ctx.config.server.host.trim().trim_end_matches('/').to_string()).filter(|u| u.starts_with("http")),
                 ..Default::default()
             },
             mailer,
@@ -275,6 +276,7 @@ impl Hooks for App {
             .add_route(controllers::plugins::routes())
             .add_route(crate::live::routes())
             .add_route(controllers::sites::routes())
+            .add_route(controllers::dav::routes())
     }
 
     async fn connect_workers(_ctx: &AppContext, _queue: &Queue) -> Result<()> {

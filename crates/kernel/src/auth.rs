@@ -203,10 +203,21 @@ impl Kernel {
         Ok(if u.two_factor_required { SignIn::SetupRequired(session) } else { SignIn::Session(session) })
     }
 
-    /// API keys look like `fk_<prefix>_<secret>`; only a SHA-256 of the secret is stored.
-    pub async fn create_api_key(&self, ctx: &Ctx, user: Uuid, name: &str, expires_at: Option<chrono::DateTime<chrono::Utc>>) -> Result<(Uuid, String)> {
+    /// API keys look like `fk_<prefix>_<secret>`; only a SHA-256 of the secret is stored. A key
+    /// with a `scope` works only there: `dav`, the app password of calendar and contacts apps.
+    pub async fn create_api_key(
+        &self,
+        ctx: &Ctx,
+        user: Uuid,
+        name: &str,
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
+        scope: Option<&str>,
+    ) -> Result<(Uuid, String)> {
         if !ctx.is_admin && user != ctx.user {
             return Err(Error::Forbidden("you can only create API keys for yourself".into()));
+        }
+        if scope.is_some_and(|s| s != "dav") {
+            return Err(Error::field("scope", "must be dav, or none for a key to the whole API"));
         }
         let (prefix, secret) = {
             let mut rng = rand::rng();
@@ -216,7 +227,7 @@ impl Kernel {
         };
         let id = Uuid::now_v7();
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        sqlx::query("insert into api_key (tenant_id, id, user_id, name, prefix, secret_hash, expires_at) values ($1, $2, $3, $4, $5, $6, $7)")
+        sqlx::query("insert into api_key (tenant_id, id, user_id, name, prefix, secret_hash, expires_at, scope) values ($1, $2, $3, $4, $5, $6, $7, $8)")
             .bind(ctx.tenant)
             .bind(id)
             .bind(user)
@@ -224,27 +235,29 @@ impl Kernel {
             .bind(&prefix)
             .bind(sha256_hex(&secret))
             .bind(expires_at)
+            .bind(scope)
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
         Ok((id, format!("fk_{prefix}_{secret}")))
     }
 
-    pub async fn verify_api_key(&self, raw: &str) -> Result<Session> {
+    /// The session an API key opens, and the key's scope (`None`: the whole API).
+    pub async fn verify_api_key(&self, raw: &str) -> Result<(Session, Option<String>)> {
         let denied = || Error::Unauthorized("invalid API key".into());
         let rest = raw.strip_prefix("fk_").ok_or_else(denied)?;
         let (prefix, secret) = rest.split_once('_').ok_or_else(denied)?;
         let mut tx = self.db.system_tx().await?;
-        let row: Option<(Uuid, Uuid, String, bool, i32)> = sqlx::query_as(
+        let row: Option<(Uuid, Uuid, String, bool, i32, Option<String>)> = sqlx::query_as(
             "select k.tenant_id, k.user_id, k.secret_hash, \
-             (k.revoked_at is null and (k.expires_at is null or k.expires_at > now()) and u.is_active and t.status = 'active'), u.token_version \
+             (k.revoked_at is null and (k.expires_at is null or k.expires_at > now()) and u.is_active and t.status = 'active'), u.token_version, k.scope \
              from api_key k join app_user u on u.tenant_id = k.tenant_id and u.id = k.user_id join tenant t on t.id = k.tenant_id \
              where k.prefix = $1",
         )
         .bind(prefix)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some((tenant, user, hash, valid, tv)) = row else {
+        let Some((tenant, user, hash, valid, tv, scope)) = row else {
             return Err(denied());
         };
         let computed = sha256_hex(secret);
@@ -257,7 +270,7 @@ impl Kernel {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
-        Ok(Session { tenant, user, token_version: tv })
+        Ok((Session { tenant, user, token_version: tv }, scope))
     }
 
     pub async fn revoke_api_key(&self, ctx: &Ctx, id: Uuid) -> Result<()> {
