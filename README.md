@@ -185,7 +185,9 @@ balance sheet balance and that stock value equals the stock accounts.
 ## Deployment
 
 * Images: `ghcr.io/cbferrum/ferrum` (API server) and `ghcr.io/cbferrum/ferrum-frontend` (web app,
-  which also proxies the API so browsers see one origin). Both are stateless.
+  which also proxies the API so browsers see one origin). Both are stateless. The published images
+  are linux/amd64; for ARM hosts (Graviton, Ampere), `docker build .` on an arm64 machine produces
+  a working image (checked on Apple Silicon: non-root, read-only root filesystem, no capabilities).
 * Single host: `deploy/docker-compose.yml`.
 * Production: `deploy/k8s` (CloudNativePG with synchronous replica and PITR backups through the
   Barman Cloud plugin, 3+ API replicas, Gateway API routes with cert-manager TLS, PDB, HPA,
