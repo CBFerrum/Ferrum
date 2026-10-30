@@ -4,9 +4,15 @@
 //! their package deleted. The package owning a document is its [`crate::DocHost`].
 //!
 //! Storage (`coedit_doc`, `coedit_update`): a snapshot, and the changes (Yjs updates) after it in
-//! the document's own sequence; every 500 are folded into the snapshot.
+//! the document's own sequence; every 500 are folded into the snapshot. A change is announced on
+//! the [`CHANNEL`], so every replica's open copy reads it.
+//!
+//! Markdown goes in ([`from_markdown`], [`append`]) and comes out ([`markdown`]) for templates and
+//! AI agents.
 
-use crate::{Result, Tx};
+mod markdown;
+
+use crate::{Error, Result, Tx};
 use std::fmt::Write as _;
 use uuid::Uuid;
 use yrs::types::text::YChange;
@@ -15,6 +21,12 @@ use yrs::{Any, Doc, OffsetKind, Options, Out, ReadTxn, StateVector, Text, Transa
 
 /// The fragment TipTap (y-prosemirror) keeps a document in.
 pub const FRAGMENT: &str = "default";
+
+/// Where stored changes are announced: `{"t": tenant, "p": package, "d": id, "r": who, "s": seq}`.
+pub const CHANNEL: &str = "ferrum_coedit";
+
+/// The largest a document may grow, roughly its encoded size.
+pub const MAX_DOC: usize = 32 << 20;
 
 /// A document as Yjs clients count it: in UTF-16 units.
 pub fn new_doc() -> Doc {
@@ -97,6 +109,77 @@ pub async fn load(tx: &mut Tx, tenant: Uuid, package: &str, id: Uuid) -> Result<
 /// at most 50 ms old, are not in it). None: never opened live.
 pub async fn state(tx: &mut Tx, tenant: Uuid, package: &str, id: Uuid) -> Result<Option<Vec<u8>>> {
     Ok(load(tx, tenant, package, id).await?.map(|l| encode(&l.doc)))
+}
+
+/// A document made from Markdown (see the `markdown` module for the subset).
+pub fn from_markdown(md: &str) -> Doc {
+    let doc = new_doc();
+    let fragment = doc.get_or_insert_xml_fragment(FRAGMENT);
+    markdown::append(&mut doc.transact_mut(), &fragment, md);
+    doc
+}
+
+/// The document as Markdown, for agents and templates.
+pub fn markdown(doc: &Doc) -> String {
+    markdown::read(doc)
+}
+
+/// Appends a change to the document's sequence and announces it, in the caller's transaction: the
+/// row lock on `coedit_doc` makes a document's changes commit in their order. `from` names who
+/// stored it (a replica, or `kernel`); `authors` are added to those the next save credits.
+/// None: no such document.
+pub async fn store(tx: &mut Tx, tenant: Uuid, package: &str, id: Uuid, data: &[u8], authors: &[Uuid], from: &str) -> Result<Option<i64>> {
+    let seq: Option<i64> = sqlx::query_scalar(
+        "update coedit_doc set seq = seq + 1, updated_at = now(), editors = array(select distinct e from unnest(editors || $4) e) \
+         where tenant_id = $1 and package = $2 and id = $3 returning seq",
+    )
+    .bind(tenant)
+    .bind(package)
+    .bind(id)
+    .bind(authors)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some(seq) = seq else { return Ok(None) };
+    sqlx::query("insert into coedit_update (tenant_id, package, doc, seq, data) values ($1, $2, $3, $4, $5)")
+        .bind(tenant)
+        .bind(package)
+        .bind(id)
+        .bind(seq)
+        .bind(data)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("select pg_notify($1, $2)")
+        .bind(CHANNEL)
+        .bind(serde_json::json!({"t": tenant, "p": package, "d": id, "r": from, "s": seq}).to_string())
+        .execute(&mut **tx)
+        .await?;
+    Ok(Some(seq))
+}
+
+/// Adds the blocks of `md` at the end of a document, as a change of its own: stored in its
+/// sequence and announced, so everyone who has it open sees them at once. A document nobody has
+/// opened live yet starts from `initial` (its package's content). Returns the change's number.
+pub async fn append(tx: &mut Tx, tenant: Uuid, package: &str, id: Uuid, initial: Option<&[u8]>, md: &str, author: Uuid) -> Result<i64> {
+    sqlx::query("insert into coedit_doc (tenant_id, package, id, snapshot) values ($1, $2, $3, $4) on conflict do nothing")
+        .bind(tenant)
+        .bind(package)
+        .bind(id)
+        .bind(initial.filter(|b| !b.is_empty() && is_update(b)))
+        .execute(&mut **tx)
+        .await?;
+    let loaded = load(tx, tenant, package, id).await?.ok_or_else(|| Error::NotFound("document".into()))?;
+    let change = {
+        let fragment = loaded.doc.get_or_insert_xml_fragment(FRAGMENT);
+        let mut txn = loaded.doc.transact_mut();
+        if markdown::append(&mut txn, &fragment, md) == 0 {
+            return Err(Error::field("markdown", "has nothing to add"));
+        }
+        txn.encode_update_v1()
+    };
+    if loaded.size + change.len() > MAX_DOC {
+        return Err(Error::invalid("the document is too large to grow further"));
+    }
+    store(tx, tenant, package, id, &change, &[author], "kernel").await?.ok_or_else(|| Error::NotFound("document".into()))
 }
 
 /// Forgets documents their package deleted. Anyone still editing one is refused at the next change.
