@@ -1,0 +1,54 @@
+--- a/src/block.rs	2006-07-24 06:51:28
++++ b/src/block.rs	2026-10-30 16:45:34
+@@ -1665,6 +1665,12 @@
+     }
+ }
+ 
++/// Splits at a UTF-16 offset as Yjs does: a surrogate pair cut in two becomes U+FFFD on each side.
++fn split_utf16_lossy(str: &str, offset: usize) -> (String, String) {
++    let units: Vec<u16> = str.encode_utf16().collect();
++    (String::from_utf16_lossy(&units[..offset]), String::from_utf16_lossy(&units[offset..]))
++}
++
+ pub(crate) fn split_str(str: &str, offset: usize, kind: OffsetKind) -> (&str, &str) {
+     fn map_utf16_offset(str: &str, offset: u32) -> u32 {
+         let mut off = 0;
+@@ -1888,20 +1894,10 @@
+             ItemContent::Deleted(_) => encoder.write_len(end - start + 1),
+             ItemContent::Binary(buf) => encoder.write_buf(buf),
+             ItemContent::String(s) => {
+-                let slice = if start != 0 {
+-                    let (_, right) = split_str(&s, start as usize, OffsetKind::Utf16);
+-                    right
+-                } else {
+-                    &s
+-                };
+-                let slice = if end != 0 {
+-                    let (left, _) =
+-                        split_str(&slice, (end - start + 1) as usize, OffsetKind::Utf16);
+-                    left
+-                } else {
+-                    slice
+-                };
+-                encoder.write_string(slice)
++                // By UTF-16 units, like Yjs: half a surrogate pair is written as U+FFFD.
++                let units: Vec<u16> = s.encode_utf16().collect();
++                let end = if end != 0 { (end + 1) as usize } else { units.len() };
++                encoder.write_string(&String::from_utf16_lossy(&units[start as usize..end]))
+             }
+             ItemContent::Embed(s) => encoder.write_json(s),
+             ItemContent::JSON(s) => {
+@@ -2015,6 +2011,13 @@
+             ItemContent::String(string) => {
+                 // compute offset given in unicode code points into byte position
+                 let (left, right) = split_str(&string, offset, encoding);
++                if encoding == OffsetKind::Utf16 && left.encode_utf16().count() != offset {
++                    // A surrogate pair cut in two: like Yjs, each half becomes U+FFFD, so both
++                    // sides keep their UTF-16 length (a Rust string cannot hold half a pair).
++                    let (left, right) = split_utf16_lossy(&string, offset);
++                    *self = ItemContent::String(left.as_str().into());
++                    return Some(ItemContent::String(right.as_str().into()));
++                }
+                 let left: SplittableString = left.into();
+                 let right: SplittableString = right.into();
+ 
