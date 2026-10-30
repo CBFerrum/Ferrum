@@ -7,18 +7,20 @@ and the parts of Office (§4) and Mail (§5) whose status lines say they are bui
 ## 1. Short answers
 
 **Does our webmail have spam filtering and corporate features such as groups?**
-No. Comms (**today**) connects existing mailboxes over SMTP/IMAP, threads mail onto any record, sends
-templates and newsletters to email groups (with one-click unsubscribe), and has team chat and calendars.
-It flags automatic mail (bulk, auto-replies, bounces), which is not spam filtering. There is no mail
-server, inbox, spam filter, shared mailbox, alias, distribution list or mail rule. §5 adds them by running
-an existing mail server, not by writing one.
+Yes (**today**, Comms 0.4.0, §5). Ferrum hosts mail on a Stalwart server beside the stack: one mailbox
+per person in the workspace's domain, a webmail in the app, shared mailboxes and distribution lists, and
+filing a mail onto any record. Spam filtering and its training are Stalwart's. Workspaces on Google
+Workspace or Microsoft 365 keep connecting their mailboxes over SMTP/IMAP, as before. Comms also threads
+mail onto records, sends templates and newsletters to email groups (with one-click unsubscribe), and
+has team chat and calendars.
 
 **Is the system plugin-based?**
 Yes, at the core (**today**): every app is a package with a manifest, a runtime (native Rust, sandboxed
 WebAssembly or metadata only), dependencies with version ranges, and settings. The 15 app repositories
 (Drive, Comms, CRM, HR, Helpdesk, Commerce, …) and the ERP modules are built this way. WebAssembly plugins
-add document hooks, HTTP endpoints, WebSockets, event handlers, schedules and storage. Missing: extension
-points that one app offers to others, sub-plugins, and plugin screens (§3).
+add document hooks, HTTP endpoints, WebSockets, event handlers, schedules and storage. Since Phase 1
+(**today**, §3), apps also offer extension points to others, have add-ons (sub-plugins) and bring their
+own screens, sandboxed and checked in Chromium, Firefox and WebKit (spike S4).
 
 **Do we reuse existing projects and libraries?**
 Yes, at three levels:
@@ -32,17 +34,15 @@ Yes, at three levels:
 §2 turns this into a rule and applies it: Stalwart for mail, Collabora/ONLYOFFICE for office documents.
 
 **Can DeckCraft, GridCraft, WordCraft and PdfCraft become our office plugin?**
-Technically yes: they are open source (MIT/Apache-2.0) and build to WebAssembly web apps we can host. But
-they are alpha, have no embedding API (we would fork them to add "open these bytes, give them back on
-save"), and their names and logos are trademarks a fork must drop. Recommendation: an Office suite with an
-*editor extension point*; Collabora Online (or ONLYOFFICE) through the WOPI protocol as the production
-editor; the ArtCraft editors as an optional lightweight provider once a spike shows they round-trip real
-files (§4).
+Office is built (**today**, §4) with Collabora Online or ONLYOFFICE through WOPI, inside Drive. The ArtCraft
+editors are open source (MIT/Apache-2.0) and build to WebAssembly web apps. Spike S3 found they can be used
+without a fork, through their host bridge, from an editor origin of their own. They remain an optional
+lightweight provider for later; their names and logos are trademarks.
 
 **Own dashboards, endpoints, custom screens, nested plugins?**
 Dashboards: without code, through package seeds of Studio spaces, dashboards and charts (no app does it
-yet; the first example proves it). Endpoints: **today** for WebAssembly plugins. Custom screens and
-nesting: §3.
+yet; the first example proves it). Endpoints: **today** for WebAssembly plugins, and an app's own
+`/api/ext/<app>/…`. Custom screens and nesting: **today** (§3; ferrum-sdk `examples/board`).
 
 Naming: "workspace" already means a tenant in Ferrum, so the document suite is called **Office** below.
 
