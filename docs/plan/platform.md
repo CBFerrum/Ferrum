@@ -1,7 +1,8 @@
 # Ferrum as one platform for the whole enterprise: plugins, Office, Mail
 
 Plan, 30 October 2026. Nothing in it is built unless marked **today**, except Phase 1 (plugin platform
-v2: extension points, add-ons and screens), which is in docs/plugins.md "Extension points" and "Screens".
+v2: extension points, add-ons and screens), which is in docs/plugins.md "Extension points" and "Screens",
+and the parts of Office (§4) and Mail (§5) whose status lines say they are built.
 
 ## 1. Short answers
 
@@ -242,7 +243,8 @@ Chromium, WebKit and Firefox (Playwright).
 ## 4. Office
 
 **Status, 30 October 2026: Office v1 is built in Drive** (CBFerrum/ferrum-app-drive#1,
-CBFerrum/Ferrum-Frontend#5, `deploy/office.yml`).
+CBFerrum/Ferrum-Frontend#5, `deploy/office.yml`). Since Drive 0.3.0 (ferrum-app-drive#3) documents
+can be as large as the operator allows (`FERRUM_DRIVE_MAX_FILE_MB`, up to 1 GiB).
 * Drive is its own WOPI host, and the web app has a Files page and an editor page.
 * One editor server per installation, set by the operator.
 * Collabora and ONLYOFFICE both speak WOPI, so they are one provider at the code level, not two.
@@ -307,6 +309,17 @@ Our own editor or renderer; co-editing for browser-only editors; Microsoft 365 f
 Apache-2.0 spreadsheet SDK: a candidate later for spreadsheet-like fields inside forms, not for files).
 
 ## 5. Mail
+
+**Status, 30 October 2026: hosted mail v1 is built in Comms 0.4.0** (CBFerrum/ferrum-app-comms#1–#3,
+CBFerrum/Ferrum#5, CBFerrum/Ferrum-Frontend#6, `deploy/mail.yml`).
+* One mailbox per person in the workspace's mail domain, on a Stalwart server beside the stack, kept
+  in step with the person's account.
+* A webmail in the web app, over JMAP through Ferrum: safe message HTML, attachments, app passwords,
+  and filing a mail onto a record.
+* Shared mailboxes and distribution lists.
+* Checked locally against Stalwart 1.0.1 through the HTTP API and the web app (sync, webmail, a reply
+  from a shared mailbox reaching the sender, threaded). Spam training, mail through a relay and the
+  rest of Phase 3's done-criteria rest on Stalwart, as spike S2 found; they are not in CI.
 
 ### 5.1 Shape
 
