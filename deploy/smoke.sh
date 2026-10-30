@@ -166,10 +166,12 @@ shell=$(curl -fsS -b "$work/jar" "$API/api/shell")
 [ "$(json '[a["url"] for a in d["apps"] if a["app"] == "drive"]' <<<"$shell")" = "['/drive/', '/sheets/', '/slides/', '/pdf/']" ] || fail "Drive's launcher entries"
 [ "$(json '[f["title"] for f in d["families"]]' <<<"$shell")" = "['Workspace']" ] || fail "Drive's family"
 curl -fsS -b "$work/jar" -D "$work/drive.h" -o "$work/drive.html" "$API/drive/" || fail "Drive's page"
-grep -q '<ferrum-bar>' "$work/drive.html" && grep -q '"app":{"id":"drive"' "$work/drive.html" || fail "Drive's page lacks the bar or its bootstrap"
+# The bootstrap is JSON in the page (its keys in any order): read it rather than match its text.
+bootstrap() { python3 -c 'import json,re,sys; m=re.search(r"<script type=\"application/json\" id=\"ferrum-bootstrap\">(.*?)</script>", sys.stdin.read(), re.S); print(json.dumps(json.loads(m.group(1)) if m else None))'; }
+grep -q '<ferrum-bar>' "$work/drive.html" && [ "$(bootstrap <"$work/drive.html" | json 'd["app"]["id"]')" = drive ] || fail "Drive's page lacks the bar or its bootstrap"
 curl -sS -D "$work/public.h" -o "$work/public.html" "$API/drive/s/smoke/no-such-link" || fail "Drive's public page"
 grep -qi "^x-robots-tag: noindex" "$work/public.h" && grep -qi "^referrer-policy: no-referrer" "$work/public.h" || fail "a public page may be indexed or leak its address"
-grep -q '"person":null' "$work/public.html" && ! grep -q '<ferrum-bar>' "$work/public.html" || fail "a public page knows a person or has the bar"
+[ "$(bootstrap <"$work/public.html" | json 'd["person"]')" = None ] && ! grep -q '<ferrum-bar>' "$work/public.html" || fail "a public page knows a person or has the bar"
 [ "$(code "$API/drive/s/no-such-workspace/x")" = 404 ] || fail "a public page of no workspace"
 # An app without an interface of its own (Helpdesk): its records in the shell, where /open leads.
 consent=$(curl -fsS "${auth[@]}" "$API/api/admin/apps/helpdesk/plan" | json 'd["digest"]') || fail "Helpdesk's install plan"
