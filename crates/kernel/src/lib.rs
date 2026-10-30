@@ -96,6 +96,8 @@ pub struct KernelSettings {
     pub secret_key: Option<secret::SecretKey>,
     /// Base URL of a Gotenberg-compatible PDF renderer; without it there are no PDFs.
     pub pdf_url: Option<String>,
+    /// The web app's address as people reach it (`PUBLIC_URL`), for links in mail.
+    pub public_url: Option<String>,
 }
 
 impl Default for KernelSettings {
@@ -107,6 +109,7 @@ impl Default for KernelSettings {
             event_retention_days: 30,
             secret_key: None,
             pdf_url: None,
+            public_url: None,
         }
     }
 }

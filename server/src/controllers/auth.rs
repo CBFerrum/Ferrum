@@ -215,13 +215,15 @@ async fn change_password(Auth(ctx): Auth, State(app): State<AppContext>, Json(re
 struct KeyReq {
     name: String,
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// `dav`: an app password for calendar and contacts apps; none: a key to the whole API.
+    scope: Option<String>,
 }
 
 async fn create_key(Auth(ctx): Auth, State(app): State<AppContext>, Json(req): Json<KeyReq>) -> ApiResult<Response> {
     if req.name.trim().is_empty() || req.name.len() > 100 {
         return Err(ApiError(Error::field("name", "is required (max 100 characters)")));
     }
-    let (id, key) = app_state(&app)?.kernel.create_api_key(&ctx, ctx.user, req.name.trim(), req.expires_at).await?;
+    let (id, key) = app_state(&app)?.kernel.create_api_key(&ctx, ctx.user, req.name.trim(), req.expires_at, req.scope.as_deref()).await?;
     Ok((StatusCode::CREATED, Json(json!({"id": id, "key": key, "note": "Store this key now; it cannot be shown again."}))).into_response())
 }
 
@@ -236,8 +238,9 @@ async fn list_keys(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<
         Option<chrono::DateTime<chrono::Utc>>,
         Option<chrono::DateTime<chrono::Utc>>,
         Option<chrono::DateTime<chrono::Utc>>,
+        Option<String>,
     )> = sqlx::query_as(
-        "select id, name, prefix, created_at, expires_at, revoked_at, last_used_at from api_key where tenant_id = $1 and user_id = $2 order by created_at desc",
+        "select id, name, prefix, created_at, expires_at, revoked_at, last_used_at, scope from api_key where tenant_id = $1 and user_id = $2 order by created_at desc",
     )
     .bind(ctx.tenant)
     .bind(ctx.user)
@@ -247,8 +250,8 @@ async fn list_keys(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<
     tx.commit().await.map_err(Error::from)?;
     let keys: Vec<Value> = rows
         .into_iter()
-        .map(|(id, name, prefix, created, expires, revoked, used)| {
-            json!({"id": id, "name": name, "prefix": format!("fk_{prefix}_…"), "created_at": created, "expires_at": expires, "revoked_at": revoked, "last_used_at": used})
+        .map(|(id, name, prefix, created, expires, revoked, used, scope)| {
+            json!({"id": id, "name": name, "prefix": format!("fk_{prefix}_…"), "created_at": created, "expires_at": expires, "revoked_at": revoked, "last_used_at": used, "scope": scope})
         })
         .collect();
     Ok(Json(json!({"keys": keys})).into_response())

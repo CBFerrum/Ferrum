@@ -3,6 +3,7 @@ pub mod apps;
 pub mod auth;
 pub mod collab;
 pub mod compat;
+pub mod dav;
 pub mod docs;
 pub mod mcp;
 pub mod meta;

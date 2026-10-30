@@ -116,4 +116,17 @@ async fn two_factor_sign_in() {
     k.disable_two_factor(&pat, Some("Correct-Horse-9"), None).await.unwrap();
     assert_eq!(k.two_factor_status(&pat).await.unwrap()["enabled"], json!(false));
     assert!(matches!(k.sign_in("twofa", "pat@twofa.test", "Correct-Horse-9").await.unwrap(), SignIn::SetupRequired(_)));
+
+    // API keys: one to the whole API, and an app password for calendar and contacts apps, which
+    // says so. Neither is a sign-in, so neither asks for the second factor.
+    let (_, full) = k.create_api_key(&pat, pat_id, "Script", None, None).await.unwrap();
+    let (dav_id, dav) = k.create_api_key(&pat, pat_id, "Phone", None, Some("dav")).await.unwrap();
+    assert_eq!(k.verify_api_key(&full).await.unwrap().1, None);
+    let (session, scope) = k.verify_api_key(&dav).await.unwrap();
+    assert_eq!((session.user, scope.as_deref()), (pat_id, Some("dav")));
+    assert!(matches!(k.create_api_key(&pat, pat_id, "Odd", None, Some("mail")).await, Err(Error::Validation(_))));
+    assert!(matches!(k.create_api_key(&pat, admin.user, "Theirs", None, Some("dav")).await, Err(Error::Forbidden(_))), "keys are for oneself");
+    k.revoke_api_key(&pat, dav_id).await.unwrap();
+    assert!(matches!(k.verify_api_key(&dav).await, Err(Error::Unauthorized(_))));
+    assert!(matches!(k.verify_api_key(&format!("{}x", &full[..full.len() - 1])).await, Err(Error::Unauthorized(_))));
 }

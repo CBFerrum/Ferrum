@@ -21,7 +21,7 @@ const MAX_BODY: usize = 1 << 30;
 
 /// Reads a request body up to the route's `limit`: refused at once when its declared length is
 /// larger, and as soon as it grows past the limit otherwise, so no route buffers more than it takes.
-async fn read_body(headers: &HeaderMap, body: Body, limit: usize) -> Result<Bytes, ApiError> {
+pub(crate) async fn read_body(headers: &HeaderMap, body: Body, limit: usize) -> Result<Bytes, ApiError> {
     let limit = limit.min(MAX_BODY);
     let too_large = || ApiError(Error::invalid(format!("request body larger than {} KB", limit / 1024)));
     let declared = headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok());
@@ -32,7 +32,7 @@ async fn read_body(headers: &HeaderMap, body: Body, limit: usize) -> Result<Byte
 }
 
 #[allow(clippy::too_many_arguments)]
-fn request(
+pub(crate) fn request(
     tenant: Uuid,
     user: Option<Ctx>,
     method: Method,
@@ -64,7 +64,7 @@ fn request(
     })
 }
 
-fn respond(r: SiteResponse) -> Response {
+pub(crate) fn respond(r: SiteResponse) -> Response {
     let mut resp = (StatusCode::from_u16(r.status).unwrap_or(StatusCode::OK), r.body).into_response();
     if let Ok(ct) = HeaderValue::from_str(&r.content_type) {
         resp.headers_mut().insert(header::CONTENT_TYPE, ct);
