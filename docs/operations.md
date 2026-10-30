@@ -605,6 +605,9 @@ It is off unless you set a key:
 | `FERRUM_ASSISTANT_FALLBACKS` | `on`/`off`; on by default for Anthropic's API with a model that has them: a request the model's safety checks decline is answered by Anthropic's recommended other model in the same call |
 | `FERRUM_ASSISTANT_CALLS_PER_HOUR` | calls to the model one person may make in an hour, default 120 (a question that reads several things is several calls) |
 
+* **Checking it.** After setting the key, `ferrum task assistant_check` sends the model one short
+  message (no tools, no workspace data) and says which model answered, or why the key, the model
+  or the network does not work.
 * **What leaves the server.** The person's messages, the page they are on, and what the tools
   read for an answer (records, reports) go to the model's API, and nothing else: the assistant
   sees only what the person may see. Set the key only where your data policy allows it; Anthropic's

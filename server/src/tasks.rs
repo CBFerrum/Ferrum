@@ -56,6 +56,32 @@ impl Task for SyncSchema {
     }
 }
 
+/// `assistant_check`: one short message to the assistant's model with the configured key
+/// (`FERRUM_ASSISTANT_*`), to see that it is set up; it costs a few tokens.
+pub struct AssistantCheck;
+
+#[async_trait]
+impl Task for AssistantCheck {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "assistant_check".into(), detail: "Send the assistant's model one short message: are its key, model and streaming right?".into() }
+    }
+    async fn run(&self, _ctx: &AppContext, _vars: &Vars) -> Result<()> {
+        let Some(c) = crate::assistant::Config::from_env() else {
+            return Err(Error::Message("FERRUM_ASSISTANT_API_KEY is not set: the assistant is off".into()));
+        };
+        match crate::assistant::Assistant::new(Some(c.clone())).check().await {
+            Ok((model, said)) => {
+                println!(
+                    "ok: {model} answered {said:?} (configured model {}, effort {}, fallbacks {}, {} calls a person an hour)",
+                    c.model, c.effort, c.fallbacks, c.calls_per_hour
+                );
+                Ok(())
+            }
+            Err(e) => Err(Error::Message(format!("the assistant's model cannot be used: {e}"))),
+        }
+    }
+}
+
 /// `import_erpnext src:../upstream/erpnext/erpnext out:packages/erpnext-import package:erpnext-import`
 pub struct ImportErpnext;
 
