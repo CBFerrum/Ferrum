@@ -144,6 +144,15 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     document typed and saved, Drive's share intent and details panel in Docs, Chat in the panel kept
     across a page load, the schedule, pick and share intents, a companion window across a page load,
     a public link signed out.
+  * Design pass: the bar draws Lucide icons (each launcher entry's `icon:` on its colour, and the
+    bar's own buttons), follows the person's light or dark theme (the runtime puts the appearance
+    stored on the device on `<html data-theme>` before the app draws, so the kit's `dark:` styles
+    work in every app, and apps of their own design get the same signal), stays the page's width
+    above a side panel, and groups the launcher: apps on their own first, then each family under its
+    name. The shell's dialogs stay centred whatever reset an app brings. The kit has `AppIcon` (an
+    app's icon as a glyph or a tile) and draws `FamilyNav` with it; Drive's list and picker and Docs'
+    lists use the kit's components and file-kind icons, and live documents show no `.fdoc`. Drive
+    0.8.1 and Docs 0.2.1 carry it.
   * Not yet: Firefox and WebKit runs (their Playwright builds are not on this machine); the Assistant
     panel (there is no assistant to put in it yet); Picture-in-Picture from the call window.
 

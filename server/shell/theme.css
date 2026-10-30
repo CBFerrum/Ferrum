@@ -22,6 +22,14 @@
   --ferrum-bar-height: 48px;
 }
 
+/* The person's theme, once the runtime has put it on <html> (data-theme): the tokens follow it. */
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
 /* The bar keeps its place before its script runs, so nothing jumps when it draws. */
 ferrum-bar {
   display: block;
@@ -37,10 +45,28 @@ ferrum-bar[compact] {
 }
 
 /* A side panel the bar opened (docs/plan/apps-ui.md §11.4) takes room at the end of wide pages and
-   floats over narrow ones. Layouts that are fixed to the viewport can use the same width. */
+   floats over narrow ones; the bar stays the page's width above it. Layouts that are fixed to the
+   viewport can use the same width. */
 @media (min-width: 1024px) {
   :root[data-ferrum-panel] body {
     margin-inline-end: var(--ferrum-panel-width, 380px);
+  }
+  :root[data-ferrum-panel] body > ferrum-bar {
+    margin-inline-end: calc(-1 * var(--ferrum-panel-width, 380px));
+  }
+}
+
+/* The shell's dialogs (an intent's app, "which app should do this?") over any app's page. */
+dialog[data-ferrum-dialog]::backdrop {
+  background: rgb(10 14 20 / 0.45);
+}
+dialog[data-ferrum-dialog][open] {
+  animation: ferrum-dialog-in 0.16s ease-out;
+}
+@keyframes ferrum-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
   }
 }
 
@@ -55,5 +81,8 @@ ferrum-bar {
 @media (prefers-reduced-motion: reduce) {
   @view-transition {
     navigation: none;
+  }
+  dialog[data-ferrum-dialog][open] {
+    animation: none;
   }
 }
