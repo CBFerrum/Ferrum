@@ -37,6 +37,7 @@ campaigns = ["dep:ferrum-app-campaigns"]
 sign = ["dep:ferrum-app-sign"]
 
 [dependencies]
+tower-http = { version = "0.6", features = ["trace", "add-extension"] }
 ferrum-kernel = { path = "../crates/kernel" }
 ferrum-meta = { path = "../crates/meta" }
 ferrum-domain = { path = "../crates/domain" }

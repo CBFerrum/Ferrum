@@ -241,6 +241,16 @@ Chromium, WebKit and Firefox (Playwright).
 
 ## 4. Office
 
+**Status, 30 October 2026: Office v1 is built in Drive** (CBFerrum/ferrum-app-drive#1,
+CBFerrum/Ferrum-Frontend#5, `deploy/office.yml`).
+* Drive is its own WOPI host, and the web app has a Files page and an editor page.
+* One editor server per installation, set by the operator.
+* Collabora and ONLYOFFICE both speak WOPI, so they are one provider at the code level, not two.
+  The `office.editor` extension point below waits for a second kind of editor (ArtCraft's bridge,
+  §4.3), as rule 5 of §2 asks.
+* Checked end to end with Collabora Online 26.04: a new document, typing, and a version saved when
+  the person left.
+
 ### 4.1 Shape
 
 ```

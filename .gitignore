@@ -12,3 +12,5 @@
 # Local secrets and tooling
 deploy/.env
 server/.claude/
+# The editor server's WOPI proof key (deploy/office.yml): a private key.
+deploy/office-proof-key*

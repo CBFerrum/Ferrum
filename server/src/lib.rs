@@ -12,5 +12,6 @@ pub mod mailer;
 pub mod objects;
 pub mod openapi;
 pub mod packages;
+pub mod request_log;
 pub mod state;
 pub mod tasks;

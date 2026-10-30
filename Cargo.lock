@@ -2327,7 +2327,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-drive"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-drive?branch=main#bb059e892e4aa1ecd0bba8e8b2f301a7761a92a7"
+source = "git+https://github.com/CBFerrum/ferrum-app-drive?branch=main#fd02d656c6e183c1919a21ee3c483ded2f985b18"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2340,6 +2340,7 @@ dependencies = [
  "hex",
  "hmac 0.12.1",
  "rand 0.9.5",
+ "ring",
  "rust_decimal",
  "serde",
  "serde_json",
@@ -2802,6 +2803,7 @@ dependencies = [
  "sqlx",
  "tokio",
  "tower",
+ "tower-http",
  "tracing",
  "uuid",
  "wat",
