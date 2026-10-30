@@ -96,8 +96,11 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     Invoice", service items, billing item and cost center, and the invoices' links.
   * The `project-records` step installs the package in a workspace that has projects without
     ERP. An entity's list columns, like its form, may name fields other packages add.
-  * Not yet: `requires: {erp}` on Commerce, POS, Field service, Assets and Bookings; removing a
-    suite's members nothing else needs.
+  * Commerce, POS, Field service, Assets and Bookings 0.1.1 require the ERP app, so installing one
+    brings ERP whole.
+  * Checked on new, empty workspaces: Commerce's plan installs ERP first; CRM installs alone (core,
+    contacts, parties, products and crm, no ERP records).
+  * Not yet: removing a suite's members nothing else needs.
 
 Contents: 1 where we are · 2 goals and targets · 3 what others do · 4 rules · 5 decisions ·
 6 the person's view · 7 addresses and deployment shapes · 8 the core shell · 9 people, sessions,
