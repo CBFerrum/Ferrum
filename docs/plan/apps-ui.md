@@ -108,6 +108,17 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     (calendar and contacts apps read it), with or without CRM. Forms' and LMS' tests install what
     they use, now that core no longer has customers or ERP's roles.
   * U3 is complete.
+* **U4b, CRM: its interface built.**
+  * CRM 0.3.0 has its own interface at /crm/, in its repository's `ui/` (built with
+    Ferrum-Frontend's packages, `dist` committed, embedded as `UI`). Its home shows the pipeline
+    (open deals by sales stage, worth and weight), your open activities and new leads. Its records
+    use the records frame, which `@ferrum/records` now exports for app repositories, with CRM's
+    modules in the sidebar; the menu lists customers and items too.
+  * Launcher entry, New Lead and New Deal in the Create menu, and /open of CRM's records, contacts
+    and customers. Checked in Chrome on the demo workspace.
+  * Not yet: making `shell_v2` the default, `/app/` only redirecting, and retiring the nginx image.
+    Helpdesk, People, Projects, POS and Studio would be records-only until U5 gives them
+    interfaces.
 
 * **U4a, Comms and Workspace: built** (31 October 2026).
   * Comms (Mail, Chat, Calendar, Meet at `/mail/`, `/chat/`, `/calendar/`, `/meet/`), Drive (`/drive/`,
