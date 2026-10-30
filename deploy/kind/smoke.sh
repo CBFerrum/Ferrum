@@ -109,7 +109,8 @@ if grep -q "ferrum_up" <<<"$(c "$API/metrics")"; then fail "metrics are reachabl
 
 step "the editor server"
 EDITORS=editors.example.com
-e() { curl -sS --max-time 60 --cacert "$work/ca.crt" --resolve "$EDITORS:8443:127.0.0.1" --resolve "$EDITORS:8080:127.0.0.1" "$@"; }
+# Like c(): the Host header names no port, as from outside.
+e() { curl -sS --max-time 60 --cacert "$work/ca.crt" --resolve "$EDITORS:8443:127.0.0.1" --resolve "$EDITORS:8080:127.0.0.1" -H "Host: $EDITORS" "$@"; }
 redirect=$(e -o /dev/null -w '%{http_code} %{redirect_url}' "http://$EDITORS:8080/relay.html")
 [ "$redirect" = "301 https://$EDITORS/relay.html" ] || fail "plain HTTP to the editor server is not redirected: $redirect"
 grep -qi "frame-ancestors https://$HOST" <<<"$(e -fsD - -o /dev/null "https://$EDITORS:8443/relay.html")" || fail "the relay may be framed by others"
