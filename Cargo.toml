@@ -10,6 +10,8 @@ members = ["crates/calc", "crates/meta", "crates/kernel", "crates/domain",
     "crates/mfg-ops",
     "crates/studio",
     "server", "server/migration"]
+# Vendored crates are dependencies, not members: yrs with a fix (third_party/yrs/FERRUM.md).
+exclude = ["third_party"]
 
 [workspace.package]
 version = "0.1.0"
@@ -39,6 +41,10 @@ sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio",
 
 # Apps built in their own repositories depend on the platform by git; inside this workspace
 # they use these crates, so there is one copy of each.
+[patch.crates-io]
+# Splits emoji like Yjs; until a yrs release has y-crdt#715 (third_party/yrs/FERRUM.md).
+yrs = { path = "third_party/yrs" }
+
 [patch."https://github.com/CBFerrum/Ferrum"]
 ferrum-kernel = { path = "crates/kernel" }
 ferrum-meta = { path = "crates/meta" }

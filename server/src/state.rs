@@ -202,6 +202,8 @@ pub struct AppState {
     pub kernel: Arc<Kernel>,
     pub plugins: Arc<ferrum_plugins::PluginHost>,
     pub live: Arc<crate::live::LiveHub>,
+    /// Documents open for live editing on this replica.
+    pub docs: Arc<crate::coedit::Docs>,
     pub settings: Settings,
     pub shutdown: Arc<watch::Sender<bool>>,
     pub background: Arc<tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,

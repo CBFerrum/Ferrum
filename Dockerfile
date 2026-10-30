@@ -7,6 +7,7 @@ FROM rust:1.95-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rustfmt.toml ./
 COPY crates ./crates
+COPY third_party ./third_party
 COPY server ./server
 COPY packages ./packages
 ARG BUILD_SHA=dev

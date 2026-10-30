@@ -9,6 +9,7 @@ pub mod audit;
 pub mod auth;
 pub mod automation;
 pub mod bulk;
+pub mod coedit;
 pub mod collab;
 pub mod ctx;
 pub mod customize;
@@ -40,7 +41,7 @@ pub mod value;
 pub use ctx::{Access, Action, Ctx, PermSet, row_scope};
 pub use db::{Db, DbConfig, Tx, with_retry};
 pub use error::{Error, FieldError, Result};
-pub use hooks::{DocHook, EventSink, HookCtx, HookRegistry, Site, SiteRequest, SiteResponse};
+pub use hooks::{DocAccess, DocHook, DocHost, EventSink, HookCtx, HookRegistry, Site, SiteRequest, SiteResponse};
 pub use query::{Filter, ListQuery, Op, Page};
 pub use registry::Registry;
 
