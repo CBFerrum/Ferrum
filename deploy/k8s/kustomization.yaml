@@ -29,6 +29,5 @@ images:
   - name: ferrum-frontend
     newName: ghcr.io/cbferrum/ferrum-frontend
     newTag: latest
-  - name: ferrum-editors
-    newName: ghcr.io/cbferrum/ferrum-editors
+  - name: ghcr.io/cbferrum/ferrum-editors
     newTag: latest
