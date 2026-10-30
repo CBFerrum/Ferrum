@@ -22,7 +22,7 @@ overlays:
       - {op: add_field, after: in_irp_username, field: {name: in_irp_password, type: secret, label: IRP API Password}}
       - {op: add_field, after: in_irp_password, field: {name: in_irp_public_key, type: text, label: IRP Public Key (PEM), description: The key the IRP gave you for encrypting the sign-in}}
       - {op: add_field, after: in_irp_public_key, field: {name: in_irp_gsp_headers, type: secret, label: GSP Headers (JSON), description: "Extra headers a GSP needs, e.g. {\"gspappid\": \"…\", \"gspappsecret\": \"…\"}"}}
-      - {op: add_field, after: in_irp_gsp_headers, field: {name: in_irp_qr_key, type: text, label: IRP Signing Key (PEM), description: "The IRP's public key for signed invoices and QR codes: answers recorded here are checked against it"}}
+      - {op: add_field, after: in_irp_gsp_headers, field: {name: in_irp_qr_key, type: text, label: IRP Signing Key (PEM), description: "A private IRP's public key for signed QR codes, or NIC's newest before Ferrum ships it: answers recorded here are checked against it instead of NIC's published keys"}}
       - {op: add_section, after: in_pincode, section: {label: e-Invoice Connection, fields: [in_irp_mode, in_irp_url, in_irp_client_id, in_irp_client_secret, in_irp_username, in_irp_password, in_irp_public_key, in_irp_gsp_headers, in_irp_qr_key], collapsible: true}}
   - entity: Customer
     ops:

@@ -607,17 +607,27 @@ async fn scenario() {
     let held = t.k.cancel(&t.ctx, "SalesInvoice", ein, None).await;
     assert!(matches!(held, Err(Error::Invalid(ref m)) if m.contains("e-invoice")), "{held:?}");
 
-    // The IRP's answer, as a connector (or someone pasting the portal's JSON) records it.
+    // The IRP's answer, as a connector (or someone pasting the portal's JSON) records it. A code
+    // claiming NIC is checked against NIC's published keys: one no published key signed is
+    // refused when entered by hand. This IRP signs with its own key, which the company names.
     let irn = "a1".repeat(32);
     let ist = chrono::Utc::now() + chrono::Duration::minutes(330);
     let ack_at = ist.format("%Y-%m-%d %H:%M:%S").to_string();
+    let irp_key = {
+        use rsa::pkcs1::EncodeRsaPrivateKey;
+        use rsa::pkcs8::{EncodePublicKey, LineEnding};
+        let key = rsa::RsaPrivateKey::new(&mut rsa::rand_core::OsRng, 1024).unwrap();
+        (key.to_pkcs1_der().unwrap().as_bytes().to_vec(), key.to_public_key().to_public_key_pem(LineEnding::LF).unwrap())
+    };
     let qr_for = |irn: &str, doc_no: &str| {
-        use base64::Engine as _;
-        let data =
-            json!({"data": json!({"Irn": irn, "DocNo": doc_no, "SellerGstin": "27AAPFU0939F1ZV", "BuyerGstin": globex_gstin}).to_string(), "iss": "NIC"});
-        format!("eyJhbGciOiJSUzI1NiJ9.{}.c2lnbmF0dXJl", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data.to_string()))
+        let data = json!({"Irn": irn, "DocNo": doc_no, "SellerGstin": "27AAPFU0939F1ZV", "BuyerGstin": globex_gstin}).to_string();
+        let key = jsonwebtoken::EncodingKey::from_rsa_der(&irp_key.0);
+        jsonwebtoken::encode(&jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256), &json!({"data": data, "iss": "NIC"}), &key).unwrap()
     };
     let answer = |irn: &str, doc_no: &str| json!({"response": json!({"data": {"Irn": irn, "AckNo": 112_010_036_563_310_u64, "AckDt": ack_at, "SignedQRCode": qr_for(irn, doc_no)}}).to_string()});
+    let unvouched = t.k.run_action(&t.ctx, "SalesInvoice", ein, "record_e_invoice", answer(&irn, &number)).await;
+    assert!(matches!(unvouched, Err(Error::Validation(ref f)) if f[0].message.contains("NIC key this release does not know")), "{unvouched:?}");
+    t.k.update(&t.ctx, "Company", cid, obj(json!({"in_irp_qr_key": irp_key.1})), None).await.expect("the IRP's QR key");
     let wrong_doc = t.k.run_action(&t.ctx, "SalesInvoice", ein, "record_e_invoice", answer(&irn, "SI/1999-00/00099")).await;
     assert!(matches!(wrong_doc, Err(Error::Validation(ref f)) if f[0].message.contains("another invoice number")), "{wrong_doc:?}");
     assert_eq!(t.action("SalesInvoice", ein, "record_e_invoice", answer(&irn, &number)).await["status"], json!("Generated"));

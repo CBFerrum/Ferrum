@@ -744,10 +744,34 @@ impl DocHook for EInvoiceHook {
                         ));
                     }
                 }
-                if let Some(pem) = s(&company, "in_irp_qr_key").filter(|k| !k.trim().is_empty())
-                    && !crate::irp::signed_by(pem, &qr)?
-                {
-                    return Err(Error::field("response", "the signed QR code does not carry the IRP's signature"));
+                // The IRP's signature: under the key the company names (a private IRP's, or NIC's
+                // newest), otherwise under NIC's published keys for a code NIC issued.
+                match s(&company, "in_irp_qr_key").filter(|k| !k.trim().is_empty()) {
+                    Some(pem) => {
+                        if !crate::irp::signed_by(pem, &qr)? {
+                            return Err(Error::field("response", "the signed QR code does not carry the IRP's signature"));
+                        }
+                    }
+                    None => match crate::irp::nic_signature(&qr) {
+                        crate::irp::NicSignature::Valid | crate::irp::NicSignature::NotNic => {}
+                        crate::irp::NicSignature::Invalid => {
+                            return Err(Error::field("response", "the signed QR code does not carry NIC's signature"));
+                        }
+                        // NIC rotates its keys. A code straight from the IRP (the direct connection)
+                        // is recorded and the gap logged; one entered by hand is not.
+                        crate::irp::NicSignature::UnknownKey(kid) if hc.ctx.is_system => {
+                            tracing::warn!(kid, "e-invoice QR code signed with a NIC key this release does not know: add it to nic_keys");
+                        }
+                        crate::irp::NicSignature::UnknownKey(kid) => {
+                            return Err(Error::field(
+                                "response",
+                                format!(
+                                    "the signed QR code names a NIC key this release does not know ({kid}): enter NIC's current QR signing key \
+                                     (einvoice1.gst.gov.in/Others/Publickeys) as the company's IRP QR key"
+                                ),
+                            ));
+                        }
+                    },
                 }
                 let ack_no = answer_field(params, "AckNo").ok_or_else(|| Error::field("response", "the IRP's answer has no AckNo"))?;
                 let ack_dt = answer_field(params, "AckDt")

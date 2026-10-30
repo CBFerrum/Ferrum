@@ -89,6 +89,57 @@ pub fn signed_by(pem: &str, jwt: &str) -> Result<bool> {
     Ok(jsonwebtoken::decode::<Value>(jwt, &decoding, &v).is_ok())
 }
 
+/// NIC's keys for the QR codes and invoices its IRPs sign, as NIC publishes them
+/// (nic_keys/README.md says where and when): each under its certificate's SHA-1 thumbprint, the
+/// `kid` a signed token names; the one key NIC published without its certificate has none.
+const NIC_KEYS: &[(&str, &str)] = &[
+    ("CD01AC2B6E720CF0B9E048F1CCBC7509C766AF78", include_str!("nic_keys/CD01AC2B6E720CF0B9E048F1CCBC7509C766AF78.pem")),
+    ("644956C46E4E947AAD72FD15DFDB01EB9A96A66B", include_str!("nic_keys/644956C46E4E947AAD72FD15DFDB01EB9A96A66B.pem")),
+    ("4DE1544AE695BDC84EC7BC12F2F57F813F44E301", include_str!("nic_keys/4DE1544AE695BDC84EC7BC12F2F57F813F44E301.pem")),
+    ("DEB2031A279F203BBDDF3538E77D4122ACB4D07D", include_str!("nic_keys/DEB2031A279F203BBDDF3538E77D4122ACB4D07D.pem")),
+    ("B8D63ECB58EA5E6F4AAC3D524543B2246669B0F8", include_str!("nic_keys/B8D63ECB58EA5E6F4AAC3D524543B2246669B0F8.pem")),
+    ("6C9E76A15241484CBBFC0CB81A5F3F0E5D489918", include_str!("nic_keys/6C9E76A15241484CBBFC0CB81A5F3F0E5D489918.pem")),
+    ("247EBBCBE931277CD0BCCEB00CB021D98E886DAC", include_str!("nic_keys/247EBBCBE931277CD0BCCEB00CB021D98E886DAC.pem")),
+    ("115F4426617A7938BE1BA06DBEE91A427584EDAB", include_str!("nic_keys/115F4426617A7938BE1BA06DBEE91A427584EDAB.pem")),
+    ("EDC57DE1358B300BA9F79340A6696831F3C85047", include_str!("nic_keys/EDC57DE1358B300BA9F79340A6696831F3C85047.pem")),
+    ("", include_str!("nic_keys/ProdPubKey3.pem")),
+];
+
+/// What NIC's keys say about a signed QR code or invoice.
+#[derive(Debug, PartialEq)]
+pub enum NicSignature {
+    /// Signed by one of NIC's keys.
+    Valid,
+    /// It names a key of NIC's that did not sign it: forged or altered.
+    Invalid,
+    /// It claims NIC but names a key NIC had not published when this release was made (NIC
+    /// rotates them), or none, and no published key signed it.
+    UnknownKey(String),
+    /// Not issued by NIC (`iss`): a private IRP's, which NIC's keys say nothing about.
+    NotNic,
+}
+
+/// Checks a token that claims NIC (`iss`) against the key it names, or against every published
+/// key when it names none of them (a valid signature under any of NIC's keys is NIC's).
+pub fn nic_signature(jwt: &str) -> NicSignature {
+    let part = |i: usize| {
+        let raw = jwt.split('.').nth(i)?;
+        serde_json::from_slice::<Value>(&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(raw.trim_end_matches('=')).ok()?).ok()
+    };
+    let (Some(header), Some(payload)) = (part(0), part(1)) else { return NicSignature::NotNic };
+    if payload["iss"].as_str() != Some("NIC") {
+        return NicSignature::NotNic;
+    }
+    let kid = header["kid"].as_str().unwrap_or_default().trim().to_ascii_uppercase();
+    let by = |pem: &str| signed_by(pem, jwt).unwrap_or(false);
+    match NIC_KEYS.iter().find(|(k, _)| !kid.is_empty() && *k == kid) {
+        Some((_, pem)) if by(pem) => NicSignature::Valid,
+        Some(_) => NicSignature::Invalid,
+        None if NIC_KEYS.iter().any(|(_, pem)| by(pem)) => NicSignature::Valid,
+        None => NicSignature::UnknownKey(if kid.is_empty() { "none".into() } else { kid }),
+    }
+}
+
 fn random_key() -> [u8; 32] {
     use rsa::rand_core::{OsRng, RngCore};
     let mut k = [0u8; 32];
@@ -432,5 +483,33 @@ mod tests {
         let block = hex::decode("6bc1bee22e409f96e93d7e117393172a").unwrap();
         assert_eq!(hex::encode(&ecb_encrypt(&k, &block)[..16]), "f3eed1bdb5d2a03c064b5a7e3db181f8");
         assert_eq!(ist("2026-10-30 14:05:00").unwrap().to_rfc3339(), "2026-10-30T08:35:00+00:00");
+    }
+
+    /// The signed QR code in NIC's own generate-IRN API documentation
+    /// (einv-apisandbox.nic.in/version1.03/generate-irn.html), signed by NIC's key 115F4426….
+    const NIC_SAMPLE_QR: &str = "eyJhbGciOiJSUzI1NiIsImtpZCI6IjExNUY0NDI2NjE3QTc5MzhCRTFCQTA2REJFRTkxQTQyNzU4NEVEQUIiLCJ0eXAiOiJKV1QiLCJ4NXQiOiJFVjlFSm1GNmVUaS1HNkJ0dnVrYVFuV0U3YXMifQ.eyJkYXRhIjoie1wiU2VsbGVyR3N0aW5cIjpcIjM3QVJaUFQ0Mzg0UTFNVFwiLFwiQnV5ZXJHc3RpblwiOlwiMTFBQUFDVDM5MDRGMVpaXCIsXCJEb2NOb1wiOlwiREQtMjAyMDA4MDQtOVwiLFwiRG9jVHlwXCI6XCJJTlZcIixcIkRvY0R0XCI6XCIwNC8wOC8yMDIwXCIsXCJUb3RJbnZWYWxcIjo3Nzc2LjMsXCJJdGVtQ250XCI6MyxcIk1haW5Ic25Db2RlXCI6XCIxMDAxXCIsXCJJcm5cIjpcIjExZjhlZjcwMWZlMjk0ZDRhMTRhYWQwYjEyNDU3ZTYyNzc1ZDBmZGM0MWEwYWNmMDViNzRmYmIyZGRjNDdhY2JcIn0iLCJpc3MiOiJOSUMifQ.fya8oD85f2_K8pDWSf8N94_T24O1lA9OPpIuUwk14el_r1lhL13OFxGkklhiewSMUom8DvO9JKu4jjz2l5farRTJhiBWJ43EtEky2SLzRhJf23JYW_6PyLErYL2RTzv2PlZ75eXIBZzPkxc2erCx61T50oHmExLgl1Q6HclvgiQUAVxysq1VFv96zEZVH8I0xDNqjdvqdtsW74ZHqzpV28kDIvuyV4Z5j3bR39GE6YKMetext_x3bJ4Wt4F1z3DOzfUjuKGdEjP0fTSwNg1RpiDoH4wcaMP7RJgtbQYXn4j3YoppCEw916AmbihiT2gSODPn04vhCbBecI7oOZvxpw";
+
+    #[test]
+    fn qr_codes_are_checked_against_nics_published_keys() {
+        for (kid, pem) in NIC_KEYS {
+            public_key(pem).unwrap_or_else(|e| panic!("NIC key {kid}: {e}"));
+        }
+        assert_eq!(nic_signature(NIC_SAMPLE_QR), NicSignature::Valid);
+        let parts: Vec<&str> = NIC_SAMPLE_QR.split('.').collect();
+        let b64 = |v: &Value| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v.to_string());
+        let decode = |p: &str| serde_json::from_slice::<Value>(&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(p).unwrap()).unwrap();
+        // Another IRN under NIC's signature: altered.
+        let mut payload = decode(parts[1]);
+        payload["data"] = json!(payload["data"].as_str().unwrap().replace("\"Irn\":\"", "\"Irn\":\"0"));
+        assert_eq!(nic_signature(&format!("{}.{}.{}", parts[0], b64(&payload), parts[2])), NicSignature::Invalid);
+        // A key NIC never published, and no kid at all: nobody vouches for it.
+        let mut header = decode(parts[0]);
+        header["kid"] = json!("00000000000000000000000000000000000000AA");
+        assert_eq!(nic_signature(&format!("{}.{}.c2ln", b64(&header), parts[1])), NicSignature::UnknownKey("00000000000000000000000000000000000000AA".into()));
+        assert_eq!(nic_signature(&format!("e30.{}.c2ln", parts[1])), NicSignature::UnknownKey("none".into()));
+        // A private IRP's code: not NIC's to judge.
+        payload["iss"] = json!("Cygnet");
+        assert_eq!(nic_signature(&format!("{}.{}.{}", parts[0], b64(&payload), parts[2])), NicSignature::NotNic);
+        assert_eq!(nic_signature("not a token"), NicSignature::NotNic);
     }
 }
