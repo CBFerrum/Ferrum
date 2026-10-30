@@ -98,8 +98,9 @@ Single host: `cp deploy/.env.example deploy/.env`, fill it in, then
 `docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d`.
 
 **Images.** For each commit on `main` whose images pass the checks below, CI publishes
-`ghcr.io/cbferrum/ferrum` (and Ferrum-Frontend's CI `ghcr.io/cbferrum/ferrum-frontend`) tagged
-with the commit's full SHA and `latest`. Deploy a commit's tag and change it to upgrade: `latest`
+`ghcr.io/cbferrum/ferrum` and `ghcr.io/cbferrum/ferrum-editors` (Ferrum-Frontend's CI publishes
+`ghcr.io/cbferrum/ferrum-frontend`), tagged with the commit's full SHA and `latest`. On a single
+host, pin them with `FERRUM_IMAGE`, `FERRUM_WEB_IMAGE` and `FERRUM_EDITORS_IMAGE`. Deploy a commit's tag and change it to upgrade: `latest`
 moves, so pods started later (a rescheduled replica, a new node) would run another release. If
 pulling needs signing in (private packages, or your own mirror), use a token that may read
 packages: `docker login ghcr.io` on a single host; on Kubernetes,
