@@ -1,0 +1,31 @@
+# Hosted mail: a Stalwart mail server beside the stack, holding the workspaces' mailboxes
+# (docs/operations.md, "Hosted mail").
+#   docker compose -f deploy/docker-compose.yml -f deploy/mail.yml --env-file deploy/.env up -d
+# First start: `docker compose ... logs mail` shows a temporary administrator, once. Sign in with it
+# at http://localhost:8081/admin on the host (an SSH tunnel from elsewhere), complete the setup and
+# put the permanent administrator it gives you in deploy/.env (FERRUM_MAIL_ADMIN,
+# FERRUM_MAIL_ADMIN_SECRET), then run `up -d` again.
+services:
+  mail:
+    image: stalwartlabs/stalwart:${STALWART_TAG:-v1.0}
+    restart: unless-stopped
+    volumes:
+      - mail-config:/etc/stalwart
+      - mail-data:/var/lib/stalwart
+    ports:
+      - "25:25" # mail from other servers
+      - "465:465" # submission (TLS)
+      - "587:587" # submission (STARTTLS)
+      - "993:993" # IMAP (TLS)
+      - "4190:4190" # ManageSieve
+      # Setup and administration over plain HTTP: on the host only.
+      - "127.0.0.1:${MAIL_ADMIN_PORT:-8081}:8080"
+  ferrum:
+    environment:
+      FERRUM_MAIL_URL: http://mail:8080
+      FERRUM_MAIL_ADMIN: ${FERRUM_MAIL_ADMIN:-}
+      FERRUM_MAIL_ADMIN_SECRET: ${FERRUM_MAIL_ADMIN_SECRET:-}
+
+volumes:
+  mail-config:
+  mail-data:

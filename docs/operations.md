@@ -339,6 +339,61 @@ Set `OFFICE_PUBLIC_URL` and `OFFICE_PUBLIC_HOST` to the editor's public address.
   limit applies to all of its sessions together. Raise it for busy editors, or exempt the editor's
   address at the ingress.
 
+## Hosted mail
+
+The Mail, Chat and Calendar app (Comms) can give people mailboxes on a Stalwart mail server that
+you run beside Ferrum (Stalwart 1.0, open source). Ferrum creates, moves, locks and unlocks the
+accounts so that they follow the people. The app's README ("Hosted mail") has the details.
+
+| Setting | On | Value |
+|---|---|---|
+| `FERRUM_MAIL_URL` | server | Stalwart's HTTP address as the server reaches it, e.g. `http://mail:8080` |
+| `FERRUM_MAIL_ADMIN`, `FERRUM_MAIL_ADMIN_SECRET` | server | a Stalwart administrator |
+
+**Compose.** `deploy/mail.yml` adds Stalwart:
+
+    docker compose -f deploy/docker-compose.yml -f deploy/mail.yml --env-file deploy/.env up -d
+
+1. `docker compose ... logs mail` shows a temporary administrator, once.
+2. Sign in with it at `http://localhost:8081/admin` on the host; from elsewhere, use an SSH
+   tunnel, because the port is published on the host only. Complete the setup there:
+   * the server's host name, e.g. `mail.example.com`;
+   * a first domain;
+   * TLS certificates (ACME).
+
+   The setup gives you the permanent administrator.
+3. Put that administrator in `deploy/.env` as `FERRUM_MAIL_ADMIN` and `FERRUM_MAIL_ADMIN_SECRET`,
+   then run `up -d` again. Stalwart keeps its setup and mail in the `mail-config` and `mail-data`
+   volumes; back them up with the database.
+4. Publish the DNS records Stalwart lists for each domain under Domains: MX, SPF, DKIM, DMARC
+   and the rest. Add reverse DNS (PTR) for the server's address.
+5. In each workspace:
+   * install Mail, Chat and Calendar;
+   * set Communication Settings → Mail Domain;
+   * then run Sync Mailboxes, or wait for the next run (every ten minutes).
+
+**Kubernetes.** Run Stalwart as a StatefulSet:
+* persistent volumes at `/etc/stalwart` and `/var/lib/stalwart`;
+* a LoadBalancer service for ports 25, 465, 587 and 993;
+* the three values above on the server, from a secret;
+* an egress rule in the server's network policy for Stalwart's port 8080. The policy lets the
+  server's pods reach only the database, the PDF renderer, DNS and ports 443 and 587.
+
+**Things to know**
+* **Outgoing mail:** many clouds block outgoing port 25, and a new address has no reputation.
+  Route outgoing mail through a relay such as Amazon SES or Postmark (Stalwart: outbound routing).
+* **Shared server:** several workspaces can share one server.
+  * Each workspace has its own domain, and each account carries
+    `externalId = ferrum:<workspace>:<person>`.
+  * Ordinary users cannot list other accounts: Stalwart ships with directory queries off. Keep
+    them off.
+  * For hard separation, run one Stalwart per Ferrum deployment, or use the Enterprise edition,
+    which has tenants.
+* **Passwords:** each account's password is random and sealed in Ferrum, and nobody is shown it.
+  Locking a person replaces every password of the account, app passwords included.
+* **Accounts Ferrum does not know:** an existing account at a person's address, made by hand or
+  left from another workspace, is never taken over. Sync Mailboxes reports it under `failed`.
+
 ## India: e-invoices and e-way bills
 
 With the `india` package, a submitted Sales Invoice to a registered business, an SEZ unit or a
