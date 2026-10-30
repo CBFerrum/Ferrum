@@ -257,6 +257,11 @@ contributes:
   stored once where the endpoint honours it; `family()` gives the app's family and its entries (the
   kit's `FamilyNav` draws them); `apps()` the launcher's entries; `on(event, cb)` returns a function
   that stops listening.
+* **Records-only apps**: an app without `ui` and without `shell.app` entries gets a launcher entry
+  into its records anyway, at `/data/{app}/` (its manifest's `name`): lists, forms and
+  reports of its packages' entities and its add-ons', in the frame ERP's interface uses, where
+  `/open` of its entities leads. Connectors (category `connector`), suites and add-ons get none: an
+  add-on's records are its parent's.
 * **Families**: an app with an interface heads a family when it names one (`ui.family`) or when its
   add-ons (`parent`) bring interfaces too. They share its launcher group and navigation, and each
   still ships and versions on its own (Drive and Docs are Workspace).

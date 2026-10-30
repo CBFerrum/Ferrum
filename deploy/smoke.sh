@@ -150,8 +150,13 @@ cookie=$(awk '$6=="__Host-ferrum" || $6=="ferrum_session" {print $7}' "$work/jar
 [[ "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$API/nothing-here/x")" =~ ^30[23]\ .*/login\?next=%2Fnothing-here%2Fx$ ]] || fail "a signed-out app route does not lead to sign-in"
 [ "$(code -b "$work/jar" "$API/nothing-here/")" = 404 ] || fail "a route nothing is installed at"
 [ "$(code -b "$work/jar" "$API/portal/")" = 404 ] || fail "a name the core keeps"
-# The shell's own pages lead a workspace that is not on the shell to today's web app.
+# A new workspace is on the shell: its pages are the shell's. Switched to the classic interface,
+# they lead to today's web app.
+grep -q '<ferrum-bar>' <<<"$(curl -fsS -b "$work/jar" "$API/admin/")" || fail "the shell's administration"
+settings() { curl -fsS "${auth[@]}" -X PUT -H 'content-type: application/json' -d "$1" "$API/api/admin/settings" >/dev/null || fail "changing the workspace's settings"; }
+settings '{"shell_v2":false}'
 [[ "$(curl -sS -o /dev/null -b "$work/jar" -w '%{http_code} %{redirect_url}' "$API/admin/")" =~ ^30[23]\ .*/app/admin$ ]] || fail "the shell's administration for a workspace on the classic interface"
+settings '{"shell_v2":true}'
 grep -q "unregister" <<<"$(curl -fsS -b "$work/jar" "$API/nothing-here/sw.js")" || fail "the worker of an empty route does not remove itself"
 # Apps with interfaces of their own (U4a): Drive, installed through the App Manager, brings its
 # interface compiled in; its family, its pages under the bar, and its public page.
@@ -166,6 +171,12 @@ curl -sS -D "$work/public.h" -o "$work/public.html" "$API/drive/s/smoke/no-such-
 grep -qi "^x-robots-tag: noindex" "$work/public.h" && grep -qi "^referrer-policy: no-referrer" "$work/public.h" || fail "a public page may be indexed or leak its address"
 grep -q '"person":null' "$work/public.html" && ! grep -q '<ferrum-bar>' "$work/public.html" || fail "a public page knows a person or has the bar"
 [ "$(code "$API/drive/s/no-such-workspace/x")" = 404 ] || fail "a public page of no workspace"
+# An app without an interface of its own (Helpdesk): its records in the shell, where /open leads.
+consent=$(curl -fsS "${auth[@]}" "$API/api/admin/apps/helpdesk/plan" | json 'd["digest"]') || fail "Helpdesk's install plan"
+curl -fsS "${auth[@]}" -H 'content-type: application/json' -d "{\"consent\":\"$consent\"}" "$API/api/admin/apps/helpdesk/install" >/dev/null || fail "installing Helpdesk"
+[ "$(curl -fsS -b "$work/jar" "$API/api/shell" | json '[a["url"] for a in d["apps"] if a["app"] == "helpdesk"]')" = "['/data/helpdesk/']" ] || fail "Helpdesk's records in the launcher"
+grep -q '"scope":{"app":"helpdesk"' <<<"$(curl -fsS -b "$work/jar" "$API/data/helpdesk/")" || fail "Helpdesk's records page"
+[[ "$(curl -sS -o /dev/null -b "$work/jar" -w '%{http_code} %{redirect_url}' "$API/open/Ticket")" =~ ^30[23]\ .*/data/helpdesk/e/Ticket$ ]] || fail "/open of Helpdesk's tickets"
 # Signing out ends the device's session: the cookie no longer works anywhere.
 [ "$(code -b "$work/jar" -X POST -H 'sec-fetch-site: same-origin' "$API/api/auth/logout")" = 204 ] || fail "signing out"
 [ "$(code -b "$work/jar" "$API/api/shell")" = 401 ] || fail "the cookie still works after signing out"

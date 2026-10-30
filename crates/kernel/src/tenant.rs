@@ -47,13 +47,19 @@ impl Kernel {
         }
         let packages = self.registry.catalog().closure(&wanted).map_err(|e| Error::field("packages", e.to_string()))?;
         let hash = hash_password(t.admin_password.clone()).await?;
+        // A new workspace uses the shell and apps' own interfaces unless told otherwise (apps-ui.md
+        // U4b); one made before keeps today's web app until it is switched (no `shell_v2`).
+        let mut settings = t.settings.clone().unwrap_or_else(|| serde_json::json!({}));
+        if let Some(s) = settings.as_object_mut() {
+            s.entry("shell_v2").or_insert(serde_json::json!(true));
+        }
         let tenant = Uuid::now_v7();
         let mut tx = self.db.system_tx().await?;
         sqlx::query("insert into tenant (id, slug, name, settings) values ($1, $2, $3, $4)")
             .bind(tenant)
             .bind(&t.slug)
             .bind(t.name.trim())
-            .bind(t.settings.clone().unwrap_or_else(|| serde_json::json!({})))
+            .bind(settings)
             .execute(&mut *tx)
             .await
             .map_err(|e| match Error::from(e) {

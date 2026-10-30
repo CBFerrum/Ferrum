@@ -187,7 +187,9 @@ impl Schema {
         }
         let roles: BTreeMap<&str, Vec<Value>> = roles.into_iter().map(|(k, v)| (k, sorted(v))).collect();
         let personal = sorted(self.personal_data.iter().map(|p| serde_json::to_value(p).unwrap_or_default()).collect());
-        serde_json::json!({"entities": entities, "modules": self.modules, "roles": roles, "personal_data": personal})
+        // What people get, whichever package defines a module.
+        let modules: Vec<ModuleDef> = self.modules.iter().map(|m| ModuleDef { package: String::new(), ..m.clone() }).collect();
+        serde_json::json!({"entities": entities, "modules": modules, "roles": roles, "personal_data": personal})
     }
 }
 
@@ -444,7 +446,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
             let print_template = pkg.print_formats.iter().find(|(n, _)| n == &e.name).map(|(_, t)| t.clone());
             building.insert(e.name.clone(), Building { package: pkg.name().into(), def: e.clone(), storage, custom: false, workflow: None, print_template });
         }
-        modules.extend(pkg.manifest.modules.iter().cloned());
+        modules.extend(pkg.manifest.modules.iter().map(|m| ModuleDef { package: pkg.name().into(), ..m.clone() }));
         roles.extend(pkg.manifest.roles.iter().cloned());
         personal_data.extend(pkg.manifest.personal_data.iter().cloned());
     }

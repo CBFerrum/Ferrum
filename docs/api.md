@@ -62,7 +62,7 @@ content}` makes the form save that file (e-invoice JSON, say).
 
 ## Metadata — `/api/meta`
 
-* `GET /api/meta` → `{version, packages, modules: [{name, label, icon, order, items: ["EntityName" | "report:<name>"]}], entities: [{name, label, label_plural, kind, module, icon, submittable, custom, permissions}], warnings}`
+* `GET /api/meta` → `{version, packages, modules: [{name, label, icon, order, items: ["EntityName" | "report:<name>"], package}], entities: [{name, label, label_plural, kind, module, icon, submittable, custom, permissions}], warnings}`
 * `GET /api/meta/{Entity}` → full description used to render forms and lists:
   `{name, label, label_plural, kind (master|document|child|settings|ledger), module, title_field, submittable, company_scoped, numbering, list: {columns, sort}, form: [{label, fields, columns (1-4), collapsible, tab?, visible_if?}], search_fields, rules, actions: [{name, label, docstatus[], permission, confirm?, condition?, read_only?, params?, group?}], workflow?: {initial_state, states: [{name, docstatus, edit_roles}], transitions: [{action, from, to, roles, condition?, not_creator}]}, fields: [Field], children: {tableField: {entity, label, fields: [Field]}}, permissions: {read|write|create|delete|submit|cancel|export|import: "none"|"own"|"all"}}`
 * `Field`: `{name, label, type, required?, unique?, read_only?, hidden?, in_list?, in_filter?, options?, to?, of?, precision?, currency?, min?, max?, max_length?, default?, default_expr?, computed?, visible_if?, required_if?, read_only_if?, fetch_from?, description?, link_filters?, storage: "column"|"ext", can_read, can_write}`.
@@ -186,13 +186,20 @@ Pages, for browsers, with the session cookie:
   person may use lives any more.
 * `GET /open/{entity}/{id}` → `303` to the screen of an app that shows the record and that the
   person may use (`?via={app}` first, then `priority`, then install order), else the shell's
-  records page (today's, for a workspace not on the shell) if the person may read the entity, else
-  403 (404 for an entity the workspace does not have). `GET /open/{entity}` → the same for the list (an app's `shell.open` `list`). The rest of the
+  records page if the person may read the entity: the records of the app it belongs to when that
+  app has no interface of its own (`/data/{app}/e/…`), else `/data/e/…` (today's web app for a
+  workspace not on the shell); else 403 (404 for an entity the workspace does not have). `GET /open/{entity}` → the same for the list (an app's `shell.open` `list`). The rest of the
   query goes along.
 * `GET /{public path}/{workspace}/…` (an app's `shell.public`, such as `/drive/s/acme/{link}` and
   `/meet/guest/acme/{link}`) → the app's page for people outside the workspace: no session, no bar,
   `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex, nofollow`; 404 when the workspace, the app
   or its page is not there (or the host serves another workspace). Rate-limited per address.
+* `GET /data/{app}/…` → the records of an app without an interface of its own (no `ui`, no
+  `shell.app`; not a connector, a suite or an add-on): the shell's records frame with the modules of
+  its packages and its add-ons'. 403 when the person may read none of them; for an app that has an
+  interface now, or is not installed, `e/{entity}[/{id}]` goes to `/open/…` and anything else to
+  `/data/`. `/data/e/…`, `/data/r/…` and `/data/customize/…` are the records of any entity, its
+  reports and Customize.
 * `GET /login?next=` → the sign-in page.
 * `GET /_ui/{app}/{digest}/{path}` → a file of an interface release: public, `immutable`.
 * `GET /_shell/v1/{file}` → the shell's own files (`runtime.js`, `live-worker.js`, …), the newest of
@@ -205,7 +212,9 @@ For the bar, with the cookie or a token:
   title, url}], sidepanels: [{id, app, title, icon, contextual, url}], families: [{id, title, apps}],
   legacy}`: what the caller may use. `family` names the head of the entry's family (`families` lists
   them, heads first). Entries into today's web app (`classic: true`) appear only for apps whose
-  installed version has no interface of its own. `ETag`.
+  installed version has no interface of its own; apps without one, without launcher entries of
+  their own, get one entry into their records (`/data/{app}/`, the manifest's name and summary) when
+  the person may read one of their entities. `ETag`.
 * `GET /api/shell/version?app=` → `{app, version, release}`: the interface release the workspace
   runs, so an open tab can tell it is outdated.
 

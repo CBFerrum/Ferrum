@@ -662,6 +662,43 @@ pub fn classic_entries(apps: &[ShellApp]) -> Vec<Value> {
         .collect()
 }
 
+/// An app without an interface or launcher entries of its own (§10.1, records-only): the shell
+/// shows its records, and its add-ons', at `/data/{app}/`. Returns the app and those packages.
+/// Connectors, suites and add-ons have no such place: an add-on's records are in its parent's.
+pub fn records_app<'a>(apps: &'a [ShellApp], id: &str) -> Option<(&'a ShellApp, Vec<String>)> {
+    let a = apps.iter().find(|a| a.id == id)?;
+    let m = &a.manifest;
+    if m.ui.is_some() || a.items("shell.app").next().is_some() || m.parent.is_some() || m.packages.is_empty() || m.categories.iter().any(|c| c == "connector") {
+        return None;
+    }
+    let mut packages = m.packages.clone();
+    for addon in apps.iter().filter(|x| x.manifest.parent.as_deref() == Some(id)) {
+        packages.extend(addon.manifest.packages.iter().cloned());
+    }
+    Some((a, packages))
+}
+
+/// Whether the person may read records of these packages (rows of other records don't count).
+pub fn reads_any(ctx: &Ctx, packages: &[String]) -> bool {
+    ctx.schema.entities.values().any(|e| {
+        e.def.kind != ferrum_meta::EntityKind::Child
+            && packages.contains(&e.package)
+            && ctx.perms.access(&e.def.name, ferrum_kernel::Action::Read) != ferrum_kernel::Access::None
+    })
+}
+
+/// Launcher entries for the [`records_app`]s whose records the person may read.
+pub fn records_entries(apps: &[ShellApp], ctx: &Ctx) -> Vec<Value> {
+    apps.iter()
+        .filter_map(|a| records_app(apps, &a.id))
+        .filter(|(_, packages)| reads_any(ctx, packages))
+        .map(|(a, _)| {
+            let m = &a.manifest;
+            json!({"id": format!("records-{}", a.id), "app": a.id, "title": m.name, "description": m.summary, "compact": false, "url": format!("/data/{}/", a.id)})
+        })
+        .collect()
+}
+
 /// Families (§11.5): an app with an interface of its own heads one when it names one (`ui.family`)
 /// or when its add-ons bring interfaces too; they share its navigation and its launcher group.
 /// Returns each member's family (app → head) and the families in install order.
@@ -1030,6 +1067,24 @@ mod tests {
         // Docs where Drive has no interface (an older Drive): on its own.
         let (of, list) = families(&[docs, comms]);
         assert!(of.is_empty() && list.is_empty(), "{of:?} {list:?}");
+    }
+
+    #[test]
+    fn records_places_for_apps_without_interfaces() {
+        let helpdesk = app(&manifest("helpdesk", "packages: [helpdesk]\n"));
+        let addon = app(&manifest("helpdesk-sla", "packages: [helpdesk_sla]\nrequires: {helpdesk: \">=0.2\"}\nparent: helpdesk\n"));
+        let connector =
+            app(&manifest("helpdesk-erp", "packages: [helpdesk_erp]\nrequires: {helpdesk: \">=0.2\", erp: \">=0.1\"}\n")
+                .replace("[productivity]", "[connector]"));
+        let crm = app(&manifest("crm", "packages: [crm]\nui:\n  dist: ui/dist\ncontributes:\n  shell.app:\n    - {id: crm, route: crm, title: CRM}\n"));
+        let suite =
+            app(&manifest("business", "requires: {helpdesk: \">=0.2\", crm: \">=0.3\"}\n").replace("[productivity]", "[suite]").replace("native", "meta"));
+        let apps = [helpdesk, addon, connector, crm, suite];
+        let (a, packages) = records_app(&apps, "helpdesk").expect("records-only");
+        assert_eq!((a.id.as_str(), packages), ("helpdesk", vec!["helpdesk".to_string(), "helpdesk_sla".to_string()]));
+        for other in ["helpdesk-sla", "helpdesk-erp", "crm", "business", "nothing"] {
+            assert!(records_app(&apps, other).is_none(), "{other}");
+        }
     }
 
     #[test]
