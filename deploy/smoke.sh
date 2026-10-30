@@ -9,7 +9,8 @@
 # database and the attachments are backed up, the stack is deleted with its volumes and restored
 # from the backups, data, sessions and numbering intact; a short load test runs without errors.
 # Everything is removed afterwards. CI runs it on every image it builds. With FERRUM_EDITORS_IMAGE,
-# the browser editors' server (editors.yml) runs beside the stack and is checked too.
+# the browser editors' server (editors.yml) runs beside the stack and is checked too; with
+# SMOKE_MEET=1, the meeting server (meet.yml), which must accept the passes Ferrum signs.
 #
 #   FERRUM_IMAGE=ghcr.io/cbferrum/ferrum:latest FERRUM_WEB_IMAGE=ghcr.io/cbferrum/ferrum-frontend:latest \
 #     deploy/smoke.sh     # needs Docker, curl, openssl, python3 + httpx
@@ -45,12 +46,18 @@ if [ -n "${FERRUM_EDITORS_IMAGE:-}" ]; then
   export FERRUM_EDITORS_PORT=${SMOKE_EDITORS_PORT:-8090}
   export FERRUM_EDITORS_URL="http://127.0.0.1:$FERRUM_EDITORS_PORT"
 fi
+if [ -n "${SMOKE_MEET:-}" ]; then
+  files+=(-f meet.yml)
+  export FERRUM_MEET_PORT=${SMOKE_MEET_PORT:-7880} FERRUM_MEET_KEY=smoke FERRUM_MEET_SECRET FERRUM_MEET_EXTERNAL_IP=false FERRUM_MEET_NODE_IP=127.0.0.1
+  export FERRUM_MEET_URL="ws://127.0.0.1:$FERRUM_MEET_PORT"
+  FERRUM_MEET_SECRET=$(openssl rand -hex 32)
+fi
 compose() { docker compose "${files[@]}" "$@"; }
 cleanup() {
   status=$?
   if [ "$status" -ne 0 ]; then
     echo "--- smoke test failed; logs:"
-    compose logs --tail 200 ferrum web pdf db ${FERRUM_EDITORS_IMAGE:+editors} || true
+    compose logs --tail 200 ferrum web pdf db ${FERRUM_EDITORS_IMAGE:+editors} ${SMOKE_MEET:+meet} || true
   fi
   compose down -v --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$work"
@@ -84,13 +91,13 @@ if [ -n "${FERRUM_PREVIOUS_IMAGE:-}" ]; then
 fi
 
 step "starting the stack from $FERRUM_IMAGE and $FERRUM_WEB_IMAGE"
-compose up -d --no-build db ferrum pdf web ${FERRUM_EDITORS_IMAGE:+editors}
+compose up -d --no-build db ferrum pdf web ${FERRUM_EDITORS_IMAGE:+editors} ${SMOKE_MEET:+meet}
 wait_up "$API/_health" "the server"
 wait_up "$WEB/healthz" "the web app"
 
 step "creating, seeding and invoicing a workspace"
 compose exec -T ferrum ferrum task create_tenant slug:smoke name:"Smoke Co" email:smoke@smoke.test password:"$PASSWORD" \
-  packages:core,accounting,inventory,selling,buying,manufacturing,india
+  packages:core,accounting,inventory,selling,buying,manufacturing,india${SMOKE_MEET:+,comms}
 compose exec -T ferrum ferrum task seed_demo tenant:smoke
 TOKEN=$(login "$API") || fail "signing in"
 auth=(-H "authorization: Bearer $TOKEN")
@@ -123,6 +130,20 @@ if [ -n "${FERRUM_EDITORS_IMAGE:-}" ]; then
   grep -qi "script-src 'self' 'wasm-unsafe-eval' 'sha256-" "$work/editor-headers" || fail "an editor's page allows other scripts"
   [ "$(compose exec -T editors sh -c 'touch /etc/nginx/probe 2>/dev/null && echo writable || echo read-only')" = read-only ] || fail "the editor server can write its root filesystem"
   [ "$(compose exec -T ferrum printenv FERRUM_EDITORS_URL)" = "$EDITORS" ] || fail "the server does not know the editor server"
+fi
+
+if [ -n "${SMOKE_MEET:-}" ]; then
+  step "the meeting server, and a pass from Ferrum that it accepts"
+  MEET="http://127.0.0.1:$FERRUM_MEET_PORT"
+  wait_up "$MEET/" "the meeting server"
+  [ "$(compose exec -T meet sh -c 'touch /probe 2>/dev/null && echo writable || echo read-only')" = read-only ] || fail "the meeting server can write its root filesystem"
+  [ "$(curl -fsS "${auth[@]}" "$API/api/app/comms/meet" | json 'd["available"]')" = True ] || fail "the server does not know the meeting server"
+  room=$(curl -fsS "${auth[@]}" -H 'content-type: application/json' -d '{"title":"Smoke"}' "$API/api/app/comms/meet/rooms" | json 'd["id"]') || fail "starting a meeting"
+  pass=$(curl -fsS "${auth[@]}" -X POST "$API/api/app/comms/meet/room/$room/token" | json 'd["token"]') || fail "a pass into the meeting"
+  [ "$(curl -fsS "$MEET/rtc/validate?access_token=$pass")" = success ] || fail "the meeting server refuses Ferrum's pass"
+  forged="${pass%.*}.$(printf '%s' "${pass%.*}" | openssl dgst -sha256 -hmac not-the-secret -binary | base64 | tr '+/' '-_' | tr -d '=')"
+  [ "$(curl -sS -o /dev/null -w '%{http_code}' "$MEET/rtc/validate?access_token=$forged")" = 401 ] || fail "the meeting server accepts a pass signed with another secret"
+  grep -qi "connect-src 'self' $FERRUM_MEET_URL $MEET;" <<<"$(curl -fsS -D - -o /dev/null "$WEB/app/")" || fail "the web app's pages may not reach the meeting server"
 fi
 
 step "the web app and the API through it"

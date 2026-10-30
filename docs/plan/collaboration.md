@@ -20,7 +20,7 @@ platform) and [browser-editors.md](browser-editors.md).
 | Notifications in the bell and by mail | The bell with live updates. Shares notify, but a Drive item in the bell opens a form only administrators may see. | **C1** |
 | Comments, mentions, to-dos and followers on business records | Built (kernel collaboration) | |
 | Chat, mail, shared calendars | Built (Comms) | C5: calendar and contacts sync |
-| Video meetings | None | C4 |
+| Video meetings | Built (C4): LiveKit, from chat channels, calendar events and Meet | |
 | Forms | Built (ferrum-app-forms) | |
 | People outside the workspace | Public links only | C5 |
 
@@ -105,9 +105,28 @@ several people in the web app.
 
 ### C4. Meetings
 
-* LiveKit (Apache-2.0) as a separate service, like Collabora: Ferrum issues its tokens.
-* A meeting from a calendar event or a chat.
-* The web app uses LiveKit's open-source components.
+**Status, 30 October 2026: built** (Comms 0.5.0; the web app's Meet pages; `deploy/meet.yml`).
+Checked in Chrome with two people, fake cameras and microphones, against LiveKit 1.13.10:
+* a room started from Meet, joined by its link: each sees and hears the other;
+* leaving and rejoining;
+* a call from a chat channel, announced once in the channel, joined from that message;
+* a meeting added to a calendar event by its organizer and joined by the guest from the calendar;
+* the call of a private channel refused to someone outside it;
+* a phone-width screen.
+
+**How.**
+* LiveKit (Apache-2.0) runs as a service of its own, like Collabora. Browsers reach it directly;
+  Ferrum signs its access tokens (HS256 with a key and secret both know) and never calls it.
+* A meeting is `{kind}/{id}`: a chat channel (whoever may read it), a calendar event (its
+  organizer and guests, anyone for a public one) or a room (anyone in the workspace with the link).
+  LiveKit rooms are named after the workspace, so workspaces can share a server.
+* The web app uses LiveKit's open-source components (PreJoin, VideoConference): camera,
+  microphone, screen sharing and the meeting's chat.
+* The smoke test runs LiveKit beside the Compose stack: it accepts Ferrum's passes and refuses
+  forged ones, and the web app's CSP lets pages reach it.
+
+**Not built:** recording, end-to-end encryption, dial-in, removing someone from a call in
+progress, and guests from outside the workspace (C5).
 
 ### C5. Beyond the workspace
 

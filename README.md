@@ -62,7 +62,7 @@ or any other vertical is a plugin, not a fork.
 | Point of sale | [ferrum-app-pos](https://github.com/CBFerrum/ferrum-app-pos) |
 | Commerce (online store) | [ferrum-app-commerce](https://github.com/CBFerrum/ferrum-app-commerce) |
 | HR and payroll | [ferrum-app-hr](https://github.com/CBFerrum/ferrum-app-hr) |
-| Mail (hosted mailboxes with webmail, or your own provider), chat and calendar | [ferrum-app-comms](https://github.com/CBFerrum/ferrum-app-comms) |
+| Mail (hosted mailboxes with webmail, or your own provider), chat, calendar and video meetings | [ferrum-app-comms](https://github.com/CBFerrum/ferrum-app-comms) |
 | Fixed assets | [ferrum-app-assets](https://github.com/CBFerrum/ferrum-app-assets) |
 | Bookings and appointments | [ferrum-app-bookings](https://github.com/CBFerrum/ferrum-app-bookings) |
 | Field service | [ferrum-app-field-service](https://github.com/CBFerrum/ferrum-app-field-service) |
@@ -192,6 +192,7 @@ balance sheet balance and that stock value equals the stock accounts.
   a working image (checked on Apple Silicon: non-root, read-only root filesystem, no capabilities).
 * Optional: `ghcr.io/cbferrum/ferrum-editors`, the static server of Drive's browser editors
   (`deploy/editors`, on an origin of its own).
+* Optional: a LiveKit server for video meetings (`deploy/meet.yml`; docs/operations.md "Meetings").
 * Single host: `deploy/docker-compose.yml`.
 * Production: `deploy/k8s` (CloudNativePG with synchronous replica and PITR backups through the
   Barman Cloud plugin, 3+ API replicas, Gateway API routes with cert-manager TLS, PDB, HPA,

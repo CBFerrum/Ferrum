@@ -166,8 +166,9 @@ jobs:
           python3 -m pip install --quiet httpx
           # The browser editors' server beside the stack (the editors job tests it in browsers).
           docker buildx build --load -q -t ferrum-editors:ci deploy/editors
+          # The meeting server too (LiveKit), as deploy/meet.yml runs it.
           FERRUM_IMAGE=ferrum:ci FERRUM_PREVIOUS_IMAGE=ghcr.io/cbferrum/ferrum:latest FERRUM_WEB_IMAGE=ferrum-frontend:ci \
-            FERRUM_EDITORS_IMAGE=ferrum-editors:ci deploy/smoke.sh
+            FERRUM_EDITORS_IMAGE=ferrum-editors:ci SMOKE_MEET=1 deploy/smoke.sh
       - if: github.event_name == 'push'
         uses: docker/build-push-action@v6
         with:
