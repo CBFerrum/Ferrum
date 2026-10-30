@@ -191,6 +191,26 @@ button[aria-pressed="true"], button[aria-expanded="true"] { background: var(--fe
   background: var(--ferrum-warning-soft, #fff3d6); }
 .group-title { font-weight: 600; }
 .create { right: 8px; min-width: 220px; }
+.search { flex: 0 1 340px; justify-content: flex-start; gap: 8px; height: 34px; padding: 0 8px 0 10px; margin: 0 10px; border: 1px solid var(--ferrum-border, #d9dee5);
+  border-radius: 9px; background: var(--ferrum-surface-2, #eef1f5); color: var(--ferrum-muted, #5b6472); font-size: 13.5px; min-width: 0; }
+.search:hover { background: var(--ferrum-surface, #fff); border-color: color-mix(in srgb, var(--ferrum-primary, #2f5bea) 35%, var(--ferrum-border, #d9dee5)); }
+.search kbd { margin-left: auto; padding: 1px 6px; border: 1px solid var(--ferrum-border, #d9dee5); border-radius: 5px; background: var(--ferrum-surface, #fff);
+  font: 11px/1.5 var(--ferrum-font, system-ui, sans-serif); color: var(--ferrum-muted, #5b6472); }
+.searchbox { left: 50%; transform: translateX(-50%); width: min(640px, calc(100vw - 16px)); padding: 10px; }
+.results { max-height: min(60vh, 520px); overflow: auto; display: grid; gap: 1px; }
+.result { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; color: inherit; text-decoration: none; cursor: pointer; }
+.result[aria-selected="true"] { background: var(--ferrum-primary-soft, #e7edfd); }
+.result .glyph { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; background: var(--ferrum-surface-2, #eef1f5); color: var(--ferrum-muted, #5b6472); flex: none; }
+.result .text { display: grid; min-width: 0; }
+.result .text strong { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.result .text small { color: var(--ferrum-muted, #5b6472); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.result mark { background: color-mix(in srgb, var(--ferrum-primary, #2f5bea) 22%, transparent); color: inherit; border-radius: 2px; }
+.rgroup { display: flex; align-items: center; gap: 6px; margin: 10px 8px 4px; font-size: 11.5px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--ferrum-muted, #5b6472); }
+.rgroup:first-child { margin-top: 2px; }
+.rgroup svg { animation: spin .9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.rhint { padding: 16px 8px; color: var(--ferrum-muted, #5b6472); text-align: center; }
 .tray { right: 8px; width: min(380px, calc(100vw - 16px)); }
 .tray h2 { margin: 2px 6px 10px; font-size: 13px; font-weight: 650; }
 .tray ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
@@ -216,6 +236,9 @@ button[aria-pressed="true"], button[aria-expanded="true"] { background: var(--fe
 .side iframe { flex: 1; width: 100%; border: 0; background: var(--ferrum-surface, #fff); }
 .grip { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: ew-resize; touch-action: none; }
 .grip:hover, .grip:focus-visible { background: linear-gradient(90deg, transparent 3px, var(--ferrum-primary, #2f5bea) 3px 5px, transparent 5px); outline: none; }
+@media (max-width: 640px) { .search { flex: none; width: 34px; min-width: 34px; padding: 0; margin: 0; justify-content: center; background: transparent; border-color: transparent; }
+  .search .search-label, .search kbd { display: none; } }
+@media (prefers-reduced-motion: reduce) { .rgroup svg { animation: none; } }
 @media (max-width: 640px) { .home, .sep, .crumbs { display: none; } .launcher { left: 4px; right: 4px; width: auto; } .apps { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 `;
 
@@ -333,6 +356,187 @@ function ownEntry() {
   return apps.filter((a) => under(a.url)).sort((a, b) => b.url.length - a.url.length)[0] ?? apps[0];
 }
 
+// ───────────────────────── the bar's search (§12.8) ─────────────────────────
+
+// Apps from the launcher, the records the person may read (/api/search), and what the apps'
+// providers find (`shell.search`, asked here in parallel), each group drawn as it arrives.
+const finder = { q: "", ctl: null, timer: 0, groups: [], active: 0, input: null, list: null };
+
+/** A same-site page to open, or null (a provider's answer is not trusted further). */
+const sitePath = (url) => (typeof url === "string" && url.startsWith("/") && !url.startsWith("//") ? url : null);
+
+function openFinder(b) {
+  b.searchPanel.hidden = false;
+  b.searchBtn.setAttribute("aria-expanded", "true");
+  const input = el("input", {
+    type: "search",
+    placeholder: "Search apps, records and more",
+    "aria-label": "Search",
+    role: "combobox",
+    "aria-expanded": "true",
+    "aria-controls": "ferrum-results",
+    "aria-autocomplete": "list",
+    autocomplete: "off",
+    spellcheck: "false",
+  });
+  const list = el("div", { class: "results", id: "ferrum-results", role: "listbox", "aria-label": "Results" });
+  b.searchPanel.replaceChildren(el("div", { class: "find" }, icon("search", 16), input), list);
+  Object.assign(finder, { input, list });
+  input.value = finder.q;
+  input.addEventListener("input", () => {
+    finder.q = input.value;
+    clearTimeout(finder.timer);
+    finder.timer = setTimeout(() => runFinder(), 180);
+    finder.groups = finder.groups.filter((g) => g.key !== "apps");
+    finder.groups.unshift({ key: "apps", title: "Apps", items: appsMatching(input.value) });
+    finder.active = 0;
+    drawFinder();
+  });
+  input.addEventListener("keydown", (e) => {
+    const items = finder.groups.flatMap((g) => g.items);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!items.length) return;
+      finder.active = (finder.active + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length;
+      drawFinder();
+    } else if (e.key === "Enter") {
+      const item = items[finder.active];
+      if (item) {
+        e.preventDefault();
+        openFound(item);
+      }
+    }
+  });
+  runFinder();
+  input.focus();
+  input.select();
+  if (!shellData) loadShell().then(() => runFinder());
+}
+
+function appsMatching(q) {
+  const t = q.trim().toLowerCase();
+  if (!t) return [];
+  return (shellData?.apps ?? [])
+    .filter((a) => `${a.title} ${a.description ?? ""}`.toLowerCase().includes(t))
+    .slice(0, 6)
+    .map((a) => ({ title: a.title, subtitle: a.description ?? "App", url: a.url, app: a }));
+}
+
+function runFinder() {
+  finder.ctl?.abort();
+  const ctl = new AbortController();
+  finder.ctl = ctl;
+  const q = finder.q.trim();
+  finder.active = 0;
+  finder.groups = [{ key: "apps", title: "Apps", items: appsMatching(q) }];
+  if (q.length >= 2) {
+    const sources = [
+      { key: "records", title: "Records", url: `/api/search?q=${encodeURIComponent(q)}&limit=12` },
+      ...(shellData?.search ?? [])
+        .filter((p) => typeof p.endpoint === "string" && p.endpoint.startsWith("/api/"))
+        .map((p) => ({ key: `${p.app}.${p.id}`, title: p.title ?? appTitle_(p.app), url: `${p.endpoint}?q=${encodeURIComponent(q)}&limit=8` })),
+    ];
+    for (const s of sources) {
+      const group = { key: s.key, title: s.title, items: [], loading: true };
+      finder.groups.push(group);
+      // A provider that takes too long is left out of this search, not waited for.
+      const slow = setTimeout(() => group.loading && ((group.loading = false), finder.ctl === ctl && drawFinder()), 2500);
+      fetch(s.url, { credentials: "same-origin", headers: { accept: "application/json" }, signal: ctl.signal })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((body) => {
+          group.items = (Array.isArray(body?.results) ? body.results : [])
+            .map((r) => ({ title: String(r.title ?? ""), subtitle: r.subtitle ? String(r.subtitle) : "", url: sitePath(r.url), icon: r.icon }))
+            .filter((r) => r.title && r.url)
+            .slice(0, 12);
+        })
+        .catch(() => {})
+        .finally(() => {
+          clearTimeout(slow);
+          group.loading = false;
+          if (finder.ctl === ctl) drawFinder();
+        });
+    }
+  }
+  drawFinder();
+}
+
+/** `text` with each occurrence of `q` marked (text nodes only). */
+function marked(text, q) {
+  const out = el("strong");
+  const t = q.trim();
+  if (!t) return (out.textContent = text), out;
+  const low = text.toLowerCase();
+  let at = 0;
+  for (let i = low.indexOf(t.toLowerCase()); i >= 0; i = low.indexOf(t.toLowerCase(), at)) {
+    out.append(text.slice(at, i), el("mark", { text: text.slice(i, i + t.length) }));
+    at = i + t.length;
+  }
+  out.append(text.slice(at));
+  return out;
+}
+
+function drawFinder() {
+  if (!finder.list) return;
+  const q = finder.q.trim();
+  const rows = [];
+  let n = 0;
+  for (const g of finder.groups) {
+    if (!g.items.length && !g.loading) continue;
+    rows.push(el("p", { class: "rgroup", role: "presentation" }, el("span", { text: g.title }), g.loading ? icon("loader-circle", 12) : null));
+    for (const item of g.items) {
+      const index = n++;
+      const glyph = item.app ? tile(item.app, true) : el("span", { class: "glyph", "aria-hidden": "true" }, icon(item.icon && ICONS[item.icon] ? item.icon : "file-text", 15));
+      rows.push(
+        el(
+          "a",
+          {
+            class: "result",
+            href: item.url,
+            role: "option",
+            id: `ferrum-result-${index}`,
+            "aria-selected": index === finder.active ? "true" : "false",
+            onclick: (e) => (e.preventDefault(), openFound(item)),
+            onpointermove: () => {
+              if (finder.active !== index) {
+                finder.active = index;
+                drawFinder();
+              }
+            },
+          },
+          glyph,
+          el("span", { class: "text" }, marked(item.title, q), item.subtitle ? el("small", { text: item.subtitle }) : null),
+        ),
+      );
+    }
+  }
+  if (!rows.length) {
+    const busy = finder.groups.some((g) => g.loading);
+    rows.push(el("p", { class: "rhint", text: q.length < 2 ? "Type to search apps, records, conversations and files." : busy ? "Searching…" : `Nothing found for “${q}”.` }));
+  }
+  finder.list.replaceChildren(...rows);
+  finder.input?.setAttribute("aria-activedescendant", n ? `ferrum-result-${finder.active}` : "");
+  finder.list.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+}
+
+function openFound(item) {
+  bar()?.closePanels(false);
+  navigate(item.url);
+}
+
+// The bar keeps the search shortcut (§12.2): before a page's own handlers see it.
+window.addEventListener(
+  "keydown",
+  (e) => {
+    if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "k") return;
+    const b = bar();
+    if (!b?.searchBtn || b.hidden) return;
+    e.preventDefault();
+    e.stopPropagation();
+    b.toggleSearch();
+  },
+  true,
+);
+
 class FerrumBar extends HTMLElement {
   connectedCallback() {
     if (this.shadowRoot) return;
@@ -361,6 +565,14 @@ class FerrumBar extends HTMLElement {
       text: initials(person.name),
       onclick: () => this.toggleMenu(),
     });
+    const mac = /Mac|iPhone|iPad/.test(navigator.platform ?? "");
+    this.searchBtn = el(
+      "button",
+      { class: "search", type: "button", "aria-label": "Search", title: `Search (${mac ? "⌘K" : "Ctrl+K"})`, "aria-haspopup": "dialog", "aria-expanded": "false", onclick: () => this.toggleSearch() },
+      icon("search", 16),
+      el("span", { class: "search-label", text: "Search" }),
+      el("kbd", { text: mac ? "⌘K" : "Ctrl K" }),
+    );
     const appRoute = boot?.app?.routes?.[boot?.app?.entry] ?? "/";
     const bar = el(
       "div",
@@ -373,6 +585,8 @@ class FerrumBar extends HTMLElement {
       (this.appLink = el("a", { class: "app", href: appRoute, hidden: !boot?.app }, this.tileEl, this.titleEl)),
       this.crumbsEl,
       el("span", { class: "spacer" }),
+      this.searchBtn,
+      el("span", { class: "spacer" }),
       this.indicators,
       (this.tools = el("span", { class: "tools" })),
       this.meBtn,
@@ -381,9 +595,10 @@ class FerrumBar extends HTMLElement {
     this.menu = el("div", { class: "panel menu", role: "menu", "aria-label": "Account", hidden: true });
     this.createMenu = el("div", { class: "panel menu create", role: "menu", "aria-label": "Create", hidden: true });
     this.tray = el("div", { class: "panel tray", role: "dialog", "aria-label": "Uploads", hidden: true });
+    this.searchPanel = el("div", { class: "panel searchbox", role: "dialog", "aria-label": "Search", hidden: true });
     this.side = el("aside", { class: "side", "aria-label": "Side panel", hidden: true });
     this.noticeEl = el("div", { class: "notice", role: "status", hidden: true });
-    root.append(style, bar, this.launcher, this.menu, this.createMenu, this.tray, this.side, this.noticeEl);
+    root.append(style, bar, this.launcher, this.menu, this.createMenu, this.tray, this.searchPanel, this.side, this.noticeEl);
     if (person.actor) root.append(el("div", { class: "banner", role: "note", text: `You are acting as ${person.name}. Everything you do is recorded with both names.` }));
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") this.closePanels(true);
@@ -416,6 +631,12 @@ class FerrumBar extends HTMLElement {
     this.menu.hidden = true;
     this.createMenu.hidden = true;
     this.tray.hidden = true;
+    if (!this.searchPanel.hidden) {
+      this.searchPanel.hidden = true;
+      finder.ctl?.abort();
+      if (restoreFocus) this.searchBtn.focus();
+    }
+    this.searchBtn.setAttribute("aria-expanded", "false");
     this.launchBtn.setAttribute("aria-expanded", "false");
     this.meBtn.setAttribute("aria-expanded", "false");
     this.createBtn?.setAttribute("aria-expanded", "false");
@@ -459,6 +680,12 @@ class FerrumBar extends HTMLElement {
         ),
       ),
     );
+  }
+
+  toggleSearch() {
+    const open = this.searchPanel.hidden;
+    this.closePanels(false);
+    if (open) openFinder(this);
   }
 
   toggleCreate() {

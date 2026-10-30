@@ -167,14 +167,16 @@ fn check_ui_path(at: &str, path: &str, routes: &BTreeSet<&str>, placeholders: &[
     Ok(())
 }
 
-/// An endpoint of the app's own (`/api/ext/{app}/…`).
+/// An endpoint of the app's own: a plugin's (`/api/ext/{app}/…`) or a native app's
+/// (`/api/app/{app}/…`).
 fn check_endpoint(at: &str, endpoint: &str, app: &str) -> Result<(), AppError> {
-    let rest = endpoint.strip_prefix("/api/ext/").and_then(|r| r.strip_prefix(app)).and_then(|r| r.strip_prefix('/'));
+    let rest =
+        ["/api/ext/", "/api/app/"].iter().find_map(|base| endpoint.strip_prefix(base)).and_then(|r| r.strip_prefix(app)).and_then(|r| r.strip_prefix('/'));
     let ok = rest.is_some_and(|r| {
         !r.is_empty() && r.split('/').all(|s| !s.is_empty() && s != ".." && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b)))
     });
     if !ok {
-        return bad(format!("{at}: '{endpoint}' must be one of this app's endpoints, /api/ext/{app}/…"));
+        return bad(format!("{at}: '{endpoint}' must be one of this app's endpoints, /api/ext/{app}/… or /api/app/{app}/…"));
     }
     Ok(())
 }
@@ -503,6 +505,8 @@ mod tests {
         refused(&format!("{app}  shell.open:\n    - {{id: e, entity: Deal, path: \"mail/{{id}}\", list: \"mail/{{id}}\"}}\n"), "plain path segments");
         refused(&format!("{app}  shell.search:\n    - {{id: s, endpoint: /api/ext/drive/search}}\n"), "/api/ext/comms/");
         refused(&format!("{app}  shell.search:\n    - {{id: s, endpoint: /api/ext/comms/../admin}}\n"), "/api/ext/comms/");
+        parse(&format!("{app}  shell.search:\n    - {{id: s, endpoint: /api/app/comms/search}}\n")).expect("a native app's endpoint");
+        refused(&format!("{app}  shell.search:\n    - {{id: s, endpoint: /api/app/drive/search}}\n"), "/api/app/comms/");
         refused(&format!("{app}  shell.intent:\n    - {{id: a, action: Pick, type: file, path: mail/pick}}\n"), "lower-case");
         refused(
             &format!(

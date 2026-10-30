@@ -278,6 +278,17 @@ async fn scenario() {
     let none = Env { kernel: k.clone(), apps: None, assistant: Assistant::new(None) };
     assert!(!none.assistant.available(&k, &ctx, "member").await, "no key, no assistant");
 
+    // ── the bar's search: records by title, as the person may read them ──
+    let found = ferrum_server::search::search(&k, &ctx, "made by the assistant", 10).await.unwrap();
+    let titles: Vec<&str> = found["results"].as_array().unwrap().iter().map(|r| r["title"].as_str().unwrap()).collect();
+    assert_eq!(titles.len(), 1, "the one customer the allowed change made: {found}");
+    assert!(titles[0].starts_with("Made by the assistant"));
+    assert_eq!(found["results"][0]["url"].as_str().unwrap(), format!("/open/Customer/{}", found["results"][0]["id"].as_str().unwrap()));
+    assert_eq!(ferrum_server::search::search(&k, &ctx, "m", 10).await.unwrap()["results"], json!([]), "one letter finds nothing");
+    let nobody = k.create_user(&ctx, "nobody@acme.test", "No Roles", Some("Correct-Horse-9"), &[], false).await.unwrap();
+    let nobody = k.load_ctx(tenant, nobody, None, "it".into()).await.unwrap();
+    assert_eq!(ferrum_server::search::search(&k, &nobody, "made by the assistant", 10).await.unwrap()["results"], json!([]), "nothing the person may not read");
+
     // ── deleting a conversation ──
     assistant::delete_thread(&env, &ctx, thread).await.unwrap();
     assert!(matches!(assistant::thread(&env, &ctx, thread).await, Err(Error::NotFound(_))));

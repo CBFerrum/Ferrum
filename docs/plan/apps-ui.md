@@ -148,6 +148,14 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     its changes). Compose and the Kubernetes manifests have no web service: the server is the front
     door (`/healthz` for load balancers).
 
+* **U5, the rest: under way** (31 October 2026).
+  * The bar's search (§12.8): ⌘K or the bar's field; apps from the launcher, records of every entity
+    the person may read (`/api/search`, the kernel's list search, permission-filtered, entities in
+    parallel within a time budget, ranked by title match then recency) and the apps' `shell.search`
+    providers, asked by the bar in parallel and drawn as they answer. Chat is the first provider
+    (Comms 0.7.4). The bar keeps the shortcut before a page's own handlers. Point endpoints may be a
+    native app's (`/api/app/{app}/…`). Checked in Chromium, Firefox and WebKit.
+
 * **U4a, Comms and Workspace: built** (31 October 2026).
   * Comms (Mail, Chat, Calendar, Meet at `/mail/`, `/chat/`, `/calendar/`, `/meet/`), Drive (`/drive/`,
     with Sheets, Slides and PDF as entries of their own) and Docs (`/docs/`, the editor at

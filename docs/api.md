@@ -301,6 +301,17 @@ Stores are configured in `apps.registries`. Only an app's `id` and a release's `
 * `GET {store}/v1/apps/{id}/releases/{version}/bundle` (unless `bundle_url` says otherwise) → the `.fapp`, redirects followed. It must carry a store signature by a key in `apps.trusted_keys`, and match the listed `digest` when there is one.
 * `GET {store}/v1/revocations` → `{"payload": "<JSON text>", "signatures": [{"key_id": "<16 hex>", "sig": "<base64 Ed25519 signature of the payload's UTF-8 bytes>"}]}` with payload `{"generated_at": "<RFC 3339>", "revocations": [{"app", "version"? (all versions when absent or "*"), "reason"?}]}`. At least one trusted store key must have signed it and every signature by one must verify; otherwise the list is ignored (and logged). A list generated before the newest one already applied from that store (a stale cache or a replay) is ignored; the newest time is kept per store in the database, so every replica agrees, and a list more than a day old is logged.
 
+## Search — `GET /api/search?q=&limit=`
+
+Records of every entity the caller may read (masters and documents with a title or search fields),
+found by title and search fields as lists search, ranked by how well the title matches, then by how
+recently the record changed: `{results: [{kind: "record", entity, id, title, subtitle, url, updated_at}],
+partial, took_ms}`. At least two characters; at most 100; `limit` up to 50 (default 20). `partial` is
+true when an entity took longer than its time budget and was left out. The bar's search asks this
+and the apps' `shell.search` providers together; a provider answers `GET {endpoint}?q=&limit=` with
+`{results: [{title, subtitle?, url, icon?, updated_at?}]}`, each `url` a page of this site the caller
+may open.
+
 ## The assistant — `/api/assistant` ([operations](operations.md#the-assistant))
 
 The signed-in person's conversations with the assistant (cookie session; app screens may not call

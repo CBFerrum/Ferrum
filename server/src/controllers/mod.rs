@@ -12,6 +12,7 @@ pub mod meta;
 pub mod oauth;
 pub mod plugins;
 pub mod prefs;
+pub mod search;
 pub mod shell;
 pub mod sites;
 pub mod system;
