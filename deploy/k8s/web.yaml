@@ -16,6 +16,7 @@ spec:
     metadata:
       labels: {app.kubernetes.io/name: ferrum-web}
     spec:
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 101

@@ -18,6 +18,7 @@ spec:
     metadata:
       labels: {app.kubernetes.io/name: ferrum}
     spec:
+      automountServiceAccountToken: false
       terminationGracePeriodSeconds: 40
       securityContext:
         runAsNonRoot: true

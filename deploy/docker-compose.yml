@@ -20,6 +20,7 @@ services:
     volumes:
       - db:/var/lib/postgresql/data
       - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    security_opt: [no-new-privileges:true]
     healthcheck:
       # Over TCP: while a new volume's init scripts run, the server listens on its socket only.
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d ferrum"]
@@ -64,6 +65,12 @@ services:
       FERRUM_REQUEST_TIMEOUT_MS: ${FERRUM_REQUEST_TIMEOUT_MS:-120000}
     volumes:
       - files:/var/lib/ferrum/files
+    # As in deploy/k8s: a read-only root filesystem, no capabilities, no privilege escalation.
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
 
   # Lays print formats out as PDFs. JavaScript is off and Chromium may load only the page itself
   # and inline images, so a template cannot make the renderer fetch anything.
@@ -71,6 +78,8 @@ services:
     image: gotenberg/gotenberg:8
     restart: unless-stopped
     command: ["gotenberg", "--chromium-disable-javascript=true", "--chromium-allow-list=^(data:|file:///tmp/).*", "--api-timeout=60s"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
 
   web:
     image: ${FERRUM_WEB_IMAGE:-ghcr.io/cbferrum/ferrum-frontend:latest}
@@ -82,6 +91,8 @@ services:
       FERRUM_MAX_UPLOAD: ${FERRUM_MAX_UPLOAD:-32m}
     ports:
       - "${FERRUM_PORT:-8080}:8080"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
 
 volumes:
   db:
