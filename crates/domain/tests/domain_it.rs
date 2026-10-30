@@ -67,9 +67,13 @@ async fn fresh_kernel() -> (Arc<Kernel>, Arc<ferrum_plugins::PluginHost>) {
 /// The IRP's API as NIC documents it, on a local port: an RSA-encrypted sign-in returning a
 /// session key under the caller's app key, AES-encrypted payloads and answers, RS256-signed QR
 /// codes, duplicate-IRN answers for invoices it registered before, and refusals on request.
+/// Started with headers of its own, it is a GSP passing NIC's API through: those headers are
+/// required on every call, once each, and a call without them is refused in the GSP's own form.
 mod fake_irp {
-    use axum::extract::{Path, State};
-    use axum::http::HeaderMap;
+    use axum::extract::{Path, Request, State};
+    use axum::http::{HeaderMap, StatusCode};
+    use axum::middleware::{self, Next};
+    use axum::response::{IntoResponse, Response};
     use axum::routing::{get, post};
     use axum::{Json, Router};
     use base64::Engine as _;
@@ -91,6 +95,11 @@ mod fake_irp {
         pub by_irn: HashMap<String, Value>,
         pub refuse_next: bool,
         pub sign_ins: usize,
+        /// Calls carrying a session token it never issued.
+        pub stale_tokens: usize,
+        /// As a GSP: the headers it requires, and the paths that came with them.
+        pub gsp: Vec<(String, String)>,
+        pub through_gsp: Vec<String>,
     }
 
     pub struct Irp {
@@ -123,7 +132,28 @@ mod fake_irp {
 
     fn session(s: &S, h: &HeaderMap) -> Option<[u8; 32]> {
         let token = h.get("authtoken")?.to_str().ok()?;
-        s.books.lock().unwrap().sessions.get(token).copied()
+        let mut b = s.books.lock().unwrap();
+        let sek = b.sessions.get(token).copied();
+        b.stale_tokens += usize::from(sek.is_none());
+        sek
+    }
+
+    /// As a GSP: its headers on every call, each once; refused without them as Azure API
+    /// Management (in front of several GSPs) refuses.
+    async fn gsp_gate(State(s): State<S>, req: Request, next: Next) -> Response {
+        let required = s.books.lock().unwrap().gsp.clone();
+        if !required.is_empty() {
+            let once = |name: &str, value: &str| {
+                let mut all = req.headers().get_all(name).iter();
+                all.next().and_then(|v| v.to_str().ok()) == Some(value) && all.next().is_none()
+            };
+            if !required.iter().all(|(n, v)| once(n, v)) {
+                return (StatusCode::UNAUTHORIZED, Json(json!({"statusCode": 401, "message": "Access denied due to missing subscription key."})))
+                    .into_response();
+            }
+            s.books.lock().unwrap().through_gsp.push(req.uri().path().to_string());
+        }
+        next.run(req).await
     }
 
     fn open(sek: &[u8; 32], body: &Value) -> Value {
@@ -205,13 +235,19 @@ mod fake_irp {
     }
 
     pub async fn start() -> Irp {
+        start_with(&[]).await
+    }
+
+    /// A GSP in front of the IRP, requiring these headers (lower-case names).
+    pub async fn start_with(gsp: &[(&str, &str)]) -> Irp {
         // NIC's key is 2048-bit: the sign-in payload does not fit a smaller one.
         let key = rsa::RsaPrivateKey::new(&mut OsRng, 2048).unwrap();
         let qr = rsa::RsaPrivateKey::new(&mut OsRng, 1024).unwrap();
         let public_pem = key.to_public_key().to_public_key_pem(LineEnding::LF).unwrap();
         let qr_pem = qr.to_public_key().to_public_key_pem(LineEnding::LF).unwrap();
         let qr_der = Arc::new(qr.to_pkcs1_der().unwrap().as_bytes().to_vec());
-        let books = Arc::new(Mutex::new(Books::default()));
+        let gsp = gsp.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect();
+        let books = Arc::new(Mutex::new(Books { gsp, ..Books::default() }));
         let key = Arc::new(key);
         let state = S { books: books.clone(), key: key.clone(), qr_der: qr_der.clone() };
         let app = Router::new()
@@ -220,6 +256,7 @@ mod fake_irp {
             .route("/eicore/v1.03/Invoice/irn/{irn}", get(by_irn))
             .route("/eicore/v1.03/Invoice/Cancel", post(cancel))
             .route("/eiewb/v1.03/ewaybill", post(ewb))
+            .layer(middleware::from_fn_with_state(state.clone(), gsp_gate))
             .with_state(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -693,6 +730,72 @@ async fn scenario() {
     t.action("SalesInvoice", lost, "cancel_e_invoice", json!({"reason": "Order cancelled", "remark": "Withdrawn"})).await;
     drain().await;
     for inv in [sent, lost, refused, by_hand] {
+        t.k.cancel(&t.ctx, "SalesInvoice", inv, None).await.expect("cancelled");
+    }
+
+    // ───────────── the same through a GSP in front of the IRP ─────────────
+    // The GSP's own credentials (the company's GSP headers) go on every call, each once, also one
+    // the IRP takes too (gstin); the new address signs in afresh rather than reusing the old token.
+    let gsp = fake_irp::start_with(&[("ocp-apim-subscription-key", "gsp-sub-key"), ("x-gsp-user", "ti-erp"), ("gstin", "27AAPFU0939F1ZV")]).await;
+    t.k.update(
+        &t.ctx,
+        "Company",
+        cid,
+        obj(json!({"in_irp_url": gsp.url, "in_irp_public_key": gsp.public_pem, "in_irp_qr_key": gsp.qr_pem,
+                   "in_irp_gsp_headers": json!({"Ocp-Apim-Subscription-Key": "gsp-sub-key", "X-GSP-User": "ti-erp", "GSTIN": "27AAPFU0939F1ZV"}).to_string()})),
+        None,
+    )
+    .await
+    .expect("through a GSP");
+    let (via_gsp, _) = invoice_for_irp().await;
+    t.action("SalesInvoice", via_gsp, "request_e_invoice", json!({})).await;
+    drain().await;
+    let doc = t.get("SalesInvoice", via_gsp).await;
+    assert_eq!(doc["in_e_invoice_status"], json!("Generated"), "{:?}", doc.get("in_e_invoice_error"));
+    let (lost_at_gsp, lost_at_gsp_no) = invoice_for_irp().await;
+    let irn = gsp.registered_before("27AAPFU0939F1ZV", &globex_gstin, &lost_at_gsp_no);
+    t.action("SalesInvoice", lost_at_gsp, "request_e_invoice", json!({})).await;
+    drain().await;
+    assert_eq!(t.get("SalesInvoice", lost_at_gsp).await["in_irn"], json!(irn), "fetched by IRN through the GSP");
+    t.action("SalesInvoice", lost_at_gsp, "set_transport", json!({"in_transport_mode": "Road", "in_distance_km": 120, "in_vehicle_no": "KA01AB1234"})).await;
+    t.action("SalesInvoice", lost_at_gsp, "request_e_way_bill", json!({})).await;
+    drain().await;
+    assert_eq!(t.get("SalesInvoice", lost_at_gsp).await["in_e_way_bill_status"], json!("Generated"));
+    t.action("SalesInvoice", via_gsp, "cancel_e_invoice", json!({"reason": "Data entry mistake", "remark": "Wrong rate"})).await;
+    drain().await;
+    assert_eq!(t.get("SalesInvoice", via_gsp).await["in_e_invoice_status"], json!("Cancelled"));
+    {
+        let b = gsp.books.lock().unwrap();
+        let through = |path: &str| b.through_gsp.iter().any(|p| p == path || (path.ends_with('/') && p.starts_with(path)));
+        for path in ["/eivital/v1.04/auth", "/eicore/v1.03/Invoice", "/eicore/v1.03/Invoice/irn/", "/eicore/v1.03/Invoice/Cancel", "/eiewb/v1.03/ewaybill"] {
+            assert!(through(path), "{path} without the GSP's headers: {:?}", b.through_gsp);
+        }
+        assert_eq!((b.sign_ins, b.stale_tokens), (1, 0), "one fresh session at the new address");
+    }
+    // Undone: the e-way bill (cancelled on its portal, recorded here), the e-invoice through the GSP.
+    t.action("SalesInvoice", lost_at_gsp, "cancel_e_way_bill", json!({"reason": "Order cancelled", "remark": "Withdrawn"})).await;
+    t.action("SalesInvoice", lost_at_gsp, "record_e_way_bill_cancellation", json!({})).await;
+    t.action("SalesInvoice", lost_at_gsp, "cancel_e_invoice", json!({"reason": "Order cancelled", "remark": "Withdrawn"})).await;
+    drain().await;
+    assert_eq!(t.get("SalesInvoice", lost_at_gsp).await["in_e_invoice_status"], json!("Cancelled"));
+    // The GSP's refusal without its credentials (in its own form, not NIC's) is the request's
+    // failure, with its status and words; so is a header that cannot be sent, rather than a retry.
+    let cases: [(Value, &[&str]); 3] = [
+        (json!({"X-GSP-User": "ti-erp"}), &["401", "subscription key"]),
+        (json!({"Bad Header": "x"}), &["Bad Header", "not a valid HTTP header"]),
+        (json!({"X-Retries": {"n": 1}}), &["X-Retries", "text value"]),
+    ];
+    for (headers, said) in cases {
+        t.k.update(&t.ctx, "Company", cid, obj(json!({"in_irp_gsp_headers": headers.to_string()})), None).await.expect("GSP headers");
+        let (inv, _) = invoice_for_irp().await;
+        t.action("SalesInvoice", inv, "request_e_invoice", json!({})).await;
+        drain().await;
+        let doc = t.get("SalesInvoice", inv).await;
+        let error = doc["in_e_invoice_error"].as_str().unwrap_or_default();
+        assert!(doc["in_e_invoice_status"] == json!("Failed") && said.iter().all(|s| error.contains(s)), "{said:?}: {error}");
+        t.k.cancel(&t.ctx, "SalesInvoice", inv, None).await.expect("cancelled");
+    }
+    for inv in [via_gsp, lost_at_gsp] {
         t.k.cancel(&t.ctx, "SalesInvoice", inv, None).await.expect("cancelled");
     }
     t.k.update(&t.ctx, "Company", cid, obj(json!({"in_irp_mode": "Off"})), None).await.expect("connection off");
