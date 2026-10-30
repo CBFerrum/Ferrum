@@ -112,8 +112,17 @@ struct Config {
     extra: Vec<(String, String)>,
 }
 
+impl Config {
+    /// Where a session belongs: another address or user (a GSP instead of NIC, production instead
+    /// of the sandbox) signs in afresh rather than sending this one's token.
+    fn endpoint(&self) -> String {
+        format!("{}|{}|{}", self.base, self.client_id, self.username)
+    }
+}
+
 #[derive(Clone)]
 struct Session {
+    endpoint: String,
     token: String,
     sek: [u8; 32],
     until: DateTime<Utc>,
@@ -171,14 +180,25 @@ impl IrpConnector {
         let need = |v: Option<&str>, what: &str| {
             v.map(str::trim).filter(|v| !v.is_empty()).map(str::to_string).ok_or_else(|| Error::invalid(format!("set the company's IRP {what}")))
         };
-        let extra: Vec<(String, String)> = match extra.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
-            None => vec![],
-            Some(text) => serde_json::from_str::<serde_json::Map<String, Value>>(text)
-                .map_err(|_| Error::invalid("the GSP headers must be a JSON object of names and values"))?
-                .into_iter()
-                .filter_map(|(k, v)| v.as_str().map(|v| (k.to_lowercase(), v.to_string())))
-                .collect(),
-        };
+        // Checked here, so a mistake is the request's failure rather than a send that never works.
+        let mut gsp = vec![];
+        if let Some(text) = extra.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
+            let map = serde_json::from_str::<serde_json::Map<String, Value>>(text)
+                .map_err(|_| Error::invalid("the GSP headers must be a JSON object of names and values"))?;
+            for (name, value) in map {
+                let value = match value {
+                    Value::String(v) => v,
+                    Value::Number(n) => n.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    _ => return Err(Error::invalid(format!("the GSP header {name} needs a text value"))),
+                };
+                // Names only in messages: the values are credentials.
+                if reqwest::header::HeaderName::from_bytes(name.as_bytes()).is_err() || reqwest::header::HeaderValue::from_str(&value).is_err() {
+                    return Err(Error::invalid(format!("the GSP header {name} is not a valid HTTP header")));
+                }
+                gsp.push((name.to_lowercase(), value));
+            }
+        }
         Ok(Some(Config {
             tenant,
             company: cid,
@@ -189,7 +209,7 @@ impl IrpConnector {
             username: need(s(company, "in_irp_username"), "API user name")?,
             password: need(password.as_deref(), "API password")?,
             public_key: need(s(company, "in_irp_public_key"), "public key (PEM)")?,
-            extra,
+            extra: gsp,
         }))
     }
 
@@ -197,7 +217,9 @@ impl IrpConnector {
         let url = format!("{}{path}", cfg.base);
         let (client, parsed) = k.vetted_client(&url, k.settings.webhooks_allow_private, Duration::from_secs(30), "Ferrum-IRP/1").await?;
         let mut req = if method == "GET" { client.get(parsed) } else { client.post(parsed) };
-        for (name, value) in cfg.extra.iter().map(|(n, v)| (n.as_str(), v.as_str())).chain(headers.iter().copied()) {
+        // A GSP header replaces the IRP header of the same name rather than doubling it.
+        let ours = headers.iter().copied().filter(|(n, _)| !cfg.extra.iter().any(|(g, _)| g.eq_ignore_ascii_case(n)));
+        for (name, value) in cfg.extra.iter().map(|(n, v)| (n.as_str(), v.as_str())).chain(ours) {
             req = req.header(name, value);
         }
         if let Some(b) = body {
@@ -209,14 +231,17 @@ impl IrpConnector {
         if status.is_server_error() || status.as_u16() == 429 {
             return Err(Error::Unavailable(format!("the IRP answered HTTP {status}")));
         }
-        match serde_json::from_str(&text) {
-            Ok(v) => Ok(v),
-            // A wrong address or a refused credential: retrying would not help, so it is a refusal.
-            Err(_) if status.is_client_error() => Ok(
-                json!({"Status": 0, "ErrorDetails": [{"ErrorCode": status.as_u16().to_string(), "ErrorMessage": format!("the IRP answered HTTP {status}")}]}),
-            ),
-            Err(_) => Err(Error::Unavailable(format!("the IRP answered HTTP {status} without JSON"))),
-        }
+        let v = match serde_json::from_str::<Value>(&text) {
+            Ok(v) if v.get("Status").is_some() || !status.is_client_error() => return Ok(v),
+            Ok(v) => Some(v),
+            Err(_) if status.is_client_error() => None,
+            Err(_) => return Err(Error::Unavailable(format!("the IRP answered HTTP {status} without JSON"))),
+        };
+        // A wrong address, a refused credential, or a GSP's own refusal (not in NIC's form):
+        // retrying would not help, so it is a refusal, with what the server said.
+        let said = v.as_ref().and_then(|v| ["message", "Message", "error_description", "errorMessage", "error"].iter().find_map(|k| v[*k].as_str()));
+        let message = said.map_or_else(|| format!("the IRP answered HTTP {status}"), |m| format!("the IRP answered HTTP {status}: {m}"));
+        Ok(json!({"Status": 0, "ErrorDetails": [{"ErrorCode": status.as_u16().to_string(), "ErrorMessage": message}]}))
     }
 
     async fn sign_in(&self, k: &Kernel, cfg: &Config) -> Result<std::result::Result<Session, String>> {
@@ -236,11 +261,11 @@ impl IrpConnector {
         let sek = B64.decode(data["Sek"].as_str().unwrap_or_default()).map_err(|_| Error::Unavailable("the IRP sent no session key".into()))?;
         let sek: [u8; 32] = ecb_decrypt(&app_key, &sek)?.try_into().map_err(|_| Error::Unavailable("the IRP's session key is not 32 bytes".into()))?;
         let until = data["TokenExpiry"].as_str().and_then(ist).unwrap_or_else(|| Utc::now() + Span::hours(6)) - Span::minutes(10);
-        Ok(Ok(Session { token: data["AuthToken"].as_str().unwrap_or_default().to_string(), sek, until }))
+        Ok(Ok(Session { endpoint: cfg.endpoint(), token: data["AuthToken"].as_str().unwrap_or_default().to_string(), sek, until }))
     }
 
     async fn session(&self, k: &Kernel, cfg: &Config) -> Result<std::result::Result<Session, String>> {
-        if let Some(s) = self.sessions.get(&(cfg.tenant, cfg.company)).filter(|s| s.until > Utc::now()) {
+        if let Some(s) = self.sessions.get(&(cfg.tenant, cfg.company)).filter(|s| s.until > Utc::now() && s.endpoint == cfg.endpoint()) {
             return Ok(Ok(s.clone()));
         }
         let fresh = self.sign_in(k, cfg).await?;

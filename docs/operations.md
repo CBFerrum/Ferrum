@@ -325,6 +325,15 @@ Three ways to the IRP:
   backoff. Cancellations and e-way bills by IRN go the same way. Enter the IRP's signing key
   (PEM) too, and every signed QR code recorded — by the connection or by hand — must carry its
   signature.
+
+  Through a GSP that passes NIC's API through, the API address is the GSP's and *GSP Headers*
+  holds its own credentials as a JSON object of header names and text values, for example
+  `{"Ocp-Apim-Subscription-Key": "…", "gstin": "27…"}`. They go on every call (sign-in,
+  registration, fetching by IRN, cancellation, e-way bills) once each; one named like a header
+  the IRP takes (`gstin`, `client_id`) replaces it. A name that is not a valid HTTP header, or a
+  value that is not text, fails the request with the header's name (never its value) instead of
+  being retried, and the GSP's own refusal (an HTTP 401 with its message, say) is recorded with its
+  status and words. A changed address or API user signs in afresh.
 * **Without a GSP**: *Download e-Invoice JSON* gives the invoice in the IRP's schema 1.1 (a list,
   as the portal's bulk upload takes it); upload it on the e-invoice portal and paste the signed
   JSON it returns into *Record e-Invoice from IRP*, which checks that the signed QR code is for
