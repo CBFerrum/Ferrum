@@ -351,6 +351,7 @@ impl Hooks for App {
         tasks.register(crate::tasks::AppUpgrade);
         tasks.register(crate::tasks::AppRevoke);
         tasks.register(crate::tasks::AppReleases);
+        tasks.register(crate::tasks::AssistantCheck);
     }
 
     async fn truncate(_ctx: &AppContext) -> Result<()> {

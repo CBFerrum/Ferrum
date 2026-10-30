@@ -68,7 +68,11 @@ async fn messages(State(m): State<Model>, headers: HeaderMap, body: Bytes) -> Re
         r.len()
     };
     let msgs = body["messages"].as_array().unwrap();
-    let last = msgs.last().unwrap()["content"].as_array().unwrap();
+    // Content is a list of blocks, or (the operator's check) a plain string.
+    let last = match &msgs.last().unwrap()["content"] {
+        Value::String(text) => vec![json!({"type": "text", "text": text})],
+        other => other.as_array().cloned().unwrap_or_default(),
+    };
     let result = last.iter().find(|b| b["type"] == "tool_result");
     let words = last.iter().rfind(|b| b["type"] == "text").and_then(|b| b["text"].as_str()).unwrap_or_default();
     let id = format!("toolu_{n}");
@@ -250,6 +254,13 @@ async fn scenario() {
             assert_eq!(&msgs[..before.len()], &before[..], "request {i}: history is only appended to");
         }
     }
+
+    // ── the operator's check: one short call with the key, no tools ──
+    let (answered_by, _) = env.assistant.check().await.expect("the check");
+    assert_eq!(answered_by, "claude-opus-5-5");
+    let checked = model.requests.lock().unwrap().last().unwrap().1.clone();
+    assert!(checked.get("tools").is_none() && checked["messages"].as_array().unwrap().len() == 1);
+    assert!(Assistant::new(None).check().await.unwrap_err().contains("FERRUM_ASSISTANT_API_KEY"));
 
     // ── a workspace that turned it off, and a guest ──
     let mut off = serde_json::Map::new();

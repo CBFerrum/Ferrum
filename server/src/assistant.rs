@@ -194,6 +194,36 @@ impl Assistant {
     pub fn setting_changed(&self, tenant: Uuid) {
         self.off.remove(&tenant);
     }
+
+    /// One short call with the operator's settings and no tools (`ferrum task assistant_check`):
+    /// whether the key, the model and streaming work. The model that answered, and what it said.
+    pub async fn check(&self) -> std::result::Result<(String, String), String> {
+        let config = self.config.as_ref().ok_or("FERRUM_ASSISTANT_API_KEY is not set: the assistant is off")?;
+        let mut body = json!({
+            "model": config.model,
+            "max_tokens": 1024,
+            "stream": true,
+            "messages": [{"role": "user", "content": "Reply with the single word OK."}],
+            "output_config": {"effort": "low"},
+        });
+        if config.fallbacks {
+            body["fallbacks"] = json!("default");
+        }
+        let stop = AtomicBool::new(false);
+        let mut text = String::new();
+        let reply = self
+            .call(&body, &stop, &mut |kind, t| {
+                if kind == "text" {
+                    text.push_str(t);
+                }
+            })
+            .await
+            .map_err(|e| e.message)?;
+        if reply.stop_reason == "refusal" {
+            return Err("the model declined the check".into());
+        }
+        Ok((reply.model, text.trim().to_string()))
+    }
 }
 
 // ───────────────────────── threads ─────────────────────────
