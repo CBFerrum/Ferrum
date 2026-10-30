@@ -706,8 +706,11 @@ until the shell app replaces it.
   `/_shell/` briefly.
 * **The switch.** Administration → Workspace → `shell_v2` (or `PUT /api/admin/settings
   {"shell_v2": true}`) gives a workspace the shell: Home at `/`, ERP at `/erp/`, the store,
-  administration and the account at `/store/`, `/admin/`, `/account/`, records at `/data/`;
-  today's web app sends its people there. Turning it off goes back.
+  administration and the account at `/store/`, `/admin/`, `/account/`, records at `/data/` (an
+  app without an interface of its own at `/data/{app}/`, Customize at `/data/customize/`); today's
+  web app sends its people there. Turning it off goes back. New workspaces (`ferrum task
+  create_tenant`) start with it on; workspaces made before keep today's web app until an
+  administrator switches.
 * **Comms, Drive and Docs** have interfaces of their own for every workspace, switch or not: Mail,
   Chat, Calendar and Meet at `/mail/`, `/chat/`, `/calendar/`, `/meet/`; Drive at `/drive/` with
   Sheets, Slides and PDF; Docs at `/docs/`. Each app's crate carries its interface, registered at

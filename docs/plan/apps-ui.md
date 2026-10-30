@@ -108,17 +108,33 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     (calendar and contacts apps read it), with or without CRM. Forms' and LMS' tests install what
     they use, now that core no longer has customers or ERP's roles.
   * U3 is complete.
-* **U4b, CRM: its interface built.**
+* **U4b, CRM: its interface built; apps without one have their records in the shell; new
+  workspaces start on the shell.**
   * CRM 0.3.0 has its own interface at /crm/, in its repository's `ui/` (built with
     Ferrum-Frontend's packages, `dist` committed, embedded as `UI`). Its home shows the pipeline
     (open deals by sales stage, worth and weight), your open activities and new leads. Its records
-    use the records frame, which `@ferrum/records` now exports for app repositories, with CRM's
-    modules in the sidebar; the menu lists customers and items too.
+    use the records frame (`@ferrum/records/frame`, an entry of its own so that tests of apps that
+    only use records never load it), with CRM's modules in the sidebar; the menu lists customers
+    and items too.
   * Launcher entry, New Lead and New Deal in the Create menu, and /open of CRM's records, contacts
     and customers. Checked in Chrome on the demo workspace.
-  * Not yet: making `shell_v2` the default, `/app/` only redirecting, and retiring the nginx image.
-    Helpdesk, People, Projects, POS and Studio would be records-only until U5 gives them
-    interfaces.
+  * Apps without an interface of their own (Helpdesk, HR, Projects, POS, Commerce, Studio, Forms,
+    LMS and the rest) have their records at `/data/{app}/` (§10.1, records-only): the frame ERP's
+    interface uses, with the modules of their packages and their add-ons', one launcher entry each
+    (the app's name, its initial on the tile), and `/open` of their records leads there. Connectors, suites
+    and add-ons get no place of their own. Customize is at `/data/customize/` for every workspace.
+  * Finance, Procurement, Stock Operations and Manufacturing Operations 0.1.1 are ERP's add-ons
+    (`parent: erp`): their modules are in ERP's sidebar. Modules say which package defines them
+    (`/api/meta`), so a frame shows its app's modules and not others' that list shared records
+    (CRM's module lists customers). Frames whose routes are the records pages (ERP's, the shell's)
+    show Customize, Studio's builders and the POS till.
+  * New workspaces start on the shell (`shell_v2`); workspaces made before keep today's web app
+    until an administrator switches. Checked in Chrome (Home's icons, Helpdesk's and Studio's
+    records, /open, Customize, ERP's sidebar) and by the deploy smoke test (a new workspace on the
+    shell, switched back and forth; Helpdesk installed from the store, its records page and /open).
+  * Next: `/app/` only redirecting and the nginx image retired. Two-factor setup at sign-in and the
+    OAuth consent page move to the shell, the server serves the shell's and ERP's interfaces itself,
+    and an upgrade step moves the remaining workspaces to the shell.
 
 * **U4a, Comms and Workspace: built** (31 October 2026).
   * Comms (Mail, Chat, Calendar, Meet at `/mail/`, `/chat/`, `/calendar/`, `/meet/`), Drive (`/drive/`,

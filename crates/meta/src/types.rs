@@ -95,6 +95,9 @@ pub struct ModuleDef {
     /// Entities and reports shown in this module's sidebar, in order.
     #[serde(default)]
     pub items: Vec<String>,
+    /// The package that defines it: set in the effective schema, never written in package.yaml.
+    #[serde(default, skip_deserializing, skip_serializing_if = "String::is_empty")]
+    pub package: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
