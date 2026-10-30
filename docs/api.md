@@ -33,7 +33,7 @@ OpenAPI 3.1 document is at `GET /api/openapi.json` (it includes every customizat
 | `POST /2fa/disable` | `{password}` or `{code}` → `204` |
 | `POST /logout_all` | revokes every session of the caller |
 | `POST /password` | `{current_password, new_password}` (policy: ≥10 chars, 3 of lower/upper/digit/symbol) |
-| `GET /api_keys`, `POST /api_keys` `{name, expires_at?}` → `{id, key}`, `DELETE /api_keys/{id}` | API keys (secret shown once) |
+| `GET /api_keys`, `POST /api_keys` `{name, expires_at?, scope?}` → `{id, key}`, `DELETE /api_keys/{id}` | API keys (secret shown once). `scope: "dav"` makes an app password for calendar and contacts apps: it signs them in at `/api/dav/…` over HTTP Basic (email and password) and is refused as a bearer token |
 
 Document actions may declare `params` (`[{name, label, type: data|text|select|int|date, options?,
 required?, description?}]`): the form asks for them, prefilled from the record's fields of the same

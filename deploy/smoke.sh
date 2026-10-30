@@ -10,7 +10,8 @@
 # from the backups, data, sessions and numbering intact; a short load test runs without errors.
 # Everything is removed afterwards. CI runs it on every image it builds. With FERRUM_EDITORS_IMAGE,
 # the browser editors' server (editors.yml) runs beside the stack and is checked too; with
-# SMOKE_MEET=1, the meeting server (meet.yml), which must accept the passes Ferrum signs.
+# SMOKE_MEET=1, the meeting server (meet.yml), which must accept the passes Ferrum signs, and
+# calendar apps signing in with an app password.
 #
 #   FERRUM_IMAGE=ghcr.io/cbferrum/ferrum:latest FERRUM_WEB_IMAGE=ghcr.io/cbferrum/ferrum-frontend:latest \
 #     deploy/smoke.sh     # needs Docker, curl, openssl, python3 + httpx
@@ -144,6 +145,13 @@ if [ -n "${SMOKE_MEET:-}" ]; then
   forged="${pass%.*}.$(printf '%s' "${pass%.*}" | openssl dgst -sha256 -hmac not-the-secret -binary | base64 | tr '+/' '-_' | tr -d '=')"
   [ "$(curl -sS -o /dev/null -w '%{http_code}' "$MEET/rtc/validate?access_token=$forged")" = 401 ] || fail "the meeting server accepts a pass signed with another secret"
   grep -qi "connect-src 'self' $FERRUM_MEET_URL $MEET;" <<<"$(curl -fsS -D - -o /dev/null "$WEB/app/")" || fail "the web app's pages may not reach the meeting server"
+
+  step "calendar and contacts apps, through the web app, with an app password"
+  key=$(curl -fsS "${auth[@]}" -H 'content-type: application/json' -d '{"name":"Smoke phone","scope":"dav"}' "$API/api/auth/api_keys" | json 'd["key"]') || fail "an app password"
+  [ "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' -X PROPFIND "$WEB/.well-known/caldav")" = "301 $WEB/api/dav/comms/" ] || fail "/.well-known/caldav does not lead to the calendars"
+  [ "$(curl -sS -o /dev/null -w '%{http_code}' -u "smoke@smoke.test:$key" -X PROPFIND -H 'depth: 0' "$WEB/api/dav/comms/")" = 207 ] || fail "a calendar app cannot sign in"
+  [ "$(curl -sS -o /dev/null -w '%{http_code}' -u "smoke@smoke.test:wrong" -X PROPFIND "$WEB/api/dav/comms/")" = 401 ] || fail "a wrong app password is let in"
+  [ "$(curl -sS -o /dev/null -w '%{http_code}' -H "authorization: Bearer $key" "$API/api/auth/me")" = 401 ] || fail "an app password works as an API key"
 fi
 
 step "the web app and the API through it"

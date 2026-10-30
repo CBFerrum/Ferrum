@@ -34,7 +34,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_FILES_DIR` | no | Local attachment directory (default `/var/lib/ferrum/files`) |
 | `FERRUM_DB_MAX_CONNECTIONS` | no | Pool size per replica (default 30) |
 | `FERRUM_RUN_BACKGROUND` | no | `false` turns a replica into API-only |
-| `PUBLIC_URL` | recommended | The address people open, scheme and port included (`https://erp.example.com`). Apps' screens name it in their Content Security Policy, which Safari needs when a proxy in front rewrites the host |
+| `PUBLIC_URL` | recommended | The address people open, scheme and port included (`https://erp.example.com`). Apps' screens name it in their Content Security Policy, which Safari needs when a proxy in front rewrites the host, and links mailed to people outside the workspace (Drive guests) are built on it |
 | `PORT`, `BINDING`, `LOG_LEVEL` | no | Usual meanings; logs are JSON on stdout |
 | `MAILER_*` | no | SMTP for notifications |
 | `FERRUM_APP_STORES` | no | App stores, comma-separated base URLs (`https://store.example`); empty: no store, only apps built in or uploaded |
@@ -541,7 +541,28 @@ The server's network policy needs no change: Ferrum never calls LiveKit.
 * **Privacy:** calls are encrypted between browsers and LiveKit, which sees the media. Ferrum
   records nothing. Recording and end-to-end encryption are not built.
 * **Several workspaces** can share one LiveKit server: rooms are named after the workspace.
-* **People outside the workspace** cannot join yet (collaboration plan, C5).
+* **Guests.** People outside the workspace join by link, as "Name (guest)": an event's outside guests
+  by the personal link their invitation carries (when the event's meeting is here), anyone by a
+  room's guest link (Invite guests on the room's page). Removing a guest from the event, or turning
+  the room's link off, stops the link. Guests need nothing but the link; there is no waiting room.
+
+## Calendar and contacts apps
+
+People can sync their Ferrum calendar and contacts with the apps of their phones and computers
+(CalDAV and CardDAV): Apple Calendar and Contacts, Thunderbird, DAVx⁵ on Android, Outlook through a
+CalDAV add-in. Nothing extra runs: the server answers them under `/api/dav/comms/`, for workspaces
+with Mail, Chat and Calendar installed.
+* **Signing in.** Apps send the person's email and an app password over HTTP Basic, so serve Ferrum
+  over HTTPS. App passwords are API keys that work only for these apps; people make and revoke them
+  under their menu → Calendar and contacts apps. Wrong passwords count against the address like
+  failed sign-ins.
+* **Finding the server.** Apps look for `/.well-known/caldav` and `/.well-known/carddav` on the
+  host people enter; Ferrum redirects them to `/api/dav/comms/`. The web container and the
+  Kubernetes Gateway pass both to the server; a proxy of your own in front must too. With DNS SRV
+  records (`_caldavs._tcp`, `_carddavs._tcp`) people can enter just the domain.
+* **What syncs.** Each person's calendar (events they organize or are invited to) both ways; the
+  address books Colleagues and Contacts (CRM) read-only. Comms' README ("Calendar and contacts
+  apps") has the details.
 
 ## India: e-invoices and e-way bills
 
