@@ -300,9 +300,9 @@ pub fn html(doc: &Doc) -> String {
                     }
                     "taskItem" => {
                         let checked = truthy(e.get_attribute(txn, "checked"));
-                        let _ = write!(out, "<li><input type=\"checkbox\" disabled{}> ", if checked { " checked" } else { "" });
+                        let _ = write!(out, "<li><input type=\"checkbox\" disabled{}><div>", if checked { " checked" } else { "" });
                         inner(out, false);
-                        out.push_str("</li>\n");
+                        out.push_str("</div></li>\n");
                     }
                     "tableHeader" | "tableCell" => {
                         let cell = if &*tag == "tableHeader" { "th" } else { "td" };
@@ -360,8 +360,10 @@ pub fn html_page(title: &str, doc: &Doc) -> String {
         "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>{t}</title><style>\
          @page{{size:A4;margin:2cm}}body{{font:11pt/1.55 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;color:#1f2328;max-width:46em;margin:0 auto}}\
          h1,h2,h3{{line-height:1.25}}pre{{background:#f6f8fa;padding:.75em;border-radius:6px;overflow-x:auto}}code{{font-family:ui-monospace,monospace}}\
-         blockquote{{border-left:3px solid #d0d7de;margin-left:0;padding-left:1em;color:#57606a}}table{{border-collapse:collapse}}\
-         th,td{{border:1px solid #d0d7de;padding:.3em .6em;vertical-align:top}}ul.tasks{{list-style:none;padding-left:.2em}}mark{{background:#fff3b0}}\
+         blockquote{{border-left:3px solid #d0d7de;margin-left:0;padding-left:1em;color:#57606a}}\
+         table{{border-collapse:collapse;width:100%;table-layout:fixed}}th,td{{border:1px solid #d0d7de;padding:.3em .6em;vertical-align:top}}\
+         th{{background:#f6f8fa;text-align:left}}td>p,th>p,li>div>p{{margin:0}}ul.tasks{{list-style:none;padding-left:.2em}}\
+         ul.tasks li{{display:flex;gap:.5em;align-items:baseline}}mark{{background:#fff3b0}}@media screen{{body{{padding:1.5em}}}}\
          </style></head><body>\n{}</body></html>\n",
         html(doc)
     )
@@ -408,7 +410,7 @@ mod tests {
         let html = html(&doc);
         assert!(html.starts_with("<h2>Plan &lt;A&amp;B&gt;</h2>\n<p style=\"text-align:center\">Hello <strong>world</strong>"), "{html}");
         assert!(html.contains("<a href=\"https://example.com/?a=1&amp;b=2\" rel=\"noopener noreferrer nofollow\"> site</a> trap<br>日本 🎉</p>"), "{html}");
-        assert!(html.contains("<li><input type=\"checkbox\" disabled checked> <p>done</p>\n</li>"), "{html}");
+        assert!(html.contains("<li><input type=\"checkbox\" disabled checked><div><p>done</p>\n</div></li>"), "{html}");
         assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;") && !html.contains("<script>"), "unknown nodes are their escaped text");
         assert!(html.ends_with("<p><br></p>\n"), "an empty paragraph keeps its line");
         assert!(html_page("Q3 <draft>", &doc).contains("<title>Q3 &lt;draft&gt;</title>"));

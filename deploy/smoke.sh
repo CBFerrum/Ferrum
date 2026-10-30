@@ -171,6 +171,10 @@ grep -qi "^cache-control: public, max-age=31536000, immutable" "$work/script.h" 
 ws=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 3 --http1.1 "${auth[@]}" -H 'connection: Upgrade' -H 'upgrade: websocket' \
   -H 'sec-websocket-version: 13' -H "sec-websocket-key: $(openssl rand -base64 16)" "$WEB/ws/live" 2>/dev/null || true)
 [ "$ws" = 101 ] || fail "live updates through the web app (HTTP $ws)"
+# Live documents: the handshake of a document's socket (it closes then: no such document).
+ws=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 3 --http1.1 "${auth[@]}" -H 'connection: Upgrade' -H 'upgrade: websocket' \
+  -H 'sec-websocket-version: 13' -H "sec-websocket-key: $(openssl rand -base64 16)" "$WEB/ws/docs/drive/00000000-0000-0000-0000-000000000000" 2>/dev/null || true)
+[ "$ws" = 101 ] || fail "live documents through the web app (HTTP $ws)"
 
 step "invoicing"
 created=$(invoice after) || fail "invoicing"

@@ -546,6 +546,27 @@ The server's network policy needs no change: Ferrum never calls LiveKit.
   room's guest link (Invite guests on the room's page). Removing a guest from the event, or turning
   the room's link off, stops the link. Guests need nothing but the link; there is no waiting room.
 
+## Live documents
+
+Drive's documents (New → Document) are edited by everyone who has them open at once, with each
+other's cursors, in the web app. Nothing extra runs.
+* **Where they live.** A replica keeps the documents its clients have open in memory and stores
+  each change in PostgreSQL (`coedit_doc`, `coedit_update`) within 50 ms. Replicas tell each other
+  over LISTEN/NOTIFY (`ferrum_coedit`), as for live updates, so any replica serves anyone: no sticky
+  sessions. Every 500 changes are folded into a snapshot.
+* **Proxies** must pass WebSockets on `/ws/` with read timeouts above 30 seconds (the server pings
+  every 30). The web container and the Gateway do.
+* **Saving to Drive.** A new version is written when the last editor on a replica leaves, and every
+  ten minutes while people type, only when the content changed. A sweep on every replica saves, within
+  about fifteen minutes, documents a stopped replica left unsaved.
+* **Failures.** A change lives in its editor's tab until it is stored. Clients reconnect on their
+  own and resend what the server lacks. The editor shows Saving… or Saved, and warns before a tab
+  with unsaved changes closes.
+* **Limits.** A document grows to 32 MB at most (deleting always works). One message is at most 8 MB.
+* **Exports.** PDF needs the PDF renderer (`FERRUM_PDF_URL`); HTML and text always work.
+* The CRDT library is built from `third_party/yrs`: yrs 0.28.0 with a fix for emoji, until a
+  release includes it (`third_party/yrs/FERRUM.md`).
+
 ## Calendar and contacts apps
 
 People can sync their Ferrum calendar and contacts with the apps of their phones and computers
