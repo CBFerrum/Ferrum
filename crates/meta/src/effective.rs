@@ -156,6 +156,9 @@ pub struct Schema {
     pub fy_start_month: u32,
     /// The tenant's IANA time zone (`Asia/Kolkata`); "today" and "now" are local to it.
     pub timezone: String,
+    /// The tenant's people use the shell and apps with interfaces of their own (the `shell_v2`
+    /// setting, docs/plan/apps-ui.md); every replica learns of a change with the schema's.
+    pub shell_v2: bool,
 }
 
 /// An empty schema (for tests); build literals with `..Default::default()` so new fields don't
@@ -172,6 +175,7 @@ impl Default for Schema {
             warnings: vec![],
             fy_start_month: 1,
             timezone: "UTC".into(),
+            shell_v2: false,
         }
     }
 }
@@ -574,7 +578,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         );
     }
     modules.sort_by(|a, b| a.order.cmp(&b.order).then(a.name.cmp(&b.name)));
-    Ok(Schema { version, entities, packages, modules, roles, personal_data, warnings, fy_start_month: 1, timezone: "UTC".into() })
+    Ok(Schema { version, entities, packages, modules, roles, personal_data, warnings, fy_start_month: 1, timezone: "UTC".into(), shell_v2: false })
 }
 
 fn compile_exprs(def: &EntityDef) -> Result<Exprs, String> {

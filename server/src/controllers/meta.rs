@@ -23,7 +23,7 @@ async fn index(Auth(ctx): Auth) -> ApiResult<Response> {
                 "name": e.def.name, "label": e.def.label,
                 "label_plural": e.def.plural_label(),
                 "kind": e.def.kind, "module": e.def.module, "icon": e.def.icon, "submittable": e.def.submittable,
-                "custom": e.custom, "permissions": permissions(&ctx, &e.def.name),
+                "custom": e.custom, "package": e.package, "permissions": permissions(&ctx, &e.def.name),
             })
         })
         .collect();

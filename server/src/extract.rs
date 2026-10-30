@@ -216,7 +216,11 @@ impl FromRequestParts<AppContext> for SetupAuth {
     async fn from_request_parts(parts: &mut Parts, state: &AppContext) -> Result<Self, Self::Rejection> {
         let st = app_state(state)?;
         let rid = request_id(&parts.headers);
-        let token = bearer(&parts.headers).ok_or_else(|| ApiError(Error::Unauthorized("sign in required".into())))?;
+        // A browser session is never setup-only: the cookie is set once sign-in is complete.
+        let Some(token) = bearer(&parts.headers) else {
+            let (ctx, _) = caller(&st, parts).await?;
+            return Ok(SetupAuth(ctx, None));
+        };
         let t = session_of(&st, &token).await?;
         if t.sid.is_some() {
             return Err(ApiError(Error::Unauthorized("this token works only as the browser's session cookie".into())));

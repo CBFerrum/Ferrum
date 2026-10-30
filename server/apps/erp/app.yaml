@@ -1,0 +1,28 @@
+# ERP as an app of its own, with its interface at /erp/ (docs/plan/apps-ui.md). Its packages are
+# still the platform's (core, accounting, selling, buying, inventory, manufacturing); phase U3 moves
+# them under it. Recorded as installed in every workspace that has accounting.
+id: erp
+name: ERP
+version: 0.1.0
+publisher: cbferrum
+summary: Accounting, selling, buying, stock and manufacturing
+categories: [finance, inventory, manufacturing]
+runtime: native
+platform: ">=0.3.1, <0.4"
+ui:
+  dist: ui/dist
+contributes:
+  shell.app:
+    - id: erp
+      route: erp
+      title: ERP
+      description: Accounting, selling, buying, stock and manufacturing
+      color: "#2f5bea"
+      roles: [Accounts Manager, Accounts User, Sales Manager, Sales User, Purchase Manager, Purchase User, Stock Manager, Stock User, Manufacturing Manager, Manufacturing User]
+  shell.open:
+    - {id: core, package: core, path: "erp/e/{entity}/{id}"}
+    - {id: accounting, package: accounting, path: "erp/e/{entity}/{id}"}
+    - {id: selling, package: selling, path: "erp/e/{entity}/{id}"}
+    - {id: buying, package: buying, path: "erp/e/{entity}/{id}"}
+    - {id: inventory, package: inventory, path: "erp/e/{entity}/{id}"}
+    - {id: manufacturing, package: manufacturing, path: "erp/e/{entity}/{id}"}

@@ -543,11 +543,14 @@ impl Kernel {
         Ok(n)
     }
 
-    /// A workspace's slug, name and status (pages and the bootstrap).
-    pub async fn workspace_brief(&self, tenant: Uuid) -> Result<(String, String, String)> {
+    /// A workspace's slug, name, status, and whether it uses the shell (`shell_v2`).
+    pub async fn workspace_brief(&self, tenant: Uuid) -> Result<(String, String, String, bool)> {
         let mut tx = self.db.system_tx().await?;
-        let row: Option<(String, String, String)> =
-            sqlx::query_as("select slug, name, status from tenant where id = $1").bind(tenant).fetch_optional(&mut *tx).await?;
+        let row: Option<(String, String, String, bool)> =
+            sqlx::query_as("select slug, name, status, coalesce((settings->>'shell_v2')::boolean, false) from tenant where id = $1")
+                .bind(tenant)
+                .fetch_optional(&mut *tx)
+                .await?;
         tx.commit().await?;
         row.ok_or_else(|| Error::NotFound("workspace".into()))
     }

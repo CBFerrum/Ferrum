@@ -48,6 +48,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_SESSION_DAYS` | no | How long a browser stays signed in with the session cookie (default 14); each browser is a session of its own that people and administrators sign out one by one |
 | `FERRUM_DEFAULT_WORKSPACE` | no | The slug of the one workspace this server serves on every host (a single-workspace install): sign-in then asks for no workspace. Empty: a host registered for a workspace leads to it, and elsewhere the workspace is chosen at sign-in |
 | `FERRUM_UI_DIR` | no | Interfaces of apps compiled into the server: a directory with one directory of built files per app id (`<dir>/<app>/index.html`), registered as interface releases at start-up |
+| `FERRUM_UI_SOURCE` | with the shell | Where the web app's image offers the shell's and ERP's interfaces (`http://web:8080/_releases/` in Compose, `http://ferrum-web/_releases/` in Kubernetes): fetched at start-up and every ten minutes, files checked against their digests |
 
 **Database role.** Ferrum must connect as an ordinary role that owns its database, never as a
 superuser or a role with `BYPASSRLS`: those bypass PostgreSQL row-level security and with it tenant
@@ -669,8 +670,15 @@ the bar runtime (`/_shell/…`) and the app's files (`/_ui/…`). Today's web ap
 until the shell app replaces it.
 
 * **Routing.** Send the server everything that is not `/app/`: app routes, `/_ui/`, `/_shell/`,
-  `/open/`, `/login`, besides `/api/`, `/ws/` and `/files/`. A proxy or CDN may cache `/_ui/` for
-  good (the paths are content digests) and `/_shell/` briefly.
+  `/open/`, `/login`, the shell's pages, besides `/api/`, `/ws/` and `/files/`. The web app's image
+  does this. A proxy or CDN may cache `/_ui/` for good (the paths are content digests) and
+  `/_shell/` briefly.
+* **The switch.** Administration → Workspace → `shell_v2` (or `PUT /api/admin/settings
+  {"shell_v2": true}`) gives a workspace the shell: Home at `/`, ERP at `/erp/`, the store,
+  administration and the account at `/store/`, `/admin/`, `/account/`, records at `/data/`;
+  today's web app sends its people there. Turning it off goes back. Mail, Chat, Calendar, Meet,
+  Drive and Docs stay in today's web app, as launcher entries, until they have interfaces of their
+  own.
 * **Sessions.** Browsers sign in with an `HttpOnly` cookie, `__Host-ferrum` over https. The cookie
   is scoped to the host, so serve each workspace on one host, and set `PUBLIC_URL` to it.
 * **Interface files** are kept in the object storage, under `ui/{app}/{digest}/`, for 30 days after

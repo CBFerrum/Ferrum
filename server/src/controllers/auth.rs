@@ -184,7 +184,8 @@ async fn sso_finish(State(app): State<AppContext>, headers: HeaderMap, Json(req)
     session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie")).await
 }
 
-async fn me(SetupAuth(ctx, setup_only): SetupAuth) -> ApiResult<Response> {
+async fn me(SetupAuth(ctx, setup_only): SetupAuth, State(app): State<AppContext>) -> ApiResult<Response> {
+    let shell_v2 = app_state(&app)?.shell.workspace(ctx.tenant).await?.shell_v2;
     Ok(Json(json!({
         "tenant": ctx.tenant,
         "user": {"id": ctx.user, "email": ctx.email, "full_name": ctx.full_name, "is_admin": ctx.is_admin, "roles": ctx.roles},
@@ -195,6 +196,7 @@ async fn me(SetupAuth(ctx, setup_only): SetupAuth) -> ApiResult<Response> {
         "today": ctx.today(),
         "packages": ctx.schema.packages,
         "two_factor_setup": setup_only.is_some(),
+        "shell_v2": shell_v2,
     }))
     .into_response())
 }

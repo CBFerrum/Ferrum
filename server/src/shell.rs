@@ -145,7 +145,27 @@ pub struct WorkspaceInfo {
     pub slug: String,
     pub name: String,
     pub status: String,
+    /// The workspace uses the shell and apps with interfaces of their own (the `shell_v2`
+    /// setting); otherwise today's web app at `/app/`.
+    pub shell_v2: bool,
 }
+
+/// The shell's own interface (Home, store, administration, account, records), an interface
+/// release like an app's, at `/` and the core's names.
+pub const SHELL_APP: &str = "shell";
+/// The core's names the shell app answers (§6).
+pub const SHELL_ROUTES: &[&str] = &["store", "admin", "account", "data"];
+
+/// Apps whose pages are still in today's web app (until their own interfaces ship, phase U4):
+/// launcher entries into `/app/` for workspaces on the shell. (app, title, path, colour).
+pub const CLASSIC_ENTRIES: &[(&str, &str, &str, &str)] = &[
+    ("comms", "Mail", "/app/mail", "#2563eb"),
+    ("comms", "Chat", "/app/chat", "#0891b2"),
+    ("comms", "Calendar", "/app/calendar", "#7c3aed"),
+    ("comms", "Meet", "/app/meet", "#16a34a"),
+    ("drive", "Drive", "/app/drive", "#ca8a04"),
+    ("docs", "Docs", "/app/docs", "#2f5bea"),
+];
 
 pub struct Shell {
     kernel: Arc<Kernel>,
@@ -228,11 +248,14 @@ impl Shell {
     }
 
     pub async fn workspace(&self, id: Uuid) -> Result<Arc<WorkspaceInfo>> {
-        if let Some(e) = self.workspaces.get(&id).filter(|e| e.0.elapsed() < TTL) {
+        // The switch comes with the workspace's schema, which every replica reloads at once when
+        // settings change; the rest (names) may be a few seconds old.
+        let shell_v2 = self.kernel.registry.schema(id).await?.shell_v2;
+        if let Some(e) = self.workspaces.get(&id).filter(|e| e.0.elapsed() < TTL && e.1.shell_v2 == shell_v2) {
             return Ok(e.1.clone());
         }
-        let (slug, name, status) = self.kernel.workspace_brief(id).await?;
-        let w = Arc::new(WorkspaceInfo { id, slug, name, status });
+        let (slug, name, status, _) = self.kernel.workspace_brief(id).await?;
+        let w = Arc::new(WorkspaceInfo { id, slug, name, status, shell_v2 });
         self.workspaces.insert(id, (Instant::now(), w.clone()));
         Ok(w)
     }
@@ -392,6 +415,20 @@ pub async fn register_compiled(kernel: &Kernel, storage: &Storage, settings: &Se
             continue;
         }
         let id = e.file_name().to_string_lossy().to_string();
+        if id == SHELL_APP {
+            let outcome = match read_dir_files(&e.path()) {
+                Ok(files) => match ferrum_apps::ui::prepare(SHELL_APP, files) {
+                    Ok(ui) => store_release(kernel, storage, SHELL_APP, SHELL_VERSION, &ui).await.map(|()| ui.digest).map_err(|e| e.to_string()),
+                    Err(e) => Err(e.to_string()),
+                },
+                Err(e) => Err(e.to_string()),
+            };
+            match outcome {
+                Ok(digest) => tracing::info!(app = SHELL_APP, %digest, "the shell's interface registered"),
+                Err(e) => tracing::error!(app = SHELL_APP, "the shell's interface not registered: {e}"),
+            }
+            continue;
+        }
         let Some(m) = apps.native_manifest(&id) else {
             tracing::warn!(app = %id, "settings.ui_dir holds an interface for an app not compiled into this server");
             continue;
@@ -412,6 +449,76 @@ pub async fn register_compiled(kernel: &Kernel, storage: &Storage, settings: &Se
             Err(e) => tracing::error!(app = %id, "interface not registered: {e}"),
         }
     }
+}
+
+/// Fetches the interfaces the web app's image offers (`settings.ui_source`: `{source}/index.json`
+/// lists each app's files and digest) and registers those this server has not got. The shell's
+/// and those of apps compiled into this server; anything else is ignored. A digest that does not
+/// match the files is refused. Returns how many releases were added.
+pub async fn pull_releases(kernel: &Kernel, storage: &Storage, apps: &crate::appmgr::AppManager, source: &str) -> Result<usize> {
+    let base = source.trim().trim_end_matches('/');
+    let unavailable = |e: String| Error::Unavailable(format!("interfaces from {base}: {e}"));
+    let http = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().map_err(|e| unavailable(e.to_string()))?;
+    let get = |url: String| {
+        let http = http.clone();
+        async move {
+            let res = http.get(&url).send().await.map_err(|e| e.to_string())?;
+            if !res.status().is_success() {
+                return Err(format!("{url} answered {}", res.status()));
+            }
+            if res.content_length().is_some_and(|n| n > ferrum_apps::ui::MAX_UI_FILE as u64) {
+                return Err(format!("{url} is too large"));
+            }
+            let bytes = res.bytes().await.map_err(|e| e.to_string())?;
+            if bytes.len() > ferrum_apps::ui::MAX_UI_FILE {
+                return Err(format!("{url} is too large"));
+            }
+            Ok::<Bytes, String>(bytes)
+        }
+    };
+    let index: Value =
+        serde_json::from_slice(&get(format!("{base}/index.json")).await.map_err(unavailable)?).map_err(|e| unavailable(format!("index.json: {e}")))?;
+    let mut added = 0;
+    for (app, rel) in index.get("apps").and_then(Value::as_object).into_iter().flatten() {
+        let version = if app == SHELL_APP {
+            SHELL_VERSION.to_string()
+        } else {
+            match apps.native_manifest(app) {
+                Some(m) if m.ui.is_some() => m.version.to_string(),
+                _ => continue,
+            }
+        };
+        let (Some(digest), Some(files)) = (rel.get("digest").and_then(Value::as_str), rel.get("files").and_then(Value::as_array)) else { continue };
+        // Had already: this version runs it.
+        if let Some(r) = kernel.ui_release(app, digest).await? {
+            kernel.register_ui_release(app, digest, &version, &r.files, &r.entry).await?;
+            continue;
+        }
+        if files.len() > ferrum_apps::ui::MAX_UI_FILES {
+            return Err(unavailable(format!("{app}: too many files")));
+        }
+        let mut got = BTreeMap::new();
+        let mut total = 0usize;
+        for f in files.iter().filter_map(Value::as_str) {
+            if f.split('/').any(|s| s.is_empty() || s == "." || s == "..") {
+                return Err(unavailable(format!("{app}: '{f}' is not a plain path")));
+            }
+            let bytes = get(format!("{base}/{app}/{f}")).await.map_err(unavailable)?;
+            total += bytes.len();
+            if total > ferrum_apps::ui::MAX_UI_BYTES {
+                return Err(unavailable(format!("{app}: the files are too large")));
+            }
+            got.insert(f.to_string(), bytes.to_vec());
+        }
+        let ui = ferrum_apps::ui::prepare(app, got).map_err(|e| unavailable(format!("{app}: {e}")))?;
+        if ui.digest != digest {
+            return Err(unavailable(format!("{app}: the files do not match the digest listed ({digest})")));
+        }
+        store_release(kernel, storage, app, &version, &ui).await?;
+        tracing::info!(%app, %version, %digest, "interface release fetched");
+        added += 1;
+    }
+    Ok(added)
 }
 
 /// Every file under `dir`, by path relative to it.

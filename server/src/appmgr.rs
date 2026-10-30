@@ -381,6 +381,35 @@ impl AppManager {
         self.native(id)
     }
 
+    /// Records ERP as installed in every workspace that has its packages (accounting): ERP became
+    /// an app of its own after those workspaces installed the packages. Runs at start-up;
+    /// idempotent; logged, not fatal.
+    pub async fn ensure_erp(&self) {
+        let Some(m) = self.native("erp") else { return };
+        let outcome: Result<usize> = async {
+            let mut tx = self.kernel.db.system_tx().await?;
+            let tenants: Vec<Uuid> = sqlx::query_scalar(
+                "select t.id from tenant t where exists (select 1 from installed_package p where p.tenant_id = t.id and p.name = 'accounting') \
+                 and not exists (select 1 from tenant_app a where a.tenant_id = t.id and a.app_id = 'erp')",
+            )
+            .fetch_all(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            for tenant in &tenants {
+                let ctx = Ctx::system(*tenant, self.kernel.registry.schema(*tenant).await?);
+                self.kernel.record_installation(&ctx, "erp", &m.version.to_string(), None, None).await?;
+                self.enabled.remove(tenant);
+            }
+            Ok(tenants.len())
+        }
+        .await;
+        match outcome {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(workspaces = n, "ERP recorded as an installed app"),
+            Err(e) => tracing::error!("recording ERP as an installed app failed: {e}"),
+        }
+    }
+
     /// Makes sure the interface of a workspace's enabled app from a bundle is a stored release
     /// (bundles made available before interfaces existed, or whose release files were purged).
     /// False when the app has none.

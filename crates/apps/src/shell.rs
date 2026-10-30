@@ -90,12 +90,12 @@ pub(crate) fn contract(point: &str) -> Value {
         "shell.app" => (
             json!({
                 "route": text(31), "title": text(60), "description": text(200), "icon": text(200), "color": text(7),
-                "roles": list(10, text(60)), "aliases": list(5, text(31)), "compact": {"type": "boolean"},
+                "roles": list(30, text(60)), "aliases": list(5, text(31)), "compact": {"type": "boolean"},
                 "priority": {"type": "integer"}, "entity": text(80),
             }),
             vec!["title"],
         ),
-        "shell.open" => (json!({"entity": text(80), "path": text(200), "priority": {"type": "integer"}}), vec!["entity", "path"]),
+        "shell.open" => (json!({"entity": text(80), "package": text(40), "path": text(200), "priority": {"type": "integer"}}), vec!["path"]),
         "shell.create" => (json!({"label": text(60), "path": text(200), "entity": text(80)}), vec!["label", "path"]),
         "shell.intent" => (json!({"action": text(31), "type": text(31), "path": text(200), "title": text(60)}), vec!["action", "type", "path"]),
         "shell.sidepanel" => (json!({"title": text(60), "path": text(200), "icon": text(200)}), vec!["title", "path"]),
@@ -117,8 +117,8 @@ fn field<'a>(item: &'a Value, k: &str) -> Option<&'a str> {
 }
 
 /// A path into the app's own interface: its first segment is one of the app's routes; then
-/// plain segments, and `{id}` where the point fills one in.
-fn check_ui_path(at: &str, path: &str, routes: &BTreeSet<&str>, id_placeholder: bool) -> Result<(), AppError> {
+/// plain segments, and the placeholders the point fills in (`{id}`, `{entity}`).
+fn check_ui_path(at: &str, path: &str, routes: &BTreeSet<&str>, placeholders: &[&str]) -> Result<(), AppError> {
     let mut segments = path.split('/');
     let first = segments.next().unwrap_or_default();
     if !routes.contains(first) {
@@ -127,12 +127,15 @@ fn check_ui_path(at: &str, path: &str, routes: &BTreeSet<&str>, id_placeholder: 
     for (i, s) in segments.enumerate() {
         let last = i + 2 == path.split('/').count();
         let plain = !s.is_empty() && s != "." && s != ".." && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b));
-        if !(plain || (id_placeholder && s == "{id}") || (last && s.is_empty())) {
-            return bad(format!("{at}: '{path}' may hold only plain path segments{}", if id_placeholder { " and {id}" } else { "" }));
+        if !(plain || placeholders.contains(&s) || (last && s.is_empty())) {
+            let also = if placeholders.is_empty() { String::new() } else { format!(" and {}", placeholders.join(", ")) };
+            return bad(format!("{at}: '{path}' may hold only plain path segments{also}"));
         }
     }
-    if id_placeholder && !path.contains("{id}") {
-        return bad(format!("{at}: '{path}' must say where the record's id goes, as {{id}}"));
+    for ph in placeholders {
+        if !path.contains(ph) {
+            return bad(format!("{at}: '{path}' must say where the record's {} goes, as {ph}", ph.trim_matches(['{', '}'])));
+        }
     }
     Ok(())
 }
@@ -254,11 +257,27 @@ pub(crate) fn check(m: &AppManifest) -> Result<(), AppError> {
         for item in m.contributes.get(*point).into_iter().flatten() {
             let id = field(item, "id").unwrap_or_default();
             let at = format!("contributes.{point}.{id}");
+            if *point == "shell.open" {
+                match (field(item, "entity"), field(item, "package")) {
+                    (Some(_), None) | (None, Some(_)) => {}
+                    _ => return bad(format!("{at}: name an entity, or a package whose records the app shows")),
+                }
+                if let Some(pkg) = field(item, "package")
+                    && !ferrum_meta::is_ident(pkg)
+                {
+                    return bad(format!("{at}.package: '{pkg}' is not a package name"));
+                }
+            }
             if let Some(path) = field(item, "path") {
                 if m.ui.is_none() {
                     return bad(format!("{at}: a path needs the app's own interface (a ui section)"));
                 }
-                check_ui_path(&at, path, &routes, *point == "shell.open")?;
+                let placeholders: &[&str] = match (*point, field(item, "package")) {
+                    ("shell.open", Some(_)) => &["{entity}", "{id}"],
+                    ("shell.open", None) => &["{id}"],
+                    _ => &[],
+                };
+                check_ui_path(&at, path, &routes, placeholders)?;
             }
             if let Some(endpoint) = field(item, "endpoint") {
                 check_endpoint(&at, endpoint, &m.id)?;
@@ -298,9 +317,9 @@ pub(crate) fn check(m: &AppManifest) -> Result<(), AppError> {
     }
     let mut opened = BTreeMap::new();
     for item in m.contributes.get("shell.open").into_iter().flatten() {
-        let entity = field(item, "entity").unwrap_or_default();
-        if opened.insert(entity, ()).is_some() {
-            return bad(format!("contributes.shell.open: {entity} is opened twice"));
+        let what = field(item, "entity").or_else(|| field(item, "package")).unwrap_or_default();
+        if opened.insert(what, ()).is_some() {
+            return bad(format!("contributes.shell.open: {what} is opened twice"));
         }
     }
     Ok(())
@@ -382,6 +401,9 @@ mod tests {
         refused(&format!("{app}  shell.create:\n    - {{id: e, label: E, path: mail/../admin}}\n"), "plain path segments");
         refused(&format!("{app}  shell.open:\n    - {{id: e, entity: CommsEvent, path: mail/events}}\n"), "{id}");
         refused(&format!("{app}  shell.create:\n    - {{id: e, label: E, path: \"mail/{{id}}\"}}\n"), "plain path segments");
+        refused(&format!("{app}  shell.open:\n    - {{id: e, package: selling, path: \"mail/{{id}}\"}}\n"), "{entity}");
+        refused(&format!("{app}  shell.open:\n    - {{id: e, entity: Deal, package: selling, path: \"mail/{{id}}\"}}\n"), "name an entity, or a package");
+        parse(&format!("{app}  shell.open:\n    - {{id: e, package: selling, path: \"mail/e/{{entity}}/{{id}}\"}}\n")).expect("a package's records");
         refused(&format!("{app}  shell.search:\n    - {{id: s, endpoint: /api/ext/drive/search}}\n"), "/api/ext/comms/");
         refused(&format!("{app}  shell.search:\n    - {{id: s, endpoint: /api/ext/comms/../admin}}\n"), "/api/ext/comms/");
         refused(&format!("{app}  shell.intent:\n    - {{id: a, action: Pick, type: file, path: mail/pick}}\n"), "lower-case");

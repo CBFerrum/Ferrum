@@ -188,7 +188,7 @@ if [ -n "${SMOKE_MEET:-}" ]; then
 fi
 
 step "the web app and the API through it"
-[[ "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$WEB/")" =~ ^302\ .*/app/$ ]] || fail "/ does not lead to the app"
+[[ "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$WEB/")" =~ ^30[23]\ .*/app/$ ]] || fail "/ does not lead to the app"
 # A deep link: the app answers for its own routes.
 page=$(curl -fsS -D "$work/page.h" "$WEB/app/SalesInvoice")
 grep -q '<div id="root">' <<<"$page" || fail "the app's page"

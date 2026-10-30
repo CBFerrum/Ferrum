@@ -109,6 +109,7 @@ impl Registry {
             schema.warnings.push(SchemaWarning { entity: m.clone(), message: format!("package {m} is installed but no longer available on this cluster") });
         }
         schema.fy_start_month = settings.get("fiscal_year_start_month").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 12) as u32;
+        schema.shell_v2 = settings.get("shell_v2").and_then(|v| v.as_bool()).unwrap_or(false);
         schema.timezone = match settings.get("timezone").and_then(|v| v.as_str()) {
             Some(tz) if tz.parse::<chrono_tz::Tz>().is_ok() => tz.to_string(),
             Some(tz) => {

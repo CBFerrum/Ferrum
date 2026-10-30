@@ -112,6 +112,10 @@ pub struct Settings {
     /// How long a browser stays signed in (days).
     #[serde(default = "default_session_days")]
     pub session_days: u32,
+    /// Where the web app's image offers the shell's and its apps' built interfaces
+    /// (`http://web:8080/_releases/`); fetched at start-up and every ten minutes.
+    #[serde(default)]
+    pub ui_source: String,
 }
 
 fn default_session_days() -> u32 {
