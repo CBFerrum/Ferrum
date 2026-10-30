@@ -4,6 +4,9 @@ Plan, 30 October 2026. Nothing in it is built unless marked **today**, except Ph
 v2: extension points, add-ons and screens), which is in docs/plugins.md "Extension points" and "Screens",
 and the parts of Office (§4) and Mail (§5) whose status lines say they are built.
 
+[apps-ui.md](apps-ui.md) (30 October 2026) plans an empty core with apps that own their interfaces; it
+replaces decision 3 below, §3.4 Tier 2 and part of §7 (its §21 lists what changes).
+
 ## 1. Short answers
 
 **Does our webmail have spam filtering and corporate features such as groups?**
