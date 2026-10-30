@@ -161,6 +161,36 @@ pub struct Schema {
     pub shell_v2: bool,
 }
 
+impl Schema {
+    /// What the schema gives a workspace, without who defines it: equal before and after
+    /// entities or fields move between packages if nothing a workspace sees or stores changes
+    /// (`ferrum task deps_report schema:…`). Roles are merged by name, as installing them does.
+    pub fn canonical(&self) -> Value {
+        let entities: BTreeMap<&str, Value> = self
+            .entities
+            .iter()
+            .map(|(n, e)| {
+                let v = serde_json::json!({
+                    "def": e.def, "table": e.table, "custom": e.custom, "storage": e.storage, "children": e.children,
+                    "workflow": e.workflow.as_ref().map(|w| &w.def), "print_template": e.print_template,
+                });
+                (n.as_str(), v)
+            })
+            .collect();
+        let sorted = |mut v: Vec<Value>| {
+            v.sort_by_key(|x| x.to_string());
+            v
+        };
+        let mut roles: BTreeMap<&str, Vec<Value>> = BTreeMap::new();
+        for r in &self.roles {
+            roles.entry(&r.name).or_default().extend(r.permissions.iter().map(|p| serde_json::to_value(p).unwrap_or_default()));
+        }
+        let roles: BTreeMap<&str, Vec<Value>> = roles.into_iter().map(|(k, v)| (k, sorted(v))).collect();
+        let personal = sorted(self.personal_data.iter().map(|p| serde_json::to_value(p).unwrap_or_default()).collect());
+        serde_json::json!({"entities": entities, "modules": self.modules, "roles": roles, "personal_data": personal})
+    }
+}
+
 /// An empty schema (for tests); build literals with `..Default::default()` so new fields don't
 /// break callers in other repositories.
 impl Default for Schema {
@@ -212,9 +242,12 @@ pub(crate) fn apply_op(def: &mut EntityDef, op: &OverlayOp, source: OverlaySourc
             def.actions.push(action.clone());
             Ok(None)
         }
-        OverlayOp::AddField { field, after } => {
+        OverlayOp::AddField { field, after, column } => {
             if def.fields.iter().any(|f| f.name == field.name) {
                 return Err(format!("field {} already exists", field.name));
+            }
+            if *column && source == OverlaySource::Tenant {
+                return Err("only packages add columns to an entity's table".into());
             }
             if field.ftype == FieldType::Table && source == OverlaySource::Tenant {
                 return Err("customizations cannot add child tables".into());
@@ -225,7 +258,7 @@ pub(crate) fn apply_op(def: &mut EntityDef, op: &OverlayOp, source: OverlaySourc
             if source == OverlaySource::Tenant && !field.name.starts_with("x_") {
                 return Err(format!("custom field {} must start with 'x_'", field.name));
             }
-            if field.unique {
+            if field.unique && !*column {
                 return Err("custom fields cannot be unique (use a validation rule)".into());
             }
             let pos = match after {
@@ -420,7 +453,16 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
             let Some(b) = building.get_mut(&ov.entity) else { continue };
             for op in &ov.ops {
                 if let Some(added) = apply_op(&mut b.def, op, OverlaySource::Package).map_err(|m| MetaError::Invalid(format!("{}: {m}", ov.entity)))? {
-                    b.storage.insert(added, Storage::Ext);
+                    match op {
+                        OverlayOp::AddField { field, column: true, .. } => {
+                            if field.ftype.is_stored() {
+                                b.storage.insert(added, Storage::Column);
+                            }
+                        }
+                        _ => {
+                            b.storage.insert(added, Storage::Ext);
+                        }
+                    }
                 }
             }
         }
@@ -430,6 +472,30 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
             }
         }
     }
+
+    // An entity's layout may place the fields other packages add to it, such as the columns they
+    // take over (§13); where such a package is not installed its fields drop out, and so do
+    // sections left without fields. (`Catalog::unknown_form_fields` finds names nothing adds.)
+    for b in building.values_mut() {
+        let known: HashSet<&str> = b.def.fields.iter().map(|f| f.name.as_str()).collect();
+        let keep = |f: &String| known.contains(f.as_str());
+        if b.def.form.iter().any(|s| s.fields.iter().any(|f| !keep(f))) {
+            let keep: Vec<Vec<String>> = b.def.form.iter().map(|s| s.fields.iter().filter(|f| keep(f)).cloned().collect()).collect();
+            let mut sections = std::mem::take(&mut b.def.form).into_iter().zip(keep).collect::<Vec<_>>();
+            sections.retain(|(s, kept)| !kept.is_empty() || s.fields.is_empty());
+            b.def.form = sections
+                .into_iter()
+                .map(|(mut s, kept)| {
+                    s.fields = kept;
+                    s
+                })
+                .collect();
+        }
+    }
+
+    // What a tenant-broken entity falls back to: its packages' definition, overlays included.
+    let packaged: HashMap<String, (EntityDef, BTreeMap<String, Storage>)> =
+        building.iter().map(|(k, b)| (k.clone(), (b.def.clone(), b.storage.clone()))).collect();
 
     // Tenant: new entities first, so other customizations can target them.
     for ov in tenant {
@@ -500,7 +566,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         if let Err(m) = validate_entity(&b.def, &all) {
             if b.custom {
                 broken.push(name.clone());
-            } else if let Some(base) = catalog.entity(name) {
+            } else if let Some((base, _)) = packaged.get(name) {
                 if validate_entity(base, &all).is_err() {
                     return invalid(format!("{name}: {m}"));
                 }
@@ -515,9 +581,9 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         if let Some(b) = building.get_mut(&name) {
             if b.custom {
                 building.remove(&name);
-            } else if let Some(base) = catalog.entity(&name) {
-                b.def = base.clone();
-                b.storage = base.fields.iter().filter(|f| f.ftype.is_stored()).map(|f| (f.name.clone(), Storage::Column)).collect();
+            } else if let Some((def, storage)) = packaged.get(&name) {
+                b.def = def.clone();
+                b.storage = storage.clone();
             }
         }
     }
@@ -668,6 +734,60 @@ mod tests {
 
     fn ov(entity: &str, ops: serde_json::Value) -> Overlay {
         Overlay { entity: entity.into(), ops: serde_json::from_value(ops).unwrap() }
+    }
+
+    fn package(yaml: &str, entities: &str) -> Package {
+        Package { manifest: serde_yaml::from_str(yaml).unwrap(), entities: serde_yaml::from_str(entities).unwrap(), sql: vec![], print_formats: vec![] }
+    }
+
+    /// A field another package takes over (§13) keeps its column and its place in the form, and
+    /// is left out where that package is not installed.
+    #[test]
+    fn columns_taken_over_by_another_package() {
+        let parties = package(
+            "{package: parties, version: '1'}",
+            "[{name: Customer, label: Customer, kind: master, fields: [{name: customer_name, type: data}, {name: phone, type: phone}],
+               form: [{label: Customer, fields: [customer_name, phone]}, {label: Accounts, fields: [receivable_account]}]},
+              {name: Account, label: Account, kind: master, fields: [{name: account_name, type: data}]}]",
+        );
+        let accounting = |after: &str| {
+            package(
+                &format!(
+                    "{{package: accounting, version: '1', depends: [parties], overlays: [{{entity: Customer, ops: [{{op: add_field, column: true, after: {after}, field: {{name: receivable_account, type: link, to: Account}}}}]}}]}}"
+                ),
+                "[]",
+            )
+        };
+        let catalog = Catalog::from_packages(vec![parties.clone(), accounting("customer_name")]).unwrap();
+        let alone = build(&catalog, &["parties".into()], &[], 1).unwrap();
+        let c = alone.entity("Customer").unwrap();
+        assert!(c.field("receivable_account").is_none());
+        assert_eq!(c.def.form.len(), 1, "the section left empty drops out");
+        let both = build(&catalog, &["accounting".into()], &[], 1).unwrap();
+        let c = both.entity("Customer").unwrap();
+        assert_eq!(c.def.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["customer_name", "receivable_account", "phone"]);
+        assert_eq!(c.storage_of("receivable_account"), Some(Storage::Column));
+        assert_eq!(c.def.form[1].fields, ["receivable_account"]);
+        // A customization cannot add a column, and a name no package adds is still an error.
+        let w = build(
+            &catalog,
+            &["accounting".into()],
+            &[ov("Customer", json!([{"op": "add_field", "column": true, "field": {"name": "x_col", "type": "data"}}]))],
+            2,
+        )
+        .unwrap();
+        assert!(w.warnings.iter().any(|w| w.message.contains("only packages add columns")));
+        assert!(catalog.unknown_form_fields().is_empty());
+        let mut typo = parties.clone();
+        typo.entities[0].form[0].fields.push("phnoe".into());
+        assert_eq!(Catalog::from_packages(vec![typo, accounting("customer_name")]).unwrap().unknown_form_fields(), ["Customer.phnoe"]);
+        // Two packages may not add the same field.
+        let other = package(
+            "{package: other, version: '1', depends: [parties], field_prefix: o_, overlays: [{entity: Customer, ops: [{op: add_field, column: true, field: {name: receivable_account, type: data}}]}]}",
+            "[]",
+        );
+        let e = Catalog::from_packages(vec![parties.clone(), accounting("customer_name"), other]).unwrap_err().to_string();
+        assert!(e.contains("too"), "{e}");
     }
 
     #[test]

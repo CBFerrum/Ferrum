@@ -138,6 +138,24 @@ contributes:
   Apps page. Nesting needs no other rules: an add-on installs after its parent, and the parent
   cannot be disabled or removed while an add-on needs it.
 
+## Records other apps share
+
+The core holds only what every app needs: companies, currencies and their exchange rates, units
+(and projects, until the Projects app takes them). Customers and suppliers are in `parties`, items
+and price lists in `products`; ERP's packages (accounting, inventory, buying, selling,
+manufacturing) bring the accounting, stock and buying records and add their fields to the shared
+ones (a customer's receivable account, an item's stock settings). Depend on the least you need:
+`parties` for customers, `products` for items, ERP's packages only for their own records.
+
+* Every package must work with only its dependencies installed: the catalog refuses one whose
+  links, overlays, workflows, seeds or personal-data rules reach further. What reaches further
+  belongs in a connector, an app that requires both sides.
+* `ferrum task deps_report` lists what ties packages together: every entity a package names that
+  another defines, and document hooks that run on another package's records or in every workspace.
+* A field a package takes over from another's entity keeps its name, column and place in the form:
+  `{op: add_field, column: true, after: <field>, field: {...}}` (packages only; no prefix). The
+  entity's form may list it; it is left out where the package is not installed.
+
 ## Screens
 
 Wasm and meta apps can bring screens: HTML pages under `ui/` in the bundle, with their scripts,

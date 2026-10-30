@@ -33,6 +33,27 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     (`shell.open` with `package`); launcher entries into today's web app for Comms, Drive and Docs.
   * Not yet: ERP's main script is 299 KB compressed, against a 200 KB budget; the packages are
     built from source in Ferrum-Frontend, not yet published to npm.
+* **U3, empty core: step 1 built (the platform's packages).**
+  * `core` keeps Company, Currency, ExchangeRate, Uom and (until the Projects app takes it) Project.
+    New packages: `parties` (Customer, CustomerGroup, Supplier, SupplierGroup) and `products` (Item,
+    ItemGroup, ItemUom, PriceList, ItemPrice). Account, CostCenter, FiscalYear, TaxTemplate, TaxRow
+    and ItemTaxRate went to `accounting`, Warehouse to `inventory`, ItemSupplier to `buying`.
+  * ERP-only fields became overlays of ERP's packages with `column: true`. They keep their names,
+    columns, data, field order and place in the form: the entity's form may list them, and drops
+    them where their package is missing. Examples: a company's default accounts, a customer's
+    receivable account and credit limit, an item's stock, buying and accounting settings.
+  * The full schema is identical before and after (`ferrum task deps_report schema:`, compared on
+    every entity, field, column, form, role, menu and personal-data rule).
+  * The catalog now builds every package with only its dependencies installed, and refuses one that
+    reaches further. Its old base-only checks are gone. Two packages may not add the same field.
+  * The domain's hooks run only where their package is installed. A test keeps every document hook
+    scoped to a package.
+  * ERP's manifest lists its five packages; India is its add-on. New workspaces get the core only.
+  * The one-time `core-split` step moves existing workspaces onto the split (operations.md,
+    Upgrades). `ferrum task upgrade_back step:core-split` undoes it before going back.
+  * Next: `contacts` (Contact and Address out of CRM); CRM on core, contacts, parties and products
+    with the `crm-erp` connector; Project into the Projects app with `projects-erp`; `hr-erp` and
+    `payroll-erp`; suites; the first-run picker.
 
 Contents: 1 where we are · 2 goals and targets · 3 what others do · 4 rules · 5 decisions ·
 6 the person's view · 7 addresses and deployment shapes · 8 the core shell · 9 people, sessions,

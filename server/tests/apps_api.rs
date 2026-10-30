@@ -49,7 +49,7 @@ fn kit(id: &str) -> BTreeMap<String, Vec<u8>> {
         ("README.md", "# Kit\nThings to track.\n"),
         (
             "packages/kit/package.yaml",
-            "package: kit\nversion: 1.0.0\ndepends: [core]\nfield_prefix: kt_\nroles:\n  - name: Kit User\n    permissions:\n      - {entity: KtThing, read: true, write: true, create: true}\n\
+            "package: kit\nversion: 1.0.0\ndepends: [parties]\nfield_prefix: kt_\nroles:\n  - name: Kit User\n    permissions:\n      - {entity: KtThing, read: true, write: true, create: true}\n\
              overlays:\n  - entity: Customer\n    ops:\n      - {op: add_field, field: {name: kt_level, type: data}}\n",
         ),
         ("packages/kit/entities/thing.yaml", "name: KtThing\nlabel: Thing\nkind: master\nfields:\n  - {name: title, type: data, required: true}\n"),
@@ -399,8 +399,9 @@ async fn scenario() {
     let url = std::env::var("FERRUM_APPS_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_apps_api_test".into());
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
-    let core = ferrum_meta::catalog::load_package_dir(&FsPath::new(env!("CARGO_MANIFEST_DIR")).join("../packages/core")).expect("core");
-    let k = Kernel::boot(db, Catalog::from_packages(vec![core, notes_package()]).unwrap(), HookRegistry::default(), KernelSettings::default(), None)
+    let dir = FsPath::new(env!("CARGO_MANIFEST_DIR")).join("../packages");
+    let [core, parties] = ["core", "parties"].map(|p| ferrum_meta::catalog::load_package_dir(&dir.join(p)).expect(p));
+    let k = Kernel::boot(db, Catalog::from_packages(vec![core, parties, notes_package()]).unwrap(), HookRegistry::default(), KernelSettings::default(), None)
         .await
         .expect("boot");
     // Rate limits hold across replicas: two limiters on one database share their count.

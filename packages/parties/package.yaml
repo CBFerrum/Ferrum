@@ -1,0 +1,32 @@
+package: parties
+version: 0.1.0
+label: Customers and Suppliers
+description: The customers and suppliers every app that sells or buys shares, with their groups.
+depends: [core]
+
+overlays:
+  - entity: Project
+    ops:
+      - {op: add_field, column: true, after: end_date, field: {name: customer, type: link, to: Customer}}
+
+# What a personal-data request exports and erases for a person (their email): an individual
+# customer's name, contact details and addresses; for companies and suppliers, whose names the
+# books keep, only the contact details.
+personal_data:
+  - {entity: Customer, match: email, where: {customer_type: Individual}, erase: [customer_name, email, phone, tax_id, billing_address, shipping_address]}
+  - {entity: Customer, match: email, where: {customer_type: Company}, erase: [email, phone]}
+  - {entity: Supplier, match: email, erase: [email, phone]}
+
+seed:
+  - entity: CustomerGroup
+    key: [group_name]
+    records:
+      - {group_name: All Customer Groups, is_group: true}
+      - {group_name: Commercial, parent_group: "@CustomerGroup:group_name=All Customer Groups"}
+      - {group_name: Individual, parent_group: "@CustomerGroup:group_name=All Customer Groups"}
+  - entity: SupplierGroup
+    key: [group_name]
+    records:
+      - {group_name: All Supplier Groups, is_group: true}
+      - {group_name: Raw Material, parent_group: "@SupplierGroup:group_name=All Supplier Groups"}
+      - {group_name: Services, parent_group: "@SupplierGroup:group_name=All Supplier Groups"}

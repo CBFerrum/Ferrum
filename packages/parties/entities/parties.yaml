@@ -1,0 +1,63 @@
+- name: CustomerGroup
+  label: Customer Group
+  kind: master
+  module: masters
+  title_field: group_name
+  fields:
+    - {name: group_name, type: data, required: true, unique: true, in_list: true}
+    - {name: parent_group, type: link, to: CustomerGroup, link_filters: {is_group: true}}
+    - {name: is_group, type: check}
+
+- name: Customer
+  label: Customer
+  kind: master
+  module: masters
+  title_field: customer_name
+  numbering: {template: "CUST-{seq:5}"}
+  search_fields: [email, phone, tax_id]
+  fields:
+    - {name: customer_name, type: data, required: true, in_list: true}
+    - {name: customer_type, type: select, options: [Company, Individual], default: Company, in_filter: true}
+    - {name: customer_group, type: link, to: CustomerGroup, in_list: true, in_filter: true, link_filters: {is_group: false}}
+    - {name: email, type: email}
+    - {name: phone, type: phone}
+    - {name: tax_id, type: data, label: Tax ID}
+    - {name: billing_address, type: text}
+    - {name: shipping_address, type: text}
+    - {name: default_currency, type: link, to: Currency}
+    - {name: payment_terms_days, type: int, default: 0, min: 0, max: 3650}
+    - {name: disabled, type: check, in_filter: true}
+  form:
+    - {label: Customer, fields: [customer_name, customer_type, customer_group, email, phone, tax_id]}
+    - {label: Addresses, collapsible: true, fields: [billing_address, shipping_address]}
+    - {label: Defaults & Credit, fields: [default_currency, default_price_list, receivable_account, payment_terms_days, credit_limit, disabled]}
+  list: {columns: [number, customer_name, customer_group, email], sort: customer_name asc}
+
+- name: SupplierGroup
+  label: Supplier Group
+  kind: master
+  module: masters
+  title_field: group_name
+  fields:
+    - {name: group_name, type: data, required: true, unique: true, in_list: true}
+    - {name: parent_group, type: link, to: SupplierGroup, link_filters: {is_group: true}}
+    - {name: is_group, type: check}
+
+- name: Supplier
+  label: Supplier
+  kind: master
+  module: masters
+  title_field: supplier_name
+  numbering: {template: "SUPP-{seq:5}"}
+  search_fields: [email, phone, tax_id]
+  fields:
+    - {name: supplier_name, type: data, required: true, in_list: true}
+    - {name: supplier_group, type: link, to: SupplierGroup, in_list: true, in_filter: true, link_filters: {is_group: false}}
+    - {name: email, type: email}
+    - {name: phone, type: phone}
+    - {name: tax_id, type: data, label: Tax ID}
+    - {name: address, type: text}
+    - {name: default_currency, type: link, to: Currency}
+    - {name: payment_terms_days, type: int, default: 0, min: 0, max: 3650}
+    - {name: disabled, type: check, in_filter: true}
+  list: {columns: [number, supplier_name, supplier_group, email], sort: supplier_name asc}

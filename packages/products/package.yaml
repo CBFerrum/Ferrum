@@ -1,0 +1,28 @@
+package: products
+version: 0.1.0
+label: Products
+description: The items every app that sells or buys shares, with their groups, units and price lists.
+depends: [core, parties]
+
+overlays:
+  - entity: Customer
+    ops:
+      - {op: add_field, column: true, after: default_currency, field: {name: default_price_list, type: link, to: PriceList}}
+  - entity: Supplier
+    ops:
+      - {op: add_field, column: true, after: default_currency, field: {name: default_price_list, type: link, to: PriceList}}
+
+seed:
+  - entity: ItemGroup
+    key: [group_name]
+    records:
+      - {group_name: All Item Groups, is_group: true}
+      - {group_name: Products, parent_group: "@ItemGroup:group_name=All Item Groups"}
+      - {group_name: Raw Material, parent_group: "@ItemGroup:group_name=All Item Groups"}
+      - {group_name: Sub Assemblies, parent_group: "@ItemGroup:group_name=All Item Groups"}
+      - {group_name: Services, parent_group: "@ItemGroup:group_name=All Item Groups"}
+  - entity: PriceList
+    key: [price_list_name]
+    records:
+      - {price_list_name: Standard Selling, selling: true, buying: false}
+      - {price_list_name: Standard Buying, selling: false, buying: true}

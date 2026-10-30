@@ -14,6 +14,9 @@ overlays:
   - entity: StockEntryItem
     ops:
       - {op: add_field, field: {name: mfg_is_finished_item, type: check, label: Finished Item, read_only: true}}
+  - entity: Item
+    ops:
+      - {op: add_field, column: true, after: is_purchased, field: {name: is_manufactured, type: check}}
 
 modules:
   - name: manufacturing

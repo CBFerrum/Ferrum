@@ -451,7 +451,7 @@ mod tests {
     #[test]
     fn xlsx_export_is_a_workbook() {
         let catalog = ferrum_meta::Catalog::from_packages(ferrum_domain::packages().unwrap()).unwrap();
-        let schema = ferrum_meta::effective::build(&catalog, &["core".into()], &[], 1).unwrap();
+        let schema = ferrum_meta::effective::build(&catalog, &["selling".into()], &[], 1).unwrap();
         let ent = schema.entity("Customer").unwrap();
         let cols = vec!["number".to_string(), "customer_name".to_string(), "credit_limit".to_string(), "disabled".to_string()];
         let rec = json!({"number": "CUST-00001", "customer_name": "=cmd|' /C calc'!A0", "credit_limit": "1250.50", "disabled": false});

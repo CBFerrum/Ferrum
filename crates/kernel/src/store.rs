@@ -245,10 +245,18 @@ fn update_columns(ent: &EffEntity) -> Vec<String> {
     cols
 }
 
+/// The columns a row object sets, quoted: only those of this workspace's schema, so the columns
+/// other packages add to a shared table (§13 of docs/plan/apps-ui.md) keep their defaults.
+fn row_columns(row: &Value, extra: &[&str]) -> String {
+    let keys = row.as_object().into_iter().flat_map(|o| o.keys().map(String::as_str));
+    keys.chain(extra.iter().copied()).map(q).collect::<Vec<_>>().join(", ")
+}
+
 pub async fn insert_row(tx: &mut Tx, schema: &Schema, ent: &EffEntity, tenant: Uuid, doc: &Doc) -> Result<()> {
     let row = row_json(ent, doc, tenant, None);
+    let cols = row_columns(&row, &["created_at", "updated_at"]);
     let sql = format!(
-        "insert into {t} select * from jsonb_populate_record(null::{t}, $1::jsonb || jsonb_build_object('created_at', now(), 'updated_at', now()))",
+        "insert into {t} ({cols}) select {cols} from jsonb_populate_record(null::{t}, $1::jsonb || jsonb_build_object('created_at', now(), 'updated_at', now()))",
         t = q(&ent.table)
     );
     sqlx::query(AssertSqlSafe(sql)).bind(row).execute(&mut **tx).await?;
@@ -336,11 +344,15 @@ fn child_rows_json(cent: &EffEntity, rows: Option<&Value>, tenant: Uuid, parent:
 }
 
 async fn upsert_children(tx: &mut Tx, cent: &EffEntity, table: &str, rows: Vec<Value>) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
     let mut cols = vec!["idx".to_string(), "updated_at".to_string(), "ext".to_string()];
     cols.extend(cent.value_fields().filter(|f| cent.storage_of(&f.name) == Some(Storage::Column)).map(|f| f.name.clone()));
     let set = cols.iter().map(|c| format!("{c} = excluded.{c}", c = q(c))).collect::<Vec<_>>().join(", ");
+    let list = row_columns(rows.first().unwrap_or(&Value::Null), &[]);
     let sql = format!(
-        "insert into {t} select * from jsonb_populate_recordset(null::{t}, $1::jsonb) \
+        "insert into {t} ({list}) select {list} from jsonb_populate_recordset(null::{t}, $1::jsonb) \
          on conflict (tenant_id, id) do update set {set} where {t}.parent_id = excluded.parent_id",
         t = q(table)
     );

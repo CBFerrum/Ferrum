@@ -1,0 +1,70 @@
+- name: ItemGroup
+  label: Item Group
+  kind: master
+  module: masters
+  title_field: group_name
+  fields:
+    - {name: group_name, type: data, required: true, unique: true, in_list: true}
+    - {name: parent_group, type: link, to: ItemGroup, link_filters: {is_group: true}}
+    - {name: is_group, type: check}
+
+- name: ItemUom
+  label: Item Unit
+  kind: child
+  fields:
+    - {name: uom, type: link, to: Uom, required: true, in_list: true, label: Unit}
+    - {name: conversion_factor, type: decimal, required: true, min: "0.000000001", in_list: true, description: Stock units in one of this unit (12 for a box of 12)}
+
+- name: Item
+  label: Item
+  kind: master
+  module: masters
+  title_field: item_name
+  search_fields: [item_code, barcode]
+  fields:
+    - {name: item_code, type: data, required: true, unique: true, in_list: true, max_length: 140}
+    - {name: item_name, type: data, required: true, in_list: true}
+    - {name: item_group, type: link, to: ItemGroup, required: true, in_list: true, in_filter: true, link_filters: {is_group: false}}
+    - {name: stock_uom, type: link, to: Uom, required: true, label: Stock Unit}
+    - {name: standard_rate, type: currency, min: "0", description: Default selling rate when no price list rate exists}
+    - {name: barcode, type: data}
+    - {name: hsn_code, type: data, label: HSN/SAC Code}
+    - {name: description, type: text}
+    - {name: uoms, type: table, of: ItemUom, label: Other Units, description: Units it is bought or sold in besides the stock unit}
+    - {name: disabled, type: check, in_filter: true}
+  form:
+    - {label: Item, fields: [item_code, item_name, item_group, stock_uom, description, barcode, hsn_code, disabled]}
+    - {label: Inventory, fields: [is_stock_item, valuation_method, default_warehouse, has_serial_no, has_batch_no, safety_stock]}
+    - {label: Units, collapsible: true, fields: [uoms]}
+    - {label: Buying & Manufacturing, fields: [is_purchased, is_manufactured, lead_time_days, min_order_qty, last_purchase_rate, suppliers]}
+    - {label: Selling & Accounting, fields: [standard_rate, income_account, expense_account, tax_rates]}
+  list: {columns: [item_code, item_name, item_group, stock_uom], sort: item_code asc}
+
+- name: PriceList
+  label: Price List
+  kind: master
+  module: masters
+  title_field: price_list_name
+  fields:
+    - {name: price_list_name, type: data, required: true, unique: true, in_list: true}
+    - {name: currency, type: link, to: Currency}
+    - {name: selling, type: check, in_list: true}
+    - {name: buying, type: check, in_list: true}
+    - {name: enabled, type: check, default: true}
+
+- name: ItemPrice
+  label: Item Price
+  kind: master
+  module: masters
+  fields:
+    - {name: item, type: link, to: Item, required: true, in_list: true, in_filter: true}
+    - {name: price_list, type: link, to: PriceList, required: true, in_list: true, in_filter: true}
+    - {name: rate, type: currency, required: true, min: "0", in_list: true}
+    - {name: uom, type: link, to: Uom, label: Unit, description: The unit this price is for; empty for the stock unit}
+    - {name: valid_from, type: date, required: true, default_expr: today, in_list: true}
+    - {name: valid_upto, type: date, in_list: true}
+  exclusion:
+    - {fields: [item, price_list], from: valid_from, to: valid_upto, message: Another price for this item in this price list covers these dates}
+  rules:
+    - {name: validity, check: "doc.valid_upto == null || doc.valid_upto >= doc.valid_from", message: "Valid up to is before valid from"}
+  list: {sort: valid_from desc}

@@ -1,0 +1,14 @@
+- name: Warehouse
+  label: Warehouse
+  kind: master
+  module: masters
+  title_field: warehouse_name
+  company_scoped: true
+  fields:
+    - {name: warehouse_name, type: data, required: true, in_list: true}
+    - {name: company, type: link, to: Company, required: true, locked: true, in_filter: true}
+    - {name: parent_warehouse, type: link, to: Warehouse, link_filters: {is_group: true}}
+    - {name: is_group, type: check}
+    - {name: account, type: link, to: Account, link_filters: {is_group: false}, description: Inventory account; defaults to the company inventory account}
+    - {name: disabled, type: check}
+  unique: [[company, warehouse_name]]

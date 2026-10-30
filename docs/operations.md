@@ -93,6 +93,9 @@ up to ~11 replicas without a pooler; raise both together).
    kubectl -n ferrum exec deploy/ferrum -- ferrum task create_tenant slug:acme name:"Acme Ltd" email:admin@acme.com password:'<strong password>' packages:core,accounting,inventory,selling,buying,manufacturing,india
    ```
 
+   Without `packages:` the workspace starts with only the core, and its administrator installs
+   apps from the store.
+
 7. Optionally run `FERRUM_URL=https://<host> FERRUM_TENANT=... FERRUM_EMAIL=... FERRUM_PASSWORD=... python3 scripts/smoke.py`
    against a staging tenant (it creates a throw-away item and stock movements).
 8. Sign in at `https://<host>/app/`, create the company (its chart of accounts, warehouses and,
@@ -170,6 +173,20 @@ deploy/kind/install.sh && deploy/kind/smoke.sh
   `maxUnavailable: 0` keeps capacity during the rollout.
 * Rolling back the image is safe while the newer migrations are additive (the norm). If a release
   notes a data migration, take an on-demand backup first (below).
+* Some releases move existing workspaces onto a new package layout with a one-time step at start-up
+  (one replica runs it; it is recorded per workspace). The first, `core-split`
+  ([plan](plan/apps-ui.md) §13), comes with the release that split `core` into `core`, `parties`
+  (customers, suppliers) and `products` (items, price lists), and gave ERP's packages the accounting,
+  stock and buying records and fields `core` had:
+  * a workspace with any of ERP's packages gets all five (accounting, inventory, buying, selling,
+    manufacturing), so it keeps every record and field it had;
+  * one without them gets `parties` and `products` only if it has customers, suppliers, items or
+    item prices of its own;
+  * tables and columns stay where they were.
+
+  To go back to a release before such a step, run `ferrum task upgrade_back step:<name>`
+  (`core-split`) with every replica of the newer release stopped, then start the older image. The
+  task takes out the packages the step installed and keeps the data.
 
 ## Backups and restore
 
@@ -725,7 +742,9 @@ also stops their API keys.
 ```bash
 ferrum task run_maintenance          # anchor audit trails, purge expired events, ledger partitions (also runs in-process)
 ferrum task sync_schema              # force the metadata → DDL sync (normally automatic at boot)
-ferrum task create_tenant slug:... name:... email:... password:... packages:...
+ferrum task create_tenant slug:... name:... email:... password:... [packages:...]   # core only without packages:
+ferrum task deps_report [schema:<file>]   # what ties packages together; schema: writes the canonical schema to compare across a package move
+ferrum task upgrade_back step:<name>      # before going back to the release before a one-time upgrade step
 ferrum task seed_demo tenant:<slug>  # demo data (never in production tenants)
 ferrum task import_erpnext src:<erpnext app dir> out:packages/erpnext-import
 ferrum task app_make_available file:<app.fapp> [allow_unsigned:true]   # make a bundle available to every workspace (verified against FERRUM_APP_TRUSTED_KEYS)

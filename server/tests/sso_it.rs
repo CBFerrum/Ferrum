@@ -193,7 +193,7 @@ async fn single_sign_on() {
             admin_email: "admin@ssoco.test".into(),
             admin_password: "Correct-Horse-9".into(),
             admin_name: None,
-            packages: vec!["core".into()],
+            packages: vec!["accounting".into()],
             settings: None,
         })
         .await

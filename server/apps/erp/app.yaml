@@ -1,6 +1,6 @@
-# ERP as an app of its own, with its interface at /erp/ (docs/plan/apps-ui.md). Its packages are
-# still the platform's (core, accounting, selling, buying, inventory, manufacturing); phase U3 moves
-# them under it. Recorded as installed in every workspace that has accounting.
+# ERP as an app of its own, with its interface at /erp/ (docs/plan/apps-ui.md §13). Its packages
+# bring the customers, suppliers and items other apps share (parties, products) and add their ERP
+# fields to them. Recorded as installed in every workspace that has accounting; India is its add-on.
 id: erp
 name: ERP
 version: 0.1.0
@@ -9,6 +9,7 @@ summary: Accounting, selling, buying, stock and manufacturing
 categories: [finance, inventory, manufacturing]
 runtime: native
 platform: ">=0.3.1, <0.4"
+packages: [accounting, inventory, buying, selling, manufacturing]
 ui:
   dist: ui/dist
 contributes:
@@ -21,6 +22,8 @@ contributes:
       roles: [Accounts Manager, Accounts User, Sales Manager, Sales User, Purchase Manager, Purchase User, Stock Manager, Stock User, Manufacturing Manager, Manufacturing User]
   shell.open:
     - {id: core, package: core, path: "erp/e/{entity}/{id}", list: "erp/e/{entity}"}
+    - {id: parties, package: parties, path: "erp/e/{entity}/{id}", list: "erp/e/{entity}"}
+    - {id: products, package: products, path: "erp/e/{entity}/{id}", list: "erp/e/{entity}"}
     - {id: accounting, package: accounting, path: "erp/e/{entity}/{id}", list: "erp/e/{entity}"}
     - {id: selling, package: selling, path: "erp/e/{entity}/{id}", list: "erp/e/{entity}"}
     - {id: buying, package: buying, path: "erp/e/{entity}/{id}", list: "erp/e/{entity}"}

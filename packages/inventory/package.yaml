@@ -2,7 +2,20 @@ package: inventory
 version: 0.1.0
 label: Inventory
 description: Append-only stock ledger with moving-average and FIFO cost layers. Backdated entries post forward; nothing is ever reposted.
-depends: [core]
+depends: [accounting]
+
+overlays:
+  - entity: Company
+    ops:
+      - {op: add_field, column: true, after: fy_start_month, field: {name: allow_negative_stock, type: check}}
+  - entity: Item
+    ops:
+      - {op: add_field, column: true, after: stock_uom, field: {name: is_stock_item, type: check, default: true, in_filter: true}}
+      - {op: add_field, column: true, after: is_stock_item, field: {name: valuation_method, type: select, options: [Moving Average, FIFO], default: Moving Average}}
+      - {op: add_field, column: true, after: standard_rate, field: {name: default_warehouse, type: link, to: Warehouse, link_filters: {is_group: false}}}
+      - {op: add_field, column: true, after: expense_account, field: {name: safety_stock, type: decimal, default: 0, min: "0"}}
+      - {op: add_field, column: true, after: safety_stock, field: {name: has_serial_no, type: check}}
+      - {op: add_field, column: true, after: has_serial_no, field: {name: has_batch_no, type: check}}
 
 modules:
   - name: inventory
@@ -13,8 +26,19 @@ modules:
 
 roles:
   - name: Stock Manager
+    description: Items, warehouses and price lists.
     permissions:
       - {entity: StockEntry, read: true, write: true, create: true, delete: true, submit: true, cancel: true, export: true}
+      - {entity: Item, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: ItemGroup, read: true, write: true, create: true, delete: true}
+      - {entity: Warehouse, read: true, write: true, create: true, delete: true}
+      - {entity: Uom, read: true, write: true, create: true}
+      - {entity: PriceList, read: true, write: true, create: true, delete: true}
+      - {entity: ItemPrice, read: true, write: true, create: true, delete: true, import: true}
+      - {entity: Company, read: true}
+      - {entity: Account, read: true}
+      - {entity: Currency, read: true}
+      - {entity: CostCenter, read: true}
   - name: Stock User
     permissions:
       - {entity: StockEntry, read: true, write: true, create: true, delete: true, submit: true}

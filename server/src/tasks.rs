@@ -22,13 +22,7 @@ impl Task for CreateTenant {
     }
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
         let k = kernel(ctx)?;
-        let packages: Vec<String> = vars
-            .cli_arg("packages")
-            .unwrap_or("core,accounting,inventory,selling,buying,manufacturing")
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+        let packages: Vec<String> = vars.cli_arg("packages").unwrap_or("core").split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
         let id = k
             .create_tenant(NewTenant {
                 slug: vars.cli_arg("slug")?.to_string(),
@@ -93,6 +87,70 @@ impl Task for RunMaintenance {
         k.maintenance().await.map_err(|e| Error::Message(e.to_string()))?;
         ferrum_domain::maintenance(&k).await.map_err(|e| Error::Message(e.to_string()))?;
         println!("maintenance done");
+        Ok(())
+    }
+}
+
+/// `deps_report [schema:<file>]` — what ties packages together (docs/plan/apps-ui.md §13): every
+/// entity a package names that another defines, and the document hooks that run on another
+/// package's entities or in every workspace. `schema:<file>` also writes what the schema gives a
+/// workspace with everything installed, without who defines it: the same file before and after
+/// moving entities or fields between packages means no workspace sees or stores anything else.
+pub struct DepsReport;
+
+#[async_trait]
+impl Task for DepsReport {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "deps_report".into(), detail: "Show what ties packages together (schema:<file> writes the canonical schema)".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let catalog = k.registry.catalog();
+        let refs = catalog.references();
+        let mut pairs: std::collections::BTreeMap<(&str, &str), Vec<&ferrum_meta::catalog::Reference>> = Default::default();
+        for r in &refs {
+            pairs.entry((r.from.as_str(), r.to.as_str())).or_default().push(r);
+        }
+        for ((from, to), rs) in &pairs {
+            println!("{from} → {to} ({})", rs.len());
+            for r in rs {
+                println!("  {:<13} {}", r.kind, r.what);
+            }
+        }
+        println!("\nDocument hooks on another package's entities, or in every workspace:");
+        for (entity, scope) in k.hooks.scopes() {
+            let owner = catalog.entity_package(&entity).unwrap_or("*");
+            match scope {
+                None => println!("  {entity} ({owner}): every workspace"),
+                Some(ps) if !ps.iter().any(|p| p == owner) => println!("  {entity} ({owner}): {}", ps.join(", ")),
+                Some(_) => {}
+            }
+        }
+        if let Ok(path) = vars.cli_arg("schema") {
+            let all: Vec<String> = catalog.packages().map(|p| p.name().to_string()).collect();
+            let schema = ferrum_meta::effective::build(&catalog, &all, &[], 0).map_err(|e| Error::Message(e.to_string()))?;
+            let text = serde_json::to_vec_pretty(&schema.canonical()).map_err(|e| Error::Message(e.to_string()))?;
+            std::fs::write(path, text).map_err(|e| Error::Message(format!("{path}: {e}")))?;
+            println!("\nThe canonical schema is in {path}");
+        }
+        Ok(())
+    }
+}
+
+/// `upgrade_back step:core-split` — before going back to the release before a one-time upgrade
+/// step: takes out the packages it installed in every workspace (the data stays).
+pub struct UpgradeBack;
+
+#[async_trait]
+impl Task for UpgradeBack {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "upgrade_back".into(), detail: "Undo a one-time upgrade step before going back to the release before it".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let step = vars.cli_arg("step")?;
+        let n = crate::upgrade::back(&k, step).await.map_err(|e| Error::Message(e.to_string()))?;
+        println!("{step}: undone in {n} workspaces; stop every replica of this release before it starts again, or it runs the step again");
         Ok(())
     }
 }

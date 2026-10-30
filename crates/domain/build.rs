@@ -4,7 +4,7 @@
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
-const PACKAGES: &[&str] = &["core", "accounting", "buying", "selling", "inventory", "manufacturing", "india"];
+const PACKAGES: &[&str] = &["core", "parties", "products", "accounting", "buying", "selling", "inventory", "manufacturing", "india"];
 
 fn walk(dir: &Path, rel: &str, out: &mut Vec<(String, PathBuf)>) {
     let Ok(read) = std::fs::read_dir(dir) else { return };
