@@ -48,7 +48,7 @@ pub fn describe(ctx: &Ctx, ent: &EffEntity) -> Value {
     json!({
         "name": ent.def.name,
         "label": ent.def.label,
-        "label_plural": ent.def.label_plural.clone().unwrap_or_else(|| format!("{}s", ent.def.label)),
+        "label_plural": ent.def.plural_label(),
         "kind": ent.def.kind,
         "module": ent.def.module,
         "icon": ent.def.icon,

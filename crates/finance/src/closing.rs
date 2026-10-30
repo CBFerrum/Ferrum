@@ -166,10 +166,7 @@ impl DocHook for ClosingHook {
             );
             let n: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql)).bind(hc.ctx.tenant).bind(cid).bind(fy.start).bind(fy.end).fetch_one(&mut **hc.tx).await?;
             if n > 0 {
-                drafts.push(format!(
-                    "{n} {}",
-                    if n == 1 { ent.def.label.clone() } else { ent.def.label_plural.clone().unwrap_or_else(|| format!("{}s", ent.def.label)) }
-                ));
+                drafts.push(format!("{n} {}", if n == 1 { ent.def.label.clone() } else { ent.def.plural_label() }));
             }
         }
         if !drafts.is_empty() {

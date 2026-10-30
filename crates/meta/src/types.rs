@@ -164,6 +164,18 @@ pub struct EntityDef {
     pub owner_fields: Vec<String>,
 }
 
+impl EntityDef {
+    /// `label_plural`, or the label with an "s"; a label ending in "s" ("Booking Settings", "Lesson
+    /// Progress") stays as it is.
+    pub fn plural_label(&self) -> String {
+        match &self.label_plural {
+            Some(plural) => plural.clone(),
+            None if self.label.ends_with('s') => self.label.clone(),
+            None => format!("{}s", self.label),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum NumberingOn {
@@ -682,4 +694,18 @@ pub enum OverlayOp {
         #[serde(default)]
         after: Option<String>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EntityDef;
+
+    #[test]
+    fn plural_labels() {
+        let plural = |yaml: &str| serde_yaml::from_str::<EntityDef>(&format!("{{name: X, kind: document, fields: [], {yaml}}}")).unwrap().plural_label();
+        assert_eq!(plural("label: Customer"), "Customers");
+        assert_eq!(plural("label: Booking Settings"), "Booking Settings");
+        assert_eq!(plural("label: Lesson Progress"), "Lesson Progress");
+        assert_eq!(plural("label: Company, label_plural: Companies"), "Companies");
+    }
 }

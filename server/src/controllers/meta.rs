@@ -21,7 +21,7 @@ async fn index(Auth(ctx): Auth) -> ApiResult<Response> {
         .map(|e| {
             json!({
                 "name": e.def.name, "label": e.def.label,
-                "label_plural": e.def.label_plural.clone().unwrap_or_else(|| format!("{}s", e.def.label)),
+                "label_plural": e.def.plural_label(),
                 "kind": e.def.kind, "module": e.def.module, "icon": e.def.icon, "submittable": e.def.submittable,
                 "custom": e.custom, "permissions": permissions(&ctx, &e.def.name),
             })
