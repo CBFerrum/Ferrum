@@ -239,6 +239,8 @@ async fn page(
         // Browsers ask for it on pages without an icon: the platform's.
         "favicon.ico" if rest.is_none() => return Ok(Redirect::permanent("/_shell/v1/icon.svg").into_response()),
         "open" => return open(&st, &headers, &uri, rest.unwrap_or_default(), &q).await,
+        // The assistant's page (controllers/assistant.rs), the side panel's and a phone's.
+        "assistant" if rest.is_none_or(str::is_empty) => return super::assistant::page(&st, &headers, &uri).await,
         _ => {}
     }
     if !ferrum_apps::shell::is_route(first) || ferrum_apps::shell::is_reserved_route(first) {
@@ -650,6 +652,14 @@ async fn shell_info(Auth(ctx): Auth, State(app): State<AppContext>, headers: Hea
             }));
         }
     }
+    // The platform's own panel, first: the assistant, for those who may use it (assistant.rs).
+    let assistant = st.assistant.available(&st.kernel, &ctx, &kind).await;
+    if assistant {
+        panels.insert(
+            0,
+            json!({"id": "assistant", "app": shell::SHELL_APP, "title": "Assistant", "icon": "sparkles", "contextual": false, "url": "/assistant/"}),
+        );
+    }
     // Apps whose pages are still in today's web app: entries into it, until they have their own.
     if ws.shell_v2 && kind == "member" {
         launcher.extend(shell::classic_entries(&apps));
@@ -667,6 +677,7 @@ async fn shell_info(Auth(ctx): Auth, State(app): State<AppContext>, headers: Hea
         "sidepanels": panels,
         "families": families,
         "legacy": "/app/",
+        "assistant": assistant,
     });
     let text = body.to_string();
     let etag = format!("\"{}\"", hex::encode(&Sha256::digest(text.as_bytes())[..12]));

@@ -296,6 +296,32 @@ Stores are configured in `apps.registries`. Only an app's `id` and a release's `
 * `GET {store}/v1/apps/{id}/releases/{version}/bundle` (unless `bundle_url` says otherwise) → the `.fapp`, redirects followed. It must carry a store signature by a key in `apps.trusted_keys`, and match the listed `digest` when there is one.
 * `GET {store}/v1/revocations` → `{"payload": "<JSON text>", "signatures": [{"key_id": "<16 hex>", "sig": "<base64 Ed25519 signature of the payload's UTF-8 bytes>"}]}` with payload `{"generated_at": "<RFC 3339>", "revocations": [{"app", "version"? (all versions when absent or "*"), "reason"?}]}`. At least one trusted store key must have signed it and every signature by one must verify; otherwise the list is ignored (and logged). A list generated before the newest one already applied from that store (a stale cache or a replay) is ignored; the newest time is kept per store in the database, so every replica agrees, and a list more than a day old is logged.
 
+## The assistant — `/api/assistant` ([operations](operations.md#the-assistant))
+
+The signed-in person's conversations with the assistant (cookie session; app screens may not call
+these). Off unless the server has `FERRUM_ASSISTANT_API_KEY`.
+* `GET /api/assistant` → `{available, reason, admin, threads: [{id, title, state, updated_at}]}`
+  (the 50 most recent; `state` is `idle`, `running` or `waiting`).
+* `POST /api/assistant/threads` → 201 `{id}`.
+* `GET /api/assistant/threads/{id}` → `{id, title, state, live, draft, pending, messages}`:
+  messages as the panel draws them (`{seq, role, items}`, items of kind `text`, `thinking`, `tool`,
+  `result`); `pending.calls` are the changes waiting for a decision.
+* `POST /api/assistant/threads/{id}/messages {text, context?}` and
+  `POST /api/assistant/threads/{id}/decide {allow}` start a turn and answer with its events
+  (`text/event-stream`, one JSON object per `data:` line): `message` (a stored message), `delta`
+  (`kind` `text` or `thinking`), `tool` (`status` `running`, `done`, `error`), `confirm`
+  (`pending`), `note`, `restart` (discard the text so far: the call is tried again), `resync`
+  (reload the thread), and last `done` (`state`) or `error` (`message`). The turn goes on if the
+  request ends. 409 while another turn runs on the thread, or when nothing waits for a decision;
+  422 for an empty or overlong message or a conversation that is full; 429 past the hourly
+  allowance.
+* `GET /api/assistant/threads/{id}/live` follows a turn under way from this replica (first event
+  `draft`: what it has said so far); 404 when it runs elsewhere.
+* `POST /api/assistant/threads/{id}/stop` → 204; `DELETE /api/assistant/threads/{id}` → 204.
+* The shell API's `ferrum.shell.assistant(context)` opens it beside a page with what the person is
+  looking at (`{entity, id, title}`); `/api/shell` says `assistant: true` and lists the panel when
+  the person may use it.
+
 ## AI agents (MCP)
 
 `POST /mcp` — Model Context Protocol, Streamable HTTP, stateless (JSON responses, no session id;

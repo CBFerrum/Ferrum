@@ -2,6 +2,7 @@
 pub mod app;
 pub mod appmgr;
 pub mod appmgr_mcp;
+pub mod assistant;
 pub mod coedit;
 pub mod controllers;
 pub mod demo;

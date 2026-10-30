@@ -20,6 +20,19 @@ operator to know. Report a vulnerability privately to the maintainers rather tha
 
 ## Controls
 
+**The assistant** ([operations](operations.md#the-assistant))
+* It acts only as the signed-in person, through the same permission-checked tools as MCP clients
+  and the REST API; it is never an administrator for someone who is not. App screens cannot call
+  it, and guests and portal people do not have it.
+* Every tool that is not read-only waits for the person's decision in the conversation; refused
+  or unanswered calls never run. Record contents, mail and documents the tools read can carry text
+  written to mislead a model (prompt injection): its instructions treat them as data, and the
+  approval step is the boundary that holds when they do not.
+* Tool inputs that stream from the model are parsed strictly and checked against each tool's
+  schema before anything runs; a reply that was cut off or declined runs none of its calls.
+* What goes to the model's API is limited to what the person could read; the key stays on the
+  server; workspaces can turn the assistant off.
+
 **Signing in**
 * Passwords: Argon2id; at least 10 characters with three character classes; 5 failures lock the
   account for 15 minutes; sign-in attempts are rate limited per address and workspace across

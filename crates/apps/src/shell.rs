@@ -27,9 +27,11 @@ pub const SHELL_POINTS: &[&str] = &[
 ];
 
 /// First path segments the core keeps for itself. The core only ever adds names starting with
-/// `_` or `.`, or nests under these, so a new core page never collides with an installed app.
+/// `_` or `.`, or nests under these, so a new core page never collides with an installed app
+/// (`assistant` joined before any app outside the platform could claim a route).
 pub const RESERVED_ROUTES: &[&str] = &[
     "api",
+    "assistant",
     "ws",
     "files",
     "mcp",

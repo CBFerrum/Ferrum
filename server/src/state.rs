@@ -241,6 +241,8 @@ pub struct AppState {
     pub objects: Arc<crate::objects::Objects>,
     /// App pages, interface releases and browser sessions (docs/plan/apps-ui.md).
     pub shell: Arc<crate::shell::Shell>,
+    /// The assistant's turns under way on this replica, and the operator's settings for it.
+    pub assistant: Arc<crate::assistant::Assistant>,
 }
 
 pub fn app_state(ctx: &AppContext) -> Result<AppState, ApiError> {

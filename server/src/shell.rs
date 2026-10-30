@@ -39,6 +39,8 @@ pub fn platform_file(name: &str) -> Option<(&'static str, &'static [u8])> {
         "kill-sw.js" => (js, include_bytes!("../shell/kill-sw.js")),
         "login.js" => (js, include_bytes!("../shell/login.js")),
         "pages.css" => ("text/css; charset=utf-8", include_bytes!("../shell/pages.css")),
+        "assistant.js" => (js, include_bytes!("../shell/assistant.js")),
+        "assistant.css" => ("text/css; charset=utf-8", include_bytes!("../shell/assistant.css")),
         "icon.svg" => ("image/svg+xml", include_bytes!("../shell/icon.svg")),
         _ => return None,
     })
