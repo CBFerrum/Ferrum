@@ -892,11 +892,10 @@ async function openSidepanel(id, context) {
   const data = shellData ?? (await loadShell());
   const p = (data?.sidepanels ?? []).find((x) => x.id === id || `${x.app}.${x.id}` === id);
   if (!p) return false;
-  // A phone has no room beside the page: the panel's app instead.
+  // A phone has no room beside the page: the panel's app instead (or the panel's own page).
   if (matchMedia("(max-width: 640px)").matches) {
     const entry = (data?.apps ?? []).find((a) => a.app === p.app);
-    if (entry) navigate(entry.url);
-    return Boolean(entry);
+    return navigate(entry?.url ?? p.url);
   }
   const ctx = context === undefined || context === null ? null : JSON.stringify(context);
   if (openPanel?.id === p.id && openPanel.app === p.app && panelFrame) {
@@ -920,7 +919,7 @@ function drawSidepanel(p, src) {
   const b = bar();
   panelFrame = el("iframe", { title: p.title, src });
   const entry = (shellData?.apps ?? []).find((a) => a.app === p.app);
-  const open = el("button", { type: "button", "aria-label": `Open ${p.title}`, title: `Open ${p.title}`, onclick: () => entry && navigate(entry.url) }, icon("external-link", 16));
+  const open = el("button", { type: "button", "aria-label": `Open ${p.title}`, title: `Open ${p.title}`, onclick: () => navigate(entry?.url ?? p.url) }, icon("external-link", 16));
   const close = el("button", { type: "button", "aria-label": `Close ${p.title}`, title: "Close", onclick: () => closeSidepanel() }, icon("x", 16));
   const grip = el("div", { class: "grip", role: "separator", "aria-orientation": "vertical", "aria-label": "Resize the side panel", tabindex: "0" });
   const resize = (w) => {
@@ -1389,11 +1388,15 @@ window.addEventListener("pageshow", (e) => {
   if (e.persisted) tabsChannel?.postMessage({ type: "hello", id: tabId });
 });
 
-// Closing the last tab while a file is being sent asks first; moving to another page does not.
+// Closing the last tab while a file is being sent asks first; moving to another page does not,
+// unless the file is only in this page's memory (too large to keep, or a browser that keeps no
+// files, such as Safari's private windows): then it ends with the page, wherever that goes.
 // Listened for only while this page sends something: at other times the listener would keep
 // pages out of Firefox's back/forward cache.
 const onUploadLeave = (e) => {
-  if (!running.size || Date.now() - leavingInSuite < 3000) return;
+  if (!running.size) return;
+  if ([...running.keys()].some((id) => memoryFiles.has(id))) return e.preventDefault();
+  if (Date.now() - leavingInSuite < 3000) return;
   const others = [...otherTabs.values()].some((t) => Date.now() - t < 25e3);
   if (!others) e.preventDefault();
 };
@@ -1549,7 +1552,7 @@ const PUBLIC_CAPABILITIES = ["navigate", "title", "toast", "theme", "locale", "r
 const CAPABILITIES = new Set(
   hostKind === "public"
     ? PUBLIC_CAPABILITIES
-    : [...PUBLIC_CAPABILITIES, "breadcrumbs", "badge", "intent", "canIntent", "companion", "leaveGuard", "session", "live", "sidepanel", "uploads", "family"],
+    : [...PUBLIC_CAPABILITIES, "breadcrumbs", "badge", "intent", "canIntent", "companion", "leaveGuard", "session", "live", "sidepanel", "uploads", "family", "assistant"],
 );
 
 function toast(message, { tone = "info" } = {}) {
@@ -1607,6 +1610,9 @@ const shell = Object.freeze({
   locale: Object.freeze({ ...(boot?.locale ?? {}) }),
   live: Object.freeze({ subscribe }),
   sidepanel,
+  /** Opens the assistant beside this page with what the person is looking at (`{entity, id,
+   *  title}`, a selection); false where there is none (the server has none, a guest). */
+  assistant: (context) => sidepanel.open({ id: "assistant", context }),
   uploads: uploadsApi,
   family,
   apps: () => loadShell().then((d) => d?.apps ?? []),

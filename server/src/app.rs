@@ -191,6 +191,7 @@ impl Hooks for App {
             apps: Arc::new(apps),
             objects,
             shell,
+            assistant: crate::assistant::Assistant::new(crate::assistant::Config::from_env()),
         };
         state.kernel.set_file_store(Arc::new(crate::mailer::StorageFiles(storage.clone())));
         let ctx = ctx.into_builder().storage(storage).build();
@@ -307,6 +308,7 @@ impl Hooks for App {
         Ok(router
             .layer(axum::middleware::from_fn(move |req, next| per_address(limiter.clone(), req, next)))
             .layer(axum::middleware::from_fn(api_no_store))
+            .layer(axum::middleware::from_fn(speculation_csp))
             .layer(axum::middleware::from_fn(screen_paths)))
     }
 
@@ -328,6 +330,7 @@ impl Hooks for App {
             .add_route(crate::coedit::routes())
             .add_route(controllers::sites::routes())
             .add_route(controllers::dav::routes())
+            .add_route(controllers::assistant::routes())
             .add_route(controllers::shell::routes())
     }
 
@@ -391,6 +394,22 @@ async fn api_no_store(req: axum::extract::Request, next: axum::middleware::Next)
     let mut res = next.run(req).await;
     if api && !res.headers().contains_key(axum::http::header::CACHE_CONTROL) {
         res.headers_mut().insert(axum::http::header::CACHE_CONTROL, axum::http::HeaderValue::from_static("no-store"));
+    }
+    res
+}
+
+/// `'inline-speculation-rules'` (the bar prerenders the next app with inline speculation rules) only
+/// for the engines that have them: Chromium's. Safari reports the unknown keyword on every page.
+async fn speculation_csp(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    let chromium =
+        req.headers().get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok()).is_some_and(|ua| ua.contains("Chrome/") || ua.contains("Chromium/"));
+    let mut res = next.run(req).await;
+    if !chromium
+        && let Some(csp) = res.headers().get("content-security-policy").and_then(|v| v.to_str().ok())
+        && csp.contains(" 'inline-speculation-rules'")
+        && let Ok(v) = axum::http::HeaderValue::from_str(&csp.replace(" 'inline-speculation-rules'", ""))
+    {
+        res.headers_mut().insert("content-security-policy", v);
     }
     res
 }

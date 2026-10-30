@@ -208,8 +208,9 @@ impl Kernel {
     /// The workspace's settings administrators may change: `timezone` (IANA name),
     /// `fiscal_year_start_month` (1-12), `require_two_factor` (everyone signs in with an
     /// authenticator app; it applies from each person's next sign-in), `require_sso` (everyone
-    /// but administrators signs in through a single sign-on provider) and `shell_v2` (the shell
-    /// and apps with interfaces of their own instead of today's web app).
+    /// but administrators signs in through a single sign-on provider), `shell_v2` (the shell
+    /// and apps with interfaces of their own instead of today's web app) and `assistant` (the
+    /// assistant, where the server has one; on unless turned off).
     pub async fn tenant_settings(&self, ctx: &Ctx) -> Result<Value> {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let settings: Value = sqlx::query_scalar("select settings from tenant where id = $1").bind(ctx.tenant).fetch_one(&mut *tx).await?;
@@ -220,6 +221,8 @@ impl Kernel {
             "require_two_factor": settings.get("require_two_factor").and_then(Value::as_bool).unwrap_or(false),
             "require_sso": settings.get("require_sso").and_then(Value::as_bool).unwrap_or(false),
             "shell_v2": settings.get("shell_v2").and_then(Value::as_bool).unwrap_or(false),
+            // The assistant, where the server has one (on unless administrators turn it off).
+            "assistant": settings.get("assistant").and_then(Value::as_bool).unwrap_or(true),
         }))
     }
 
@@ -244,7 +247,7 @@ impl Kernel {
                 }
                 // `shell_v2`: the workspace's people use the shell and apps with interfaces of their own
                 // (docs/plan/apps-ui.md §14); off, today's web app.
-                "require_two_factor" | "require_sso" | "shell_v2" => {
+                "require_two_factor" | "require_sso" | "shell_v2" | "assistant" => {
                     let on = v.as_bool().ok_or_else(|| Error::field(k.clone(), "must be true or false"))?;
                     clean.insert(k.clone(), serde_json::json!(on));
                 }

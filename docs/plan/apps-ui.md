@@ -173,8 +173,20 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     app's icon as a glyph or a tile) and draws `FamilyNav` with it; Drive's list and picker and Docs'
     lists use the kit's components and file-kind icons, and live documents show no `.fdoc`. Drive
     0.8.1 and Docs 0.2.1 carry it.
-  * Not yet: Firefox and WebKit runs (their Playwright builds are not on this machine); the Assistant
-    panel (there is no assistant to put in it yet); Picture-in-Picture from the call window.
+  * The Assistant (D2, §11.4): the bar's first side panel (and `/assistant/` on a phone), a
+    conversation with Claude that works through the MCP tools as the person, reads at once and
+    asks before every change; threads on the server, so an answer goes on across page loads and
+    any app's page follows it; `ferrum.shell.assistant(context)` opens it with what the person is
+    looking at. Off unless the operator sets `FERRUM_ASSISTANT_API_KEY`; workspaces can turn it
+    off. Checked against a stand-in for the API (reads, an allowed and a refused change, a page
+    load mid-answer, stopping, a phone) in Chromium, Firefox and WebKit, and in the server's tests.
+  * Picture-in-Picture: a call pops out into a window above every other (Document
+    Picture-in-Picture in Chromium and recent Firefox; Safari floats the speaker's video). Checked
+    in Chrome in a two-person call on LiveKit; Playwright's Firefox and WebKit builds could not
+    reach the local LiveKit, so there only the choice of method was checked.
+  * Firefox and WebKit: the whole U4a run, the assistant, and light and dark screenshots pass in
+    both. Safari's private windows keep no files in IndexedDB: an upload there goes only while its
+    page lives, and leaving that page asks first.
 
 Contents: 1 where we are · 2 goals and targets · 3 what others do · 4 rules · 5 decisions ·
 6 the person's view · 7 addresses and deployment shapes · 8 the core shell · 9 people, sessions,

@@ -585,6 +585,46 @@ The server's network policy needs no change: Ferrum never calls LiveKit.
   room's guest link (Invite guests on the room's page). Removing a guest from the event, or turning
   the room's link off, stops the link. Guests need nothing but the link; there is no waiting room.
 
+## The assistant
+
+The bar's Assistant (the sparkles button; `/assistant/` on a phone) answers questions about the
+workspace and does things in it, as the person, with exactly their permissions: it uses the tools
+AI agents get over MCP (below, "AI agents"), on Claude through Anthropic's Messages API. It reads
+at once; every change (creating, updating, submitting, cancelling, deleting records, running
+actions, installing apps) is shown to the person, who allows or refuses it before it runs.
+Conversations are kept on the server (`assistant_thread`, `assistant_message`), so an answer goes
+on when the page that asked moves to another app, and any page shows it again.
+
+It is off unless you set a key:
+
+| Setting | Value |
+|---|---|
+| `FERRUM_ASSISTANT_API_KEY` | an Anthropic API key; without it there is no assistant |
+| `FERRUM_ASSISTANT_MODEL` | default `claude-opus-5-5` |
+| `FERRUM_ASSISTANT_EFFORT` | `low`, `medium` (default), `high`, `xhigh` or `max`: how hard the model thinks, and so its speed and cost |
+| `FERRUM_ASSISTANT_URL` | default `https://api.anthropic.com`; a proxy or gateway that speaks the same API |
+| `FERRUM_ASSISTANT_FALLBACKS` | `on`/`off`; on by default for Anthropic's API with a model that has them: a request the model's safety checks decline is answered by Anthropic's recommended other model in the same call |
+| `FERRUM_ASSISTANT_CALLS_PER_HOUR` | calls to the model one person may make in an hour, default 120 (a question that reads several things is several calls) |
+
+* **What leaves the server.** The person's messages, the page they are on, and what the tools
+  read for an answer (records, reports) go to the model's API, and nothing else: the assistant
+  sees only what the person may see. Set the key only where your data policy allows it; Anthropic's
+  API terms and retention apply to what is sent.
+* **Per workspace.** Administrators turn it off for their workspace from the panel's
+  Conversations menu (or `PUT /api/admin/settings {"assistant": false}`); every replica follows
+  within 20 seconds. Guests and portal people never have it.
+* **Limits.** 25 calls to the model per message (then it stops and says so), 400 messages per
+  conversation, the hourly allowance above, one answer at a time per conversation, and tool
+  results cut at 150,000 characters (with a note to the model saying so). Rate limits and
+  overloads at the API are retried three times with backoff; a key the API refuses is logged as an
+  error and shown to people as "not set up correctly".
+* **Replicas.** An answer runs on the replica that took the message; a page on another replica
+  shows it when it is stored (it asks every few seconds). An answer whose replica went away is
+  taken as stopped after 15 minutes, and calls it left half done are reported to the model as
+  interrupted.
+* **Deleting.** People delete their conversations from the Conversations menu; removing a
+  workspace removes its conversations.
+
 ## Live documents
 
 Drive's documents (New → Document) are edited by everyone who has them open at once, with each

@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod apps;
+pub mod assistant;
 pub mod auth;
 pub mod collab;
 pub mod compat;
