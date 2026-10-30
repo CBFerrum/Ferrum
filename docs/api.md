@@ -189,6 +189,10 @@ Pages, for browsers, with the session cookie:
   records page (today's, for a workspace not on the shell) if the person may read the entity, else
   403 (404 for an entity the workspace does not have). `GET /open/{entity}` → the same for the list (an app's `shell.open` `list`). The rest of the
   query goes along.
+* `GET /{public path}/{workspace}/…` (an app's `shell.public`, such as `/drive/s/acme/{link}` and
+  `/meet/guest/acme/{link}`) → the app's page for people outside the workspace: no session, no bar,
+  `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex, nofollow`; 404 when the workspace, the app
+  or its page is not there (or the host serves another workspace). Rate-limited per address.
 * `GET /login?next=` → the sign-in page.
 * `GET /_ui/{app}/{digest}/{path}` → a file of an interface release: public, `immutable`.
 * `GET /_shell/v1/{file}` → the shell's own files (`runtime.js`, `live-worker.js`, …), the newest of
@@ -197,8 +201,11 @@ Pages, for browsers, with the session cookie:
 For the bar, with the cookie or a token:
 
 * `GET /api/shell` → `{v, shell, workspace, person, apps: [{id, app, title, description, icon,
-  color, compact, url}], create: [{app, label, entity, url}], intents: [{app, action, type, title,
-  url}], sidepanels: [{id, app, title, icon, url}], legacy}`: what the caller may use. `ETag`.
+  color, compact, url, family}], create: [{app, label, entity, url}], intents: [{app, action, type,
+  title, url}], sidepanels: [{id, app, title, icon, contextual, url}], families: [{id, title, apps}],
+  legacy}`: what the caller may use. `family` names the head of the entry's family (`families` lists
+  them, heads first). Entries into today's web app (`classic: true`) appear only for apps whose
+  installed version has no interface of its own. `ETag`.
 * `GET /api/shell/version?app=` → `{app, version, release}`: the interface release the workspace
   runs, so an open tab can tell it is outdated.
 

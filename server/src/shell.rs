@@ -16,8 +16,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -156,8 +156,9 @@ pub const SHELL_APP: &str = "shell";
 /// The core's names the shell app answers (§6).
 pub const SHELL_ROUTES: &[&str] = &["store", "admin", "account", "data"];
 
-/// Apps whose pages are still in today's web app (until their own interfaces ship, phase U4):
-/// launcher entries into `/app/` for workspaces on the shell. (app, title, path, colour).
+/// Apps whose pages were in today's web app before they brought interfaces of their own (phase
+/// U4): launcher entries into `/app/` for workspaces on the shell, while an installed version of
+/// the app has no launcher entries of its own. (app, title, path, colour).
 pub const CLASSIC_ENTRIES: &[(&str, &str, &str, &str)] = &[
     ("comms", "Mail", "/app/mail", "#2563eb"),
     ("comms", "Chat", "/app/chat", "#0891b2"),
@@ -174,6 +175,7 @@ pub struct Shell {
     pub session_ttl: Duration,
     default_slug: String,
     default_workspace: DashMap<(), (Instant, Option<Uuid>)>,
+    slugs: DashMap<String, (Instant, Option<Uuid>)>,
     workspaces: DashMap<Uuid, (Instant, Arc<WorkspaceInfo>)>,
     kinds: DashMap<(Uuid, Uuid), (Instant, String)>,
     pins: DashMap<(Uuid, String), (Instant, Option<String>)>,
@@ -192,6 +194,7 @@ impl Shell {
             session_ttl: Duration::from_secs(u64::from(settings.session_days.clamp(1, 400)) * 86_400),
             default_slug: settings.default_workspace.trim().to_lowercase(),
             default_workspace: DashMap::new(),
+            slugs: DashMap::new(),
             workspaces: DashMap::new(),
             kinds: DashMap::new(),
             pins: DashMap::new(),
@@ -219,6 +222,30 @@ impl Shell {
             Err(e) => return Err(e),
         };
         self.default_workspace.insert((), (Instant::now(), id));
+        Ok(id)
+    }
+
+    /// The workspace a slug names (public pages carry it in their path), cached briefly. Only
+    /// slugs that can exist are looked up.
+    pub async fn workspace_by_slug(&self, slug: &str) -> Result<Option<Uuid>> {
+        let slug = slug.to_ascii_lowercase();
+        if slug.is_empty() || slug.len() > 63 || !slug.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') {
+            return Ok(None);
+        }
+        if let Some(e) = self.slugs.get(&slug).filter(|e| e.0.elapsed() < TTL) {
+            return Ok(e.1);
+        }
+        let id = match self.kernel.tenant_by_slug(&slug).await {
+            Ok((id, _)) => Some(id),
+            Err(Error::NotFound(_)) => None,
+            Err(e) => return Err(e),
+        };
+        // ponytail: one entry per slug asked for, cleared when it grows; a size-bounded LRU if
+        // someone sprays made-up slugs (the public limiter slows that down first).
+        if self.slugs.len() > 10_000 {
+            self.slugs.clear();
+        }
+        self.slugs.insert(slug, (Instant::now(), id));
         Ok(id)
     }
 
@@ -596,6 +623,88 @@ pub fn routes_of(app: &ShellApp) -> serde_json::Map<String, Value> {
     app.manifest.routes().into_iter().map(|(r, _)| (r.clone(), json!(format!("/{r}/")))).collect()
 }
 
+/// Launcher entries into today's web app for installed apps that have none of their own yet.
+pub fn classic_entries(apps: &[ShellApp]) -> Vec<Value> {
+    CLASSIC_ENTRIES
+        .iter()
+        .filter(|(id, ..)| apps.iter().any(|a| a.id == *id && a.items("shell.app").next().is_none()))
+        .map(|(id, title, path, color)| {
+            json!({"id": format!("classic-{}", title.to_lowercase().replace(' ', "-")), "app": id, "title": title, "color": color, "compact": false, "url": path, "classic": true})
+        })
+        .collect()
+}
+
+/// Families (§11.5): an app with an interface of its own heads one when it names one (`ui.family`)
+/// or when its add-ons bring interfaces too; they share its navigation and its launcher group.
+/// Returns each member's family (app → head) and the families in install order.
+pub fn families(apps: &[ShellApp]) -> (BTreeMap<String, String>, Vec<Value>) {
+    fn with_ui<'a>(apps: &'a [ShellApp], id: &str) -> Option<&'a ShellApp> {
+        apps.iter().find(|a| a.id == id && a.manifest.ui.is_some() && a.items("shell.app").next().is_some())
+    }
+    // The top-most ancestor with an interface, among this workspace's apps.
+    fn head<'a>(apps: &'a [ShellApp], a: &'a ShellApp) -> &'a ShellApp {
+        let mut at = a;
+        let mut seen = vec![a.id.as_str()];
+        while let Some(parent) = at.manifest.parent.as_deref().and_then(|p| with_ui(apps, p)) {
+            if seen.contains(&parent.id.as_str()) {
+                break;
+            }
+            seen.push(parent.id.as_str());
+            at = parent;
+        }
+        at
+    }
+    let mut members: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for a in apps.iter().filter(|a| with_ui(apps, &a.id).is_some()) {
+        let h = head(apps, a);
+        if !order.contains(&h.id) {
+            order.push(h.id.clone());
+        }
+        members.entry(h.id.clone()).or_default().push(a.id.clone());
+    }
+    let mut of = BTreeMap::new();
+    let mut list = Vec::new();
+    for id in order {
+        let Some(h) = with_ui(apps, &id) else { continue };
+        let ids = members.remove(&id).unwrap_or_default();
+        let named = h.manifest.ui.as_ref().and_then(|u| u.family.clone());
+        if named.is_none() && ids.len() < 2 {
+            continue;
+        }
+        for m in &ids {
+            of.insert(m.clone(), id.clone());
+        }
+        list.push(json!({"id": id, "title": named.unwrap_or_else(|| h.manifest.name.clone()), "apps": ids}));
+    }
+    (of, list)
+}
+
+/// The pages anyone with a link may open (`shell.public`) of the apps compiled into this server:
+/// (path, app), longest path first. Store apps get theirs with origins of their own (U8).
+fn public_pages() -> &'static [(String, String)] {
+    static PAGES: OnceLock<Vec<(String, String)>> = OnceLock::new();
+    PAGES.get_or_init(|| {
+        let mut out: Vec<(String, String)> =
+            crate::appmgr::compiled_natives().iter().flat_map(|m| m.public_paths().into_iter().map(|p| (p.to_string(), m.id.clone()))).collect();
+        out.sort_by_key(|(p, _)| std::cmp::Reverse(p.len()));
+        out
+    })
+}
+
+/// The public page a path (without its leading `/`) leads to: (app, page path, the rest).
+pub fn public_page(path: &str) -> Option<(&'static str, &'static str, &str)> {
+    match_public(public_pages(), path)
+}
+
+fn match_public<'a, 'p>(pages: &'p [(String, String)], path: &'a str) -> Option<(&'p str, &'p str, &'a str)> {
+    pages.iter().find_map(|(p, app)| {
+        let rest = path.strip_prefix(p.as_str())?;
+        let rest = if rest.is_empty() { rest } else { rest.strip_prefix('/')? };
+        Some((app.as_str(), p.as_str(), rest))
+    })
+}
+
 // ───────────────────────── pages ─────────────────────────
 
 /// Escapes text for HTML.
@@ -637,34 +746,79 @@ pub fn bootstrap(ws: &WorkspaceInfo, host: &str, ctx: &Ctx, kind: &str, state: &
     })
 }
 
+/// The bootstrap of a public page (§7.3): no person, no live channel; the workspace by name.
+pub fn public_bootstrap(ws: &WorkspaceInfo, host: &str, timezone: &str, app: Value, page: &str) -> Value {
+    json!({
+        "v": 1,
+        "workspace": {"id": null, "slug": ws.slug, "name": ws.name, "host": host},
+        "person": null,
+        "app": app,
+        "host": {"kind": "public", "shell": SHELL_VERSION},
+        "api": {"base": "/api/", "live": null, "auth": "none"},
+        "locale": {"language": "en", "timezone": timezone, "dir": "ltr"},
+        "theme": {"appearance": "system", "hash": theme_hash()},
+        "company": null,
+        "flags": {},
+        "public": page,
+    })
+}
+
+/// A public page: the app's entry template with the bootstrap and runtime but no bar, kept out
+/// of search engines, and sending no referrer (its address holds the link's secret).
+pub fn public_entry_page(entry: &EntryTemplate, bootstrap: &Value, csp: &str) -> Response {
+    let mut res = page_response(StatusCode::OK, entry.render(&shell_head(bootstrap), ""), csp);
+    let h = res.headers_mut();
+    h.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    h.insert("x-robots-tag", HeaderValue::from_static("noindex, nofollow"));
+    res
+}
+
 /// The Content-Security-Policy of an app's pages: its own files and the host, plus the origins
 /// its manifest names (taken from operator settings where it says so).
 pub fn csp(manifest: Option<&AppManifest>, settings: &Value) -> String {
+    csp_with(manifest, settings, |name| std::env::var(name).ok())
+}
+
+/// [`csp`], reading the server's settings (`env:FERRUM_…`) through `env`.
+fn csp_with(manifest: Option<&AppManifest>, settings: &Value, env: impl Fn(&str) -> Option<String>) -> String {
     let mut extra: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     if let Some(ui) = manifest.and_then(|m| m.ui.as_ref()) {
         for (kind, origins) in &ui.csp {
             for o in origins {
-                let origin = match o.strip_prefix("setting:") {
-                    Some(key) => settings.get(key).and_then(Value::as_str).and_then(origin_of),
-                    None => Some(o.clone()),
+                // A server setting may hold several addresses (spaces or commas between them).
+                let found: Vec<String> = if let Some(name) = o.strip_prefix("env:") {
+                    env(name).map(|v| v.split([' ', ',']).filter_map(origin_of).collect()).unwrap_or_default()
+                } else if let Some(key) = o.strip_prefix("setting:") {
+                    settings.get(key).and_then(Value::as_str).and_then(origin_of).into_iter().collect()
+                } else {
+                    vec![o.clone()]
                 };
-                if let Some(origin) = origin {
-                    extra.entry(kind.as_str()).or_default().push(origin);
+                let list = extra.entry(kind.as_str()).or_default();
+                for origin in found {
+                    // A WebSocket server is asked over HTTP too (LiveKit's client checks why a
+                    // connection was refused there).
+                    let http = (kind == "connect").then(|| origin.strip_prefix("ws").map(|rest| format!("http{rest}"))).flatten();
+                    for v in std::iter::once(origin).chain(http) {
+                        if !list.contains(&v) {
+                            list.push(v);
+                        }
+                    }
                 }
             }
         }
     }
-    let more = |kind: &str| extra.get(kind).map(|v| format!(" {}", v.join(" "))).unwrap_or_default();
+    let more = |kind: &str| extra.get(kind).filter(|v| !v.is_empty()).map(|v| format!(" {}", v.join(" "))).unwrap_or_default();
     format!(
         "default-src 'self'; script-src 'self' 'inline-speculation-rules'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:{}; \
          font-src 'self' data:{}; media-src 'self' blob:{}; connect-src 'self'{}; frame-src 'self'{}; worker-src 'self' blob:{}; \
-         manifest-src 'self'; frame-ancestors 'self'; base-uri 'none'; object-src 'none'; form-action 'self'",
+         manifest-src 'self'; frame-ancestors 'self'; base-uri 'none'; object-src 'none'; form-action 'self'{}",
         more("img"),
         more("font"),
         more("media"),
         more("connect"),
         more("frame"),
-        more("worker")
+        more("worker"),
+        more("form")
     )
 }
 
@@ -791,10 +945,93 @@ mod tests {
         )
         .unwrap();
         let p = csp(Some(&m), &json!({"meet_url": "wss://meet.acme.example:7880/rtc"}));
-        assert!(p.contains("connect-src 'self' wss://meet.acme.example:7880 https://api.example.com;"), "{p}");
+        assert!(p.contains("connect-src 'self' wss://meet.acme.example:7880 https://meet.acme.example:7880 https://api.example.com;"), "{p}");
         assert!(p.contains("script-src 'self' 'inline-speculation-rules';") && p.contains("frame-ancestors 'self'") && p.contains("base-uri 'none'"));
         let p = csp(Some(&m), &json!({"meet_url": "javascript:alert(1)"}));
         assert!(p.contains("connect-src 'self' https://api.example.com;"), "a setting that is no origin is left out: {p}");
+        // Server settings: several addresses, WebSockets asked over HTTP too, forms.
+        let m = AppManifest::parse(
+            "id: drive\nname: Drive\nversion: 1.0.0\npublisher: cbferrum\nsummary: s\ncategories: [productivity]\nruntime: native\nplatform: \">=0.3.2\"\n\
+             ui:\n  dist: ui/dist\n  csp:\n    frame: [\"env:FERRUM_OFFICE_ORIGIN\", \"env:FERRUM_EDITORS_URL\"]\n    form: [\"env:FERRUM_OFFICE_ORIGIN\"]\n    connect: [\"env:FERRUM_MEET_URL\"]\n",
+        )
+        .unwrap();
+        let env = |name: &str| match name {
+            "FERRUM_OFFICE_ORIGIN" => Some("https://office.acme.example/ http://localhost:9980".to_string()),
+            "FERRUM_MEET_URL" => Some("wss://meet.acme.example:7880".to_string()),
+            _ => None,
+        };
+        let p = csp_with(Some(&m), &Value::Null, env);
+        assert!(p.contains("frame-src 'self' https://office.acme.example http://localhost:9980;"), "{p}");
+        assert!(p.ends_with("form-action 'self' https://office.acme.example http://localhost:9980"), "{p}");
+        assert!(p.contains("connect-src 'self' wss://meet.acme.example:7880 https://meet.acme.example:7880;"), "{p}");
+        assert!(csp_with(Some(&m), &Value::Null, |_| None).ends_with("form-action 'self'"), "nothing set, nothing added");
+    }
+
+    fn app(yaml: &str) -> ShellApp {
+        let m = AppManifest::parse(yaml).unwrap();
+        ShellApp { id: m.id.clone(), version: m.version.to_string(), manifest: Arc::new(m), bundled: false }
+    }
+
+    fn manifest(id: &str, extra: &str) -> String {
+        format!(
+            "id: {id}\nname: {id}\nversion: 1.0.0\npublisher: cbferrum\nsummary: s\ncategories: [productivity]\nruntime: native\nplatform: \">=0.3.2\"\n{extra}"
+        )
+    }
+
+    #[test]
+    fn families_group_apps_with_their_add_ons() {
+        let drive = app(&manifest(
+            "drive",
+            "ui:\n  dist: ui/dist\n  family: Workspace\ncontributes:\n  shell.app:\n    - {id: drive, route: drive, title: Drive}\n    - {id: sheets, route: sheets, title: Sheets}\n",
+        ));
+        let docs = app(&manifest(
+            "docs",
+            "requires: {drive: \">=0.7\"}\nparent: drive\nui:\n  dist: ui/dist\ncontributes:\n  shell.app:\n    - {id: docs, route: docs, title: Docs}\n",
+        ));
+        // Drawn by Drive through its extension point: no interface, no place in the family.
+        let editors = app(&manifest("drive-editors", "requires: {drive: \">=0.7\"}\nparent: drive\n"));
+        let comms = app(&manifest("comms", "ui:\n  dist: ui/dist\ncontributes:\n  shell.app:\n    - {id: mail, route: mail, title: Mail}\n"));
+        let (of, list) = families(&[drive.clone(), docs.clone(), editors, comms.clone()]);
+        assert_eq!(of.get("docs").map(String::as_str), Some("drive"));
+        assert_eq!(of.get("drive").map(String::as_str), Some("drive"));
+        assert!(!of.contains_key("drive-editors") && !of.contains_key("comms"), "{of:?}");
+        assert_eq!(list, vec![json!({"id": "drive", "title": "Workspace", "apps": ["drive", "docs"]})]);
+        // A head that names its family has one alone; an app that names none and has no add-ons, none.
+        let (_, list) = families(&[drive, comms.clone()]);
+        assert_eq!(list, vec![json!({"id": "drive", "title": "Workspace", "apps": ["drive"]})]);
+        // Docs where Drive has no interface (an older Drive): on its own.
+        let (of, list) = families(&[docs, comms]);
+        assert!(of.is_empty() && list.is_empty(), "{of:?} {list:?}");
+    }
+
+    #[test]
+    fn public_pages_match_whole_segments() {
+        let pages = vec![("meet/guest".to_string(), "comms".to_string()), ("drive/s".to_string(), "drive".to_string())];
+        assert_eq!(match_public(&pages, "drive/s/acme/tok"), Some(("drive", "drive/s", "acme/tok")));
+        assert_eq!(match_public(&pages, "drive/s"), Some(("drive", "drive/s", "")));
+        assert_eq!(match_public(&pages, "drive/shared/x"), None, "whole segments, not a prefix");
+        assert_eq!(match_public(&pages, "drive/x/s"), None);
+        assert_eq!(match_public(&pages, "meet/guest/acme/k"), Some(("comms", "meet/guest", "acme/k")));
+    }
+
+    #[test]
+    fn public_pages_know_no_person() {
+        let ws = WorkspaceInfo { id: Uuid::nil(), slug: "acme".into(), name: "Acme".into(), status: "active".into(), shell_v2: false };
+        let b = public_bootstrap(&ws, "erp.acme.com", "Asia/Kolkata", json!({"id": "drive"}), "drive/s");
+        assert!(b["person"].is_null() && b["workspace"]["id"].is_null() && b["api"]["live"].is_null());
+        assert_eq!((b["host"]["kind"].as_str(), b["public"].as_str(), b["workspace"]["slug"].as_str()), (Some("public"), Some("drive/s"), Some("acme")));
+        let entry = ferrum_apps::ui::prepare(
+            "drive",
+            BTreeMap::from([
+                ("index.html".to_string(), b"<!doctype html><html><head><script type=\"module\" src=\"./a.js\"></script></head><body></body></html>".to_vec()),
+                ("a.js".to_string(), b"1".to_vec()),
+            ]),
+        )
+        .unwrap()
+        .entry;
+        let res = public_entry_page(&entry, &b, "default-src 'self'");
+        assert_eq!(res.headers()["referrer-policy"], "no-referrer");
+        assert_eq!(res.headers()["x-robots-tag"], "noindex, nofollow");
     }
 
     #[test]

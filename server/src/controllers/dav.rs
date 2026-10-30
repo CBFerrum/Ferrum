@@ -75,7 +75,7 @@ async fn dav(
     let body = read_body(&headers, body, site.max_body_for(method.as_str(), &path)).await?;
     let tenant = ctx.tenant;
     let req = request(tenant, Some(ctx), method, &uri, path, query, &headers, body)?;
-    Ok(respond(site.handle(&st.kernel, req).await?))
+    Ok(respond(super::sites::handle(&st.kernel, site, req).await?))
 }
 
 /// Where apps look first (RFC 6764).

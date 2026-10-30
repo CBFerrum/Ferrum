@@ -8,11 +8,12 @@ use axum::body::{Body, Bytes};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
-use ferrum_kernel::{Ctx, Error, SiteRequest, SiteResponse};
+use ferrum_kernel::{Ctx, Error, Kernel, Site, SiteRequest, SiteResponse};
 use loco_rs::app::AppContext;
 use loco_rs::controller::Routes;
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// No package may accept more than this per request. Each route's own limit
@@ -64,6 +65,18 @@ pub(crate) fn request(
     })
 }
 
+/// Runs a site's handler. A request that changes something finishes once its body is here, even
+/// if the browser goes away meanwhile (a page left for another app's): never half an upload, never
+/// stored bytes that no record holds. Reads stop with their request.
+pub(crate) async fn handle(kernel: &Arc<Kernel>, site: Arc<dyn Site>, req: SiteRequest) -> Result<SiteResponse, ApiError> {
+    if matches!(req.method.as_str(), "GET" | "HEAD" | "OPTIONS") {
+        return Ok(site.handle(kernel, req).await?);
+    }
+    let k = kernel.clone();
+    let done = tokio::spawn(async move { site.handle(&k, req).await }).await.map_err(|e| ApiError(Error::internal(format!("the request stopped: {e}"))))?;
+    Ok(done?)
+}
+
 pub(crate) fn respond(r: SiteResponse) -> Response {
     let mut resp = (StatusCode::from_u16(r.status).unwrap_or(StatusCode::OK), r.body).into_response();
     if let Ok(ct) = HeaderValue::from_str(&r.content_type) {
@@ -96,7 +109,7 @@ async fn app(
     let tenant = ctx.tenant;
     let body = read_body(&headers, body, site.max_body_for(method.as_str(), &path)).await?;
     let req = request(tenant, Some(ctx), method, &uri, path, query, &headers, body)?;
-    Ok(respond(site.handle(&st.kernel, req).await?))
+    Ok(respond(handle(&st.kernel, site, req).await?))
 }
 
 async fn public(
@@ -119,7 +132,7 @@ async fn public(
     let site = site.ok_or_else(|| ApiError(Error::NotFound(format!("package {package}"))))?;
     let body = read_body(&headers, body, site.max_body_for(method.as_str(), &path)).await?;
     let req = request(tenant, None, method, &uri, path, query, &headers, body)?;
-    Ok(respond(site.handle(&st.kernel, req).await?))
+    Ok(respond(handle(&st.kernel, site, req).await?))
 }
 
 pub fn routes() -> Routes {
