@@ -333,8 +333,9 @@ pub struct Reference {
 }
 
 impl Catalog {
-    /// Names in entities' forms that neither the entity nor any package's overlay defines
-    /// (`Entity.field`): typos, since a form may place the fields other packages add (§13).
+    /// Names in entities' forms and list columns that neither the entity nor any package's overlay
+    /// defines (`Entity.field`): typos, since a layout may place the fields other packages add
+    /// (§13).
     pub fn unknown_form_fields(&self) -> Vec<String> {
         let mut added: HashSet<(&str, &str)> = HashSet::new();
         for p in self.packages.values() {
@@ -348,7 +349,8 @@ impl Catalog {
         }
         let mut out = Vec::new();
         for (name, (_, e)) in &self.entities {
-            for f in e.form.iter().flat_map(|s| &s.fields) {
+            let list = e.list.columns.iter().filter(|c| !crate::RESERVED_FIELDS.contains(&c.as_str()));
+            for f in e.form.iter().flat_map(|s| &s.fields).chain(list) {
                 if !e.fields.iter().any(|x| &x.name == f) && !added.contains(&(name.as_str(), f.as_str())) {
                     out.push(format!("{name}.{f}"));
                 }

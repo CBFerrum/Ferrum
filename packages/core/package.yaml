@@ -1,7 +1,7 @@
 package: core
 version: 0.2.0
 label: Core
-description: What every app needs — companies, currencies with their exchange rates, units, projects.
+description: What every app needs — companies, currencies with their exchange rates, units.
 
 seed:
   - entity: Currency

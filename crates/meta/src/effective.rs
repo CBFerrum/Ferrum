@@ -483,12 +483,14 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         }
     }
 
-    // An entity's layout may place the fields other packages add to it, such as the columns they
-    // take over (§13); where such a package is not installed its fields drop out, and so do
-    // sections left without fields. (`Catalog::unknown_form_fields` finds names nothing adds.)
+    // An entity's layout (form and list) may place the fields other packages add to it, such as
+    // the columns they take over (§13); where such a package is not installed its fields drop
+    // out, and so do sections left without fields. (`Catalog::unknown_form_fields` finds names
+    // nothing adds.)
     for b in building.values_mut() {
-        let known: HashSet<&str> = b.def.fields.iter().map(|f| f.name.as_str()).collect();
+        let known: HashSet<&str> = b.def.fields.iter().map(|f| f.name.as_str()).chain(crate::RESERVED_FIELDS.iter().copied()).collect();
         let keep = |f: &String| known.contains(f.as_str());
+        b.def.list.columns.retain(|c| keep(c));
         if b.def.form.iter().any(|s| s.fields.iter().any(|f| !keep(f))) {
             let keep: Vec<Vec<String>> = b.def.form.iter().map(|s| s.fields.iter().filter(|f| keep(f)).cloned().collect()).collect();
             let mut sections = std::mem::take(&mut b.def.form).into_iter().zip(keep).collect::<Vec<_>>();
