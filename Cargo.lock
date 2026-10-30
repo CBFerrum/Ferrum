@@ -2273,8 +2273,8 @@ dependencies = [
 
 [[package]]
 name = "ferrum-app-comms"
-version = "0.5.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-comms?branch=main#7c964cc8992c8a7556f34c29517876c20798a6f8"
+version = "0.6.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-comms?branch=main#4d788396e3fd51d220d02da640adcc08d18be0bf"
 dependencies = [
  "ammonia",
  "async-imap",
@@ -2291,6 +2291,7 @@ dependencies = [
  "lettre",
  "mail-parser",
  "minijinja",
+ "quick-xml 0.42.0",
  "rand 0.9.5",
  "regex",
  "rust_decimal",
@@ -2327,7 +2328,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-drive"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-drive?branch=main#c0d3c284bcbb1c322cac9813c79e497bb0e8a7b4"
+source = "git+https://github.com/CBFerrum/ferrum-app-drive?branch=main#b63133a9a5507ab0f9962b58feee8070de156eff"
 dependencies = [
  "async-trait",
  "base64 0.22.1",

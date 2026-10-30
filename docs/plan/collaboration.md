@@ -19,10 +19,11 @@ platform) and [browser-editors.md](browser-editors.md).
 | Who is here now | Only the holder of an editor lock | **C1** |
 | Notifications in the bell and by mail | The bell with live updates. Shares notify, but a Drive item in the bell opens a form only administrators may see. | **C1** |
 | Comments, mentions, to-dos and followers on business records | Built (kernel collaboration) | |
-| Chat, mail, shared calendars | Built (Comms) | C5: calendar and contacts sync |
+| Chat, mail, shared calendars | Built (Comms) | |
+| Calendar and contacts on phones and computers | Built (C5): CalDAV and CardDAV | |
 | Video meetings | Built (C4): LiveKit, from chat channels, calendar events and Meet | |
 | Forms | Built (ferrum-app-forms) | |
-| People outside the workspace | Public links only | C5 |
+| People outside the workspace | Built (C5): guests by link, in meetings and Drive | |
 
 ## 2. Phases
 
@@ -130,8 +131,47 @@ progress, and guests from outside the workspace (C5).
 
 ### C5. Beyond the workspace
 
-* Calendar and contacts sync over CalDAV and CardDAV.
-* Guests: people outside the workspace, signed in by link and limited to what is shared with them.
+**Status, 30 October 2026: built** (Comms 0.6.0, Drive 0.5.0, the platform's app passwords and
+`/api/dav`; the web app's calendar-apps dialog, guest pages and Drive's link page). Checked:
+* a real CalDAV client (python-caldav 2.1.2): discovery from the server's root, the calendar, an
+  event created, found by date, read, changed and deleted;
+* CardDAV as DAVx⁵ walks it: `/.well-known/carddav`, the principal, the address book home, tags
+  and ETags, cards by multiget; a CRM contact with two emails, typed phones, company and title;
+* Comms' tests: an organizer's app, a guest's answer from theirs, stale answers kept, a moved
+  occurrence detached once, reports, refusals, address books; meeting guest links signed, revoked
+  and renewed;
+* Drive's tests: a guest's link mailed, replaced, refused for deactivated colleagues, shown in the
+  external sharing report.
+
+**Calendar and contacts apps (CalDAV, CardDAV).** People add their Ferrum account to the calendar
+and contacts apps of their phones and computers: Apple Calendar and Contacts, Thunderbird, DAVx⁵
+on Android, Outlook through a CalDAV add-in.
+* **Signing in.** An app password: an API key that works only for these apps (scope `dav`), made
+  and revoked in the web app. The apps send it with the person's email over HTTP Basic.
+* **Platform.** Ferrum serves `/api/dav/{package}/…`: it checks the app password and hands the
+  request to the package as the signed-in person. `/.well-known/caldav` and
+  `/.well-known/carddav` lead to Comms.
+* **Calendar.** One calendar per person: the events they organize and those they are invited to
+  and have not declined, from the last 400 days and every repeating one.
+  * Organizers create, change and delete events from their apps; Ferrum sends the invitations,
+    as it does from the web app.
+  * A guest's answer (accept, maybe, decline) becomes their RSVP; deleting an invitation declines
+    it.
+  * A change to one occurrence of a repeating event becomes an event of its own, and the
+    occurrence leaves the series: Ferrum has no changes to single occurrences.
+* **Contacts.** Two address books, read-only: Colleagues (the people of the workspace) and
+  Contacts (the CRM contacts the person may read, where CRM is installed).
+* **Sync** by collection tags and ETags. Not built: sync-collection reports, scheduling inboxes
+  (Ferrum sends invitations itself), more than one calendar.
+
+**Guests.** People outside the workspace, by link, limited to what is shared with them.
+* **Meetings.** An event's outside guests get a personal link in their invitation, and a room has
+  a guest link to share. Guests type their name and join as "Name (guest)". Removing a guest from
+  the event, or turning the room's link off, stops the link.
+* **Drive.** Sharing with an email outside the workspace sends that person a personal link to the
+  item, under the workspace's rules for public links (whether allowed, expiry, password). The
+  Share dialog lists them as guests and removes them.
+* Not built: guest accounts, chat with guests, a lobby where guests wait to be let in.
 
 ## 3. Not building
 
