@@ -72,6 +72,9 @@ pub struct Installation {
     pub installed_by: Option<Uuid>,
     pub installed_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    /// The app whose installation brought this one in (it required it); `None` when installed for
+    /// itself.
+    pub brought_by: Option<String>,
 }
 
 const RELEASE_COLUMNS: &str = "id, app_id, version, runtime, manifest, digest, signatures, source, bundle_key, packages, plugin_sha256, status, \
@@ -236,7 +239,7 @@ impl Kernel {
     pub async fn installations(&self, tenant: Uuid) -> Result<Vec<Installation>> {
         let mut tx = self.db.system_tenant_tx(tenant).await?;
         let rows = sqlx::query_as::<_, Installation>(
-            "select app_id, version, enabled, consent_digest, plugin_id, installed_by, installed_at, updated_at from tenant_app where tenant_id = $1 order by app_id",
+            "select app_id, version, enabled, consent_digest, plugin_id, installed_by, installed_at, updated_at, brought_by from tenant_app where tenant_id = $1 order by app_id",
         )
         .bind(tenant)
         .fetch_all(&mut *tx)
@@ -263,6 +266,19 @@ impl Kernel {
         .execute(&mut *tx)
         .await?;
         crate::audit::record(&mut tx, ctx, "App", Uuid::nil(), "install", None, json!({"app": app_id, "version": version, "consent": consent})).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Records which app's installation brought `app_id` in (`None`: installed for itself).
+    pub async fn set_brought_by(&self, ctx: &Ctx, app_id: &str, by: Option<&str>) -> Result<()> {
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        sqlx::query("update tenant_app set brought_by = $3 where tenant_id = $1 and app_id = $2")
+            .bind(ctx.tenant)
+            .bind(app_id)
+            .bind(by)
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
         Ok(())
     }

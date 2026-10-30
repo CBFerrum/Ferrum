@@ -187,6 +187,8 @@ struct Installed {
     installed_at: chrono::DateTime<chrono::Utc>,
     /// Recorded in `tenant_app` (native apps installed with the workspace may not be).
     row: bool,
+    /// The app whose installation brought this one in.
+    brought_by: Option<String>,
 }
 
 struct Workspace {
@@ -725,7 +727,19 @@ impl AppManager {
         tx.commit().await?;
         let mut apps: BTreeMap<String, Installed> = rows
             .into_iter()
-            .map(|i| (i.app_id, Installed { version: i.version, enabled: i.enabled, plugin_id: i.plugin_id, installed_at: i.installed_at, row: true }))
+            .map(|i| {
+                (
+                    i.app_id,
+                    Installed {
+                        version: i.version,
+                        enabled: i.enabled,
+                        plugin_id: i.plugin_id,
+                        installed_at: i.installed_at,
+                        row: true,
+                        brought_by: i.brought_by,
+                    },
+                )
+            })
             .collect();
         // Native apps whose packages the workspace already has (installed when it was created).
         for m in &self.natives {
@@ -733,7 +747,10 @@ impl AppManager {
                 continue;
             }
             let at = pkgs.iter().filter(|(n, ..)| m.packages.contains(n)).map(|(.., t)| *t).min().unwrap_or_else(chrono::Utc::now);
-            apps.insert(m.id.clone(), Installed { version: m.version.to_string(), enabled: true, plugin_id: None, installed_at: at, row: false });
+            apps.insert(
+                m.id.clone(),
+                Installed { version: m.version.to_string(), enabled: true, plugin_id: None, installed_at: at, row: false, brought_by: None },
+            );
         }
         Ok(Workspace { apps, packages: pkgs.into_iter().map(|(n, v, _)| (n, v)).collect(), schema })
     }
@@ -1312,6 +1329,14 @@ impl AppManager {
                 return Err(e.into());
             }
         }
+        // What this installation brought in for itself is marked so; the app asked for is the
+        // administrator's own choice, even if something brought it in before.
+        for s in steps.iter().filter(|s| s.action == StepAction::Install && s.id != id && !ws.apps.contains_key(&s.id)) {
+            self.kernel.set_brought_by(ctx, &s.id, Some(id)).await?;
+        }
+        if ws.apps.get(id).is_some_and(|i| i.brought_by.is_some()) {
+            self.kernel.set_brought_by(ctx, id, None).await?;
+        }
         tracing::info!(tenant = %ctx.tenant, app = %id, version = %plan.app.summary.version, consent = %plan.digest, "app installed");
         Ok(plan)
     }
@@ -1439,6 +1464,29 @@ impl AppManager {
             }
         }
         self.kernel.set_app_enabled(ctx, id, enabled).await
+    }
+
+    /// The apps `removed` brought in that nothing installed needs any more, in an order they can be
+    /// removed in (those requiring others first): what removing a suite offers to remove too.
+    pub async fn leftovers(&self, tenant: Uuid, removed: &str) -> Result<Vec<String>> {
+        let ws = self.workspace(tenant).await?;
+        let mut left: Vec<String> = ws.apps.iter().filter(|(_, i)| i.brought_by.as_deref() == Some(removed)).map(|(a, _)| a.clone()).collect();
+        let mut order = Vec::new();
+        loop {
+            let mut next = None;
+            for a in &left {
+                // Required only by apps that are themselves on their way out (or by none).
+                let users = self.dependents(tenant, &ws, a, false).await?;
+                if users.iter().all(|u| order.contains(u)) {
+                    next = Some(a.clone());
+                    break;
+                }
+            }
+            let Some(a) = next else { break };
+            left.retain(|x| x != &a);
+            order.push(a);
+        }
+        Ok(order)
     }
 
     /// Removes an app from the workspace: its packages (and with `delete_data`, when the app
