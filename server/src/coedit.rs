@@ -961,7 +961,11 @@ impl Conn<'_> {
                             let _ = sink.send(close(4401, "session expired")).await;
                             return;
                         }
-                        // Checked again next minute; meanwhile the access stands.
+                        Err(ApiError(e)) if e.status() == 403 => {
+                            let _ = sink.send(close(4403, &e.to_string())).await;
+                            return;
+                        }
+                        // Busy or failing (429, 5xx): checked again next minute; meanwhile the access stands.
                         Err(ApiError(e)) => {
                             tracing::warn!(doc = %self.room.key.doc, "coedit recheck: {e}");
                             true
