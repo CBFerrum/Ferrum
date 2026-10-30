@@ -306,8 +306,8 @@ creates blank documents, sheets and presentations and lists recent files; templa
 **Status, 30 October 2026: built.** Drive 0.4.0 with its add-on Browser editors, Ferrum's
 `deploy/editors`, and the web app's editor page. Checked end to end in Chrome: a workbook opened from
 Drive, edited and saved as a version. The editor server is tested in Chromium, Firefox and WebKit in
-CI. Still to come: DeckCraft, the fidelity note and the upstream pull requests
-([browser-editors.md](browser-editors.md) §8, §9). Spike S3
+CI. Fidelity on 25 public files: [browser-editors-fidelity.md](browser-editors-fidelity.md). Still
+to come: DeckCraft and the upstream pull requests ([browser-editors.md](browser-editors.md) §8). Spike S3
 ([spike-s3-artcraft.md](spike-s3-artcraft.md)) found go without a fork.
 * An editor server the operator runs, on an origin of its own, serves the official, unmodified web
   builds of GridCraft, WordCraft and PdfCraft, and a small Ferrum relay.

@@ -5,8 +5,8 @@ workspace plugins. It builds on [platform.md](platform.md) §3 (plugin platform 
 over WOPI, built) and spike S3 ([spike-s3-artcraft.md](spike-s3-artcraft.md)).
 
 **Status, 30 October 2026: built** (Drive 0.4.0 with the add-on, Ferrum `deploy/editors` and the
-web app's editor page), except DeckCraft, the fidelity note and the upstream pull requests (§8,
-§9). The sections below describe what was built; where it differs from the first draft of this
+web app's editor page), with its fidelity note. DeckCraft and the upstream pull requests (§8) are
+still to come. The sections below describe what was built; where it differs from the first draft of this
 plan, they say so.
 
 ## 1. The request, and where each part stands
@@ -303,11 +303,18 @@ Pull requests to the ArtCraft repositories:
 2. **All four:** a host-initiated save (`<app>:request-save`, answered with `<app>:save`), so Ferrum
    can show a Save button and save before closing.
 3. **All four:** a read-only flag for viewers.
+4. **WordCraft and PdfCraft:** honour `?chrome=none` as GridCraft does. They show their whole frame
+   (File, Open, New, Share, community links) when a host owns the files
+   ([browser-editors-fidelity.md](browser-editors-fidelity.md)).
+5. **All four:** report a file they could not open (`<app>:failed`), rather than staying on their
+   start page.
 
 Until these land:
 * the editor page says "Ctrl/⌘+S saves to Drive";
 * read-only is enforced by refusing saves and offering "Save a copy";
 * PPTX stays with the online editor.
+* Only a file saved under the opened name is a new version of it. Anything else an editor hands
+  back becomes a new file beside it.
 
 If a change is declined, Ferrum lives with the gap. A modified build would have to drop the marks,
 and it would become ours to maintain.
@@ -321,8 +328,8 @@ and it would become ours to maintain.
 | 3 | ferrum-app-drive `addons/editors/` | The add-on: manifest, contributions, store listing without the ArtCraft name or logos | It installs under Drive, and removing Drive while it is installed is refused |
 | 4 | Ferrum-Frontend | Open and Open with; the editor page (frame, port, dirty, lock refresh, save, conflicts, read-only, failures); the default editor per type in Drive's settings; `frame-src` | Playwright tests for every row of §5 the browser decides, in the three engines |
 | 5 | Ferrum `deploy/` and docs | `editors.yml`, the Kubernetes component, a "Browser editors" section in docs/operations.md | The Compose smoke test runs with the editor server; the kind test checks its headers |
-| 6 | A fidelity note in docs/plan | Ten real files per type (styles, charts, merged cells, pivots, comments, tracked changes, images), opened and saved unchanged in each editor, compared with the original and with Collabora's result | Written; a type that loses content is not offered as a default |
-| 7 | Upstream | The pull requests of §8 | Opened |
+| 6 | A fidelity note in docs/plan | Ten real files per type (styles, charts, merged cells, pivots, comments, tracked changes, images), opened and saved unchanged in each editor, compared with the original and with Collabora's result | Done: [browser-editors-fidelity.md](browser-editors-fidelity.md). 24 of 25 public files keep everything counted. Collabora was not compared (none ran here). |
+| 7 | Upstream | The pull requests of §8 | Written up here; opening them on the ArtCraft repositories waits for the owner's go-ahead |
 
 The phase is done when:
 * in a workspace with the add-on, a sheet, a document and a PDF open from Drive, are edited and saved
