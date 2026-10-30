@@ -97,6 +97,13 @@ macro_rules! apps {
             // ERP and its add-on for India, over the platform's own packages (docs/plan/apps-ui.md).
             out.push(ERP_MANIFEST);
             out.push(INDIA_MANIFEST);
+            // Suites, where this build has their members.
+            #[cfg(all(feature = "comms", feature = "drive", feature = "docs"))]
+            out.push(include_str!("../apps/suites/workspace.yaml"));
+            #[cfg(all(feature = "crm", feature = "helpdesk", feature = "projects"))]
+            out.push(include_str!("../apps/suites/business.yaml"));
+            #[cfg(all(feature = "commerce", feature = "pos"))]
+            out.push(include_str!("../apps/suites/retail.yaml"));
             out
         }
 

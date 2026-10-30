@@ -1,0 +1,11 @@
+# The suite for selling in shops and online (docs/plan/apps-ui.md §13): ERP, the online store and
+# the point of sale.
+id: retail
+name: Retail
+version: 0.1.0
+publisher: cbferrum
+summary: ERP with an online store and point of sale
+categories: [suite, commerce, pos]
+runtime: meta
+platform: ">=0.3.2, <0.4"
+requires: {erp: ">=0.1", commerce: ">=0.1", pos: ">=0.1"}

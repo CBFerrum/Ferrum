@@ -154,6 +154,10 @@ ones (a customer's receivable account, an item's stock settings). Depend on the 
   `crm-erp` (`requires: {crm, erp}`, package `crm_erp`) adds ERP's taxes to quotations and makes
   sales orders from them; its hooks register under `HookRegistry::scoped(&["crm_erp"], …)` so they
   run only where it is installed.
+* A suite is a metadata app (`runtime: meta`, category `suite`) with only the apps it requires:
+  installing it installs them. Connectors carry the category `connector`. The platform's suites
+  are Workspace (Comms, Drive, Docs), Business (ERP, CRM, Helpdesk, Projects and their connectors)
+  and Retail (ERP, Commerce, POS); a server lists those whose members it has.
 * `ferrum task deps_report` lists what ties packages together: every entity a package names that
   another defines, and document hooks that run on another package's records or in every workspace.
 * A field a package takes over from another's entity keeps its name, column and place in the form:

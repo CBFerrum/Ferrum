@@ -86,6 +86,10 @@ pub const CATEGORIES: &[&str] = &[
     "healthcare",
     "industry",
     "developer",
+    // Apps that bundle others (a suite requires its members) and apps that join two others (a
+    // connector requires both sides): docs/plan/apps-ui.md §13.
+    "suite",
+    "connector",
 ];
 
 /// Kinds of app settings; `secret` values are write-only.
@@ -374,9 +378,12 @@ impl AppManifest {
             }
         }
         // An app of metadata brings tables, or at least an interface of its own (over other
-        // apps' records, through the API).
-        if self.runtime == Runtime::Meta && self.packages.is_empty() && self.ui.is_none() {
-            return bad("a meta app needs at least one package, or an interface of its own (ui)");
+        // apps' records, through the API); or it is a suite, the apps it requires.
+        if self.runtime == Runtime::Meta && self.packages.is_empty() && self.ui.is_none() && self.requires.is_empty() {
+            return bad("a meta app needs at least one package, an interface of its own (ui), or the apps of its suite (requires)");
+        }
+        if self.categories.iter().any(|c| c == "suite") != self.is_suite() {
+            return bad("a suite (category suite) is a meta app with only the apps it requires: no packages, interface or contributions");
         }
 
         match (self.runtime, self.plugin.as_deref()) {
@@ -503,6 +510,11 @@ impl AppManifest {
     }
 
     /// Whether this app works with platform (app API) version `platform`.
+    /// A suite: installs the apps it requires, and is nothing itself.
+    pub fn is_suite(&self) -> bool {
+        self.runtime == Runtime::Meta && self.packages.is_empty() && self.ui.is_none() && self.contributes.is_empty() && !self.requires.is_empty()
+    }
+
     pub fn compatible_with(&self, platform: &Version) -> bool {
         self.platform.matches(platform)
     }
@@ -695,7 +707,12 @@ contributes:
         rejected("packages: [ev_charging]", "packages: [Ev]", "not a package name");
         rejected("packages: [ev_charging]", "packages: [a, a]", "twice");
         let meta = VALID.replace("runtime: wasm", "runtime: meta").replace("plugin: plugin.json\n", "").replace("packages: [ev_charging]", "packages: []");
-        assert!(AppManifest::parse(&meta).unwrap_err().to_string().contains("at least one package"));
+        // Without packages or an interface, it is a suite: the apps it requires, in category suite.
+        assert!(AppManifest::parse(&meta).unwrap_err().to_string().contains("a suite (category suite)"));
+        let suite = AppManifest::parse(&meta.replace("categories: [energy, iot]", "categories: [suite]")).expect("a suite");
+        assert!(suite.is_suite());
+        let lone = meta.replace("requires:\n  selling: \">=0.3\"\n", "");
+        assert!(AppManifest::parse(&lone).unwrap_err().to_string().contains("at least one package"));
     }
 
     #[test]
