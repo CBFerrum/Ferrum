@@ -45,6 +45,18 @@ Drive.
 * Collabora stays the default.
 * Their brand terms keep the ArtCraft name and logos out of the add-on's name, icon and listing.
 
+**Collaboration like Google Workspace?**
+Planned and partly built in [collaboration.md](collaboration.md):
+* **Live co-editing of Office files:** the online editor (**today**).
+* **Drive as a shared workspace (**today**):**
+  * sharing with roles;
+  * Shared with me, Recent, Starred, Trash and search;
+  * comments with @mentions;
+  * versions and activity;
+  * who has a file open now;
+  * requests for access.
+* **Next:** co-editing made visible (C2), documents co-edited natively (C3) and meetings (C4).
+
 **Own dashboards, endpoints, custom screens, nested plugins?**
 * Dashboards: without code, through package seeds of Studio spaces, dashboards and charts. No app
   does it yet; the first example proves it.
