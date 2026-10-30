@@ -127,6 +127,7 @@ apps! {
         "forms" => ferrum_app_forms,
         "lms" => ferrum_app_lms,
         "drive" => ferrum_app_drive,
+        "docs" => ferrum_app_docs,
         "campaigns" => ferrum_app_campaigns,
         "sign" => ferrum_app_sign,
     }

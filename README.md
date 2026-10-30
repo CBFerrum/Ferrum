@@ -68,7 +68,8 @@ or any other vertical is a plugin, not a fork.
 | Field service | [ferrum-app-field-service](https://github.com/CBFerrum/ferrum-app-field-service) |
 | Forms and surveys | [ferrum-app-forms](https://github.com/CBFerrum/ferrum-app-forms) |
 | Learn (courses, quizzes, certificates) | [ferrum-app-lms](https://github.com/CBFerrum/ferrum-app-lms) |
-| Drive (files, sharing, online editing of office documents; browser editors as an add-on) | [ferrum-app-drive](https://github.com/CBFerrum/ferrum-app-drive) |
+| Drive (files, sharing, documents edited together live, online editing of office documents; browser editors as an add-on) | [ferrum-app-drive](https://github.com/CBFerrum/ferrum-app-drive) |
+| Docs (a home for documents written together, templates, search by what they say, AI agents that draft and add to them) | [ferrum-app-docs](https://github.com/CBFerrum/ferrum-app-docs) |
 | Campaigns (email marketing) | [ferrum-app-campaigns](https://github.com/CBFerrum/ferrum-app-campaigns) |
 | Sign (electronic signatures) | [ferrum-app-sign](https://github.com/CBFerrum/ferrum-app-sign) |
 
