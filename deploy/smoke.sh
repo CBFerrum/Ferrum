@@ -149,7 +149,9 @@ cookie=$(awk '$6=="__Host-ferrum" || $6=="ferrum_session" {print $7}' "$work/jar
 # App routes: sign-in first; then a page for what is not installed; the core's names are not apps.
 [[ "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$API/nothing-here/x")" =~ ^30[23]\ .*/login\?next=%2Fnothing-here%2Fx$ ]] || fail "a signed-out app route does not lead to sign-in"
 [ "$(code -b "$work/jar" "$API/nothing-here/")" = 404 ] || fail "a route nothing is installed at"
-[ "$(code -b "$work/jar" "$API/admin/")" = 404 ] || fail "a name the core keeps"
+[ "$(code -b "$work/jar" "$API/portal/")" = 404 ] || fail "a name the core keeps"
+# The shell's own pages lead a workspace that is not on the shell to today's web app.
+[[ "$(curl -sS -o /dev/null -b "$work/jar" -w '%{http_code} %{redirect_url}' "$API/admin/")" =~ ^30[23]\ .*/app/admin$ ]] || fail "the shell's administration for a workspace on the classic interface"
 grep -q "unregister" <<<"$(curl -fsS -b "$work/jar" "$API/nothing-here/sw.js")" || fail "the worker of an empty route does not remove itself"
 # Signing out ends the device's session: the cookie no longer works anywhere.
 [ "$(code -b "$work/jar" -X POST -H 'sec-fetch-site: same-origin' "$API/api/auth/logout")" = 204 ] || fail "signing out"
