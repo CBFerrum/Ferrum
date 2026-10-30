@@ -104,6 +104,9 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     app whose installation brought it in (`tenant_app.brought_by`); an app installed for itself
     never counts. Checked on a new workspace: CRM installed alone, then Business, then removing
     Business offered its six other apps in a safe order and left CRM.
+  * Comms 0.7.1 depends on `contacts`: every workspace with Comms has the shared address book
+    (calendar and contacts apps read it), with or without CRM. Forms' and LMS' tests install what
+    they use, now that core no longer has customers or ERP's roles.
   * U3 is complete.
 
 * **U4a, Comms and Workspace: built** (31 October 2026).

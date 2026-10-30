@@ -2286,7 +2286,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-comms"
 version = "0.7.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-comms?branch=main#25358006c65ed26372cf2b3b7a73ece30920ae17"
+source = "git+https://github.com/CBFerrum/ferrum-app-comms?branch=main#88af4af83b23c12933478082b26e4ef6aa28cd08"
 dependencies = [
  "ammonia",
  "async-imap",
@@ -2404,7 +2404,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-forms"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-forms?branch=main#e3e3bc2ca634d6d6ae83a93ec51d9f25acbd59e9"
+source = "git+https://github.com/CBFerrum/ferrum-app-forms?branch=main#d2e9fce85e784e3d163a88cc5fe8377f0998763a"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2468,7 +2468,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-lms"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-lms?branch=main#c5e51339a859c8d5dbf7574220de8e3a6293efe6"
+source = "git+https://github.com/CBFerrum/ferrum-app-lms?branch=main#1598fd491a401d72f3427509d90c1ff446709b95"
 dependencies = [
  "async-trait",
  "chrono",
