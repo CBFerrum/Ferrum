@@ -155,6 +155,25 @@ Tests:
 * Drive's end-to-end test;
 * the client against a stand-in server.
 
+**Docs app, 30 October 2026** ([ferrum-app-docs](https://github.com/CBFerrum/ferrum-app-docs) 0.1.0,
+Drive 0.7.0). Built at the user's request: a Docs app over Drive's documents, so they stay Drive files.
+* **The web app's Docs page** lists documents: recent, shared with you, starred, all. It searches
+  them by title and by what they say, with the words found highlighted.
+* **Templates** (`DocsTemplate`, Markdown): six come with it. Docs Managers keep them, and can make
+  one from any document they can read. New Document on a template works as the caller.
+* **For AI agents** (MCP `run_action`), Drive's `create_document`, `read_document` and
+  `append_to_document`. What an agent adds is a change of the live document: everyone who has it
+  open sees it at once, on any replica (35 ms in the check below).
+* **Platform:** Markdown in and out of documents (kernel `coedit::from_markdown`,
+  `coedit::markdown`) and `coedit::append`.
+
+Checked in Chrome, two people on two replicas:
+* the gallery, and a document from a template;
+* an agent's addition (a checklist among bullets) appearing for both at once;
+* search with the words highlighted;
+* a template saved from a document, refused to a non-manager;
+* phone width.
+
 Not yet:
 * comments and suggestions inside the text (Drive's comments on the file stand in);
 * images in documents;

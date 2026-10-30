@@ -14,7 +14,7 @@ path = "src/bin/main.rs"
 # Native apps compiled into this server (all official ones by default; docs/plan/apps.md). Most live
 # in their own repositories; a workspace whose installed app is not in a build keeps its data and
 # loses the app until it is back.
-default = ["crm", "projects", "helpdesk", "pos", "hr", "comms", "commerce", "procurement", "stock-ops", "finance", "mfg-ops", "studio", "assets", "bookings", "field-service", "forms", "lms", "drive", "campaigns", "sign"]
+default = ["crm", "projects", "helpdesk", "pos", "hr", "comms", "commerce", "procurement", "stock-ops", "finance", "mfg-ops", "studio", "assets", "bookings", "field-service", "forms", "lms", "drive", "docs", "campaigns", "sign"]
 crm = ["dep:ferrum-app-crm"]
 projects = ["dep:ferrum-app-projects"]
 helpdesk = ["dep:ferrum-app-helpdesk"]
@@ -33,6 +33,7 @@ field-service = ["dep:ferrum-app-field-service"]
 forms = ["dep:ferrum-app-forms"]
 lms = ["dep:ferrum-app-lms"]
 drive = ["dep:ferrum-app-drive"]
+docs = ["dep:ferrum-app-docs", "drive"]
 campaigns = ["dep:ferrum-app-campaigns"]
 sign = ["dep:ferrum-app-sign"]
 
@@ -62,6 +63,7 @@ ferrum-app-field-service = { git = "https://github.com/CBFerrum/ferrum-app-field
 ferrum-app-forms = { git = "https://github.com/CBFerrum/ferrum-app-forms", branch = "main", optional = true }
 ferrum-app-lms = { git = "https://github.com/CBFerrum/ferrum-app-lms", branch = "main", optional = true }
 ferrum-app-drive = { git = "https://github.com/CBFerrum/ferrum-app-drive", branch = "main", optional = true }
+ferrum-app-docs = { git = "https://github.com/CBFerrum/ferrum-app-docs", branch = "main", optional = true }
 ferrum-app-campaigns = { git = "https://github.com/CBFerrum/ferrum-app-campaigns", branch = "main", optional = true }
 ferrum-app-sign = { git = "https://github.com/CBFerrum/ferrum-app-sign", branch = "main", optional = true }
 base64 = "0.22"

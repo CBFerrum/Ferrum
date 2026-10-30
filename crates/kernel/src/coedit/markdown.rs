@@ -264,6 +264,11 @@ fn list(lines: &[&str], mut i: usize, ind: usize, ordered: bool, start: u64) -> 
         if mi != ind || mo != ordered || rule(lines[i]) {
             break;
         }
+        // The editor keeps checklists apart from other lists: a change of kind starts a new list.
+        let boxed = !ordered && task(rest).is_some();
+        if tasks.is_some_and(|t| t != boxed) {
+            break;
+        }
         let mut body = vec![rest.to_string()];
         i += 1;
         while i < lines.len() {
@@ -289,14 +294,13 @@ fn list(lines: &[&str], mut i: usize, ind: usize, ordered: bool, start: u64) -> 
             }
             i += 1;
         }
-        let box_ = (!ordered).then(|| task(&body[0])).flatten();
-        let is_task = *tasks.get_or_insert(box_.is_some());
-        let checked = match box_ {
-            Some((checked, rest)) if is_task => {
+        tasks.get_or_insert(boxed);
+        let checked = match (!ordered).then(|| task(&body[0])).flatten() {
+            Some((checked, rest)) => {
                 body[0] = rest;
                 checked
             }
-            _ => false,
+            None => false,
         };
         let refs: Vec<&str> = body.iter().map(String::as_str).collect();
         items.push(Item { checked, blocks: blocks(&refs) });
@@ -888,6 +892,16 @@ mod tests {
             assert!(back.contains(line), "missing {line:?}\nin {back}");
         }
         assert_eq!(plain_text(&doc_of(&back)), plain_text(&doc));
+    }
+
+    #[test]
+    fn checklists_and_bullets_side_by_side_become_two_lists() {
+        let h = html(&doc_of("- Venue booked\n- [ ] Send the kit\n- [x] Book the hall\n- Coffee"));
+        assert_eq!(
+            h,
+            "<ul><li><p>Venue booked</p>\n</li>\n</ul>\n<ul class=\"tasks\"><li><input type=\"checkbox\" disabled><div><p>Send the kit</p>\n</div></li>\n\
+             <li><input type=\"checkbox\" disabled checked><div><p>Book the hall</p>\n</div></li>\n</ul>\n<ul><li><p>Coffee</p>\n</li>\n</ul>\n"
+        );
     }
 
     #[test]
