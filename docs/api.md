@@ -312,10 +312,13 @@ Discovery: `GET /.well-known/oauth-protected-resource` (RFC 9728) and
 `GET /.well-known/oauth-authorization-server` (RFC 8414); a 401 from `/mcp` carries
 `WWW-Authenticate: Bearer resource_metadata="…"`. `POST /oauth/register` (RFC 7591, public clients;
 redirect URIs must be https, loopback http — any port — or an app scheme). Authorization endpoint:
-the web app's consent page `/app/oauth/authorize` (`response_type=code`, `client_id`, `redirect_uri`,
-`code_challenge`, `code_challenge_method=S256`, `state`), which calls `GET /api/oauth/clients/{id}`
-and, after the user approves, `POST /api/oauth/authorize` → `{redirect_to}` (adds `code`, `state`,
-`iss`). `POST /oauth/token` (form): `grant_type=authorization_code` (`code`, `redirect_uri`,
+`GET /oauth/authorize` (`response_type=code`, `client_id`, `redirect_uri`, `code_challenge`,
+`code_challenge_method=S256`, `state`), a consent page the server draws for the person signed in
+with the browser's cookie (anyone else signs in first and comes back). It refuses a client that is
+not registered or an address it did not register, and sends nothing there. Its form answers with
+`POST /oauth/authorize` (same fields, `decision=allow|deny`, the page's own origin only) → `303` to
+the redirect URI with `code`, `state` and `iss`, or with `error=access_denied`. A page of its own
+may use `GET /api/oauth/clients/{id}` and `POST /api/oauth/authorize` → `{redirect_to}` instead. `POST /oauth/token` (form): `grant_type=authorization_code` (`code`, `redirect_uri`,
 `client_id`, `code_verifier`) or `grant_type=refresh_token` (`refresh_token`, `client_id`) →
 `{access_token, token_type: "Bearer", expires_in: 3600, refresh_token, scope}`. Codes are single-use
 (a replay revokes the tokens it produced); refresh tokens rotate and reuse revokes the family.

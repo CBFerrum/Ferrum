@@ -1,16 +1,17 @@
 //! OAuth 2.1 authorization server for MCP and other API clients: discovery (RFC 8414, RFC 9728),
 //! dynamic client registration (RFC 7591), authorization code + PKCE S256, rotating refresh
-//! tokens and revocation (RFC 7009). The user approves on the web app's consent page
-//! (`/app/oauth/authorize`), which calls `POST /api/oauth/authorize` with their session.
-//! Access tokens are ordinary Ferrum session JWTs, so `/mcp` and the REST API both accept them.
+//! tokens and revocation (RFC 7009). The user approves on the consent page the server draws
+//! (`/oauth/authorize`, signed in with the browser's session cookie); `POST /api/oauth/authorize`
+//! does the same for a page of its own. Access tokens are ordinary Ferrum session JWTs, so `/mcp`
+//! and the REST API both accept them.
 
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{Auth, client_ip};
 use crate::state::app_state;
 use axum::Json;
-use axum::extract::{Form, Path, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::extract::{Form, Path, Query, State};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
+use axum::response::{IntoResponse, Redirect, Response};
 use ferrum_kernel::Error;
 use ferrum_kernel::oauth::{Grant, SCOPE};
 use loco_rs::app::AppContext;
@@ -62,7 +63,7 @@ async fn authorization_server(headers: HeaderMap) -> Response {
     let base = base_url(&headers);
     Json(json!({
         "issuer": base,
-        "authorization_endpoint": format!("{base}/app/oauth/authorize"),
+        "authorization_endpoint": format!("{base}/oauth/authorize"),
         "token_endpoint": format!("{base}/oauth/token"),
         "registration_endpoint": format!("{base}/oauth/register"),
         "revocation_endpoint": format!("{base}/oauth/revoke"),
@@ -139,14 +140,158 @@ fn s256() -> String {
 async fn authorize(Auth(ctx): Auth, State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<AuthorizeReq>) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let code = st.kernel.oauth_issue_code(&ctx, &req.client_id, &req.redirect_uri, &req.code_challenge, &req.code_challenge_method).await?;
-    let mut url = req.redirect_uri.clone();
-    url.push(if url.contains('?') { '&' } else { '?' });
-    url.push_str(&format!("code={}", urlencode(&code)));
-    if let Some(state) = req.state.filter(|s| !s.is_empty()) {
-        url.push_str(&format!("&state={}", urlencode(&state)));
-    }
-    url.push_str(&format!("&iss={}", urlencode(&base_url(&headers))));
+    let url = back_to(&req.redirect_uri, &[("code", &code), ("state", req.state.as_deref().unwrap_or_default()), ("iss", &base_url(&headers))]);
     Ok(no_store(Json(json!({"redirect_to": url})).into_response()))
+}
+
+/// The client's redirect URI with `params` added (empty values left out).
+fn back_to(redirect_uri: &str, params: &[(&str, &str)]) -> String {
+    let mut url = redirect_uri.to_string();
+    for (k, v) in params.iter().filter(|(_, v)| !v.is_empty()) {
+        url.push(if url.contains('?') { '&' } else { '?' });
+        url.push_str(&format!("{k}={}", urlencode(v)));
+    }
+    url
+}
+
+/// An authorization request, as the client sends it to the consent page.
+#[derive(Deserialize)]
+struct ConsentReq {
+    #[serde(default)]
+    response_type: String,
+    #[serde(default)]
+    client_id: String,
+    #[serde(default)]
+    redirect_uri: String,
+    #[serde(default)]
+    code_challenge: String,
+    #[serde(default = "s256")]
+    code_challenge_method: String,
+    #[serde(default)]
+    state: String,
+    /// The person's answer (the page's form): `allow`, else denied.
+    #[serde(default)]
+    decision: String,
+}
+
+impl ConsentReq {
+    fn query(&self) -> String {
+        let p = [
+            ("response_type", self.response_type.as_str()),
+            ("client_id", &self.client_id),
+            ("redirect_uri", &self.redirect_uri),
+            ("code_challenge", &self.code_challenge),
+            ("code_challenge_method", &self.code_challenge_method),
+            ("state", &self.state),
+        ];
+        back_to("/oauth/authorize", &p)
+    }
+}
+
+/// The client exists and returns only to an address it registered; else what the person is told
+/// (and nothing is sent to that address).
+async fn checked(st: &crate::state::AppState, r: &ConsentReq) -> ApiResult<Result<ferrum_kernel::oauth::OAuthClient, &'static str>> {
+    if r.response_type != "code" {
+        return Ok(Err("This sign-in link is not valid (response_type must be code)."));
+    }
+    if r.client_id.is_empty() || r.redirect_uri.is_empty() || r.code_challenge.is_empty() {
+        return Ok(Err("This sign-in link is incomplete (client_id, redirect_uri and code_challenge are required)."));
+    }
+    if r.code_challenge_method != "S256" {
+        return Ok(Err("This app uses an unsupported sign-in method (PKCE S256 is required)."));
+    }
+    let client = match st.kernel.oauth_client(&r.client_id).await {
+        Ok(c) => c,
+        Err(Error::NotFound(_)) => return Ok(Err("This app is not registered with Ferrum.")),
+        Err(e) => return Err(e.into()),
+    };
+    if !ferrum_kernel::oauth::redirect_matches(&client.redirect_uris, &r.redirect_uri) {
+        return Ok(Err("This app asked to return to an address it did not register. For your safety, nothing was shared."));
+    }
+    Ok(Ok(client))
+}
+
+/// The consent page: the theme and the sign-in page's look, no scripts, never in a frame.
+fn consent_page(status: StatusCode, body: &str) -> Response {
+    use crate::shell::{page_response, theme_hash};
+    let html = format!(
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Allow access · Ferrum</title><link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/_shell/theme/{}.css"><link rel="stylesheet" href="/_shell/v1/pages.css"></head><body><main class="ferrum-login" id="main"><img class="ferrum-mark" src="/_shell/v1/icon.svg" alt="" width="40" height="40"><h1>Allow access to Ferrum?</h1>{body}</main></body></html>"#,
+        theme_hash()
+    );
+    // No form-action: after the answer the browser goes on to the client's own address.
+    let csp = "default-src 'none'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; object-src 'none'";
+    no_store(page_response(status, html, csp))
+}
+
+fn refused(problem: &str) -> Response {
+    consent_page(StatusCode::BAD_REQUEST, &format!(r#"<p class="ferrum-error" role="alert">{}</p>"#, crate::shell::esc(problem)))
+}
+
+/// The person signed in with the browser's session cookie; `None` sends them to sign in first.
+async fn signed_in(st: &crate::state::AppState, method: &Method, headers: &HeaderMap) -> ApiResult<Option<ferrum_kernel::Ctx>> {
+    if crate::shell::session_cookie(headers, st.shell.secure).is_none() {
+        return Ok(None);
+    }
+    match crate::extract::caller_on(st, method, headers).await {
+        Ok((ctx, _)) => Ok(Some(ctx)),
+        Err(ApiError(Error::Unauthorized(_))) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// `GET /oauth/authorize`: the authorization endpoint, a consent page for the signed-in person
+/// (anyone else signs in first and comes back).
+async fn consent(State(app): State<AppContext>, headers: HeaderMap, uri: Uri, Query(req): Query<ConsentReq>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    let Some(ctx) = signed_in(&st, &Method::GET, &headers).await? else {
+        let here = uri.path_and_query().map_or("/oauth/authorize", |p| p.as_str());
+        return Ok(Redirect::to(&format!("/login?next={}", urlencode(here))).into_response());
+    };
+    let client = match checked(&st, &req).await? {
+        Ok(c) => c,
+        Err(problem) => return Ok(refused(problem)),
+    };
+    let esc = crate::shell::esc;
+    let workspace = st.shell.workspace(ctx.tenant).await?;
+    let host = req.redirect_uri.split_once("://").map_or(req.redirect_uri.as_str(), |(_, rest)| rest.split(['/', '?']).next().unwrap_or(rest));
+    let hidden: String = [
+        ("client_id", &req.client_id),
+        ("redirect_uri", &req.redirect_uri),
+        ("code_challenge", &req.code_challenge),
+        ("code_challenge_method", &req.code_challenge_method),
+        ("state", &req.state),
+    ]
+    .iter()
+    .map(|(k, v)| format!(r#"<input type="hidden" name="{k}" value="{}">"#, esc(v)))
+    .collect();
+    let body = format!(
+        r#"<p><strong>{}</strong> wants to use Ferrum as <strong>{}</strong> in the <strong>{}</strong> workspace.</p><ul><li>It can read and change everything you can, with your permissions.</li><li>Everything it does is recorded in the audit trail under your name.</li><li>Access lasts until you revoke it or sign out everywhere.</li></ul><p class="ferrum-hint">It will return to {}.</p><form method="post" action="/oauth/authorize" class="ferrum-consent">{hidden}<button class="ferrum-button ferrum-button-quiet" type="submit" name="decision" value="deny">Deny</button><button class="ferrum-button" type="submit" name="decision" value="allow">Allow</button></form>"#,
+        esc(&client.name),
+        esc(&ctx.email),
+        esc(&workspace.name),
+        esc(host)
+    );
+    Ok(consent_page(StatusCode::OK, &body))
+}
+
+/// The consent page's answer: back to the client with a one-time code, or with `access_denied`.
+async fn consent_answer(State(app): State<AppContext>, headers: HeaderMap, Form(mut req): Form<ConsentReq>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    req.response_type = "code".into();
+    let Some(ctx) = signed_in(&st, &Method::POST, &headers).await? else {
+        return Ok(Redirect::to(&format!("/login?next={}", urlencode(&req.query()))).into_response());
+    };
+    let client = match checked(&st, &req).await? {
+        Ok(c) => c,
+        Err(problem) => return Ok(refused(problem)),
+    };
+    let to = if req.decision == "allow" {
+        let code = st.kernel.oauth_issue_code(&ctx, &client.id, &req.redirect_uri, &req.code_challenge, &req.code_challenge_method).await?;
+        back_to(&req.redirect_uri, &[("code", &code), ("state", &req.state), ("iss", &base_url(&headers))])
+    } else {
+        back_to(&req.redirect_uri, &[("error", "access_denied"), ("state", &req.state)])
+    };
+    Ok(no_store(Redirect::to(&to).into_response()))
 }
 
 fn urlencode(s: &str) -> String {
@@ -250,9 +395,24 @@ pub fn routes() -> Routes {
         .add("/.well-known/oauth-protected-resource", get(protected_resource))
         .add("/.well-known/oauth-protected-resource/mcp", get(protected_resource))
         .add("/.well-known/oauth-authorization-server", get(authorization_server))
+        .add("/oauth/authorize", get(consent).post(consent_answer))
         .add("/oauth/register", post(register))
         .add("/oauth/token", post(token))
         .add("/oauth/revoke", post(revoke))
         .add("/api/oauth/clients/{id}", get(client_info))
         .add("/api/oauth/authorize", post(authorize))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::back_to;
+
+    #[test]
+    fn answers_go_back_with_their_parameters() {
+        assert_eq!(
+            back_to("http://127.0.0.1:3118/cb", &[("code", "a b"), ("state", ""), ("iss", "https://x.test")]),
+            "http://127.0.0.1:3118/cb?code=a%20b&iss=https%3A%2F%2Fx.test"
+        );
+        assert_eq!(back_to("myapp://cb?x=1", &[("error", "access_denied"), ("state", "s/1")]), "myapp://cb?x=1&error=access_denied&state=s%2F1");
+    }
 }

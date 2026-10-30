@@ -1,6 +1,7 @@
 // The sign-in page (/login) until the shell app brings its own: the workspace (where the host
-// does not decide it), email and password, the second step for authenticator apps, and single
-// sign-on. Signing in sets the browser's session cookie and goes back where the person was.
+// does not decide it), email and password, the second step for authenticator apps (set up here
+// when the workspace requires one), and single sign-on. Signing in sets the browser's session
+// cookie and goes back where the person was.
 
 const boot = JSON.parse(document.getElementById("ferrum-login").textContent);
 const form = document.getElementById("ferrum-login-form");
@@ -22,6 +23,10 @@ const store = {
   },
 };
 let ticket = null;
+// A workspace that requires two-factor sign-in, for someone who has not set it up: a token that
+// may do only that; then, with the recovery codes shown, signing in again.
+let setupToken = null;
+let again = false;
 
 function field(name, label, type, value = "", extra = {}) {
   const l = document.createElement("label");
@@ -41,16 +46,64 @@ function say(message) {
   error.textContent = message;
 }
 
-async function post(path, body) {
+async function post(path, body, headers = {}) {
   const r = await fetch(path, {
     method: "POST",
     credentials: "same-origin",
-    headers: { "content-type": "application/json", accept: "application/json" },
+    headers: { "content-type": "application/json", accept: "application/json", ...headers },
     body: JSON.stringify(body),
   });
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data?.error?.message ?? data?.message ?? `Signing in failed (${r.status})`);
+  if (!r.ok) throw new Error(data?.fields?.[0]?.message ?? data?.error?.message ?? data?.message ?? `Signing in failed (${r.status})`);
   return data;
+}
+
+function text(tag, content, className) {
+  const e = document.createElement(tag);
+  e.textContent = content;
+  if (className) e.className = className;
+  return e;
+}
+
+/** Two-factor sign-in on the way in: an authenticator app scans the code (or takes the key), and
+ *  one of its codes turns it on. */
+async function setUp(token) {
+  setupToken = token;
+  fields.replaceChildren();
+  document.querySelector(".ferrum-login h1").textContent = "Set up two-factor sign-in";
+  try {
+    const begun = await post("/api/auth/2fa/begin", {}, { authorization: `Bearer ${token}` });
+    const qr = Object.assign(document.createElement("img"), {
+      src: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(begun.qr_svg)}`,
+      alt: "QR code for your authenticator app",
+      width: 200,
+      height: 200,
+      className: "ferrum-qr",
+    });
+    const link = Object.assign(document.createElement("a"), { href: begun.uri, textContent: "open it in the app" });
+    const key = text("p", `Can't scan it? Enter ${begun.secret.replace(/(.{4})/g, "$1 ").trim()} in the app (time-based), or `, "ferrum-hint");
+    key.append(link, ".");
+    fields.append(
+      text("p", "This workspace requires a code from an authenticator app at every sign-in. Scan this with one (Google Authenticator, Microsoft Authenticator, 1Password, Authy…), then enter the six-digit code it shows."),
+      qr,
+      key,
+    );
+    field("code", "Code from the app", "text", "", { autocomplete: "one-time-code", inputMode: "numeric" }).focus();
+    submit.textContent = "Turn on";
+  } catch (err) {
+    setupToken = null;
+    say(err.message);
+  }
+}
+
+/** Once it is on: the recovery codes, shown this once, then signing in again with a code. */
+function recoveryCodes(codes) {
+  fields.replaceChildren(
+    text("p", "Two-factor sign-in is on. Keep these recovery codes somewhere safe: each one signs you in once if you lose the app, and they are not shown again."),
+    text("pre", codes.join("\n"), "ferrum-codes"),
+  );
+  submit.textContent = "Sign in";
+  again = true;
 }
 
 function done(data) {
@@ -66,11 +119,7 @@ function done(data) {
     return;
   }
   if (data.two_factor_setup) {
-    say("This workspace requires two-factor sign-in. Set it up in the classic interface first.");
-    const a = document.createElement("a");
-    a.href = "/app/";
-    a.textContent = "Open the classic interface";
-    error.append(" ", a);
+    setUp(data.token);
     return;
   }
   if (data.cookie) {
@@ -88,7 +137,15 @@ form.addEventListener("submit", async (e) => {
   say("");
   submit.disabled = true;
   try {
-    if (ticket) {
+    if (again) {
+      location.reload();
+      return;
+    }
+    if (setupToken) {
+      const { recovery_codes } = await post("/api/auth/2fa/enable", { code: form.elements.code.value.trim() }, { authorization: `Bearer ${setupToken}` });
+      setupToken = null;
+      recoveryCodes(recovery_codes);
+    } else if (ticket) {
       done(await post("/api/auth/login/second-factor", { ticket, code: form.elements.code.value.trim(), session: "cookie" }));
     } else {
       const tenant = workspace();
