@@ -307,7 +307,8 @@ creates blank documents, sheets and presentations and lists recent files; templa
 `deploy/editors`, and the web app's editor page. Checked end to end in Chrome: a workbook opened from
 Drive, edited and saved as a version. The editor server is tested in Chromium, Firefox and WebKit in
 CI. Fidelity on 25 public files: [browser-editors-fidelity.md](browser-editors-fidelity.md). Still
-to come: DeckCraft and the upstream pull requests ([browser-editors.md](browser-editors.md) §8). Spike S3
+to come: DeckCraft, once its host bridge exists (asked for in deckcraft#1563;
+[upstream-requests.md](upstream-requests.md)). Spike S3
 ([spike-s3-artcraft.md](spike-s3-artcraft.md)) found go without a fork.
 * An editor server the operator runs, on an origin of its own, serves the official, unmodified web
   builds of GridCraft, WordCraft and PdfCraft, and a small Ferrum relay.
