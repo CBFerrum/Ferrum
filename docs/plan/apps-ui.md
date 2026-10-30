@@ -132,9 +132,13 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     until an administrator switches. Checked in Chrome (Home's icons, Helpdesk's and Studio's
     records, /open, Customize, ERP's sidebar) and by the deploy smoke test (a new workspace on the
     shell, switched back and forth; Helpdesk installed from the store, its records page and /open).
-  * Next: `/app/` only redirecting and the nginx image retired. Two-factor setup at sign-in and the
-    OAuth consent page move to the shell, the server serves the shell's and ERP's interfaces itself,
-    and an upgrade step moves the remaining workspaces to the shell.
+  * Signing in sets up two-factor sign-in where the workspace requires it (the authenticator app's
+    code, a code to turn it on, the recovery codes, then signing in with a code), and OAuth
+    clients' consent is a page the server draws (`/oauth/authorize`, the discovery's authorization
+    endpoint; no scripts, never framed, nothing sent to an address the client did not register).
+    Neither needs today's web app now. Checked in Chrome and by the deploy smoke test.
+  * Next: `/app/` only redirecting and the nginx image retired: the server serves the shell's and
+    ERP's interfaces itself, and an upgrade step moves the remaining workspaces to the shell.
 
 * **U4a, Comms and Workspace: built** (31 October 2026).
   * Comms (Mail, Chat, Calendar, Meet at `/mail/`, `/chat/`, `/calendar/`, `/meet/`), Drive (`/drive/`,

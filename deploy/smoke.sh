@@ -177,6 +177,11 @@ curl -fsS "${auth[@]}" -H 'content-type: application/json' -d "{\"consent\":\"$c
 [ "$(curl -fsS -b "$work/jar" "$API/api/shell" | json '[a["url"] for a in d["apps"] if a["app"] == "helpdesk"]')" = "['/data/helpdesk/']" ] || fail "Helpdesk's records in the launcher"
 grep -q '"scope":{"app":"helpdesk"' <<<"$(curl -fsS -b "$work/jar" "$API/data/helpdesk/")" || fail "Helpdesk's records page"
 [[ "$(curl -sS -o /dev/null -b "$work/jar" -w '%{http_code} %{redirect_url}' "$API/open/Ticket")" =~ ^30[23]\ .*/data/helpdesk/e/Ticket$ ]] || fail "/open of Helpdesk's tickets"
+# OAuth clients (MCP): the server's consent page, for the person signed in with the cookie.
+[[ "$(curl -fsS "$API/.well-known/oauth-authorization-server" | json 'd["authorization_endpoint"]')" == */oauth/authorize ]] || fail "the OAuth authorization endpoint"
+client=$(curl -fsS -H 'content-type: application/json' -d '{"client_name":"Smoke","redirect_uris":["http://127.0.0.1/cb"]}' "$API/oauth/register" | json 'd["client_id"]') || fail "registering an OAuth client"
+grep -q "Smoke</strong> wants to use Ferrum" <<<"$(curl -fsS -b "$work/jar" "$API/oauth/authorize?response_type=code&client_id=$client&redirect_uri=http%3A%2F%2F127.0.0.1%3A9%2Fcb&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256")" \
+  || fail "the OAuth consent page"
 # Signing out ends the device's session: the cookie no longer works anywhere.
 [ "$(code -b "$work/jar" -X POST -H 'sec-fetch-site: same-origin' "$API/api/auth/logout")" = 204 ] || fail "signing out"
 [ "$(code -b "$work/jar" "$API/api/shell")" = 401 ] || fail "the cookie still works after signing out"
