@@ -1,7 +1,13 @@
 # Browser editors: requests to the ArtCraft repositories
 
-30 October 2026. The upstream part of [browser-editors.md](browser-editors.md) §8. Drafts, **not
-posted**: posting them puts them on public repositories under Ferrum's maintainer's account.
+30 October 2026. The upstream part of [browser-editors.md](browser-editors.md) §8.
+
+**Posted 30 October 2026**, as drafted below:
+* storytold/deckcraft#1563 (https://github.com/storytold/deckcraft/issues/1563);
+* storytold/wordcraft#4945 (https://github.com/storytold/wordcraft/issues/4945);
+* storytold/gridcraft#2942 (https://github.com/storytold/gridcraft/issues/2942).
+
+The asks already open upstream (below) were left as they are.
 
 The maintainers are building a richer protocol for hosts that own the files (a "managed host").
 It has a private message port for sandboxed frames, read-only sessions, an "opened" message and
@@ -26,7 +32,7 @@ The last row would change Ferrum's design for the better, once released:
 
 It is in browser-editors.md §12.
 
-## New requests (drafts)
+## New requests (as posted)
 
 ### storytold/deckcraft: "Web build: a host bridge (?host=parent) like GridCraft's and WordCraft's"
 
@@ -51,7 +57,7 @@ It is in browser-editors.md §12.
 > `chrome=notitlebar` / `chrome=nofiletab` as GridCraft does)? Host mode would keep Save (Ctrl+S),
 > which goes to the host.
 
-### storytold/gridcraft (the same for wordcraft, pdfcraft): "Host bridge: let the host ask for a save"
+### storytold/gridcraft, for all three bridges: "Host bridge: let the host ask for a save"
 
 > In host mode, saving starts in the app (Ctrl+S, or the File tab, which `chrome=none` hides). The
 > host cannot offer its own Save button, or save before it closes the frame.
