@@ -115,7 +115,7 @@ impl SiteResponse {
 #[async_trait]
 pub trait Site: Send + Sync {
     async fn handle(&self, kernel: &Kernel, req: SiteRequest) -> Result<SiteResponse>;
-    /// Largest request body this package accepts (the server caps it at 32 MB).
+    /// Largest request body this package accepts (the server reads no further, and caps it at 1 GiB).
     fn max_body(&self) -> usize {
         1 << 20
     }

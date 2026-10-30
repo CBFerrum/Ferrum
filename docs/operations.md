@@ -26,6 +26,8 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_METRICS_TOKEN` | recommended | `/metrics` then requires `Authorization: Bearer <token>` |
 | `FERRUM_S3_BUCKET`, `FERRUM_S3_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | multi-replica | Attachment storage on S3 (region `auto` if empty) |
 | `FERRUM_S3_ENDPOINT` | no | Any S3-compatible store: MinIO, Cloudflare R2, Wasabi, Backblaze B2, DigitalOcean Spaces, GCS interoperability |
+| `FERRUM_DRIVE_MAX_FILE_MB` | no | Largest file in one request to Drive: an upload, a new version or an editor save. Default 32, at most 1024. A replica holds each such file in memory while storing it, so allow `uploads at once × this` of memory per replica. Workspaces set their own limit within it. Raise the web app's `FERRUM_MAX_UPLOAD` (nginx, default `32m`) with it, and any proxy in front |
+| `FERRUM_REQUEST_TIMEOUT_MS` | no | How long one request may take, receiving its body included; default 120000 (2 minutes). Large files over slow links need more: allow the largest file divided by the slowest client's upload rate (200 MB at 10 Mbit/s is about 3 minutes). Keep the gateway's request timeout (600 s in `gateway.yaml`) above it |
 | `FERRUM_DIRECT_UPLOAD_MAX_BYTES` | no | Largest file browsers upload straight to the bucket (default 2 GiB). Needs the bucket CORS rule below |
 | `FERRUM_PDF_URL` | no | A Gotenberg-compatible renderer (`gotenberg/gotenberg:8`, included in both deployments as `pdf` / `ferrum-pdf`) for PDFs of print formats; empty turns PDFs off. Run it with JavaScript off and an allow-list of `^(data:\|file:///tmp/).*` so templates cannot make it fetch anything; print formats then use inline (data:) images |
 | `FERRUM_REQUIRE_OBJECT_STORAGE` | no | Production default `true`: refuse to start without object storage, so no replica keeps files locally. `false` only for single-server installs |
@@ -334,7 +336,9 @@ Set `OFFICE_PUBLIC_URL` and `OFFICE_PUBLIC_HOST` to the editor's public address.
   policy).
 * **Logs:** request logs record paths without query strings, so WOPI tokens and sign-in codes never
   reach them.
-* **Size:** saves are limited by Drive's upload limit (at most 32 MB per file).
+* **Size:** saves are limited by Drive's upload limit, at most the server's
+  `FERRUM_DRIVE_MAX_FILE_MB` (32 MB unless raised). Editor saves go straight to the server, not
+  through the web app's proxy.
 * **Rate limits:** the editor calls Ferrum from one address, so the public endpoints' per-address
   limit applies to all of its sessions together. Raise it for busy editors, or exempt the editor's
   address at the ingress.

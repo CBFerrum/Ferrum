@@ -57,6 +57,11 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       # PDFs of print formats (Download PDF, apps that attach documents); empty turns them off.
       FERRUM_PDF_URL: ${FERRUM_PDF_URL:-http://pdf:3000}
+      # The largest file in one request (Drive upload, version, editor save), in MB; the server
+      # holds it in memory meanwhile. Raise FERRUM_MAX_UPLOAD on the web service with it.
+      FERRUM_DRIVE_MAX_FILE_MB: ${FERRUM_DRIVE_MAX_FILE_MB:-32}
+      # How long one request may take, its body included (ms): raise it with the file size for slow links.
+      FERRUM_REQUEST_TIMEOUT_MS: ${FERRUM_REQUEST_TIMEOUT_MS:-120000}
     volumes:
       - files:/var/lib/ferrum/files
 
@@ -74,6 +79,7 @@ services:
       - ferrum
     environment:
       FERRUM_API_URL: http://ferrum:5150
+      FERRUM_MAX_UPLOAD: ${FERRUM_MAX_UPLOAD:-32m}
     ports:
       - "${FERRUM_PORT:-8080}:8080"
 
