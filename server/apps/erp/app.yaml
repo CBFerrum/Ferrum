@@ -18,6 +18,7 @@ contributes:
       route: erp
       title: ERP
       description: Accounting, selling, buying, stock and manufacturing
+      icon: building-2
       color: "#2f5bea"
       roles: [Accounts Manager, Accounts User, Sales Manager, Sales User, Purchase Manager, Purchase User, Stock Manager, Stock User, Manufacturing Manager, Manufacturing User]
   shell.open:
