@@ -5,6 +5,7 @@
 //! entity whose package is not installed simply never triggers its hooks.
 
 pub mod accounting;
+pub mod contacts;
 pub mod einvoice;
 pub mod flow;
 pub mod india;
@@ -27,8 +28,8 @@ use std::sync::Arc;
 
 include!(concat!(env!("OUT_DIR"), "/packages.rs"));
 
-/// The platform's metadata packages (core, parties, products, accounting, buying, selling,
-/// inventory, manufacturing, india), embedded at build time.
+/// The platform's metadata packages (core, contacts, parties, products, accounting, buying,
+/// selling, inventory, manufacturing, india), embedded at build time.
 pub fn packages() -> std::result::Result<Vec<ferrum_meta::Package>, ferrum_meta::MetaError> {
     ferrum_meta::catalog::load_embedded(EMBEDDED)
 }
@@ -38,6 +39,12 @@ pub fn packages() -> std::result::Result<Vec<ferrum_meta::Package>, ferrum_meta:
 /// before the pricing/posting hooks of the same document.
 pub fn register(h: &mut HookRegistry) {
     let only = |p: &str| vec![p.to_string()];
+    h.scoped(&only("contacts"), |h| {
+        h.register("Contact", Arc::new(contacts::ContactHook)).register("Address", Arc::new(contacts::AddressHook));
+    });
+    h.scoped(&only("parties"), |h| {
+        h.register("Address", Arc::new(contacts::PartyAddressHook));
+    });
     h.scoped(&only("india"), |h| {
         h.register("Company", Arc::new(india::PartyGstHook))
             .register("Customer", Arc::new(india::PartyGstHook))
@@ -104,7 +111,7 @@ mod tests {
     fn embedded_platform_packages_form_a_valid_catalog() {
         let pkgs = super::packages().expect("embedded packages parse");
         let names: Vec<&str> = pkgs.iter().map(|p| p.name()).collect();
-        assert_eq!(names, ["accounting", "buying", "core", "india", "inventory", "manufacturing", "parties", "products", "selling"]);
+        assert_eq!(names, ["accounting", "buying", "contacts", "core", "india", "inventory", "manufacturing", "parties", "products", "selling"]);
         let catalog = ferrum_meta::Catalog::from_packages(pkgs).expect("they validate together");
         assert_eq!(catalog.unknown_form_fields(), Vec::<String>::new(), "forms place fields nothing defines");
     }

@@ -1,0 +1,10 @@
+package: contacts
+version: 0.1.0
+label: Contacts
+description: People outside the workspace and their addresses, which every app that deals with them shares (customers, suppliers and leads link to them).
+depends: [core]
+
+# What a personal-data request exports and erases for a person (their email).
+personal_data:
+  - {entity: Contact, match: email, erase: [first_name, last_name, full_name, designation, department, email, phone, emails, phones, notes]}
+  - {entity: Address, match: email, erase: [address_title, address_line1, address_line2, postal_code, email, phone, display]}

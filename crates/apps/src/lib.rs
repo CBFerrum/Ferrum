@@ -89,7 +89,7 @@ pub use signing::{Role, SignatureEntry, Signatures, Signer, TrustedKey, key_id};
 /// Bundle format identifier; the first line hashed into every digest.
 pub const FORMAT: &str = "ferrum-app-v1";
 /// The app API version this platform build provides; apps declare `platform` requirements against it.
-pub const PLATFORM_VERSION: &str = "0.3.1";
+pub const PLATFORM_VERSION: &str = "0.3.2";
 
 /// Most bytes a bundle may hold unpacked (50 MiB).
 pub const MAX_UNPACKED: u64 = 50 << 20;

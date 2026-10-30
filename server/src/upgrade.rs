@@ -15,27 +15,74 @@ pub const ERP_PACKAGES: &[&str] = &["accounting", "inventory", "buying", "sellin
 /// (the groups and price lists every workspace was seeded with don't count).
 pub const CORE_SPLIT: &str = "core-split";
 
+/// CRM's couplings with ERP moved into its connector, `crm_erp` (quotations' taxes, sales orders
+/// made from quotations): a workspace with CRM and ERP's selling gets it, so it keeps them.
+pub const CRM_ERP: &str = "crm-erp";
+
 /// Session advisory lock: one replica runs the steps; the others wait for it.
 const LOCK: i64 = 0x6665_7272_756d_0002;
 
 pub async fn run(k: &Kernel) -> Result<()> {
     let mut conn = k.db.pool.acquire().await?;
     sqlx::query("select pg_advisory_lock($1)").bind(LOCK).execute(&mut *conn).await?;
-    let out = core_split(k).await;
+    let out = async {
+        core_split(k).await?;
+        crm_erp(k).await
+    }
+    .await;
     let _ = sqlx::query("select pg_advisory_unlock($1)").bind(LOCK).execute(&mut *conn).await;
     out
 }
 
-async fn core_split(k: &Kernel) -> Result<()> {
+/// Workspaces `step` has not run for.
+async fn pending(k: &Kernel, step: &str) -> Result<Vec<Uuid>> {
     let mut tx = k.db.system_tx().await?;
-    let tenants: Vec<Uuid> =
-        sqlx::query_scalar("select t.id from tenant t where not exists (select 1 from upgrade_step s where s.tenant_id = t.id and s.step = $1)")
-            .bind(CORE_SPLIT)
-            .fetch_all(&mut *tx)
-            .await?;
+    let tenants = sqlx::query_scalar("select t.id from tenant t where not exists (select 1 from upgrade_step s where s.tenant_id = t.id and s.step = $1)")
+        .bind(step)
+        .fetch_all(&mut *tx)
+        .await?;
     tx.commit().await?;
+    Ok(tenants)
+}
+
+/// Installs `want` (with what it depends on) and records that `step` ran, with what it installed.
+async fn finish(k: &Kernel, tenant: Uuid, step: &str, installed: &[String], want: &[String]) -> Result<bool> {
+    let closure = k.registry.catalog().closure(want).map_err(|e| ferrum_kernel::Error::internal(e.to_string()))?;
+    let new: Vec<String> = closure.into_iter().filter(|p| !installed.contains(p)).collect();
+    if !new.is_empty() {
+        k.install_packages(tenant, want).await?;
+        tracing::info!(%tenant, packages = ?new, "{step}: workspace moved onto this release's packages");
+    }
+    let mut tx = k.db.system_tenant_tx(tenant).await?;
+    sqlx::query("insert into upgrade_step (tenant_id, step, installed) values ($1, $2, $3) on conflict do nothing")
+        .bind(tenant)
+        .bind(step)
+        .bind(&new)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(!new.is_empty())
+}
+
+async fn crm_erp(k: &Kernel) -> Result<()> {
+    // Without CRM compiled in, its workspaces wait for a server that has it.
+    if k.registry.catalog().package("crm_erp").is_none() {
+        return Ok(());
+    }
+    for tenant in pending(k, CRM_ERP).await? {
+        let mut tx = k.db.system_tenant_tx(tenant).await?;
+        let installed: Vec<String> = sqlx::query_scalar("select name from installed_package where tenant_id = $1").bind(tenant).fetch_all(&mut *tx).await?;
+        tx.commit().await?;
+        let has = |p: &str| installed.iter().any(|i| i == p);
+        let want = if has("crm") && has("selling") { vec!["crm_erp".to_string()] } else { vec![] };
+        finish(k, tenant, CRM_ERP, &installed, &want).await?;
+    }
+    Ok(())
+}
+
+async fn core_split(k: &Kernel) -> Result<()> {
     let mut moved = 0;
-    for tenant in tenants {
+    for tenant in pending(k, CORE_SPLIT).await? {
         let mut tx = k.db.system_tenant_tx(tenant).await?;
         let installed: Vec<String> = sqlx::query_scalar("select name from installed_package where tenant_id = $1").bind(tenant).fetch_all(&mut *tx).await?;
         let want: Vec<String> = if ERP_PACKAGES.iter().any(|p| installed.iter().any(|i| i == p)) {
@@ -51,21 +98,9 @@ async fn core_split(k: &Kernel) -> Result<()> {
             w
         };
         tx.commit().await?;
-        let closure = k.registry.catalog().closure(&want).map_err(|e| ferrum_kernel::Error::internal(e.to_string()))?;
-        let new: Vec<String> = closure.into_iter().filter(|p| !installed.contains(p)).collect();
-        if !new.is_empty() {
-            k.install_packages(tenant, &want).await?;
+        if finish(k, tenant, CORE_SPLIT, &installed, &want).await? {
             moved += 1;
-            tracing::info!(%tenant, packages = ?new, "workspace moved onto the split core");
         }
-        let mut tx = k.db.system_tenant_tx(tenant).await?;
-        sqlx::query("insert into upgrade_step (tenant_id, step, installed) values ($1, $2, $3) on conflict do nothing")
-            .bind(tenant)
-            .bind(CORE_SPLIT)
-            .bind(&new)
-            .execute(&mut *tx)
-            .await?;
-        tx.commit().await?;
     }
     if moved > 0 {
         tracing::info!(workspaces = moved, "{CORE_SPLIT}: done");

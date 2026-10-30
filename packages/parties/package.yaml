@@ -2,9 +2,18 @@ package: parties
 version: 0.1.0
 label: Customers and Suppliers
 description: The customers and suppliers every app that sells or buys shares, with their groups.
-depends: [core]
+depends: [core, contacts]
 
 overlays:
+  # A contact's and an address's customer or supplier.
+  - entity: Contact
+    ops:
+      - {op: add_field, column: true, after: phones, field: {name: customer, type: link, to: Customer, in_filter: true}}
+      - {op: add_field, column: true, after: customer, field: {name: supplier, type: link, to: Supplier, in_filter: true}}
+  - entity: Address
+    ops:
+      - {op: add_field, column: true, after: is_primary, field: {name: customer, type: link, to: Customer, in_filter: true}}
+      - {op: add_field, column: true, after: customer, field: {name: supplier, type: link, to: Supplier, in_filter: true}}
   - entity: Project
     ops:
       - {op: add_field, column: true, after: end_date, field: {name: customer, type: link, to: Customer}}

@@ -184,6 +184,10 @@ deploy/kind/install.sh && deploy/kind/smoke.sh
     item prices of its own;
   * tables and columns stay where they were.
 
+  The second, `crm-erp`, comes with CRM 0.2.0, which works without ERP: a workspace with CRM and
+  ERP's selling gets the connector package `crm_erp` (quotations' taxes, sales orders made from
+  quotations, the orders' link to them), and contacts and addresses are the platform's `contacts`.
+
   To go back to a release before such a step, run `ferrum task upgrade_back step:<name>`
   (`core-split`) with every replica of the newer release stopped, then start the older image. The
   task takes out the packages the step installed and keeps the data.
