@@ -120,7 +120,9 @@ FERRUM_IMAGE=ghcr.io/cbferrum/ferrum:<tag> FERRUM_PREVIOUS_IMAGE=ghcr.io/cbferru
 (through `deploy/kind/kustomization.yaml`, which only swaps in local images and points
 attachments and backups at an S3 emulator) and checks it as an operator would: three database
 instances, the API, renderer and web app ready, the Gateway serving HTTPS with a certificate from
-cert-manager, HTTP redirected, no metrics outside; a workspace created and an invoice submitted,
+cert-manager, HTTP redirected, no metrics outside; no pod but the gateway's, the web app's and
+monitoring's reaching the API (the network policy), metrics only with their token, the
+autoscaler reading the API's CPU use (metrics-server); a workspace created and an invoice submitted,
 printed and given an attachment that every replica serves from object storage; the database
 primary killed (a standby is promoted and writes resume within 90 s — about 25 s in CI — with
 nothing lost); the API restarted replica by

@@ -4,7 +4,9 @@
 # operator would:
 #   * the database comes up as three instances, the API, the PDF renderer and the web app as two
 #     or three replicas each, the gateway as two proxies with a certificate from cert-manager;
-#   * through the gateway: HTTPS only, the API and the web app on their paths, no metrics;
+#   * through the gateway: HTTPS only, the API and the web app on their paths, no metrics; nothing
+#     else reaches the API (network policy); metrics only with their token; the autoscaler sees
+#     the API's CPU use;
 #   * a workspace is created and seeded; someone signs in, submits a Sales Invoice, prints it as
 #     HTML and PDF and attaches a file, which every replica then serves from object storage;
 #   * the database primary is killed: writes resume on the new primary, nothing is lost;
@@ -103,6 +105,37 @@ redirect=$(c -o /dev/null -w '%{http_code} %{redirect_url}' "http://$HOST:8080/a
 grep -qi "<html" <<<"$(c -f "$API/app/")" || fail "the web app"
 c -fo /dev/null "$API/.well-known/oauth-authorization-server" || fail "the OAuth metadata"
 if grep -q "ferrum_up" <<<"$(c "$API/metrics")"; then fail "metrics are reachable from outside"; fi
+
+step "the network policy, metrics and the autoscaler"
+# A pod outside the gateway, the web app and monitoring reaches the web app (which no policy
+# guards) but gets no answer from the API.
+kubectl -n ci-s3 run policy-probe --image=curlimages/curl:8.21.0 --restart=Never --command -- sleep 600 >/dev/null
+kubectl -n ci-s3 wait pod/policy-probe --for=condition=Ready --timeout=3m >/dev/null
+probe() { kubectl -n ci-s3 exec policy-probe -- curl -s -o /dev/null -m 5 -w '%{http_code}' "$1" 2>/dev/null || true; }
+for attempt in $(seq 1 15); do
+  [ "$(probe "http://ferrum-web.$NS.svc.cluster.local/healthz")" = 200 ] && break
+  [ "$attempt" -lt 15 ] || fail "the probe pod reaches nothing, so it proves nothing about the policy"
+  sleep 2
+done
+for _ in 1 2 3; do
+  [ "$(probe "http://ferrum.$NS.svc.cluster.local/api/ready")" != 200 ] || fail "a pod outside the gateway reached the API"
+done
+kubectl -n ci-s3 delete pod policy-probe --wait=false >/dev/null
+first=$(k get pods -l app.kubernetes.io/name=ferrum -o name | head -1)
+k port-forward "$first" 15150:5150 >/dev/null 2>&1 &
+metrics_forward=$!
+for _ in $(seq 1 40); do curl -fs http://127.0.0.1:15150/_ping >/dev/null 2>&1 && break; sleep 0.5; done
+token=$(k get secret ferrum-secrets -o jsonpath='{.data.FERRUM_METRICS_TOKEN}' | base64 -d)
+[ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:15150/metrics)" = 401 ] || fail "metrics without the token"
+grep -q "^ferrum_up 1" <<<"$(curl -fsS -H "authorization: Bearer $token" http://127.0.0.1:15150/metrics)" || fail "metrics with the token"
+kill "$metrics_forward"
+for attempt in $(seq 1 60); do
+  cpu=$(k get hpa ferrum -o jsonpath='{.status.currentMetrics[0].resource.current.averageUtilization}')
+  [ -n "$cpu" ] && break
+  [ "$attempt" -lt 60 ] || fail "the autoscaler has no CPU figures"
+  sleep 5
+done
+echo "    the API uses $cpu % of its CPU request; the autoscaler keeps 3 to 10 replicas"
 
 step "creating and seeding a workspace"
 k exec deploy/ferrum -- ferrum task create_tenant slug:cluster name:"Cluster Co" email:ops@cluster.test password:"$PASSWORD" \
