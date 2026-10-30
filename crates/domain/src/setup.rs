@@ -115,18 +115,21 @@ pub async fn setup_company(hc: &mut HookCtx<'_>, company: Uuid) -> Result<bool> 
     cc.insert("cost_center_name".into(), json!("Main"));
     cc.insert("company".into(), json!(company.to_string()));
     let cc = k.insert_tx(&sctx, hc.tx, "CostCenter", cc).await?;
-    let mut group = Doc::new();
-    group.insert("warehouse_name".into(), json!("All Warehouses"));
-    group.insert("company".into(), json!(company.to_string()));
-    group.insert("is_group".into(), json!(true));
-    let group = k.insert_tx(&sctx, hc.tx, "Warehouse", group).await?;
-    for (name, account) in [("Stores", "Stock In Hand"), ("Finished Goods", "Stock In Hand"), ("Work In Progress", "Work In Progress")] {
-        let mut w = Doc::new();
-        w.insert("warehouse_name".into(), json!(name));
-        w.insert("company".into(), json!(company.to_string()));
-        w.insert("parent_warehouse".into(), group.get("id").cloned().unwrap_or(Value::Null));
-        w.insert("account".into(), json!(ids.get(account).cloned()));
-        k.insert_tx(&sctx, hc.tx, "Warehouse", w).await?;
+    // Warehouses are inventory's: a workspace with accounting alone (an HR connector, say) has none.
+    if hc.ctx.schema.entity("Warehouse").is_some() {
+        let mut group = Doc::new();
+        group.insert("warehouse_name".into(), json!("All Warehouses"));
+        group.insert("company".into(), json!(company.to_string()));
+        group.insert("is_group".into(), json!(true));
+        let group = k.insert_tx(&sctx, hc.tx, "Warehouse", group).await?;
+        for (name, account) in [("Stores", "Stock In Hand"), ("Finished Goods", "Stock In Hand"), ("Work In Progress", "Work In Progress")] {
+            let mut w = Doc::new();
+            w.insert("warehouse_name".into(), json!(name));
+            w.insert("company".into(), json!(company.to_string()));
+            w.insert("parent_warehouse".into(), group.get("id").cloned().unwrap_or(Value::Null));
+            w.insert("account".into(), json!(ids.get(account).cloned()));
+            k.insert_tx(&sctx, hc.tx, "Warehouse", w).await?;
+        }
     }
     let mut v = Doc::new();
     for (field, account) in [

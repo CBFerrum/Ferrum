@@ -15,11 +15,17 @@ pub const ERP_PACKAGES: &[&str] = &["accounting", "inventory", "buying", "sellin
 /// (the groups and price lists every workspace was seeded with don't count).
 pub const CORE_SPLIT: &str = "core-split";
 
-/// Apps whose couplings with ERP moved into a connector package: (step, connector package, the
-/// packages a workspace had them with). Such a workspace gets the connector, so it keeps them.
+/// Apps whose couplings with ERP moved into connector packages: (step, [(connector package, the
+/// packages a workspace had it with)]). Such a workspace gets the connector, so it keeps them.
 /// * `crm-erp`: quotations' taxes, sales orders made from quotations (CRM 0.2.0);
-/// * `helpdesk-erp`: a ticket's sales invoice, a maintenance contract's sales order (Helpdesk 0.2.0).
-pub const CONNECTORS: &[(&str, &str, &[&str])] = &[("crm-erp", "crm_erp", &["crm", "selling"]), ("helpdesk-erp", "helpdesk_erp", &["helpdesk", "selling"])];
+/// * `helpdesk-erp`: a ticket's sales invoice, a maintenance contract's sales order (Helpdesk 0.2.0);
+/// * `hr-erp`: expense claims and advances, payroll's accounts and postings (HR 0.2.0).
+pub type Connector = (&'static str, &'static [(&'static str, &'static [&'static str])]);
+pub const CONNECTORS: &[Connector] = &[
+    ("crm-erp", &[("crm_erp", &["crm", "selling"])]),
+    ("helpdesk-erp", &[("helpdesk_erp", &["helpdesk", "selling"])]),
+    ("hr-erp", &[("hr_erp", &["hr", "accounting"]), ("payroll_erp", &["payroll", "accounting"])]),
+];
 
 /// Session advisory lock: one replica runs the steps; the others wait for it.
 const LOCK: i64 = 0x6665_7272_756d_0002;
@@ -29,8 +35,8 @@ pub async fn run(k: &Kernel) -> Result<()> {
     sqlx::query("select pg_advisory_lock($1)").bind(LOCK).execute(&mut *conn).await?;
     let out = async {
         core_split(k).await?;
-        for (step, connector, with) in CONNECTORS {
-            connector_step(k, step, connector, with).await?;
+        for (step, connectors) in CONNECTORS {
+            connector_step(k, step, connectors).await?;
         }
         Ok(())
     }
@@ -69,16 +75,17 @@ async fn finish(k: &Kernel, tenant: Uuid, step: &str, installed: &[String], want
     Ok(!new.is_empty())
 }
 
-async fn connector_step(k: &Kernel, step: &str, connector: &str, with: &[&str]) -> Result<()> {
+async fn connector_step(k: &Kernel, step: &str, connectors: &[(&str, &[&str])]) -> Result<()> {
     // Without the app compiled in, its workspaces wait for a server that has it.
-    if k.registry.catalog().package(connector).is_none() {
+    if connectors.iter().any(|(c, _)| k.registry.catalog().package(c).is_none()) {
         return Ok(());
     }
     for tenant in pending(k, step).await? {
         let mut tx = k.db.system_tenant_tx(tenant).await?;
         let installed: Vec<String> = sqlx::query_scalar("select name from installed_package where tenant_id = $1").bind(tenant).fetch_all(&mut *tx).await?;
         tx.commit().await?;
-        let want = if with.iter().all(|p| installed.iter().any(|i| i == p)) { vec![connector.to_string()] } else { vec![] };
+        let want: Vec<String> =
+            connectors.iter().filter(|(_, with)| with.iter().all(|p| installed.iter().any(|i| i == p))).map(|(c, _)| c.to_string()).collect();
         finish(k, tenant, step, &installed, &want).await?;
     }
     Ok(())

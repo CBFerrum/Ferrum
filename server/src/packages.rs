@@ -94,6 +94,8 @@ macro_rules! apps {
             out.push(ferrum_app_crm::CONNECTOR_MANIFEST);
             #[cfg(feature = "helpdesk")]
             out.push(ferrum_app_helpdesk::CONNECTOR_MANIFEST);
+            #[cfg(feature = "hr")]
+            out.push(ferrum_app_hr::CONNECTOR_MANIFEST);
             // ERP and its add-on for India, over the platform's own packages (docs/plan/apps-ui.md).
             out.push(ERP_MANIFEST);
             out.push(INDIA_MANIFEST);
