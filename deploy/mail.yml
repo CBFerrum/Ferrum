@@ -25,6 +25,8 @@ services:
       FERRUM_MAIL_URL: http://mail:8080
       FERRUM_MAIL_ADMIN: ${FERRUM_MAIL_ADMIN:-}
       FERRUM_MAIL_ADMIN_SECRET: ${FERRUM_MAIL_ADMIN_SECRET:-}
+      # The mail server's public host name, shown to people setting up mail programs.
+      FERRUM_MAIL_HOST: ${FERRUM_MAIL_HOST:-}
 
 volumes:
   mail-config:

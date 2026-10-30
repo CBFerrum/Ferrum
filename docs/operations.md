@@ -349,6 +349,7 @@ accounts so that they follow the people. The app's README ("Hosted mail") has th
 |---|---|---|
 | `FERRUM_MAIL_URL` | server | Stalwart's HTTP address as the server reaches it, e.g. `http://mail:8080` |
 | `FERRUM_MAIL_ADMIN`, `FERRUM_MAIL_ADMIN_SECRET` | server | a Stalwart administrator |
+| `FERRUM_MAIL_HOST` | server | optional: the server's public host name, e.g. `mail.example.com`, shown to people setting up mail programs (IMAP 993, SMTP 465) |
 
 **Compose.** `deploy/mail.yml` adds Stalwart:
 
@@ -390,7 +391,9 @@ accounts so that they follow the people. The app's README ("Hosted mail") has th
   * For hard separation, run one Stalwart per Ferrum deployment, or use the Enterprise edition,
     which has tenants.
 * **Passwords:** each account's password is random and sealed in Ferrum, and nobody is shown it.
-  Locking a person replaces every password of the account, app passwords included.
+  * People read their mail in Ferrum's webmail, which signs in for them.
+  * Mail programs use app passwords that people make there.
+  * Locking a person replaces every password of the account, app passwords included.
 * **Accounts Ferrum does not know:** an existing account at a person's address, made by hand or
   left from another workspace, is never taken over. Sync Mailboxes reports it under `failed`.
 
