@@ -415,6 +415,9 @@ The component adds:
   but they are made for a mouse and keyboard.
 * **Accessibility:** the editors draw on a canvas and offer little to screen readers. The online
   editor stays available to everyone through "Open with".
+* **Saves under another name.** WordCraft and PdfCraft show their own File menu, with Open and
+  New. Only a file saved under the opened name becomes a new version of it. Anything else they
+  hand back (Save As, an export, another file) is saved as a new file beside it.
 * **Names:** the add-on and its listing do not use the ArtCraft name or logos (their brand terms).
   The editors show their own.
 
