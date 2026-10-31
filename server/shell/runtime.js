@@ -122,6 +122,7 @@ async function signOut() {
   const pending = [...uploads.values()].filter((u) => mine(u) && !FINISHED.has(u.state));
   if (pending.length && !confirm(`${pending.length === 1 ? "An upload has" : `${pending.length} uploads have`} not finished. Sign out and stop ${pending.length === 1 ? "it" : "them"}?`)) return;
   await forgetUploads();
+  await pushOff().catch(() => {});
   await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
   try {
     sessionStorage.removeItem("ferrum.session");
@@ -309,6 +310,11 @@ button[aria-pressed="true"], button[aria-expanded="true"] { background: var(--fe
   background: var(--ferrum-surface, #fff); color: inherit; font: inherit; font-size: 13px; }
 .kind select:focus-visible { outline: none; box-shadow: var(--ferrum-focus-ring, 0 0 0 3px rgb(47 91 234 / .35)); }
 .inote { margin: 2px 6px 8px; padding: 8px 10px; border-radius: 8px; background: var(--ferrum-surface-2, #eef1f5); color: var(--ferrum-muted, #5b6472); font-size: 12.5px; }
+.kind.device { margin: 0 0 6px; padding: 8px 8px; border: 1px solid var(--ferrum-border, #d9dee5); }
+.kind.device button { flex: none; height: 30px; }
+.kind .dlabel { font-size: 13.5px; font-weight: 500; }
+button.primary { background: var(--ferrum-primary, #2f5bea); color: var(--ferrum-primary-text, #fff); }
+button.primary:hover { background: var(--ferrum-primary-hover, #2449c4); }
 .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .side { position: fixed; top: var(--ferrum-bar-height, 48px); right: 0; bottom: 0; width: var(--ferrum-panel-width, 380px); max-width: 100vw;
   display: flex; flex-direction: column; background: var(--ferrum-surface, #fff); border-left: 1px solid var(--ferrum-border, #d9dee5);
@@ -636,7 +642,7 @@ window.addEventListener(
 // other what the person read; each hears new ones on the live channel itself.
 const inbox = { unread: 0, items: null, failed: false, types: null, view: "list", status: "" };
 const inboxTabs = "BroadcastChannel" in window ? new BroadcastChannel("ferrum-inbox") : null;
-const CHANNEL_LABELS = { inapp: "In Ferrum", email: "Email at once", digest: "Daily email digest", off: "Off" };
+const CHANNEL_LABELS = { inapp: "In Ferrum", email: "Email at once", digest: "Daily email digest", push: "On my devices", off: "Off" };
 
 inboxTabs?.addEventListener("message", (e) => {
   setUnread(e.data?.unread, false);
@@ -647,7 +653,133 @@ inboxTabs?.addEventListener("message", (e) => {
 function setUnread(n, share) {
   inbox.unread = Math.max(0, Number(n) || 0);
   bar()?.drawBell();
-  if (share) inboxTabs?.postMessage({ unread: inbox.unread });
+  if (share) {
+    inboxTabs?.postMessage({ unread: inbox.unread });
+    // The installed suite's icon shows the count (the core worker sets it when one is pushed);
+    // an app installed on its own badges its icon itself (`ferrum.shell.badge`).
+    if (!boot?.app?.installable) (inbox.unread ? navigator.setAppBadge?.(inbox.unread) : navigator.clearAppBadge?.())?.catch(() => {});
+  }
+}
+
+// ───────────────────────── this device's notifications (§12.5) ─────────────────────────
+// The core worker (/sw.js) shows notifications pushed to this device. The person turns them on
+// per device in the bell's settings (the browser asks them once); the subscription belongs to
+// this browser session, so signing out ends it. The browser's subscription is sent again only for
+// the person who turned it on here: someone else signing in on this browser starts with it off.
+
+const PUSH_PERSON = "ferrum.push.person";
+const push = { on: !!boot?.push?.on, busy: false };
+
+/** Whether this browser can be pushed to: a secure page with a worker, push and notifications. */
+const canPush = () => window.isSecureContext && "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+const isApple = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
+/** The server's key as `applicationServerKey` takes it. */
+function pushKey() {
+  const b64 = String(boot?.push?.key ?? "").replace(/-/g, "+").replace(/_/g, "/");
+  return Uint8Array.from(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4)), (c) => c.charCodeAt(0));
+}
+
+/** Whether a subscription was made with the server's current key (one it replaced cannot be pushed to). */
+function sameKey(sub) {
+  const had = sub.options?.applicationServerKey;
+  if (!had) return true;
+  const a = new Uint8Array(had);
+  const b = pushKey();
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+/** Sends this device's subscription to the server, making one when `make` (after the person said yes). */
+async function pushOn(make) {
+  const reg = await navigator.serviceWorker.register("/sw.js", { scope: "/", updateViaCache: "none" });
+  await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  if (sub && !sameKey(sub)) {
+    await sub.unsubscribe().catch(() => {});
+    sub = null;
+  }
+  if (!sub && !make) return false;
+  sub ??= await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: pushKey() });
+  const r = await fetch("/api/push", { method: "PUT", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(sub.toJSON()) });
+  if (!r.ok) throw new Error((await r.json().catch(() => null))?.error ?? `The server answered ${r.status}.`);
+  try {
+    localStorage.setItem(PUSH_PERSON, String(boot?.person?.id ?? ""));
+  } catch {}
+  push.on = true;
+  return true;
+}
+
+/** Ends this device's pushes: in the browser, and on the server while still signed in. */
+async function pushOff() {
+  try {
+    localStorage.removeItem(PUSH_PERSON);
+  } catch {}
+  const was = push.on;
+  push.on = false;
+  if (!canPush()) return;
+  const sub = await navigator.serviceWorker.getRegistration("/").then((r) => r?.pushManager.getSubscription());
+  await Promise.allSettled([sub?.unsubscribe(), (was || sub) && fetch("/api/push", { method: "DELETE", credentials: "same-origin" })]);
+}
+
+/** On a page of a new session: the browser still has the subscription of the person who turned
+ *  notifications on here, so this session gets them again; anyone else's is ended. */
+async function resumePush() {
+  if (push.on || !boot?.push?.key || !canPush() || Notification.permission !== "granted") return;
+  const sub = await navigator.serviceWorker.getRegistration("/").then((r) => r?.pushManager.getSubscription());
+  if (!sub) return;
+  let mine = false;
+  try {
+    mine = localStorage.getItem(PUSH_PERSON) === String(boot?.person?.id ?? "");
+  } catch {}
+  if (mine) await pushOn(false);
+  else await sub.unsubscribe();
+}
+
+/** Turns this device's notifications on or off from the bell's settings. Asking the browser's
+ *  permission comes first, inside the click (Safari allows it nowhere else). */
+function togglePush() {
+  if (push.busy) return;
+  const turnOn = !push.on;
+  const asked = turnOn ? Notification.requestPermission() : Promise.resolve("granted");
+  push.busy = true;
+  inbox.status = "";
+  drawInbox();
+  asked
+    .then((p) => {
+      if (p !== "granted") throw new Error(p === "denied" ? "Notifications are blocked for this site in your browser's settings." : "Notifications stay off on this device.");
+      return turnOn ? pushOn(true) : pushOff();
+    })
+    .catch((e) => {
+      push.on = !turnOn && push.on;
+      inbox.status = e?.message ?? "Could not change that. Try again.";
+    })
+    .finally(() => {
+      push.busy = false;
+      drawInbox();
+    });
+}
+
+/** Closes what this device shows for notifications read in the bar (one, or all). */
+function closeShown(id) {
+  navigator.serviceWorker
+    ?.getRegistration("/")
+    .then((r) => r?.getNotifications(id ? { tag: id } : undefined))
+    .then((list) => list?.forEach((n) => n.close()))
+    .catch(() => {});
+}
+
+/** The bell's settings: whether this device gets notifications, and how to turn them on or off. */
+function deviceRow() {
+  if (!boot?.push?.key) return null;
+  const row = (text, action) =>
+    el("div", { class: "kind device" }, el("span", { class: "what" }, el("span", { class: "dlabel", text }), action?.hint ? el("small", { text: action.hint }) : null), action?.button ?? null);
+  if (!canPush())
+    return row("Notifications on this device", {
+      hint: isApple() ? "Add Ferrum to your Home Screen (Share, then Add to Home Screen), open it from there, and turn them on." : "This browser cannot show notifications from Ferrum.",
+    });
+  if (Notification.permission === "denied") return row("Notifications on this device", { hint: "Blocked for this site in your browser's settings." });
+  const button = el("button", { type: "button", class: push.on ? "ghost" : "primary", disabled: push.busy, onclick: () => togglePush() }, push.busy ? "Working…" : push.on ? "Turn off" : "Turn on");
+  return row("Notifications on this device", { hint: push.on ? "On: kinds set to On my devices pop up here." : "Off: nothing pops up on this device.", button });
 }
 
 const answer = (r) => (r?.ok ? r.json() : (r?.status === 401 && toLogin(), null));
@@ -689,6 +821,7 @@ function openNote(n) {
   if (!n.read_at) {
     n.read_at = new Date().toISOString();
     setUnread(inbox.unread - 1, true);
+    closeShown(n.id);
     // keepalive: the request outlives the page it is leaving.
     fetch(`/api/notifications/${encodeURIComponent(n.id)}/read`, { method: "POST", credentials: "same-origin", keepalive: true }).catch(() => {});
   }
@@ -707,6 +840,7 @@ async function readAll() {
   for (const n of inbox.items ?? []) n.read_at ??= new Date().toISOString();
   inbox.status = "";
   setUnread(0, true);
+  closeShown(null);
   drawInbox();
 }
 
@@ -724,7 +858,7 @@ async function chooseChannel(kind, select) {
   const body = JSON.stringify({ kind: kind.kind, channel: kind.channel === kind.default ? null : kind.channel });
   const r = await fetch("/api/notifications/preferences", { method: "PUT", credentials: "same-origin", headers: { "content-type": "application/json" }, body }).catch(() => null);
   select.disabled = false;
-  inbox.status = r?.ok ? "" : "Could not save that. Try again.";
+  inbox.status = r?.ok ? (kind.channel === "push" && !push.on ? "Turn on notifications on this device to get these here." : "") : "Could not save that. Try again.";
   if (!r?.ok) {
     kind.channel = before;
     select.value = before;
@@ -744,6 +878,8 @@ function drawInbox() {
     else if (t.failed) kinds.append(el("p", { class: "rhint", text: "Could not load your choices." }));
     else {
       if (!t.email) kinds.append(el("p", { class: "inote", text: "This server sends no email, so notifications stay in Ferrum." }));
+      const device = t.push ? deviceRow() : null;
+      if (device) kinds.append(device);
       let group;
       for (const k of t.types ?? []) {
         if ((k.app ?? "") !== group) kinds.append(el("p", { class: "rgroup", text: k.app ?? "All apps" }));
@@ -752,7 +888,7 @@ function drawInbox() {
         const select = el("select", { id, "aria-describedby": `${id}-hint` });
         for (const c of t.channels ?? []) {
           const mail = c === "email" || c === "digest";
-          select.append(el("option", { value: c, disabled: mail && !t.email, text: CHANNEL_LABELS[c] ?? c }));
+          select.append(el("option", { value: c, disabled: (mail && !t.email) || (c === "push" && !t.push), text: CHANNEL_LABELS[c] ?? c }));
         }
         select.value = k.channel;
         const hint = el("small", { id: `${id}-hint` });
@@ -883,7 +1019,10 @@ class FerrumBar extends HTMLElement {
     });
     this.drawTools();
     if (this.bellBtn) {
-      (window.requestIdleCallback ?? ((f) => setTimeout(f, 1200)))(() => countInbox());
+      (window.requestIdleCallback ?? ((f) => setTimeout(f, 1200)))(() => {
+        countInbox();
+        if (hostKind === "page") resumePush().catch(() => {});
+      });
       // A new one: counted, listed if the bell is open; one that asks for the person, said.
       subscribe(
         ["notification"],

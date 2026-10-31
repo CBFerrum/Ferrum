@@ -218,6 +218,9 @@ impl Kernel {
         if ev.topic == crate::notify::MAIL_TOPIC {
             return self.mail_notification(ev.tenant_id, &ev.payload).await;
         }
+        if ev.topic == crate::webpush::PUSH_TOPIC {
+            return self.push_notification(ev.tenant_id, &ev.payload).await;
+        }
         if ev.topic == MAIL_TOPIC {
             let mailer = self.mailer.as_ref().ok_or_else(|| Error::Unavailable("no mailer is configured; queued mail waits for one".into()))?;
             let field = |k: &str| ev.payload.get(k).and_then(Value::as_str).unwrap_or_default();

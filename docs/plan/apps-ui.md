@@ -247,7 +247,7 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     bar counts what is unread (live, and in step across tabs), lists the latest, opens each through
     `/open`, marks all read, and holds the per-kind choices; mentions and assignments also show a
     notice. Emails go out through the outbox once; the hourly maintenance queues each digest in the
-    transaction that claims its notifications. Push waits for the core worker (§12.12). Checked in
+    transaction that claims its notifications. Pushing to devices came later (below). Checked in
     Chromium, Firefox and WebKit, light and dark, at phone width.
   * My work on Home (§11.8): the platform's part (`/api/work`: open assignments, records waiting for
     the person's approval, unread mentions) and the apps' `shell.work` providers (Calendar's
@@ -282,6 +282,23 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     session, is back (§16); the server prices each again. Checked in Chromium and Firefox with the
     server stopped (the page from the worker, a sale priced offline at the server's total, sent on
     return) and in WebKit on a loaded page (Playwright's WebKit keeps nothing in the Cache API).
+  * Notifications on devices and installed apps (§12.5). The core worker (`/sw.js`, scope `/`, no
+    fetch handler) is registered when a person turns notifications on for a device in the bell's
+    settings; kinds set to "On my devices" (the `push` channel) then pop up there. The server sends
+    each through the browser's push service (RFC 8030), encrypted for the device (RFC 8291, with
+    `ring`, checked against the RFC's example) and signed with its VAPID key (RFC 8292), made once,
+    sealed with the secret key and shared by replicas (`server_key`); one outbox delivery per
+    device, retried alone; a service that forgot the device (404, 410) forgets it here. A
+    subscription belongs to its browser session: signing out there or everywhere, deactivation or
+    expiry end it, and a browser keeps it for the person who turned it on (someone else signing in
+    starts with it off). The worker shows the notification, puts the unread count on the installed
+    icon (Badging API), and a click marks it read and opens `/open/…`. Every page links the
+    workspace's manifest (`id: /`, Ferrum's icons, PNGs for Android and iOS); an app may ask to be
+    installable on its own (`installable` on its `shell.app` entry): its pages link its manifest
+    (`id: /{route}/`, its launcher tile drawn as SVG). Point of Sale 0.2.2 asks. Checked in Chrome
+    (both installable by Chrome's own checks; a message the server pushed, opened by an independent
+    RFC 8291 implementation and shown by the worker) and in Firefox and WebKit (the switch, or why
+    there is none).
 
 * **U8, third parties: built** (31 October 2026).
   * Isolated interfaces (D9): an app whose bundle the server does not trust, uploaded to one
@@ -813,7 +830,7 @@ ui:
     connect: ["setting:meet_url"] # an operator setting resolved at run time (LiveKit's address)
 contributes:
   shell.app:                      # launcher entries; each owns a route, all served by this app's UI
-    - { id: mail, route: mail, title: Mail, icon: assets/mail.svg, color: "#2563eb", roles: [Comms User] }
+    - { id: mail, route: mail, title: Mail, icon: assets/mail.svg, color: "#2563eb", roles: [Comms User], installable: true }
     - { id: chat, route: chat, title: Chat, icon: assets/chat.svg }
     - { id: meet, route: meet, title: Meet, icon: assets/meet.svg, compact: true }
     - { id: calendar, route: calendar, title: Calendar, icon: assets/calendar.svg, aliases: [agenda] }
@@ -1163,6 +1180,9 @@ the last two.
 * **Installable apps**: a suite manifest at `/` and optional per-app manifests (`/mail/`, with
   `id: /mail/`); nested scopes are tested in U0 in Chrome, Edge and Safari.
 * Unread counts go to installed apps' icons through the Badging API.
+* Built (U5): the core worker with Web Push (`/api/push`, the `push` channel, the kernel's
+  webpush.rs), the suite's manifest and apps' own (`installable: true` on a `shell.app` entry),
+  badges from pushes and from the bar. Nested scopes were checked in Chrome only.
 
 ### 12.6 Work that outlives a page
 

@@ -139,6 +139,15 @@ pub struct Settings {
     /// bootstrap, with hot reload. Never on a server people use.
     #[serde(default)]
     pub dev_ui: bool,
+    /// The push services notifications are sent to (`FERRUM_PUSH_SERVICES`), comma-separated:
+    /// hosts (their subdomains too) or exact origins. Empty: the browsers' own (Chrome, Edge,
+    /// Firefox, Safari).
+    #[serde(default)]
+    pub push_services: String,
+    /// Who push services may contact about this server's pushes (`FERRUM_PUSH_CONTACT`, `mailto:`
+    /// or `https:`). Empty: the server's address when it is https.
+    #[serde(default)]
+    pub push_contact: String,
 }
 
 fn default_session_days() -> u32 {

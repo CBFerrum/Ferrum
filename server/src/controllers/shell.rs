@@ -156,6 +156,12 @@ pub(crate) async fn page_bootstrap(
     // A host that belongs to one workspace (registered, or the server's one): what browsers keep
     // for its origin is that workspace's (§7.2). A shared host (shape A′) serves several in turn.
     boot["host"]["bound"] = json!(matches!(st.shell.place(headers).await, Ok(Place::Workspace(_) | Place::Portal(_))));
+    // Web Push (§12.5): the key a device subscribes with, and whether this one has. None for
+    // callers without a browser session, or a server without a secret key.
+    boot["push"] = match (device, st.kernel.vapid().await.map_err(err)?) {
+        (Some(d), Some(v)) => json!({"key": v.public, "on": st.kernel.push_status(ctx, Some(d)).await.map_err(err)?.here}),
+        _ => Value::Null,
+    };
     Ok((boot, kind))
 }
 
@@ -319,7 +325,10 @@ async fn page(
     match first {
         "_ui" => return ui_file(&st, rest.unwrap_or_default(), &headers).await,
         "_isolated" => return isolated_file(&st, &origins, rest.unwrap_or_default(), &headers).await,
+        "_shell" if rest == Some("app-icon.svg") => return Ok(app_icon(&q)),
         "_shell" => return platform_file(rest.unwrap_or_default()),
+        "sw.js" if rest.is_none() => return Ok(core_worker()),
+        "manifest.webmanifest" if rest.is_none() => return manifest(&st, &headers, &q).await,
         "login" if rest.is_none() => return login(&st, &headers, &uri, &q).await,
         "_auth" if rest == Some("callback") => return auth_callback(&st, &headers, &q).await,
         // Browsers ask for it on pages without an icon: the platform's.
@@ -438,6 +447,7 @@ async fn page(
             "title": title,
             "compact": false,
             "isolated": true,
+            "installable": item.get("installable").and_then(Value::as_bool).unwrap_or(false),
         });
         let (boot, _) = match page_bootstrap(&st, &headers, &ctx, device, app_json, "page").await {
             Ok(b) => b,
@@ -461,6 +471,7 @@ async fn page(
         "entry": route,
         "title": title,
         "compact": item.get("compact").and_then(Value::as_bool).unwrap_or(false),
+        "installable": item.get("installable").and_then(Value::as_bool).unwrap_or(false),
     });
     let (boot, _) = match page_bootstrap(&st, &headers, &ctx, device, app_json, "page").await {
         Ok(b) => b,
@@ -861,6 +872,69 @@ fn platform_file(rest: &str) -> ApiResult<Response> {
         return Ok(res);
     }
     Ok(not_found("/_shell/"))
+}
+
+/// `/sw.js`: the core worker (§12.5), the same for everyone.
+fn core_worker() -> Response {
+    let mut res = shell::file_response(Bytes::from_static(shell::platform_file("core-sw.js").expect("compiled in").1), "text/javascript; charset=utf-8", false);
+    res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    res
+}
+
+/// `/manifest.webmanifest` (§12.5): the workspace as an app to install, or with `?app={route}`
+/// one of its apps that asks to be installable on its own and the person may use. Browsers ask
+/// with the cookie (`crossorigin="use-credentials"`); without one, the workspace is the host's.
+async fn manifest(st: &AppState, headers: &HeaderMap, q: &[(String, String)]) -> ApiResult<Response> {
+    let caller = match shell::session_cookie(headers, st.shell.secure) {
+        Some(_) => caller_on(st, &Method::GET, headers).await.ok().map(|(ctx, _)| ctx),
+        None => None,
+    };
+    let tenant = match &caller {
+        Some(ctx) => Some(ctx.tenant),
+        None => match st.shell.place(headers).await? {
+            Place::Workspace(t) => Some(t),
+            _ => None,
+        },
+    };
+    let workspace = match tenant {
+        Some(t) => st.shell.workspace(t).await?.name.clone(),
+        None => "Ferrum".to_string(),
+    };
+    let body = match (query(q, "app"), &caller) {
+        (None, _) => shell::suite_manifest(&workspace),
+        (Some(route), Some(ctx)) => {
+            let apps = st.apps.shell_apps(ctx.tenant).await?;
+            let kind = st.shell.kind(ctx.tenant, ctx.user).await?;
+            match shell::find_route(&apps, route) {
+                Some((_, item, _)) if item.get("installable").and_then(Value::as_bool) == Some(true) && may_use(ctx, &kind, item) => {
+                    let route = item.get("route").and_then(Value::as_str).unwrap_or(route);
+                    shell::app_manifest(route, item, &workspace)
+                }
+                _ => return Ok(not_found("/manifest.webmanifest")),
+            }
+        }
+        (Some(_), None) => return Ok(not_found("/manifest.webmanifest")),
+    };
+    let mut res = Json(body).into_response();
+    let h = res.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/manifest+json"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-cache"));
+    h.insert(header::VARY, HeaderValue::from_static("Cookie"));
+    Ok(res)
+}
+
+/// `/_shell/app-icon.svg?icon=&color=&letter=&mask=`: an app's launcher tile as an image, for its
+/// install manifest. Public: it holds nothing but what the query says.
+fn app_icon(q: &[(String, String)]) -> Response {
+    let svg = shell::app_icon_svg(
+        query(q, "icon").unwrap_or_default(),
+        query(q, "color").unwrap_or_default(),
+        query(q, "letter").unwrap_or_default(),
+        query(q, "mask") == Some("1"),
+    );
+    let mut res = shell::file_response(Bytes::from(svg), "image/svg+xml", false);
+    res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=86400"));
+    res
 }
 
 fn query<'a>(q: &'a [(String, String)], key: &str) -> Option<&'a str> {

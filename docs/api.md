@@ -475,20 +475,51 @@ Each notification has a kind: the platform's `mention`, `assignment`, `comment`,
 `automation` and `general`, and the apps' (`shell.notification` in app.yaml) as `{app}.{id}`. Each
 person chooses per kind how it reaches them: `inapp` (in the bar), `email` (in the bar and by email
 at once), `digest` (in the bar, and in one daily email of those still unread once the oldest has
-waited a day) or `off`. Links in emails open the record (`/open/{entity}/{id}`) on the workspace's
-own address, else on `PUBLIC_URL`.
+waited a day), `push` (in the bar, and on each device where they turned notifications on; below)
+or `off`. Links in emails open the record (`/open/{entity}/{id}`) on the workspace's own address,
+else on `PUBLIC_URL`.
 
 | Request | |
 |---|---|
 | `GET /api/notifications?limit=` | `{notifications: [{id, user_id, title, body, entity, record_id, kind, delivery, read_at, emailed_at, created_at}], unread}`, newest first; `limit` up to 100 (the default), 0 for the count alone |
 | `POST /api/notifications/{id}/read`, `POST /api/notifications/read-all` | marks one, or all, read (204) |
-| `GET /api/notifications/types` | `{types: [{kind, label, app, default, channel}], channels, email}`: the kinds the caller may choose for (apps' only for apps they may use), each with its default and their choice; `email` is false when the server sends no email |
-| `PUT /api/notifications/preferences` `{kind, channel}` | how one kind reaches the caller; `channel: null` returns it to the default. `email` and `digest` need a mailer |
+| `GET /api/notifications/types` | `{types: [{kind, label, app, default, channel}], channels, email, push}`: the kinds the caller may choose for (apps' only for apps they may use), each with its default and their choice; `email` is false when the server sends no email, `push` when it pushes to no devices (no secret key) |
+| `PUT /api/notifications/preferences` `{kind, channel}` | how one kind reaches the caller; `channel: null` returns it to the default. `email` and `digest` need a mailer, `push` the secret key |
 
 An app sends its kinds with `ferrum_kernel::notify::send_kind(tx, tenant, user, "{app}.{id}",
 default, title, body, entity, record)`, `default` being what its manifest declares
-(`notify::declared_default`): `email` when the declared list has email, else `digest`, else
-`inapp` (`push` too, until the platform pushes); an empty list is `off`.
+(`notify::declared_default`): `email` when the declared list has email, else `push`, else
+`digest`, else `inapp`; an empty list is `off`.
+
+### Notifications on a device — `/api/push` (docs/plan/apps-ui.md §12.5)
+
+Web Push (RFC 8030, 8291, 8292): the bell's settings turn notifications on for the device in
+use, and kinds set to `push` then pop up there through the core worker (`/sw.js`), even with no
+Ferrum page open. A device's subscription belongs to its browser session: signing that device
+out, signing out everywhere, or a person made inactive ends it. Each message is encrypted for the
+device (the push service cannot read it) and carries `{id, title, body, url, unread}`; the worker
+shows it, puts `unread` on the installed app's icon, and a click marks it read and opens `url`
+(`/open/{entity}/{id}`, else Home). The cookie of a browser session is needed; tokens of API
+clients are refused (422).
+
+| Request | |
+|---|---|
+| `GET /api/push` | `{key, here, devices}`: the server's VAPID key (base64url, the browser's `applicationServerKey`; `null` when it pushes to no devices), whether this device has notifications on, and on how many of the caller's devices they are |
+| `PUT /api/push` `{endpoint, keys: {p256dh, auth}}` | this device gets them, through this subscription (`PushSubscription.toJSON()`) with its browser's push service (204). Refused (422) for an endpoint that is not a push service the server sends to, or keys that are not a subscription's; 403 for someone acting as another person |
+| `DELETE /api/push` | this device gets no more (204) |
+
+The page bootstrap carries `push: {key, on}` for signed-in pages (`null` without push), so the bar
+knows without asking. Browsers' own services are allowed (Chrome's and Edge's, Firefox's, Safari's,
+Windows'); operators may list others (`FERRUM_PUSH_SERVICES`, docs/operations.md).
+
+### Installing — `/manifest.webmanifest`, `/sw.js`
+
+| Request | |
+|---|---|
+| `GET /manifest.webmanifest` | the workspace as an app to install (`id: /`, its name, Ferrum's icons); asked with the page's cookie, else for the workspace the host belongs to |
+| `GET /manifest.webmanifest?app={route}` | an app that asks to be installable on its own (`installable: true` on its `shell.app` entry), for someone who may use it: `id`, `scope` and `start_url` `/{route}/`, its launcher tile as the icon; else 404 |
+| `GET /_shell/app-icon.svg?icon=&color=&letter=&mask=` | an app's launcher tile as an image (a Lucide icon of the bar's, else the letter, on the colour); square with `mask=1` |
+| `GET /sw.js` | the core worker, scope `/`: no fetch handler, so it adds nothing to page loads; registered only when someone turns notifications on |
 
 ## My work — `GET /api/work`
 

@@ -118,10 +118,11 @@ operator to know. Report a vulnerability privately to the maintainers rather tha
   invoice, its number and the seller, and for its signature: under the key the company names, or
   else, for codes NIC issued, under NIC's published signing keys (shipped in
   `crates/domain/src/nic_keys`, verified against NIC's own signed sample).
-* Outbound requests (webhooks, plugins, identity providers, the IRP): https, hosts resolved once and
-  pinned, private and loopback addresses refused, no redirects, time and size limits. Plugins
-  reach only the hosts they declare; identity providers on a private network need
-  `FERRUM_SSO_ALLOW_PRIVATE`.
+* Outbound requests (webhooks, plugins, identity providers, the IRP, push services): https, hosts
+  resolved once and pinned, private and loopback addresses refused, no redirects, time and size
+  limits. Plugins reach only the hosts they declare; identity providers on a private network need
+  `FERRUM_SSO_ALLOW_PRIVATE`; pushes go only to the browsers' push services
+  (`FERRUM_PUSH_SERVICES`), whatever endpoint a subscription names.
 * Plugins run as WebAssembly without ambient access, with CPU fuel, a memory cap, a host-call
   budget and a nesting limit; a failing plugin fails closed.
 * Request bodies, uploads, exports and list pages have size limits; database statements time out
@@ -143,6 +144,13 @@ operator to know. Report a vulnerability privately to the maintainers rather tha
   `X-Content-Type-Options: nosniff`, a referrer policy and same-origin framing. Session tokens live
   in session storage and travel in the `Authorization` header (no cookies, so no cross-site request
   forgery).
+* Notifications on devices (Web Push, [operations](operations.md#notifications-on-devices-web-push)):
+  each message is encrypted for the one device (RFC 8291), so the push service carries what it
+  cannot read, and signed with the server's VAPID key, sealed with the secret key. A device's
+  subscription belongs to its browser session and ends with it (signing out there or everywhere,
+  the person made inactive); someone acting as another person cannot subscribe to their
+  notifications; a subscription another person's browser session registered last is theirs. The
+  core worker opens only addresses on its own host, and has no fetch handler.
 
 ## Review, 2026-10-30
 

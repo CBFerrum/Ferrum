@@ -119,7 +119,7 @@ pub(crate) fn contract(point: &str) -> Value {
             json!({
                 "route": text(31), "title": text(60), "description": text(200), "icon": text(200), "color": text(7),
                 "roles": list(30, text(60)), "aliases": list(5, text(31)), "compact": {"type": "boolean"},
-                "priority": {"type": "integer"}, "entity": text(80),
+                "priority": {"type": "integer"}, "entity": text(80), "installable": {"type": "boolean"},
             }),
             vec!["title"],
         ),

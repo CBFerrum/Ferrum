@@ -40,6 +40,8 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_APP_STORES` | no | App stores, comma-separated base URLs (`https://store.example`); empty: no store, only apps built in or uploaded |
 | `FERRUM_APP_TRUSTED_KEYS` | with stores | Comma-separated `store:<base64>` / `publisher:<base64>` Ed25519 public keys whose signatures this cluster trusts (`ferrum-app keygen` prints them). Store apps need a store countersignature by one of them; several keys may be trusted at once (rotation) |
 | `FERRUM_DEV_UI` | no | Development only: administrators may serve an app's pages from its interface's Vite server on the same machine (`ferrum-app dev --ui`, [Apps with interfaces of their own](#apps-with-interfaces-of-their-own)). The server warns at start when it is on. Never on a server people use |
+| `FERRUM_PUSH_SERVICES` | no | The push services notifications go to, comma-separated: hosts (their subdomains too, over https) or exact origins. Empty: the browsers' own, Chrome's and Edge's (`fcm.googleapis.com`), Firefox's (`push.services.mozilla.com`), Safari's (`push.apple.com`) and Windows' (`notify.windows.com`); see [Notifications on devices](#notifications-on-devices-web-push) |
+| `FERRUM_PUSH_CONTACT` | recommended | Who push services may contact about this server's pushes, `mailto:ops@example.com` or an `https:` page; default `PUBLIC_URL` when it is https. Apple's service wants one |
 | `FERRUM_APP_UPLOADS` | no | Who may upload app bundles: `off`, `private` (production default: sandboxed apps without tables, visible only in the uploading workspace) or `cluster` (development default: available to every workspace) |
 | `FERRUM_USER_REQUESTS_PER_MINUTE` | no | Requests one user (with any of their sessions and API keys) may make per minute on each replica; beyond it they get `429` with `Retry-After`. Default 3000; `0` turns it off. It counts per replica, so the cluster-wide budget grows with the replica count |
 | `FERRUM_ADDRESS_REQUESTS_PER_MINUTE` | no | Requests one client address may make per minute on each replica, counted for requests that came through the proxy (`X-Forwarded-For`); default 6000, `0` turns it off. Health probes and in-cluster calls are not counted |
@@ -799,6 +801,32 @@ the bar runtime (`/_shell/…`) and the app's files (`/_ui/…`).
   that app's public site at its root, without the shell or sessions: Commerce's storefront, with
   its own `robots.txt` and `sitemap.xml`. Point the domain at the server like the workspace's.
   Administrators add such hosts themselves (below).
+
+## Notifications on devices (Web Push)
+
+People turn notifications on per device in the bell's settings, and kinds they set to "On my
+devices" then pop up there, even with no Ferrum page open (docs/plan/apps-ui.md §12.5). The server
+sends each one to the browser's push service, encrypted for that device (the service cannot read
+it) and signed with the server's VAPID key.
+
+* **Nothing to configure** beyond `FERRUM_SECRET_KEY`. The VAPID key is made by the first replica
+  that needs it, sealed with the secret key in the database (`server_key`), and shared by every
+  replica. Without a secret key there is no Web Push; the bell does not offer it.
+* **Outbound access.** Replicas reach the push services over https: `fcm.googleapis.com`,
+  `updates.push.services.mozilla.com`, `web.push.apple.com` and `*.notify.windows.com`. Where egress
+  is filtered, allow those; a push service that cannot be reached is tried again with the outbox's
+  backoff (up to 15 times over about 6 hours), and the bar has the notification meanwhile.
+* **Only push services.** The server sends to no address but those (`FERRUM_PUSH_SERVICES`), each
+  checked again when sending (no private addresses), so a subscription cannot point it elsewhere.
+* **A new secret key** cannot open the stored VAPID key: the server logs an error, makes a new one,
+  and forgets subscriptions made with the old one as they come up. People's browsers subscribe
+  again on their next visit without asking (the permission stays).
+* **Sign-out ends it.** A device's subscription belongs to its browser session: signing that device
+  out, signing out everywhere, deactivating the person or the session expiring stops its pushes.
+* **Installing.** Every page links the workspace's manifest (`/manifest.webmanifest`), so browsers
+  offer to install it as one app; an app that asks (`installable: true` on its `shell.app` entry,
+  Point of Sale does) is offered on its own pages as an app of its own. Installed apps show the
+  unread count on their icon where the system supports it.
 
 ## Custom domains
 
