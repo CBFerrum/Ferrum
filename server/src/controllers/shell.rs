@@ -151,6 +151,8 @@ pub(crate) async fn page_bootstrap(
     // Where outside callers reach the workspace's endpoints (`/api/public/{workspace}/…`): the
     // hooks host in shapes B and C, else the server's public address.
     boot["api"]["hooks"] = json!(st.shell.hooks_origin(headers).or_else(|| st.kernel.settings.public_url.clone()));
+    // Shapes B and C: the accounts host, where the person's other workspaces are.
+    boot["api"]["accounts"] = json!(st.shell.accounts_origin(headers));
     Ok((boot, kind))
 }
 

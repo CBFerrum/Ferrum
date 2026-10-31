@@ -127,7 +127,8 @@ the next sign-in there asks which account. People of the portal still sign in on
 workspace's subdomain or custom domain, or the accounts or hooks host), else `404`: how other regions'
 accounts hosts and edges find where a workspace lives. Pages' bootstrap carries `api.hooks`, the
 origin outside callers use for a workspace's endpoints (`https://hooks.{base}` in shapes B and C, else
-`PUBLIC_URL`), which no change of the workspace's addresses moves.
+`PUBLIC_URL`), which no change of the workspace's addresses moves, and `api.accounts`, the accounts
+host (shapes B and C; the bar's account menu links "Your workspaces" there).
 
 ## Metadata — `/api/meta`
 
