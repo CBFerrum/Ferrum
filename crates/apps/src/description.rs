@@ -17,6 +17,14 @@ use std::collections::HashMap;
 /// clash with the page around it.
 pub const ID_PREFIX: &str = "about-";
 
+/// Stands where a block was dropped (HTML or a diagram) until [`prune`] has used it: a section
+/// left with only notes about what was dropped goes too. Never reaches the page.
+const DROPPED: &str = "\u{0}dropped";
+/// The same, where an HTML block opens or closes a collapsible `<details>` section, which the
+/// excerpt leaves out (it is not opening prose).
+const DETAILS_OPEN: &str = "\u{0}details";
+const DETAILS_CLOSE: &str = "\u{0}/details";
+
 /// Fenced code languages that are diagrams drawn by a script the page does not run.
 const DIAGRAMS: &[&str] = &["mermaid", "plantuml", "dot", "graphviz", "geojson", "topojson", "stl"];
 
@@ -29,7 +37,9 @@ fn options() -> Options {
 /// forbid them), GitHub alerts as `<blockquote class="markdown-alert-…">`.
 pub fn to_html(markdown: &str, homepage: Option<&str>) -> String {
     let repository = homepage.and_then(github_repository);
-    let events = unlink_missing_anchors(prune(safe_events(markdown, repository.as_deref(), true)));
+    let mut events = unlink_missing_anchors(prune(safe_events(markdown, repository.as_deref(), true)));
+    // The placeholders for what was dropped; no raw HTML is left besides them.
+    events.retain(|e| !matches!(e, Event::Html(_) | Event::InlineHtml(_)));
     let mut out = String::with_capacity(markdown.len());
     pulldown_cmark::html::push_html(&mut out, events.into_iter());
     out
@@ -45,6 +55,8 @@ pub fn excerpt(markdown: &str, max: usize) -> String {
     // The block being read: its prefix, its text and how many letters or digits sit outside links.
     let mut current: Option<(&str, String, usize)> = None;
     let mut skip = 0usize;
+    // Inside collapsible sections.
+    let mut hidden = 0usize;
     let mut in_link = 0usize;
     let flush = |current: &mut Option<(&str, String, usize)>, parts: &mut Vec<String>, used: &mut usize| {
         if let Some((prefix, text, outside)) = current.take() {
@@ -64,7 +76,9 @@ pub fn excerpt(markdown: &str, max: usize) -> String {
             Event::End(TagEnd::Heading(_) | TagEnd::Table | TagEnd::CodeBlock | TagEnd::BlockQuote(_) | TagEnd::FootnoteDefinition) => {
                 skip = skip.saturating_sub(1)
             }
-            _ if skip > 0 => {}
+            Event::Html(m) if m.as_ref() == DETAILS_OPEN => hidden += 1,
+            Event::Html(m) if m.as_ref() == DETAILS_CLOSE => hidden = hidden.saturating_sub(1),
+            _ if skip > 0 || hidden > 0 => {}
             Event::Start(Tag::Item) => {
                 flush(&mut current, &mut parts, &mut used);
                 current = Some(("• ", String::new(), 0));
@@ -122,11 +136,42 @@ fn safe_events<'a>(markdown: &'a str, repository: Option<&str>, page: bool) -> V
         let ev = events[i].clone();
         i += 1;
         match ev {
-            Event::Html(_) | Event::InlineHtml(_) | Event::Start(Tag::HtmlBlock) | Event::End(TagEnd::HtmlBlock) => {}
+            Event::Start(Tag::HtmlBlock) => {
+                let end = past(&events, i, |_| false, |e| matches!(e, Event::End(TagEnd::HtmlBlock)));
+                let html: String = events[i..end]
+                    .iter()
+                    .filter_map(|e| match e {
+                        Event::Html(h) => Some(h.as_ref()),
+                        _ => None,
+                    })
+                    .collect();
+                let lower = html.to_ascii_lowercase();
+                let marker = match lower.matches("<details").count().cmp(&lower.matches("</details").count()) {
+                    std::cmp::Ordering::Greater => DETAILS_OPEN,
+                    std::cmp::Ordering::Less => DETAILS_CLOSE,
+                    std::cmp::Ordering::Equal => DROPPED,
+                };
+                out.push(Event::Html(marker.into()));
+                if page {
+                    // A collapsible section's title is worth keeping, as text.
+                    for title in summaries(&html) {
+                        out.extend([
+                            Event::Start(Tag::Paragraph),
+                            Event::Start(Tag::Strong),
+                            Event::Text(title.into()),
+                            Event::End(TagEnd::Strong),
+                            Event::End(TagEnd::Paragraph),
+                        ]);
+                    }
+                }
+                i = end;
+            }
+            Event::Html(_) | Event::InlineHtml(_) | Event::End(TagEnd::HtmlBlock) => {}
             Event::Start(Tag::Image { .. }) => {
                 i = past(&events, i, |e| matches!(e, Event::Start(Tag::Image { .. })), |e| matches!(e, Event::End(TagEnd::Image)))
             }
             Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(ref info))) if is_diagram(info) => {
+                out.push(Event::Html(DROPPED.into()));
                 i = past(&events, i, |_| false, |e| matches!(e, Event::End(TagEnd::CodeBlock)))
             }
             Event::Start(Tag::Link { link_type, dest_url, title, id }) => match href(link_type, &dest_url, repository) {
@@ -174,6 +219,34 @@ fn past(events: &[Event], from: usize, start: impl Fn(&Event) -> bool, end: impl
         }
     }
     events.len()
+}
+
+/// The text of each `<summary>` in an HTML block: tags stripped, common entities decoded.
+fn summaries(html: &str) -> Vec<String> {
+    let lower = html.to_ascii_lowercase();
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(open) = lower[from..].find("<summary").map(|p| from + p) {
+        let Some(start) = lower[open..].find('>').map(|p| open + p + 1) else { break };
+        let Some(close) = lower[start..].find("</summary").map(|p| start + p) else { break };
+        let mut text = String::new();
+        let mut in_tag = false;
+        for c in html[start..close].chars() {
+            match c {
+                '<' => in_tag = true,
+                '>' => in_tag = false,
+                c if !in_tag => text.push(c),
+                _ => {}
+            }
+        }
+        let text = text.replace("&nbsp;", " ").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&");
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !text.is_empty() {
+            out.push(text);
+        }
+        from = close;
+    }
+    out
 }
 
 fn is_diagram(info: &str) -> bool {
@@ -245,8 +318,9 @@ fn down(level: HeadingLevel) -> HeadingLevel {
 }
 
 /// What dropping left empty: links with no content (a badge's), paragraphs of white space, and
-/// headings with nothing under them before the next heading of their level (a section that held
-/// only a diagram or pictures).
+/// sections with nothing under them (one that held only a diagram or pictures), or only notes
+/// beside what was dropped (GitHub alerts, such as one about the pictures' theme). A section with
+/// subsections stays.
 fn prune(mut events: Vec<Event>) -> Vec<Event> {
     loop {
         let before = events.len();
@@ -259,7 +333,7 @@ fn prune(mut events: Vec<Event>) -> Vec<Event> {
                     let end = past(&events, k + 1, |_| false, |e| matches!(e, Event::End(TagEnd::Paragraph)));
                     let blank = events[k + 1..end - 1].iter().all(|e| match e {
                         Event::Text(t) => t.trim().is_empty(),
-                        Event::SoftBreak | Event::HardBreak => true,
+                        Event::SoftBreak | Event::HardBreak | Event::Html(_) => true,
                         _ => false,
                     });
                     if blank {
@@ -272,13 +346,13 @@ fn prune(mut events: Vec<Event>) -> Vec<Event> {
                 (Event::Start(Tag::Heading { level, .. }), _) => {
                     let level = *level;
                     let end = past(&events, k + 1, |_| false, |e| matches!(e, Event::End(TagEnd::Heading(_))));
-                    let empty = match events.get(end) {
-                        None => true,
-                        Some(Event::Start(Tag::Heading { level: next, .. })) => *next <= level,
-                        _ => false,
-                    };
-                    if empty {
-                        k = end;
+                    let next = events[end..].iter().position(|e| matches!(e, Event::Start(Tag::Heading { .. }))).map_or(events.len(), |p| end + p);
+                    let subsections = matches!(events.get(next), Some(Event::Start(Tag::Heading { level: l, .. })) if *l > level);
+                    let body = &events[end..next];
+                    let dropped = body.iter().any(|e| matches!(e, Event::Html(_)));
+                    let nothing = body.iter().all(|e| matches!(e, Event::Html(_)));
+                    if !subsections && (nothing || (dropped && only_alerts(body))) {
+                        k = next;
                     } else {
                         out.push(events[k].clone());
                         k += 1;
@@ -295,6 +369,30 @@ fn prune(mut events: Vec<Event>) -> Vec<Event> {
             return events;
         }
     }
+}
+
+/// Whether `body`'s blocks (placeholders aside) are all GitHub alerts.
+fn only_alerts(body: &[Event]) -> bool {
+    let mut depth = 0usize;
+    let mut any = false;
+    for e in body {
+        match e {
+            Event::Html(_) => {}
+            Event::Start(tag) => {
+                if depth == 0 {
+                    if !matches!(tag, Tag::BlockQuote(Some(_))) {
+                        return false;
+                    }
+                    any = true;
+                }
+                depth += 1;
+            }
+            Event::End(_) => depth = depth.saturating_sub(1),
+            _ if depth == 0 => return false,
+            _ => {}
+        }
+    }
+    any
 }
 
 /// Links to headings that are not there (a section [`prune`] took out) keep only their text.
@@ -381,6 +479,9 @@ Leads, a pipeline you can drag, quotations and every touchpoint, in one place be
 </picture>
 <p align="center"><sub>The pipeline.</sub></p>
 
+> [!TIP]
+> The screenshots follow your GitHub theme.
+
 ## How it works
 
 ### The pipeline
@@ -393,6 +494,19 @@ flowchart LR
 ### Inside Ferrum
 
 Everything it adds is ordinary metadata. See [the changelog](CHANGELOG.md) and [the plan](../Ferrum/docs/plan.md).
+
+## Security
+
+> [!WARNING]
+> Keep its keys secret.
+
+<details>
+<summary><b>Reports (2)</b> &amp; <script>x</script>more</summary>
+
+- Pipeline
+- Won and lost
+
+</details>
 "##;
 
     #[test]
@@ -412,7 +526,12 @@ Everything it adds is ordinary metadata. See [the changelog](CHANGELOG.md) and [
         // The screenshots' section keeps nothing but its heading, so it goes too, and the
         // contents line's link to it becomes text.
         assert!(!html.contains("id=\"about-screenshots\"") && !html.contains("href=\"#about-screenshots\""), "{html}");
-        assert!(html.contains("· Screenshots ·"), "{html}");
+        assert!(html.contains("· Screenshots ·") && !html.contains("GitHub theme"), "{html}");
+        // A section of only an alert, with nothing dropped beside it, stays.
+        assert!(html.contains("<h3 id=\"about-security\">Security</h3>") && html.contains("Keep its keys secret."), "{html}");
+        assert!(!html.contains('\u{0}'), "no placeholder reaches the page");
+        // A collapsible section keeps its title as text.
+        assert!(html.contains("<p><strong>Reports (2) &amp; xmore</strong></p>\n<ul>\n<li>Pipeline</li>"), "{html}");
         assert!(html.contains("<table>") && !html.contains("style="), "{html}");
         assert!(html.contains("markdown-alert-note"), "{html}");
         // Relative links resolve in the repository; a way out of it is text only.
