@@ -142,11 +142,22 @@ invoice validates against EN 16931's rules and goes to a Peppol test access poin
 | Romania | RO e-Factura between businesses since 2024; SAF-T (D406) | clearance | ANAF |
 | Hungary | real-time invoice reporting (Online Számla) | reporting | NAV |
 
+**Germany built (31 October 2026):** ERP 6f045dd (Germany 0.1.0, crate `ferrum-de` in `addons/de`, on
+the EU's): XRechnung 3.0 checked against KoSIT's BR-DE rules (taken from its schematron), small
+businesses (§ 19 UStG) and the domestic reverse charge (§ 13b UStG). The other member states follow.
+
 Order: by demand. Germany first (the largest market, formats only), then the clearance countries
 (Italy, Poland), then France (platforms), Spain and Portugal. Done when, for each: its scenario runs
 against a fake authority and the authority's sandbox, and its official validator accepts the files.
 
 ## L3. The United Kingdom (`gb`)
+
+**Built (31 October 2026):** ERP 649d799 (the United Kingdom 0.1.0, crate `ferrum-gb` in `addons/gb`):
+VAT at 20%, 5%, zero and exempt, the CIS reverse charge, exports and services abroad, imports of
+services reverse-charged; VAT returns (nine boxes from the books) filed through HMRC's MTD API as
+hmrc/vat-api defines it, with OAuth sign-in and refresh and the fraud prevention headers (the
+browser's details when filed through `/api/app/gb/returns/{id}/file`; ERP's interface should file
+through it). Not yet: postponed import VAT and the 2029 e-invoicing mandate (details due 2027-28).
 
 * VAT at 20%, 5% and 0%, postponed import VAT, the domestic reverse charge for construction.
 * Making Tax Digital for VAT: returns sent through HMRC's API from digital records.
