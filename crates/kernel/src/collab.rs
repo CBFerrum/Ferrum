@@ -152,11 +152,33 @@ impl Kernel {
             .execute(&mut *tx)
             .await?;
         for &u in &notify_users {
-            notify::send(&mut tx, ctx.tenant, u, &format!("{} mentioned you on {what}", ctx.full_name), Some(&snippet), Some(entity), Some(id)).await?;
+            notify::send_kind(
+                &mut tx,
+                ctx.tenant,
+                u,
+                "mention",
+                "inapp",
+                &format!("{} mentioned you on {what}", ctx.full_name),
+                Some(&snippet),
+                Some(entity),
+                Some(id),
+            )
+            .await?;
         }
         for u in followers(&mut tx, ctx.tenant, entity, id, ctx.user).await? {
             if !notify_users.contains(&u) {
-                notify::send(&mut tx, ctx.tenant, u, &format!("{} commented on {what}", ctx.full_name), Some(&snippet), Some(entity), Some(id)).await?;
+                notify::send_kind(
+                    &mut tx,
+                    ctx.tenant,
+                    u,
+                    "comment",
+                    "inapp",
+                    &format!("{} commented on {what}", ctx.full_name),
+                    Some(&snippet),
+                    Some(entity),
+                    Some(id),
+                )
+                .await?;
             }
         }
         follow_tx(&mut tx, ctx.tenant, entity, id, ctx.user).await?;
@@ -272,7 +294,7 @@ impl Kernel {
         }
         if user != ctx.user {
             let by = if ctx.full_name.is_empty() { "Someone".to_string() } else { ctx.full_name.clone() };
-            notify::send(&mut tx, ctx.tenant, user, &format!("{by} assigned {what} to you"), note, Some(entity), Some(id)).await?;
+            notify::send_kind(&mut tx, ctx.tenant, user, "assignment", "inapp", &format!("{by} assigned {what} to you"), note, Some(entity), Some(id)).await?;
         }
         follow_tx(&mut tx, ctx.tenant, entity, id, user).await?;
         crate::audit::record(&mut tx, ctx, entity, id, "assign", None, json!({"user": user, "assignment": aid})).await?;
@@ -310,7 +332,18 @@ impl Kernel {
         if by != ctx.user && !by.is_nil() {
             let who = if ctx.full_name.is_empty() { "Someone".to_string() } else { ctx.full_name.clone() };
             let verb = if status == "Done" { "completed" } else { "cancelled" };
-            notify::send(&mut tx, ctx.tenant, by, &format!("{who} {verb} an assignment on {}", label(ctx, &entity)), None, Some(&entity), Some(id)).await?;
+            notify::send_kind(
+                &mut tx,
+                ctx.tenant,
+                by,
+                "assignment",
+                "inapp",
+                &format!("{who} {verb} an assignment on {}", label(ctx, &entity)),
+                None,
+                Some(&entity),
+                Some(id),
+            )
+            .await?;
         }
         announce(&mut tx, ctx.tenant, &entity, id, "assigned", ctx.user).await?;
         tx.commit().await?;
@@ -479,7 +512,7 @@ impl Kernel {
         for u in users {
             let still = event == "deleted" || self.can_user_read(&sys, u, entity, id).await;
             if still {
-                notify::send(&mut tx, tenant, u, &format!("{what} was {verb}"), None, Some(entity), Some(id)).await?;
+                notify::send_kind(&mut tx, tenant, u, "watch", "inapp", &format!("{what} was {verb}"), None, Some(entity), Some(id)).await?;
             }
         }
         tx.commit().await?;

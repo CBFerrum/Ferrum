@@ -1,5 +1,6 @@
 //! Tenant administration: users, roles, permissions, packages, customizations, webhooks,
-//! automations, notifications. Everything except notifications requires an administrator.
+//! automations. Everything requires an administrator (people's own notifications are in
+//! notifications.rs).
 
 use crate::error::{ApiError, ApiResult};
 use crate::extract::Auth;
@@ -336,37 +337,6 @@ async fn delete_automation(Auth(ctx): Auth, State(app): State<AppContext>, Path(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-// ── notifications (any user, own only) ──
-
-async fn notifications(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
-    let st = app_state(&app)?;
-    let mut tx = st.kernel.db.tenant_tx(ctx.tenant).await?;
-    let rows: Vec<Value> = sqlx::query_scalar(
-        "select to_jsonb(n) - 'tenant_id' from notification n where n.tenant_id = $1 and n.user_id = $2 order by n.created_at desc limit 100",
-    )
-    .bind(ctx.tenant)
-    .bind(ctx.user)
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(Error::from)?;
-    tx.commit().await.map_err(Error::from)?;
-    Ok(Json(json!({"notifications": rows})).into_response())
-}
-
-async fn mark_read(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
-    let st = app_state(&app)?;
-    let mut tx = st.kernel.db.tenant_tx(ctx.tenant).await?;
-    sqlx::query("update notification set read_at = now() where tenant_id = $1 and user_id = $2 and id = $3 and read_at is null")
-        .bind(ctx.tenant)
-        .bind(ctx.user)
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .map_err(Error::from)?;
-    tx.commit().await.map_err(Error::from)?;
-    Ok(StatusCode::NO_CONTENT.into_response())
-}
-
 #[derive(Deserialize)]
 struct PluginUpload {
     #[serde(flatten)]
@@ -465,6 +435,4 @@ pub fn routes() -> Routes {
         .add("/customize/export", get(export_custom))
         .add("/customize/import", post(import_custom))
         .add("/customize/{id}/active", put(toggle_custom))
-        .add("/notifications", get(notifications))
-        .add("/notifications/{id}/read", post(mark_read))
 }

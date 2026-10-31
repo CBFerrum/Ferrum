@@ -128,7 +128,7 @@ resets it. At most 500 scopes per user.
 Send `{"auth": "<token>"}` first (tokens never go in URLs) → `{"ready": true, "user"}`. Then
 `{"subscribe": ["SalesOrder", …]}` / `{"unsubscribe": […]}` → `{"subscribed": […], "denied": […]}`.
 Events: `{"event": "SalesOrder.updated", "entity", "id", "actor"}` for committed changes to records the
-user may read, `{"notification": {id, title, entity, record_id}}` for the user's notifications and
+user may read, `{"notification": {id, title, entity, record_id, kind}}` for the user's notifications and
 `{"push": {"kind", "data"}}` from apps (chat). Works on every replica (PostgreSQL LISTEN/NOTIFY).
 
 ## Live documents — `GET /ws/docs/{package}/{id}` (WebSocket)
@@ -240,7 +240,7 @@ For the bar, with the cookie or a token:
   dates as dates in a sheet named after the report. Exports need export permission on the
   report's entity.
 
-## Administration (administrators only, except notifications)
+## Administration (administrators only)
 
 Workspace settings: `GET /api/admin/settings` → `{timezone, fiscal_year_start_month, require_two_factor}`;
 `PUT` with any of them (`timezone` is an IANA name such as `Asia/Kolkata`; `require_two_factor`
@@ -274,8 +274,6 @@ Plugins (sandboxed WebAssembly, see README): `GET /api/admin/plugins` → `{plug
 any method on `/api/ext/{plugin}/{path}` (signed in) or `/api/public/{tenant}/{plugin}/{path}` (public routes),
 and WebSockets at `/ws/ext/{tenant}/{plugin}/{path}` (token in `Authorization` or `access_token` unless public).
 Manifest, contract and host calls: [plugins.md](plugins.md).
-
-Notifications (own): `GET /api/notifications`, `POST /api/notifications/{id}/read`.
 
 ## Apps — `/api/admin/apps` (administrators; [design](plan/apps.md))
 
@@ -311,6 +309,27 @@ true when an entity took longer than its time budget and was left out. The bar's
 and the apps' `shell.search` providers together; a provider answers `GET {endpoint}?q=&limit=` with
 `{results: [{title, subtitle?, url, icon?, updated_at?}]}`, each `url` a page of this site the caller
 may open.
+
+## Notifications — `/api/notifications` (the caller's own)
+
+Each notification has a kind: the platform's `mention`, `assignment`, `comment`, `watch`,
+`automation` and `general`, and the apps' (`shell.notification` in app.yaml) as `{app}.{id}`. Each
+person chooses per kind how it reaches them: `inapp` (in the bar), `email` (in the bar and by email
+at once), `digest` (in the bar, and in one daily email of those still unread once the oldest has
+waited a day) or `off`. Links in emails open the record (`/open/{entity}/{id}`) on the workspace's
+own address, else on `PUBLIC_URL`.
+
+| Request | |
+|---|---|
+| `GET /api/notifications?limit=` | `{notifications: [{id, user_id, title, body, entity, record_id, kind, delivery, read_at, emailed_at, created_at}], unread}`, newest first; `limit` up to 100 (the default), 0 for the count alone |
+| `POST /api/notifications/{id}/read`, `POST /api/notifications/read-all` | marks one, or all, read (204) |
+| `GET /api/notifications/types` | `{types: [{kind, label, app, default, channel}], channels, email}`: the kinds the caller may choose for (apps' only for apps they may use), each with its default and their choice; `email` is false when the server sends no email |
+| `PUT /api/notifications/preferences` `{kind, channel}` | how one kind reaches the caller; `channel: null` returns it to the default. `email` and `digest` need a mailer |
+
+An app sends its kinds with `ferrum_kernel::notify::send_kind(tx, tenant, user, "{app}.{id}",
+default, title, body, entity, record)`, `default` being what its manifest declares
+(`notify::declared_default`): `email` when the declared list has email, else `digest`, else
+`inapp` (`push` too, until the platform pushes); an empty list is `off`.
 
 ## The assistant — `/api/assistant` ([operations](operations.md#the-assistant))
 

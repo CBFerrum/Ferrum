@@ -599,4 +599,120 @@ async fn scenario() {
     assert!(k.login("collab", "pat@private.test", "Correct-Horse-9").await.is_err(), "the account no longer signs in");
     let again = k.personal_data(&admin, "pat@private.test").await.unwrap();
     assert!(again["records"].as_array().unwrap().is_empty() && again["account"].is_null(), "nothing is left to find");
+
+    // ── notifications: each kind reaches a person the way they chose ──
+    let choose = |kind: &'static str, channel: &'static str| {
+        let k = k.clone();
+        async move {
+            let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+            sqlx::query("insert into notification_pref (tenant_id, user_id, kind, channel) values ($1, $2, $3, $4) on conflict (tenant_id, user_id, kind) do update set channel = excluded.channel")
+                .bind(tenant)
+                .bind(bea)
+                .bind(kind)
+                .bind(channel)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+        }
+    };
+    let delivered = |title: &'static str| {
+        let k = k.clone();
+        async move {
+            let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+            let rows: Vec<(String, String, bool)> = sqlx::query_as(
+                "select kind, delivery, emailed_at is not null from notification where tenant_id = $1 and user_id = $2 and title = $3 order by created_at",
+            )
+            .bind(tenant)
+            .bind(bea)
+            .bind(title)
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+            rows
+        }
+    };
+    choose("mention", "email").await;
+    choose("comment", "off").await;
+    k.set_following(&bea_ctx, "Customer", cid, true).await.unwrap();
+    let mails = SENT.lock().unwrap().len();
+    k.add_comment(&admin, "Customer", cid, "A word for Bea", &[bea]).await.unwrap();
+    k.add_comment(&admin, "Customer", cid, "And one for everyone", &[]).await.unwrap();
+    drain(&k).await;
+    assert_eq!(
+        delivered("Ada Admin mentioned you on Customer Globex").await.last(),
+        Some(&("mention".to_string(), "email".to_string(), true)),
+        "in the bar and emailed"
+    );
+    let sent = SENT.lock().unwrap()[mails..].to_vec();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!((sent[0].0.as_str(), sent[0].1.as_str()), ("bea@collab.test", "Ada Admin mentioned you on Customer Globex"));
+    assert!(sent[0].2.contains("Collab Co") && sent[0].2.contains("A word for Bea"), "{}", sent[0].2);
+    assert!(delivered("Ada Admin commented on Customer Globex").await.iter().all(|r| r.0 != "comment" || r.1 != "inapp"), "comments are off");
+    assert!(!unread(&k, &bea_ctx).await.iter().any(|t| t == "Ada Admin commented on Customer Globex"), "nothing in the bar either");
+    // Sent once: a retry of the event finds it emailed.
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let emailed: Uuid = sqlx::query_scalar("select id from notification where tenant_id = $1 and user_id = $2 and delivery = 'email'")
+        .bind(tenant)
+        .bind(bea)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    ferrum_kernel::outbox::enqueue(&mut tx, tenant, ferrum_kernel::notify::MAIL_TOPIC, None, None, json!({"notification": emailed})).await.unwrap();
+    tx.commit().await.unwrap();
+    drain(&k).await;
+    assert_eq!(SENT.lock().unwrap().len(), mails + 1);
+
+    // Changes to what Bea follows, in a daily digest: once the oldest has waited a day, then not again.
+    choose("watch", "digest").await;
+    k.update(&admin, "Customer", cid, obj(json!({"customer_name": "Globex Corp"})), None).await.unwrap();
+    drain(&k).await;
+    assert_eq!(delivered("Customer Globex Corp was updated").await, vec![("watch".to_string(), "digest".to_string(), false)]);
+    assert_eq!(k.send_digests().await.unwrap(), 0, "not a day old yet");
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update notification set created_at = created_at - interval '25 hours' where tenant_id = $1 and user_id = $2 and delivery = 'digest'")
+        .bind(tenant)
+        .bind(bea)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(k.send_digests().await.unwrap(), 1);
+    assert_eq!(k.send_digests().await.unwrap(), 0, "taken once");
+    drain(&k).await;
+    let digest = SENT.lock().unwrap().last().cloned().unwrap();
+    assert_eq!((digest.0.as_str(), digest.1.as_str()), ("bea@collab.test", "1 notification in Collab Co"));
+    assert!(digest.2.contains("Customer Globex Corp was updated") && digest.2.contains("daily digest"), "{}", digest.2);
+    assert_eq!(delivered("Customer Globex Corp was updated").await, vec![("watch".to_string(), "digest".to_string(), true)]);
+    // Read in the bar before the digest goes: not emailed.
+    k.update(&admin, "Customer", cid, obj(json!({"customer_name": "Globex Inc"})), None).await.unwrap();
+    drain(&k).await;
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update notification set created_at = created_at - interval '25 hours', read_at = now() where tenant_id = $1 and title = 'Customer Globex Inc was updated'")
+        .bind(tenant)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(k.send_digests().await.unwrap(), 0, "read already");
+    // Off: nothing at all; the default again: in the bar.
+    choose("watch", "off").await;
+    k.update(&admin, "Customer", cid, obj(json!({"customer_name": "Globex Two"})), None).await.unwrap();
+    drain(&k).await;
+    assert!(delivered("Customer Globex Two was updated").await.is_empty());
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("delete from notification_pref where tenant_id = $1 and user_id = $2 and kind = 'watch'")
+        .bind(tenant)
+        .bind(bea)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    k.update(&admin, "Customer", cid, obj(json!({"customer_name": "Globex Three"})), None).await.unwrap();
+    drain(&k).await;
+    assert_eq!(delivered("Customer Globex Three was updated").await, vec![("watch".to_string(), "inapp".to_string(), false)]);
+    assert_eq!(ferrum_kernel::notify::declared_default(&["inapp", "email"]), "email");
+    assert_eq!(ferrum_kernel::notify::declared_default(&["push"]), "inapp");
+    assert_eq!(ferrum_kernel::notify::declared_default(&[]), "off");
 }

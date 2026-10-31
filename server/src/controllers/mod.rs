@@ -9,6 +9,7 @@ pub mod docs;
 pub mod legacy;
 pub mod mcp;
 pub mod meta;
+pub mod notifications;
 pub mod oauth;
 pub mod plugins;
 pub mod prefs;

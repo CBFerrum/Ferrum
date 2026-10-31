@@ -58,8 +58,10 @@ pub const RESERVED_ROUTES: &[&str] = &[
 /// Intents the platform defines payloads for; apps may define their own actions and types.
 pub const COMMON_INTENTS: &[&str] = &["pick", "create", "compose", "share", "preview", "schedule"];
 
-/// Where a person may be told of a notification type.
-pub const NOTIFY_CHANNELS: &[&str] = &["inapp", "email", "push"];
+/// Where a person may be told of a notification type by default: in the bar, by email at once, in
+/// the daily email digest, by push (in the bar until the platform pushes). None listed: off until
+/// they turn it on.
+pub const NOTIFY_CHANNELS: &[&str] = &["inapp", "email", "digest", "push"];
 
 /// Kinds of origins an interface may add to its Content-Security-Policy (`form`: where its forms
 /// may post, as an online editor's launch does).

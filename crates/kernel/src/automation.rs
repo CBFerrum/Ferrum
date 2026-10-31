@@ -203,7 +203,7 @@ async fn execute(
                 return Err(Error::invalid("notify.to must be owner, role:<name>, user:<id> or field:<name>"));
             };
             for u in users {
-                crate::notify::send(tx, ctx.tenant, u, &title, body.as_deref(), Some(entity), record).await?;
+                crate::notify::send_kind(tx, ctx.tenant, u, "automation", "inapp", &title, body.as_deref(), Some(entity), record).await?;
             }
         }
         AutomationAction::Email { to, subject, body } => {

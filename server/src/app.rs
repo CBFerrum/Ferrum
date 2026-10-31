@@ -333,6 +333,7 @@ impl Hooks for App {
             .add_route(controllers::dav::routes())
             .add_route(controllers::assistant::routes())
             .add_route(controllers::search::routes())
+            .add_route(controllers::notifications::routes())
             .add_route(controllers::shell::routes())
     }
 
