@@ -290,7 +290,13 @@ Drive (today: files, folders, versions, sharing with people and teams, links, tr
 ```
 
 As built, Office lives in Drive and the WOPI editor is set by the operator, not a sub-plugin. Drive
-creates blank documents, sheets and presentations and lists recent files; templates are still to do.
+creates blank documents, sheets and presentations, or ones from a template, and lists recent files.
+Templates (Drive 0.11.0) come with Drive, as Word, Excel and PowerPoint files it writes itself
+(meeting notes, a project brief, a report, a letter, a budget, an expense report, a task tracker, a
+project update, a team meeting), and from the workspace: a Drive administrator saves any Office file
+as one (`DriveTemplate`, which keeps its own copy of the file). People pick them in Drive's New menu
+(Sheets and Slides offer their own); agents use `list_templates` and `create_from_template`. Docs'
+live documents have their own gallery in Docs.
 
 * Opening a file in Drive opens its editor in a frame:
   * for WOPI, the engine's page with a short-lived access token for that user and file;
