@@ -24,8 +24,10 @@ pub fn new_home(path: &str) -> String {
         ["admin", ..] => format!("/admin/{}", rest(1)),
         ["settings", ..] => "/account/".into(),
         ["customize", ..] => format!("/data/{}", rest(0)),
-        // ERP's interface has them until Studio and POS have their own.
-        ["r", _] | ["studio" | "dashboards" | "spaces" | "x" | "pos", ..] => format!("/erp/{}", rest(0)),
+        // Studio's own interface; ERP's has the rest until POS has its own.
+        ["studio", ..] => format!("/studio/{}", rest(1)),
+        ["dashboards" | "spaces", ..] => format!("/studio/{}", rest(0)),
+        ["r", _] | ["x" | "pos", ..] => format!("/erp/{}", rest(0)),
         // Comms', Drive's and Docs' pages, and the pages people outside the workspace open by link.
         ["mail" | "chat" | "meet" | "drive", ..] => format!("/{}/{}", seg[0], rest(1)),
         ["calendar", ..] => "/calendar/".into(),
@@ -100,7 +102,9 @@ mod tests {
             ("/admin/users", "/admin/users"),
             ("/settings", "/account/"),
             ("/customize/Customer/form", "/data/customize/Customer/form"),
-            ("/studio/reports/42", "/erp/studio/reports/42"),
+            ("/studio/reports/42", "/studio/reports/42"),
+            ("/studio", "/studio/"),
+            ("/dashboards/d1", "/studio/dashboards/d1"),
             ("/x/board/main", "/erp/x/board/main"),
             ("/pos", "/erp/pos"),
             ("/mail/inbox/7", "/mail/inbox/7"),

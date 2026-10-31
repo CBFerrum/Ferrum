@@ -383,23 +383,25 @@ impl AppManager {
         self.native(id)
     }
 
-    /// Records ERP as installed in every workspace that has its packages (accounting): ERP became
-    /// an app of its own after those workspaces installed the packages. Runs at start-up;
-    /// idempotent; logged, not fatal.
-    pub async fn ensure_erp(&self) {
-        let Some(m) = self.native("erp") else { return };
+    /// Records a compiled-in app as installed in every workspace that has `package` (ERP, by its
+    /// accounting; Studio, by its own): they became apps of their own after those workspaces
+    /// installed the packages. Runs at start-up; idempotent; logged, not fatal.
+    pub async fn ensure_native(&self, app: &str, package: &str) {
+        let Some(m) = self.native(app) else { return };
         let outcome: Result<usize> = async {
             let mut tx = self.kernel.db.system_tx().await?;
             let tenants: Vec<Uuid> = sqlx::query_scalar(
-                "select t.id from tenant t where exists (select 1 from installed_package p where p.tenant_id = t.id and p.name = 'accounting') \
-                 and not exists (select 1 from tenant_app a where a.tenant_id = t.id and a.app_id = 'erp')",
+                "select t.id from tenant t where exists (select 1 from installed_package p where p.tenant_id = t.id and p.name = $1) \
+                 and not exists (select 1 from tenant_app a where a.tenant_id = t.id and a.app_id = $2)",
             )
+            .bind(package)
+            .bind(app)
             .fetch_all(&mut *tx)
             .await?;
             tx.commit().await?;
             for tenant in &tenants {
                 let ctx = Ctx::system(*tenant, self.kernel.registry.schema(*tenant).await?);
-                self.kernel.record_installation(&ctx, "erp", &m.version.to_string(), None, None).await?;
+                self.kernel.record_installation(&ctx, app, &m.version.to_string(), None, None).await?;
                 self.enabled.remove(tenant);
             }
             Ok(tenants.len())
@@ -407,8 +409,8 @@ impl AppManager {
         .await;
         match outcome {
             Ok(0) => {}
-            Ok(n) => tracing::info!(workspaces = n, "ERP recorded as an installed app"),
-            Err(e) => tracing::error!("recording ERP as an installed app failed: {e}"),
+            Ok(n) => tracing::info!(app, workspaces = n, "recorded as an installed app"),
+            Err(e) => tracing::error!(app, "recording as an installed app failed: {e}"),
         }
     }
 

@@ -164,7 +164,8 @@ impl Hooks for App {
         if let Err(e) = crate::upgrade::run(&kernel).await {
             tracing::error!("moving workspaces onto this release's packages failed: {e}");
         }
-        apps.ensure_erp().await;
+        apps.ensure_native("erp", "accounting").await;
+        apps.ensure_native("studio", "studio").await;
         crate::shell::register_compiled(&kernel, &storage, &settings, &apps).await;
         let (tx, _rx) = watch::channel(false);
         let db = kernel.db.clone();
