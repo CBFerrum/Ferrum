@@ -16,6 +16,10 @@ const LOCK: i64 = 0x6665_7272_756d_0001;
 // EU member states other than Germany are apps of one crate on the EU's (localization.md L2).
 #[cfg(feature = "be")]
 use ferrum_eu_members::be as ferrum_be;
+#[cfg(feature = "es")]
+use ferrum_eu_members::es as ferrum_es;
+#[cfg(feature = "fr")]
+use ferrum_eu_members::fr as ferrum_fr;
 #[cfg(feature = "it")]
 use ferrum_eu_members::it as ferrum_it;
 #[cfg(feature = "pl")]
@@ -207,6 +211,8 @@ apps! {
         // Member states' rules after the EU's, which they adjust (localization.md L2).
         "de" => ferrum_de,
         "be" => ferrum_be,
+        "es" => ferrum_es,
+        "fr" => ferrum_fr,
         "it" => ferrum_it,
         "pl" => ferrum_pl,
         "ro" => ferrum_ro,

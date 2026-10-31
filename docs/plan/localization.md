@@ -156,6 +156,15 @@ queued for the company's KSeF channel. Romania: CIUS-RO with ISO 3166-2:RO count
 sectors, queued for ANAF. Not yet: the channels themselves (SDI, KSeF's API 2.0, ANAF's OAuth), Italy's
 FPA12, split payment and withholding, and France, Spain, Portugal, Croatia, Greece, Hungary.
 
+**Spain and France built (1 November 2026):** ERP 572204b and c062e2b, in `ferrum-eu-members`. Spain:
+VERI*FACTU invoicing records chained by AEAT's SHA-256 fingerprint (its test vectors pass),
+cancellation records, the verification QR code, records queued for the company's AEAT connection;
+the recargo de equivalencia; the Canary Islands, Ceuta and Melilla outside the VAT area. France:
+e-invoices to the company's plateforme agréée with both SIRENs and the PA's statuses, e-reporting of
+the other sales, the reform's and the Code de commerce's mentions, SIREN, SIRET and VAT key checks.
+Not yet: AEAT's and the PA's connections themselves, the SII, Facturae, the No-VERI*FACTU signed
+records.
+
 Order: by demand. Germany first (the largest market, formats only), then the clearance countries
 (Italy, Poland), then France (platforms), Spain and Portugal. Done when, for each: its scenario runs
 against a fake authority and the authority's sandbox, and its official validator accepts the files.
@@ -253,8 +262,10 @@ boxes), the United Arab Emirates (`ae`, the VAT 201 by emirate), Australia (`au`
 labels, ABN check), New Zealand (`nz`, the GST101A, IRD number check), Japan (`jp`, 10% and 8% on
 rows of their own so tax is worked out once per rate per invoice, the T-number), Mexico (`mx`, IVA
 on a cash basis from payments, the RFC) and China (`cn`, 13%, 9%, 6%, small-scale taxpayers, the
-credit code's check). Not yet: Fatoora phase 2, PINT AE and A-NZ and JP over Peppol, CFDI 4.0 with
-a PAC, fapiao; Brazil. Japan's food rate cut from 1 April 2027 is enacted but its rate is not in
+credit code's check). Peppol PINT e-invoices for Singapore, Australia, New Zealand, Japan and the
+UAE (ERP bf03c35) and Malaysia's MyInvois connector (ERP 1484877: submission, validation,
+cancellation within 72 hours) are built. Not yet: Fatoora phase 2, CFDI 4.0 with a PAC, fapiao,
+Indonesia's Coretax, Vietnam's and the Philippines' e-invoices; Brazil. Japan's food rate cut from 1 April 2027 is enacted but its rate is not in
 the table yet (items' own rates cover it).
 
 | Country | Taxes | E-invoicing |
