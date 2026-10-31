@@ -177,6 +177,12 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     to you, customer replies, SLA breaches), HR 0.3.1 (leave and expense requests waiting for your
     approval, decisions on yours), Projects 0.3.1 (tasks assigned to you, new: someone added to a
     task's assignees hears of it).
+  * Commerce 0.2.0 has the store's admin at `/commerce/`: web sales today and over 7 and 30 days,
+    web orders to deliver (opened in ERP), failed or expired payments, reviews to publish or reject
+    in place, and the catalog's state. Checked in Chrome.
+  * The records frame leaves notifications to the bar (one bell): CRM 0.3.3, Helpdesk 0.3.2,
+    HR 0.3.2 and Projects 0.3.2 are rebuilt with it, and the image's interfaces come from
+    Ferrum-Frontend a8d4dda.
   * Notifications (§12.8): every notification has a kind (the platform's mention, assignment,
     comment, watch, automation and general; apps' `shell.notification` as `{app}.{id}`), and each
     person chooses per kind: in the bar, email at once, a daily email digest, or off. The bell in the
