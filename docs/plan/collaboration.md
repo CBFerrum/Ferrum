@@ -9,7 +9,7 @@ platform) and [browser-editors.md](browser-editors.md).
 | Google Workspace | Ferrum today | Plan |
 |---|---|---|
 | Co-editing documents, sheets and presentations live, with others' cursors | Built (C3): Drive's own documents are co-edited in the web app, with no editor server. Built (C2): the online editor (Collabora or ONLYOFFICE over WOPI) co-edits Office files, and the web app shows who is in them and offers to join. Browser editors are single-user, one session at a time. | |
-| Comments, suggestions and @mentions inside a document | In the online editor (comments, track changes). Not yet in live documents (C3). | |
+| Comments, suggestions and @mentions inside a document | Built (C3) in live documents: comments on the text in threads with @mentions, resolved when done (Drive 0.10.0, Docs 0.4.0), and suggestions accepted or rejected by editors, kept as tracked changes in Word files (Docs 0.5.0). In the online editor, its own comments and track changes. | |
 | Comments on files, @mentions | Drive comments (Commenter access), no mentions, no screen | **C1** |
 | Sharing with people and groups as viewer, commenter or editor; links with expiry | Drive's server (people, teams, roles, links with expiry, password and download caps); no screen | **C1** |
 | Request access | None | **C1** |

@@ -124,7 +124,7 @@ Naming: "workspace" already means a tenant in Ferrum, so the document suite is c
 | Metadata packages: entities, overlays on other packages' entities, actions with parameters, print formats, numbering, seeds | `ferrum/crates/meta` |
 | WebAssembly plugins: hooks; endpoints `/api/ext/{plugin}/…` and public `/api/public/{tenant}/{plugin}/…`; sockets `/ws/ext/…`; events; schedules; kv; declared permissions and outbound hosts; fuel and memory limits | `ferrum/crates/plugins`, `ferrum/server/src/controllers/plugins.rs` |
 | Studio: reports, charts, number cards, dashboards, spaces | `ferrum/crates/studio`, `ferrum/web/src/app/studio` |
-| Promised, not built: UI slots in a sandboxed frame | `ferrum/docs/plan/architecture.md` §7.2 |
+| Promised, not built when this plan began: UI slots in a sandboxed frame (built since: Tier 1, §3.7 step 3) | `ferrum/docs/plan/architecture.md` §7.2 |
 
 ### 3.2 Extension points and contributions
 
