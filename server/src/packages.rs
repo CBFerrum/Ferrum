@@ -171,6 +171,8 @@ apps! {
         "de" => ferrum_de,
         // The United Kingdom (localization.md L3).
         "gb" => ferrum_gb,
+        // Canada (localization.md L5).
+        "ca" => ferrum_ca,
         "crm" => ferrum_app_crm,
         "projects" => ferrum_app_projects,
         "helpdesk" => ferrum_app_helpdesk,

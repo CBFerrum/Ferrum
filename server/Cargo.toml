@@ -14,11 +14,12 @@ path = "src/bin/main.rs"
 # Native apps compiled into this server (all official ones by default; docs/plan/apps.md). Most live
 # in their own repositories; a workspace whose installed app is not in a build keeps its data and
 # loses the app until it is back.
-default = ["india", "eu", "de", "gb", "crm", "projects", "helpdesk", "pos", "hr", "comms", "commerce", "procurement", "stock-ops", "finance", "mfg-ops", "studio", "assets", "bookings", "field-service", "forms", "lms", "drive", "docs", "campaigns", "sign"]
+default = ["india", "eu", "de", "gb", "ca", "crm", "projects", "helpdesk", "pos", "hr", "comms", "commerce", "procurement", "stock-ops", "finance", "mfg-ops", "studio", "assets", "bookings", "field-service", "forms", "lms", "drive", "docs", "campaigns", "sign"]
 india = ["dep:ferrum-india"]
 eu = ["dep:ferrum-eu"]
 de = ["dep:ferrum-de", "eu"]
 gb = ["dep:ferrum-gb"]
+ca = ["dep:ferrum-ca"]
 crm = ["dep:ferrum-app-crm"]
 projects = ["dep:ferrum-app-projects"]
 helpdesk = ["dep:ferrum-app-helpdesk"]
@@ -62,6 +63,7 @@ ferrum-india = { git = "https://github.com/CBFerrum/ferrum-app-erp", branch = "m
 ferrum-eu = { git = "https://github.com/CBFerrum/ferrum-app-erp", branch = "main", optional = true }
 ferrum-de = { git = "https://github.com/CBFerrum/ferrum-app-erp", branch = "main", optional = true }
 ferrum-gb = { git = "https://github.com/CBFerrum/ferrum-app-erp", branch = "main", optional = true }
+ferrum-ca = { git = "https://github.com/CBFerrum/ferrum-app-erp", branch = "main", optional = true }
 ferrum-procurement = { git = "https://github.com/CBFerrum/ferrum-app-erp", branch = "main", optional = true }
 ferrum-stock-ops = { git = "https://github.com/CBFerrum/ferrum-app-erp", branch = "main", optional = true }
 ferrum-finance = { git = "https://github.com/CBFerrum/ferrum-app-erp", branch = "main", optional = true }

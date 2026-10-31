@@ -189,6 +189,14 @@ voids at the service; the nexus report and 1099s come out right.
 
 ## L5. Canada (`ca`)
 
+**Built (31 October 2026):** ERP a5283b6 (Canada 0.1.0, crate `ferrum-ca` in `addons/ca`): GST 5%,
+HST by province (13% Ontario; 15% New Brunswick, Newfoundland and Labrador, Prince Edward Island;
+14% Nova Scotia from 1 April 2025), PST in British Columbia (7%) and Saskatchewan (6%), RST in
+Manitoba (7%) where the company is registered, QST 9.975% in Quebec; goods taxed where delivered,
+services by the customer's address; zero-rated and exempt supplies, exports, input tax credits, and
+the GST/HST (GST34 lines 101, 103, 106, 109) and QST returns. Not yet: NETFILE or GST/HST Internet
+File transmission (the CRA's file formats need its certified-software process).
+
 GST or HST by province, PST (British Columbia, Saskatchewan, Manitoba) and QST (Quebec), with the
 place-of-supply rules, registration numbers on invoices and the returns. Done when: sales into each
 province take the right taxes.
