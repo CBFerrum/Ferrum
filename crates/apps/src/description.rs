@@ -606,4 +606,170 @@ Everything it adds is ordinary metadata. See [the changelog](CHANGELOG.md) and [
             assert_eq!(github_repository(not), None, "{not}");
         }
     }
+
+    /// Whatever a publisher writes: tags the page could run or style, event handlers and link
+    /// schemes never come through, nothing panics, and large or deeply nested input stays fast.
+    #[test]
+    fn hostile_input_never_gets_through() {
+        const PARTS: &[&str] = &[
+            "<script>alert(1)</script>",
+            "<img src=x onerror=alert(1)>",
+            "<svg/onload=alert(1)>",
+            "<iframe src=//e.x>",
+            "<div onclick=x>",
+            "<style>*{}</style>",
+            "<a href='javascript:x'>z</a>",
+            "<!-- c -->",
+            "<details><summary>S <b>t</b></summary>",
+            "</details>",
+            "[a](javascript:alert(1))",
+            "[a](JaVaScRiPt:x)",
+            "[a]( javascript:x)",
+            "[b](data:text/html,x)",
+            "[v](vbscript:x)",
+            "[n](//evil.example)",
+            "[s](\\\\evil)",
+            "[r](docs/a.md)",
+            "[u](../../etc)",
+            "[f](#frag)",
+            "[m](mailto:a@b.c)",
+            "[h](https://e.x/?a=\"b\")",
+            "![i](https://e.x/i.png)",
+            "[![b](https://e.x/b.svg)](https://e.x)",
+            "<https://e.x/auto>",
+            "<a@b.c>",
+            "[x]: javascript:alert(1)\n[y][x]",
+            "```mermaid\nflowchart LR\n  A-->B\n```",
+            "```js\n</code><script>\n```",
+            "    indented <script>",
+            "# H",
+            "## H <b>",
+            "### `c`",
+            "> [!NOTE]\n> n",
+            "> quote",
+            "| a | <b>b</b> |\n|:--|--:|\n| 1 | 2 |",
+            "- [ ] task",
+            "- item",
+            "1. item",
+            "**b**",
+            "*i*",
+            "~~s~~",
+            "`<c>`",
+            "&amp; &lt; &#60;",
+            "ünïcödé ✓",
+            "\n",
+            "\n\n",
+            "x",
+            "<",
+            ">",
+            "\"",
+            "'",
+            "[",
+            "]",
+            "(",
+            ")",
+            "\\",
+            "*",
+            "_",
+            "`",
+            "#",
+            "|",
+        ];
+        let allowed_tags = [
+            "p",
+            "h2",
+            "h3",
+            "h4",
+            "h5",
+            "h6",
+            "ul",
+            "ol",
+            "li",
+            "table",
+            "thead",
+            "tbody",
+            "tr",
+            "th",
+            "td",
+            "a",
+            "strong",
+            "em",
+            "del",
+            "code",
+            "pre",
+            "blockquote",
+            "hr",
+            "br",
+            "input",
+        ];
+        let allowed_attrs = ["href", "title", "id", "class", "start", "type", "disabled", "checked"];
+        let tag = |html: &str| -> Vec<(String, Vec<(String, String)>)> {
+            // Every tag in the output with its attributes (the renderer quotes attribute values).
+            let mut out = Vec::new();
+            let mut rest = html;
+            while let Some(at) = rest.find('<') {
+                rest = &rest[at + 1..];
+                let end = rest.find('>').expect("every tag closes");
+                let body = rest[..end].trim_start_matches('/').trim_end_matches('/').trim();
+                let name: String = body.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+                let mut attrs = Vec::new();
+                let mut a = &body[name.len()..];
+                while let Some(eq) = a.find('=') {
+                    let key = a[..eq].trim().to_string();
+                    let value = &a[eq + 1..];
+                    assert!(value.starts_with('"'), "unquoted attribute in <{body}>");
+                    let close = value[1..].find('"').expect("closed quote") + 1;
+                    attrs.push((key, value[1..close].to_string()));
+                    a = &value[close + 1..];
+                }
+                for word in a.split_whitespace() {
+                    attrs.push((word.to_string(), String::new()));
+                }
+                out.push((name, attrs));
+                rest = &rest[end + 1..];
+            }
+            out
+        };
+        // A small deterministic generator: the same cases on every run.
+        let mut seed: u64 = 0x5eed_f00d_cafe_b0de;
+        let mut next = move |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        for case in 0..3000 {
+            let md: String = (0..1 + next(30)).map(|_| PARTS[next(PARTS.len())]).collect::<Vec<_>>().join(if next(3) == 0 { "\n" } else { " " });
+            let homepage = [None, Some("https://github.com/acme/kit"), Some("https://example.com/")][next(3)];
+            let html = to_html(&md, homepage);
+            for (name, attrs) in tag(&html) {
+                assert!(allowed_tags.contains(&name.as_str()), "case {case}: <{name}> from {md:?}\n{html}");
+                for (key, value) in attrs {
+                    assert!(allowed_attrs.contains(&key.as_str()), "case {case}: {key}= on <{name}> from {md:?}\n{html}");
+                    if key == "href" {
+                        let v = value.to_ascii_lowercase();
+                        assert!(
+                            v.starts_with("https://") || v.starts_with("http://") || v.starts_with("mailto:") || v.starts_with("#about-"),
+                            "case {case}: href {value} from {md:?}"
+                        );
+                    }
+                }
+            }
+            assert!(!html.contains('\u{0}'), "case {case}: a placeholder reached the page");
+            let text = excerpt(&md, 600);
+            assert!(text.chars().count() <= 601, "case {case}: the excerpt is too long");
+        }
+        // The excerpt is plain text, shown as text: what was written as HTML is left out, and what
+        // only looks like it (not HTML to Markdown, such as `<svg/onload=…>`) stays the words it is.
+        assert_eq!(excerpt("Hi <img src=x onerror=alert(1)> there <b>now</b>.", 100), "Hi there now.");
+        // Large and deeply nested input stays fast (no quadratic loops on what dropping leaves).
+        let started = std::time::Instant::now();
+        let big = PARTS.iter().cycle().take(20_000).copied().collect::<Vec<_>>().join("\n");
+        let deep = format!("{}x", "> ".repeat(5_000)) + &"[".repeat(20_000) + &"#\n\n".repeat(5_000);
+        for md in [big.as_str(), deep.as_str()] {
+            let _ = to_html(md, Some("https://github.com/acme/kit"));
+            let _ = excerpt(md, 600);
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(20), "took {:?}", started.elapsed());
+    }
 }
