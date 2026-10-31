@@ -211,11 +211,25 @@ Checked in Chrome, two people on two replicas:
 * a template saved from a document, refused to a non-manager;
 * phone width.
 
-Not yet:
-* comments and suggestions inside the text (Drive's comments on the file stand in);
-* images in documents;
-* DOCX export;
-* keeping unsaved changes after a tab is closed while offline. The editor warns instead.
+Since 31 October 2026 (Docs 0.3.0, Drive 0.9.0, kernel `coedit` images and `docx`):
+* **Images in documents.** From the toolbar, pasted or dropped in. The document keeps each one in
+  Drive, shown to whoever may view it, paid for by its space, and copied with its copies and
+  restored versions. An image pasted from another document is adopted at the next save (when the
+  editor saving may view it). A document names an image by id, never by address, so pasted web pages
+  keep their text but not their pictures. "Describe image" sets its text for screen readers.
+* **Word files.** `format=docx` (File → Download as Word): headings, lists that restart where the
+  document restarts them, checklists, tables with merged cells, links, images, and suggestions as
+  tracked changes. Checked in LibreOffice and macOS's reader. HTML and PDF carry images too.
+* **Unsaved changes outlive the tab.** They are kept in the browser (IndexedDB, per person and
+  document, merged across tabs, 30 days), sent at the next visit if the person may still edit, and
+  let go once stored. Leaving no longer asks where the browser keeps them; the editor notices the
+  network going away at once.
+
+Checked in Chrome: an image added from the toolbar, described, a picture pasted, a web page's picture
+refused, the Word file holding both; then offline typing, the tab closed with nothing asked, and the
+words reaching the server at the next visit and showing in a fresh browser.
+
+Not yet: comments and suggestions inside the text (Drive's comments on the file stand in).
 
 ### C4. Meetings
 
