@@ -128,5 +128,7 @@ async fn two_factor_sign_in() {
     assert!(matches!(k.create_api_key(&pat, admin.user, "Theirs", None, Some("dav")).await, Err(Error::Forbidden(_))), "keys are for oneself");
     k.revoke_api_key(&pat, dav_id).await.unwrap();
     assert!(matches!(k.verify_api_key(&dav).await, Err(Error::Unauthorized(_))));
-    assert!(matches!(k.verify_api_key(&format!("{}x", &full[..full.len() - 1])).await, Err(Error::Unauthorized(_))));
+    // A key one character off (never the same character: random keys end in x now and then).
+    let tampered = format!("{}{}", &full[..full.len() - 1], if full.ends_with('x') { 'y' } else { 'x' });
+    assert!(matches!(k.verify_api_key(&tampered).await, Err(Error::Unauthorized(_))));
 }
