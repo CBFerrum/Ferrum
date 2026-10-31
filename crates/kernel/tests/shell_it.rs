@@ -17,7 +17,8 @@ async fn kernel() -> Arc<Kernel> {
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
-    let settings = KernelSettings { secret_key: Some(SecretKey::new([7u8; 32])), ..Default::default() };
+    // Private addresses allowed: the domain check below reaches a server on this machine.
+    let settings = KernelSettings { secret_key: Some(SecretKey::new([7u8; 32])), webhooks_allow_private: true, ..Default::default() };
     Kernel::boot(db, catalog, HookRegistry::default(), settings, Some(Arc::new(Quiet))).await.expect("boot")
 }
 
@@ -143,6 +144,15 @@ async fn sessions_hosts_kinds_and_releases() {
     assert_eq!(k.route_host(&shop.host).await.unwrap(), HostRoute::Serve { tenant: acme, target: "site:commerce".into() });
     assert_eq!(k.tenant_for_host(&shop.host).await.unwrap(), None, "a site host serves no shell");
 
+    // A domain is checked by fetching its token from it: it points at this cluster.
+    let books = k.add_host(&admin, "books.acme.example", "shell").await.unwrap();
+    let answering = answer_with(books.verify_token.clone()).await;
+    assert!(k.host_answers("books.acme.example", &answering).await, "its own token");
+    assert!(!k.host_answers("books.acme.example", &answer_with("another".into()).await).await, "another token");
+    assert!(!k.host_answers("nobody.acme.example", &answering).await, "not a domain of any workspace");
+    assert!(!k.host_answers("books.acme.example", "http://127.0.0.1:9/.well-known/ferrum-domain").await, "nothing listening");
+    k.remove_host(&admin, "books.acme.example").await.unwrap();
+
     // Seven failed checks in a row unverify a domain.
     for _ in 0..6 {
         k.host_checked(&shop.host, false).await.unwrap();
@@ -260,4 +270,21 @@ async fn sessions_hosts_kinds_and_releases() {
     k.touch_ui_releases(&[("crm".into(), d3.clone())]).await.unwrap();
     assert_eq!(k.purge_ui_releases().await.unwrap(), vec![("crm".to_string(), d1.clone())]);
     assert!(k.ui_release("crm", &d2).await.unwrap().is_some() && k.ui_release("crm", &d3).await.unwrap().is_some());
+}
+
+/// A server on this machine answering every request with `body`; its proof address.
+async fn answer_with(body: String) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+            let _ = sock.write_all(head.as_bytes()).await;
+            let _ = sock.write_all(body.as_bytes()).await;
+        }
+    });
+    format!("http://{addr}/.well-known/ferrum-domain")
 }

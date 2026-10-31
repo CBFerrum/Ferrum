@@ -234,6 +234,10 @@ async fn locked_round(k: &Kernel) -> Result<(), sqlx::Error> {
         return Ok(());
     }
     maintenance(k).await;
+    // Custom domains due a check (docs/plan/apps-ui.md §7): verified when they answer their token.
+    if let Err(e) = k.check_hosts().await {
+        tracing::warn!("domain checks: {e}");
+    }
     sqlx::query("select pg_advisory_unlock($1)").bind(LOCK).execute(&mut *conn).await?;
     Ok(())
 }

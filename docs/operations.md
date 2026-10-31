@@ -772,9 +772,48 @@ the bar runtime (`/_shell/…`) and the app's files (`/_ui/…`).
 * **Public sites.** A host whose target is `site:{app}` (`shop.example.com` → `site:commerce`) is
   that app's public site at its root, without the shell or sessions: Commerce's storefront, with
   its own `robots.txt` and `sitemap.xml`. Point the domain at the server like the workspace's.
-  Until administrators can add domains themselves (with custom domains), an operator adds such
-  hosts to the host map (`tenant_host`: host, workspace, `kind` `custom`, `target`, `verified_at`)
-  and they serve within 20 seconds.
+  Administrators add such hosts themselves (below).
+
+## Custom domains
+
+Administrators give a workspace its own addresses under Administration → Domains
+([plan](plan/apps-ui.md) §7): for the workspace (`shell`), its portal (`portal`) or an app's public
+site (`site:{app}`), at most 20 per workspace.
+
+* **Pointing a domain**: a CNAME record to the cluster's address (the host of `PUBLIC_URL`, shown on
+  the page), or A/AAAA records to the same addresses for an apex domain.
+* **Verification**: once a minute one replica checks up to six domains that are due: pending ones every
+  five minutes, working ones daily. A domain works when `https://{domain}/.well-known/ferrum-domain`
+  answers its token, which the server gives to whoever asks on that host; it stops working after seven
+  failed checks in a row (a week of daily checks). Administrators can check one at once. The check
+  refuses private addresses and follows no redirect; with `settings.webhooks_allow_private` (development)
+  it uses plain http.
+* **Certificates**: the edge in front of Ferrum gets one per domain. With Caddy's on-demand TLS:
+
+  ```caddyfile
+  {
+    on_demand_tls {
+      ask http://ferrum:5150/_tls/ask
+    }
+  }
+  https:// {
+    tls {
+      on_demand
+    }
+    reverse_proxy ferrum:5150
+  }
+  ```
+
+  `/_tls/ask?domain=` answers 200 only for a workspace's subdomain, a working custom domain, one being
+  verified, or a removed one still redirecting, so nobody can make the edge request certificates for
+  other names. On Kubernetes, put Caddy (or another edge with on-demand TLS) in front of the
+  `ferrum` service; with cert-manager instead, each custom domain needs its own Ingress and
+  Certificate, which an operator adds when the domain is verified.
+* **Removing** a working domain releases it: it redirects to the workspace's main address of the same
+  kind for 90 days, and no workspace can claim it for a year, so old links and data in browsers never
+  reach a new owner. A domain that never worked is simply dropped.
+* **Main address**: one working domain of each kind is the main one: links in mail and redirects use
+  it, and the workspace's other addresses of that kind lead to it.
 
 ## Sign-in security
 
