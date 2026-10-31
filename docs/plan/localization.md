@@ -7,8 +7,8 @@ foundation: ERP's engine holds no country's rules, a country is an add-on on one
 company's accounts and templates), and India (`addons/india`, crate `ferrum-india`) is the first.
 
 This plan covers what comes next: the shared parts every country after India needs (L0), then the
-add-ons in an order, with what each must do and when it is done. Nothing here is built yet; it is
-built phase by phase on a go-ahead.
+add-ons in an order, with what each must do and when it is done. L0 is built (31 October 2026, see
+its section); the add-ons are built phase by phase on a go-ahead.
 
 Dates are as reported on 31 October 2026 (sources at the end). Tax law moves often, and several
 sources disagree, marked *(check)*. Each add-on confirms its dates against the authority's own
@@ -45,6 +45,25 @@ Rules every add-on keeps:
 * Sandbox and production endpoints are a setting per company, defaulting to the sandbox.
 
 ## L0. The shared parts, before any second country
+
+**Built (31 October 2026):** Ferrum 1b532f4 and b5b2d3f, Ferrum-Frontend 9ecf5bf, ERP 7a2a70c and
+4aae57a (ERP 0.3.0, India 0.2.0), Commerce 6c74dbd, Point of Sale 0.2.3; pinned by the Ferrum commit
+that marks this. What was built differs from the table in one place: a country stays the name
+people type, and a read-only `country_code` (ISO 3166-1 alpha-2, `ferrum_domain::countries`, with the
+other names people type) follows it on every save, so nothing that reads or writes `country` changes;
+the upgrade step `country-codes` fills existing companies' and addresses' codes and logs names it
+does not know. In short:
+
+* `ferrum-calc`: charge type `on_item_quantity` (rate × the line's `tax_qty`, its stock quantity),
+  `reverse_charge` rows (reported, never in a total), `tax_rounding` per document or per line; every
+  input has a default, so callers name only what they set and older JSON keeps working.
+* ERP: categories and exemption reasons on tax rows and items' tax rates, a stored tax breakdown on
+  invoices (BG-23), reverse-charge postings (purchases: input and owed; sales: nothing), the company's
+  Tax Rounding, the party's address and a ship-to on orders, deliveries and invoices
+  (`localization::ship_to`).
+* India: reads the code; reverse-charge purchases with RCM templates and accounts; e-invoices mark
+  reverse charge and report a cess per unit.
+* Point of Sale and the browser engine price offline as the server does, per-unit taxes included.
 
 | Need | Change | Where |
 |---|---|---|

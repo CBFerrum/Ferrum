@@ -2412,7 +2412,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-erp"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7a2a70c0bef0673d7d43ef1fd1e6646a0d7f9b19"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#4aae57a8aa93c8a507bab012dd2a1abfa656e6d4"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2545,7 +2545,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-pos"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-pos?branch=main#4b8ba830176776028475c7adfb22742612c8eab8"
+source = "git+https://github.com/CBFerrum/ferrum-app-pos?branch=main#3b0318fe8dbc6932e2821acab5bac0aaf54f1875"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2659,7 +2659,7 @@ dependencies = [
 [[package]]
 name = "ferrum-finance"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7a2a70c0bef0673d7d43ef1fd1e6646a0d7f9b19"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#4aae57a8aa93c8a507bab012dd2a1abfa656e6d4"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2681,7 +2681,7 @@ dependencies = [
 [[package]]
 name = "ferrum-india"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7a2a70c0bef0673d7d43ef1fd1e6646a0d7f9b19"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#4aae57a8aa93c8a507bab012dd2a1abfa656e6d4"
 dependencies = [
  "aes",
  "async-trait",
@@ -2778,7 +2778,7 @@ dependencies = [
 [[package]]
 name = "ferrum-mfg-ops"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7a2a70c0bef0673d7d43ef1fd1e6646a0d7f9b19"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#4aae57a8aa93c8a507bab012dd2a1abfa656e6d4"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2828,7 +2828,7 @@ dependencies = [
 [[package]]
 name = "ferrum-procurement"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7a2a70c0bef0673d7d43ef1fd1e6646a0d7f9b19"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#4aae57a8aa93c8a507bab012dd2a1abfa656e6d4"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2917,7 +2917,7 @@ dependencies = [
 [[package]]
 name = "ferrum-stock-ops"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7a2a70c0bef0673d7d43ef1fd1e6646a0d7f9b19"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#4aae57a8aa93c8a507bab012dd2a1abfa656e6d4"
 dependencies = [
  "async-trait",
  "chrono",
