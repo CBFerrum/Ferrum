@@ -134,6 +134,55 @@ async fn login_second_factor(State(app): State<AppContext>, headers: HeaderMap, 
 }
 
 #[derive(Deserialize)]
+struct SendCodeReq {
+    tenant: String,
+    email: String,
+}
+
+/// The least an answer to "email me a code" takes, so how long it takes says nothing about the
+/// address either.
+const CODE_ANSWER: std::time::Duration = std::time::Duration::from_millis(600);
+
+/// Emails a portal person a code to sign in with (docs/plan/apps-ui.md §9.1). The answer is the
+/// same whether or not the address belongs to anyone.
+async fn send_code(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<SendCodeReq>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    st.login_limiter.check(&format!("{}|{}", client_ip(&headers), req.tenant.to_lowercase())).await?;
+    if req.tenant.len() > 63 {
+        return Err(ApiError(Error::field("tenant", "is too long")));
+    }
+    let until = tokio::time::Instant::now() + CODE_ANSWER;
+    let sent = st.kernel.send_sign_in_code(&req.tenant, &req.email).await;
+    tokio::time::sleep_until(until).await;
+    sent?;
+    Ok(Json(json!({"sent": true})).into_response())
+}
+
+#[derive(Deserialize)]
+struct CodeSignInReq {
+    tenant: String,
+    email: String,
+    code: String,
+    #[serde(default)]
+    session: Option<String>,
+}
+
+/// Signs in with an emailed code; the second step follows for someone with an authenticator app.
+async fn sign_in_with_code(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<CodeSignInReq>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    st.login_limiter.check(&format!("{}|{}", client_ip(&headers), req.tenant.to_lowercase())).await?;
+    if req.tenant.len() > 63 || req.email.len() > 254 || req.code.len() > 32 {
+        return Err(ApiError(Error::Unauthorized("that code is wrong or has expired; ask for a new one".into())));
+    }
+    match st.kernel.sign_in_with_code(&req.tenant, &req.email, &req.code).await? {
+        SignIn::SecondFactor(s) => {
+            Ok(Json(json!({"second_factor": true, "ticket": token(&st, &s, TICKET_SECS, Some("mfa"))?, "expires_in": TICKET_SECS})).into_response())
+        }
+        SignIn::Session(s) | SignIn::SetupRequired(s) => session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie")).await,
+    }
+}
+
+#[derive(Deserialize)]
 struct SsoOptionsQuery {
     tenant: String,
 }
@@ -423,6 +472,8 @@ pub fn routes() -> Routes {
         .prefix("/api/auth")
         .add("/login", post(login))
         .add("/login/second-factor", post(login_second_factor))
+        .add("/code", post(send_code))
+        .add("/code/sign-in", post(sign_in_with_code))
         .add("/sso", get(sso_options))
         .add("/sso/start", post(sso_start))
         .add("/sso/finish", post(sso_finish))

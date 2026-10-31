@@ -558,6 +558,54 @@ async fn scenario() {
     assert_eq!(dec(&si_doc["outstanding_amount"]), n("1000"));
     assert_eq!(si_doc["status"], json!("Partly Paid"));
 
+    // ───────────── the portal's "Your invoices" (docs/plan/apps-ui.md §9.1) ─────────────
+    t.k.update(&t.ctx, "Customer", globex, obj(json!({"email": "Accounts@Globex.test"})), None).await.expect("customer's email");
+    let draft = uid(&t
+        .insert("SalesInvoice", json!({"company": cid.to_string(), "customer": globex.to_string(), "items": [{"item": widget.to_string(), "qty": "1"}]}))
+        .await);
+    let portal_person = |email: &'static str| {
+        let (k, admin) = (t.k.clone(), t.ctx.clone());
+        async move {
+            let id = k.create_user(&admin, email, "Accounts", None, &[], false).await.expect("user");
+            k.set_user_kind(&admin, id, "portal").await.expect("portal");
+            k.load_ctx(admin.tenant, id, None, "it".into()).await.expect("ctx")
+        }
+    };
+    let ask = |who: Ctx, path: String| {
+        let k = t.k.clone();
+        async move {
+            let site = k.hooks.site("selling").expect("selling's endpoints").clone();
+            let req = ferrum_kernel::SiteRequest {
+                tenant: who.tenant,
+                user: Some(who),
+                method: "GET".into(),
+                path,
+                query: Default::default(),
+                headers: Default::default(),
+                body: vec![],
+                client_ip: "203.0.113.9".into(),
+            };
+            site.handle(&k, req).await
+        }
+    };
+    let accounts = portal_person("accounts@globex.test").await;
+    let mine = ask(accounts.clone(), "/portal/invoices".into()).await.expect("list");
+    let mine: Value = serde_json::from_slice(&mine.body).unwrap();
+    let listed: Vec<&str> = mine["invoices"].as_array().unwrap().iter().map(|i| i["id"].as_str().unwrap()).collect();
+    assert_eq!(listed, [si_id.to_string()], "submitted invoices of her customer only, no drafts: {mine}");
+    assert_eq!((mine["invoices"][0]["outstanding"].as_str(), mine["invoices"][0]["status"].as_str()), (Some("1000"), Some("Partly Paid")));
+    let one: Value = serde_json::from_slice(&ask(accounts.clone(), format!("/portal/invoices/{si_id}")).await.expect("detail").body).unwrap();
+    assert_eq!(one["lines"][0]["qty"].as_str(), Some("10"));
+    assert_eq!(one["total"].as_str(), Some("1770"));
+    assert!(one["taxes"].as_array().unwrap().iter().any(|x| x["amount"].as_str() == Some("270")), "{one}");
+    assert!(matches!(ask(accounts.clone(), format!("/portal/invoices/{draft}")).await, Err(Error::NotFound(_))), "a draft is not hers to see");
+    let printed = ask(accounts.clone(), format!("/portal/invoices/{si_id}/print")).await.expect("print");
+    assert!(printed.content_type.starts_with("text/html") && printed.headers.iter().any(|(k, v)| k == "content-security-policy" && v.contains("sandbox")));
+    let stranger = portal_person("someone@else.test").await;
+    let none: Value = serde_json::from_slice(&ask(stranger.clone(), "/portal/invoices".into()).await.unwrap().body).unwrap();
+    assert_eq!(none["invoices"], json!([]));
+    assert!(matches!(ask(stranger, format!("/portal/invoices/{si_id}")).await, Err(Error::NotFound(_))), "another customer's invoice");
+
     // Credit note settles what is still open; the rest is a customer credit.
     let cn = t.action("SalesInvoice", si_id, "make_credit_note", json!({})).await;
     let cn_doc = t.submit("SalesInvoice", vid(&cn)).await;

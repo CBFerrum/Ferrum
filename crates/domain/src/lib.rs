@@ -12,6 +12,7 @@ pub mod india;
 pub mod irp;
 pub mod ledger;
 pub mod manufacturing;
+pub mod portal;
 pub mod pricing;
 pub mod reports;
 pub mod reservation;
@@ -39,6 +40,8 @@ pub fn packages() -> std::result::Result<Vec<ferrum_meta::Package>, ferrum_meta:
 /// before the pricing/posting hooks of the same document.
 pub fn register(h: &mut HookRegistry) {
     let only = |p: &str| vec![p.to_string()];
+    // A customer's invoices on the workspace's portal (ERP's "Your invoices").
+    h.add_site("selling", Arc::new(portal::SellingPortal));
     h.scoped(&only("contacts"), |h| {
         h.register("Contact", Arc::new(contacts::ContactHook)).register("Address", Arc::new(contacts::AddressHook));
     });

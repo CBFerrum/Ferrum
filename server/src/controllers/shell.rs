@@ -59,7 +59,7 @@ async fn person(st: &AppState, headers: &HeaderMap, uri: &Uri) -> Result<(Ctx, O
         Place::Moved(None) => {
             return Err(status_page(StatusCode::GONE, "This workspace has moved", "This address no longer leads to a workspace.", &[], None));
         }
-        Place::Elsewhere => return Err(not_found(uri.path())),
+        Place::Site(..) => return Err(not_found(uri.path())),
         _ => {}
     }
     if shell::session_cookie(headers, st.shell.secure).is_none() {
@@ -93,8 +93,13 @@ pub(crate) async fn page_bootstrap(
 }
 
 /// `GET /`: the shell's Home; someone signed out signs in first.
-async fn home(State(app): State<AppContext>, headers: HeaderMap, uri: Uri) -> ApiResult<Response> {
+async fn home(State(app): State<AppContext>, headers: HeaderMap, uri: Uri, Query(q): Query<Vec<(String, String)>>) -> ApiResult<Response> {
     let st = app_state(&app)?;
+    match st.shell.place(&headers).await? {
+        Place::Site(tenant, app_id) => return site_page(&st, tenant, &app_id, &headers, &uri, "", q).await,
+        Place::Portal(_) => return Ok(Redirect::to("/portal/").into_response()),
+        _ => {}
+    }
     if shell::session_cookie(&headers, st.shell.secure).is_some()
         && let Ok((ctx, device)) = caller_on(&st, &Method::GET, &headers).await
     {
@@ -111,6 +116,9 @@ async fn shell_page(st: &AppState, headers: &HeaderMap, ctx: Ctx, device: Option
         Ok(b) => b,
         Err(r) => return Ok(r),
     };
+    if kind == "portal" {
+        return Ok(Redirect::to("/portal/").into_response());
+    }
     if kind != "member" {
         return Ok(status_page(
             StatusCode::FORBIDDEN,
@@ -211,6 +219,14 @@ async fn page(
     let mut parts = path.splitn(2, '/');
     let first = parts.next().unwrap_or_default();
     let rest = parts.next();
+    match st.shell.place(&headers).await? {
+        Place::Site(tenant, app_id) => return site_page(&st, tenant, &app_id, &headers, &uri, &path, q).await,
+        // The portal's host has the portal, signing in and links to records; the rest leads to the portal.
+        Place::Portal(_) if !matches!(first, "portal" | "login" | "open" | "_ui" | "_shell" | "favicon.ico") => {
+            return Ok(Redirect::to("/portal/").into_response());
+        }
+        _ => {}
+    }
     if shell::SHELL_ROUTES.contains(&first) {
         return shell_core(&st, &headers, &uri, first, rest).await;
     }
@@ -221,6 +237,7 @@ async fn page(
         // Browsers ask for it on pages without an icon: the platform's.
         "favicon.ico" if rest.is_none() => return Ok(Redirect::permanent("/_shell/v1/icon.svg").into_response()),
         "open" => return open(&st, &headers, &uri, rest.unwrap_or_default(), &q).await,
+        "portal" => return portal(&st, &headers, &uri, rest).await,
         // Today's web app's addresses (controllers/legacy.rs); `/app/` comes here, slash and all.
         "app" => return Ok(super::legacy::answer(&uri)),
         // The assistant's page (controllers/assistant.rs), the side panel's and a phone's.
@@ -283,6 +300,9 @@ async fn page(
         ));
     }
     if !may_use(&ctx, &kind, item) {
+        if kind == "portal" {
+            return Ok(Redirect::to("/portal/").into_response());
+        }
         return Ok(status_page(
             StatusCode::FORBIDDEN,
             &format!("You do not have access to {title}"),
@@ -347,7 +367,7 @@ async fn public_page(st: &AppState, headers: &HeaderMap, uri: &Uri, app_id: &str
             let scheme = if st.shell.secure { "https" } else { "http" };
             return Ok(Redirect::permanent(&format!("{scheme}://{to}{}", path_and_query(uri))).into_response());
         }
-        Place::Moved(None) | Place::Elsewhere => return Ok(gone()),
+        Place::Moved(None) | Place::Portal(_) | Place::Site(..) => return Ok(gone()),
         Place::Workspace(_) | Place::Any => {}
     }
     let ws = st.shell.workspace(tenant).await?;
@@ -385,6 +405,143 @@ async fn public_page(st: &AppState, headers: &HeaderMap, uri: &Uri, app_id: &str
     let timezone = st.kernel.registry.schema(tenant).await?.timezone.clone();
     let boot = shell::public_bootstrap(&ws, shell::request_host(headers).unwrap_or_default(), &timezone, app_json, page);
     Ok(not_modified(headers, shell::public_entry_page(&entry, &boot, &shell::csp(Some(app.manifest.as_ref()), &Value::Null))))
+}
+
+/// `/portal/…`: the workspace's portal (docs/plan/apps-ui.md §9.1). Its home lists the pages the
+/// apps give this person (`shell.portal`); each is its app's interface at `/portal/{id}/`, with
+/// the portal's header instead of the bar. Portal people live here; members may look too.
+async fn portal(st: &AppState, headers: &HeaderMap, uri: &Uri, rest: Option<&str>) -> ApiResult<Response> {
+    let query = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
+    let Some(rest) = rest else { return Ok(Redirect::permanent(&format!("/portal/{query}")).into_response()) };
+    let (ctx, device, _) = match person(st, headers, uri).await {
+        Ok(p) => p,
+        Err(r) => return Ok(r),
+    };
+    let ws = st.shell.workspace(ctx.tenant).await?;
+    let kind = st.shell.kind(ctx.tenant, ctx.user).await?;
+    // Status pages here have no bar: portal people never see it.
+    if ws.status != "active" {
+        return Ok(status_page(StatusCode::FORBIDDEN, "This portal is closed for now", "Try again later.", &[], None));
+    }
+    if !matches!(kind.as_str(), "portal" | "member") {
+        return Ok(status_page(
+            StatusCode::FORBIDDEN,
+            "Nothing here for you",
+            "This workspace has shared particular things with you; open them from the links you were sent.",
+            &[],
+            None,
+        ));
+    }
+    let apps = st.apps.shell_apps(ctx.tenant).await?;
+    let pages = shell::portal_pages(&apps);
+    let (id, tail) = match rest.split_once('/') {
+        Some((id, tail)) => (id, Some(tail)),
+        None => (rest, None),
+    };
+    if id.is_empty() {
+        // One page: straight to it.
+        if let [only] = pages.as_slice()
+            && kind == "portal"
+        {
+            return Ok(Redirect::to(&format!("/portal/{}/", only.id)).into_response());
+        }
+        let (mut boot, _) = match page_bootstrap(st, headers, &ctx, device, json!(null), "portal").await {
+            Ok(b) => b,
+            Err(r) => return Ok(r),
+        };
+        boot["portal"] = shell::portal_json(&pages);
+        return Ok(not_modified(headers, shell::portal_home(&boot, &pages)));
+    }
+    let Some(page) = pages.iter().find(|p| p.id == id) else {
+        return Ok(status_page(StatusCode::NOT_FOUND, "This page is not here", "It may have been removed.", &[("Go to the portal", "/portal/")], None));
+    };
+    if tail.is_none() {
+        return Ok(Redirect::permanent(&format!("/portal/{id}/{query}")).into_response());
+    }
+    let app = page.app;
+    let mut release = st.shell.release_for(ctx.tenant, &app.id, &app.version).await?;
+    if release.is_none() && app.bundled && st.apps.ensure_ui_release(ctx.tenant, &app.id, &app.version).await? {
+        release = st.shell.release_for(ctx.tenant, &app.id, &app.version).await?;
+    }
+    let Some(release) = release else {
+        return Ok(status_page(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &format!("{} cannot open", page.title),
+            "Try again in a while.",
+            &[("Go to the portal", "/portal/")],
+            None,
+        ));
+    };
+    let entry: ferrum_apps::ui::EntryTemplate = serde_json::from_value(release.entry.clone())
+        .map_err(|e| ApiError(Error::internal(format!("interface release {} of {}: {e}", release.digest, app.id))))?;
+    let route = format!("portal/{}", page.id);
+    let app_json = json!({
+        "id": app.id,
+        "version": app.version,
+        "release": release.digest,
+        "routes": {route.clone(): format!("/{route}/")},
+        "entry": route,
+        "title": page.title,
+        "compact": false,
+    });
+    let (mut boot, _) = match page_bootstrap(st, headers, &ctx, device, app_json, "portal").await {
+        Ok(b) => b,
+        Err(r) => return Ok(r),
+    };
+    boot["portal"] = shell::portal_json(&pages);
+    Ok(not_modified(headers, shell::portal_entry_page(&entry, &boot, &shell::csp(Some(app.manifest.as_ref()), &Value::Null))))
+}
+
+/// A `site:{app}` host (docs/plan/apps-ui.md §7.3): everything under its root is the app's public
+/// pages, rendered on the server by its package's site handler at `/_site/{path}`. No shell, no
+/// session; the handler learns where its public API is and the site's own origin from the
+/// platform (`x-ferrum-site-api`, `x-ferrum-site-origin`), never from the caller.
+async fn site_page(st: &AppState, tenant: Uuid, app_id: &str, headers: &HeaderMap, uri: &Uri, path: &str, q: Vec<(String, String)>) -> ApiResult<Response> {
+    let unavailable = |status: StatusCode, title: &str, message: &str| status_page(status, title, message, &[], None);
+    let ws = st.shell.workspace(tenant).await?;
+    st.public_limiter.check(&format!("{}|{}", crate::extract::client_ip(headers), ws.slug)).await?;
+    if ws.status != "active" {
+        return Ok(unavailable(StatusCode::SERVICE_UNAVAILABLE, "This site is closed for now", "Try again later."));
+    }
+    let apps = st.apps.shell_apps(tenant).await?;
+    let schema = st.kernel.registry.schema(tenant).await?;
+    // The app's package with a site handler: the one named like the app first.
+    let site = apps.iter().find(|a| a.id == app_id).and_then(|a| {
+        let mut packages: Vec<&String> = a.manifest.packages.iter().filter(|p| schema.packages.contains(*p)).collect();
+        packages.sort_by_key(|p| p.as_str() != app_id);
+        packages.into_iter().find_map(|p| st.kernel.hooks.site(p).map(|s| (p.clone(), s.clone())))
+    });
+    let Some((package, site)) = site else {
+        return Ok(unavailable(StatusCode::NOT_FOUND, "Nothing is here", "This address has no site yet."));
+    };
+    let mut req = super::sites::request(tenant, None, Method::GET, uri, format!("_site/{path}"), q.into_iter().collect(), headers, Bytes::new())?;
+    let scheme = if st.shell.secure { "https" } else { "http" };
+    let host = shell::request_host(headers).unwrap_or_default();
+    req.headers.insert("x-ferrum-site-api".into(), json!(format!("/api/site/{}/{package}", ws.slug)));
+    req.headers.insert("x-ferrum-site-origin".into(), json!(format!("{scheme}://{host}")));
+    let mut res = match super::sites::handle(&st.kernel, site, req).await {
+        Ok(r) => super::sites::respond(r),
+        Err(ApiError(Error::NotFound(_))) => return Ok(unavailable(StatusCode::NOT_FOUND, "Page not found", "There is nothing at this address.")),
+        Err(e) => {
+            tracing::warn!(app = app_id, path, "a site's page failed: {}", e.0);
+            return Ok(unavailable(StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong", "Try again in a moment."));
+        }
+    };
+    // What every public page gets unless the app says otherwise.
+    let h = res.headers_mut();
+    for (name, value) in [
+        ("x-content-type-options", "nosniff"),
+        ("referrer-policy", "strict-origin-when-cross-origin"),
+        (
+            "content-security-policy",
+            "default-src 'self'; img-src 'self' data: https:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'",
+        ),
+    ] {
+        if !h.contains_key(name) {
+            h.insert(name, HeaderValue::from_static(value));
+        }
+    }
+    Ok(res)
 }
 
 /// A 304 when the browser already has this page.
@@ -490,11 +647,13 @@ async fn login(st: &AppState, headers: &HeaderMap, uri: &Uri, q: &[(String, Stri
     if shell::session_cookie(headers, st.shell.secure).is_some() && caller_on(st, &Method::GET, headers).await.is_ok() {
         return Ok(Redirect::to(&next).into_response());
     }
+    // On the portal's host, or on the way to the portal, an emailed code comes first.
+    let codes = matches!(place, Place::Portal(_)) || next.starts_with("/portal/");
     let fixed = match place {
-        Place::Workspace(t) => Some(st.shell.workspace(t).await?),
+        Place::Workspace(t) | Place::Portal(t) => Some(st.shell.workspace(t).await?),
         _ => None,
     };
-    let mut res = shell::login_page(fixed.as_deref(), &next);
+    let mut res = shell::login_page(fixed.as_deref(), &next, codes);
     // A stale cookie (signed out elsewhere, another workspace) goes.
     if shell::session_cookie(headers, st.shell.secure).is_some() {
         res.headers_mut().append(header::SET_COOKIE, shell::clear_cookie(st.shell.secure));
@@ -518,6 +677,12 @@ async fn open(st: &AppState, headers: &HeaderMap, uri: &Uri, rest: &str, q: &[(S
     };
     let kind = st.shell.kind(ctx.tenant, ctx.user).await?;
     let apps = st.apps.shell_apps(ctx.tenant).await?;
+    // A portal person opens records in the portal, on the page that shows them.
+    if kind == "portal" {
+        let pages = shell::portal_pages(&apps);
+        let to = id.as_deref().and_then(|id| shell::portal_open(&pages, entity, &seg(id))).unwrap_or_else(|| "/portal/".to_string());
+        return Ok(Redirect::to(&to).into_response());
+    }
     let via = query(q, "via");
     let package = ctx.schema.entity(entity).map(|e| e.package.clone());
     let mut best: Option<(i64, usize, String)> = None;

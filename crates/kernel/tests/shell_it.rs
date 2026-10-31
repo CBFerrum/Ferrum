@@ -18,7 +18,32 @@ async fn kernel() -> Arc<Kernel> {
     sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
     let settings = KernelSettings { secret_key: Some(SecretKey::new([7u8; 32])), ..Default::default() };
-    Kernel::boot(db, catalog, HookRegistry::default(), settings, None).await.expect("boot")
+    Kernel::boot(db, catalog, HookRegistry::default(), settings, Some(Arc::new(Quiet))).await.expect("boot")
+}
+
+/// A mailer that sends nothing: mail stays in the outbox, where the test reads it.
+struct Quiet;
+
+#[async_trait::async_trait]
+impl ferrum_kernel::Mailer for Quiet {
+    async fn send(&self, _: &str, _: &str, _: &str) -> ferrum_kernel::Result<()> {
+        Ok(())
+    }
+}
+
+/// The sign-in codes queued for `to`, newest first (from the mail's subject).
+async fn codes_for(k: &Kernel, to: &str) -> Vec<String> {
+    // Past row-level security, as the dispatcher reads it.
+    let mut tx = k.db.system_tx().await.unwrap();
+    let subjects: Vec<String> = sqlx::query_scalar(
+        "select payload->>'subject' from outbox where topic = 'ferrum.mail' and payload->>'to' = $1 and payload->>'subject' like '% is your code for %' order by id desc",
+    )
+    .bind(to)
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    subjects.iter().map(|s| s.split(' ').next().unwrap().to_string()).collect()
 }
 
 fn tenant(slug: &str) -> NewTenant {
@@ -156,6 +181,52 @@ async fn sessions_hosts_kinds_and_releases() {
     assert!(matches!(k.set_user_kind(&admin, ana_id, "robot").await, Err(Error::Validation(_))));
     assert!(matches!(k.set_user_kind(&admin, s.user, "guest").await, Err(Error::Invalid(_))), "not one's own");
     assert!(matches!(k.set_user_kind(&ana, s.user, "member").await, Err(Error::Forbidden(_))));
+
+    // ── Portal people sign in with emailed codes, and hold no roles or rights. ──
+    let pia_id = k.create_user(&admin, "pia@customer.test", "Pia", None, &[], true).await.unwrap();
+    k.set_user_kind(&admin, pia_id, "portal").await.unwrap();
+    k.send_sign_in_code("ACME", " Pia@Customer.test ").await.unwrap();
+    k.send_sign_in_code("acme", "nobody@customer.test").await.expect("the same answer for nobody");
+    k.send_sign_in_code("acme", "admin@acme.test").await.expect("and for members, who sign in with passwords");
+    assert!(codes_for(&k, "nobody@customer.test").await.is_empty() && codes_for(&k, "admin@acme.test").await.is_empty());
+    let first = codes_for(&k, "pia@customer.test").await;
+    assert_eq!(first.len(), 1);
+    assert!(first[0].len() == 6 && first[0].bytes().all(|b| b.is_ascii_digit()), "{first:?}");
+    // A new code ends the one before.
+    k.send_sign_in_code("acme", "pia@customer.test").await.unwrap();
+    let code = codes_for(&k, "pia@customer.test").await[0].clone();
+    if code != first[0] {
+        assert!(matches!(k.sign_in_with_code("acme", "pia@customer.test", &first[0]).await, Err(Error::Unauthorized(_))), "the older code");
+    }
+    assert!(matches!(k.sign_in_with_code("globex", "pia@customer.test", &code).await, Err(Error::Unauthorized(_))), "another workspace");
+    let wrong = if code == "000000" { "111111" } else { "000000" };
+    assert!(matches!(k.sign_in_with_code("acme", "pia@customer.test", wrong).await, Err(Error::Unauthorized(_))));
+    let signed = match k.sign_in_with_code("acme", "pia@customer.test", &format!(" {} {} ", &code[..3], &code[3..])).await.unwrap() {
+        ferrum_kernel::auth::SignIn::Session(s) => s,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!((signed.tenant, signed.user), (acme, pia_id));
+    assert!(matches!(k.sign_in_with_code("acme", "pia@customer.test", &code).await, Err(Error::Unauthorized(_))), "a code works once");
+    let pia = k.load_ctx(acme, pia_id, Some(signed.token_version), "it".into()).await.unwrap();
+    assert!(!pia.is_admin && pia.roles.is_empty(), "a portal person holds no rights, whatever she was given");
+    // Five wrong tries end a code.
+    k.send_sign_in_code("acme", "pia@customer.test").await.unwrap();
+    let code = codes_for(&k, "pia@customer.test").await[0].clone();
+    let wrong = if code == "000000" { "111111" } else { "000000" };
+    for _ in 0..5 {
+        assert!(k.sign_in_with_code("acme", "pia@customer.test", wrong).await.is_err());
+    }
+    assert!(matches!(k.sign_in_with_code("acme", "pia@customer.test", &code).await, Err(Error::Unauthorized(_))), "spent by wrong tries");
+    // At most five codes an hour; past that, silence.
+    for _ in 0..4 {
+        k.send_sign_in_code("acme", "pia@customer.test").await.unwrap();
+    }
+    assert_eq!(codes_for(&k, "pia@customer.test").await.len(), 5);
+    // A disabled portal person gets none.
+    sql(&k, &format!("update app_user set is_active = false where id = '{pia_id}'")).await;
+    sql(&k, "delete from sign_in_code").await;
+    k.send_sign_in_code("acme", "pia@customer.test").await.unwrap();
+    assert_eq!(codes_for(&k, "pia@customer.test").await.len(), 5);
 
     // ── Interface releases: content-addressed, pinned per workspace, purged when unused. ──
     let (d1, d2, d3) = ("1".repeat(64), "2".repeat(64), "3".repeat(64));
