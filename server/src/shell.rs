@@ -529,65 +529,6 @@ pub async fn store_release(kernel: &Kernel, storage: &Storage, app: &str, versio
     kernel.register_ui_release(app, &ui.digest, version, &Value::Object(files), &entry).await
 }
 
-/// The release files of a bundle's interface (paths relative to its `ui.dist`).
-pub fn bundle_ui(b: &ferrum_apps::Bundle) -> std::result::Result<Option<PreparedUi>, ferrum_apps::AppError> {
-    let Some(ui) = &b.manifest.ui else { return Ok(None) };
-    let prefix = format!("{}/", ui.dist.trim_end_matches('/'));
-    let files: BTreeMap<String, Vec<u8>> =
-        b.paths().filter_map(|p| p.strip_prefix(prefix.as_str()).map(|rel| (rel.to_string(), b.file(p).unwrap_or_default().to_vec()))).collect();
-    if files.is_empty() {
-        return Err(ferrum_apps::AppError::Bundle(format!("ui: {} holds no files", ui.dist)));
-    }
-    ferrum_apps::ui::prepare(&b.manifest.id, files).map(Some)
-}
-
-/// What the store's review says of a bundle's interface (docs/plan/apps-ui.md U8), for the people
-/// who install it: what an automatic look at its page finds missing for accessibility, and how much
-/// a first visit downloads. Hard limits (size, the page's rules) are `ferrum_apps::ui::prepare`'s.
-pub fn ui_review(b: &ferrum_apps::Bundle) -> Vec<String> {
-    let Some(ui) = &b.manifest.ui else { return vec![] };
-    let prefix = format!("{}/", ui.dist.trim_end_matches('/'));
-    let mut bytes = 0usize;
-    let mut index = String::new();
-    for p in b.paths() {
-        let Some(rel) = p.strip_prefix(prefix.as_str()) else { continue };
-        let file = b.file(p).unwrap_or_default();
-        bytes += file.len();
-        if rel == "index.html" {
-            index = String::from_utf8_lossy(file).to_ascii_lowercase();
-        }
-    }
-    review_page(&index, bytes)
-}
-
-fn review_page(index: &str, bytes: usize) -> Vec<String> {
-    let mut out = Vec::new();
-    let tag = |name: &str| index.find(&format!("<{name}")).map(|i| &index[i..i + index[i..].find('>').unwrap_or(0)]);
-    if !tag("html").is_some_and(|t| t.contains(" lang=")) {
-        out.push("its page names no language (<html lang>), so screen readers guess how to read it".to_string());
-    }
-    let titled = index.find("<title>").is_some_and(|i| index[i + 7..].split("</title>").next().is_some_and(|t| !t.trim().is_empty()));
-    if !titled {
-        out.push("its page has no title (<title>), which tabs, history and screen readers show".to_string());
-    }
-    if !index.contains("name=\"viewport\"") && !index.contains("name=viewport") {
-        out.push("its page sets no viewport, so phones show it zoomed out".to_string());
-    }
-    let mut rest = index;
-    while let Some(i) = rest.find("<img") {
-        let end = rest[i..].find('>').map_or(rest.len(), |e| i + e);
-        if !rest[i..end].contains(" alt=") {
-            out.push("an image on its page has no text alternative (alt)".to_string());
-            break;
-        }
-        rest = &rest[end..];
-    }
-    if bytes > 2 << 20 {
-        out.push(format!("its interface is {:.1} MB, which a first visit downloads", bytes as f64 / f64::from(1 << 20)));
-    }
-    out
-}
-
 /// Registers the interfaces of compiled-in apps: those their crates carry (`ui/dist`, embedded),
 /// then those found in `settings.ui_dir` (one directory of built files per app id), which an
 /// operator uses to run another release; a release registered later for the same version wins.
@@ -1523,22 +1464,6 @@ mod tests {
         assert_eq!(app_origin("xn", "demo", "apps.example", "h", true), None, "an IDNA prefix");
         assert!(app_origin(&"a".repeat(40), &"w".repeat(21), "apps.example", "h", true).is_some(), "63 characters");
         assert_eq!(app_origin(&"a".repeat(40), &"w".repeat(22), "apps.example", "h", true), None, "64 characters");
-    }
-
-    #[test]
-    fn the_review_reads_the_page() {
-        let good = r#"<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Board</title></head><body><img src="a.png" alt=""></body></html>"#;
-        assert!(review_page(good, 1000).is_empty(), "{:?}", review_page(good, 1000));
-        let bare = "<html><head><title> </title></head><body><img src=a.png></body></html>";
-        let found = review_page(bare, 3 << 20);
-        assert_eq!(found.len(), 5, "{found:?}");
-        assert!(
-            found[0].contains("language")
-                && found[1].contains("title")
-                && found[2].contains("viewport")
-                && found[3].contains("alt")
-                && found[4].contains("3.0 MB")
-        );
     }
 
     #[tokio::test]

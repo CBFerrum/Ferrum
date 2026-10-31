@@ -135,6 +135,70 @@ pub fn prepare(app: &str, files: BTreeMap<String, Vec<u8>>) -> Result<PreparedUi
     Ok(PreparedUi { digest, files, entry })
 }
 
+/// A bundle's interface, checked and prepared (`None` when it has none): the files under its
+/// `ui.dist`. The platform refuses a bundle whose interface fails here at upload and install, and
+/// the store at submission.
+pub fn from_bundle(b: &crate::Bundle) -> Result<Option<PreparedUi>, AppError> {
+    let Some(ui) = &b.manifest.ui else { return Ok(None) };
+    let prefix = format!("{}/", ui.dist.trim_end_matches('/'));
+    let files: BTreeMap<String, Vec<u8>> =
+        b.paths().filter_map(|p| p.strip_prefix(prefix.as_str()).map(|rel| (rel.to_string(), b.file(p).unwrap_or_default().to_vec()))).collect();
+    if files.is_empty() {
+        return bad(format!("{} holds no files", ui.dist));
+    }
+    prepare(&b.manifest.id, files).map(Some)
+}
+
+/// What an automatic look at a bundle's interface finds (docs/plan/apps-ui.md U8), for the people
+/// who review or install it: what its page misses for accessibility, and how much a first visit
+/// downloads. Hard limits (size, the page's rules) are [`prepare`]'s.
+pub fn review(b: &crate::Bundle) -> Vec<String> {
+    let Some(ui) = &b.manifest.ui else { return vec![] };
+    let prefix = format!("{}/", ui.dist.trim_end_matches('/'));
+    let mut bytes = 0usize;
+    let mut index = String::new();
+    for p in b.paths() {
+        let Some(rel) = p.strip_prefix(prefix.as_str()) else { continue };
+        let file = b.file(p).unwrap_or_default();
+        bytes += file.len();
+        if rel == "index.html" {
+            index = String::from_utf8_lossy(file).into_owned();
+        }
+    }
+    review_page(&index, bytes)
+}
+
+/// The same look at an interface's page (`index.html`) and the size of all its files.
+pub fn review_page(index: &str, bytes: usize) -> Vec<String> {
+    let index = index.to_ascii_lowercase();
+    let index = index.as_str();
+    let mut out = Vec::new();
+    let tag = |name: &str| index.find(&format!("<{name}")).map(|i| &index[i..i + index[i..].find('>').unwrap_or(0)]);
+    if !tag("html").is_some_and(|t| t.contains(" lang=")) {
+        out.push("its page names no language (<html lang>), so screen readers guess how to read it".to_string());
+    }
+    let titled = index.find("<title>").is_some_and(|i| index[i + 7..].split("</title>").next().is_some_and(|t| !t.trim().is_empty()));
+    if !titled {
+        out.push("its page has no title (<title>), which tabs, history and screen readers show".to_string());
+    }
+    if !index.contains("name=\"viewport\"") && !index.contains("name=viewport") {
+        out.push("its page sets no viewport, so phones show it zoomed out".to_string());
+    }
+    let mut rest = index;
+    while let Some(i) = rest.find("<img") {
+        let end = rest[i..].find('>').map_or(rest.len(), |e| i + e);
+        if !rest[i..end].contains(" alt=") {
+            out.push("an image on its page has no text alternative (alt)".to_string());
+            break;
+        }
+        rest = &rest[end..];
+    }
+    if bytes > 2 << 20 {
+        out.push(format!("its interface is {:.1} MB, which a first visit downloads", bytes as f64 / f64::from(1 << 20)));
+    }
+    out
+}
+
 /// One tag of `index.html`: where it starts and ends, its name, and its attributes with the
 /// byte ranges of their values.
 struct Tag<'a> {
@@ -365,6 +429,22 @@ fn entry_template(html: &str, files: &BTreeMap<String, Vec<u8>>, base: &str) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_review_reads_the_page() {
+        let good = r#"<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Board</title></head><body><img src="a.png" alt=""></body></html>"#;
+        assert!(review_page(good, 1000).is_empty(), "{:?}", review_page(good, 1000));
+        let bare = "<HTML><head><title> </title></head><body><IMG src=a.png></body></HTML>";
+        let found = review_page(bare, 3 << 20);
+        assert_eq!(found.len(), 5, "{found:?}");
+        assert!(
+            found[0].contains("language")
+                && found[1].contains("title")
+                && found[2].contains("viewport")
+                && found[3].contains("alt")
+                && found[4].contains("3.0 MB")
+        );
+    }
+
     use super::*;
 
     const VITE: &str = r#"<!doctype html>
