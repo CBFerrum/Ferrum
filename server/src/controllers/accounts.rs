@@ -603,6 +603,7 @@ async fn sign_out_everywhere(State(app): State<AppContext>, headers: HeaderMap) 
     st.kernel.identity_sign_out_everywhere(&ctx).await?;
     let mut res = StatusCode::NO_CONTENT.into_response();
     res.headers_mut().append(header::SET_COOKIE, shell::clear_cookie(st.shell.secure));
+    res.headers_mut().insert("clear-site-data", HeaderValue::from_static("\"cache\""));
     Ok(res)
 }
 

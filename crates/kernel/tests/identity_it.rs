@@ -278,12 +278,12 @@ async fn scenario() {
 
     // ── Accounts across regions ──
     // Home: a code for another region's accounts host, bound to its PKCE challenge.
-    let verifier = "dBjftJeZ4CVP-mJ0n0Kt6kXRIHSTb0cEo1rgGO86X6s";
+    let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
     let challenge = ferrum_kernel::identity::pkce_challenge(verifier);
     let me = ctx(&k, &signed(k.account_sign_in("ana@x.test", "Ana-New-Pass-1").await.unwrap())).await;
     assert!(k.mint_region_code(&me, "accounts.eu.test", "short").await.is_err(), "no challenge, no code");
     let c = k.mint_region_code(&me, "accounts.eu.test", &challenge).await.unwrap();
-    assert!(k.redeem_region_code(&c, "accounts.eu.test", "dBjftJeZ4CVP-mJ0n0Kt6kXRIHSTb0cEo1rgGO86X6t").await.is_err(), "another verifier");
+    assert!(k.redeem_region_code(&c, "accounts.eu.test", "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXl").await.is_err(), "another verifier");
     assert!(k.redeem_region_code(&c, "accounts.eu.test", verifier).await.is_err(), "spent by the wrong try");
     let c = k.mint_region_code(&me, "accounts.eu.test", &challenge).await.unwrap();
     assert!(k.redeem_region_code(&c, "accounts.us.test", verifier).await.is_err(), "another region's host");

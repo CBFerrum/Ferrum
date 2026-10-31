@@ -181,7 +181,9 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     region, and the accounts host sending requests on to the region that has the workspace. Checked
     in the kernel's tests, in Chrome, Firefox and WebKit (two workspaces on subdomains and one on a
     custom domain, one account, passkeys at accounts, signing out everywhere), and in the kind
-    cluster's last step through the gateway.
+    cluster's last step through the gateway. The bar's runtime keeps the §7.2 guard (a host of one
+    workspace's that answers for another clears what the browser kept for the origin), and
+    signing out sends `Clear-Site-Data: "cache"` (§12.3); the account menu has "Your workspaces".
   * Accounts across regions (§9.3): an account lives in one region, and the regions it lists trust
     it. The visited region's sign-in page sends people home (`/regions/start`), whose accounts host
     answers with a one-use code bound to the visitor's PKCE challenge (`/regions/authorize`); the

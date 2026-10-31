@@ -153,6 +153,9 @@ pub(crate) async fn page_bootstrap(
     boot["api"]["hooks"] = json!(st.shell.hooks_origin(headers).or_else(|| st.kernel.settings.public_url.clone()));
     // Shapes B and C: the accounts host, where the person's other workspaces are.
     boot["api"]["accounts"] = json!(st.shell.accounts_origin(headers));
+    // A host that belongs to one workspace (registered, or the server's one): what browsers keep
+    // for its origin is that workspace's (§7.2). A shared host (shape A′) serves several in turn.
+    boot["host"]["bound"] = json!(matches!(st.shell.place(headers).await, Ok(Place::Workspace(_) | Place::Portal(_))));
     Ok((boot, kind))
 }
 
