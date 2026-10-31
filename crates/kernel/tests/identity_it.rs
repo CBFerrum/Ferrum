@@ -240,18 +240,17 @@ async fn scenario() {
     let dana_globex = k.create_user(&g_admin, "dana@x.test", "Dana Wu", Some("Dana-Pass-12"), &[], false).await.unwrap();
     let (dana_secret, dana_recovery) = two_factor(&k, &k.load_ctx(globex, dana_globex, None, "it".into()).await.unwrap()).await;
     let AccountSignIn::SecondFactor { session, found: true } = k.account_sign_in("dana@x.test", "Dana-Pass-12").await.unwrap() else { panic!() };
-    assert!(k.account_found_second_factor(session.tenant, session.user, session.token_version, "000000").await.is_err());
-    let AccountSignIn::Verify(m) =
-        k.account_found_second_factor(session.tenant, session.user, session.token_version, &code(&dana_secret, now() + 30).unwrap()).await.unwrap()
-    else {
-        panic!()
-    };
+    let wrong = if code(&dana_secret, now()).unwrap() == "000000" { "111111" } else { "000000" };
+    assert!(k.account_found_second_factor(session.tenant, session.user, session.token_version, wrong).await.is_err());
+    // The next step's code, kept: the same code must be refused once the app has moved.
+    let next = code(&dana_secret, now() + 30).unwrap();
+    let AccountSignIn::Verify(m) = k.account_found_second_factor(session.tenant, session.user, session.token_version, &next).await.unwrap() else { panic!() };
     let dana = k.account_verify(&m, &newest_code(&k, "dana@x.test").await).await.unwrap();
     assert!(k.identity(&ctx(&k, &dana).await).await.unwrap().two_factor);
     let AccountSignIn::SecondFactor { session, found: false } = k.account_sign_in("dana@x.test", "Dana-Pass-12").await.unwrap() else { panic!() };
     assert_eq!(session.tenant, dir);
     // The app's codes go on from where the membership's were; its recovery codes came along too.
-    assert!(k.second_factor(session.tenant, session.user, session.token_version, &code(&dana_secret, now() + 30).unwrap()).await.is_err(), "used already");
+    assert!(k.second_factor(session.tenant, session.user, session.token_version, &next).await.is_err(), "used already");
     k.second_factor(session.tenant, session.user, session.token_version, &dana_recovery[0]).await.unwrap();
 
     // ── A workspace's single sign-on joins its membership to the identity signed in ──
