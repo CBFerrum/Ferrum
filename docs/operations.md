@@ -882,7 +882,8 @@ workspaces, each at its own address, and people sign in once for all of them ([A
   another workspace has that name.
 * **Turning it off** (removing `FERRUM_BASE_DOMAIN`) leaves the hosts and accounts in place: people
   sign in on each workspace's host again with that workspace's own password, which joining never
-  changed.
+  changed. Someone who never had one there (added without a password, then signing in with their
+  Ferrum account) needs an administrator to set one.
 
 ## Sign-in security
 

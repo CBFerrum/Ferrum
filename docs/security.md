@@ -68,6 +68,11 @@ operator to know. Report a vulnerability privately to the maintainers rather tha
   accounts host's pages cannot be framed by other sites. Unknown hosts are served nothing; custom
   domains under the cluster's own domain are refused, and `accounts`, `hooks`, `www` and `api` are
   no workspace's names.
+* Browsers and released addresses: on a host of one workspace's, the bar's runtime remembers that
+  workspace in the browser; if the host ever answers for another (a released address's next owner, a
+  year on), everything the browser kept for the origin is cleared (local and session storage,
+  IndexedDB, caches, service workers) before the page goes on. Signing out sends
+  `Clear-Site-Data: "cache"` (not storage: offline work waits to be sent).
 * Ferrum accounts across regions: a region vouches for its own accounts only, to the regions it lists,
   at their fixed callback address: a one-use, one-minute code bound to the asking host's PKCE
   challenge (S256), so only the server that started the sign-in, holding the verifier, can take it,

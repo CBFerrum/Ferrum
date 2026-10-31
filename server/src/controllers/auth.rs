@@ -5,7 +5,7 @@ use crate::extract::{Auth, BrowserSession, SetupAuth, client_ip};
 use crate::state::{AppState, app_state};
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use ferrum_kernel::Error;
 use ferrum_kernel::auth::{Session, SignIn};
@@ -340,6 +340,7 @@ async fn logout_all(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult
     st.kernel.logout_everywhere(&ctx).await?;
     let mut res = StatusCode::NO_CONTENT.into_response();
     res.headers_mut().append(axum::http::header::SET_COOKIE, crate::shell::clear_cookie(st.shell.secure));
+    res.headers_mut().insert("clear-site-data", HeaderValue::from_static("\"cache\""));
     Ok(res)
 }
 
@@ -352,6 +353,8 @@ async fn logout(State(app): State<AppContext>, method: axum::http::Method, heade
     }
     let mut res = StatusCode::NO_CONTENT.into_response();
     res.headers_mut().append(axum::http::header::SET_COOKIE, crate::shell::clear_cookie(st.shell.secure));
+    // Pages kept by the browser's cache go; what apps keep for working offline stays (§12.3, §16).
+    res.headers_mut().insert("clear-site-data", HeaderValue::from_static("\"cache\""));
     // Shapes B and C: signed out of this host only; the next sign-in here asks which account
     // rather than going straight back in through the accounts host.
     if st.shell.base().is_some() && matches!(st.shell.place(&headers).await?, crate::shell::Place::Workspace(_)) {

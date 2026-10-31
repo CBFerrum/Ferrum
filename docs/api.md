@@ -34,7 +34,7 @@ OpenAPI 3.1 document is at `GET /api/openapi.json` (it includes every customizat
 | `POST /2fa/recovery-codes` | `{code}` → `{recovery_codes}`: new ones replace the old |
 | `POST /2fa/disable` | `{password}` or `{code}` → `204` |
 | `POST /logout_all` | revokes every session of the caller (and clears the session cookie) |
-| `POST /logout` | signs this browser out: its session ends, with the tokens bound to it, and the cookie is cleared → `204` |
+| `POST /logout` | signs this browser out: its session ends, with the tokens bound to it, and the cookie is cleared → `204`. Both send `Clear-Site-Data: "cache"` (pages kept by the browser go; what apps keep for working offline stays) |
 | `POST /token` | (session cookie) → `{token, token_type, expires_in, tenant, email}`: a bearer token for a page that still sends one, bound to the browser's session |
 | `GET /sessions?user=` | → `{sessions: [{id, user_id, actor, created_at, last_seen_at, expires_at, user_agent, ip, current}]}`: the signed-in browsers of the caller (administrators: of `user`) |
 | `DELETE /sessions/{id}` | signs one browser out (one's own; administrators: anyone's) |
@@ -128,7 +128,12 @@ workspace's subdomain or custom domain, or the accounts or hooks host), else `40
 accounts hosts and edges find where a workspace lives. Pages' bootstrap carries `api.hooks`, the
 origin outside callers use for a workspace's endpoints (`https://hooks.{base}` in shapes B and C, else
 `PUBLIC_URL`), which no change of the workspace's addresses moves, and `api.accounts`, the accounts
-host (shapes B and C; the bar's account menu links "Your workspaces" there).
+host (shapes B and C; the bar's account menu links "Your workspaces" there), and `host.bound`: the
+host belongs to one workspace (registered, or the server's one). On such a host the bar's runtime
+remembers the workspace in the browser, and should the host ever answer for another one (a released
+address's next owner), it clears everything the browser kept for the origin (local and session
+storage, IndexedDB, caches, service workers) before going on; a shared host (shape A′) serves
+several workspaces in turn and is left as it is.
 
 ## Metadata — `/api/meta`
 

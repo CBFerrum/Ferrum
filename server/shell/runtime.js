@@ -16,6 +16,43 @@ function readBootstrap() {
 
 const boot = readBootstrap();
 const params = new URLSearchParams(location.search);
+
+// This origin's workspace (§7.2): a host of one workspace's that ever answers for another than
+// before (a released host's next owner, a year on) gets nothing the earlier one left in this
+// browser: everything stored for the origin goes, and the page starts again on a clean slate.
+// A shared host (shape A′, `host.bound` false) serves several workspaces in turn and is left be.
+const ORIGIN_WORKSPACE = "ferrum.origin-workspace";
+const originWiped = (() => {
+  const id = boot?.workspace?.id;
+  if (!id || !boot?.host?.bound) return null;
+  let before = null;
+  try {
+    before = localStorage.getItem(ORIGIN_WORKSPACE);
+  } catch {
+    return null;
+  }
+  if (before === id) return null;
+  if (before === null) {
+    try {
+      localStorage.setItem(ORIGIN_WORKSPACE, id);
+    } catch {}
+    return null;
+  }
+  try {
+    localStorage.clear();
+    sessionStorage.clear();
+    localStorage.setItem(ORIGIN_WORKSPACE, id);
+  } catch {}
+  const gone = [
+    indexedDB.databases?.().then((dbs) => Promise.all(dbs.map((d) => d.name && new Promise((done) => {
+      const r = indexedDB.deleteDatabase(d.name);
+      r.onsuccess = r.onerror = r.onblocked = () => done();
+    })))),
+    globalThis.caches?.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k)))),
+    navigator.serviceWorker?.getRegistrations().then((regs) => Promise.all(regs.map((r) => r.unregister()))),
+  ];
+  return Promise.allSettled(gone).then(() => location.reload());
+})();
 const inFrame = window.top !== window;
 const intentId = params.get("_intent");
 // A side panel's page (§11.4): its id, and the context it was opened with.
