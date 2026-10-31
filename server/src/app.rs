@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use ferrum_kernel::{Db, DbConfig, HookRegistry, Kernel, KernelSettings, Mailer};
 use loco_rs::app::{AppContext, Hooks, Initializer};
 use loco_rs::bgworker::Queue;
-use loco_rs::boot::{BootResult, StartMode, create_app};
+use loco_rs::boot::{BootResult, ServeParams, StartMode, create_app};
 use loco_rs::config::Config;
 use loco_rs::controller::AppRoutes;
 use loco_rs::environment::Environment;
@@ -16,6 +16,7 @@ use loco_rs::storage::{self, Storage};
 use loco_rs::task::Tasks;
 use loco_rs::{Error, Result};
 use migration::Migrator;
+use std::future::IntoFuture;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -68,8 +69,44 @@ async fn probe_storage(storage: &Storage) {
     }
 }
 
+/// How long a stopping replica keeps answering the requests in flight. Kubernetes gives a replica
+/// 40 s after its 5 s preStop pause (deploy/k8s/deployment.yaml); this and the background loops'
+/// 10 s fit inside it.
+const DRAIN: Duration = Duration::from_secs(20);
+
 #[async_trait]
 impl Hooks for App {
+    /// Loco's own `serve` runs `on_shutdown` the moment the signal comes, before the server has
+    /// answered the requests in flight, so those met closed database pools (and failed with 503).
+    /// Here the signal stops the background loops and live connections, the requests in flight
+    /// get up to [`DRAIN`] to finish, and only then do the pools close.
+    async fn serve(app: axum::Router, ctx: &AppContext, params: &ServeParams) -> Result<()> {
+        let listener = tokio::net::TcpListener::bind(format!("{}:{}", params.binding, params.port)).await?;
+        let (fired, signalled) = tokio::sync::oneshot::channel::<()>();
+        let stopping = ctx.clone();
+        let server = axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).with_graceful_shutdown(async move {
+            loco_rs::boot::shutdown_signal().await;
+            tracing::info!("shutting down: answering the requests in flight");
+            if let Some(state) = stopping.shared_store.get::<AppState>() {
+                let _ = state.shutdown.send(true);
+            }
+            let _ = fired.send(());
+        });
+        let drained = async {
+            match signalled.await {
+                Ok(()) => tokio::time::sleep(DRAIN).await,
+                // The server ended before any signal (its error is what matters).
+                Err(_) => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            served = server.into_future() => served?,
+            () = drained => tracing::warn!("requests still in flight after {} s: stopping anyway", DRAIN.as_secs()),
+        }
+        Self::on_shutdown(ctx).await;
+        Ok(())
+    }
+
     /// Loco's middleware, but our request log (queries are left out of the log).
     fn middlewares(ctx: &AppContext) -> Vec<Box<dyn loco_rs::controller::middleware::MiddlewareLayer>> {
         loco_rs::controller::middleware::default_middleware_stack(ctx)
@@ -312,9 +349,10 @@ impl Hooks for App {
     async fn on_shutdown(ctx: &AppContext) {
         if let Some(state) = ctx.shared_store.get::<AppState>() {
             let _ = state.shutdown.send(true);
+            // Together, so a replica stops within its grace period however many loops it runs.
             let handles: Vec<_> = state.background.lock().await.drain(..).collect();
-            for h in handles {
-                let _ = tokio::time::timeout(Duration::from_secs(10), h).await;
+            if tokio::time::timeout(Duration::from_secs(10), futures_util::future::join_all(handles)).await.is_err() {
+                tracing::warn!("background loops still busy after 10 s: stopping anyway");
             }
             state.kernel.db.pool.close().await;
             state.kernel.db.side.close().await;

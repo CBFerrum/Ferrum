@@ -9,7 +9,7 @@ through PostgreSQL `NOTIFY`. Any replica can be killed or added at any time.
 
 | Component | Role | Failure behaviour |
 |---|---|---|
-| API replicas (`ferrum start`) | Stateless HTTP API; each also runs the outbox dispatcher, webhook sender, metadata listener and maintenance loops | Any replica may die at any time; work is claimed with `SKIP LOCKED` / advisory locks and retried by the others |
+| API replicas (`ferrum start`) | Stateless HTTP API; each also runs the outbox dispatcher, webhook sender, metadata listener and maintenance loops | Any replica may die at any time; work is claimed with `SKIP LOCKED` / advisory locks and retried by the others. Stopped (`SIGTERM`), a replica stops its background loops and live connections, answers the requests in flight (up to 20 s), then closes its database pools: within Kubernetes' 40 s grace period |
 | PostgreSQL 17 (CloudNativePG) | All state: documents, ledgers, audit, outbox, plugins | Synchronous replica + automatic failover; WAL archiving for point-in-time recovery |
 | Object storage (S3 or compatible) | Attachments (`FERRUM_S3_BUCKET`, `FERRUM_S3_ENDPOINT`) | Required in production; checked with a write/delete probe at boot (logged, not fatal) |
 
