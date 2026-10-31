@@ -312,8 +312,9 @@ person() { c -f -H "authorization: Bearer $1" -H 'content-type: application/json
 person "$TOKEN" Pat-Cluster-Pass-1
 person "$BRANCH" Pat-Branch-Pass-1
 # A browser through the gateway: a cookie jar for every host, the Host header without a port (as
-# from outside), redirects followed by hand. `go` prints the last answer's status; $last is its
-# address and $work/page its body.
+# from outside), redirects followed by hand. `go` leaves the last answer's status in $got, its
+# address in $last and its body in $work/page (call it directly, not in $(…): a subshell's
+# variables never reach the checks).
 host_of() { local h=${1#https://}; echo "${h%%/*}"; }
 w() {
   local url=$1 host
@@ -324,13 +325,12 @@ w() {
 }
 post() { w "$1" -H 'content-type: application/json' -H 'sec-fetch-site: same-origin' -H "origin: https://$(host_of "$1")" -d "$2"; }
 go() {
-  local url=$1 out code
+  local url=$1 out
   for _ in $(seq 1 10); do
     out=$(w "$url" -o "$work/page" -w '%{http_code} %{redirect_url}')
-    code=${out%% *}
-    if [[ ! "$code" =~ ^30[12378]$ ]]; then
+    got=${out%% *}
+    if [[ ! "$got" =~ ^30[12378]$ ]]; then
       last=$url
-      echo "$code"
       return
     fi
     url=${out#* }
@@ -339,21 +339,26 @@ go() {
   fail "too many redirects from $1"
 }
 param() { python3 -c "import sys, urllib.parse as u; print(u.parse_qs(u.urlsplit(sys.argv[1]).query)[sys.argv[2]][0])" "$1" "$2"; }
-[ "$(go "https://nobody.$BASE/")" = 404 ] || fail "a host of no workspace answered"
+go "https://nobody.$BASE/"
+[ "$got" = 404 ] || fail "a host of no workspace answered ($got)"
 # The first workspace: to the accounts host, signing in there (no mail in this cluster: the
 # workspace's password makes the Ferrum account at once), back with a code for a session of its own.
-[ "$(go "https://cluster.$BASE/")" = 200 ] && [[ "$last" == "https://accounts.$BASE/login?next="* ]] || fail "no way to the accounts host ($last)"
+go "https://cluster.$BASE/"
+[ "$got" = 200 ] && [[ "$last" == "https://accounts.$BASE/login?next="* ]] || fail "no way to the accounts host ($got $last)"
 authorize=$(param "$last" next)
 grep -q '"cookie":true' <<<"$(post "https://accounts.$BASE/api/accounts/sign-in" '{"email":"pat@people.test","password":"Pat-Cluster-Pass-1"}')" ||
   fail "signing in at the accounts host"
-[ "$(go "https://accounts.$BASE$authorize")" = 200 ] && [ "$last" = "https://cluster.$BASE/" ] || fail "not back in the workspace ($last)"
+go "https://accounts.$BASE$authorize"
+[ "$got" = 200 ] && [ "$last" = "https://cluster.$BASE/" ] || fail "not back in the workspace ($got $last)"
 [ "$(w "https://cluster.$BASE/api/auth/me" | json 'd["user"]["email"]')" = pat@people.test ] || fail "the workspace's own session"
 # The second: added to the account once, with its own password.
-[ "$(go "https://branch.$BASE/")" = 200 ] && [[ "$last" == "https://accounts.$BASE/authorize?"* ]] || fail "no step at the accounts host ($last)"
+go "https://branch.$BASE/"
+[ "$got" = 200 ] && [[ "$last" == "https://accounts.$BASE/authorize?"* ]] || fail "no step at the accounts host ($got $last)"
 grep -q '"need":"join"' "$work/page" || fail "the second workspace was not offered to be added"
 redirect=$(post "https://accounts.$BASE/api/accounts/join" \
   "{\"host\":\"branch.$BASE\",\"state\":\"$(param "$last" state)\",\"password\":\"Pat-Branch-Pass-1\"}" | json 'd["redirect"]')
-[ "$(go "$redirect")" = 200 ] && [ "$last" = "https://branch.$BASE/" ] || fail "not in the second workspace ($last)"
+go "$redirect"
+[ "$got" = 200 ] && [ "$last" = "https://branch.$BASE/" ] || fail "not in the second workspace ($got $last)"
 [ "$(w "https://branch.$BASE/api/auth/me" | json 'd["user"]["email"]')" = pat@people.test ] || fail "the second workspace's session"
 # The second workspace's custom domain: its proof answers through the gateway; the server's own
 # check would need public DNS, so the test marks it verified, as that check would.
@@ -361,8 +366,9 @@ proof=$(c -f -H "authorization: Bearer $BRANCH" -H 'content-type: application/js
 [ "$(w "https://$CUSTOM/.well-known/ferrum-domain")" = "$proof" ] || fail "the custom domain's proof"
 sql "$(primary)" "update tenant_host set verified_at = now() where host = '$CUSTOM'" >/dev/null
 for attempt in $(seq 1 15); do
-  [ "$(go "https://$CUSTOM/")" = 200 ] && [ "$last" = "https://$CUSTOM/" ] && break
-  [ "$attempt" -lt 15 ] || fail "not in the workspace on its custom domain ($last)"
+  go "https://$CUSTOM/"
+  [ "$got" = 200 ] && [ "$last" = "https://$CUSTOM/" ] && break
+  [ "$attempt" -lt 15 ] || fail "not in the workspace on its custom domain ($got $last)"
   sleep 2
 done
 [ "$(w "https://$CUSTOM/api/auth/me" | json 'd["user"]["email"]')" = pat@people.test ] || fail "the custom domain's session"
