@@ -37,6 +37,8 @@ minijinja = { version = "2", features = ["loader", "fuel"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 # Documents edited together (coedit.rs). Patched in the workspace (third_party/yrs/FERRUM.md).
 yrs = "=0.28.0"
+# Documents as Word files (coedit/docx.rs).
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tokio = { workspace = true }

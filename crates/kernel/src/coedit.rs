@@ -8,9 +8,16 @@
 //! the [`CHANNEL`], so every replica's open copy reads it.
 //!
 //! Markdown goes in ([`from_markdown`], [`append`]) and comes out ([`markdown`]) for templates and
-//! AI agents.
+//! AI agents. Documents go out as Word files too ([`docx`]).
+//!
+//! Images ([`IMAGE`] nodes) name an image their package keeps (`image`, an id) and describe it
+//! (`alt`); never an address. Whoever renders a document says where each image's bytes are
+//! ([`html_with`], [`docx`]), so a document cannot point readers anywhere else.
 
+mod docx;
 mod markdown;
+
+pub use docx::{ImageData, docx};
 
 use crate::{Error, Result, Tx};
 use std::fmt::Write as _;
@@ -21,6 +28,9 @@ use yrs::{Any, Doc, OffsetKind, Options, Out, ReadTxn, StateVector, Text, Transa
 
 /// The fragment TipTap (y-prosemirror) keeps a document in.
 pub const FRAGMENT: &str = "default";
+
+/// An image's node: `image` (the id its package keeps it under) and `alt` (what it shows).
+pub const IMAGE: &str = "image";
 
 /// Where stored changes are announced: `{"t": tenant, "p": package, "d": id, "r": who, "s": seq}`.
 pub const CHANNEL: &str = "ferrum_coedit";
@@ -214,6 +224,10 @@ pub fn plain_text(doc: &Doc) -> String {
                     out.push('\n');
                     return;
                 }
+                // An image's description is among the document's words.
+                if &*tag == IMAGE {
+                    out.push_str(string(e.get_attribute(txn, "alt")).unwrap_or_default().trim());
+                }
                 for child in e.children(txn) {
                     walk(child, txn, out);
                 }
@@ -278,10 +292,47 @@ fn safe_href(href: &str) -> bool {
     h.starts_with("https://") || h.starts_with("http://") || h.starts_with("mailto:")
 }
 
+/// The images a document shows, by the ids their package keeps them under.
+pub fn image_ids(doc: &Doc) -> std::collections::BTreeSet<String> {
+    fn walk<T: ReadTxn>(node: XmlOut, txn: &T, out: &mut std::collections::BTreeSet<String>) {
+        match node {
+            XmlOut::Element(e) => {
+                if &**e.tag() == IMAGE
+                    && let Some(id) = string(e.get_attribute(txn, "image")).filter(|id| !id.is_empty())
+                {
+                    out.insert(id);
+                }
+                for child in e.children(txn) {
+                    walk(child, txn, out);
+                }
+            }
+            XmlOut::Fragment(f) => {
+                for child in f.children(txn) {
+                    walk(child, txn, out);
+                }
+            }
+            XmlOut::Text(_) => {}
+        }
+    }
+    let txn = doc.transact();
+    let mut out = std::collections::BTreeSet::new();
+    for child in children(&txn) {
+        walk(child, &txn, &mut out);
+    }
+    out
+}
+
+/// The document as HTML without its images (their descriptions stand in): see [`html_with`].
+pub fn html(doc: &Doc) -> String {
+    html_with(doc, &|_| None)
+}
+
 /// The document as HTML (a fragment for a page's body), for exports, previews and PDFs: the nodes
 /// and marks the editor makes as their HTML elements, other nodes as their content; text escaped;
-/// links only to the web and mail; no images, scripts or styles beyond text alignment.
-pub fn html(doc: &Doc) -> String {
+/// links only to the web and mail; suggestions as `ins` and `del`; images where `images` gives
+/// their address (a `data:` URI for files that travel), else their description; no scripts or
+/// styles beyond text alignment.
+pub fn html_with(doc: &Doc, images: &dyn Fn(&str) -> Option<String>) -> String {
     fn marks(attrs: Option<&yrs::types::Attrs>) -> Vec<(&'static str, String)> {
         let Some(attrs) = attrs else { return Vec::new() };
         let mut out = Vec::new();
@@ -295,6 +346,8 @@ pub fn html(doc: &Doc) -> String {
             ("subscript", "sub"),
             ("superscript", "sup"),
             ("code", "code"),
+            ("insertion", "ins"),
+            ("deletion", "del"),
         ] {
             let Some(v) = attrs.get(name) else { continue };
             if matches!(v, Any::Null | Any::Undefined | Any::Bool(false)) {
@@ -323,7 +376,7 @@ pub fn html(doc: &Doc) -> String {
             _ => String::new(),
         }
     }
-    fn walk<T: ReadTxn>(node: XmlOut, txn: &T, out: &mut String, in_code: bool) {
+    fn walk<T: ReadTxn>(node: XmlOut, txn: &T, out: &mut String, in_code: bool, images: &dyn Fn(&str) -> Option<String>) {
         match node {
             XmlOut::Text(t) => {
                 for chunk in t.diff(txn, YChange::identity) {
@@ -342,7 +395,7 @@ pub fn html(doc: &Doc) -> String {
                 let tag = e.tag().clone();
                 let inner = |out: &mut String, code: bool| {
                     for child in e.children(txn) {
-                        walk(child, txn, out, code);
+                        walk(child, txn, out, code, images);
                     }
                 };
                 match &*tag {
@@ -401,6 +454,24 @@ pub fn html(doc: &Doc) -> String {
                     }
                     "hardBreak" => out.push_str("<br>"),
                     "horizontalRule" => out.push_str("<hr>\n"),
+                    IMAGE => {
+                        let alt = string(e.get_attribute(txn, "alt")).unwrap_or_default();
+                        match string(e.get_attribute(txn, "image")).and_then(|id| images(&id)) {
+                            Some(src) => {
+                                out.push_str("<p class=\"image\"><img src=\"");
+                                esc(&src, out);
+                                out.push_str("\" alt=\"");
+                                esc(&alt, out);
+                                out.push_str("\"></p>\n");
+                            }
+                            None if !alt.trim().is_empty() => {
+                                out.push_str("<p class=\"image-missing\">[");
+                                esc(alt.trim(), out);
+                                out.push_str("]</p>\n");
+                            }
+                            None => {}
+                        }
+                    }
                     _ => {
                         let html = match &*tag {
                             "blockquote" => Some("blockquote"),
@@ -422,7 +493,7 @@ pub fn html(doc: &Doc) -> String {
             }
             XmlOut::Fragment(f) => {
                 for child in f.children(txn) {
-                    walk(child, txn, out, in_code);
+                    walk(child, txn, out, in_code, images);
                 }
             }
         }
@@ -430,13 +501,18 @@ pub fn html(doc: &Doc) -> String {
     let txn = doc.transact();
     let mut out = String::new();
     for child in children(&txn) {
-        walk(child, &txn, &mut out, false);
+        walk(child, &txn, &mut out, false, images);
     }
     out
 }
 
-/// A whole page for the document: for downloads and the PDF renderer.
+/// A whole page for the document without its images: see [`html_page_with`].
 pub fn html_page(title: &str, doc: &Doc) -> String {
+    html_page_with(title, doc, &|_| None)
+}
+
+/// A whole page for the document: for downloads and the PDF renderer.
+pub fn html_page_with(title: &str, doc: &Doc, images: &dyn Fn(&str) -> Option<String>) -> String {
     let mut t = String::new();
     esc(title, &mut t);
     format!(
@@ -446,9 +522,11 @@ pub fn html_page(title: &str, doc: &Doc) -> String {
          blockquote{{border-left:3px solid #d0d7de;margin-left:0;padding-left:1em;color:#57606a}}\
          table{{border-collapse:collapse;width:100%;table-layout:fixed}}th,td{{border:1px solid #d0d7de;padding:.3em .6em;vertical-align:top}}\
          th{{background:#f6f8fa;text-align:left}}td>p,th>p,li>div>p{{margin:0}}ul.tasks{{list-style:none;padding-left:.2em}}\
-         ul.tasks li{{display:flex;gap:.5em;align-items:baseline}}mark{{background:#fff3b0}}@media screen{{body{{padding:1.5em}}}}\
+         ul.tasks li{{display:flex;gap:.5em;align-items:baseline}}mark{{background:#fff3b0}}\
+         img{{max-width:100%;height:auto}}.image-missing{{color:#57606a;font-style:italic}}\
+         ins{{color:#1a7f37;text-decoration:underline}}del{{color:#cf222e}}@media screen{{body{{padding:1.5em}}}}\
          </style></head><body>\n{}</body></html>\n",
-        html(doc)
+        html_with(doc, images)
     )
 }
 
