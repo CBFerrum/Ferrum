@@ -159,12 +159,23 @@ curl -sS -D "$work/public.h" -o "$work/public.html" "$API/drive/s/smoke/no-such-
 grep -qi "^x-robots-tag: noindex" "$work/public.h" && grep -qi "^referrer-policy: no-referrer" "$work/public.h" || fail "a public page may be indexed or leak its address"
 [ "$(bootstrap <"$work/public.html" | json 'd["person"]')" = None ] && ! grep -q '<ferrum-bar>' "$work/public.html" || fail "a public page knows a person or has the bar"
 [ "$(code "$API/drive/s/no-such-workspace/x")" = 404 ] || fail "a public page of no workspace"
-# An app without an interface of its own (Helpdesk): its records in the shell, where /open leads.
-consent=$(curl -fsS "${auth[@]}" "$API/api/admin/apps/helpdesk/plan" | json 'd["digest"]') || fail "Helpdesk's install plan"
-curl -fsS "${auth[@]}" -H 'content-type: application/json' -d "{\"consent\":\"$consent\"}" "$API/api/admin/apps/helpdesk/install" >/dev/null || fail "installing Helpdesk"
-[ "$(curl -fsS -b "$work/jar" "$API/api/shell" | json '[a["url"] for a in d["apps"] if a["app"] == "helpdesk"]')" = "['/data/helpdesk/']" ] || fail "Helpdesk's records in the launcher"
-[ "$(curl -fsS -b "$work/jar" "$API/data/helpdesk/" | bootstrap | json 'd["app"]["scope"]["app"]')" = helpdesk ] || fail "Helpdesk's records page"
-[[ "$(curl -sS -o /dev/null -b "$work/jar" -w '%{http_code} %{redirect_url}' "$API/open/Ticket")" =~ ^30[23]\ .*/data/helpdesk/e/Ticket$ ]] || fail "/open of Helpdesk's tickets"
+install() {
+  consent=$(curl -fsS "${auth[@]}" "$API/api/admin/apps/$1/plan" | json 'd["digest"]') || fail "$1's install plan"
+  curl -fsS "${auth[@]}" -H 'content-type: application/json' -d "{\"consent\":\"$consent\"}" "$API/api/admin/apps/$1/install" >/dev/null || fail "installing $1"
+}
+launcher() { curl -fsS -b "$work/jar" "$API/api/shell" | json "[a['url'] for a in d['apps'] if a['app'] == '$1']"; }
+# An app without an interface of its own (Forms): its records in the shell, where /open leads.
+install forms
+[ "$(launcher forms)" = "['/data/forms/']" ] || fail "Forms' records in the launcher"
+[ "$(curl -fsS -b "$work/jar" "$API/data/forms/" | bootstrap | json 'd["app"]["scope"]["app"]')" = forms ] || fail "Forms' records page"
+[[ "$(curl -sS -o /dev/null -b "$work/jar" -w '%{http_code} %{redirect_url}' "$API/open/Form")" =~ ^30[23]\ .*/data/forms/e/Form$ ]] || fail "/open of Forms' forms"
+# An app with one (Helpdesk): its launcher entry and its pages, where /open of its records leads,
+# and its old records-only addresses too.
+install helpdesk
+[ "$(launcher helpdesk)" = "['/helpdesk/']" ] || fail "Helpdesk's launcher entry"
+[ "$(curl -fsS -b "$work/jar" "$API/helpdesk/" | bootstrap | json 'd["app"]["id"]')" = helpdesk ] || fail "Helpdesk's page"
+[[ "$(curl -sS -o /dev/null -b "$work/jar" -w '%{http_code} %{redirect_url}' "$API/open/Ticket")" =~ ^30[23]\ .*/helpdesk/$ ]] || fail "/open of Helpdesk's tickets"
+[[ "$(curl -sS -o /dev/null -b "$work/jar" -w '%{http_code} %{redirect_url}' "$API/data/helpdesk/e/Ticket")" =~ ^30[23]\ .*/helpdesk/e/Ticket$ ]] || fail "Helpdesk's old records address"
 # OAuth clients (MCP): the server's consent page, for the person signed in with the cookie.
 [[ "$(curl -fsS "$API/.well-known/oauth-authorization-server" | json 'd["authorization_endpoint"]')" == */oauth/authorize ]] || fail "the OAuth authorization endpoint"
 client=$(curl -fsS -H 'content-type: application/json' -d '{"client_name":"Smoke","redirect_uris":["http://127.0.0.1/cb"]}' "$API/oauth/register" | json 'd["client_id"]') || fail "registering an OAuth client"
