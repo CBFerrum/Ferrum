@@ -1,8 +1,8 @@
 // The sign-in page (/login) until the shell app brings its own: the workspace (where the host
 // does not decide it), email and password, the second step for authenticator apps (set up here
-// when the workspace requires one), single sign-on, and a code sent by email (the portal's way
-// in, offered first on its way). Signing in sets the browser's session cookie and goes back where
-// the person was.
+// when the workspace requires one), single sign-on, a code sent by email (the portal's way in,
+// offered first on its way), and a passkey the device keeps (no email or password: the account
+// is the passkey's). Signing in sets the browser's session cookie and goes back where the person was.
 
 const boot = JSON.parse(document.getElementById("ferrum-login").textContent);
 const form = document.getElementById("ferrum-login-form");
@@ -233,6 +233,7 @@ function draw() {
   say("");
   document.getElementById("ferrum-switch")?.remove();
   document.getElementById("ferrum-sso")?.remove();
+  document.getElementById("ferrum-passkey")?.remove();
   if (mode === "code" && codeFor) {
     fields.append(text("p", `If ${codeFor} may sign in here, a code is on its way to it. It works for 10 minutes.`, "ferrum-hint"));
     field("code", "Code from the email", "text", "", { autocomplete: "one-time-code", inputMode: "numeric", maxLength: 12 }).focus();
@@ -263,7 +264,49 @@ function draw() {
       draw();
     });
   }
+  passkeyButton();
   form.querySelector("input:not([value]), input[value='']")?.focus();
+}
+
+// Passkeys travel as base64url; the browser speaks ArrayBuffers.
+const b64 = {
+  decode: (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), (c) => c.charCodeAt(0)),
+  encode: (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""),
+};
+
+/** Signs in with a passkey on this device (or a phone nearby): the browser asks which one. */
+async function passkey() {
+  say("");
+  const button = document.getElementById("ferrum-passkey");
+  if (button) button.disabled = true;
+  try {
+    const { request, publicKey } = await post("/api/auth/passkey/options", {});
+    const cred = await navigator.credentials.get({ publicKey: { ...publicKey, challenge: b64.decode(publicKey.challenge) } });
+    if (!cred) return;
+    const r = cred.response;
+    const response = {
+      clientDataJSON: b64.encode(r.clientDataJSON),
+      authenticatorData: b64.encode(r.authenticatorData),
+      signature: b64.encode(r.signature),
+      userHandle: r.userHandle ? b64.encode(r.userHandle) : null,
+    };
+    done(await post("/api/auth/passkey", { request, session: "cookie", credential: { id: cred.id, rawId: b64.encode(cred.rawId), type: cred.type, response } }));
+  } catch (e) {
+    say(e?.name === "NotAllowedError" || e?.name === "AbortError" ? "No passkey was used." : e?.message || "Signing in with a passkey failed.");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function passkeyButton() {
+  if (!window.PublicKeyCredential || !window.isSecureContext) return;
+  const b = document.createElement("button");
+  b.type = "button";
+  b.id = "ferrum-passkey";
+  b.className = "ferrum-button ferrum-button-quiet";
+  b.textContent = "Sign in with a passkey";
+  b.addEventListener("click", () => void passkey());
+  form.after(b);
 }
 
 function switcher(label, onclick) {
