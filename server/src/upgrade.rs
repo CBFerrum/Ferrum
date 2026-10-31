@@ -33,6 +33,10 @@ pub const CONNECTORS: &[Connector] = &[
     ("projects-erp", &[("projects_erp", &["projects", "selling"])]),
 ];
 
+/// Companies and addresses got `country_code` (docs/plan/localization.md, L0): filled from the
+/// countries they name; those it does not recognise are logged for an administrator to correct.
+pub const COUNTRY_CODES: &str = "country-codes";
+
 /// Session advisory lock: one replica runs the steps; the others wait for it.
 const LOCK: i64 = 0x6665_7272_756d_0002;
 
@@ -45,6 +49,7 @@ pub async fn run(k: &Kernel) -> Result<()> {
         for (step, connectors) in CONNECTORS {
             connector_step(k, step, connectors).await?;
         }
+        country_codes(k).await?;
         Ok(())
     }
     .await;
@@ -94,6 +99,24 @@ async fn connector_step(k: &Kernel, step: &str, connectors: &[(&str, &[&str])]) 
         let want: Vec<String> =
             connectors.iter().filter(|(_, with)| with.iter().all(|p| installed.iter().any(|i| i == p))).map(|(c, _)| c.to_string()).collect();
         finish(k, tenant, step, &installed, &want).await?;
+    }
+    Ok(())
+}
+
+async fn country_codes(k: &Kernel) -> Result<()> {
+    for tenant in pending(k, COUNTRY_CODES).await? {
+        let mut tx = k.db.system_tenant_tx(tenant).await?;
+        let mut unknown = ferrum_domain::countries::backfill(&mut tx, tenant, "Company").await?;
+        unknown.extend(ferrum_domain::countries::backfill(&mut tx, tenant, "Address").await?);
+        sqlx::query("insert into upgrade_step (tenant_id, step, installed) values ($1, $2, '{}') on conflict do nothing")
+            .bind(tenant)
+            .bind(COUNTRY_CODES)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        if !unknown.is_empty() {
+            tracing::warn!(%tenant, countries = ?unknown, "{COUNTRY_CODES}: no code for these countries; correct them on the workspace's companies and addresses");
+        }
     }
     Ok(())
 }

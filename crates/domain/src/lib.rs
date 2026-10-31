@@ -8,6 +8,7 @@
 //! workspaces with its package.
 
 pub mod contacts;
+pub mod countries;
 pub mod flow;
 pub mod products;
 pub mod reports;
@@ -27,6 +28,9 @@ pub fn packages() -> std::result::Result<Vec<ferrum_meta::Package>, ferrum_meta:
 /// Registers the shared packages' hooks, each for the workspaces with its package.
 pub fn register(h: &mut HookRegistry) {
     let only = |p: &str| vec![p.to_string()];
+    h.scoped(&only("core"), |h| {
+        h.register("Company", Arc::new(countries::CountryHook));
+    });
     h.scoped(&only("contacts"), |h| {
         h.register("Contact", Arc::new(contacts::ContactHook)).register("Address", Arc::new(contacts::AddressHook));
     });

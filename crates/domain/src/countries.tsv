@@ -1,0 +1,253 @@
+# ISO 3166-1 alpha-2 codes (as tz's iso3166.tab lists them, plus XK for Kosovo, which the EU and banks use),
+# each with its English name (CLDR's) and, lowercase, the other names and spellings recognised for it.
+# code<TAB>name<TAB>other names separated by ;
+AD	Andorra	
+AE	United Arab Emirates	uae;u.a.e;emirates
+AF	Afghanistan	
+AG	Antigua and Barbuda	antigua & barbuda
+AI	Anguilla	
+AL	Albania	
+AM	Armenia	
+AO	Angola	
+AQ	Antarctica	
+AR	Argentina	
+AS	American Samoa	samoa (american)
+AT	Austria	österreich;osterreich
+AU	Australia	
+AW	Aruba	
+AX	Åland Islands	aland islands
+AZ	Azerbaijan	
+BA	Bosnia and Herzegovina	bosnia & herzegovina
+BB	Barbados	
+BD	Bangladesh	
+BE	Belgium	belgië;belgie;belgique
+BF	Burkina Faso	
+BG	Bulgaria	
+BH	Bahrain	
+BI	Burundi	
+BJ	Benin	
+BL	Saint Barthélemy	saint barthelemy;st. barthélemy;st. barthelemy;st barthelemy
+BM	Bermuda	
+BN	Brunei	brunei darussalam
+BO	Bolivia	
+BQ	Caribbean Netherlands	caribbean nl
+BR	Brazil	brasil
+BS	Bahamas	
+BT	Bhutan	
+BV	Bouvet Island	
+BW	Botswana	
+BY	Belarus	
+BZ	Belize	
+CA	Canada	
+CC	Cocos (Keeling) Islands	
+CD	Democratic Republic of the Congo	congo - kinshasa;congo (dem. rep.);dr congo;drc;congo-kinshasa
+CF	Central African Republic	central african rep
+CG	Republic of the Congo	congo - brazzaville;congo (rep.);congo-brazzaville
+CH	Switzerland	schweiz;suisse;svizzera
+CI	Côte d’Ivoire	cote d'ivoire;ivory coast
+CK	Cook Islands	
+CL	Chile	
+CM	Cameroon	
+CN	China	prc;people's republic of china;mainland china
+CO	Colombia	
+CR	Costa Rica	
+CU	Cuba	
+CV	Cape Verde	cabo verde
+CW	Curaçao	curacao
+CX	Christmas Island	
+CY	Cyprus	
+CZ	Czechia	czech republic;česko;cesko
+DE	Germany	deutschland
+DJ	Djibouti	
+DK	Denmark	danmark
+DM	Dominica	
+DO	Dominican Republic	
+DZ	Algeria	
+EC	Ecuador	
+EE	Estonia	eesti
+EG	Egypt	
+EH	Western Sahara	
+ER	Eritrea	
+ES	Spain	españa;espana
+ET	Ethiopia	
+FI	Finland	suomi
+FJ	Fiji	
+FK	Falkland Islands	
+FM	Micronesia	federated states of micronesia
+FO	Faroe Islands	
+FR	France	
+GA	Gabon	
+GB	United Kingdom	britain (uk);uk;u.k;great britain;britain;england;scotland;wales;northern ireland
+GD	Grenada	
+GE	Georgia	
+GF	French Guiana	
+GG	Guernsey	
+GH	Ghana	
+GI	Gibraltar	
+GL	Greenland	
+GM	Gambia	
+GN	Guinea	
+GP	Guadeloupe	
+GQ	Equatorial Guinea	
+GR	Greece	hellas;ellada
+GS	South Georgia and South Sandwich Islands	south georgia & south sandwich islands;south georgia & the south sandwich islands;south georgia and the south sandwich islands
+GT	Guatemala	
+GU	Guam	
+GW	Guinea-Bissau	
+GY	Guyana	
+HK	Hong Kong	hong kong sar china
+HM	Heard and McDonald Islands	heard & mcdonald islands;heard island & mcdonald islands;heard island and mcdonald islands
+HN	Honduras	
+HR	Croatia	hrvatska
+HT	Haiti	
+HU	Hungary	magyarország;magyarorszag
+ID	Indonesia	
+IE	Ireland	éire;eire
+IL	Israel	
+IM	Isle of Man	
+IN	India	bharat;hindustan;ind
+IO	British Indian Ocean Territory	
+IQ	Iraq	
+IR	Iran	
+IS	Iceland	
+IT	Italy	italia
+JE	Jersey	
+JM	Jamaica	
+JO	Jordan	
+JP	Japan	nippon;nihon
+KE	Kenya	
+KG	Kyrgyzstan	
+KH	Cambodia	
+KI	Kiribati	
+KM	Comoros	
+KN	Saint Kitts and Nevis	st. kitts & nevis;st. kitts and nevis;st kitts & nevis;st kitts and nevis
+KP	North Korea	korea (north);dprk;democratic people's republic of korea
+KR	South Korea	korea (south);korea;republic of korea
+KW	Kuwait	
+KY	Cayman Islands	
+KZ	Kazakhstan	
+LA	Laos	lao pdr
+LB	Lebanon	
+LC	Saint Lucia	st. lucia;st lucia
+LI	Liechtenstein	
+LK	Sri Lanka	
+LR	Liberia	
+LS	Lesotho	
+LT	Lithuania	lietuva
+LU	Luxembourg	
+LV	Latvia	latvija
+LY	Libya	
+MA	Morocco	
+MC	Monaco	
+MD	Moldova	
+ME	Montenegro	
+MF	Saint Martin	st. martin;st martin (french)
+MG	Madagascar	
+MH	Marshall Islands	
+MK	North Macedonia	macedonia
+ML	Mali	
+MM	Myanmar	myanmar (burma);burma
+MN	Mongolia	
+MO	Macao	macao sar china;macau
+MP	Northern Mariana Islands	
+MQ	Martinique	
+MR	Mauritania	
+MS	Montserrat	
+MT	Malta	
+MU	Mauritius	
+MV	Maldives	
+MW	Malawi	
+MX	Mexico	méxico
+MY	Malaysia	
+MZ	Mozambique	
+NA	Namibia	
+NC	New Caledonia	
+NE	Niger	
+NF	Norfolk Island	
+NG	Nigeria	
+NI	Nicaragua	
+NL	Netherlands	holland;nederland
+NO	Norway	norge
+NP	Nepal	
+NR	Nauru	
+NU	Niue	
+NZ	New Zealand	
+OM	Oman	
+PA	Panama	
+PE	Peru	
+PF	French Polynesia	
+PG	Papua New Guinea	
+PH	Philippines	pilipinas
+PK	Pakistan	
+PL	Poland	polska
+PM	Saint Pierre and Miquelon	st. pierre & miquelon;st. pierre and miquelon;st pierre & miquelon;st pierre and miquelon
+PN	Pitcairn Islands	pitcairn
+PR	Puerto Rico	
+PS	Palestine	palestinian territories
+PT	Portugal	
+PW	Palau	
+PY	Paraguay	
+QA	Qatar	
+RE	Réunion	reunion
+RO	Romania	românia
+RS	Serbia	
+RU	Russia	russian federation
+RW	Rwanda	
+SA	Saudi Arabia	ksa;saudi;kingdom of saudi arabia
+SB	Solomon Islands	
+SC	Seychelles	
+SD	Sudan	
+SE	Sweden	sverige
+SG	Singapore	singapura
+SH	Saint Helena, Ascension and Tristan da Cunha	st. helena;st helena
+SI	Slovenia	slovenija
+SJ	Svalbard and Jan Mayen	svalbard & jan mayen
+SK	Slovakia	slovensko
+SL	Sierra Leone	
+SM	San Marino	
+SN	Senegal	
+SO	Somalia	
+SR	Suriname	
+SS	South Sudan	
+ST	São Tomé and Príncipe	sao tome and principe;são tomé & príncipe;sao tome & principe
+SV	El Salvador	
+SX	Sint Maarten	st maarten (dutch)
+SY	Syria	
+SZ	Eswatini	eswatini (swaziland);swaziland
+TC	Turks and Caicos Islands	turks & caicos islands;turks & caicos is;turks and caicos is
+TD	Chad	
+TF	French Southern Territories	french s. terr
+TG	Togo	
+TH	Thailand	
+TJ	Tajikistan	
+TK	Tokelau	
+TL	Timor-Leste	east timor
+TM	Turkmenistan	
+TN	Tunisia	
+TO	Tonga	
+TR	Türkiye	turkiye;turkey
+TT	Trinidad and Tobago	trinidad & tobago
+TV	Tuvalu	
+TW	Taiwan	republic of china
+TZ	Tanzania	
+UA	Ukraine	
+UG	Uganda	
+UM	United States Minor Outlying Islands	u.s. outlying islands;us minor outlying islands
+US	United States	usa;u.s.a;u.s;united states of america;america
+UY	Uruguay	
+UZ	Uzbekistan	
+VA	Vatican City	holy see;vatican
+VC	Saint Vincent and the Grenadines	st. vincent & grenadines;st. vincent and grenadines;st vincent
+VE	Venezuela	
+VG	British Virgin Islands	virgin islands (uk)
+VI	United States Virgin Islands	u.s. virgin islands;virgin islands (us)
+VN	Vietnam	viet nam
+VU	Vanuatu	
+WF	Wallis and Futuna	wallis & futuna
+WS	Samoa	samoa (western)
+XK	Kosovo	
+YE	Yemen	
+YT	Mayotte	
+ZA	South Africa	
+ZM	Zambia	
+ZW	Zimbabwe	
