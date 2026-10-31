@@ -429,6 +429,52 @@ impl Kernel {
         Ok(out)
     }
 
+    /// A record's card (docs/plan/apps-ui.md §11.6), derived from its metadata for those who may
+    /// read it: its title, kind and number, its state, and up to six fields its list shows (a link
+    /// by the linked record's title), as the read masks them.
+    /// `{entity, id, title, kind, number, icon, state, fields: [{name, label, type, value}], updated_at, url}`.
+    pub async fn card(&self, ctx: &Ctx, entity: &str, id: Uuid) -> Result<Value> {
+        use ferrum_meta::FieldType as T;
+        let ent = ctx.schema.entity(entity).ok_or_else(|| Error::NotFound(entity.to_string()))?.clone();
+        let doc = self.get(ctx, entity, id, true).await?;
+        let titles = doc.get("_titles").and_then(Value::as_object);
+        let columns: Vec<&str> = if ent.def.list.columns.is_empty() {
+            ent.def.fields.iter().filter(|f| f.in_list).map(|f| f.name.as_str()).collect()
+        } else {
+            ent.def.list.columns.iter().map(String::as_str).collect()
+        };
+        let mut fields = Vec::new();
+        for name in columns {
+            let Some(f) = ent.def.fields.iter().find(|f| f.name == name) else { continue };
+            if f.hidden || ent.def.title_field.as_deref() == Some(name) || matches!(f.ftype, T::Table | T::Json | T::Secret | T::Code | T::Markdown | T::Text) {
+                continue;
+            }
+            let Some(v) = doc.get(name).filter(|v| !v.is_null() && v.as_str() != Some("")) else { continue };
+            let value = match f.ftype {
+                T::Link => titles.and_then(|t| t.get(name)).filter(|t| t.is_string()).unwrap_or(v).clone(),
+                _ => v.clone(),
+            };
+            fields.push(json!({"name": name, "label": f.label(), "type": f.ftype, "value": value}));
+            if fields.len() == 6 {
+                break;
+            }
+        }
+        // A record from before its entity's workflow is in the initial state, as transitions see it.
+        let state = match (doc.get("workflow_state").and_then(Value::as_str), &ent.workflow) {
+            (Some(s), _) => Some(s.to_string()),
+            (None, Some(wf)) => Some(wf.def.initial_state.clone()),
+            (None, None) if ent.def.submittable => {
+                Some(["Draft", "Submitted", "Cancelled"].get(crate::doc::docstatus_of(&doc) as usize).copied().unwrap_or("Draft").to_string())
+            }
+            (None, None) => None,
+        };
+        Ok(json!({
+            "entity": entity, "id": id, "title": record_title(ctx, entity, &doc), "kind": label(ctx, entity),
+            "number": doc.get("number").filter(|n| n.as_str().is_some_and(|s| !s.is_empty())), "icon": ent.def.icon, "state": state,
+            "fields": fields, "updated_at": doc.get("updated_at"), "url": format!("/open/{entity}/{id}"),
+        }))
+    }
+
     // ───────────── tags ─────────────
 
     pub async fn tags(&self, ctx: &Ctx, entity: &str, id: Uuid) -> Result<Vec<String>> {

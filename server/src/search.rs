@@ -3,6 +3,7 @@
 //! the person's permissions as lists are, on trigram indexes), entities in parallel within a time
 //! budget, ranked by how well the title matches and how recently the record changed. What is not
 //! an entity (mail, chat) comes from the apps' `shell.search` providers, which the bar asks itself.
+//! The lists the person may open are matched by name too (`pages`: the bar's "Go to").
 
 use ferrum_kernel::{Access, Action, Ctx, Error, Kernel, ListQuery, Result};
 use ferrum_meta::EntityKind;
@@ -54,16 +55,46 @@ fn searchable(ctx: &Ctx) -> Vec<String> {
         .collect()
 }
 
-/// `q` across the workspace: `{results, partial, took_ms}`.
+/// The lists the person may open whose name matches `q`, best first (at most five): each opens
+/// through `/open/{entity}`, in the app that shows it.
+fn pages(ctx: &Ctx, q: &str) -> Vec<Value> {
+    let mut found: Vec<(u8, &str, Value)> = ctx
+        .schema
+        .entities
+        .values()
+        .filter(|e| matches!(e.def.kind, EntityKind::Master | EntityKind::Document))
+        .filter(|e| ctx.perms.access(&e.def.name, Action::Read) != Access::None)
+        .filter_map(|e| {
+            let name = e.def.label_plural.as_deref().unwrap_or(&e.def.label);
+            let r = rank(name, q).max(rank(&e.def.label, q));
+            let module = e
+                .def
+                .module
+                .as_deref()
+                .and_then(|m| ctx.schema.modules.iter().find(|d| d.name == m))
+                .map(|d| format!(" · {}", d.label))
+                .unwrap_or_default();
+            (r > 0).then(|| {
+                let page = json!({"kind": "page", "entity": e.def.name, "title": name, "subtitle": format!("List{module}"), "url": format!("/open/{}", e.def.name), "icon": e.def.icon});
+                (r, name, page)
+            })
+        })
+        .collect();
+    found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
+    found.into_iter().take(5).map(|(_, _, v)| v).collect()
+}
+
+/// `q` across the workspace: `{results, pages, partial, took_ms}`.
 pub async fn search(k: &Arc<Kernel>, ctx: &Ctx, q: &str, limit: usize) -> Result<Value> {
     let started = Instant::now();
     let q = q.trim();
     if q.chars().count() < 2 {
-        return Ok(json!({"results": [], "partial": false, "took_ms": 0}));
+        return Ok(json!({"results": [], "pages": [], "partial": false, "took_ms": 0}));
     }
     if q.len() > 100 {
         return Err(Error::invalid("search text too long"));
     }
+    let pages = pages(ctx, q);
     let entities = searchable(ctx);
     let gate = Arc::new(tokio::sync::Semaphore::new(AT_ONCE));
     let mut tasks = Vec::new();
@@ -88,9 +119,17 @@ pub async fn search(k: &Arc<Kernel>, ctx: &Ctx, q: &str, limit: usize) -> Result
                 .filter_map(|row| {
                     let id = row.get("id")?.as_str()?.to_string();
                     let number = row.get("number").and_then(Value::as_str).unwrap_or_default().to_string();
-                    let title = ent.def.title_field.as_ref().and_then(|f| row.get(f)).and_then(Value::as_str).filter(|t| !t.trim().is_empty()).map(String::from).unwrap_or_else(|| {
-                        if number.is_empty() { format!("{label} {}", &id[..8.min(id.len())]) } else { number.clone() }
-                    });
+                    // A record with neither a title nor a number (a chat message) is left to its
+                    // app's own search, which can say what it is.
+                    let title = ent
+                        .def
+                        .title_field
+                        .as_ref()
+                        .and_then(|f| row.get(f))
+                        .and_then(Value::as_str)
+                        .filter(|t| !t.trim().is_empty())
+                        .map(String::from)
+                        .or_else(|| (!number.is_empty()).then(|| number.clone()))?;
                     let updated = row.get("updated_at").and_then(Value::as_str).unwrap_or_default().to_string();
                     let subtitle = if number.is_empty() || number == title { label.clone() } else { format!("{label} · {number}") };
                     Some(Hit {
@@ -115,6 +154,7 @@ pub async fn search(k: &Arc<Kernel>, ctx: &Ctx, q: &str, limit: usize) -> Result
     hits.truncate(limit.clamp(1, 50));
     Ok(json!({
         "results": hits.into_iter().map(|h| h.value).collect::<Vec<_>>(),
+        "pages": pages,
         "partial": partial,
         "took_ms": started.elapsed().as_millis() as u64,
     }))

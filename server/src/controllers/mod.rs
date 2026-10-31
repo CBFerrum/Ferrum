@@ -2,6 +2,7 @@ pub mod admin;
 pub mod apps;
 pub mod assistant;
 pub mod auth;
+pub mod cards;
 pub mod collab;
 pub mod compat;
 pub mod dav;

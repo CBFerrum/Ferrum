@@ -198,6 +198,11 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     holds (an administrator's power to approve is not a duty to). Each interface's stylesheet now
     also scans the shared components (`web/src`), whose classes were missing from the shell's and
     ERP's builds. Checked in Chromium, Firefox and WebKit, light and dark, at phone width.
+  * Cards (§11.6): hovering or focusing a link to a record shows its card after a moment, the app's
+    own (`shell.card`) or one derived from metadata (`/api/cards/{entity}/{id}`: title, kind and
+    number, state, the list's fields), for those who may read it; it stays while hovered and goes
+    with Escape, scrolling or leaving; not on touch, not on list rows. The bar's search gains "Go
+    to": the lists the person may open, by name. Checked in Chromium, Firefox and WebKit.
 
 * **U4a, Comms and Workspace: built** (31 October 2026).
   * Comms (Mail, Chat, Calendar, Meet at `/mail/`, `/chat/`, `/calendar/`, `/meet/`), Drive (`/drive/`,

@@ -288,6 +288,10 @@ async fn scenario() {
     let nobody = k.create_user(&ctx, "nobody@acme.test", "No Roles", Some("Correct-Horse-9"), &[], false).await.unwrap();
     let nobody = k.load_ctx(tenant, nobody, None, "it".into()).await.unwrap();
     assert_eq!(ferrum_server::search::search(&k, &nobody, "made by the assistant", 10).await.unwrap()["results"], json!([]), "nothing the person may not read");
+    // "Go to": the lists the person may open, by name.
+    let pages = ferrum_server::search::search(&k, &ctx, "custom", 10).await.unwrap()["pages"].clone();
+    assert!(pages.as_array().unwrap().iter().any(|p| p["url"] == json!("/open/Customer") && p["kind"] == json!("page")), "{pages}");
+    assert_eq!(ferrum_server::search::search(&k, &nobody, "custom", 10).await.unwrap()["pages"], json!([]), "not lists the person may not read");
 
     // ── deleting a conversation ──
     assistant::delete_thread(&env, &ctx, thread).await.unwrap();
