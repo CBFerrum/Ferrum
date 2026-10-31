@@ -213,6 +213,17 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     Customize stays the platform's (`/data/customize/`): Studio is installed per workspace, and every
     workspace's administrators customize. Workspaces that had Studio's package have Studio recorded
     as installed at start-up, as ERP was.
+  * The Point of Sale 0.2.0 has its own interface at `/pos/`: the till, full screen (moved from
+    Ferrum-Frontend), and the register's records in the records frame. It sells offline: its own
+    worker (§12.5) keeps the till's page and files; the register's price book
+    (`/api/app/pos/pricebook`: each item's engine line as the server prices a sale of one, and the
+    tax rows and rounding every sale shares, built with `pricing::calc_input`) stays on the device,
+    and the till prices from it with the server's own engine in WebAssembly (`@ferrum/calc`, from
+    crates/calc), so offline totals are the server's; it searches and scans from it too. Sales it
+    cannot send wait with who made them and when, and go when the connection, or the cashier's
+    session, is back (§16); the server prices each again. Checked in Chromium and Firefox with the
+    server stopped (the page from the worker, a sale priced offline at the server's total, sent on
+    return) and in WebKit on a loaded page (Playwright's WebKit keeps nothing in the Cache API).
 
 * **U7, portal and sites: built** (31 October 2026).
   * Hosts lead where their target says (§7.2): a `portal` host has sign-in, the portal and `/open`
