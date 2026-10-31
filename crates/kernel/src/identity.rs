@@ -90,6 +90,22 @@ pub struct Identity {
     /// The address was proven with a code sent to it.
     pub verified: bool,
     pub two_factor: bool,
+    /// A Ferrum account of another region, visiting: the region it lives in (and keeps its
+    /// password, two-factor sign-in and passkeys).
+    pub home_region: Option<String>,
+}
+
+/// What a Ferrum account's home region tells the region it visits ([`Kernel::redeem_region_code`]).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Visitor {
+    /// Its id at home.
+    pub sub: Uuid,
+    pub email: String,
+    pub name: String,
+    /// Its address was proven with a code sent to it.
+    pub email_verified: bool,
+    /// It signs in at home with two factors.
+    pub two_factor: bool,
 }
 
 /// A code's text as people type it: six digits, spaces dropped.
@@ -167,8 +183,9 @@ impl Kernel {
             return Err(again());
         }
         let mut tx = self.db.system_tx().await?;
-        let row: Option<(String, String, bool, bool)> = sqlx::query_as(
-            "select email::text, full_name, email_verified_at is not null, totp_enabled_at is not null from app_user \
+        let row: Option<(String, String, bool, bool, Option<String>)> = sqlx::query_as(
+            "select email::text, full_name, email_verified_at is not null, \
+               totp_enabled_at is not null or coalesce(settings->'home_two_factor' = 'true'::jsonb, false), home_region from app_user \
              where tenant_id = $1 and id = $2 and is_active",
         )
         .bind(ctx.tenant)
@@ -176,8 +193,8 @@ impl Kernel {
         .fetch_optional(&mut *tx)
         .await?;
         tx.commit().await?;
-        let (email, name, verified, two_factor) = row.ok_or_else(again)?;
-        Ok(Identity { id: ctx.user, email, name, verified, two_factor })
+        let (email, name, verified, two_factor, home_region) = row.ok_or_else(again)?;
+        Ok(Identity { id: ctx.user, email, name, verified, two_factor, home_region })
     }
 
     /// The identity a membership joined, if any: its id and address.
@@ -506,18 +523,22 @@ impl Kernel {
             tx.commit().await?;
             return Err(e);
         }
-        let existing: Option<(Uuid, bool, bool)> =
-            sqlx::query_as("select id, totp_enabled_at is not null, is_active from app_user where tenant_id = $1 and email = $2 for update")
+        let existing: Option<(Uuid, bool, bool, Option<String>)> =
+            sqlx::query_as("select id, totp_enabled_at is not null, is_active, home_region from app_user where tenant_id = $1 and email = $2 for update")
                 .bind(dir)
                 .bind(&email)
                 .fetch_optional(&mut *tx)
                 .await?;
         let (id, two_factor, token_version) = match existing {
-            Some((_, _, false)) => {
+            Some((_, _, false, _)) => {
                 tx.commit().await?;
                 return Err(Error::Forbidden("this account is turned off".into()));
             }
-            Some((id, two_factor, true)) => {
+            Some((_, _, _, Some(home))) => {
+                tx.commit().await?;
+                return Err(Error::Forbidden(format!("this Ferrum account lives in another region ({home}): set its password there")));
+            }
+            Some((id, two_factor, true, None)) => {
                 let tv: i32 = sqlx::query_scalar(
                     "update app_user set password_hash = $3, email_verified_at = coalesce(email_verified_at, now()), token_version = token_version + 1, \
                        failed_logins = 0, locked_until = null, updated_at = now() where tenant_id = $1 and id = $2 returning token_version",
@@ -840,6 +861,159 @@ impl Kernel {
     }
 }
 
+// ───────────────────────── accounts across regions ─────────────────────────
+
+/// A PKCE challenge (S256) as sent: 43 to 128 base64url characters.
+fn challenge_ok(c: &str) -> bool {
+    (43..=128).contains(&c.len()) && c.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// The S256 challenge of a PKCE verifier.
+pub fn pkce_challenge(verifier: &str) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
+}
+
+impl Kernel {
+    /// Home region: a one-use code telling another region's accounts host (`host`) who this
+    /// Ferrum account is, bound to that host's PKCE challenge, good for a minute. A visiting
+    /// account is vouched for only by its own home.
+    pub async fn mint_region_code(&self, identity: &Ctx, host: &str, challenge: &str) -> Result<String> {
+        let me = self.identity(identity).await?;
+        if me.home_region.is_some() {
+            return Err(Error::Forbidden("this Ferrum account lives in another region: sign in there".into()));
+        }
+        if !challenge_ok(challenge) {
+            return Err(Error::field("code_challenge", "is not an S256 challenge"));
+        }
+        let host = normalize_host(host).ok_or_else(|| Error::invalid("not a host name"))?;
+        let code = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>());
+        let mut tx = self.db.system_tx().await?;
+        sqlx::query(
+            "insert into host_code (code_hash, tenant_id, user_id, identity_id, host, expires_at, challenge) \
+             values ($1, $2, $3, $3, $4, now() + make_interval(secs => $5), $6)",
+        )
+        .bind(sha256_hex(&code))
+        .bind(identity.tenant)
+        .bind(me.id)
+        .bind(&host)
+        .bind(HOST_CODE_SECONDS)
+        .bind(challenge)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(code)
+    }
+
+    /// Home region: takes a code minted for `host`, with the verifier of its challenge: what the
+    /// visited region learns of the account.
+    pub async fn redeem_region_code(&self, code: &str, host: &str, verifier: &str) -> Result<Visitor> {
+        let expired = || Error::Unauthorized("this sign-in has expired or was used; sign in again".into());
+        let dir = self.directory_id().await?;
+        let host = normalize_host(host).ok_or_else(expired)?;
+        if code.is_empty() || code.len() > 100 || !challenge_ok(verifier) {
+            return Err(expired());
+        }
+        let mut tx = self.db.system_tx().await?;
+        let taken: Option<(Uuid, Uuid, String, String)> = sqlx::query_as(
+            "update host_code set used_at = now() where code_hash = $1 and used_at is null and expires_at > now() and challenge is not null \
+             returning tenant_id, user_id, host, challenge",
+        )
+        .bind(sha256_hex(code))
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((tenant, user, _, _)) = taken.filter(|t| t.0 == dir && t.2 == host && t.3 == pkce_challenge(verifier)) else {
+            tx.commit().await?;
+            return Err(expired());
+        };
+        let row: Option<(String, String, bool, bool)> = sqlx::query_as(
+            "select email::text, full_name, email_verified_at is not null, totp_enabled_at is not null from app_user \
+             where tenant_id = $1 and id = $2 and is_active and home_region is null",
+        )
+        .bind(tenant)
+        .bind(user)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        let (email, name, email_verified, two_factor) = row.ok_or_else(expired)?;
+        Ok(Visitor { sub: user, email, name, email_verified, two_factor })
+    }
+
+    /// Visited region: the visiting account of a Ferrum account of `region`, made the first time
+    /// it signs in here; its address, name and two-factor sign-in as its home vouches for them. An
+    /// account of this region with the same address keeps it: the visitor is refused.
+    pub async fn visiting_identity(&self, region: &str, v: &Visitor) -> Result<Session> {
+        let dir = self.directory_id().await?;
+        let region = region.trim().to_ascii_lowercase();
+        if region.is_empty() || region.len() > 40 {
+            return Err(Error::invalid("not a region"));
+        }
+        let email = normalized_email(&v.email)?;
+        let mut tx = self.db.system_tx().await?;
+        let known: Option<(Uuid, i32, bool)> =
+            sqlx::query_as("select id, token_version, is_active from app_user where tenant_id = $1 and home_region = $2 and home_sub = $3 for update")
+                .bind(dir)
+                .bind(&region)
+                .bind(v.sub)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let session = match known {
+            Some((_, _, false)) => {
+                tx.commit().await?;
+                return Err(Error::Forbidden("this account is turned off here".into()));
+            }
+            Some((id, token_version, true)) => {
+                // Home may have a new address for it: taken here, unless another account has it.
+                sqlx::query(
+                    "update app_user set email = case when exists (select 1 from app_user o where o.tenant_id = $1 and o.email = $3 and o.id <> $2) \
+                       then email else $3 end, full_name = $4, \
+                       email_verified_at = case when $5 then coalesce(email_verified_at, now()) end, \
+                       settings = jsonb_set(settings, '{home_two_factor}', to_jsonb($6::boolean)), last_login_at = now() \
+                     where tenant_id = $1 and id = $2",
+                )
+                .bind(dir)
+                .bind(id)
+                .bind(&email)
+                .bind(&v.name)
+                .bind(v.email_verified)
+                .bind(v.two_factor)
+                .execute(&mut *tx)
+                .await?;
+                Session { tenant: dir, user: id, token_version }
+            }
+            None => {
+                let taken: bool = sqlx::query_scalar("select exists(select 1 from app_user where tenant_id = $1 and email = $2)")
+                    .bind(dir)
+                    .bind(&email)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                if taken {
+                    tx.commit().await?;
+                    return Err(Error::Conflict(format!("{email} has a Ferrum account in this region already: sign in with it here")));
+                }
+                let id = Uuid::now_v7();
+                sqlx::query(
+                    "insert into app_user (tenant_id, id, email, full_name, email_verified_at, home_region, home_sub, settings, last_login_at) \
+                     values ($1, $2, $3, $4, case when $5 then now() end, $6, $7, jsonb_build_object('home_two_factor', $8::boolean), now())",
+                )
+                .bind(dir)
+                .bind(id)
+                .bind(&email)
+                .bind(&v.name)
+                .bind(v.email_verified)
+                .bind(&region)
+                .bind(v.sub)
+                .bind(v.two_factor)
+                .execute(&mut *tx)
+                .await?;
+                Session { tenant: dir, user: id, token_version: 1 }
+            }
+        };
+        tx.commit().await?;
+        self.invalidate_user(dir, session.user);
+        Ok(session)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -854,5 +1028,10 @@ mod tests {
         assert!(normalized_email("a@b@c").is_err());
         assert!(normalized_email("a b@c.d").is_err());
         assert!(RESERVED_SLUGS.contains(&DIRECTORY));
+        // RFC 7636 appendix B.
+        assert_eq!(pkce_challenge("dBjftJeZ4CVP-mJ0n0Kt6kXRIHSTb0cEo1rgGO86X6s"), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+        assert!(challenge_ok("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"));
+        assert!(!challenge_ok("short"));
+        assert!(!challenge_ok(&"a".repeat(129)));
     }
 }

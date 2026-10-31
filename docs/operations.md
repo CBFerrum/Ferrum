@@ -868,11 +868,15 @@ workspaces, each at its own address, and people sign in once for all of them ([A
   accounts host; or everywhere, from the account's browsers list, which ends every session of the
   account and of each workspace it joined, on every device.
 * **Regions.** Each region runs its own cluster with its own base domain and accounts host. Set
-  `FERRUM_REGION` and list the others in `FERRUM_REGIONS`: the sign-in page offers them, and the
-  accounts host sends a request for a workspace it does not have to the region that answers for it at
-  `/_directory?host=` (asked with a three-second limit, remembered five minutes). A person's Ferrum
-  account lives in one region; a workspace in another region cannot yet trust it (they sign in there
-  with an account of that region).
+  `FERRUM_REGION` and list the others in `FERRUM_REGIONS` (each region lists the others, by the same
+  names): the accounts host sends a request for a workspace it does not have to the region that
+  answers for it at `/_directory?host=` (asked with a three-second limit, remembered five minutes).
+  A person's Ferrum account lives in one region, and the others trust it: their sign-in pages offer
+  "your Ferrum account lives in another region", which signs in at home and comes back with the
+  account's facts, taken server to server from the home's accounts host (a code bound to a PKCE
+  challenge, for listed regions only). The visited region keeps a visiting account with no password:
+  its password, two-factor sign-in and passkeys stay at home. Workspace data never leaves its
+  region; only the account's address, name and whether it uses two-factor sign-in travel.
 * **The directory** is a workspace of its own named `accounts` (made at start-up), whose people are the
   Ferrum accounts; it has no apps and nothing to administer. Start-up refuses a base domain while
   another workspace has that name.

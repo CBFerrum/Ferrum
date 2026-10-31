@@ -121,6 +121,9 @@ pub(crate) async fn page(st: &AppState, headers: &HeaderMap, uri: &Uri, first: &
         // Where single sign-on providers send people back (the address they have registered).
         ("app", Some("login")) => Ok(Redirect::to(&format!("/login{}", uri.query().map(|q| format!("?{q}")).unwrap_or_default())).into_response()),
         ("account", _) => Ok(Redirect::permanent("/").into_response()),
+        ("regions", Some("authorize")) => region_authorize(st, headers, uri, q).await,
+        ("regions", Some("start")) => region_start(st, headers, q).await,
+        ("regions", Some("callback")) => region_callback(st, headers, q).await,
         _ => Ok(not_found()),
     }
 }
@@ -262,9 +265,9 @@ async fn elsewhere(st: &AppState, bare: &str) -> Option<String> {
     if let Some(e) = SEEN.get(bare).filter(|e| e.0.elapsed() < Duration::from_secs(300)) {
         return e.1.clone();
     }
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(3)).redirect(reqwest::redirect::Policy::none()).build().ok()?;
     let mut found = None;
     for (_, url) in &st.shell.regions {
+        let Some(client) = region_client(url, Duration::from_secs(3)) else { continue };
         let asked = client.get(format!("{url}/_directory?host={}", enc(bare))).send().await;
         if asked.is_ok_and(|r| r.status().is_success()) {
             found = Some(url.clone());
@@ -276,6 +279,19 @@ async fn elsewhere(st: &AppState, bare: &str) -> Option<String> {
     }
     SEEN.insert(bare.to_string(), (Instant::now(), found.clone()));
     found
+}
+
+/// A client for another region's accounts host: no redirects followed; names under `localhost`
+/// are this machine (RFC 6761), for regions run side by side in development.
+fn region_client(url: &str, timeout: Duration) -> Option<reqwest::Client> {
+    let mut b = reqwest::Client::builder().timeout(timeout).redirect(reqwest::redirect::Policy::none());
+    if let Ok(u) = reqwest::Url::parse(url)
+        && let Some(host) = u.host_str()
+        && (host == "localhost" || host.ends_with(".localhost"))
+    {
+        b = b.resolve(host, std::net::SocketAddr::from(([127, 0, 0, 1], u.port_or_known_default().unwrap_or(80))));
+    }
+    b.build().ok()
 }
 
 /// `GET /_directory?host=`: whether a host is this region's (a workspace's, or the cluster's
@@ -488,7 +504,8 @@ async fn me(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Resp
         w["url"] = json!(url);
     }
     Ok(Json(json!({
-        "account": {"id": me.id, "email": me.email, "name": me.name, "verified": me.verified, "two_factor": me.two_factor},
+        "account": {"id": me.id, "email": me.email, "name": me.name, "verified": me.verified, "two_factor": me.two_factor, "home_region": me.home_region,
+            "home": me.home_region.as_deref().and_then(|r| st.shell.regions.iter().find(|(n, _)| n == r).map(|(_, url)| format!("{url}/")))},
         "workspaces": workspaces,
         "region": st.shell.region,
     }))
@@ -589,6 +606,161 @@ async fn sign_out_everywhere(State(app): State<AppContext>, headers: HeaderMap) 
     Ok(res)
 }
 
+// ───────────────────────── accounts across regions ─────────────────────────
+
+/// The region whose accounts host has this callback address (`{its accounts host}/regions/callback`).
+fn region_of_callback<'a>(st: &'a AppState, redirect_uri: &str) -> Option<&'a (String, String)> {
+    st.shell.regions.iter().find(|(_, url)| redirect_uri == format!("{url}/regions/callback"))
+}
+
+/// The cookie that keeps a sign-in through another region's accounts host: `state`, the PKCE
+/// verifier, the region and where to go back to.
+fn region_cookie_name(secure: bool) -> &'static str {
+    if secure { "__Host-ferrum-region" } else { "ferrum_region" }
+}
+
+/// Home region, `GET /regions/authorize?redirect_uri=…&state=…&code_challenge=…&code_challenge_method=S256`:
+/// another region's accounts host asks who is signed in here (signing in first), and gets back a
+/// one-use code bound to its challenge. Only the regions this cluster lists are answered.
+async fn region_authorize(st: &AppState, headers: &HeaderMap, uri: &Uri, q: &[(String, String)]) -> ApiResult<Response> {
+    let bad = || {
+        status_page(
+            StatusCode::BAD_REQUEST,
+            "This sign-in link does not work",
+            "Go back to where you came from and sign in again.",
+            &[("Your workspaces", "/")],
+            None,
+        )
+    };
+    let (Some(redirect_uri), Some(state), Some(challenge)) = (query(q, "redirect_uri"), query(q, "state").and_then(state_param), query(q, "code_challenge"))
+    else {
+        return Ok(bad());
+    };
+    if query(q, "code_challenge_method") != Some("S256") || region_of_callback(st, redirect_uri).is_none() {
+        return Ok(bad());
+    }
+    let Some((ctx, _)) = signed_in(st, headers).await else {
+        return Ok(Redirect::to(&format!("/login?next={}", enc(&format!("/regions/authorize?{}", uri.query().unwrap_or_default())))).into_response());
+    };
+    let host = reqwest::Url::parse(redirect_uri).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
+    let code = st.kernel.mint_region_code(&ctx, &host, challenge).await?;
+    let mut res = Redirect::to(&format!("{redirect_uri}?code={code}&state={state}")).into_response();
+    res.headers_mut().insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    Ok(res)
+}
+
+#[derive(Deserialize)]
+struct RegionTokenReq {
+    code: String,
+    code_verifier: String,
+    redirect_uri: String,
+}
+
+/// Home region, `POST /api/accounts/region-token`: the visited region's server takes its code,
+/// with the verifier of the challenge it was bound to, and learns who the account is.
+async fn region_token(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<RegionTokenReq>) -> ApiResult<Response> {
+    let st = here(&app, &headers).await?;
+    st.public_limiter.check(&format!("{}|region-token", client_ip(&headers))).await?;
+    if region_of_callback(&st, &req.redirect_uri).is_none() {
+        return Err(ApiError(Error::Forbidden("not a region of this cluster's".into())));
+    }
+    let host = reqwest::Url::parse(&req.redirect_uri).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
+    let visitor = st.kernel.redeem_region_code(&req.code, &host, &req.code_verifier).await?;
+    let mut res = Json(visitor).into_response();
+    res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(res)
+}
+
+/// Visited region, `GET /regions/start?region=…&next=…`: signing in with a Ferrum account that
+/// lives in another region: off to its accounts host, with a PKCE challenge whose verifier and a
+/// `state` this host keeps in a cookie (ten minutes).
+async fn region_start(st: &AppState, headers: &HeaderMap, q: &[(String, String)]) -> ApiResult<Response> {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let region = query(q, "region").unwrap_or_default().to_ascii_lowercase();
+    let (Some((_, url)), Some(own)) = (st.shell.regions.iter().find(|(n, _)| *n == region), st.shell.accounts_origin(headers)) else {
+        return Ok(not_found());
+    };
+    let next = shell::safe_next(query(q, "next").unwrap_or("/"));
+    let verifier = b64.encode(rand_bytes());
+    let state = Uuid::new_v4().simple().to_string();
+    let to = format!(
+        "{url}/regions/authorize?redirect_uri={}&state={state}&code_challenge={}&code_challenge_method=S256",
+        enc(&format!("{own}/regions/callback")),
+        ferrum_kernel::identity::pkce_challenge(&verifier)
+    );
+    let mut res = Redirect::to(&to).into_response();
+    let secure = st.shell.secure;
+    let kept = format!("{state}.{verifier}.{}.{}", b64.encode(&region), b64.encode(&next));
+    res.headers_mut().append(header::SET_COOKIE, shell::host_cookie(secure, region_cookie_name(secure), &kept, Duration::from_secs(600)));
+    Ok(res)
+}
+
+fn rand_bytes() -> [u8; 32] {
+    let mut b = [0u8; 32];
+    b[..16].copy_from_slice(Uuid::new_v4().as_bytes());
+    b[16..].copy_from_slice(Uuid::new_v4().as_bytes());
+    b
+}
+
+/// Visited region, `GET /regions/callback?code=…&state=…`: back from the account's home with a
+/// code; this server takes it there (with the verifier) and signs the visiting account in here.
+async fn region_callback(st: &AppState, headers: &HeaderMap, q: &[(String, String)]) -> ApiResult<Response> {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let secure = st.shell.secure;
+    let failed = |message: &str| {
+        let mut res = status_page(StatusCode::BAD_REQUEST, "Signing in did not finish", message, &[("Sign in again", "/login")], None);
+        res.headers_mut().append(header::SET_COOKIE, shell::host_cookie(secure, region_cookie_name(secure), "", Duration::ZERO));
+        res
+    };
+    let kept = shell::cookie(headers, region_cookie_name(secure)).unwrap_or_default();
+    let parts: Vec<&str> = kept.split('.').collect();
+    let (Some(code), Some(state), [kept_state, verifier, region, next]) = (query(q, "code"), query(q, "state"), parts.as_slice()) else {
+        return Ok(failed("It was started in another tab, or took too long. Sign in again."));
+    };
+    if !super::system::same_secret(kept_state, state) {
+        return Ok(failed("It was started in another tab, or took too long. Sign in again."));
+    }
+    let decode = |s: &str| b64.decode(s).ok().and_then(|b| String::from_utf8(b).ok()).unwrap_or_default();
+    let (region, next) = (decode(region), decode(next));
+    let (Some((_, url)), Some(own)) = (st.shell.regions.iter().find(|(n, _)| *n == region), st.shell.accounts_origin(headers)) else {
+        return Ok(failed("That region is not one this service knows."));
+    };
+    let Some(client) = region_client(url, Duration::from_secs(10)) else { return Ok(failed("That region cannot be reached.")) };
+    let asked = client
+        .post(format!("{url}/api/accounts/region-token"))
+        .json(&json!({"code": code, "code_verifier": verifier, "redirect_uri": format!("{own}/regions/callback")}))
+        .send()
+        .await;
+    let visitor: ferrum_kernel::identity::Visitor = match asked {
+        Ok(r) if r.status().is_success() => match r.json().await {
+            Ok(v) => v,
+            Err(_) => return Ok(failed("The account's region answered something unexpected.")),
+        },
+        Ok(_) => return Ok(failed("The account's region did not confirm the sign-in. Sign in again.")),
+        Err(e) => {
+            tracing::warn!(%region, "a region's accounts host is unreachable: {e}");
+            return Ok(failed("The account's region cannot be reached just now. Try again in a while."));
+        }
+    };
+    let s = match st.kernel.visiting_identity(&region, &visitor).await {
+        Ok(s) => s,
+        Err(Error::Conflict(m) | Error::Forbidden(m)) => return Ok(failed(&m)),
+        Err(e) => return Err(e.into()),
+    };
+    let ua = headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default();
+    let ttl = st.shell.session_ttl;
+    let sid = st.kernel.open_session(&s, ttl, ua, &client_ip(headers), None).await?;
+    let mut res = Redirect::to(&shell::safe_next(&next)).into_response();
+    let h = res.headers_mut();
+    h.append(header::SET_COOKIE, shell::set_cookie(secure, &super::auth::device_token(st, &s, ttl.as_secs(), "sid", sid)?, ttl));
+    h.append(header::SET_COOKIE, shell::host_cookie(secure, region_cookie_name(secure), "", Duration::ZERO));
+    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(res)
+}
+
 pub fn routes() -> Routes {
     use axum::routing::{get, post};
     Routes::new()
@@ -604,6 +776,7 @@ pub fn routes() -> Routes {
         .add("/api/accounts/join", post(join))
         .add("/api/accounts/join/code", post(join_code))
         .add("/api/accounts/sign-out-everywhere", post(sign_out_everywhere))
+        .add("/api/accounts/region-token", post(region_token))
 }
 
 #[cfg(test)]

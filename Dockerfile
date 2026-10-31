@@ -6,7 +6,7 @@
 #   docker run -e DATABASE_URL=... -e JWT_SECRET=$(openssl rand -base64 48) -p 8080:5150 ferrum
 
 # The Ferrum-Frontend commit this server's pages are built from (bumped like an app's pin).
-ARG FRONTEND_REV=791bd81de33f7a3e6f2b36c7c613f1fca1df9ad8
+ARG FRONTEND_REV=fbd7bbe5b8641e21ac82dff7485eeab913b3f8a6
 
 FROM scratch AS frontend
 ARG FRONTEND_REV

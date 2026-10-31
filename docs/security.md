@@ -68,6 +68,13 @@ operator to know. Report a vulnerability privately to the maintainers rather tha
   accounts host's pages cannot be framed by other sites. Unknown hosts are served nothing; custom
   domains under the cluster's own domain are refused, and `accounts`, `hooks`, `www` and `api` are
   no workspace's names.
+* Ferrum accounts across regions: a region vouches for its own accounts only, to the regions it lists,
+  at their fixed callback address: a one-use, one-minute code bound to the asking host's PKCE
+  challenge (S256), so only the server that started the sign-in, holding the verifier, can take it,
+  server to server over TLS from the address in its own configuration (no redirects followed). The
+  visited region keeps the `state` and verifier in a `__Host-` cookie, holds no credentials for the
+  visiting account (password, two-factor sign-in and passkeys are refused there), and never lets a
+  visitor take the address of an account of its own.
 * Two-factor sign-in: TOTP secrets sealed with the server key; each code accepted once; recovery
   codes stored as hashes; wrong codes count toward the lockout, and a correct password does not
   clear the count while the second step is pending; the ticket between the steps is no session;
