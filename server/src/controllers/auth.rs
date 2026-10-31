@@ -437,7 +437,12 @@ struct NewPasskey {
 }
 
 /// `POST /api/auth/passkeys`: keeps the passkey the browser made.
-async fn add_passkey(BrowserSession(ctx, _): BrowserSession, State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<NewPasskey>) -> ApiResult<Response> {
+async fn add_passkey(
+    BrowserSession(ctx, _): BrowserSession,
+    State(app): State<AppContext>,
+    headers: HeaderMap,
+    Json(req): Json<NewPasskey>,
+) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let (_, origins) = relying_party(&st, &headers)?;
     let made = st.kernel.add_passkey(&ctx, req.request, &origins, &req.credential, &req.name).await?;
