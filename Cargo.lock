@@ -2412,7 +2412,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-erp"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#12f8b1f8521e04905a2700e7236218140a8cdfb6"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#649d7991aac8998cc5fdf044b8dcf828c983d90d"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2641,6 +2641,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrum-de"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#649d7991aac8998cc5fdf044b8dcf828c983d90d"
+dependencies = [
+ "async-trait",
+ "ferrum-app-erp",
+ "ferrum-domain",
+ "ferrum-eu",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "rust_decimal",
+ "serde_json",
+]
+
+[[package]]
 name = "ferrum-domain"
 version = "0.1.0"
 dependencies = [
@@ -2659,7 +2674,7 @@ dependencies = [
 [[package]]
 name = "ferrum-eu"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#12f8b1f8521e04905a2700e7236218140a8cdfb6"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#649d7991aac8998cc5fdf044b8dcf828c983d90d"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2667,7 +2682,7 @@ dependencies = [
  "ferrum-domain",
  "ferrum-kernel",
  "ferrum-meta",
- "quick-xml 0.37.5",
+ "quick-xml 0.42.0",
  "reqwest 0.12.28",
  "rust_decimal",
  "serde_json",
@@ -2679,7 +2694,7 @@ dependencies = [
 [[package]]
 name = "ferrum-finance"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#12f8b1f8521e04905a2700e7236218140a8cdfb6"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#649d7991aac8998cc5fdf044b8dcf828c983d90d"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2699,9 +2714,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrum-gb"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#649d7991aac8998cc5fdf044b8dcf828c983d90d"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrum-app-erp",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "hex",
+ "reqwest 0.12.28",
+ "rust_decimal",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ferrum-india"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#12f8b1f8521e04905a2700e7236218140a8cdfb6"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#649d7991aac8998cc5fdf044b8dcf828c983d90d"
 dependencies = [
  "aes",
  "async-trait",
@@ -2798,7 +2834,7 @@ dependencies = [
 [[package]]
 name = "ferrum-mfg-ops"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#12f8b1f8521e04905a2700e7236218140a8cdfb6"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#649d7991aac8998cc5fdf044b8dcf828c983d90d"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2848,7 +2884,7 @@ dependencies = [
 [[package]]
 name = "ferrum-procurement"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#12f8b1f8521e04905a2700e7236218140a8cdfb6"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#649d7991aac8998cc5fdf044b8dcf828c983d90d"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2897,9 +2933,11 @@ dependencies = [
  "ferrum-app-projects",
  "ferrum-app-sign",
  "ferrum-apps",
+ "ferrum-de",
  "ferrum-domain",
  "ferrum-eu",
  "ferrum-finance",
+ "ferrum-gb",
  "ferrum-india",
  "ferrum-kernel",
  "ferrum-mcp",
@@ -2938,7 +2976,7 @@ dependencies = [
 [[package]]
 name = "ferrum-stock-ops"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#12f8b1f8521e04905a2700e7236218140a8cdfb6"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#649d7991aac8998cc5fdf044b8dcf828c983d90d"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5478,15 +5516,6 @@ name = "quick-error"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
-
-[[package]]
-name = "quick-xml"
-version = "0.37.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "331e97a1af0bf59823e6eadffe373d7b27f485be8748f71471c662c1f269b7fb"
-dependencies = [
- "memchr",
-]
 
 [[package]]
 name = "quick-xml"

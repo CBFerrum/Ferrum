@@ -167,6 +167,10 @@ apps! {
         "india" => ferrum_india,
         // The EU's rules for companies in its member states (localization.md L1).
         "eu" => ferrum_eu,
+        // Member states' rules after the EU's, which they adjust (localization.md L2).
+        "de" => ferrum_de,
+        // The United Kingdom (localization.md L3).
+        "gb" => ferrum_gb,
         "crm" => ferrum_app_crm,
         "projects" => ferrum_app_projects,
         "helpdesk" => ferrum_app_helpdesk,
