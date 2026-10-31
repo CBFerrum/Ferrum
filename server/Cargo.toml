@@ -14,11 +14,13 @@ path = "src/bin/main.rs"
 # Native apps compiled into this server (all official ones by default; docs/plan/apps.md). Most live
 # in their own repositories; a workspace whose installed app is not in a build keeps its data and
 # loses the app until it is back.
-default = ["india", "eu", "de", "be", "it", "pl", "ro", "gb", "ca", "us", "sg", "my", "id", "th", "ph", "vn", "sa", "ae", "au", "nz", "jp", "mx", "cn", "crm", "projects", "helpdesk", "pos", "hr", "comms", "commerce", "procurement", "stock-ops", "finance", "mfg-ops", "studio", "assets", "bookings", "field-service", "forms", "lms", "drive", "docs", "campaigns", "sign"]
+default = ["india", "eu", "de", "be", "es", "fr", "it", "pl", "ro", "gb", "ca", "us", "sg", "my", "id", "th", "ph", "vn", "sa", "ae", "au", "nz", "jp", "mx", "cn", "crm", "projects", "helpdesk", "pos", "hr", "comms", "commerce", "procurement", "stock-ops", "finance", "mfg-ops", "studio", "assets", "bookings", "field-service", "forms", "lms", "drive", "docs", "campaigns", "sign"]
 india = ["dep:ferrum-india"]
 eu = ["dep:ferrum-eu"]
 de = ["dep:ferrum-de", "eu"]
 be = ["dep:ferrum-eu-members", "eu"]
+es = ["dep:ferrum-eu-members", "eu"]
+fr = ["dep:ferrum-eu-members", "eu"]
 it = ["dep:ferrum-eu-members", "eu"]
 pl = ["dep:ferrum-eu-members", "eu"]
 ro = ["dep:ferrum-eu-members", "eu"]
