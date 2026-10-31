@@ -167,6 +167,19 @@ impl Hooks for App {
         apps.ensure_native("erp", "accounting").await;
         apps.ensure_native("studio", "studio").await;
         crate::shell::register_compiled(&kernel, &storage, &settings, &apps).await;
+        // Shapes B and C (docs/plan/apps-ui.md §7, §9.3): the directory of Ferrum accounts, and every
+        // workspace's subdomain of the base domain.
+        if let Some(base) = crate::shell::base_domain(&settings) {
+            if ferrum_kernel::shell::normalize_host(&format!("{}.{base}", ferrum_kernel::identity::DIRECTORY)).is_none() {
+                return Err(Error::Message(format!("settings.base_domain ({base}) is not a domain name")));
+            }
+            kernel.ensure_directory().await.map_err(|e| Error::Message(format!("the accounts directory: {e}")))?;
+            match kernel.ensure_subdomains(&base).await {
+                Ok(0) => {}
+                Ok(added) => tracing::info!(added, %base, "workspaces got their subdomains"),
+                Err(e) => tracing::error!("workspaces' subdomains: {e}"),
+            }
+        }
         let (tx, _rx) = watch::channel(false);
         let db = kernel.db.clone();
         let user_requests = settings.user_requests_per_minute;
@@ -321,6 +334,7 @@ impl Hooks for App {
         AppRoutes::with_default_routes()
             .add_route(controllers::system::routes())
             .add_route(controllers::auth::routes())
+            .add_route(controllers::accounts::routes())
             .add_route(controllers::meta::routes())
             .add_route(controllers::docs::routes())
             .add_route(controllers::collab::routes())

@@ -20,6 +20,7 @@ pub mod doc;
 pub mod error;
 pub mod files;
 pub mod hooks;
+pub mod identity;
 pub mod notify;
 pub mod numbering;
 pub mod oauth;
@@ -129,6 +130,8 @@ pub struct Kernel {
     /// Host names looked up recently → where they lead.
     pub(crate) hosts: DashMap<String, (shell::HostRoute, Instant)>,
     pub(crate) files: std::sync::OnceLock<Arc<dyn files::FileStore>>,
+    /// The directory workspace, once known (identity.rs).
+    pub(crate) directory: std::sync::OnceLock<Uuid>,
 }
 
 impl Kernel {
@@ -176,6 +179,7 @@ impl Kernel {
             sessions: DashMap::new(),
             hosts: DashMap::new(),
             files: std::sync::OnceLock::new(),
+            directory: std::sync::OnceLock::new(),
         }))
     }
 

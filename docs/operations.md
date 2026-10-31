@@ -46,6 +46,8 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_SSO_ALLOW_PRIVATE` | no | `true` lets single sign-on reach an identity provider on a private address or over plain http (one inside your own network, such as an in-cluster Keycloak); default `false` |
 | `FERRUM_APP_ALLOW_UNSIGNED` | no | `true` accepts uploads no trusted key signed (development default); production default `false` |
 | `FERRUM_SESSION_DAYS` | no | How long a browser stays signed in with the session cookie (default 14); each browser is a session of its own that people and administrators sign out one by one |
+| `FERRUM_BASE_DOMAIN` | no | Shapes B and C (below, [Many workspaces](#many-workspaces-subdomains-and-ferrum-accounts)): the domain under which each workspace is `{slug}.{base}`, people sign in at `accounts.{base}` and outside callers use `hooks.{base}`. Empty: one workspace (`FERRUM_DEFAULT_WORKSPACE`) or a shared host |
+| `FERRUM_REGION`, `FERRUM_REGIONS` | no | This cluster's region (`eu`), and the other regions' accounts hosts, `name=https://accounts.example.eu,…`: the sign-in page offers them, and a workspace not found here is looked up there |
 | `FERRUM_DEFAULT_WORKSPACE` | no | The slug of the one workspace this server serves on every host (a single-workspace install): sign-in then asks for no workspace. Empty: a host registered for a workspace leads to it, and elsewhere the workspace is chosen at sign-in |
 | `FERRUM_UI_DIR` | no | Interfaces registered at start-up from a directory with one directory of built files per app id (`<dir>/<app>/index.html`), after those compiled into apps' crates, so they win for the same version. The image sets it to `/app/ui`, which holds the shell's and ERP's (built from Ferrum-Frontend at the commit the Dockerfile pins); point it elsewhere to run others |
 | `FERRUM_OFFICE_ORIGIN` | with online editing | The editor server as browsers reach it (`https://office.example.com`), when that is not `FERRUM_OFFICE_URL`: Drive's pages frame it and post to it, and their Content-Security-Policy names it (`deploy/office.yml` sets it from `OFFICE_PUBLIC_URL`) |
@@ -829,6 +831,55 @@ site (`site:{app}`), at most 20 per workspace.
 * **Main address**: one working domain of each kind is the main one: links in mail and redirects use
   it, and the workspace's other addresses of that kind lead to it.
 
+## Many workspaces: subdomains and Ferrum accounts
+
+With `FERRUM_BASE_DOMAIN` (shapes B and C of [the plan](plan/apps-ui.md) §7), a cluster serves many
+workspaces, each at its own address, and people sign in once for all of them ([API](api.md#ferrum-accounts--the-accounts-host-shapes-b-and-c)):
+
+* **Addresses.** `{slug}.{base}` for each workspace (added at start-up for those without one, and when a
+  workspace is made), `accounts.{base}` for signing in, the account chooser and each person's own
+  security, and `hooks.{base}` for outside callers (webhooks and other calls that name their workspace
+  in the path; no pages, no sessions). Any other host answers 404, so DNS left pointing at the cluster
+  shows nobody's workspace. The slugs `accounts`, `hooks`, `www` and `api` are kept; a custom domain
+  under the base domain is refused. Workspaces' verified custom domains ([Custom domains](#custom-domains))
+  sign in through the accounts host as well, each with a session of its own.
+* **DNS and certificates.** A wildcard record `*.{base}` to the edge, and a wildcard certificate:
+  cert-manager needs a DNS-01 solver for it (a Gateway listener with hostname `*.{base}` and the
+  `cert-manager.io/cluster-issuer` annotation, as `deploy/kind/kustomization.yaml` adds for the test
+  cluster). Caddy's on-demand TLS above covers subdomains and custom domains alike (`/_tls/ask`
+  answers for both). Put the base domain on the Public Suffix List once you can, so each workspace's
+  host is a site of its own for browsers.
+* **Ferrum accounts.** The first time someone signs in at the accounts host with a workspace's
+  password, that workspace's account makes their Ferrum account (it takes its password, authenticator
+  app and recovery codes) once a code mailed to the address proves it is theirs. Their other workspaces
+  join it when they open them and prove it once: a click when the address is proven and the account has
+  no authenticator app of its own, else that workspace's password (and app code) or a mailed code.
+  Someone without a password anywhere (added without one, or through single sign-on) sets one with a
+  mailed code. **Run it with a mailer**: without one, accounts are made from a workspace's password
+  alone, their address unproven, and nobody can set or reset a password by mail (an administrator sets
+  a workspace password; signing in with it joins the account).
+* **Workspace rules stay the workspace's.** One that requires single sign-on sends its people (not its
+  administrators) through it at the accounts host every time; one that requires two-factor sign-in
+  asks people to turn it on for their Ferrum account first. Deactivating someone in a workspace stops
+  their next sign-in there at once and their sessions with it.
+* **Single sign-on.** Register `https://accounts.{base}/app/login` as the redirect URI with each
+  provider: the one address for every workspace, which adding a custom domain never changes.
+* **Signing out.** Of one host, from its menu (the next sign-in there asks which account); of the
+  accounts host; or everywhere, from the account's browsers list, which ends every session of the
+  account and of each workspace it joined, on every device.
+* **Regions.** Each region runs its own cluster with its own base domain and accounts host. Set
+  `FERRUM_REGION` and list the others in `FERRUM_REGIONS`: the sign-in page offers them, and the
+  accounts host sends a request for a workspace it does not have to the region that answers for it at
+  `/_directory?host=` (asked with a three-second limit, remembered five minutes). A person's Ferrum
+  account lives in one region; a workspace in another region cannot yet trust it (they sign in there
+  with an account of that region).
+* **The directory** is a workspace of its own named `accounts` (made at start-up), whose people are the
+  Ferrum accounts; it has no apps and nothing to administer. Start-up refuses a base domain while
+  another workspace has that name.
+* **Turning it off** (removing `FERRUM_BASE_DOMAIN`) leaves the hosts and accounts in place: people
+  sign in on each workspace's host again with that workspace's own password, which joining never
+  changed.
+
 ## Sign-in security
 
 **Two-factor sign-in.** Anyone turns it on from the account menu (Two-factor sign-in) with an
@@ -840,7 +891,8 @@ the person's sessions. Wrong codes count toward the same lockout as wrong passwo
 
 **Single sign-on (OpenID Connect).** Register Ferrum with the identity provider as a web
 application: redirect URI `https://<your host>/app/login` (Administration → Single sign-on shows
-it; the server sends the provider's answer on to the sign-in page), scopes `openid email profile`. Then add the provider there with its issuer URL, client ID and
+it; the server sends the provider's answer on to the sign-in page; with a base domain,
+`https://accounts.{base}/app/login`), scopes `openid email profile`. Then add the provider there with its issuer URL, client ID and
 client secret:
 
 | Provider | Issuer URL | Notes |

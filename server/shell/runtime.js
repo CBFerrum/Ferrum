@@ -40,6 +40,11 @@ const memory = {
   },
 };
 
+/** A random id: `crypto.randomUUID` exists on secure pages only (https, localhost), and a
+ *  plain-http address (a test server, an intranet) has the bar too. */
+const newId = () =>
+  typeof crypto.randomUUID === "function" ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+
 // ───────────────────────── appearance ─────────────────────────
 
 // The person's appearance on this device, under the web app's key (web/src/lib/theme.ts): light,
@@ -1407,7 +1412,7 @@ function intent({ action, type, data } = {}) {
         resolve({ status: "cancelled" });
         return;
       }
-      const id = crypto.randomUUID();
+      const id = newId();
       const dialog = el("dialog", { "data-ferrum-dialog": "" });
       Object.assign(dialog.style, {
         margin: "auto",
@@ -1909,7 +1914,7 @@ async function startUpload({ file, url, method = "POST", headers = {}, label } =
   if (!boot?.person) throw new Error("uploads need a signed-in person");
   const plain = {};
   for (const [k, v] of Object.entries(headers)) if (/^[a-z0-9-]{1,60}$/i.test(k) && typeof v === "string" && !/[\r\n]/.test(v)) plain[k.toLowerCase()] = v;
-  const id = crypto.randomUUID();
+  const id = newId();
   const item = {
     id,
     owner: owner(),
@@ -2048,7 +2053,7 @@ function fillTray() {
 
 // The other tabs of this site, so closing one while another can carry on asks nothing.
 const tabsChannel = "BroadcastChannel" in window ? new BroadcastChannel("ferrum-tabs") : null;
-const tabId = crypto.randomUUID();
+const tabId = newId();
 const otherTabs = new Map();
 tabsChannel?.addEventListener("message", (e) => {
   const { type, id } = e.data ?? {};

@@ -32,6 +32,9 @@ impl Kernel {
         if !SLUG.is_match(&t.slug) {
             return Err(Error::field("slug", "use 2-63 lowercase letters, digits or hyphens"));
         }
+        if crate::identity::RESERVED_SLUGS.contains(&t.slug.as_str()) {
+            return Err(Error::field("slug", "is a name the cluster keeps for itself"));
+        }
         if t.name.trim().is_empty() || t.name.len() > 200 {
             return Err(Error::field("name", "is required (max 200 characters)"));
         }

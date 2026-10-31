@@ -31,6 +31,30 @@ patches:
                   - {name: FERRUM_S3_BUCKET, value: ferrum-files}
                   - {name: FERRUM_S3_REGION, value: us-east-1}
                   - {name: FERRUM_S3_ENDPOINT, value: "http://s3.ci-s3.svc.cluster.local:5000"}
+  # Shapes B and C (smoke.sh's last step): workspaces and the accounts host at *.ferrum.example and
+  # one custom domain, each listener with a certificate cert-manager has the CI root sign.
+  - target: {group: gateway.networking.k8s.io, version: v1, kind: Gateway, name: ferrum}
+    patch: |-
+      - op: add
+        path: /spec/listeners/-
+        value: {name: https-workspaces, protocol: HTTPS, port: 443, hostname: "*.ferrum.example", tls: {mode: Terminate, certificateRefs: [{name: ferrum-workspaces-tls}]}, allowedRoutes: {namespaces: {from: Same}}}
+      - op: add
+        path: /spec/listeners/-
+        value: {name: https-custom, protocol: HTTPS, port: 443, hostname: shop.example.org, tls: {mode: Terminate, certificateRefs: [{name: ferrum-custom-tls}]}, allowedRoutes: {namespaces: {from: Same}}}
+  - target: {group: gateway.networking.k8s.io, version: v1, kind: HTTPRoute, name: ferrum}
+    patch: |-
+      - op: add
+        path: /spec/parentRefs/-
+        value: {name: ferrum, sectionName: https-workspaces}
+      - op: add
+        path: /spec/parentRefs/-
+        value: {name: ferrum, sectionName: https-custom}
+      - op: add
+        path: /spec/hostnames/-
+        value: "*.ferrum.example"
+      - op: add
+        path: /spec/hostnames/-
+        value: shop.example.org
   # kind has no load balancers: the proxies get a cluster address (smoke.sh port-forwards to it).
   - patch: |-
       apiVersion: gateway.envoyproxy.io/v1alpha1

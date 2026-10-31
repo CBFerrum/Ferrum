@@ -93,6 +93,14 @@ fn shell_target() -> String {
 
 async fn add(Auth(ctx): Auth, State(app): State<AppContext>, Json(d): Json<NewDomain>) -> ApiResult<Response> {
     let st = app_state(&app)?;
+    // The cluster's own domain names its workspaces and its own hosts (shape B): none of them is
+    // anyone's custom domain.
+    if let Some(base) = st.shell.base() {
+        let host = d.host.trim().trim_end_matches('.').to_ascii_lowercase();
+        if host == base || host.ends_with(&format!(".{base}")) {
+            return Err(Error::field("host", format!("is under {base}, this service's own domain")).into());
+        }
+    }
     // A site is an app's: one this workspace has.
     if let Some(app_id) = d.target.strip_prefix("site:")
         && !st.apps.shell_apps(ctx.tenant).await?.iter().any(|a| a.id == app_id)

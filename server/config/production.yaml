@@ -71,6 +71,9 @@ settings:
   session_days: <%= get_env(name="FERRUM_SESSION_DAYS", default="14") %>
   ui_source: "<%= get_env(name="FERRUM_UI_SOURCE", default="") %>"
   apps_base: "<%= get_env(name="FERRUM_APPS_BASE", default="") %>"
+  base_domain: "<%= get_env(name="FERRUM_BASE_DOMAIN", default="") %>"
+  region: "<%= get_env(name="FERRUM_REGION", default="") %>"
+  regions: "<%= get_env(name="FERRUM_REGIONS", default="") %>"
   packages_dir: <%= get_env(name="FERRUM_PACKAGES_DIR", default="packages") %>
   db_max_connections: <%= get_env(name="FERRUM_DB_MAX_CONNECTIONS", default="30") %>
   bootstrap_token: "<%= get_env(name="FERRUM_BOOTSTRAP_TOKEN", default="") %>"

@@ -27,7 +27,7 @@ OpenAPI 3.1 document is at `GET /api/openapi.json` (it includes every customizat
 | `POST /login/second-factor` | `{ticket, code}` (six digits from the authenticator app, or a recovery code) → `{token, …}`. Each app code is accepted once; wrong codes count toward the same lockout as wrong passwords |
 | `POST /code` | `{tenant, email}` → `{sent: true}`: emails a portal person a six-digit code to sign in with ([plan](plan/apps-ui.md) §9.1). The same answer, after the same time (600 ms at least), whether or not the address belongs to anyone, and nothing is sent to members (they sign in with passwords). A code works once, for ten minutes, takes five wrong tries, and only the newest one works; a person is sent at most five an hour. 503 when the server sends no email |
 | `POST /code/sign-in` | `{tenant, email, code, session?}` → as `/login` (with two-factor sign-in on, the second step follows) |
-| `GET /me` | → `{tenant, user: {id, email, full_name, is_admin, roles}, default_company, scopes, fiscal_year_start_month, timezone, today, packages, two_factor_setup}` |
+| `GET /me` | → `{tenant, user: {id, email, full_name, is_admin, roles}, default_company, scopes, fiscal_year_start_month, timezone, today, packages, two_factor_setup, accounts}`; `accounts`: in shapes B and C, the accounts host that keeps the person's password, two-factor sign-in and passkeys (their account joined their Ferrum account), else `null` |
 | `GET /2fa` | → `{enabled, pending, recovery_codes_left, required}` |
 | `POST /2fa/begin` | → `{secret, uri (otpauth://), qr_svg}`: a new secret for an authenticator app (TOTP, SHA-1, 6 digits, 30 s); it takes effect once confirmed |
 | `POST /2fa/enable` | `{code}` → `{recovery_codes}` (ten, shown once; and `token`, a full session, when called with a setup-only token) |
@@ -70,6 +70,60 @@ Document actions may declare `params` (`[{name, label, type: data|text|select|in
 required?, description?}]`): the form asks for them, prefilled from the record's fields of the same
 name, and sends them as the action's body. An action whose result carries `file: {name, type,
 content}` makes the form save that file (e-invoice JSON, say).
+
+## Ferrum accounts — the accounts host (shapes B and C)
+
+With `FERRUM_BASE_DOMAIN` set ([operations](operations.md#many-workspaces-subdomains-and-ferrum-accounts),
+[plan](plan/apps-ui.md) §9.3, §12.3), each workspace is at `{slug}.{base}` (and any custom domain it
+verified), and people sign in once, at `accounts.{base}`, as their **Ferrum account**: one password,
+two-factor sign-in, passkeys and list of browsers for every workspace. A workspace's account joins a
+Ferrum account once the person proves it is theirs (its password, a code sent to its address, its
+single sign-on, or, with the address already proven by a code, confirming); never by the address
+alone. Each host keeps a session of its own.
+
+**The way in.** A workspace's host without a session sends `/login` on to
+`https://accounts.{base}/authorize?host={its host}&state={random}&prompt=none` and keeps `state`, with
+where to go back to, in the cookie `__Host-ferrum-auth` (ten minutes). Signed in there, with nothing to
+ask, the accounts host sends the browser straight back to `https://{host}/_auth/callback?code=…&state=…`:
+the code works once, within a minute, on that host only, for a member who is still active (and still
+joined); the host checks `state` against its cookie, opens its own session and goes on. Otherwise the
+accounts host shows the one step needed: signing in, going on as this account (`prompt=select_account`,
+after someone signed out of that host), adding the workspace, its single sign-on (when it requires it of
+non-administrators), turning on two-factor sign-in (when it requires it), or no access. A host of
+another region's workspace is looked up in the regions of `FERRUM_REGIONS` and the request sent there.
+
+On the accounts host (only there; `404` elsewhere):
+
+| Method & path | Body → response |
+|---|---|
+| `POST /api/accounts/sign-in` | `{email, password}` → the session cookie (`{cookie: true, …}`), or the next step: `{second_factor: true, ticket}` (an authenticator code, `…/sign-in/second-factor`), or `{verify: true, ticket}`. The first time, with no Ferrum account for the address, a workspace's own password makes one: the account takes that workspace account's password, authenticator app and unused recovery codes, once the code just sent to the address proves it (`…/sign-in/verify`; without a mailer at once, its address unproven). Rate limited per address; 5 failures lock 15 minutes |
+| `POST /api/accounts/sign-in/second-factor` | `{ticket, code}` → as `/sign-in` |
+| `POST /api/accounts/sign-in/verify` | `{ticket, code}` → the session cookie |
+| `POST /api/accounts/code` | `{email}` → `{sent: true}`: a six-digit code to set a password with (a forgotten one, or a first one for someone added without one). Sent only to an address a member of this cluster has, at most five an hour; the same answer after the same time (600 ms) for every address. 503 without a mailer |
+| `POST /api/accounts/password` | `{email, code, password}` → as `/sign-in`: sets the account's password (making the account when there is none, its address proven) and ends its other sessions. The authenticator code follows when the account has one |
+| `GET /api/accounts/me` | → `{account: {id, email, name, verified, two_factor}, workspaces: [{id, slug, name, host, url, joined, active, admin}], region}`: the account chooser; once the address is proven, also the workspaces with an account for it that has yet to join (`joined: false`) |
+| `POST /api/accounts/continue` | `{host, state}` → `{redirect}` back to that host with a code, or `{need, join?}`: the step it needs |
+| `POST /api/accounts/join` | `{host, state, password? \| code?, totp?}` → as `/continue`, the workspace's account joined: its password, or a code sent to the address (`/join/code`), or neither when `join.click` (the address is proven and that account has no authenticator app); `totp`, the code of that account's own app, when it has one |
+| `POST /api/accounts/join/code` | `{host}` → `{sent: true}`: a code to the account's address, to add that workspace |
+| `POST /api/accounts/sso/finish` | `{state, code, binding, next}`: a workspace's single sign-on came back to the accounts host (`https://accounts.{base}/app/login`, the redirect URI registered with the provider); `next` is the `/authorize` request it started from → `{redirect}` back to the workspace's host with a code. The workspace's account joins the Ferrum account signed in here when they share an address |
+| `POST /api/accounts/sign-out-everywhere` | → `204`: ends every session of the Ferrum account and of every workspace account it joined, on every device |
+
+`/api/auth/…` works there for the Ferrum account itself: passkeys (made for `accounts.{base}`; signing in
+with one at `/api/auth/passkey`), two-factor sign-in, the list of browsers, step-up, changing the password
+and `POST /logout` (this browser). API keys are refused (they belong to workspaces), and the account's
+sessions and tokens work nowhere but on the accounts host.
+
+On a workspace's host, for someone whose account joined a Ferrum account: signing in with that
+workspace's own password or passkey answers `403` with the accounts host's address;
+step-up checks the Ferrum account's password (and app); changing the password, two-factor sign-in and
+passkeys answer `403` (the Ferrum account keeps them). `POST /logout` signs out of that host only, and
+the next sign-in there asks which account. People of the portal still sign in on their host.
+
+`GET /_directory?host=` (any host, no session) → `{region}` when the host is this cluster's (a
+workspace's subdomain or custom domain, or the accounts or hooks host), else `404`: how other regions'
+accounts hosts and edges find where a workspace lives. Pages' bootstrap carries `api.hooks`, the
+origin outside callers use for a workspace's endpoints (`https://hooks.{base}` in shapes B and C, else
+`PUBLIC_URL`), which no change of the workspace's addresses moves.
 
 ## Metadata — `/api/meta`
 

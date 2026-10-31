@@ -12,7 +12,10 @@
 #     HTML and PDF and attaches a file, which every replica then serves from object storage;
 #   * the database primary is killed: writes resume on the new primary, nothing is lost;
 #   * the API is restarted replica by replica under traffic without a failed request;
-#   * a backup is taken and restored into a new database cluster holding the latest writes.
+#   * a backup is taken and restored into a new database cluster holding the latest writes;
+#   * with a base domain (shapes B and C): one person signs in once, at the accounts host, and
+#     enters two workspaces on their subdomains and one workspace's custom domain, each with a
+#     session of its own; signing out everywhere ends all of them.
 # CI runs it for every image published from main (.github/workflows/cluster.yml).
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -293,5 +296,82 @@ k wait cluster/ferrum-db-restored --for=condition=Ready --timeout=15m
 found=$(sql "$(primary ferrum-db-restored)" "select count(*) from file_object where id in ('$file', '$later')")
 [ "$found" = 2 ] || fail "the restored database lacks writes ($found of 2 attachments)"
 k delete cluster ferrum-db-restored --wait=false
+
+step "one person, many workspaces: subdomains, the accounts host, a custom domain"
+BASE=ferrum.example
+CUSTOM=shop.example.org
+k wait certificate/ferrum-workspaces-tls certificate/ferrum-custom-tls --for=condition=Ready --timeout=5m
+k set env deploy/ferrum FERRUM_BASE_DOMAIN="$BASE" FERRUM_REGION=ci
+k rollout status deploy/ferrum --timeout=10m
+k exec deploy/ferrum -- ferrum task create_tenant slug:branch name:"Branch Co" email:ops@branch.test password:"$PASSWORD" packages:core
+BRANCH=$(c -f "$API/api/auth/login" -H 'content-type: application/json' \
+  -d "{\"tenant\":\"branch\",\"email\":\"ops@branch.test\",\"password\":\"$PASSWORD\"}" | json 'd["token"]')
+# Pat is a member of both, with the same address and a password of each workspace's own.
+person() { c -f -H "authorization: Bearer $1" -H 'content-type: application/json' "$API/api/admin/users" -o /dev/null \
+  -d "{\"email\":\"pat@people.test\",\"full_name\":\"Pat Lee\",\"password\":\"$2\"}"; }
+person "$TOKEN" Pat-Cluster-Pass-1
+person "$BRANCH" Pat-Branch-Pass-1
+# A browser through the gateway: a cookie jar for every host, the Host header without a port (as
+# from outside), redirects followed by hand. `go` prints the last answer's status; $last is its
+# address and $work/page its body.
+host_of() { local h=${1#https://}; echo "${h%%/*}"; }
+w() {
+  local url=$1 host
+  shift
+  host=$(host_of "$url")
+  curl -sS --max-time 60 --cacert "$work/ca.crt" --resolve "$host:8443:127.0.0.1" -H "Host: $host" -b "$work/jar" -c "$work/jar" "$@" \
+    "https://$host:8443${url#https://$host}"
+}
+post() { w "$1" -H 'content-type: application/json' -H 'sec-fetch-site: same-origin' -H "origin: https://$(host_of "$1")" -d "$2"; }
+go() {
+  local url=$1 out code
+  for _ in $(seq 1 10); do
+    out=$(w "$url" -o "$work/page" -w '%{http_code} %{redirect_url}')
+    code=${out%% *}
+    if [[ ! "$code" =~ ^30[12378]$ ]]; then
+      last=$url
+      echo "$code"
+      return
+    fi
+    url=${out#* }
+    url=${url/:8443/}
+  done
+  fail "too many redirects from $1"
+}
+param() { python3 -c "import sys, urllib.parse as u; print(u.parse_qs(u.urlsplit(sys.argv[1]).query)[sys.argv[2]][0])" "$1" "$2"; }
+[ "$(go "https://nobody.$BASE/")" = 404 ] || fail "a host of no workspace answered"
+# The first workspace: to the accounts host, signing in there (no mail in this cluster: the
+# workspace's password makes the Ferrum account at once), back with a code for a session of its own.
+[ "$(go "https://cluster.$BASE/")" = 200 ] && [[ "$last" == "https://accounts.$BASE/login?next="* ]] || fail "no way to the accounts host ($last)"
+authorize=$(param "$last" next)
+grep -q '"cookie":true' <<<"$(post "https://accounts.$BASE/api/accounts/sign-in" '{"email":"pat@people.test","password":"Pat-Cluster-Pass-1"}')" ||
+  fail "signing in at the accounts host"
+[ "$(go "https://accounts.$BASE$authorize")" = 200 ] && [ "$last" = "https://cluster.$BASE/" ] || fail "not back in the workspace ($last)"
+[ "$(w "https://cluster.$BASE/api/auth/me" | json 'd["user"]["email"]')" = pat@people.test ] || fail "the workspace's own session"
+# The second: added to the account once, with its own password.
+[ "$(go "https://branch.$BASE/")" = 200 ] && [[ "$last" == "https://accounts.$BASE/authorize?"* ]] || fail "no step at the accounts host ($last)"
+grep -q '"need":"join"' "$work/page" || fail "the second workspace was not offered to be added"
+redirect=$(post "https://accounts.$BASE/api/accounts/join" \
+  "{\"host\":\"branch.$BASE\",\"state\":\"$(param "$last" state)\",\"password\":\"Pat-Branch-Pass-1\"}" | json 'd["redirect"]')
+[ "$(go "$redirect")" = 200 ] && [ "$last" = "https://branch.$BASE/" ] || fail "not in the second workspace ($last)"
+[ "$(w "https://branch.$BASE/api/auth/me" | json 'd["user"]["email"]')" = pat@people.test ] || fail "the second workspace's session"
+# The second workspace's custom domain: its proof answers through the gateway; the server's own
+# check would need public DNS, so the test marks it verified, as that check would.
+proof=$(c -f -H "authorization: Bearer $BRANCH" -H 'content-type: application/json' "$API/api/admin/domains" -d "{\"host\":\"$CUSTOM\"}" | json 'd["verify_token"]')
+[ "$(w "https://$CUSTOM/.well-known/ferrum-domain")" = "$proof" ] || fail "the custom domain's proof"
+sql "$(primary)" "update tenant_host set verified_at = now() where host = '$CUSTOM'" >/dev/null
+for attempt in $(seq 1 15); do
+  [ "$(go "https://$CUSTOM/")" = 200 ] && [ "$last" = "https://$CUSTOM/" ] && break
+  [ "$attempt" -lt 15 ] || fail "not in the workspace on its custom domain ($last)"
+  sleep 2
+done
+[ "$(w "https://$CUSTOM/api/auth/me" | json 'd["user"]["email"]')" = pat@people.test ] || fail "the custom domain's session"
+[ "$(w "https://accounts.$BASE/api/accounts/me" | json 'len([x for x in d["workspaces"] if x["joined"]])')" = 2 ] || fail "the account chooser"
+# Signing out everywhere ends every session of the account.
+post "https://accounts.$BASE/api/accounts/sign-out-everywhere" '{}' -o /dev/null
+for h in "cluster.$BASE" "branch.$BASE" "$CUSTOM"; do
+  [ "$(w "https://$h/api/auth/me" -o /dev/null -w '%{http_code}')" = 401 ] || fail "$h kept its session after signing out everywhere"
+done
+echo "    one Ferrum account: two workspaces on subdomains and one on its own domain, each its own session"
 
 step "the deployment works"

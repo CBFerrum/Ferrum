@@ -47,7 +47,7 @@ async fn version(State(app): State<AppContext>) -> ApiResult<Response> {
 }
 
 /// Constant-time comparison for shared secrets.
-fn same_secret(given: &str, expected: &str) -> bool {
+pub(crate) fn same_secret(given: &str, expected: &str) -> bool {
     given.len() == expected.len() && given.bytes().zip(expected.bytes()).fold(0u8, |a, (x, y)| a | (x ^ y)) == 0
 }
 
@@ -106,7 +106,12 @@ async fn create_tenant(State(app): State<AppContext>, headers: HeaderMap, Json(t
     if !ok {
         return Err(ApiError(Error::Forbidden("tenant creation requires the bootstrap token".into())));
     }
+    let slug = t.slug.clone();
     let id = st.kernel.create_tenant(t).await?;
+    // Shapes B and C: its subdomain at once.
+    if let Some(base) = st.shell.base() {
+        st.kernel.add_subdomain(id, &format!("{slug}.{base}")).await?;
+    }
     Ok((StatusCode::CREATED, Json(json!({"id": id}))).into_response())
 }
 

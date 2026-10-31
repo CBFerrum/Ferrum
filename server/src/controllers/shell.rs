@@ -47,6 +47,63 @@ fn not_found(path: &str) -> Response {
     (StatusCode::NOT_FOUND, "Not found").into_response()
 }
 
+/// A host the cluster does not know (shapes B and C).
+fn nowhere() -> Response {
+    status_page(StatusCode::NOT_FOUND, "No workspace here", "This address does not lead to a workspace. Check the link, or ask whoever sent it.", &[], None)
+}
+
+/// Shapes B and C: members sign in once, at the accounts host. On there with a fresh `state`,
+/// which this host keeps in a cookie with where to come back to; after someone signed out here,
+/// the accounts host asks which account rather than going straight back in.
+fn to_accounts(st: &AppState, headers: &HeaderMap, accounts: &str, next: &str) -> Response {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let secure = st.shell.secure;
+    let state = Uuid::new_v4().simple().to_string();
+    let host = shell::request_host(headers).unwrap_or_default();
+    let prompt = if shell::cookie(headers, shell::signed_out_cookie_name(secure)).is_some() { "select_account" } else { "none" };
+    let mut res = Redirect::to(&format!("{accounts}/authorize?host={}&state={state}&prompt={prompt}", seg(host))).into_response();
+    let kept = format!("{state}.{}", b64.encode(next));
+    res.headers_mut().append(header::SET_COOKIE, shell::host_cookie(secure, shell::auth_cookie_name(secure), &kept, std::time::Duration::from_secs(600)));
+    res
+}
+
+/// `/_auth/callback?code=…&state=…` (shapes B and C): the accounts host sends the browser back with
+/// a one-use code for this host, which becomes this host's own session.
+async fn auth_callback(st: &AppState, headers: &HeaderMap, q: &[(String, String)]) -> ApiResult<Response> {
+    use base64::Engine;
+    let secure = st.shell.secure;
+    let failed = |message: &str| {
+        let mut res = status_page(StatusCode::BAD_REQUEST, "Signing in did not finish", message, &[("Sign in again", "/login")], None);
+        res.headers_mut().append(header::SET_COOKIE, shell::host_cookie(secure, shell::auth_cookie_name(secure), "", std::time::Duration::ZERO));
+        res
+    };
+    let Place::Workspace(tenant) = st.shell.place(headers).await? else { return Ok(nowhere()) };
+    let (Some(code), Some(state)) = (query(q, "code"), query(q, "state")) else { return Ok(failed("The link is incomplete.")) };
+    let kept = shell::cookie(headers, shell::auth_cookie_name(secure)).unwrap_or_default();
+    let (kept_state, next) = kept.split_once('.').unwrap_or_default();
+    // Only the browser that set off from here comes back: no one else's sign-in lands in it.
+    if kept_state.is_empty() || !super::system::same_secret(kept_state, state) {
+        return Ok(failed("It was started in another tab, or took too long. Sign in again."));
+    }
+    let next = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(next).ok().and_then(|b| String::from_utf8(b).ok()).unwrap_or_else(|| "/".into());
+    let s = match st.kernel.redeem_host_code(code, shell::request_host(headers).unwrap_or_default()).await {
+        Ok(s) if s.tenant == tenant => s,
+        _ => return Ok(failed("The link has expired or was used already. Sign in again.")),
+    };
+    let ua = headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default();
+    let ttl = st.shell.session_ttl;
+    let sid = st.kernel.open_session(&s, ttl, ua, &crate::extract::client_ip(headers), None).await?;
+    let mut res = Redirect::to(&shell::safe_next(&next)).into_response();
+    let h = res.headers_mut();
+    h.append(header::SET_COOKIE, shell::set_cookie(secure, &super::auth::device_token(st, &s, ttl.as_secs(), "sid", sid)?, ttl));
+    h.append(header::SET_COOKIE, shell::host_cookie(secure, shell::auth_cookie_name(secure), "", std::time::Duration::ZERO));
+    h.append(header::SET_COOKIE, shell::host_cookie(secure, shell::signed_out_cookie_name(secure), "", std::time::Duration::ZERO));
+    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(res)
+}
+
 /// Who is asking, for a page: the person of the browser session in the cookie, on a host that
 /// serves the shell. `Err` is the response to send instead (sign-in, a redirect, a refusal).
 async fn person(st: &AppState, headers: &HeaderMap, uri: &Uri) -> Result<(Ctx, Option<Uuid>, Place), Response> {
@@ -59,7 +116,8 @@ async fn person(st: &AppState, headers: &HeaderMap, uri: &Uri) -> Result<(Ctx, O
         Place::Moved(None) => {
             return Err(status_page(StatusCode::GONE, "This workspace has moved", "This address no longer leads to a workspace.", &[], None));
         }
-        Place::Site(..) => return Err(not_found(uri.path())),
+        Place::Site(..) | Place::Accounts | Place::Hooks => return Err(not_found(uri.path())),
+        Place::Nowhere => return Err(nowhere()),
         _ => {}
     }
     if shell::session_cookie(headers, st.shell.secure).is_none() {
@@ -89,7 +147,11 @@ pub(crate) async fn page_bootstrap(
         None => ferrum_kernel::shell::SessionState { actor: None, step_up_at: None },
     };
     let host = shell::request_host(headers).unwrap_or_default();
-    Ok((shell::bootstrap(&ws, host, ctx, &kind, &state, app, kind_of_page), kind))
+    let mut boot = shell::bootstrap(&ws, host, ctx, &kind, &state, app, kind_of_page);
+    // Where outside callers reach the workspace's endpoints (`/api/public/{workspace}/…`): the
+    // hooks host in shapes B and C, else the server's public address.
+    boot["api"]["hooks"] = json!(st.shell.hooks_origin(headers).or_else(|| st.kernel.settings.public_url.clone()));
+    Ok((boot, kind))
 }
 
 /// `GET /`: the shell's Home; someone signed out signs in first.
@@ -102,6 +164,8 @@ async fn home(State(app): State<AppContext>, headers: HeaderMap, uri: Uri, Query
     match st.shell.place(&headers).await? {
         Place::Site(tenant, app_id) => return site_page(&st, tenant, &app_id, &headers, &uri, "", q).await,
         Place::Portal(_) => return Ok(Redirect::to("/portal/").into_response()),
+        Place::Accounts => return super::accounts::home(&st, &headers).await,
+        Place::Hooks | Place::Nowhere => return Ok(nowhere()),
         _ => {}
     }
     if shell::session_cookie(&headers, st.shell.secure).is_some()
@@ -239,6 +303,9 @@ async fn page(
         Place::Portal(_) if !matches!(first, "portal" | "login" | "open" | "_ui" | "_shell" | "favicon.ico") => {
             return Ok(Redirect::to("/portal/").into_response());
         }
+        // The accounts host has its own pages; the platform's files and interfaces as anywhere.
+        Place::Accounts if !matches!(first, "_ui" | "_shell" | "favicon.ico") => return super::accounts::page(&st, &headers, &uri, first, rest, &q).await,
+        Place::Hooks | Place::Nowhere if !matches!(first, "_shell" | "favicon.ico") => return Ok(nowhere()),
         _ => {}
     }
     if shell::SHELL_ROUTES.contains(&first) {
@@ -249,6 +316,7 @@ async fn page(
         "_isolated" => return isolated_file(&st, &origins, rest.unwrap_or_default(), &headers).await,
         "_shell" => return platform_file(rest.unwrap_or_default()),
         "login" if rest.is_none() => return login(&st, &headers, &uri, &q).await,
+        "_auth" if rest == Some("callback") => return auth_callback(&st, &headers, &q).await,
         // Browsers ask for it on pages without an icon: the platform's.
         "favicon.ico" if rest.is_none() => return Ok(Redirect::permanent("/_shell/v1/icon.svg").into_response()),
         "open" => return open(&st, &headers, &uri, rest.unwrap_or_default(), &q).await,
@@ -404,7 +472,7 @@ async fn public_page(st: &AppState, headers: &HeaderMap, uri: &Uri, app_id: &str
             let scheme = if st.shell.secure { "https" } else { "http" };
             return Ok(Redirect::permanent(&format!("{scheme}://{to}{}", path_and_query(uri))).into_response());
         }
-        Place::Moved(None) | Place::Portal(_) | Place::Site(..) => return Ok(gone()),
+        Place::Moved(None) | Place::Portal(_) | Place::Site(..) | Place::Accounts | Place::Hooks | Place::Nowhere => return Ok(gone()),
         Place::Workspace(_) | Place::Any => {}
     }
     let ws = st.shell.workspace(tenant).await?;
@@ -741,8 +809,17 @@ async fn login(st: &AppState, headers: &HeaderMap, uri: &Uri, q: &[(String, Stri
         let scheme = if st.shell.secure { "https" } else { "http" };
         return Ok(Redirect::permanent(&format!("{scheme}://{to}{}", path_and_query(uri))).into_response());
     }
+    if matches!(place, Place::Hooks | Place::Nowhere | Place::Site(..) | Place::Moved(None)) {
+        return Ok(nowhere());
+    }
     if shell::session_cookie(headers, st.shell.secure).is_some() && caller_on(st, &Method::GET, headers).await.is_ok() {
         return Ok(Redirect::to(&next).into_response());
+    }
+    // Shapes B and C: members sign in at the accounts host; portal people here, with a code.
+    if let (Place::Workspace(_), Some(accounts)) = (&place, st.shell.accounts_origin(headers))
+        && !next.starts_with("/portal/")
+    {
+        return Ok(to_accounts(st, headers, &accounts, &next));
     }
     // On the portal's host, or on the way to the portal, an emailed code comes first.
     let codes = matches!(place, Place::Portal(_)) || next.starts_with("/portal/");
@@ -837,7 +914,7 @@ async fn open(st: &AppState, headers: &HeaderMap, uri: &Uri, rest: &str, q: &[(S
     ))
 }
 
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;

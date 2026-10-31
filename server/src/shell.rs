@@ -80,7 +80,11 @@ pub fn clear_cookie(secure: bool) -> HeaderValue {
 
 /// The session cookie's token, if the request carries one.
 pub fn session_cookie(headers: &HeaderMap, secure: bool) -> Option<String> {
-    let name = cookie_name(secure);
+    cookie(headers, cookie_name(secure))
+}
+
+/// A cookie's value, if the request carries it.
+pub fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get_all(header::COOKIE)
         .iter()
@@ -90,6 +94,24 @@ pub fn session_cookie(headers: &HeaderMap, secure: bool) -> Option<String> {
         .find(|(k, _)| *k == name)
         .map(|(_, v)| v.trim().to_string())
         .filter(|v| !v.is_empty() && v.len() < 4096)
+}
+
+/// Shapes B and C: the cookie a workspace's host keeps while the browser signs in at the accounts
+/// host: the `state` it sent there and where to go back to (ten minutes).
+pub fn auth_cookie_name(secure: bool) -> &'static str {
+    if secure { "__Host-ferrum-auth" } else { "ferrum_auth" }
+}
+
+/// Shapes B and C: set when someone signs out of a workspace's host, so the next sign-in there
+/// asks which account rather than going straight back in (a day).
+pub fn signed_out_cookie_name(secure: bool) -> &'static str {
+    if secure { "__Host-ferrum-out" } else { "ferrum_out" }
+}
+
+/// A cookie of the host's own: `value` must be cookie-safe (base64url, digits, dots).
+pub fn host_cookie(secure: bool, name: &str, value: &str, max_age: Duration) -> HeaderValue {
+    HeaderValue::from_str(&format!("{name}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}{}", max_age.as_secs(), if secure { "; Secure" } else { "" }))
+        .unwrap_or_else(|_| HeaderValue::from_static("ferrum_bad=; Max-Age=0"))
 }
 
 /// The host the browser asked for, as sent (`Host`).
@@ -142,6 +164,14 @@ pub enum Place {
     Moved(Option<String>),
     /// Any workspace: chosen at sign-in and kept in the session (shape A′).
     Any,
+    /// The accounts host (`accounts.{base}`, shapes B and C): signing in once, the account
+    /// chooser, the identity's own security.
+    Accounts,
+    /// The host for outside callers (`hooks.{base}`): webhooks and public calls that name their
+    /// workspace in the path; no pages, no sessions.
+    Hooks,
+    /// A host the cluster does not know (shapes B and C): nothing is served there.
+    Nowhere,
 }
 
 /// What a page needs to know about a workspace.
@@ -177,6 +207,37 @@ pub struct Shell {
     files: DashMap<String, Bytes>,
     file_bytes: AtomicUsize,
     used: DashMap<(String, String), Instant>,
+    /// Shapes B and C: the base domain, and the accounts and hooks hosts under it.
+    base: Option<String>,
+    accounts_host: Option<String>,
+    hooks_host: Option<String>,
+    /// This cluster's region, and the other regions' accounts hosts by name.
+    pub region: String,
+    pub regions: Vec<(String, String)>,
+}
+
+/// `settings.regions`: `name=https://accounts.example.eu, …` → (name, origin); the malformed are
+/// left out, with a warning.
+fn parse_regions(raw: &str) -> Vec<(String, String)> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .filter_map(|r| {
+            let parsed = r.split_once('=').map(|(n, u)| (n.trim().to_ascii_lowercase(), u.trim().trim_end_matches('/').to_string()));
+            let ok = parsed.as_ref().filter(|(n, u)| {
+                !n.is_empty() && u.split_once("://").is_some_and(|(scheme, host)| matches!(scheme, "https" | "http") && !host.is_empty() && !host.contains('/'))
+            });
+            if ok.is_none() {
+                tracing::warn!(region = r, "settings.regions: expected name=https://accounts.host");
+            }
+            ok.cloned()
+        })
+        .collect()
+}
+
+/// `settings.base_domain`, as a lowercase name without dots around it; `None` when empty.
+pub fn base_domain(settings: &Settings) -> Option<String> {
+    Some(settings.base_domain.trim().trim_matches('.').to_ascii_lowercase()).filter(|b| !b.is_empty())
 }
 
 impl Shell {
@@ -196,7 +257,39 @@ impl Shell {
             files: DashMap::new(),
             file_bytes: AtomicUsize::new(0),
             used: DashMap::new(),
+            base: base_domain(settings),
+            accounts_host: base_domain(settings).map(|b| format!("{}.{b}", ferrum_kernel::identity::DIRECTORY)),
+            hooks_host: base_domain(settings).map(|b| format!("hooks.{b}")),
+            region: settings.region.trim().to_ascii_lowercase(),
+            regions: parse_regions(&settings.regions),
         }
+    }
+
+    /// Shapes B and C: the cluster's base domain.
+    pub fn base(&self) -> Option<&str> {
+        self.base.as_deref()
+    }
+
+    /// The accounts host's origin as this request reaches the cluster (with its port, on a
+    /// development server).
+    pub fn accounts_origin(&self, headers: &HeaderMap) -> Option<String> {
+        self.host_origin(self.accounts_host.as_deref()?, headers)
+    }
+
+    /// Shapes B and C: the fixed host for outside callers (webhooks, payment and connector
+    /// callbacks), which no change of a workspace's addresses moves (docs/plan/apps-ui.md §7.2).
+    pub fn hooks_origin(&self, headers: &HeaderMap) -> Option<String> {
+        self.host_origin(self.hooks_host.as_deref()?, headers)
+    }
+
+    /// A host of the cluster's as this request reaches it (with its port on a development server).
+    fn host_origin(&self, host: &str, headers: &HeaderMap) -> Option<String> {
+        let port = request_host(headers).and_then(|h| h.rsplit_once(':')).map(|(_, p)| p).filter(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+        let scheme = if self.secure { "https" } else { "http" };
+        Some(match port {
+            Some(p) => format!("{scheme}://{host}:{p}"),
+            None => format!("{scheme}://{host}"),
+        })
     }
 
     /// The server's one workspace (shape A), if it is configured.
@@ -246,6 +339,15 @@ impl Shell {
     /// Where the request's host leads (docs/plan/apps-ui.md §7).
     pub async fn place(&self, headers: &HeaderMap) -> Result<Place> {
         if let Some(host) = request_host(headers) {
+            if self.base.is_some() {
+                let bare = ferrum_kernel::shell::normalize_host(host);
+                if bare.is_some() && bare == self.accounts_host {
+                    return Ok(Place::Accounts);
+                }
+                if bare.is_some() && bare == self.hooks_host {
+                    return Ok(Place::Hooks);
+                }
+            }
             match self.kernel.route_host(host).await? {
                 HostRoute::Serve { tenant, target } => {
                     return Ok(match target.as_str() {
@@ -259,19 +361,36 @@ impl Shell {
                 HostRoute::Unknown => {}
             }
         }
+        if self.base.is_some() {
+            return Ok(Place::Nowhere);
+        }
         Ok(match self.default_workspace().await? {
             Some(t) => Place::Workspace(t),
             None => Place::Any,
         })
     }
 
-    /// Refuses a cookie session of another workspace than the host serves.
+    /// Refuses a cookie session of another workspace than the host serves. The directory's
+    /// sessions (identities) work only on the accounts host, and only they work there.
     pub async fn check_host(&self, headers: &HeaderMap, tenant: Uuid) -> Result<()> {
+        let directory = self.kernel.directory().await?;
         match self.place(headers).await? {
+            Place::Accounts if directory == Some(tenant) => Ok(()),
+            Place::Accounts => Err(Error::Unauthorized("sign in on the workspace's address".into())),
+            _ if directory == Some(tenant) => Err(Error::Unauthorized("this sign-in works only on the accounts host".into())),
             Place::Workspace(t) | Place::Portal(t) if t != tenant => Err(Error::Unauthorized("this session belongs to another workspace; sign in here".into())),
-            Place::Moved(_) | Place::Site(..) => Err(Error::Unauthorized("sign in on the workspace's address".into())),
-            _ => Ok(()),
+            Place::Moved(_) | Place::Site(..) | Place::Hooks | Place::Nowhere => Err(Error::Unauthorized("sign in on the workspace's address".into())),
+            Place::Workspace(_) | Place::Portal(_) | Place::Any => Ok(()),
         }
+    }
+
+    /// Refuses the directory's tokens anywhere but on the accounts host (bearer tokens, which
+    /// [`Shell::check_host`] does not see).
+    pub async fn check_directory(&self, headers: &HeaderMap, tenant: Uuid) -> Result<()> {
+        if self.kernel.directory().await? == Some(tenant) && !matches!(self.place(headers).await?, Place::Accounts) {
+            return Err(Error::Unauthorized("this sign-in works only on the accounts host".into()));
+        }
+        Ok(())
     }
 
     pub async fn workspace(&self, id: Uuid) -> Result<Arc<WorkspaceInfo>> {
@@ -1154,13 +1273,29 @@ pub fn status_page(status: StatusCode, title: &str, message: &str, actions: &[(&
 pub fn login_page(fixed_workspace: Option<&WorkspaceInfo>, next: &str, codes: bool) -> Response {
     let boot = json!({"v": 1, "next": safe_next(next), "codes": codes, "workspace": fixed_workspace.map(|w| json!({"slug": w.slug, "name": w.name}))});
     let title = fixed_workspace.map_or("Sign in".to_string(), |w| format!("Sign in to {}", w.name));
+    login_html(&boot, &title)
+}
+
+/// The sign-in page with what `login.js` needs (`boot`) and a heading.
+pub fn login_html(boot: &Value, title: &str) -> Response {
     let html = format!(
         r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{t} · Ferrum</title><link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/_shell/theme/{h}.css"><link rel="stylesheet" href="/_shell/v1/pages.css"><script type="application/json" id="ferrum-login">{b}</script><script type="module" src="/_shell/v1/login.js"></script></head><body><main class="ferrum-login" id="main"><img class="ferrum-mark" src="/_shell/v1/icon.svg" alt="" width="40" height="40"><h1>{t}</h1><form id="ferrum-login-form" novalidate><div id="ferrum-login-fields"></div><p class="ferrum-error" role="alert" id="ferrum-login-error"></p><button class="ferrum-button" type="submit">Sign in</button></form><noscript><p>Signing in needs JavaScript.</p></noscript></main></body></html>"#,
-        t = esc(&title),
+        t = esc(title),
         h = theme_hash(),
-        b = json_in_html(&boot)
+        b = json_in_html(boot)
     );
     page_response(StatusCode::OK, html, &csp(None, &Value::Null))
+}
+
+/// A page of the accounts host: the shell's interface (its `accounts` entry) with the bootstrap,
+/// without the bar or its runtime: the accounts host has no apps, search or notifications.
+pub fn accounts_page(entry: &EntryTemplate, bootstrap: &Value, csp: &str) -> Response {
+    let head = format!(
+        r#"<script type="application/json" id="ferrum-bootstrap">{}</script><link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/_shell/theme/{}.css">"#,
+        json_in_html(bootstrap),
+        theme_hash()
+    );
+    page_response(StatusCode::OK, entry.render(&head, ""), csp)
 }
 
 /// A file of a release or of the platform.
@@ -1180,6 +1315,13 @@ pub fn file_response(bytes: Bytes, content_type: &str, immutable: bool) -> Respo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn regions_as_configured() {
+        let r = parse_regions(" EU=https://accounts.ferrum.eu/ , us=https://accounts.ferrum.com,bad, x=ftp://y, y=https://, z=https://a.b/c");
+        assert_eq!(r, vec![("eu".to_string(), "https://accounts.ferrum.eu".to_string()), ("us".to_string(), "https://accounts.ferrum.com".to_string())]);
+        assert!(parse_regions("").is_empty());
+    }
 
     #[test]
     fn only_the_pages_own_origin_may_change_things() {

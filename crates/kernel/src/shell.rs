@@ -336,6 +336,33 @@ impl Kernel {
         Ok(())
     }
 
+    /// Gives every workspace without one its subdomain of the base domain, `{slug}.{base}` (shape B):
+    /// its primary host when it has no other. Returns how many were added.
+    pub async fn ensure_subdomains(&self, base: &str) -> Result<u64> {
+        let base = base.trim().trim_matches('.').to_ascii_lowercase();
+        if normalize_host(&format!("x.{base}")).is_none() {
+            return Err(Error::invalid("the base domain is not a domain name"));
+        }
+        let mut tx = self.db.system_tx().await?;
+        let added = sqlx::query(
+            "insert into tenant_host (host, tenant_id, kind, target, is_primary, verify_token, verified_at) \
+             select t.slug || '.' || $1, t.id, 'subdomain', 'shell', \
+               not exists (select 1 from tenant_host p where p.tenant_id = t.id and p.target = 'shell' and p.is_primary and p.released_at is null), '', now() \
+             from tenant t where t.slug <> $2 and not exists (select 1 from tenant_host h where h.host = t.slug || '.' || $1) \
+             on conflict (host) do nothing",
+        )
+        .bind(&base)
+        .bind(crate::identity::DIRECTORY)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        tx.commit().await?;
+        if added > 0 {
+            self.hosts.clear();
+        }
+        Ok(added)
+    }
+
     /// Refuses a host that is in use, or released and still redirecting or quarantined.
     async fn claimable(&self, tx: &mut crate::db::Tx, host: &str) -> Result<()> {
         let row: Option<Option<DateTime<Utc>>> =
