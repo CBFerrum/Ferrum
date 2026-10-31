@@ -146,6 +146,16 @@ invoice validates against EN 16931's rules and goes to a Peppol test access poin
 the EU's): XRechnung 3.0 checked against KoSIT's BR-DE rules (taken from its schematron), small
 businesses (§ 19 UStG) and the domestic reverse charge (§ 13b UStG). The other member states follow.
 
+**Belgium, Italy, Poland and Romania built (1 November 2026):** ERP 2db8112, crate `ferrum-eu-members`
+(`addons/eu-members`, one app per member state on the EU's, sharing what member states add at home:
+small businesses' exemptions and the domestic reverse charge with their invoice notes). Belgium:
+Peppol on submit between Belgian businesses, enterprise numbers and 0208 IDs. Italy: FatturaPA
+(FPR12, schema 1.2.3) with Natura codes, the virtual stamp duty and SDI's receipts, queued for the
+company's SDI channel. Poland: FA(3) for KSeF with the rate codes, corrections citing KSeF numbers,
+queued for the company's KSeF channel. Romania: CIUS-RO with ISO 3166-2:RO counties and Bucharest's
+sectors, queued for ANAF. Not yet: the channels themselves (SDI, KSeF's API 2.0, ANAF's OAuth), Italy's
+FPA12, split payment and withholding, and France, Spain, Portugal, Croatia, Greece, Hungary.
+
 Order: by demand. Germany first (the largest market, formats only), then the clearance countries
 (Italy, Poland), then France (platforms), Spain and Portugal. Done when, for each: its scenario runs
 against a fake authority and the authority's sandbox, and its official validator accepts the files.

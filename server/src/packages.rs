@@ -13,6 +13,15 @@ const EVERY: Duration = Duration::from_secs(60);
 /// Session advisory lock: one replica runs upkeep at a time; the others skip that round.
 const LOCK: i64 = 0x6665_7272_756d_0001;
 
+// EU member states other than Germany are apps of one crate on the EU's (localization.md L2).
+#[cfg(feature = "be")]
+use ferrum_eu_members::be as ferrum_be;
+#[cfg(feature = "it")]
+use ferrum_eu_members::it as ferrum_it;
+#[cfg(feature = "pl")]
+use ferrum_eu_members::pl as ferrum_pl;
+#[cfg(feature = "ro")]
+use ferrum_eu_members::ro as ferrum_ro;
 // The countries on ERP's VAT and GST engine are apps of one crate (localization.md L6, L7).
 #[cfg(feature = "ae")]
 use ferrum_countries::ae as ferrum_ae;
@@ -197,6 +206,10 @@ apps! {
         "eu" => ferrum_eu,
         // Member states' rules after the EU's, which they adjust (localization.md L2).
         "de" => ferrum_de,
+        "be" => ferrum_be,
+        "it" => ferrum_it,
+        "pl" => ferrum_pl,
+        "ro" => ferrum_ro,
         // The United Kingdom (localization.md L3).
         "gb" => ferrum_gb,
         // Canada (localization.md L5).
