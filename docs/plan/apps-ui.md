@@ -168,6 +168,11 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     anniversaries coming up, and the directory with search. Its other records (HR, payroll, the
     hr-erp connector's) are lists and forms in the records frame. ERP 0.1.1 opens its add-ons'
     records and projects. Checked in Chrome.
+  * Projects 0.3.0 has its own interface at `/projects/`: the open projects with their progress and
+    your tasks; the project view's board (tasks by status, moved and added in place), timeline
+    (expected dates as bars, milestones, today's line, the unscheduled listed) and logged time.
+    `/open` of a project goes to the project view, ahead of ERP's records of the shared projects.
+    Checked in Chrome.
   * Notifications (§12.8): every notification has a kind (the platform's mention, assignment,
     comment, watch, automation and general; apps' `shell.notification` as `{app}.{id}`), and each
     person chooses per kind: in the bar, email at once, a daily email digest, or off. The bell in the
