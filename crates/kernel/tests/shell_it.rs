@@ -270,6 +270,21 @@ async fn sessions_hosts_kinds_and_releases() {
     k.touch_ui_releases(&[("crm".into(), d3.clone())]).await.unwrap();
     assert_eq!(k.purge_ui_releases().await.unwrap(), vec![("crm".to_string(), d1.clone())]);
     assert!(k.ui_release("crm", &d2).await.unwrap().is_some() && k.ui_release("crm", &d3).await.unwrap().is_some());
+
+    // ───────────── a slug never names another workspace (apps' origins of their own) ─────────────
+    let initech = k.create_tenant(tenant("initech")).await.expect("tenant");
+    sql(&k, &format!("update tenant set slug = 'initech-labs' where id = '{initech}'")).await;
+    let taken = k.create_tenant(tenant("initech")).await.unwrap_err();
+    assert!(matches!(&taken, Error::Validation(f) if f[0].field == "slug"), "a renamed workspace's old slug stays retired: {taken}");
+    // The workspace itself may take its old slug back.
+    sql(&k, &format!("update tenant set slug = 'initech' where id = '{initech}'")).await;
+    // A deleted workspace's slug is retired too (a bare row: nothing else refers to it).
+    sql(&k, "insert into tenant (id, slug, name) values ('01a19000-0000-7000-8000-000000000001', 'hooli', 'Hooli')").await;
+    sql(&k, "delete from tenant where slug = 'hooli'").await;
+    assert!(k.create_tenant(tenant("hooli")).await.is_err(), "a deleted workspace's slug stays retired");
+    // Unchanged slugs and other columns pass untouched.
+    sql(&k, &format!("update tenant set name = 'Initech Inc' where id = '{initech}'")).await;
+    assert!(k.create_tenant(tenant("umbrella")).await.is_ok());
 }
 
 /// A server on this machine answering every request with `body`; its proof address.

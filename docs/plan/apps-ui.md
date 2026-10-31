@@ -316,8 +316,9 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     the interface's files and size, its `ui.csp` origins, its routes and shell points (`shell.public`
     flagged as open to anyone with the link) and the automatic look at its page
     (`ferrum_apps::ui::review`) before countersigning lets it run with people's sessions.
-  * A workspace's slug names its apps' origins: if slugs ever change hands (U6 adds no renames),
-    they need the hosts' quarantine (§7.2).
+  * A workspace's slug names its apps' origins, so the database never lets a slug name another
+    workspace: renaming or deleting one retires its old slug for good (`tenant_slug_retired`, kept by
+    a trigger on `tenant`, one slug at a time under an advisory lock).
 
 * **U7, portal and sites: built** (31 October 2026).
   * Hosts lead where their target says (§7.2): a `portal` host has sign-in, the portal and `/open`
