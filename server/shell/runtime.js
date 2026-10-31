@@ -1057,6 +1057,8 @@ class FerrumBar extends HTMLElement {
         el("div", {}, el("strong", { text: person.name ?? "" }), el("small", { text: person.email ?? "" }), el("small", { text: boot?.workspace?.name ?? "" })),
       ),
       el("a", { role: "menuitem", href: "/account/" }, icon("user", 16), el("span", { text: "Account and devices" })),
+      // Shapes B and C: the person's other workspaces, at the accounts host (each on a host of its own).
+      boot?.api?.accounts ? el("a", { role: "menuitem", href: `${boot.api.accounts}/` }, icon("building-2", 16), el("span", { text: "Your workspaces" })) : null,
       el("hr"),
       el("button", { role: "menuitem", type: "button", onclick: () => guardedLeave(signOut) }, icon("log-out", 16), el("span", { text: "Sign out" })),
     );
