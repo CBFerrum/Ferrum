@@ -185,7 +185,7 @@ grep -q "Smoke</strong> wants to use Ferrum" <<<"$(curl -fsS -b "$work/jar" "$AP
 [ "$(code -b "$work/jar" -X POST -H 'sec-fetch-site: same-origin' "$API/api/auth/logout")" = 204 ] || fail "signing out"
 [ "$(code -b "$work/jar" "$API/api/shell")" = 401 ] || fail "the cookie still works after signing out"
 
-step "the portal (docs/plan/apps-ui.md §9.1)"
+step "the portal and an app's public site (docs/plan/apps-ui.md §7.3, §9.1)"
 # Hosts are an administrator's (custom domains); here straight into the host map, verified.
 compose exec -T db psql -qtAU postgres -d ferrum -c "insert into tenant_host (host, tenant_id, kind, target, verify_token, verified_at) \
   select h, t.id, 'custom', tg, 'smoke', now() from tenant t, (values ('portal.smoke.test', 'portal')) v(h, tg) \
@@ -201,6 +201,13 @@ grep -q '"codes":true' <<<"$(curl -fsS "${portal[@]}" "$API/login?next=%2Fportal
 [ "$(code "${auth[@]}" -H 'content-type: application/json' -d '{"email":"x@garage.test","full_name":"X","kind":"portal","roles":["Sales User"]}' "$API/api/admin/users")" = 422 ] \
   || fail "a portal person was given roles"
 [ "$(code -H 'content-type: application/json' -d '{"tenant":"smoke","email":"pia@garage.test"}' "$API/api/auth/code")" = 503 ] || fail "emailed codes without a mailer"
+# The shop's host is Commerce's: its own pages at the root, closed until the store has settings.
+compose exec -T db psql -qtAU postgres -d ferrum -c "insert into tenant_host (host, tenant_id, kind, target, verify_token, verified_at) \
+  select 'shop.smoke.test', id, 'custom', 'site:commerce', 'smoke', now() from tenant where slug = 'smoke'" >/dev/null || fail "adding the shop's host"
+install commerce
+shop=(-H 'host: shop.smoke.test')
+curl -sS -D "$work/shop.h" -o "$work/shop.html" "${shop[@]}" "$API/" || fail "the shop's page"
+grep -q "Opening soon" "$work/shop.html" && grep -qi "^content-security-policy: default-src 'self'" "$work/shop.h" || fail "the shop's host does not serve Commerce's pages"
 
 if [ -n "${FERRUM_EDITORS_IMAGE:-}" ]; then
   step "the browser editors' server"

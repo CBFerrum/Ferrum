@@ -2262,7 +2262,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-commerce"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-commerce?branch=main#e484e14d86e26146fb4abab5fce45772c9244da8"
+source = "git+https://github.com/CBFerrum/ferrum-app-commerce?branch=main#116a4097bd581cb8cee0389ba09969dc1c6c677f"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2431,7 +2431,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-helpdesk"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-helpdesk?branch=main#70099b97920390d4634037d259956f4e3c995ed8"
+source = "git+https://github.com/CBFerrum/ferrum-app-helpdesk?branch=main#33afa6c692683d656a9c484561d642309c6eeef1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2511,7 +2511,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-projects"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-projects?branch=main#b2257bebb1fc2a7edd3e0e0a59670540d6d502c5"
+source = "git+https://github.com/CBFerrum/ferrum-app-projects?branch=main#e5c7151dcd8c3cdee0deb4e2ae37ab20241e543a"
 dependencies = [
  "async-trait",
  "chrono",
