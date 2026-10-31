@@ -372,6 +372,63 @@ impl Kernel {
         Ok(out)
     }
 
+    /// Records waiting for the caller's decision (Home's My work): in a workflow state that a
+    /// transition only some roles may take leaves, the caller holding one of them (an
+    /// administrator's power to take any is not a duty to); not records they created when the
+    /// transition needs a second person, and only when its condition holds.
+    /// `{entity, id, title, entity_label, state, actions, updated_at}`, latest change first.
+    pub async fn my_approvals(&self, ctx: &Ctx, limit: usize) -> Result<Vec<Value>> {
+        // Per entity, the newest this many waiting in its states (each read whole for its guards).
+        const PER_ENTITY: u32 = 20;
+        let mut out: Vec<Value> = Vec::new();
+        for (name, ent) in &ctx.schema.entities {
+            let Some(wf) = &ent.workflow else { continue };
+            let mine: Vec<_> = wf.def.transitions.iter().filter(|t| t.roles.iter().any(|r| ctx.roles.iter().any(|mine| mine == r))).collect();
+            if mine.is_empty() || ctx.perms.access(name, Action::Read) == crate::ctx::Access::None {
+                continue;
+            }
+            let mut states: Vec<&str> = mine.iter().map(|t| t.from.as_str()).collect();
+            states.sort_unstable();
+            states.dedup();
+            let query = crate::query::ListQuery {
+                filters: vec![crate::query::Filter { field: "workflow_state".into(), op: crate::query::Op::In, value: json!(states) }],
+                fields: Some(vec!["id".into()]),
+                sort: Some("updated_at desc".into()),
+                limit: Some(PER_ENTITY),
+                ..Default::default()
+            };
+            // An entity the caller cannot list after all (a field rule, a broken customization): skipped.
+            let Ok(page) = self.list(ctx, name, &query).await else { continue };
+            for row in page.rows {
+                let Some(id) = row.get("id").and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok()) else { continue };
+                let Ok(doc) = self.get(ctx, name, id, false).await else { continue };
+                let state = doc.get("workflow_state").and_then(Value::as_str).unwrap_or(&wf.def.initial_state).to_string();
+                let view = ent.cel_view(&Value::Object(doc.clone()), &ctx.schema);
+                let user = ctx.user_value();
+                let actions: Vec<&str> = mine
+                    .iter()
+                    .filter(|t| t.from == state)
+                    .filter(|t| !(t.not_creator && crate::doc::uuid_of(doc.get("created_by")) == Some(ctx.user)))
+                    .filter(|t| {
+                        wf.guards
+                            .get(&(t.action.clone(), t.from.clone()))
+                            .is_none_or(|g| g.eval_bool(&ferrum_meta::Scope { doc: &view, old: None, parent: None, user: &user }).unwrap_or(false))
+                    })
+                    .map(|t| t.action.as_str())
+                    .collect();
+                if !actions.is_empty() {
+                    out.push(json!({
+                        "entity": name, "id": id, "title": record_title(ctx, name, &doc), "entity_label": label(ctx, name),
+                        "state": state, "actions": actions, "updated_at": doc.get("updated_at"),
+                    }));
+                }
+            }
+        }
+        out.sort_by(|a, b| b["updated_at"].as_str().cmp(&a["updated_at"].as_str()));
+        out.truncate(limit);
+        Ok(out)
+    }
+
     // ───────────── tags ─────────────
 
     pub async fn tags(&self, ctx: &Ctx, entity: &str, id: Uuid) -> Result<Vec<String>> {

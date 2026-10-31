@@ -17,3 +17,4 @@ pub mod search;
 pub mod shell;
 pub mod sites;
 pub mod system;
+pub mod work;
