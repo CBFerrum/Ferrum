@@ -229,7 +229,16 @@ Checked in Chrome: an image added from the toolbar, described, a picture pasted,
 refused, the Word file holding both; then offline typing, the tab closed with nothing asked, and the
 words reaching the server at the next visit and showing in a fresh browser.
 
-Not yet: comments and suggestions inside the text (Drive's comments on the file stand in).
+* **Comments on the text** (Docs 0.4.0, Drive 0.10.0). Select words, then Comment (Ctrl+Alt+M), with
+  comment access only too. Drive keeps the thread: `anchor` (Yjs relative positions, so the place
+  moves with everyone's typing) and `quote`, replies by `reply_to` (the thread's author is told), and
+  `resolve_comment` to resolve or reopen. The editor marks open threads' words and lists the threads
+  beside the page in the order of the text. Marks are computed from the anchors when threads change
+  or Yjs changes the text, and follow the editor's steps for typing here. A thread whose words were
+  deleted says so. Checked in Chrome with two people: the mark followed edits before it; a commenter
+  saw it, replied, started a thread on the read-only text and resolved one.
+
+Not yet: suggestions (proposed edits to accept or reject).
 
 ### C4. Meetings
 
