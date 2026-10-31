@@ -163,6 +163,12 @@ certificate's mention, the QR code's message (Portaria 195/2020), NIF checks, ar
 construction reverse charge. Romania's ANAF e-Factura connection (OAuth, upload, status) is in ERP
 fa6232f. Not yet: SAF-T (PT), the AT's series communication web service, Açores and Madeira rates.
 
+**Tax rates as data (1 November 2026):** ERP 954e587 (ERP 0.4.1). A Tax Rate record (country,
+optional region, category, rate, from and to) wins over a localization's built-in rate for that
+day (`ferrum_app_erp::localization::rates`; a region's over the whole country's), so a new rate is
+a record, not a release. The thirteen countries of `ferrum-countries` read it. Next: Canada, the
+UK and the US; then categories, thresholds and exemption texts as data.
+
 **Spain and France built (1 November 2026):** ERP 572204b and c062e2b, in `ferrum-eu-members`. Spain:
 VERI*FACTU invoicing records chained by AEAT's SHA-256 fingerprint (its test vectors pass),
 cancellation records, the verification QR code, records queued for the company's AEAT connection;
