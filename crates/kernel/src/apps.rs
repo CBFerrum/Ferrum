@@ -310,8 +310,9 @@ impl Kernel {
 
     /// Removes packages from a workspace: refuses while another installed package depends on
     /// them; drops their roles (and those roles' grants); with `delete_data`, deletes the
-    /// workspace's rows in their tables (child tables first). Tables stay — other workspaces may
-    /// use them.
+    /// workspace's data: rows in the tables of their SQL files and in their entities' tables
+    /// (child tables first), the files attached to those records (their bytes once this commits)
+    /// and their live documents. Tables stay — other workspaces may use them.
     pub async fn uninstall_packages(&self, ctx: &Ctx, names: &[String], delete_data: bool) -> Result<()> {
         self.remove_packages(ctx, names, delete_data, false).await
     }
@@ -341,6 +342,8 @@ impl Kernel {
         if delete_data {
             for name in names {
                 let Some(pkg) = catalog.package(name) else { continue };
+                // Its own tables first: they may refer to its entities' rows.
+                delete_package_rows(&mut tx, ctx.tenant, pkg).await?;
                 for e in pkg.entities.iter().filter(|e| e.kind != EntityKind::Child && e.kind != EntityKind::Ledger) {
                     let Some(ent) = ctx.schema.entity(&e.name) else { continue };
                     delete_entity_rows(&mut tx, ctx.tenant, ent).await?;
@@ -372,11 +375,83 @@ impl Kernel {
     }
 }
 
-/// Deletes a workspace's rows of an entity and of its child tables.
+/// Deletes a workspace's rows in the tables a package's SQL files create (the newest table first,
+/// so none is emptied before a table that refers to it) and its live documents.
+async fn delete_package_rows(tx: &mut Tx, tenant: Uuid, pkg: &Package) -> Result<()> {
+    let created = sql_tables(pkg);
+    if !created.is_empty() {
+        // Only the workspace's rows, in tables that keep rows per workspace.
+        let per_tenant: Vec<String> = sqlx::query_scalar(
+            "select table_name::text from information_schema.columns where table_schema = current_schema() and column_name = 'tenant_id' and table_name = any($1)",
+        )
+        .bind(&created)
+        .fetch_all(&mut **tx)
+        .await?;
+        for table in created.iter().rev().filter(|t| per_tenant.contains(t)) {
+            sqlx::query(AssertSqlSafe(format!("delete from {} where tenant_id = $1", ddl::q(table)))).bind(tenant).execute(&mut **tx).await?;
+        }
+    }
+    // Their changes go with them (coedit_update cascades).
+    sqlx::query("delete from coedit_doc where tenant_id = $1 and package = $2").bind(tenant).bind(pkg.name()).execute(&mut **tx).await?;
+    Ok(())
+}
+
+/// The tables a package's SQL files create (`create [unlogged] table [if not exists] [public.]name`),
+/// in the order they create them, comments skipped. ponytail: a scan of the text, not a parser — a
+/// `create table` inside a function body counts too; only tables with a `tenant_id` are emptied.
+fn sql_tables(pkg: &Package) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (_, sql) in &pkg.sql {
+        let mut text = String::with_capacity(sql.len());
+        let mut rest = sql.as_str();
+        while let Some(c) = rest.chars().next() {
+            if let Some(after) = rest.strip_prefix("--") {
+                rest = after.find('\n').map_or("", |i| &after[i..]);
+            } else if let Some(after) = rest.strip_prefix("/*") {
+                rest = after.find("*/").map_or("", |i| &after[i + 2..]);
+            } else {
+                text.push(c.to_ascii_lowercase());
+                rest = &rest[c.len_utf8()..];
+            }
+        }
+        let words: Vec<&str> = text.split(|c: char| c.is_whitespace() || c == '(' || c == ';').filter(|w| !w.is_empty()).collect();
+        for i in 0..words.len() {
+            if words[i] != "create" {
+                continue;
+            }
+            let mut j = i + 1;
+            if words.get(j) == Some(&"unlogged") {
+                j += 1;
+            }
+            if words.get(j) != Some(&"table") {
+                continue;
+            }
+            j += 1;
+            if words.get(j..j + 3) == Some(&["if", "not", "exists"][..]) {
+                j += 3;
+            }
+            let Some(name) = words.get(j).map(|w| w.strip_prefix("public.").unwrap_or(w)) else { continue };
+            let plain = !name.is_empty() && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+            if plain && !out.iter().any(|t| t == name) {
+                out.push(name.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Deletes a workspace's rows of an entity and of its child tables, and the files attached to
+/// them: their records now, their bytes from storage once the transaction commits.
 async fn delete_entity_rows(tx: &mut Tx, tenant: Uuid, ent: &ferrum_meta::EffEntity) -> Result<()> {
     if ent.table.is_empty() || ent.custom {
         return Ok(());
     }
+    let keys: Vec<String> = sqlx::query_scalar("delete from file_object where tenant_id = $1 and entity = $2 returning storage_key")
+        .bind(tenant)
+        .bind(&ent.def.name)
+        .fetch_all(&mut **tx)
+        .await?;
+    crate::outbox::release_objects(tx, tenant, &keys).await?;
     for child in ent.children.values() {
         sqlx::query(AssertSqlSafe(format!("delete from {} where tenant_id = $1", ddl::q(&child.table)))).bind(tenant).execute(&mut **tx).await?;
     }
@@ -389,4 +464,24 @@ async fn delete_entity_rows(tx: &mut Tx, tenant: Uuid, ent: &ferrum_meta::EffEnt
             .await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_packages_sql_names_the_tables_it_creates() {
+        let mut pkg: Package = serde_json::from_value(json!({"package": "kit", "version": "1", "label": "Kit"})).expect("a package");
+        pkg.sql = vec![
+            (
+                "001_init.sql".into(),
+                "-- create table not_this (x int);\n/* create table nor_this ( */\nCREATE TABLE kit_log (tenant_id uuid);\n\
+                 create unlogged table if not exists public.kit_cache(tenant_id uuid);\ncreate index kit_log_t on kit_log (tenant_id);"
+                    .into(),
+            ),
+            ("002_more.sql".into(), "create table kit_log (x int); create table \"Quoted\" (x int); create table kit_items (id int);".into()),
+        ];
+        assert_eq!(sql_tables(&pkg), ["kit_log", "kit_cache", "kit_items"]);
+    }
 }

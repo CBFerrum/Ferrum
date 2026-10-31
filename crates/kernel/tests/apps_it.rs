@@ -82,6 +82,18 @@ fn release(version: &str, extra_field: bool) -> NewRelease {
     } else {
         ""
     };
+    if extra_field {
+        // From 1.1 the app keeps a log of its own, a table per workspace row (package SQL).
+        files.insert(
+            "sql/001_log.sql".to_string(),
+            "-- Fleet's log (create table not_ours would only be a comment).\n\
+             create table if not exists fleet_log (tenant_id uuid not null references tenant(id) on delete cascade, note text not null);\n\
+             alter table fleet_log enable row level security;\nalter table fleet_log force row level security;\n\
+             create policy tenant_isolation on fleet_log using (tenant_id = (select ferrum_tenant()) or (select ferrum_is_system())) \
+             with check (tenant_id = (select ferrum_tenant()) or (select ferrum_is_system()));\n"
+                .to_string(),
+        );
+    }
     files.insert(
         "entities/fleet.yaml".to_string(),
         format!("{child}- name: FleetVehicle\n  label: Vehicle\n  kind: master\n  title_field: plate\n  actions:\n    - {{name: peek, label: Peek, permission: read, read_only: true}}\n  fields:\n    - {{name: plate, type: data, required: true}}\n{extra}"),
@@ -234,13 +246,39 @@ async fn apps_join_the_catalog_at_runtime() {
     let c = ctx().await;
     let blocked = k.uninstall_packages(&c, &["core".into()], false).await;
     assert!(blocked.is_err(), "core is needed by fleet");
+    // The workspace's other data of the app: a row in its own table, a file on a vehicle, a live document.
+    let key = format!("tenants/{tenant}/files/fleet-photo");
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("insert into fleet_log (tenant_id, note) values ($1, 'serviced')").bind(tenant).execute(&mut *tx).await.unwrap();
+    sqlx::query(
+        "insert into file_object (tenant_id, id, entity, record_id, file_name, content_type, size_bytes, storage_key, sha256) \
+         select $1, gen_random_uuid(), 'FleetVehicle', id, 'photo.png', 'image/png', 3, $2, 'x' from e_fleet_vehicle where tenant_id = $1 limit 1",
+    )
+    .bind(tenant)
+    .bind(&key)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query("insert into coedit_doc (tenant_id, package, id) values ($1, 'fleet', gen_random_uuid())").bind(tenant).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
     k.uninstall_packages(&c, &["fleet".into()], true).await.unwrap();
     let c = ctx().await;
     assert!(c.schema.entity("FleetVehicle").is_none());
     assert!(!c.schema.packages.contains(&"fleet".to_string()));
     let mut tx = k.db.system_tx().await.unwrap();
-    let left: i64 = sqlx::query_scalar("select count(*) from e_fleet_vehicle").fetch_one(&mut *tx).await.unwrap();
-    let roles: i64 = sqlx::query_scalar("select count(*) from role where package = 'fleet'").fetch_one(&mut *tx).await.unwrap();
+    let count = |sql: &'static str| sqlx::query_scalar::<_, i64>(sql).bind(tenant);
+    let left = count("select count(*) from e_fleet_vehicle where tenant_id = $1").fetch_one(&mut *tx).await.unwrap();
+    let roles = count("select count(*) from role where tenant_id = $1 and package = 'fleet'").fetch_one(&mut *tx).await.unwrap();
+    let logged = count("select count(*) from fleet_log where tenant_id = $1").fetch_one(&mut *tx).await.unwrap();
+    let files = count("select count(*) from file_object where tenant_id = $1 and entity = 'FleetVehicle'").fetch_one(&mut *tx).await.unwrap();
+    let docs = count("select count(*) from coedit_doc where tenant_id = $1 and package = 'fleet'").fetch_one(&mut *tx).await.unwrap();
+    let released: i64 = sqlx::query_scalar("select count(*) from outbox where tenant_id = $1 and payload->'keys' ? $2")
+        .bind(tenant)
+        .bind(&key)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
-    assert_eq!((left, roles), (0, 0));
+    assert_eq!((left, roles, logged, files, docs), (0, 0, 0, 0, 0), "uninstalling with its data leaves nothing of the app's");
+    assert_eq!(released, 1, "the file's bytes leave storage once the uninstall commits");
 }
