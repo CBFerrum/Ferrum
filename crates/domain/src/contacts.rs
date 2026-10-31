@@ -91,6 +91,7 @@ pub struct AddressHook;
 #[async_trait]
 impl DocHook for AddressHook {
     async fn before_validate(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
+        crate::countries::fill(doc);
         if s(doc, "address_title").is_none() {
             // The title of the first record it links to, else its first line.
             let mut title = None;

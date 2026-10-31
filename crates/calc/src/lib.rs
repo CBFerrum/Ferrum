@@ -4,7 +4,8 @@
 //! Invariants guaranteed for every successful result (property-tested below):
 //! * every money value has at most `precision` (or `base_precision`) decimals;
 //! * `Σ line.net_amount == net_total` and `Σ line.taxes[k] == taxes[k].tax_amount` (same in base currency);
-//! * `grand_total == net_total + Σ ±tax_amount`, `rounded_total == grand_total + rounding_adjustment`;
+//! * `grand_total == net_total + Σ ±tax_amount` over the rows not reverse-charged,
+//!   `rounded_total == grand_total + rounding_adjustment`;
 //! * when every tax row is price-inclusive and there is no document discount, `grand_total == Σ line.amount`.
 
 use rust_decimal::{Decimal, RoundingStrategy};
@@ -69,6 +70,19 @@ pub enum ChargeType {
     OnPreviousRowTotal,
     /// Fixed `amount`, distributed over lines by net amount.
     Actual,
+    /// `rate` per unit of each line's quantity (its `tax_qty`, else `qty`): excise duties, eco and
+    /// packaging fees, a cess per thousand.
+    OnItemQuantity,
+}
+
+/// How a rate-based tax row is rounded: once over the document (each row's tax on the sum of its
+/// lines, as EN 16931 does), or line by line and then added up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TaxRounding {
+    #[default]
+    PerDocument,
+    PerLine,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -82,6 +96,9 @@ pub struct LineIn {
     /// Per-line rate overrides keyed by tax row key (item tax templates, exemptions).
     #[serde(default)]
     pub tax_rates: BTreeMap<String, Decimal>,
+    /// The quantity per-unit taxes count (the line in stock units); `qty` when unset.
+    #[serde(default)]
+    pub tax_qty: Option<Decimal>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -101,6 +118,10 @@ pub struct TaxIn {
     /// Subtract instead of add (withholding taxes).
     #[serde(default)]
     pub deduct: bool,
+    /// Reverse charge: worked out and reported (for posting to input and output tax) but never
+    /// charged to the party, so it stays out of the totals.
+    #[serde(default)]
+    pub reverse_charge: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +156,8 @@ pub struct CalcInput {
     /// Cash rounding step for `rounded_total`, e.g. `1` or `0.05`. `None` disables it.
     #[serde(default)]
     pub round_total_to: Option<Decimal>,
+    #[serde(default)]
+    pub tax_rounding: TaxRounding,
 }
 
 /// Two decimals, the same currency, half-up rounding, nothing to price: callers set what they use
@@ -150,6 +173,7 @@ impl Default for CalcInput {
             taxes: Vec::new(),
             discount: None,
             round_total_to: None,
+            tax_rounding: TaxRounding::default(),
         }
     }
 }
@@ -175,6 +199,9 @@ pub struct TaxOut {
     /// Unsigned row amount; apply `deduct` for the sign.
     pub tax_amount: Decimal,
     pub deduct: bool,
+    /// Not in the totals: the party is not charged it (see [`TaxIn::reverse_charge`]).
+    #[serde(default)]
+    pub reverse_charge: bool,
     /// Running total after this row.
     pub total: Decimal,
     pub base_tax_amount: Decimal,
@@ -189,7 +216,7 @@ pub struct CalcOutput {
     pub total: Decimal,
     pub discount_amount: Decimal,
     pub net_total: Decimal,
-    /// Σ ±tax amounts.
+    /// Σ ±tax amounts, reverse charges left out.
     pub total_taxes: Decimal,
     pub grand_total: Decimal,
     pub rounding_adjustment: Decimal,
@@ -287,6 +314,9 @@ fn validate(input: &CalcInput) -> Result<(), CalcError> {
     if input.taxes.len() > MAX_TAX_ROWS {
         return invalid(format!("at most {MAX_TAX_ROWS} tax rows"));
     }
+    // A per-unit rate is money per unit (thousands in some currencies), the others percentages.
+    let per_unit: HashSet<&str> = input.taxes.iter().filter(|t| t.charge_type == ChargeType::OnItemQuantity).map(|t| t.key.as_str()).collect();
+    let max_rate = |key: &str| if per_unit.contains(key) { max_money() } else { Decimal::from(1000) };
     for (i, l) in input.lines.iter().enumerate() {
         if l.qty.abs() > max_qty() {
             return invalid(format!("line {}: qty out of range", i + 1));
@@ -298,9 +328,12 @@ fn validate(input: &CalcInput) -> Result<(), CalcError> {
             return invalid(format!("line {}: discount_percent must be within 0..100", i + 1));
         }
         for (k, r) in &l.tax_rates {
-            if *r < Decimal::ZERO || *r > Decimal::from(1000) {
-                return invalid(format!("line {}: tax rate for {k} must be within 0..1000", i + 1));
+            if *r < Decimal::ZERO || *r > max_rate(k) {
+                return invalid(format!("line {}: tax rate for {k} out of range", i + 1));
             }
+        }
+        if l.tax_qty.is_some_and(|q| q.abs() > max_qty()) {
+            return invalid(format!("line {}: tax_qty out of range", i + 1));
         }
     }
     let mut keys = HashSet::new();
@@ -308,11 +341,14 @@ fn validate(input: &CalcInput) -> Result<(), CalcError> {
         if !keys.insert(t.key.as_str()) {
             return invalid(format!("duplicate tax row key {}", t.key));
         }
-        if t.rate < Decimal::ZERO || t.rate > Decimal::from(1000) {
-            return invalid(format!("tax row {}: rate must be within 0..1000", k + 1));
+        if t.rate < Decimal::ZERO || t.rate > max_rate(&t.key) {
+            return invalid(format!("tax row {}: rate out of range", k + 1));
         }
         if t.included_in_price && t.deduct {
             return invalid(format!("tax row {}: a deducted tax cannot be price-inclusive", k + 1));
+        }
+        if t.reverse_charge && (t.included_in_price || t.deduct) {
+            return invalid(format!("tax row {}: a reverse charge is neither price-inclusive nor deducted", k + 1));
         }
         match t.charge_type {
             ChargeType::Actual => {
@@ -332,6 +368,11 @@ fn validate(input: &CalcInput) -> Result<(), CalcError> {
                 }
                 if t.included_in_price && !input.taxes[j].included_in_price {
                     return invalid(format!("tax row {}: an inclusive tax can only reference inclusive rows", k + 1));
+                }
+            }
+            ChargeType::OnItemQuantity => {
+                if t.included_in_price {
+                    return invalid(format!("tax row {}: a per-unit tax cannot be price-inclusive", k + 1));
                 }
             }
             ChargeType::OnNetTotal => {}
@@ -367,7 +408,17 @@ pub fn compute(input: &CalcInput) -> Result<CalcOutput, CalcError> {
     let m = input.taxes.len();
     let taxes = &input.taxes;
     let rate_of = |i: usize, k: usize| -> Decimal { input.lines[i].tax_rates.get(&taxes[k].key).copied().unwrap_or(taxes[k].rate) };
-    let sign = |k: usize| if taxes[k].deduct { -Decimal::ONE } else { Decimal::ONE };
+    // What a row adds to the totals: nothing when reverse-charged, else ±1.
+    let sign = |k: usize| {
+        if taxes[k].reverse_charge {
+            Decimal::ZERO
+        } else if taxes[k].deduct {
+            -Decimal::ONE
+        } else {
+            Decimal::ONE
+        }
+    };
+    let per_line = input.tax_rounding == TaxRounding::PerLine;
 
     // 1. Line amounts as entered.
     let mut rates = Vec::with_capacity(n);
@@ -398,7 +449,7 @@ pub fn compute(input: &CalcInput) -> Result<CalcOutput, CalcError> {
                     let upto = add(Decimal::ONE, sum(&f[..=j], "inclusive factor")?, "inclusive factor")?;
                     mul(rk, upto, "inclusive factor")?
                 }
-                ChargeType::Actual => Decimal::ZERO,
+                ChargeType::Actual | ChargeType::OnItemQuantity => Decimal::ZERO,
             };
         }
         let factor = add(Decimal::ONE, sum(&f, "inclusive factor")?, "inclusive factor")?;
@@ -427,16 +478,12 @@ pub fn compute(input: &CalcInput) -> Result<CalcOutput, CalcError> {
     let mut row_weights: Vec<Vec<Decimal>> = Vec::with_capacity(m);
     for k in 0..m {
         let t = &taxes[k];
-        let (row_total, weights) = match t.charge_type {
-            ChargeType::Actual => (round(t.amount, p, r), net.clone()),
-            ChargeType::OnNetTotal => {
-                let w = (0..n).map(|i| pct(net[i], rate_of(i, k), "tax")).collect::<Result<Vec<_>, _>>()?;
-                (round(sum(&w, "tax")?, p, r), w)
-            }
+        let weights: Vec<Decimal> = match t.charge_type {
+            ChargeType::Actual => net.clone(),
+            ChargeType::OnNetTotal => (0..n).map(|i| pct(net[i], rate_of(i, k), "tax")).collect::<Result<Vec<_>, _>>()?,
             ChargeType::OnPreviousRowAmount => {
                 let j = t.row_ref.unwrap_or(0);
-                let w = (0..n).map(|i| pct(alloc[j][i], rate_of(i, k), "tax")).collect::<Result<Vec<_>, _>>()?;
-                (round(sum(&w, "tax")?, p, r), w)
+                (0..n).map(|i| pct(alloc[j][i], rate_of(i, k), "tax")).collect::<Result<Vec<_>, _>>()?
             }
             ChargeType::OnPreviousRowTotal => {
                 let j = t.row_ref.unwrap_or(0);
@@ -448,11 +495,26 @@ pub fn compute(input: &CalcInput) -> Result<CalcOutput, CalcError> {
                     }
                     w.push(pct(base, rate_of(i, k), "tax")?);
                 }
-                (round(sum(&w, "tax")?, p, r), w)
+                w
+            }
+            ChargeType::OnItemQuantity => {
+                (0..n).map(|i| mul(input.lines[i].tax_qty.unwrap_or(input.lines[i].qty), rate_of(i, k), "tax")).collect::<Result<Vec<_>, _>>()?
             }
         };
-        alloc.push(allocate(row_total, &weights, p, r)?);
-        tax_amounts.push(row_total);
+        if t.charge_type == ChargeType::Actual {
+            let row_total = round(t.amount, p, r);
+            alloc.push(allocate(row_total, &weights, p, r)?);
+            tax_amounts.push(row_total);
+        } else if per_line {
+            // Each line's tax rounded on its own; the row is their sum.
+            let lines_tax: Vec<Decimal> = weights.iter().map(|w| round(*w, p, r)).collect();
+            tax_amounts.push(sum(&lines_tax, "tax")?);
+            alloc.push(lines_tax);
+        } else {
+            let row_total = round(sum(&weights, "tax")?, p, r);
+            alloc.push(allocate(row_total, &weights, p, r)?);
+            tax_amounts.push(row_total);
+        }
         row_weights.push(weights);
     }
 
@@ -523,6 +585,7 @@ pub fn compute(input: &CalcInput) -> Result<CalcOutput, CalcError> {
             key: taxes[k].key.clone(),
             tax_amount: tax_amounts[k],
             deduct: taxes[k].deduct,
+            reverse_charge: taxes[k].reverse_charge,
             total: totals[k],
             base_tax_amount: base_tax[k],
             base_total: base_totals[k],
@@ -573,34 +636,98 @@ mod tests {
     use rust_decimal_macros::dec;
 
     fn line(key: &str, qty: Decimal, price: Decimal) -> LineIn {
-        LineIn { key: key.into(), qty, price, discount_percent: Decimal::ZERO, tax_rates: BTreeMap::new() }
+        LineIn { key: key.into(), qty, price, ..Default::default() }
     }
     fn tax(key: &str, ct: ChargeType, rate: Decimal) -> TaxIn {
-        TaxIn { key: key.into(), charge_type: ct, rate, amount: Decimal::ZERO, row_ref: None, included_in_price: false, deduct: false }
+        TaxIn { key: key.into(), charge_type: ct, rate, ..Default::default() }
     }
     fn input(lines: Vec<LineIn>, taxes: Vec<TaxIn>) -> CalcInput {
-        CalcInput {
+        CalcInput { lines, taxes, ..Default::default() }
+    }
+
+    /// Defaults price exactly like the fields spelled out (a field added later belongs here too).
+    #[test]
+    fn defaults_are_neutral() {
+        let spelled = CalcInput {
             precision: 2,
             base_precision: None,
             conversion_rate: Decimal::ONE,
             rounding: Rounding::HalfUp,
-            lines,
-            taxes,
+            lines: vec![LineIn { key: "a".into(), qty: dec!(2), price: dec!(10), discount_percent: Decimal::ZERO, tax_rates: BTreeMap::new(), tax_qty: None }],
+            taxes: vec![TaxIn {
+                key: "vat".into(),
+                charge_type: ChargeType::OnNetTotal,
+                rate: dec!(20),
+                amount: Decimal::ZERO,
+                row_ref: None,
+                included_in_price: false,
+                deduct: false,
+                reverse_charge: false,
+            }],
             discount: None,
             round_total_to: None,
-        }
+            tax_rounding: TaxRounding::PerDocument,
+        };
+        let defaulted = input(vec![line("a", dec!(2), dec!(10))], vec![tax("vat", ChargeType::OnNetTotal, dec!(20))]);
+        assert_eq!(compute(&spelled).unwrap(), compute(&defaulted).unwrap());
     }
 
-    /// Defaults price exactly like the fields spelled out.
+    /// Excise per unit counted in stock units, then VAT on the price plus the excise.
     #[test]
-    fn defaults_are_neutral() {
-        let spelled = input(vec![line("a", dec!(2), dec!(10))], vec![tax("vat", ChargeType::OnNetTotal, dec!(20))]);
-        let defaulted = CalcInput {
-            lines: vec![LineIn { key: "a".into(), qty: dec!(2), price: dec!(10), ..Default::default() }],
-            taxes: vec![TaxIn { key: "vat".into(), rate: dec!(20), ..Default::default() }],
-            ..Default::default()
-        };
-        assert_eq!(compute(&spelled).unwrap(), compute(&defaulted).unwrap());
+    fn per_unit_tax_counts_tax_qty() {
+        let boxed = LineIn { tax_qty: Some(dec!(24)), ..line("a", dec!(2), dec!(10)) };
+        let excise = tax("excise", ChargeType::OnItemQuantity, dec!(0.5));
+        let vat = TaxIn { row_ref: Some(0), ..tax("vat", ChargeType::OnPreviousRowTotal, dec!(20)) };
+        let out = compute(&input(vec![boxed, line("b", dec!(3), dec!(1))], vec![excise, vat])).unwrap();
+        assert_eq!(out.taxes[0].tax_amount, dec!(13.50));
+        assert_eq!(out.lines[0].taxes[0], dec!(12.00));
+        assert_eq!(out.lines[1].taxes[0], dec!(1.50));
+        assert_eq!(out.taxes[1].tax_amount, dec!(7.30));
+        assert_eq!(out.grand_total, dec!(43.80));
+        // A rate in a currency with small units can run into thousands per unit.
+        let vnd = input(vec![line("fuel", dec!(40), dec!(21000))], vec![tax("bvmt", ChargeType::OnItemQuantity, dec!(2000))]);
+        assert_eq!(compute(&vnd).unwrap().taxes[0].tax_amount, dec!(80000.00));
+    }
+
+    /// The buyer accounts for a reverse charge: worked out, reported, never in the totals.
+    #[test]
+    fn reverse_charge_stays_out_of_totals() {
+        let rc = TaxIn { reverse_charge: true, ..tax("vat", ChargeType::OnNetTotal, dec!(20)) };
+        let mut i = input(vec![line("a", dec!(1), dec!(1000))], vec![rc]);
+        i.conversion_rate = dec!(1.1);
+        let out = compute(&i).unwrap();
+        assert_eq!(out.taxes[0].tax_amount, dec!(200.00));
+        assert!(out.taxes[0].reverse_charge);
+        assert_eq!(out.taxes[0].total, dec!(1000.00));
+        assert_eq!(out.taxes[0].base_tax_amount, dec!(220.00));
+        assert_eq!(out.lines[0].taxes[0], dec!(200.00));
+        assert_eq!((out.total_taxes, out.grand_total, out.base_grand_total), (dec!(0.00), dec!(1000.00), dec!(1100.00)));
+    }
+
+    /// Per-line rounding rounds each line's tax, per-document the row's sum.
+    #[test]
+    fn per_line_tax_rounding() {
+        let lines = || (0..3).map(|i| line(&i.to_string(), dec!(1), dec!(0.10))).collect::<Vec<_>>();
+        let mut i = input(lines(), vec![tax("vat", ChargeType::OnNetTotal, dec!(5))]);
+        assert_eq!(compute(&i).unwrap().taxes[0].tax_amount, dec!(0.02));
+        i.tax_rounding = TaxRounding::PerLine;
+        let out = compute(&i).unwrap();
+        assert_eq!(out.taxes[0].tax_amount, dec!(0.03));
+        assert!(out.lines.iter().all(|l| l.taxes[0] == dec!(0.01)));
+        assert_eq!(out.grand_total, dec!(0.33));
+    }
+
+    /// The browser speaks JSON: the wire names of the newer fields.
+    #[test]
+    fn json_wire_names() {
+        let out = compute_json(
+            r#"{"precision":2,"tax_rounding":"per_line","lines":[{"key":"a","qty":"2","price":"10","tax_qty":"24"}],
+                "taxes":[{"key":"x","charge_type":"on_item_quantity","rate":"0.5"},{"key":"r","charge_type":"on_net_total","rate":"20","reverse_charge":true}]}"#,
+        );
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["taxes"][0]["tax_amount"], "12.00");
+        assert_eq!(v["taxes"][1]["reverse_charge"], true);
+        assert_eq!(v["grand_total"], "32.00");
     }
 
     #[test]
@@ -701,6 +828,15 @@ mod tests {
         d.discount = Some(DocDiscount::Amount { value: dec!(11) });
         assert!(compute(&d).is_err());
         assert!(compute_json("{not json").contains("error"));
+        let one = |t: TaxIn| compute(&input(vec![line("a", dec!(1), dec!(10))], vec![t]));
+        assert!(one(TaxIn { included_in_price: true, ..tax("excise", ChargeType::OnItemQuantity, dec!(1)) }).is_err());
+        assert!(one(TaxIn { reverse_charge: true, deduct: true, ..tax("vat", ChargeType::OnNetTotal, dec!(20)) }).is_err());
+        assert!(one(TaxIn { reverse_charge: true, included_in_price: true, ..tax("vat", ChargeType::OnNetTotal, dec!(20)) }).is_err());
+        assert!(one(tax("vat", ChargeType::OnNetTotal, dec!(1001))).is_err());
+        let mut l = line("a", dec!(1), dec!(10));
+        l.tax_rates.insert("excise".into(), dec!(5000));
+        assert!(compute(&input(vec![l.clone()], vec![tax("excise", ChargeType::OnItemQuantity, dec!(1))])).is_ok());
+        assert!(compute(&input(vec![l], vec![tax("excise", ChargeType::OnNetTotal, dec!(1))])).is_err());
     }
 
     #[test]
@@ -717,23 +853,28 @@ mod tests {
         #![proptest_config(ProptestConfig::with_cases(400))]
         #[test]
         fn invariants_hold(
-            lines in prop::collection::vec((arb_dec(10_000, 2), arb_dec(1_000_000, 3), 0i64..=50), 0..12),
-            rates in prop::collection::vec((0i64..=3000, any::<bool>(), any::<bool>()), 0..5),
+            lines in prop::collection::vec((arb_dec(10_000, 2), arb_dec(1_000_000, 3), 0i64..=50, 0i64..=3), 0..12),
+            // (rate, inclusive, deducted, kind): kind 0 percent, 1 percent reverse-charged, 2 per unit, 3 per unit reverse-charged.
+            rates in prop::collection::vec((0i64..=3000, any::<bool>(), any::<bool>(), 0u8..4), 0..5),
             disc in 0i64..=20,
             cr in 1i64..=10_000_000,
             prec in 0u32..=3,
+            per_line in any::<bool>(),
         ) {
-            let lines: Vec<LineIn> = lines.into_iter().enumerate().map(|(i, (q, p, d))| LineIn {
-                key: i.to_string(), qty: q, price: p.abs(), discount_percent: Decimal::from(d), tax_rates: BTreeMap::new(),
+            let lines: Vec<LineIn> = lines.into_iter().enumerate().map(|(i, (q, p, d, f))| LineIn {
+                key: i.to_string(), qty: q, price: p.abs(), discount_percent: Decimal::from(d),
+                tax_qty: (f > 0).then(|| q * Decimal::from(f)), ..Default::default()
             }).collect();
-            let all_incl = rates.iter().all(|(_, inc, _)| *inc);
-            let taxes: Vec<TaxIn> = rates.iter().enumerate().map(|(k, (rate, inc, ded))| {
+            let all_incl = rates.iter().all(|(_, inc, _, kind)| *inc && *kind == 0);
+            let taxes: Vec<TaxIn> = rates.iter().enumerate().map(|(k, (rate, inc, ded, kind))| {
                 let incl = all_incl && *inc;
-                TaxIn { key: format!("t{k}"), charge_type: ChargeType::OnNetTotal, rate: Decimal::new(*rate, 2), amount: Decimal::ZERO,
-                        row_ref: None, included_in_price: incl, deduct: *ded && !incl }
+                let reverse_charge = kind % 2 == 1;
+                TaxIn { key: format!("t{k}"), charge_type: if *kind >= 2 { ChargeType::OnItemQuantity } else { ChargeType::OnNetTotal },
+                        rate: Decimal::new(*rate, 2), included_in_price: incl, deduct: *ded && !incl && !reverse_charge, reverse_charge, ..Default::default() }
             }).collect();
-            let i = CalcInput { precision: prec, base_precision: Some(2), conversion_rate: Decimal::new(cr, 4), rounding: Rounding::HalfUp,
-                lines, taxes, discount: if disc > 0 { Some(DocDiscount::Percent { value: Decimal::from(disc) }) } else { None }, round_total_to: None };
+            let i = CalcInput { precision: prec, base_precision: Some(2), conversion_rate: Decimal::new(cr, 4), lines, taxes,
+                discount: if disc > 0 { Some(DocDiscount::Percent { value: Decimal::from(disc) }) } else { None },
+                tax_rounding: if per_line { TaxRounding::PerLine } else { TaxRounding::PerDocument }, ..Default::default() };
             let out = compute(&i).unwrap();
             prop_assert_eq!(out.lines.iter().map(|l| l.net_amount).sum::<Decimal>(), out.net_total);
             prop_assert_eq!(out.lines.iter().map(|l| l.base_net_amount).sum::<Decimal>(), out.base_net_total);
@@ -741,9 +882,13 @@ mod tests {
                 prop_assert_eq!(out.lines.iter().map(|l| l.taxes[k]).sum::<Decimal>(), t.tax_amount);
                 prop_assert_eq!(out.lines.iter().map(|l| l.base_taxes[k]).sum::<Decimal>(), t.base_tax_amount);
                 prop_assert!(t.tax_amount.scale() <= prec);
+                prop_assert!(out.lines.iter().all(|l| l.taxes[k].scale() <= prec));
             }
-            let signed: Decimal = out.taxes.iter().map(|t| if t.deduct { -t.tax_amount } else { t.tax_amount }).sum();
+            let charged = out.taxes.iter().filter(|t| !t.reverse_charge);
+            let signed: Decimal = charged.clone().map(|t| if t.deduct { -t.tax_amount } else { t.tax_amount }).sum();
             prop_assert_eq!(out.net_total + signed, out.grand_total);
+            let base_signed: Decimal = charged.map(|t| if t.deduct { -t.base_tax_amount } else { t.base_tax_amount }).sum();
+            prop_assert_eq!(out.base_net_total + base_signed, out.base_grand_total);
             prop_assert!(out.net_total.scale() <= prec && out.grand_total.scale() <= prec);
             if !out.taxes.is_empty() && all_incl && disc == 0 {
                 prop_assert_eq!(out.grand_total, out.total);

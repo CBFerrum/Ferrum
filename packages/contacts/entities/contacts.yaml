@@ -54,6 +54,7 @@
     - {name: state, type: data, in_filter: true}
     - {name: postal_code, type: data}
     - {name: country, type: data, in_filter: true}
+    - {name: country_code, type: data, read_only: true, max_length: 2, label: Country Code, description: "ISO 3166-1 code, from the country"}
     - {name: email, type: email}
     - {name: phone, type: phone}
     - {name: is_primary, type: check, in_list: true, description: The party's preferred address of this type}
