@@ -712,6 +712,43 @@ async fn scenario() {
     k.update(&admin, "Customer", cid, obj(json!({"customer_name": "Globex Three"})), None).await.unwrap();
     drain(&k).await;
     assert_eq!(delivered("Customer Globex Three was updated").await, vec![("watch".to_string(), "inapp".to_string(), false)]);
+    // ── approvals: records waiting for a decision only some roles may make ──
+    let manager = PermissionDef { entity: "Customer".into(), read: true, write: true, create: true, ..Default::default() };
+    k.set_role_permission(&admin, "Sales Manager", &manager).await.unwrap();
+    let maya = k.create_user(&admin, "maya@collab.test", "Maya Manager", Some("Correct-Horse-9"), &["Sales Manager".into()], false).await.unwrap();
+    let maya_ctx = k.load_ctx(tenant, maya, None, "it".into()).await.unwrap();
+    let workflow: ferrum_meta::WorkflowDef = serde_json::from_value(json!({
+        "name": "Customer vetting", "entity": "Customer", "initial_state": "Draft",
+        "states": [{"name": "Draft"}, {"name": "Pending"}, {"name": "Approved"}],
+        "transitions": [
+            {"action": "Send for approval", "from": "Draft", "to": "Pending"},
+            {"action": "Approve", "from": "Pending", "to": "Approved", "roles": ["Sales Manager"], "not_creator": true,
+             "condition": "doc.customer_name != 'Blocked Ltd'"},
+        ],
+    }))
+    .unwrap();
+    k.add_customization(&admin, "Customer", ferrum_meta::OverlayOp::SetWorkflow { workflow }, None).await.unwrap();
+    let (bea_ctx, maya_ctx) = (k.load_ctx(tenant, bea, None, "it".into()).await.unwrap(), k.load_ctx(tenant, maya_ctx.user, None, "it".into()).await.unwrap());
+    let pending = |ctx: &ferrum_kernel::Ctx, name: &str| {
+        let (k, ctx, name) = (k.clone(), ctx.clone(), name.to_string());
+        async move {
+            let c = id_of(&k.insert(&ctx, "Customer", obj(json!({"customer_name": name}))).await.unwrap());
+            k.transition(&ctx, "Customer", c, "Send for approval", None).await.unwrap();
+            c
+        }
+    };
+    let vetted = pending(&bea_ctx, "Vetting Co").await;
+    pending(&bea_ctx, "Blocked Ltd").await;
+    pending(&maya_ctx, "Maya's Own").await;
+    let waiting = k.my_approvals(&maya_ctx, 50).await.unwrap();
+    let titles: Vec<&str> = waiting.iter().map(|a| a["title"].as_str().unwrap()).collect();
+    assert_eq!(titles, vec!["Vetting Co"], "not her own (a second person approves), not one whose condition fails: {waiting:?}");
+    assert_eq!((waiting[0]["state"].clone(), waiting[0]["actions"].clone()), (json!("Pending"), json!(["Approve"])));
+    assert!(k.my_approvals(&bea_ctx, 50).await.unwrap().is_empty(), "Bea cannot approve");
+    assert!(k.my_approvals(&admin, 50).await.unwrap().is_empty(), "an administrator may approve, but it is not their duty");
+    k.transition(&maya_ctx, "Customer", vetted, "Approve", None).await.unwrap();
+    assert!(k.my_approvals(&maya_ctx, 50).await.unwrap().is_empty(), "decided");
+
     assert_eq!(ferrum_kernel::notify::declared_default(&["inapp", "email"]), "email");
     assert_eq!(ferrum_kernel::notify::declared_default(&["push"]), "inapp");
     assert_eq!(ferrum_kernel::notify::declared_default(&[]), "off");

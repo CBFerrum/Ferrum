@@ -191,6 +191,13 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     notice. Emails go out through the outbox once; the hourly maintenance queues each digest in the
     transaction that claims its notifications. Push waits for the core worker (§12.12). Checked in
     Chromium, Firefox and WebKit, light and dark, at phone width.
+  * My work on Home (§11.8): the platform's part (`/api/work`: open assignments, records waiting for
+    the person's approval, unread mentions) and the apps' `shell.work` providers (Calendar's
+    invitations to answer, Comms 0.7.5), asked in parallel, listed together most pressing first,
+    filtered by source, with assignments marked done in place. Approvals follow the roles a person
+    holds (an administrator's power to approve is not a duty to). Each interface's stylesheet now
+    also scans the shared components (`web/src`), whose classes were missing from the shell's and
+    ERP's builds. Checked in Chromium, Firefox and WebKit, light and dark, at phone width.
 
 * **U4a, Comms and Workspace: built** (31 October 2026).
   * Comms (Mail, Chat, Calendar, Meet at `/mail/`, `/chat/`, `/calendar/`, `/meet/`), Drive (`/drive/`,

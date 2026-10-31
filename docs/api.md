@@ -331,6 +331,23 @@ default, title, body, entity, record)`, `default` being what its manifest declar
 (`notify::declared_default`): `email` when the declared list has email, else `digest`, else
 `inapp` (`push` too, until the platform pushes); an empty list is `off`.
 
+## My work — `GET /api/work`
+
+What waits for the caller, from the platform: `{groups: [{id, title, items}], partial}` with the
+groups `assigned` (open assignments: `{kind: "assignment", id, assignment, title, subtitle, url,
+due, priority, at}`), `approvals` (records in a workflow state that a transition only some roles
+may take leaves, the caller holding one of those roles, not their own records when the transition
+needs a second person, its condition met: `{kind: "approval", id, title, subtitle, url, actions,
+at}`) and `mentions` (unread: `{kind: "mention", id, notification, title, subtitle, url, at}`), at
+most 50 each. `partial` is true when a source failed and was left out. `url` opens the record
+(`/open/{entity}/{id}`).
+
+Home asks the apps' `shell.work` providers (`{id, title, endpoint}` in app.yaml) itself, in
+parallel, each within 5 seconds: `GET {endpoint}` answers `{items: [{title, subtitle?, url, due?,
+priority?, updated_at?}]}`, `url` a page of this site, `due` a date (`YYYY-MM-DD`, the day it is
+due in the person's calendar), `priority` `High` to flag it. Home lists everything together, most
+pressing first: overdue, due today, decisions, mentions, then by due date and recency.
+
 ## The assistant — `/api/assistant` ([operations](operations.md#the-assistant))
 
 The signed-in person's conversations with the assistant (cookie session; app screens may not call
