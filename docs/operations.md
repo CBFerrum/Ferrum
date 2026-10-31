@@ -741,6 +741,24 @@ within 24 hours of being made — and the e-way bill before the e-invoice. A Sal
 live (or pending) e-invoice or e-way bill cannot be cancelled in Ferrum; after 24 hours issue a
 credit note, which gets its own e-invoice (type CRN, referring to the original).
 
+## Portugal: certified invoices
+
+Portuguese companies' invoices are signed as the AT requires of certified software, with the
+software producer's key. The server reads (keep them with the deploy secrets):
+
+| Variable | Meaning |
+|---|---|
+| `FERRUM_PT_SIGNING_KEY` | The producer's RSA private key (PEM, PKCS#8 or PKCS#1, newlines included) whose public key was given to the AT at certification |
+| `FERRUM_PT_CERTIFICATE` | The software's AT certificate number, printed on every invoice ("Processado por programa certificado n.º …/AT") |
+| `FERRUM_PT_KEY_VERSION` | The key's version, recorded on each invoice it signs (default `1`) |
+
+* **Without them** submitting a Portuguese company's invoice refuses with an error; other countries
+  are unaffected. Set them before a workspace turns Portugal on.
+* **Rotating the key:** give the AT the new public key, then set the new key and raise
+  `FERRUM_PT_KEY_VERSION`; earlier invoices keep the version that signed them.
+* **Series:** each document series is communicated to the AT first and entered as a PT Series with
+  the AT's validation code; a series' numbers and its hash chain never restart.
+
 ## Apps with interfaces of their own
 
 Apps may own whole interfaces at addresses of their own (`/deals/…`, [plan](plan/apps-ui.md)).
