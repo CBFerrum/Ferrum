@@ -399,6 +399,21 @@ async fn page(
             Some(&boot_status),
         ));
     }
+    // Development (`FERRUM_DEV_UI`): the app's pages from its developer's Vite server; an isolated
+    // interface stays isolated, framed from there.
+    if let Some(origin) = st.shell.dev_ui(ctx.tenant, &app.id) {
+        if app.isolated {
+            let app_json = json!({"id": app.id, "version": app.version, "release": "dev", "routes": shell::routes_of(app), "entry": route, "title": title, "compact": false, "isolated": true});
+            let (boot, _) = match page_bootstrap(&st, &headers, &ctx, device, app_json, "page").await {
+                Ok(b) => b,
+                Err(r) => return Ok(r),
+            };
+            let under = format!("/{}{}", rest.unwrap_or_default(), uri.query().map(|q| format!("?{q}")).unwrap_or_default());
+            return Ok(shell::isolated_dev_page(&boot, &title, &origin, &under));
+        }
+        let compact = item.get("compact").and_then(Value::as_bool).unwrap_or(false);
+        return dev_page(&st, &headers, &ctx, device, app, route, &title, compact, &origin).await;
+    }
     let mut release = st.shell.release_for(ctx.tenant, &app.id, &app.version).await?;
     if release.is_none() && app.bundled && st.apps.ensure_ui_release(ctx.tenant, &app.id, &app.version).await? {
         release = st.shell.release_for(ctx.tenant, &app.id, &app.version).await?;
@@ -453,6 +468,52 @@ async fn page(
     };
     let res = shell::entry_page(&entry, &boot, &shell::csp(Some(app.manifest.as_ref()), &Value::Null));
     Ok(not_modified(&headers, res))
+}
+
+/// An app's page from its developer's Vite server (`ferrum-app dev --ui`, `FERRUM_DEV_UI` only): the
+/// page that server gives, behind the real session, bar and bootstrap, its files and hot-reload
+/// socket allowed from that server. Never cached; the release digest is `dev`.
+#[allow(clippy::too_many_arguments)]
+async fn dev_page(
+    st: &AppState,
+    headers: &HeaderMap,
+    ctx: &Ctx,
+    device: Option<Uuid>,
+    app: &ShellApp,
+    route: &str,
+    title: &str,
+    compact: bool,
+    origin: &str,
+) -> ApiResult<Response> {
+    let failed = |why: String| status_page(StatusCode::BAD_GATEWAY, &format!("{title}'s development server"), &why, &[("Go to Home", "/")], None);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| ApiError(Error::internal(e)))?;
+    let html = match client.get(format!("{origin}/")).header(header::ACCEPT, "text/html").send().await {
+        Ok(r) if r.status().is_success() => r.text().await.unwrap_or_default(),
+        Ok(r) => return Ok(failed(format!("{origin} answered {}.", r.status()))),
+        Err(_) => {
+            return Ok(failed(format!(
+                "{origin} does not answer. Start it in the app's ui/ (npm run dev), or point the app back at its release: ferrum-app dev --ui off --no-upload."
+            )));
+        }
+    };
+    let entry = match ferrum_apps::ui::dev_entry(&html, origin) {
+        Ok(e) => e,
+        Err(e) => return Ok(failed(e.to_string())),
+    };
+    let app_json =
+        json!({"id": app.id, "version": app.version, "release": "dev", "routes": shell::routes_of(app), "entry": route, "title": title, "compact": compact});
+    let (boot, _) = match page_bootstrap(st, headers, ctx, device, app_json, "page").await {
+        Ok(b) => b,
+        Err(r) => return Ok(r),
+    };
+    let policy = shell::dev_csp(&shell::csp(Some(app.manifest.as_ref()), &Value::Null), origin);
+    let mut res = shell::entry_page(&entry, &boot, &policy);
+    res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(res)
 }
 
 /// `/{page}/{workspace}/…`: a page anyone with a link may open (`shell.public`, §7.3), such as a
@@ -1069,6 +1130,10 @@ async fn version(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query
     let st = app_state(&app)?;
     let apps = st.apps.shell_apps(ctx.tenant).await?;
     let Some(a) = apps.iter().find(|a| a.id == q.app) else { return Err(ApiError(Error::NotFound(format!("app {}", q.app)))) };
+    // An app served by its developer's Vite server is never outdated: it reloads itself.
+    if st.shell.dev_ui(ctx.tenant, &a.id).is_some() {
+        return Ok(Json(json!({"app": a.id, "version": a.version, "release": "dev"})).into_response());
+    }
     let release = st.shell.release_for(ctx.tenant, &a.id, &a.version).await?;
     Ok(Json(json!({"app": a.id, "version": a.version, "release": release.map(|r| r.digest.clone())})).into_response())
 }

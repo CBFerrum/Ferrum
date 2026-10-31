@@ -39,6 +39,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `MAILER_*` | no | SMTP for mail: notifications people chose to have by email (at once, or in a daily digest), and apps' mail. Without it, notifications stay in the bar and people cannot choose email |
 | `FERRUM_APP_STORES` | no | App stores, comma-separated base URLs (`https://store.example`); empty: no store, only apps built in or uploaded |
 | `FERRUM_APP_TRUSTED_KEYS` | with stores | Comma-separated `store:<base64>` / `publisher:<base64>` Ed25519 public keys whose signatures this cluster trusts (`ferrum-app keygen` prints them). Store apps need a store countersignature by one of them; several keys may be trusted at once (rotation) |
+| `FERRUM_DEV_UI` | no | Development only: administrators may serve an app's pages from its interface's Vite server on the same machine (`ferrum-app dev --ui`, [Apps with interfaces of their own](#apps-with-interfaces-of-their-own)). The server warns at start when it is on. Never on a server people use |
 | `FERRUM_APP_UPLOADS` | no | Who may upload app bundles: `off`, `private` (production default: sandboxed apps without tables, visible only in the uploading workspace) or `cluster` (development default: available to every workspace) |
 | `FERRUM_USER_REQUESTS_PER_MINUTE` | no | Requests one user (with any of their sessions and API keys) may make per minute on each replica; beyond it they get `429` with `Retry-After`. Default 3000; `0` turns it off. It counts per replica, so the cluster-wide budget grows with the replica count |
 | `FERRUM_ADDRESS_REQUESTS_PER_MINUTE` | no | Requests one client address may make per minute on each replica, counted for requests that came through the proxy (`X-Forwarded-For`); default 6000, `0` turns it off. Health probes and in-cluster calls are not counted |
@@ -781,6 +782,14 @@ the bar runtime (`/_shell/…`) and the app's files (`/_ui/…`).
   sets cookies. An app whose `{app}--{workspace}` is longer than 63 characters keeps the sandboxed
   frame. A workspace's slug names its apps' origins, so the database never hands a slug to another
   workspace: a renamed or deleted workspace's slug is retired for good.
+* **Size budgets.** An interface's first script (its entry and the modules preloaded with it) is at
+  most 200 KB compressed and its CSS 50 KB; pages load when opened. Ferrum-Frontend's build and each
+  app's `check` (`packages/build`) fail over budget, so a release cannot grow past it unnoticed.
+* **Developing an interface.** On a development server run with `FERRUM_DEV_UI=1`: in the app's
+  `ui/`, `npm run dev` starts Vite (`packages/build/cli.mjs dev`), and `ferrum-app dev --ui
+  http://localhost:5173 --no-upload` serves the app's pages from it behind the real session, bar
+  and bootstrap, with hot reload, until `--ui off` or a restart. `ferrum-app new <id> --ui` makes an
+  app with an interface to start from.
 * **The portal** ([plan](plan/apps-ui.md) §9.1) is at `/portal/` on the workspace's host, and at
   the root of a host whose target is `portal` (`support.example.com`): the pages apps give
   customers and suppliers (Helpdesk's "Your tickets", ERP's "Your invoices"). Administrators add

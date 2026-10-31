@@ -130,7 +130,12 @@ pub fn prepare(app: &str, files: BTreeMap<String, Vec<u8>>) -> Result<PreparedUi
     let Some(index) = files.get("index.html") else { return bad("there is no index.html") };
     let index = std::str::from_utf8(index).map_err(|_| AppError::Bundle("ui: index.html is not UTF-8".into()))?.to_string();
     let digest = digest_of(files.iter().map(|(p, b)| (p.as_str(), b.as_slice())));
-    let entry = entry_template(&index, &files, &format!("/_ui/{app}/{digest}/"))?;
+    let base = format!("/_ui/{app}/{digest}/");
+    let entry = entry_template(&index, &|v: &str| match local_file(v)? {
+        Some(path) if files.contains_key(&path) => Ok(Some(format!("{base}{path}"))),
+        Some(path) => Err(format!("refers to {path}, which is not in the release")),
+        None => Ok(None),
+    })?;
     let files = files.into_iter().filter(|(p, _)| p != "index.html").map(|(p, b)| (p.clone(), (b, content_type(&p).expect("checked")))).collect();
     Ok(PreparedUi { digest, files, entry })
 }
@@ -324,7 +329,28 @@ fn local_file(value: &str) -> Result<Option<String>, String> {
     Ok(Some(path.to_string()))
 }
 
-fn entry_template(html: &str, files: &BTreeMap<String, Vec<u8>>, base: &str) -> Result<EntryTemplate, AppError> {
+/// The entry page of an interface served by its developer's Vite server (`ferrum-app dev --ui`, on a
+/// server with `FERRUM_DEV_UI` only): the page that server gives, with the files it names loaded
+/// from it (`origin`, such as `http://localhost:5173`). Inline scripts are refused as in releases.
+pub fn dev_entry(html: &str, origin: &str) -> Result<EntryTemplate, AppError> {
+    let origin = origin.trim_end_matches('/');
+    entry_template(html, &|v: &str| {
+        let v = v.trim();
+        if v.is_empty() || v.starts_with('#') || v.starts_with("data:") || v.starts_with(origin) {
+            return Ok(None);
+        }
+        if v.starts_with("//") || v.contains("://") || v.contains(':') {
+            return Err(format!("'{v}' is not the development server's"));
+        }
+        Ok(Some(format!("{origin}/{}", v.trim_start_matches("./").trim_start_matches('/'))))
+    })
+}
+
+/// What an address in an entry page becomes: its replacement, `None` to keep it as it is, or why it
+/// is refused.
+type Address<'a> = dyn Fn(&str) -> Result<Option<String>, String> + 'a;
+
+fn entry_template(html: &str, address: &Address) -> Result<EntryTemplate, AppError> {
     let tags = tags(html)?;
     let mut head = None;
     let mut body = None;
@@ -378,13 +404,8 @@ fn entry_template(html: &str, files: &BTreeMap<String, Vec<u8>>, base: &str) -> 
                 || rel
                     .split_whitespace()
                     .any(|r| matches!(r, "stylesheet" | "modulepreload" | "preload" | "prefetch" | "icon" | "apple-touch-icon" | "manifest" | "mask-icon"));
-            match local_file(v) {
-                Ok(Some(path)) if loads => {
-                    if !files.contains_key(&path) {
-                        return bad(format!("index.html refers to {path}, which is not in the release"));
-                    }
-                    edits.push((*vs, *ve, format!("{base}{path}")));
-                }
+            match address(v) {
+                Ok(Some(to)) if loads => edits.push((*vs, *ve, to)),
                 Ok(_) => {}
                 Err(why) if loads => return bad(format!("index.html: {why}")),
                 Err(_) => {}
@@ -400,7 +421,7 @@ fn entry_template(html: &str, files: &BTreeMap<String, Vec<u8>>, base: &str) -> 
     }
     // Apply the rewrites, keeping track of where the two insertion points move.
     edits.sort_by_key(|e| e.0);
-    let mut out = String::with_capacity(html.len() + edits.len() * base.len());
+    let mut out = String::with_capacity(html.len() + edits.iter().map(|e| e.2.len()).sum::<usize>());
     let (mut head_out, mut body_out) = (None, None);
     let mut at = 0;
     for (vs, ve, replacement) in edits {
@@ -498,6 +519,18 @@ mod tests {
         let mut changed = files(VITE);
         changed.insert("assets/index-B1x2.js".into(), b"changed".to_vec());
         assert_ne!(prepare("crm", changed).unwrap().digest, ui.digest);
+    }
+
+    #[test]
+    fn a_development_server_page_loads_from_it() {
+        let vite = r#"<!doctype html><html><head><script type="module" src="/@vite/client"></script><link rel="icon" href="./favicon.svg"></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>"#;
+        let page = dev_entry(vite, "http://localhost:5173/").unwrap().render("<!--HEAD-->", "<!--BAR-->");
+        assert!(page.contains(r#"src="http://localhost:5173/@vite/client""#), "{page}");
+        assert!(page.contains(r#"src="http://localhost:5173/src/main.tsx""#));
+        assert!(page.contains(r#"href="http://localhost:5173/favicon.svg""#));
+        assert!(page.contains("<head><!--HEAD-->") && page.contains("<body><!--BAR-->"));
+        assert!(dev_entry(&vite.replace("/src/main.tsx", "https://cdn.example.com/x.js"), "http://localhost:5173").is_err(), "another origin");
+        assert!(dev_entry(&vite.replace("<div id=\"root\"></div>", "<script>go()</script>"), "http://localhost:5173").is_err(), "inline script");
     }
 
     #[test]

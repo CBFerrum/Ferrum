@@ -167,6 +167,9 @@ impl Hooks for App {
         apps.ensure_native("erp", "accounting").await;
         apps.ensure_native("studio", "studio").await;
         crate::shell::register_compiled(&kernel, &storage, &settings, &apps).await;
+        if settings.dev_ui {
+            tracing::warn!("FERRUM_DEV_UI is on: administrators may serve apps' pages from development servers on this machine; never on a server people use");
+        }
         // Shapes B and C (docs/plan/apps-ui.md §7, §9.3): the directory of Ferrum accounts, and every
         // workspace's subdomain of the base domain.
         if let Some(base) = crate::shell::base_domain(&settings) {
