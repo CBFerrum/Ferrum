@@ -9,16 +9,21 @@ use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::Catalog;
 use serde_json::{Value, json};
-use std::path::Path;
 use std::sync::Arc;
 
 async fn fresh_kernel() -> Arc<Kernel> {
     let url = std::env::var("FERRUM_MCP_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_mcp_test".into());
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
-    let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
+    let mut packages = ferrum_domain::packages().expect("the shared packages");
+    packages.extend(ferrum_app_erp::packages().expect("ERP's packages"));
+    let catalog = Catalog::from_packages(packages).expect("catalog");
     let mut hooks = HookRegistry::default();
     ferrum_domain::register(&mut hooks);
+    ferrum_app_erp::register(&mut hooks);
+    for source in ferrum_app_erp::reports() {
+        ferrum_domain::reports::add_source(source);
+    }
     Kernel::boot(db, catalog, hooks, KernelSettings::default(), None).await.expect("boot")
 }
 

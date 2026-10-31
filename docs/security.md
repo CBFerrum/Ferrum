@@ -117,7 +117,8 @@ operator to know. Report a vulnerability privately to the maintainers rather tha
   (its client secret and password are sealed secret fields); a signed QR code is checked for the
   invoice, its number and the seller, and for its signature: under the key the company names, or
   else, for codes NIC issued, under NIC's published signing keys (shipped in
-  `crates/domain/src/nic_keys`, verified against NIC's own signed sample).
+  India's add-on, `addons/india/src/nic_keys` in ferrum-app-erp, verified against NIC's own signed
+  sample).
 * Outbound requests (webhooks, plugins, identity providers, the IRP, push services): https, hosts
   resolved once and pinned, private and loopback addresses refused, no redirects, time and size
   limits. Plugins reach only the hosts they declare; identity providers on a private network need

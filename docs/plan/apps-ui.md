@@ -978,8 +978,8 @@ Ferrum-Frontend becomes an npm workspace that publishes:
 ### 10.5 Where code lives and how UI files reach a server
 
 * Shell, Data and the `@ferrum/*` packages: Ferrum-Frontend (`apps/shell`, `packages/*`). ERP's UI:
-  `ui/` in its own repository, ferrum-app-erp, with its manifest and add-ons (its packages and their
-  logic are still in the Ferrum repository; erp-repo.md).
+  `ui/` in its own repository, ferrum-app-erp, with its manifest, packages, engine and add-ons
+  (erp-repo.md).
 * Every other app: `ui/` in its own repository, built and tested in its CI, versioned with its backend.
 * Store apps (WebAssembly, metadata): `ui/dist` inside the signed bundle, as screens are today.
 * Compiled-in apps (built U4a): the app's `ui/dist` is committed and embedded in its crate (`UI`, by

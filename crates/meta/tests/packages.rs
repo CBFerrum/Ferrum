@@ -1,4 +1,5 @@
-//! The shipped packages must always load, validate and merge.
+//! The shared packages shipped here must always load, validate and merge (ERP's are checked in its
+//! repository).
 
 use ferrum_meta::{Catalog, effective};
 use std::path::Path;
@@ -13,6 +14,7 @@ fn shipped_packages_are_valid() {
     for p in &all {
         effective::build(&cat, std::slice::from_ref(p), &[], 1).unwrap_or_else(|e| panic!("package {p} alone: {e}"));
     }
-    assert!(schema.entity("SalesInvoice").is_some());
-    assert!(schema.entity("Customer").unwrap().storage_of("in_gstin").is_some());
+    for e in ["Company", "Contact", "Customer", "Item", "Project"] {
+        assert!(schema.entity(e).is_some(), "{e}");
+    }
 }

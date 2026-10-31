@@ -32,7 +32,7 @@ async fn kernel_end_to_end() {
             admin_email: "admin@acme.test".into(),
             admin_password: "Correct-Horse-9".into(),
             admin_name: None,
-            packages: vec!["selling".into()],
+            packages: vec!["parties".into(), "products".into(), "project_records".into()],
             settings: Some(json!({"fiscal_year_start_month": 4})),
         })
         .await
@@ -56,9 +56,8 @@ async fn kernel_end_to_end() {
 
     // Numbered master with defaults; unknown fields rejected.
     assert!(k.insert(&ctx, "Customer", obj(json!({"customer_name": "X", "nope": 1}))).await.is_err());
-    let c = k.insert(&ctx, "Customer", obj(json!({"customer_name": "Globex", "credit_limit": "1,000.50"}))).await.expect("customer");
+    let c = k.insert(&ctx, "Customer", obj(json!({"customer_name": "Globex"}))).await.expect("customer");
     assert_eq!(c["number"], json!("CUST-00001"));
-    assert_eq!(c["credit_limit"], json!("1000.5"));
     assert_eq!(c["customer_type"], json!("Company"));
     let cid: uuid::Uuid = c["id"].as_str().unwrap().parse().unwrap();
 
@@ -108,17 +107,30 @@ async fn kernel_end_to_end() {
     let cyc = k.update(&ctx, "ItemGroup", root_id, obj(json!({"parent_group": leaf_id})), None).await;
     assert!(cyc.is_err(), "leaf is not a group, and the link would create a cycle: {cyc:?}");
 
-    // Foreign keys: a company in use cannot be deleted; customer deletion works.
-    let fy = k
-        .insert(&ctx, "FiscalYear", obj(json!({"year_name": "2026-27", "company": company_id, "start_date": "2026-04-01", "end_date": "2027-03-31"})))
+    // Exclusion constraints: two prices of one item in one price list cannot cover the same dates.
+    let nos = k.list(&ctx, "Uom", &ListQuery { filters: parse_filters(&json!({"uom_name": "Nos"})).unwrap(), ..Default::default() }).await.unwrap();
+    let kit = k
+        .insert(
+            &ctx,
+            "Item",
+            obj(json!({"item_code": "KIT", "item_name": "Kit", "item_group": leaf_id, "stock_uom": nos.rows[0]["id"], "standard_rate": "1,000.50"})),
+        )
         .await
-        .expect("fiscal year");
-    let overlap =
-        k.insert(&ctx, "FiscalYear", obj(json!({"year_name": "X", "company": company_id, "start_date": "2026-06-01", "end_date": "2027-05-31"}))).await;
-    assert!(matches!(&overlap, Err(Error::Conflict(m)) if m == "Fiscal years of a company cannot overlap"), "exclusion constraint: {overlap:?}");
+        .expect("item");
+    assert_eq!(kit["standard_rate"], json!("1000.5"), "amounts parse with thousands separators");
+    let retail = k.insert(&ctx, "PriceList", obj(json!({"price_list_name": "Retail", "currency": inr_id, "selling": true}))).await.expect("price list");
+    let price = |from: &str, upto: &str| obj(json!({"item": kit["id"], "price_list": retail["id"], "rate": "10", "valid_from": from, "valid_upto": upto}));
+    k.insert(&ctx, "ItemPrice", price("2026-04-01", "2027-03-31")).await.expect("a price");
+    let overlap = k.insert(&ctx, "ItemPrice", price("2026-06-01", "2027-05-31")).await;
+    assert!(
+        matches!(&overlap, Err(Error::Conflict(m)) if m == "Another price for this item in this price list covers these dates"),
+        "exclusion constraint: {overlap:?}"
+    );
+
+    // Foreign keys: a company in use cannot be deleted; customer deletion works.
+    k.insert(&ctx, "Project", obj(json!({"project_name": "Rollout", "company": company_id}))).await.expect("project");
     let del = k.delete(&ctx, "Company", company_id.parse().unwrap(), None).await;
     assert!(matches!(del, Err(Error::Conflict(_))), "{del:?}");
-    let _ = fy;
 
     // Pagination with cursors.
     for i in 0..25 {
@@ -141,7 +153,7 @@ async fn kernel_end_to_end() {
             admin_email: "admin@globex.test".into(),
             admin_password: "Correct-Horse-9".into(),
             admin_name: None,
-            packages: vec!["selling".into()],
+            packages: vec!["parties".into(), "products".into()],
             settings: None,
         })
         .await

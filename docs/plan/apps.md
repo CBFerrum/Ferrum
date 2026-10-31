@@ -183,7 +183,8 @@ templates, CI workflow templates and the developer guide.
 ## 11. Native apps in their own repositories
 
 * Each native app repository holds a Rust crate (`ferrum-app-<id>`) and its `packages/`. The crate
-  depends on the platform crates (`ferrum-kernel`, `ferrum-meta`, `ferrum-domain`) by git tag and
+  depends on the platform crates (`ferrum-kernel`, `ferrum-meta`, `ferrum-domain`; an app that builds
+  on ERP's documents also on `ferrum-app-erp`, erp-repo.md) by git tag and
   embeds its packages at compile time, exposing one entry point (manifest, embedded package files,
   hooks, reports, endpoints, upkeep).
 * The Ferrum server includes official native apps as cargo features pointing at those

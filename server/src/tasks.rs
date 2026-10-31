@@ -115,7 +115,7 @@ impl Task for RunMaintenance {
     async fn run(&self, ctx: &AppContext, _vars: &Vars) -> Result<()> {
         let k = kernel(ctx)?;
         k.maintenance().await.map_err(|e| Error::Message(e.to_string()))?;
-        ferrum_domain::maintenance(&k).await.map_err(|e| Error::Message(e.to_string()))?;
+        ferrum_app_erp::maintenance(&k).await.map_err(|e| Error::Message(e.to_string()))?;
         println!("maintenance done");
         Ok(())
     }

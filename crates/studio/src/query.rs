@@ -1386,6 +1386,7 @@ pub(crate) mod tests {
 
     pub(crate) fn schema() -> Arc<Schema> {
         let mut pkgs = ferrum_domain::packages().unwrap();
+        pkgs.extend(ferrum_app_erp::packages().unwrap());
         pkgs.extend(crate::packages().unwrap());
         let catalog = ferrum_meta::Catalog::from_packages(pkgs).unwrap();
         let mut s = ferrum_meta::effective::build(&catalog, &["selling".into(), "buying".into(), "studio".into()], &[], 1).unwrap();

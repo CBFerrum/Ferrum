@@ -15,7 +15,7 @@ use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::sso::SsoProviderInput;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings};
-use ferrum_meta::Catalog;
+use ferrum_meta::{Catalog, PermissionDef};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use ring::rand::SystemRandom;
 use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
@@ -193,7 +193,7 @@ async fn single_sign_on() {
             admin_email: "admin@ssoco.test".into(),
             admin_password: "Correct-Horse-9".into(),
             admin_name: None,
-            packages: vec!["accounting".into()],
+            packages: vec!["parties".into()],
             settings: None,
         })
         .await
@@ -254,6 +254,9 @@ async fn single_sign_on() {
     assert!(matches!(sign_in(&k, &idp, provider, json!({"sub": "x1", "email_verified": false})).await, Err(Error::Forbidden(_))));
     assert!(matches!(sign_in(&k, &idp, provider, json!({"sub": "x2", "email": "new@ssoco.test"})).await, Err(Error::Forbidden(_))), "no account");
     assert!(matches!(sign_in(&k, &idp, provider, json!({"email_verified": null})).await, Err(Error::Forbidden(_))), "unsaid, no domains listed");
+    // A role new people get (the shared packages bring none).
+    let customers = PermissionDef { entity: "Customer".into(), read: true, ..Default::default() };
+    k.set_role_permission(&admin, "Customer Viewer", &customers).await.expect("a role");
     let role: String = read(&k, tenant, "select name from role where tenant_id = $1 order by name limit 1".into()).await.remove(0);
     let mut creating = input(&issuer);
     creating.client_secret = None;

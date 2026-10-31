@@ -146,7 +146,7 @@ impl Hooks for App {
         )
         .await
         .map_err(|e| Error::Message(format!("kernel boot: {e}")))?;
-        ferrum_domain::maintenance(&kernel).await.map_err(|e| Error::Message(format!("domain maintenance: {e}")))?;
+        ferrum_app_erp::maintenance(&kernel).await.map_err(|e| Error::Message(format!("ERP's upkeep: {e}")))?;
         // Loco signs with the base64-decoded secret: reject anything that is not valid base64 at boot.
         if loco_rs::auth::jwt::JWT::new(&jwt.secret).generate_token(60, "probe".into(), serde_json::Map::new()).is_err() {
             return Err(Error::Message("auth.jwt.secret must be base64 (generate one with `openssl rand -base64 48`)".into()));
@@ -249,7 +249,7 @@ impl Hooks for App {
         state.background.lock().await.extend(listeners);
         if state.settings.run_background {
             let mut handles = state.kernel.spawn_background(state.shutdown.subscribe());
-            // Domain upkeep (ledger partitions for the coming year) on the same cadence.
+            // ERP's upkeep (journal partitions for the coming year) on the same cadence.
             let (k, mut stop) = (state.kernel.clone(), state.shutdown.subscribe());
             handles.push(tokio::spawn(async move {
                 loop {
@@ -257,8 +257,8 @@ impl Hooks for App {
                         _ = stop.changed() => return,
                         _ = tokio::time::sleep(Duration::from_secs(6 * 3600)) => {}
                     }
-                    if let Err(e) = ferrum_domain::maintenance(&k).await {
-                        tracing::warn!("domain maintenance failed: {e}");
+                    if let Err(e) = ferrum_app_erp::maintenance(&k).await {
+                        tracing::warn!("ERP's upkeep failed: {e}");
                     }
                 }
             }));

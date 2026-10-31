@@ -14,11 +14,21 @@ fn obj(v: Value) -> ferrum_kernel::Doc {
     v.as_object().cloned().unwrap()
 }
 
+/// Customers' credit limits in a permission group of their own, as an app's package adds them (ERP's
+/// selling does): field groups are the kernel's, so this test brings its own.
+const CREDIT_PACKAGE: &str = "{package: credit, version: '1', depends: [parties], overlays: [{entity: Customer, ops: [{op: add_field, column: true, \
+     after: payment_terms_days, field: {name: credit_limit, type: currency, min: '0', perm_group: credit}}]}]}";
+
 async fn fresh_kernel() -> Arc<Kernel> {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
-    let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages");
+    let mut packages: Vec<_> =
+        ["core", "contacts", "parties", "products", "project_records"].iter().map(|p| ferrum_meta::catalog::load_package_dir(&dir.join(p)).expect(p)).collect();
+    let credit = std::collections::BTreeMap::from([("package.yaml".to_string(), CREDIT_PACKAGE.to_string())]);
+    packages.push(ferrum_meta::catalog::load_package_files(&credit).expect("credit package"));
+    let catalog = Catalog::from_packages(packages).expect("catalog");
     let settings = KernelSettings { pdf_url: Some(fake_pdf_renderer().await), ..Default::default() };
     Kernel::boot(db, catalog, HookRegistry::default(), settings, Some(Arc::new(Captured))).await.expect("boot")
 }
@@ -137,7 +147,7 @@ async fn scenario() {
             admin_email: "admin@collab.test".into(),
             admin_password: "Correct-Horse-9".into(),
             admin_name: Some("Ada Admin".into()),
-            packages: vec!["selling".into()],
+            packages: vec!["parties".into(), "products".into(), "credit".into()],
             settings: None,
         })
         .await

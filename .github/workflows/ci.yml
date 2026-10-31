@@ -33,7 +33,6 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       FERRUM_TEST_DATABASE_URL: postgres://ferrum:ferrum@localhost:5432/ferrum_test
-      FERRUM_DOMAIN_TEST_DATABASE_URL: postgres://ferrum:ferrum@localhost:5432/ferrum_domain_test
       FERRUM_MCP_TEST_DATABASE_URL: postgres://ferrum:ferrum@localhost:5432/ferrum_mcp_test
       FERRUM_PLUGINS_TEST_DATABASE_URL: postgres://ferrum:ferrum@localhost:5432/ferrum_plugins_test
     steps:
@@ -49,7 +48,6 @@ jobs:
           psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 <<'SQL'
           create role ferrum login password 'ferrum';
           create database ferrum_test owner ferrum;
-          create database ferrum_domain_test owner ferrum;
           create database ferrum_mcp_test owner ferrum;
           create database ferrum_plugins_test owner ferrum;
           create database ferrum_studio_test owner ferrum;
