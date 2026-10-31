@@ -34,6 +34,7 @@ pub use hooks::PluginHook;
 pub use sockets::{Outgoing, SocketHub};
 
 use dashmap::DashMap;
+use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::{Action, Ctx, Db, Error, FieldError, Kernel, Result};
 use ferrum_meta::{EntityDef, OverlayOp, PermissionDef};
 use runtime::HostApi;
@@ -232,6 +233,64 @@ pub struct PluginHost {
     loaded: DashMap<Uuid, (Instant, Arc<Vec<Loaded>>)>,
     pub sockets: Arc<SocketHub>,
     allow_private_http: bool,
+    /// Seals each configuration value at rest (gateways' API keys and webhook secrets among them);
+    /// without one (tests), configuration is stored as given.
+    sealing: std::sync::OnceLock<SecretKey>,
+}
+
+/// How a sealed configuration value is stored: `{"$sealed": <AES-256-GCM, base64>, "$key": <key id>}`.
+const SEALED: &str = "$sealed";
+
+/// What a configuration value is bound to: its workspace, plugin and key (a sealed value cannot be
+/// moved to another plugin or setting).
+fn config_aad(tenant: Uuid, plugin: &str, key: &str) -> String {
+    format!("{tenant}/plugin/{plugin}/{key}")
+}
+
+/// `config` with every value sealed (values sealed already stay as they are).
+fn seal_config(key: &SecretKey, tenant: Uuid, plugin: &str, config: Map<String, Value>) -> Result<Map<String, Value>> {
+    config
+        .into_iter()
+        .map(|(k, v)| {
+            if is_sealed(&v) || v.is_null() {
+                return Ok((k, v));
+            }
+            let sealed = key.seal(&config_aad(tenant, plugin, &k), &v.to_string())?;
+            Ok((k, json!({ "$sealed": sealed, "$key": key.id })))
+        })
+        .collect()
+}
+
+fn is_sealed(v: &Value) -> bool {
+    v.get(SEALED).is_some_and(Value::is_string)
+}
+
+/// `config` as the plugin reads it: sealed values opened. One that cannot be opened (sealed with
+/// another key, or tampered with) is left out and logged, so the plugin reports it as missing
+/// rather than every plugin of the workspace failing to load.
+fn open_config(key: Option<&SecretKey>, tenant: Uuid, plugin: &str, config: Value) -> Value {
+    let Value::Object(map) = config else { return config };
+    let mut out = Map::new();
+    for (k, v) in map {
+        if !is_sealed(&v) {
+            out.insert(k, v);
+            continue;
+        }
+        let opened = key
+            .ok_or_else(|| "no key to open it with".to_string())
+            .and_then(|key| match v.get("$key").and_then(Value::as_str) {
+                Some(id) if id != key.id => Err(format!("it was sealed with another key ({id})")),
+                _ => key.open(&config_aad(tenant, plugin, &k), v[SEALED].as_str().unwrap_or_default()).map_err(|e| e.to_string()),
+            })
+            .and_then(|plain| serde_json::from_str::<Value>(&plain).map_err(|e| e.to_string()));
+        match opened {
+            Ok(value) => {
+                out.insert(k, value);
+            }
+            Err(why) => tracing::warn!(%tenant, plugin, setting = %k, "a plugin setting could not be opened: {why}; set it again"),
+        }
+    }
+    Value::Object(out)
 }
 
 fn require_admin(ctx: &Ctx) -> Result<()> {
@@ -277,7 +336,14 @@ impl PluginHost {
         config.consume_fuel(true);
         config.max_wasm_stack(512 << 10);
         let engine = Engine::new(&config).map_err(|e| Error::internal(format!("wasm engine: {e}")))?;
-        Ok(Arc::new(PluginHost { engine, modules: DashMap::new(), loaded: DashMap::new(), sockets: SocketHub::new(), allow_private_http }))
+        Ok(Arc::new(PluginHost {
+            engine,
+            modules: DashMap::new(),
+            loaded: DashMap::new(),
+            sockets: SocketHub::new(),
+            allow_private_http,
+            sealing: std::sync::OnceLock::new(),
+        }))
     }
 
     /// Compiles a module and checks the contract: its only import may be `ferrum.host_call`.
@@ -304,6 +370,39 @@ impl PluginHost {
     /// Runs one call without host access (tests, pure plugins).
     pub async fn execute(&self, module: &Module, fuel: u64, memory_mb: u32, input: &[u8]) -> std::result::Result<Vec<u8>, String> {
         runtime::run(&self.engine, module, fuel, memory_mb, input.to_vec(), &mut runtime::NoHost).await
+    }
+
+    /// Seals plugins' configuration with `key` from now on (the server's secret key; set once).
+    pub fn seal_with(&self, key: SecretKey) {
+        let _ = self.sealing.set(key);
+    }
+
+    /// Seals configuration stored before values were sealed, in every workspace; returns how many
+    /// plugins changed. Safe to run at every start: a plugin whose configuration an administrator
+    /// changes meanwhile is left for the next run.
+    pub async fn seal_stored(&self, db: &Db) -> Result<usize> {
+        let Some(key) = self.sealing.get() else { return Ok(0) };
+        let mut tx = db.system_tx().await?;
+        let rows: Vec<(Uuid, Uuid, String, Value)> = sqlx::query_as("select tenant_id, id, name, config from plugin").fetch_all(&mut *tx).await?;
+        let mut changed = 0;
+        for (tenant, id, name, config) in rows {
+            let Value::Object(map) = &config else { continue };
+            if map.values().all(|v| is_sealed(v) || v.is_null()) {
+                continue;
+            }
+            let sealed = Value::Object(seal_config(key, tenant, &name, map.clone())?);
+            changed += sqlx::query("update plugin set config = $3 where tenant_id = $1 and id = $2 and config = $4")
+                .bind(tenant)
+                .bind(id)
+                .bind(&sealed)
+                .bind(&config)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected() as usize;
+            self.invalidate(tenant);
+        }
+        tx.commit().await?;
+        Ok(changed)
     }
 
     pub fn invalidate(&self, tenant: Uuid) {
@@ -334,6 +433,7 @@ impl PluginHost {
                 if m.hooks.is_empty() {
                     m.hooks = serde_json::from_value(hooks).unwrap_or_default();
                 }
+                let config = open_config(self.sealing.get(), tenant, &name, config);
                 Loaded { id, name, sha, manifest: Arc::new(m), config: Arc::new(config), user_id, fuel: fuel.max(0) as u64, memory_mb: mem.max(1) as u32 }
             })
             .collect();
@@ -451,7 +551,11 @@ impl PluginHost {
         let sha = hex::encode(Sha256::digest(wasm));
         let manifest = serde_json::to_value(m).map_err(Error::internal)?;
         let hooks = serde_json::to_value(&m.hooks).map_err(Error::internal)?;
-        let config = Value::Object(p.config.clone().unwrap_or_default());
+        let config = p.config.clone().unwrap_or_default();
+        let config = Value::Object(match self.sealing.get() {
+            Some(key) => seal_config(key, ctx.tenant, &p.name, config)?,
+            None => config,
+        });
         let mut tx = k.db.tenant_tx(ctx.tenant).await?;
         let id: Uuid = sqlx::query_scalar(
             "insert into plugin (tenant_id, id, name, version, description, sha256, wasm, hooks, manifest, config, user_id, fuel_limit, memory_limit_mb, created_by) \
@@ -569,6 +673,18 @@ impl PluginHost {
         let (removed, set): (Vec<(&String, &Value)>, Vec<(&String, &Value)>) = config.iter().partition(|(_, v)| merge && v.is_null());
         let set: Map<String, Value> = set.into_iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         let removed: Vec<String> = removed.into_iter().map(|(k, _)| k.clone()).collect();
+        let set = match self.sealing.get() {
+            Some(key) => {
+                let name: String = sqlx::query_scalar("select name from plugin where tenant_id = $1 and id = $2")
+                    .bind(ctx.tenant)
+                    .bind(id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .ok_or_else(|| Error::NotFound("plugin".into()))?;
+                seal_config(key, ctx.tenant, &name, set)?
+            }
+            None => set,
+        };
         let n = sqlx::query(
             "update plugin set config = case when $5 then (config || $3) - $4::text[] else $3 end, updated_at = now() \
              where tenant_id = $1 and id = $2",

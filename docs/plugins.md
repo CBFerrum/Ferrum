@@ -44,7 +44,10 @@ Any language that compiles to a core WebAssembly module works: the contract is b
 `POST /api/admin/plugins` (administrators) with the manifest fields plus `wasm_base64`. Installing
 again with the same `name` upgrades it in place. `PUT /api/admin/plugins/{id}/enabled`
 `{"enabled": false}` switches it off at once; `PUT /api/admin/plugins/{id}/config` `{"config": {...}}`
-replaces its settings and secrets (listings only show the keys); `DELETE /api/admin/plugins/{id}`
+replaces its settings and secrets (listings only show the keys; each value is sealed at rest with the
+server's `FERRUM_SECRET_KEY`, bound to its workspace, plugin and key, and settings stored before that
+are sealed when the server starts; the plugin reads them as given, and one that cannot be opened, such
+as after the key changed, is left out with a warning in the log until it is set again); `DELETE /api/admin/plugins/{id}`
 removes it with its private data (records it created stay).
 
 ## Manifest
