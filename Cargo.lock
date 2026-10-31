@@ -2260,7 +2260,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-campaigns"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-campaigns?branch=main#f0aa288bddbeed9d24c8ff0db387809e3e899361"
+source = "git+https://github.com/CBFerrum/ferrum-app-campaigns?branch=main#0b1be93a610f7072a991aef4894275eb260507d8"
 dependencies = [
  "async-trait",
  "chrono",
