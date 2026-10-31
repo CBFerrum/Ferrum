@@ -165,6 +165,8 @@ apps! {
     native {
         // India first: its hooks run right after ERP's, ahead of the other add-ons' on ERP's documents.
         "india" => ferrum_india,
+        // The EU's rules for companies in its member states (localization.md L1).
+        "eu" => ferrum_eu,
         "crm" => ferrum_app_crm,
         "projects" => ferrum_app_projects,
         "helpdesk" => ferrum_app_helpdesk,

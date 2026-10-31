@@ -83,6 +83,30 @@ POS's, CRM's and Commerce's tests still pass.
 
 ## L1. The European Union (`eu`): the rules members share
 
+**Built (31 October 2026):** ERP 34d813d (ERP 0.4.0, the European Union add-on 0.1.0, crate
+`ferrum-eu` in `addons/eu`), compiled into Ferrum by the commit that marks this. What it does:
+
+* Which VAT a sale or purchase of a company in a member state takes, line by line: at home; goods
+  to businesses elsewhere in the EU as intra-Community supplies (Art. 138, category K) and services
+  reverse-charged (Art. 196, AE); goods and digital services to consumers elsewhere at the
+  destination's rates through the OSS when the company says so; exports (Art. 146) and services
+  outside the EU (G); acquisitions and services from abroad reverse-charged by the company. Mixed
+  OSS and home-taxed lines are refused (they belong on separate invoices).
+* Invoices carry the legal mentions, the customer's VAT number as it was and VIES's consultation
+  number; VAT numbers are checked for their country's form and in VIES (REST, through the
+  outbox); a supply without VAT to a business waits for a VIES-confirmed number.
+* Rates are data (`EuVatRate`): standard rates seeded from TEDB with the day each took effect,
+  everything else fetched from TEDB's VAT Retrieval Service; a reduced-rate item carries its rate
+  per country, suggested from its CN code, never guessed.
+* EN 16931 UBL (Peppol BIS Billing 3.0 with both Peppol IDs), checked against the standard's
+  rules before it is written; sending hands it to an access point connector through the outbox
+  (`eu.peppol.send_requested`), which records delivery or failure.
+* The EC sales list and the OSS return (in euro at the ECB rate of the period's end).
+
+Not yet: the connector to a particular Peppol access point (it needs the user's provider and
+account; any provider's connector answers the outbox topic), Intrastat, postponed import VAT, and
+ViDA's later steps (2028, 2030), which come with their dates.
+
 * VAT at standard, reduced and zero rates per member state (rates as data, dated, not code).
 * Between businesses across borders: zero-rated with reverse charge on the buyer, the buyer's VAT
   number required and checked in VIES (the check and its consultation number kept on the
