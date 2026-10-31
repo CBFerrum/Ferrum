@@ -16,7 +16,11 @@ brings ERP to the same shape, in stages that each leave every repository's main 
 | **2. The add-ons** | Finance, Procurement, Stock Operations and Manufacturing Operations, as crates of the repository's workspace with their tests | the server takes them from the ERP repository; this workspace has no `crates/finance` … |
 | **3. The packages and the engine** | ERP's five packages and its logic, into ERP's crate; India's package and logic, into an add-on of its own on a seam every country uses; apps that build on the engine depend on ERP's crate | `ferrum-domain` holds the shared core only; this repository has no ERP or India code or package; existing workspaces run on unchanged |
 
-Stages 1 and 2 are built (31 October 2026). Stage 3 is designed below.
+All three stages are built (31 October 2026). Stage 3 went as designed below, with what the build
+found added in place: step 0 (one shared helper moved before anything else), Campaigns in step 2
+(its tests load CRM's ERP connector), and fixtures of their own for the collaboration and SSO
+tests (a credit-limit field and a role, which ERP's packages used to bring). ERP's CI takes the
+latest stable Rust (1.99), whose clippy asked for one change in the IRP's code from Ferrum (1.95).
 
 ## Stage 3: the packages and the engine
 
