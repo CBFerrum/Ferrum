@@ -214,6 +214,10 @@ pub struct Shell {
     /// This cluster's region, and the other regions' accounts hosts by name.
     pub region: String,
     pub regions: Vec<(String, String)>,
+    /// Development (`FERRUM_DEV_UI`): apps whose pages come from their developer's Vite server, by
+    /// workspace and app; this replica's memory only, forgotten at restart.
+    pub dev_ui: bool,
+    dev_uis: DashMap<(Uuid, String), String>,
 }
 
 /// `settings.regions`: `name=https://accounts.example.eu, …` → (name, origin); the malformed are
@@ -262,7 +266,26 @@ impl Shell {
             hooks_host: base_domain(settings).map(|b| format!("hooks.{b}")),
             region: settings.region.trim().to_ascii_lowercase(),
             regions: parse_regions(&settings.regions),
+            dev_ui: settings.dev_ui,
+            dev_uis: DashMap::new(),
         }
+    }
+
+    /// The Vite server an app's pages come from in a workspace (`FERRUM_DEV_UI` only).
+    pub fn dev_ui(&self, tenant: Uuid, app: &str) -> Option<String> {
+        if !self.dev_ui {
+            return None;
+        }
+        self.dev_uis.get(&(tenant, app.to_string())).map(|e| e.clone())
+    }
+
+    /// Points an app's pages in a workspace at a Vite server on this machine, or back at its
+    /// release (`None`).
+    pub fn set_dev_ui(&self, tenant: Uuid, app: &str, origin: Option<String>) {
+        match origin {
+            Some(o) => self.dev_uis.insert((tenant, app.to_string()), o),
+            None => self.dev_uis.remove(&(tenant, app.to_string())).map(|e| e.1),
+        };
     }
 
     /// Shapes B and C: the cluster's base domain.
@@ -1036,12 +1059,25 @@ pub fn isolated_page(bootstrap: &Value, app: &str, digest: &str, title: &str, or
             String::new(),
         ),
     };
+    isolated_frame(bootstrap, title, &src, &sandbox, &frame_src, &target)
+}
+
+/// An isolated interface served by its developer's Vite server (`ferrum-app dev --ui`,
+/// `FERRUM_DEV_UI` only): still isolated, in the same sandboxed frame with an opaque origin (no
+/// session, no storage), reaching Ferrum only through the bridge; the frame is the dev server's.
+pub fn isolated_dev_page(bootstrap: &Value, title: &str, dev_origin: &str, path: &str) -> Response {
+    let mut res = isolated_frame(bootstrap, title, &format!("{dev_origin}{path}"), ISOLATED_SANDBOX, &format!("{dev_origin}/"), "");
+    res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    res
+}
+
+fn isolated_frame(bootstrap: &Value, title: &str, src: &str, sandbox: &str, frame_src: &str, target: &str) -> Response {
     let html = format!(
         r#"<!doctype html><html lang="en"><head>{head}<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{t}</title><link rel="stylesheet" href="/_shell/v1/pages.css"><script type="module" src="/_shell/v1/isolated.js"></script></head><body class="ferrum-isolated">{SHELL_BODY}<iframe id="ferrum-app" title="{t}" src="{src}" sandbox="{sandbox}" data-origin="{target}" referrerpolicy="no-referrer" allow="clipboard-write; fullscreen"></iframe></body></html>"#,
         head = shell_head(bootstrap),
         t = esc(title),
-        src = esc(&src),
-        target = esc(&target),
+        src = esc(src),
+        target = esc(target),
     );
     // The frame holds the app's release (or its origin) and nothing else: it cannot be sent elsewhere.
     let policy = csp(None, &Value::Null).replace("frame-src 'self';", &format!("frame-src {frame_src};"));
@@ -1228,6 +1264,33 @@ pub fn login_html(boot: &Value, title: &str) -> Response {
     page_response(StatusCode::OK, html, &csp(None, &Value::Null))
 }
 
+/// A development server's address on this machine, as `ferrum-app dev --ui` gives it: http(s) on
+/// localhost, 127.0.0.1 or [::1], with a port; its origin, or `None`.
+pub fn dev_origin(url: &str) -> Option<String> {
+    let (scheme, rest) = url.trim().trim_end_matches('/').split_once("://")?;
+    let (host, port) = rest.rsplit_once(':')?;
+    let ok = matches!(scheme, "http" | "https")
+        && matches!(host, "localhost" | "127.0.0.1" | "[::1]")
+        && !port.is_empty()
+        && port.len() <= 5
+        && port.bytes().all(|b| b.is_ascii_digit());
+    ok.then(|| format!("{scheme}://{host}:{port}"))
+}
+
+/// A page's policy with a development server's origin allowed to give its scripts, styles, images,
+/// fonts, media and workers, and its socket (hot reload).
+pub fn dev_csp(csp: &str, origin: &str) -> String {
+    let socket = origin.replacen("http", "ws", 1);
+    csp.split("; ")
+        .map(|d| match d.split(' ').next().unwrap_or_default() {
+            "script-src" | "style-src" | "img-src" | "font-src" | "media-src" | "worker-src" => format!("{d} {origin}"),
+            "connect-src" => format!("{d} {origin} {socket}"),
+            _ => d.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// A page of the accounts host: the shell's interface (its `accounts` entry) with the bootstrap,
 /// without the bar or its runtime: the accounts host has no apps, search or notifications.
 pub fn accounts_page(entry: &EntryTemplate, bootstrap: &Value, csp: &str) -> Response {
@@ -1256,6 +1319,23 @@ pub fn file_response(bytes: Bytes, content_type: &str, immutable: bool) -> Respo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn development_servers_on_this_machine_only() {
+        assert_eq!(dev_origin("http://localhost:5173/"), Some("http://localhost:5173".into()));
+        assert_eq!(dev_origin("https://127.0.0.1:4000"), Some("https://127.0.0.1:4000".into()));
+        assert_eq!(dev_origin("http://[::1]:5173"), Some("http://[::1]:5173".into()));
+        for bad in
+            ["http://localhost", "http://example.com:5173", "http://localhost.example.com:5173", "ftp://localhost:21", "http://localhost:x", "localhost:5173"]
+        {
+            assert_eq!(dev_origin(bad), None, "{bad}");
+        }
+        let csp = dev_csp("default-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'self'", "http://localhost:5173");
+        assert_eq!(
+            csp,
+            "default-src 'self'; script-src 'self' http://localhost:5173; connect-src 'self' http://localhost:5173 ws://localhost:5173; frame-ancestors 'self'"
+        );
+    }
 
     #[test]
     fn regions_as_configured() {

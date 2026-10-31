@@ -4,8 +4,9 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
 (§22 lists what changed) and two decisions of [platform.md](platform.md) (§21).
 
 **Status, 30 October 2026.**
-* **U0, spike: done in Chrome** ([spike-u0-apps-ui.md](spike-u0-apps-ui.md)); Firefox and WebKit
-  still to run.
+* **U0, spike: done in Chrome** ([spike-u0-apps-ui.md](spike-u0-apps-ui.md)); its questions were then
+  answered by the platform itself, whose every phase since has been checked in Chrome, Firefox and
+  WebKit.
 * **U1, shell platform: built.**
   * Kernel: `crates/kernel/src/shell.rs` and migration 021, for sessions per device, hosts,
     kinds of people and interface releases.
@@ -16,7 +17,15 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
   * Sessions: cookie sessions with Fetch-Metadata checks, and bound tokens for today's web app.
   * Runtime: the bar runtime (`server/shell/`), with the launcher, intents, companion windows, the
     shared live channel and version checks.
-  * Not yet: `ferrum-app dev --ui`.
+  * `ferrum-app dev --ui` (31 October 2026): on a development server (`FERRUM_DEV_UI=1`), an
+    administrator points an installed app's pages at its interface's Vite server on the same machine
+    (`/api/admin/apps/{id}/dev-ui`, kept in memory): the page that server gives, with the shell put
+    in and its files and hot-reload socket allowed by the page's policy; an isolated interface stays
+    isolated, framed from there. `packages/build/cli.mjs dev` runs Vite for an app's `ui/`;
+    `ferrum-app new <id> --ui` makes an app with one (plain files and the bridge for wasm and meta
+    apps, which now also runs on a page of the workspace when the server trusts the app; Vite,
+    React and TypeScript with the packages for native apps). Checked with the Point of Sale's till
+    served from Vite: a style edit applied in place, a source edit reloaded with it.
 * **U2, frontend split: built.**
   * Ferrum-Frontend packages: `@ferrum/client` (the bootstrap, the shell API with fallbacks,
     requests with the browser's session) and `@ferrum/testing`. `@ferrum/kit`, `@ferrum/records`
@@ -31,8 +40,11 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
   * Server: the `shell_v2` setting, carried in the schema so every replica knows at once; the
     shell's pages; ERP as an app, installed wherever its packages are; records claimed by package
     (`shell.open` with `package`); launcher entries into today's web app for Comms, Drive and Docs.
-  * Not yet: ERP's main script is 299 KB compressed, against a 200 KB budget; the packages are
-    built from source in Ferrum-Frontend, not yet published to npm.
+  * Size budgets (§12.9, 31 October 2026): pages load when opened (lazy routes, in the records frame
+    too), so first scripts are 118–186 KB compressed (the shell, ERP and Studio about 120; the apps'
+    137–186); Ferrum-Frontend's build and each app's `check` fail over budget.
+  * Not yet: the packages are built from source in Ferrum-Frontend, not published to npm (a public
+    release, for the owner to decide).
 * **U3, empty core: step 1 built (the platform's packages).**
   * `core` keeps Company, Currency, ExchangeRate, Uom and (until the Projects app takes it) Project.
     New packages: `parties` (Customer, CustomerGroup, Supplier, SupplierGroup) and `products` (Item,

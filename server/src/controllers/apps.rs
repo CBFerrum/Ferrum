@@ -184,4 +184,54 @@ pub fn routes() -> Routes {
         .add("/{id}/upgrade", post(upgrade))
         .add("/{id}/enable", post(enable))
         .add("/{id}/disable", post(disable))
+        .add("/{id}/dev-ui", get(dev_ui).put(set_dev_ui).delete(clear_dev_ui))
+}
+
+// ── development: an app's pages from its developer's Vite server (`ferrum-app dev --ui`) ──
+
+/// Only on a development server (`FERRUM_DEV_UI`), only administrators.
+fn dev_ui_allowed(st: &crate::state::AppState, ctx: &Ctx) -> Result<(), ApiError> {
+    if !st.shell.dev_ui {
+        return Err(ApiError(Error::NotFound("this is not a development server (FERRUM_DEV_UI)".into())));
+    }
+    if !ctx.is_admin {
+        return Err(ApiError(Error::Forbidden("administrator access required".into())));
+    }
+    Ok(())
+}
+
+/// `GET /api/admin/apps/{id}/dev-ui` → `{app, dev_ui}`: where the app's pages come from in this
+/// workspace (`null`: its release).
+async fn dev_ui(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<String>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    dev_ui_allowed(&st, &ctx)?;
+    Ok(Json(json!({"app": id, "dev_ui": st.shell.dev_ui(ctx.tenant, &id)})).into_response())
+}
+
+#[derive(Deserialize)]
+struct DevUi {
+    url: String,
+}
+
+/// `PUT /api/admin/apps/{id}/dev-ui` `{url}`: the app's pages in this workspace come from the Vite
+/// server at `url`, on this machine, until `DELETE` or the server restarts.
+async fn set_dev_ui(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<String>, Json(req): Json<DevUi>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    dev_ui_allowed(&st, &ctx)?;
+    let origin = crate::shell::dev_origin(&req.url)
+        .ok_or_else(|| ApiError(Error::field("url", "names a development server on this machine, such as http://localhost:5173")))?;
+    if !st.apps.shell_apps(ctx.tenant).await?.iter().any(|a| a.id == id && a.manifest.ui.is_some()) {
+        return Err(ApiError(Error::NotFound(format!("this workspace has no app {id} with an interface of its own"))));
+    }
+    st.shell.set_dev_ui(ctx.tenant, &id, Some(origin.clone()));
+    tracing::warn!(app = %id, %origin, "an app's pages come from a development server");
+    Ok(Json(json!({"app": id, "dev_ui": origin})).into_response())
+}
+
+/// `DELETE /api/admin/apps/{id}/dev-ui`: the app's pages come from its release again.
+async fn clear_dev_ui(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<String>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    dev_ui_allowed(&st, &ctx)?;
+    st.shell.set_dev_ui(ctx.tenant, &id, None);
+    Ok(StatusCode::NO_CONTENT.into_response())
 }

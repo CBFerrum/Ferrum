@@ -59,6 +59,7 @@ settings:
   base_domain: "<%= get_env(name="FERRUM_BASE_DOMAIN", default="") %>"
   region: "<%= get_env(name="FERRUM_REGION", default="") %>"
   regions: "<%= get_env(name="FERRUM_REGIONS", default="") %>"
+  dev_ui: <%= get_env(name="FERRUM_DEV_UI", default="false") %>
   packages_dir: <%= get_env(name="FERRUM_PACKAGES_DIR", default="../packages") %>
   db_max_connections: <%= get_env(name="FERRUM_DB_MAX_CONNECTIONS", default="20") %>
   bootstrap_token: <%= get_env(name="FERRUM_BOOTSTRAP_TOKEN", default="dev-bootstrap-token") %>

@@ -134,6 +134,11 @@ pub struct Settings {
     /// the sign-in page offers them, and a workspace not found here is looked for there.
     #[serde(default)]
     pub regions: String,
+    /// Development only (`FERRUM_DEV_UI`): administrators may point an app's pages at their Vite
+    /// server on this machine (`ferrum-app dev --ui`), served behind the real session, bar and
+    /// bootstrap, with hot reload. Never on a server people use.
+    #[serde(default)]
+    pub dev_ui: bool,
 }
 
 fn default_session_days() -> u32 {
