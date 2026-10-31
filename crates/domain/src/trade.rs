@@ -3,13 +3,14 @@
 //! (SalesInvoice / PurchaseInvoice), including stock, ledger postings, open items, returns and
 //! the "create next document" actions.
 
+pub use crate::flow::create_for_user;
 use crate::flow::{self, MapSpec, add_progress_in, created, refresh_billing, refresh_order, sync_invoice_outstanding};
 use crate::ledger::{self, Entry, Line, OpenItem};
 use crate::pricing::{Side, breakup, calculate};
 use crate::stock::{self, MoveIn, Posted, parse_serials};
-use crate::util::{Company, b, company, d, date, elevated, get, id, money, posting_ts, round, rows, s, set, stock_qty, sys, unit_factor};
+use crate::util::{Company, b, company, d, date, get, id, money, posting_ts, round, rows, s, set, stock_qty, sys, unit_factor};
 use async_trait::async_trait;
-use ferrum_kernel::{Action, Doc, DocHook, Error, FieldError, Filter, HookCtx, Result};
+use ferrum_kernel::{Doc, DocHook, Error, FieldError, Filter, HookCtx, Result};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -100,14 +101,6 @@ async fn is_stock_item(hc: &mut HookCtx<'_>, cache: &mut HashMap<Uuid, bool>, it
     let v = b(&it, "is_stock_item");
     cache.insert(item, v);
     Ok(v)
-}
-
-/// Creates a follow-up document for the user. The links back to the source lines are read-only
-/// fields, which only the engine may set, so the insert runs elevated after checking that the
-/// user may create the target.
-pub async fn create_for_user(hc: &mut HookCtx<'_>, entity: &str, input: Doc) -> Result<Doc> {
-    hc.ctx.require(entity, Action::Create)?;
-    hc.kernel.insert_tx(&elevated(hc.ctx), hc.tx, entity, input).await
 }
 
 /// Unit cost at which an item left on the original document (None: use the current valuation).

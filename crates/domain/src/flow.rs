@@ -1,8 +1,8 @@
 //! Document-to-document flows: progress counters on order lines, statuses, and mapping one
 //! document into the next (order → delivery → invoice) for the quantities still open.
 
-use crate::util::{d, id, money, rows, s, set, sys, unit_factor};
-use ferrum_kernel::{Ctx, Doc, Error, Kernel, Result, Tx};
+use crate::util::{d, elevated, id, money, rows, s, set, sys, unit_factor};
+use ferrum_kernel::{Action, Ctx, Doc, Error, HookCtx, Kernel, Result, Tx};
 use rust_decimal::Decimal;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -200,6 +200,14 @@ pub fn map_document_with(src: &Doc, spec: &MapSpec<'_>, extra: &[String]) -> Res
         out.insert("taxes".into(), Value::Array(taxes));
     }
     Ok(out)
+}
+
+/// Creates a follow-up document for the user. The links back to the source lines are read-only
+/// fields, which only the engine may set, so the insert runs elevated after checking that the
+/// user may create the target.
+pub async fn create_for_user(hc: &mut HookCtx<'_>, entity: &str, input: Doc) -> Result<Doc> {
+    hc.ctx.require(entity, Action::Create)?;
+    hc.kernel.insert_tx(&elevated(hc.ctx), hc.tx, entity, input).await
 }
 
 pub fn created(entity: &str, doc: &Doc) -> Value {
