@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-label="Ferrum: ERP, CRM, office, mail and more as apps on one AI-first core: exact money, append-only ledgers, multi-tenant, built to scale out.">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0d1117"/><stop offset="1" stop-color="#142041"/></linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.07"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#486fed"/><stop offset="1" stop-color="#2b54d7"/></linearGradient>
+    <pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.3" fill="#2f5bea" fill-opacity="0.16"/></pattern>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%"><feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#2f5bea" flood-opacity="0.45"/></filter>
+    <clipPath id="card"><rect width="1280" height="360" rx="28"/></clipPath>
+    <style>
+      text { font-family: Inter, "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif; }
+      .sheen { animation: sweep 9s ease-in-out infinite; }
+      .tile { animation: float 7s ease-in-out infinite; }
+      @keyframes sweep { 0% { transform: translateX(-480px) skewX(-18deg); } 60%, 100% { transform: translateX(1760px) skewX(-18deg); } }
+      @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
+      @media (prefers-reduced-motion: reduce) { .sheen, .tile { animation: none; } }
+    </style>
+  </defs>
+  <g clip-path="url(#card)">
+    <rect width="1280" height="360" fill="url(#bg)"/>
+    <rect width="1280" height="360" fill="url(#dots)"/>
+    <circle cx="1150" cy="20" r="230" fill="#2f5bea" fill-opacity="0.1"/>
+    <circle cx="1240" cy="350" r="150" fill="#2f5bea" fill-opacity="0.08"/>
+    <rect class="sheen" x="0" y="-60" width="260" height="480" fill="url(#sheen)"/>
+  </g>
+  <rect x="0.5" y="0.5" width="1279" height="359" rx="28" fill="none" stroke="#30363d"/>
+  <g class="tile"><g transform="translate(72 102)" filter="url(#shadow)"><rect width="144" height="144" rx="36" fill="url(#tile)"/><path d="M45 36h58.5v18H63v18h36v18H63v27H45z" fill="#fff"/></g></g>
+  <text x="264" y="138" font-size="17" font-weight="700" fill="#829df2" letter-spacing="2.4">OPEN-SOURCE BUSINESS PLATFORM</text>
+  <text x="262" y="198" font-size="58" font-weight="750" fill="#e6edf3" letter-spacing="-1">Ferrum</text>
+  <text x="264" y="244" font-size="23" fill="#9da7b3">ERP, CRM, office, mail and more as apps on one AI-first core:</text>
+  <text x="264" y="278" font-size="23" fill="#9da7b3">exact money, append-only ledgers, multi-tenant, built to scale out.</text>
+  <g><rect x="264" y="310" width="52" height="30" rx="15" fill="#172652"/><text x="290.2" y="330" font-size="14.5" font-weight="600" fill="#8da5f3" text-anchor="middle">Rust</text></g>
+  <g><rect x="326.4" y="310" width="104" height="30" rx="15" fill="#172652"/><text x="378.4" y="330" font-size="14.5" font-weight="600" fill="#8da5f3" text-anchor="middle">PostgreSQL</text></g>
+  <g><rect x="440.4" y="310" width="164" height="30" rx="15" fill="#172652"/><text x="522.5" y="330" font-size="14.5" font-weight="600" fill="#8da5f3" text-anchor="middle">MCP for AI agents</text></g>
+  <g><rect x="614.5999999999999" y="310" width="52" height="30" rx="15" fill="#172652"/><text x="640.8" y="330" font-size="14.5" font-weight="600" fill="#8da5f3" text-anchor="middle">Apps</text></g>
+  <g><rect x="676.9999999999999" y="310" width="87" height="30" rx="15" fill="#172652"/><text x="720.4" y="330" font-size="14.5" font-weight="600" fill="#8da5f3" text-anchor="middle">AGPL-3.0</text></g>
+</svg>
