@@ -173,6 +173,10 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     (expected dates as bars, milestones, today's line, the unscheduled listed) and logged time.
     `/open` of a project goes to the project view, ahead of ERP's records of the shared projects.
     Checked in Chrome.
+  * Their notifications have kinds people choose for in the bell: Helpdesk 0.3.1 (tickets assigned
+    to you, customer replies, SLA breaches), HR 0.3.1 (leave and expense requests waiting for your
+    approval, decisions on yours), Projects 0.3.1 (tasks assigned to you, new: someone added to a
+    task's assignees hears of it).
   * Notifications (§12.8): every notification has a kind (the platform's mention, assignment,
     comment, watch, automation and general; apps' `shell.notification` as `{app}.{id}`), and each
     person chooses per kind: in the bar, email at once, a daily email digest, or off. The bell in the
