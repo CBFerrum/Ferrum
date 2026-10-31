@@ -2492,7 +2492,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-pos"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-pos?branch=main#828e415fe7140add1e33e0ee7ebf16b540e95060"
+source = "git+https://github.com/CBFerrum/ferrum-app-pos?branch=main#4d0d500196da01169d680366f82d1f9e1d50c07c"
 dependencies = [
  "async-trait",
  "chrono",
