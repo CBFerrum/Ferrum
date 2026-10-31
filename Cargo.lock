@@ -2367,7 +2367,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-docs"
 version = "0.2.1"
-source = "git+https://github.com/CBFerrum/ferrum-app-docs?branch=main#e6ad41b7b487e7737b11884a132799a4c7018d9a"
+source = "git+https://github.com/CBFerrum/ferrum-app-docs?branch=main#c84e2a703f05b8ba901ab3ac15f88c25d2ee9ec5"
 dependencies = [
  "async-trait",
  "ferrum-domain",
