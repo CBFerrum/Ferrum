@@ -1,6 +1,6 @@
 [package]
 name = "ferrum-domain"
-description = "ERP domain engines and hooks: ledger, inventory valuation, selling, buying, manufacturing, India GST, reports"
+description = "The business records and helpers every app shares: contacts, parties, products, projects; document helpers; the report framework"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,27 +10,12 @@ ferrum-kernel = { path = "../kernel" }
 ferrum-meta = { path = "../meta" }
 ferrum-calc = { path = "../calc" }
 rust_decimal = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }
-tracing = { workspace = true }
 async-trait = { workspace = true }
-sha2 = { workspace = true }
-hex = { workspace = true }
-base64 = "0.22"
-dashmap = { workspace = true }
-aes = "0.9"
-rsa = { version = "0.9", default-features = false, features = ["std", "pem"] }
-rand_core = { version = "0.6", features = ["getrandom"] }
-jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
-
-[dev-dependencies]
-axum = "0.8"
-ferrum-plugins = { path = "../plugins" }
 
 [lints]
 workspace = true

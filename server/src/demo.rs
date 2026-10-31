@@ -61,9 +61,14 @@ pub async fn seed(k: &Kernel, tenant: Uuid) -> Result<String> {
     let raw_group = id(&group("Raw Material").await?.unwrap_or_default());
     let nos = id(&find(k, ctx, "Uom", json!({"uom_name": "Nos"})).await?.unwrap_or_default());
 
-    let gstin = |first14: &str| match india {
-        true => json!(format!("{first14}{}", ferrum_domain::india::gstin_check_char(first14).unwrap_or('0'))),
-        false => Value::Null,
+    // GSTINs where the workspace has India (a build without its add-on has no `india` package).
+    let gstin = |first14: &str| -> Value {
+        #[cfg(feature = "india")]
+        if india {
+            return json!(format!("{first14}{}", ferrum_india::gstin_check_char(first14).unwrap_or('0')));
+        }
+        let _ = first14;
+        Value::Null
     };
     let supplier = k.insert(ctx, "Supplier", obj(json!({"supplier_name": "Shakti Steels", "in_gstin": gstin("27AAACS1111C1Z")}))).await?;
     let customer = k.insert(ctx, "Customer", obj(json!({"customer_name": "Bharat Retail", "in_gstin": gstin("29AABCB2222D1Z")}))).await?;

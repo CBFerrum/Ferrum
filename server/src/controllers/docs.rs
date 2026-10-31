@@ -450,7 +450,9 @@ mod tests {
 
     #[test]
     fn xlsx_export_is_a_workbook() {
-        let catalog = ferrum_meta::Catalog::from_packages(ferrum_domain::packages().unwrap()).unwrap();
+        let mut packages = ferrum_domain::packages().unwrap();
+        packages.extend(ferrum_app_erp::packages().unwrap());
+        let catalog = ferrum_meta::Catalog::from_packages(packages).unwrap();
         let schema = ferrum_meta::effective::build(&catalog, &["selling".into()], &[], 1).unwrap();
         let ent = schema.entity("Customer").unwrap();
         let cols = vec!["number".to_string(), "customer_name".to_string(), "credit_limit".to_string(), "disabled".to_string()];

@@ -20,8 +20,13 @@ macro_rules! apps {
         native { $($nfeature:literal => $nkrate:ident),* $(,)? }
         legacy { $($lfeature:literal => $lkrate:ident [$($yaml:literal),+]),* $(,)? }
     ) => {
-        /// Registers every compiled app's hooks, reports and endpoints.
+        /// Registers every compiled app's hooks, reports and endpoints: ERP's first, so the apps
+        /// that build on its documents see their totals, postings and open items.
         pub fn register(hooks: &mut HookRegistry) {
+            ferrum_app_erp::register(hooks);
+            for source in ferrum_app_erp::reports() {
+                ferrum_domain::reports::add_source(source);
+            }
             $(
                 #[cfg(feature = $nfeature)]
                 {
@@ -51,6 +56,9 @@ macro_rules! apps {
 
         /// Runs every compiled app's upkeep once; failures are logged and do not stop the others.
         pub async fn maintenance(k: &Kernel) {
+            if let Err(e) = ferrum_app_erp::maintenance(k).await {
+                tracing::warn!(app = "erp", "app maintenance failed: {e}");
+            }
             $(
                 #[cfg(feature = $nfeature)]
                 if let Err(e) = $nkrate::maintenance(k).await {
@@ -66,10 +74,10 @@ macro_rules! apps {
             let _ = k;
         }
 
-        /// Packages embedded in the compiled native apps.
+        /// Packages embedded in the compiled native apps, ERP's first.
         pub fn native_packages() -> Result<Vec<Package>, String> {
             #[allow(unused_mut)]
-            let mut out = Vec::new();
+            let mut out = ferrum_app_erp::packages().map_err(|e| format!("app erp: {e}"))?;
             $(
                 #[cfg(feature = $nfeature)]
                 out.extend($nkrate::packages().map_err(|e| format!("app {}: {e}", $nfeature))?);
@@ -98,9 +106,8 @@ macro_rules! apps {
             out.push(ferrum_app_hr::CONNECTOR_MANIFEST);
             #[cfg(feature = "projects")]
             out.push(ferrum_app_projects::CONNECTOR_MANIFEST);
-            // ERP and its add-on for India, over the platform's own packages (docs/plan/apps-ui.md).
+            // ERP, compiled into every build (docs/plan/erp-repo.md).
             out.push(ERP_MANIFEST);
-            out.push(INDIA_MANIFEST);
             // Suites, where this build has their members.
             #[cfg(all(feature = "comms", feature = "drive", feature = "docs"))]
             out.push(include_str!("../apps/suites/workspace.yaml"));
@@ -156,6 +163,8 @@ macro_rules! apps {
 
 apps! {
     native {
+        // India first: its hooks run right after ERP's, ahead of the other add-ons' on ERP's documents.
+        "india" => ferrum_india,
         "crm" => ferrum_app_crm,
         "projects" => ferrum_app_projects,
         "helpdesk" => ferrum_app_helpdesk,
@@ -182,18 +191,15 @@ apps! {
     }
 }
 
-/// ERP's app manifest: its interface at /erp/ and the records it shows (its repository,
-/// docs/plan/erp-repo.md).
+/// ERP's app manifest: its interface at /erp/, its packages and the records it shows (its
+/// repository, docs/plan/erp-repo.md).
 pub const ERP_MANIFEST: &str = ferrum_app_erp::MANIFEST;
 
-/// ERP's add-on for India.
-pub const INDIA_MANIFEST: &str = ferrum_app_erp::INDIA_MANIFEST;
-
-/// The catalog this build starts from: the platform's embedded packages, the native apps'
-/// embedded packages, and extra packages from `dir` (metadata-only packages an operator adds, and
+/// The catalog this build starts from: the shared embedded packages, the native apps' embedded
+/// packages (ERP's among them), and extra packages from `dir` (metadata-only packages an operator adds, and
 /// legacy apps' YAML). An embedded package wins over a directory copy of the same name.
 pub fn base_catalog(dir: &Path) -> Result<Catalog, String> {
-    let mut pkgs = ferrum_domain::packages().map_err(|e| format!("platform packages: {e}"))?;
+    let mut pkgs = ferrum_domain::packages().map_err(|e| format!("shared packages: {e}"))?;
     pkgs.extend(native_packages()?);
     // A connector between two compiled apps ships with one of them: without the other in this
     // build it is left out.

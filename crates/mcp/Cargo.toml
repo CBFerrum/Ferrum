@@ -18,6 +18,8 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+# MCP's test runs a whole sale over ERP's records.
+ferrum-app-erp = { git = "https://github.com/CBFerrum/ferrum-app-erp", branch = "main" }
 tokio = { workspace = true }
 sqlx = { workspace = true }
 

@@ -105,16 +105,18 @@ async fn scenario() {
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let mut packages = ferrum_domain::packages().expect("platform packages");
+    packages.extend(ferrum_app_erp::packages().expect("ERP's packages"));
     packages.extend(ferrum_studio::packages().expect("studio packages"));
     let catalog = Catalog::from_packages(packages).expect("catalog");
     let mut hooks = HookRegistry::default();
     ferrum_domain::register(&mut hooks);
+    ferrum_app_erp::register(&mut hooks);
     ferrum_studio::register(&mut hooks);
-    for source in ferrum_studio::reports() {
+    for source in ferrum_app_erp::reports().into_iter().chain(ferrum_studio::reports()) {
         ferrum_domain::reports::add_source(source);
     }
     let k = Kernel::boot(db, catalog, hooks, KernelSettings::default(), None).await.expect("boot");
-    ferrum_domain::maintenance(&k).await.expect("partitions");
+    ferrum_app_erp::maintenance(&k).await.expect("partitions");
     ferrum_studio::maintenance(&k).await.expect("studio upkeep");
     let tenant = k
         .create_tenant(NewTenant {

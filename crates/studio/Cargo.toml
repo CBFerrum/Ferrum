@@ -24,6 +24,8 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+# Studio's tests report on ERP's records (sales, purchases, the books).
+ferrum-app-erp = { git = "https://github.com/CBFerrum/ferrum-app-erp", branch = "main" }
 zip = { version = "9", default-features = false, features = ["deflate"] }
 tokio = { workspace = true }
 

@@ -1,9 +1,0 @@
-- name: ItemSupplier
-  label: Approved Manufacturer / Supplier
-  kind: child
-  fields:
-    - {name: supplier, type: link, to: Supplier, in_list: true}
-    - {name: manufacturer, type: data, in_list: true}
-    - {name: manufacturer_part_no, type: data, label: MPN, in_list: true}
-    - {name: approved, type: check, default: true, in_list: true}
-    - {name: priority, type: int, default: 1, min: 1, in_list: true}

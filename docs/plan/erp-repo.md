@@ -39,7 +39,8 @@ framework (`reports::ReportSource`, `add_source`, `run`, `read_tx`, `Params`, `c
 | Bookings, Helpdesk (`helpdesk_erp`) | — | `trade::create_for_user`, `flow::created` | same |
 | Projects (`projects_erp`) | — | `flow::created` | same |
 | Comms, Forms | — | — | `selling` (customers, the Sales roles) |
-| Docs, Drive, LMS, Sign, Campaigns | — | — | the shared packages only |
+| Campaigns | — | — | CRM's packages, whose ERP connector builds on `selling` |
+| Docs, Drive, LMS, Sign | — | — | the shared packages only |
 | ERP's add-ons | `ledger`, `stock`, `stock_entry`, `manufacturing`, `pricing`, `flow::sync_invoice_outstanding` | `trade::create_for_user`, `flow::created` | ERP's packages and hooks |
 | Ferrum | `india::gstin_check_char` (the demo); the server registers everything | — | Studio's and MCP's tests run on ERP's records; kernel, collaboration and SSO tests install `selling` or `accounting` for customers and companies |
 | ferrum-store | — | — | checks uploaded apps against `ferrum_domain::packages()`, ERP's included |
@@ -196,7 +197,7 @@ No upgrade step is needed; the one this stage once planned has nothing to do.
 | the moved modules' unit tests | `crates/domain/src` | ERP's crate (reports' catalog, company set-up, stock) and India's (GSTIN check characters, e-invoice JSON, IRP encryption) |
 | the embedded packages form a valid catalog | the domain, all eleven | the domain: the five shared; ERP: its five with them, together and each alone; India: its package with ERP's; plus the SQL checksums above |
 | `crates/meta/tests/packages.rs` (shipped packages; `SalesInvoice`, `Customer.in_gstin`) | meta | the shared packages; the ERP and India assertions join ERP's and India's tests |
-| `kernel_it` (fiscal years for an exclusion constraint and a company in use), `collab_it`, `sso_it` | install `selling` or `accounting` | the shared packages: item prices' exclusion constraint, a project's company |
+| `kernel_it` (fiscal years for an exclusion constraint and a company in use), `collab_it`, `sso_it` | install `selling` or `accounting` | the shared packages: item prices' exclusion constraint, a project's company; `collab_it`'s field permission groups on a credit limit from a package of its own |
 | Studio's and MCP's tests, the server's documents test | ERP's records from the platform | ERP's packages and hooks from ERP's crate |
 | CI databases | Ferrum creates `ferrum_domain_test` | Ferrum drops it; ERP's CI creates `ferrum_erp_test` |
 
@@ -209,7 +210,7 @@ their new versions. Then, in this order:
 |---|---|---|---|---|
 | 0 | Ferrum | `create_for_user` moves into `flow`, still reachable as `trade::create_for_user` | its own lock | nothing else changes |
 | 1 | ferrum-app-erp | the engine, ERP's packages and their tests move in; India becomes `addons/india`; the add-ons use ERP's modules. ERP's and India's entry points give nothing while the `ferrum-domain` they are built with still has ERP's packages (`handed_over()`), so a test that calls both never gets two copies of a package or a hook | Ferrum's main | Ferrum's server still pins the ERP commit before this one; until step 3, ERP's CI runs its engine tests through `ferrum-domain`'s copy |
-| 2 | POS, Commerce, Assets, Field Service, HR, CRM (a dependency); Bookings, Helpdesk, Projects, Comms, Forms (a dev-dependency); ferrum-store | imports move to `ferrum_app_erp::…` (and `flow::create_for_user`); CRM and POS drop their India calls; tests call ERP's (and where needed India's) entry points beside the shared core's; the store adds ERP's and India's packages | Ferrum's main and ERP's main | step 1's entry points still give nothing, and each repository uses one copy of each module |
+| 2 | POS, Commerce, Assets, Field Service, HR, CRM (a dependency); Bookings, Helpdesk, Projects, Comms, Forms, Campaigns (a dev-dependency); ferrum-store | imports move to `ferrum_app_erp::…` (and `flow::create_for_user`); CRM and POS drop their India calls; tests call ERP's (and where needed India's) entry points beside the shared core's; the store adds ERP's and India's packages | Ferrum's main and ERP's main | step 1's entry points still give nothing, and each repository uses one copy of each module |
 | 3 | Ferrum | `ferrum-domain` keeps the shared core and `packages/` the five shared packages; the server takes ERP's and India's packages, hooks, reports and upkeep from their crates; the test changes above; `Cargo.lock` pins step 1 and every step-2 app | its own lock (`--locked`) | the pinned commits already use the new entry points; from now on app and ERP CIs get ERP's packages from ERP's crate alone |
 | 4 | ferrum-app-erp | `handed_over()` goes, so its CI tests its own engine, the company outside India included; a CHANGELOG entry | Ferrum's main, from step 3 | — |
 | 5 | Ferrum | its next pin of ERP takes step 4 | — | — |
@@ -221,7 +222,7 @@ are agreed with it first. Ferrum-Frontend has nothing to change.
 
 * `ferrum-domain` and `packages/` hold the shared core only, and no ERP or India module or package
   is left in this repository.
-* Every main stays green through the six steps (ERP's, the eleven apps', the store's and
+* Every main stays green through the six steps (ERP's, the twelve apps', the store's and
   Ferrum's), and Ferrum's image job and kind cluster pass.
 * The rehearsal above passes: an existing workspace runs on with nothing moved.
 * An Indian company's invoice, CRM quotation and POS sale pick their GST templates through the
