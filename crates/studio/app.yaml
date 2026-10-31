@@ -1,6 +1,6 @@
 id: studio
 name: Studio
-version: 0.1.0
+version: 0.2.0
 publisher: cbferrum
 summary: Analytics engine, report builder, charts, number cards, dashboards and spaces, all customizable without code
 description: README.md
@@ -10,3 +10,21 @@ runtime: native
 platform: ">=0.3, <0.4"
 packages: [studio]
 uninstall: ask
+# Studio's own interface at /studio/ (Ferrum docs/plan/apps-ui.md §13), built in Ferrum-Frontend
+# (apps/studio) and carried by the server's image, as ERP's is.
+ui:
+  dist: ui/dist
+contributes:
+  # Everyone in a workspace with Studio opens the dashboards and spaces shared with them; building
+  # needs Studio User or Studio Manager, which the pages and the server check.
+  shell.app:
+    - {id: studio, route: studio, title: Studio, description: "Reports, dashboards and spaces", icon: layout-dashboard, color: "#c026d3"}
+  shell.open:
+    - {id: report, entity: Report, path: "studio/reports/{id}", list: "studio/reports"}
+    - {id: dashboard, entity: Dashboard, path: "studio/dashboards/{id}", list: "studio/dashboards"}
+    - {id: chart, entity: DashboardChart, path: "studio/charts/{id}", list: "studio/charts"}
+    - {id: card, entity: NumberCard, path: "studio/cards/{id}", list: "studio/cards"}
+    - {id: space, entity: Space, path: "studio/spaces/{id}", list: "studio/spaces"}
+  shell.create:
+    - {id: report, label: Report, path: studio/reports/new, entity: Report}
+    - {id: space, label: Space, path: studio/spaces/new, entity: Space}

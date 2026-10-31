@@ -203,6 +203,16 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     number, state, the list's fields), for those who may read it; it stays while hovered and goes
     with Escape, scrolling or leaving; not on touch, not on list rows. The bar's search gains "Go
     to": the lists the person may open, by name. Checked in Chromium, Firefox and WebKit.
+  * Studio 0.2.0 has its own interface at `/studio/` (Ferrum-Frontend `apps/studio`, carried by the
+    server's image as ERP's is): its home (the latest reports, dashboards and spaces the person may
+    open, with counts and where to start), the report builder, dashboards with their charts and
+    number cards, and spaces, in the records frame with Studio's module in the sidebar; `/open` of
+    reports, dashboards, charts, cards and spaces leads there, and Create offers a report and a
+    space. Frames that had Studio's pages (ERP's, the records-only apps') send `…/studio/…` there,
+    and today's web app's `/app/studio/…`, `/app/dashboards…` and `/app/spaces…` go there too.
+    Customize stays the platform's (`/data/customize/`): Studio is installed per workspace, and every
+    workspace's administrators customize. Workspaces that had Studio's package have Studio recorded
+    as installed at start-up, as ERP was.
 
 * **U4a, Comms and Workspace: built** (31 October 2026).
   * Comms (Mail, Chat, Calendar, Meet at `/mail/`, `/chat/`, `/calendar/`, `/meet/`), Drive (`/drive/`,
