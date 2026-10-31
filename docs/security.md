@@ -39,6 +39,14 @@ operator to know. Report a vulnerability privately to the maintainers rather tha
   replicas; an unknown email costs the same time as a known one.
 * Sessions: signed tokens (8 hours by default) carrying a token version; changing the password,
   "sign out everywhere", an administrator's two-factor reset and deactivation end every session.
+* Passkeys (WebAuthn): the relying party is the host signed in on; registration needs a session that
+  signed in or stepped up in the last ten minutes and asks for no attestation; every ceremony's
+  challenge is random, kept server-side for five minutes and taken once; the client data must name
+  the ceremony, the challenge and this site's origin, outside any other site's frame; the
+  authenticator must report the person present and verified; signatures are checked with `ring`
+  (ES256, RS256 of 2048 bits or more, Ed25519), and a signature counter that does not move on is
+  refused as a possible copy. A credential belongs to one account in the cluster. A verified passkey
+  counts as both factors.
 * Two-factor sign-in: TOTP secrets sealed with the server key; each code accepted once; recovery
   codes stored as hashes; wrong codes count toward the lockout, and a correct password does not
   clear the count while the second step is pending; the ticket between the steps is no session;

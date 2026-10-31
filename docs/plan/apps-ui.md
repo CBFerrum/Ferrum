@@ -156,6 +156,12 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     the vetted client); seven failures in a row stop it. `/_tls/ask` lets an edge with on-demand TLS
     get certificates only for the cluster's own hosts; operations.md gives the Caddy recipe. Removing
     a working domain redirects it for 90 days and quarantines it for a year.
+  * Passkeys (§12.3) for shape A: the relying party is the host. People add them on their Account page
+    (a session that signed in or stepped up in the last ten minutes; the page asks for the password
+    otherwise) and sign in with one alone from the sign-in page: the account is the passkey's.
+    Verified with `ring` and a CBOR reader (no WebAuthn library); one-use challenges; the counter
+    must move on. Checked with Chrome's virtual authenticator and a software authenticator in the
+    kernel's tests. The accounts host (shapes B and C) and identities across workspaces come next.
 
 * **U5, the rest: under way** (31 October 2026).
   * The bar's search (§12.8): ⌘K or the bar's field; apps from the launcher, records of every entity

@@ -173,6 +173,11 @@ body {
   color: var(--ferrum-muted);
   font-size: 0.9rem;
 }
+/* "Sign in with a passkey", under the form. */
+.ferrum-login #ferrum-passkey {
+  width: 100%;
+  margin-top: 12px;
+}
 .ferrum-login .ferrum-switch {
   display: block;
   margin: 14px 0 0;

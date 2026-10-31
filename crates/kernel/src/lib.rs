@@ -25,6 +25,7 @@ pub mod numbering;
 pub mod oauth;
 pub mod outbound;
 pub mod outbox;
+pub mod passkey;
 mod pdf;
 pub mod prefs;
 pub mod print;

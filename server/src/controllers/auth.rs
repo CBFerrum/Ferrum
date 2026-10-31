@@ -404,6 +404,95 @@ async fn step_up(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+// ── passkeys (docs/plan/apps-ui.md §12.3, U6; the kernel's passkey.rs) ──
+
+/// The relying party of a request: its host (a passkey works on the host it was made on), and
+/// the origins its pages have.
+fn relying_party(st: &AppState, headers: &HeaderMap) -> Result<(String, Vec<String>), ApiError> {
+    let host = crate::shell::request_host(headers).ok_or_else(|| ApiError(Error::invalid("no host")))?.to_ascii_lowercase();
+    let rp = host.split(':').next().unwrap_or_default().to_string();
+    let scheme = if st.shell.secure { "https" } else { "http" };
+    Ok((rp, vec![format!("{scheme}://{host}")]))
+}
+
+/// `POST /api/auth/passkeys/options`: what the browser needs to make a passkey for the caller on
+/// this host. Changing how one signs in needs a recent sign-in or step-up (§9.2).
+async fn passkey_options(BrowserSession(ctx, device): BrowserSession, State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    let Some(device) = device else { return Err(ApiError(Error::invalid("make passkeys from a page of this site"))) };
+    if !st.kernel.check_session(ctx.tenant, ctx.user, device).await?.stepped_up() {
+        return Err(ApiError(Error::Forbidden("confirm your password to change how you sign in".into())));
+    }
+    let (rp, _) = relying_party(&st, &headers)?;
+    let ws = st.shell.workspace(ctx.tenant).await?;
+    Ok(Json(st.kernel.passkey_options(&ctx, &rp, &ws.name).await?).into_response())
+}
+
+#[derive(Deserialize)]
+struct NewPasskey {
+    request: Uuid,
+    credential: Value,
+    #[serde(default)]
+    name: String,
+}
+
+/// `POST /api/auth/passkeys`: keeps the passkey the browser made.
+async fn add_passkey(BrowserSession(ctx, _): BrowserSession, State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<NewPasskey>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    let (_, origins) = relying_party(&st, &headers)?;
+    let made = st.kernel.add_passkey(&ctx, req.request, &origins, &req.credential, &req.name).await?;
+    Ok((StatusCode::CREATED, Json(made)).into_response())
+}
+
+async fn list_passkeys(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    Ok(Json(json!({"passkeys": app_state(&app)?.kernel.passkeys(&ctx).await?})).into_response())
+}
+
+#[derive(Deserialize)]
+struct PasskeyName {
+    name: String,
+}
+
+async fn rename_passkey(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>, Json(req): Json<PasskeyName>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.change_passkey(&ctx, id, Some(&req.name)).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn remove_passkey(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.change_passkey(&ctx, id, None).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// `POST /api/auth/passkey/options`: what the browser needs to sign in with a passkey here.
+async fn passkey_sign_in_options(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    st.login_limiter.check(&format!("{}|passkey", client_ip(&headers))).await?;
+    let (rp, _) = relying_party(&st, &headers)?;
+    Ok(Json(st.kernel.passkey_sign_in_options(&rp).await?).into_response())
+}
+
+#[derive(Deserialize)]
+struct PasskeySignIn {
+    request: Uuid,
+    credential: Value,
+    #[serde(default)]
+    session: Option<String>,
+}
+
+/// `POST /api/auth/passkey`: signs in with the browser's answer, to the account the passkey
+/// belongs to (on a workspace's own host, only that workspace's).
+async fn passkey_sign_in(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<PasskeySignIn>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    st.login_limiter.check(&format!("{}|passkey", client_ip(&headers))).await?;
+    let (_, origins) = relying_party(&st, &headers)?;
+    let tenant = match st.shell.place(&headers).await? {
+        crate::shell::Place::Workspace(t) | crate::shell::Place::Portal(t) => Some(t),
+        _ => None,
+    };
+    let s = st.kernel.passkey_sign_in(req.request, &origins, &req.credential, tenant).await?;
+    session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie")).await
+}
+
 #[derive(Deserialize)]
 struct PasswordReq {
     current_password: Option<String>,
@@ -470,6 +559,11 @@ pub fn routes() -> Routes {
     use axum::routing::{delete, get, post};
     Routes::new()
         .prefix("/api/auth")
+        .add("/passkey/options", post(passkey_sign_in_options))
+        .add("/passkey", post(passkey_sign_in))
+        .add("/passkeys/options", post(passkey_options))
+        .add("/passkeys", get(list_passkeys).post(add_passkey))
+        .add("/passkeys/{id}", delete(remove_passkey).patch(rename_passkey))
         .add("/login", post(login))
         .add("/login/second-factor", post(login_second_factor))
         .add("/code", post(send_code))
