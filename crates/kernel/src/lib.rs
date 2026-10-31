@@ -213,6 +213,12 @@ impl Kernel {
         if purged > 0 {
             tracing::info!(purged, "old events purged");
         }
+        // A failed digest waits for the next run; it must not stop the rest of the upkeep.
+        match self.send_digests().await {
+            Ok(0) => {}
+            Ok(digests) => tracing::info!(digests, "notification digests queued"),
+            Err(e) => tracing::warn!("notification digests failed: {e}"),
+        }
         Ok(())
     }
 

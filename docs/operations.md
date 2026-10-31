@@ -36,7 +36,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_RUN_BACKGROUND` | no | `false` turns a replica into API-only |
 | `PUBLIC_URL` | recommended | The address people open, scheme and port included (`https://erp.example.com`). Apps' screens name it in their Content Security Policy, which Safari needs when a proxy in front rewrites the host, and links mailed to people outside the workspace (Drive guests) are built on it |
 | `PORT`, `BINDING`, `LOG_LEVEL` | no | Usual meanings; logs are JSON on stdout |
-| `MAILER_*` | no | SMTP for notifications |
+| `MAILER_*` | no | SMTP for mail: notifications people chose to have by email (at once, or in a daily digest), and apps' mail. Without it, notifications stay in the bar and people cannot choose email |
 | `FERRUM_APP_STORES` | no | App stores, comma-separated base URLs (`https://store.example`); empty: no store, only apps built in or uploaded |
 | `FERRUM_APP_TRUSTED_KEYS` | with stores | Comma-separated `store:<base64>` / `publisher:<base64>` Ed25519 public keys whose signatures this cluster trusts (`ferrum-app keygen` prints them). Store apps need a store countersignature by one of them; several keys may be trusted at once (rotation) |
 | `FERRUM_APP_UPLOADS` | no | Who may upload app bundles: `off`, `private` (production default: sandboxed apps without tables, visible only in the uploading workspace) or `cluster` (development default: available to every workspace) |
@@ -801,7 +801,7 @@ also stops their API keys.
 ## Routine tasks
 
 ```bash
-ferrum task run_maintenance          # anchor audit trails, purge expired events, ledger partitions (also runs in-process)
+ferrum task run_maintenance          # anchor audit trails, purge expired events, ledger partitions, queue notification digests (also runs in-process, hourly)
 ferrum task sync_schema              # force the metadata → DDL sync (normally automatic at boot)
 ferrum task create_tenant slug:... name:... email:... password:... [packages:...]   # core only without packages:
 ferrum task deps_report [schema:<file>]   # what ties packages together; schema: writes the canonical schema to compare across a package move
@@ -813,6 +813,13 @@ ferrum task app_upgrade [app:<id>]   # make the newest compatible store releases
 ferrum task app_revoke app:<id> [version:<v>] reason:"..."   # take a release out of service and disable it everywhere (data kept)
 ferrum task app_releases [app:<id>]  # every release recorded on the cluster, with status and source
 ```
+
+**Notifications by email.** A notification someone chose to have by email goes out through the
+outbox right after it is made (once, even when the event is retried). Daily digests are queued by
+the hourly maintenance: a person's unread digest notifications go out together once the oldest has
+waited a day, at most 50 listed; claiming them and queueing the mail happen in one transaction, so
+replicas never send the same ones twice. Without a mailer nothing is emailed and the choices that
+need one are refused; people still see everything in the bar.
 
 **Apps.** A release made available on the cluster is shared by every workspace (its tables are
 created once, under the cluster DDL lock); each workspace then installs, upgrades or removes it

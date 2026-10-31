@@ -236,7 +236,7 @@ pub fn plain_text(doc: &Doc) -> String {
     out.trim_end().to_string()
 }
 
-fn esc(s: &str, out: &mut String) {
+pub(crate) fn esc(s: &str, out: &mut String) {
     for c in s.chars() {
         match c {
             '&' => out.push_str("&amp;"),

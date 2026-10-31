@@ -228,6 +228,46 @@ button[aria-pressed="true"], button[aria-expanded="true"] { background: var(--fe
 .tray progress::-webkit-progress-value { background: var(--ferrum-primary, #2f5bea); border-radius: 99px; }
 .tray progress::-moz-progress-bar { background: var(--ferrum-primary, #2f5bea); }
 .tray .actions { display: flex; justify-content: flex-end; margin-top: 6px; }
+.bell { position: relative; color: var(--ferrum-muted, #5b6472); }
+.bell .badge { position: absolute; top: 2px; right: 1px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; display: grid; place-items: center;
+  background: var(--ferrum-danger, #d92d20); color: #fff; font: 600 10px/1 var(--ferrum-font, system-ui, sans-serif); box-shadow: 0 0 0 2px var(--ferrum-surface, #fff); }
+.inbox { right: 8px; width: min(400px, calc(100vw - 16px)); padding: 6px; }
+.ihead { display: flex; align-items: center; gap: 2px; padding: 2px 2px 6px 8px; }
+.ihead h2 { flex: 1; margin: 0; font-size: 14px; font-weight: 650; }
+.ihead .ghost { width: 32px; min-width: 32px; height: 32px; padding: 0; color: var(--ferrum-muted, #5b6472); }
+.ihead .ghost:first-child { margin-left: -6px; }
+.ihead .ghost[disabled] { opacity: .45; cursor: default; background: transparent; }
+.istatus { margin: 0 8px; color: var(--ferrum-danger, #c62828); font-size: 12.5px; }
+.istatus:empty { display: none; }
+.ilist { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; max-height: min(70vh, 560px); overflow: auto; }
+.note { display: flex; width: 100%; align-items: flex-start; justify-content: flex-start; gap: 10px; height: auto; padding: 9px 10px 9px 8px; border-radius: 8px;
+  color: inherit; text-decoration: none; text-align: left; font-weight: 400; }
+.note:hover { background: var(--ferrum-surface-2, #eef1f5); }
+.note .dot { flex: none; width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; }
+.note.unread .dot { background: var(--ferrum-primary, #2f5bea); }
+.note .text { display: grid; gap: 2px; min-width: 0; }
+.note strong { font-weight: 500; font-size: 13.5px; line-height: 1.35; overflow-wrap: anywhere; }
+.note.unread strong { font-weight: 650; }
+.note .body { color: var(--ferrum-muted, #5b6472); font-size: 12.5px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.note .when { color: var(--ferrum-muted, #5b6472); font-size: 11.5px; }
+.caught { display: grid; justify-items: center; gap: 4px; padding: 28px 16px; text-align: center; color: var(--ferrum-muted, #5b6472); }
+.caught svg { color: var(--ferrum-primary, #2f5bea); margin-bottom: 4px; }
+.caught strong { color: var(--ferrum-text, #17191d); font-weight: 600; }
+.caught small { font-size: 12.5px; max-width: 30ch; }
+.link { height: auto; min-width: 0; padding: 0; color: var(--ferrum-primary, #2f5bea); text-decoration: underline; }
+.link:hover { background: transparent; }
+.kinds { display: grid; gap: 2px; padding: 0 2px 4px; max-height: min(70vh, 560px); overflow: auto; }
+.kinds .rgroup { margin: 10px 6px 2px; }
+.kind { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 6px; border-radius: 8px; }
+.kind .what { display: grid; gap: 1px; min-width: 0; }
+.kind label { font-size: 13.5px; }
+.kind small { color: var(--ferrum-muted, #5b6472); font-size: 11.5px; }
+.kind small:empty { display: none; }
+.kind select { flex: none; height: 30px; max-width: 52%; padding: 0 6px; border: 1px solid var(--ferrum-border, #d9dee5); border-radius: 7px;
+  background: var(--ferrum-surface, #fff); color: inherit; font: inherit; font-size: 13px; }
+.kind select:focus-visible { outline: none; box-shadow: var(--ferrum-focus-ring, 0 0 0 3px rgb(47 91 234 / .35)); }
+.inote { margin: 2px 6px 8px; padding: 8px 10px; border-radius: 8px; background: var(--ferrum-surface-2, #eef1f5); color: var(--ferrum-muted, #5b6472); font-size: 12.5px; }
+.vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .side { position: fixed; top: var(--ferrum-bar-height, 48px); right: 0; bottom: 0; width: var(--ferrum-panel-width, 380px); max-width: 100vw;
   display: flex; flex-direction: column; background: var(--ferrum-surface, #fff); border-left: 1px solid var(--ferrum-border, #d9dee5);
   box-shadow: -8px 0 24px -16px rgb(16 24 40 / .35); }
@@ -289,6 +329,10 @@ const ICONS = {
   "sparkles": '<path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z"/><path d="M20 2v4"/><path d="M22 4h-4"/><circle cx="4" cy="20" r="2"/>',
   "folder": '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
   "chevron-right": '<path d="m9 18 6-6-6-6"/>',
+  "chevron-left": '<path d="m15 18-6-6 6-6"/>',
+  "bell": '<path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/>',
+  "check-check": '<path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/>',
+  "circle-check": '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
 };
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -537,6 +581,178 @@ window.addEventListener(
   true,
 );
 
+// ───────────────────────── notifications (§12.8) ─────────────────────────
+
+// The bell: how many are unread (on idle, then from the live channel), the latest when it opens,
+// each opening its record through /open, and how each kind reaches the person. Tabs tell each
+// other what the person read; each hears new ones on the live channel itself.
+const inbox = { unread: 0, items: null, failed: false, types: null, view: "list", status: "" };
+const inboxTabs = "BroadcastChannel" in window ? new BroadcastChannel("ferrum-inbox") : null;
+const CHANNEL_LABELS = { inapp: "In Ferrum", email: "Email at once", digest: "Daily email digest", off: "Off" };
+
+inboxTabs?.addEventListener("message", (e) => {
+  setUnread(e.data?.unread, false);
+  inbox.items = null;
+  if (bar()?.inboxPanel?.hidden === false && inbox.view === "list") loadInbox();
+});
+
+function setUnread(n, share) {
+  inbox.unread = Math.max(0, Number(n) || 0);
+  bar()?.drawBell();
+  if (share) inboxTabs?.postMessage({ unread: inbox.unread });
+}
+
+const answer = (r) => (r?.ok ? r.json() : (r?.status === 401 && toLogin(), null));
+
+async function countInbox() {
+  const body = await fetch("/api/notifications?limit=0", { credentials: "same-origin" }).then(answer).catch(() => null);
+  if (body) setUnread(body.unread, false);
+}
+
+async function loadInbox() {
+  const body = await fetch("/api/notifications?limit=50", { credentials: "same-origin" }).then(answer).catch(() => null);
+  inbox.failed = !body;
+  if (body) {
+    inbox.items = Array.isArray(body.notifications) ? body.notifications : [];
+    setUnread(body.unread, false);
+  }
+  drawInbox();
+}
+
+/** "5 min ago", "yesterday", "12 Oct". */
+function ago(iso) {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return "";
+  const s = (t - Date.now()) / 1000;
+  const a = Math.abs(s);
+  const lang = boot?.locale?.language ?? "en";
+  const rtf = new Intl.RelativeTimeFormat(lang, { numeric: "auto", style: "short" });
+  if (a < 60) return "just now";
+  if (a < 3600) return rtf.format(Math.round(s / 60), "minute");
+  if (a < 86400) return rtf.format(Math.round(s / 3600), "hour");
+  if (a < 7 * 86400) return rtf.format(Math.round(s / 86400), "day");
+  return new Date(t).toLocaleDateString(lang, { day: "numeric", month: "short" });
+}
+
+const noteUrl = (n) => (n.entity && n.record_id ? `/open/${encodeURIComponent(n.entity)}/${encodeURIComponent(n.record_id)}` : null);
+
+function openNote(n) {
+  const url = noteUrl(n);
+  if (!n.read_at) {
+    n.read_at = new Date().toISOString();
+    setUnread(inbox.unread - 1, true);
+    // keepalive: the request outlives the page it is leaving.
+    fetch(`/api/notifications/${encodeURIComponent(n.id)}/read`, { method: "POST", credentials: "same-origin", keepalive: true }).catch(() => {});
+  }
+  if (url) {
+    bar()?.closePanels(false);
+    navigate(url);
+  } else drawInbox();
+}
+
+async function readAll() {
+  const r = await fetch("/api/notifications/read-all", { method: "POST", credentials: "same-origin" }).catch(() => null);
+  if (!r?.ok) {
+    inbox.status = "Could not mark them read. Try again.";
+    return drawInbox();
+  }
+  for (const n of inbox.items ?? []) n.read_at ??= new Date().toISOString();
+  inbox.status = "";
+  setUnread(0, true);
+  drawInbox();
+}
+
+async function loadKinds() {
+  inbox.types = null;
+  drawInbox();
+  inbox.types = (await fetch("/api/notifications/types", { credentials: "same-origin" }).then(answer).catch(() => null)) ?? { failed: true };
+  drawInbox();
+}
+
+async function chooseChannel(kind, select) {
+  const before = kind.channel;
+  kind.channel = select.value;
+  select.disabled = true;
+  const body = JSON.stringify({ kind: kind.kind, channel: kind.channel === kind.default ? null : kind.channel });
+  const r = await fetch("/api/notifications/preferences", { method: "PUT", credentials: "same-origin", headers: { "content-type": "application/json" }, body }).catch(() => null);
+  select.disabled = false;
+  inbox.status = r?.ok ? "" : "Could not save that. Try again.";
+  if (!r?.ok) {
+    kind.channel = before;
+    select.value = before;
+  }
+  bar()?.inboxPanel?.querySelector(".istatus")?.replaceChildren(inbox.status);
+}
+
+function drawInbox() {
+  const p = bar()?.inboxPanel;
+  if (!p || p.hidden) return;
+  const focused = p.contains(p.getRootNode().activeElement);
+  const status = el("p", { class: "istatus", role: "status", text: inbox.status });
+  if (inbox.view === "settings") {
+    const t = inbox.types;
+    const kinds = el("div", { class: "kinds" });
+    if (!t) kinds.append(el("p", { class: "rhint", text: "Loading…" }));
+    else if (t.failed) kinds.append(el("p", { class: "rhint", text: "Could not load your choices." }));
+    else {
+      if (!t.email) kinds.append(el("p", { class: "inote", text: "This server sends no email, so notifications stay in Ferrum." }));
+      let group;
+      for (const k of t.types ?? []) {
+        if ((k.app ?? "") !== group) kinds.append(el("p", { class: "rgroup", text: k.app ?? "All apps" }));
+        group = k.app ?? "";
+        const id = `ferrum-kind-${String(k.kind).replace(/[^a-z0-9_-]/gi, "-")}`;
+        const select = el("select", { id, "aria-describedby": `${id}-hint` });
+        for (const c of t.channels ?? []) {
+          const mail = c === "email" || c === "digest";
+          select.append(el("option", { value: c, disabled: mail && !t.email, text: CHANNEL_LABELS[c] ?? c }));
+        }
+        select.value = k.channel;
+        const hint = el("small", { id: `${id}-hint` });
+        const showDefault = () => (hint.textContent = k.channel === k.default ? "" : `Default: ${CHANNEL_LABELS[k.default] ?? k.default}`);
+        showDefault();
+        select.addEventListener("change", () => chooseChannel(k, select).then(showDefault));
+        kinds.append(el("div", { class: "kind" }, el("span", { class: "what" }, el("label", { for: id, text: k.label }), hint), select));
+      }
+    }
+    const back = el("button", { type: "button", class: "ghost", "aria-label": "Back to notifications", title: "Back", onclick: () => ((inbox.view = "list"), (inbox.status = ""), loadInbox()) }, icon("chevron-left", 16));
+    p.replaceChildren(el("div", { class: "ihead" }, back, el("h2", { text: "How notifications reach you" })), status, kinds);
+    if (focused) back.focus();
+    return;
+  }
+  const allRead = el("button", { type: "button", class: "ghost", title: "Mark all as read", "aria-label": "Mark all as read", disabled: !inbox.unread, onclick: () => readAll() }, icon("check-check", 16));
+  const settings = el("button", { type: "button", class: "ghost", title: "Notification settings", "aria-label": "Notification settings", onclick: () => ((inbox.view = "settings"), (inbox.status = ""), loadKinds()) }, icon("settings", 16));
+  const list = el("ul", { class: "ilist", "aria-label": "Notifications" });
+  if (!inbox.items)
+    list.append(
+      el("li", { class: "rhint" }, inbox.failed ? el("span", {}, "Could not load your notifications. ", el("button", { type: "button", class: "link", text: "Try again", onclick: () => loadInbox() })) : "Loading…"),
+    );
+  else if (!inbox.items.length)
+    list.append(el("li", { class: "caught" }, icon("circle-check", 28), el("strong", { text: "You're all caught up" }), el("small", { text: "Mentions, assignments and changes to what you follow show up here." })));
+  for (const n of inbox.items ?? []) {
+    const url = noteUrl(n);
+    list.append(
+      el(
+        "li",
+        {},
+        el(
+          url ? "a" : "button",
+          { class: n.read_at ? "note" : "note unread", href: url, type: url ? null : "button", onclick: (e) => (e.preventDefault(), openNote(n)) },
+          el("span", { class: "dot", "aria-hidden": "true" }),
+          el(
+            "span",
+            { class: "text" },
+            el("strong", {}, n.read_at ? null : el("span", { class: "vh", text: "Unread: " }), String(n.title ?? "")),
+            n.body ? el("small", { class: "body", text: String(n.body) }) : null,
+            el("small", { class: "when", text: ago(n.created_at) }),
+          ),
+        ),
+      ),
+    );
+  }
+  p.replaceChildren(el("div", { class: "ihead" }, el("h2", { text: "Notifications" }), allRead, settings), status, list);
+  if (focused) (p.querySelector(".note") ?? settings).focus();
+}
+
 class FerrumBar extends HTMLElement {
   connectedCallback() {
     if (this.shadowRoot) return;
@@ -573,6 +789,11 @@ class FerrumBar extends HTMLElement {
       el("span", { class: "search-label", text: "Search" }),
       el("kbd", { text: mac ? "⌘K" : "Ctrl K" }),
     );
+    // The bell, for people signed in (not on a public page).
+    this.bellBtn =
+      person.id && hostKind !== "public"
+        ? el("button", { class: "bell", type: "button", "aria-label": "Notifications", title: "Notifications", "aria-haspopup": "dialog", "aria-expanded": "false", onclick: () => this.toggleInbox() }, icon("bell", 18))
+        : null;
     const appRoute = boot?.app?.routes?.[boot?.app?.entry] ?? "/";
     const bar = el(
       "div",
@@ -589,6 +810,7 @@ class FerrumBar extends HTMLElement {
       el("span", { class: "spacer" }),
       this.indicators,
       (this.tools = el("span", { class: "tools" })),
+      this.bellBtn,
       this.meBtn,
     );
     this.launcher = el("div", { class: "panel launcher", role: "dialog", "aria-label": "Apps", hidden: true });
@@ -596,9 +818,10 @@ class FerrumBar extends HTMLElement {
     this.createMenu = el("div", { class: "panel menu create", role: "menu", "aria-label": "Create", hidden: true });
     this.tray = el("div", { class: "panel tray", role: "dialog", "aria-label": "Uploads", hidden: true });
     this.searchPanel = el("div", { class: "panel searchbox", role: "dialog", "aria-label": "Search", hidden: true });
+    this.inboxPanel = el("div", { class: "panel inbox", role: "dialog", "aria-label": "Notifications", hidden: true });
     this.side = el("aside", { class: "side", "aria-label": "Side panel", hidden: true });
     this.noticeEl = el("div", { class: "notice", role: "status", hidden: true });
-    root.append(style, bar, this.launcher, this.menu, this.createMenu, this.tray, this.searchPanel, this.side, this.noticeEl);
+    root.append(style, bar, this.launcher, this.menu, this.createMenu, this.tray, this.searchPanel, this.inboxPanel, this.side, this.noticeEl);
     if (person.actor) root.append(el("div", { class: "banner", role: "note", text: `You are acting as ${person.name}. Everything you do is recorded with both names.` }));
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") this.closePanels(true);
@@ -611,6 +834,27 @@ class FerrumBar extends HTMLElement {
       this.drawTools();
     });
     this.drawTools();
+    if (this.bellBtn) {
+      (window.requestIdleCallback ?? ((f) => setTimeout(f, 1200)))(() => countInbox());
+      // A new one: counted, listed if the bell is open; one that asks for the person, said.
+      subscribe(
+        ["notification"],
+        (d) => {
+          setUnread(inbox.unread + 1, false);
+          inbox.items = null;
+          if (!this.inboxPanel.hidden && inbox.view === "list") loadInbox();
+          const n = d.notification ?? {};
+          if (["mention", "assignment"].includes(n.kind) && this.inboxPanel.hidden) {
+            const url = noteUrl(n);
+            this.notice(String(n.title ?? "New notification"), url ? [["Open", () => (this.hideNotice(), openNote(n))]] : []);
+            this.noticeFrom = "inbox";
+            clearTimeout(this.noticeTimer);
+            this.noticeTimer = setTimeout(() => this.hideNotice(), 8000);
+          }
+        },
+        { resync: () => countInbox() },
+      );
+    }
     // The launcher's data, early but not in the way; at once when a side panel was open in this tab.
     if (rememberedPanel()) loadShell().then(() => (rememberedPanel() && !openPanel ? openSidepanel(rememberedPanel()) : null));
     else (window.requestIdleCallback ?? ((f) => setTimeout(f, 1500)))(() => loadShell());
@@ -626,11 +870,13 @@ class FerrumBar extends HTMLElement {
   }
 
   closePanels(restoreFocus) {
-    const wasOpen = !this.launcher.hidden ? this.launchBtn : !this.menu.hidden ? this.meBtn : !this.createMenu.hidden ? this.createBtn : null;
+    const wasOpen = !this.launcher.hidden ? this.launchBtn : !this.menu.hidden ? this.meBtn : !this.createMenu.hidden ? this.createBtn : !this.inboxPanel.hidden ? this.bellBtn : null;
     this.launcher.hidden = true;
     this.menu.hidden = true;
     this.createMenu.hidden = true;
     this.tray.hidden = true;
+    this.inboxPanel.hidden = true;
+    this.bellBtn?.setAttribute("aria-expanded", "false");
     if (!this.searchPanel.hidden) {
       this.searchPanel.hidden = true;
       finder.ctl?.abort();
@@ -680,6 +926,31 @@ class FerrumBar extends HTMLElement {
         ),
       ),
     );
+  }
+
+  toggleInbox() {
+    const open = this.inboxPanel.hidden;
+    this.closePanels(false);
+    if (!open || !this.bellBtn) return;
+    if (this.noticeFrom === "inbox") this.hideNotice();
+    this.inboxPanel.hidden = false;
+    this.bellBtn.setAttribute("aria-expanded", "true");
+    inbox.view = "list";
+    inbox.status = "";
+    drawInbox();
+    this.inboxPanel.querySelector("button")?.focus();
+    loadInbox();
+  }
+
+  /** The bell's count: a dot with the number (99+), and said with the button's name. */
+  drawBell() {
+    if (!this.bellBtn) return;
+    const n = inbox.unread;
+    this.bellBtn.querySelector(".badge")?.remove();
+    if (n) this.bellBtn.append(el("span", { class: "badge", "aria-hidden": "true", text: n > 99 ? "99+" : String(n) }));
+    const label = n ? `Notifications, ${n} unread` : "Notifications";
+    this.bellBtn.setAttribute("aria-label", label);
+    this.bellBtn.title = label;
   }
 
   toggleSearch() {
@@ -785,6 +1056,7 @@ class FerrumBar extends HTMLElement {
 
   notice(text, actions = []) {
     if (!this.noticeEl) return;
+    this.noticeFrom = null;
     this.noticeEl.replaceChildren(el("span", { text }), ...actions.map(([label, run]) => el("button", { type: "button", text: label, onclick: run })));
     this.noticeEl.hidden = false;
   }

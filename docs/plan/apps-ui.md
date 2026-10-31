@@ -168,6 +168,14 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     anniversaries coming up, and the directory with search. Its other records (HR, payroll, the
     hr-erp connector's) are lists and forms in the records frame. ERP 0.1.1 opens its add-ons'
     records and projects. Checked in Chrome.
+  * Notifications (§12.8): every notification has a kind (the platform's mention, assignment,
+    comment, watch, automation and general; apps' `shell.notification` as `{app}.{id}`), and each
+    person chooses per kind: in the bar, email at once, a daily email digest, or off. The bell in the
+    bar counts what is unread (live, and in step across tabs), lists the latest, opens each through
+    `/open`, marks all read, and holds the per-kind choices; mentions and assignments also show a
+    notice. Emails go out through the outbox once; the hourly maintenance queues each digest in the
+    transaction that claims its notifications. Push waits for the core worker (§12.12). Checked in
+    Chromium, Firefox and WebKit, light and dark, at phone width.
 
 * **U4a, Comms and Workspace: built** (31 October 2026).
   * Comms (Mail, Chat, Calendar, Meet at `/mail/`, `/chat/`, `/calendar/`, `/meet/`), Drive (`/drive/`,
@@ -996,7 +1004,8 @@ current tab with a warning that leaving ends it.
   first; a search service (Tantivy or Meilisearch) fed from the outbox when a workspace outgrows it,
   still filtered at query time.
 * Apps declare notification types (`shell.notification`); each person chooses per type: in-app, email,
-  push or off; quiet ones go into an email digest. One inbox in the bar; items open through `/open`.
+  a daily email digest, push (with the core worker) or off. One inbox in the bar; items open through
+  `/open`. Built in U5: the kernel's `notify::send_kind`, `/api/notifications` and the bell.
 
 ### 12.9 Language, branding, accessibility, performance
 
