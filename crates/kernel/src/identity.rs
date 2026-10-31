@@ -1029,7 +1029,7 @@ mod tests {
         assert!(normalized_email("a b@c.d").is_err());
         assert!(RESERVED_SLUGS.contains(&DIRECTORY));
         // RFC 7636 appendix B.
-        assert_eq!(pkce_challenge("dBjftJeZ4CVP-mJ0n0Kt6kXRIHSTb0cEo1rgGO86X6s"), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+        assert_eq!(pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
         assert!(challenge_ok("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"));
         assert!(!challenge_ok("short"));
         assert!(!challenge_ok(&"a".repeat(129)));
