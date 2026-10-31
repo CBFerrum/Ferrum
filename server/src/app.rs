@@ -138,6 +138,8 @@ impl Hooks for App {
                 secret_key: Some(secret_key),
                 pdf_url: Some(settings.pdf_url.trim().to_string()).filter(|u| !u.is_empty()),
                 public_url: Some(ctx.config.server.host.trim().trim_end_matches('/').to_string()).filter(|u| u.starts_with("http")),
+                push_services: push_services(&settings.push_services),
+                push_contact: Some(settings.push_contact.trim().to_string()).filter(|c| c.starts_with("mailto:") || c.starts_with("https://")),
                 ..Default::default()
             },
             mailer,
@@ -491,6 +493,13 @@ async fn speculation_csp(req: axum::extract::Request, next: axum::middleware::Ne
         res.headers_mut().insert("content-security-policy", v);
     }
     res
+}
+
+/// The push services notifications go to (`settings.push_services`): the browsers' own unless
+/// the operator lists others.
+fn push_services(listed: &str) -> Vec<String> {
+    let listed: Vec<String> = listed.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect();
+    if listed.is_empty() { ferrum_kernel::webpush::PUSH_SERVICES.iter().map(|s| s.to_string()).collect() } else { listed }
 }
 
 /// The key sealing secret fields: configured (`FERRUM_SECRET_KEY`), required in production; in

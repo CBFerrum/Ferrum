@@ -44,6 +44,11 @@ pub fn platform_file(name: &str) -> Option<(&'static str, &'static [u8])> {
         "assistant.js" => (js, include_bytes!("../shell/assistant.js")),
         "assistant.css" => ("text/css; charset=utf-8", include_bytes!("../shell/assistant.css")),
         "icon.svg" => ("image/svg+xml", include_bytes!("../shell/icon.svg")),
+        "icon-192.png" => ("image/png", include_bytes!("../shell/icon-192.png")),
+        "icon-512.png" => ("image/png", include_bytes!("../shell/icon-512.png")),
+        "icon-maskable-512.png" => ("image/png", include_bytes!("../shell/icon-maskable-512.png")),
+        "icon-180.png" => ("image/png", include_bytes!("../shell/icon-180.png")),
+        "core-sw.js" => (js, include_bytes!("../shell/core-sw.js")),
         _ => return None,
     })
 }
@@ -907,10 +912,141 @@ pub fn json_in_html(v: &Value) -> String {
 /// What goes first in `<head>` on every page: the bootstrap, the theme and the bar runtime.
 pub fn shell_head(bootstrap: &Value) -> String {
     format!(
-        r#"<script type="application/json" id="ferrum-bootstrap">{}</script><link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/_shell/theme/{}.css"><script type="module" src="/_shell/v1/runtime.js"></script>"#,
+        r#"<script type="application/json" id="ferrum-bootstrap">{}</script><link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml">{}<link rel="stylesheet" href="/_shell/theme/{}.css"><script type="module" src="/_shell/v1/runtime.js"></script>"#,
         json_in_html(bootstrap),
+        install_links(bootstrap),
         theme_hash()
     )
+}
+
+/// What makes a page installable (§12.5): the manifest of its app when the app asks to be
+/// installable on its own, else the workspace's; none on public pages. Browsers fetch it with
+/// the cookie, which tells the server whose workspace and apps it describes.
+fn install_links(bootstrap: &Value) -> String {
+    if bootstrap["host"]["kind"] == "public" {
+        return String::new();
+    }
+    let app = &bootstrap["app"];
+    let query = match app["entry"].as_str() {
+        Some(route) if app["installable"] == true && ferrum_apps::shell::is_route(route) => format!("?app={route}"),
+        _ => String::new(),
+    };
+    format!(
+        r#"<link rel="manifest" href="/manifest.webmanifest{query}" crossorigin="use-credentials"><link rel="apple-touch-icon" href="/_shell/v1/icon-180.png">"#
+    )
+}
+
+/// The web app manifest of a workspace (`id: /`): Ferrum as one app, from any of its pages.
+pub fn suite_manifest(workspace: &str) -> Value {
+    json!({
+        "id": "/",
+        "name": workspace,
+        "short_name": short_name(workspace),
+        "start_url": "/",
+        "scope": "/",
+        "display": "standalone",
+        "background_color": "#ffffff",
+        "theme_color": "#2f5bea",
+        "icons": [
+            {"src": "/_shell/v1/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"},
+            {"src": "/_shell/v1/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+            {"src": "/_shell/v1/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+            {"src": "/_shell/v1/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+        ],
+    })
+}
+
+/// The manifest of one app that asks to be installable on its own (`installable` on its
+/// `shell.app` entry): `id: /{route}/`, a window of its own, its launcher tile as the icon.
+pub fn app_manifest(route: &str, item: &Value, workspace: &str) -> Value {
+    let title = item.get("title").and_then(Value::as_str).unwrap_or(route);
+    let colour = tile_colour(item.get("color").and_then(Value::as_str), title);
+    let icon = item.get("icon").and_then(Value::as_str).filter(|i| lucide(i).is_some()).unwrap_or_default();
+    let letter: String = title.chars().find(|c| c.is_alphanumeric()).and_then(|c| c.to_uppercase().next()).map(String::from).unwrap_or_default();
+    let letter: String = letter.bytes().map(|b| if b.is_ascii_alphanumeric() { char::from(b).to_string() } else { format!("%{b:02X}") }).collect();
+    let src = |mask: bool| format!("/_shell/app-icon.svg?icon={icon}&color={}&letter={letter}{}", &colour[1..], if mask { "&mask=1" } else { "" });
+    json!({
+        "id": format!("/{route}/"),
+        "name": format!("{title} · {workspace}"),
+        "short_name": short_name(title),
+        "description": item.get("description"),
+        "start_url": format!("/{route}/"),
+        "scope": format!("/{route}/"),
+        "display": "standalone",
+        "background_color": "#ffffff",
+        "theme_color": colour,
+        "icons": [
+            {"src": src(false), "sizes": "any", "type": "image/svg+xml", "purpose": "any"},
+            {"src": src(true), "sizes": "any", "type": "image/svg+xml", "purpose": "maskable"},
+        ],
+    })
+}
+
+/// A name short enough for a home screen (12 characters): the name, its first word, or a cut.
+fn short_name(name: &str) -> String {
+    let name = name.trim();
+    if name.chars().count() <= 12 {
+        return name.to_string();
+    }
+    match name.split_whitespace().next() {
+        Some(w) if w.chars().count() <= 12 => w.to_string(),
+        _ => name.chars().take(12).collect(),
+    }
+}
+
+/// A launcher tile's colour as runtime.js's `colourOf` picks it: the app's own (`#rrggbb`), else
+/// a hue from its title at 55% saturation and 42% lightness.
+pub fn tile_colour(color: Option<&str>, title: &str) -> String {
+    if let Some(c) = color.filter(|c| c.len() == 7 && c.starts_with('#') && c[1..].bytes().all(|b| b.is_ascii_hexdigit())) {
+        return c.to_ascii_lowercase();
+    }
+    let mut unit = [0u16; 2];
+    let h = title.chars().fold(0u32, |h, c| (h * 31 + u32::from(c.encode_utf16(&mut unit)[0])) % 360);
+    let (h, s, l): (f64, f64, f64) = (f64::from(h), 0.55, 0.42);
+    let a = s * l.min(1.0 - l);
+    let f = |n: f64| {
+        let k = (n + h / 30.0) % 12.0;
+        ((l - a * (k - 3.0).min(9.0 - k).clamp(-1.0, 1.0)) * 255.0).round() as u8
+    };
+    format!("#{:02x}{:02x}{:02x}", f(0.0), f(8.0), f(4.0))
+}
+
+/// The bar's Lucide icons (runtime.js `ICONS`): a name → the shapes of its 24×24 drawing.
+pub fn lucide(name: &str) -> Option<&'static str> {
+    static ICONS: OnceLock<std::collections::HashMap<&'static str, &'static str>> = OnceLock::new();
+    ICONS
+        .get_or_init(|| {
+            let js = platform_file("runtime.js").and_then(|(_, b)| std::str::from_utf8(b).ok()).unwrap_or_default();
+            let body = js.split_once("\nconst ICONS = {\n").and_then(|(_, rest)| rest.split_once("\n};")).map(|(b, _)| b).unwrap_or_default();
+            body.lines()
+                .filter_map(|l| {
+                    let (k, v) = l.trim().strip_suffix(',')?.split_once(": ")?;
+                    Some((k.strip_prefix('"')?.strip_suffix('"')?, v.strip_prefix('\'')?.strip_suffix('\'')?))
+                })
+                .collect()
+        })
+        .get(name)
+        .copied()
+}
+
+/// An app's icon as its launcher tile shows it (its Lucide icon, else its initial, white on its
+/// colour), for install manifests: square with `mask` (the system shapes it), else rounded.
+pub fn app_icon_svg(icon: &str, colour: &str, letter: &str, mask: bool) -> String {
+    let colour = if colour.len() == 6 && colour.bytes().all(|b| b.is_ascii_hexdigit()) { colour } else { "2f5bea" };
+    let drawing = match lucide(icon) {
+        Some(shape) => format!(
+            r##"<g transform="translate(128 128) scale(10.6667)" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{shape}</g>"##
+        ),
+        None => {
+            let letter: String = letter.chars().take(1).filter(|c| c.is_alphanumeric()).collect();
+            format!(
+                r##"<text x="256" y="256" dy="0.35em" text-anchor="middle" font-family="system-ui, sans-serif" font-size="240" font-weight="600" fill="#fff">{}</text>"##,
+                if letter.is_empty() { "•" } else { &letter }
+            )
+        }
+    };
+    let rx = if mask { 0 } else { 112 };
+    format!(r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="{rx}" fill="#{colour}"/>{drawing}</svg>"##)
 }
 
 pub const SHELL_BODY: &str = "<ferrum-bar></ferrum-bar>";
@@ -1319,6 +1455,79 @@ pub fn file_response(bytes: Bytes, content_type: &str, immutable: bool) -> Respo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pages_link_the_manifest_they_install_as() {
+        let page = |app: Value, kind: &str| install_links(&json!({"app": app, "host": {"kind": kind}}));
+        let suite = page(json!({"id": "shell", "entry": "store"}), "page");
+        assert!(suite.contains(r#"<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">"#), "{suite}");
+        assert!(suite.contains(r#"<link rel="apple-touch-icon" href="/_shell/v1/icon-180.png">"#));
+        assert!(page(json!({"id": "pos", "entry": "pos", "installable": true}), "page").contains(r#"href="/manifest.webmanifest?app=pos""#));
+        // Not installable on its own, or a route that is not one: the workspace's.
+        assert!(page(json!({"id": "pos", "entry": "pos", "installable": false}), "page").contains(r#"href="/manifest.webmanifest""#));
+        assert!(page(json!({"id": "x", "entry": "a\"><script>", "installable": true}), "page").contains(r#"href="/manifest.webmanifest""#));
+        assert_eq!(page(json!({"id": "forms", "entry": "f"}), "public"), "");
+        assert!(shell_head(&json!({"app": null, "host": {"kind": "status"}})).contains("/manifest.webmanifest"));
+    }
+
+    #[test]
+    fn manifests_of_the_suite_and_of_an_app() {
+        let m = suite_manifest("Acme Industries Private Limited");
+        assert_eq!(
+            (m["id"].as_str(), m["start_url"].as_str(), m["scope"].as_str(), m["display"].as_str()),
+            (Some("/"), Some("/"), Some("/"), Some("standalone"))
+        );
+        assert_eq!(m["short_name"], "Acme");
+        for icon in m["icons"].as_array().unwrap() {
+            let src = icon["src"].as_str().unwrap().strip_prefix("/_shell/v1/").unwrap();
+            assert_eq!(platform_file(src).unwrap().0, icon["type"].as_str().unwrap(), "{src}");
+        }
+        assert!(m["icons"].as_array().unwrap().iter().any(|i| i["purpose"] == "maskable"));
+        assert_eq!(suite_manifest("Zenith")["short_name"], "Zenith");
+        assert_eq!(short_name("Supercalifragilistic Co"), "Supercalifra");
+
+        let item = json!({"id": "pos", "route": "pos", "title": "Point of Sale", "icon": "shopping-cart", "color": "#0E7490", "description": "The till"});
+        let m = app_manifest("pos", &item, "Acme");
+        assert_eq!((m["id"].as_str(), m["start_url"].as_str(), m["scope"].as_str()), (Some("/pos/"), Some("/pos/"), Some("/pos/")));
+        assert_eq!((m["name"].as_str(), m["short_name"].as_str(), m["theme_color"].as_str()), (Some("Point of Sale · Acme"), Some("Point"), Some("#0e7490")));
+        assert_eq!(m["icons"][0]["src"], "/_shell/app-icon.svg?icon=shopping-cart&color=0e7490&letter=P");
+        assert_eq!(m["icons"][1]["src"], "/_shell/app-icon.svg?icon=shopping-cart&color=0e7490&letter=P&mask=1");
+        // An icon the bar cannot draw, a title starting with a mark, a letter outside ASCII.
+        let m = app_manifest("kassa", &json!({"title": "«Äpfel»", "icon": "assets/kassa.svg"}), "Acme");
+        assert_eq!(m["icons"][0]["src"].as_str().unwrap(), format!("/_shell/app-icon.svg?icon=&color={}&letter=%C3%84", &tile_colour(None, "«Äpfel»")[1..]));
+    }
+
+    #[test]
+    fn icons_are_the_bars_own() {
+        let mail = lucide("mail").expect("the bar draws mail");
+        assert!(mail.starts_with("<path ") && mail.ends_with("/>"), "{mail}");
+        for name in ["layout-grid", "shopping-cart", "store", "receipt", "circle-check", "bell"] {
+            assert!(lucide(name).is_some(), "{name}");
+        }
+        assert!(lucide("nope").is_none());
+        let js = std::str::from_utf8(platform_file("runtime.js").unwrap().1).unwrap();
+        let block = js.split_once("\nconst ICONS = {\n").unwrap().1.split_once("\n};").unwrap().0;
+        assert!(block.lines().all(|l| lucide(l.trim().split('"').nth(1).unwrap()).is_some()), "every icon of runtime.js parses");
+
+        let svg = app_icon_svg("mail", "2563eb", "M", false);
+        assert!(svg.starts_with(r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#2563eb"/>"##));
+        assert!(svg.contains(mail) && !svg.contains("<text"));
+        let masked = app_icon_svg("nope", "zzz\"/><script>", "<", true);
+        assert!(masked.contains(r##"rx="0" fill="#2f5bea""##) && masked.contains(">•</text>") && !masked.contains("<script"), "{masked}");
+        assert!(app_icon_svg("", "0e7490", "Ä", false).contains(">Ä</text>"));
+    }
+
+    #[test]
+    fn tiles_take_the_launchers_colours() {
+        assert_eq!(tile_colour(Some("#2563EB"), "Mail"), "#2563eb");
+        // runtime.js colourOf: hsl(h 55% 42%) from the title, as Chrome computes it.
+        for (title, chrome) in
+            [("", "#a63030"), ("Notes", "#30a681"), ("Point of Sale", "#a68e30"), ("«Äpfel»", "#3085a6"), ("Field Service", "#a63e30"), ("😀 Fun", "#30a677")]
+        {
+            assert_eq!(tile_colour(None, title), chrome, "{title}");
+        }
+        assert_eq!(tile_colour(Some("#bad"), "Notes"), "#30a681");
+    }
 
     #[test]
     fn development_servers_on_this_machine_only() {

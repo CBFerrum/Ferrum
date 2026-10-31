@@ -109,6 +109,9 @@ redirect=$(c -o /dev/null -w '%{http_code} %{redirect_url}' "http://$HOST:8080/l
 grep -qi "<html" <<<"$(c -f "$API/login")" || fail "the sign-in page"
 [[ "$(c -o /dev/null -w '%{http_code} %{redirect_url}' "$API/app/e/Customer")" =~ ^30[23]\ .*/open/Customer$ ]] || fail "today's web app's old addresses"
 c -fo /dev/null "$API/.well-known/oauth-authorization-server" || fail "the OAuth metadata"
+# Notifications on devices and installing (apps-ui.md §12.5): the core worker, Ferrum as an app.
+grep -q 'addEventListener("push"' <<<"$(c -f "$API/sw.js")" || fail "the core worker"
+[ "$(c -f "$API/manifest.webmanifest" | json 'd["id"] + " " + d["display"]')" = "/ standalone" ] || fail "the workspace's manifest"
 if grep -q "ferrum_up" <<<"$(c "$API/metrics")"; then fail "metrics are reachable from outside"; fi
 
 step "the editor server"

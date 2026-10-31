@@ -1,9 +1,10 @@
 //! The person's notifications (docs/plan/apps-ui.md §12.8; crates/kernel/src/notify.rs): the
 //! latest, marking them read, the kinds they may choose for (the platform's and the apps'
-//! `shell.notification`, as `{app}.{id}`) and how each reaches them. Own notifications only.
+//! `shell.notification`, as `{app}.{id}`) and how each reaches them, and whether this device gets
+//! them pushed (§12.5; crates/kernel/src/webpush.rs). Own notifications only.
 
 use crate::error::ApiResult;
-use crate::extract::Auth;
+use crate::extract::{Auth, BrowserSession};
 use crate::state::{AppState, app_state};
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -111,7 +112,8 @@ async fn types(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Resp
             json!({"kind": kind, "label": label, "app": app, "default": default, "channel": channel})
         })
         .collect();
-    Ok(Json(json!({"types": types, "channels": notify::CHANNELS, "email": st.kernel.mailer.is_some()})).into_response())
+    let push = st.kernel.vapid().await?.is_some();
+    Ok(Json(json!({"types": types, "channels": notify::CHANNELS, "email": st.kernel.mailer.is_some(), "push": push})).into_response())
 }
 
 #[derive(Deserialize)]
@@ -135,6 +137,9 @@ async fn choose(Auth(ctx): Auth, State(app): State<AppContext>, Json(c): Json<Ch
         if matches!(ch, "email" | "digest") && st.kernel.mailer.is_none() {
             return Err(Error::field("channel", "this server sends no email").into());
         }
+        if ch == "push" && st.kernel.vapid().await?.is_none() {
+            return Err(Error::field("channel", "this server pushes to no devices").into());
+        }
     }
     let mut tx = st.kernel.db.tenant_tx(ctx.tenant).await?;
     match c.channel {
@@ -155,6 +160,48 @@ async fn choose(Auth(ctx): Auth, State(app): State<AppContext>, Json(c): Json<Ch
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+/// The browser session a push subscription belongs to: this device's, never an API client's.
+fn device(session: Option<Uuid>) -> Result<Uuid, Error> {
+    session.ok_or_else(|| Error::invalid("notifications on a device need its browser session (the cookie), not a token"))
+}
+
+/// `GET /api/push`: the key browsers subscribe with (`null`: this server pushes to no devices),
+/// whether this device has pushes on, and on how many of the person's devices they are.
+async fn push(BrowserSession(ctx, session): BrowserSession, State(app): State<AppContext>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    let key = st.kernel.vapid().await?.map(|v| v.public.clone());
+    let status = st.kernel.push_status(&ctx, session).await?;
+    Ok(Json(json!({"key": key, "here": status.here, "devices": status.devices})).into_response())
+}
+
+#[derive(Deserialize)]
+struct SubscriptionKeys {
+    p256dh: String,
+    auth: String,
+}
+
+/// A subscription as the browser gives it (`PushSubscription.toJSON()`).
+#[derive(Deserialize)]
+struct Subscription {
+    endpoint: String,
+    keys: SubscriptionKeys,
+}
+
+/// `PUT /api/push` `{endpoint, keys: {p256dh, auth}}`: this device gets pushes, through this
+/// subscription with its browser's push service.
+async fn push_on(BrowserSession(ctx, session): BrowserSession, State(app): State<AppContext>, Json(sub): Json<Subscription>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    st.kernel.subscribe_push(&ctx, device(session)?, &sub.endpoint, &sub.keys.p256dh, &sub.keys.auth).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// `DELETE /api/push`: this device gets no more pushes.
+async fn push_off(BrowserSession(ctx, session): BrowserSession, State(app): State<AppContext>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    st.kernel.unsubscribe_push(&ctx, device(session)?).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 pub fn routes() -> Routes {
     use axum::routing::{get, post, put};
     Routes::new()
@@ -163,4 +210,5 @@ pub fn routes() -> Routes {
         .add("/api/notifications/types", get(types))
         .add("/api/notifications/preferences", put(choose))
         .add("/api/notifications/{id}/read", post(mark_read))
+        .add("/api/push", get(push).put(push_on).delete(push_off))
 }

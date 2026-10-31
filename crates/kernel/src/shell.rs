@@ -202,7 +202,7 @@ impl Kernel {
         Ok(rows)
     }
 
-    /// Signs one device out (one's own, or anyone's for an administrator).
+    /// Signs one device out (one's own, or anyone's for an administrator); its pushes stop.
     pub async fn revoke_session(&self, ctx: &Ctx, sid: Uuid) -> Result<()> {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let n = sqlx::query("update user_session set revoked_at = now() where tenant_id = $1 and id = $2 and revoked_at is null and (user_id = $3 or $4)")
@@ -216,13 +216,15 @@ impl Kernel {
         if n == 0 {
             return Err(Error::NotFound("no such session".into()));
         }
+        sqlx::query("delete from push_subscription where tenant_id = $1 and session_id = $2").bind(ctx.tenant).bind(sid).execute(&mut *tx).await?;
         crate::audit::record(&mut tx, ctx, "UserSession", sid, "revoke", None, serde_json::json!({})).await?;
         tx.commit().await?;
         self.sessions.insert((ctx.tenant, sid), (None, Instant::now()));
         Ok(())
     }
 
-    /// Signing out of this device: revokes its session (no permission check: it is the caller's).
+    /// Signing out of this device: revokes its session (no permission check: it is the caller's),
+    /// and with it the device's pushes.
     pub async fn end_session(&self, tenant: Uuid, sid: Uuid) -> Result<()> {
         let mut tx = self.db.tenant_tx(tenant).await?;
         sqlx::query("update user_session set revoked_at = now() where tenant_id = $1 and id = $2 and revoked_at is null")
@@ -230,6 +232,7 @@ impl Kernel {
             .bind(sid)
             .execute(&mut *tx)
             .await?;
+        sqlx::query("delete from push_subscription where tenant_id = $1 and session_id = $2").bind(tenant).bind(sid).execute(&mut *tx).await?;
         tx.commit().await?;
         self.sessions.insert((tenant, sid), (None, Instant::now()));
         Ok(())

@@ -767,6 +767,9 @@ async fn scenario() {
     assert!(matches!(k.card(&otto_ctx, "Customer", carded).await, Err(Error::Forbidden(_) | Error::NotFound(_))), "only for those who may read it");
 
     assert_eq!(ferrum_kernel::notify::declared_default(&["inapp", "email"]), "email");
-    assert_eq!(ferrum_kernel::notify::declared_default(&["push"]), "inapp");
+    assert_eq!(ferrum_kernel::notify::declared_default(&["push"]), "push");
+    assert_eq!(ferrum_kernel::notify::declared_default(&["inapp", "push"]), "push");
+    assert_eq!(ferrum_kernel::notify::declared_default(&["push", "email"]), "email");
+    assert_eq!(ferrum_kernel::notify::declared_default(&["digest", "push"]), "push");
     assert_eq!(ferrum_kernel::notify::declared_default(&[]), "off");
 }

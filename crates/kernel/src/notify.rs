@@ -1,7 +1,8 @@
 //! Notifications (docs/plan/apps-ui.md §12.8). Each has a kind, and each person chooses per kind
 //! how it reaches them: in the bar only, by email at once (and in the bar), in a daily email digest
-//! (and in the bar), or not at all. One kept for the bar is announced on the live channel (at
-//! commit) so open apps show it at once; one to email goes out through the outbox after commit.
+//! (and in the bar), pushed to the devices where they turned notifications on (and in the bar;
+//! webpush.rs), or not at all. One kept for the bar is announced on the live channel (at commit)
+//! so open apps show it at once; one to email or push goes out through the outbox after commit.
 
 use crate::db::Tx;
 use crate::error::Result;
@@ -15,7 +16,7 @@ pub const LIVE_CHANNEL: &str = "ferrum_live";
 pub const MAIL_TOPIC: &str = "ferrum.notification.mail";
 
 /// How a person may have a kind of notification reach them.
-pub const CHANNELS: &[&str] = &["inapp", "email", "digest", "off"];
+pub const CHANNELS: &[&str] = &["inapp", "email", "digest", "push", "off"];
 
 /// The platform's own kinds: (kind, what people choose for), all in the bar unless chosen otherwise.
 pub const KINDS: &[(&str, &str)] = &[
@@ -28,11 +29,13 @@ pub const KINDS: &[(&str, &str)] = &[
 ];
 
 /// The channel an app's declared default means (`shell.notification` `default`, a list): email when
-/// it lists email, else the digest when it lists that, else the bar (push too, until the platform
-/// pushes); none listed is off until the person turns it on.
+/// it lists email, else push when it lists that, else the digest when it lists that, else the bar;
+/// none listed is off until the person turns it on.
 pub fn declared_default(listed: &[&str]) -> &'static str {
     if listed.contains(&"email") {
         "email"
+    } else if listed.contains(&"push") {
+        "push"
     } else if listed.contains(&"digest") {
         "digest"
     } else if listed.is_empty() {
@@ -92,6 +95,17 @@ pub async fn send_kind(
     sqlx::query("select pg_notify($1, $2)").bind(LIVE_CHANNEL).bind(payload.to_string()).execute(&mut **tx).await?;
     if channel == "email" {
         crate::outbox::enqueue(tx, tenant, MAIL_TOPIC, None, None, json!({"notification": id})).await?;
+    }
+    if channel == "push" {
+        // One delivery per device, so a device whose push service is slow or down is retried alone.
+        let sessions: Vec<Uuid> = sqlx::query_scalar("select session_id from push_subscription where tenant_id = $1 and user_id = $2")
+            .bind(tenant)
+            .bind(user)
+            .fetch_all(&mut **tx)
+            .await?;
+        for session in sessions {
+            crate::outbox::enqueue(tx, tenant, crate::webpush::PUSH_TOPIC, None, None, json!({"notification": id, "session": session})).await?;
+        }
     }
     Ok(Some(id))
 }

@@ -40,6 +40,7 @@ pub mod store;
 pub mod tenant;
 pub mod twofactor;
 pub mod value;
+pub mod webpush;
 
 pub use ctx::{Access, Action, Ctx, PermSet, row_scope};
 pub use db::{Db, DbConfig, Tx, with_retry};
@@ -102,6 +103,12 @@ pub struct KernelSettings {
     pub pdf_url: Option<String>,
     /// The web app's address as people reach it (`PUBLIC_URL`), for links in mail.
     pub public_url: Option<String>,
+    /// The push services the server sends notifications to (webpush.rs): hosts (their subdomains
+    /// too), or exact origins such as `http://127.0.0.1:9000`.
+    pub push_services: Vec<String>,
+    /// Who push services may contact about this server's pushes (`mailto:` or `https:`); the
+    /// public address when it is https.
+    pub push_contact: Option<String>,
 }
 
 impl Default for KernelSettings {
@@ -114,6 +121,8 @@ impl Default for KernelSettings {
             secret_key: None,
             pdf_url: None,
             public_url: None,
+            push_services: webpush::PUSH_SERVICES.iter().map(|s| s.to_string()).collect(),
+            push_contact: None,
         }
     }
 }
@@ -132,6 +141,8 @@ pub struct Kernel {
     pub(crate) files: std::sync::OnceLock<Arc<dyn files::FileStore>>,
     /// The directory workspace, once known (identity.rs).
     pub(crate) directory: std::sync::OnceLock<Uuid>,
+    /// The server's VAPID key, once read (webpush.rs).
+    pub(crate) vapid: tokio::sync::OnceCell<Arc<webpush::Vapid>>,
 }
 
 impl Kernel {
@@ -180,6 +191,7 @@ impl Kernel {
             hosts: DashMap::new(),
             files: std::sync::OnceLock::new(),
             directory: std::sync::OnceLock::new(),
+            vapid: tokio::sync::OnceCell::new(),
         }))
     }
 

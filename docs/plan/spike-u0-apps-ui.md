@@ -32,9 +32,9 @@ them are not installed on the machine the spike ran on, and downloading them nee
 | Worker that removes itself where no app lives | **go** | `/{route}/sw.js` answers with it, scoped by `Service-Worker-Allowed`; it deletes only its route's caches. |
 | An upgrade while a tab is open | **go** | The old release's files still load; the tab is told a new version runs and offers to reload; after the reload, the new release. |
 | A person without an app's role | **go** | Not in the launcher, a 403 page at its address, its intents not offered; with the role, all three. |
-| Suite and per-app installable web apps (nested manifest scopes) | **not yet** | Comes with the shell app (U2) and the first real apps (U4). |
-| Core worker for push, without a fetch handler | **not yet** | U5, with notifications. |
-| `{workspace}.localhost` | **not yet** | Subdomain hosting is U6; the spike ran shape A′ (the workspace chosen at sign-in). |
+| Suite and per-app installable web apps (nested manifest scopes) | **go** (Chrome) | Built in U5 (§12.5): Chrome finds no installability errors for the workspace (`id: /`) or for Point of Sale on its own (`id: /pos/`, nested in it). Edge and Safari were not tried. |
+| Core worker for push, without a fetch handler | **go** | Built in U5 (§12.5): registered when someone turns notifications on; Chrome showed a message the server pushed through it. |
+| `{workspace}.localhost` | **go** | Built in U6: each workspace at `{slug}.{base}`, `{slug}.localhost` in development; checked in Chrome, Firefox and WebKit. |
 
 ## What changed in the plan's design
 

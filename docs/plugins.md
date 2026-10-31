@@ -249,6 +249,11 @@ contributes:
 * **Sessions**: the page calls the API with the browser's session cookie; nothing to store.
 * **Access**: an entry with `roles` is for administrators and people with one of them; without,
   for every member. Nobody else sees it in the launcher or opens its address.
+* **Installing**: from any page browsers offer the workspace as one app to install. An entry with
+  `installable: true` asks to be installable on its own (a till, a mail client): its pages link a
+  manifest of their own (`id`, `scope` and `start_url` `/{route}/`, its launcher tile as the icon),
+  and installed it opens in a window of its own. Installed icons show the unread notifications;
+  `ferrum.shell.badge(n)` sets an app's own count instead.
 * **Trust**: an interface runs on the workspace's host with the person's session when it comes from
   an app compiled into the server, a bundle signed by a key the server trusts, or an app an
   operator made available to the whole cluster. Anything else (an unsigned app uploaded to one
