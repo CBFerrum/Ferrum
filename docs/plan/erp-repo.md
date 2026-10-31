@@ -140,7 +140,7 @@ protection (GDPR, India's DPDP Act, the PDPAs of Singapore and Thailand) and dat
 platform's (regions, export, erasure).
 
 Stage 3 builds the seam and moves India onto it. Every other country is an add-on of its own,
-planned and built when it is picked (a localization plan, `docs/plan/localization.md`).
+planned in [localization.md](localization.md) and built phase by phase.
 
 ### Depending on ERP without a cycle
 
