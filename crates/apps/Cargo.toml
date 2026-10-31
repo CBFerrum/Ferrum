@@ -18,6 +18,8 @@ ring = "0.17"
 base64 = "0.22"
 flate2 = "1"
 tar = "0.4"
+# Descriptions (README.md) for the store's pages and the install dialog: Markdown, never raw HTML.
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 
 [lints]
 workspace = true
