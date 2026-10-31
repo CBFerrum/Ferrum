@@ -597,13 +597,38 @@ async fn scenario() {
     let off = manager(Uploads::Off, true);
     assert!(matches!(off.upload(&admin, bundle(plugin_only("nope"), &[]).write().unwrap().into()).await, Err(Error::Forbidden(_))));
 
-    // ── interfaces of their own: stored as releases; private ones only from trusted bundles ──
+    // ── interfaces of their own: stored as releases; a private one from a bundle the server does
+    // not trust runs isolated (docs/plan/apps-ui.md U8) ──
     let lax_private = manager(Uploads::Private, true);
-    let err = lax_private.upload(&admin, bundle(interface_app("pvui", "pvui"), &[]).write().unwrap().into()).await.unwrap_err();
-    assert!(matches!(&err, Error::Forbidden(m) if m.contains("interface of its own")), "{err}");
+    let (app, plan) = lax_private.upload(&admin, bundle(interface_app("pvui", "pvui"), &[]).write().unwrap().into()).await.unwrap();
+    assert!(app.private && plan.app.isolated);
+    assert!(plan.warnings.iter().any(|w| w.contains("pvui's interface runs isolated")), "{:?}", plan.warnings);
+    assert!(
+        plan.warnings.iter().any(|w| w.contains("names no language")) && plan.warnings.iter().any(|w| w.contains("no title")),
+        "the review: {:?}",
+        plan.warnings
+    );
+    lax_private.install(&admin, "pvui", None, &plan.digest, false).await.unwrap();
+    let apps = lax_private.shell_apps(tenant).await.unwrap();
+    assert!(apps.iter().find(|a| a.id == "pvui").is_some_and(|a| a.isolated), "its pages run isolated");
+    assert!(k.ui_release_for("pvui", "1.0.0").await.unwrap().is_some());
+    // What an isolated interface cannot do: pages the platform opens on the host, other origins.
+    let public = interface_app("pvpub", "pvpub");
+    let mut public = public;
+    let yaml = String::from_utf8(public["app.yaml"].clone()).unwrap() + "  shell.public:\n    - {id: link, path: pvpub/s}\n";
+    public.insert("app.yaml".into(), yaml.into_bytes());
+    let err = lax_private.upload(&admin, bundle(public, &[]).write().unwrap().into()).await.unwrap_err();
+    assert!(matches!(&err, Error::Forbidden(m) if m.contains("runs isolated") && m.contains("shell.public")), "{err}");
+    let mut reach = interface_app("pvcsp", "pvcsp");
+    let yaml = String::from_utf8(reach["app.yaml"].clone())
+        .unwrap()
+        .replace("ui:\n  dist: ui/dist\n", "ui:\n  dist: ui/dist\n  csp: {connect: [\"https://api.example.com\"]}\n");
+    reach.insert("app.yaml".into(), yaml.into_bytes());
+    let err = lax_private.upload(&admin, bundle(reach, &[]).write().unwrap().into()).await.unwrap_err();
+    assert!(matches!(&err, Error::Forbidden(m) if m.contains("ui.csp")), "{err}");
     let signed = bundle(interface_app("pvui-signed", "pvui-signed"), &[(&keys.publisher, Role::Publisher)]).write().unwrap();
-    let (app, _) = prod.upload(&admin, signed.into()).await.unwrap();
-    assert!(app.private);
+    let (app, plan) = prod.upload(&admin, signed.into()).await.unwrap();
+    assert!(app.private && !plan.app.isolated, "a trusted bundle's interface runs on the host");
     assert!(k.ui_release_for("pvui-signed", "1.0.0").await.unwrap().is_some(), "a signed private app's interface is stored");
     dev.upload(&admin, bundle(interface_app("clui", "clui"), &[]).write().unwrap().into()).await.unwrap();
     let release = k.ui_release_for("clui", "1.0.0").await.unwrap().expect("stored");

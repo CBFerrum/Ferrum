@@ -249,9 +249,27 @@ contributes:
 * **Sessions**: the page calls the API with the browser's session cookie; nothing to store.
 * **Access**: an entry with `roles` is for administrators and people with one of them; without,
   for every member. Nobody else sees it in the launcher or opens its address.
-* **Trust**: an interface runs on the workspace's host with the person's session. Apps compiled
-  into the server, bundles signed by a key the server trusts, and apps an operator makes available
-  for the whole cluster may bring one; an unsigned app private to a workspace may not.
+* **Trust**: an interface runs on the workspace's host with the person's session when it comes from
+  an app compiled into the server, a bundle signed by a key the server trusts, or an app an
+  operator made available to the whole cluster. Anything else (an unsigned app uploaded to one
+  workspace) brings its interface too, but it runs **isolated** (below).
+* **Isolated interfaces** ([plan](plan/apps-ui.md) U8): the app's pages are the bar and, below it,
+  the app in a sandboxed frame (`/_isolated/{app}/{digest}/index.html`, an opaque origin: no session,
+  no cookie or storage of the workspace's site, and a policy that lets it load its own files only).
+  It reaches Ferrum through the bridge, screens' protocol with what a page needs besides
+  (ferrum-sdk `examples/customer-cards/ui/ferrum.js`): `context` (with `path`, where the page is under
+  its route), `api`, `navigate` (the address bar follows, Back sends `location`), `open`,
+  `openRecord`, `title`, `ready`, `toast`, `confirm`, and `token`, a short-lived app token for calling
+  `/api/v1/…`, `/api/meta/…` and `/api/ext/{app}/…` straight from the page. Every call is narrowed
+  to what the app declared, within the person's rights, never as an administrator. An isolated
+  interface may not contribute `shell.public`, `shell.sidepanel`, `shell.intent` or `shell.portal`
+  pages, nor name other origins in `ui.csp`.
+* **`access`**: what an app's pages may reach when it has no plugin declaring it (a plugin declares
+  its own in plugin.json), consented to at install like the rest of its permissions:
+  `access: [{entity: Customer, read: true}, {entity: Contact, read: true, write: true, if_owner: true}]`.
+* **The store's review**: at upload, the install dialog lists what an automatic look at the
+  interface's page finds (no `<html lang>`, no title, no viewport, images without `alt`, a large
+  download) and whether it runs isolated; the manifest's `screenshots` show there.
 * **`ferrum.shell`, more**: `sidepanel.open({id, context})` and `close()` (a panel's page reads
   `sidepanel.context()` and hears `panel-context`); `uploads.start({file, url})` hands an upload to
   the runtime, which keeps the file in IndexedDB until it is sent, carries on in the next page of any

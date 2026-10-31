@@ -90,6 +90,10 @@ pub struct PlanApp {
     pub description: Option<String>,
     pub license: Option<String>,
     pub homepage: Option<String>,
+    /// Pictures of the app (its manifest's `screenshots`), where this server or its store serves them.
+    pub screenshots: Vec<String>,
+    /// Its interface runs isolated: a bundle this server does not trust, private to the workspace.
+    pub isolated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -171,13 +175,33 @@ struct Recorded {
     app: AppManifest,
     permissions: Permissions,
     readme: Option<String>,
+    /// Its interface runs isolated (docs/plan/apps-ui.md U8): a bundle this server does not trust,
+    /// private to a workspace.
+    isolated: bool,
 }
 
 fn recorded(r: &Release) -> Option<Recorded> {
     let app = serde_json::from_value(r.manifest.get("app")?.clone()).ok()?;
     let permissions = serde_json::from_value(r.manifest.get("permissions")?.clone()).ok()?;
     let readme = r.manifest.get("readme").and_then(Value::as_str).map(String::from);
-    Some(Recorded { app, permissions, readme })
+    let isolated = r.manifest.get("isolated").and_then(Value::as_bool).unwrap_or(false);
+    Some(Recorded { app, permissions, readme, isolated })
+}
+
+/// What an interface that runs isolated may not contribute: points whose pages the platform opens
+/// on the workspace's host itself (side panels, intents, public and portal pages).
+pub const NOT_ISOLATED: &[&str] = &["shell.public", "shell.sidepanel", "shell.intent", "shell.portal"];
+
+fn check_isolated(m: &AppManifest) -> Result<()> {
+    let why = "its bundle is not signed by a key this server trusts";
+    if let Some(point) = NOT_ISOLATED.iter().find(|p| m.contributes.get(**p).is_some_and(|items| !items.is_empty())) {
+        return Err(Error::Forbidden(format!("{}'s interface runs isolated ({why}), and an isolated interface cannot contribute {point} yet", m.id)));
+    }
+    // It reaches its own files and, through the bridge, Ferrum: nothing elsewhere.
+    if m.ui.as_ref().is_some_and(|ui| !ui.csp.is_empty()) {
+        return Err(Error::Forbidden(format!("{}'s interface runs isolated ({why}) and reaches nothing beyond Ferrum: drop ui.csp", m.id)));
+    }
+    Ok(())
 }
 
 struct Installed {
@@ -267,6 +291,8 @@ struct Enabled {
     manifest: Arc<AppManifest>,
     /// Apps from bundles: their consent (what their screens may reach) and stored release.
     bundled: Option<(Permissions, Release)>,
+    /// Its interface runs isolated (see `Recorded`).
+    isolated: bool,
 }
 
 /// Screens and extension points (docs/plugins.md): what a workspace's enabled apps contribute,
@@ -281,11 +307,11 @@ impl AppManager {
         for (id, inst) in ws.apps.iter().filter(|(_, i)| i.enabled) {
             let version = inst.version.clone();
             if let Some(m) = self.native(id) {
-                out.push(Enabled { id: id.clone(), version, manifest: Arc::new(m.clone()), bundled: None });
+                out.push(Enabled { id: id.clone(), version, manifest: Arc::new(m.clone()), bundled: None, isolated: false });
             } else if let Some(r) = self.release_of(tenant, id, &inst.version).await?.filter(|r| r.status != "revoked")
                 && let Some(rec) = recorded(&r)
             {
-                out.push(Enabled { id: id.clone(), version, manifest: Arc::new(rec.app), bundled: Some((rec.permissions, r)) });
+                out.push(Enabled { id: id.clone(), version, manifest: Arc::new(rec.app), bundled: Some((rec.permissions, r)), isolated: rec.isolated });
             }
         }
         let out = Arc::new(out);
@@ -334,7 +360,8 @@ impl AppManager {
         let apps = self.enabled_apps(tenant).await?;
         Ok(apps
             .iter()
-            .find(|a| a.id == app && a.manifest.contributes.keys().any(|p| p.starts_with("ui.")))
+            // Screens, or an interface of its own (isolated ones call through the same narrowing).
+            .find(|a| a.id == app && (a.manifest.contributes.keys().any(|p| p.starts_with("ui.")) || a.manifest.ui.is_some()))
             .and_then(|a| a.bundled.as_ref())
             .map(|(p, _)| (p.entities.clone(), p.new_entities.clone())))
     }
@@ -374,8 +401,20 @@ impl AppManager {
             .enabled_apps(tenant)
             .await?
             .iter()
-            .map(|a| crate::shell::ShellApp { id: a.id.clone(), version: a.version.clone(), manifest: a.manifest.clone(), bundled: a.bundled.is_some() })
+            .map(|a| crate::shell::ShellApp {
+                id: a.id.clone(),
+                version: a.version.clone(),
+                manifest: a.manifest.clone(),
+                bundled: a.bundled.is_some(),
+                isolated: a.isolated,
+            })
             .collect())
+    }
+
+    /// The origins of the app stores this server reads (their icons and screenshots show in the
+    /// shell's store pages).
+    pub fn store_origins(&self) -> Vec<String> {
+        self.stores.iter().filter_map(|u| crate::controllers::plugins::plain_origin(u)).collect()
     }
 
     /// The manifest of an app compiled into this build.
@@ -412,6 +451,29 @@ impl AppManager {
             Ok(n) => tracing::info!(app, workspaces = n, "recorded as an installed app"),
             Err(e) => tracing::error!(app, "recording as an installed app failed: {e}"),
         }
+    }
+
+    /// One of an uploaded app's screenshots (its manifest's `screenshots[n]`), from its stored
+    /// bundle, for the store's pages: the bytes and their type. Images only.
+    pub async fn screenshot(&self, ctx: &Ctx, id: &str, version: &str, n: usize) -> Result<(Bytes, &'static str)> {
+        admin(ctx)?;
+        let missing = || Error::NotFound(format!("{id} {version}: screenshot {n}"));
+        if !valid_id(id) || Version::parse(version).is_err() {
+            return Err(missing());
+        }
+        let r = self.release_of(ctx.tenant, id, version).await?.ok_or_else(missing)?;
+        let b = self.load_bundle(&r).await?;
+        let path = b.manifest.screenshots.get(n).ok_or_else(missing)?.clone();
+        let kind = match path.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).as_deref() {
+            Some("png") => "image/png",
+            Some("jpg" | "jpeg") => "image/jpeg",
+            Some("webp") => "image/webp",
+            Some("gif") => "image/gif",
+            Some("svg") => "image/svg+xml",
+            _ => return Err(missing()),
+        };
+        let bytes = b.file(&path).ok_or_else(missing)?;
+        Ok((Bytes::copy_from_slice(bytes), kind))
     }
 
     /// Makes sure the interface of a workspace's enabled app from a bundle is a stored release
@@ -956,14 +1018,13 @@ impl AppManager {
     async fn publish(&self, b: &Bundle, key: &str, private: Option<Uuid>, source: &str, by: Option<Uuid>) -> Result<Release> {
         let plugin = b.plugin().map_err(app_err)?;
         self.check_routes(&b.manifest).await?;
-        // An interface of its own runs on the workspace's host with the person's session (until
-        // third parties get origins of their own, docs/plan/apps-ui.md U8): only from bundles this
-        // server trusts, or uploaded for the whole cluster where its operator allows that.
-        if b.manifest.ui.is_some() && private.is_some() && !matches!(self.trust(b)?, Trust::Trusted) {
-            return Err(Error::Forbidden(format!(
-                "{} brings an interface of its own, which only apps signed by a key this server trusts may do when private to a workspace",
-                b.manifest.id
-            )));
+        // An interface of its own runs on the workspace's host with the person's session when the
+        // server trusts its bundle, or its operator made it available to the whole cluster.
+        // Otherwise it runs isolated (docs/plan/apps-ui.md U8): in a sandboxed frame without the
+        // session, reaching Ferrum only through the bridge, within the app's permissions.
+        let isolated = b.manifest.ui.is_some() && private.is_some() && !matches!(self.trust(b)?, Trust::Trusted);
+        if isolated {
+            check_isolated(&b.manifest)?;
         }
         if let Some(ui) = crate::shell::bundle_ui(b).map_err(app_err)? {
             crate::shell::store_release(&self.kernel, &self.storage, &b.manifest.id, &b.manifest.version.to_string(), &ui).await?;
@@ -973,6 +1034,8 @@ impl AppManager {
             "permissions": b.permissions().map_err(app_err)?,
             "plugin": plugin.as_ref().map(|(_, json)| json.clone()),
             "readme": readme(b),
+            "isolated": isolated,
+            "review": crate::shell::ui_review(b),
         });
         self.kernel
             .make_available(NewRelease {
@@ -1240,6 +1303,19 @@ impl AppManager {
             .filter(|s| !s.trusted)
             .map(|s| format!("{} {} was uploaded without a signature this server trusts: nobody has reviewed its code.", s.id, s.version))
             .collect();
+        // Interfaces: whether they run isolated, and what the review of their pages found.
+        for s in &changing {
+            let Origin::Local(rel) = &s.origin else { continue };
+            if s.manifest.ui.is_some() && recorded(rel).is_some_and(|r| r.isolated) {
+                warnings.push(format!(
+                    "{}'s interface runs isolated: in a frame of its own, without your session, reaching Ferrum only as far as its permissions allow.",
+                    s.id
+                ));
+            }
+            for line in rel.manifest.get("review").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+                warnings.push(format!("{}: {line}.", s.id));
+            }
+        }
         if !errors.is_empty() {
             warnings.push(format!("Some app stores did not answer ({}); newer versions may exist.", errors.join("; ")));
         }
@@ -1258,12 +1334,32 @@ impl AppManager {
             Origin::Local(r) => r.source.clone(),
             Origin::Store { url, .. } => format!("store:{url}"),
         };
+        let screenshots: Vec<String> = match &root.origin {
+            Origin::Native => vec![],
+            // The store serves what it extracted at approval, under assets/.
+            Origin::Store { url, .. } => m
+                .screenshots
+                .iter()
+                .filter_map(|p| p.strip_prefix("assets/"))
+                .map(|p| format!("{}/v1/apps/{id}/assets/{p}?version={}", url.trim_end_matches('/'), root.version))
+                .collect(),
+            Origin::Local(rel) => (0..m.screenshots.len())
+                .filter(|_| rel.bundle_key.is_some())
+                .map(|n| format!("/api/admin/apps/{id}/screenshots/{n}?version={}", root.version))
+                .collect(),
+        };
+        let isolated = match &root.origin {
+            Origin::Local(rel) => recorded(rel).is_some_and(|r| r.isolated),
+            _ => false,
+        };
         let plan = Plan {
             app: PlanApp {
                 summary: summary(m, &origin, root.verified, root.source == "private", icon_url),
                 description: root.readme.clone(),
                 license: m.license.clone(),
                 homepage: m.homepage.clone(),
+                screenshots,
+                isolated,
             },
             steps: steps.iter().map(|s| Step { id: s.id.clone(), version: s.version.to_string(), action: s.action, source: s.source.clone() }).collect(),
             permissions,

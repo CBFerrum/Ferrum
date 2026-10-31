@@ -761,9 +761,12 @@ the bar runtime (`/_shell/…`) and the app's files (`/_ui/…`).
   is scoped to the host, so serve each workspace on one host, and set `PUBLIC_URL` to it.
 * **Interface files** are kept in the object storage, under `ui/{app}/{digest}/`, for 30 days after
   no workspace uses them, so tabs open across an upgrade keep loading theirs.
-* **Who may bring one.** An interface runs on the workspace's host with the person's session. Apps
-  compiled in, bundles signed by a key in `FERRUM_APP_TRUSTED_KEYS`, and uploads for the whole
-  cluster (`FERRUM_APP_UPLOADS=cluster`) may; an unsigned app private to a workspace may not.
+* **Who may bring one.** An interface runs on the workspace's host with the person's session for
+  apps compiled in, bundles signed by a key in `FERRUM_APP_TRUSTED_KEYS`, and uploads for the whole
+  cluster (`FERRUM_APP_UPLOADS=cluster`). An unsigned app uploaded to one workspace
+  (`FERRUM_APP_UPLOADS=private`, the default, with `FERRUM_APP_ALLOW_UNSIGNED=true`) runs its
+  interface isolated: in a sandboxed frame without the session, reaching the API only through the
+  bridge or a five-minute app token, within what the app declared. The install dialog says so.
 * **The portal** ([plan](plan/apps-ui.md) §9.1) is at `/portal/` on the workspace's host, and at
   the root of a host whose target is `portal` (`support.example.com`): the pages apps give
   customers and suppliers (Helpdesk's "Your tickets", ERP's "Your invoices"). Administrators add

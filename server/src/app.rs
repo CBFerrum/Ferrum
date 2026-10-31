@@ -310,7 +310,8 @@ impl Hooks for App {
             .layer(axum::middleware::from_fn(move |req, next| per_address(limiter.clone(), req, next)))
             .layer(axum::middleware::from_fn(api_no_store))
             .layer(axum::middleware::from_fn(speculation_csp))
-            .layer(axum::middleware::from_fn(screen_paths)))
+            .layer(axum::middleware::from_fn(screen_paths))
+            .layer(axum::middleware::from_fn(isolated_cors)))
     }
 
     fn routes(_ctx: &AppContext) -> AppRoutes {
@@ -392,6 +393,29 @@ async fn screen_paths(req: axum::extract::Request, next: axum::middleware::Next)
         }
     }
     next.run(req).await
+}
+
+/// Isolated interfaces (an opaque origin: `Origin: null`) may call the API directly with an app
+/// token, on the paths apps may call (docs/plan/apps-ui.md §12.3): CORS without credentials, so
+/// no cookie goes along and an answer is of use only to a caller that holds a token.
+async fn isolated_cors(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    use axum::http::{HeaderValue, Method, StatusCode, header};
+    let path = req.uri().path();
+    let app_path = path.starts_with("/api/v1/") || path.starts_with("/api/meta/") || path.starts_with("/api/ext/");
+    let opaque = req.headers().get(header::ORIGIN).is_some_and(|o| o.as_bytes() == b"null");
+    if !(app_path && opaque) {
+        return next.run(req).await;
+    }
+    let preflight = req.method() == Method::OPTIONS && req.headers().contains_key(header::ACCESS_CONTROL_REQUEST_METHOD);
+    let mut res = if preflight { axum::response::IntoResponse::into_response(StatusCode::NO_CONTENT) } else { next.run(req).await };
+    let h = res.headers_mut();
+    h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
+    if preflight {
+        h.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST, PUT, PATCH, DELETE"));
+        h.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("authorization, content-type, if-match, idempotency-key"));
+        h.insert(header::ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("600"));
+    }
+    res
 }
 
 /// API answers belong to one user and can change without a new version (an engine-set status, a

@@ -41,6 +41,9 @@ struct TokenSession {
     /// The browser session a bearer token given to a page is bound to (`bsid`): signing that
     /// device out ends the token too.
     bound: Option<Uuid>,
+    /// An app token's app (`app`, docs/plan/apps-ui.md §12.3): it works only through [`Auth`],
+    /// narrowed to that app.
+    app: Option<String>,
 }
 
 impl TokenSession {
@@ -60,7 +63,7 @@ async fn session_of(st: &crate::state::AppState, token: &str) -> Result<TokenSes
             return Err(ApiError(Error::Unauthorized("this key is an app password for calendar and contacts apps, and works only there".into())));
         }
         st.user_limiter.check_local(&format!("{}|{}", s.tenant, s.user))?;
-        return Ok(TokenSession { session: s, setup_only: false, sid: None, bound: None });
+        return Ok(TokenSession { session: s, setup_only: false, sid: None, bound: None, app: None });
     }
     let data =
         JWT::new(&st.jwt_secret).validate(token).map_err(|_| ApiError(Error::Unauthorized("session expired or invalid; please sign in again".into())))?;
@@ -84,7 +87,19 @@ async fn session_of(st: &crate::state::AppState, token: &str) -> Result<TokenSes
     if let Some(device) = sid.or(bound) {
         st.kernel.check_session(tenant, user, device).await?;
     }
-    Ok(TokenSession { session: ferrum_kernel::auth::Session { tenant, user, token_version: tv }, setup_only, sid, bound })
+    let app = match claims.get("app") {
+        None => None,
+        Some(v) => Some(v.as_str().filter(|a| crate::appmgr::valid_id(a)).ok_or_else(|| ApiError(Error::Unauthorized("invalid session".into())))?.to_string()),
+    };
+    Ok(TokenSession { session: ferrum_kernel::auth::Session { tenant, user, token_version: tv }, setup_only, sid, bound, app })
+}
+
+/// App tokens work only for their app's calls to the API ([`Auth`]); everything else refuses them.
+fn no_app_token(t: &TokenSession) -> Result<(), ApiError> {
+    match t.app {
+        Some(_) => Err(ApiError(Error::Unauthorized("an app token works only for its app's calls to the API".into()))),
+        None => Ok(()),
+    }
 }
 
 /// Resolves a token (session JWT, cookie token or `fk_` API key) to the caller's context. Sockets
@@ -92,6 +107,7 @@ async fn session_of(st: &crate::state::AppState, token: &str) -> Result<TokenSes
 /// may come from.
 pub async fn ctx_from_token(st: &crate::state::AppState, token: &str, request_id: String) -> Result<Ctx, ApiError> {
     let t = session_of(st, token).await?;
+    no_app_token(&t)?;
     if t.setup_only {
         return Err(ApiError(Error::Forbidden("set up two-factor sign-in first; this workspace requires it".into())));
     }
@@ -109,8 +125,19 @@ async fn caller(st: &crate::state::AppState, parts: &Parts) -> Result<(Ctx, Opti
 /// See [`caller`]; for handlers that read the request themselves. `.1` is the browser session
 /// behind the credential (the cookie's, or the one a page's bearer token is bound to).
 pub async fn caller_on(st: &crate::state::AppState, method: &axum::http::Method, headers: &HeaderMap) -> Result<(Ctx, Option<Uuid>), ApiError> {
-    let parts = (method, headers);
-    let (method, headers) = parts;
+    let (ctx, device, app) = caller_with_app(st, method, headers).await?;
+    if app.is_some() {
+        return Err(ApiError(Error::Unauthorized("an app token works only for its app's calls to the API".into())));
+    }
+    Ok((ctx, device))
+}
+
+/// [`caller_on`], where an app token is welcome: `.2` names its app (the caller narrows to it).
+async fn caller_with_app(
+    st: &crate::state::AppState,
+    method: &axum::http::Method,
+    headers: &HeaderMap,
+) -> Result<(Ctx, Option<Uuid>, Option<String>), ApiError> {
     let rid = request_id(headers);
     let (token, from_cookie) = match bearer(headers) {
         Some(t) => (t, false),
@@ -136,7 +163,7 @@ pub async fn caller_on(st: &crate::state::AppState, method: &axum::http::Method,
         st.shell.check_host(headers, t.session.tenant).await?;
     }
     let ctx = st.kernel.load_ctx(t.session.tenant, t.session.user, Some(t.session.token_version), rid).await?;
-    Ok((ctx, t.device()))
+    Ok((ctx, t.device(), t.app))
 }
 
 /// The caller and the browser session behind its credential (`None` for tokens of API clients
@@ -164,6 +191,7 @@ pub async fn socket_credential(st: &crate::state::AppState, headers: &HeaderMap)
     match crate::shell::session_cookie(headers, st.shell.secure) {
         Some(token) if crate::shell::origin_is_host(headers) => {
             let t = session_of(st, &token).await?;
+            no_app_token(&t)?;
             if t.sid.is_none() || t.bound.is_some() || t.setup_only {
                 return Err(ApiError(Error::Unauthorized("invalid session cookie".into())));
             }
@@ -180,10 +208,18 @@ impl FromRequestParts<AppContext> for Auth {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppContext) -> Result<Self, Self::Rejection> {
         let st = app_state(state)?;
-        let (ctx, _) = caller(&st, parts).await?;
-        match parts.headers.get("x-ferrum-app") {
-            Some(app) => Ok(Auth(screen_ctx(&st, ctx, app, parts.uri.path()).await?)),
-            None => Ok(Auth(ctx)),
+        let (ctx, _, token_app) = caller_with_app(&st, &parts.method, &parts.headers).await?;
+        match (token_app, parts.headers.get("x-ferrum-app")) {
+            (Some(app), Some(header)) if header.as_bytes() != app.as_bytes() => {
+                Err(ApiError(Error::Forbidden(format!("this token is {app}'s, not {}'s", header.to_str().unwrap_or("another app")))))
+            }
+            // An app token: as its app, as screens' calls are.
+            (Some(app), _) => {
+                let app = HeaderValue::from_str(&app).map_err(|_| ApiError(Error::Unauthorized("invalid session".into())))?;
+                Ok(Auth(screen_ctx(&st, ctx, &app, parts.uri.path()).await?))
+            }
+            (None, Some(app)) => Ok(Auth(screen_ctx(&st, ctx, app, parts.uri.path()).await?)),
+            (None, None) => Ok(Auth(ctx)),
         }
     }
 }
@@ -222,6 +258,7 @@ impl FromRequestParts<AppContext> for SetupAuth {
             return Ok(SetupAuth(ctx, None));
         };
         let t = session_of(&st, &token).await?;
+        no_app_token(&t)?;
         if t.sid.is_some() {
             return Err(ApiError(Error::Unauthorized("this token works only as the browser's session cookie".into())));
         }

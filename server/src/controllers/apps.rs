@@ -39,6 +39,24 @@ struct Wanted {
     version: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct ShotQuery {
+    version: String,
+}
+
+/// `GET /api/admin/apps/{id}/screenshots/{n}?version=`: one of an uploaded app's screenshots.
+async fn screenshot(Auth(ctx): Auth, State(app): State<AppContext>, Path((id, n)): Path<(String, usize)>, Query(q): Query<ShotQuery>) -> ApiResult<Response> {
+    let (bytes, kind) = app_state(&app)?.apps.screenshot(&ctx, &id, &q.version, n).await?;
+    let mut res = bytes.into_response();
+    let h = res.headers_mut();
+    h.insert(axum::http::header::CONTENT_TYPE, axum::http::HeaderValue::from_static(kind));
+    h.insert(axum::http::header::CACHE_CONTROL, axum::http::HeaderValue::from_static("private, max-age=3600"));
+    h.insert("x-content-type-options", axum::http::HeaderValue::from_static("nosniff"));
+    // An SVG is a document: it runs nothing.
+    h.insert("content-security-policy", axum::http::HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'; sandbox"));
+    Ok(res)
+}
+
 async fn plan(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<String>, Query(w): Query<Wanted>) -> ApiResult<Response> {
     Ok(Json(app_state(&app)?.apps.plan(&ctx, &id, w.version.as_deref()).await?).into_response())
 }
@@ -161,6 +179,7 @@ pub fn routes() -> Routes {
         .add("/upload", post(upload).delete(uninstall).layer(DefaultBodyLimit::max(MAX_BUNDLE + (1 << 20))))
         .add("/{id}", delete(uninstall))
         .add("/{id}/plan", get(plan))
+        .add("/{id}/screenshots/{n}", get(screenshot))
         .add("/{id}/install", post(install))
         .add("/{id}/upgrade", post(upgrade))
         .add("/{id}/enable", post(enable))

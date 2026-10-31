@@ -257,7 +257,7 @@ fn screen_csp(origins: &[String]) -> String {
 
 /// `scheme://host[:port]` of a URL, when it is a plain http(s) origin; anything else (a header a
 /// client wrote to inject directives, say) is dropped.
-fn plain_origin(url: &str) -> Option<String> {
+pub(crate) fn plain_origin(url: &str) -> Option<String> {
     let (scheme, rest) = url.trim().split_once("://")?;
     let authority = rest.split(['/', '?', '#']).next()?.to_ascii_lowercase();
     let host_ok = !authority.is_empty()

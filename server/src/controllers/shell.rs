@@ -157,7 +157,13 @@ async fn shell_page(st: &AppState, headers: &HeaderMap, ctx: Ctx, device: Option
         Ok(b) => b,
         Err(r) => return Ok(r),
     };
-    Ok(not_modified(headers, shell::entry_page(&entry, &boot, &shell::csp(None, &Value::Null))))
+    // Apps' icons and screenshots come from the stores this server reads.
+    let stores = st.apps.store_origins();
+    let mut policy = shell::csp(None, &Value::Null);
+    if !stores.is_empty() {
+        policy = policy.replacen("img-src 'self' data: blob:", &format!("img-src 'self' data: blob: {}", stores.join(" ")), 1);
+    }
+    Ok(not_modified(headers, shell::entry_page(&entry, &boot, &policy)))
 }
 
 /// `/store/`, `/admin/`, `/account/`, `/data/…`: the shell's pages.
@@ -216,6 +222,7 @@ async fn page(
     Query(q): Query<Vec<(String, String)>>,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
+    let origins = server_origins(&app, &headers);
     let mut parts = path.splitn(2, '/');
     let first = parts.next().unwrap_or_default();
     let rest = parts.next();
@@ -232,6 +239,7 @@ async fn page(
     }
     match first {
         "_ui" => return ui_file(&st, rest.unwrap_or_default(), &headers).await,
+        "_isolated" => return isolated_file(&st, &origins, rest.unwrap_or_default(), &headers).await,
         "_shell" => return platform_file(rest.unwrap_or_default()),
         "login" if rest.is_none() => return login(&st, &headers, &uri, &q).await,
         // Browsers ask for it on pages without an icon: the platform's.
@@ -324,6 +332,24 @@ async fn page(
             Some(&boot_status),
         ));
     };
+    // An interface the server does not trust runs in a sandboxed frame under the bar (U8).
+    if app.isolated {
+        let app_json = json!({
+            "id": app.id,
+            "version": app.version,
+            "release": release.digest,
+            "routes": shell::routes_of(app),
+            "entry": route,
+            "title": title,
+            "compact": false,
+            "isolated": true,
+        });
+        let (boot, _) = match page_bootstrap(&st, &headers, &ctx, device, app_json, "page").await {
+            Ok(b) => b,
+            Err(r) => return Ok(r),
+        };
+        return Ok(not_modified(&headers, shell::isolated_page(&boot, &app.id, &release.digest, &title, &origins)));
+    }
     let entry: ferrum_apps::ui::EntryTemplate = match serde_json::from_value(release.entry.clone()) {
         Ok(e) => e,
         Err(e) => return Err(ApiError(Error::internal(format!("interface release {} of {}: {e}", release.digest, app.id)))),
@@ -614,6 +640,66 @@ async fn ui_file(st: &AppState, rest: &str, headers: &HeaderMap) -> ApiResult<Re
     }
 }
 
+/// The origins a browser may reach this server at: the public address the operator configured,
+/// and the one this request names.
+fn server_origins(app: &AppContext, headers: &HeaderMap) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for o in [super::plugins::plain_origin(&app.config.server.host), super::plugins::plain_origin(&super::oauth::base_url(headers))].into_iter().flatten() {
+        if !out.contains(&o) {
+            out.push(o);
+        }
+    }
+    out
+}
+
+/// `/_isolated/{app}/{digest}/{path}`: the files of an interface that runs isolated
+/// (docs/plan/apps-ui.md U8), its page (`index.html`) included, for the sandboxed frame of the
+/// app's pages. Every answer is sandboxed by its Content-Security-Policy, so it stays an opaque
+/// origin however it is opened, and the page answers only inside a frame of this server's.
+async fn isolated_file(st: &AppState, origins: &[String], rest: &str, headers: &HeaderMap) -> ApiResult<Response> {
+    let mut it = rest.splitn(3, '/');
+    let (Some(app), Some(digest), path) = (it.next(), it.next(), it.next().unwrap_or("index.html")) else { return Ok(not_found("/_isolated/")) };
+    let path = if path.is_empty() { "index.html" } else { path };
+    let digest_ok = digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if !crate::appmgr::valid_id(app) || !digest_ok || path.split('/').any(|s| s.is_empty() || s == "..") {
+        return Ok(not_found("/_isolated/"));
+    }
+    let Some(release) = st.shell.release(app, digest).await? else { return Ok(not_found("/_isolated/")) };
+    let csp = shell::isolated_csp(origins, app, digest);
+    let (body, ctype, cache) = if path == "index.html" {
+        if headers.get("sec-fetch-dest").is_some_and(|d| d != "iframe") {
+            return Ok((StatusCode::FORBIDDEN, "An app's interface opens inside its page").into_response());
+        }
+        let entry: ferrum_apps::ui::EntryTemplate =
+            serde_json::from_value(release.entry.clone()).map_err(|e| ApiError(Error::internal(format!("interface release {digest} of {app}: {e}"))))?;
+        // Its files from here, where an opaque origin may load them (the template names /_ui/).
+        let page = entry.render("", "").replace(&format!("/_ui/{app}/{digest}/"), &format!("/_isolated/{app}/{digest}/"));
+        (Bytes::from(page), "text/html; charset=utf-8".to_string(), "no-cache")
+    } else {
+        match st.shell.file(app, digest, path).await? {
+            Some((bytes, ctype)) => (bytes, ctype, "public, max-age=31536000, immutable"),
+            None => return Ok(not_found("/_isolated/")),
+        }
+    };
+    let mut res = body.into_response();
+    let h = res.headers_mut();
+    for (name, value) in [
+        (header::CACHE_CONTROL, cache),
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        (header::X_FRAME_OPTIONS, "sameorigin"),
+        (header::REFERRER_POLICY, "no-referrer"),
+        // Module scripts, fonts and WebAssembly are fetched with CORS from the frame's opaque
+        // origin, and stylesheets and images without: both cross-origin to it.
+        (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+        (axum::http::HeaderName::from_static("cross-origin-resource-policy"), "cross-origin"),
+    ] {
+        h.insert(name, HeaderValue::from_static(value));
+    }
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_str(&ctype).unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")));
+    h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_str(&csp).map_err(|e| ApiError(Error::internal(e.to_string())))?);
+    Ok(res)
+}
+
 /// `/_shell/v1/{file}` (the newest of shell API v1) and `/_shell/theme/{hash}.css`.
 fn platform_file(rest: &str) -> ApiResult<Response> {
     if let Some(name) = rest.strip_prefix("v1/")
@@ -759,6 +845,35 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+#[derive(Deserialize)]
+struct AppTokenReq {
+    app: String,
+}
+
+/// `POST /api/shell/app-token {app}`: a token of a few minutes for the API as `app`, for the page
+/// of an app whose interface runs isolated, whose bridge hands it to the app
+/// (docs/plan/apps-ui.md §12.3). The person's rights narrowed to what the app declared, bound to
+/// this browser session, refused on administration and sign-in; only from the site's own pages.
+async fn app_token(
+    crate::extract::BrowserSession(ctx, device): crate::extract::BrowserSession,
+    State(app): State<AppContext>,
+    Json(req): Json<AppTokenReq>,
+) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    let Some(device) = device else { return Err(ApiError(Error::Forbidden("app tokens are for pages of this site, signed in with the cookie".into()))) };
+    let kind = st.shell.kind(ctx.tenant, ctx.user).await?;
+    let apps = st.apps.shell_apps(ctx.tenant).await?;
+    let Some(a) = apps.iter().find(|a| a.id == req.app && a.isolated) else {
+        return Err(ApiError(Error::NotFound(format!("no interface of {} runs isolated here", req.app))));
+    };
+    if !a.items("shell.app").any(|i| may_use(&ctx, &kind, i)) {
+        return Err(ApiError(Error::Forbidden(format!("you do not have access to {}", a.id))));
+    }
+    let session = ferrum_kernel::auth::Session { tenant: ctx.tenant, user: ctx.user, token_version: st.kernel.token_version(ctx.tenant, ctx.user).await? };
+    let token = super::auth::app_token(&st, &session, device, &a.id)?;
+    Ok(Json(json!({"token": token, "token_type": "Bearer", "expires_in": super::auth::APP_TOKEN_SECS, "app": a.id})).into_response())
+}
+
 /// `GET /api/shell`: what the bar shows the caller: the apps they may use (the launcher), the
 /// Create menu, the intents others' apps handle, side panels.
 async fn shell_info(Auth(ctx): Auth, State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
@@ -867,5 +982,10 @@ async fn version(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query
 
 pub fn routes() -> Routes {
     use axum::routing::get;
-    Routes::new().add("/", get(home)).add("/{*path}", get(page)).add("/api/shell", get(shell_info)).add("/api/shell/version", get(version))
+    Routes::new()
+        .add("/", get(home))
+        .add("/{*path}", get(page))
+        .add("/api/shell", get(shell_info))
+        .add("/api/shell/version", get(version))
+        .add("/api/shell/app-token", axum::routing::post(app_token))
 }

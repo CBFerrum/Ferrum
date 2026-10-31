@@ -52,6 +52,20 @@ fn signed(st: &AppState, s: &Session, ttl: u64, extra: Option<(&str, Value)>) ->
     JWT::new(&st.jwt_secret).generate_token(ttl, s.user.to_string(), claims).map_err(|e| ApiError(Error::Internal(format!("token: {e}"))))
 }
 
+/// How long an app token lasts (docs/plan/apps-ui.md §12.3): its page asks for another before then.
+pub(crate) const APP_TOKEN_SECS: u64 = 300;
+
+/// An app token: the API as `app` for a few minutes, the person's rights narrowed to what the app
+/// declared (extract.rs), bound to the browser session `device` (signing it out ends the token).
+pub(crate) fn app_token(st: &AppState, s: &Session, device: Uuid, app: &str) -> Result<String, ApiError> {
+    let mut claims = Map::new();
+    claims.insert("tenant".into(), json!(s.tenant.to_string()));
+    claims.insert("tv".into(), json!(s.token_version));
+    claims.insert("bsid".into(), json!(device.to_string()));
+    claims.insert("app".into(), json!(app));
+    JWT::new(&st.jwt_secret).generate_token(APP_TOKEN_SECS, s.user.to_string(), claims).map_err(|e| ApiError(Error::Internal(format!("token: {e}"))))
+}
+
 /// A request made by a page of this site in a browser (Fetch Metadata), as opposed to an API
 /// client: it gets a browser session in the cookie.
 fn from_page(headers: &HeaderMap) -> bool {
