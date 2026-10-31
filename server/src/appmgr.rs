@@ -483,7 +483,7 @@ impl AppManager {
         let apps = self.enabled_apps(tenant).await?;
         let Some((_, r)) = apps.iter().find(|a| a.id == app && a.version == version).and_then(|a| a.bundled.as_ref()) else { return Ok(false) };
         let b = self.load_bundle(r).await?;
-        let Some(ui) = crate::shell::bundle_ui(&b).map_err(app_err)? else { return Ok(false) };
+        let Some(ui) = ferrum_apps::ui::from_bundle(&b).map_err(app_err)? else { return Ok(false) };
         crate::shell::store_release(&self.kernel, &self.storage, app, version, &ui).await?;
         Ok(true)
     }
@@ -1026,7 +1026,7 @@ impl AppManager {
         if isolated {
             check_isolated(&b.manifest)?;
         }
-        if let Some(ui) = crate::shell::bundle_ui(b).map_err(app_err)? {
+        if let Some(ui) = ferrum_apps::ui::from_bundle(b).map_err(app_err)? {
             crate::shell::store_release(&self.kernel, &self.storage, &b.manifest.id, &b.manifest.version.to_string(), &ui).await?;
         }
         let manifest = json!({
@@ -1035,7 +1035,7 @@ impl AppManager {
             "plugin": plugin.as_ref().map(|(_, json)| json.clone()),
             "readme": readme(b),
             "isolated": isolated,
-            "review": crate::shell::ui_review(b),
+            "review": ferrum_apps::ui::review(b),
         });
         self.kernel
             .make_available(NewRelease {
