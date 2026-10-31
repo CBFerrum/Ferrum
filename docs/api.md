@@ -600,7 +600,7 @@ Public files (`public=true`; images and PDFs only — logos, product photos, bro
 
 ## System
 
-`GET /api/ready` (DB reachable), `GET /api/version`, `GET /metrics` (Prometheus), `POST /api/tenants` (requires `X-Ferrum-Bootstrap-Token`), `GET /_ping`, `GET /_health`.
+`GET /api/ready` (DB reachable), `GET /api/version`, `GET /metrics` (Prometheus), `POST /api/tenants` (requires `X-Ferrum-Bootstrap-Token`; a slug any workspace ever used is taken for good), `GET /_ping`, `GET /_health`.
 
 ## ERPNext compatibility
 

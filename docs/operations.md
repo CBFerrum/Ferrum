@@ -779,7 +779,8 @@ the bar runtime (`/_shell/…`) and the app's files (`/_ui/…`).
   server as for the workspace's host. The server tells the app and the workspace from the host; there
   it serves the app's files, the API its app tokens reach and the token endpoint, and never reads or
   sets cookies. An app whose `{app}--{workspace}` is longer than 63 characters keeps the sandboxed
-  frame. A workspace's slug names its apps' origins, so slugs are never handed to another workspace.
+  frame. A workspace's slug names its apps' origins, so the database never hands a slug to another
+  workspace: a renamed or deleted workspace's slug is retired for good.
 * **The portal** ([plan](plan/apps-ui.md) §9.1) is at `/portal/` on the workspace's host, and at
   the root of a host whose target is `portal` (`support.example.com`): the pages apps give
   customers and suppliers (Helpdesk's "Your tickets", ERP's "Your invoices"). Administrators add
