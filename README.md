@@ -173,7 +173,7 @@ or any other vertical is a plugin, not a fork.
 
 | | App | What it brings |
 |---|---|---|
-| 🏢 | **[ERP](https://github.com/CBFerrum/ferrum-app-erp)**<br><sub>ferrum-app-erp</sub> | Accounting, selling, buying, inventory and manufacturing on one universal journal; India's GST; Finance, Procurement, Stock Operations and Manufacturing Operations as add-ons |
+| 🏢 | **[ERP](https://github.com/CBFerrum/ferrum-app-erp)**<br><sub>ferrum-app-erp</sub> | Accounting, selling, buying, inventory and manufacturing on one universal journal, the engine other apps post through; a country's taxes as an add-on (India's GST first); Finance, Procurement, Stock Operations and Manufacturing Operations |
 | 🤝 | **[CRM](https://github.com/CBFerrum/ferrum-app-crm)**<br><sub>ferrum-app-crm</sub> | Leads, a pipeline you can drag, quotations and every touchpoint, beside the books |
 | 📋 | **[Projects and timesheets](https://github.com/CBFerrum/ferrum-app-projects)**<br><sub>ferrum-app-projects</sub> | Task trees with dependencies, timesheets, billing by time or milestone, profitability |
 | 🎧 | **[Helpdesk](https://github.com/CBFerrum/ferrum-app-helpdesk)**<br><sub>ferrum-app-helpdesk</sub> | Tickets with business-hours SLAs, fair assignment and a knowledge base |
@@ -222,13 +222,13 @@ flowchart TB
 | `crates/calc` | Pure tax/discount/rounding engine (also builds to WASM for the browser) |
 | `crates/meta` | Metadata model: packages, entities, overlays, CEL rules, effective schema per tenant |
 | `crates/kernel` | Document engine on PostgreSQL: CRUD, lifecycle, permissions, RLS, numbering, audit, outbox, webhooks, automations, print, customization |
-| `crates/domain` | ERP engines: ledger, open items, stock valuation, selling/buying flows, stock entries, manufacturing + MRP, India GST, reports |
+| `crates/domain` | The shared core every app builds on: helpers (fields, contexts, money and rounding, exchange rates), the report framework, document helpers, the shared packages' hooks |
 | `crates/plugins` | WebAssembly plugin host (wasmtime): hooks, routes, WebSockets, schedules, host calls, fuel and memory limits |
 | `crates/apps` | Signed `.fapp` app bundles, manifests, permissions and dependency resolution (shared by server, SDK and store) |
 | `crates/mcp` | MCP server: every entity, action and report available to AI agents |
 | `crates/studio` | Analytics engine and the no-code report builder, charts, number cards, dashboards and Spaces |
-| [ferrum-app-erp](https://github.com/CBFerrum/ferrum-app-erp) | ERP's manifests, its interface and its add-ons: Finance, Procurement, Stock Operations, Manufacturing Operations |
-| `packages/*` | Shipped packages: `core`, `accounting`, `inventory`, `selling`, `buying`, `manufacturing`, `india` |
+| [ferrum-app-erp](https://github.com/CBFerrum/ferrum-app-erp) | ERP: its manifest, interface, packages (`accounting`, `inventory`, `selling`, `buying`, `manufacturing`) and engine (ledger, open items, stock valuation, selling and buying, manufacturing and MRP, the books' reports), which other apps post through; its add-ons India (GST, e-invoices, e-way bills), Finance, Procurement, Stock Operations and Manufacturing Operations |
+| `packages/*` | The shared packages: `core`, `contacts`, `parties`, `products`, `project_records` |
 | `server` | HTTP API (Loco/Axum), auth, admin, OpenAPI, ERPNext-compatible `/api/resource` shim, CLI tasks |
 | `plugins/sdk`, `plugins/examples` | Rust plugin SDK and example plugins |
 | `deploy` | Docker Compose and Kubernetes manifests |
@@ -237,7 +237,9 @@ flowchart TB
 
 The shell's and Studio's interfaces, and the packages apps build theirs with, live in
 [CBFerrum/Ferrum-Frontend](https://github.com/CBFerrum/Ferrum-Frontend); the server's image builds
-them in. Apps' own interfaces, ERP's included, come compiled into their crates.
+them in. Apps' own interfaces, ERP's included, come compiled into their crates, and so do their
+packages and logic: ERP's books and stock, and every country's taxes as an add-on on ERP's
+localization seam (India's first).
 
 <details>
 <summary><b>How the crates depend on each other</b></summary>
@@ -248,25 +250,29 @@ flowchart BT
     meta["meta<br/><small>packages · entities · CEL</small>"]
     kernel["kernel<br/><small>documents on PostgreSQL</small>"]
     plugins["plugins<br/><small>WebAssembly host</small>"]
-    domain["domain<br/><small>ledger · stock · flows · MRP · GST</small>"]
+    domain["domain<br/><small>the shared core</small>"]
+    erp["ferrum-app-erp<br/><small>its own repository: ledger · stock · MRP</small>"]
     mcp["mcp"]
     studio["studio"]
     apps["apps<br/><small>.fapp bundles</small>"]
     server["server<br/><small>HTTP API · shell · tasks</small>"]
-    native["native apps<br/><small>their own repositories</small>"]
+    native["other native apps<br/><small>their own repositories</small>"]
     kernel --> meta
     plugins --> kernel
     domain --> kernel
     domain --> calc
-    domain --> plugins
+    erp --> domain
     mcp --> domain
     studio --> domain
     apps --> meta
+    native -.-> erp
+    native -.-> domain
     server --> mcp
     server --> studio
     server --> apps
+    server --> plugins
+    server --> erp
     server -.-> native
-    native -.-> domain
     classDef core fill:#2f5bea,color:#fff,stroke:#2f5bea
     class server core
 ```
@@ -327,7 +333,7 @@ flowchart LR
     subgraph SRV["Server (Loco/Axum): every replica alike, stateless"]
         API["/api/v1/{Entity} · /mcp · live"]
         K["Kernel<br/><small>effective schema · permissions<br/>document pipeline · audit · outbox</small>"]
-        DOM["Domain engines<br/><small>ledger · stock · …</small>"]
+        DOM["Apps' engines<br/><small>ERP's ledger and stock · …</small>"]
         PL["Tenant WebAssembly plugins<br/><small>fuel and memory limits</small>"]
         BG["Background loops<br/><small>outbox · webhooks · metadata listener · maintenance</small>"]
     end
@@ -354,7 +360,7 @@ sequenceDiagram
     autonumber
     participant C as Client
     participant K as Kernel
-    participant H as Hooks (domain engines, plugins)
+    participant H as Hooks (apps' engines, plugins)
     participant DB as PostgreSQL
     C->>K: POST /api/v1/SalesInvoice
     K->>K: effective schema, permissions
@@ -448,8 +454,8 @@ ferrum-sdk's `examples/board` shows both.
 ## Testing
 
 ```bash
-for db in ferrum_test ferrum_domain_test ferrum_mcp_test ferrum_plugins_test ferrum_studio_test \
-          ferrum_apps_api_test ferrum_sso_test ferrum_coedit_test ferrum_assistant_test; do
+for db in ferrum_test ferrum_mcp_test ferrum_plugins_test ferrum_studio_test ferrum_apps_api_test \
+          ferrum_sso_test ferrum_coedit_test ferrum_assistant_test; do
   createdb -O ferrum $db
 done
 cargo test --workspace                # unit + integration (resets the test databases)
@@ -459,16 +465,18 @@ cd web && npm test
 > [!NOTE]
 > The role the tests connect as must not be a superuser: superusers bypass row-level security.
 > Each test database has a `FERRUM_*_TEST_DATABASE_URL` override (for example
-> `FERRUM_TEST_DATABASE_URL`, `FERRUM_DOMAIN_TEST_DATABASE_URL`); the object storage test runs
+> `FERRUM_TEST_DATABASE_URL`, `FERRUM_MCP_TEST_DATABASE_URL`); the object storage test runs
 > when `FERRUM_TEST_S3_ENDPOINT` points at an S3-compatible endpoint.
 
 `scripts/smoke.py` is a post-deploy check against a running server (readiness, login, reports,
 idempotency, optimistic locking, and 60 concurrent stock issues racing for 100 units).
 
-The domain integration test walks a GST-registered company through opening stock,
-procure-to-pay, order-to-cash, payments, credit notes, credit limits, manufacturing, MRP, period
-closing, concurrent stock issues, sales returns and plugins, and checks that the trial balance and
-balance sheet balance and that stock value equals the stock accounts.
+ERP's end-to-end test (`tests/erp_it.rs` in [ferrum-app-erp](https://github.com/CBFerrum/ferrum-app-erp))
+walks a GST-registered company through opening stock, procure-to-pay, order-to-cash, payments,
+credit notes, credit limits, manufacturing, MRP, period closing, concurrent stock issues, sales
+returns and plugins, checks that the trial balance and balance sheet balance and that stock value
+equals the stock accounts, and that a company outside India in the same workspace gets none of
+India's rules.
 
 ## Deployment
 
