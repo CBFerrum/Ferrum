@@ -173,7 +173,7 @@ or any other vertical is a plugin, not a fork.
 
 | | App | What it brings |
 |---|---|---|
-| 🏢 | **[ERP](https://github.com/CBFerrum/ferrum-app-erp)**<br><sub>ferrum-app-erp</sub> | Accounting, selling, buying, inventory and manufacturing on one universal journal, the engine other apps post through; a country's taxes as an add-on (23 so far: India, the EU, Germany, Belgium, Italy, Poland, Romania, the UK, the US, Canada, South East Asia, the Gulf, Australia, New Zealand, Japan, Mexico, China); Finance, Procurement, Stock Operations and Manufacturing Operations |
+| 🏢 | **[ERP](https://github.com/CBFerrum/ferrum-app-erp)**<br><sub>ferrum-app-erp</sub> | Accounting, selling, buying, inventory and manufacturing on one universal journal, the engine other apps post through; a country's taxes as an add-on (25 so far: India, the EU, Germany, Belgium, Italy, Poland, Romania, Spain, France, the UK, the US, Canada, South East Asia, the Gulf, Australia, New Zealand, Japan, Mexico, China); Finance, Procurement, Stock Operations and Manufacturing Operations |
 | 🤝 | **[CRM](https://github.com/CBFerrum/ferrum-app-crm)**<br><sub>ferrum-app-crm</sub> | Leads, a pipeline you can drag, quotations and every touchpoint, beside the books |
 | 📋 | **[Projects and timesheets](https://github.com/CBFerrum/ferrum-app-projects)**<br><sub>ferrum-app-projects</sub> | Task trees with dependencies, timesheets, billing by time or milestone, profitability |
 | 🎧 | **[Helpdesk](https://github.com/CBFerrum/ferrum-app-helpdesk)**<br><sub>ferrum-app-helpdesk</sub> | Tickets with business-hours SLAs, fair assignment and a knowledge base |
@@ -227,7 +227,7 @@ flowchart TB
 | `crates/apps` | Signed `.fapp` app bundles, manifests, permissions and dependency resolution (shared by server, SDK and store) |
 | `crates/mcp` | MCP server: every entity, action and report available to AI agents |
 | `crates/studio` | Analytics engine and the no-code report builder, charts, number cards, dashboards and Spaces |
-| [ferrum-app-erp](https://github.com/CBFerrum/ferrum-app-erp) | ERP: its manifest, interface, packages (`accounting`, `inventory`, `selling`, `buying`, `manufacturing`) and engine (ledger, open items, stock valuation, selling and buying, manufacturing and MRP, the books' reports), which other apps post through; its add-ons the European Union (VAT, VIES, the One-Stop Shop, EN 16931 e-invoices over Peppol), Germany (XRechnung), Belgium, Italy, Poland and Romania (Peppol, SDI, KSeF and e-Factura), the United Kingdom (VAT, Making Tax Digital returns), Canada (GST/HST, PST, QST), the United States (sales and use tax), thirteen more countries on one VAT/GST engine, India (GST, e-invoices, e-way bills), Finance, Procurement, Stock Operations and Manufacturing Operations |
+| [ferrum-app-erp](https://github.com/CBFerrum/ferrum-app-erp) | ERP: its manifest, interface, packages (`accounting`, `inventory`, `selling`, `buying`, `manufacturing`) and engine (ledger, open items, stock valuation, selling and buying, manufacturing and MRP, the books' reports), which other apps post through; its add-ons the European Union (VAT, VIES, the One-Stop Shop, EN 16931 e-invoices over Peppol), Germany (XRechnung), Belgium, Italy, Poland, Romania, Spain and France (Peppol, SDI, KSeF, e-Factura, VERI\*FACTU and the plateformes agréées), the United Kingdom (VAT, Making Tax Digital returns), Canada (GST/HST, PST, QST), the United States (sales and use tax), thirteen more countries on one VAT/GST engine (with Peppol PINT or MyInvois e-invoices in six), India (GST, e-invoices, e-way bills), Finance, Procurement, Stock Operations and Manufacturing Operations |
 | `packages/*` | The shared packages: `core`, `contacts`, `parties`, `products`, `project_records` |
 | `server` | HTTP API (Loco/Axum), auth, admin, OpenAPI, ERPNext-compatible `/api/resource` shim, CLI tasks |
 | `plugins/sdk`, `plugins/examples` | Rust plugin SDK and example plugins |
@@ -239,7 +239,7 @@ The shell's and Studio's interfaces, and the packages apps build theirs with, li
 [CBFerrum/Ferrum-Frontend](https://github.com/CBFerrum/Ferrum-Frontend); the server's image builds
 them in. Apps' own interfaces, ERP's included, come compiled into their crates, and so do their
 packages and logic: ERP's books and stock, and every country's taxes as an add-on on ERP's
-localization seam: 23 so far, from India, the European Union and its members' e-invoicing
+localization seam: 25 so far, from India, the European Union and its members' e-invoicing
 mandates, the United Kingdom and the United States to South East Asia, the Gulf, Australia, Japan,
 Mexico and China.
 
@@ -528,11 +528,11 @@ flowchart LR
 | 🏭 | Manufacturing | BOMs, work orders, job cards, production planning, subcontracting, MRP |
 | 🇪🇺 | European Union | VAT for companies in member states: home rates, intra-Community supplies and reverse charge with VAT numbers confirmed in VIES, the One-Stop Shop, exports and acquisitions; rates from the Commission's TEDB; EN 16931 e-invoices (Peppol BIS Billing 3.0) handed to a Peppol access point; the EC sales list and the OSS return |
 | 🇩🇪 | Germany | XRechnung 3.0 e-invoices to KoSIT's rules, small businesses (§ 19 UStG), the domestic reverse charge (§ 13b UStG) |
-| 🇪🇺 | Belgium, Italy, Poland, Romania | Each one's e-invoicing mandate on the EU's VAT: Peppol between Belgian businesses, FatturaPA through SDI, FA(3) through KSeF, CIUS-RO through ANAF's e-Factura; small businesses' exemptions and the domestic reverse charge |
+| 🇪🇺 | Belgium, Italy, Poland, Romania, Spain, France | Each one's e-invoicing mandate on the EU's VAT: Peppol between Belgian businesses, FatturaPA through SDI, FA(3) through KSeF, CIUS-RO through ANAF's e-Factura, Spain's chained VERI\*FACTU records with their QR codes, France's e-invoices through a plateforme agréée with e-reporting; small businesses' exemptions and the domestic reverse charge (all but Spain), Spain's recargo de equivalencia |
 | 🇬🇧 | United Kingdom | UK VAT with the construction industry's reverse charge (CIS), exports and services abroad, and VAT returns filed through HMRC's Making Tax Digital API |
 | 🇨🇦 | Canada | GST/HST, PST/RST and QST by province of supply with the CRA's dated rates, zero-rated and exempt supplies, exports, input tax credits, and the GST/HST and QST returns |
 | 🇺🇸 | United States | Sales tax by destination at ZIP codes' rates where the company is registered, exemption certificates, product taxability, use tax, Avalara AvaTax reporting, economic nexus and Forms 1099 |
-| 🌏 | Thirteen more countries | Singapore, Malaysia, Indonesia, Thailand, the Philippines, Vietnam, Saudi Arabia, the UAE, Australia, New Zealand, Japan, Mexico and China on one VAT/GST engine, each with its dated rates, registration number check and return |
+| 🌏 | Thirteen more countries | Singapore, Malaysia, Indonesia, Thailand, the Philippines, Vietnam, Saudi Arabia, the UAE, Australia, New Zealand, Japan, Mexico and China on one VAT/GST engine, each with its dated rates, registration number check and return; e-invoices through Peppol PINT (Singapore's InvoiceNow, Australia, New Zealand, Japan, the UAE) and Malaysia's MyInvois |
 | 🇮🇳 | India GST | GSTIN, place of supply, CGST/SGST/IGST templates, HSN checks, e-invoices with IRN and signed QR codes — sent straight to the IRP or uploaded — e-way bills, a GST tax invoice print |
 | 📊 | Analytics | Studio: reports with calculated columns, subtotals and Excel export, charts, dashboards |
 | 💬 | Collaboration | Comments, assignments, tags, followers, chat, calendar; PDFs and emailing any document |
