@@ -13,6 +13,34 @@ const EVERY: Duration = Duration::from_secs(60);
 /// Session advisory lock: one replica runs upkeep at a time; the others skip that round.
 const LOCK: i64 = 0x6665_7272_756d_0001;
 
+// The countries on ERP's VAT and GST engine are apps of one crate (localization.md L6, L7).
+#[cfg(feature = "sg")]
+use ferrum_countries::sg as ferrum_sg;
+#[cfg(feature = "my")]
+use ferrum_countries::my as ferrum_my;
+#[cfg(feature = "id")]
+use ferrum_countries::id as ferrum_id;
+#[cfg(feature = "th")]
+use ferrum_countries::th as ferrum_th;
+#[cfg(feature = "ph")]
+use ferrum_countries::ph as ferrum_ph;
+#[cfg(feature = "vn")]
+use ferrum_countries::vn as ferrum_vn;
+#[cfg(feature = "sa")]
+use ferrum_countries::sa as ferrum_sa;
+#[cfg(feature = "ae")]
+use ferrum_countries::ae as ferrum_ae;
+#[cfg(feature = "au")]
+use ferrum_countries::au as ferrum_au;
+#[cfg(feature = "nz")]
+use ferrum_countries::nz as ferrum_nz;
+#[cfg(feature = "jp")]
+use ferrum_countries::jp as ferrum_jp;
+#[cfg(feature = "mx")]
+use ferrum_countries::mx as ferrum_mx;
+#[cfg(feature = "cn")]
+use ferrum_countries::cn as ferrum_cn;
+
 /// Two kinds of compiled apps: `native` ones carry their packages and manifest (built in their
 /// own repositories, docs/plan/apps.md); `legacy` ones still keep their YAML in `packages/`.
 macro_rules! apps {
@@ -173,6 +201,22 @@ apps! {
         "gb" => ferrum_gb,
         // Canada (localization.md L5).
         "ca" => ferrum_ca,
+        // The United States (localization.md L4).
+        "us" => ferrum_us,
+        // South East Asia, the Gulf, Australia, New Zealand, Japan, Mexico and China (localization.md L6, L7).
+        "sg" => ferrum_sg,
+        "my" => ferrum_my,
+        "id" => ferrum_id,
+        "th" => ferrum_th,
+        "ph" => ferrum_ph,
+        "vn" => ferrum_vn,
+        "sa" => ferrum_sa,
+        "ae" => ferrum_ae,
+        "au" => ferrum_au,
+        "nz" => ferrum_nz,
+        "jp" => ferrum_jp,
+        "mx" => ferrum_mx,
+        "cn" => ferrum_cn,
         "crm" => ferrum_app_crm,
         "projects" => ferrum_app_projects,
         "helpdesk" => ferrum_app_helpdesk,

@@ -169,6 +169,17 @@ carry what the law asks.
 
 ## L4. The United States (`us`)
 
+**Built (31 October 2026):** ERP 9e923ac (the United States 0.1.0, crate `ferrum-us` in `addons/us`):
+sales tax by destination (origin within origin-based states) at the ZIP code's combined rate from the
+states' rate tables (US Rate Table takes a state's table as published; without a ZIP code's rate,
+submitting refuses where local taxes apply), only where the company is registered; exemption
+certificates by state and date, marketplace facilitators, products' taxability by state; use tax
+accrued as a reverse charge; sales recorded in AvaTax (createoradjust, committed, with the tax
+charged as an override, AvaTax's own figure compared) and voided on cancel; the sales tax by
+jurisdiction, economic nexus (the Sales Tax Institute's chart of 1 August 2026) and Form 1099
+reports ($2,000 from 2026). Not yet: AvaTax as the source of rates on drafts (rates come from the
+tables, so a document never waits on it), filing the states' returns, and the IRS's 1099 files.
+
 * Sales and use tax by destination: state, county, city and district rates (thousands of
   jurisdictions), from the ship-to address (L0).
 * Economic nexus per state, mostly $100,000 of sales a year; the 200-transaction test is going
@@ -203,6 +214,15 @@ province take the right taxes.
 
 ## L6. South East Asia (one add-on each)
 
+**Built (31 October 2026):** ERP 713f2b5, crate `ferrum-countries` (`addons/countries`): one app per
+country (`sg`, `my`, `id`, `th`, `ph`, `vn`) on a shared engine for VAT and GST that work the common
+way (dated rates by item category on one or more tax rows, exports, recoverable or not, the reverse
+charge on services from abroad, registration numbers checked, each country's return worked out
+from the books). Singapore's GST F5, Malaysia's SST (sales and service tax on separate rows, not
+recovered), Indonesia's PPN on 11/12, Thailand's 7% to 30 September 2027, the Philippines' 12%,
+Vietnam's 10%, 5% and temporary 8%. Not yet: their e-invoicing (InvoiceNow, MyInvois, Coretax
+e-Faktur, the EIS, Vietnam's coded e-invoices, e-Tax) and withholding taxes.
+
 | Country | Taxes | E-invoicing and reporting | Authority |
 |---|---|---|---|
 | Singapore (`sg`) | GST 9%; GST F5 returns | InvoiceNow (Peppol, PINT-SG) with invoice data sent to IRAS: voluntary registrants since November 2025 and April 2026; new compulsory registrants and existing ones up to S$200,000 from 1 April 2028, then S$1 million (2029), S$4 million (2030) and above (1 April 2031) | IRAS, IMDA |
@@ -217,6 +237,15 @@ the Philippines, Thailand last (voluntary). Done when, for each: its scenario ru
 authority and the authority's sandbox where there is one.
 
 ## L7. Elsewhere
+
+**Built (31 October 2026):** on the same engine (ERP 713f2b5): Saudi Arabia (`sa`, ZATCA's return
+boxes), the United Arab Emirates (`ae`, the VAT 201 by emirate), Australia (`au`, the BAS's GST
+labels, ABN check), New Zealand (`nz`, the GST101A, IRD number check), Japan (`jp`, 10% and 8% on
+rows of their own so tax is worked out once per rate per invoice, the T-number), Mexico (`mx`, IVA
+on a cash basis from payments, the RFC) and China (`cn`, 13%, 9%, 6%, small-scale taxpayers, the
+credit code's check). Not yet: Fatoora phase 2, PINT AE and A-NZ and JP over Peppol, CFDI 4.0 with
+a PAC, fapiao; Brazil. Japan's food rate cut from 1 April 2027 is enacted but its rate is not in
+the table yet (items' own rates cover it).
 
 | Country | Taxes | E-invoicing |
 |---|---|---|
