@@ -771,6 +771,8 @@ fn blocks_md<T: ReadTxn>(children: impl Iterator<Item = XmlOut>, txn: &T) -> Vec
                 format!("{fence}{lang}\n{code}\n{fence}")
             }
             "horizontalRule" => "---".to_string(),
+            // Images stay with their document: Markdown (templates, agents) carries the words.
+            super::IMAGE => continue,
             tag @ ("bulletList" | "orderedList" | "taskList") => {
                 let start = number(e.get_attribute(txn, "start")).unwrap_or(1);
                 let mut items = Vec::new();
