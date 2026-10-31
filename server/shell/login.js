@@ -1,7 +1,8 @@
 // The sign-in page (/login) until the shell app brings its own: the workspace (where the host
 // does not decide it), email and password, the second step for authenticator apps (set up here
-// when the workspace requires one), and single sign-on. Signing in sets the browser's session
-// cookie and goes back where the person was.
+// when the workspace requires one), single sign-on, and a code sent by email (the portal's way
+// in, offered first on its way). Signing in sets the browser's session cookie and goes back where
+// the person was.
 
 const boot = JSON.parse(document.getElementById("ferrum-login").textContent);
 const form = document.getElementById("ferrum-login-form");
@@ -27,6 +28,9 @@ let ticket = null;
 // may do only that; then, with the recovery codes shown, signing in again.
 let setupToken = null;
 let again = false;
+// "code": signing in with an emailed code; `codeFor` is the address it went to.
+let mode = boot.codes ? "code" : "password";
+let codeFor = null;
 
 function field(name, label, type, value = "", extra = {}) {
   const l = document.createElement("label");
@@ -110,6 +114,7 @@ function done(data) {
   if (data.second_factor) {
     ticket = data.ticket;
     fields.replaceChildren();
+    document.getElementById("ferrum-switch")?.remove();
     const code = field("code", "Code from your authenticator app", "text", "", { autocomplete: "one-time-code", inputMode: "numeric" });
     const hint = document.createElement("p");
     hint.className = "ferrum-hint";
@@ -147,6 +152,19 @@ form.addEventListener("submit", async (e) => {
       recoveryCodes(recovery_codes);
     } else if (ticket) {
       done(await post("/api/auth/login/second-factor", { ticket, code: form.elements.code.value.trim(), session: "cookie" }));
+    } else if (mode === "code") {
+      const tenant = workspace();
+      if (!tenant) throw new Error("Which workspace?");
+      store.set("ferrum.workspace", tenant);
+      if (codeFor) {
+        done(await post("/api/auth/code/sign-in", { tenant, email: codeFor, code: form.elements.code.value.trim(), session: "cookie" }));
+      } else {
+        const email = form.elements.email.value.trim();
+        if (!email) throw new Error("Your email address?");
+        await post("/api/auth/code", { tenant, email });
+        codeFor = email;
+        draw();
+      }
     } else {
       const tenant = workspace();
       if (!tenant) throw new Error("Which workspace?");
@@ -205,14 +223,57 @@ async function start() {
       say(err.message);
     }
   }
+  draw();
+}
+
+/** The fields of the way in chosen: a password, or an emailed code (the address, then the code). */
+function draw() {
+  const kept = form.elements.workspace?.value;
+  fields.replaceChildren();
+  say("");
+  document.getElementById("ferrum-switch")?.remove();
+  document.getElementById("ferrum-sso")?.remove();
+  if (mode === "code" && codeFor) {
+    fields.append(text("p", `If ${codeFor} may sign in here, a code is on its way to it. It works for 10 minutes.`, "ferrum-hint"));
+    field("code", "Code from the email", "text", "", { autocomplete: "one-time-code", inputMode: "numeric", maxLength: 12 }).focus();
+    submit.textContent = "Sign in";
+    switcher("Send another code, or use another address", () => {
+      codeFor = null;
+      draw();
+    });
+    return;
+  }
   if (!boot.workspace) {
-    const ws = field("workspace", "Workspace", "text", store.get("ferrum.workspace") ?? "", { autocomplete: "organization", spellcheck: false });
-    ws.addEventListener("change", () => singleSignOn(workspace()));
+    const ws = field("workspace", "Workspace", "text", kept ?? store.get("ferrum.workspace") ?? "", { autocomplete: "organization", spellcheck: false });
+    if (mode === "password") ws.addEventListener("change", () => singleSignOn(workspace()));
   }
   field("email", "Email", "email", "", { autocomplete: "username" });
-  field("password", "Password", "password", "", { autocomplete: "current-password" });
+  if (mode === "password") {
+    field("password", "Password", "password", "", { autocomplete: "current-password" });
+    submit.textContent = "Sign in";
+    switcher("Email me a code instead", () => {
+      mode = "code";
+      draw();
+    });
+    singleSignOn(workspace());
+  } else {
+    submit.textContent = "Email me a code";
+    switcher("Sign in with a password instead", () => {
+      mode = "password";
+      draw();
+    });
+  }
   form.querySelector("input:not([value]), input[value='']")?.focus();
-  singleSignOn(workspace());
+}
+
+function switcher(label, onclick) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.id = "ferrum-switch";
+  b.className = "ferrum-switch";
+  b.textContent = label;
+  b.addEventListener("click", onclick);
+  form.after(b);
 }
 
 start();

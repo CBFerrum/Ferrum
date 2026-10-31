@@ -16,6 +16,16 @@ use uuid::Uuid;
 
 const MAX_FAILED_LOGINS: i32 = 5;
 pub(crate) const LOCK_MINUTES: i32 = 15;
+/// An emailed sign-in code works for this long, takes this many wrong tries, and a person is sent
+/// at most this many in an hour.
+const CODE_MINUTES: i32 = 10;
+const CODE_TRIES: i32 = 5;
+const CODES_PER_HOUR: i64 = 5;
+
+/// What is kept of a sign-in code: salted with its row's id, so equal codes hash apart.
+fn code_hash(id: Uuid, code: &str) -> String {
+    hex::encode(Sha256::digest(format!("{id}:{code}").as_bytes()))
+}
 
 pub fn validate_password(p: &str) -> Result<()> {
     if p.chars().count() < 10 {
@@ -203,6 +213,140 @@ impl Kernel {
         Ok(if u.two_factor_required { SignIn::SetupRequired(session) } else { SignIn::Session(session) })
     }
 
+    /// Emails a portal person of the workspace a code to sign in with (docs/plan/apps-ui.md §9.1).
+    /// The answer says nothing about the address: nobody by that address, someone who is not a
+    /// portal person, a disabled one or one sent too many codes lately all get no mail and `Ok`.
+    pub async fn send_sign_in_code(&self, tenant_slug: &str, email: &str) -> Result<()> {
+        if self.mailer.is_none() {
+            return Err(Error::Unavailable("this server sends no email, so it cannot send sign-in codes".into()));
+        }
+        let email = email.trim().to_lowercase();
+        if email.len() > 254 || email.split('@').count() != 2 || email.starts_with('@') || email.ends_with('@') {
+            return Err(Error::field("email", "is not an email address"));
+        }
+        let mut tx = self.db.system_tx().await?;
+        // Codes past their day, of anyone: a few at a time, as people ask for new ones.
+        sqlx::query("delete from sign_in_code where id in (select id from sign_in_code where expires_at < now() - interval '1 day' limit 100)")
+            .execute(&mut *tx)
+            .await?;
+        let person: Option<(Uuid, Uuid, String)> = sqlx::query_as(
+            "select u.tenant_id, u.id, t.name from app_user u join tenant t on t.id = u.tenant_id \
+             where t.slug = $1 and u.email = $2 and u.kind = 'portal' and u.is_active and t.status = 'active'",
+        )
+        .bind(tenant_slug.trim().to_lowercase())
+        .bind(&email)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((tenant, user, workspace)) = person else {
+            tx.commit().await?;
+            return Ok(());
+        };
+        let lately: i64 =
+            sqlx::query_scalar("select count(*) from sign_in_code where tenant_id = $1 and user_id = $2 and created_at > now() - interval '1 hour'")
+                .bind(tenant)
+                .bind(user)
+                .fetch_one(&mut *tx)
+                .await?;
+        if lately >= CODES_PER_HOUR {
+            tx.commit().await?;
+            return Ok(());
+        }
+        // Only the newest code works.
+        sqlx::query("update sign_in_code set used_at = now() where tenant_id = $1 and user_id = $2 and used_at is null")
+            .bind(tenant)
+            .bind(user)
+            .execute(&mut *tx)
+            .await?;
+        let id = Uuid::new_v4();
+        let code = format!("{:06}", rand::rng().random_range(0..1_000_000u32));
+        sqlx::query("insert into sign_in_code (id, tenant_id, user_id, code_hash, expires_at) values ($1, $2, $3, $4, now() + make_interval(mins => $5))")
+            .bind(id)
+            .bind(tenant)
+            .bind(user)
+            .bind(code_hash(id, &code))
+            .bind(CODE_MINUTES)
+            .execute(&mut *tx)
+            .await?;
+        let mut name = String::new();
+        crate::coedit::esc(&workspace, &mut name);
+        let html = format!(
+            "<p>Your code to sign in to {name}:</p><p style=\"font-size:28px;font-weight:700;letter-spacing:4px\">{code}</p>\
+             <p>It works once, for {CODE_MINUTES} minutes. If you did not ask for it, you can ignore this email.</p>"
+        );
+        self.queue_mail(&mut tx, tenant, &email, &format!("{code} is your code for {workspace}"), &html).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Signs a portal person in with the code [`Kernel::send_sign_in_code`] sent last. A code takes
+    /// five wrong tries; someone with an authenticator app still gives its code next.
+    pub async fn sign_in_with_code(&self, tenant_slug: &str, email: &str, code: &str) -> Result<SignIn> {
+        let denied = || Error::Unauthorized("that code is wrong or has expired; ask for a new one".into());
+        let email = email.trim().to_lowercase();
+        let code: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+        if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(denied());
+        }
+        let mut tx = self.db.system_tx().await?;
+        let person: Option<(Uuid, Uuid, i32, bool, bool)> = sqlx::query_as(
+            "select u.tenant_id, u.id, u.token_version, coalesce(u.locked_until > now(), false), u.totp_enabled_at is not null \
+             from app_user u join tenant t on t.id = u.tenant_id \
+             where t.slug = $1 and u.email = $2 and u.kind = 'portal' and u.is_active and t.status = 'active'",
+        )
+        .bind(tenant_slug.trim().to_lowercase())
+        .bind(&email)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((tenant, user, token_version, locked, two_factor)) = person else {
+            tx.commit().await?;
+            return Err(denied());
+        };
+        if locked {
+            tx.commit().await?;
+            return Err(Error::TooManyRequests(format!("too many failed attempts; try again in {LOCK_MINUTES} minutes")));
+        }
+        // Locked, so two tries at once cannot both use it.
+        let live: Option<(Uuid, String, i32)> = sqlx::query_as(
+            "select id, code_hash, attempts from sign_in_code where tenant_id = $1 and user_id = $2 and used_at is null and expires_at > now() \
+             order by created_at desc limit 1 for update",
+        )
+        .bind(tenant)
+        .bind(user)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((id, hash, attempts)) = live else {
+            tx.commit().await?;
+            return Err(denied());
+        };
+        // Hashes compared: how long that takes says nothing about the code.
+        if code_hash(id, &code) != hash {
+            sqlx::query("update sign_in_code set attempts = attempts + 1, used_at = case when attempts + 1 >= $2 then now() end where id = $1")
+                .bind(id)
+                .bind(CODE_TRIES)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            return Err(if attempts + 1 >= CODE_TRIES {
+                Error::Unauthorized("that code is wrong, and has now stopped working; ask for a new one".into())
+            } else {
+                denied()
+            });
+        }
+        sqlx::query("update sign_in_code set used_at = now() where id = $1").bind(id).execute(&mut *tx).await?;
+        let session = Session { tenant, user, token_version };
+        if two_factor {
+            tx.commit().await?;
+            return Ok(SignIn::SecondFactor(session));
+        }
+        sqlx::query("update app_user set failed_logins = 0, locked_until = null, last_login_at = now() where tenant_id = $1 and id = $2")
+            .bind(tenant)
+            .bind(user)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(SignIn::Session(session))
+    }
+
     /// API keys look like `fk_<prefix>_<secret>`; only a SHA-256 of the secret is stored. A key
     /// with a `scope` works only there: `dav`, the app password of calendar and contacts apps.
     pub async fn create_api_key(
@@ -289,25 +433,33 @@ impl Kernel {
 
     async fn load_core(&self, tenant: Uuid, user: Uuid) -> Result<CtxCore> {
         let mut tx = self.db.tenant_tx(tenant).await?;
-        let row: Option<(String, String, bool, bool, i32, serde_json::Value)> = sqlx::query_as(
-            "select u.email::text, u.full_name, u.is_admin, u.is_active and t.status = 'active', u.token_version, t.settings \
+        let row: Option<(String, String, bool, bool, i32, serde_json::Value, String)> = sqlx::query_as(
+            "select u.email::text, u.full_name, u.is_admin, u.is_active and t.status = 'active', u.token_version, t.settings, u.kind \
              from app_user u join tenant t on t.id = u.tenant_id where u.tenant_id = $1 and u.id = $2",
         )
         .bind(tenant)
         .bind(user)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some((email, full_name, is_admin, active, token_version, settings)) = row else {
+        let Some((email, full_name, is_admin, active, token_version, settings, kind)) = row else {
             return Err(Error::Unauthorized("user no longer exists".into()));
         };
         if !active {
             return Err(Error::Unauthorized("user or tenant is disabled".into()));
         }
-        let roles: Vec<String> = sqlx::query_scalar("select role from user_role where tenant_id = $1 and user_id = $2 order by role")
-            .bind(tenant)
-            .bind(user)
-            .fetch_all(&mut *tx)
-            .await?;
+        // Portal people and guests reach only the pages apps give them (docs/plan/apps-ui.md §9.1),
+        // which answer for them by who they are: whatever roles they were given count for nothing.
+        let outside = matches!(kind.as_str(), "portal" | "guest");
+        let is_admin = is_admin && !outside;
+        let roles: Vec<String> = if outside {
+            vec![]
+        } else {
+            sqlx::query_scalar("select role from user_role where tenant_id = $1 and user_id = $2 order by role")
+                .bind(tenant)
+                .bind(user)
+                .fetch_all(&mut *tx)
+                .await?
+        };
         let scope_rows: Vec<(String, Uuid, bool)> = sqlx::query_as("select entity, value, is_default from user_scope where tenant_id = $1 and user_id = $2")
             .bind(tenant)
             .bind(user)

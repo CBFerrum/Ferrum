@@ -38,7 +38,7 @@ async fn list_users(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult
         &ctx,
         "select jsonb_build_object('id', u.id, 'email', u.email, 'full_name', u.full_name, 'is_active', u.is_active, \
          'is_admin', u.is_admin, 'last_login_at', u.last_login_at, 'locked', coalesce(u.locked_until > now(), false), \
-         'two_factor', u.totp_enabled_at is not null, 'sso', u.sso_subject is not null, \
+         'two_factor', u.totp_enabled_at is not null, 'sso', u.sso_subject is not null, 'kind', u.kind, \
          'roles', coalesce((select jsonb_agg(r.role order by r.role) from user_role r where r.tenant_id = u.tenant_id and r.user_id = u.id), '[]'::jsonb), \
          'scopes', coalesce((select jsonb_agg(jsonb_build_object('entity', s.entity, 'value', s.value, 'is_default', s.is_default)) \
                     from user_scope s where s.tenant_id = u.tenant_id and s.user_id = u.id), '[]'::jsonb)) \
@@ -57,11 +57,38 @@ struct NewUser {
     roles: Vec<String>,
     #[serde(default)]
     is_admin: bool,
+    /// `member` (the default) or `portal`, `guest`, `service` (docs/plan/apps-ui.md §9.1).
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 async fn create_user(Auth(ctx): Auth, State(app): State<AppContext>, Json(u): Json<NewUser>) -> ApiResult<Response> {
-    let id = app_state(&app)?.kernel.create_user(&ctx, &u.email, &u.full_name, u.password.as_deref(), &u.roles, u.is_admin).await?;
-    Ok((StatusCode::CREATED, Json(json!({"id": id}))).into_response())
+    let st = app_state(&app)?;
+    let kind = u.kind.as_deref().map(str::trim).filter(|k| !k.is_empty()).unwrap_or("member");
+    if !ferrum_kernel::shell::USER_KINDS.contains(&kind) {
+        return Err(ApiError(Error::field("kind", "must be member, guest, portal or service")));
+    }
+    // Portal people and guests work through the pages apps give them: no roles, no administration.
+    if matches!(kind, "portal" | "guest") && (u.is_admin || !u.roles.is_empty()) {
+        return Err(ApiError(Error::field("roles", "portal people and guests hold no roles")));
+    }
+    let id = st.kernel.create_user(&ctx, &u.email, &u.full_name, u.password.as_deref(), &u.roles, u.is_admin).await?;
+    if kind != "member" {
+        st.kernel.set_user_kind(&ctx, id, kind).await?;
+    }
+    Ok((StatusCode::CREATED, Json(json!({"id": id, "kind": kind}))).into_response())
+}
+
+#[derive(Deserialize)]
+struct Kind {
+    kind: String,
+}
+
+/// Makes someone a member, a portal person, a guest or a service account; they are signed out
+/// everywhere when it changes.
+async fn set_kind(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>, Json(k): Json<Kind>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.set_user_kind(&ctx, id, k.kind.trim()).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 #[derive(Deserialize)]
@@ -413,6 +440,7 @@ pub fn routes() -> Routes {
         .add("/admin/users/{id}/roles", put(set_roles))
         .add("/admin/users/{id}/scopes", put(set_scopes))
         .add("/admin/users/{id}/active", put(set_active))
+        .add("/admin/users/{id}/kind", put(set_kind))
         .add("/admin/users/{id}/password", put(reset_password))
         .add("/admin/users/{id}/two-factor/reset", post(reset_two_factor))
         .add("/admin/users/{id}/sso/unlink", post(unlink_sso))

@@ -764,6 +764,17 @@ the bar runtime (`/_shell/…`) and the app's files (`/_ui/…`).
 * **Who may bring one.** An interface runs on the workspace's host with the person's session. Apps
   compiled in, bundles signed by a key in `FERRUM_APP_TRUSTED_KEYS`, and uploads for the whole
   cluster (`FERRUM_APP_UPLOADS=cluster`) may; an unsigned app private to a workspace may not.
+* **The portal** ([plan](plan/apps-ui.md) §9.1) is at `/portal/` on the workspace's host, and at
+  the root of a host whose target is `portal` (`support.example.com`): the pages apps give
+  customers and suppliers (Helpdesk's "Your tickets", ERP's "Your invoices"). Administrators add
+  portal people under Administration → Users (kind *Portal person*, or *Make portal person*); they
+  hold no roles and sign in with a code sent to their email, so the portal needs `MAILER_*`.
+* **Public sites.** A host whose target is `site:{app}` (`shop.example.com` → `site:commerce`) is
+  that app's public site at its root, without the shell or sessions: Commerce's storefront, with
+  its own `robots.txt` and `sitemap.xml`. Point the domain at the server like the workspace's.
+  Until administrators can add domains themselves (with custom domains), an operator adds such
+  hosts to the host map (`tenant_host`: host, workspace, `kind` `custom`, `target`, `verified_at`)
+  and they serve within 20 seconds.
 
 ## Sign-in security
 
@@ -797,6 +808,12 @@ administrators, who keep it to get in when the provider is down.
 Removing someone at the provider stops their next sign-in, not the session they have (it lasts up
 to `JWT_EXPIRATION_SECONDS`, 8 hours by default): deactivate them in Ferrum to end it at once, which
 also stops their API keys.
+
+**Emailed codes (portal people).** Customers and suppliers sign in with a six-digit code sent to
+their address: it works once, for ten minutes, takes five wrong tries, and only the newest one
+works; at most five are sent to a person in an hour, and the answer to "email me a code" is the
+same for every address. Members never get one (they sign in with passwords, two-factor and single
+sign-on as the workspace requires). Without a mailer no code can be sent.
 
 ## Routine tasks
 

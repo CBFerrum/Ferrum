@@ -45,7 +45,9 @@ pub(crate) fn request(
 ) -> Result<SiteRequest, ApiError> {
     let mut safe: Map<String, Value> = headers
         .iter()
-        .filter(|(k, _)| !matches!(k.as_str(), "authorization" | "cookie" | "proxy-authorization" | "x-ferrum-uri"))
+        .filter(|(k, _)| {
+            !matches!(k.as_str(), "authorization" | "cookie" | "proxy-authorization" | "x-ferrum-uri" | "x-ferrum-site-api" | "x-ferrum-site-origin")
+        })
         .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_string(), json!(v))))
         .collect();
     // The path and query exactly as requested, set here and never by the caller: a signature over

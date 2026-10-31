@@ -185,6 +185,23 @@ grep -q "Smoke</strong> wants to use Ferrum" <<<"$(curl -fsS -b "$work/jar" "$AP
 [ "$(code -b "$work/jar" -X POST -H 'sec-fetch-site: same-origin' "$API/api/auth/logout")" = 204 ] || fail "signing out"
 [ "$(code -b "$work/jar" "$API/api/shell")" = 401 ] || fail "the cookie still works after signing out"
 
+step "the portal (docs/plan/apps-ui.md §9.1)"
+# Hosts are an administrator's (custom domains); here straight into the host map, verified.
+compose exec -T db psql -qtAU postgres -d ferrum -c "insert into tenant_host (host, tenant_id, kind, target, verify_token, verified_at) \
+  select h, t.id, 'custom', tg, 'smoke', now() from tenant t, (values ('portal.smoke.test', 'portal')) v(h, tg) \
+  where t.slug = 'smoke'" >/dev/null || fail "adding the portal's host"
+portal=(-H 'host: portal.smoke.test')
+[[ "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "${portal[@]}" "$API/")" =~ ^30[23]\ .*/portal/$ ]] || fail "the portal's host leads to the portal"
+[[ "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "${portal[@]}" "$API/helpdesk/")" =~ ^30[23]\ .*/portal/$ ]] || fail "the portal's host serves apps"
+[[ "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "${portal[@]}" "$API/portal/")" =~ ^30[23]\ .*/login\?next=%2Fportal%2F$ ]] || fail "the portal asks to sign in"
+grep -q '"codes":true' <<<"$(curl -fsS "${portal[@]}" "$API/login?next=%2Fportal%2F")" || fail "the portal's sign-in offers an emailed code"
+# Portal people hold no roles and sign in with emailed codes (this stack sends no email).
+[ "$(curl -fsS "${auth[@]}" -H 'content-type: application/json' -d '{"email":"pia@garage.test","full_name":"Pia","kind":"portal"}' "$API/api/admin/users" | json 'd["kind"]')" = portal ] \
+  || fail "adding a portal person"
+[ "$(code "${auth[@]}" -H 'content-type: application/json' -d '{"email":"x@garage.test","full_name":"X","kind":"portal","roles":["Sales User"]}' "$API/api/admin/users")" = 422 ] \
+  || fail "a portal person was given roles"
+[ "$(code -H 'content-type: application/json' -d '{"tenant":"smoke","email":"pia@garage.test"}' "$API/api/auth/code")" = 503 ] || fail "emailed codes without a mailer"
+
 if [ -n "${FERRUM_EDITORS_IMAGE:-}" ]; then
   step "the browser editors' server"
   EDITORS=$FERRUM_EDITORS_URL

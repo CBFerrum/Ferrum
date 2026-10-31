@@ -127,3 +127,59 @@ body {
   font: 1rem/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
   text-align: center;
 }
+/* The portal's home: the pages the workspace's apps give this person. */
+.ferrum-portal {
+  box-sizing: border-box;
+  max-width: 48rem;
+  margin: clamp(24px, 6vh, 64px) auto;
+  padding: 0 clamp(16px, 4vw, 32px);
+}
+.ferrum-portal h1 {
+  margin: 0 0 20px;
+  font-size: 1.5rem;
+  font-weight: 650;
+}
+.ferrum-portal > p {
+  color: var(--ferrum-muted);
+}
+.ferrum-portal-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ferrum-portal-card {
+  display: grid;
+  gap: 4px;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 18px 20px;
+  background: var(--ferrum-surface);
+  border: 1px solid var(--ferrum-border);
+  border-radius: var(--ferrum-radius);
+  color: var(--ferrum-text);
+  text-decoration: none;
+}
+.ferrum-portal-card:hover {
+  border-color: var(--ferrum-primary);
+}
+.ferrum-portal-card:focus-visible {
+  outline: none;
+  box-shadow: var(--ferrum-focus-ring);
+}
+.ferrum-portal-card span {
+  color: var(--ferrum-muted);
+  font-size: 0.9rem;
+}
+.ferrum-login .ferrum-switch {
+  display: block;
+  margin: 14px 0 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ferrum-primary);
+  font: inherit;
+  cursor: pointer;
+}

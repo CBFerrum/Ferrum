@@ -24,6 +24,7 @@ pub const SHELL_POINTS: &[&str] = &[
     "shell.work",
     "shell.card",
     "shell.public",
+    "shell.portal",
 ];
 
 /// First path segments the core keeps for itself. The core only ever adds names starting with
@@ -132,6 +133,9 @@ pub(crate) fn contract(point: &str) -> Value {
         "shell.work" => (json!({"title": text(60), "endpoint": text(200)}), vec!["endpoint"]),
         "shell.card" => (json!({"entity": text(80), "endpoint": text(200)}), vec!["entity", "endpoint"]),
         "shell.public" => (json!({"path": text(200), "title": text(60)}), vec!["path"]),
+        // A page of the workspace's portal at `/portal/{id}/`, drawn by the app's interface;
+        // `open`: where under it a record of `entity` opens (`t/{id}`).
+        "shell.portal" => (json!({"title": text(60), "description": text(200), "entity": text(80), "open": text(200)}), vec!["title"]),
         _ => (json!({}), vec![]),
     };
     json!({"type": "object", "additionalProperties": false, "required": required, "properties": props})
@@ -335,6 +339,22 @@ pub(crate) fn check(m: &AppManifest) -> Result<(), AppError> {
                     return bad(format!("{at}: '{path}' must name a page below one of this app's routes, such as {}/s", path.trim_end_matches('/')));
                 }
             }
+            if *point == "shell.portal" {
+                if m.ui.is_none() {
+                    return bad(format!("{at}: a portal page is drawn by the app's own interface (a ui section)"));
+                }
+                match (field(item, "entity"), field(item, "open")) {
+                    (None, None) => {}
+                    (Some(_), Some(open)) => {
+                        let plain =
+                            |seg: &str| !seg.is_empty() && seg != "." && seg != ".." && seg.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~".contains(&b));
+                        if !open.contains("{id}") || open.starts_with('/') || !open.split('/').all(|seg| seg == "{id}" || plain(seg)) {
+                            return bad(format!("{at}.open: '{open}' must be plain path segments below the page with {{id}} in it, such as t/{{id}}"));
+                        }
+                    }
+                    _ => return bad(format!("{at}: entity and open go together (which records the page shows, and where one opens)")),
+                }
+            }
             // shell.open's list of the records it opens (`/open/{entity}`).
             if let Some(list) = field(item, "list") {
                 let placeholders: &[&str] = if field(item, "package").is_some() { &["{entity}"] } else { &[] };
@@ -480,6 +500,22 @@ mod tests {
         refused("ui:\n  dist: ui/dist\n  family: \"  \"\n", "single line");
         refused(&format!("ui:\n  dist: ui/dist\n  family: {}\n", "x".repeat(41)), "at most 40");
         refused("requires: {drive: \">=1\"}\nparent: drive\nui:\n  dist: ui/dist\n  family: Docs\n", "parent's family");
+    }
+
+    #[test]
+    fn portal_pages() {
+        let app = format!("{UI}contributes:\n  shell.app:\n    - {{id: helpdesk, route: helpdesk, title: Helpdesk}}\n");
+        parse(&format!(
+            "{app}  shell.portal:\n    - {{id: tickets, title: Your tickets, description: Ask and follow up, entity: Ticket, open: \"t/{{id}}\"}}\n"
+        ))
+        .expect("a portal page");
+        parse(&format!("{app}  shell.portal:\n    - {{id: tickets, title: Your tickets}}\n")).expect("without records to open");
+        refused("contributes:\n  shell.portal:\n    - {id: tickets, title: Your tickets}\n", "own interface");
+        refused(&format!("{app}  shell.portal:\n    - {{id: tickets, title: T, entity: Ticket}}\n"), "go together");
+        refused(&format!("{app}  shell.portal:\n    - {{id: tickets, title: T, entity: Ticket, open: t}}\n"), "{id}");
+        refused(&format!("{app}  shell.portal:\n    - {{id: tickets, title: T, entity: Ticket, open: \"../t/{{id}}\"}}\n"), "plain path segments");
+        refused(&format!("{app}  shell.portal:\n    - {{id: tickets, title: T, entity: Ticket, open: \"/t/{{id}}\"}}\n"), "plain path segments");
+        refused(&format!("{app}  shell.portal:\n    - {{id: tickets}}\n"), "title");
     }
 
     #[test]

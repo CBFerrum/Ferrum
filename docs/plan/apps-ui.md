@@ -214,6 +214,40 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     workspace's administrators customize. Workspaces that had Studio's package have Studio recorded
     as installed at start-up, as ERP was.
 
+* **U7, portal and sites: built** (31 October 2026).
+  * Hosts lead where their target says (§7.2): a `portal` host has sign-in, the portal and `/open`
+    (everything else goes to `/portal/`); a `site:{app}` host is the app's public site at its root,
+    rendered by the app's package site handler at `/_site/{path}`, with the API's address and the
+    site's origin in `x-ferrum-site-api` and `x-ferrum-site-origin` (set by the server, never by the
+    caller) and the platform's headers unless the app sets its own; no shell and no session there.
+  * Kinds of people count everywhere (§9.1): portal people and guests hold no roles and no
+    administration, whatever was given them; a portal person's shell and app pages lead to
+    `/portal/`, `/open` of a record to the portal page that shows it; no launcher. Administrators add
+    portal people and change kinds (`/api/admin/users`, Users in Administration); a change signs the
+    person out everywhere.
+  * Signing in with an emailed code, for portal people: six digits, ten minutes, five tries, once,
+    the newest only, five an hour; the same answer after the same time for any address; members get
+    none. The sign-in page offers it first on the portal's host and on the way to `/portal/`.
+  * The portal at `/portal/`: its home lists the pages the workspace's apps give the person
+    (`shell.portal`), each drawn by its app's interface at `/portal/{id}/` under the portal's header
+    (`<ferrum-portal-bar>`, `server/shell/portal.js`: the workspace, the pages, signing out; the bar
+    never loads). Helpdesk 0.4.0's "Your tickets" (raise, follow, reply, rate; internal notes never
+    show) and ERP 0.1.2's "Your invoices" (lines, taxes, what is due, printing) answer by the address
+    the person signed in with and act as the system after that check.
+  * Commerce 0.3.0's storefront on its own host: home, categories, search and product pages (with
+    schema.org data), `robots.txt` and `sitemap.xml`, rendered on the server; the cart, checkout
+    (guest, delivery and payment methods, one order per attempt) and the order page are a small
+    script over the storefront API.
+  * Home's My work gains Helpdesk's open tickets assigned to you (due on the SLA) and Projects' open
+    tasks (Projects 0.4.0). Under the bar the records frame drops its own search ("Go to" is the
+    bar's) and lists draw no record cards in Helpdesk and Projects.
+  * Checked in Chrome on the demo workspace: a portal person signs in with a code on
+    `support.localhost`, sees only her customer's invoice and her tickets, raises one; an order is
+    placed on `shop.localhost` with cash on delivery.
+  * Still open: administrators add portal and site hosts with U6's custom domains (until then an
+    operator adds them to the host map); suppliers' pages (procurement's RFQs keep their links); a
+    shopper's portal session on the shop's host.
+
 * **U4a, Comms and Workspace: built** (31 October 2026).
   * Comms (Mail, Chat, Calendar, Meet at `/mail/`, `/chat/`, `/calendar/`, `/meet/`), Drive (`/drive/`,
     with Sheets, Slides and PDF as entries of their own) and Docs (`/docs/`, the editor at

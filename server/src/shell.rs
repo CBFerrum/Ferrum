@@ -38,6 +38,7 @@ pub fn platform_file(name: &str) -> Option<(&'static str, &'static [u8])> {
         "live-worker.js" => (js, include_bytes!("../shell/live-worker.js")),
         "kill-sw.js" => (js, include_bytes!("../shell/kill-sw.js")),
         "login.js" => (js, include_bytes!("../shell/login.js")),
+        "portal.js" => (js, include_bytes!("../shell/portal.js")),
         "pages.css" => ("text/css; charset=utf-8", include_bytes!("../shell/pages.css")),
         "assistant.js" => (js, include_bytes!("../shell/assistant.js")),
         "assistant.css" => ("text/css; charset=utf-8", include_bytes!("../shell/assistant.css")),
@@ -132,10 +133,12 @@ pub fn safe_next(next: &str) -> String {
 pub enum Place {
     /// This workspace (a registered host, or the server's one workspace).
     Workspace(Uuid),
+    /// The workspace's portal host (`portal` target): sign-in and the portal, no shell.
+    Portal(Uuid),
+    /// An app's public site (`site:{app}`): the app's pages at the root, no shell and no session.
+    Site(Uuid, String),
     /// A released host still redirecting, to the workspace's primary host if it has one.
     Moved(Option<String>),
-    /// A host of a public site or portal: no shell here.
-    Elsewhere,
     /// Any workspace: chosen at sign-in and kept in the session (shape A′).
     Any,
 }
@@ -243,8 +246,14 @@ impl Shell {
     pub async fn place(&self, headers: &HeaderMap) -> Result<Place> {
         if let Some(host) = request_host(headers) {
             match self.kernel.route_host(host).await? {
-                HostRoute::Serve { tenant, target } if target == "shell" => return Ok(Place::Workspace(tenant)),
-                HostRoute::Serve { .. } => return Ok(Place::Elsewhere),
+                HostRoute::Serve { tenant, target } => {
+                    return Ok(match target.as_str() {
+                        "shell" => Place::Workspace(tenant),
+                        "portal" => Place::Portal(tenant),
+                        // `site:{app}`, the only other target a host may have.
+                        t => Place::Site(tenant, t.strip_prefix("site:").unwrap_or_default().to_string()),
+                    });
+                }
                 HostRoute::Moved { to, .. } => return Ok(Place::Moved(to)),
                 HostRoute::Unknown => {}
             }
@@ -258,8 +267,8 @@ impl Shell {
     /// Refuses a cookie session of another workspace than the host serves.
     pub async fn check_host(&self, headers: &HeaderMap, tenant: Uuid) -> Result<()> {
         match self.place(headers).await? {
-            Place::Workspace(t) if t != tenant => Err(Error::Unauthorized("this session belongs to another workspace; sign in here".into())),
-            Place::Moved(_) | Place::Elsewhere => Err(Error::Unauthorized("sign in on the workspace's address".into())),
+            Place::Workspace(t) | Place::Portal(t) if t != tenant => Err(Error::Unauthorized("this session belongs to another workspace; sign in here".into())),
+            Place::Moved(_) | Place::Site(..) => Err(Error::Unauthorized("sign in on the workspace's address".into())),
             _ => Ok(()),
         }
     }
@@ -893,6 +902,97 @@ pub fn entry_page(entry: &EntryTemplate, bootstrap: &Value, csp: &str) -> Respon
     page_response(StatusCode::OK, entry.render(&shell_head(bootstrap), SHELL_BODY), csp)
 }
 
+// ───────────────────────── the portal ─────────────────────────
+
+/// What portal pages carry instead of the bar: the portal's own header (no launcher, no search).
+const PORTAL_BODY: &str = "<ferrum-portal-bar></ferrum-portal-bar>";
+
+fn portal_head(bootstrap: &Value) -> String {
+    format!(r#"{}<script type="module" src="/_shell/v1/portal.js"></script>"#, shell_head(bootstrap))
+}
+
+/// A page of the workspace's portal (docs/plan/apps-ui.md §9.1): an app's `shell.portal` entry,
+/// served by the app's interface at `/portal/{id}/`.
+#[derive(Clone)]
+pub struct PortalPage<'a> {
+    pub app: &'a ShellApp,
+    pub id: &'a str,
+    pub title: &'a str,
+    pub description: &'a str,
+    /// The entity whose records it shows, and where under the page one opens (`t/{id}`).
+    pub entity: Option<&'a str>,
+    pub open: Option<&'a str>,
+}
+
+/// The portal's pages from the workspace's apps; when two apps name the same page, the first keeps it.
+pub fn portal_pages(apps: &[ShellApp]) -> Vec<PortalPage<'_>> {
+    let mut out: Vec<PortalPage> = vec![];
+    for app in apps {
+        for item in app.items("shell.portal") {
+            let text = |k: &str| item.get(k).and_then(Value::as_str);
+            let Some(id) = text("id") else { continue };
+            if let Some(first) = out.iter().find(|p| p.id == id) {
+                tracing::warn!(page = id, app = %app.id, kept = %first.app.id, "two apps give the portal the same page");
+                continue;
+            }
+            out.push(PortalPage {
+                app,
+                id,
+                title: text("title").unwrap_or(id),
+                description: text("description").unwrap_or_default(),
+                entity: text("entity"),
+                open: text("open"),
+            });
+        }
+    }
+    out
+}
+
+/// Where a portal person opens a record (`/open/{entity}/{id}`): the portal page that shows it.
+pub fn portal_open(pages: &[PortalPage], entity: &str, id: &str) -> Option<String> {
+    let page = pages.iter().find(|p| p.entity == Some(entity))?;
+    Some(format!("/portal/{}/{}", page.id, page.open.unwrap_or_default().replace("{id}", id)))
+}
+
+/// The bootstrap's `portal`: the pages the portal's header links to.
+pub fn portal_json(pages: &[PortalPage]) -> Value {
+    json!({
+        "home": "/portal/",
+        "pages": pages.iter().map(|p| json!({"id": p.id, "title": p.title, "url": format!("/portal/{}/", p.id)})).collect::<Vec<_>>(),
+    })
+}
+
+/// A portal page of an app: its entry template with the portal's header instead of the bar.
+pub fn portal_entry_page(entry: &EntryTemplate, bootstrap: &Value, csp: &str) -> Response {
+    page_response(StatusCode::OK, entry.render(&portal_head(bootstrap), PORTAL_BODY), csp)
+}
+
+/// The portal's home: what the workspace's apps have for this person.
+pub fn portal_home(bootstrap: &Value, pages: &[PortalPage]) -> Response {
+    let workspace = bootstrap["workspace"]["name"].as_str().unwrap_or("Portal");
+    let person = bootstrap["person"]["name"].as_str().unwrap_or_default();
+    let list: String = pages
+        .iter()
+        .map(|p| {
+            let about = if p.description.is_empty() { String::new() } else { format!("<span>{}</span>", esc(p.description)) };
+            format!(r#"<li><a class="ferrum-portal-card" href="/portal/{}/"><strong>{}</strong>{about}</a></li>"#, esc(p.id), esc(p.title))
+        })
+        .collect();
+    let body = if pages.is_empty() {
+        "<p>Nothing has been shared with you here yet. Links you are sent open the right page.</p>".to_string()
+    } else {
+        format!(r#"<ul class="ferrum-portal-cards">{list}</ul>"#)
+    };
+    let html = format!(
+        r#"<!doctype html><html lang="en"><head>{head}<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{w}</title><link rel="stylesheet" href="/_shell/v1/pages.css"></head><body>{PORTAL_BODY}<main class="ferrum-portal" id="main"><h1>Hello{comma}{p}</h1>{body}</main></body></html>"#,
+        head = portal_head(bootstrap),
+        w = esc(workspace),
+        comma = if person.is_empty() { "" } else { ", " },
+        p = esc(person),
+    );
+    page_response(StatusCode::OK, html, &csp(None, &Value::Null))
+}
+
 /// A page of the shell's own: a message with the bar above it (not installed, no access…).
 pub fn status_page(status: StatusCode, title: &str, message: &str, actions: &[(&str, &str)], bootstrap: Option<&Value>) -> Response {
     let actions: String = actions.iter().map(|(label, href)| format!(r#"<a class="ferrum-button" href="{}">{}</a>"#, esc(href), esc(label))).collect();
@@ -913,8 +1013,9 @@ pub fn status_page(status: StatusCode, title: &str, message: &str, actions: &[(&
 }
 
 /// The sign-in page (until the shell app brings its own).
-pub fn login_page(fixed_workspace: Option<&WorkspaceInfo>, next: &str) -> Response {
-    let boot = json!({"v": 1, "next": safe_next(next), "workspace": fixed_workspace.map(|w| json!({"slug": w.slug, "name": w.name}))});
+/// `codes`: an emailed code is offered first (the portal's way in), a password second.
+pub fn login_page(fixed_workspace: Option<&WorkspaceInfo>, next: &str, codes: bool) -> Response {
+    let boot = json!({"v": 1, "next": safe_next(next), "codes": codes, "workspace": fixed_workspace.map(|w| json!({"slug": w.slug, "name": w.name}))});
     let title = fixed_workspace.map_or("Sign in".to_string(), |w| format!("Sign in to {}", w.name));
     let html = format!(
         r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{t} · Ferrum</title><link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/_shell/theme/{h}.css"><link rel="stylesheet" href="/_shell/v1/pages.css"><script type="application/json" id="ferrum-login">{b}</script><script type="module" src="/_shell/v1/login.js"></script></head><body><main class="ferrum-login" id="main"><img class="ferrum-mark" src="/_shell/v1/icon.svg" alt="" width="40" height="40"><h1>{t}</h1><form id="ferrum-login-form" novalidate><div id="ferrum-login-fields"></div><p class="ferrum-error" role="alert" id="ferrum-login-error"></p><button class="ferrum-button" type="submit">Sign in</button></form><noscript><p>Signing in needs JavaScript.</p></noscript></main></body></html>"#,
@@ -1063,6 +1164,42 @@ mod tests {
         for other in ["helpdesk-sla", "helpdesk-erp", "crm", "business", "nothing"] {
             assert!(records_app(&apps, other).is_none(), "{other}");
         }
+    }
+
+    #[tokio::test]
+    async fn portal_pages_and_where_records_open() {
+        let portal = |id: &str, pages: &str| {
+            app(&manifest(
+                id,
+                &format!(
+                    "packages: [{id}]\nui:\n  dist: ui/dist\ncontributes:\n  shell.app:\n    - {{id: {id}, route: {id}, title: X}}\n  shell.portal:\n{pages}"
+                ),
+            ))
+        };
+        let helpdesk = portal("helpdesk", "    - {id: tickets, title: Your tickets, entity: Ticket, open: \"t/{id}\"}\n");
+        let erp = portal("erp", "    - {id: invoices, title: Your invoices, description: Bills and what is due, entity: SalesInvoice, open: \"{id}\"}\n");
+        let copy = portal("other", "    - {id: tickets, title: Theirs}\n");
+        let apps = [helpdesk, erp, copy];
+        let pages = portal_pages(&apps);
+        assert_eq!(
+            pages.iter().map(|p| (p.id, p.app.id.as_str(), p.title)).collect::<Vec<_>>(),
+            vec![("tickets", "helpdesk", "Your tickets"), ("invoices", "erp", "Your invoices"),]
+        );
+        assert_eq!(portal_open(&pages, "Ticket", "42").as_deref(), Some("/portal/tickets/t/42"));
+        assert_eq!(portal_open(&pages, "SalesInvoice", "7").as_deref(), Some("/portal/invoices/7"));
+        assert_eq!(portal_open(&pages, "Customer", "7"), None);
+        let j = portal_json(&pages);
+        assert_eq!(j["pages"][1], json!({"id": "invoices", "title": "Your invoices", "url": "/portal/invoices/"}));
+        let boot = json!({"workspace": {"name": "Acme <Ltd>"}, "person": {"name": "Ana"}, "portal": j});
+        let html = page_html(portal_home(&boot, &pages)).await;
+        assert!(html.contains("<ferrum-portal-bar>") && !html.contains("<ferrum-bar>"), "{html}");
+        assert!(html.contains("<title>Acme &lt;Ltd&gt;</title>") && html.contains("Hello, Ana"), "{html}");
+        assert!(html.contains(r#"href="/portal/invoices/"><strong>Your invoices</strong><span>Bills and what is due</span>"#), "{html}");
+        assert!(page_html(portal_home(&boot, &[])).await.contains("Nothing has been shared with you here yet"));
+    }
+
+    async fn page_html(res: Response) -> String {
+        String::from_utf8(axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap().to_vec()).unwrap()
     }
 
     #[test]

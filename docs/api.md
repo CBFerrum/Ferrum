@@ -25,6 +25,8 @@ OpenAPI 3.1 document is at `GET /api/openapi.json` (it includes every customizat
 | `POST /sso/start` | `{tenant, provider, redirect_uri, binding}` → `{url}` to send the browser to. `redirect_uri` is the sign-in page (registered with the provider, which sends the browser nowhere else); `binding` is a random secret (16–200 characters) the browser keeps to finish |
 | `POST /sso/finish` | `{state, code, binding}` (what the provider sent the browser back with) → `{token, …}`. Each sign-in works once, within ten minutes, in the browser that started it. The provider's own two-factor rules apply instead of Ferrum's |
 | `POST /login/second-factor` | `{ticket, code}` (six digits from the authenticator app, or a recovery code) → `{token, …}`. Each app code is accepted once; wrong codes count toward the same lockout as wrong passwords |
+| `POST /code` | `{tenant, email}` → `{sent: true}`: emails a portal person a six-digit code to sign in with ([plan](plan/apps-ui.md) §9.1). The same answer, after the same time (600 ms at least), whether or not the address belongs to anyone, and nothing is sent to members (they sign in with passwords). A code works once, for ten minutes, takes five wrong tries, and only the newest one works; a person is sent at most five an hour. 503 when the server sends no email |
+| `POST /code/sign-in` | `{tenant, email, code, session?}` → as `/login` (with two-factor sign-in on, the second step follows) |
 | `GET /me` | → `{tenant, user: {id, email, full_name, is_admin, roles}, default_company, scopes, fiscal_year_start_month, timezone, today, packages, two_factor_setup}` |
 | `GET /2fa` | → `{enabled, pending, recovery_codes_left, required}` |
 | `POST /2fa/begin` | → `{secret, uri (otpauth://), qr_svg}`: a new secret for an authenticator app (TOTP, SHA-1, 6 digits, 30 s); it takes effect once confirmed |
@@ -53,7 +55,12 @@ tokens only, as before. With the cookie:
   `cross-site` are refused (403);
 * the cookie's token is refused as a bearer token, and a bearer token in place of the cookie;
 * sockets (`/ws/live`, `/ws/docs/…`) accept the cookie at the upgrade when `Origin` is the host;
-* on a host registered for a workspace, a cookie of another workspace is refused.
+* on a host registered for a workspace, a cookie of another workspace is refused; on a public
+  site's host (`site:{app}`) none is accepted, on the portal's host the workspace's is.
+
+**Kinds of people** ([plan](plan/apps-ui.md) §9.1): portal people and guests hold no roles and no
+administration, whatever was given them, so `/api/v1/…`, reports and search show them nothing;
+they reach what apps answer for them by who they are (the portal's endpoints below).
 
 Document actions may declare `params` (`[{name, label, type: data|text|select|int|date, options?,
 required?, description?}]`): the form asks for them, prefilled from the record's fields of the same
@@ -158,7 +165,33 @@ that is not the protocol. Exports: Drive's `GET /api/app/drive/files/{id}/conten
 Apps add HTTP endpoints under `/api/app/{package}/{path}` (signed in, any method) and
 `/api/site/{tenant}/{package}/{path}` (public pages, webhooks; rate-limited per IP, 300/min). Each
 app documents its own in `packages/<package>/README.md` of its repository. Request bodies are
-limited per app (1 MB unless the app allows more, at most 32 MB).
+limited per app (1 MB unless the app allows more, at most 32 MB). `x-ferrum-site-api` and
+`x-ferrum-site-origin` never reach an app from the caller (see public sites below).
+
+The portal's endpoints, for whoever signed in (portal people included), answering by the address
+they signed in with:
+
+* `GET /api/app/helpdesk/portal/tickets?cursor=` → `{tickets: [{id, number, subject, status, label,
+  priority, opened_at, updated_at}], next_cursor}`: the tickets raised from that address;
+  `POST` `{subject, description, priority?: Low|Medium|High}` → `201` a new one (channel Portal,
+  linked to the customer the address belongs to; 20 an hour). `GET …/{id}` → the ticket with
+  `description`, `messages: [{id, mine, author, body, sent_at}]` (internal notes never), `resolution`,
+  `rating`, `feedback`, `can_reply`, `can_rate`; `POST …/{id}/replies` `{body}` (60 an hour; it
+  reopens a ticket waiting on the customer or resolved); `POST …/{id}/rating` `{rating: 1-5,
+  feedback?}` once resolved. Another person's ticket is 404.
+* `GET /api/app/selling/portal/invoices?cursor=` → `{invoices: [{id, number, date, due_date,
+  status, is_return, customer, currency, total, outstanding, overdue}], next_cursor}`: the submitted
+  invoices of the customers the address belongs to (their own email, or a contact's; not disabled
+  customers, nor a web shop's unchecked guests). `GET …/{id}` → one with `company`, `lines: [{item,
+  description, qty, unit, rate, amount}]`, `taxes`, `net_total`, `total_taxes`, `grand_total`,
+  `pdf` (whether the server makes PDFs); `GET …/{id}/print[?format=pdf]` → the invoice as the
+  workspace prints it, under `Content-Security-Policy: … sandbox`. Drafts, cancelled invoices and
+  other customers' are 404.
+
+For Home's My work (`shell.work`): `GET /api/app/helpdesk/work` (open tickets assigned to the
+caller, due on their SLA's resolution date) and `GET /api/app/projects/work` (the caller's open
+tasks, due on their expected end), each `{items: [{title, subtitle, url, due, priority,
+updated_at}]}`.
 
 ## Screens of apps
 
@@ -206,7 +239,23 @@ Pages, for browsers, with the session cookie:
   the other moved apps → their pages, anything else → `/`. `/app/sw.js` is a worker that clears
   today's web app's cache and removes itself.
 * `GET /healthz` → `ok` (for load balancers).
-* `GET /login?next=` → the sign-in page.
+* `GET /login?next=` → the sign-in page. On the portal's host, and on the way to `/portal/`, it
+  offers an emailed code first.
+* `GET /portal/` → the workspace's portal ([plan](plan/apps-ui.md) §9.1): the pages the apps give
+  this person (`shell.portal`), straight to the only one for a portal person who has one; `GET
+  /portal/{id}/…` → that page, the app's interface with `<ferrum-portal-bar>` (the workspace, the
+  pages, signing out) instead of the bar and `host.kind: "portal"` with `portal: {home, pages: [{id,
+  title, url}]}` in the bootstrap. Signed out → sign-in. Members may look; guests and service
+  accounts get 403. A portal person who opens the shell's or an app's page goes to `/portal/`, and
+  `/open/{entity}/{id}` to the portal page that shows the record (its `entity` and `open`).
+* Hosts by their target (§7.2): a `portal` host has the portal, sign-in, `/open` and the platform's
+  files; everything else there leads to `/portal/`. On a `site:{app}` host every page is the app's
+  public site: `GET /{path}` goes to the app's site handler as `GET /_site/{path}` (the package named
+  like the app first), with `x-ferrum-site-api: /api/site/{workspace}/{package}` and
+  `x-ferrum-site-origin: {scheme}://{host}` set by the server; without a session; rate-limited per
+  address; with `X-Content-Type-Options`, `Referrer-Policy` and a strict
+  `Content-Security-Policy` unless the app sets its own. The API's paths (`/api/…`, `/files/…`)
+  work on every host.
 * `GET /_ui/{app}/{digest}/{path}` → a file of an interface release: public, `immutable`.
 * `GET /_shell/v1/{file}` → the shell's own files (`runtime.js`, `live-worker.js`, …), the newest of
   v1; `GET /_shell/theme/{hash}.css` → the theme.
@@ -253,8 +302,8 @@ client_secret?, domains[], auto_create, default_roles[], enabled}` → `{id}`, t
 document fetched to check it), `/api/admin/sso/{id}` (PUT the same — `client_secret` left out keeps
 the stored one, `""` clears it; DELETE unlinks the people linked through it).
 
-`/api/admin/users` (GET, POST `{email, full_name, password?, roles[], is_admin}`), `/api/admin/users/{id}/roles` (PUT `{roles}`),
-`/scopes` (PUT `{entity, ids[], default?}`), `/active` (PUT `{active}`), `/password` (PUT `{password}`), `/two-factor/reset` (POST: turns the person's two-factor sign-in off, lifts a lockout and signs them out everywhere — for a lost phone), `/sso/unlink` (POST: forgets the identity at a single sign-on provider the account is linked to); the user list shows `two_factor`, `sso` and `locked`;
+`/api/admin/users` (GET, POST `{email, full_name, password?, roles[], is_admin, kind?}` → `{id, kind}`; `kind` is `member` (the default), `portal`, `guest` or `service`, and portal people and guests take no roles), `/api/admin/users/{id}/kind` (PUT `{kind}`: signs the person out everywhere), `/api/admin/users/{id}/roles` (PUT `{roles}`),
+`/scopes` (PUT `{entity, ids[], default?}`), `/active` (PUT `{active}`), `/password` (PUT `{password}`), `/two-factor/reset` (POST: turns the person's two-factor sign-in off, lifts a lockout and signs them out everywhere — for a lost phone), `/sso/unlink` (POST: forgets the identity at a single sign-on provider the account is linked to); the user list shows `kind`, `two_factor`, `sso` and `locked`;
 `/api/admin/personal-data?email=` (GET: every record the installed packages declare as the person's — `personal_data` in package manifests, `{entity, match: <email field>, erase: [fields], where?: {field: value}}` — with its data, and their login account) and `/api/admin/personal-data/erase` (POST `{email, reason}`: blanks the declared fields, a placeholder where a value is required, and empties declared child tables and JSON fields; redacts those fields in the records' audit history, each event keeping its hash and recording the redaction; anonymizes and closes the login account; refused for administrators and oneself) → `{erased: [{entity, id}], account_erased, audit_events_redacted}`;
 `/api/admin/roles` (GET), `/api/admin/roles/{role}/permissions` (PUT PermissionDef `{entity, read, write, create, delete, submit, cancel, export, import, if_owner, read_groups[], write_groups[], where?}`);
 `where` limits a rule to records whose fields hold given values, all of them: `{"customer_type": ["Individual"], "disabled": false}` (data, select, check, link, email and int fields; links by record id, an unset checkbox reads as `false`; up to 10 fields and 50 values each). A role can hold several rules for one entity with different conditions (and `if_owner`), and a record is reachable through any of them, in lists, reads, filters, reports and live updates alike;

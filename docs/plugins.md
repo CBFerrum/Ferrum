@@ -226,6 +226,8 @@ contributes:
     - {id: deal, title: Deal, path: deals/_panel/deal, contextual: true}
   shell.public:                   # pages anyone with a link opens, without signing in
     - {id: quote, path: deals/q, title: Quote}
+  shell.portal:                   # pages of the workspace's portal, at /portal/{id}/
+    - {id: quotes, title: Your quotes, description: Quotes waiting for you, entity: Deal, open: "q/{id}"}
 ```
 
 * **Routes** are `[a-z][a-z0-9-]{1,30}`, unique on a cluster with their aliases, and never one of the
@@ -272,6 +274,22 @@ contributes:
   path: `/{path}/{workspace}/…` (`/drive/s/acme/{link}`). They have no bar and no person (the
   bootstrap's `person` is null, `host.kind` is `public`), send no referrer and are kept out of
   search engines; on a host that serves one workspace only that workspace's links work.
+* **Portal pages** (`shell.portal`, [plan](plan/apps-ui.md) §9.1) are drawn by the app's own
+  interface at `/portal/{id}/` for portal people (customers, suppliers) and members alike: the page
+  reads `app.entry` (`portal/{id}`) from the bootstrap to know it is there (its router's base is
+  `routes["portal/{id}"]`), gets `<ferrum-portal-bar>` instead of the bar and `host.kind:
+  "portal"`, and calls the app's own endpoints (`/api/app/{package}/…`). Portal people hold no
+  roles, so those endpoints find what is theirs by `ctx.email` (proven by the emailed code they
+  signed in with) and read or change it as the system after that check, rate limited. `entity` and
+  `open` (plain segments with `{id}`) send portal people's `/open/{entity}/{id}` to `/portal/{id}/{open}`.
+  The first app to give an id keeps it.
+* **Public sites**: on a host whose target is `site:{app}` (§7.3), every page is the app's: the
+  server calls its package's site handler with `GET /_site/{path}` and the headers
+  `x-ferrum-site-api` (`/api/site/{workspace}/{package}`, for the page's scripts) and
+  `x-ferrum-site-origin` (`https://shop.example.com`, for canonical links and sitemaps), which only
+  the server sets. The handler answers HTML, CSS, scripts, `robots.txt` or `sitemap.xml` as it likes;
+  the server adds `X-Content-Type-Options`, `Referrer-Policy` and a strict Content-Security-Policy
+  unless it sets its own. Commerce's storefront is the example.
 * **CSP**: kinds are `connect`, `frame`, `img`, `media`, `font`, `worker` and `form` (where forms may
   post); `https:` alone is allowed for `img` and `media`; apps compiled into the server may name a
   server setting, `env:FERRUM_…`, whose addresses (several, space- or comma-separated) are read at
