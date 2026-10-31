@@ -304,7 +304,9 @@ Stores are configured in `apps.registries`. Only an app's `id` and a release's `
 Records of every entity the caller may read (masters and documents with a title or search fields),
 found by title and search fields as lists search, ranked by how well the title matches, then by how
 recently the record changed: `{results: [{kind: "record", entity, id, title, subtitle, url, updated_at}],
-partial, took_ms}`. At least two characters; at most 100; `limit` up to 50 (default 20). `partial` is
+pages, partial, took_ms}`; a record with neither a title nor a number is left to its app's own
+search. `pages` ("Go to") are the lists the caller may open whose name matches, at most five:
+`{kind: "page", entity, title, subtitle, url: "/open/{entity}", icon}`. At least two characters; at most 100; `limit` up to 50 (default 20). `partial` is
 true when an entity took longer than its time budget and was left out. The bar's search asks this
 and the apps' `shell.search` providers together; a provider answers `GET {endpoint}?q=&limit=` with
 `{results: [{title, subtitle?, url, icon?, updated_at?}]}`, each `url` a page of this site the caller
@@ -347,6 +349,22 @@ parallel, each within 5 seconds: `GET {endpoint}` answers `{items: [{title, subt
 priority?, updated_at?}]}`, `url` a page of this site, `due` a date (`YYYY-MM-DD`, the day it is
 due in the person's calendar), `priority` `High` to flag it. Home lists everything together, most
 pressing first: overdue, due today, decisions, mentions, then by due date and recency.
+
+## Record cards — `GET /api/cards/{entity}/{id}`
+
+A record's preview (the bar shows it when a link to a record is hovered or focused), derived from
+its metadata for those who may read it: `{entity, id, title, kind, number, icon, state, fields:
+[{name, label, type, value}], updated_at, url}`. `state` is the workflow state (the initial one for
+records from before their workflow), else Draft/Submitted/Cancelled for submittable records;
+`fields` are up to six the list shows, not the title, a link as the linked record's title, masked
+as reads are. Cached by the browser for 30 seconds.
+
+An app may serve its entities' cards itself (`shell.card: [{entity, endpoint}]`): the bar then asks
+`GET {endpoint}?id=` and draws `{title, kind?, number?, icon?, state?, fields?: [{label, value,
+type?}], updated_at?}`; the endpoint checks the caller's access itself. `type` (`date`,
+`datetime`, `currency`, `decimal`, `int`, `percent`, `check`) says how the bar formats `value`.
+Links the bar previews: `/open/{Entity}/{id}`, and a records frame's `…/e/{Entity}/{id}`; an
+element marked `data-ferrum-nocard` (a list, whose rows already show the fields) has none.
 
 ## The assistant — `/api/assistant` ([operations](operations.md#the-assistant))
 

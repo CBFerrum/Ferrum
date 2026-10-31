@@ -749,6 +749,23 @@ async fn scenario() {
     k.transition(&maya_ctx, "Customer", vetted, "Approve", None).await.unwrap();
     assert!(k.my_approvals(&maya_ctx, 50).await.unwrap().is_empty(), "decided");
 
+    // ── cards: what a preview of a record shows, for those who may read it ──
+    let group = id_of(&k.insert(&admin, "CustomerGroup", obj(json!({"group_name": "Wholesale"}))).await.unwrap());
+    let carded = id_of(
+        &k.insert(&admin, "Customer", obj(json!({"customer_name": "Card Co", "customer_group": group.to_string(), "email": "hello@card.test"}))).await.unwrap(),
+    );
+    let card = k.card(&maya_ctx, "Customer", carded).await.unwrap();
+    assert_eq!((card["title"].clone(), card["kind"].clone(), card["state"].clone()), (json!("Card Co"), json!("Customer"), json!("Draft")));
+    let fields: Vec<(String, Value)> =
+        card["fields"].as_array().unwrap().iter().map(|f| (f["name"].as_str().unwrap().to_string(), f["value"].clone())).collect();
+    assert_eq!(
+        fields,
+        vec![("customer_group".to_string(), json!("Wholesale")), ("email".to_string(), json!("hello@card.test"))],
+        "the list's fields, a link by its title, not the title again"
+    );
+    assert_eq!(card["url"], json!(format!("/open/Customer/{carded}")));
+    assert!(matches!(k.card(&otto_ctx, "Customer", carded).await, Err(Error::Forbidden(_) | Error::NotFound(_))), "only for those who may read it");
+
     assert_eq!(ferrum_kernel::notify::declared_default(&["inapp", "email"]), "email");
     assert_eq!(ferrum_kernel::notify::declared_default(&["push"]), "inapp");
     assert_eq!(ferrum_kernel::notify::declared_default(&[]), "off");

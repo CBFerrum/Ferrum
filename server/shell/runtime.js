@@ -330,6 +330,7 @@ const ICONS = {
   "folder": '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
   "chevron-right": '<path d="m9 18 6-6-6-6"/>',
   "chevron-left": '<path d="m15 18-6-6 6-6"/>',
+  "list": '<path d="M3 12h.01"/><path d="M3 18h.01"/><path d="M3 6h.01"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M8 6h13"/>',
   "bell": '<path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/>',
   "check-check": '<path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/>',
   "circle-check": '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
@@ -485,13 +486,18 @@ function runFinder() {
       finder.groups.push(group);
       // A provider that takes too long is left out of this search, not waited for.
       const slow = setTimeout(() => group.loading && ((group.loading = false), finder.ctl === ctl && drawFinder()), 2500);
+      const items = (list) =>
+        (Array.isArray(list) ? list : [])
+          .map((r) => ({ title: String(r.title ?? ""), subtitle: r.subtitle ? String(r.subtitle) : "", url: sitePath(r.url), icon: r.icon }))
+          .filter((r) => r.title && r.url)
+          .slice(0, 12);
       fetch(s.url, { credentials: "same-origin", headers: { accept: "application/json" }, signal: ctl.signal })
         .then((r) => (r.ok ? r.json() : null))
         .then((body) => {
-          group.items = (Array.isArray(body?.results) ? body.results : [])
-            .map((r) => ({ title: String(r.title ?? ""), subtitle: r.subtitle ? String(r.subtitle) : "", url: sitePath(r.url), icon: r.icon }))
-            .filter((r) => r.title && r.url)
-            .slice(0, 12);
+          group.items = items(body?.results);
+          // The lists the person may open, by name: "Go to", before the records.
+          const pages = s.key === "records" ? items(body?.pages).map((p) => ({ ...p, icon: p.icon && ICONS[p.icon] ? p.icon : "list" })) : [];
+          if (pages.length && finder.ctl === ctl) finder.groups.splice(finder.groups.indexOf(group), 0, { key: "pages", title: "Go to", items: pages, loading: false });
         })
         .catch(() => {})
         .finally(() => {
@@ -1073,6 +1079,182 @@ class FerrumBar extends HTMLElement {
 }
 
 const bar = () => document.querySelector("ferrum-bar");
+
+// ───────────────────────── record cards (§11.6) ─────────────────────────
+
+// Hovering (or focusing) a link to a record — `/open/{Entity}/{id}`, or a records frame's
+// `…/e/{Entity}/{id}` — shows its card after a moment: the app's own (`shell.card`) when it serves
+// one, else the one the platform derives from metadata. It stays while the pointer is on the link
+// or the card, and goes with Escape, scrolling or leaving. Not on touch: a tap opens the record.
+const CARD_CSS = `
+:host { all: initial; position: fixed; z-index: 2147483001; inset: 0 auto auto 0; pointer-events: none; }
+.card { pointer-events: auto; box-sizing: border-box; width: min(340px, calc(100vw - 16px)); padding: 12px 14px; border-radius: 12px;
+  background: var(--ferrum-surface, #fff); color: var(--ferrum-text, #17191d); border: 1px solid var(--ferrum-border, #d9dee5);
+  box-shadow: var(--ferrum-shadow, 0 8px 28px rgb(16 24 40 / .14)); font: 13px/1.4 var(--ferrum-font, system-ui, sans-serif);
+  -webkit-font-smoothing: antialiased; animation: in .12s ease-out; }
+@keyframes in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .card { animation: none; } }
+.head { display: flex; gap: 10px; align-items: flex-start; }
+.glyph { flex: none; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 9px; background: var(--ferrum-primary-soft, #e7edfd);
+  color: var(--ferrum-primary, #2f5bea); }
+.who { display: grid; gap: 2px; min-width: 0; }
+.title { font-weight: 650; font-size: 14px; overflow-wrap: anywhere; }
+.meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--ferrum-muted, #5b6472); font-size: 12px; }
+.state { padding: 1px 7px; border-radius: 999px; background: var(--ferrum-surface-2, #eef1f5); color: var(--ferrum-text, #17191d); font-weight: 500; }
+dl { display: grid; grid-template-columns: minmax(0, 40%) minmax(0, 1fr); gap: 5px 12px; margin: 10px 0 0; padding-top: 10px;
+  border-top: 1px solid var(--ferrum-border, #d9dee5); }
+dt { color: var(--ferrum-muted, #5b6472); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.foot { margin-top: 10px; color: var(--ferrum-muted, #5b6472); font-size: 11.5px; }
+.busy { color: var(--ferrum-muted, #5b6472); }
+`;
+const RECORD_LINK = [/^\/open\/([A-Z][A-Za-z0-9]{0,79})\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/, /\/e\/([A-Z][A-Za-z0-9]{0,79})\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/];
+const cardCache = new Map();
+const hover = { link: null, timer: 0, hide: 0, ctl: null, host: null, root: null, touch: false };
+
+/** The record a link opens, or null. */
+function recordOf(a) {
+  let url;
+  try {
+    url = new URL(a.href, location.href);
+  } catch {
+    return null;
+  }
+  if (url.origin !== location.origin) return null;
+  for (const re of RECORD_LINK) {
+    const m = url.pathname.match(re);
+    if (m) return { entity: m[1], id: m[2] };
+  }
+  return null;
+}
+
+async function cardFor(entity, id, signal) {
+  const key = `${entity}/${id}`;
+  const hit = cardCache.get(key);
+  if (hit && Date.now() - hit.at < 60_000) return hit.card;
+  const own = (shellData?.cards ?? []).find((c) => c.entity === entity && typeof c.endpoint === "string" && c.endpoint.startsWith("/api/"));
+  const url = own ? `${own.endpoint}?id=${encodeURIComponent(id)}` : `/api/cards/${encodeURIComponent(entity)}/${encodeURIComponent(id)}`;
+  const r = await fetch(url, { credentials: "same-origin", headers: { accept: "application/json" }, signal });
+  const card = r.ok ? await r.json() : null;
+  if (card && typeof card.title === "string") cardCache.set(key, { at: Date.now(), card });
+  if (cardCache.size > 200) cardCache.delete(cardCache.keys().next().value);
+  return card && typeof card.title === "string" ? card : null;
+}
+
+/** A field's value as people read it. */
+function shown(f) {
+  const v = f?.value;
+  const lang = boot?.locale?.language ?? undefined;
+  if (v === true || v === false) return v ? "Yes" : "No";
+  if (typeof v === "number" || (typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v) && ["decimal", "currency", "int", "percent"].includes(f.type))) {
+    const n = Number(v);
+    const text = new Intl.NumberFormat(lang, { maximumFractionDigits: f.type === "int" ? 0 : 2, minimumFractionDigits: f.type === "currency" ? 2 : 0 }).format(n);
+    return f.type === "percent" ? `${text}%` : text;
+  }
+  if (typeof v === "string" && f.type === "date" && /^\d{4}-\d{2}-\d{2}$/.test(v)) return new Date(`${v}T00:00:00`).toLocaleDateString(lang, { day: "numeric", month: "short", year: "numeric" });
+  if (typeof v === "string" && f.type === "datetime" && Number.isFinite(Date.parse(v))) return new Date(v).toLocaleString(lang, { dateStyle: "medium", timeStyle: "short" });
+  return typeof v === "string" ? v : v == null ? "" : JSON.stringify(v);
+}
+
+function cardRoot() {
+  if (hover.root?.host.isConnected) return hover.root;
+  const host = document.createElement("div");
+  host.setAttribute("data-ferrum-card", "");
+  host.setAttribute("aria-hidden", "true");
+  const root = host.attachShadow({ mode: "open" });
+  const style = document.createElement("style");
+  style.textContent = CARD_CSS;
+  root.append(style);
+  host.addEventListener("pointerenter", () => clearTimeout(hover.hide));
+  host.addEventListener("pointerleave", () => hideCardSoon());
+  document.body.append(host);
+  hover.host = host;
+  hover.root = root;
+  return root;
+}
+
+function placeCard(link, el_) {
+  const r = link.getBoundingClientRect();
+  const w = Math.min(340, innerWidth - 16);
+  const left = Math.max(8, Math.min(r.left, innerWidth - w - 8));
+  const below = innerHeight - r.bottom > 220 || r.top < 220;
+  hover.host.style.transform = `translate(${Math.round(left)}px, ${Math.round(below ? r.bottom + 6 : r.top - 6)}px)`;
+  el_.style.transform = below ? "" : "translateY(-100%)";
+}
+
+function drawCard(link, card) {
+  const root = cardRoot();
+  root.querySelector(".card")?.remove();
+  const box = el("div", { class: "card" });
+  if (!card) box.append(el("span", { class: "busy", text: "Loading…" }));
+  else {
+    const meta = el("div", { class: "meta" }, el("span", { text: [card.kind, card.number].filter((x) => typeof x === "string" && x).join(" · ") }), typeof card.state === "string" && card.state ? el("span", { class: "state", text: card.state }) : null);
+    box.append(el("div", { class: "head" }, el("span", { class: "glyph" }, icon(card.icon, 17) ?? icon("file-text", 17)), el("div", { class: "who" }, el("span", { class: "title", text: card.title }), meta)));
+    const fields = (Array.isArray(card.fields) ? card.fields : []).filter((f) => f && typeof f.label === "string" && shown(f) !== "").slice(0, 8);
+    if (fields.length) box.append(el("dl", {}, ...fields.flatMap((f) => [el("dt", { text: f.label, title: f.label }), el("dd", { text: shown(f), title: shown(f) })])));
+    if (typeof card.updated_at === "string" && ago(card.updated_at)) box.append(el("div", { class: "foot", text: `Changed ${ago(card.updated_at)}` }));
+  }
+  root.append(box);
+  placeCard(link, box);
+}
+
+function hideCard() {
+  clearTimeout(hover.timer);
+  clearTimeout(hover.hide);
+  hover.ctl?.abort();
+  hover.link = null;
+  hover.root?.querySelector(".card")?.remove();
+}
+
+function hideCardSoon() {
+  clearTimeout(hover.hide);
+  hover.hide = setTimeout(hideCard, 250);
+}
+
+function showCardFor(link, delay) {
+  const rec = recordOf(link);
+  if (!rec || link.closest("[data-ferrum-nocard]")) return;
+  clearTimeout(hover.hide);
+  if (hover.link === link) return;
+  hideCard();
+  hover.link = link;
+  hover.timer = setTimeout(async () => {
+    const ctl = new AbortController();
+    hover.ctl = ctl;
+    const slow = setTimeout(() => hover.link === link && drawCard(link, null), 300);
+    const card = await cardFor(rec.entity, rec.id, ctl.signal).catch(() => null);
+    clearTimeout(slow);
+    if (hover.link !== link || ctl.signal.aborted) return;
+    if (card) drawCard(link, card);
+    else hideCard();
+  }, delay);
+}
+
+if (boot?.person && hostKind !== "public") {
+  document.addEventListener("pointerdown", (e) => {
+    hover.touch = e.pointerType === "touch";
+    if (!e.composedPath().includes(hover.host)) hideCard();
+  });
+  document.addEventListener("pointerover", (e) => {
+    if (e.pointerType !== "mouse") return;
+    const a = e.target instanceof Element ? e.target.closest("a[href]") : null;
+    if (a) showCardFor(a, 450);
+  });
+  document.addEventListener("pointerout", (e) => {
+    const a = e.target instanceof Element ? e.target.closest("a[href]") : null;
+    if (a && a === hover.link && !(e.relatedTarget instanceof Node && a.contains(e.relatedTarget))) hideCardSoon();
+  });
+  document.addEventListener("focusin", (e) => {
+    const a = e.target instanceof Element ? e.target.closest("a[href]") : null;
+    if (a && !hover.touch) showCardFor(a, 600);
+  });
+  document.addEventListener("focusout", (e) => {
+    if (e.target === hover.link) hideCard();
+  });
+  document.addEventListener("keydown", (e) => e.key === "Escape" && hideCard());
+  addEventListener("scroll", () => hover.link && hideCard(), { capture: true, passive: true });
+  addEventListener("pagehide", () => hideCard());
+}
 
 // ───────────────────────── moving between apps ─────────────────────────
 

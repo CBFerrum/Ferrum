@@ -34,7 +34,7 @@ fn version_of(doc: &Doc) -> i64 {
     doc.get("version").and_then(Value::as_i64).unwrap_or(1)
 }
 
-fn docstatus_of(doc: &Doc) -> i64 {
+pub(crate) fn docstatus_of(doc: &Doc) -> i64 {
     doc.get("docstatus").and_then(Value::as_i64).unwrap_or(0)
 }
 
