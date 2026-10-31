@@ -47,7 +47,7 @@
 //!   fields refused), named after the app, with resource limits capped ([`MAX_PLUGIN_FUEL`],
 //!   [`MAX_PLUGIN_MEMORY_MB`]).
 //! * **Manifest.** `plugin` must be `plugin.json`; `description` names a markdown file in the
-//!   bundle; `icon` and `screenshots` are images under `assets/`; `homepage` is an http(s) URL;
+//!   bundle (shown outside GitHub through [`description`]: Markdown only, never raw HTML); `icon` and `screenshots` are images under `assets/`; `homepage` is an http(s) URL;
 //!   `support` an http(s) URL or e-mail address; versions carry no build metadata; `publisher`
 //!   follows the app id syntax; prefixes starting with `X` are refused (that namespace belongs to
 //!   custom and plugin entities). [`AppManifest::parse`] also validates.
@@ -71,6 +71,7 @@
 
 mod bundle;
 pub mod contract;
+pub mod description;
 mod manifest;
 mod permissions;
 mod resolve;

@@ -72,7 +72,10 @@ fn gw(version: &str, hosts: &[&str]) -> BTreeMap<String, Vec<u8>> {
                  runtime: wasm\nplatform: \"^0.3\"\nrequires: {{kit: \"^1\"}}\npackages: [gw]\nplugin: plugin.json\nprefix: Gw\nuninstall: ask\n"
             ),
         ),
-        ("README.md", "# Gateway\nConnects devices.\n"),
+        (
+            "README.md",
+            "<div align=\"center\"><img src=\"assets/banner.svg\"></div>\n\n# Gateway\n\n[![CI](https://ci.example/badge.svg)](https://ci.example)\n\nConnects devices <b>over</b> [WebSocket](https://example.com/ws).\n",
+        ),
         ("plugin.json", &plugin.to_string()),
         ("packages/gw/package.yaml", &format!("package: gw\nversion: {version}\ndepends: [core]\n")),
         ("packages/gw/entities/device.yaml", "name: GwDevice\nlabel: Device\nkind: master\nfields:\n  - {name: serial, type: data}\n"),
@@ -509,7 +512,8 @@ async fn scenario() {
     assert!(plan.increases.is_empty() && plan.warnings.is_empty(), "{:?} {:?}", plan.increases, plan.warnings);
     assert_eq!((plan.app.summary.runtime.as_str(), plan.app.summary.verified, plan.uninstall), ("wasm", true, Uninstall::Ask));
     assert_eq!(plan.app.summary.icon_url, Some(format!("{store_url}/icons/gw.svg")));
-    assert!(plan.app.description.as_deref().is_some_and(|d| d.contains("Connects devices")));
+    // The README's opening prose, without its HTML, picture and badge.
+    assert_eq!(plan.app.description.as_deref(), Some("Connects devices over WebSocket."));
     assert_eq!(dev.plan(&admin, "gw", None).await.unwrap().digest, plan.digest, "plans are deterministic");
     assert!(k.release_history("gw").await.unwrap().is_empty(), "planning makes nothing available");
 

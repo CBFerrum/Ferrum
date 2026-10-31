@@ -42,6 +42,8 @@ const REVOCATIONS_LOCK: i64 = 0x6665_7272_756d_0002;
 /// Most apps one plan may look at (the requested app, its dependencies and the installed apps).
 const MAX_APPS: usize = 200;
 const README_MAX: usize = 4_000;
+/// The longest description an install plan shows.
+const DESCRIPTION_MAX: usize = 600;
 const NOT_FOUND: &str = "HTTP 404";
 /// How long a replica trusts its list of a workspace's enabled apps (changes made on this
 /// replica clear it at once).
@@ -1355,7 +1357,8 @@ impl AppManager {
         let plan = Plan {
             app: PlanApp {
                 summary: summary(m, &origin, root.verified, root.source == "private", icon_url),
-                description: root.readme.clone(),
+                // Its opening prose: a README written for GitHub carries HTML, badges and pictures.
+                description: root.readme.as_deref().map(|md| ferrum_apps::description::excerpt(md, DESCRIPTION_MAX)).filter(|t| !t.is_empty()),
                 license: m.license.clone(),
                 homepage: m.homepage.clone(),
                 screenshots,
