@@ -165,6 +165,7 @@ impl Hooks for App {
         let mailer: Option<Arc<dyn Mailer>> = ctx.mailer.clone().map(|sender| Arc::new(LocoMailer { sender, from: None, smtp }) as Arc<dyn Mailer>);
         let jwt = ctx.config.auth.as_ref().and_then(|a| a.jwt.as_ref()).ok_or_else(|| Error::Message("auth.jwt is not configured".into()))?;
         let secret_key = secret_key(&settings, &jwt.secret, &ctx.environment)?;
+        plugins.seal_with(secret_key.clone());
         let kernel = Kernel::boot(
             db,
             catalog,
@@ -184,6 +185,12 @@ impl Hooks for App {
         .await
         .map_err(|e| Error::Message(format!("kernel boot: {e}")))?;
         ferrum_app_erp::maintenance(&kernel).await.map_err(|e| Error::Message(format!("ERP's upkeep: {e}")))?;
+        // Plugins configured before their settings were sealed (gateways' keys among them) are sealed now.
+        match plugins.seal_stored(&kernel.db).await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(plugins = n, "sealed stored plugin settings"),
+            Err(e) => tracing::warn!("sealing stored plugin settings: {e}"),
+        }
         // Loco signs with the base64-decoded secret: reject anything that is not valid base64 at boot.
         if loco_rs::auth::jwt::JWT::new(&jwt.secret).generate_token(60, "probe".into(), serde_json::Map::new()).is_err() {
             return Err(Error::Message("auth.jwt.secret must be base64 (generate one with `openssl rand -base64 48`)".into()));
