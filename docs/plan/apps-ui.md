@@ -152,9 +152,10 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     app has left: the server answers `/app/…` with redirects to the new homes, query kept
     (bookmarks, links in mail; `/app/login` stays the single sign-on return address providers have
     registered, sent on to `/login`), and `/app/sw.js` is a worker that clears its cache and
-    removes itself. Ferrum-Frontend keeps the shell's and ERP's interfaces and the packages; its
+    removes itself. Ferrum-Frontend keeps the shell's and Studio's interfaces and the packages (ERP's
+    moved to ERP's own repository, [erp-repo.md](erp-repo.md)); its
     classic entry, its sign-in and consent pages, its redirect map and its nginx image are gone.
-  * The server's image carries the shell's and ERP's interfaces, built from Ferrum-Frontend at the
+  * The server's image carries the shell's and Studio's interfaces, built from Ferrum-Frontend at the
     commit the Dockerfile pins (`FRONTEND_REV`, bumped like an app's pin; another checkout with
     `--build-context frontend=…`, which Ferrum-Frontend's CI uses to run Ferrum's smoke test on
     its changes). Compose and the Kubernetes manifests have no web service: the server is the front
