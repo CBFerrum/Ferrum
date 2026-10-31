@@ -156,6 +156,13 @@ queued for the company's KSeF channel. Romania: CIUS-RO with ISO 3166-2:RO count
 sectors, queued for ANAF. Not yet: the channels themselves (SDI, KSeF's API 2.0, ANAF's OAuth), Italy's
 FPA12, split payment and withholding, and France, Spain, Portugal, Croatia, Greece, Hungary.
 
+**Portugal built (1 November 2026):** ERP b926b7e, `ferrum-eu-members` `pt`: certified invoices: series
+communicated to the AT with their validation codes, ATCUD, the RSA-SHA1 signature chained over each
+series (Despacho 8632/2014; matches openssl on the Despacho's record), the hash characters and the
+certificate's mention, the QR code's message (Portaria 195/2020), NIF checks, article 53 and the
+construction reverse charge. Romania's ANAF e-Factura connection (OAuth, upload, status) is in ERP
+fa6232f. Not yet: SAF-T (PT), the AT's series communication web service, Açores and Madeira rates.
+
 **Spain and France built (1 November 2026):** ERP 572204b and c062e2b, in `ferrum-eu-members`. Spain:
 VERI*FACTU invoicing records chained by AEAT's SHA-256 fingerprint (its test vectors pass),
 cancellation records, the verification QR code, records queued for the company's AEAT connection;

@@ -24,6 +24,8 @@ use ferrum_eu_members::fr as ferrum_fr;
 use ferrum_eu_members::it as ferrum_it;
 #[cfg(feature = "pl")]
 use ferrum_eu_members::pl as ferrum_pl;
+#[cfg(feature = "pt")]
+use ferrum_eu_members::pt as ferrum_pt;
 #[cfg(feature = "ro")]
 use ferrum_eu_members::ro as ferrum_ro;
 // The countries on ERP's VAT and GST engine are apps of one crate (localization.md L6, L7).
@@ -215,6 +217,7 @@ apps! {
         "fr" => ferrum_fr,
         "it" => ferrum_it,
         "pl" => ferrum_pl,
+        "pt" => ferrum_pt,
         "ro" => ferrum_ro,
         // The United Kingdom (localization.md L3).
         "gb" => ferrum_gb,
