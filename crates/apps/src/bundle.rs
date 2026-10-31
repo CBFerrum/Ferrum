@@ -397,8 +397,14 @@ impl Bundle {
                 }
             }
         }
-        if m.runtime == Runtime::Native && self.files.keys().any(|p| p.starts_with("ui/")) {
-            return bad("native apps put their screens in the web app, not under ui/");
+        // A native app's own interface (`ui.dist`, built) may ride in its bundle for the store to
+        // review; its server embeds its own copy. Nothing else of ui/: screens are wasm and meta
+        // apps', and an interface's sources stay out.
+        if m.runtime == Runtime::Native {
+            let dist = m.ui.as_ref().map(|u| format!("{}/", u.dist.trim_end_matches('/')));
+            if let Some(p) = self.files.keys().find(|p| p.starts_with("ui/") && !dist.as_deref().is_some_and(|d| p.starts_with(d))) {
+                return bad(format!("{p}: native apps carry only their built interface under ui/ (ui.dist), not screens or sources"));
+            }
         }
         if let Some(e) = m.screen_entries().into_iter().find(|e| !has(e)) {
             return bad(format!("app.yaml opens {e}, which is not in the bundle"));
@@ -566,8 +572,18 @@ mod tests {
             .unwrap()
             .replace("runtime: meta", "runtime: native")
             .replace("contributes:\n  ui.page:\n    - {id: board, title: Board, entry: ui/board.html}\n", "");
-        native.insert("app.yaml".into(), yaml.into_bytes());
-        refused(native, "native apps put their screens in the web app");
+        native.insert("app.yaml".into(), yaml.clone().into_bytes());
+        refused(native.clone(), "native apps carry only their built interface under ui/");
+        // With an interface of its own, its built files come along, and nothing else of ui/.
+        let own = format!("{yaml}ui:\n  dist: ui/dist\ncontributes:\n  shell.app:\n    - {{id: board, route: board, title: Board}}\n");
+        let mut built: BTreeMap<String, Vec<u8>> = native.into_iter().filter(|(p, _)| !p.starts_with("ui/")).collect();
+        built.insert("app.yaml".into(), own.into_bytes());
+        built.insert("ui/dist/index.html".into(), b"<!doctype html><html><head><title>Board</title></head><body></body></html>".to_vec());
+        built.insert("ui/dist/assets/index-a1.js".into(), b"export {};".to_vec());
+        Bundle::from_files(built.clone()).expect("a native app with its built interface");
+        let mut sources = built;
+        sources.insert("ui/src/main.js".into(), b"export {};".to_vec());
+        refused(sources, "ui/src/main.js: native apps carry only their built interface");
     }
 
     fn refused(files: BTreeMap<String, Vec<u8>>, needle: &str) {
