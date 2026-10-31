@@ -2381,7 +2381,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-drive"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-drive?branch=main#5c45c6ca2f43a915bf96b1d59f8f6cc2af96b776"
+source = "git+https://github.com/CBFerrum/ferrum-app-drive?branch=main#368bb3c66f98d1322cc7215a71d439b7f881a335"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2396,12 +2396,14 @@ dependencies = [
  "rand 0.9.5",
  "ring",
  "rust_decimal",
+ "rust_xlsxwriter",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
  "tracing",
  "uuid",
+ "zip",
 ]
 
 [[package]]
