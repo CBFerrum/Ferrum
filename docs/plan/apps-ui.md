@@ -301,8 +301,13 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     own, and the isolation checks above hold; opened alone, it goes to consent, comes back to where it
     was with cards, survives a reload, renews, refuses a replayed refresh token (revoking the family)
     and signs in again.
-  * Still open: the store's publisher-side review (ferrum-store) of UI bundles. A workspace's slug
-    names its apps' origins: if slugs ever change hands, they need the hosts' quarantine (§7.2).
+  * The store's review (ferrum-store b3f63e6): a submission whose interface the platform would not
+    serve is rejected (`ferrum_apps::ui::from_bundle`, shared with the platform), and moderators see
+    the interface's files and size, its `ui.csp` origins, its routes and shell points (`shell.public`
+    flagged as open to anyone with the link) and the automatic look at its page
+    (`ferrum_apps::ui::review`) before countersigning lets it run with people's sessions.
+  * A workspace's slug names its apps' origins: if slugs ever change hands (U6 adds no renames),
+    they need the hosts' quarantine (§7.2).
 
 * **U7, portal and sites: built** (31 October 2026).
   * Hosts lead where their target says (§7.2): a `portal` host has sign-in, the portal and `/open`
