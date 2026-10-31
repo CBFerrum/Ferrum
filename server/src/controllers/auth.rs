@@ -470,6 +470,12 @@ async fn kept_by_identity(st: &AppState, headers: &HeaderMap, ctx: &ferrum_kerne
     {
         return Err(ApiError(Error::Forbidden(format!("your Ferrum account keeps this; change it at {accounts}"))));
     }
+    // A Ferrum account visiting from another region keeps its credentials at home.
+    if st.kernel.directory().await? == Some(ctx.tenant)
+        && let Some(home) = st.kernel.identity(ctx).await?.home_region
+    {
+        return Err(ApiError(Error::Forbidden(format!("your Ferrum account lives in region {home}; change this there"))));
+    }
     Ok(())
 }
 

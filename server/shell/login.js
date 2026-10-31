@@ -274,12 +274,14 @@ function drawAccounts() {
     if (accounts.target) singleSignOn(accounts.target.slug);
     passkeyButton();
   }
+  // A Ferrum account of another region signs in there, and comes back here trusted.
   if (accounts.regions?.length) {
-    const p = text("p", "Your account is in another region? ", "ferrum-hint ferrum-regions");
+    const p = text("p", "Your Ferrum account lives in another region? Sign in with it: ", "ferrum-hint ferrum-regions");
     p.id = "ferrum-regions";
     accounts.regions.forEach((r, i) => {
       if (i) p.append(" · ");
-      p.append(Object.assign(document.createElement("a"), { href: `${r.url}/login`, textContent: r.name.toUpperCase() }));
+      const href = `/regions/start?region=${encodeURIComponent(r.name)}&next=${encodeURIComponent(boot.next || "/")}`;
+      p.append(Object.assign(document.createElement("a"), { href, textContent: r.name.toUpperCase() }));
     });
     document.getElementById("main").append(p);
   }

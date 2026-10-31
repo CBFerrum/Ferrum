@@ -148,7 +148,7 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     its changes). Compose and the Kubernetes manifests have no web service: the server is the front
     door (`/healthz` for load balancers).
 
-* **U6, many workspaces and hosts: done** (31 October 2026), but for trust between regions.
+* **U6, many workspaces and hosts: done** (31 October 2026).
   * Custom domains: administrators add, check, make main and remove a workspace's domains
     (Administration → Domains; `/api/admin/domains`) for the workspace, its portal or an app's public
     site. A pending domain is verified when it answers its token at `/.well-known/ferrum-domain` (one
@@ -181,8 +181,16 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     region, and the accounts host sending requests on to the region that has the workspace. Checked
     in the kernel's tests, in Chrome, Firefox and WebKit (two workspaces on subdomains and one on a
     custom domain, one account, passkeys at accounts, signing out everywhere), and in the kind
-    cluster's last step through the gateway. Not yet: a workspace of one region trusting an
-    account of another (OpenID Connect between regions' accounts hosts).
+    cluster's last step through the gateway.
+  * Accounts across regions (§9.3): an account lives in one region, and the regions it lists trust
+    it. The visited region's sign-in page sends people home (`/regions/start`), whose accounts host
+    answers with a one-use code bound to the visitor's PKCE challenge (`/regions/authorize`); the
+    visited region's server takes it to the home's `/api/accounts/region-token` and keeps a visiting
+    account (no password; address, name and two-factor sign-in as home vouches for them), which then
+    joins workspaces as any account does. A code exchange between our own regions rather than full
+    OpenID Connect: no id_token signing keys or discovery to run, and nothing but listed regions is
+    ever answered. Checked in the kernel's tests and with two servers as two regions in Chrome and
+    Firefox.
 
 * **U5, the rest: under way** (31 October 2026).
   * The bar's search (§12.8): ⌘K or the bar's field; apps from the launcher, records of every entity
@@ -763,9 +771,11 @@ add a cluster-wide `identity` (email, password, 2FA, passkeys, home region) that
 * Linking: at the first central sign-in the identity takes the credentials just used; other memberships
   with the same email join after the person proves each once (that workspace's password or an emailed
   code), never by email alone. New invitations join when accepted while signed in.
-* An identity lives in one region. A workspace in another region trusts it through OIDC, as Zoho's
-  secondary accounts trust the primary data centre; the workspace keeps its own copy of the member's
-  name and email for residency.
+* An identity lives in one region. A workspace in another region trusts it, as Zoho's secondary
+  accounts trust the primary data centre: the home region's accounts host vouches for it to the
+  other's through an authorization code bound to a PKCE challenge, taken server to server (built in
+  U6: OpenID Connect's code flow between our own regions, without id_token keys); the other region
+  keeps its own copy of the member's name and email for residency.
 * The account chooser lists the person's workspaces; later a partner view serves firms that work for
   many clients (accountants, implementers).
 * Inside one workspace, the bootstrap carries the person's default company; apps that support several

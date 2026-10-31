@@ -114,8 +114,14 @@ fn signed(r: AccountSignIn) -> Session {
     }
 }
 
-#[tokio::test]
-async fn one_person_many_workspaces() {
+#[test]
+fn one_person_many_workspaces() {
+    // One long scenario: its async state machine needs more than the default 2 MiB test stack.
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
+    rt.block_on(async { tokio::spawn(scenario()).await.unwrap() });
+}
+
+async fn scenario() {
     let db = Db::connect(DbConfig { url: url(), max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let k = boot(db.clone(), true).await;
@@ -269,6 +275,52 @@ async fn one_person_many_workspaces() {
     assert!(k.check_session(acme, ana_acme, there).await.is_err());
     assert!(k.load_ctx(acme, ana_acme, Some(into_acme.token_version), "it".into()).await.is_err());
     assert!(k.identity(&me).await.is_ok(), "the identity itself stays");
+
+    // ── Accounts across regions ──
+    // Home: a code for another region's accounts host, bound to its PKCE challenge.
+    let verifier = "dBjftJeZ4CVP-mJ0n0Kt6kXRIHSTb0cEo1rgGO86X6s";
+    let challenge = ferrum_kernel::identity::pkce_challenge(verifier);
+    let me = ctx(&k, &signed(k.account_sign_in("ana@x.test", "Ana-New-Pass-1").await.unwrap())).await;
+    assert!(k.mint_region_code(&me, "accounts.eu.test", "short").await.is_err(), "no challenge, no code");
+    let c = k.mint_region_code(&me, "accounts.eu.test", &challenge).await.unwrap();
+    assert!(k.redeem_region_code(&c, "accounts.eu.test", "dBjftJeZ4CVP-mJ0n0Kt6kXRIHSTb0cEo1rgGO86X6t").await.is_err(), "another verifier");
+    assert!(k.redeem_region_code(&c, "accounts.eu.test", verifier).await.is_err(), "spent by the wrong try");
+    let c = k.mint_region_code(&me, "accounts.eu.test", &challenge).await.unwrap();
+    assert!(k.redeem_region_code(&c, "accounts.us.test", verifier).await.is_err(), "another region's host");
+    let c = k.mint_region_code(&me, "accounts.eu.test", &challenge).await.unwrap();
+    let ana_abroad = k.redeem_region_code(&c, "accounts.eu.test", verifier).await.unwrap();
+    assert_eq!((ana_abroad.sub, ana_abroad.email.as_str(), ana_abroad.email_verified), (me.user, "ana@x.test", true));
+    assert!(k.redeem_region_code(&c, "accounts.eu.test", verifier).await.is_err(), "once");
+    // Visited: an account of this region with the same address keeps it.
+    assert!(matches!(k.visiting_identity("in", &ana_abroad).await, Err(Error::Conflict(_))));
+    // Zed lives in region "in" and has an account in Globex, here, added without a password.
+    let zed_globex = k.create_user(&g_admin, "zed@far.test", "Zed Far", None, &[], false).await.unwrap();
+    let zed_home = ferrum_kernel::identity::Visitor {
+        sub: uuid::Uuid::now_v7(),
+        email: "zed@far.test".into(),
+        name: "Zed Far".into(),
+        email_verified: true,
+        two_factor: true,
+    };
+    let zed = k.visiting_identity("IN", &zed_home).await.unwrap();
+    assert_eq!(k.visiting_identity("in", &zed_home).await.unwrap(), zed, "the same visiting account every time");
+    let zed_ctx = ctx(&k, &zed).await;
+    let zed_id = k.identity(&zed_ctx).await.unwrap();
+    assert_eq!((zed_id.home_region.as_deref(), zed_id.verified, zed_id.two_factor), (Some("in"), true, true));
+    assert!(k.account_sign_in("zed@far.test", "Anything-12").await.is_err(), "no password here");
+    k.send_email_code("zed@far.test", "set your password").await.unwrap();
+    assert!(
+        matches!(k.account_password("zed@far.test", &newest_code(&k, "zed@far.test").await, "Zed-Pass-1234").await, Err(Error::Forbidden(_))),
+        "kept at home"
+    );
+    assert!(matches!(k.mint_region_code(&zed_ctx, "accounts.us.test", &challenge).await, Err(Error::Forbidden(_))), "vouched for by its home only");
+    // It enters workspaces here as any account: Globex's account joins on a click (home proved
+    // the address), and a workspace's two-factor rule counts home's.
+    assert_eq!(k.enter(&zed_ctx, globex).await.unwrap(), Entry::Join { click: true, password: false, two_factor: false });
+    k.join(&zed_ctx, globex, Proof::default()).await.unwrap();
+    set_policy(&k, globex, json!({"require_two_factor": true})).await;
+    assert!(matches!(k.enter(&zed_ctx, globex).await.unwrap(), Entry::Ready(s) if s.user == zed_globex));
+    set_policy(&k, globex, json!({})).await;
 
     // ── A server that sends no mail: identities whose address proves nothing ──
     let quiet = boot(db, false).await;
