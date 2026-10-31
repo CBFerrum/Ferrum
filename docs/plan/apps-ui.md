@@ -267,8 +267,21 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
   * Remote rendering: a spike ([spike-u8-remote-rendering.md](spike-u8-remote-rendering.md)) proves a
     sandboxed extension can describe native-looking UI the host draws from checked components;
     built when a third party asks.
-  * Still open: shape D origins for publisher-hosted interfaces (OAuth + PKCE app tokens, wildcard
-    hosts: with U6's domains), the store's publisher-side review (ferrum-store) of UI bundles.
+  * Shape D: with `FERRUM_APPS_BASE`, an isolated app has `{app}--{workspace}.{apps base}`, a site of
+    its own, which the workspace's page frames (`allow-same-origin`, the same bridge) and which also
+    opens on its own: `ferrum.js` signs in with OAuth code + PKCE against the workspace
+    (`app:{app}:{workspace}` clients, made at first consent, one redirect URI), keeps the session in
+    `sessionStorage` and renews app tokens with rotating refresh tokens. On those hosts only the
+    app's files, `/api/v1|meta|ext/{app}`, `/oauth/token` and `/oauth/revoke` answer; no cookie is
+    read or set. Pairs that make no hostname label (over 63 characters, `--` in an id) keep the
+    sandboxed frame. The token endpoint re-checks the app and the person on every exchange, and
+    refresh tokens of every client now end with the person's sessions (token version). Proof in
+    Chrome with `FERRUM_APPS_BASE=localhost`: framed, the frame's origin is the app's, its storage its
+    own, and the isolation checks above hold; opened alone, it goes to consent, comes back to where it
+    was with cards, survives a reload, renews, refuses a replayed refresh token (revoking the family)
+    and signs in again.
+  * Still open: the store's publisher-side review (ferrum-store) of UI bundles. A workspace's slug
+    names its apps' origins: if slugs ever change hands, they need the hosts' quarantine (§7.2).
 
 * **U7, portal and sites: built** (31 October 2026).
   * Hosts lead where their target says (§7.2): a `portal` host has sign-in, the portal and `/open`

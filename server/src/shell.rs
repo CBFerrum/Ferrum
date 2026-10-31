@@ -817,7 +817,7 @@ pub fn esc(s: &str) -> String {
 }
 
 /// JSON safe inside `<script type="application/json">`.
-fn json_in_html(v: &Value) -> String {
+pub fn json_in_html(v: &Value) -> String {
     v.to_string().replace('<', "\\u003c").replace('>', "\\u003e").replace('&', "\\u0026")
 }
 
@@ -964,18 +964,61 @@ pub const ISOLATED_SANDBOX: &str = "allow-scripts allow-forms allow-downloads al
 /// The page of an app whose interface runs isolated (docs/plan/apps-ui.md U8): the bar, and the
 /// app in a sandboxed frame filling the page below it, which reaches Ferrum only through the
 /// bridge of `isolated.js` (screens' protocol, with the person's rights narrowed to the app's).
-pub fn isolated_page(bootstrap: &Value, app: &str, digest: &str, title: &str, origins: &[String]) -> Response {
+/// The frame holds the release's files from `/_isolated/` (an opaque origin), or, in shape D,
+/// `own`: the app's origin of its own and the address under it, a site apart from this one.
+pub fn isolated_page(bootstrap: &Value, app: &str, digest: &str, title: &str, origins: &[String], own: Option<(&str, &str)>) -> Response {
+    let (src, sandbox, frame_src, target) = match own {
+        Some((origin, path)) => (format!("{origin}{path}"), format!("{ISOLATED_SANDBOX} allow-same-origin"), format!("{origin}/"), origin.to_string()),
+        None => (
+            format!("/_isolated/{app}/{digest}/index.html"),
+            ISOLATED_SANDBOX.to_string(),
+            origins.iter().map(|o| format!("{o}/_isolated/{app}/{digest}/")).collect::<Vec<_>>().join(" "),
+            String::new(),
+        ),
+    };
     let html = format!(
-        r#"<!doctype html><html lang="en"><head>{head}<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{t}</title><link rel="stylesheet" href="/_shell/v1/pages.css"><script type="module" src="/_shell/v1/isolated.js"></script></head><body class="ferrum-isolated">{SHELL_BODY}<iframe id="ferrum-app" title="{t}" src="/_isolated/{a}/{d}/index.html" sandbox="{ISOLATED_SANDBOX}" referrerpolicy="no-referrer" allow="clipboard-write; fullscreen"></iframe></body></html>"#,
+        r#"<!doctype html><html lang="en"><head>{head}<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{t}</title><link rel="stylesheet" href="/_shell/v1/pages.css"><script type="module" src="/_shell/v1/isolated.js"></script></head><body class="ferrum-isolated">{SHELL_BODY}<iframe id="ferrum-app" title="{t}" src="{src}" sandbox="{sandbox}" data-origin="{target}" referrerpolicy="no-referrer" allow="clipboard-write; fullscreen"></iframe></body></html>"#,
         head = shell_head(bootstrap),
         t = esc(title),
-        a = esc(app),
-        d = esc(digest),
+        src = esc(&src),
+        target = esc(&target),
     );
-    // The frame holds the app's release and nothing else: it cannot be sent to other pages.
-    let release: Vec<String> = origins.iter().map(|o| format!("{o}/_isolated/{app}/{digest}/")).collect();
-    let policy = csp(None, &Value::Null).replace("frame-src 'self';", &format!("frame-src {};", release.join(" ")));
+    // The frame holds the app's release (or its origin) and nothing else: it cannot be sent elsewhere.
+    let policy = csp(None, &Value::Null).replace("frame-src 'self';", &format!("frame-src {frame_src};"));
     page_response(StatusCode::OK, html, &policy)
+}
+
+/// The app and workspace an app origin's host names, `{app}--{workspace}.{apps_base}` (shape D):
+/// `None` for any other host, and when no apps base is set. The host may carry a port.
+pub fn app_origin_of(host: &str, apps_base: &str) -> Option<(String, String)> {
+    let base = apps_base.trim().trim_matches('.').to_ascii_lowercase();
+    if base.is_empty() {
+        return None;
+    }
+    let host = host.trim().to_ascii_lowercase();
+    let name = host.split(':').next().unwrap_or_default();
+    let label = name.strip_suffix(&format!(".{base}"))?;
+    let (app, slug) = label.split_once("--")?;
+    // A workspace's slug: 2 to 63 lowercase letters, digits or hyphens, not starting with a hyphen.
+    let slug_ok =
+        (2..=63).contains(&slug.len()) && slug.as_bytes()[0] != b'-' && slug.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    (crate::appmgr::valid_id(app) && slug_ok).then(|| (app.to_string(), slug.to_string()))
+}
+
+/// The origin an app of a workspace has of its own (shape D), on the port `host` carries. `None`
+/// when no apps base is set, or when `{app}--{workspace}` is no hostname label that reads back as
+/// the same app and workspace (longer than 63 characters, ending in a hyphen, an IDNA `xn--`
+/// prefix, an app id with `--` in it): that app keeps to a sandboxed frame.
+pub fn app_origin(app: &str, slug: &str, apps_base: &str, host: &str, secure: bool) -> Option<String> {
+    let base = apps_base.trim().trim_matches('.').to_ascii_lowercase();
+    let label = format!("{app}--{slug}");
+    let fits = !base.is_empty() && label.len() <= 63 && !label.ends_with('-') && !label.starts_with("xn--");
+    if !fits || app_origin_of(&format!("{label}.{base}"), &base) != Some((app.to_string(), slug.to_string())) {
+        return None;
+    }
+    let port = host.rsplit_once(':').map(|(_, p)| p).filter(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    let scheme = if secure { "https" } else { "http" };
+    Some(format!("{scheme}://{label}.{base}{}", port.map(|p| format!(":{p}")).unwrap_or_default()))
 }
 
 /// The Content-Security-Policy of an isolated interface's files: sandboxed (an opaque origin
@@ -1279,7 +1322,7 @@ mod tests {
         assert!(p.contains("https://acme.example/api/v1/") && p.contains("http://localhost:5150/api/ext/cards/") && !p.contains("/api/admin"), "{p}");
         assert!(p.ends_with("frame-ancestors 'self' https://acme.example http://localhost:5150"), "{p}");
         let boot = json!({"workspace": {"name": "Acme"}, "person": {"name": "Ana"}, "app": {"id": "cards", "isolated": true}});
-        let res = isolated_page(&boot, "cards", &digest, "Cards <b>", &origins);
+        let res = isolated_page(&boot, "cards", &digest, "Cards <b>", &origins, None);
         let policy = res.headers()["content-security-policy"].to_str().unwrap().to_string();
         assert!(
             policy.contains(&format!("frame-src https://acme.example/_isolated/cards/{digest}/ http://localhost:5150/_isolated/cards/{digest}/;")),
@@ -1293,6 +1336,51 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("<ferrum-bar></ferrum-bar>") && html.contains("/_shell/v1/isolated.js"), "{html}");
+    }
+
+    #[tokio::test]
+    async fn an_app_with_an_origin_of_its_own_is_framed_there() {
+        let boot = json!({"app": {"id": "cards", "isolated": true}});
+        let origins = vec!["https://acme.example".to_string()];
+        let res = isolated_page(&boot, "cards", "d1", "Cards", &origins, Some(("https://cards--acme.apps.example", "/board?q=a&b")));
+        let policy = res.headers()["content-security-policy"].to_str().unwrap().to_string();
+        assert!(policy.contains("frame-src https://cards--acme.apps.example/;"), "the frame holds the app's origin and nothing else: {policy}");
+        let html = page_html(res).await;
+        assert!(
+            html.contains(&format!(
+                r#"src="https://cards--acme.apps.example/board?q=a&amp;b" sandbox="{ISOLATED_SANDBOX} allow-same-origin" data-origin="https://cards--acme.apps.example""#
+            )),
+            "{html}"
+        );
+        assert!(!html.contains("allow-top-navigation"), "{html}");
+    }
+
+    #[test]
+    fn app_origins_read_back_as_their_app_and_workspace() {
+        let pair = |a: &str, w: &str| Some((a.to_string(), w.to_string()));
+        assert_eq!(app_origin_of("customer-cards--demo.apps.example:8443", "apps.example"), pair("customer-cards", "demo"));
+        assert_eq!(app_origin_of("Customer-Cards--Demo.Apps.Example", ".apps.example."), pair("customer-cards", "demo"));
+        assert_eq!(app_origin_of("cards--acme-2.localhost:5150", "localhost"), pair("cards", "acme-2"));
+        assert_eq!(app_origin_of("customer-cards--demo.apps.example", ""), None, "no apps base");
+        assert_eq!(app_origin_of("demo.apps.example", "apps.example"), None, "no app");
+        assert_eq!(app_origin_of("apps.example", "apps.example"), None);
+        assert_eq!(app_origin_of("customer-cards--demo.example", "apps.example"), None, "another domain");
+        assert_eq!(app_origin_of("customer-cards--demo.evilapps.example", "apps.example"), None, "a suffix, not the domain");
+        assert_eq!(app_origin_of("x.cards--demo.apps.example", "apps.example"), None, "one label");
+        assert_eq!(app_origin_of("cards---demo.apps.example", "apps.example"), None, "a workspace starts with a letter or digit");
+        assert_eq!(app_origin_of("9cards--demo.apps.example", "apps.example"), None, "an app id starts with a letter");
+
+        assert_eq!(app_origin("customer-cards", "demo", "apps.example", "acme.example", true).as_deref(), Some("https://customer-cards--demo.apps.example"));
+        assert_eq!(app_origin("cards", "demo", "Localhost.", "localhost:5150", false).as_deref(), Some("http://cards--demo.localhost:5150"));
+        assert_eq!(app_origin("cards", "demo", "apps.example", "[::1]", false).as_deref(), Some("http://cards--demo.apps.example"));
+        // Names no hostname can carry, or that would read back as another app: a sandboxed frame instead.
+        assert_eq!(app_origin("cards", "demo", "", "h", true), None, "no apps base");
+        assert_eq!(app_origin("my--cards", "demo", "apps.example", "h", true), None, "an id with --");
+        assert_eq!(app_origin("cards-", "demo", "apps.example", "h", true), None, "an id ending in a hyphen");
+        assert_eq!(app_origin("cards", "demo-", "apps.example", "h", true), None, "a label ends with a letter or digit");
+        assert_eq!(app_origin("xn", "demo", "apps.example", "h", true), None, "an IDNA prefix");
+        assert!(app_origin(&"a".repeat(40), &"w".repeat(21), "apps.example", "h", true).is_some(), "63 characters");
+        assert_eq!(app_origin(&"a".repeat(40), &"w".repeat(22), "apps.example", "h", true), None, "64 characters");
     }
 
     #[test]

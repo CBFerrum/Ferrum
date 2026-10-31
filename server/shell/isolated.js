@@ -231,9 +231,10 @@ function connect() {
       (err) => port.postMessage({ id: msg.id, error: { status: err instanceof Refused ? err.status : 500, message: String(err?.message ?? err) } }),
     );
   };
-  // The frame's origin is opaque, so "*": the port goes to whatever document it holds, which this
-  // page's policy (frame-src) keeps to the app's own release.
-  win.postMessage({ ferrum: "init", version: PROTOCOL }, "*", [channel.port2]);
+  // An opaque frame's origin cannot be named, so "*" there: the port goes to whatever document it
+  // holds, which this page's policy (frame-src) keeps to the app's own release. An app with an
+  // origin of its own (shape D) gets it only at that origin.
+  win.postMessage({ ferrum: "init", version: PROTOCOL }, frame.dataset.origin || "*", [channel.port2]);
 }
 
 frame?.addEventListener("load", connect);

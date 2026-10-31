@@ -13,6 +13,7 @@ pub mod mcp;
 pub mod meta;
 pub mod notifications;
 pub mod oauth;
+pub mod origins;
 pub mod plugins;
 pub mod prefs;
 pub mod search;

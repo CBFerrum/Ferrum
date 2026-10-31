@@ -211,6 +211,44 @@ async fn checked(st: &crate::state::AppState, r: &ConsentReq) -> ApiResult<Resul
     Ok(Ok(client))
 }
 
+/// Whether a person may use an isolated app of their workspace on its origin of its own
+/// (`app:{app}:{workspace}` clients, docs/plan/apps-ui.md shape D): the workspace is theirs, the
+/// app is installed there with its interface isolated, and they may use it. `Err`: what they are
+/// told. Asked at consent and again whenever tokens are issued, so uninstalling the app or losing
+/// access to it ends its sign-ins.
+async fn app_usable(st: &crate::state::AppState, ctx: &ferrum_kernel::Ctx, app_id: &str, slug: &str) -> ApiResult<Result<String, &'static str>> {
+    if st.settings.apps_base.trim().is_empty() {
+        return Ok(Err("This server gives apps no addresses of their own."));
+    }
+    if st.shell.workspace(ctx.tenant).await?.slug != slug {
+        return Ok(Err("This app belongs to another workspace. Sign in to that one to use it."));
+    }
+    let apps = st.apps.shell_apps(ctx.tenant).await?;
+    let Some(app) = apps.iter().find(|a| a.id == app_id && a.isolated) else { return Ok(Err("This app is not installed in this workspace.")) };
+    let kind = st.shell.kind(ctx.tenant, ctx.user).await?;
+    if !app.items("shell.app").any(|i| crate::shell::may_use(ctx, &kind, i)) {
+        return Ok(Err("You do not have access to this app."));
+    }
+    Ok(Ok(app.manifest.name.clone()))
+}
+
+/// An isolated app's client, made (or brought up to date) when first used: for an app the person
+/// may use, returning only to that app's origin of its own. Other clients pass untouched.
+async fn app_client(st: &crate::state::AppState, ctx: &ferrum_kernel::Ctx, headers: &HeaderMap, client_id: &str) -> ApiResult<Result<(), &'static str>> {
+    let Some(rest) = client_id.strip_prefix("app:") else { return Ok(Ok(())) };
+    let Some((app_id, slug)) = rest.split_once(':') else { return Ok(Err("This app is not registered with Ferrum.")) };
+    let name = match app_usable(st, ctx, app_id, slug).await? {
+        Ok(name) => name,
+        Err(problem) => return Ok(Err(problem)),
+    };
+    let host = crate::shell::request_host(headers).unwrap_or_default();
+    let Some(origin) = crate::shell::app_origin(app_id, slug, &st.settings.apps_base, host, st.shell.secure) else {
+        return Ok(Err("This app has no address of its own here: open it in the workspace."));
+    };
+    st.kernel.oauth_ensure_client(client_id, &name, &[format!("{origin}/_ferrum/callback")]).await?;
+    Ok(Ok(()))
+}
+
 /// The consent page: the theme and the sign-in page's look, no scripts, never in a frame.
 fn consent_page(status: StatusCode, body: &str) -> Response {
     use crate::shell::{page_response, theme_hash};
@@ -247,6 +285,9 @@ async fn consent(State(app): State<AppContext>, headers: HeaderMap, uri: Uri, Qu
         let here = uri.path_and_query().map_or("/oauth/authorize", |p| p.as_str());
         return Ok(Redirect::to(&format!("/login?next={}", urlencode(here))).into_response());
     };
+    if let Err(problem) = app_client(&st, &ctx, &headers, &req.client_id).await? {
+        return Ok(refused(problem));
+    }
     let client = match checked(&st, &req).await? {
         Ok(c) => c,
         Err(problem) => return Ok(refused(problem)),
@@ -264,8 +305,14 @@ async fn consent(State(app): State<AppContext>, headers: HeaderMap, uri: Uri, Qu
     .iter()
     .map(|(k, v)| format!(r#"<input type="hidden" name="{k}" value="{}">"#, esc(v)))
     .collect();
+    // An installed app's own page asks for no more than the workspace allowed it.
+    let reach = if req.client_id.starts_with("app:") {
+        "<li>It can do what this workspace allowed when it installed the app, within your permissions.</li><li>Everything it does is recorded in the audit trail under your name.</li><li>It stays signed in while you use it; signing out everywhere ends it.</li>"
+    } else {
+        "<li>It can read and change everything you can, with your permissions.</li><li>Everything it does is recorded in the audit trail under your name.</li><li>Access lasts until you revoke it or sign out everywhere.</li>"
+    };
     let body = format!(
-        r#"<p><strong>{}</strong> wants to use Ferrum as <strong>{}</strong> in the <strong>{}</strong> workspace.</p><ul><li>It can read and change everything you can, with your permissions.</li><li>Everything it does is recorded in the audit trail under your name.</li><li>Access lasts until you revoke it or sign out everywhere.</li></ul><p class="ferrum-hint">It will return to {}.</p><form method="post" action="/oauth/authorize" class="ferrum-consent">{hidden}<button class="ferrum-button ferrum-button-quiet" type="submit" name="decision" value="deny">Deny</button><button class="ferrum-button" type="submit" name="decision" value="allow">Allow</button></form>"#,
+        r#"<p><strong>{}</strong> wants to use Ferrum as <strong>{}</strong> in the <strong>{}</strong> workspace.</p><ul>{reach}</ul><p class="ferrum-hint">It will return to {}.</p><form method="post" action="/oauth/authorize" class="ferrum-consent">{hidden}<button class="ferrum-button ferrum-button-quiet" type="submit" name="decision" value="deny">Deny</button><button class="ferrum-button" type="submit" name="decision" value="allow">Allow</button></form>"#,
         esc(&client.name),
         esc(&ctx.email),
         esc(&workspace.name),
@@ -281,6 +328,9 @@ async fn consent_answer(State(app): State<AppContext>, headers: HeaderMap, Form(
     let Some(ctx) = signed_in(&st, &Method::POST, &headers).await? else {
         return Ok(Redirect::to(&format!("/login?next={}", urlencode(&req.query()))).into_response());
     };
+    if let Err(problem) = app_client(&st, &ctx, &headers, &req.client_id).await? {
+        return Ok(refused(problem));
+    }
     let client = match checked(&st, &req).await? {
         Ok(c) => c,
         Err(problem) => return Ok(refused(problem)),
@@ -344,25 +394,53 @@ async fn token(State(app): State<AppContext>, headers: HeaderMap, Form(req): For
         }
         other => return oauth_error(StatusCode::BAD_REQUEST, "unsupported_grant_type", &format!("grant_type {other} is not supported")),
     };
-    match grant {
-        Ok(g) => match access_token(&st.jwt_secret, &g, client_id) {
-            Ok(access) => no_store(
-                Json(json!({
-                    "access_token": access,
-                    "token_type": "Bearer",
-                    "expires_in": ACCESS_TTL_SECS,
-                    "refresh_token": g.refresh_token,
-                    "scope": g.scope,
-                }))
-                .into_response(),
-            ),
-            Err(e) => ApiError(e).into_response(),
-        },
+    let g = match grant {
+        Ok(g) => g,
         Err(Error::Invalid(_)) | Err(Error::NotFound(_)) => {
-            oauth_error(StatusCode::BAD_REQUEST, "invalid_grant", "the code or refresh token is invalid, expired or already used")
+            return oauth_error(StatusCode::BAD_REQUEST, "invalid_grant", "the code or refresh token is invalid, expired or already used");
         }
-        Err(e) => ApiError(e).into_response(),
+        Err(e) => return ApiError(e).into_response(),
+    };
+    // An app's own page (shape D) gets app tokens: narrowed to the app, a few minutes long.
+    let (minted, ttl) = match client_id.strip_prefix("app:").and_then(|r| r.split_once(':')) {
+        Some((app, _)) => (app_access_token(&st.jwt_secret, &g, client_id, app), super::auth::APP_TOKEN_SECS),
+        None => (access_token(&st.jwt_secret, &g, client_id), ACCESS_TTL_SECS),
+    };
+    let mut answer = match minted {
+        Ok(access) => json!({
+            "access_token": access,
+            "token_type": "Bearer",
+            "expires_in": ttl,
+            "refresh_token": g.refresh_token,
+            "scope": g.scope,
+        }),
+        Err(e) => return ApiError(e).into_response(),
+    };
+    // An app's page: only while the person may still use the app, and it greets them (it can
+    // read nothing else about them).
+    if let Some((app, slug)) = client_id.strip_prefix("app:").and_then(|r| r.split_once(':')) {
+        let ctx = match st.kernel.load_ctx(g.tenant, g.user, Some(g.token_version), String::new()).await {
+            Ok(ctx) => ctx,
+            Err(e) => return ApiError(e).into_response(),
+        };
+        match app_usable(&st, &ctx, app, slug).await {
+            Ok(Ok(_)) => answer["user"] = json!({"email": ctx.email, "name": ctx.full_name}),
+            Ok(Err(problem)) => return oauth_error(StatusCode::BAD_REQUEST, "invalid_grant", problem),
+            Err(e) => return e.into_response(),
+        }
     }
+    no_store(Json(answer).into_response())
+}
+
+/// An app token for an app's own page (shape D): its claims say which app, so the server narrows
+/// every call to it (extract.rs), and it lasts minutes; the refresh token renews it.
+fn app_access_token(secret: &str, g: &Grant, client_id: &str, app: &str) -> Result<String, Error> {
+    let mut claims = Map::new();
+    claims.insert("tenant".into(), json!(g.tenant.to_string()));
+    claims.insert("tv".into(), json!(g.token_version));
+    claims.insert("client_id".into(), json!(client_id));
+    claims.insert("app".into(), json!(app));
+    JWT::new(secret).generate_token(super::auth::APP_TOKEN_SECS, g.user.to_string(), claims).map_err(|e| Error::Internal(format!("token: {e}")))
 }
 
 fn access_token(secret: &str, g: &Grant, client_id: &str) -> Result<String, Error> {

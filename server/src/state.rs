@@ -116,6 +116,12 @@ pub struct Settings {
     /// (`http://web:8080/_releases/`); fetched at start-up and every ten minutes.
     #[serde(default)]
     pub ui_source: String,
+    /// The domain isolated apps get origins of their own under, `{app}--{workspace}.{apps_base}`
+    /// (docs/plan/apps-ui.md §7.1, shape D): a site apart from the workspaces' hosts (another
+    /// registrable domain, or one in the Public Suffix List), its wildcard DNS name and
+    /// certificate pointing here. Empty: isolated apps run in sandboxed frames instead.
+    #[serde(default)]
+    pub apps_base: String,
 }
 
 fn default_session_days() -> u32 {
