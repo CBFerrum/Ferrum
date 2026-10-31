@@ -238,7 +238,19 @@ words reaching the server at the next visit and showing in a fresh browser.
   deleted says so. Checked in Chrome with two people: the mark followed edits before it; a commenter
   saw it, replied, started a thread on the read-only text and resolved one.
 
-Not yet: suggestions (proposed edits to accept or reject).
+* **Suggestions** (Docs 0.5.0). Editors switch the toolbar's mode to Suggesting, and typing then
+  proposes. `insertion` and `deletion` marks carry who, when and an id in the shared document, so
+  everyone sees them at once. A replacement shares one id, and deleting your own proposal removes it.
+  While suggesting, deletions are made by the editor from the browser's `beforeinput` target ranges,
+  not by the browser, so they are exact and the caret moves past what was struck. Formatting and
+  structure are refused, since a mark cannot carry them. Whoever may edit accepts or rejects each
+  suggestion or all of them; exports show them (HTML `ins`/`del`, Word's tracked changes). Checked in
+  Chrome: an addition, a replacement and a removal; bold refused; a commenter seeing them live
+  without Accept; accept and reject; a Word file with the open one as a tracked insertion (LibreOffice
+  shows it).
+
+C3 has nothing left "not yet". The marks are plain in the shared document (one suggestion per
+character), so the server reads them as they are.
 
 ### C4. Meetings
 
