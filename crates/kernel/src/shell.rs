@@ -485,6 +485,34 @@ impl Kernel {
         Ok(rows)
     }
 
+    /// Whether `url` answers `host`'s token: the domain points at this cluster. Through the vetted
+    /// client (no private addresses unless the server allows them, no redirects, ten seconds).
+    pub async fn host_answers(&self, host: &str, url: &str) -> bool {
+        let Ok(Some(token)) = self.host_token(host).await else { return false };
+        let allow_private = self.settings.webhooks_allow_private;
+        let Ok((client, url)) = self.vetted_client(url, allow_private, std::time::Duration::from_secs(10), "Ferrum domain check").await else { return false };
+        match client.get(url).send().await {
+            Ok(r) if r.status().is_success() => r.text().await.is_ok_and(|body| body.trim() == token),
+            _ => false,
+        }
+    }
+
+    /// Checks the custom domains that are due ([`Kernel::hosts_to_check`]): one is verified when
+    /// `https://{host}/.well-known/ferrum-domain` answers its token (plain http when the server
+    /// allows private addresses, in development), and loses that after [`HOST_MAX_FAILURES`]
+    /// failed checks in a row. Returns how many were checked.
+    // ponytail: a few per round, one after another; checks in parallel if a cluster carries
+    // thousands of custom domains.
+    pub async fn check_hosts(&self) -> Result<usize> {
+        let scheme = if self.settings.webhooks_allow_private { "http" } else { "https" };
+        let hosts = self.hosts_to_check(6).await?;
+        for host in &hosts {
+            let ok = self.host_answers(host, &format!("{scheme}://{host}/.well-known/ferrum-domain")).await;
+            self.host_checked(host, ok).await?;
+        }
+        Ok(hosts.len())
+    }
+
     /// Whether the edge may get a certificate for `host`: a verified custom domain, a subdomain,
     /// a pending custom domain (it must be served to be checked), or a released one still
     /// redirecting.

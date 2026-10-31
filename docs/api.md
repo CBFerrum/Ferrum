@@ -296,6 +296,15 @@ Workspace settings: `GET /api/admin/settings` → `{timezone, fiscal_year_start_
 applies from each person's next sign-in; `require_sso` refuses password sign-in to everyone but
 administrators and needs an enabled single sign-on provider).
 
+Domains ([operations](operations.md#custom-domains)): `GET /api/admin/domains` → `{domains: [{host,
+kind (subdomain or custom), target (shell, portal, site:{app}), is_primary, verify_token, status
+(verified, pending, failing, released), verified_at, checked_at, failures, released_at,
+created_at}], point_to}`; `POST {host, target}` adds a custom domain (201); `DELETE
+/api/admin/domains/{host}` removes one; `PUT …/{host}/primary` makes a working one the main address
+of its kind; `POST …/{host}/check` checks it now → `{host, answers}`. Public:
+`GET /.well-known/ferrum-domain` answers the token of the custom domain the request reached, and
+`GET /_tls/ask?domain=` answers 200 when the edge may get a certificate for that host.
+
 Single sign-on: `/api/admin/sso` (GET → `{providers: [{id, label, issuer, client_id, has_secret,
 domains, auto_create, default_roles, enabled, linked_users}]}`; POST `{label, issuer, client_id,
 client_secret?, domains[], auto_create, default_roles[], enabled}` → `{id}`, the issuer's discovery

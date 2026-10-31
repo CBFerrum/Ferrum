@@ -148,6 +148,15 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     its changes). Compose and the Kubernetes manifests have no web service: the server is the front
     door (`/healthz` for load balancers).
 
+* **U6, many workspaces and hosts: under way** (31 October 2026).
+  * Custom domains: administrators add, check, make main and remove a workspace's domains
+    (Administration → Domains; `/api/admin/domains`) for the workspace, its portal or an app's public
+    site. A pending domain is verified when it answers its token at `/.well-known/ferrum-domain` (one
+    replica checks those due every minute: pending ones every five minutes, working ones daily, through
+    the vetted client); seven failures in a row stop it. `/_tls/ask` lets an edge with on-demand TLS
+    get certificates only for the cluster's own hosts; operations.md gives the Caddy recipe. Removing
+    a working domain redirects it for 90 days and quarantines it for a year.
+
 * **U5, the rest: under way** (31 October 2026).
   * The bar's search (§12.8): ⌘K or the bar's field; apps from the launcher, records of every entity
     the person may read (`/api/search`, the kernel's list search, permission-filtered, entities in

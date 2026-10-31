@@ -337,6 +337,7 @@ impl Hooks for App {
             .add_route(controllers::notifications::routes())
             .add_route(controllers::work::routes())
             .add_route(controllers::cards::routes())
+            .add_route(controllers::domains::routes())
             .add_route(controllers::shell::routes())
     }
 
