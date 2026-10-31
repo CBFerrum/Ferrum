@@ -291,6 +291,18 @@ its routes as usual, but the page is the bar and a sandboxed frame:
 its own files only, `Access-Control-Allow-Origin: *`, `Cross-Origin-Resource-Policy: cross-origin`.
 The page's own policy keeps the frame to that release (`frame-src`).
 
+**Origins of their own** (`FERRUM_APPS_BASE`, [plan](plan/apps-ui.md) §7.1 shape D). With an apps
+base set, an isolated app of a workspace has the origin `{app}--{workspace}.{apps base}` (when that
+makes a hostname label that reads back as the same app and workspace: at most 63 characters, no `--`
+in the app's id; any other keeps the sandboxed frame), and its pages frame that origin instead, with
+`allow-same-origin` (storage and workers of its own, a site apart from the workspace's). On that
+origin every path the server does not keep serves the app's page, with `#ferrum-bootstrap`
+`{v, app: {id, version, release, title}, workspace: {slug, name, origin}, oauth: {authorize, token,
+client_id, redirect_uri}}`, and its release's files by name; the policy allows `'self'` only and
+`frame-ancestors` the workspace's origins. Of the server's paths only `/api/v1/…`, `/api/meta/…`,
+`/api/ext/{app}/…`, `POST /oauth/token` and `POST /oauth/revoke` answer there (the rest is 404), and
+no cookie is read or set on it.
+
 ## Reports — `/api/reports`
 
 * `GET /api/reports` → `{reports: [{name, label, module, params: [{name, label, type: "link"|"date"|"select"|"check", to?, options?, required?, default?}]}]}`
@@ -498,7 +510,16 @@ may use `GET /api/oauth/clients/{id}` and `POST /api/oauth/authorize` → `{redi
 `client_id`, `code_verifier`) or `grant_type=refresh_token` (`refresh_token`, `client_id`) →
 `{access_token, token_type: "Bearer", expires_in: 3600, refresh_token, scope}`. Codes are single-use
 (a replay revokes the tokens it produced); refresh tokens rotate and reuse revokes the family.
-`POST /oauth/revoke` (`token`). Access tokens work for `/mcp` and the whole REST API.
+`POST /oauth/revoke` (`token`). Access tokens work for `/mcp` and the whole REST API. Refresh tokens
+end with the person's sessions: after signing out everywhere, a new password or deactivation, a
+refresh token issued before is refused and its family revoked.
+
+**Apps' own clients.** `client_id=app:{app}:{workspace}` needs no registration: the authorization
+endpoint makes it for the signed-in person's own workspace, an app installed there whose interface
+runs isolated with an origin of its own and that they may use, and its one redirect URI
+`{app origin}/_ferrum/callback`. Its access tokens are app tokens (`expires_in: 300`, narrowed as
+above), the answer carries `user: {email, name}`, and the token endpoint answers `invalid_grant` once
+the app is gone or the person may no longer use it.
 
 ## Files
 

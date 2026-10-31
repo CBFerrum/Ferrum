@@ -111,6 +111,28 @@ impl Kernel {
         Ok(client)
     }
 
+    /// The client of an app whose interface has an origin of its own (`app:{app}:{workspace}`,
+    /// docs/plan/apps-ui.md shape D): made, or brought up to date, when it is first used. The
+    /// server decides its one return address; nobody registers it.
+    pub async fn oauth_ensure_client(&self, id: &str, name: &str, redirect_uris: &[String]) -> Result<OAuthClient> {
+        if !id.starts_with("app:") || redirect_uris.is_empty() || redirect_uris.len() > 10 {
+            return Err(Error::invalid("an app's client is app:{app}:{workspace} with its return addresses"));
+        }
+        let name: String = name.trim().chars().take(100).collect();
+        let mut tx = self.db.system_tx().await?;
+        sqlx::query(
+            "insert into oauth_client (id, name, redirect_uris) values ($1, $2, $3) \
+             on conflict (id) do update set name = excluded.name, redirect_uris = excluded.redirect_uris",
+        )
+        .bind(id)
+        .bind(&name)
+        .bind(redirect_uris)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(OAuthClient { id: id.to_string(), name, redirect_uris: redirect_uris.to_vec() })
+    }
+
     pub async fn oauth_client(&self, id: &str) -> Result<OAuthClient> {
         let mut tx = self.db.system_tx().await?;
         let row: Option<(String, String, Vec<String>)> =
@@ -184,21 +206,26 @@ impl Kernel {
         Ok(grant)
     }
 
-    /// Rotates a refresh token. Presenting an already rotated token revokes the whole family.
+    /// Rotates a refresh token. Presenting an already rotated token revokes the whole family, and so
+    /// does one issued before the person's sessions were ended (signing out everywhere, a new
+    /// password: the token version moved on).
     pub async fn oauth_refresh(&self, client_id: &str, refresh_token: &str) -> Result<Grant> {
         let mut tx = self.db.system_tx().await?;
-        let row: Option<(String, Uuid, Uuid, String, bool, bool)> = sqlx::query_as(
-            "select client_id, tenant_id, user_id, scope, expires_at < now(), revoked_at is not null from oauth_refresh where token_hash = $1 for update",
+        let row: Option<(String, Uuid, Uuid, String, bool, bool, bool)> = sqlx::query_as(
+            "select r.client_id, r.tenant_id, r.user_id, r.scope, r.expires_at < now(), r.revoked_at is not null, \
+                    u.token_version is distinct from r.token_version \
+               from oauth_refresh r left join app_user u on u.tenant_id = r.tenant_id and u.id = r.user_id \
+              where r.token_hash = $1 for update of r",
         )
         .bind(hash(refresh_token))
         .fetch_optional(&mut *tx)
         .await?;
         let invalid = || Error::Invalid("invalid_grant".into());
-        let (cid, tenant, user, scope, expired, revoked) = row.ok_or_else(invalid)?;
+        let (cid, tenant, user, scope, expired, revoked, ended) = row.ok_or_else(invalid)?;
         if cid != client_id {
             return Err(invalid());
         }
-        if revoked {
+        if revoked || ended {
             sqlx::query("update oauth_refresh set revoked_at = now() where client_id = $1 and tenant_id = $2 and user_id = $3 and revoked_at is null")
                 .bind(&cid)
                 .bind(tenant)
@@ -229,8 +256,8 @@ impl Kernel {
         let token_version = token_version.ok_or_else(|| Error::Invalid("invalid_grant".into()))?;
         let refresh_token = random_secret("fr_");
         sqlx::query(
-            "insert into oauth_refresh (token_hash, client_id, tenant_id, user_id, scope, expires_at) \
-             values ($1, $2, $3, $4, $5, now() + make_interval(days => $6))",
+            "insert into oauth_refresh (token_hash, client_id, tenant_id, user_id, scope, expires_at, token_version) \
+             values ($1, $2, $3, $4, $5, now() + make_interval(days => $6), $7)",
         )
         .bind(hash(&refresh_token))
         .bind(client_id)
@@ -238,6 +265,7 @@ impl Kernel {
         .bind(user)
         .bind(scope)
         .bind(REFRESH_TTL_DAYS as i32)
+        .bind(token_version)
         .execute(&mut **tx)
         .await?;
         sqlx::query("update oauth_client set last_used_at = now() where id = $1").bind(client_id).execute(&mut **tx).await?;

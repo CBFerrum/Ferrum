@@ -305,13 +305,16 @@ impl Hooks for App {
     }
 
     async fn after_routes(router: axum::Router, ctx: &AppContext) -> Result<axum::Router> {
-        let limiter = crate::state::app_state(ctx).map_err(|e| Error::Message(e.0.to_string()))?.address_limiter;
+        let state = crate::state::app_state(ctx).map_err(|e| Error::Message(e.0.to_string()))?;
+        let limiter = state.address_limiter.clone();
+        let apps_base: Arc<str> = Arc::from(state.settings.apps_base.trim());
         Ok(router
             .layer(axum::middleware::from_fn(move |req, next| per_address(limiter.clone(), req, next)))
             .layer(axum::middleware::from_fn(api_no_store))
             .layer(axum::middleware::from_fn(speculation_csp))
             .layer(axum::middleware::from_fn(screen_paths))
-            .layer(axum::middleware::from_fn(isolated_cors)))
+            .layer(axum::middleware::from_fn(isolated_cors))
+            .layer(axum::middleware::from_fn(move |req, next| app_origins(apps_base.clone(), req, next))))
     }
 
     fn routes(_ctx: &AppContext) -> AppRoutes {
@@ -393,6 +396,33 @@ async fn screen_paths(req: axum::extract::Request, next: axum::middleware::Next)
         }
     }
     next.run(req).await
+}
+
+/// An isolated app's origin of its own (`{app}--{workspace}.{apps_base}`, docs/plan/apps-ui.md
+/// shape D) serves that app's files and, of the server's own paths, only the API its app tokens
+/// reach and the token endpoint: no cookie is ever read or set there, and no sign-in,
+/// administration or other app's endpoint answers.
+async fn app_origins(apps_base: Arc<str>, mut req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    use axum::http::header;
+    if apps_base.is_empty() {
+        return next.run(req).await;
+    }
+    let host_app = req.headers().get(header::HOST).and_then(|h| h.to_str().ok()).and_then(|h| crate::shell::app_origin_of(h, &apps_base));
+    let Some((app, _)) = host_app else { return next.run(req).await };
+    req.headers_mut().remove(header::COOKIE);
+    let path = req.uri().path();
+    let server_paths = ["/api", "/oauth", "/ws", "/files", "/mcp", "/.well-known", "/metrics", "/_shell", "/_ui", "/_isolated", "/app", "/assistant"];
+    let server_path = server_paths.iter().any(|p| path == *p || path.starts_with(&format!("{p}/")));
+    let allowed = path.starts_with("/api/v1/")
+        || path.starts_with("/api/meta/")
+        || path.starts_with(&format!("/api/ext/{app}/"))
+        || matches!(path, "/oauth/token" | "/oauth/revoke");
+    if server_path && !allowed {
+        return axum::response::IntoResponse::into_response(crate::error::ApiError(ferrum_kernel::Error::NotFound(format!("no such endpoint here: {path}"))));
+    }
+    let mut res = next.run(req).await;
+    res.headers_mut().remove(header::SET_COOKIE);
+    res
 }
 
 /// Isolated interfaces (an opaque origin: `Origin: null`) may call the API directly with an app
@@ -490,6 +520,66 @@ mod tests {
     fn local_files_need_an_explicit_opt_out_when_object_storage_is_required() {
         let settings: Settings = serde_json::from_value(serde_json::json!({"require_object_storage": true})).unwrap();
         assert!(build_storage(&settings).is_err());
+    }
+
+    #[tokio::test]
+    async fn an_apps_origin_reaches_its_own_api_without_cookies() {
+        use axum::http::header;
+        use tower::ServiceExt;
+        let base: Arc<str> = Arc::from("apps.example");
+        // Answers whether a cookie arrived, and always tries to set one.
+        let echo = |headers: axum::http::HeaderMap| async move {
+            ([(header::SET_COOKIE, "ferrum_session=x; Path=/")], if headers.contains_key(header::COOKIE) { "cookie" } else { "none" })
+        };
+        let app = axum::Router::new()
+            .route("/", axum::routing::get(echo))
+            .route("/{*path}", axum::routing::get(echo).post(echo))
+            .layer(axum::middleware::from_fn(move |req, next| app_origins(base.clone(), req, next)));
+        let call = |host: &str, method: &str, path: &str| {
+            let req = axum::http::Request::builder()
+                .method(method)
+                .uri(path)
+                .header(header::HOST, host)
+                .header(header::COOKIE, "ferrum_session=secret")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let app = app.clone();
+            async move {
+                let res = app.oneshot(req).await.unwrap();
+                let (status, set_cookie) = (res.status().as_u16(), res.headers().contains_key(header::SET_COOKIE));
+                let body = axum::body::to_bytes(res.into_body(), 1 << 16).await.unwrap();
+                (status, String::from_utf8_lossy(&body).to_string(), set_cookie)
+            }
+        };
+        let app_host = "cards--acme.apps.example";
+        for (method, path) in [
+            ("GET", "/"),
+            ("GET", "/board/42"),
+            ("GET", "/api/v1/Customer"),
+            ("GET", "/api/meta/entities"),
+            ("GET", "/api/ext/cards/stats"),
+            ("POST", "/oauth/token"),
+        ] {
+            assert_eq!(call(app_host, method, path).await, (200, "none".to_string(), false), "{method} {path}: no cookie in or out");
+        }
+        for path in [
+            "/api/auth/me",
+            "/api/admin/users",
+            "/api/ext/other/x",
+            "/api/shell/app-token",
+            "/oauth/authorize",
+            "/ws/live",
+            "/files/x",
+            "/mcp",
+            "/_shell/v1/runtime.js",
+            "/_ui/cards/d/a.js",
+            "/_isolated/cards/d/index.html",
+            "/.well-known/oauth-authorization-server",
+        ] {
+            assert_eq!(call(app_host, "GET", path).await.0, 404, "{path} is not the app's");
+        }
+        assert_eq!(call("acme.example", "GET", "/api/auth/me").await, (200, "cookie".to_string(), true), "workspace hosts are untouched");
+        assert_eq!(call("apps.example", "GET", "/api/auth/me").await.1, "cookie", "the apps domain itself is no app's origin");
     }
 
     #[tokio::test]

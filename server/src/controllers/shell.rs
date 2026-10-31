@@ -95,6 +95,10 @@ pub(crate) async fn page_bootstrap(
 /// `GET /`: the shell's Home; someone signed out signs in first.
 async fn home(State(app): State<AppContext>, headers: HeaderMap, uri: Uri, Query(q): Query<Vec<(String, String)>>) -> ApiResult<Response> {
     let st = app_state(&app)?;
+    // An isolated app's origin of its own (shape D) serves that app alone.
+    if let Some(res) = super::origins::serve_app_host(&st, &headers, "").await? {
+        return Ok(res);
+    }
     match st.shell.place(&headers).await? {
         Place::Site(tenant, app_id) => return site_page(&st, tenant, &app_id, &headers, &uri, "", q).await,
         Place::Portal(_) => return Ok(Redirect::to("/portal/").into_response()),
@@ -222,6 +226,9 @@ async fn page(
     Query(q): Query<Vec<(String, String)>>,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
+    if let Some(res) = super::origins::serve_app_host(&st, &headers, &path).await? {
+        return Ok(res);
+    }
     let origins = server_origins(&app, &headers);
     let mut parts = path.splitn(2, '/');
     let first = parts.next().unwrap_or_default();
@@ -348,7 +355,11 @@ async fn page(
             Ok(b) => b,
             Err(r) => return Ok(r),
         };
-        return Ok(not_modified(&headers, shell::isolated_page(&boot, &app.id, &release.digest, &title, &origins)));
+        // With an apps base (shape D) the app has an origin of its own, framed here.
+        let own = shell::app_origin(&app.id, &ws.slug, &st.settings.apps_base, shell::request_host(&headers).unwrap_or_default(), st.shell.secure);
+        let under = format!("/{}{}", rest.unwrap_or_default(), uri.query().map(|q| format!("?{q}")).unwrap_or_default());
+        let framed = own.as_deref().map(|o| (o, under.as_str()));
+        return Ok(not_modified(&headers, shell::isolated_page(&boot, &app.id, &release.digest, &title, &origins, framed)));
     }
     let entry: ferrum_apps::ui::EntryTemplate = match serde_json::from_value(release.entry.clone()) {
         Ok(e) => e,

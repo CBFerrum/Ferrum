@@ -264,6 +264,15 @@ contributes:
   to what the app declared, within the person's rights, never as an administrator. An isolated
   interface may not contribute `shell.public`, `shell.sidepanel`, `shell.intent` or `shell.portal`
   pages, nor name other origins in `ui.csp`.
+* **An origin of its own**: where the server has an apps base (`FERRUM_APPS_BASE`), the frame holds
+  `{app}--{workspace}.{apps base}` instead, a site of its own: storage, IndexedDB and workers are the
+  app's, never the workspace's. The bridge connects the same way. Opened on its own (a bookmark, a
+  new tab) the page has no host, and `ferrum.js` takes over: it signs in through the workspace with
+  OAuth (code and PKCE; `#ferrum-bootstrap` says where), keeps the session in the tab's
+  `sessionStorage`, renews the five-minute app token while the page is open, and answers the calls
+  itself (`open` and `openRecord` go to the workspace's pages, `toast` and `confirm` are the
+  browser's). The same calls work either way. Refer to the interface's own files by relative URLs:
+  they are at the origin's root there and under `/_isolated/` in a sandboxed frame.
 * **`access`**: what an app's pages may reach when it has no plugin declaring it (a plugin declares
   its own in plugin.json), consented to at install like the rest of its permissions:
   `access: [{entity: Customer, read: true}, {entity: Contact, read: true, write: true, if_owner: true}]`.

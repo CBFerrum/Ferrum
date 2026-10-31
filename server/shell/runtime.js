@@ -2220,6 +2220,9 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") checkVersion();
 });
 
+// A view transition between pages (theme.css) that the browser skips rejects its `ready`; nothing waits on it.
+for (const type of ["pageswap", "pagereveal"]) window.addEventListener(type, (e) => e.viewTransition?.ready.catch(() => {}));
+
 window.addEventListener("offline", () => bar()?.setIndicator("offline", "Offline", () => {}));
 window.addEventListener("online", () => bar()?.setIndicator("offline", ""));
 

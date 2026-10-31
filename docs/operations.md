@@ -49,6 +49,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_DEFAULT_WORKSPACE` | no | The slug of the one workspace this server serves on every host (a single-workspace install): sign-in then asks for no workspace. Empty: a host registered for a workspace leads to it, and elsewhere the workspace is chosen at sign-in |
 | `FERRUM_UI_DIR` | no | Interfaces registered at start-up from a directory with one directory of built files per app id (`<dir>/<app>/index.html`), after those compiled into apps' crates, so they win for the same version. The image sets it to `/app/ui`, which holds the shell's and ERP's (built from Ferrum-Frontend at the commit the Dockerfile pins); point it elsewhere to run others |
 | `FERRUM_OFFICE_ORIGIN` | with online editing | The editor server as browsers reach it (`https://office.example.com`), when that is not `FERRUM_OFFICE_URL`: Drive's pages frame it and post to it, and their Content-Security-Policy names it (`deploy/office.yml` sets it from `OFFICE_PUBLIC_URL`) |
+| `FERRUM_APPS_BASE` | no | A domain under which isolated apps get origins of their own, `{app}--{workspace}.{base}` (`example-apps.net`); see "Apps with interfaces of their own". Empty (the default): isolated apps run in sandboxed frames. `localhost` works in development |
 | `FERRUM_UI_SOURCE` | no | Development: a server listing built interfaces (`index.json`, as Ferrum-Frontend's `npm run build:apps` writes `dist-apps/`), fetched at start-up and every ten minutes, files checked against their digests |
 
 **Database role.** Ferrum must connect as an ordinary role that owns its database, never as a
@@ -767,6 +768,16 @@ the bar runtime (`/_shell/…`) and the app's files (`/_ui/…`).
   (`FERRUM_APP_UPLOADS=private`, the default, with `FERRUM_APP_ALLOW_UNSIGNED=true`) runs its
   interface isolated: in a sandboxed frame without the session, reaching the API only through the
   bridge or a five-minute app token, within what the app declared. The install dialog says so.
+* **Origins of their own for isolated apps** (optional, `FERRUM_APPS_BASE`). Give the apps a
+  domain that is a site of its own: another registrable domain (`example-apps.net`, not
+  `apps.example.com` when the workspaces are under `example.com`) or one in the Public Suffix List,
+  so browsers keep their pages in processes of their own and the server's same-site checks hold.
+  Point `*.{base}` at the server in DNS, and give the gateway a listener for `*.{base}` with a
+  wildcard certificate (cert-manager issues those with a DNS-01 solver) routing everything to the
+  server as for the workspace's host. The server tells the app and the workspace from the host; there
+  it serves the app's files, the API its app tokens reach and the token endpoint, and never reads or
+  sets cookies. An app whose `{app}--{workspace}` is longer than 63 characters keeps the sandboxed
+  frame. A workspace's slug names its apps' origins, so slugs are never handed to another workspace.
 * **The portal** ([plan](plan/apps-ui.md) §9.1) is at `/portal/` on the workspace's host, and at
   the root of a host whose target is `portal` (`support.example.com`): the pages apps give
   customers and suppliers (Helpdesk's "Your tickets", ERP's "Your invoices"). Administrators add

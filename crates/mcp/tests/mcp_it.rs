@@ -200,6 +200,18 @@ async fn scenario() {
     k.oauth_revoke(&g4.refresh_token).await.unwrap();
     assert!(k.oauth_refresh(&client.id, &g4.refresh_token).await.is_err(), "revoked");
     assert!(k.oauth_refresh("fc_someone_else", &g4.refresh_token).await.is_err(), "bound to its client");
+    // Signing out everywhere ends the agent's access too: its refresh token is refused, and a new
+    // consent (under the new token version) works again.
+    let code4 = k.oauth_issue_code(&a.ctx, &client.id, redirect, challenge, "S256").await.unwrap();
+    let g5 = k.oauth_redeem_code(&client.id, &code4, redirect, verifier).await.unwrap();
+    k.logout_everywhere(&a.ctx).await.unwrap();
+    assert!(k.oauth_refresh(&client.id, &g5.refresh_token).await.is_err(), "issued before signing out everywhere");
+    let fresh = k.load_ctx(tenant, session.user, None, "mcp-it".into()).await.unwrap();
+    let code5 = k.oauth_issue_code(&fresh, &client.id, redirect, challenge, "S256").await.unwrap();
+    let g6 = k.oauth_redeem_code(&client.id, &code5, redirect, verifier).await.unwrap();
+    let g7 = k.oauth_refresh(&client.id, &g6.refresh_token).await.expect("a grant after signing out everywhere");
+    assert!(g7.token_version > g5.token_version, "{} after {}", g7.token_version, g5.token_version);
+    a.ctx = fresh;
 
     // ───────────── a sales clerk's agent has the clerk's limits ─────────────
     let clerk = k.create_user(&a.ctx, "clerk@agents.test", "Clerk", Some("Correct-Horse-9"), &["Sales User".into()], false).await.unwrap();
