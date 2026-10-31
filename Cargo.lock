@@ -2511,7 +2511,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-projects"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-projects?branch=main#d98f71f07c0d0b58043b32108e667412cb46c383"
+source = "git+https://github.com/CBFerrum/ferrum-app-projects?branch=main#ec5599edd6f6dde47fb92ca2e7fb3659d094fb0e"
 dependencies = [
  "async-trait",
  "chrono",
