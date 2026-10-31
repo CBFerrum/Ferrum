@@ -275,6 +275,21 @@ For the bar, with the cookie or a token:
   the person may read one of their entities. `ETag`.
 * `GET /api/shell/version?app=` → `{app, version, release}`: the interface release the workspace
   runs, so an open tab can tell it is outdated.
+* `POST /api/shell/app-token` `{app}` (the session cookie, from the site's own pages) →
+  `{token, token_type: "Bearer", expires_in: 300, app}`: an **app token** for an app whose interface
+  runs isolated and that the person may use ([plan](plan/apps-ui.md) §12.3). It works only as a bearer
+  token on `/api/v1/…`, `/api/meta/…` and `/api/ext/{app}/…`, with the person's rights narrowed to
+  what the app declared and never as an administrator; it is bound to the browser session (signing
+  that out ends it), refused by every other endpoint, socket and sign-in step, and a request whose
+  `X-Ferrum-App` names another app is 403. Requests from an opaque origin (`Origin: null`, an isolated
+  frame) to those paths get CORS answers without credentials (`Access-Control-Allow-Origin: *`).
+
+An app whose interface runs isolated (an unsigned upload private to the workspace) has its pages at
+its routes as usual, but the page is the bar and a sandboxed frame:
+`GET /_isolated/{app}/{digest}/{path}` serves its files, `index.html` only to frames
+(`Sec-Fetch-Dest: iframe`, else 403), every answer with `Content-Security-Policy: sandbox …` and
+its own files only, `Access-Control-Allow-Origin: *`, `Cross-Origin-Resource-Policy: cross-origin`.
+The page's own policy keeps the frame to that release (`frame-src`).
 
 ## Reports — `/api/reports`
 
@@ -315,6 +330,9 @@ client_secret?, domains[], auto_create, default_roles[], enabled}` → `{id}`, t
 document fetched to check it), `/api/admin/sso/{id}` (PUT the same — `client_secret` left out keeps
 the stored one, `""` clears it; DELETE unlinks the people linked through it).
 
+`/api/admin/apps/{id}/screenshots/{n}?version=` (GET: an uploaded app's `screenshots[n]` from its
+bundle, for the install dialog; plans list them as `app.screenshots`, store apps' from the store, and
+say `app.isolated` when the interface will run isolated);
 `/api/admin/users` (GET, POST `{email, full_name, password?, roles[], is_admin, kind?}` → `{id, kind}`; `kind` is `member` (the default), `portal`, `guest` or `service`, and portal people and guests take no roles), `/api/admin/users/{id}/kind` (PUT `{kind}`: signs the person out everywhere), `/api/admin/users/{id}/roles` (PUT `{roles}`),
 `/scopes` (PUT `{entity, ids[], default?}`), `/active` (PUT `{active}`), `/password` (PUT `{password}`), `/two-factor/reset` (POST: turns the person's two-factor sign-in off, lifts a lockout and signs them out everywhere — for a lost phone), `/sso/unlink` (POST: forgets the identity at a single sign-on provider the account is linked to); the user list shows `kind`, `two_factor`, `sso` and `locked`;
 `/api/admin/personal-data?email=` (GET: every record the installed packages declare as the person's — `personal_data` in package manifests, `{entity, match: <email field>, erase: [fields], where?: {field: value}}` — with its data, and their login account) and `/api/admin/personal-data/erase` (POST `{email, reason}`: blanks the declared fields, a placeholder where a value is required, and empties declared child tables and JSON fields; redacts those fields in the records' audit history, each event keeping its hash and recording the redaction; anonymizes and closes the login account; refused for administrators and oneself) → `{erased: [{entity, id}], account_erased, audit_events_redacted}`;

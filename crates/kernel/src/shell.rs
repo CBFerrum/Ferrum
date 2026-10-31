@@ -585,6 +585,16 @@ impl Kernel {
 
     // ── people ──
 
+    /// A person's token version (every session and token carries it; bumped to sign them out
+    /// everywhere).
+    pub async fn token_version(&self, tenant: Uuid, user: Uuid) -> Result<i32> {
+        let mut tx = self.db.tenant_tx(tenant).await?;
+        let v: Option<i32> =
+            sqlx::query_scalar("select token_version from app_user where tenant_id = $1 and id = $2").bind(tenant).bind(user).fetch_optional(&mut *tx).await?;
+        tx.commit().await?;
+        v.ok_or_else(|| Error::NotFound("no such user".into()))
+    }
+
     /// A person's kind (`member`, `guest`, `portal`, `service`).
     pub async fn user_kind(&self, tenant: Uuid, user: Uuid) -> Result<String> {
         let mut tx = self.db.tenant_tx(tenant).await?;

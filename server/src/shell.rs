@@ -39,6 +39,7 @@ pub fn platform_file(name: &str) -> Option<(&'static str, &'static [u8])> {
         "kill-sw.js" => (js, include_bytes!("../shell/kill-sw.js")),
         "login.js" => (js, include_bytes!("../shell/login.js")),
         "portal.js" => (js, include_bytes!("../shell/portal.js")),
+        "isolated.js" => (js, include_bytes!("../shell/isolated.js")),
         "pages.css" => ("text/css; charset=utf-8", include_bytes!("../shell/pages.css")),
         "assistant.js" => (js, include_bytes!("../shell/assistant.js")),
         "assistant.css" => ("text/css; charset=utf-8", include_bytes!("../shell/assistant.css")),
@@ -421,6 +422,53 @@ pub fn bundle_ui(b: &ferrum_apps::Bundle) -> std::result::Result<Option<Prepared
     ferrum_apps::ui::prepare(&b.manifest.id, files).map(Some)
 }
 
+/// What the store's review says of a bundle's interface (docs/plan/apps-ui.md U8), for the people
+/// who install it: what an automatic look at its page finds missing for accessibility, and how much
+/// a first visit downloads. Hard limits (size, the page's rules) are `ferrum_apps::ui::prepare`'s.
+pub fn ui_review(b: &ferrum_apps::Bundle) -> Vec<String> {
+    let Some(ui) = &b.manifest.ui else { return vec![] };
+    let prefix = format!("{}/", ui.dist.trim_end_matches('/'));
+    let mut bytes = 0usize;
+    let mut index = String::new();
+    for p in b.paths() {
+        let Some(rel) = p.strip_prefix(prefix.as_str()) else { continue };
+        let file = b.file(p).unwrap_or_default();
+        bytes += file.len();
+        if rel == "index.html" {
+            index = String::from_utf8_lossy(file).to_ascii_lowercase();
+        }
+    }
+    review_page(&index, bytes)
+}
+
+fn review_page(index: &str, bytes: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let tag = |name: &str| index.find(&format!("<{name}")).map(|i| &index[i..i + index[i..].find('>').unwrap_or(0)]);
+    if !tag("html").is_some_and(|t| t.contains(" lang=")) {
+        out.push("its page names no language (<html lang>), so screen readers guess how to read it".to_string());
+    }
+    let titled = index.find("<title>").is_some_and(|i| index[i + 7..].split("</title>").next().is_some_and(|t| !t.trim().is_empty()));
+    if !titled {
+        out.push("its page has no title (<title>), which tabs, history and screen readers show".to_string());
+    }
+    if !index.contains("name=\"viewport\"") && !index.contains("name=viewport") {
+        out.push("its page sets no viewport, so phones show it zoomed out".to_string());
+    }
+    let mut rest = index;
+    while let Some(i) = rest.find("<img") {
+        let end = rest[i..].find('>').map_or(rest.len(), |e| i + e);
+        if !rest[i..end].contains(" alt=") {
+            out.push("an image on its page has no text alternative (alt)".to_string());
+            break;
+        }
+        rest = &rest[end..];
+    }
+    if bytes > 2 << 20 {
+        out.push(format!("its interface is {:.1} MB, which a first visit downloads", bytes as f64 / f64::from(1 << 20)));
+    }
+    out
+}
+
 /// Registers the interfaces of compiled-in apps: those their crates carry (`ui/dist`, embedded),
 /// then those found in `settings.ui_dir` (one directory of built files per app id), which an
 /// operator uses to run another release; a release registered later for the same version wins.
@@ -621,6 +669,9 @@ pub struct ShellApp {
     pub manifest: Arc<AppManifest>,
     /// From a bundle (its interface can be prepared from it), rather than compiled in.
     pub bundled: bool,
+    /// Its interface runs isolated: in a sandboxed frame under the bar, without the session
+    /// (docs/plan/apps-ui.md U8).
+    pub isolated: bool,
 }
 
 impl ShellApp {
@@ -902,6 +953,49 @@ pub fn entry_page(entry: &EntryTemplate, bootstrap: &Value, csp: &str) -> Respon
     page_response(StatusCode::OK, entry.render(&shell_head(bootstrap), SHELL_BODY), csp)
 }
 
+// ───────────────────────── isolated interfaces ─────────────────────────
+
+/// What the frame of an isolated interface may do: run scripts, use forms (their handlers; nothing
+/// is posted anywhere), download, open pages in new windows and ask with the browser's own
+/// dialogs. Never `allow-same-origin` (its origin stays opaque: no session, no storage of the
+/// host) nor `allow-top-navigation` (it leaves only through the bridge).
+pub const ISOLATED_SANDBOX: &str = "allow-scripts allow-forms allow-downloads allow-popups allow-popups-to-escape-sandbox allow-modals";
+
+/// The page of an app whose interface runs isolated (docs/plan/apps-ui.md U8): the bar, and the
+/// app in a sandboxed frame filling the page below it, which reaches Ferrum only through the
+/// bridge of `isolated.js` (screens' protocol, with the person's rights narrowed to the app's).
+pub fn isolated_page(bootstrap: &Value, app: &str, digest: &str, title: &str, origins: &[String]) -> Response {
+    let html = format!(
+        r#"<!doctype html><html lang="en"><head>{head}<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{t}</title><link rel="stylesheet" href="/_shell/v1/pages.css"><script type="module" src="/_shell/v1/isolated.js"></script></head><body class="ferrum-isolated">{SHELL_BODY}<iframe id="ferrum-app" title="{t}" src="/_isolated/{a}/{d}/index.html" sandbox="{ISOLATED_SANDBOX}" referrerpolicy="no-referrer" allow="clipboard-write; fullscreen"></iframe></body></html>"#,
+        head = shell_head(bootstrap),
+        t = esc(title),
+        a = esc(app),
+        d = esc(digest),
+    );
+    // The frame holds the app's release and nothing else: it cannot be sent to other pages.
+    let release: Vec<String> = origins.iter().map(|o| format!("{o}/_isolated/{app}/{digest}/")).collect();
+    let policy = csp(None, &Value::Null).replace("frame-src 'self';", &format!("frame-src {};", release.join(" ")));
+    page_response(StatusCode::OK, html, &policy)
+}
+
+/// The Content-Security-Policy of an isolated interface's files: sandboxed (an opaque origin
+/// whatever frames or opens it), and its own release's files only, by path, on each of the
+/// server's origins (WebKit matches `'self'` in an opaque frame against the opaque origin), and
+/// the API's paths apps may call (with an app token; no session goes along). Nothing elsewhere.
+pub fn isolated_csp(origins: &[String], app: &str, digest: &str) -> String {
+    let own: Vec<String> = origins.iter().map(|o| format!("{o}/_isolated/{app}/{digest}/")).collect();
+    let own = own.join(" ");
+    // With an app token, the API where apps may call it (the server narrows the rest).
+    let api: Vec<String> = origins.iter().flat_map(|o| [format!("{o}/api/v1/"), format!("{o}/api/meta/"), format!("{o}/api/ext/{app}/")]).collect();
+    format!(
+        "sandbox {ISOLATED_SANDBOX}; default-src 'none'; script-src {own} 'wasm-unsafe-eval'; style-src {own} 'unsafe-inline'; \
+         img-src {own} data: blob:; font-src {own} data:; media-src {own} blob:; connect-src {own} {}; worker-src {own} blob:; \
+         form-action 'none'; base-uri 'none'; frame-ancestors 'self' {}",
+        api.join(" "),
+        origins.join(" ")
+    )
+}
+
 // ───────────────────────── the portal ─────────────────────────
 
 /// What portal pages carry instead of the bar: the portal's own header (no launcher, no search).
@@ -1117,7 +1211,7 @@ mod tests {
 
     fn app(yaml: &str) -> ShellApp {
         let m = AppManifest::parse(yaml).unwrap();
-        ShellApp { id: m.id.clone(), version: m.version.to_string(), manifest: Arc::new(m), bundled: false }
+        ShellApp { id: m.id.clone(), version: m.version.to_string(), manifest: Arc::new(m), bundled: false, isolated: false }
     }
 
     fn manifest(id: &str, extra: &str) -> String {
@@ -1168,6 +1262,53 @@ mod tests {
         for other in ["helpdesk-sla", "helpdesk-erp", "crm", "business", "nothing"] {
             assert!(records_app(&apps, other).is_none(), "{other}");
         }
+    }
+
+    #[tokio::test]
+    async fn isolated_interfaces_are_kept_to_their_own_files() {
+        let origins = vec!["https://acme.example".to_string(), "http://localhost:5150".to_string()];
+        let digest = "a".repeat(64);
+        let p = isolated_csp(&origins, "cards", &digest);
+        assert!(p.starts_with(&format!("sandbox {ISOLATED_SANDBOX};")) && !p.contains("allow-same-origin") && !p.contains("allow-top-navigation"), "{p}");
+        assert!(
+            p.contains(&format!(
+                "script-src https://acme.example/_isolated/cards/{digest}/ http://localhost:5150/_isolated/cards/{digest}/ 'wasm-unsafe-eval';"
+            )),
+            "{p}"
+        );
+        assert!(p.contains("https://acme.example/api/v1/") && p.contains("http://localhost:5150/api/ext/cards/") && !p.contains("/api/admin"), "{p}");
+        assert!(p.ends_with("frame-ancestors 'self' https://acme.example http://localhost:5150"), "{p}");
+        let boot = json!({"workspace": {"name": "Acme"}, "person": {"name": "Ana"}, "app": {"id": "cards", "isolated": true}});
+        let res = isolated_page(&boot, "cards", &digest, "Cards <b>", &origins);
+        let policy = res.headers()["content-security-policy"].to_str().unwrap().to_string();
+        assert!(
+            policy.contains(&format!("frame-src https://acme.example/_isolated/cards/{digest}/ http://localhost:5150/_isolated/cards/{digest}/;")),
+            "the frame holds the release and nothing else: {policy}"
+        );
+        let html = page_html(res).await;
+        assert!(
+            html.contains(&format!(
+                r#"<iframe id="ferrum-app" title="Cards &lt;b&gt;" src="/_isolated/cards/{digest}/index.html" sandbox="{ISOLATED_SANDBOX}""#
+            )),
+            "{html}"
+        );
+        assert!(html.contains("<ferrum-bar></ferrum-bar>") && html.contains("/_shell/v1/isolated.js"), "{html}");
+    }
+
+    #[test]
+    fn the_review_reads_the_page() {
+        let good = r#"<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width"><title>Board</title></head><body><img src="a.png" alt=""></body></html>"#;
+        assert!(review_page(good, 1000).is_empty(), "{:?}", review_page(good, 1000));
+        let bare = "<html><head><title> </title></head><body><img src=a.png></body></html>";
+        let found = review_page(bare, 3 << 20);
+        assert_eq!(found.len(), 5, "{found:?}");
+        assert!(
+            found[0].contains("language")
+                && found[1].contains("title")
+                && found[2].contains("viewport")
+                && found[3].contains("alt")
+                && found[4].contains("3.0 MB")
+        );
     }
 
     #[tokio::test]

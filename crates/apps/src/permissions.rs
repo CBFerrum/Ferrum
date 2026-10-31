@@ -347,6 +347,12 @@ impl Bundle {
             }
             out.sql.extend(pkg.sql.iter().map(|(file, _)| format!("{}/{file}", pkg.name())));
         }
+        for p in &self.manifest.access {
+            let a = access(&p.permission());
+            if !a.is_empty() {
+                out.entities.entry(p.entity.clone()).or_default().extend(a);
+            }
+        }
         if self.manifest.runtime == Runtime::Wasm {
             let plugin = PluginManifest::parse(self.file(PLUGIN_JSON).unwrap_or_default())?;
             for p in &plugin.permissions {
@@ -426,6 +432,21 @@ mod tests {
                 "role Kit User: write KtThing"
             ]
         );
+    }
+
+    #[test]
+    fn what_an_app_without_a_plugin_declares() {
+        let mut f = meta_app();
+        let yaml = String::from_utf8(f["app.yaml"].clone()).unwrap()
+            + "access:\n  - {entity: Customer, read: true}\n  - {entity: Contact, read: true, write: true, if_owner: true}\n";
+        f.insert("app.yaml".into(), yaml.into_bytes());
+        let p = Bundle::from_files(f).unwrap().permissions().unwrap();
+        assert_eq!(p.entities["Customer"], set(&["read"]));
+        assert_eq!(p.entities["Contact"], set(&["read (own records)", "write (own records)"]));
+        let mut bad = meta_app();
+        let yaml = String::from_utf8(bad["app.yaml"].clone()).unwrap() + "access:\n  - {entity: \"no such\", read: true}\n";
+        bad.insert("app.yaml".into(), yaml.into_bytes());
+        assert!(Bundle::from_files(bad).is_err(), "an entity name, or *");
     }
 
     #[test]

@@ -240,6 +240,36 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     server stopped (the page from the worker, a sale priced offline at the server's total, sent on
     return) and in WebKit on a loaded page (Playwright's WebKit keeps nothing in the Cache API).
 
+* **U8, third parties: built** (31 October 2026).
+  * Isolated interfaces (D9): an app whose bundle the server does not trust, uploaded to one
+    workspace, brings its interface, and its pages are the bar and a sandboxed frame
+    (`/_isolated/{app}/{digest}/…`: an opaque origin, its own files only, `frame-src` of the page kept
+    to that release). It reaches Ferrum through the bridge (`server/shell/isolated.js`: screens'
+    protocol plus `path`, `navigate` with the address bar in step, `open`, `title`, `ready` and
+    `token`), every call narrowed to what the app declared within the person's rights. Such apps may
+    not contribute public, portal, intent or side-panel pages, nor reach other origins.
+  * App tokens (§12.3): `POST /api/shell/app-token`, five minutes, audience the app, bound to the
+    browser session, accepted only by `Auth` on the paths apps may call (narrowed as `X-Ferrum-App`
+    calls are), refused by sockets, sign-in and setup sessions; CORS without credentials for
+    `Origin: null`. An isolated page may call the API straight with one.
+  * `access` in app.yaml: what an app without a plugin lets its pages reach, consented to at install.
+  * The store's review of interfaces: size and the page's rules at upload (as before), plus an
+    automatic look at the page (language, title, viewport, image alternatives, download size) shown
+    in the install dialog with whether the interface runs isolated; the manifest's screenshots show
+    there (an upload's from its bundle, a store app's from the store, whose origins the shell's pages
+    may load images from).
+  * The proof: ferrum-sdk `examples/customer-cards`, an interface-only app reading customers, uploaded
+    unsigned to the demo workspace: in Chrome its frame's origin is `null`, it reads no cookie or
+    storage, invoices it did not ask for, adding customers and administration are refused (403), its
+    app token reaches `/api/v1/Customer` (200), the API without one and the rest of the API with one
+    are out of reach, the address bar follows its search, Back works, and its page refuses to open
+    outside a frame.
+  * Remote rendering: a spike ([spike-u8-remote-rendering.md](spike-u8-remote-rendering.md)) proves a
+    sandboxed extension can describe native-looking UI the host draws from checked components;
+    built when a third party asks.
+  * Still open: shape D origins for publisher-hosted interfaces (OAuth + PKCE app tokens, wildcard
+    hosts: with U6's domains), the store's publisher-side review (ferrum-store) of UI bundles.
+
 * **U7, portal and sites: built** (31 October 2026).
   * Hosts lead where their target says (§7.2): a `portal` host has sign-in, the portal and `/open`
     (everything else goes to `/portal/`); a `site:{app}` host is the app's public site at its root,

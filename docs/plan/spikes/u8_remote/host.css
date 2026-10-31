@@ -1,0 +1,14 @@
+body { margin: 0; font: 15px/1.5 system-ui, sans-serif; color: #17191d; background: #f6f7f9; }
+main { max-width: 40rem; margin: 0 auto; padding: 24px; }
+.muted { color: #5b6472; }
+.slot { padding: 16px; border: 1px solid #d9dee5; border-radius: 10px; background: #fff; }
+.r-stack { display: grid; gap: 10px; }
+.r-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.r-heading { margin: 0; font-size: 1.05rem; }
+.r-button { padding: 6px 12px; border: 1px solid #d9dee5; border-radius: 8px; background: #fff; font: inherit; cursor: pointer; }
+.r-button.primary { border-color: #2f5bea; background: #2f5bea; color: #fff; }
+.r-badge { padding: 0 8px; border-radius: 99px; background: #eef1f5; font-size: 0.85rem; }
+.r-badge.green { background: #dcfce7; } .r-badge.red { background: #fee2e2; }
+.r-field { display: grid; gap: 4px; }
+.r-field input { padding: 6px 10px; border: 1px solid #d9dee5; border-radius: 8px; font: inherit; }
+.log { font-size: 12px; color: #5b6472; white-space: pre-wrap; }

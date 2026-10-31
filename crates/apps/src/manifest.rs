@@ -203,8 +203,64 @@ pub struct AppManifest {
     /// The app's own interface (docs/plan/apps-ui.md §10.1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui: Option<crate::shell::UiSection>,
+    /// Records the app's pages may reach for the person (its interface and screens), within the
+    /// person's own rights: what an app without a plugin declares (a plugin declares its own in
+    /// plugin.json). Consented to at install, like the rest of its permissions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub access: Vec<AccessDef>,
     #[serde(default)]
     pub uninstall: Uninstall,
+}
+
+/// One entry of a manifest's `access`: what a plugin's permission says, without conditions.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AccessDef {
+    /// Entity name or `*`.
+    pub entity: String,
+    #[serde(default)]
+    pub read: bool,
+    #[serde(default)]
+    pub write: bool,
+    #[serde(default)]
+    pub create: bool,
+    #[serde(default)]
+    pub delete: bool,
+    #[serde(default)]
+    pub submit: bool,
+    #[serde(default)]
+    pub cancel: bool,
+    #[serde(default)]
+    pub export: bool,
+    #[serde(default)]
+    pub import: bool,
+    /// Only records the person created.
+    #[serde(default)]
+    pub if_owner: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub read_groups: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub write_groups: Vec<String>,
+}
+
+impl AccessDef {
+    pub fn permission(&self) -> ferrum_meta::PermissionDef {
+        ferrum_meta::PermissionDef {
+            entity: self.entity.clone(),
+            read: self.read,
+            write: self.write,
+            create: self.create,
+            delete: self.delete,
+            submit: self.submit,
+            cancel: self.cancel,
+            export: self.export,
+            import: self.import,
+            if_owner: self.if_owner,
+            read_groups: self.read_groups.clone(),
+            write_groups: self.write_groups.clone(),
+            condition: Default::default(),
+        }
+    }
 }
 
 fn bad<T>(msg: impl Into<String>) -> Result<T, AppError> {
@@ -336,6 +392,14 @@ impl AppManifest {
             if !is_image_path(p) {
                 return bad(format!("{field}: {p} must be an image under assets/ (png, jpg, jpeg, gif, webp or svg)"));
             }
+        }
+        for p in &self.access {
+            if p.entity != "*" && !ferrum_meta::is_entity_name(&p.entity) {
+                return bad(format!("access: '{}' is not an entity name (or *)", p.entity));
+            }
+        }
+        if self.access.len() > 100 {
+            return bad("access: at most 100 entries");
         }
         if self.screenshots.len() > 10 {
             return bad("at most 10 screenshots");
