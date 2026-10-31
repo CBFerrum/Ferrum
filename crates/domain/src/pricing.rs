@@ -228,6 +228,64 @@ fn copy_tax_rows(template: &Doc) -> Vec<Value> {
         .collect()
 }
 
+/// The engine's input for a document's priced lines (prices, line discounts, item tax rates) and
+/// tax rows: what [`calculate`] computes totals from, and what a register prices with offline (the
+/// same engine in the browser, `ferrum-calc` built for WASM). `rounded_total`: the document has a
+/// cash-rounded total.
+pub fn calc_input(items: &[Doc], taxes: &[Doc], discount_percent: Decimal, co: &Company, precision: u32, rate: Decimal, rounded_total: bool) -> CalcInput {
+    let tax_keys: Vec<String> = taxes.iter().enumerate().map(|(i, t)| s(t, "id").map(str::to_string).unwrap_or_else(|| format!("t{i}"))).collect();
+    let tax_in: Vec<TaxIn> = taxes
+        .iter()
+        .enumerate()
+        .map(|(i, t)| TaxIn {
+            key: tax_keys[i].clone(),
+            charge_type: charge_type(s(t, "charge_type").unwrap_or("On Net Total")),
+            rate: d(t, "rate"),
+            amount: d(t, "amount"),
+            row_ref: t.get("row_ref").and_then(Value::as_i64).filter(|r| *r >= 1).map(|r| (r - 1) as usize),
+            included_in_price: b(t, "included_in_price"),
+            deduct: b(t, "deduct"),
+        })
+        .collect();
+    let account_of_tax: Vec<Option<String>> = taxes.iter().map(|t| s(t, "account").map(str::to_string)).collect();
+    let lines: Vec<LineIn> = items
+        .iter()
+        .map(|r| {
+            let overrides: BTreeMap<String, Decimal> = r
+                .get("item_tax_rates")
+                .and_then(Value::as_object)
+                .map(|m| {
+                    account_of_tax
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, acc)| {
+                            let rate = m.get(acc.as_deref()?)?.as_str()?.parse().ok()?;
+                            Some((tax_keys[i].clone(), rate))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            LineIn {
+                key: s(r, "id").unwrap_or_default().to_string(),
+                qty: d(r, "qty"),
+                price: d(r, "price_list_rate"),
+                discount_percent: d(r, "discount_percent"),
+                tax_rates: overrides,
+            }
+        })
+        .collect();
+    CalcInput {
+        precision,
+        base_precision: Some(co.precision),
+        conversion_rate: rate,
+        rounding: co.rounding,
+        lines,
+        taxes: tax_in,
+        discount: (discount_percent > Decimal::ZERO).then_some(DocDiscount::Percent { value: discount_percent }),
+        round_total_to: if rounded_total { co.round_total_to } else { None },
+    }
+}
+
 /// Fills prices, discounts, item tax rates, taxes and totals. Returns the company for reuse.
 pub async fn calculate(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: &mut Doc, side: Side) -> Result<Company> {
     let company_id = id(doc, "company").ok_or_else(|| Error::field("company", "is required"))?;
@@ -379,57 +437,7 @@ pub async fn calculate(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc:
     let mut taxes = rows(doc, "taxes");
 
     // Calculation.
-    let tax_keys: Vec<String> = taxes.iter().enumerate().map(|(i, t)| s(t, "id").map(str::to_string).unwrap_or_else(|| format!("t{i}"))).collect();
-    let tax_in: Vec<TaxIn> = taxes
-        .iter()
-        .enumerate()
-        .map(|(i, t)| TaxIn {
-            key: tax_keys[i].clone(),
-            charge_type: charge_type(s(t, "charge_type").unwrap_or("On Net Total")),
-            rate: d(t, "rate"),
-            amount: d(t, "amount"),
-            row_ref: t.get("row_ref").and_then(Value::as_i64).filter(|r| *r >= 1).map(|r| (r - 1) as usize),
-            included_in_price: b(t, "included_in_price"),
-            deduct: b(t, "deduct"),
-        })
-        .collect();
-    let account_of_tax: Vec<Option<String>> = taxes.iter().map(|t| s(t, "account").map(str::to_string)).collect();
-    let lines: Vec<LineIn> = items
-        .iter()
-        .map(|r| {
-            let overrides: BTreeMap<String, Decimal> = r
-                .get("item_tax_rates")
-                .and_then(Value::as_object)
-                .map(|m| {
-                    account_of_tax
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(i, acc)| {
-                            let rate = m.get(acc.as_deref()?)?.as_str()?.parse().ok()?;
-                            Some((tax_keys[i].clone(), rate))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            LineIn {
-                key: s(r, "id").unwrap_or_default().to_string(),
-                qty: d(r, "qty"),
-                price: d(r, "price_list_rate"),
-                discount_percent: d(r, "discount_percent"),
-                tax_rates: overrides,
-            }
-        })
-        .collect();
-    let input = CalcInput {
-        precision,
-        base_precision: Some(co.precision),
-        conversion_rate: rate,
-        rounding: co.rounding,
-        lines,
-        taxes: tax_in,
-        discount: (d(doc, "discount_percent") > Decimal::ZERO).then(|| DocDiscount::Percent { value: d(doc, "discount_percent") }),
-        round_total_to: if ent.field("rounded_total").is_some() { co.round_total_to } else { None },
-    };
+    let input = calc_input(&items, &taxes, d(doc, "discount_percent"), &co, precision, rate, ent.field("rounded_total").is_some());
     let out = ferrum_calc::compute(&input).map_err(|e| Error::Validation(vec![FieldError::new("items", e.to_string())]))?;
     for (row, line) in items.iter_mut().zip(&out.lines) {
         set(row, "rate", money(line.rate));

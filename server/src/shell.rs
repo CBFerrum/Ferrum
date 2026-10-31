@@ -861,7 +861,7 @@ fn csp_with(manifest: Option<&AppManifest>, settings: &Value, env: impl Fn(&str)
     }
     let more = |kind: &str| extra.get(kind).filter(|v| !v.is_empty()).map(|v| format!(" {}", v.join(" "))).unwrap_or_default();
     format!(
-        "default-src 'self'; script-src 'self' 'inline-speculation-rules'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:{}; \
+        "default-src 'self'; script-src 'self' 'inline-speculation-rules' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:{}; \
          font-src 'self' data:{}; media-src 'self' blob:{}; connect-src 'self'{}; frame-src 'self'{}; worker-src 'self' blob:{}; \
          manifest-src 'self'; frame-ancestors 'self'; base-uri 'none'; object-src 'none'; form-action 'self'{}",
         more("img"),
@@ -1090,7 +1090,11 @@ mod tests {
         .unwrap();
         let p = csp(Some(&m), &json!({"meet_url": "wss://meet.acme.example:7880/rtc"}));
         assert!(p.contains("connect-src 'self' wss://meet.acme.example:7880 https://meet.acme.example:7880 https://api.example.com;"), "{p}");
-        assert!(p.contains("script-src 'self' 'inline-speculation-rules';") && p.contains("frame-ancestors 'self'") && p.contains("base-uri 'none'"));
+        assert!(
+            p.contains("script-src 'self' 'inline-speculation-rules' 'wasm-unsafe-eval';")
+                && p.contains("frame-ancestors 'self'")
+                && p.contains("base-uri 'none'")
+        );
         let p = csp(Some(&m), &json!({"meet_url": "javascript:alert(1)"}));
         assert!(p.contains("connect-src 'self' https://api.example.com;"), "a setting that is no origin is left out: {p}");
         // Server settings: several addresses, WebSockets asked over HTTP too, forms.
