@@ -57,10 +57,11 @@ impl Rounding {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ChargeType {
     /// `rate`% of each line's net amount.
+    #[default]
     OnNetTotal,
     /// `rate`% of the tax amount of row `row_ref`.
     OnPreviousRowAmount,
@@ -70,7 +71,7 @@ pub enum ChargeType {
     Actual,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LineIn {
     pub key: String,
     pub qty: Decimal,
@@ -83,7 +84,7 @@ pub struct LineIn {
     pub tax_rates: BTreeMap<String, Decimal>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TaxIn {
     pub key: String,
     pub charge_type: ChargeType,
@@ -134,6 +135,23 @@ pub struct CalcInput {
     /// Cash rounding step for `rounded_total`, e.g. `1` or `0.05`. `None` disables it.
     #[serde(default)]
     pub round_total_to: Option<Decimal>,
+}
+
+/// Two decimals, the same currency, half-up rounding, nothing to price: callers set what they use
+/// and leave the rest (`..Default::default()`), so a field added later never breaks them.
+impl Default for CalcInput {
+    fn default() -> Self {
+        CalcInput {
+            precision: 2,
+            base_precision: None,
+            conversion_rate: Decimal::ONE,
+            rounding: Rounding::default(),
+            lines: Vec::new(),
+            taxes: Vec::new(),
+            discount: None,
+            round_total_to: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -571,6 +589,18 @@ mod tests {
             discount: None,
             round_total_to: None,
         }
+    }
+
+    /// Defaults price exactly like the fields spelled out.
+    #[test]
+    fn defaults_are_neutral() {
+        let spelled = input(vec![line("a", dec!(2), dec!(10))], vec![tax("vat", ChargeType::OnNetTotal, dec!(20))]);
+        let defaulted = CalcInput {
+            lines: vec![LineIn { key: "a".into(), qty: dec!(2), price: dec!(10), ..Default::default() }],
+            taxes: vec![TaxIn { key: "vat".into(), rate: dec!(20), ..Default::default() }],
+            ..Default::default()
+        };
+        assert_eq!(compute(&spelled).unwrap(), compute(&defaulted).unwrap());
     }
 
     #[test]
