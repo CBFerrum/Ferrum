@@ -52,10 +52,6 @@ jobs:
           create database ferrum_domain_test owner ferrum;
           create database ferrum_mcp_test owner ferrum;
           create database ferrum_plugins_test owner ferrum;
-          create database ferrum_procurement_test owner ferrum;
-          create database ferrum_stock_ops_test owner ferrum;
-          create database ferrum_finance_test owner ferrum;
-          create database ferrum_mfg_ops_test owner ferrum;
           create database ferrum_studio_test owner ferrum;
           create database ferrum_apps_api_test owner ferrum;
           create database ferrum_sso_test owner ferrum;
