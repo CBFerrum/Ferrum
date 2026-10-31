@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1.7
-# Ferrum: the server with its packages and every page people open, including the shell's and ERP's
+# Ferrum: the server with its packages and every page people open, including the shell's and Studio's
 # interfaces, built from CBFerrum/Ferrum-Frontend at FRONTEND_REV (or another checkout of it:
 # --build-context frontend=<dir>). Apps' own interfaces come compiled into their crates.
 #   docker build -t ferrum .
 #   docker run -e DATABASE_URL=... -e JWT_SECRET=$(openssl rand -base64 48) -p 8080:5150 ferrum
 
 # The Ferrum-Frontend commit this server's pages are built from (bumped like an app's pin).
-ARG FRONTEND_REV=0e9f4ebf1101c5d870e8d4b3ec3489af27dd5990
+ARG FRONTEND_REV=165cf1675da4a5dccfc7611e318a9febdf87ca1d
 
 FROM scratch AS frontend
 ARG FRONTEND_REV
