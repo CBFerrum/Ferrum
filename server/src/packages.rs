@@ -14,32 +14,32 @@ const EVERY: Duration = Duration::from_secs(60);
 const LOCK: i64 = 0x6665_7272_756d_0001;
 
 // The countries on ERP's VAT and GST engine are apps of one crate (localization.md L6, L7).
-#[cfg(feature = "sg")]
-use ferrum_countries::sg as ferrum_sg;
-#[cfg(feature = "my")]
-use ferrum_countries::my as ferrum_my;
-#[cfg(feature = "id")]
-use ferrum_countries::id as ferrum_id;
-#[cfg(feature = "th")]
-use ferrum_countries::th as ferrum_th;
-#[cfg(feature = "ph")]
-use ferrum_countries::ph as ferrum_ph;
-#[cfg(feature = "vn")]
-use ferrum_countries::vn as ferrum_vn;
-#[cfg(feature = "sa")]
-use ferrum_countries::sa as ferrum_sa;
 #[cfg(feature = "ae")]
 use ferrum_countries::ae as ferrum_ae;
 #[cfg(feature = "au")]
 use ferrum_countries::au as ferrum_au;
-#[cfg(feature = "nz")]
-use ferrum_countries::nz as ferrum_nz;
+#[cfg(feature = "cn")]
+use ferrum_countries::cn as ferrum_cn;
+#[cfg(feature = "id")]
+use ferrum_countries::id as ferrum_id;
 #[cfg(feature = "jp")]
 use ferrum_countries::jp as ferrum_jp;
 #[cfg(feature = "mx")]
 use ferrum_countries::mx as ferrum_mx;
-#[cfg(feature = "cn")]
-use ferrum_countries::cn as ferrum_cn;
+#[cfg(feature = "my")]
+use ferrum_countries::my as ferrum_my;
+#[cfg(feature = "nz")]
+use ferrum_countries::nz as ferrum_nz;
+#[cfg(feature = "ph")]
+use ferrum_countries::ph as ferrum_ph;
+#[cfg(feature = "sa")]
+use ferrum_countries::sa as ferrum_sa;
+#[cfg(feature = "sg")]
+use ferrum_countries::sg as ferrum_sg;
+#[cfg(feature = "th")]
+use ferrum_countries::th as ferrum_th;
+#[cfg(feature = "vn")]
+use ferrum_countries::vn as ferrum_vn;
 
 /// Two kinds of compiled apps: `native` ones carry their packages and manifest (built in their
 /// own repositories, docs/plan/apps.md); `legacy` ones still keep their YAML in `packages/`.
