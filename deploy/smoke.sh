@@ -138,7 +138,7 @@ cookie=$(awk '$6=="__Host-ferrum" || $6=="ferrum_session" {print $7}' "$work/jar
 # App routes: sign-in first; then a page for what is not installed; the core's names are not apps.
 [[ "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$API/nothing-here/x")" =~ ^30[23]\ .*/login\?next=%2Fnothing-here%2Fx$ ]] || fail "a signed-out app route does not lead to sign-in"
 [ "$(code -b "$work/jar" "$API/nothing-here/")" = 404 ] || fail "a route nothing is installed at"
-[ "$(code -b "$work/jar" "$API/portal/")" = 404 ] || fail "a name the core keeps"
+[ "$(code -b "$work/jar" "$API/accounts/")" = 404 ] || fail "a name the core keeps"
 # Every workspace is on the shell: Home and the shell's pages, from the interfaces the image carries.
 for page in / /admin/ /store/ /account/ /data/; do
   grep -q '<ferrum-bar>' <<<"$(curl -fsS -b "$work/jar" "$API$page")" || fail "the shell's page $page"
