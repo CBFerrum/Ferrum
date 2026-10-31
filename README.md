@@ -173,7 +173,7 @@ or any other vertical is a plugin, not a fork.
 
 | | App | What it brings |
 |---|---|---|
-| 🏢 | **[ERP](https://github.com/CBFerrum/ferrum-app-erp)**<br><sub>ferrum-app-erp</sub> | Accounting, selling, buying, inventory and manufacturing on one universal journal, the engine other apps post through; a country's taxes as an add-on (India's GST first); Finance, Procurement, Stock Operations and Manufacturing Operations |
+| 🏢 | **[ERP](https://github.com/CBFerrum/ferrum-app-erp)**<br><sub>ferrum-app-erp</sub> | Accounting, selling, buying, inventory and manufacturing on one universal journal, the engine other apps post through; a country's taxes as an add-on (India's GST and the European Union's VAT so far); Finance, Procurement, Stock Operations and Manufacturing Operations |
 | 🤝 | **[CRM](https://github.com/CBFerrum/ferrum-app-crm)**<br><sub>ferrum-app-crm</sub> | Leads, a pipeline you can drag, quotations and every touchpoint, beside the books |
 | 📋 | **[Projects and timesheets](https://github.com/CBFerrum/ferrum-app-projects)**<br><sub>ferrum-app-projects</sub> | Task trees with dependencies, timesheets, billing by time or milestone, profitability |
 | 🎧 | **[Helpdesk](https://github.com/CBFerrum/ferrum-app-helpdesk)**<br><sub>ferrum-app-helpdesk</sub> | Tickets with business-hours SLAs, fair assignment and a knowledge base |
@@ -227,7 +227,7 @@ flowchart TB
 | `crates/apps` | Signed `.fapp` app bundles, manifests, permissions and dependency resolution (shared by server, SDK and store) |
 | `crates/mcp` | MCP server: every entity, action and report available to AI agents |
 | `crates/studio` | Analytics engine and the no-code report builder, charts, number cards, dashboards and Spaces |
-| [ferrum-app-erp](https://github.com/CBFerrum/ferrum-app-erp) | ERP: its manifest, interface, packages (`accounting`, `inventory`, `selling`, `buying`, `manufacturing`) and engine (ledger, open items, stock valuation, selling and buying, manufacturing and MRP, the books' reports), which other apps post through; its add-ons India (GST, e-invoices, e-way bills), Finance, Procurement, Stock Operations and Manufacturing Operations |
+| [ferrum-app-erp](https://github.com/CBFerrum/ferrum-app-erp) | ERP: its manifest, interface, packages (`accounting`, `inventory`, `selling`, `buying`, `manufacturing`) and engine (ledger, open items, stock valuation, selling and buying, manufacturing and MRP, the books' reports), which other apps post through; its add-ons the European Union (VAT, VIES, the One-Stop Shop, EN 16931 e-invoices over Peppol), India (GST, e-invoices, e-way bills), Finance, Procurement, Stock Operations and Manufacturing Operations |
 | `packages/*` | The shared packages: `core`, `contacts`, `parties`, `products`, `project_records` |
 | `server` | HTTP API (Loco/Axum), auth, admin, OpenAPI, ERPNext-compatible `/api/resource` shim, CLI tasks |
 | `plugins/sdk`, `plugins/examples` | Rust plugin SDK and example plugins |
@@ -239,7 +239,7 @@ The shell's and Studio's interfaces, and the packages apps build theirs with, li
 [CBFerrum/Ferrum-Frontend](https://github.com/CBFerrum/Ferrum-Frontend); the server's image builds
 them in. Apps' own interfaces, ERP's included, come compiled into their crates, and so do their
 packages and logic: ERP's books and stock, and every country's taxes as an add-on on ERP's
-localization seam (India's first).
+localization seam (India's and the European Union's so far).
 
 <details>
 <summary><b>How the crates depend on each other</b></summary>
@@ -524,6 +524,7 @@ flowchart LR
 | 🔁 | Selling and buying | Cycles with returns in any of an item's units of measure; procurement (material requests, RFQs, supplier scorecards) |
 | 📦 | Inventory | Batches/serials, variants, landed costs, pick lists, quality inspection |
 | 🏭 | Manufacturing | BOMs, work orders, job cards, production planning, subcontracting, MRP |
+| 🇪🇺 | European Union | VAT for companies in member states: home rates, intra-Community supplies and reverse charge with VAT numbers confirmed in VIES, the One-Stop Shop, exports and acquisitions; rates from the Commission's TEDB; EN 16931 e-invoices (Peppol BIS Billing 3.0) handed to a Peppol access point; the EC sales list and the OSS return |
 | 🇮🇳 | India GST | GSTIN, place of supply, CGST/SGST/IGST templates, HSN checks, e-invoices with IRN and signed QR codes — sent straight to the IRP or uploaded — e-way bills, a GST tax invoice print |
 | 📊 | Analytics | Studio: reports with calculated columns, subtotals and Excel export, charts, dashboards |
 | 💬 | Collaboration | Comments, assignments, tags, followers, chat, calendar; PDFs and emailing any document |
