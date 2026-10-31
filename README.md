@@ -32,10 +32,7 @@ built to scale out.
 | `crates/plugins` | WebAssembly plugin host (wasmtime): hooks, routes, WebSockets, schedules, host calls, fuel and memory limits |
 | `crates/apps` | Signed `.fapp` app bundles, manifests, permissions and dependency resolution (shared by server, SDK and store) |
 | `crates/mcp` | MCP server: every entity, action and report available to AI agents |
-| `crates/procurement` | Material requests, auto-reorder, requests for quotation with supplier links, supplier quotations and scorecards |
-| `crates/stock-ops` | Stock reconciliation, landed costs, pick lists, packing slips, quality inspection, item variants, product bundles |
-| `crates/finance` | Budgets, bank reconciliation, period closing, payment terms, dunning, subscriptions |
-| `crates/mfg-ops` | Workstations, routings, job cards, production planning, subcontracting |
+| [ferrum-app-erp](https://github.com/CBFerrum/ferrum-app-erp) | ERP's interface and its add-ons: Finance, Procurement, Stock Operations, Manufacturing Operations |
 | `crates/studio` | Analytics engine and the no-code report builder, charts, number cards, dashboards and Spaces |
 | `packages/*` | Shipped packages: `core`, `accounting`, `inventory`, `selling`, `buying`, `manufacturing`, `india` |
 | `server` | HTTP API (Loco/Axum), auth, admin, OpenAPI, ERPNext-compatible `/api/resource` shim, CLI tasks |

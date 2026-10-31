@@ -117,6 +117,7 @@ macro_rules! apps {
         pub fn native_uis() -> Vec<(&'static str, &'static [(&'static str, &'static [u8])])> {
             #[allow(unused_mut)]
             let mut out: Vec<(&'static str, &'static [(&'static str, &'static [u8])])> = Vec::new();
+            out.push(("erp", ferrum_app_erp::UI));
             #[cfg(feature = "comms")]
             out.push(("comms", ferrum_app_comms::UI));
             #[cfg(feature = "drive")]
@@ -181,11 +182,12 @@ apps! {
     }
 }
 
-/// ERP's app manifest: its interface at /erp/ and the records it shows.
-pub const ERP_MANIFEST: &str = include_str!("../apps/erp/app.yaml");
+/// ERP's app manifest: its interface at /erp/ and the records it shows (its repository,
+/// docs/plan/erp-repo.md).
+pub const ERP_MANIFEST: &str = ferrum_app_erp::MANIFEST;
 
 /// ERP's add-on for India.
-pub const INDIA_MANIFEST: &str = include_str!("../apps/india/app.yaml");
+pub const INDIA_MANIFEST: &str = ferrum_app_erp::INDIA_MANIFEST;
 
 /// The catalog this build starts from: the platform's embedded packages, the native apps'
 /// embedded packages, and extra packages from `dir` (metadata-only packages an operator adds, and

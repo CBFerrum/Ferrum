@@ -563,7 +563,11 @@ pub async fn store_release(kernel: &Kernel, storage: &Storage, app: &str, versio
 /// Logged, not fatal: a broken interface leaves the rest of the server working, and its app's
 /// pages say what is missing.
 pub async fn register_compiled(kernel: &Kernel, storage: &Storage, settings: &Settings, apps: &crate::appmgr::AppManager) {
-    register_embedded(kernel, storage, apps, crate::packages::native_uis()).await;
+    let embedded = crate::packages::native_uis();
+    // An interface compiled into an app's crate wins over a copy in ui_dir (an image built from an
+    // older Ferrum-Frontend still holds ERP's, which moved to ERP's crate).
+    let in_crates: std::collections::HashSet<String> = embedded.iter().map(|(id, _)| id.to_string()).collect();
+    register_embedded(kernel, storage, apps, embedded).await;
     let dir = settings.ui_dir.trim();
     if dir.is_empty() {
         return;
@@ -592,6 +596,10 @@ pub async fn register_compiled(kernel: &Kernel, storage: &Storage, settings: &Se
                 Ok(digest) => tracing::info!(app = SHELL_APP, %digest, "the shell's interface registered"),
                 Err(e) => tracing::error!(app = SHELL_APP, "the shell's interface not registered: {e}"),
             }
+            continue;
+        }
+        if in_crates.contains(&id) {
+            tracing::warn!(app = %id, "settings.ui_dir holds an interface for an app whose crate carries its own; the crate's is served");
             continue;
         }
         let Some(m) = apps.native_manifest(&id) else {

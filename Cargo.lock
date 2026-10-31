@@ -2407,6 +2407,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrum-app-erp"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#55dae96b84b884791e5239a0d45b6980dd4205cd"
+
+[[package]]
 name = "ferrum-app-field-service"
 version = "0.1.0"
 source = "git+https://github.com/CBFerrum/ferrum-app-field-service?branch=main#5f00e08e600b98ec90442b3272e3019413e9756d"
@@ -2646,6 +2651,7 @@ dependencies = [
 [[package]]
 name = "ferrum-finance"
 version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#55dae96b84b884791e5239a0d45b6980dd4205cd"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2659,7 +2665,6 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
- "tokio",
  "tracing",
  "uuid",
 ]
@@ -2738,6 +2743,7 @@ dependencies = [
 [[package]]
 name = "ferrum-mfg-ops"
 version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#55dae96b84b884791e5239a0d45b6980dd4205cd"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2750,7 +2756,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
- "tokio",
  "tracing",
  "uuid",
 ]
@@ -2787,6 +2792,7 @@ dependencies = [
 [[package]]
 name = "ferrum-procurement"
 version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#55dae96b84b884791e5239a0d45b6980dd4205cd"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2802,7 +2808,6 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
- "tokio",
  "tracing",
  "uuid",
 ]
@@ -2825,6 +2830,7 @@ dependencies = [
  "ferrum-app-crm",
  "ferrum-app-docs",
  "ferrum-app-drive",
+ "ferrum-app-erp",
  "ferrum-app-field-service",
  "ferrum-app-forms",
  "ferrum-app-helpdesk",
@@ -2873,6 +2879,7 @@ dependencies = [
 [[package]]
 name = "ferrum-stock-ops"
 version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#55dae96b84b884791e5239a0d45b6980dd4205cd"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2884,7 +2891,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
- "tokio",
  "tracing",
  "uuid",
 ]
