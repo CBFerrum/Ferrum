@@ -35,6 +35,10 @@ impl Task for CreateTenant {
             })
             .await
             .map_err(|e| Error::Message(e.to_string()))?;
+        // Shapes B and C: its subdomain at once.
+        if let Some(base) = crate::shell::base_domain(&crate::state::Settings::from_ctx(ctx)?) {
+            k.add_subdomain(id, &format!("{}.{base}", vars.cli_arg("slug")?)).await.map_err(|e| Error::Message(e.to_string()))?;
+        }
         println!("tenant created: {id}");
         Ok(())
     }

@@ -122,6 +122,18 @@ pub struct Settings {
     /// certificate pointing here. Empty: isolated apps run in sandboxed frames instead.
     #[serde(default)]
     pub apps_base: String,
+    /// Shapes B and C (docs/plan/apps-ui.md §7.1): the cluster's base domain. Each workspace is at
+    /// `{slug}.{base}`, people sign in once at `accounts.{base}`, and outside callers use
+    /// `hooks.{base}`; a host the cluster does not know leads nowhere. Empty: shapes A and A′.
+    #[serde(default)]
+    pub base_domain: String,
+    /// This cluster's region (`eu`, `in`…), as the directory names it.
+    #[serde(default)]
+    pub region: String,
+    /// The other regions' accounts hosts, `name=https://accounts.example.eu`, comma-separated:
+    /// the sign-in page offers them, and a workspace not found here is looked for there.
+    #[serde(default)]
+    pub regions: String,
 }
 
 fn default_session_days() -> u32 {

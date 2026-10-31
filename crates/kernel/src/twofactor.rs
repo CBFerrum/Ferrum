@@ -92,6 +92,13 @@ impl Kernel {
         self.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("two-factor sign-in needs the server's secret key (FERRUM_SECRET_KEY)".into()))
     }
 
+    /// An authenticator secret sealed for one person, sealed again for another (an identity taking
+    /// the credentials of the membership it was made from).
+    pub(crate) fn reseal_totp(&self, from: (Uuid, Uuid), to: (Uuid, Uuid), sealed: &str) -> Result<String> {
+        let key = self.totp_key()?;
+        key.seal(&sealed_label(to.0, to.1), &key.open(&sealed_label(from.0, from.1), sealed)?)
+    }
+
     fn open_secret(&self, tenant: Uuid, user: Uuid, sealed: &str) -> Result<Vec<u8>> {
         let b32 = self.totp_key()?.open(&sealed_label(tenant, user), sealed)?;
         BASE32_NOPAD.decode(b32.as_bytes()).map_err(|_| Error::Internal("corrupt two-factor secret".into()))

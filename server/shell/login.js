@@ -3,6 +3,11 @@
 // when the workspace requires one), single sign-on, a code sent by email (the portal's way in,
 // offered first on its way), and a passkey the device keeps (no email or password: the account
 // is the passkey's). Signing in sets the browser's session cookie and goes back where the person was.
+//
+// On the accounts host (shapes B and C, `boot.accounts`) it signs in to the Ferrum account, once
+// for every workspace: email and password (the first time, a workspace's password and then a code
+// sent to the address), a password set with an emailed code, a passkey, the single sign-on of the
+// workspace being entered, and the other regions' accounts hosts.
 
 const boot = JSON.parse(document.getElementById("ferrum-login").textContent);
 const form = document.getElementById("ferrum-login-form");
@@ -24,12 +29,20 @@ const store = {
   },
 };
 let ticket = null;
+const accounts = boot.accounts ?? null;
+// Accounts: the code sent to the address finishes making the account (its step's ticket), and
+// the address a code went to, to set a password with.
+let verifying = null;
+let resetFor = null;
+let typed = null;
 // A workspace that requires two-factor sign-in, for someone who has not set it up: a token that
 // may do only that; then, with the recovery codes shown, signing in again.
 let setupToken = null;
 let again = false;
 // "code": signing in with an emailed code; `codeFor` is the address it went to.
-let mode = boot.codes ? "code" : "password";
+let mode = accounts ? "password" : boot.codes ? "code" : "password";
+const heading = document.querySelector(".ferrum-login h1");
+const title = heading.textContent;
 let codeFor = null;
 
 function field(name, label, type, value = "", extra = {}) {
@@ -111,10 +124,21 @@ function recoveryCodes(codes) {
 }
 
 function done(data) {
+  if (data.verify) {
+    verifying = data.ticket;
+    ticket = null;
+    draw();
+    return;
+  }
+  // A workspace's single sign-on, from the accounts host: back to the workspace's host.
+  if (data.redirect) {
+    location.assign(data.redirect);
+    return;
+  }
   if (data.second_factor) {
     ticket = data.ticket;
     fields.replaceChildren();
-    document.getElementById("ferrum-switch")?.remove();
+    for (const id of ["ferrum-switch", "ferrum-passkey", "ferrum-sso", "ferrum-regions"]) document.getElementById(id)?.remove();
     const code = field("code", "Code from your authenticator app", "text", "", { autocomplete: "one-time-code", inputMode: "numeric" });
     const hint = document.createElement("p");
     hint.className = "ferrum-hint";
@@ -146,7 +170,9 @@ form.addEventListener("submit", async (e) => {
       location.reload();
       return;
     }
-    if (setupToken) {
+    if (accounts) {
+      await viaAccounts();
+    } else if (setupToken) {
       const { recovery_codes } = await post("/api/auth/2fa/enable", { code: form.elements.code.value.trim() }, { authorization: `Bearer ${setupToken}` });
       setupToken = null;
       recoveryCodes(recovery_codes);
@@ -178,6 +204,88 @@ form.addEventListener("submit", async (e) => {
   }
 });
 
+/** A step of signing in at the accounts host. */
+async function viaAccounts() {
+  const code = () => form.elements.code.value.trim();
+  if (ticket) return done(await post("/api/accounts/sign-in/second-factor", { ticket, code: code() }));
+  if (verifying) return done(await post("/api/accounts/sign-in/verify", { ticket: verifying, code: code() }));
+  if (resetFor) return done(await post("/api/accounts/password", { email: resetFor, code: code(), password: form.elements.password.value }));
+  const email = form.elements.email.value.trim();
+  if (!email) throw new Error("Your email address?");
+  typed = email;
+  if (mode === "reset") {
+    await post("/api/accounts/code", { email });
+    resetFor = email;
+    draw();
+    return;
+  }
+  done(await post("/api/accounts/sign-in", { email, password: form.elements.password.value }));
+}
+
+/** The accounts host's fields for the step at hand. */
+function drawAccounts() {
+  heading.textContent = title;
+  const code = () => field("code", "Code from the email", "text", "", { autocomplete: "one-time-code", inputMode: "numeric", maxLength: 12 });
+  if (accounts.sso_only && accounts.target) {
+    submit.hidden = true;
+    fields.append(text("p", `${accounts.target.name} signs its people in through its own single sign-on.`));
+    singleSignOn(accounts.target.slug);
+    return;
+  }
+  if (verifying) {
+    heading.textContent = "Check your email";
+    fields.append(text("p", `One more step to set up your Ferrum account: enter the code we sent to ${typed}. It works for 15 minutes.`, "ferrum-hint"));
+    code().focus();
+    submit.textContent = "Continue";
+    return;
+  }
+  if (resetFor) {
+    heading.textContent = "Set your password";
+    fields.append(text("p", `If ${resetFor} has an account with us, a code is on its way to it. It works for 15 minutes.`, "ferrum-hint"));
+    code().focus();
+    field("password", "New password", "password", "", { autocomplete: "new-password", minLength: 10 });
+    submit.textContent = "Set password and sign in";
+    switcher("Use another address", () => {
+      resetFor = null;
+      draw();
+    });
+    return;
+  }
+  if (mode === "reset") {
+    heading.textContent = "Set a password";
+    fields.append(text("p", "Forgot your password, or never had one here? We will email you a code to set one.", "ferrum-hint"));
+  }
+  field("email", "Email", "email", typed ?? "", { autocomplete: "username webauthn" });
+  if (mode === "reset") {
+    submit.textContent = "Email me a code";
+    switcher("Sign in with a password instead", () => {
+      mode = "password";
+      draw();
+    });
+  } else {
+    field("password", "Password", "password", "", { autocomplete: "current-password" });
+    submit.textContent = "Sign in";
+    if (accounts.mail) {
+      switcher("Forgot your password, or new here?", () => {
+        mode = "reset";
+        draw();
+      });
+    }
+    if (accounts.target) singleSignOn(accounts.target.slug);
+    passkeyButton();
+  }
+  if (accounts.regions?.length) {
+    const p = text("p", "Your account is in another region? ", "ferrum-hint ferrum-regions");
+    p.id = "ferrum-regions";
+    accounts.regions.forEach((r, i) => {
+      if (i) p.append(" · ");
+      p.append(Object.assign(document.createElement("a"), { href: `${r.url}/login`, textContent: r.name.toUpperCase() }));
+    });
+    document.getElementById("main").append(p);
+  }
+  form.querySelector("input:not([value]), input[value='']")?.focus();
+}
+
 async function singleSignOn(tenant) {
   if (!tenant) return;
   const r = await fetch(`/api/auth/sso?tenant=${encodeURIComponent(tenant)}`, { credentials: "same-origin" }).catch(() => null);
@@ -194,7 +302,8 @@ async function singleSignOn(tenant) {
     b.textContent = `Sign in with ${p.name ?? p.label ?? "single sign-on"}`;
     b.addEventListener("click", async () => {
       try {
-        const binding = crypto.randomUUID();
+        // crypto.randomUUID exists on secure pages only.
+        const binding = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
         sessionStorage.setItem("ferrum.sso", JSON.stringify({ binding, next: boot.next }));
         // The return address providers have registered (today's web app's); the server sends it on
         // to this page with the provider's answer.
@@ -217,7 +326,8 @@ async function start() {
     const { binding, next } = JSON.parse(pending);
     boot.next = next || boot.next;
     try {
-      done(await post("/api/auth/sso/finish", { state: back.get("state"), code: back.get("code"), binding, session: "cookie" }));
+      const answer = { state: back.get("state"), code: back.get("code"), binding };
+      done(await post(accounts ? "/api/accounts/sso/finish" : "/api/auth/sso/finish", accounts ? { ...answer, next: boot.next } : { ...answer, session: "cookie" }));
       return;
     } catch (err) {
       say(err.message);
@@ -234,6 +344,9 @@ function draw() {
   document.getElementById("ferrum-switch")?.remove();
   document.getElementById("ferrum-sso")?.remove();
   document.getElementById("ferrum-passkey")?.remove();
+  document.getElementById("ferrum-regions")?.remove();
+  submit.hidden = false;
+  if (accounts) return drawAccounts();
   if (mode === "code" && codeFor) {
     fields.append(text("p", `If ${codeFor} may sign in here, a code is on its way to it. It works for 10 minutes.`, "ferrum-hint"));
     field("code", "Code from the email", "text", "", { autocomplete: "one-time-code", inputMode: "numeric", maxLength: 12 }).focus();

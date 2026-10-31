@@ -47,6 +47,27 @@ operator to know. Report a vulnerability privately to the maintainers rather tha
   (ES256, RS256 of 2048 bits or more, Ed25519), and a signature counter that does not move on is
   refused as a possible copy. A credential belongs to one account in the cluster. A verified passkey
   counts as both factors.
+* Ferrum accounts (shapes B and C; one sign-in for many workspaces): a workspace's account joins a
+  Ferrum account only on proof that it is the person's: its own password (and its authenticator code
+  when it has one), a code sent to its address, its workspace's single sign-on, or confirming when the
+  Ferrum account's address was proven by a mailed code and that account has no authenticator app;
+  never on a matching address alone. Joining is recorded in the workspace's audit trail. A Ferrum
+  account made from a workspace's password takes that account's password hash, sealed authenticator
+  secret (sealed again for the new account) and unused recovery codes, after a code mailed to the
+  address. An account whose address is unproven (a server without mail) is told nothing about
+  which workspaces have its address: every workspace shows it the same step, and the proofs fail.
+  Sign-in hands over to a workspace's host as a one-use code (32 random bytes, kept as a SHA-256)
+  for one membership and one host, good for a minute, checked again when taken (still active, still
+  joined); the host accepts it only with the `state` it sent, kept in its own `__Host-` cookie, so no
+  one else's sign-in lands in a browser (login CSRF), and answers without a referrer. Ports are
+  refused in the host names of these steps over https. The Ferrum account's sessions and tokens work
+  only on the accounts host, and no workspace's work there; it gets no API keys. Once joined, the
+  workspace's own password and passkeys open nothing while the cluster signs in through accounts,
+  for pages and API clients alike; "sign out everywhere" ends every session of the account and of
+  each workspace it joined, raising their token versions (OAuth grants and tokens end too). The
+  accounts host's pages cannot be framed by other sites. Unknown hosts are served nothing; custom
+  domains under the cluster's own domain are refused, and `accounts`, `hooks`, `www` and `api` are
+  no workspace's names.
 * Two-factor sign-in: TOTP secrets sealed with the server key; each code accepted once; recovery
   codes stored as hashes; wrong codes count toward the lockout, and a correct password does not
   clear the count while the second step is pending; the ticket between the steps is no session;

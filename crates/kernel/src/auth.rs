@@ -23,7 +23,7 @@ const CODE_TRIES: i32 = 5;
 const CODES_PER_HOUR: i64 = 5;
 
 /// What is kept of a sign-in code: salted with its row's id, so equal codes hash apart.
-fn code_hash(id: Uuid, code: &str) -> String {
+pub(crate) fn code_hash(id: Uuid, code: &str) -> String {
     hex::encode(Sha256::digest(format!("{id}:{code}").as_bytes()))
 }
 
@@ -78,9 +78,9 @@ pub async fn verify_password(p: String, hash: String) -> bool {
 }
 
 /// A fixed hash verified for unknown users so response time does not reveal which emails exist.
-const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHRzb21lc2FsdA$ZmVycnVtLWR1bW15LWhhc2gtZm9yLXRpbWluZw";
+pub(crate) const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHRzb21lc2FsdA$ZmVycnVtLWR1bW15LWhhc2gtZm9yLXRpbWluZw";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
     pub tenant: Uuid,
     pub user: Uuid,

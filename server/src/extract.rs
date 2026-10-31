@@ -111,6 +111,10 @@ pub async fn ctx_from_token(st: &crate::state::AppState, token: &str, request_id
     if t.setup_only {
         return Err(ApiError(Error::Forbidden("set up two-factor sign-in first; this workspace requires it".into())));
     }
+    // A Ferrum account (the directory's) has no live channel, documents or apps.
+    if st.kernel.directory().await? == Some(t.session.tenant) {
+        return Err(ApiError(Error::Unauthorized("this sign-in works only on the accounts host".into())));
+    }
     Ok(st.kernel.load_ctx(t.session.tenant, t.session.user, Some(t.session.token_version), request_id).await?)
 }
 
@@ -161,6 +165,8 @@ async fn caller_with_app(
     }
     if from_cookie {
         st.shell.check_host(headers, t.session.tenant).await?;
+    } else {
+        st.shell.check_directory(headers, t.session.tenant).await?;
     }
     let ctx = st.kernel.load_ctx(t.session.tenant, t.session.user, Some(t.session.token_version), rid).await?;
     Ok((ctx, t.device(), t.app))

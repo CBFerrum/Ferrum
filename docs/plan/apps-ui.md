@@ -148,7 +148,7 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     its changes). Compose and the Kubernetes manifests have no web service: the server is the front
     door (`/healthz` for load balancers).
 
-* **U6, many workspaces and hosts: under way** (31 October 2026).
+* **U6, many workspaces and hosts: done** (31 October 2026), but for trust between regions.
   * Custom domains: administrators add, check, make main and remove a workspace's domains
     (Administration → Domains; `/api/admin/domains`) for the workspace, its portal or an app's public
     site. A pending domain is verified when it answers its token at `/.well-known/ferrum-domain` (one
@@ -161,7 +161,28 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     otherwise) and sign in with one alone from the sign-in page: the account is the passkey's.
     Verified with `ring` and a CBOR reader (no WebAuthn library); one-use challenges; the counter
     must move on. Checked with Chrome's virtual authenticator and a software authenticator in the
-    kernel's tests. The accounts host (shapes B and C) and identities across workspaces come next.
+    kernel's tests.
+  * Shapes B and C (§7.1, §9.3, §12.3): `FERRUM_BASE_DOMAIN` gives each workspace `{slug}.{base}`;
+    other hosts lead nowhere. People sign in once, at `accounts.{base}`, as a Ferrum account: a person
+    of the directory, the reserved workspace `accounts`, so password, two-factor sign-in, passkeys
+    (the relying party is the accounts host) and browsers are the same code as anyone's. The first
+    sign-in with a workspace's password makes the account (it takes that account's credentials) once a
+    mailed code proves the address; other workspaces join on one proof each (their password and app
+    code, a mailed code, their single sign-on, or a click when the address is proven), never by
+    address alone. A workspace's host without a session goes to `/authorize` (top-level redirect,
+    `prompt=none`, `select_account` after signing out of that host) and comes back with a one-use,
+    one-minute code for a session of its own; custom domains the same way. The account chooser,
+    the account's security and the steps of entering a workspace (go on as this account, add it,
+    its single sign-on, two-factor sign-in, no access) are the shell interface's `accounts` entry.
+    Workspace rules apply on every entry; sign-out of one host, of accounts, or everywhere (every
+    session of the account and of its workspaces). Fixed callback hosts: single sign-on comes back
+    to `accounts.{base}/app/login`; `hooks.{base}` serves outside callers (`api.hooks` in the
+    bootstrap). Regions: `FERRUM_REGION`, `FERRUM_REGIONS`, `/_directory?host=` answered by each
+    region, and the accounts host sending requests on to the region that has the workspace. Checked
+    in the kernel's tests, in Chrome, Firefox and WebKit (two workspaces on subdomains and one on a
+    custom domain, one account, passkeys at accounts, signing out everywhere), and in the kind
+    cluster's last step through the gateway. Not yet: a workspace of one region trusting an
+    account of another (OpenID Connect between regions' accounts hosts).
 
 * **U5, the rest: under way** (31 October 2026).
   * The bar's search (§12.8): ⌘K or the bar's field; apps from the launcher, records of every entity

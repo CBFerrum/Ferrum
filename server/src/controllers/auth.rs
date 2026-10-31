@@ -9,6 +9,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use ferrum_kernel::Error;
 use ferrum_kernel::auth::{Session, SignIn};
+use ferrum_kernel::identity::DIRECTORY;
 use loco_rs::app::AppContext;
 use loco_rs::auth::jwt::JWT;
 use loco_rs::controller::Routes;
@@ -38,11 +39,11 @@ fn token(st: &AppState, s: &Session, ttl: u64, extra: Option<&str>) -> Result<St
 
 /// A token for a browser session: the cookie's (`sid`) or a page's bearer token bound to it
 /// (`bsid`), both ending when the session does.
-fn device_token(st: &AppState, s: &Session, ttl: u64, kind: &str, device: Uuid) -> Result<String, ApiError> {
+pub(crate) fn device_token(st: &AppState, s: &Session, ttl: u64, kind: &str, device: Uuid) -> Result<String, ApiError> {
     signed(st, s, ttl, Some((kind, json!(device.to_string()))))
 }
 
-fn signed(st: &AppState, s: &Session, ttl: u64, extra: Option<(&str, Value)>) -> Result<String, ApiError> {
+pub(crate) fn signed(st: &AppState, s: &Session, ttl: u64, extra: Option<(&str, Value)>) -> Result<String, ApiError> {
     let mut claims = Map::new();
     claims.insert("tenant".into(), json!(s.tenant.to_string()));
     claims.insert("tv".into(), json!(s.token_version));
@@ -75,7 +76,16 @@ fn from_page(headers: &HeaderMap) -> bool {
 /// A finished sign-in. API clients get a bearer token, as always. A page of this site also gets
 /// a browser session in the cookie (docs/plan/apps-ui.md §12.3), and, unless it asked for the
 /// cookie alone, a bearer token bound to that session for the pages that still send one.
-async fn session_response(st: &AppState, s: &Session, headers: &HeaderMap, cookie_only: bool) -> ApiResult<Response> {
+pub(crate) async fn session_response(st: &AppState, s: &Session, headers: &HeaderMap, cookie_only: bool) -> ApiResult<Response> {
+    // Shapes B and C: someone whose workspace account joined their Ferrum account signs in at the
+    // accounts host, with that account's credentials; the workspace's own, unused since, open
+    // nothing (for pages and API clients alike).
+    if let Some(accounts) = st.shell.accounts_origin(headers)
+        && st.kernel.directory().await? != Some(s.tenant)
+        && st.kernel.identity_of(s.tenant, s.user).await?.is_some()
+    {
+        return Err(ApiError(Error::Forbidden(format!("this account signs in with its Ferrum account, at {accounts}"))));
+    }
     if !from_page(headers) {
         if cookie_only {
             return Err(ApiError(Error::Forbidden("sign in from a page of this site".into())));
@@ -100,7 +110,8 @@ async fn session_response(st: &AppState, s: &Session, headers: &HeaderMap, cooki
 async fn login(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<LoginReq>) -> ApiResult<Response> {
     let st = app_state(&app)?;
     st.login_limiter.check(&format!("{}|{}", client_ip(&headers), req.tenant.to_lowercase())).await?;
-    if req.password.len() > 256 || req.email.len() > 254 || req.tenant.len() > 63 {
+    // The directory's people sign in on the accounts host's own page.
+    if req.password.len() > 256 || req.email.len() > 254 || req.tenant.len() > 63 || req.tenant.trim().eq_ignore_ascii_case(DIRECTORY) {
         return Err(ApiError(Error::Unauthorized("invalid tenant, email or password".into())));
     }
     match st.kernel.sign_in(&req.tenant, &req.email, &req.password).await? {
@@ -162,8 +173,8 @@ const CODE_ANSWER: std::time::Duration = std::time::Duration::from_millis(600);
 async fn send_code(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<SendCodeReq>) -> ApiResult<Response> {
     let st = app_state(&app)?;
     st.login_limiter.check(&format!("{}|{}", client_ip(&headers), req.tenant.to_lowercase())).await?;
-    if req.tenant.len() > 63 {
-        return Err(ApiError(Error::field("tenant", "is too long")));
+    if req.tenant.len() > 63 || req.tenant.trim().eq_ignore_ascii_case(DIRECTORY) {
+        return Err(ApiError(Error::field("tenant", "names no workspace")));
     }
     let until = tokio::time::Instant::now() + CODE_ANSWER;
     let sent = st.kernel.send_sign_in_code(&req.tenant, &req.email).await;
@@ -247,8 +258,15 @@ async fn sso_finish(State(app): State<AppContext>, headers: HeaderMap, Json(req)
     session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie")).await
 }
 
-async fn me(SetupAuth(ctx, setup_only): SetupAuth, State(app): State<AppContext>) -> ApiResult<Response> {
-    let shell_v2 = app_state(&app)?.shell.workspace(ctx.tenant).await?.shell_v2;
+async fn me(SetupAuth(ctx, setup_only): SetupAuth, State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    let shell_v2 = st.shell.workspace(ctx.tenant).await?.shell_v2;
+    // Shapes B and C: a joined account's password, two-step sign-in and passkeys are its Ferrum
+    // account's, kept at the accounts host.
+    let accounts = match st.shell.accounts_origin(&headers) {
+        Some(origin) if st.kernel.identity_of(ctx.tenant, ctx.user).await?.is_some() => Some(origin),
+        _ => None,
+    };
     Ok(Json(json!({
         "tenant": ctx.tenant,
         "user": {"id": ctx.user, "email": ctx.email, "full_name": ctx.full_name, "is_admin": ctx.is_admin, "roles": ctx.roles},
@@ -260,6 +278,7 @@ async fn me(SetupAuth(ctx, setup_only): SetupAuth, State(app): State<AppContext>
         "packages": ctx.schema.packages,
         "two_factor_setup": setup_only.is_some(),
         "shell_v2": shell_v2,
+        "accounts": accounts,
     }))
     .into_response())
 }
@@ -268,8 +287,10 @@ async fn two_factor_status(SetupAuth(ctx, _): SetupAuth, State(app): State<AppCo
     Ok(Json(app_state(&app)?.kernel.two_factor_status(&ctx).await?).into_response())
 }
 
-async fn two_factor_begin(SetupAuth(ctx, _): SetupAuth, State(app): State<AppContext>) -> ApiResult<Response> {
-    Ok(Json(app_state(&app)?.kernel.begin_two_factor(&ctx).await?).into_response())
+async fn two_factor_begin(SetupAuth(ctx, _): SetupAuth, State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    kept_by_identity(&st, &headers, &ctx).await?;
+    Ok(Json(st.kernel.begin_two_factor(&ctx).await?).into_response())
 }
 
 #[derive(Deserialize)]
@@ -278,8 +299,14 @@ struct CodeReq {
 }
 
 /// Turns two-factor sign-in on; a session that could only set it up gets a full one.
-async fn two_factor_enable(SetupAuth(ctx, setup_only): SetupAuth, State(app): State<AppContext>, Json(req): Json<CodeReq>) -> ApiResult<Response> {
+async fn two_factor_enable(
+    SetupAuth(ctx, setup_only): SetupAuth,
+    State(app): State<AppContext>,
+    headers: HeaderMap,
+    Json(req): Json<CodeReq>,
+) -> ApiResult<Response> {
     let st = app_state(&app)?;
+    kept_by_identity(&st, &headers, &ctx).await?;
     let codes = st.kernel.enable_two_factor(&ctx, &req.code).await?;
     let mut out = json!({"recovery_codes": codes});
     if let Some(s) = setup_only {
@@ -289,8 +316,10 @@ async fn two_factor_enable(SetupAuth(ctx, setup_only): SetupAuth, State(app): St
     Ok(Json(out).into_response())
 }
 
-async fn two_factor_recovery_codes(Auth(ctx): Auth, State(app): State<AppContext>, Json(req): Json<CodeReq>) -> ApiResult<Response> {
-    Ok(Json(json!({"recovery_codes": app_state(&app)?.kernel.new_recovery_codes(&ctx, &req.code).await?})).into_response())
+async fn two_factor_recovery_codes(Auth(ctx): Auth, State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<CodeReq>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    kept_by_identity(&st, &headers, &ctx).await?;
+    Ok(Json(json!({"recovery_codes": st.kernel.new_recovery_codes(&ctx, &req.code).await?})).into_response())
 }
 
 #[derive(Deserialize)]
@@ -299,8 +328,10 @@ struct DisableReq {
     code: Option<String>,
 }
 
-async fn two_factor_disable(Auth(ctx): Auth, State(app): State<AppContext>, Json(req): Json<DisableReq>) -> ApiResult<Response> {
-    app_state(&app)?.kernel.disable_two_factor(&ctx, req.password.as_deref(), req.code.as_deref()).await?;
+async fn two_factor_disable(Auth(ctx): Auth, State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<DisableReq>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    kept_by_identity(&st, &headers, &ctx).await?;
+    st.kernel.disable_two_factor(&ctx, req.password.as_deref(), req.code.as_deref()).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -321,6 +352,15 @@ async fn logout(State(app): State<AppContext>, method: axum::http::Method, heade
     }
     let mut res = StatusCode::NO_CONTENT.into_response();
     res.headers_mut().append(axum::http::header::SET_COOKIE, crate::shell::clear_cookie(st.shell.secure));
+    // Shapes B and C: signed out of this host only; the next sign-in here asks which account
+    // rather than going straight back in through the accounts host.
+    if st.shell.base().is_some() && matches!(st.shell.place(&headers).await?, crate::shell::Place::Workspace(_)) {
+        let secure = st.shell.secure;
+        res.headers_mut().append(
+            axum::http::header::SET_COOKIE,
+            crate::shell::host_cookie(secure, crate::shell::signed_out_cookie_name(secure), "1", std::time::Duration::from_secs(86_400)),
+        );
+    }
     Ok(res)
 }
 
@@ -402,8 +442,12 @@ async fn step_up(
     if req.password.len() > 256 {
         return Err(ApiError(Error::Unauthorized("wrong password".into())));
     }
-    let ws = st.shell.workspace(ctx.tenant).await?;
-    match st.kernel.sign_in(&ws.slug, &ctx.email, &req.password).await? {
+    // Shapes B and C: a joined account steps up with its Ferrum account's password (and app).
+    let (slug, email) = match st.kernel.identity_of(ctx.tenant, ctx.user).await? {
+        Some((_, email)) if st.shell.base().is_some() => (DIRECTORY.to_string(), email),
+        _ => (st.shell.workspace(ctx.tenant).await?.slug.clone(), ctx.email.clone()),
+    };
+    match st.kernel.sign_in(&slug, &email, &req.password).await? {
         SignIn::Session(_) | SignIn::SetupRequired(_) => {}
         SignIn::SecondFactor(t) => {
             let code = req
@@ -416,6 +460,17 @@ async fn step_up(
     }
     st.kernel.step_up_session(ctx.tenant, device).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// Shapes B and C: someone whose workspace account joined their Ferrum account has that account's
+/// password, two-step sign-in and passkeys, kept at the accounts host.
+async fn kept_by_identity(st: &AppState, headers: &HeaderMap, ctx: &ferrum_kernel::Ctx) -> Result<(), ApiError> {
+    if let Some(accounts) = st.shell.accounts_origin(headers)
+        && st.kernel.identity_of(ctx.tenant, ctx.user).await?.is_some()
+    {
+        return Err(ApiError(Error::Forbidden(format!("your Ferrum account keeps this; change it at {accounts}"))));
+    }
+    Ok(())
 }
 
 // ── passkeys (docs/plan/apps-ui.md §12.3, U6; the kernel's passkey.rs) ──
@@ -434,12 +489,14 @@ fn relying_party(st: &AppState, headers: &HeaderMap) -> Result<(String, Vec<Stri
 async fn passkey_options(BrowserSession(ctx, device): BrowserSession, State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let Some(device) = device else { return Err(ApiError(Error::invalid("make passkeys from a page of this site"))) };
+    kept_by_identity(&st, &headers, &ctx).await?;
     if !st.kernel.check_session(ctx.tenant, ctx.user, device).await?.stepped_up() {
         return Err(ApiError(Error::Forbidden("confirm your password to change how you sign in".into())));
     }
     let (rp, _) = relying_party(&st, &headers)?;
-    let ws = st.shell.workspace(ctx.tenant).await?;
-    Ok(Json(st.kernel.passkey_options(&ctx, &rp, &ws.name).await?).into_response())
+    // At the accounts host the passkey is for Ferrum itself, not for a workspace.
+    let name = if st.kernel.directory().await? == Some(ctx.tenant) { "Ferrum".to_string() } else { st.shell.workspace(ctx.tenant).await?.name.clone() };
+    Ok(Json(st.kernel.passkey_options(&ctx, &rp, &name).await?).into_response())
 }
 
 #[derive(Deserialize)]
@@ -458,6 +515,7 @@ async fn add_passkey(
     Json(req): Json<NewPasskey>,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
+    kept_by_identity(&st, &headers, &ctx).await?;
     let (_, origins) = relying_party(&st, &headers)?;
     let made = st.kernel.add_passkey(&ctx, req.request, &origins, &req.credential, &req.name).await?;
     Ok((StatusCode::CREATED, Json(made)).into_response())
@@ -506,7 +564,9 @@ async fn passkey_sign_in(State(app): State<AppContext>, headers: HeaderMap, Json
     let (_, origins) = relying_party(&st, &headers)?;
     let tenant = match st.shell.place(&headers).await? {
         crate::shell::Place::Workspace(t) | crate::shell::Place::Portal(t) => Some(t),
-        _ => None,
+        crate::shell::Place::Accounts => st.kernel.directory().await?,
+        crate::shell::Place::Any => None,
+        _ => return Err(ApiError(Error::Unauthorized("sign in on the workspace's address".into()))),
     };
     let s = st.kernel.passkey_sign_in(req.request, &origins, &req.credential, tenant).await?;
     session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie")).await
@@ -518,8 +578,10 @@ struct PasswordReq {
     new_password: String,
 }
 
-async fn change_password(Auth(ctx): Auth, State(app): State<AppContext>, Json(req): Json<PasswordReq>) -> ApiResult<Response> {
-    app_state(&app)?.kernel.set_password(&ctx, ctx.user, req.current_password.as_deref(), &req.new_password).await?;
+async fn change_password(Auth(ctx): Auth, State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<PasswordReq>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    kept_by_identity(&st, &headers, &ctx).await?;
+    st.kernel.set_password(&ctx, ctx.user, req.current_password.as_deref(), &req.new_password).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -535,7 +597,12 @@ async fn create_key(Auth(ctx): Auth, State(app): State<AppContext>, Json(req): J
     if req.name.trim().is_empty() || req.name.len() > 100 {
         return Err(ApiError(Error::field("name", "is required (max 100 characters)")));
     }
-    let (id, key) = app_state(&app)?.kernel.create_api_key(&ctx, ctx.user, req.name.trim(), req.expires_at, req.scope.as_deref()).await?;
+    let st = app_state(&app)?;
+    // A Ferrum account is no workspace: keys are made in the workspace they open.
+    if st.kernel.directory().await? == Some(ctx.tenant) {
+        return Err(ApiError(Error::Forbidden("make API keys in the workspace they are for".into())));
+    }
+    let (id, key) = st.kernel.create_api_key(&ctx, ctx.user, req.name.trim(), req.expires_at, req.scope.as_deref()).await?;
     Ok((StatusCode::CREATED, Json(json!({"id": id, "key": key, "note": "Store this key now; it cannot be shown again."}))).into_response())
 }
 
