@@ -112,6 +112,15 @@ pub fn newer(candidate: &str, current: &str) -> bool {
     }
 }
 
+/// A flow that has been through review and is meant to run here (`crate::flow`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FlowSpec {
+    pub id: Uuid,
+    pub name: String,
+    pub revision: i64,
+    pub body: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct EdgeConfig {
     pub version: String,
@@ -121,6 +130,8 @@ pub struct EdgeConfig {
     pub devices: Vec<DeviceLink>,
     #[serde(default)]
     pub rules: Vec<Rule>,
+    #[serde(default)]
+    pub flows: Vec<FlowSpec>,
     #[serde(default)]
     pub exports: Vec<Export>,
     #[serde(default)]
@@ -161,6 +172,13 @@ pub struct AlarmChange {
     pub raised: bool,
     #[serde(default)]
     pub value: Option<f64>,
+    /// When a flow raised it, and not a rule: which flow and node. `rule` is then the flow's id.
+    #[serde(default)]
+    pub node: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub severity: Option<String>,
 }
 
 /// Where one rule stands on one device.

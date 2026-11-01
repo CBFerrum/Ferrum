@@ -3,7 +3,7 @@
 
 use chrono::{DateTime, Utc};
 use ferrum_kernel::{Result, Tx};
-use ferrum_ops::contract::edge::{Comparison, DeviceLink, EdgeConfig, Export, Release, Rule};
+use ferrum_ops::contract::edge::{Comparison, DeviceLink, EdgeConfig, Export, FlowSpec, Release, Rule};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -151,6 +151,15 @@ pub async fn for_gateway(tx: &mut Tx, tenant: Uuid, gateway: Uuid, site: Option<
             sign_with: e.sign_with.filter(|s| !s.is_empty()),
         })
         .collect();
+    let flows: Vec<(Uuid, String, i64, String)> = sqlx::query_as(
+        "select id, flow_name, revision, published_body from e_edge_flow \
+         where tenant_id = $1 and live and published_body is not null and (site is null or site = $2) order by flow_name",
+    )
+    .bind(tenant)
+    .bind(site)
+    .fetch_all(&mut **tx)
+    .await?;
+    let flows = flows.into_iter().map(|(id, name, revision, body)| FlowSpec { id, name, revision, body }).collect();
     let release: Option<ReleaseRow> = sqlx::query_as(
         "select release_version as version, url, sha256, signature, expires_at, percent::text as percent from e_edge_release \
          where tenant_id = $1 and status = 'Rolling Out' and (site is null or site = $2) and expires_at > now() order by created_at desc limit 1",
@@ -162,7 +171,7 @@ pub async fn for_gateway(tx: &mut Tx, tenant: Uuid, gateway: Uuid, site: Option<
     let release = release
         .filter(|r| number(r.percent.as_deref()).unwrap_or(0.0) > bucket(gateway) || number(r.percent.as_deref()) == Some(100.0))
         .map(|r| Release { version: r.version, url: r.url, sha256: r.sha256, signature: r.signature, expires_at: r.expires_at });
-    let mut config = EdgeConfig { version: String::new(), definitions, devices, rules, exports, release };
+    let mut config = EdgeConfig { version: String::new(), definitions, devices, rules, flows, exports, release };
     config.version = hex::encode(Sha256::digest(serde_json::to_vec(&config).unwrap_or_default()));
     Ok(config)
 }

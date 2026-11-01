@@ -15,7 +15,8 @@ use crate::peer::Peer;
 use crate::update::{self, Pending};
 use chrono::{DateTime, Utc};
 use ferrum_ops_contract::command::Report;
-use ferrum_ops_contract::edge::{AlarmChange, Comparison, ConfigRequest, ConfigResponse, EdgeConfig, Export, Release, Rule, Watch};
+use ferrum_ops_contract::edge::{AlarmChange, Comparison, ConfigRequest, ConfigResponse, EdgeConfig, Export, FlowSpec, Release, Rule, Watch};
+use ferrum_ops_contract::flow::{self, Effect};
 use ferrum_ops_contract::schedule::{self, Held, Resource, Task};
 use ferrum_ops_contract::sync::{Fact, Health, SiteDevice};
 use ferrum_ops_contract::telemetry::{Class, Limits, Measurement};
@@ -86,6 +87,18 @@ struct Rules {
     watches: HashMap<(Uuid, Uuid), Watch>,
 }
 
+/// A flow in force, with what it remembers.
+struct RunningFlow {
+    id: Uuid,
+    name: String,
+    revision: i64,
+    compiled: flow::Compiled,
+    state: flow::State,
+}
+
+/// How often what flows remember is written down. A crash loses this much of a window or a hold.
+const FLOW_SAVE_MS: i64 = 15_000;
+
 pub struct Runtime {
     pub cfg: Config,
     pub journal: Arc<Journal>,
@@ -107,6 +120,8 @@ pub struct Runtime {
     last_attribute: Mutex<HashMap<(Uuid, String), Value>>,
     defined: Arc<Defined>,
     rules: Mutex<Rules>,
+    flows: Mutex<Vec<RunningFlow>>,
+    flows_saved: AtomicI64,
     /// Why what this gateway was given could not all start.
     problems: Mutex<Vec<String>>,
     /// Signed calls go one at a time: each must carry a later time than the last that arrived.
@@ -180,6 +195,8 @@ impl Runtime {
             last_attribute: Mutex::default(),
             defined,
             rules: Mutex::default(),
+            flows: Mutex::default(),
+            flows_saved: AtomicI64::new(0),
             problems: Mutex::default(),
             signing: tokio::sync::Mutex::new(()),
             exports: Mutex::default(),
@@ -223,13 +240,128 @@ impl Runtime {
                 devices.push(d.clone());
             }
         }
-        let problems = self.defined.apply(&definitions, &devices);
+        let mut problems = self.defined.apply(&definitions, &devices);
+        problems.extend(self.start_flows(managed.flows));
         for p in &problems {
             tracing::warn!("{p}");
         }
         *self.problems.lock().unwrap_or_else(|e| e.into_inner()) = problems;
         self.rules.lock().unwrap_or_else(|e| e.into_inner()).rules = managed.rules;
         *self.exports.lock().unwrap_or_else(|e| e.into_inner()) = managed.exports;
+    }
+
+    /// Becomes the flows it was given. One unchanged keeps what it remembers, and a new revision
+    /// starts afresh: its nodes may mean something else now.
+    fn start_flows(&self, specs: Vec<FlowSpec>) -> Vec<String> {
+        let saved: HashMap<String, flow::State> = self.journal.get("flow_state").ok().flatten().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let mut running = self.flows.lock().unwrap_or_else(|e| e.into_inner());
+        let mut was: Vec<RunningFlow> = running.drain(..).collect();
+        let mut problems = Vec::new();
+        for spec in specs {
+            if let Some(i) = was.iter().position(|f| f.id == spec.id && f.revision == spec.revision) {
+                running.push(was.swap_remove(i));
+                continue;
+            }
+            match flow::parse(&spec.body) {
+                Ok(compiled) => {
+                    let state = saved.get(&format!("{}:{}", spec.id, spec.revision)).cloned().unwrap_or_default();
+                    running.push(RunningFlow { id: spec.id, name: spec.name, revision: spec.revision, compiled, state });
+                }
+                Err(why) => problems.push(format!("flow {}: {why}", spec.name)),
+            }
+        }
+        problems
+    }
+
+    /// Passes something a device did to every flow, and does what they make of it.
+    fn feed(&self, input: &flow::Input, devices: &HashMap<String, SiteDevice>, batch: &mut Vec<Measurement>) {
+        let now = self.clock.now();
+        let mut running = self.flows.lock().unwrap_or_else(|e| e.into_inner());
+        for f in running.iter_mut() {
+            let output = f.compiled.input(&mut f.state, input, now);
+            self.act(f.id, &f.name, output, devices, batch);
+        }
+    }
+
+    /// What the clock alone causes in flows, and now and then writing down where they stand.
+    fn tick_flows(&self, devices: &HashMap<String, SiteDevice>, batch: &mut Vec<Measurement>) {
+        let now = self.clock.now();
+        let mut running = self.flows.lock().unwrap_or_else(|e| e.into_inner());
+        for f in running.iter_mut() {
+            let output = f.compiled.tick(&mut f.state, now);
+            self.act(f.id, &f.name, output, devices, batch);
+        }
+        let now_ms = self.clock.now_ms();
+        if !running.is_empty() && now_ms - self.flows_saved.load(Ordering::Relaxed) >= FLOW_SAVE_MS {
+            self.flows_saved.store(now_ms, Ordering::Relaxed);
+            let states: HashMap<String, &flow::State> = running.iter().map(|f| (format!("{}:{}", f.id, f.revision), &f.state)).collect();
+            let _ = self.journal.set("flow_state", &json!(states).to_string());
+        }
+    }
+
+    /// Does what a flow decided. Everything here is recorded before it counts, and nothing here
+    /// reaches equipment: a command is only a request, for the ledger to decide.
+    fn act(&self, id: Uuid, name: &str, output: flow::Output, devices: &HashMap<String, SiteDevice>, batch: &mut Vec<Measurement>) {
+        for p in output.problems {
+            tracing::warn!(flow = %name, "{p}");
+        }
+        let fact = |kind: &str, body: Value| {
+            let _ = self.journal.add_fact(&Fact { fact_id: Uuid::now_v7(), kind: kind.into(), at_source: self.clock.now(), actor: None, body });
+        };
+        let known = |code: &Option<String>| code.as_ref().and_then(|c| devices.get(c));
+        for effect in output.effects {
+            match effect {
+                Effect::Alarm { node, name: title, severity, device, raised, value } => {
+                    let Some(d) = known(&device) else {
+                        tracing::warn!(flow = %name, "{node} has no device to raise an alarm on");
+                        continue;
+                    };
+                    let change = AlarmChange { rule: id, device: d.id, raised, value, node: Some(node), name: Some(title), severity: Some(severity) };
+                    fact("edge.alarm", json!(change));
+                }
+                Effect::Event { device, name: event, value } => {
+                    if let Some(d) = known(&device) {
+                        fact("edge.event", json!({"device": d.id, "name": event, "value": value}));
+                    }
+                }
+                Effect::Attribute { device, key, value } => {
+                    if let Some(d) = known(&device) {
+                        fact("edge.attribute", json!({"device": d.id, "key": key, "value": value}));
+                    }
+                }
+                Effect::Metric { device, name: metric, value, unit } => {
+                    if let Some(d) = known(&device) {
+                        batch.push(Measurement {
+                            device_id: d.id,
+                            metric,
+                            value,
+                            unit,
+                            source_time: self.clock.now(),
+                            boot: self.boot,
+                            seq: self.seq.fetch_add(1, Ordering::Relaxed) + 1,
+                            quality: ferrum_ops_contract::Quality::Good,
+                            class: Class::Sample,
+                        });
+                    }
+                }
+                Effect::Notify { device, title } => fact("edge.notify", json!({"flow": id, "device": known(&device).map(|d| d.id), "title": title})),
+                Effect::Export { to, body } => {
+                    if let Ok(shed) = self.journal.add_exports(&to, &[body.to_string()], export::BUDGET) {
+                        self.export_shed.fetch_add(shed, Ordering::Relaxed);
+                    }
+                }
+                Effect::Command { node, device, operation, payload, expires_secs } => {
+                    let Some(d) = known(&device) else {
+                        tracing::warn!(flow = %name, "{node} has no device to ask {operation} of");
+                        continue;
+                    };
+                    fact(
+                        "edge.request",
+                        json!({"flow": id, "node": node, "device": d.id, "operation": operation, "payload": payload, "expires_secs": expires_secs}),
+                    );
+                }
+            }
+        }
     }
 
     /// An adapter on this machine, for a peer that asks. What is itself reached through a peer is
@@ -335,7 +467,7 @@ impl Runtime {
 
     /// Writes down an alarm's change: a fact for the platform, and what is raised, for a restart.
     fn alarm(&self, rules: &Rules, rule: Uuid, device: Uuid, raised: bool, value: Option<f64>) {
-        let change = AlarmChange { rule, device, raised, value };
+        let change = AlarmChange { rule, device, raised, value, node: None, name: None, severity: None };
         let fact = Fact { fact_id: Uuid::now_v7(), kind: "edge.alarm".into(), at_source: self.clock.now(), actor: None, body: json!(change) };
         let _ = self.journal.add_fact(&fact);
         let up: Vec<&(Uuid, Uuid)> = rules.watches.iter().filter(|(_, w)| w.raised()).map(|(k, _)| k).collect();
@@ -831,6 +963,7 @@ impl Runtime {
                 Err(_) => tracing::debug!(adapter = %name, "read timed out"),
             }
         }
+        self.tick_flows(&devices, &mut batch);
         // Past the reserve only what someone has to know is kept, and what cannot be kept is counted.
         if free_disk(&self.cfg.state_dir).is_some_and(|f| f < self.cfg.reserve_mb << 20) {
             batch.retain(|m| m.class == Class::Alarm);
@@ -862,6 +995,8 @@ impl Runtime {
                 if quality != ferrum_ops_contract::Quality::Bad {
                     self.latest.lock().unwrap_or_else(|e| e.into_inner()).insert(key, value);
                     self.judge(&device, d.id, &metric, value);
+                    let input = flow::Input { device: device.clone(), metric: Some(metric.clone()), value: json!(value), ..Default::default() };
+                    self.feed(&input, devices, batch);
                 }
                 batch.push(Measurement {
                     device_id: d.id,
@@ -887,6 +1022,7 @@ impl Runtime {
                         body: json!({"device": d.id, "key": key, "value": value}),
                     };
                     let _ = self.journal.add_fact(&fact);
+                    self.feed(&flow::Input { device, attribute: Some(key), value, ..Default::default() }, devices, batch);
                 }
             }
             Reading::Event { device, name, value } => {
@@ -899,10 +1035,11 @@ impl Runtime {
                     body: json!({"device": d.id, "name": name, "value": value}),
                 };
                 let _ = self.journal.add_fact(&fact);
+                self.feed(&flow::Input { device, event: Some(name), value, ..Default::default() }, devices, batch);
             }
             Reading::State { device, state, reason } => {
                 let Some(d) = devices.get(&device) else { return };
-                let changed = self.last_state.lock().unwrap_or_else(|e| e.into_inner()).insert(device, state.clone()).as_ref() != Some(&state);
+                let changed = self.last_state.lock().unwrap_or_else(|e| e.into_inner()).insert(device.clone(), state.clone()).as_ref() != Some(&state);
                 if changed {
                     let fact = Fact {
                         fact_id: Uuid::now_v7(),
@@ -912,6 +1049,7 @@ impl Runtime {
                         body: json!({"device": d.id, "state": state, "reason": reason}),
                     };
                     let _ = self.journal.add_fact(&fact);
+                    self.feed(&flow::Input { device, state: Some(state), ..Default::default() }, devices, batch);
                 }
             }
         }
@@ -962,6 +1100,7 @@ impl Runtime {
             "links": self.defined.links(),
             "problems": *self.problems.lock().unwrap_or_else(|e| e.into_inner()),
             "strangers": self.defined.strangers(),
+            "flows": self.flows.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|f| json!({"name": f.name, "revision": f.revision})).collect::<Vec<_>>(),
             "exports": self.exports.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|e| json!({"name": e.name, "waiting": self.journal.export_backlog(&e.name).unwrap_or(0)})).collect::<Vec<_>>(),
             "exports_shed": self.export_shed.load(Ordering::Relaxed),
             "notices": self.journal.notices(20).unwrap_or_default(),

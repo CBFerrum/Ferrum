@@ -1,7 +1,7 @@
 package: edge
 version: 0.1.0
 label: IoT Edge
-description: Device definitions, edge rules and alarms, exports and releases
+description: Device definitions, edge rules and flows, alarms, exports and releases
 depends: [ops]
 field_prefix: edge_
 
@@ -10,7 +10,7 @@ modules:
     label: IoT Edge
     icon: factory
     order: 61
-    items: [DeviceDefinition, EdgeRule, EdgeAlarm, EdgeExport, EdgeRelease]
+    items: [DeviceDefinition, EdgeRule, EdgeFlow, EdgeAlarm, EdgeExport, EdgeRelease]
 
 overlays:
   - entity: Device
@@ -27,6 +27,7 @@ roles:
     permissions:
       - {entity: DeviceDefinition, read: true}
       - {entity: EdgeRule, read: true}
+      - {entity: EdgeFlow, read: true}
       - {entity: EdgeAlarm, read: true}
       - {entity: EdgeExport, read: true}
       - {entity: EdgeRelease, read: true}
@@ -37,6 +38,7 @@ roles:
     permissions:
       - {entity: DeviceDefinition, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: EdgeRule, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: EdgeFlow, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: EdgeAlarm, read: true, export: true}
       - {entity: EdgeExport, read: true, write: true, create: true, delete: true}
       - {entity: EdgeRelease, read: true, write: true, create: true}
@@ -45,3 +47,13 @@ roles:
       - {entity: Site, read: true}
       - {entity: SiteArea, read: true}
       - {entity: Company, read: true}
+  - name: Edge Reviewer
+    description: Reviews flows drawn by others, and decides when they run.
+    permissions:
+      - {entity: EdgeFlow, read: true, write: true}
+      - {entity: DeviceDefinition, read: true}
+      - {entity: EdgeRule, read: true}
+      - {entity: EdgeAlarm, read: true}
+      - {entity: EdgeExport, read: true}
+      - {entity: Device, read: true}
+      - {entity: Site, read: true}

@@ -6,6 +6,8 @@
 //! |---|---|---|
 //! | `GET /overview` | Edge Viewer | gateways with their connections, what is alarmed, strangers |
 //! | `POST /definitions/try` | Edge Engineer | `{body, topic?, sample?, sample_hex?}`: checks a definition and reads a sample |
+//! | `POST /flows/try` | Edge Engineer or Reviewer | `{body, script?, until?}`: checks a flow and walks a script through it |
+//! | `POST /flows/{id}/simulate` | Edge Engineer | `{script, until?}`: the same for what is saved, which is what lets it go for review |
 //! | `GET /devices/{id}` | Edge Viewer | attributes, newest values, open alarms, recent events |
 //! | `PUT /devices/{id}/desired` | Edge Engineer | `{key, value}`: asks for an attribute through the ledger |
 //! | `POST /devices/{id}/token` | Edge Engineer | a token for a device that talks to us directly, shown once |
@@ -28,6 +30,7 @@ use ferrum_kernel::{Ctx, Doc, Error, Kernel, Result, Site, SiteRequest, SiteResp
 use ferrum_ops::commands::{self, Issuer, NewCommand};
 use ferrum_ops::contract::driver;
 use ferrum_ops::contract::edge::{ConfigRequest, ConfigResponse};
+use ferrum_ops::contract::flow;
 use ferrum_ops::contract::telemetry::{Class, Quality};
 use ferrum_ops::contract::{Fact, Measurement};
 use ferrum_ops::identity::{self, Refused};
@@ -41,6 +44,7 @@ pub struct EdgeSite;
 
 const READ: &[&str] = &["Edge Viewer", "Edge Engineer"];
 const ENGINEER: &[&str] = &["Edge Engineer"];
+const FLOWS: &[&str] = &["Edge Engineer", "Edge Reviewer"];
 
 /// What a device sends in one call, at most.
 const MAX_INGEST: usize = 256 << 10;
@@ -296,6 +300,15 @@ async fn signed_in(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<SiteRespo
             may(ctx, ENGINEER)?;
             try_definition(&body(req)?)
         }
+        ("POST", ["flows", "try"]) => {
+            may(ctx, FLOWS)?;
+            let b = body(req)?;
+            return Ok(ok(try_flow(b["body"].as_str().unwrap_or_default(), &b)));
+        }
+        ("POST", ["flows", id, "simulate"]) => {
+            may(ctx, ENGINEER)?;
+            return simulate_flow(k, ctx, uuid(id)?, &body(req)?).await.map(ok);
+        }
         ("GET", ["devices", id]) => {
             may(ctx, READ)?;
             device(k, ctx, uuid(id)?).await?
@@ -326,6 +339,42 @@ async fn signed_in(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<SiteRespo
         _ => return Err(Error::NotFound("route".into())),
     };
     Ok(ok(value))
+}
+
+/// Checks a flow and, given a script, shows what it would do, by the code a gateway runs.
+fn try_flow(text: &str, b: &Value) -> Value {
+    let compiled = match flow::parse(text) {
+        Ok(f) => f,
+        Err(why) => return json!({"ok": false, "error": why}),
+    };
+    let script: Vec<flow::Scripted> = match serde_json::from_value(b.get("script").cloned().unwrap_or(json!([]))) {
+        Ok(s) => s,
+        Err(e) => return json!({"ok": false, "error": format!("the script: {e}")}),
+    };
+    match flow::simulate(&compiled, &script, b["until"].as_i64().unwrap_or(0)) {
+        Ok(moments) => json!({"ok": true, "digest": compiled.digest, "moments": moments}),
+        Err(why) => json!({"ok": false, "error": why}),
+    }
+}
+
+/// Simulating a version is what lets it go for review, and only a run that worked counts.
+async fn simulate_flow(k: &Kernel, ctx: &Ctx, id: Uuid, b: &Value) -> Result<Value> {
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let text: Option<Option<String>> =
+        sqlx::query_scalar("select body from e_edge_flow where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).fetch_optional(&mut *tx).await?;
+    let text = text.ok_or_else(|| Error::NotFound("flow".into()))?.unwrap_or_default();
+    let result = try_flow(&text, b);
+    let moments = result["moments"].as_array().map_or(0, Vec::len);
+    if result["ok"] == json!(true) {
+        if moments == 0 {
+            return Ok(json!({"ok": false, "error": "nothing happened: give it a script that reaches its nodes"}));
+        }
+        let mut values = Doc::new();
+        values.insert("simulated_digest".into(), result["digest"].clone());
+        k.set_values_tx(&sys(ctx), &mut tx, "EdgeFlow", id, values).await?;
+    }
+    tx.commit().await?;
+    Ok(result)
 }
 
 async fn gateway_config(k: &Kernel, req: &SiteRequest) -> Result<SiteResponse> {
