@@ -6,4 +6,11 @@ ignore = [
   # and holds no RSA private key; it verifies providers' RS256 ID tokens with public keys only.
   "RUSTSEC-2023-0071",
   "RUSTSEC-2026-0387",
+  # rustls-webpki 0.102 arrives through rumqttc, which uses only its error type. Certificates are
+  # checked by rustls, through the current rustls-webpki.
+  "RUSTSEC-2026-0049",
+  "RUSTSEC-2026-0098",
+  "RUSTSEC-2026-0099",
+  "RUSTSEC-2026-0104",
+  "RUSTSEC-2026-0382",
 ]
