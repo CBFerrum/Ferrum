@@ -10,7 +10,7 @@ license = "AGPL-3.0-or-later"
 crate-type = ["cdylib"]
 
 [dependencies]
-ferrum-plugin-sdk = { path = "../../sdk" }
+ferrum-plugin-sdk = { git = "https://github.com/CBFerrum/ferrum-sdk" }
 
 [profile.release]
 opt-level = "s"

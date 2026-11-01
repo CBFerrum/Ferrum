@@ -303,7 +303,8 @@ pub fn push_filter_for(qb: &mut QueryBuilder<Postgres>, ctx: &Ctx, ent: &EffEnti
 
 /// Whether the caller may read `name` on `ent`; system keys carry nothing protected.
 pub fn readable(ctx: &Ctx, ent: &EffEntity, name: &str) -> bool {
-    SYSTEM_KEYS.contains(&name) || ent.field(name).is_some_and(|f| ctx.perms.can_read_field(&ent.def.name, f))
+    SYSTEM_KEYS.contains(&name)
+        || ent.field(name).is_some_and(|f| ctx.perms.can_read_field(&ent.def.name, f) && ctx.egress.as_ref().is_none_or(|e| e.allows_field(f)))
 }
 
 fn push_filter_impl(qb: &mut QueryBuilder<Postgres>, schema: &Schema, ctx: Option<&Ctx>, ent: &EffEntity, alias: &str, f: &Filter) -> Result<()> {

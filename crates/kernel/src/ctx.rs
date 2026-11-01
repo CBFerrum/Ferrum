@@ -302,6 +302,11 @@ impl PermSet {
 /// Everything known about the caller for one request.
 #[derive(Debug, Clone)]
 pub struct Ctx {
+    /// Set while what is read goes on to an AI provider: see [`Egress`].
+    pub egress: Option<Arc<Egress>>,
+    /// The workspace's account is restricted (crate::account): nothing changes, everything can be
+    /// read and taken away.
+    pub read_only: bool,
     pub tenant: Uuid,
     pub user: Uuid,
     pub email: String,
@@ -320,10 +325,42 @@ pub struct Ctx {
     pub depth: u8,
 }
 
+/// What may leave for an AI provider. Being able to read something does not make it yours to send:
+/// a person with access to pay records may look at them, and that says nothing about passing them to
+/// a third party. So a context can carry this, and everything read through it is narrowed: entities
+/// marked `internal` are refused, and fields in a permission group or holding a secret are left out,
+/// in records, lists, filters, sorting, reports and audit trails alike. A workspace can widen it.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct Egress {
+    /// Field groups that may go.
+    #[serde(default)]
+    pub groups: BTreeSet<String>,
+    /// `internal` entities that may go all the same.
+    #[serde(default)]
+    pub entities: BTreeSet<String>,
+}
+
+impl Egress {
+    pub fn allows_entity(&self, ent: &ferrum_meta::EntityDef) -> bool {
+        !ent.internal || self.entities.contains(&ent.name)
+    }
+
+    pub fn allows_field(&self, f: &FieldDef) -> bool {
+        f.ftype != FieldType::Secret && f.perm_group.as_ref().is_none_or(|g| self.groups.contains(g))
+    }
+}
+
 impl Ctx {
+    /// This context, for reading what goes on to an AI provider.
+    pub fn for_provider(&self, egress: Egress) -> Ctx {
+        Ctx { egress: Some(Arc::new(egress)), ..self.clone() }
+    }
+
     /// Full-power context for engine work (seeding, automations, migrations).
     pub fn system(tenant: Uuid, schema: Arc<Schema>) -> Ctx {
         Ctx {
+            egress: None,
+            read_only: false,
             tenant,
             user: Uuid::nil(),
             email: "system@ferrum.local".into(),
@@ -374,6 +411,9 @@ impl Ctx {
     }
 
     pub fn require(&self, entity: &str, action: Action) -> Result<Access> {
+        if self.read_only && !matches!(action, Action::Read | Action::Export) {
+            return Err(Error::Forbidden("this workspace is read-only until its account is settled; you can still read and export everything".into()));
+        }
         match self.perms.access(entity, action) {
             Access::None => Err(Error::Forbidden(format!("not permitted to {action:?} {entity}").to_lowercase())),
             a => Ok(a),
@@ -514,6 +554,9 @@ fn owner_fields(ctx: &Ctx, ent: &EffEntity) -> Vec<OwnerField> {
 
 pub fn row_scope(ctx: &Ctx, ent: &EffEntity, action: Action) -> Result<RowScope> {
     ctx.require(&ent.def.name, action)?;
+    if ctx.egress.as_ref().is_some_and(|e| !e.allows_entity(&ent.def)) {
+        return Err(Error::Forbidden(format!("{} stays inside this workspace: it is not sent to the AI provider", ent.def.label)));
+    }
     let mut scope = RowScope::default();
     if ctx.is_admin || ctx.is_system {
         return Ok(scope);

@@ -134,10 +134,16 @@ async fn stop(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uui
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+/// `GET /api/assistant/usage`: this month's tokens, by person and model (administrators).
+async fn usage(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    Ok(Json(assistant::usage(&app_state(&app)?.kernel, &ctx).await?).into_response())
+}
+
 pub fn routes() -> Routes {
     use axum::routing::{get, post};
     Routes::new()
         .add("/api/assistant", get(status))
+        .add("/api/assistant/usage", get(usage))
         .add("/api/assistant/threads", post(create))
         .add("/api/assistant/threads/{id}", get(read).delete(remove))
         .add("/api/assistant/threads/{id}/messages", post(send))

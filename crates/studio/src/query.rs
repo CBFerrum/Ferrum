@@ -1416,6 +1416,8 @@ pub(crate) mod tests {
             schema,
             perms: Arc::new(perms),
             depth: 0,
+            egress: None,
+            read_only: false,
         }
     }
 

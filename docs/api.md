@@ -482,8 +482,8 @@ Personal data, beside `/api/admin/privacy`: `GET`/`POST /api/admin/restrictions`
 /api/admin/restrictions/lift` `{email}`; `GET`/`POST /api/admin/retention`, `PUT`/`DELETE
 /api/admin/retention/{id}`, `POST /api/admin/retention/{id}/preview` → `{reaches, more}`.
 
-Customizations and upgrades: `GET /api/admin/customize/conflicts` → `{conflicts: [{id, entity, op, was,
-now, gone, suspended}]}`; `POST /api/admin/customize/{id}/keep` keeps one over what its package says now.
+Customizations and upgrades: `GET /api/customize/conflicts` → `{conflicts: [{id, entity, op, was,
+now, gone, suspended}]}`; `POST /api/customize/{id}/keep` keeps one over what its package says now.
 
 ## SCIM 2.0 — `/api/scim/v2` ([identity lifecycle](identity-lifecycle.md))
 

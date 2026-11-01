@@ -59,7 +59,8 @@ impl TokenSession {
 async fn session_of(st: &crate::state::AppState, token: &str) -> Result<TokenSession, ApiError> {
     if token.starts_with("fk_") {
         let (s, scope) = st.kernel.verify_api_key(token).await?;
-        if scope.is_some() {
+        // Support keys go through like anyone's: the role behind them decides what they reach.
+        if scope.as_deref().is_some_and(|s| s != "support") {
             return Err(ApiError(Error::Unauthorized(
                 "this key has a single purpose (calendar and contacts apps, or an identity provider) and works only there".into(),
             )));
@@ -217,6 +218,14 @@ impl FromRequestParts<AppContext> for Auth {
     async fn from_request_parts(parts: &mut Parts, state: &AppContext) -> Result<Self, Self::Rejection> {
         let st = app_state(state)?;
         let (ctx, _, token_app) = caller_with_app(&st, &parts.method, &parts.headers).await?;
+        // Support access is seen by the customer, request by request (crates/kernel/src/support.rs).
+        if ctx.email.ends_with(ferrum_kernel::support::SUPPORT_DOMAIN) {
+            let (grant, level) = st.kernel.support_level(&ctx).await?.ok_or_else(|| ApiError(Error::Unauthorized("this support access has ended".into())))?;
+            if !ferrum_kernel::support::reaches_records(&level) && parts.uri.path() != "/api/support/report" {
+                return Err(ApiError(Error::Forbidden(format!("{level} access reaches no records"))));
+            }
+            st.kernel.support_used(&ctx, grant, parts.method.as_str(), parts.uri.path()).await?;
+        }
         match (token_app, parts.headers.get("x-ferrum-app")) {
             (Some(app), Some(header)) if header.as_bytes() != app.as_bytes() => {
                 Err(ApiError(Error::Forbidden(format!("this token is {app}'s, not {}'s", header.to_str().unwrap_or("another app")))))

@@ -212,6 +212,11 @@ pub async fn complete(k: &Kernel, objects: &Objects, ctx: &Ctx, id: Uuid) -> Res
         forget(k, ctx.tenant, id).await?;
         return Err(Error::field("size", format!("{stored} bytes arrived, {size} were announced; start a new upload")));
     }
+    if let Err(e) = k.check_storage_quota(ctx.tenant, stored).await {
+        objects.delete(&key).await;
+        forget(k, ctx.tenant, id).await?;
+        return Err(e);
+    }
     let bytes = objects.op.reader(&key).await.map_err(storage_err)?.into_bytes_stream(..).await.map_err(storage_err)?;
     let scanned = match k.scan_stream(ctx, &name, stored, bytes.map(|chunk| chunk.map_err(storage_err))).await {
         Ok(status) => status,

@@ -5,6 +5,7 @@
 //! isolation enforced twice: by the code (scopes) and by Postgres row-level security.
 
 pub mod access;
+pub mod account;
 pub mod apps;
 pub mod audit;
 pub mod auth;
@@ -47,6 +48,7 @@ pub mod secret;
 pub mod shell;
 pub mod sso;
 pub mod store;
+pub mod support;
 pub mod tenant;
 pub mod twofactor;
 pub mod value;
@@ -249,6 +251,12 @@ impl Kernel {
         audit::anchor_day(&self.db, yesterday).await?;
         if let Err(e) = self.queue_retention().await {
             tracing::warn!("queueing retention: {e}");
+        }
+        if let Err(e) = self.record_usage().await {
+            tracing::warn!("recording usage: {e}");
+        }
+        if let Err(e) = self.expire_support().await {
+            tracing::warn!("closing expired support access: {e}");
         }
         let purged = self.purge_old_events(self.settings.event_retention_days).await?
             + self.oauth_purge().await?
