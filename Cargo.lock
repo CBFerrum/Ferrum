@@ -2583,7 +2583,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-sign"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-sign?branch=main#b9b4e6ef3e79aa96154d55120b8b8bba28331416"
+source = "git+https://github.com/CBFerrum/ferrum-app-sign?branch=main#426401a9680ed15a9da309e0b0ec54dcf3c0a18c"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
