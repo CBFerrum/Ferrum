@@ -90,6 +90,15 @@ impl Objects {
         Ok(Some((size, hex::encode(hash.finalize()))))
     }
 
+    /// Writes, reads and deletes a probe object: whether this store works, and not merely answers.
+    pub async fn probe(&self) -> Result<()> {
+        let key = format!(".ferrum-probe/{}", Uuid::now_v7());
+        self.op.write(&key, b"ok".to_vec()).await.map_err(storage_err)?;
+        let back = self.op.read(&key).await.map_err(storage_err)?;
+        self.op.delete(&key).await.map_err(storage_err)?;
+        if back.to_bytes().as_ref() == b"ok" { Ok(()) } else { Err(Error::Unavailable("storage: a probe came back different".into())) }
+    }
+
     async fn exists(&self, key: &str) -> Result<bool> {
         match self.op.stat(key).await {
             Ok(_) => Ok(true),
@@ -203,6 +212,18 @@ pub async fn complete(k: &Kernel, objects: &Objects, ctx: &Ctx, id: Uuid) -> Res
         forget(k, ctx.tenant, id).await?;
         return Err(Error::field("size", format!("{stored} bytes arrived, {size} were announced; start a new upload")));
     }
+    let bytes = objects.op.reader(&key).await.map_err(storage_err)?.into_bytes_stream(..).await.map_err(storage_err)?;
+    let scanned = match k.scan_stream(ctx, &name, stored, bytes.map(|chunk| chunk.map_err(storage_err))).await {
+        Ok(status) => status,
+        // Found: the bytes go, the same way as ones of the wrong size. A scanner that is down keeps
+        // them, unrecorded, for another try at completing.
+        Err(Error::Invalid(why)) => {
+            objects.delete(&key).await;
+            forget(k, ctx.tenant, id).await?;
+            return Err(Error::Invalid(why));
+        }
+        Err(e) => return Err(e),
+    };
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     // Deleting the pending row first makes completion happen once, however many requests race.
     let claimed = sqlx::query("delete from file_upload where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).execute(&mut *tx).await?.rows_affected();
@@ -210,8 +231,8 @@ pub async fn complete(k: &Kernel, objects: &Objects, ctx: &Ctx, id: Uuid) -> Res
         return Err(Error::NotFound("upload".into()));
     }
     sqlx::query(
-        "insert into file_object (tenant_id, id, entity, record_id, file_name, content_type, size_bytes, storage_key, sha256, created_by) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        "insert into file_object (tenant_id, id, entity, record_id, file_name, content_type, size_bytes, storage_key, sha256, created_by, scan_status) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(ctx.tenant)
     .bind(id)
@@ -223,6 +244,7 @@ pub async fn complete(k: &Kernel, objects: &Objects, ctx: &Ctx, id: Uuid) -> Res
     .bind(&key)
     .bind(&sha)
     .bind(ctx.user)
+    .bind(scanned)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;

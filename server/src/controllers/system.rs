@@ -75,6 +75,14 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
             .await
             .map_err(Error::from)?;
     let tenants: i64 = sqlx::query_scalar("select count(*) from tenant").fetch_one(&mut *tx).await.map_err(Error::from)?;
+    let (jobs_queued, jobs_running, jobs_failed, job_wait): (i64, i64, i64, Option<f64>) = sqlx::query_as(
+        "select count(*) filter (where status = 'queued'), count(*) filter (where status = 'running'), \
+         count(*) filter (where status = 'failed' and finished_at > now() - interval '1 day'), \
+         extract(epoch from now() - min(run_at) filter (where status = 'queued' and run_at <= now()))::float8 from job",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(Error::from)?;
     tx.commit().await.map_err(Error::from)?;
     let pool = &st.kernel.db.pool;
     let body = format!(
@@ -87,11 +95,16 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
          # TYPE ferrum_outbox_oldest_pending_seconds gauge\nferrum_outbox_oldest_pending_seconds {}\n\
          # TYPE ferrum_webhook_pending gauge\nferrum_webhook_pending {wh_pending}\n\
          # TYPE ferrum_webhook_dead gauge\nferrum_webhook_dead {wh_dead}\n\
-         # TYPE ferrum_tenants gauge\nferrum_tenants {tenants}\n",
+         # TYPE ferrum_tenants gauge\nferrum_tenants {tenants}\n\
+         # TYPE ferrum_jobs_queued gauge\nferrum_jobs_queued {jobs_queued}\n\
+         # TYPE ferrum_jobs_running gauge\nferrum_jobs_running {jobs_running}\n\
+         # HELP ferrum_jobs_failed_day Jobs that gave up in the last day.\n# TYPE ferrum_jobs_failed_day gauge\nferrum_jobs_failed_day {jobs_failed}\n\
+         # TYPE ferrum_jobs_oldest_waiting_seconds gauge\nferrum_jobs_oldest_waiting_seconds {}\n",
         STARTED.elapsed().as_secs(),
         pool.size(),
         pool.num_idle(),
-        oldest.unwrap_or(0.0)
+        oldest.unwrap_or(0.0),
+        job_wait.unwrap_or(0.0)
     );
     let mut resp = body.into_response();
     resp.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain; version=0.0.4"));

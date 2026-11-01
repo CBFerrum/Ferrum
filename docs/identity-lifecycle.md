@@ -18,7 +18,8 @@ the identity provider turning them off. In one transaction:
 | OAuth grants | Refresh tokens revoked, codes spent. |
 | Notifications on devices | Push subscriptions removed. Queued mail to them is not sent. |
 | Open assignments | Move to `reassign_to`, or the workspace's `deprovision_reassign_to` setting (a person's id). Without either they stay open, and the answer counts them. |
-| Everything else they own | `ferrum.user.deprovisioned` is published, for apps to hand over what they keep themselves. |
+| What packages say they are named on | Moves to the successor right after, in batches (`handover` in a package's manifest): open tickets, leads, tasks. What is finished keeps the name of who did it. |
+| Anything an app does beyond that | `ferrum.user.deprovisioned` is published for it: Drive's links and locks, say. |
 
 Their row stays, so their name stays on what they did. The audit trail records the reason and the
 counts, by the person's id, never their email.
@@ -26,9 +27,11 @@ counts, by the person's id, never their email.
 It refuses your own account, a plugin's service account, and a workspace's last administrator, so
 that nobody locks a workspace out. Repeating it is harmless.
 
-**What it does not do yet.** No app handles `ferrum.user.deprovisioned`, so what apps keep (Drive
-shares, helpdesk queues, public links someone made) stays until those apps do. Files already
-downloaded and offline copies on a device cannot be reached from here.
+With no successor, nothing moves and the answer counts the open assignments. Name one later with
+`POST /api/admin/users/{id}/hand-over` `{"to": "<person's id>", "reason": "..."}`.
+
+**What it cannot do.** Files already downloaded, and offline copies on a device, cannot be reached
+from here.
 
 ## SCIM provisioning
 

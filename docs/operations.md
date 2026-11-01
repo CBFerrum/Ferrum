@@ -9,7 +9,7 @@ through PostgreSQL `NOTIFY`. Any replica can be killed or added at any time.
 
 | Component | Role | Failure behaviour |
 |---|---|---|
-| API replicas (`ferrum start`) | Stateless HTTP API; each also runs the outbox dispatcher, webhook sender, metadata listener and maintenance loops | Any replica may die at any time; work is claimed with `SKIP LOCKED` / advisory locks and retried by the others. Stopped (`SIGTERM`), a replica stops its background loops and live connections, answers the requests in flight (up to 20 s), then closes its database pools: within Kubernetes' 40 s grace period |
+| API replicas (`ferrum start`) | Stateless HTTP API; each also runs the outbox dispatcher, webhook sender, job runner, metadata listener and maintenance loops | Any replica may die at any time; work is claimed with `SKIP LOCKED` / advisory locks and retried by the others. Stopped (`SIGTERM`), a replica stops its background loops and live connections, answers the requests in flight (up to 20 s), then closes its database pools: within Kubernetes' 40 s grace period |
 | PostgreSQL 17 (CloudNativePG) | All state: documents, ledgers, audit, outbox, plugins | Synchronous replica + automatic failover; WAL archiving for point-in-time recovery |
 | Object storage (S3 or compatible) | Attachments (`FERRUM_S3_BUCKET`, `FERRUM_S3_ENDPOINT`) | Required in production; checked with a write/delete probe at boot (logged, not fatal) |
 
@@ -23,6 +23,8 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `JWT_SECRET` | yes | Base64, ≥ 32 random bytes: `openssl rand -base64 48`. Rotating it signs everyone out |
 | `FERRUM_RETIRED_SECRET_KEYS` | no | Keys being rotated out, comma-separated: see *Rotating the secret key*. |
 | `FERRUM_SECRET_KEY` | yes | Base64 of exactly 32 random bytes: `openssl rand -base64 32`. Seals secret fields (mail passwords, API keys) and plugins' settings (payment gateways' keys among them) with AES-256-GCM; every replica needs the same key. Back it up: values sealed with a lost key must be entered again |
+| `FERRUM_CLAMAV_ADDR` | recommended | A ClamAV daemon uploads pass through, `host:3310`. What it finds is refused and audited; with it set, a scanner that cannot answer refuses uploads too. See *Malware scanning*. |
+| `FERRUM_CLAMAV_MAX_MB` | with a scanner | The scanner's `StreamMaxLength` in MiB (default 25). Files past it are stored unscanned. |
 | `FERRUM_BOOTSTRAP_TOKEN` | no | Enables `POST /api/tenants` with header `X-Ferrum-Bootstrap-Token`; empty disables it |
 | `FERRUM_METRICS_TOKEN` | recommended | `/metrics` then requires `Authorization: Bearer <token>` |
 | `FERRUM_S3_BUCKET`, `FERRUM_S3_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | multi-replica | Attachment storage on S3 (region `auto` if empty) |
@@ -290,6 +292,66 @@ rather than go out unsigned, so make new ones. The Web Push key is replaced, and
 again. Passwords, sessions and business data are not affected. Restoring a backup without its key
 leaves the same state.
 
+## Background jobs
+
+Long work runs in the `job` table: bulk operations over many records, workspace exports, and whatever
+apps register (`HookRegistry::add_job_handler`). Every replica with background loops takes jobs, up
+to 4 at once; a workspace gets at most 3 running across the cluster, and each workspace with work
+takes its turn.
+
+| What happens | What the job does |
+|---|---|
+| Its replica dies | The lease (60 s) runs out and another replica takes it over. That counted as an attempt, so a job that kills its worker is given up on after `max_attempts` (5; 3 for exports) and stays `failed` for someone to look at, and the person who asked is told. |
+| Its replica is stopped | It goes back in the queue, the attempt uncounted, before the replica exits. A deployment costs nothing. |
+| It fails | Retried after 10 s, 20 s, 40 s and so on up to an hour. Something that cannot succeed (invalid, forbidden, not found) fails at once. Only the job's owner and administrators read `last_error`, and internal errors say so without detail: the detail is in the log, under the job's id. |
+| It is cancelled | At once if it has not started. Otherwise within 5 s: the work is dropped at its next `await`, and its open transaction rolls back. What earlier transactions finished stays done. |
+| Its owner left or lost a right | It runs as they are when it runs, so it fails, or the records they may no longer touch are listed in its result. A bulk job looks again at every 500 records. |
+
+Jobs run at least once: a handler must be safe to repeat. Bulk jobs resume after the last 500 records
+they recorded, so a lost worker repeats no more than those. Finished jobs are deleted after 30 days.
+
+**Workspace exports.** `POST /api/admin/export` gives an administrator a copy of everything: records
+with their child rows, what packages list in `export_tables` (journals, stock moves), attached files,
+the audit trail, people, roles, permissions, customizations and automations, in zip parts of about
+128 MB of JSON lines and files, deleted after 7 days. Passwords, sign-in factors, secret fields,
+sealed settings, API keys and sessions stay out. `manifest.json` names every workspace table it did
+not carry (`tables_left_out`): read it before relying on an export as a way out.
+
+## Malware scanning
+
+Set `FERRUM_CLAMAV_ADDR` to a ClamAV daemon (`clamav/clamav:stable`, listening on 3310; give it 2 GB of
+memory, and keep it on the private network: it has no authentication). Every upload passes through it
+before it is stored, whichever app it came through and whether it reached the server or went straight
+to the bucket. What it finds is refused, is not stored, and goes on the audit trail as
+`malware_refused`.
+
+| What happens | What it means |
+|---|---|
+| Nothing set | Files are stored unscanned, and `ferrum task doctor` says so. |
+| The scanner is down | Uploads fail with `503` until it is back: an outage must not be a way in. A direct upload can be completed again; its bytes wait. |
+| A file past its limit | Stored, marked `unscanned`, and logged. `FERRUM_CLAMAV_MAX_MB` (default 25) must match ClamAV's `StreamMaxLength`: raise both to `FERRUM_DIRECT_UPLOAD_MAX_BYTES` if every file must be scanned. Set above the scanner's real limit, a file between the two fails as if the scanner were down. |
+
+`file_object.scan_status` says which files were scanned. Files stored before a scanner was configured
+stay `unscanned`, and signatures added later do not reach files already stored.
+
+## Checking a deployment
+
+**Before the first start**, `deploy/preflight.sh` looks at the host and `deploy/.env`: Docker, secrets
+left as placeholders, TLS, DNS, memory, disk and ports. `--generate` fills in missing secrets and
+changes nothing else. Blockers exit non-zero; warnings do not.
+
+**Once it runs**, `ferrum task doctor` reports on the deployment itself, blockers apart from warnings,
+each with what to do. It connects to everything: PostgreSQL's version and connection limits, row-level
+security on every workspace table, the clock, object storage (a write, read and delete), the malware
+scanner, the PDF renderer, the queues, and every workspace's customizations. It does not send mail.
+
+```bash
+docker compose -f deploy/docker-compose.yml exec ferrum ferrum task doctor
+```
+
+Add `format:json` for a machine. It exits non-zero on a blocker, so a deployment can run it as a last
+step. The report holds no secret or connection string, so it can be pasted into a ticket.
+
 ## Monitoring
 
 `/metrics` (Prometheus text) exposes `ferrum_up`, uptime, database pool size and idle
@@ -418,6 +480,18 @@ are audited, and released holds stay listed. A hold applies to the platform's er
 an app that deletes rows in its own SQL (Drive's trash, for one) does not check it yet.
 
 Restriction of processing, as an operation of its own, is not built.
+
+**Restricting processing** keeps someone's data and stops using it: `POST /api/admin/restrictions`
+`{email, reason}` covers every address they have had. No queued mail goes to them, and apps with
+their own delivery ask `Kernel::may_contact`. It deletes nothing, and hides nothing from people who
+can read the records. `POST /api/admin/restrictions/lift` undoes it.
+
+**Retention rules** say how long an entity's records are kept: `POST /api/admin/retention` `{entity,
+after_days, date_field, action: delete | anonymize, condition, reason}`. They run once a day as a job,
+5,000 records a rule at most. A legal hold stops a rule, what a package keeps for a stated reason cannot
+have a rule that deletes it, and a record that cannot be deleted is counted in `last_result`, not forced.
+`POST /api/admin/retention/{id}/preview` says what a rule would reach, without touching it. Immutable
+financial history is out of their reach by design.
 
 ## Online editing
 
@@ -1044,6 +1118,13 @@ works; at most five are sent to a person in an hour, and the answer to "email me
 same for every address. Members never get one (they sign in with passwords, two-factor and single
 sign-on as the workspace requires). Without a mailer no code can be sent.
 
+
+**Signing out at the provider.** A provider that supports OpenID Connect Back-Channel Logout can end
+a person's sessions here when they sign out there or it disables them. Give it
+`{PUBLIC_URL}/api/auth/sso/{provider id}/backchannel-logout`. The logout token's signature, issuer,
+audience, event and age are checked, and each token works once. It ends all the person's sessions at
+Ferrum and their refresh tokens, on every replica, not only the session it names. Their API keys stay:
+those are not sign-ins, and removing the person ends them.
 ## Routine tasks
 
 ```bash

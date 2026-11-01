@@ -55,6 +55,10 @@ spec:
               valueFrom: {secretKeyRef: {name: ferrum-secrets, key: JWT_SECRET}}
             - name: FERRUM_SECRET_KEY
               valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_SECRET_KEY}}
+            - name: FERRUM_CLAMAV_ADDR
+              valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_CLAMAV_ADDR, optional: true}}
+            - name: FERRUM_CLAMAV_MAX_MB
+              valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_CLAMAV_MAX_MB, optional: true}}
             - name: FERRUM_RETIRED_SECRET_KEYS
               valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_RETIRED_SECRET_KEYS, optional: true}}
             - name: FERRUM_BOOTSTRAP_TOKEN

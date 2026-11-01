@@ -12,6 +12,28 @@ fn kernel(ctx: &AppContext) -> Result<std::sync::Arc<ferrum_kernel::Kernel>> {
     app_state(ctx).map(|s| s.kernel).map_err(|e| Error::Message(format!("{:?}", e.0)))
 }
 
+/// `doctor`: a redacted report on this deployment; `format:json` for a machine. Fails when something
+/// must be fixed before it is safe to run.
+pub struct Doctor;
+
+#[async_trait]
+impl Task for Doctor {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "doctor".into(), detail: "A redacted report on this deployment: what must be fixed, what should be, and how".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let st = app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?;
+        let findings = crate::doctor::report(&st, ctx).await.map_err(|e| Error::Message(e.to_string()))?;
+        if vars.cli_arg("format").is_ok_and(|f| f == "json") {
+            println!("{}", serde_json::to_string_pretty(&findings).map_err(|e| Error::Message(e.to_string()))?);
+        } else {
+            print!("{}", crate::doctor::render(&findings));
+        }
+        let blockers = findings.iter().filter(|f| f.level == ferrum_kernel::doctor::Level::Blocker).count();
+        if blockers > 0 { Err(Error::Message(format!("{blockers} blockers"))) } else { Ok(()) }
+    }
+}
+
 /// `reapply_erasures`: after restoring a database, erases again what was erased since that backup.
 pub struct ReapplyErasures;
 

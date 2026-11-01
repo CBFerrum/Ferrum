@@ -277,6 +277,60 @@ async fn single_sign_on() {
     k.unlink_sso(&admin, pat).await.unwrap();
     assert_eq!(sign_in(&k, &idp, provider, json!({"sub": "okta-pat-2"})).await.unwrap().user, pat);
 
+    // ───────────── signing out at the provider ends the sessions here ─────────────
+    let signed = sign_in(&k, &idp, provider, json!({"sub": "okta-sam", "email": "sam@ssoco.test", "sid": "idp-session-1"})).await;
+    let signed = match signed {
+        Ok(s) => s,
+        Err(e) => panic!("{e:?}"),
+    };
+    let alive = |s: Session| {
+        let k = k.clone();
+        async move { k.load_ctx(s.tenant, s.user, Some(s.token_version), "it".into()).await.is_ok() }
+    };
+    let logout = |claims: Value, rogue: bool| {
+        let idp = idp.lock().unwrap();
+        let mut c = json!({
+            "iss": idp.issuer, "aud": CLIENT_ID, "sub": "okta-sam", "iat": now(), "jti": Uuid::now_v7().to_string(),
+            "events": {"http://schemas.openid.net/event/backchannel-logout": {}},
+        });
+        for (k, v) in claims.as_object().unwrap() {
+            if v.is_null() {
+                c.as_object_mut().unwrap().remove(k);
+            } else {
+                c[k] = v.clone();
+            }
+        }
+        let mut header = Header::new(Algorithm::ES256);
+        header.kid = Some("k1".into());
+        jsonwebtoken::encode(&header, &c, &EncodingKey::from_ec_der(if rogue { &idp.rogue } else { &idp.key })).unwrap()
+    };
+    for (claims, rogue, why) in [
+        (json!({}), true, "signed by someone else"),
+        (json!({"aud": "another-app"}), false, "for another application"),
+        (json!({"iss": "https://someone.else"}), false, "from another issuer"),
+        (json!({"events": {"other": {}}}), false, "not a logout"),
+        (json!({"nonce": "n"}), false, "an ID token passed off as one"),
+        (json!({"sub": null}), false, "names nobody"),
+        (json!({"iat": now() - 3600}), false, "too old"),
+        (json!({"jti": null}), false, "cannot be remembered"),
+    ] {
+        assert!(matches!(k.sso_backchannel_logout(provider, &logout(claims, rogue)).await, Err(Error::Unauthorized(_))), "{why}");
+        assert!(alive(signed.clone()).await, "{why}: still signed in");
+    }
+    assert!(matches!(k.sso_backchannel_logout(provider, "not a token").await, Err(Error::Unauthorized(_))));
+    assert!(matches!(k.sso_backchannel_logout(Uuid::now_v7(), &logout(json!({}), false)).await, Err(Error::NotFound(_))));
+    k.sso_backchannel_logout(provider, &logout(json!({"sub": "okta-nobody"}), false)).await.expect("nobody here: done, as far as the provider cares");
+    assert!(alive(signed.clone()).await);
+
+    let once = logout(json!({}), false);
+    k.sso_backchannel_logout(provider, &once).await.expect("logged out");
+    assert!(!alive(signed.clone()).await, "their session ended");
+    let again = sign_in(&k, &idp, provider, json!({"sub": "okta-sam", "email": "sam@ssoco.test", "sid": "idp-session-2"})).await.expect("signs in again");
+    k.sso_backchannel_logout(provider, &once).await.expect("a token used twice");
+    assert!(alive(again.clone()).await, "a replayed token ends nothing");
+    k.sso_backchannel_logout(provider, &logout(json!({"sub": null, "sid": "idp-session-2"}), false)).await.expect("by its session alone");
+    assert!(!alive(again).await, "a token that names only the session reaches its person");
+
     // A deactivated account stays out.
     k.set_user_active(&admin, created.user, false).await.unwrap();
     assert!(matches!(sign_in(&k, &idp, provider, json!({"sub": "okta-new", "email": "new@ssoco.test"})).await, Err(Error::Forbidden(_))));

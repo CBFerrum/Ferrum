@@ -23,6 +23,20 @@ pub struct HookCtx<'a> {
 #[allow(unused_variables)]
 #[async_trait]
 pub trait DocHook: Send + Sync {
+    /// This hook's name, for others to order themselves by: `{app}.{what}`.
+    fn name(&self) -> &'static str {
+        ""
+    }
+    /// Hooks on the same entity that must run first, by name. A name nobody registered stops the
+    /// server from starting, and a workspace from installing an app without what it waits for.
+    fn after(&self) -> &'static [&'static str] {
+        &[]
+    }
+    /// Fields `before_validate` fills. Two hooks on an entity filling the same field must be
+    /// ordered, or the last one registered wins by accident: that too stops the server.
+    fn fills(&self) -> &'static [&'static str] {
+        &[]
+    }
     /// Fill derived values (totals, defaults from linked records). May modify the document.
     async fn before_validate(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
         Ok(())
@@ -165,8 +179,55 @@ pub struct HookRegistry {
     sinks: Vec<Arc<dyn EventSink>>,
     sites: HashMap<String, Arc<dyn Site>>,
     doc_hosts: HashMap<String, Arc<dyn DocHost>>,
+    job_handlers: HashMap<&'static str, Arc<dyn crate::jobs::JobHandler>>,
+    connectors: HashMap<&'static str, Arc<dyn crate::connect::Connector>>,
     /// The packages owning what is being registered (see [`HookRegistry::scoped`]).
     scope: Option<Arc<[String]>>,
+}
+
+/// The order an entity's hooks run in, as indices of `hooks`: each after what it waits for, and
+/// otherwise as registered.
+fn settle_entity(entity: &str, hooks: &[ScopedHook]) -> std::result::Result<Vec<usize>, Vec<String>> {
+    let label = |i: usize| match hooks[i].hook.name() {
+        "" => format!("hook {} (unnamed)", i + 1),
+        name => name.to_string(),
+    };
+    let mut problems = Vec::new();
+    // waits[i]: the hooks i runs after.
+    let mut waits: Vec<Vec<usize>> = vec![Vec::new(); hooks.len()];
+    for (i, h) in hooks.iter().enumerate() {
+        for wanted in h.hook.after() {
+            match hooks.iter().position(|o| o.hook.name() == *wanted) {
+                Some(j) if j != i => waits[i].push(j),
+                Some(_) => problems.push(format!("{entity}: {} waits for itself", label(i))),
+                None => problems.push(format!("{entity}: {} waits for {wanted}, which is not registered on it", label(i))),
+            }
+        }
+    }
+    let mut order = Vec::with_capacity(hooks.len());
+    let mut placed = vec![false; hooks.len()];
+    while order.len() < hooks.len() {
+        let Some(next) = (0..hooks.len()).find(|&i| !placed[i] && waits[i].iter().all(|&w| placed[w])) else {
+            let stuck: Vec<String> = (0..hooks.len()).filter(|&i| !placed[i]).map(label).collect();
+            problems.push(format!("{entity}: these hooks wait for each other: {}", stuck.join(", ")));
+            return Err(problems);
+        };
+        placed[next] = true;
+        order.push(next);
+    }
+    // Whether a runs (directly or not) after b.
+    fn reaches(waits: &[Vec<usize>], a: usize, b: usize) -> bool {
+        waits[a].iter().any(|&w| w == b || reaches(waits, w, b))
+    }
+    for i in 0..hooks.len() {
+        for j in i + 1..hooks.len() {
+            let shared: Vec<&str> = hooks[i].hook.fills().iter().filter(|f| hooks[j].hook.fills().contains(f)).copied().collect();
+            if !shared.is_empty() && !reaches(&waits, i, j) && !reaches(&waits, j, i) {
+                problems.push(format!("{entity}: {} and {} both fill {}, and neither says it goes first", label(i), label(j), shared.join(", ")));
+            }
+        }
+    }
+    if problems.is_empty() { Ok(order) } else { Err(problems) }
 }
 
 #[derive(Clone)]
@@ -213,6 +274,44 @@ impl HookRegistry {
         self.matching(entity, |h| h.packages.as_ref().is_none_or(|ps| ps.iter().any(|p| installed.contains(p))))
     }
 
+    /// Puts each entity's hooks in the order they declare (otherwise, registration order), or says
+    /// everything that cannot work: a hook waiting for one that does not exist, a cycle, two hooks
+    /// filling one field with neither declared to go first.
+    pub fn settle(&mut self) -> std::result::Result<(), Vec<String>> {
+        let mut problems = Vec::new();
+        let names: HashMap<String, Vec<&'static str>> = self.by_entity.iter().map(|(e, hs)| (e.clone(), hs.iter().map(|h| h.hook.name()).collect())).collect();
+        let mut entities: Vec<&String> = names.keys().collect();
+        entities.sort();
+        for entity in entities {
+            let hooks = self.by_entity.get_mut(entity).expect("listed above");
+            match settle_entity(entity, hooks) {
+                Ok(order) => {
+                    let mut taken: Vec<Option<ScopedHook>> = hooks.drain(..).map(Some).collect();
+                    hooks.extend(order.into_iter().filter_map(|i| taken[i].take()));
+                }
+                Err(found) => problems.extend(found),
+            }
+        }
+        if problems.is_empty() { Ok(()) } else { Err(problems) }
+    }
+
+    /// What a workspace with the `installed` packages would be missing: hooks that would run without
+    /// one they wait for, which its package does not bring.
+    pub fn unmet(&self, installed: &[String]) -> Vec<String> {
+        let runs = |h: &ScopedHook| h.packages.as_ref().is_none_or(|ps| ps.iter().any(|p| installed.contains(p)));
+        let mut out = Vec::new();
+        for (entity, hooks) in &self.by_entity {
+            let here: Vec<&'static str> = hooks.iter().filter(|h| runs(h)).map(|h| h.hook.name()).collect();
+            for hook in hooks.iter().filter(|h| runs(h)) {
+                for wanted in hook.hook.after().iter().filter(|w| !here.contains(w)) {
+                    out.push(format!("{entity}: {} needs {wanted}, which these packages do not bring", hook.hook.name()));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
     fn matching(&self, entity: &str, keep: impl Fn(&ScopedHook) -> bool) -> Vec<Arc<dyn DocHook>> {
         let own = self.by_entity.get(entity).into_iter().flatten();
         let all = if entity != "*" { self.by_entity.get("*") } else { None };
@@ -226,6 +325,30 @@ impl HookRegistry {
 
     pub fn event_sinks(&self) -> &[Arc<dyn EventSink>] {
         &self.sinks
+    }
+
+    /// Adds a kind of background work (crate::jobs). Kinds are `{app}.{what}`.
+    pub fn add_job_handler(&mut self, handler: Arc<dyn crate::jobs::JobHandler>) -> &mut Self {
+        self.job_handlers.insert(handler.kind(), handler);
+        self
+    }
+
+    pub fn job_handler(&self, kind: &str) -> Option<&Arc<dyn crate::jobs::JobHandler>> {
+        self.job_handlers.get(kind)
+    }
+
+    /// Adds a provider a workspace can connect to (crate::connect).
+    pub fn add_connector(&mut self, connector: Arc<dyn crate::connect::Connector>) -> &mut Self {
+        self.connectors.insert(connector.info().provider, connector);
+        self
+    }
+
+    pub fn connector(&self, provider: &str) -> Option<&Arc<dyn crate::connect::Connector>> {
+        self.connectors.get(provider)
+    }
+
+    pub fn connectors(&self) -> impl Iterator<Item = &Arc<dyn crate::connect::Connector>> {
+        self.connectors.values()
     }
 
     pub fn entities(&self) -> impl Iterator<Item = &String> {
@@ -256,6 +379,73 @@ impl HookRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Named(&'static str, &'static [&'static str], &'static [&'static str]);
+
+    #[async_trait]
+    impl DocHook for Named {
+        fn name(&self) -> &'static str {
+            self.0
+        }
+        fn after(&self) -> &'static [&'static str] {
+            self.1
+        }
+        fn fills(&self) -> &'static [&'static str] {
+            self.2
+        }
+    }
+
+    fn registry(hooks: Vec<Named>) -> HookRegistry {
+        let mut r = HookRegistry::default();
+        for h in hooks {
+            r.register("Invoice", Arc::new(h));
+        }
+        r
+    }
+
+    fn names(r: &HookRegistry) -> Vec<&'static str> {
+        r.for_entity("Invoice").iter().map(|h| h.name()).collect()
+    }
+
+    #[test]
+    fn hooks_run_in_the_order_they_declare_and_otherwise_as_registered() {
+        let mut r = registry(vec![Named("tax", &["pricing"], &[]), Named("audit", &[], &[]), Named("pricing", &[], &[])]);
+        r.settle().unwrap();
+        assert_eq!(names(&r), ["audit", "pricing", "tax"]);
+        let mut r = registry(vec![Named("a", &[], &[]), Named("b", &[], &[])]);
+        r.settle().unwrap();
+        assert_eq!(names(&r), ["a", "b"], "nothing declared: nothing moves");
+    }
+
+    #[test]
+    fn what_cannot_work_stops_the_server() {
+        let problem = |hooks| registry(hooks).settle().unwrap_err().join("; ");
+        assert!(problem(vec![Named("a", &["gone"], &[])]).contains("gone"), "unresolved");
+        assert!(problem(vec![Named("a", &["a"], &[])]).contains("itself"));
+        assert!(problem(vec![Named("a", &["b"], &[]), Named("b", &["a"], &[])]).contains("wait for each other"), "a cycle");
+        assert!(
+            problem(vec![Named("a", &["c"], &[]), Named("b", &["a"], &[]), Named("c", &["b"], &[]), Named("d", &[], &[])]).contains("a, b, c"),
+            "only those in it"
+        );
+        assert!(problem(vec![Named("a", &[], &["total"]), Named("b", &[], &["total", "tax"])]).contains("both fill total"), "a conflict");
+        let mut ordered = registry(vec![Named("a", &[], &["total"]), Named("b", &["mid"], &["total"]), Named("mid", &["a"], &[])]);
+        assert!(ordered.settle().is_ok(), "ordered, even through another hook, it is deliberate");
+    }
+
+    #[test]
+    fn a_workspace_needs_what_its_hooks_wait_for() {
+        let mut r = HookRegistry::default();
+        r.scoped(&["pos".to_string()], |r| {
+            r.register("Invoice", Arc::new(Named("pos.till", &["erp.pricing"], &[])));
+        });
+        r.scoped(&["erp".to_string()], |r| {
+            r.register("Invoice", Arc::new(Named("erp.pricing", &[], &[])));
+        });
+        assert!(r.settle().is_ok(), "the binary has both");
+        assert!(r.unmet(&["pos".to_string(), "erp".to_string()]).is_empty());
+        assert!(r.unmet(&["erp".to_string()]).is_empty(), "its hook does not run there");
+        assert!(r.unmet(&["pos".to_string()])[0].contains("erp.pricing"));
+    }
 
     struct Noop;
     impl DocHook for Noop {}

@@ -9,6 +9,11 @@
 //! the provider is set to create them (with its default roles). A workspace can require single
 //! sign-on of everyone but its administrators. The provider's own sign-in rules apply (its
 //! two-factor step included); Ferrum's two-factor step does not.
+//!
+//! A provider that supports OpenID Connect Back-Channel Logout can end a person's sessions here when
+//! they sign out there, or when it disables them: it posts a signed logout token to
+//! `/api/auth/sso/{provider}/backchannel-logout`. That ends all their sessions at Ferrum, on every
+//! replica, not only the one the token names: refusing too much is the safe way to be wrong.
 
 use crate::auth::Session;
 use crate::ctx::Ctx;
@@ -41,6 +46,49 @@ const ALGORITHMS: [Algorithm; 9] = [
     Algorithm::ES384,
     Algorithm::EdDSA,
 ];
+
+/// What marks a token as a logout token (OpenID Connect Back-Channel Logout 1.0).
+const LOGOUT_EVENT: &str = "http://schemas.openid.net/event/backchannel-logout";
+/// How old a logout token may be. Seen tokens are remembered for longer than this.
+const LOGOUT_TOKEN_SECS: i64 = 600;
+/// How far ahead of our clock a provider's may be.
+const CLOCK_SKEW_SECS: i64 = 120;
+
+#[derive(Debug, Deserialize)]
+struct LogoutClaims {
+    #[serde(default)]
+    sub: Option<String>,
+    #[serde(default)]
+    sid: Option<String>,
+    iat: i64,
+    jti: String,
+    events: Value,
+    #[serde(default)]
+    nonce: Option<String>,
+}
+
+impl LogoutClaims {
+    /// What makes it a logout token and a recent one, beyond its signature, issuer and audience.
+    fn check(&self, now: i64) -> std::result::Result<(), &'static str> {
+        if !self.events.get(LOGOUT_EVENT).is_some_and(Value::is_object) {
+            return Err("is not a logout event");
+        }
+        // Forbidden by the standard: it is how an ID token passed off as a logout token is told apart.
+        if self.nonce.is_some() {
+            return Err("carries a nonce");
+        }
+        if self.sub.as_deref().unwrap_or_default().is_empty() && self.sid.as_deref().unwrap_or_default().is_empty() {
+            return Err("names neither a person nor a session");
+        }
+        if self.jti.is_empty() || self.jti.len() > 255 {
+            return Err("has no usable id");
+        }
+        if self.iat > now + CLOCK_SKEW_SECS || self.iat < now - LOGOUT_TOKEN_SECS {
+            return Err("is too old, or from the future");
+        }
+        Ok(())
+    }
+}
 
 /// A provider as an administrator sets it up.
 #[derive(Debug, Clone, Deserialize)]
@@ -97,6 +145,9 @@ struct IdClaims {
     nonce: Option<String>,
     #[serde(default)]
     azp: Option<String>,
+    /// The provider's session, for its logout tokens to name.
+    #[serde(default)]
+    sid: Option<String>,
     #[serde(default)]
     aud: Value,
 }
@@ -510,11 +561,85 @@ impl Kernel {
         let token = answer.get("id_token").and_then(Value::as_str).ok_or_else(|| Error::Unauthorized(format!("{} sent no ID token", p.label)))?;
         let claims = self.check_id_token(&d, &p, token, &nonce).await?;
         let email = verified_email(&claims, &p)?;
-        self.sso_account(tenant, &p, &claims, &email).await
+        let session = self.sso_account(tenant, &p, &claims, &email).await?;
+        if let Some(sid) = claims.sid.as_deref().filter(|s| !s.is_empty() && s.len() <= 255) {
+            let mut tx = self.db.system_tenant_tx(tenant).await?;
+            sqlx::query("insert into sso_sid (tenant_id, provider_id, sid, user_id) values ($1, $2, $3, $4) on conflict (tenant_id, provider_id, sid) do update set user_id = excluded.user_id")
+                .bind(tenant)
+                .bind(p.id)
+                .bind(sid)
+                .bind(session.user)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+        }
+        Ok(session)
     }
 
-    async fn check_id_token(&self, d: &Discovery, p: &Provider, token: &str, nonce: &str) -> Result<IdClaims> {
-        let bad = |why: String| Error::Unauthorized(format!("{}'s ID token {why}", p.label));
+    /// A provider signed someone out: ends everything they are signed in with here. A token already
+    /// seen, or for nobody we know, does nothing and is not an error: the provider need not retry.
+    pub async fn sso_backchannel_logout(&self, provider: Uuid, token: &str) -> Result<()> {
+        let mut tx = self.db.system_tx().await?;
+        let tenant: Option<Uuid> = sqlx::query_scalar("select tenant_id from sso_provider where id = $1").bind(provider).fetch_optional(&mut *tx).await?;
+        let tenant = tenant.ok_or_else(|| Error::NotFound("single sign-on provider".into()))?;
+        let (_, p) = self.sign_in_provider(&mut tx, Some(tenant), None, provider).await?;
+        tx.commit().await?;
+        let d = self.discover(&p.issuer).await?;
+        let (key, mut v) = self.token_key(&d, &p, token, "logout token").await?;
+        v.set_required_spec_claims(&["iss", "aud"]);
+        let c = jsonwebtoken::decode::<LogoutClaims>(token, &key, &v)
+            .map_err(|e| Error::Unauthorized(format!("{}'s logout token is not valid: {e}", p.label)))?
+            .claims;
+        c.check(chrono::Utc::now().timestamp()).map_err(|why| Error::Unauthorized(format!("{}'s logout token {why}", p.label)))?;
+
+        let schema = self.registry.schema(tenant).await?;
+        let mut tx = self.db.system_tenant_tx(tenant).await?;
+        let fresh = sqlx::query("insert into sso_logout_seen (tenant_id, provider_id, jti) values ($1, $2, $3) on conflict do nothing")
+            .bind(tenant)
+            .bind(provider)
+            .bind(&c.jti)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+            > 0;
+        if !fresh {
+            return Ok(tx.commit().await?);
+        }
+        let subject = c.sub.as_ref().map(|sub| format!("{provider}|{sub}"));
+        let mut user: Option<Uuid> = sqlx::query_scalar("select id from app_user where tenant_id = $1 and sso_subject = $2")
+            .bind(tenant)
+            .bind(&subject)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if let (None, Some(sid)) = (user, &c.sid) {
+            user = sqlx::query_scalar("select user_id from sso_sid where tenant_id = $1 and provider_id = $2 and sid = $3")
+                .bind(tenant)
+                .bind(provider)
+                .bind(sid)
+                .fetch_optional(&mut *tx)
+                .await?;
+        }
+        let Some(user) = user else {
+            return Ok(tx.commit().await?);
+        };
+        sqlx::query("delete from sso_sid where tenant_id = $1 and provider_id = $2 and user_id = $3")
+            .bind(tenant)
+            .bind(provider)
+            .bind(user)
+            .execute(&mut *tx)
+            .await?;
+        crate::auth::end_sessions(&mut tx, tenant, user).await?;
+        let by = Ctx::system(tenant, schema);
+        audit::record(&mut tx, &by, "User", user, "sso_logout", None, json!({"provider": p.label})).await?;
+        tx.commit().await?;
+        self.invalidate_user(tenant, user);
+        Ok(())
+    }
+
+    /// The key a token of this provider's is signed with, and a validation of its issuer and this
+    /// client to go with it.
+    async fn token_key(&self, d: &Discovery, p: &Provider, token: &str, what: &str) -> Result<(DecodingKey, Validation)> {
+        let bad = |why: String| Error::Unauthorized(format!("{}'s {what} {why}", p.label));
         let header = jsonwebtoken::decode_header(token).map_err(|e| bad(format!("is malformed: {e}")))?;
         if !ALGORITHMS.contains(&header.alg) {
             return Err(bad(format!("is signed with {:?}, which is not accepted", header.alg)));
@@ -535,8 +660,14 @@ impl Kernel {
         let mut v = Validation::new(header.alg);
         v.set_issuer(&[&d.issuer]);
         v.set_audience(&[&p.client_id]);
+        v.leeway = CLOCK_SKEW_SECS as u64;
+        Ok((key, v))
+    }
+
+    async fn check_id_token(&self, d: &Discovery, p: &Provider, token: &str, nonce: &str) -> Result<IdClaims> {
+        let bad = |why: String| Error::Unauthorized(format!("{}'s ID token {why}", p.label));
+        let (key, mut v) = self.token_key(d, p, token, "ID token").await?;
         v.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
-        v.leeway = 120;
         let c = jsonwebtoken::decode::<IdClaims>(token, &key, &v).map_err(|e| bad(format!("is not valid: {e}")))?.claims;
         if c.nonce.as_deref() != Some(nonce) {
             return Err(bad("belongs to another sign-in".into()));
@@ -621,6 +752,22 @@ impl Kernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn logout_tokens_are_told_from_everything_else() {
+        let token = |v: Value| serde_json::from_value::<LogoutClaims>(v).unwrap();
+        let event = json!({LOGOUT_EVENT: {}});
+        let now = 1_800_000_000;
+        assert!(token(json!({"sub": "a", "iat": now, "jti": "1", "events": event})).check(now).is_ok());
+        assert!(token(json!({"sid": "a", "iat": now, "jti": "1", "events": event})).check(now).is_ok());
+        assert!(token(json!({"sub": "a", "iat": now, "jti": "1", "events": {}})).check(now).is_err(), "another event");
+        assert!(token(json!({"sub": "a", "iat": now, "jti": "1", "events": {LOGOUT_EVENT: "yes"}})).check(now).is_err(), "must be an object");
+        assert!(token(json!({"sub": "a", "iat": now, "jti": "1", "events": event, "nonce": "n"})).check(now).is_err(), "an ID token");
+        assert!(token(json!({"iat": now, "jti": "1", "events": event})).check(now).is_err(), "nobody named");
+        assert!(token(json!({"sub": "a", "iat": now, "jti": "", "events": event})).check(now).is_err());
+        assert!(token(json!({"sub": "a", "iat": now - LOGOUT_TOKEN_SECS - 1, "jti": "1", "events": event})).check(now).is_err(), "replayed later");
+        assert!(token(json!({"sub": "a", "iat": now + CLOCK_SKEW_SECS + 1, "jti": "1", "events": event})).check(now).is_err());
+    }
 
     fn provider(domains: &[&str]) -> Provider {
         Provider {

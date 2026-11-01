@@ -14,6 +14,8 @@
   module: masters
   title_field: customer_name
   numbering: {template: "CUST-{seq:5}"}
+  mergeable: true
+  duplicate_fields: [email, phone, tax_id, customer_name]
   search_fields: [email, phone, tax_id]
   fields:
     - {name: customer_name, type: data, required: true, in_list: true}
@@ -48,6 +50,8 @@
   kind: master
   module: masters
   title_field: supplier_name
+  mergeable: true
+  duplicate_fields: [email, phone, tax_id, supplier_name]
   numbering: {template: "SUPP-{seq:5}"}
   search_fields: [email, phone, tax_id]
   fields:
