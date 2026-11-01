@@ -992,14 +992,14 @@ done
     .unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let d = Defined::new(Limits { drivers_dir: Some(dir.clone()), allow: vec![] }, json!({}));
+    let d = Defined::new(Limits { drivers_dir: Some(dir.clone()), ..Default::default() }, json!({}));
     assert_eq!(apply(&d, "name: pump\nconnect: process://driver.sh\n", &[("PUMP-1", None)]), Vec::<String>::new());
     reading(&d, |r| is_metric(r, "flow", 7.5)).await;
     let c = command("pump.start", json!({"rate": 3}));
     assert!(matches!(d.dispatch(&c, &device("PUMP-1")).await, Ok(Dispatched::Accepted { .. })));
     until("the driver's answer", async || matches!(d.observe(&c, None).await.unwrap(), Observation::Completed(_))).await;
 
-    let elsewhere = Defined::new(Limits { drivers_dir: Some(dir.clone()), allow: vec![] }, json!({}));
+    let elsewhere = Defined::new(Limits { drivers_dir: Some(dir.clone()), ..Default::default() }, json!({}));
     let problems = apply(&elsewhere, "name: pump\nconnect: process://../../bin/sh\n", &[("PUMP-1", None)]);
     assert_eq!(problems.len(), 1, "a definition cannot run what it likes: {problems:?}");
     assert!(!elsewhere.reaches("PUMP-1"));

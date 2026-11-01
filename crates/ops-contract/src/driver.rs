@@ -24,17 +24,21 @@
 //! because a write that nothing confirms is not work done: `once: true` is the explicit admission
 //! that this device can prove nothing more than the send.
 
+use crate::sparkplug;
+use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::Deserialize;
 use serde::de::{self, Deserializer};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
+use std::cell::OnceCell;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 /// The schemes a site can open. Anything else is an error when the definition is saved, not when it
 /// reaches a gateway at three in the morning.
-pub const SCHEMES: [&str; 12] = ["tcp", "udp", "serial", "http", "https", "ws", "wss", "mqtt", "mqtts", "modbus+tcp", "process", "opcua"];
+pub const SCHEMES: [&str; 16] =
+    ["tcp", "udp", "serial", "http", "https", "ws", "wss", "mqtt", "mqtts", "modbus+tcp", "modbus+rtu", "process", "opcua", "listen", "listen+udp", "webhook"];
 
 /// The longest message a site will assemble. A stream that never frames costs this much, not memory.
 pub const MAX_FRAME: usize = 1 << 20;
@@ -52,9 +56,15 @@ pub struct Definition {
     /// Sent with every HTTP request, or at connection on a WebSocket.
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
-    /// Topics to hold open.
+    /// Topics to hold open, or OPC UA nodes to watch.
     #[serde(default)]
     pub subscribe: Vec<String>,
+    /// Added to what is sent as bytes, and checked on what arrives: what fails is dropped.
+    #[serde(default)]
+    pub checksum: Option<Checksum>,
+    /// Certificates for a plant's own authority, by name in the site's `tls` directory.
+    #[serde(default)]
+    pub tls: Option<Tls>,
     /// Said once on each new connection: a login, a subscription.
     #[serde(default)]
     pub on_connect: Vec<Step>,
@@ -64,6 +74,95 @@ pub struct Definition {
     pub read: Vec<ReadRule>,
     #[serde(default)]
     pub commands: BTreeMap<String, CommandDef>,
+}
+
+/// What a message is written in, when that is not JSON or plain bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Format {
+    #[default]
+    Json,
+    /// Every element with no children, flat: `[{tag, parent, text, attrs, of}]`. `of` holds the
+    /// attributes of the elements around it, by their names.
+    Xml,
+    /// A Sparkplug B payload: `{timestamp, seq, metrics: [{name, alias, datatype, value}]}`.
+    Sparkplug,
+}
+
+/// How a frame is checked. The check sits at its end, and covers it from `from`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Checksum {
+    pub kind: ChecksumKind,
+    #[serde(default)]
+    pub from: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChecksumKind {
+    /// Two bytes, low first.
+    Crc16Modbus,
+    /// CCITT-FALSE: two bytes, high first.
+    Crc16Ccitt,
+    /// Four bytes, high first.
+    Crc32,
+    Sum8,
+    Xor8,
+    /// The two's complement of the sum, as Modbus ASCII and many meters use.
+    Lrc,
+}
+
+impl Checksum {
+    fn over(&self, bytes: &[u8]) -> Vec<u8> {
+        let bytes = bytes.get(self.from..).unwrap_or_default();
+        match self.kind {
+            ChecksumKind::Crc16Modbus => {
+                let crc = bytes.iter().fold(0xffffu16, |crc, b| (0..8).fold(crc ^ u16::from(*b), |c, _| if c & 1 == 1 { (c >> 1) ^ 0xa001 } else { c >> 1 }));
+                crc.to_le_bytes().to_vec()
+            }
+            ChecksumKind::Crc16Ccitt => {
+                let crc = bytes
+                    .iter()
+                    .fold(0xffffu16, |crc, b| (0..8).fold(crc ^ (u16::from(*b) << 8), |c, _| if c & 0x8000 != 0 { (c << 1) ^ 0x1021 } else { c << 1 }));
+                crc.to_be_bytes().to_vec()
+            }
+            ChecksumKind::Crc32 => {
+                let crc = bytes.iter().fold(!0u32, |crc, b| (0..8).fold(crc ^ u32::from(*b), |c, _| if c & 1 == 1 { (c >> 1) ^ 0xedb8_8320 } else { c >> 1 }));
+                (!crc).to_be_bytes().to_vec()
+            }
+            ChecksumKind::Sum8 => vec![bytes.iter().fold(0u8, |a, b| a.wrapping_add(*b))],
+            ChecksumKind::Xor8 => vec![bytes.iter().fold(0u8, |a, b| a ^ b)],
+            ChecksumKind::Lrc => vec![bytes.iter().fold(0u8, |a, b| a.wrapping_add(*b)).wrapping_neg()],
+        }
+    }
+
+    /// `bytes` with its check on the end.
+    pub fn seal(&self, mut bytes: Vec<u8>) -> Vec<u8> {
+        let check = self.over(&bytes);
+        bytes.extend(check);
+        bytes
+    }
+
+    /// The message without its check, if the check holds.
+    pub fn open<'a>(&self, bytes: &'a [u8]) -> Option<&'a [u8]> {
+        let size = self.over(&[]).len();
+        let (body, check) = bytes.split_at_checked(bytes.len().checked_sub(size)?)?;
+        (self.over(body) == check).then_some(body)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Tls {
+    /// The authority to trust, instead of the public ones.
+    #[serde(default)]
+    pub ca: Option<String>,
+    /// This gateway's own certificate and key, for a server that asks.
+    #[serde(default)]
+    pub cert: Option<String>,
+    #[serde(default)]
+    pub key: Option<String>,
 }
 
 /// How a stream of bytes becomes messages. Datagrams, MQTT and HTTP are messages already.
@@ -83,6 +182,9 @@ pub enum Frame {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LengthField {
+    /// What every message starts with, in hexadecimal, for a stream to find its place by.
+    #[serde(default)]
+    pub start: Option<String>,
     #[serde(default)]
     pub at: usize,
     /// One, two or four bytes.
@@ -119,6 +221,15 @@ impl Frame {
                 Some(message)
             }
             Frame::Length(f) => {
+                if let Some(marker) = f.start.as_deref().and_then(|m| hex::decode(m.replace(' ', "")).ok()) {
+                    match find(buf, &marker) {
+                        Some(at) => drop(buf.drain(..at)),
+                        None => {
+                            buf.drain(..buf.len().saturating_sub(marker.len().saturating_sub(1)));
+                            return None;
+                        }
+                    }
+                }
                 if buf.len() < f.at + f.size {
                     return None;
                 }
@@ -158,6 +269,12 @@ pub struct Step {
     pub hex: Option<String>,
     #[serde(default)]
     pub topic: Option<String>,
+    /// MQTT: the broker keeps it for whoever subscribes next.
+    #[serde(default)]
+    pub retain: bool,
+    /// How `send` is written, when not as JSON or text.
+    #[serde(default)]
+    pub format: Option<Format>,
     #[serde(default)]
     pub get: Option<String>,
     #[serde(default)]
@@ -178,6 +295,15 @@ pub struct Step {
     /// Modbus: registers to write, in order. Nothing else can be written.
     #[serde(default)]
     pub write: Vec<RegisterWrite>,
+    /// Modbus: the unit on a shared bus, when it is not the connection's. A number or `{settings.unit}`.
+    #[serde(default)]
+    pub unit: Option<Value>,
+    /// OPC UA: a node to read, or to write `send` to.
+    #[serde(default)]
+    pub node: Option<String>,
+    /// OPC UA: a method of `node` to call, with `send` as its arguments.
+    #[serde(default)]
+    pub call: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -196,7 +322,7 @@ impl Step {
     }
 
     fn is_empty(&self) -> bool {
-        self.send.is_none() && self.hex.is_none() && self.method().is_none() && self.read.is_none() && self.write.is_empty()
+        self.send.is_none() && self.hex.is_none() && self.method().is_none() && self.read.is_none() && self.write.is_empty() && self.node.is_none()
     }
 }
 
@@ -310,12 +436,20 @@ pub struct Field {
     /// Report a number only when it has moved this far.
     #[serde(default)]
     pub deadband: Option<f64>,
+    /// Report a number at most this often, whatever rate it arrives at.
+    #[serde(default, deserialize_with = "maybe_duration")]
+    pub every: Option<Duration>,
+    /// Where the message says when this was true, for equipment that keeps its own time: a path to
+    /// RFC 3339, or to seconds or milliseconds since 1970.
+    #[serde(default)]
+    pub time: Option<String>,
     /// `Sample`, `State` or `Alarm`: what may be shed first when space runs out.
     #[serde(default)]
     pub class: Option<String>,
 }
 
-/// When a message counts. Without one, every message that reaches the rule does.
+/// When a message counts. Without one, every message that reaches the rule does. Under `each`, it
+/// is asked of each element.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct When {
@@ -333,8 +467,14 @@ pub struct ReadRule {
     pub topic: Option<String>,
     pub pattern: Option<String>,
     pub when: Option<When>,
-    /// Whose message this is, for a connection several devices share: `{topic.1}`, `{group.id}`.
+    /// Whose message this is, for a connection several devices share: `{topic.1}`, `{group.id}`,
+    /// `{each.x}`.
     pub device: Option<String>,
+    pub format: Format,
+    /// A list or map in the message: the rule is applied to each element, its paths start there,
+    /// and a value's name can come from it: `metric: "{each.name}"`. A map's elements are
+    /// `{key, value}`. This is what makes a device that reports hundreds of values one line.
+    pub each: Option<String>,
     pub fields: Vec<Field>,
 }
 
@@ -345,6 +485,8 @@ impl<'de> Deserialize<'de> for ReadRule {
         let topic = text(&mut m, "topic");
         let pattern = text(&mut m, "match");
         let device = text(&mut m, "device");
+        let each = text(&mut m, "each");
+        let format = m.remove("format").map(serde_json::from_value).transpose().map_err(de::Error::custom)?.unwrap_or_default();
         let when = m.remove("when").map(serde_json::from_value).transpose().map_err(de::Error::custom)?;
         // One value inline or several under `values`: most rules want one, and that should read so.
         let fields = match m.remove("values") {
@@ -356,7 +498,7 @@ impl<'de> Deserialize<'de> for ReadRule {
             }
             None => vec![serde_json::from_value(Value::Object(m)).map_err(de::Error::custom)?],
         };
-        Ok(ReadRule { topic, pattern, when, device, fields })
+        Ok(ReadRule { topic, pattern, when, device, format, each, fields })
     }
 }
 
@@ -393,6 +535,12 @@ pub struct StatusRule {
     pub failed: Vec<String>,
     #[serde(default, deserialize_with = "one_or_many")]
     pub aborted: Vec<String>,
+    #[serde(default)]
+    pub format: Format,
+    /// Other things that may say how it ended, for a protocol with no one field for it: the first
+    /// that says it has ended settles it.
+    #[serde(default)]
+    pub also: Vec<StatusRule>,
 }
 
 /// What a status said. Anything it has no word for proves nothing, so it is `Waiting`.
@@ -465,6 +613,10 @@ fn duration<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
     let v = Value::deserialize(d)?;
     let text = v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string());
     parse_duration(&text).ok_or_else(|| de::Error::custom(format!("{text} is not a duration: try 500ms, 5s or 2m")))
+}
+
+fn maybe_duration<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
+    duration(d).map(Some)
 }
 
 /// `$.a.b[0].c`, or a bare `a.b`. A path that does not lead anywhere is `None`: a device leaving a
@@ -584,10 +736,30 @@ fn number_at(bytes: &[u8], at: usize, kind: Kind, order: Order) -> Option<Value>
 /// What a message said.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Decoded {
-    Metric { device: Option<String>, metric: String, value: f64, unit: Option<String>, class: Option<String>, deadband: Option<f64> },
-    State { device: Option<String>, state: String },
-    Attribute { device: Option<String>, key: String, value: Value },
-    Event { device: Option<String>, name: String, value: Value },
+    Metric {
+        device: Option<String>,
+        metric: String,
+        value: f64,
+        unit: Option<String>,
+        class: Option<String>,
+        deadband: Option<f64>,
+        every: Option<Duration>,
+        at: Option<DateTime<Utc>>,
+    },
+    State {
+        device: Option<String>,
+        state: String,
+    },
+    Attribute {
+        device: Option<String>,
+        key: String,
+        value: Value,
+    },
+    Event {
+        device: Option<String>,
+        name: String,
+        value: Value,
+    },
 }
 
 struct CompiledRead {
@@ -599,8 +771,12 @@ pub struct Compiled {
     pub definition: Definition,
     pub digest: String,
     reads: Vec<CompiledRead>,
-    statuses: BTreeMap<String, Option<Regex>>,
+    /// By operation: the patterns of a status and of each of its `also`, in order.
+    statuses: BTreeMap<String, Vec<Option<Regex>>>,
 }
+
+/// What a decoder remembers between messages on one link.
+pub type Memory = crate::sparkplug::Aliases;
 
 fn word(v: &Value) -> String {
     match v {
@@ -614,16 +790,45 @@ struct Seen<'a> {
     topic: &'a str,
     body: &'a [u8],
     text: Option<&'a str>,
-    parsed: std::cell::OnceCell<Option<Value>>,
+    parsed: OnceCell<Option<Value>>,
+    xml: OnceCell<Option<Value>>,
+    sparkplug: OnceCell<Option<Value>>,
+    /// Which of those the rule at hand reads.
+    format: Format,
 }
 
 impl<'a> Seen<'a> {
     fn new(topic: &'a str, body: &'a [u8]) -> Seen<'a> {
-        Seen { topic, body, text: std::str::from_utf8(body).ok(), parsed: std::cell::OnceCell::new() }
+        Seen {
+            topic,
+            body,
+            text: std::str::from_utf8(body).ok(),
+            parsed: OnceCell::new(),
+            xml: OnceCell::new(),
+            sparkplug: OnceCell::new(),
+            format: Format::Json,
+        }
+    }
+
+    /// One element of a list, seen as a message of its own.
+    fn element(&self, value: Value) -> Seen<'a> {
+        Seen {
+            topic: self.topic,
+            body: &[],
+            text: None,
+            parsed: OnceCell::from(Some(value)),
+            xml: OnceCell::new(),
+            sparkplug: OnceCell::new(),
+            format: Format::Json,
+        }
     }
 
     fn json(&self) -> Option<&Value> {
-        self.parsed.get_or_init(|| serde_json::from_slice(self.body).ok()).as_ref()
+        match self.format {
+            Format::Json => self.parsed.get_or_init(|| serde_json::from_slice(self.body).ok()).as_ref(),
+            Format::Xml => self.xml.get_or_init(|| flatten_xml(self.body)).as_ref(),
+            Format::Sparkplug => self.sparkplug.get_or_init(|| sparkplug::decode(self.body)).as_ref(),
+        }
     }
 
     fn holds(&self, when: &When) -> bool {
@@ -636,6 +841,63 @@ impl<'a> Seen<'a> {
             (None, None) => self.text.is_some_and(|t| t.trim() == word(&when.is)),
         }
     }
+}
+
+/// See [`Format::Xml`]. An XML document is usually a few levels of wrapping around leaves that all
+/// look alike, so a flat list reads better from a definition than a tree, and needs no XPath.
+fn flatten_xml(body: &[u8]) -> Option<Value> {
+    use quick_xml::events::Event;
+    let mut reader = quick_xml::Reader::from_reader(body);
+    let (mut open, mut leaves): (Vec<(String, Map<String, Value>, bool)>, Vec<Value>) = (Vec::new(), Vec::new());
+    let (mut text, mut buf) = (String::new(), Vec::new());
+    let attrs = |e: &quick_xml::events::BytesStart<'_>| -> Map<String, Value> {
+        e.attributes()
+            .flatten()
+            .map(|a| {
+                let value = quick_xml::escape::unescape(&a.value).map(|v| v.to_string()).unwrap_or_else(|_| a.value.to_string());
+                (a.key.local_name().as_ref().to_string(), json!(value))
+            })
+            .collect()
+    };
+    let name = |e: &quick_xml::events::BytesStart<'_>| e.local_name().as_ref().to_string();
+    let leaf = |open: &[(String, Map<String, Value>, bool)], tag: String, attrs: Map<String, Value>, text: &str| {
+        let of: Map<String, Value> = open.iter().filter(|(_, a, _)| !a.is_empty()).map(|(t, a, _)| (t.clone(), Value::Object(a.clone()))).collect();
+        json!({"tag": tag, "parent": open.last().map(|(t, _, _)| t), "text": text.trim(), "attrs": attrs, "of": of})
+    };
+    loop {
+        match reader.read_event_into(&mut buf).ok()? {
+            Event::Start(e) => {
+                if let Some(parent) = open.last_mut() {
+                    parent.2 = true;
+                }
+                open.push((name(&e), attrs(&e), false));
+                text.clear();
+            }
+            Event::Empty(e) => {
+                if let Some(parent) = open.last_mut() {
+                    parent.2 = true;
+                }
+                leaves.push(leaf(&open, name(&e), attrs(&e), ""));
+            }
+            Event::Text(t) => text.push_str(&t.xml10_content()),
+            Event::CData(t) => text.push_str(&t.xml10_content()),
+            Event::GeneralRef(r) => {
+                let raw = format!("&{};", r.xml10_content());
+                text.push_str(&quick_xml::escape::unescape(&raw).map(|v| v.to_string()).unwrap_or(raw));
+            }
+            Event::End(_) => {
+                let (tag, attrs, parent) = open.pop()?;
+                if !parent {
+                    leaves.push(leaf(&open, tag, attrs, &text));
+                }
+                text.clear();
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    (!leaves.is_empty()).then_some(Value::Array(leaves))
 }
 
 fn extract(f: &Field, seen: &Seen<'_>, groups: Option<&regex::Captures<'_>>) -> Option<Value> {
@@ -691,7 +953,14 @@ fn shape(f: &Field, raw: Value) -> Option<Value> {
     }))
 }
 
-fn device_of(rule: &ReadRule, wild: &[&str], groups: Option<&regex::Captures<'_>>, pattern: Option<&Regex>) -> Option<String> {
+/// A name a device chose, made into one a metric can have. Sparkplug's have spaces in them.
+fn named(template: &str, each: &Value) -> Option<String> {
+    let name = render(template, &json!({"each": each})).ok()?;
+    let clean: String = name.chars().take(120).map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '/') { c } else { '_' }).collect();
+    (!clean.is_empty()).then_some(clean)
+}
+
+fn device_of(rule: &ReadRule, wild: &[&str], groups: Option<&regex::Captures<'_>>, pattern: Option<&Regex>, each: Option<&Value>) -> Option<String> {
     let template = rule.device.as_ref()?;
     let mut group = Map::new();
     if let (Some(c), Some(p)) = (groups, pattern) {
@@ -703,16 +972,60 @@ fn device_of(rule: &ReadRule, wild: &[&str], groups: Option<&regex::Captures<'_>
     }
     // `{topic.1}` counts from one, as people do.
     let topic: Map<String, Value> = wild.iter().enumerate().map(|(i, w)| ((i + 1).to_string(), json!(w))).collect();
-    render(template, &json!({"topic": topic, "group": group})).ok()
+    render(template, &json!({"topic": topic, "group": group, "each": each})).ok()
+}
+
+/// A time as equipment gives it. Below 10^11 a number is seconds: as milliseconds that is 1973.
+fn when_of(v: &Value) -> Option<DateTime<Utc>> {
+    match v {
+        Value::String(t) => t.parse().ok(),
+        Value::Number(n) => {
+            let n = n.as_f64()?;
+            DateTime::from_timestamp_millis(if n < 1e11 { n * 1000.0 } else { n } as i64)
+        }
+        _ => None,
+    }
+}
+
+/// Everything one element or whole message says, by one rule.
+fn say(rule: &ReadRule, seen: &Seen<'_>, device: Option<String>, each: &Value, groups: Option<&regex::Captures<'_>>, out: &mut Vec<Decoded>) {
+    for f in &rule.fields {
+        let Some(value) = extract(f, seen, groups).and_then(|raw| shape(f, raw)) else { continue };
+        let device = device.clone();
+        if let Some(metric) = &f.metric {
+            if let (Some(value), Some(metric)) = (as_number(&value), named(metric, each)) {
+                let at = f.time.as_deref().and_then(|path| at_path(seen.json()?, path)).and_then(when_of);
+                out.push(Decoded::Metric { device, metric, value, unit: f.unit.clone(), class: f.class.clone(), deadband: f.deadband, every: f.every, at });
+            }
+        } else if f.state == Some(true) {
+            out.push(Decoded::State { device, state: word(&value) });
+        } else if let Some(key) = f.attribute.as_deref().and_then(|k| named(k, each)) {
+            out.push(Decoded::Attribute { device, key, value });
+        } else if let Some(name) = f.event.as_deref().and_then(|n| named(n, each)) {
+            out.push(Decoded::Event { device, name, value });
+        }
+    }
 }
 
 impl Compiled {
     /// Everything a message says, by the rules of this definition. A value that cannot be read is
     /// left out: dropped, and never stored as something it is not.
     pub fn decode(&self, topic: &str, body: &[u8]) -> Vec<Decoded> {
-        let seen = Seen::new(topic, body);
+        self.decode_with(topic, body, &mut Memory::default())
+    }
+
+    /// As [`Self::decode`], for a link that keeps what earlier messages taught it.
+    pub fn decode_with(&self, topic: &str, body: &[u8], memory: &mut Memory) -> Vec<Decoded> {
+        let mut seen = Seen::new(topic, body);
+        if self.definition.read.iter().any(|r| r.format == Format::Sparkplug)
+            && let Some(mut payload) = sparkplug::decode(body)
+        {
+            memory.resolve(topic, &mut payload);
+            seen.sparkplug = OnceCell::from(Some(payload));
+        }
         let mut out = Vec::new();
         for (rule, compiled) in self.definition.read.iter().zip(&self.reads) {
+            seen.format = rule.format;
             let wild = match &rule.topic {
                 Some(filter) => match topic_matches(filter, seen.topic) {
                     Some(w) => w,
@@ -727,25 +1040,26 @@ impl Compiled {
                 },
                 None => None,
             };
+            if let Some(path) = &rule.each {
+                let elements = match seen.json().and_then(|j| at_path(j, path)) {
+                    Some(Value::Array(a)) => a.clone(),
+                    Some(Value::Object(m)) => m.iter().map(|(k, v)| json!({"key": k, "value": v})).collect(),
+                    _ => continue,
+                };
+                for element in elements {
+                    let one = seen.element(element.clone());
+                    if rule.when.as_ref().is_none_or(|w| one.holds(w)) {
+                        let device = device_of(rule, &wild, groups.as_ref(), compiled.pattern.as_ref(), Some(&element));
+                        say(rule, &one, device, &element, groups.as_ref(), &mut out);
+                    }
+                }
+                continue;
+            }
             if rule.when.as_ref().is_some_and(|w| !seen.holds(w)) {
                 continue;
             }
-            let device = device_of(rule, &wild, groups.as_ref(), compiled.pattern.as_ref());
-            for f in &rule.fields {
-                let Some(value) = extract(f, &seen, groups.as_ref()).and_then(|raw| shape(f, raw)) else { continue };
-                let device = device.clone();
-                if let Some(metric) = &f.metric {
-                    if let Some(value) = as_number(&value) {
-                        out.push(Decoded::Metric { device, metric: metric.clone(), value, unit: f.unit.clone(), class: f.class.clone(), deadband: f.deadband });
-                    }
-                } else if f.state == Some(true) {
-                    out.push(Decoded::State { device, state: word(&value) });
-                } else if let Some(key) = &f.attribute {
-                    out.push(Decoded::Attribute { device, key: key.clone(), value });
-                } else if let Some(name) = &f.event {
-                    out.push(Decoded::Event { device, name: name.clone(), value });
-                }
-            }
+            let device = device_of(rule, &wild, groups.as_ref(), compiled.pattern.as_ref(), None);
+            say(rule, &seen, device, &Value::Null, groups.as_ref(), &mut out);
         }
         out
     }
@@ -754,7 +1068,10 @@ impl Compiled {
     /// goes by: ours, and the equipment's.
     pub fn status(&self, operation: &str, device: &str, topic: &str, body: &[u8], names: &[&str]) -> Option<Ending> {
         let rule = self.definition.commands.get(operation)?.status.as_ref()?;
-        self.judge(rule, self.statuses.get(operation).and_then(Option::as_ref), device, topic, body, names)
+        let patterns = self.statuses.get(operation)?;
+        let chain = std::iter::once(rule).chain(&rule.also);
+        let said: Vec<Ending> = chain.zip(patterns).filter_map(|(r, p)| self.judge(r, p.as_ref(), device, topic, body, names)).collect();
+        said.iter().find(|e| !matches!(e, Ending::Waiting | Ending::Running)).or(said.first()).copied()
     }
 
     /// What this reply to a `find` says, by the same rules as a status.
@@ -765,7 +1082,8 @@ impl Compiled {
     }
 
     fn judge(&self, rule: &StatusRule, pattern: Option<&Regex>, device: &str, topic: &str, body: &[u8], names: &[&str]) -> Option<Ending> {
-        let seen = Seen::new(topic, body);
+        let mut seen = Seen::new(topic, body);
+        seen.format = rule.format;
         if let Some(filter) = &rule.topic {
             topic_matches(&filter.replace("{device}", device), topic)?;
         }
@@ -802,11 +1120,11 @@ impl Compiled {
 fn check_template(what: &str, template: &str) -> Result<(), String> {
     // `{payload.x}`, `{command}`, `{device}`, `{id}`, `{secret.x}`, `{settings.x}`: render with
     // everything present, so only an unknown root fails.
-    let probe = json!({"command": "c", "device": "d", "id": "i"});
+    let probe = json!({"command": "c", "device": "d", "id": "i", "now": "t", "now_ms": 1, "seq": 1});
     match render(template, &probe) {
         Ok(_) => Ok(()),
         Err(e) if ["{payload", "{secret", "{settings"].iter().any(|r| e.contains(r)) => Ok(()),
-        Err(e) => Err(format!("{what}: {e}. Placeholders are command, device, id, payload.*, secret.* and settings.*")),
+        Err(e) => Err(format!("{what}: {e}. Placeholders are command, device, id, now, now_ms, seq, payload.*, secret.* and settings.*")),
     }
 }
 
@@ -827,15 +1145,29 @@ fn check_step(what: &str, step: &Step, scheme: Option<&str>) -> Result<(), Strin
     }
     let Some(scheme) = scheme else { return Ok(()) };
     let http = matches!(scheme, "http" | "https");
-    let modbus = scheme == "modbus+tcp";
+    let modbus = matches!(scheme, "modbus+tcp" | "modbus+rtu");
+    let opcua = scheme == "opcua";
+    let mqtt = matches!(scheme, "mqtt" | "mqtts");
     if step.method().is_some() && !http {
         return Err(format!("{what}: get, post, put, patch and delete are for http, and this connects by {scheme}"));
     }
     if http && (step.send.is_some() || step.hex.is_some()) && step.method().is_none() {
         return Err(format!("{what}: say which method and path to send this with"));
     }
-    if (step.read.is_some() || !step.write.is_empty()) && !modbus {
-        return Err(format!("{what}: read and write are for modbus+tcp, and this connects by {scheme}"));
+    if (step.read.is_some() || !step.write.is_empty() || step.unit.is_some()) && !modbus {
+        return Err(format!("{what}: read, write and unit are for Modbus, and this connects by {scheme}"));
+    }
+    if (step.node.is_some() || step.call.is_some()) && !opcua {
+        return Err(format!("{what}: node and call are for opcua, and this connects by {scheme}"));
+    }
+    if step.call.is_some() && step.node.is_none() {
+        return Err(format!("{what}: call needs the node it belongs to"));
+    }
+    if opcua && step.node.is_none() && (step.send.is_some() || step.hex.is_some()) {
+        return Err(format!("{what}: say which node this is for"));
+    }
+    if step.retain && !mqtt {
+        return Err(format!("{what}: retain is for MQTT, and this connects by {scheme}"));
     }
     if modbus && (step.send.is_some() || step.hex.is_some()) {
         return Err(format!("{what}: Modbus takes read and write"));
@@ -843,12 +1175,18 @@ fn check_step(what: &str, step: &Step, scheme: Option<&str>) -> Result<(), Strin
     Ok(())
 }
 
-fn check_field(what: &str, f: &Field) -> Result<(), String> {
+fn check_field(what: &str, f: &Field, each: bool) -> Result<(), String> {
     let says = usize::from(f.metric.is_some()) + usize::from(f.state == Some(true)) + usize::from(f.attribute.is_some()) + usize::from(f.event.is_some());
     if says != 1 {
         return Err(format!("{what}: say one of metric, state, attribute or event"));
     }
+    for name in [&f.metric, &f.attribute, &f.event].into_iter().flatten() {
+        if name.contains("{each.") && !each {
+            return Err(format!("{what}: {name} needs each, to say what to take it from"));
+        }
+    }
     if let Some(m) = &f.metric
+        && !m.contains("{each.")
         && (m.is_empty() || m.len() > 120 || !m.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '/')))
     {
         return Err(format!("{what}: {m} is not a metric's name"));
@@ -892,6 +1230,14 @@ pub fn parse(text: &str) -> Result<Compiled, String> {
         Some(c) if !c.contains('{') => Some(scheme(c).ok_or_else(|| format!("connect: {c} is not an address this can open. Schemes: {}", SCHEMES.join(", ")))?),
         _ => None,
     };
+    if let Some(s) = scheme_of {
+        if d.checksum.is_some() && !matches!(s, "tcp" | "udp" | "serial" | "listen" | "listen+udp") {
+            return Err(format!("checksum: {s} has checks of its own"));
+        }
+        if !d.on_connect.is_empty() && matches!(s, "listen" | "listen+udp" | "webhook") {
+            return Err(format!("on_connect: nothing is connected to at {s}: equipment calls in"));
+        }
+    }
     for (i, step) in d.on_connect.iter().enumerate() {
         check_step(&format!("on_connect[{i}]"), step, scheme_of)?;
     }
@@ -909,7 +1255,7 @@ pub fn parse(text: &str) -> Result<Compiled, String> {
             return Err(format!("{what}: it finds nothing"));
         }
         for f in &r.fields {
-            check_field(&what, f)?;
+            check_field(&what, f, r.each.is_some())?;
             if let (Some(g), Some(p)) = (&f.group, &pattern)
                 && !p.capture_names().flatten().any(|n| n == g)
             {
@@ -932,7 +1278,7 @@ pub fn parse(text: &str) -> Result<Compiled, String> {
             return Err(format!("{what}: say how it is known to have ended with status, or set once: true if this device can prove nothing beyond the send"));
         }
         if let Some(s) = &c.status {
-            if s.done.is_empty() {
+            if s.done.is_empty() && s.also.iter().all(|a| a.done.is_empty()) {
                 return Err(format!("{what}: status needs a value that means done"));
             }
             if let Some(p) = &s.poll {
@@ -942,8 +1288,10 @@ pub fn parse(text: &str) -> Result<Compiled, String> {
         if let Some(step) = &c.cancel {
             check_step(&format!("{what}.cancel"), step, scheme_of)?;
         }
-        let pattern = c.status.as_ref().and_then(|s| s.pattern.as_deref()).map(Regex::new).transpose().map_err(|e| format!("{what}.status: {e}"))?;
-        statuses.insert(name.clone(), pattern);
+        let chain = c.status.iter().flat_map(|s| std::iter::once(s).chain(&s.also));
+        let patterns =
+            chain.map(|s| s.pattern.as_deref().map(Regex::new).transpose()).collect::<Result<Vec<_>, _>>().map_err(|e| format!("{what}.status: {e}"))?;
+        statuses.insert(name.clone(), patterns);
     }
     let digest = hex::encode(Sha256::digest(text.as_bytes()));
     Ok(Compiled { definition, digest, reads, statuses })
@@ -955,6 +1303,181 @@ mod tests {
 
     fn def(text: &str) -> Compiled {
         parse(text).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    #[test]
+    fn each_makes_a_device_with_hundreds_of_values_one_line() {
+        let d = def(r#"
+name: bridge
+connect: mqtt://b:1883
+subscribe: ["plant/#"]
+read:
+  - topic: plant/+/tags
+    device: "{topic.1}"
+    each: $.tags
+    when: {json: $.good, is: true}
+    metric: "{each.name}"
+    json: $.v
+    every: 5s
+  - topic: plant/+/info
+    device: "{topic.1}"
+    each: $
+    attribute: "{each.key}"
+    json: $.value
+"#);
+        let body = br#"{"tags":[{"name":"Temp Sensor/1","v":21.5,"good":true},{"name":"bad","v":0,"good":false},{"name":"s","v":"not a number","good":true}]}"#;
+        let got = d.decode("plant/PRESS-1/tags", body);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert!(
+            matches!(&got[0], Decoded::Metric { device: Some(c), metric, value, every, .. } if c == "PRESS-1" && metric == "Temp_Sensor/1" && *value == 21.5 && *every == Some(Duration::from_secs(5))),
+            "a name a device chose is made fit, and {got:?}"
+        );
+        let got = d.decode("plant/PRESS-1/info", br#"{"fw":"1.2","model":"X"}"#);
+        assert!(got.contains(&Decoded::Attribute { device: Some("PRESS-1".into()), key: "fw".into(), value: json!("1.2") }), "{got:?}");
+        assert_eq!(got.len(), 2, "a map's elements are its keys");
+        assert!(d.decode("plant/PRESS-1/tags", b"not json").is_empty());
+        assert!(parse("name: x\nread:\n  - {metric: \"{each.name}\", json: $.v}\n").is_err_and(|e| e.contains("needs each")));
+    }
+
+    #[test]
+    fn sparkplug_is_read_by_name_even_when_it_arrives_by_alias() {
+        let d = def(r#"
+name: edge-node
+connect: mqtts://b:8883
+subscribe: ["spBv1.0/plant/+/+/+"]
+read:
+  - {topic: "spBv1.0/plant/+/+/+", format: sparkplug, device: "{topic.3}", each: $.metrics, metric: "{each.name}", json: $.value}
+commands:
+  machine.set:
+    topic: spBv1.0/plant/DCMD/node/{device}
+    format: sparkplug
+    send: {timestamp: "{now_ms}", metrics: [{name: Setpoint, value: "{payload.value}", type: double}]}
+    once: true
+"#);
+        let named = crate::sparkplug::encode(&json!({"metrics": [{"name": "Temp", "value": 21.5}]})).unwrap();
+        assert!(
+            matches!(&d.decode("spBv1.0/plant/DDATA/node/M1", &named)[0], Decoded::Metric { device: Some(c), metric, .. } if c == "M1" && metric == "Temp")
+        );
+
+        // A birth with aliases, then data with only the alias. Field 2 of a metric carries it.
+        let with_alias = |name: Option<&str>| {
+            let mut m = Vec::new();
+            if let Some(n) = name {
+                m.extend([0x0a, n.len() as u8]);
+                m.extend(n.as_bytes());
+            }
+            m.extend([0x10, 5, 0x20, 10, 0x69]);
+            m.extend(7.5f64.to_le_bytes());
+            let mut p = vec![0x12, m.len() as u8];
+            p.extend(m);
+            p
+        };
+        let mut memory = Memory::default();
+        let birth = d.decode_with("spBv1.0/plant/DBIRTH/node/M1", &with_alias(Some("Rpm")), &mut memory);
+        assert_eq!(birth.len(), 1);
+        let data = d.decode_with("spBv1.0/plant/DDATA/node/M1", &with_alias(None), &mut memory);
+        assert!(matches!(&data[0], Decoded::Metric { metric, value, .. } if metric == "Rpm" && *value == 7.5), "{data:?}");
+        assert!(d.decode("spBv1.0/plant/DDATA/node/M1", &with_alias(None)).is_empty(), "without its birth it has no name, so it is not filed under one");
+    }
+
+    #[test]
+    fn xml_is_read_as_a_flat_list() {
+        let d = def(r#"
+name: mtconnect
+connect: http://agent:5000
+poll:
+  - {every: 1s, get: /current}
+read:
+  - {format: xml, each: $, when: {json: $.parent, is: Samples}, device: "{each.of.DeviceStream.name}", metric: "{each.attrs.dataItemId}", json: $.text}
+  - {format: xml, each: $, when: {json: $.parent, is: Events}, device: "{each.of.DeviceStream.name}", attribute: "{each.attrs.dataItemId}", json: $.text}
+  - {format: xml, each: $, when: {json: $.parent, is: Condition}, device: "{each.of.DeviceStream.name}", event: "{each.attrs.type}", json: $.tag}
+"#);
+        let body = br#"<?xml version="1.0"?><MTConnectStreams xmlns="urn:x"><Streams><DeviceStream name="M1"><ComponentStream component="Axes">
+            <Samples><Position dataItemId="x.pos" timestamp="t">10.5</Position><Temperature dataItemId="t1">UNAVAILABLE</Temperature></Samples>
+            <Events><Execution dataItemId="exec">ACTIVE &amp; ready</Execution></Events>
+            <Condition><Fault type="TEMPERATURE"/><Normal type="SYSTEM"></Normal></Condition>
+        </ComponentStream></DeviceStream></Streams></MTConnectStreams>"#;
+        let got = d.decode("/current", body);
+        assert!(matches!(&got[0], Decoded::Metric { device: Some(c), metric, value, .. } if c == "M1" && metric == "x.pos" && *value == 10.5), "{got:?}");
+        assert_eq!(got.iter().filter(|g| matches!(g, Decoded::Metric { .. })).count(), 1, "UNAVAILABLE is not a number, so it is not one");
+        assert!(got.contains(&Decoded::Attribute { device: Some("M1".into()), key: "exec".into(), value: json!("ACTIVE & ready") }), "{got:?}");
+        assert!(got.contains(&Decoded::Event { device: Some("M1".into()), name: "TEMPERATURE".into(), value: json!("Fault") }), "{got:?}");
+        assert!(got.contains(&Decoded::Event { device: Some("M1".into()), name: "SYSTEM".into(), value: json!("Normal") }), "{got:?}");
+        assert!(d.decode("/current", b"<not<xml").is_empty());
+    }
+
+    #[test]
+    fn a_check_is_added_going_out_and_held_to_coming_in() {
+        // Known answers, from the standards' own examples.
+        let modbus = Checksum { kind: ChecksumKind::Crc16Modbus, from: 0 };
+        assert_eq!(modbus.seal(vec![0x01, 0x03, 0x00, 0x00, 0x00, 0x0a]), [0x01, 0x03, 0x00, 0x00, 0x00, 0x0a, 0xc5, 0xcd]);
+        let ccitt = Checksum { kind: ChecksumKind::Crc16Ccitt, from: 0 };
+        assert_eq!(ccitt.seal(b"123456789".to_vec())[9..], [0x29, 0xb1]);
+        let crc32 = Checksum { kind: ChecksumKind::Crc32, from: 0 };
+        assert_eq!(crc32.seal(b"123456789".to_vec())[9..], [0xcb, 0xf4, 0x39, 0x26]);
+        let lrc = Checksum { kind: ChecksumKind::Lrc, from: 0 };
+        assert_eq!(lrc.seal(vec![0x11, 0x03, 0x00, 0x6b, 0x00, 0x03]), [0x11, 0x03, 0x00, 0x6b, 0x00, 0x03, 0x7e]);
+        assert_eq!(Checksum { kind: ChecksumKind::Sum8, from: 1 }.seal(vec![0xff, 2, 3]), [0xff, 2, 3, 5], "it covers what follows the header");
+        for kind in [ChecksumKind::Crc16Modbus, ChecksumKind::Crc16Ccitt, ChecksumKind::Crc32, ChecksumKind::Sum8, ChecksumKind::Xor8, ChecksumKind::Lrc] {
+            let c = Checksum { kind, from: 0 };
+            let sealed = c.seal(vec![1, 2, 3]);
+            assert_eq!(c.open(&sealed), Some(&[1u8, 2, 3][..]), "{kind:?}");
+            let mut damaged = sealed.clone();
+            damaged[1] ^= 0x10;
+            assert_eq!(c.open(&damaged), None, "{kind:?}");
+            assert_eq!(c.open(&[]), None, "{kind:?}: too short to have one");
+        }
+    }
+
+    #[test]
+    fn a_stream_finds_its_place_by_a_marker() {
+        let length = Frame::Length(LengthField { start: Some("AA 55".into()), at: 2, size: 1, little: false, add: 3 });
+        let mut b = vec![1, 2, 3, 0xaa, 0x55, 2, 7, 8, 0xaa];
+        assert_eq!(length.take(&mut b), Some(vec![0xaa, 0x55, 2, 7, 8]));
+        assert_eq!(length.take(&mut b), None);
+        assert_eq!(b, vec![0xaa], "what may be the start of the next stays");
+    }
+
+    #[test]
+    fn a_protocol_with_no_one_field_for_it_can_say_how_work_ended_several_ways() {
+        let d = def(r#"
+name: agv
+connect: mqtt://b:1883
+commands:
+  transport.move:
+    topic: agv/{device}/order
+    send: {orderId: "{command}"}
+    status:
+      topic: agv/{device}/state
+      id: $.orderId
+      json: $.errors[0].errorLevel
+      failed: FATAL
+      also:
+        - {topic: "agv/{device}/state", id: $.orderId, json: $.nodeStates, done: "[]"}
+"#);
+        let status = |body: &str| d.status("transport.move", "A1", "agv/A1/state", body.as_bytes(), &["c1"]);
+        assert_eq!(status(r#"{"orderId":"c1","errors":[],"nodeStates":[{"id":"n"}]}"#), Some(Ending::Waiting));
+        assert_eq!(status(r#"{"orderId":"c1","errors":[],"nodeStates":[]}"#), Some(Ending::Done));
+        assert_eq!(status(r#"{"orderId":"c1","errors":[{"errorLevel":"FATAL"}],"nodeStates":[{"id":"n"}]}"#), Some(Ending::Failed));
+        assert_eq!(status(r#"{"orderId":"other","errors":[],"nodeStates":[]}"#), None, "another order's news is not this one's");
+        assert!(
+            parse(
+                "name: x\nconnect: mqtt://b:1\ncommands:\n  a:\n    topic: t\n    send: x\n    status: {json: $.s, failed: F, also: [{json: $.t, failed: G}]}\n"
+            )
+            .is_err_and(|e| e.contains("done"))
+        );
+    }
+
+    #[test]
+    fn what_belongs_to_one_protocol_is_refused_on_another() {
+        let on = |connect: &str, step: &str| parse(&format!("name: x\nconnect: {connect}\npoll:\n  - {{every: 1s, {step}}}\n"));
+        assert!(on("tcp://h:1", "node: \"ns=2;i=1\"").is_err_and(|e| e.contains("opcua")));
+        assert!(on("opcua://h:4840", "node: \"ns=2;i=1\"").is_ok());
+        assert!(on("opcua://h:4840", "send: x").is_err_and(|e| e.contains("which node")));
+        assert!(on("tcp://h:1", "send: x, unit: 3").is_err_and(|e| e.contains("Modbus")));
+        assert!(on("modbus+rtu:///dev/ttyUSB0", "read: holding, unit: \"{settings.unit}\"").is_ok());
+        assert!(on("tcp://h:1", "send: x, retain: true").is_err_and(|e| e.contains("MQTT")));
+        assert!(parse("name: x\nconnect: opcua://h:1\ncommands:\n  a:\n    call: \"ns=2;i=2\"\n    once: true\n").is_err());
     }
 
     #[test]
@@ -971,14 +1494,14 @@ mod tests {
         assert_eq!(between.take(&mut b), None);
         assert_eq!(b, b"\x02wo");
 
-        let length = Frame::Length(LengthField { at: 1, size: 2, little: false, add: 3 });
+        let length = Frame::Length(LengthField { start: None, at: 1, size: 2, little: false, add: 3 });
         let mut b = vec![0xaa, 0, 2, 1, 2, 0xaa];
         assert_eq!(length.take(&mut b), Some(vec![0xaa, 0, 2, 1, 2]));
         assert_eq!(b, vec![0xaa]);
 
         // A length that cannot be: skip a byte and look again, rather than wait for ever.
         let mut b = vec![0xff, 0xff, 0xff, 0xff, 0xff, 0];
-        let wide = Frame::Length(LengthField { at: 0, size: 4, little: false, add: 0 });
+        let wide = Frame::Length(LengthField { start: None, at: 0, size: 4, little: false, add: 0 });
         assert_eq!(wide.take(&mut b), None);
         assert_eq!(b.len(), 5);
 
@@ -1003,7 +1526,19 @@ commands:
 "#);
         assert_eq!(d.definition.poll[0].every, Duration::from_secs(5));
         let got = d.decode("", b"12.5 kg");
-        assert_eq!(got, vec![Decoded::Metric { device: None, metric: "weight.kg".into(), value: 12.5, unit: Some("kg".into()), class: None, deadband: None }]);
+        assert_eq!(
+            got,
+            vec![Decoded::Metric {
+                device: None,
+                metric: "weight.kg".into(),
+                value: 12.5,
+                unit: Some("kg".into()),
+                class: None,
+                deadband: None,
+                every: None,
+                at: None
+            }]
+        );
         assert!(d.decode("", b"not a weight").is_empty());
         assert_eq!(d.status("scale.tare", "S", "", b"OK", &[]), Some(Ending::Done));
         assert_eq!(d.status("scale.tare", "S", "", b"ERR 4", &[]), Some(Ending::Failed));
@@ -1141,7 +1676,7 @@ commands:
         fails("name: x\ncommands:\n  a.b: {send: 'go {nope}', once: true}", "Placeholders are");
         fails("name: x\nread:\n  - {metric: 'no spaces', json: $.a}", "not a metric");
         fails("name: x\nconnect: modbus+tcp://a:502\npoll:\n  - {every: 1s, send: hi}", "Modbus takes");
-        fails("name: x\nconnect: tcp://a:1\npoll:\n  - {every: 1s, read: holding, at: 1}", "are for modbus");
+        fails("name: x\nconnect: tcp://a:1\npoll:\n  - {every: 1s, read: holding, at: 1}", "are for Modbus");
     }
 
     #[test]

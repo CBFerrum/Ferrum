@@ -10,5 +10,7 @@ pub mod transport;
 pub mod modbus;
 #[cfg(feature = "mqtt")]
 pub mod mqtt;
+#[cfg(feature = "opcua")]
+pub mod opcua;
 #[cfg(feature = "mqtt")]
 pub mod vda5050;

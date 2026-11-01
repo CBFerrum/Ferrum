@@ -5,8 +5,8 @@
 
 use crate::adapter::Failure;
 use crate::adapters::transport::{self, Limits, Message, Out, Transport};
-use hmac::{Hmac, Mac};
 use ferrum_ops_contract::edge::Export;
+use hmac::{Hmac, Mac};
 use serde_json::Value;
 use sha2::Sha256;
 use std::collections::HashMap;
@@ -52,7 +52,7 @@ impl Sender {
         if let Some(b) = brokers.get(to) {
             return Ok(b.clone());
         }
-        let broker = transport::open(to, None, &[], &[], &Limits::default())?;
+        let broker = transport::open(to, transport::Options::default(), &Limits::default())?;
         brokers.insert(to.to_string(), broker.clone());
         let runner = broker.clone();
         tokio::spawn(async move {
@@ -82,8 +82,13 @@ impl Sender {
             let broker = self.broker(&export.to)?;
             for body in bodies {
                 let m: Value = serde_json::from_str(body).unwrap_or(Value::Null);
-                let topic = export.topic.as_deref().unwrap_or("ferrum/{device}/{metric}").replace("{device}", m["device"].as_str().unwrap_or("unknown")).replace("{metric}", m["metric"].as_str().unwrap_or("unknown"));
-                broker.send(Out::Publish { topic, body: body.clone().into_bytes(), expiry: None }).await.map_err(|e| match e {
+                let topic = export
+                    .topic
+                    .as_deref()
+                    .unwrap_or("ferrum/{device}/{metric}")
+                    .replace("{device}", m["device"].as_str().unwrap_or("unknown"))
+                    .replace("{metric}", m["metric"].as_str().unwrap_or("unknown"));
+                broker.send(Out::Publish { topic, body: body.clone().into_bytes(), expiry: None, retain: false }).await.map_err(|e| match e {
                     Failure::NotSent(w) | Failure::Unknown(w) => w,
                 })?;
             }

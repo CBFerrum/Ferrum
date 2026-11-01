@@ -12,7 +12,7 @@ use crate::adapter::{Adapter, Dispatched, Failure, Observation, Reading};
 use crate::adapters::transport::{self, Limits, Message, Out, Transport};
 use async_trait::async_trait;
 use chrono::Utc;
-use ferrum_ops_contract::driver::{self, Compiled, Decoded, Ending, Step, render, render_json};
+use ferrum_ops_contract::driver::{self, Compiled, Decoded, Ending, Format, Memory, Step, render, render_json};
 use ferrum_ops_contract::edge::DeviceLink;
 use ferrum_ops_contract::telemetry::Class;
 use ferrum_ops_contract::{Command, sync::SiteDevice};
@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
@@ -29,6 +29,9 @@ use uuid::Uuid;
 const MAX_WAITING: usize = 10_000;
 /// Device codes seen on a shared connection that this site does not know, for a person to claim.
 const MAX_STRANGERS: usize = 200;
+/// Different values a link will keep track of. A device that names a new one each time is a fault,
+/// and it costs this much memory and no more.
+const MAX_NAMES: usize = 20_000;
 
 struct Inflight {
     operation: String,
@@ -42,10 +45,13 @@ struct Inflight {
 struct Shared {
     readings: VecDeque<Reading>,
     inflight: HashMap<Uuid, Inflight>,
-    /// The last number reported per device and metric, for deadbands.
-    reported: HashMap<(String, String), f64>,
+    /// The last number reported per device and metric and when, for deadbands and rates.
+    reported: HashMap<(String, String), (f64, Instant)>,
     strangers: BTreeMap<String, ()>,
     last_error: Option<String>,
+    /// Who each device was last heard calling in as, on a listener.
+    routes: HashMap<String, String>,
+    memory: Memory,
 }
 
 /// What a link has done, for the console and for `/metrics`.
@@ -66,6 +72,8 @@ pub struct Link {
     shared: Mutex<Shared>,
     up: AtomicBool,
     counters: Counters,
+    /// For `{seq}`. From the clock, so that it keeps rising across a restart.
+    seq: AtomicU64,
     stop: watch::Sender<bool>,
 }
 
@@ -81,6 +89,13 @@ fn class_of(name: Option<&str>) -> Class {
     }
 }
 
+fn unit_of(step: &Step, vars: &Value) -> Result<Option<u8>, String> {
+    let Some(template) = &step.unit else { return Ok(None) };
+    let v = render_json(template, vars)?;
+    let unit = v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())).filter(|n| *n <= 247);
+    unit.map(|n| Some(n as u8)).ok_or_else(|| format!("{v} is not a Modbus unit"))
+}
+
 /// What a step becomes on the wire. Anything left unfilled refuses it here, before it can go.
 fn outgoing(step: &Step, vars: &Value, expires: Option<u32>) -> Result<Out, String> {
     if let Some((method, path)) = step.method() {
@@ -90,7 +105,7 @@ fn outgoing(step: &Step, vars: &Value, expires: Option<u32>) -> Result<Out, Stri
         return Ok(Out::Http { method: method.to_string(), path: render(path, vars)?, body, headers });
     }
     if let Some(table) = &step.read {
-        return Ok(Out::Read { table: table.clone(), at: step.at.unwrap_or(0), count: step.count.unwrap_or(1) });
+        return Ok(Out::Read { table: table.clone(), at: step.at.unwrap_or(0), count: step.count.unwrap_or(1), unit: unit_of(step, vars)? });
     }
     if !step.write.is_empty() {
         let mut values = Vec::new();
@@ -99,15 +114,31 @@ fn outgoing(step: &Step, vars: &Value, expires: Option<u32>) -> Result<Out, Stri
             let word = v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())).filter(|n| *n <= u64::from(u16::MAX));
             values.push((w.at, word.ok_or_else(|| format!("{v} does not fit a register"))? as u16));
         }
-        return Ok(Out::Write(values));
+        return Ok(Out::Write { values, unit: unit_of(step, vars)? });
+    }
+    if let Some(node) = &step.node {
+        let node = render(node, vars)?;
+        let sent = step.send.as_ref().map(|b| render_json(b, vars)).transpose()?;
+        return Ok(match &step.call {
+            Some(method) => {
+                let args = match sent {
+                    Some(Value::Array(args)) => args,
+                    Some(one) => vec![one],
+                    None => Vec::new(),
+                };
+                Out::Call { object: node, method: render(method, vars)?, args }
+            }
+            None => Out::Node { node, value: sent },
+        });
     }
     let body = match (&step.send, &step.hex) {
+        (Some(b), _) if step.format == Some(Format::Sparkplug) => ferrum_ops_contract::sparkplug::encode(&render_json(b, vars)?)?,
         (Some(b), _) => body_of(b, vars)?,
         (None, Some(h)) => hex::decode(render(h, vars)?.replace(' ', "")).map_err(|e| e.to_string())?,
         (None, None) => Vec::new(),
     };
     Ok(match &step.topic {
-        Some(topic) => Out::Publish { topic: render(topic, vars)?, body, expiry: expires },
+        Some(topic) => Out::Publish { topic: render(topic, vars)?, body, expiry: expires, retain: step.retain },
         None => Out::Bytes(body),
     })
 }
@@ -134,7 +165,8 @@ impl Link {
         }
         topics.sort();
         topics.dedup();
-        let transport = transport::open(&address, d.frame.clone(), &topics, &headers, limits)?;
+        let options = transport::Options { frame: d.frame.clone(), subscribe: &topics, headers: &headers, tls: d.tls.as_ref() };
+        let transport = transport::open(&address, options, limits)?;
         let (stop, _) = watch::channel(false);
         let link = Arc::new(Link {
             compiled,
@@ -145,6 +177,7 @@ impl Link {
             shared: Mutex::default(),
             up: AtomicBool::new(false),
             counters: Counters::default(),
+            seq: AtomicU64::new(Utc::now().timestamp().unsigned_abs()),
             stop,
         });
         link.clone().spawn();
@@ -223,7 +256,7 @@ impl Link {
         for step in &self.compiled.definition.on_connect {
             match outgoing(step, &vars, None) {
                 Ok(out) => {
-                    if let Ok(Some(reply)) = self.transport.send(out).await {
+                    if let Ok(Some(reply)) = self.send(out, None).await {
                         self.heard(&reply, None);
                     }
                 }
@@ -238,6 +271,10 @@ impl Link {
         let devices: Vec<DeviceLink> = self.devices.read().unwrap_or_else(|e| e.into_inner()).clone();
         let step = &self.compiled.definition.poll[i].step;
         for device in &devices {
+            // Nothing can be asked of a device that has not called in yet.
+            if self.transport.listening() && !locked(&self.shared).routes.contains_key(&device.code) {
+                continue;
+            }
             let vars = self.vars(Some(device), None, None);
             let out = match outgoing(step, &vars, None) {
                 Ok(o) => o,
@@ -246,7 +283,7 @@ impl Link {
                     continue;
                 }
             };
-            match self.transport.send(out).await {
+            match self.send(out, Some(&device.code)).await {
                 Ok(Some(reply)) if reply.status.is_none_or(|s| s < 400) => self.heard(&reply, Some(&device.code)),
                 Ok(Some(reply)) => locked(&self.shared).last_error = Some(format!("{} answered {}", reply.topic, reply.status.unwrap_or(0))),
                 Ok(None) => {}
@@ -255,8 +292,28 @@ impl Link {
         }
     }
 
+    /// Puts on what every message on this link needs: its check, and who it is for.
+    async fn send(&self, out: Out, device: Option<&str>) -> Result<Option<Message>, Failure> {
+        let out = match (out, self.compiled.definition.checksum) {
+            (Out::Bytes(bytes), Some(check)) => Out::Bytes(check.seal(bytes)),
+            (out, _) => out,
+        };
+        let out = match out {
+            Out::Bytes(bytes) if self.transport.listening() => {
+                let peer = device.and_then(|d| locked(&self.shared).routes.get(d).cloned());
+                Out::To { peer: peer.ok_or_else(|| Failure::NotSent(format!("{} has not called in", device.unwrap_or("nobody"))))?, bytes }
+            }
+            out => out,
+        };
+        self.transport.send(out).await
+    }
+
     fn vars(&self, device: Option<&DeviceLink>, command: Option<&Command>, external: Option<&str>) -> Value {
+        let now = Utc::now();
         json!({
+            "now": now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            "now_ms": now.timestamp_millis(),
+            "seq": self.seq.fetch_add(1, Ordering::Relaxed),
             "device": device.map(|d| d.code.clone()),
             "settings": device.map(|d| d.settings.clone()).unwrap_or(Value::Null),
             "command": command.map(|c| c.id.to_string()),
@@ -270,42 +327,62 @@ impl Link {
     /// Takes in a message: what it says about the equipment, and what it says about commands.
     fn heard(&self, m: &Message, owner: Option<&str>) {
         self.counters.messages.fetch_add(1, Ordering::Relaxed);
-        let decoded = if self.native() { native_decode(&m.body) } else { self.compiled.decode(&m.topic, &m.body) };
+        let body = match self.compiled.definition.checksum {
+            Some(check) => match check.open(&m.body) {
+                Some(body) => body,
+                None => {
+                    // Line noise, most likely, and a reading from it would be a wrong one.
+                    self.counters.dropped.fetch_add(1, Ordering::Relaxed);
+                    locked(&self.shared).last_error = Some("a message failed its check".into());
+                    return;
+                }
+            },
+            None => &m.body[..],
+        };
         let known: Vec<String> = self.devices.read().unwrap_or_else(|e| e.into_inner()).iter().map(|d| d.code.clone()).collect();
         let sole = owner.map(str::to_string).or_else(|| (known.len() == 1).then(|| known[0].clone()));
         let mut s = locked(&self.shared);
+        let decoded = if self.native() { native_decode(body) } else { self.compiled.decode_with(&m.topic, body, &mut s.memory) };
         for d in decoded {
-            let (device, reading) = match d {
-                Decoded::Metric { device, metric, value, unit, class, deadband } => {
-                    let Some(code) = device.or_else(|| sole.clone()) else { continue };
-                    if let Some(band) = deadband
-                        && let Some(last) = s.reported.get(&(code.clone(), metric.clone()))
-                        && (value - last).abs() < band
-                    {
-                        continue;
-                    }
-                    s.reported.insert((code.clone(), metric.clone()), value);
-                    (code.clone(), Reading::Value { device: code, metric, value, unit, class: class_of(class.as_deref()), source_time: None })
-                }
-                Decoded::State { device, state } => {
-                    let Some(code) = device.or_else(|| sole.clone()) else { continue };
-                    (code.clone(), Reading::State { device: code, state, reason: None })
-                }
-                Decoded::Attribute { device, key, value } => {
-                    let Some(code) = device.or_else(|| sole.clone()) else { continue };
-                    (code.clone(), Reading::Attribute { device: code, key, value })
-                }
-                Decoded::Event { device, name, value } => {
-                    let Some(code) = device.or_else(|| sole.clone()) else { continue };
-                    (code.clone(), Reading::Event { device: code, name, value })
+            let named = match &d {
+                Decoded::Metric { device, .. } | Decoded::State { device, .. } | Decoded::Attribute { device, .. } | Decoded::Event { device, .. } => {
+                    device.clone()
                 }
             };
-            if !known.contains(&device) {
+            let Some(code) = named.or_else(|| sole.clone()) else { continue };
+            if !known.contains(&code) {
                 if s.strangers.len() < MAX_STRANGERS {
-                    s.strangers.insert(device, ());
+                    s.strangers.insert(code, ());
                 }
                 continue;
             }
+            if self.transport.listening() {
+                s.routes.insert(code.clone(), m.topic.clone());
+            }
+            let reading = match d {
+                Decoded::Metric { metric, value, unit, class, deadband, every, at, .. } => {
+                    let key = (code.clone(), metric.clone());
+                    let now = Instant::now();
+                    match s.reported.get(&key) {
+                        Some((last, when)) => {
+                            if deadband.is_some_and(|band| (value - last).abs() < band) || every.is_some_and(|gap| now.duration_since(*when) < gap) {
+                                continue;
+                            }
+                        }
+                        None if s.reported.len() >= MAX_NAMES => {
+                            s.last_error = Some(format!("this link reports more than {MAX_NAMES} different values: {metric} was dropped"));
+                            self.counters.dropped.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
+                        None => {}
+                    }
+                    s.reported.insert(key, (value, now));
+                    Reading::Value { device: code, metric, value, unit, class: class_of(class.as_deref()), source_time: at }
+                }
+                Decoded::State { state, .. } => Reading::State { device: code, state, reason: None },
+                Decoded::Attribute { key, value, .. } => Reading::Attribute { device: code, key, value },
+                Decoded::Event { name, value, .. } => Reading::Event { device: code, name, value },
+            };
             if s.readings.len() >= MAX_WAITING {
                 s.readings.pop_front();
                 self.counters.dropped.fetch_add(1, Ordering::Relaxed);
@@ -319,9 +396,9 @@ impl Link {
             let Some(f) = s.inflight.get_mut(&id) else { continue };
             let text = id.to_string();
             let names: Vec<&str> = std::iter::once(text.as_str()).chain(f.external.as_deref()).collect();
-            let said = if self.native() { native_status(&m.body, &names) } else { self.compiled.status(&f.operation, &f.device, &m.topic, &m.body, &names) };
+            let said = if self.native() { native_status(body, &names) } else { self.compiled.status(&f.operation, &f.device, &m.topic, body, &names) };
             if let Some(ending) = said {
-                merge(f, ending, &m.body);
+                merge(f, ending, body);
             }
         }
     }
@@ -354,7 +431,7 @@ impl Link {
         locked(&self.shared)
             .inflight
             .insert(c.id, Inflight { operation: c.operation.clone(), device: device.code.clone(), external: None, ending: Ending::Waiting, evidence: None });
-        let sent = self.transport.send(out).await;
+        let sent = self.send(out, Some(&device.code)).await;
         let reply = match sent {
             Ok(r) => r,
             Err(Failure::NotSent(e)) => {
@@ -418,7 +495,7 @@ impl Link {
                 };
                 let vars = self.vars(self.settings_of(&device).as_ref(), Some(c), name.as_deref());
                 let out = outgoing(step, &vars, None).map_err(Failure::Unknown)?;
-                if let Some(reply) = self.transport.send(out).await? {
+                if let Some(reply) = self.send(out, Some(&device)).await? {
                     self.heard(&reply, None);
                 }
             }
@@ -439,7 +516,7 @@ impl Link {
         let Some(rule) = self.compiled.command(&c.operation).and_then(|d| d.find.as_ref()) else { return Ok(None) };
         let Some(step) = &rule.poll else { return Ok(None) };
         let out = outgoing(step, &self.vars(None, Some(c), None), None).map_err(Failure::Unknown)?;
-        let Some(reply) = self.transport.send(out).await? else { return Ok(None) };
+        let Some(reply) = self.send(out, None).await? else { return Ok(None) };
         if reply.status == Some(404) {
             return Ok(Some(Observation::NotFound));
         }
@@ -459,16 +536,21 @@ impl Link {
     async fn cancel(&self, c: &Command, external: Option<&str>) -> Result<(), Failure> {
         if self.native() {
             let line = json!({"op": "cancel", "command": c.id});
-            return self.transport.send(Out::Bytes(format!("{line}\n").into_bytes())).await.map(drop);
+            return self.send(Out::Bytes(format!("{line}\n").into_bytes()), None).await.map(drop);
         }
         let step = self
             .compiled
             .command(&c.operation)
             .and_then(|d| d.cancel.as_ref())
             .ok_or_else(|| Failure::NotSent("this definition has no way to stop it".into()))?;
-        let name = locked(&self.shared).inflight.get(&c.id).and_then(|f| f.external.clone()).or_else(|| external.map(str::to_string));
-        let out = outgoing(step, &self.vars(None, Some(c), name.as_deref()), None).map_err(Failure::NotSent)?;
-        self.transport.send(out).await.map(drop)
+        let (name, device) = {
+            let s = locked(&self.shared);
+            let f = s.inflight.get(&c.id);
+            (f.and_then(|f| f.external.clone()).or_else(|| external.map(str::to_string)), f.map(|f| f.device.clone()).filter(|d| !d.is_empty()))
+        };
+        let link = device.as_deref().and_then(|d| self.settings_of(d));
+        let out = outgoing(step, &self.vars(link.as_ref(), Some(c), name.as_deref()), None).map_err(Failure::NotSent)?;
+        self.send(out, device.as_deref()).await.map(drop)
     }
 
     fn take(&self) -> Vec<Reading> {
@@ -517,7 +599,7 @@ fn native_decode(line: &[u8]) -> Vec<Decoded> {
     let device = v["device"].as_str().map(str::to_string);
     let text = |k: &str| v[k].as_str().map(str::to_string);
     if let (Some(metric), Some(value)) = (text("metric"), v["value"].as_f64()) {
-        return vec![Decoded::Metric { device, metric, value, unit: text("unit"), class: text("class"), deadband: None }];
+        return vec![Decoded::Metric { device, metric, value, unit: text("unit"), class: text("class"), deadband: None, every: None, at: None }];
     }
     if let Some(state) = text("state") {
         return vec![Decoded::State { device, state }];

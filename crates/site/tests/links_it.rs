@@ -170,7 +170,11 @@ async fn a_relay_passes_what_gateways_use_and_nothing_else() {
         post(move |uri: axum::http::Uri, headers: HeaderMap, body: Bytes| {
             let log = log.clone();
             async move {
-                log.lock().unwrap().push((uri.path().to_string(), headers.get(HEADER_SIGNATURE).and_then(|v| v.to_str().ok()).map(str::to_string), body.to_vec()));
+                log.lock().unwrap().push((
+                    uri.path().to_string(),
+                    headers.get(HEADER_SIGNATURE).and_then(|v| v.to_str().ok()).map(str::to_string),
+                    body.to_vec(),
+                ));
                 axum::Json(json!({"ok": true}))
             }
         }),

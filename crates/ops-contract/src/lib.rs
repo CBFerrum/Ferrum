@@ -9,6 +9,7 @@ pub mod edge;
 pub mod oee;
 pub mod schedule;
 pub mod sign;
+pub mod sparkplug;
 pub mod sync;
 pub mod telemetry;
 
