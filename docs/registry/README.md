@@ -74,6 +74,7 @@ absent.
 | Release manifest | [release-manifest.yaml](release-manifest.yaml) |
 | Operations handbook | [operations.md](../operations.md) |
 | External-blocker register | [blockers.yaml](blockers.yaml) |
+| Handover, session by session | [handover.md](handover.md) |
 | Accepted advisories | [advisories.yaml](advisories.yaml) |
 
 Release notes and a completion report are not generated yet; the registry holds what they need.
