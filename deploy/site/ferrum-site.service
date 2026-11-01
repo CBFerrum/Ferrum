@@ -5,10 +5,10 @@ Wants=network-online.target
 
 [Service]
 User=ferrum-site
-ExecStart=/usr/local/bin/ferrum-site run --config /etc/ferrum-site/site.yaml
+ExecStart=/var/lib/ferrum-site/bin/ferrum-site run --config /etc/ferrum-site/site.yaml
 Restart=always
 RestartSec=5
-# It writes only its journal.
+# It writes only its journal, and its own binary when `update_keys` lets it take signed releases.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

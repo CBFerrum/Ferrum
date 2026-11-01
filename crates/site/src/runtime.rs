@@ -8,11 +8,14 @@ use crate::adapters::transport::Limits as OpenLimits;
 use crate::adapters::{operator::OperatorTasks, sim::Sim};
 use crate::config::{AdapterKind, Config};
 use crate::crash_point;
+use crate::export::{self, Sender};
 use crate::journal::{Entry, Journal};
 use crate::link::{Link, LinkError};
+use crate::peer::Peer;
+use crate::update::{self, Pending};
 use chrono::{DateTime, Utc};
 use ferrum_ops_contract::command::Report;
-use ferrum_ops_contract::edge::{AlarmChange, Comparison, ConfigRequest, ConfigResponse, EdgeConfig, Rule, Watch};
+use ferrum_ops_contract::edge::{AlarmChange, Comparison, ConfigRequest, ConfigResponse, EdgeConfig, Export, Release, Rule, Watch};
 use ferrum_ops_contract::schedule::{self, Held, Resource, Task};
 use ferrum_ops_contract::sync::{Fact, Health, SiteDevice};
 use ferrum_ops_contract::telemetry::{Class, Limits, Measurement};
@@ -106,6 +109,11 @@ pub struct Runtime {
     rules: Mutex<Rules>,
     /// Why what this gateway was given could not all start.
     problems: Mutex<Vec<String>>,
+    /// Signed calls go one at a time: each must carry a later time than the last that arrived.
+    signing: tokio::sync::Mutex<()>,
+    exports: Mutex<Vec<Export>>,
+    sender: Sender,
+    export_shed: AtomicI64,
 }
 
 fn free_disk(path: &Path) -> Option<i64> {
@@ -120,9 +128,10 @@ fn free_disk(path: &Path) -> Option<i64> {
 impl Runtime {
     pub fn open(cfg: Config, key: ed25519_dalek::SigningKey) -> Result<Arc<Runtime>, String> {
         let journal = Arc::new(Journal::open(&cfg.journal_path()).map_err(|e| e.to_string())?);
-        let key_id: Uuid =
-            journal.get("key_id").map_err(|e| e.to_string())?.and_then(|v| v.parse().ok()).ok_or("this site is not enrolled: run `ferrum-site enroll`")?;
-        let link = Link::new(&cfg.server, &cfg.tenant, key, key_id);
+        let key_id: Option<Uuid> = journal.get("key_id").map_err(|e| e.to_string())?.and_then(|v| v.parse().ok());
+        // A box that only answers a peer has no platform, so nothing to enroll with.
+        let key_id = key_id.or(cfg.peer_only.then(Uuid::nil)).ok_or("this site is not enrolled: run `ferrum-site enroll`")?;
+        let link = Link::new(&cfg.server, &cfg.tenant, key.clone(), key_id);
         let (mut adapters, mut by_device): (Vec<(String, Arc<dyn Adapter>)>, HashMap<String, Slot>) = (Vec::new(), HashMap::new());
         for a in &cfg.adapters {
             let adapter: Arc<dyn Adapter> = match &a.kind {
@@ -139,6 +148,13 @@ impl Runtime {
                 by_device.insert(d.clone(), Slot { adapter: adapter.clone(), concurrency: a.concurrency.max(1) });
             }
             adapters.push((a.name.clone(), adapter));
+        }
+        for p in &cfg.peers {
+            let adapter: Arc<dyn Adapter> = Arc::new(Peer::new(&p.url, key.clone()));
+            for d in &p.devices {
+                by_device.insert(d.clone(), Slot { adapter: adapter.clone(), concurrency: p.concurrency.max(1) });
+            }
+            adapters.push((format!("peer {}", p.name), adapter));
         }
         let limits = OpenLimits { drivers_dir: cfg.drivers_dir.clone(), allow: cfg.allow.clone() };
         let defined = Arc::new(Defined::new(limits, json!(cfg.secrets)));
@@ -164,7 +180,12 @@ impl Runtime {
             defined,
             rules: Mutex::default(),
             problems: Mutex::default(),
+            signing: tokio::sync::Mutex::new(()),
+            exports: Mutex::default(),
+            sender: Sender::new(),
+            export_shed: AtomicI64::new(0),
         });
+        runtime.settle_update();
         runtime.restore_alarms();
         runtime.configure();
         Ok(runtime)
@@ -207,6 +228,103 @@ impl Runtime {
         }
         *self.problems.lock().unwrap_or_else(|e| e.into_inner()) = problems;
         self.rules.lock().unwrap_or_else(|e| e.into_inner()).rules = managed.rules;
+        *self.exports.lock().unwrap_or_else(|e| e.into_inner()) = managed.exports;
+    }
+
+    /// An adapter on this machine, for a peer that asks. What is itself reached through a peer is
+    /// not offered on: one hop, so that nobody can build a loop.
+    pub fn local_adapter(&self, code: &str) -> Option<Arc<dyn Adapter>> {
+        let slot = self.adapter_for(code)?;
+        (!self.cfg.peers.iter().any(|p| p.devices.iter().any(|d| d == code))).then_some(slot.adapter)
+    }
+
+    /// What this machine's equipment has said, for the peer that holds authority over it.
+    pub async fn read_local(&self) -> Vec<Reading> {
+        let mut out = Vec::new();
+        for (name, a) in self.adapters.iter().filter(|(n, _)| !n.starts_with("peer ")) {
+            match timeout(self.call_limit(), a.read()).await {
+                Ok(Ok(readings)) => out.extend(readings),
+                Ok(Err(e)) => tracing::debug!(adapter = %name, "read: {e:?}"),
+                Err(_) => tracing::debug!(adapter = %name, "read timed out"),
+            }
+        }
+        out
+    }
+
+    /// Queues measurements for whatever wants them.
+    fn offer_exports(&self, batch: &[Measurement], devices: &HashMap<Uuid, SiteDevice>) {
+        let exports = self.exports.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        for e in &exports {
+            let lines: Vec<String> = batch
+                .iter()
+                .filter(|m| export::wanted(e, &m.metric))
+                .map(|m| json!({"device": devices.get(&m.device_id).map(|d| d.code.as_str()), "metric": m.metric, "value": m.value, "unit": m.unit, "at": m.source_time, "quality": m.quality}).to_string())
+                .collect();
+            if !lines.is_empty()
+                && let Ok(shed) = self.journal.add_exports(&e.name, &lines, export::BUDGET)
+            {
+                self.export_shed.fetch_add(shed, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// One round of delivery. An export that is down waits and holds up nothing else.
+    pub async fn deliver_exports(&self) {
+        let exports = self.exports.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        for e in &exports {
+            let Ok((bodies, upto)) = self.journal.exports(&e.name, export::BATCH) else { continue };
+            if bodies.is_empty() {
+                continue;
+            }
+            match self.sender.deliver(e, &bodies, &json!(self.cfg.secrets)).await {
+                Ok(()) => {
+                    let _ = self.journal.exports_gone(&e.name, upto);
+                }
+                Err(why) => tracing::debug!(export = %e.name, "{why}"),
+            }
+        }
+    }
+
+    /// Deals with an update that was under way when this started.
+    fn settle_update(&self) {
+        let Ok(exe) = std::env::current_exe() else { return };
+        let pending: Option<Pending> = self.journal.get("update_pending").ok().flatten().and_then(|t| serde_json::from_str(&t).ok());
+        match update::at_start(&exe, pending, env!("CARGO_PKG_VERSION")) {
+            Ok(Some(p)) => {
+                let _ = self.journal.set("update_pending", &json!(p).to_string());
+            }
+            Ok(None) => {
+                let _ = self.journal.clear("update_pending");
+            }
+            Err(version) => {
+                let _ = self.journal.clear("update_pending");
+                let _ = self.journal.set("update_refused", &version);
+                let _ = self.journal.notice(self.clock.now_ms(), &format!("{version} kept failing, so this went back to what worked before"));
+                std::process::exit(update::RESTART);
+            }
+        }
+    }
+
+    /// Takes a release that is meant for this site. Everything is checked before anything changes,
+    /// and work in hand is not interrupted: it waits for a moment with nothing running.
+    async fn consider_update(&self, release: &Release) -> Result<(), String> {
+        let refused = self.journal.get("update_refused").ok().flatten();
+        update::judge(release, env!("CARGO_PKG_VERSION"), &self.cfg.update_keys, self.clock.now(), refused.as_deref())?;
+        let counts = self.journal.counts().map_err(|e| e.to_string())?;
+        if counts.active > 0 || counts.unknown > 0 {
+            return Err("waiting for what is running to end".into());
+        }
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let download = self.cfg.state_dir.join("update.bin");
+        let bytes = self.sender.fetch(&release.url).await?;
+        std::fs::write(&download, bytes).map_err(|e| e.to_string())?;
+        // Written first: a build that went in unrecorded could never be rolled back. A record with no
+        // build behind it ends at the next start, because that start is not running this version.
+        let pending = Pending { version: release.version.clone(), tries: 0 };
+        self.journal.set("update_pending", &json!(pending).to_string()).map_err(|e| e.to_string())?;
+        update::install(&exe, &download, release)?;
+        let _ = self.journal.notice(self.clock.now_ms(), &format!("Updated to {}: restarting", release.version));
+        std::process::exit(update::RESTART);
     }
 
     fn restore_alarms(&self) {
@@ -267,7 +385,11 @@ impl Runtime {
             links: json!(self.defined.links()),
             runtime: env!("CARGO_PKG_VERSION").to_string(),
         };
-        match self.link.edge_config(&request, self.clock.signing_ms()).await {
+        let answer = {
+            let _turn = self.signing.lock().await;
+            self.link.edge_config(&request, self.clock.signing_ms()).await
+        };
+        match answer {
             Ok(ConfigResponse { config: Some(config) }) => {
                 let text = serde_json::to_string(&config).unwrap_or_default();
                 if let Err(e) = self.journal.set("edge_config", &text) {
@@ -278,6 +400,11 @@ impl Runtime {
             }
             Ok(_) => {}
             Err(e) => tracing::debug!("edge configuration: {e:?}"),
+        }
+        if let Some(release) = self.managed().and_then(|c| c.release)
+            && let Err(why) = self.consider_update(&release).await
+        {
+            tracing::debug!("release {}: {why}", release.version);
         }
     }
 
@@ -618,11 +745,16 @@ impl Runtime {
             want,
             config_version: self.journal.get("config_version").ok().flatten().unwrap_or_default(),
         };
-        let answer = self.link.sync(&req, self.clock.signing_ms()).await;
+        let answer = {
+            let _turn = self.signing.lock().await;
+            self.link.sync(&req, self.clock.signing_ms()).await
+        };
         crash_point("after_exchange");
         match answer {
             Ok(r) => {
                 *self.heard.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now());
+                // It came up and reached the platform, so it stays.
+                let _ = self.journal.clear("update_pending");
                 self.absorb(r, &held, upto);
                 Ok(())
             }
@@ -702,6 +834,7 @@ impl Runtime {
         if free_disk(&self.cfg.state_dir).is_some_and(|f| f < self.cfg.reserve_mb << 20) {
             batch.retain(|m| m.class == Class::Alarm);
         }
+        self.offer_exports(&batch, &self.devices_by_id());
         if let Err(e) = self.journal.add_samples(&batch) {
             tracing::warn!("measurements not kept: {e}");
         }
@@ -828,6 +961,8 @@ impl Runtime {
             "links": self.defined.links(),
             "problems": *self.problems.lock().unwrap_or_else(|e| e.into_inner()),
             "strangers": self.defined.strangers(),
+            "exports": self.exports.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|e| json!({"name": e.name, "waiting": self.journal.export_backlog(&e.name).unwrap_or(0)})).collect::<Vec<_>>(),
+            "exports_shed": self.export_shed.load(Ordering::Relaxed),
             "notices": self.journal.notices(20).unwrap_or_default(),
         })
     }
@@ -835,6 +970,12 @@ impl Runtime {
     /// Runs until `stop` says otherwise. Each loop owns its own timing, so a slow adapter does not
     /// hold up the exchange with the platform.
     pub async fn run(self: Arc<Self>, stop: watch::Receiver<bool>) {
+        if self.cfg.peer_only {
+            // It only answers. Its adapters hold what they read until the peer asks.
+            let mut s = stop;
+            let _ = s.changed().await;
+            return;
+        }
         self.recover().await;
         let sync = self.clone();
         let mut s = stop.clone();
@@ -880,6 +1021,14 @@ impl Runtime {
                 tokio::select! { _ = s.changed() => return, _ = tokio::time::sleep(StdDuration::from_millis(work.cfg.work_millis)) => {} }
             }
         });
+        let courier = self.clone();
+        let mut s = stop.clone();
+        let exporting = tokio::spawn(async move {
+            loop {
+                courier.deliver_exports().await;
+                tokio::select! { _ = s.changed() => return, _ = tokio::time::sleep(StdDuration::from_secs(2)) => {} }
+            }
+        });
         let manager = self.clone();
         let mut s = stop.clone();
         let managing = tokio::spawn(async move {
@@ -899,7 +1048,7 @@ impl Runtime {
                 tokio::select! { _ = s.changed() => return, _ = tokio::time::sleep(StdDuration::from_secs(reader.cfg.read_secs)) => {} }
             }
         });
-        let _ = tokio::join!(exchange, working, reading, managing);
+        let _ = tokio::join!(exchange, working, reading, managing, exporting);
     }
 }
 

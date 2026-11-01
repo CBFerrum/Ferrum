@@ -88,6 +88,37 @@ pub struct Config {
     /// What `{secret.name}` stands for. These never leave this machine.
     #[serde(default)]
     pub secrets: BTreeMap<String, String>,
+    /// Other sites this one works through: boxes wired to equipment it cannot reach itself.
+    #[serde(default)]
+    pub peers: Vec<PeerConfig>,
+    /// Works only for a peer: no platform of its own, and nothing is dispatched but what is asked.
+    #[serde(default)]
+    pub peer_only: bool,
+    /// Where to answer peers, with the public keys of those allowed to ask.
+    #[serde(default)]
+    pub listen_peers: Option<String>,
+    #[serde(default)]
+    pub trusted_peers: Vec<String>,
+    /// Passes gateways' requests on to `server`, for networks with no other way out.
+    #[serde(default)]
+    pub relay: Option<String>,
+    /// `server` may be plain HTTP, for a relay on the plant's own network. Requests are signed, so
+    /// they cannot be changed. They can be read.
+    #[serde(default)]
+    pub plain_link: bool,
+    /// Public keys that may sign a release of this software. Without one, it never updates itself.
+    #[serde(default)]
+    pub update_keys: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PeerConfig {
+    pub name: String,
+    pub url: String,
+    /// Device codes reached through it.
+    pub devices: Vec<String>,
+    #[serde(default = "one")]
+    pub concurrency: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -131,7 +162,7 @@ impl Config {
 
     fn check(&self) -> Result<(), String> {
         let local = self.server.starts_with("http://127.") || self.server.starts_with("http://localhost");
-        if !self.server.starts_with("https://") && !local {
+        if !self.server.starts_with("https://") && !local && !self.plain_link {
             return Err("server must be https, or plain http only to this machine".into());
         }
         if self.sync_secs == 0 || self.work_millis == 0 || self.read_secs == 0 || self.adapter_timeout_secs == 0 {

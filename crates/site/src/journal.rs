@@ -53,6 +53,9 @@ create table if not exists device (id text primary key, code text not null, body
 create table if not exists operator (user text primary key, body text not null);
 create table if not exists operator_task (command text primary key, state text not null, evidence text, by text);
 create table if not exists notice (seq integer primary key, at integer not null, text text not null);
+create table if not exists peer_dispatch (id text primary key, device text not null, answer text);
+create table if not exists export_item (seq integer primary key, export text not null, body text not null);
+create index if not exists export_item_export on export_item (export, seq);
 ";
 
 pub struct Journal {
@@ -240,6 +243,60 @@ impl Journal {
     pub fn settled(&self, id: Uuid, to: State) -> Result<()> {
         self.db().execute("update command set state = ?2 where id = ?1 and state = 'OutcomeUnknown'", params![id.to_string(), to.as_str()])?;
         Ok(())
+    }
+
+    /// A peer asks for a command. `None` if this is the first time; otherwise what was answered,
+    /// which is `None` if it stopped before it could.
+    pub fn peer_begin(&self, id: Uuid, device: &str) -> Result<Option<Option<String>>> {
+        let mut db = self.db();
+        let tx = db.transaction()?;
+        let seen: Option<Option<String>> = tx.query_row("select answer from peer_dispatch where id = ?1", [id.to_string()], |r| r.get(0)).optional()?;
+        if seen.is_none() {
+            tx.execute("insert into peer_dispatch (id, device) values (?1, ?2)", params![id.to_string(), device])?;
+        }
+        tx.commit()?;
+        Ok(seen)
+    }
+
+    pub fn peer_end(&self, id: Uuid, answer: &str) -> Result<()> {
+        self.db().execute("update peer_dispatch set answer = ?2 where id = ?1", params![id.to_string(), answer])?;
+        Ok(())
+    }
+
+    pub fn peer_device(&self, id: Uuid) -> Result<Option<String>> {
+        Ok(self.db().query_row("select device from peer_dispatch where id = ?1", [id.to_string()], |r| r.get(0)).optional()?)
+    }
+
+    /// Keeps a measurement for an export, up to `budget` of them. Past that the oldest go, and how
+    /// many went is said: an export that has been down for a month must not fill the disk.
+    pub fn add_exports(&self, export: &str, bodies: &[String], budget: i64) -> Result<i64> {
+        let mut db = self.db();
+        let tx = db.transaction()?;
+        for body in bodies {
+            tx.execute("insert into export_item (export, body) values (?1, ?2)", params![export, body])?;
+        }
+        let shed = tx.execute(
+            "delete from export_item where export = ?1 and seq in (select seq from export_item where export = ?1 order by seq desc limit -1 offset ?2)",
+            params![export, budget],
+        )?;
+        tx.commit()?;
+        Ok(shed as i64)
+    }
+
+    pub fn exports(&self, export: &str, limit: i64) -> Result<(Vec<String>, i64)> {
+        let db = self.db();
+        let mut q = db.prepare("select seq, body from export_item where export = ?1 order by seq limit ?2")?;
+        let rows = q.query_map(params![export, limit], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok((rows.iter().map(|r| r.1.clone()).collect(), rows.last().map_or(0, |r| r.0)))
+    }
+
+    pub fn exports_gone(&self, export: &str, upto: i64) -> Result<()> {
+        self.db().execute("delete from export_item where export = ?1 and seq <= ?2", params![export, upto])?;
+        Ok(())
+    }
+
+    pub fn export_backlog(&self, export: &str) -> Result<i64> {
+        Ok(self.db().query_row("select count(*) from export_item where export = ?1", [export], |r| r.get(0))?)
     }
 
     pub fn request_cancel(&self, id: Uuid) -> Result<bool> {
