@@ -29,11 +29,24 @@ export function placed(robots: Robot[]): Map<string, Placed[]> {
   return maps;
 }
 
+export interface Bounds {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+}
+
+/** The area robots have been seen in. It only grows: a map that rescaled with each move would make
+ * every robot appear to jump. */
+export function grown(bounds: Bounds | null, list: { x: number; y: number }[]): Bounds {
+  return list.reduce(
+    (b, p) => ({ minX: Math.min(b.minX, p.x), maxX: Math.max(b.maxX, p.x), minY: Math.min(b.minY, p.y), maxY: Math.max(b.maxY, p.y) }),
+    bounds ?? { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity },
+  );
+}
+
 /** Scales positions to fit, keeping the proportions, with north up. */
-export function fit(list: Placed[], width: number, height: number, margin: number) {
-  const xs = list.map((p) => p.x);
-  const ys = list.map((p) => p.y);
-  const [minX, maxX, minY, maxY] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+export function fit({ minX, maxX, minY, maxY }: Bounds, width: number, height: number, margin: number) {
   // One robot, or several in a line, must not divide by nothing.
   const span = Math.max(maxX - minX, maxY - minY, 1);
   const scale = Math.min(width - 2 * margin, height - 2 * margin) / span;

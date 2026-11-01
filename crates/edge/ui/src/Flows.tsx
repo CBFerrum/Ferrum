@@ -5,6 +5,7 @@ import { useId, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { refusal } from "@ferrum/client";
 import { Badge, Button, Dialog, EmptyState, ErrorState, Field, PageLoading, toast, useShellTitle } from "@ferrum/kit";
+import { can, useEntityMeta } from "@ferrum/records";
 import { type FlowDoc, flowList, newFlow } from "./data";
 import { arrange, type Flow, STARTS } from "./drawing";
 import { Tabs } from "./Tabs";
@@ -79,14 +80,17 @@ export function Flows() {
   useShellTitle("Flows");
   const q = useQuery({ queryKey: ["edge", "flows"], queryFn: flowList });
   const [starting, setStarting] = useState(false);
+  const meta = useEntityMeta("EdgeFlow");
   return (
     <div className="edge-page">
       <Tabs />
-      <div className="edge-bar">
-        <Button variant="primary" onClick={() => setStarting(true)}>
-          New flow
-        </Button>
-      </div>
+      {meta.data && can(meta.data.permissions, "create") ? (
+        <div className="edge-bar">
+          <Button variant="primary" onClick={() => setStarting(true)}>
+            New flow
+          </Button>
+        </div>
+      ) : null}
       {q.isPending ? (
         <PageLoading />
       ) : q.isError ? (

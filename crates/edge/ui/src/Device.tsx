@@ -142,13 +142,13 @@ function Token({ id, onClose }: { id: string; onClose: () => void }) {
 
 export function DevicePage() {
   const { id } = useParams() as { id: string };
-  useShellTitle("Device");
   const q = useQuery({ queryKey: ["edge", "device", id], queryFn: () => device(id), refetchInterval: 10_000 });
   const [asking, setAsking] = useState<Attribute | "new" | null>(null);
   const [token, setToken] = useState(false);
   const [sending, setSending] = useState(false);
   const record = useQuery({ queryKey: ["edge", "device-record", id], queryFn: () => deviceRecord(id) });
   const operations = record.data?.operations?.map((o) => o.operation) ?? [];
+  useShellTitle(record.data?.device_name ?? "Device");
   if (q.isPending) return <PageLoading />;
   if (q.isError) return <ErrorState error={q.error} onRetry={() => void q.refetch()} />;
   const d = q.data;

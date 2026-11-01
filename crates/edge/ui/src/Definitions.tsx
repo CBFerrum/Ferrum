@@ -6,6 +6,7 @@ import { useEffect, useId, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { refusal } from "@ferrum/client";
 import { Alert, Badge, Button, Dialog, EmptyState, ErrorState, Field, PageLoading, toast, useShellTitle, useUnsavedGuard } from "@ferrum/kit";
+import { can, useEntityMeta } from "@ferrum/records";
 import { definitionDoc, definitionList, newDefinition, publishDefinition, saveDefinition, type Template, templates, tryDefinition, type Tried } from "./data";
 import { Tabs } from "./Tabs";
 
@@ -83,14 +84,17 @@ export function Definitions() {
   useShellTitle("Definitions");
   const q = useQuery({ queryKey: ["edge", "definitions"], queryFn: definitionList });
   const [starting, setStarting] = useState(false);
+  const meta = useEntityMeta("DeviceDefinition");
   return (
     <div className="edge-page">
       <Tabs />
-      <div className="edge-bar">
-        <Button variant="primary" onClick={() => setStarting(true)}>
-          New definition
-        </Button>
-      </div>
+      {meta.data && can(meta.data.permissions, "create") ? (
+        <div className="edge-bar">
+          <Button variant="primary" onClick={() => setStarting(true)}>
+            New definition
+          </Button>
+        </div>
+      ) : null}
       {q.isPending ? (
         <PageLoading />
       ) : q.isError ? (
@@ -157,6 +161,8 @@ export function DefinitionPage() {
   }, [q.data]);
   const dirty = q.data !== undefined && body !== q.data.body;
   const { dialog } = useUnsavedGuard(dirty);
+  const meta = useEntityMeta("DeviceDefinition");
+  const writable = meta.data ? can(meta.data.permissions, "write") : false;
   const attempt = useMutation({ mutationFn: () => tryDefinition(body, topic, sample, hex), onSuccess: setTried, onError: (e) => toast(refusal(e), "error") });
   const save = useMutation({
     mutationFn: () => saveDefinition(id, q.data!.version, { body }),
@@ -186,17 +192,21 @@ export function DefinitionPage() {
         <Link to="/definitions">Definitions</Link>
         <Badge tone={q.data.status === "Published" ? "green" : "neutral"}>{q.data.revision ? `Version ${q.data.revision}` : "Never published"}</Badge>
         <span className="edge-grow" />
-        <Button disabled={!dirty} loading={save.isPending} onClick={() => save.mutate()}>
-          Save
-        </Button>
-        <Button variant="primary" loading={publish.isPending} onClick={() => publish.mutate()}>
-          Publish
-        </Button>
+        {writable ? (
+          <>
+            <Button disabled={!dirty} loading={save.isPending} onClick={() => save.mutate()}>
+              Save
+            </Button>
+            <Button variant="primary" loading={publish.isPending} onClick={() => publish.mutate()}>
+              Publish
+            </Button>
+          </>
+        ) : null}
       </div>
       <div className="edge-split">
         <section className="card card-pad stack" aria-label="The definition">
           <Field label="Definition" htmlFor={`${form}-b`} hint="YAML. See the definitions guide for every key.">
-            <textarea id={`${form}-b`} className="input edge-code" spellCheck={false} rows={24} value={body} onChange={(e) => setBody(e.target.value)} />
+            <textarea id={`${form}-b`} className="input edge-code" spellCheck={false} rows={24} readOnly={!writable} value={body} onChange={(e) => setBody(e.target.value)} />
           </Field>
         </section>
         <section className="card card-pad stack" aria-label="Try it">
