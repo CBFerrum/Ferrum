@@ -59,15 +59,15 @@ fn time(req: &SiteRequest, k: &str) -> Result<Option<DateTime<Utc>>> {
 
 /// Roles that each kind of act needs. Read, dispatch, configuration and recovery are separate
 /// privileges: who may move a robot need not be who may change what it is allowed to do.
-fn may(ctx: &Ctx, roles: &[&str]) -> Result<()> {
+pub(crate) fn may(ctx: &Ctx, roles: &[&str]) -> Result<()> {
     if ctx.is_admin || roles.iter().any(|r| ctx.has_role(r)) {
         return Ok(());
     }
     Err(Error::Forbidden(format!("this takes one of: {}", roles.join(", "))))
 }
 
-const READ: &[&str] = &["Ops Viewer", "Ops Dispatcher", "Ops Recovery", "Device Administrator", "Ops Manager"];
-const DISPATCH: &[&str] = &["Ops Dispatcher", "Ops Manager"];
+pub(crate) const READ: &[&str] = &["Ops Viewer", "Ops Dispatcher", "Ops Recovery", "Device Administrator", "Ops Manager"];
+pub(crate) const DISPATCH: &[&str] = &["Ops Dispatcher", "Ops Manager"];
 const RECOVER: &[&str] = &["Ops Recovery", "Ops Manager"];
 const CONFIGURE: &[&str] = &["Device Administrator", "Ops Manager"];
 const APPROVE: &[&str] = &["Ops Manager"];
@@ -97,14 +97,14 @@ async fn site_open(k: &Kernel, ctx: &Ctx, site: Uuid) -> Result<()> {
     }
 }
 
-async fn command_site(k: &Kernel, ctx: &Ctx, id: Uuid) -> Result<()> {
+pub(crate) async fn command_site(k: &Kernel, ctx: &Ctx, id: Uuid) -> Result<()> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let site: Option<Uuid> = sqlx::query_scalar("select site_id from op_command where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).fetch_optional(&mut *tx).await?;
     tx.commit().await?;
     site_open(k, ctx, site.ok_or_else(|| Error::NotFound("command".into()))?).await
 }
 
-async fn device_site(k: &Kernel, ctx: &Ctx, id: Uuid) -> Result<()> {
+pub(crate) async fn device_site(k: &Kernel, ctx: &Ctx, id: Uuid) -> Result<()> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let site: Option<Option<Uuid>> = sqlx::query_scalar("select site from e_device where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).fetch_optional(&mut *tx).await?;
     tx.commit().await?;
@@ -116,7 +116,7 @@ async fn device_site(k: &Kernel, ctx: &Ctx, id: Uuid) -> Result<()> {
 
 /// Every site at a glance. What matters first: is its gateway there, and does anything need a
 /// person.
-async fn overview(k: &Kernel, ctx: &Ctx) -> Result<Value> {
+pub(crate) async fn overview(k: &Kernel, ctx: &Ctx) -> Result<Value> {
     let open = open_sites(k, ctx).await?;
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let rows: Vec<Value> = sqlx::query_scalar(
@@ -195,8 +195,8 @@ async fn signed_in(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<SiteRespo
             may(ctx, DISPATCH)?;
             let cmd: NewCommand = body(req)?;
             device_site(k, ctx, cmd.target).await?;
-            // Through these endpoints, whoever signed in is a person or an agent acting as one.
-            let cmd = if ctx.request_id.starts_with("mcp") { NewCommand { issuer: commands::Issuer::Ai, ..cmd } } else { NewCommand { issuer: commands::Issuer::Person, ..cmd } };
+            // Never the caller's to say. An assistant's context is marked, and it only proposes.
+            let cmd = NewCommand { issuer: if ctx.egress.is_some() { commands::Issuer::Ai } else { commands::Issuer::Person }, ..cmd };
             let mut tx = k.db.tenant_tx(ctx.tenant).await?;
             let issued = commands::issue(&mut tx, ctx, cmd).await?;
             tx.commit().await?;

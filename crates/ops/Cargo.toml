@@ -10,6 +10,7 @@ build = "build.rs"
 ferrum-kernel = { path = "../kernel" }
 ferrum-meta = { path = "../meta" }
 ferrum-domain = { path = "../domain" }
+ferrum-mcp = { path = "../mcp" }
 ferrum-ops-contract = { path = "../ops-contract" }
 async-trait = { workspace = true }
 chrono = { workspace = true }
@@ -24,6 +25,7 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+ferrum-mcp = { path = "../mcp" }
 ed25519-dalek = { version = "2.2", default-features = false, features = ["std", "fast"] }
 tokio = { workspace = true }
 

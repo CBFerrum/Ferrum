@@ -6,6 +6,7 @@
 //! * [`devices`]: what a device may do, and its lifecycle;
 //! * [`telemetry`]: measurements, apart from business records;
 //! * [`sync`]: the one idempotent call a site runtime makes;
+//! * [`mcp`]: what AI agents may do, which is look and propose;
 //! * [`site`]: the HTTP endpoints.
 //!
 //! Ferrum coordinates equipment. It does not control it: motion, sequencing and safety functions
@@ -15,6 +16,7 @@ pub mod authority;
 pub mod commands;
 pub mod devices;
 pub mod identity;
+pub mod mcp;
 pub mod site;
 pub mod sync;
 pub mod telemetry;
