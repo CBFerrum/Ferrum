@@ -94,15 +94,15 @@ this repository, 83 built and awaiting qualification.
 - `FERRUM-OPS-009` Structured logs and basic metrics (No OpenTelemetry traces; job, outbox and connection health are metrics, but not per-app business failures such as a posting that failed)
 - `FERRUM-RELEASE-003` Release manifest of every component (Written by hand at this audit; not yet generated in CI)
 - `FERRUM-RELEASE-005` Published support and compatibility policy (A draft: support windows are the owner's commitment to make, and none is in force)
-- `FERRUM-JOURNEY-001` Lead to cash
-- `FERRUM-JOURNEY-002` Procure to pay
+- `FERRUM-JOURNEY-001` Lead to cash (Runs through the kernel's API, not through the interface; no independent reviewer prepared the figures)
+- `FERRUM-JOURNEY-002` Procure to pay (Runs through the kernel's API, not through the interface; no independent reviewer prepared the figures)
 - `FERRUM-JOURNEY-003` Hire to retire
-- `FERRUM-JOURNEY-004` Support to resolution
-- `FERRUM-JOURNEY-005` Project to profit
+- `FERRUM-JOURNEY-004` Support to resolution (Inside one app's suite, through its API, not through the interface; no independent reviewer)
+- `FERRUM-JOURNEY-005` Project to profit (Inside one app's suite, through its API, not through the interface; no independent reviewer)
 - `FERRUM-JOURNEY-006` Online order to return
-- `FERRUM-JOURNEY-008` Document to signature
-- `FERRUM-JOURNEY-009` Marketing to consent enforcement
-- `FERRUM-JOURNEY-011` Learning completion
+- `FERRUM-JOURNEY-008` Document to signature (Inside one app's suite, through its API, not through the interface; no independent reviewer)
+- `FERRUM-JOURNEY-009` Marketing to consent enforcement (Inside one app's suite, through its API, not through the interface; no independent reviewer)
+- `FERRUM-JOURNEY-011` Learning completion (Inside one app's suite, through its API, not through the interface; no independent reviewer)
 - `FERRUM-JOURNEY-013` Partner support
 
 ## Waiting

@@ -4,17 +4,17 @@ defaults: {component: verification, repositories: [CBFerrum/Ferrum], workstream:
 requirements:
   - {id: FERRUM-VERIFY-001, title: Tests detect broken invariants, status: implemented_unqualified, basis: tested, spec: "18.3", files: [scripts/mutants.py], tests: [scripts/mutants.py], limits: ["Covers this work's invariants, not the whole platform"]}
   - {id: FERRUM-VERIFY-002, title: Independent domain fixtures for finance and payroll, spec: "18.1", external: [BLOCK-TAX-REVIEW, BLOCK-PAYROLL-REVIEW]}
-  - {id: FERRUM-JOURNEY-001, title: Lead to cash, spec: "18.2", deps: [FERRUM-CRM-001, FERRUM-ERP-001]}
-  - {id: FERRUM-JOURNEY-002, title: Procure to pay, spec: "18.2", deps: [FERRUM-ERP-010, FERRUM-ERP-001]}
+  - {id: FERRUM-JOURNEY-001, title: Lead to cash, spec: "18.2", status: partial, basis: tested, files: [server/tests/journeys_it.rs], deps: [FERRUM-CRM-001, FERRUM-ERP-001], tests: [server/tests/journeys_it.rs], limits: ["Runs through the kernel's API, not through the interface; no independent reviewer prepared the figures"]}
+  - {id: FERRUM-JOURNEY-002, title: Procure to pay, spec: "18.2", status: partial, basis: tested, files: [server/tests/journeys_it.rs], deps: [FERRUM-ERP-010, FERRUM-ERP-001], tests: [server/tests/journeys_it.rs], limits: ["Runs through the kernel's API, not through the interface; no independent reviewer prepared the figures"]}
   - {id: FERRUM-JOURNEY-003, title: Hire to retire, spec: "18.2", deps: [FERRUM-HR-001, FERRUM-IDENTITY-003]}
-  - {id: FERRUM-JOURNEY-004, title: Support to resolution, spec: "18.2", deps: [FERRUM-HELPDESK-001]}
-  - {id: FERRUM-JOURNEY-005, title: Project to profit, spec: "18.2", deps: [FERRUM-PROJECTS-001, FERRUM-ERP-001]}
+  - {id: FERRUM-JOURNEY-004, title: Support to resolution, spec: "18.2", status: partial, basis: tested, files: ["ferrum-app-helpdesk:tests/helpdesk_it.rs"], deps: [FERRUM-HELPDESK-001], tests: ["ferrum-app-helpdesk:tests/helpdesk_it.rs"], limits: ["Inside one app's suite, through its API, not through the interface; no independent reviewer"]}
+  - {id: FERRUM-JOURNEY-005, title: Project to profit, spec: "18.2", status: partial, basis: tested, files: ["ferrum-app-projects:tests/projects_it.rs"], deps: [FERRUM-PROJECTS-001, FERRUM-ERP-001], tests: ["ferrum-app-projects:tests/projects_it.rs"], limits: ["Inside one app's suite, through its API, not through the interface; no independent reviewer"]}
   - {id: FERRUM-JOURNEY-006, title: Online order to return, spec: "18.2", deps: [FERRUM-COMMERCE-001]}
-  - {id: FERRUM-JOURNEY-007, title: Field work to invoice, spec: "18.2", deps: [FERRUM-FIELD-001, FERRUM-FIELD-002]}
-  - {id: FERRUM-JOURNEY-008, title: Document to signature, spec: "18.2", deps: [FERRUM-DOCS-001, FERRUM-SIGN-001]}
-  - {id: FERRUM-JOURNEY-009, title: Marketing to consent enforcement, spec: "18.2", deps: [FERRUM-CAMPAIGNS-001]}
+  - {id: FERRUM-JOURNEY-007, title: Field work to invoice, spec: "18.2", status: partial, basis: tested, files: ["ferrum-app-field-service:tests/field_service_it.rs"], deps: [FERRUM-FIELD-001, FERRUM-FIELD-002], tests: ["ferrum-app-field-service:tests/field_service_it.rs"], limits: ["Inside one app's suite, through its API, not through the interface; no independent reviewer"]}
+  - {id: FERRUM-JOURNEY-008, title: Document to signature, spec: "18.2", status: partial, basis: tested, files: ["ferrum-app-sign:tests/sign_it.rs"], deps: [FERRUM-DOCS-001, FERRUM-SIGN-001], tests: ["ferrum-app-sign:tests/sign_it.rs"], limits: ["Inside one app's suite, through its API, not through the interface; no independent reviewer"]}
+  - {id: FERRUM-JOURNEY-009, title: Marketing to consent enforcement, spec: "18.2", status: partial, basis: tested, files: ["ferrum-app-campaigns:tests/campaigns_it.rs"], deps: [FERRUM-CAMPAIGNS-001], tests: ["ferrum-app-campaigns:tests/campaigns_it.rs"], limits: ["Inside one app's suite, through its API, not through the interface; no independent reviewer"]}
   - {id: FERRUM-JOURNEY-010, title: Hospitality stay, spec: "18.2", deps: [FERRUM-INDUSTRY-001]}
-  - {id: FERRUM-JOURNEY-011, title: Learning completion, spec: "18.2", deps: [FERRUM-LMS-001]}
+  - {id: FERRUM-JOURNEY-011, title: Learning completion, spec: "18.2", status: partial, basis: tested, files: ["ferrum-app-lms:tests/lms_it.rs"], deps: [FERRUM-LMS-001], tests: ["ferrum-app-lms:tests/lms_it.rs"], limits: ["Inside one app's suite, through its API, not through the interface; no independent reviewer"]}
   - {id: FERRUM-JOURNEY-012, title: Tenant lifecycle, spec: "18.2", deps: [FERRUM-CLOUD-002]}
   - {id: FERRUM-JOURNEY-013, title: Partner support, spec: "18.2", deps: [FERRUM-PARTNER-002]}
   - {id: FERRUM-JOURNEY-014, title: AI-assisted operation, spec: "18.2", deps: [FERRUM-AI-001, FERRUM-AI-005]}
