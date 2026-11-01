@@ -165,6 +165,9 @@ export const overview = () => api.get<Overview>(`${base}/overview`);
 export const devices = (q: string) => api.get<{ devices: DeviceRow[] }>(`${base}/devices`, q ? { q } : {});
 export const device = (id: string) => api.get<DeviceDetail>(`${base}/devices/${id}`);
 export const desire = (id: string, key: string, value: unknown) => api.put<{ command: string }>(`${base}/devices/${id}/desired`, { key, value });
+export const deviceRecord = (id: string) => api.get<{ device_name: string; device_code: string; kind: string; operations?: { operation: string }[] }>(docPath("Device", id));
+export const sendCommand = (target: string, operation: string, payload: unknown, expires_in_secs: number) =>
+  api.post<{ id: string; state: string }>("/api/app/ops/commands", { target, operation, payload, expires_in_secs });
 export const newToken = (id: string) => api.post<{ token: string }>(`${base}/devices/${id}/token`, {});
 export const alarms = (all: boolean) => api.get<{ alarms: AlarmRow[] }>(`${base}/alarms`, all ? { all: 1 } : {});
 export const acknowledge = (id: string, note: string) => api.post(`${base}/alarms/${id}/acknowledge`, { note: note || null });

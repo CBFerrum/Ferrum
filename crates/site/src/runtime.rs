@@ -173,6 +173,7 @@ impl Runtime {
         }
         let limits =
             OpenLimits { drivers_dir: cfg.drivers_dir.clone(), allow: cfg.allow.clone(), listen: cfg.listen.clone(), tls_dir: Some(cfg.state_dir.join("tls")) };
+        let exporting = OpenLimits { allow: cfg.allow.clone(), tls_dir: Some(cfg.state_dir.join("tls")), ..OpenLimits::default() };
         let defined = Arc::new(Defined::new(limits, json!(cfg.secrets)));
         adapters.push(("definitions".to_string(), defined.clone()));
         let high_water = journal.high_water().map_err(|e| e.to_string())?.map(|t| t.timestamp_millis()).unwrap_or(0);
@@ -200,7 +201,7 @@ impl Runtime {
             problems: Mutex::default(),
             signing: tokio::sync::Mutex::new(()),
             exports: Mutex::default(),
-            sender: Sender::new(),
+            sender: Sender::new(exporting),
             export_shed: AtomicI64::new(0),
         });
         runtime.settle_update();
@@ -346,6 +347,11 @@ impl Runtime {
                 }
                 Effect::Notify { device, title } => fact("edge.notify", json!({"flow": id, "device": known(&device).map(|d| d.id), "title": title})),
                 Effect::Export { to, body } => {
+                    // Nothing would ever take it from a queue with no export behind it.
+                    if !self.exports.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|e| e.name == to) {
+                        tracing::warn!(flow = %name, "there is no export called {to} at this site");
+                        continue;
+                    }
                     if let Ok(shed) = self.journal.add_exports(&to, &[body.to_string()], export::BUDGET) {
                         self.export_shed.fetch_add(shed, Ordering::Relaxed);
                     }

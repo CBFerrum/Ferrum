@@ -38,12 +38,15 @@ fn signature(secret: &str, body: &[u8]) -> Option<String> {
 pub struct Sender {
     http: reqwest::Client,
     brokers: Mutex<HashMap<String, Arc<dyn Transport>>>,
+    limits: Limits,
 }
 
 impl Sender {
-    pub fn new() -> Sender {
+    /// An export can come from the platform, so where it goes is the site's to limit, like anything
+    /// a definition opens.
+    pub fn new(limits: Limits) -> Sender {
         let http = reqwest::Client::builder().timeout(Duration::from_secs(30)).connect_timeout(Duration::from_secs(5)).build().unwrap_or_default();
-        Sender { http, brokers: Mutex::default() }
+        Sender { http, brokers: Mutex::default(), limits }
     }
 
     /// A broker stays connected between batches. Its connection looks after itself.
@@ -52,7 +55,7 @@ impl Sender {
         if let Some(b) = brokers.get(to) {
             return Ok(b.clone());
         }
-        let broker = transport::open(to, transport::Options::default(), &Limits::default())?;
+        let broker = transport::open(to, transport::Options::default(), &self.limits)?;
         brokers.insert(to.to_string(), broker.clone());
         let runner = broker.clone();
         tokio::spawn(async move {
@@ -78,6 +81,9 @@ impl Sender {
 
     /// Delivers a batch of JSON measurements. Anything but a clear yes leaves it queued.
     pub async fn deliver(&self, export: &Export, bodies: &[String], secrets: &Value) -> Result<(), String> {
+        if !self.limits.reaches(&export.to) {
+            return Err(format!("{} is not in this site's allow list", export.to));
+        }
         if export.to.starts_with("mqtt") {
             let broker = self.broker(&export.to)?;
             for body in bodies {

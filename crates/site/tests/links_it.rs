@@ -8,6 +8,7 @@ use ferrum_ops_contract::edge::Export;
 use ferrum_ops_contract::sign::{HEADER_KEY, HEADER_SIGNATURE, HEADER_TIME, message};
 use ferrum_ops_contract::sync::SiteDevice;
 use ferrum_site::adapter::{Adapter, Dispatched, Failure, Observation, Reading};
+use ferrum_site::adapters::transport::Limits;
 use ferrum_site::config::Config;
 use ferrum_site::export::Sender;
 use ferrum_site::journal::Journal;
@@ -155,6 +156,20 @@ async fn only_a_trusted_peer_gets_an_answer_and_only_once() {
 
     let unsigned = reqwest::Client::new().post(format!("{url}/peer/read")).body("{}").send().await.unwrap();
     assert_eq!(unsigned.status(), 401);
+
+    // A trusted key's name on someone else's signature.
+    let time = Utc::now().timestamp_millis() + 1000;
+    let forged = SigningKey::from_bytes(&[4; 32]).sign(&message("POST", "/peer/read", time, b"{}"));
+    let answer = reqwest::Client::new()
+        .post(format!("{url}/peer/read"))
+        .header(HEADER_KEY, hex::encode(hub.verifying_key().to_bytes()))
+        .header(HEADER_TIME, time.to_string())
+        .header(HEADER_SIGNATURE, hex::encode(forged.to_bytes()))
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(answer.status(), 401, "the name proves nothing");
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -231,7 +246,7 @@ async fn an_export_waits_out_an_outage_and_says_who_sent_it() {
     let dir = scratch();
     let journal = Journal::open(&dir.join("journal.db")).unwrap();
     let export = Export { name: "historian".into(), to, topic: None, only: vec![], sign_with: Some("hist".into()) };
-    let sender = Sender::new();
+    let sender = Sender::new(Limits::default());
     let secrets = json!({"hist": "s3cret"});
     let lines: Vec<String> = (0..3).map(|i| json!({"device": "A", "metric": "m", "value": i}).to_string()).collect();
     journal.add_exports("historian", &lines, 100).unwrap();
@@ -243,7 +258,11 @@ async fn an_export_waits_out_an_outage_and_says_who_sent_it() {
     journal.exports_gone("historian", upto).unwrap();
     assert_eq!(journal.export_backlog("historian").unwrap(), 0);
     assert_eq!(got.lock().unwrap()[0]["measurements"].as_array().unwrap().len(), 3);
-    assert!(sender.deliver(&Export { sign_with: Some("nope".into()), ..export }, &bodies, &secrets).await.is_err_and(|e| e.contains("no secret")));
+    assert!(sender.deliver(&Export { sign_with: Some("nope".into()), ..export.clone() }, &bodies, &secrets).await.is_err_and(|e| e.contains("no secret")));
+
+    // An export can come from the platform, and where it goes is the site's to say.
+    let walled = Sender::new(Limits { allow: vec!["10.0.".into()], ..Default::default() });
+    assert!(walled.deliver(&export, &bodies, &secrets).await.is_err_and(|e| e.contains("allow list")));
 
     // A budget bounds what an export that never comes back can cost.
     let many: Vec<String> = (0..10).map(|i| i.to_string()).collect();

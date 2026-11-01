@@ -628,8 +628,9 @@ fn native_status(line: &[u8], names: &[&str]) -> Option<Ending> {
     })
 }
 
-/// An address fit to show: no passwords.
+/// An address fit to show. Passwords sit before an `@`, and in OPC UA's and a webhook's query.
 fn redact(address: &str) -> String {
+    let address = address.split('?').next().unwrap_or(address);
     match (address.split_once("://"), address.rsplit_once('@')) {
         (Some((scheme, _)), Some((_, tail))) => format!("{scheme}://…@{tail}"),
         _ => address.to_string(),
@@ -800,5 +801,19 @@ impl Adapter for Defined {
     fn health(&self) -> String {
         let links = self.links();
         format!("{} of {} links up", links.iter().filter(|l| l.up).count(), links.len())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_address_shown_gives_nothing_away() {
+        assert_eq!(redact("mqtt://user:s3cret@broker:1883"), "mqtt://…@broker:1883");
+        assert_eq!(redact("opcua://plc:4840/?user=u&password=s3cret"), "opcua://plc:4840/");
+        assert_eq!(redact("webhook://0.0.0.0:8088?token=s3cret"), "webhook://0.0.0.0:8088");
+        assert_eq!(redact("mqtts://u:p@b:8883?client=x"), "mqtts://…@b:8883");
+        assert_eq!(redact("tcp://10.0.0.7:9100"), "tcp://10.0.0.7:9100");
     }
 }

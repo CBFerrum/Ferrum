@@ -17,6 +17,9 @@ independently (`BLOCK-SECURITY-REVIEW`).
 | Public pages to server | Rate limits per address, signed links, no session | Budgets are per replica for some limits |
 | Identity provider to workspace | A `scim` key opens SCIM only; groups grant only mapped roles | Whoever holds the key can create members |
 | Assistant to workspace | Acts as the person; writes need approval | Approval is not bound to an exact proposal (`FERRUM-AI-001`) |
+| Platform to gateway | Off until `managed: true`. The site limits what a definition may open, and what is on the machine wins | Whoever can publish a definition chooses what a managed gateway connects to, within `allow` |
+| Gateway to gateway | Signed requests from listed keys, rising times, and what was asked kept in the journal | The link is not encrypted, and a replay within the clock skew after a restart reaches only what is kept |
+| Flow to equipment | No code, no cycles, simulated and reviewed by someone else. Commands go through the ledger as automation | A reviewer who approves what they did not read. Effects outside the ledger: alarms, notifications, exports |
 | Operator to customer data | None technically: operators can read the database | Stated plainly: there is no customer-held key |
 
 ## Surfaces and how they are held
@@ -27,6 +30,10 @@ independently (`BLOCK-SECURITY-REVIEW`).
 | Plugin call | A runaway guest holds a transaction | Deadlines on both sides; epoch interruption | `runtime::tests` |
 | Plugin HTTP | SSRF | Declared hosts, private addresses refused, DNS pinned, no redirects | `host.rs`; not tested here |
 | Webhook delivery | SSRF, slow endpoint | The same vetting; leased, no transaction across it | `events_it` |
+| Device definition | Runs something, opens a port, reads a file on a gateway | Hosts by `allow`, ports by `listen`, drivers from `drivers_dir`, certificates from its own folder, serial under `/dev` | `transport::tests` |
+| Flow | Loops, floods the ledger, moves equipment | Cycles refused, work per message bounded, requests rate limited, issued as automation | `flow::tests`, `edge_it` |
+| Site update | An old or forged build | A key installed with the site, expiry, version, hash, rollback | `update::tests` |
+| Webhook at a site | Anyone on the network posts readings | A bearer token, compared by hash, on a port the site named. Not encrypted | `protocols_it` |
 | Sign-in | Credential stuffing | Argon2id, lockouts, shared rate limits, dummy hash for unknown users | `identity_it` |
 | Sessions | Theft, stale access | `token_version` plus NOTIFY; rows per device; sockets recheck | `lifecycle_it` |
 | SCIM | A filter that matches too much | Unknown filters are errors | `lifecycle_it` |

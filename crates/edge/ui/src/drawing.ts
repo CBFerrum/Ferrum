@@ -342,6 +342,19 @@ export function inputsOf(flow: Flow, n: FlowNode): string[] {
   return [...new Set(flow.edges.filter((e) => e.to === n.id).map((e) => e.input ?? "in"))];
 }
 
+/** A name for one more wire into a step whose inputs are named by their wires. */
+export function nextInput(flow: Flow, n: FlowNode): string {
+  const used = inputsOf(flow, n);
+  return "abcdefghijklmnopqrstuvwxyz".split("").find((c) => !used.includes(c)) ?? `in${used.length}`;
+}
+
+/** Where a wire goes when someone joins it to a step, and not to one of its dots. */
+export function firstInput(flow: Flow, n: FlowNode): string | null {
+  const fixed = kindOf(n.kind).inputs;
+  if (fixed === null) return nextInput(flow, n);
+  return fixed[0] ?? null;
+}
+
 export const NODE_W = 184;
 export const NODE_H = 62;
 const COLUMN = 244;
