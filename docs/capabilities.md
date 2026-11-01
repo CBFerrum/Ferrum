@@ -10,8 +10,8 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | Status | Requirements |
 |---|---|
 | Implemented, qualification incomplete | 83 |
-| Partially implemented | 45 |
-| Missing | 51 |
+| Partially implemented | 53 |
+| Missing | 43 |
 | Blocked by external dependency | 9 |
 | **All** | **188** |
 
@@ -243,17 +243,17 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 |---|---|---|---|---|
 | FERRUM-VERIFY-001 | Tests detect broken invariants | Implemented, qualification incomplete | tested | Covers this work's invariants, not the whole platform |
 | FERRUM-VERIFY-002 | Independent domain fixtures for finance and payroll | Missing | read |  |
-| FERRUM-JOURNEY-001 | Lead to cash | Missing | read |  |
-| FERRUM-JOURNEY-002 | Procure to pay | Missing | read |  |
+| FERRUM-JOURNEY-001 | Lead to cash | Partially implemented | tested | Runs through the kernel's API, not through the interface; no independent reviewer prepared the figures |
+| FERRUM-JOURNEY-002 | Procure to pay | Partially implemented | tested | Runs through the kernel's API, not through the interface; no independent reviewer prepared the figures |
 | FERRUM-JOURNEY-003 | Hire to retire | Missing | read |  |
-| FERRUM-JOURNEY-004 | Support to resolution | Missing | read |  |
-| FERRUM-JOURNEY-005 | Project to profit | Missing | read |  |
+| FERRUM-JOURNEY-004 | Support to resolution | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
+| FERRUM-JOURNEY-005 | Project to profit | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
 | FERRUM-JOURNEY-006 | Online order to return | Missing | read |  |
-| FERRUM-JOURNEY-007 | Field work to invoice | Missing | read |  |
-| FERRUM-JOURNEY-008 | Document to signature | Missing | read |  |
-| FERRUM-JOURNEY-009 | Marketing to consent enforcement | Missing | read |  |
+| FERRUM-JOURNEY-007 | Field work to invoice | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
+| FERRUM-JOURNEY-008 | Document to signature | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
+| FERRUM-JOURNEY-009 | Marketing to consent enforcement | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
 | FERRUM-JOURNEY-010 | Hospitality stay | Missing | read |  |
-| FERRUM-JOURNEY-011 | Learning completion | Missing | read |  |
+| FERRUM-JOURNEY-011 | Learning completion | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
 | FERRUM-JOURNEY-012 | Tenant lifecycle | Missing | read |  |
 | FERRUM-JOURNEY-013 | Partner support | Missing | read |  |
 | FERRUM-JOURNEY-014 | AI-assisted operation | Missing | read |  |
