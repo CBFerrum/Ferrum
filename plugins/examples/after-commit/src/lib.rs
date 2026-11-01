@@ -17,16 +17,16 @@ fn handle(req: Request) -> Value {
     reply.unwrap_or_else(|e| json!({"error": e}))
 }
 
-fn call_provider(req: &Request, customer: &str) -> Result<Value, String> {
+fn call_provider(req: &Request, headers: Value, customer: &str) -> Result<Value, String> {
     let url = req.config("provider_url").as_str().unwrap_or_default();
-    fetch("POST", url, json!({}), json!({"customer": customer})).map_err(|e| e.to_string())
+    fetch("POST", url, headers, json!({"customer": customer})).map_err(|e| e.to_string())
 }
 
 fn hook(req: &Request) -> Result<Value, String> {
     let name = req.get("doc")["customer_name"].as_str().unwrap_or_default();
     if name.contains("from the hook") {
         // Refused: the document may still roll back.
-        call_provider(req, name)?;
+        call_provider(req, json!({}), name)?;
     }
     if name.contains("after commit") {
         emit("provider", json!({"customer": name})).map_err(|e| e.to_string())?;
@@ -37,13 +37,17 @@ fn hook(req: &Request) -> Result<Value, String> {
     Ok(json!({}))
 }
 
+/// A crash after the provider answered and before the host recorded it brings the event back, so
+/// the provider gets a key that is the same on every attempt. `attempt` above 1 says it may be a
+/// repeat; a provider with no such key must be asked first what it already did.
 fn event(req: &Request) -> Result<Value, String> {
-    call_provider(req, req.get("event")["customer"].as_str().unwrap_or_default())?;
+    let headers = json!({"Idempotency-Key": req.str("operation_id"), "X-Attempt": req.get("attempt").to_string()});
+    call_provider(req, headers, req.get("event")["customer"].as_str().unwrap_or_default())?;
     Ok(json!({}))
 }
 
 /// The same call from a route, where nothing is left to roll back.
 fn http(req: &Request) -> Result<Value, String> {
-    call_provider(req, "route")?;
+    call_provider(req, json!({}), "route")?;
     Ok(json!({"json": {"called": true}}))
 }

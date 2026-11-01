@@ -162,14 +162,27 @@ async fn scenario() {
     assert_eq!(ferrum_plugins::schedule::run_due_once(&host, &k).await.unwrap(), 0, "not due again for a minute");
     assert_eq!(kv(&k, tenant, "sweeps").await, json!(1));
 
-    // ───────────── the device disconnects ─────────────
+    // ───────────── it reconnects before the old socket has closed ─────────────
+    let d1_status = async || {
+        let filters = ferrum_kernel::query::parse_filters(&json!({"device_id": "D1"})).unwrap();
+        k.list(&admin, "XDevice", &ListQuery { filters, ..Default::default() }).await.unwrap().rows[0]["status"].clone()
+    };
+    let c3 = Uuid::now_v7();
+    let mut rx3 = host.sockets.register(tenant, c3);
+    host.socket_event(&k, tenant, &gateway, None, socket("connect", c3, "/devices/D1", None)).await.expect("reconnect");
     host.socket_event(&k, tenant, &gateway, None, socket("close", c1, "/devices/D1", None)).await.unwrap();
     host.sockets.unregister(c1);
-    let d1 = k
-        .list(&admin, "XDevice", &ListQuery { filters: ferrum_kernel::query::parse_filters(&json!({"device_id": "D1"})).unwrap(), ..Default::default() })
-        .await
-        .unwrap();
-    assert_eq!(d1.rows[0]["status"], json!("Offline"));
+    assert_eq!(d1_status().await, json!("Online"), "the old socket's close says nothing about the new one");
+    host.handle_http(&k, tenant, "device-gateway", call("POST", "/devices/D1/command", r#"{"action":"still here"}"#), Some(admin.clone())).await.unwrap();
+    match tokio::time::timeout(Duration::from_secs(5), rx3.recv()).await.unwrap() {
+        Some(Outgoing::Text(t)) => assert!(t.contains("still here"), "{t}"),
+        other => panic!("the new socket should still be mapped, got {other:?}"),
+    }
+
+    // ───────────── the device disconnects ─────────────
+    host.socket_event(&k, tenant, &gateway, None, socket("close", c3, "/devices/D1", None)).await.unwrap();
+    host.sockets.unregister(c3);
+    assert_eq!(d1_status().await, json!("Offline"));
 
     // ───────────── configuration, disabling, removal ─────────────
     let mut config = Map::new();
