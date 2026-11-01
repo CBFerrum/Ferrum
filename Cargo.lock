@@ -2723,6 +2723,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrum-edge"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ed25519-dalek",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "ferrum-ops",
+ "hex",
+ "rand 0.9.5",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ferrum-eu"
 version = "0.1.0"
 source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#27c501cc6a6c8a94748a803b61909b0fe41d35ee"

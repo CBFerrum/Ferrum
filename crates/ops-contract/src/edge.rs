@@ -74,7 +74,7 @@ pub struct Export {
     /// `{device}` and `{metric}` work here. MQTT only.
     #[serde(default)]
     pub topic: Option<String>,
-    /// Only these metrics, by MQTT's `+` and `#` over dots turned to slashes. Empty means all.
+    /// Only these metrics, with `*` for the rest of a name. Empty means all.
     #[serde(default)]
     pub only: Vec<String>,
     /// Signs each HTTP batch, by the name of a secret held at the site.

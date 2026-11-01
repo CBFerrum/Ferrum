@@ -1,0 +1,47 @@
+package: edge
+version: 0.1.0
+label: IoT Edge
+description: Device definitions, edge rules and alarms, exports and releases
+depends: [ops]
+field_prefix: edge_
+
+modules:
+  - name: edge
+    label: IoT Edge
+    icon: factory
+    order: 61
+    items: [DeviceDefinition, EdgeRule, EdgeAlarm, EdgeExport, EdgeRelease]
+
+overlays:
+  - entity: Device
+    ops:
+      - {op: add_field, column: true, field: {name: edge_definition, type: link, to: DeviceDefinition, label: Definition, description: "How it is reached and read. Its gateway picks this up by itself"}}
+      - {op: add_field, column: true, field: {name: edge_connect, type: data, label: Address, description: "Where this one is, when the definition does not say: tcp://10.0.0.7:9100"}}
+      - {op: add_field, column: true, field: {name: edge_settings, type: json, label: Settings, description: "What {settings.name} stands for in its definition"}}
+      - {op: add_field, column: true, field: {name: edge_concurrency, type: int, min: "1", default: 1, label: Commands at Once}}
+      - {op: add_field, column: true, field: {name: edge_token_hash, type: data, read_only: true, no_copy: true, hidden: true}}
+
+roles:
+  - name: Edge Viewer
+    description: Sees gateways, devices, alarms and robots.
+    permissions:
+      - {entity: DeviceDefinition, read: true}
+      - {entity: EdgeRule, read: true}
+      - {entity: EdgeAlarm, read: true}
+      - {entity: EdgeExport, read: true}
+      - {entity: EdgeRelease, read: true}
+      - {entity: Device, read: true}
+      - {entity: Site, read: true}
+  - name: Edge Engineer
+    description: Writes and publishes definitions, rules and exports, and acknowledges alarms.
+    permissions:
+      - {entity: DeviceDefinition, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: EdgeRule, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: EdgeAlarm, read: true, export: true}
+      - {entity: EdgeExport, read: true, write: true, create: true, delete: true}
+      - {entity: EdgeRelease, read: true, write: true, create: true}
+      - {entity: Device, read: true, write: true, create: true, export: true, import: true}
+      - {entity: DeviceProfile, read: true}
+      - {entity: Site, read: true}
+      - {entity: SiteArea, read: true}
+      - {entity: Company, read: true}

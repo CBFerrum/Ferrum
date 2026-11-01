@@ -105,7 +105,7 @@ pub(crate) async fn command_site(k: &Kernel, ctx: &Ctx, id: Uuid) -> Result<()> 
     site_open(k, ctx, site.ok_or_else(|| Error::NotFound("command".into()))?).await
 }
 
-pub(crate) async fn device_site(k: &Kernel, ctx: &Ctx, id: Uuid) -> Result<()> {
+pub async fn device_site(k: &Kernel, ctx: &Ctx, id: Uuid) -> Result<()> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let site: Option<Option<Uuid>> =
         sqlx::query_scalar("select site from e_device where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).fetch_optional(&mut *tx).await?;

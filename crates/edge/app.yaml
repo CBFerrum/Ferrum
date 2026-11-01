@@ -1,0 +1,22 @@
+id: edge
+name: IoT Edge
+version: 0.1.0
+publisher: cbferrum
+summary: Devices described instead of programmed, gateways that keep working offline, alarms, reported state and robots
+description: README.md
+categories: [manufacturing]
+license: AGPL-3.0-only
+runtime: native
+platform: ">=0.3, <0.4"
+requires: {ops: ">=0.1"}
+packages: [edge]
+uninstall: ask
+ui:
+  dist: ui/dist
+contributes:
+  shell.app:
+    - {id: edge, route: edge, title: IoT Edge, description: "Devices, gateways, alarms and robots", icon: factory, color: "#0369a1", roles: [Edge Engineer, Edge Viewer]}
+  shell.open:
+    - {id: edge, package: edge, path: "edge/e/{entity}/{id}", list: "edge/e/{entity}"}
+  shell.create:
+    - {id: definition, label: Device definition, path: edge/e/DeviceDefinition/new, entity: DeviceDefinition}
