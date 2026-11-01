@@ -323,6 +323,17 @@ async fn scenario() {
     k.update(&manager, "AutomationEnvelope", id_of(&envelope), obj(json!({"max_per_hour": 100, "enabled": false})), None).await.expect("switched off");
     assert_eq!(issue(&t, &manager, NewCommand { issuer: Issuer::Ai, ..move_tote(bot) }).await.unwrap().state, State::Proposed, "switching it off takes effect at once");
 
+    // An agent has one way in, and it proposes, whatever it asks for.
+    let tools = ferrum_ops::mcp::OpsTools;
+    use ferrum_mcp::ToolProvider;
+    let names: Vec<String> = tools.tools(&dispatcher).iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
+    assert_eq!(names, ["ops_overview", "ops_command", "ops_propose"], "looking and proposing, and no tool for anything else");
+    let proposed_by_ai = tools.call(&k, &dispatcher, "ops_propose", &json!({"target": bot, "operation": "warehouse.move", "reason": "Aisle 4 is congested", "issuer": "person"})).await.unwrap().unwrap();
+    assert_eq!(proposed_by_ai["state"], json!("Proposed"), "it cannot call itself a person");
+    assert!(tools.call(&k, &viewer, "ops_propose", &json!({"target": bot, "operation": "warehouse.move", "reason": "x"})).await.unwrap().is_err(), "and it has no more rights than its person");
+    assert!(tools.call(&k, &dispatcher, "ops_propose", &json!({"target": bot, "operation": "arm.swing", "reason": "x"})).await.unwrap().is_err(), "nor can it invent what a device can do");
+    assert!(tools.call(&k, &dispatcher, "ops_overview", &json!({})).await.unwrap().is_ok());
+
     // ───── cancelling: what never left stops, the rest is a request ─────
     let unsent = issue(&t, &t.admin, NewCommand { payload: json!({"tote": "T-9"}), expires_in_secs: 1, ..move_tote(idle_free(&t, site).await) }).await;
     assert!(unsent.is_err(), "that device is not active");

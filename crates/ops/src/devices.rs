@@ -52,14 +52,21 @@ pub async fn operation(tx: &mut Tx, tenant: Uuid, device: Uuid, operation: &str)
 
 /// Moves a device through its lifecycle. Provisioned is reached only by enrolling.
 pub async fn set_lifecycle(k: &Kernel, ctx: &Ctx, id: Uuid, to: Lifecycle, reason: &str) -> Result<Lifecycle> {
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    set_lifecycle_tx(k, ctx, &mut tx, id, to, reason).await?;
+    tx.commit().await?;
+    Ok(to)
+}
+
+/// [`set_lifecycle`] inside the caller's transaction, so that what moved it commits with it.
+pub async fn set_lifecycle_tx(k: &Kernel, ctx: &Ctx, tx: &mut Tx, id: Uuid, to: Lifecycle, reason: &str) -> Result<()> {
     if to == Lifecycle::Provisioned {
         return Err(Error::invalid("a device is provisioned by enrolling a key"));
     }
-    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let row: Option<(String, String, Option<Uuid>)> = sqlx::query_as("select lifecycle, kind, site from e_device where tenant_id = $1 and id = $2 for update")
         .bind(ctx.tenant)
         .bind(id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?;
     let (from, kind, site) = row.ok_or_else(|| Error::NotFound("device".into()))?;
     let from = lifecycle_of(&from)?;
@@ -73,7 +80,7 @@ pub async fn set_lifecycle(k: &Kernel, ctx: &Ctx, id: Uuid, to: Lifecycle, reaso
         let ops: i64 = sqlx::query_scalar("select count(*) from e_device__operations where tenant_id = $1 and parent_id = $2")
             .bind(ctx.tenant)
             .bind(id)
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut **tx)
             .await?;
         if ops == 0 && kind != "Gateway" && kind != "Sensor" && kind != "Meter" {
             return Err(Error::invalid("list what this device may be asked to do before commissioning it"));
@@ -86,16 +93,14 @@ pub async fn set_lifecycle(k: &Kernel, ctx: &Ctx, id: Uuid, to: Lifecycle, reaso
         values.insert("commissioned_at".into(), json!(chrono::Utc::now().to_rfc3339()));
         values.insert("configuration_version".into(), json!(Uuid::now_v7().to_string()));
     }
-    k.set_values_tx(&sys(ctx), &mut tx, "Device", id, values).await?;
+    k.set_values_tx(&sys(ctx), tx, "Device", id, values).await?;
     if to == Lifecycle::Retired {
-        identity::revoke_keys(&mut tx, ctx.tenant, id).await?;
+        identity::revoke_keys(tx, ctx.tenant, id).await?;
     }
     if matches!(to, Lifecycle::Quarantined | Lifecycle::Retired) {
-        authority::fence_holder(&mut tx, ctx, id, reason).await?;
+        authority::fence_holder(tx, ctx, id, reason).await?;
     }
-    audit::record(&mut tx, ctx, "Device", id, "ops.lifecycle", None, json!({"from": from.as_str(), "to": to.as_str(), "reason": reason})).await?;
-    tx.commit().await?;
-    Ok(to)
+    audit::record(tx, ctx, "Device", id, "ops.lifecycle", None, json!({"from": from.as_str(), "to": to.as_str(), "reason": reason})).await
 }
 
 /// The lifecycle is not a field anyone edits, and what a commissioned device may do changes only
