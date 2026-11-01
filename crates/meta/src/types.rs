@@ -342,6 +342,9 @@ pub struct ActionDef {
     /// Actions of one group show under one menu (e.g. "e-Invoice").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// Called by plugins and other code, never offered to a person as a button.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
 }
 
 /// One input an action asks for.
