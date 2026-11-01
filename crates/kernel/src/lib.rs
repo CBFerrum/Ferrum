@@ -43,7 +43,7 @@ pub mod value;
 pub mod webpush;
 
 pub use ctx::{Access, Action, Ctx, PermSet, row_scope};
-pub use db::{Db, DbConfig, Tx, with_retry};
+pub use db::{Db, DbConfig, Trace, Tx, with_retry};
 pub use error::{Error, FieldError, Result};
 pub use hooks::{DocAccess, DocHook, DocHost, EventSink, HookCtx, HookRegistry, Site, SiteRequest, SiteResponse};
 pub use query::{Filter, ListQuery, Op, Page};

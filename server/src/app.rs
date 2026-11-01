@@ -377,6 +377,7 @@ impl Hooks for App {
             .layer(axum::middleware::from_fn(speculation_csp))
             .layer(axum::middleware::from_fn(screen_paths))
             .layer(axum::middleware::from_fn(isolated_cors))
+            .layer(axum::middleware::from_fn(traced))
             .layer(axum::middleware::from_fn(move |req, next| app_origins(apps_base.clone(), req, next))))
     }
 
@@ -439,6 +440,23 @@ impl Hooks for App {
 
 /// Each client address's budget. Only requests that came through the proxy (`X-Forwarded-For`)
 /// count: probes, port-forwards and the cluster's own calls have no address to tell apart.
+/// Runs a request under its trace: the events it writes name its request id, and the caller's W3C
+/// trace context travels with them.
+async fn traced(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    let correlation = req.extensions().get::<loco_rs::controller::middleware::request_id::LocoRequestId>().map(|id| id.get().to_string());
+    let traceparent = req.headers().get("traceparent").and_then(|v| v.to_str().ok()).filter(|v| valid_traceparent(v)).map(str::to_string);
+    let trace = ferrum_kernel::Trace { correlation: correlation.unwrap_or_default(), traceparent, ..Default::default() };
+    trace.scope(next.run(req)).await
+}
+
+/// `version-traceid-parentid-flags` in lower-case hexadecimal (W3C Trace Context): anything else
+/// is dropped rather than stored as the caller sent it.
+fn valid_traceparent(v: &str) -> bool {
+    let parts: Vec<&str> = v.split('-').collect();
+    matches!(parts.as_slice(), [a, b, c, d] if a.len() == 2 && b.len() == 32 && c.len() == 16 && d.len() == 2)
+        && parts.iter().all(|p| p.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)))
+}
+
 async fn per_address(limiter: Arc<RateLimiter>, req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
     use axum::response::IntoResponse;
     if req.headers().contains_key("x-forwarded-for")
