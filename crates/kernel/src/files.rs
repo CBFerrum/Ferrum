@@ -36,6 +36,7 @@ impl Kernel {
         if let Some((entity, record)) = attach_to {
             self.get(ctx, entity, record, false).await?;
         }
+        self.check_storage_quota(ctx.tenant, data.len() as u64).await?;
         let scanned = self.scan_stream(ctx, file_name, data.len() as u64, futures::stream::iter([Ok::<_, Error>(data)])).await?;
         self.keep_file(ctx, attach_to, file_name, content_type, data, scanned).await
     }

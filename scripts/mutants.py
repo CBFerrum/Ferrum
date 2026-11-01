@@ -38,6 +38,8 @@ MERGE = ("-p", "ferrum-kernel", "--test", "merge_it")
 RETENTION = ("-p", "ferrum-kernel", "--test", "retention_it")
 DOCTOR = ("-p", "ferrum-kernel", "--test", "doctor_it")
 CONNECT = ("-p", "ferrum-kernel", "--test", "connect_it")
+EGRESS = ("-p", "ferrum-server", "--test", "assistant_egress_it")
+SUPPORT = ("-p", "ferrum-kernel", "--test", "support_it")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
@@ -139,6 +141,21 @@ MUTANTS = [
     ("delivery-key-changes", "crates/kernel/src/connect.rs", "let change = Outgoing { key: key.to_string(),", "let change = Outgoing { key: Uuid::now_v7().to_string(),", CONNECT),
     ("untested-connection-runs", "crates/kernel/src/connect.rs", """        if !row.enabled {\n            return Err(Error::invalid("test this connection first"));\n        }\n""", "", CONNECT),
     ("disconnect-keeps-credentials", "crates/kernel/src/connect.rs", "update connection set enabled = false, sealed = null where", "update connection set enabled = false where", CONNECT),
+    ("assistant-reads-everything", "server/src/assistant.rs", "let ctx = &ctx.for_provider(policy.egress.clone());", "let ctx = ctx;", EGRESS),
+    ("internal-entity-goes-out", "crates/kernel/src/ctx.rs", "if ctx.egress.as_ref().is_some_and(|e| !e.allows_entity(&ent.def)) {", "if false {", EGRESS),
+    ("field-group-goes-out", "crates/kernel/src/doc.rs", "                if !egress.allows_field(f) {\n                    doc.remove(&f.name);\n                } else", "                if false {\n                    doc.remove(&f.name);\n                } else", EGRESS),
+    ("salary-by-filter", "crates/kernel/src/query.rs", "ctx.perms.can_read_field(&ent.def.name, f) && ctx.egress.as_ref().is_none_or(|e| e.allows_field(f))", "ctx.perms.can_read_field(&ent.def.name, f)", EGRESS),
+    ("approval-outlives-its-record", "server/src/assistant.rs", 'if json!(version_of(k, ctx, &call["input"]).await) != call["version"] => {', 'if false => {', EGRESS),
+    ("approval-never-expires", "server/src/assistant.rs", 'if chrono::Utc::now().timestamp() - p["asked_at"].as_i64().unwrap_or(0) > APPROVAL_SECS => {', 'if false => {', EGRESS),
+    ("budget-ignored", "server/src/assistant.rs", "&& tokens_this_month(k, ctx.tenant).await? >= budget", "&& tokens_this_month(k, ctx.tenant).await? >= i64::MAX - budget", EGRESS),
+    ("any-model-allowed", "server/src/assistant.rs", ".filter(|m| *m == config.model || config.models.contains(m))", "", EGRESS),
+    ("support-key-outlives-revocation", "crates/kernel/src/support.rs", "update api_key set revoked_at = now() where tenant_id = $1 and user_id = $2 and revoked_at is null", "update api_key set revoked_at = revoked_at where tenant_id = $1 and user_id = $2 and revoked_at is null", SUPPORT),
+    ("support-lasts-for-ever", "crates/kernel/src/support.rs", "if !(1..=longest).contains(&input.hours) {", "if false {", SUPPORT),
+    ("support-writes-when-told-not", "crates/kernel/src/support.rs", ".bind(&role).bind(e).bind(input.can_write).execute(&mut *tx)", ".bind(&role).bind(e).bind(true).execute(&mut *tx)", SUPPORT),
+    ("support-unseen-by-the-customer", "crates/kernel/src/support.rs", "if first {", "if false {", SUPPORT),
+    ("restricted-account-still-writes", "crates/kernel/src/ctx.rs", "if self.read_only && !matches!(action, Action::Read | Action::Export) {", "if false {", SUPPORT),
+    ("restricted-account-loses-its-export", "crates/kernel/src/ctx.rs", "if self.read_only && !matches!(action, Action::Read | Action::Export) {", "if self.read_only {", SUPPORT),
+    ("quota-ignored", "crates/kernel/src/files.rs", "self.check_storage_quota(ctx.tenant, data.len() as u64).await?;", "", SUPPORT),
 ]
 
 

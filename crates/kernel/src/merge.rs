@@ -6,7 +6,7 @@
 //! transaction, and either happens whole or not at all.
 //!
 //! The duplicate's row stays, as an alias: append-only history (a journal) may name it for ever, and
-//! that is not rewritten. [`Kernel::merged_ids`] gives whoever reports on such history every id a
+//! that is not rewritten. [`merged_ids`] gives whoever reports on such history every id a
 //! record has had. Asked for by its old id, a record answers with what it became; lists no longer show
 //! it; a link saved with the old id lands on the record that stayed. A merge is not undone: the links
 //! it moved are not told apart from those that were there.
@@ -61,6 +61,21 @@ fn link_columns(schema: &Schema, entity: &str) -> Vec<(String, String, bool, boo
         }
     }
     out
+}
+
+/// Every id a record has had: its own, and those merged into it. For reports on append-only
+/// history, which keeps the id it was posted under.
+pub async fn merged_ids(tx: &mut Tx, tenant: Uuid, entity: &str, id: Uuid) -> Result<Vec<Uuid>> {
+    let stays = canonical(tx, tenant, entity, id).await?.unwrap_or(id);
+    let mut ids: Vec<Uuid> =
+        sqlx::query_scalar("select alias_id from record_alias where tenant_id = $1 and entity = $2 and canonical_id = $3 order by alias_id")
+            .bind(tenant)
+            .bind(entity)
+            .bind(stays)
+            .fetch_all(&mut **tx)
+            .await?;
+    ids.insert(0, stays);
+    Ok(ids)
 }
 
 impl Kernel {
@@ -169,21 +184,6 @@ impl Kernel {
         outbox::enqueue(&mut tx, ctx.tenant, &format!("{entity}.merged"), Some(entity), Some(keep), json!({"keep": keep, "duplicate": duplicate})).await?;
         tx.commit().await?;
         Ok(json!({"keep": keep, "merged": duplicate, "links_moved": links}))
-    }
-
-    /// Every id a record has had: its own, and those merged into it. For reports on append-only
-    /// history, which keeps the id it was posted under.
-    pub async fn merged_ids(&self, tx: &mut Tx, tenant: Uuid, entity: &str, id: Uuid) -> Result<Vec<Uuid>> {
-        let stays = canonical(tx, tenant, entity, id).await?.unwrap_or(id);
-        let mut ids: Vec<Uuid> =
-            sqlx::query_scalar("select alias_id from record_alias where tenant_id = $1 and entity = $2 and canonical_id = $3 order by alias_id")
-                .bind(tenant)
-                .bind(entity)
-                .bind(stays)
-                .fetch_all(&mut **tx)
-                .await?;
-        ids.insert(0, stays);
-        Ok(ids)
     }
 
     /// Records that look like one another: equal, apart from case and spaces, in a field the entity

@@ -9,9 +9,9 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 71 |
-| Partially implemented | 40 |
-| Missing | 65 |
+| Implemented, qualification incomplete | 74 |
+| Partially implemented | 41 |
+| Missing | 61 |
 | Blocked by external dependency | 9 |
 | **All** | **185** |
 
@@ -21,7 +21,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 |---|---|---|---|---|
 | FERRUM-PLATFORM-001 | Modular monolith with a Rust kernel and apps as crates | Implemented, qualification incomplete | read |  |
 | FERRUM-PLATFORM-002 | Authoritative ownership of each shared concept | Partially implemented | read | Person, party, product and project are shared packages; employee, payment and consent are not yet one owned model across apps |
-| FERRUM-PLATFORM-003 | Controlled merging of duplicate customers with aliases | Implemented, qualification incomplete | tested | Customer and Supplier opt in; apps with their own people or companies have not; Duplicates are found by equal fields, not fuzzy matching; A merge is not undone; ERP's statements read merged ids only once it asks Kernel::merged_ids; External identifiers wait for the connector platform |
+| FERRUM-PLATFORM-003 | Controlled merging of duplicate customers with aliases | Implemented, qualification incomplete | tested | Customer and Supplier opt in; apps with their own people or companies have not; Duplicates are found by equal fields, not fuzzy matching; A merge is not undone; ERP's statements read merged ids only once it asks ferrum_kernel::merge::merged_ids; External identifiers wait for the connector platform |
 | FERRUM-PLATFORM-004 | Typed cross-application contracts with stated idempotency and failure behaviour | Partially implemented | read | Apps call ERP's engine as a crate, without a published contract for each operation |
 | FERRUM-PLATFORM-005 | Hook dependencies and ordering checked at startup | Implemented, qualification incomplete | tested | The mechanism exists; apps' hooks have not declared names or fills yet, so they run in registration order |
 | FERRUM-PLATFORM-006 | Isolation profiles: shared cells, dedicated, on-premises, disconnected | Partially implemented | read | Single-server and Kubernetes deployments exist; cells and a disconnected profile do not |
@@ -195,11 +195,11 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Id | Requirement | Status | Basis | Known limitations |
 |---|---|---|---|---|
-| FERRUM-AI-001 | Assistant acts as the person with writes approved in the conversation | Partially implemented | read | An approval is not bound to an exact proposal with versions and an expiry |
-| FERRUM-AI-002 | Shared AI gateway: providers, allowlists, regions, spending limits | Missing | probe | One provider through one key |
-| FERRUM-AI-003 | Egress policy separate from read permission | Missing | probe |  |
+| FERRUM-AI-001 | Assistant acts as the person with writes approved in the conversation | Implemented, qualification incomplete | tested | Approval is bound to the stored call, the record's version and 30 minutes; estimated financial impact is not shown |
+| FERRUM-AI-002 | Shared AI gateway: providers, allowlists, regions, spending limits | Partially implemented | tested | One provider protocol (Anthropic's, or a proxy that speaks it); no regional routing; Budgets are in tokens: no prices are invented; Usage is metered per workspace, person and model |
+| FERRUM-AI-003 | Egress policy separate from read permission | Implemented, qualification incomplete | tested | Packages must mark entities `internal` and fields with perm_group: HR's are marked, others not yet reviewed; Fields free of any group go, whatever they hold |
 | FERRUM-AI-004 | Authorization-aware retrieval | Partially implemented | read | Tools run as the person, so reads are theirs; no retrieval index, so caches and embeddings do not arise yet |
-| FERRUM-AI-005 | Evaluation datasets and prompt-injection tests | Missing | probe | Prompt-injection acceptance not tested |
+| FERRUM-AI-005 | Evaluation datasets and prompt-injection tests | Partially implemented | tested | An adversarial test with a model that obeys injected instructions; no evaluation against real models, no grounded-answer datasets, no recorded prompt versions |
 | FERRUM-AI-006 | Domain-specific assistants with sources shown | Missing | probe |  |
 
 ## Cloud
@@ -208,10 +208,10 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 |---|---|---|---|---|
 | FERRUM-CLOUD-001 | Control plane separate from customer workloads | Missing | probe |  |
 | FERRUM-CLOUD-002 | Tenant lifecycle: signup, provisioning, plans, closure | Partially implemented | read | Tenants are created by a task or API; no signup, plans or closure |
-| FERRUM-CLOUD-003 | Metering, billing, entitlements | Missing | probe |  |
+| FERRUM-CLOUD-003 | Metering, billing, entitlements | Partially implemented | tested | Metering and account states exist; prices, invoices and payment do not; Storage is the only enforced quota; Connector and communication usage are not metered |
 | FERRUM-CLOUD-004 | Fleet inventory, staged upgrades, customer-facing status | Missing | probe |  |
 | FERRUM-PARTNER-001 | Partner console | Missing | probe |  |
-| FERRUM-PARTNER-002 | Layered support access that expires and is visible to the customer | Partially implemented | read | user_session has an `actor` for acting as someone; no grants, levels or customer view |
+| FERRUM-PARTNER-002 | Layered support access that expires and is visible to the customer | Implemented, qualification incomplete | tested | The request log is written by the HTTP layer, which the suite exercises directly rather than over HTTP; No partner console shows these: they are API routes |
 | FERRUM-PARTNER-003 | Program terms separate from open-source rights | Blocked by external dependency | read |  |
 
 ## Operations

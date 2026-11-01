@@ -16,6 +16,7 @@ use axum::body::Body;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::Response;
 use dashmap::DashMap;
+use ferrum_kernel::ctx::Egress;
 use ferrum_kernel::{Ctx, Error, Kernel, Result};
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
@@ -64,6 +65,19 @@ several records.
 app it belongs to.
 - When something failed or you could not find it, say so and what you tried.";
 
+/// How long a proposed change waits for the person: past this, allowing it does nothing, and the
+/// assistant has to look again.
+const APPROVAL_SECS: i64 = 30 * 60;
+
+/// A workspace's settings for the assistant: what it may be sent, on which model, how much of it.
+#[derive(Clone, Debug, Default)]
+struct Policy {
+    off: bool,
+    model: Option<String>,
+    monthly_tokens: Option<i64>,
+    egress: Egress,
+}
+
 /// The operator's settings, from the environment.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -76,6 +90,10 @@ pub struct Config {
     pub fallbacks: bool,
     /// Calls to the model one person may make in an hour.
     pub calls_per_hour: i64,
+    /// Models a workspace may choose; empty: only `model`.
+    pub models: Vec<String>,
+    /// Tokens one workspace may use in a calendar month; it can set less, not more.
+    pub monthly_tokens: Option<i64>,
 }
 
 impl Config {
@@ -95,7 +113,9 @@ impl Config {
             None => base_url == "https://api.anthropic.com" && FALLBACK_MODELS.contains(&model.as_str()),
         };
         let calls_per_hour = env("FERRUM_ASSISTANT_CALLS_PER_HOUR").and_then(|v| v.parse().ok()).filter(|n| *n > 0).unwrap_or(120);
-        Some(Config { api_key, model, base_url, effort, fallbacks, calls_per_hour })
+        let models = env("FERRUM_ASSISTANT_MODELS").map(|m| m.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
+        let monthly_tokens = env("FERRUM_ASSISTANT_MONTHLY_TOKENS").and_then(|v| v.parse().ok());
+        Some(Config { api_key, model, base_url, effort, fallbacks, calls_per_hour, models, monthly_tokens })
     }
 }
 
@@ -149,7 +169,7 @@ pub struct Assistant {
     http: reqwest::Client,
     live: DashMap<(Uuid, Uuid), Arc<Live>>,
     /// Workspaces whose administrators turned the assistant off, as read a moment ago.
-    off: DashMap<Uuid, (Instant, bool)>,
+    off: DashMap<Uuid, (Instant, Policy)>,
 }
 
 impl Assistant {
@@ -173,21 +193,30 @@ impl Assistant {
         self.config.is_some() && kind == "member" && !self.turned_off(k, ctx.tenant).await
     }
 
-    async fn turned_off(&self, k: &Kernel, tenant: Uuid) -> bool {
+    async fn policy(&self, k: &Kernel, tenant: Uuid) -> Policy {
         if let Some(e) = self.off.get(&tenant).filter(|e| e.0.elapsed() < Duration::from_secs(20)) {
-            return e.1;
+            return e.1.clone();
         }
-        let off = async {
+        let read = async {
             let mut tx = k.db.tenant_tx(tenant).await?;
-            let v: Option<Value> =
-                sqlx::query_scalar("select settings->'assistant' from tenant where id = $1").bind(tenant).fetch_optional(&mut *tx).await?.flatten();
+            let s: Value = sqlx::query_scalar("select settings from tenant where id = $1").bind(tenant).fetch_one(&mut *tx).await?;
             tx.commit().await?;
-            Ok::<bool, Error>(v.and_then(|v| v.as_bool()) == Some(false))
+            Ok::<Value, Error>(s)
         }
         .await
-        .unwrap_or(false);
-        self.off.insert(tenant, (Instant::now(), off));
-        off
+        .unwrap_or(Value::Null);
+        let policy = Policy {
+            off: read.get("assistant").and_then(Value::as_bool) == Some(false),
+            model: read.get("assistant_model").and_then(Value::as_str).map(str::to_string),
+            monthly_tokens: read.get("assistant_monthly_tokens").and_then(Value::as_i64),
+            egress: read.get("assistant_egress").cloned().and_then(|e| serde_json::from_value(e).ok()).unwrap_or_default(),
+        };
+        self.off.insert(tenant, (Instant::now(), policy.clone()));
+        policy
+    }
+
+    async fn turned_off(&self, k: &Kernel, tenant: Uuid) -> bool {
+        self.policy(k, tenant).await.off
     }
 
     /// Forgets what was read about a workspace's setting (it just changed here).
@@ -391,6 +420,45 @@ pub async fn stop(env: &Env, ctx: &Ctx, id: Uuid) -> Result<()> {
         live.stop.store(true, Ordering::SeqCst);
     }
     Ok(())
+}
+
+/// Tokens to and from the model this calendar month, in the workspace.
+async fn tokens_this_month(k: &Kernel, tenant: Uuid) -> Result<i64> {
+    let mut tx = k.db.tenant_tx(tenant).await?;
+    let n: Option<i64> = sqlx::query_scalar(
+        "select sum(coalesce((usage->'usage'->>'input_tokens')::bigint, 0) + coalesce((usage->'usage'->>'output_tokens')::bigint, 0))::bigint \
+         from assistant_message where tenant_id = $1 and role = 'assistant' and created_at >= date_trunc('month', now())",
+    )
+    .bind(tenant)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(n.unwrap_or(0))
+}
+
+/// What the workspace has used this month, by person and model, for its administrators.
+pub async fn usage(k: &Kernel, ctx: &Ctx) -> Result<Value> {
+    if !ctx.is_admin {
+        return Err(Error::Forbidden("this is for administrators".into()));
+    }
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let rows: Vec<Value> = sqlx::query_scalar(
+        "select jsonb_build_object('user', t.user_id, 'model', m.usage->>'model', 'calls', count(*), \
+         'input_tokens', sum(coalesce((m.usage->'usage'->>'input_tokens')::bigint, 0)), 'output_tokens', sum(coalesce((m.usage->'usage'->>'output_tokens')::bigint, 0))) \
+         from assistant_message m join assistant_thread t on t.tenant_id = m.tenant_id and t.id = m.thread_id \
+         where m.tenant_id = $1 and m.role = 'assistant' and m.created_at >= date_trunc('month', now()) group by t.user_id, m.usage->>'model' order by 1",
+    )
+    .bind(ctx.tenant)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(json!({"month": rows}))
+}
+
+/// A record's version as a proposed change finds it.
+async fn version_of(k: &Kernel, ctx: &Ctx, input: &Value) -> Option<i64> {
+    let (entity, id) = (input["entity"].as_str()?, input["id"].as_str()?.parse().ok()?);
+    k.get(ctx, entity, id, false).await.ok()?.get("version")?.as_i64()
 }
 
 /// The person's calls to the model in the last hour.
@@ -886,6 +954,11 @@ fn not_run(calls: &[Value], why: &str) -> Vec<Value> {
 async fn run(env: &Env, ctx: &Ctx, thread: Uuid, live: &Live, t: Thread, input: Input) -> Result<&'static str> {
     let k = &env.kernel;
     let config = env.assistant.config.clone().ok_or_else(|| Error::Unavailable("the assistant is not set up on this server".into()))?;
+    let policy = env.assistant.policy(k, ctx.tenant).await;
+    // From here on, what is read goes to the provider: narrowed, whatever the person may see.
+    let ctx = &ctx.for_provider(policy.egress.clone());
+    let model = policy.model.clone().filter(|m| *m == config.model || config.models.contains(m)).unwrap_or_else(|| config.model.clone());
+    let budget = [policy.monthly_tokens, config.monthly_tokens].into_iter().flatten().min();
     let tools = tools(env, ctx).await;
 
     // What the person sent, after whatever was left open: the results of calls that were waiting
@@ -901,6 +974,13 @@ async fn run(env: &Env, ctx: &Ctx, thread: Uuid, live: &Live, t: Thread, input: 
             }
             let waiting = p["awaiting"].as_array().is_some_and(|a| a.iter().any(|x| x == id));
             let outcome = match (&input, waiting) {
+                (Input::Decision { allow: true }, true) if chrono::Utc::now().timestamp() - p["asked_at"].as_i64().unwrap_or(0) > APPROVAL_SECS => {
+                    (true, "This approval had expired, so nothing was done. Look at the record again before proposing it.".to_string())
+                }
+                // What the person agreed to was the record as it was then.
+                (Input::Decision { allow: true }, true) if json!(version_of(k, ctx, &call["input"]).await) != call["version"] => {
+                    (true, "This record changed after the person was asked, so nothing was done. Look at it again before proposing a change.".to_string())
+                }
                 (Input::Decision { allow: true }, true) => {
                     let name = call["name"].as_str().unwrap_or_default();
                     live.send(json!({"type": "tool", "id": id, "name": name, "status": "running"}));
@@ -955,6 +1035,11 @@ async fn run(env: &Env, ctx: &Ctx, thread: Uuid, live: &Live, t: Thread, input: 
         if live.stop.load(Ordering::SeqCst) || stop_requested(k, ctx, thread).await {
             return stopped();
         }
+        if let Some(budget) = budget
+            && tokens_this_month(k, ctx.tenant).await? >= budget
+        {
+            return Err(Error::TooManyRequests("this workspace has used its assistant allowance for the month".into()));
+        }
         if calls_last_hour(k, ctx).await? >= config.calls_per_hour {
             return Err(Error::TooManyRequests("you have used the assistant a lot in the last hour; it is available again shortly".into()));
         }
@@ -963,7 +1048,7 @@ async fn run(env: &Env, ctx: &Ctx, thread: Uuid, live: &Live, t: Thread, input: 
             messages(&mut tx, ctx.tenant, thread).await?.into_iter().map(|(_, role, content)| json!({"role": role, "content": content})).collect();
         tx.commit().await?;
         let mut body = json!({
-            "model": config.model,
+            "model": model,
             "max_tokens": MAX_TOKENS,
             "stream": true,
             "system": [{"type": "text", "text": system}],
@@ -1003,6 +1088,9 @@ async fn run(env: &Env, ctx: &Ctx, thread: Uuid, live: &Live, t: Thread, input: 
             }
         };
 
+        // What was asked and answered stays in the conversation: the log says only that it happened.
+        let called: Vec<&str> = reply.content.iter().filter(|b| b["type"] == "tool_use").filter_map(|b| b["name"].as_str()).collect();
+        tracing::info!(tenant = %ctx.tenant, user = %ctx.user, model = %reply.model, input_tokens = %reply.usage["input_tokens"], output_tokens = %reply.usage["output_tokens"], tools = ?called, "assistant call");
         let content = json!(reply.content);
         let usage = json!({"model": reply.model, "usage": reply.usage, "stop_reason": reply.stop_reason});
         let seq = append(k, ctx, thread, "assistant", &content, Some(&usage)).await?;
@@ -1055,7 +1143,8 @@ async fn run(env: &Env, ctx: &Ctx, thread: Uuid, live: &Live, t: Thread, input: 
                 results.insert(id, json!([true, format!("Invalid input: {why}.")]));
                 continue;
             }
-            described.push(json!({"id": id, "name": name, "title": m["title"], "input": call["input"], "destructive": m["destructive"]}));
+            let version = if m["read_only"] == json!(true) { None } else { version_of(k, ctx, &call["input"]).await };
+            described.push(json!({"id": id, "name": name, "title": m["title"], "input": call["input"], "version": version, "destructive": m["destructive"]}));
             if m["read_only"] == json!(true) {
                 continue;
             }
@@ -1077,7 +1166,7 @@ async fn run(env: &Env, ctx: &Ctx, thread: Uuid, live: &Live, t: Thread, input: 
             results.insert(id.to_string(), json!([error, text]));
         }
         if !awaiting.is_empty() {
-            let pending = json!({"calls": described, "results": results, "awaiting": awaiting});
+            let pending = json!({"calls": described, "results": results, "awaiting": awaiting, "asked_at": chrono::Utc::now().timestamp()});
             set_state(k, ctx, thread, "waiting", Some(&pending)).await?;
             live.send(json!({"type": "confirm", "pending": confirmation(&pending)}));
             return Ok("waiting");

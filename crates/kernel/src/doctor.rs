@@ -162,7 +162,7 @@ impl Kernel {
             Finding::warning(
                 "customizations",
                 format!("{skipped} customizations are skipped and {conflicts} have parted ways with their packages"),
-                "Each workspace's administrators can see them: GET /api/admin/customize/conflicts.",
+                "Each workspace's administrators can see them: GET /api/customize/conflicts.",
             )
         });
         Ok(out)

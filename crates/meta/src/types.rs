@@ -39,7 +39,7 @@ pub struct PackageManifest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub export_tables: Vec<String>,
     /// Engine tables holding links to a `mergeable` entity, moved when two records merge. Not
-    /// append-only history: that keeps the id it was posted under (`Kernel::merged_ids`).
+    /// append-only history: that keeps the id it was posted under (`ferrum_kernel::merge::merged_ids`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub merge_links: Vec<MergeLinkDef>,
 }
@@ -174,6 +174,10 @@ pub struct EntityDef {
     pub numbering: Option<NumberingDef>,
     #[serde(default)]
     pub submittable: bool,
+    /// Not to leave for an AI provider, whatever the person reading it may see, unless a workspace
+    /// says otherwise (pay, health, personnel files).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub internal: bool,
     /// Duplicates can be merged into one record (crates/kernel/src/merge.rs).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mergeable: bool,
