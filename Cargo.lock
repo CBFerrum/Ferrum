@@ -3061,6 +3061,7 @@ dependencies = [
  "ferrum-meta",
  "ferrum-mfg-ops",
  "ferrum-migration",
+ "ferrum-ops",
  "ferrum-plugins",
  "ferrum-procurement",
  "ferrum-stock-ops",

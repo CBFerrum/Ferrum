@@ -49,7 +49,6 @@ ferrum-kernel = { path = "crates/kernel" }
 ferrum-meta = { path = "crates/meta" }
 ferrum-domain = { path = "crates/domain" }
 ferrum-calc = { path = "crates/calc" }
-ferrum-ops = { path = "crates/ops" }
 
 [profile.dev]
 # Keep target/ small (disk is constrained) and builds fast; line tables are enough for backtraces.
