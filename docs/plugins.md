@@ -55,7 +55,7 @@ removes it with its private data (records it created stay).
 | Field | Meaning |
 |---|---|
 | `name`, `version`, `description` | `name`: 2–40 lower-case letters, digits or `-` |
-| `config` | Settings and secrets, delivered in every input as `config` |
+| `config` | Settings, delivered in every input as `config`; values named in `credentials` stay out of it |
 | `entities` | Entity definitions it brings (masters or documents, names start with `X`), stored without DDL |
 | `permissions` | `[{entity, read, write, create, delete, submit, cancel}]` — its service user's role, and the most it may do on a user's behalf |
 | `hooks` | `[{entity, stage}]` with stage `before_validate`, `validate`, `before_submit`, `on_submit`, `before_cancel`, `on_cancel`, `before_delete`; entity `*` for all |
@@ -64,6 +64,7 @@ removes it with its private data (records it created stay).
 | `subscriptions` | Outbox topics: `SalesInvoice.submitted`, `SalesInvoice.*`, `plugin.other.*`, `*` |
 | `schedules` | `[{name, every_seconds}]` (at least 60) |
 | `http_hosts` | Hosts it may call: `api.example.com`, `*.example.com` |
+| `credentials` | `[{name, hosts, scheme?, user?}]`: configuration values the plugin uses without reading them. `scheme` is `bearer` (the default) or `basic` with `user`, the configuration key of the user name. `hosts`, from `http_hosts`, say where the value may be sent; none means it only checks signatures |
 | `fuel_limit`, `memory_limit_mb` | Per-call CPU budget (default 50 M) and memory cap (default 32 MB) |
 
 ## Contract
@@ -97,7 +98,8 @@ role is exactly its declared permissions. Everything it changes lands in the aud
 | `data.insert` / `data.update` / `data.delete` | `{entity, data}` / `{entity, id, data, expected_version?}` / `{entity, id}` |
 | `data.submit` / `data.cancel` / `data.action` | `{entity, id}` / `{entity, id}` / `{entity, id, action, params}` |
 | `kv.get` / `kv.set` / `kv.delete` / `kv.list` | private per-tenant storage: `{key}` / `{key, value}` / `{key}` / `{prefix}` |
-| `http.fetch` | `{method, url, headers?, body?}` → `{status, headers, body}`; declared hosts only, https only, never private addresses, no redirects, 15 s, 1 MB; refused in hooks |
+| `http.fetch` | `{method, url, headers?, body?, auth?}` → `{status, headers, body}`; declared hosts only, https only, never private addresses, no redirects, 15 s, 1 MB; refused in hooks. `auth` names a credential: the host signs the request in, and only for that credential's hosts |
+| `crypto.verify_hmac_sha256` | `{credential, message, signature}` → `{valid}`; checks a provider's hex signature in constant time |
 | `events.emit` | `{topic, payload}` → publishes `plugin.{name}.{topic}` (inside the document's transaction for hooks) |
 | `sockets.send` / `sockets.close` | `{connection, message}` / `{connection, reason}` — on whichever replica holds the socket; refused in hooks |
 | `log` | `{level?, message}`: `info` (default), `warn` or `error`, to the server log with the plugin and tenant |
@@ -108,6 +110,13 @@ still roll back, so `http.fetch` and `sockets.*` are refused there. Decide in th
 the work and subscribe to it: the event exists only if the document commits, and the handler runs
 after the commit, at least once, once per plugin and event. `plugins/examples/after-commit` is this
 shape, and its handler is where a payment or an order goes out.
+
+**A secret a plugin does not hold cannot leak from it.** Declare API keys and signing secrets under
+`credentials`. The administrator sets them through `config` as before, and they are sealed at rest
+as before, but they never reach the plugin's input: it asks for a request to be signed in
+(`fetch_with`) or a signature to be checked (`verify_hmac_sha256`) by name. A plugin that logs its
+whole input, or is talked into calling somewhere else, has nothing to give away. Values that are not
+declared keep working as plain configuration, so existing plugins are unaffected until they move.
 
 **Limits of one call.** A hook has 15 seconds, host calls included, because it holds the document's
 transaction; any other call has 5 minutes. At the deadline the host call in progress is dropped

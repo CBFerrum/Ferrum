@@ -215,6 +215,17 @@ pub fn fetch(method: &str, url: &str, headers: Value, body: Value) -> Result<Val
     call("http.fetch", json!({"method": method, "url": url, "headers": headers, "body": body}))
 }
 
+/// As `fetch`, signed in by the host with the credential `name` from the manifest's `credentials`.
+/// The plugin never holds its value, and the host sends it only to the hosts declared for it.
+pub fn fetch_with(name: &str, method: &str, url: &str, headers: Value, body: Value) -> Result<Value, HostError> {
+    call("http.fetch", json!({"method": method, "url": url, "headers": headers, "body": body, "auth": name}))
+}
+
+/// Whether `signature` (hex) is `message` signed with HMAC-SHA256 under the credential `name`.
+pub fn verify_hmac_sha256(name: &str, message: &str, signature: &str) -> Result<bool, HostError> {
+    Ok(call("crypto.verify_hmac_sha256", json!({"credential": name, "message": message, "signature": signature}))?["valid"] == json!(true))
+}
+
 /// Publishes `plugin.<name>.<topic>` to the outbox (automations, webhooks, other plugins).
 pub fn emit(topic: &str, payload: Value) -> Result<(), HostError> {
     call("events.emit", json!({"topic": topic, "payload": payload})).map(drop)

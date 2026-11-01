@@ -166,12 +166,21 @@ async fn scenario() {
     assert_eq!(kept["records"].as_array().map_or(0, Vec::len), 1, "nothing is removed: {kept}");
     k.restrict_processing(&admin, "pat@acme.test", "Again").await.expect("repeating it changes nothing");
     assert_eq!(k.restrictions(&admin).await.unwrap().len(), 2);
+    let mut tx = k.db.system_tenant_tx(tenant).await.unwrap();
+    sqlx::query("update app_user set email = 'pat.later@acme.test' where tenant_id = $1 and id = $2").bind(tenant).bind(pat).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(mail("pat.later@acme.test").await, 0, "an address they take on afterwards is covered too");
     k.lift_restriction(&admin, "pat.new@acme.test").await.expect("lifted");
     assert_eq!(mail("pat@acme.test").await, 1, "and it can be undone");
     assert!(matches!(k.lift_restriction(&admin, "pat@acme.test").await, Err(Error::NotFound(_))));
 
     // ───────────── retention ─────────────
     assert!(matches!(k.save_retention_rule(&clerk, None, rule("Enquiry", "delete", json!({}))).await, Err(Error::Forbidden(_))));
+    let kept = k.save_retention_rule(&admin, None, RetentionInput { date_field: "created_at".into(), ..rule("Receipt", "delete", json!({})) }).await;
+    assert!(
+        matches!(kept, Err(Error::Validation(ref e)) if e.iter().any(|f| f.field == "action" && f.message.contains("seven years"))),
+        "its package keeps these: {kept:?}"
+    );
     for (bad, why) in [
         (rule("Nothing", "delete", json!({})), "no such entity"),
         (rule("Receipt", "delete", json!({})), "its package keeps these, and says why"),
