@@ -75,6 +75,8 @@ impl Kernel {
         let ent = self.entity(ctx, entity)?;
         guard_kind(&ent)?;
         let scope = row_scope(ctx, &ent, Action::Read)?;
+        // Asked for by an old id, a merged record answers with what it became.
+        let id = if ent.def.mergeable { crate::merge::canonical(tx, ctx.tenant, entity, id).await?.unwrap_or(id) } else { id };
         let doc = self.load_marked(tx, ctx, &ent, id, lock).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
         if !scope.matches(&doc) {
             return Err(Error::NotFound(ent.def.label.clone()));
@@ -82,14 +84,20 @@ impl Kernel {
         Ok(self.mask(ctx, &ent, doc))
     }
 
-    /// Removes fields in permission groups the caller cannot read.
+    /// Removes fields in permission groups the caller cannot read, or leaves the masked form of
+    /// those that declare one.
     pub fn mask(&self, ctx: &Ctx, ent: &EffEntity, mut doc: Doc) -> Doc {
         if ctx.perms.admin {
             return doc;
         }
         for f in &ent.def.fields {
             if !ctx.perms.can_read_field(&ent.def.name, f) {
-                doc.remove(&f.name);
+                let value = doc.remove(&f.name);
+                if let (Some(mask), Some(Value::String(v))) = (f.mask, value)
+                    && !v.is_empty()
+                {
+                    doc.insert(f.name.clone(), Value::String(mask.apply(&v)));
+                }
             } else if f.ftype == FieldType::Table {
                 let cent = f.of.as_deref().and_then(|c| ctx.schema.entity(c)).cloned();
                 if let (Some(cent), Some(Value::Array(rows))) = (cent, doc.get_mut(&f.name)) {
@@ -153,16 +161,14 @@ impl Kernel {
         qb.push(") x");
         let rows: Vec<Value> = qb.build_query_scalar().fetch_all(&mut *tx).await?;
         let has_more = rows.len() as i64 > limit;
+        // From the row, not the document: documents show milliseconds, and a cursor rounded to one
+        // would repeat a record at the edge of a page, or skip those created within that millisecond.
+        let next_cursor = rows.get(limit as usize - 1).filter(|_| has_more && keyset_ok).and_then(|r| {
+            let ts = r.get(&sort_field)?.as_str()?;
+            let id = r.get("id")?.as_str()?;
+            Some(query::encode_cursor(ts, id))
+        });
         let mut docs: Vec<Doc> = rows.into_iter().take(limit as usize).map(|r| self.mask(ctx, &ent, store::row_to_doc(&ent, &ctx.schema, r))).collect();
-        let next_cursor = if has_more && keyset_ok {
-            docs.last().and_then(|d| {
-                let ts = d.get(&sort_field)?.as_str()?;
-                let id = d.get("id")?.as_str()?;
-                Some(query::encode_cursor(ts, id))
-            })
-        } else {
-            None
-        };
         let total = if q.with_count {
             let mut cq = QueryBuilder::new("select count(*)");
             query::push_from_where_for(&mut cq, ctx, &ent, &scope, &q.filters, q.search.as_deref())?;
@@ -869,6 +875,10 @@ impl Kernel {
 
     /// Loads a stored record and marks which of its secret fields are set.
     async fn load_marked(&self, tx: &mut Tx, ctx: &Ctx, ent: &EffEntity, id: Uuid, lock: bool) -> Result<Option<Doc>> {
+        // To change or delete one, as opposed to reading it: it is gone, and says where.
+        if lock && ent.def.mergeable && crate::merge::canonical(tx, ctx.tenant, &ent.def.name, id).await?.is_some() {
+            return Err(Error::Conflict(format!("this {} was merged into another", ent.def.label.to_lowercase())));
+        }
         let mut doc = store::load(tx, &ctx.schema, ent, ctx.tenant, id, lock).await?;
         if let Some(d) = doc.as_mut() {
             self.mark_secrets(tx, ctx.tenant, ent, d).await?;
@@ -1056,6 +1066,7 @@ impl Kernel {
     }
 
     async fn fetch_links(&self, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: &mut Doc, old: Option<&Doc>) -> Result<()> {
+        crate::merge::resolve_links(ctx, tx, ent, doc).await?;
         let empty = Map::new();
         fetch_for(self, ctx, tx, ent, doc, old.unwrap_or(&empty), old.is_none()).await?;
         for (field, info) in &ent.children {

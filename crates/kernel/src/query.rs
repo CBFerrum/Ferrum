@@ -450,6 +450,11 @@ fn push_from_where_impl(
     qb.push(format!(" from {} a where a.tenant_id = ", q(&ent.table))).push_bind(tenant);
     qb.push(entity_predicate(ent, "a"));
     scope.push_sql(qb, "a");
+    if ent.def.mergeable {
+        qb.push(" and not exists (select 1 from record_alias m where m.tenant_id = a.tenant_id and m.entity = ");
+        qb.push_bind(ent.def.name.clone());
+        qb.push(" and m.alias_id = a.id)");
+    }
     for f in filters {
         push_filter_impl(qb, schema, ctx, ent, "a", f)?;
     }

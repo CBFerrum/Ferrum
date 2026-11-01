@@ -26,7 +26,7 @@ impl Kernel {
         let _ = self.files.set(store);
     }
 
-    fn file_store(&self) -> Result<&Arc<dyn FileStore>> {
+    pub(crate) fn file_store(&self) -> Result<&Arc<dyn FileStore>> {
         self.files.get().ok_or_else(|| Error::Unavailable("no file storage is configured".into()))
     }
 
@@ -36,6 +36,21 @@ impl Kernel {
         if let Some((entity, record)) = attach_to {
             self.get(ctx, entity, record, false).await?;
         }
+        let scanned = self.scan_stream(ctx, file_name, data.len() as u64, futures::stream::iter([Ok::<_, Error>(data)])).await?;
+        self.keep_file(ctx, attach_to, file_name, content_type, data, scanned).await
+    }
+
+    /// [`Kernel::store_file`] for a caller that decided what `attach_to` may name and scanned it, or
+    /// made it itself.
+    pub(crate) async fn keep_file(
+        &self,
+        ctx: &Ctx,
+        attach_to: Option<(&str, Uuid)>,
+        file_name: &str,
+        content_type: &str,
+        data: &[u8],
+        scanned: &str,
+    ) -> Result<Value> {
         let name: String = file_name.chars().filter(|c| !c.is_control() && *c != '/' && *c != '\\').take(200).collect();
         let name = if name.trim().is_empty() { "file.bin".to_string() } else { name };
         let ctype = content_type.to_lowercase();
@@ -46,8 +61,8 @@ impl Kernel {
         let sha = hex::encode(Sha256::digest(data));
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         sqlx::query(
-            "insert into file_object (tenant_id, id, entity, record_id, file_name, content_type, size_bytes, storage_key, sha256, created_by) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+            "insert into file_object (tenant_id, id, entity, record_id, file_name, content_type, size_bytes, storage_key, sha256, created_by, scan_status) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(ctx.tenant)
         .bind(id)
@@ -59,6 +74,7 @@ impl Kernel {
         .bind(&key)
         .bind(&sha)
         .bind((!ctx.user.is_nil()).then_some(ctx.user))
+        .bind(scanned)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;

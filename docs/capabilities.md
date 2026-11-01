@@ -9,9 +9,9 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 61 |
-| Partially implemented | 44 |
-| Missing | 71 |
+| Implemented, qualification incomplete | 71 |
+| Partially implemented | 40 |
+| Missing | 65 |
 | Blocked by external dependency | 9 |
 | **All** | **185** |
 
@@ -21,20 +21,20 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 |---|---|---|---|---|
 | FERRUM-PLATFORM-001 | Modular monolith with a Rust kernel and apps as crates | Implemented, qualification incomplete | read |  |
 | FERRUM-PLATFORM-002 | Authoritative ownership of each shared concept | Partially implemented | read | Person, party, product and project are shared packages; employee, payment and consent are not yet one owned model across apps |
-| FERRUM-PLATFORM-003 | Controlled merging of duplicate customers with aliases | Missing | probe |  |
+| FERRUM-PLATFORM-003 | Controlled merging of duplicate customers with aliases | Implemented, qualification incomplete | tested | Customer and Supplier opt in; apps with their own people or companies have not; Duplicates are found by equal fields, not fuzzy matching; A merge is not undone; ERP's statements read merged ids only once it asks Kernel::merged_ids; External identifiers wait for the connector platform |
 | FERRUM-PLATFORM-004 | Typed cross-application contracts with stated idempotency and failure behaviour | Partially implemented | read | Apps call ERP's engine as a crate, without a published contract for each operation |
-| FERRUM-PLATFORM-005 | Hook dependencies and ordering checked at startup | Partially implemented | read | Order is registration order; cycles and conflicts are not detected |
+| FERRUM-PLATFORM-005 | Hook dependencies and ordering checked at startup | Implemented, qualification incomplete | tested | The mechanism exists; apps' hooks have not declared names or fills yet, so they run in registration order |
 | FERRUM-PLATFORM-006 | Isolation profiles: shared cells, dedicated, on-premises, disconnected | Partially implemented | read | Single-server and Kubernetes deployments exist; cells and a disconnected profile do not |
 | FERRUM-PLATFORM-007 | Strong types at consequential boundaries | Partially implemented | read | Money and tax go through ferrum-calc with decimals; documents stay JSON-shaped maps |
 | FERRUM-PLATFORM-008 | Explicit document state machine with per-state field rules | Partially implemented | read | Draft, submitted and cancelled are general; approved, amended and archived vary by app |
-| FERRUM-PLATFORM-009 | Custom fields and entities with conflict detection | Partially implemented | read | Conflict detection between vendor, partner and tenant layers is not built |
+| FERRUM-PLATFORM-009 | Custom fields and entities with conflict detection | Implemented, qualification incomplete | tested | Customizations made before this have no record of what they replaced, and are not compared; Compares property changes and added fields; rules, workflows and print templates are not compared |
 | FERRUM-PLATFORM-010 | Schema evolution: expand, migrate, contract, resumable backfills | Partially implemented | read | Upgrade steps exist; resumable backfills and validation reports do not |
 | FERRUM-PLATFORM-011 | Equivalent integrity on every mutation path | Partially implemented | read | Not audited path by path; app maintenance jobs that write SQL directly need a review |
 | FERRUM-PLATFORM-012 | Transactional outbox with idempotent consumers | Implemented, qualification incomplete | tested |  |
 | FERRUM-PLATFORM-013 | Event envelope: origin, correlation, causation, trace context, versions | Implemented, qualification incomplete | tested | Tasks an event handler spawns start without a trace |
 | FERRUM-PLATFORM-014 | Tenant fairness and priority classes for events | Implemented, qualification incomplete | tested | Fairness covers the outbox and plugins; apps' own background jobs (Campaigns sending, upkeep) have none yet; Bulk paths must set the bulk priority; importer and bulk.rs do not yet |
 | FERRUM-PLATFORM-015 | Dead letters with inspection and audited replay | Implemented, qualification incomplete | tested | An API only: no administrator screen yet |
-| FERRUM-PLATFORM-016 | Durable jobs with leases, cancellation and poison isolation | Partially implemented | read | Each scheduler is its own; there is no shared job queue with cancellation or retry budgets |
+| FERRUM-PLATFORM-016 | Durable jobs with leases, cancellation and poison isolation | Implemented, qualification incomplete | tested | Nothing schedules a job for later or repeats one; apps' periodic work stays in their maintenance; Plugin schedules and app maintenance are not moved onto it yet |
 | FERRUM-PLATFORM-017 | External effects run after commit | Implemented, qualification incomplete | tested | Enforced for plugins; native hooks are held to it by review (IRP and VIES read; other connectors not) |
 | FERRUM-PLATFORM-018 | No transaction held across an external call | Implemented, qualification incomplete | tested |  |
 | FERRUM-PLATFORM-019 | Stateful cross-system workflows with compensation | Missing | probe |  |
@@ -47,17 +47,17 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-IDENTITY-002 | Session and token revocation across replicas | Implemented, qualification incomplete | tested |  |
 | FERRUM-IDENTITY-003 | Deprovisioning with work handed over | Implemented, qualification incomplete | tested | No app handles ferrum.user.deprovisioned yet, so Drive shares and helpdesk queues stay put |
 | FERRUM-IDENTITY-004 | SCIM 2.0 people and groups | Implemented, qualification incomplete | tested | Not yet run against a real Okta or Entra tenant |
-| FERRUM-IDENTITY-005 | OIDC back-channel logout | Missing | probe |  |
+| FERRUM-IDENTITY-005 | OIDC back-channel logout | Implemented, qualification incomplete | tested | Ends all the person's sessions, not only the one the token names; Not tried against a real identity provider |
 | FERRUM-IDENTITY-006 | SAML single sign-on | Missing | probe |  |
 | FERRUM-IDENTITY-007 | Linking accounts only on proof of ownership | Implemented, qualification incomplete | read |  |
 | FERRUM-IDENTITY-008 | Guests, portal people, service accounts, scoped keys | Partially implemented | read | API key scopes are dav and scim; there are no per-entity key scopes |
 | FERRUM-IDENTITY-009 | One policy system across tenant | Partially implemented | read | Department, branch and time-limited grants are not modelled |
 | FERRUM-IDENTITY-010 | Row rules beyond equality | Implemented, qualification incomplete | tested | Ranges and days from today; no expressions across fields |
 | FERRUM-IDENTITY-011 | Explicit reference-disclosure policy for linked titles | Implemented, qualification incomplete | tested | The default stays open; no package has marked its sensitive entities yet; Covers titles on records; counts, suggestions and search snippets are not audited against it |
-| FERRUM-IDENTITY-012 | Field masking and export restrictions | Partially implemented | read | Field groups give read and write; no masking |
+| FERRUM-IDENTITY-012 | Field masking and export restrictions | Partially implemented | tested | Masks exist; no field declares one yet in the shipped packages; Export restrictions are per entity (can_export), not per field |
 | FERRUM-IDENTITY-013 | Policy explanation and simulation | Implemented, qualification incomplete | tested | An API only: no administrator screen yet; Simulates other roles, not other rules |
 | FERRUM-IDENTITY-014 | Segregation of duties and maker-checker | Partially implemented | read | Approvers can be barred from their own documents; no rule across roles or automations |
-| FERRUM-IDENTITY-015 | Authorization rechecked when delayed work runs | Partially implemented | read | Mail and push recheck; automations run as the system |
+| FERRUM-IDENTITY-015 | Authorization rechecked when delayed work runs | Partially implemented | tested | Mail, push and jobs recheck when they run; automations still run as the system |
 | FERRUM-IDENTITY-016 | Browser session architecture with CSRF defence | Implemented, qualification incomplete | read | Bearer tokens on pages remain readable by script; CSP is the defence |
 | FERRUM-IDENTITY-017 | Secrets sealed at rest with bound context | Implemented, qualification incomplete | tested |  |
 | FERRUM-IDENTITY-018 | Key rotation while old values exist | Implemented, qualification incomplete | tested | One key per server, not per tenant; apps' signing keys kept elsewhere are not covered |
@@ -70,9 +70,9 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 |---|---|---|---|---|
 | FERRUM-PRIVACY-001 | Packages declare personal data | Implemented, qualification incomplete | read | Match by email field only |
 | FERRUM-PRIVACY-002 | Relationship-aware discovery: identities, attachments, messages | Partially implemented | tested | Found by email, under every address held, with attached files; not by name or phone; The apps' new declarations are on local branches, unpushed; packages that declare nothing are named in each answer, not searched; Search words and analytics exports are not reached |
-| FERRUM-PRIVACY-003 | Restriction of processing as its own operation | Missing | probe |  |
+| FERRUM-PRIVACY-003 | Restriction of processing as its own operation | Implemented, qualification incomplete | tested | Stops queued mail under every address the person has had; Campaigns and hosted mail must ask Kernel::may_contact on their own delivery paths |
 | FERRUM-PRIVACY-004 | Legal holds | Implemented, qualification incomplete | tested | Holds apply to the platform's erasure and deletion; apps' own SQL deletes do not check them yet |
-| FERRUM-PRIVACY-005 | Retention rules by data category | Partially implemented | probe | Event retention only; no category-based policy |
+| FERRUM-PRIVACY-005 | Retention rules by data category | Implemented, qualification incomplete | tested | Rules are by entity, set per workspace; packages suggest none; Reaches 5000 records a rule a day |
 | FERRUM-PRIVACY-006 | Deletion journal reapplied after a restore | Implemented, qualification incomplete | tested | The restore is simulated in the test; not yet rehearsed in deploy/smoke.sh; Restricted-processing has no journal because it has no operation yet |
 | FERRUM-PRIVACY-007 | Immutable evidence without duplicated personal data | Partially implemented | read | Audit diffs of records are redacted on erasure, keeping hashes; other audit payloads are not reviewed |
 | FERRUM-PRIVACY-008 | Evidence pack for compliance reviews | Missing | probe |  |
@@ -176,7 +176,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Id | Requirement | Status | Basis | Known limitations |
 |---|---|---|---|---|
-| FERRUM-CONNECT-001 | Shared connector infrastructure: credentials, mapping, sync, reconciliation | Missing | probe | Each app and add-on holds its own connector code |
+| FERRUM-CONNECT-001 | Shared connector infrastructure: credentials, mapping, sync, reconciliation | Implemented, qualification incomplete | tested | Tested against a stand-in provider only: no real provider uses it yet; OAuth refresh and reconnect are each connector's for now; Deletions do not go out to providers; Rate limits are met with backoff, not a shared budget; Egress is not restricted per connection |
 | FERRUM-CONNECT-002 | Connector catalog with what each provider's API really offers | Missing | read |  |
 | FERRUM-CONNECT-003 | Payment gateways | Blocked by external dependency | read | Stripe, Razorpay and PayPal adapters tested only against fakes |
 | FERRUM-CONNECT-004 | Tax and e-invoicing networks | Blocked by external dependency | read | Adapters written to published specifications; none has run against a live or sandbox provider here |
@@ -221,10 +221,10 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-OPS-001 | Local development and single-server deployment | Implemented, qualification incomplete | read |  |
 | FERRUM-OPS-002 | High availability on Kubernetes | Implemented, qualification incomplete | read |  |
 | FERRUM-OPS-003 | Dedicated, on-premises and disconnected profiles | Partially implemented | read | No registry mirroring or offline install procedure |
-| FERRUM-OPS-004 | Installer preflight and a doctor command | Missing | probe |  |
+| FERRUM-OPS-004 | Installer preflight and a doctor command | Implemented, qualification incomplete | tested | preflight.sh is checked for syntax, not run on a clean host; Does not send mail, so a mailer's credentials are not proven |
 | FERRUM-OPS-005 | Reference workloads and measured capacity | Partially implemented | read | A short load test; no published reference workload or targets |
 | FERRUM-OPS-006 | Safe large files: resumable uploads, limits | Partially implemented | read | Direct uploads to S3 up to 2 GiB; apps read files into memory |
-| FERRUM-OPS-007 | Malware scanning of uploads | Missing | probe |  |
+| FERRUM-OPS-007 | Malware scanning of uploads | Implemented, qualification incomplete | tested | Tested against a stand-in speaking clamd's protocol, not a real ClamAV; A file is scanned once, on upload; nothing rescans when signatures change; The direct-upload path is not covered by a test |
 | FERRUM-OPS-008 | Disaster recovery rehearsed into a clean environment | Implemented, qualification incomplete | read | Compose and kind rehearsals; zone, region and ransomware procedures not written |
 | FERRUM-OPS-009 | Structured logs and basic metrics | Partially implemented | read | No OpenTelemetry traces; no business metrics such as failed postings or stale syncs |
 | FERRUM-RELEASE-001 | Build once and promote the qualified digest | Implemented, qualification incomplete | read | The workflows have not run yet: they need a push to main |

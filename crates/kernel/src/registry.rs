@@ -92,14 +92,37 @@ impl Registry {
         // instead of breaking the whole workspace.
         let catalog = self.catalog();
         let (installed, missing): (Vec<String>, Vec<String>) = installed.into_iter().partition(|p| catalog.package(p).is_some());
-        let rows: Vec<(String, serde_json::Value)> =
-            sqlx::query_as("select entity, op from meta_overlay where tenant_id = $1 and is_active order by seq").bind(tenant).fetch_all(&mut *tx).await?;
+        let rows: Vec<(String, serde_json::Value, Option<serde_json::Value>)> =
+            sqlx::query_as("select entity, op, base from meta_overlay where tenant_id = $1 and is_active order by seq")
+                .bind(tenant)
+                .fetch_all(&mut *tx)
+                .await?;
         tx.commit().await?;
         let mut overlays = Vec::with_capacity(rows.len());
         let mut parse_warnings = Vec::new();
-        for (entity, op) in rows {
+        let mut upstream = None;
+        for (entity, op, base) in rows {
             match serde_json::from_value::<OverlayOp>(op) {
-                Ok(op) => overlays.push(Overlay { entity, ops: vec![op] }),
+                Ok(op) => {
+                    // A field its package has come to require stays required until someone decides.
+                    if crate::customize::relaxes(&op, base.as_ref()) {
+                        let packaged = match &upstream {
+                            Some(s) => s,
+                            None => upstream.insert(
+                                effective::build(&catalog, &installed, &[], version)
+                                    .map_err(|e| Error::Internal(format!("schema for tenant {tenant}: {e}")))?,
+                            ),
+                        };
+                        if crate::customize::now_required(packaged, &entity, &op) {
+                            parse_warnings.push(SchemaWarning {
+                                entity,
+                                message: "a customization that made a field optional is suspended: its package now requires it".into(),
+                            });
+                            continue;
+                        }
+                    }
+                    overlays.push(Overlay { entity, ops: vec![op] })
+                }
                 Err(e) => parse_warnings.push(SchemaWarning { entity, message: format!("unreadable customization: {e}") }),
             }
         }

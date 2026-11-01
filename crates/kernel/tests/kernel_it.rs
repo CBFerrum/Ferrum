@@ -145,6 +145,31 @@ async fn kernel_end_to_end() {
     assert_eq!(p2.rows.len(), 10);
     assert!(p1.rows.iter().all(|a| p2.rows.iter().all(|b| a["id"] != b["id"])));
 
+    // Records sharing a timestamp finer than a document shows (a bulk load): every page, both ways,
+    // holds each of them once.
+    let mut tx = k.db.tenant_tx(t1).await.unwrap();
+    sqlx::query("update e_customer set created_at = timestamptz '2026-03-04 05:06:07.123456+00' where customer_name like 'Bulk %'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    for sort in ["created_at desc", "created_at asc"] {
+        let filters = ferrum_kernel::query::parse_filters(&json!([["customer_name", "like", "Bulk %"]])).unwrap();
+        let (mut seen, mut cursor) = (std::collections::HashSet::new(), None);
+        loop {
+            let q = ListQuery { filters: filters.clone(), limit: Some(7), sort: Some(sort.into()), cursor, ..Default::default() };
+            let page = k.list(&ctx, "Customer", &q).await.unwrap();
+            for r in &page.rows {
+                assert!(seen.insert(r["id"].as_str().unwrap().to_string()), "{sort}: a record repeated");
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(seen.len(), 25, "{sort}: every record, once");
+    }
+
     // Tenant isolation: a second tenant sees none of the first tenant's data, even by id.
     let t2 = k
         .create_tenant(NewTenant {

@@ -3,6 +3,7 @@
 use crate::expr::Expr;
 use crate::types::*;
 use crate::{MetaError, RESERVED_FIELDS, invalid, is_entity_name, is_ident, is_package_name};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -226,6 +227,37 @@ impl Catalog {
                     return invalid(format!("{name}: personal data of {}: {c} is not a field", pd.entity));
                 }
             }
+            for m in &p.manifest.merge_links {
+                if !is_ident(&m.table) || !is_ident(&m.column) || !self.entities.get(&m.to).is_some_and(|(_, e)| e.mergeable) {
+                    return invalid(format!("{name}: merge_links: {}.{} must point at a mergeable entity, not {}", m.table, m.column, m.to));
+                }
+            }
+            for t in &p.manifest.export_tables {
+                if t.is_empty() || !t.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+                    return invalid(format!("{name}: export_tables: {t:?} is not a table name"));
+                }
+            }
+            for h in &p.manifest.handover {
+                let Some((_, e)) = self.entities.get(&h.entity) else {
+                    return invalid(format!("{name}: handover of unknown entity {}", h.entity));
+                };
+                let target = match h.field.split_once('.') {
+                    None => e.fields.iter().find(|x| x.name == h.field),
+                    Some((table, f)) => e
+                        .fields
+                        .iter()
+                        .find(|x| x.name == table && x.ftype == FieldType::Table)
+                        .and_then(|t| t.of.as_ref())
+                        .and_then(|child| self.entities.get(child))
+                        .and_then(|(_, c)| c.fields.iter().find(|x| x.name == f)),
+                };
+                if target.is_none_or(|f| !matches!(f.ftype, FieldType::Email | FieldType::Data)) {
+                    return invalid(format!("{name}: handover of {}: {} must be an email (or data) field", h.entity, h.field));
+                }
+                if let Some(c) = h.condition.keys().find(|c| !e.fields.iter().any(|x| &x.name == *c)) {
+                    return invalid(format!("{name}: handover of {}: {c} is not a field", h.entity));
+                }
+            }
             for seed in &p.manifest.seed {
                 let Some((_, e)) = self.entities.get(&seed.entity) else {
                     return invalid(format!("{name}: seed for unknown entity {}", seed.entity));
@@ -239,6 +271,30 @@ impl Catalog {
             for m in &p.manifest.modules {
                 if !is_ident(&m.name) {
                     return invalid(format!("{name}: invalid module name {}", m.name));
+                }
+            }
+        }
+        // Two packages setting one thing differently: the later would win by accident of order.
+        // One that depends on the other has seen it, and means to.
+        let mut set: BTreeMap<(String, String, String), (String, Value)> = BTreeMap::new();
+        for name in &self.order {
+            let needs = self.closure(std::slice::from_ref(name))?;
+            for ov in &self.packages[name].manifest.overlays {
+                for op in &ov.ops {
+                    let (field, property, value) = match op {
+                        OverlayOp::SetProperty { field, property, value } => (field.as_str(), property, value),
+                        OverlayOp::SetEntityProperty { property, value } => ("", property, value),
+                        _ => continue,
+                    };
+                    let key = (ov.entity.clone(), field.to_string(), property.clone());
+                    match set.get(&key) {
+                        Some((other, seen)) if seen != value && !needs.contains(other) => {
+                            return invalid(format!("{name} and {other} set {} {field} {property} differently, and neither depends on the other", ov.entity));
+                        }
+                        _ => {
+                            set.insert(key, (name.clone(), value.clone()));
+                        }
+                    }
                 }
             }
         }
@@ -837,6 +893,21 @@ mod tests {
             "[]",
         );
         assert!(Catalog::from_packages(vec![pkg("{package: core, version: '1'}", CORE), ok]).is_ok());
+
+        // Two packages setting one thing differently need one to have seen the other.
+        let overlay = |name: &str, depends: &str, label: &str| {
+            pkg(
+                &format!(
+                    "{{package: {name}, version: '1', depends: [{depends}], overlays: [{{entity: Customer, ops: [{{op: set_property, field: customer_name, property: label, value: {label}}}]}}]}}"
+                ),
+                "",
+            )
+        };
+        let core = || pkg("{package: core, version: '1'}", CORE);
+        let conflict = Catalog::from_packages(vec![core(), overlay("one", "core", "One"), overlay("two", "core", "Two")]);
+        assert!(conflict.is_err_and(|e| e.to_string().contains("differently")));
+        assert!(Catalog::from_packages(vec![core(), overlay("one", "core", "Same"), overlay("two", "core", "Same")]).is_ok(), "they agree");
+        assert!(Catalog::from_packages(vec![core(), overlay("one", "core", "One"), overlay("two", "one", "Two")]).is_ok(), "one builds on the other");
         let no_prefix = pkg(
             "{package: india, version: '1', depends: [core], field_prefix: in_, overlays: [{entity: Customer, ops: [{op: add_field, field: {name: gstin, type: data}}]}]}",
             "[]",

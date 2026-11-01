@@ -39,8 +39,10 @@ events. Anything that depends on order compares `source_version`.
 
 **Fairness.** A batch gives each workspace with work at most 10 events, of 50, and handles workspaces
 side by side. So one workspace's backlog, or its slow provider, does not delay another's events.
-Within a workspace, mail and push go first and bulk work last. Run an import under
-`Trace { priority: Some(PRIORITY_BULK), .. }` to keep it behind what people are waiting for.
+Within a workspace, mail and push go first and bulk work last: bulk operations, imports, jobs at
+bulk priority and sends to a whole list. A mail sent under bulk priority stays there, so 50,000
+campaign messages do not stand in front of someone's password reset. Run anything of the kind under
+`Trace::at_priority(PRIORITY_BULK)`.
 
 **Retries.** A failed event waits 10 s, 20 s, 40 s and so on, up to an hour, and is dead after 15
 attempts. One event's handlers get 120 seconds before they count as failed. Webhooks get 12 attempts
@@ -56,6 +58,13 @@ of their own, and a request that takes more than 10 seconds fails.
 | `POST /api/admin/webhook-deliveries/{id}/replay` | The same for one webhook delivery. |
 
 These are for administrators, stay within their workspace, and are recorded in the audit trail.
+
+## Topics the platform publishes
+
+| Topic | Payload | Listen to |
+|---|---|---|
+| `ferrum.user.deprovisioned` | `{user, email, reassign_to, reason}` | Hand over what a package's `handover` declaration cannot express. It also fires when an administrator names a successor later, so handlers must be idempotent. |
+| `ferrum.privacy.erased` | `{account, records: [{entity, id, fields}], reason}` | The platform writes the journal from it. No value it erased is in it. |
 
 ## What may happen where
 

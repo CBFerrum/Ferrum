@@ -153,6 +153,9 @@ pub struct Schema {
     pub personal_data: Vec<PersonalDataDef>,
     /// Installed packages that declare no personal data, so requests do not search them.
     pub undeclared_personal_data: Vec<String>,
+    pub handover: Vec<HandoverDef>,
+    pub export_tables: Vec<String>,
+    pub merge_links: Vec<MergeLinkDef>,
     pub warnings: Vec<SchemaWarning>,
     /// The tenant's fiscal year start month (1-12), for contexts that act without a user.
     pub fy_start_month: u32,
@@ -207,6 +210,9 @@ impl Default for Schema {
             roles: vec![],
             personal_data: vec![],
             undeclared_personal_data: vec![],
+            handover: vec![],
+            export_tables: vec![],
+            merge_links: vec![],
             warnings: vec![],
             fy_start_month: 1,
             timezone: "UTC".into(),
@@ -235,6 +241,18 @@ fn as_opt_string(v: &Value, prop: &str) -> Result<Option<String>, String> {
 }
 
 /// Applies one overlay op to an entity definition. Returns the name of a field it added.
+/// What `op` replaces in `def` as it stands: `None` if it replaces nothing, or what it names is gone.
+pub fn replaced_value(def: &EntityDef, op: &OverlayOp) -> Option<Value> {
+    match op {
+        OverlayOp::SetProperty { field, property, .. } => {
+            let f = def.fields.iter().find(|f| &f.name == field)?;
+            Some(serde_json::to_value(f).ok()?.get(property).cloned().unwrap_or(Value::Null))
+        }
+        OverlayOp::SetEntityProperty { property, .. } => Some(serde_json::to_value(def).ok()?.get(property).cloned().unwrap_or(Value::Null)),
+        _ => None,
+    }
+}
+
 pub(crate) fn apply_op(def: &mut EntityDef, op: &OverlayOp, source: OverlaySource) -> Result<Option<String>, String> {
     match op {
         OverlayOp::AddAction { action } => {
@@ -443,6 +461,9 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
     let mut roles = Vec::new();
     let mut personal_data = Vec::new();
     let mut undeclared_personal_data = Vec::new();
+    let mut handover = Vec::new();
+    let mut export_tables = Vec::new();
+    let mut merge_links = Vec::new();
     let mut warnings = Vec::new();
 
     for pkg in catalog.packages().filter(|p| set.contains(p.name())) {
@@ -454,6 +475,9 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         modules.extend(pkg.manifest.modules.iter().map(|m| ModuleDef { package: pkg.name().into(), ..m.clone() }));
         roles.extend(pkg.manifest.roles.iter().cloned());
         personal_data.extend(pkg.manifest.personal_data.iter().cloned());
+        handover.extend(pkg.manifest.handover.iter().cloned());
+        export_tables.extend(pkg.manifest.export_tables.iter().cloned());
+        merge_links.extend(pkg.manifest.merge_links.iter().cloned());
         if pkg.manifest.personal_data.is_empty() {
             undeclared_personal_data.push(pkg.manifest.package.clone());
         }
@@ -674,6 +698,9 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         roles,
         personal_data,
         undeclared_personal_data,
+        handover,
+        export_tables,
+        merge_links,
         warnings,
         fy_start_month: 1,
         timezone: "UTC".into(),

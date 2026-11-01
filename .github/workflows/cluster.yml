@@ -69,5 +69,5 @@ jobs:
           for image in ghcr.io/cbferrum/ferrum ghcr.io/cbferrum/ferrum-editors; do
             ref="$image@$(docker buildx imagetools inspect "$image:$SHA" --format '{{.Manifest.Digest}}')"
             gh attestation verify "oci://$ref" --repo "$GITHUB_REPOSITORY"
-            docker buildx imagetools create -t "$image:latest" "$ref"
+            docker buildx imagetools create --prefer-index=false -t "$image:latest" "$ref"
           done

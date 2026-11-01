@@ -71,6 +71,10 @@ required?, description?}]`): the form asks for them, prefilled from the record's
 name, and sends them as the action's body. An action whose result carries `file: {name, type,
 content}` makes the form save that file (e-invoice JSON, say).
 
+`POST /api/auth/sso/{provider}/backchannel-logout` takes `logout_token` as a form field, from the
+provider ([OpenID Connect Back-Channel Logout](operations.md#sign-in-security)): `200`, or `400
+{error: "invalid_request"}` when the token is refused.
+
 ## Ferrum accounts — the accounts host (shapes B and C)
 
 With `FERRUM_BASE_DOMAIN` set ([operations](operations.md#many-workspaces-subdomains-and-ferrum-accounts),
@@ -175,6 +179,9 @@ several workspaces in turn and is left as it is.
 | `GET /api/v1/{E}/_export` | CSV (export permission), or Excel with `format=xlsx` (field labels as headers, numbers as numbers); same filters as list, at most 100,000 rows |
 | `POST /api/v1/{E}/_import` | JSON array (≤5000) → `{created, ids, errors: [{row, error, fields?}]}` (`207` if some failed) |
 | `POST /api/v1/{E}/_bulk` | one operation on a selection: `{ids: [...]}` or `{filters: [...]}` (≤500 records) plus `{"op": "update", "values": {...}}`, `{"op": "delete"}`, `{"op": "submit"}`, `{"op": "cancel"}`, `{"op": "workflow", "action"}`, `{"op": "action", "action", "params"?}`, `{"op": "assign", "user", "note"?, "due_date"?, "priority"?}`, `{"op": "add_tags" \| "remove_tags", "tags"}` → `{succeeded, failed, results: [{id, ok, error?}]}`. Each record runs in its own transaction with the caller's permissions; `error` has the API error shape |
+| `POST /api/v1/{E}/_bulk/jobs` | the same over up to 100,000 records, or all a filter matches when it starts → `202 {job}`; see [Background jobs](#background-jobs--apijobs) |
+| `GET /api/v1/{E}/_duplicates?limit=` | a mergeable entity's likely duplicates: `{groups: [{field, value, ids}]}` (needs delete) |
+| `POST /api/v1/{E}/{id}/merge` | `{duplicate, reason}`: moves everything linked to the duplicate onto this record → `{keep, merged, links_moved}` (needs delete). Whole or not at all, and not undone. The old id then answers with this record. |
 
 ## Collaboration (any record the caller can read)
 
@@ -384,6 +391,23 @@ no cookie is read or set on it.
   dates as dates in a sheet named after the report. Exports need export permission on the
   report's entity.
 
+## Background jobs — `/api/jobs`
+
+What takes longer than a request, or must survive a restart ([how they behave](operations.md#background-jobs)).
+
+| Route | |
+|---|---|
+| `GET /api/jobs?limit=` | newest first (≤200): the caller's own, everyone's for an administrator → `{jobs: [{id, kind, status, attempts, max_attempts, priority, progress, result, last_error, cancel_requested, created_by, created_at, started_at, finished_at}]}` |
+| `GET /api/jobs/{id}` | one of those; `404` to anyone but whoever asked for it and administrators |
+| `POST /api/jobs/{id}/cancel` | at once if it has not started; within 5 seconds if it has, and its open transaction rolls back |
+| `POST /api/jobs/{id}/retry` | a `failed` job, with its attempts back; it still runs as whoever asked |
+| `POST /api/admin/export` | administrators: queues the workspace's export (one at a time) → `202 {job}` |
+| `GET /api/jobs/{id}/parts/{part}` | administrators: one zip of a finished export (`result.parts[].id`); each download is on the audit trail |
+
+`status` is `queued`, `running`, `done`, `failed` or `cancelled`. A job runs with the rights its owner
+has when it runs, not when they asked. A bulk job's `result` is `{total, succeeded, failed, failures}`
+(the first 1,000 failures); its `progress` says how far it has got.
+
 ## Administration (administrators only)
 
 Workspace settings: `GET /api/admin/settings` → `{timezone, fiscal_year_start_month, require_two_factor}`;
@@ -453,6 +477,13 @@ files_deleted, audit_events_redacted, account_erased, not_searched}`. Legal hold
 Failed events ([events](events.md)): `GET /api/admin/events/dead?limit=` → `{events: [{id, topic,
 entity, record_id, attempts, last_error, created_at, correlation_id}]}`; `POST
 /api/admin/events/{id}/replay`; `POST /api/admin/webhook-deliveries/{id}/replay`.
+
+Personal data, beside `/api/admin/privacy`: `GET`/`POST /api/admin/restrictions`, `POST
+/api/admin/restrictions/lift` `{email}`; `GET`/`POST /api/admin/retention`, `PUT`/`DELETE
+/api/admin/retention/{id}`, `POST /api/admin/retention/{id}/preview` → `{reaches, more}`.
+
+Customizations and upgrades: `GET /api/admin/customize/conflicts` → `{conflicts: [{id, entity, op, was,
+now, gone, suspended}]}`; `POST /api/admin/customize/{id}/keep` keeps one over what its package says now.
 
 ## SCIM 2.0 — `/api/scim/v2` ([identity lifecycle](identity-lifecycle.md))
 

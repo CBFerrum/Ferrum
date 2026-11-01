@@ -2,17 +2,19 @@
 //! matches). Each record runs in its own transaction with the caller's permissions, so one
 //! failure never undoes the others, and every record reports its own outcome.
 
+use crate::db::Trace;
 use crate::error::{Error, Result};
+use crate::outbox::PRIORITY_BULK;
 use crate::query::{Filter, ListQuery};
 use crate::{Ctx, Doc, Kernel};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 /// Most records one bulk request may touch.
 pub const MAX_BULK: usize = 500;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BulkOp {
     Update {
@@ -78,23 +80,28 @@ impl Kernel {
         if ids.len() > MAX_BULK {
             return Err(Error::invalid(format!("at most {MAX_BULK} records at once")));
         }
-        let mut results = Vec::with_capacity(ids.len());
-        let mut failed = 0;
-        for id in ids {
-            let mut outcome = self.bulk_one(ctx, entity, id, op).await;
-            // A serialization conflict with a concurrent writer is worth one more try.
-            if outcome.as_ref().is_err_and(Error::is_retryable) {
-                outcome = self.bulk_one(ctx, entity, id, op).await;
-            }
-            match outcome {
-                Ok(()) => results.push(json!({"id": id, "ok": true})),
-                Err(e) => {
-                    failed += 1;
-                    results.push(json!({"id": id, "ok": false, "error": row_error(&e)}));
+        // The events this sets off wait behind everyone's single edits (docs/events.md).
+        Trace::at_priority(PRIORITY_BULK)
+            .scope(async {
+                let mut results = Vec::with_capacity(ids.len());
+                let mut failed = 0;
+                for id in ids {
+                    let mut outcome = self.bulk_one(ctx, entity, id, op).await;
+                    // A serialization conflict with a concurrent writer is worth one more try.
+                    if outcome.as_ref().is_err_and(Error::is_retryable) {
+                        outcome = self.bulk_one(ctx, entity, id, op).await;
+                    }
+                    match outcome {
+                        Ok(()) => results.push(json!({"id": id, "ok": true})),
+                        Err(e) => {
+                            failed += 1;
+                            results.push(json!({"id": id, "ok": false, "error": row_error(&e)}));
+                        }
+                    }
                 }
-            }
-        }
-        Ok(json!({"succeeded": results.len() - failed, "failed": failed, "results": results}))
+                Ok(json!({"succeeded": results.len() - failed, "failed": failed, "results": results}))
+            })
+            .await
     }
 
     async fn bulk_one(&self, ctx: &Ctx, entity: &str, id: Uuid, op: &BulkOp) -> Result<()> {

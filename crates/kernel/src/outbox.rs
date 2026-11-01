@@ -75,6 +75,10 @@ impl Kernel {
     pub async fn queue_mail_with(&self, tx: &mut Tx, tenant: Uuid, to: &str, subject: &str, html: &str, files: &[Uuid]) -> Result<()> {
         let to = to.trim();
         check_mail(to, subject)?;
+        if !self.may_contact(tx, tenant, to).await? {
+            tracing::info!(%tenant, "a queued mail was not sent: processing of its recipient's data is restricted");
+            return Ok(());
+        }
         if html.len() > 1 << 20 {
             return Err(Error::field("html", "is larger than 1 MB"));
         }
@@ -141,11 +145,13 @@ pub async fn release_objects(tx: &mut Tx, tenant: Uuid, keys: &[String]) -> Resu
 }
 
 pub async fn enqueue(tx: &mut Tx, tenant: Uuid, topic: &str, entity: Option<&str>, record_id: Option<Uuid>, payload: Value) -> Result<()> {
-    // Mail and push carry what someone is waiting for, whatever work queued them.
+    // Mail and push carry what someone is waiting for, whatever work queued them; a send to a whole
+    // list carries nothing anyone is waiting for, and stays behind that.
     let urgent = matches!(topic, MAIL_TOPIC | crate::notify::MAIL_TOPIC | crate::webpush::PUSH_TOPIC);
     sqlx::query(
         "insert into outbox (tenant_id, topic, entity, record_id, payload, priority) \
-         values ($1, $2, $3, $4, $5, case when $6 then 0 else coalesce(nullif(current_setting('ferrum.priority', true), '')::smallint, 1) end)",
+         values ($1, $2, $3, $4, $5, case when $6 and coalesce(nullif(current_setting('ferrum.priority', true), '')::smallint, 1) < 2 then 0 \
+         else coalesce(nullif(current_setting('ferrum.priority', true), '')::smallint, 1) end)",
     )
     .bind(tenant)
     .bind(topic)
@@ -186,7 +192,7 @@ pub async fn enqueue_change(tx: &mut Tx, tenant: Uuid, topic: &str, source: Sour
     Ok(())
 }
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone, Default, sqlx::FromRow)]
 pub struct Event {
     pub id: i64,
     pub tenant_id: Uuid,
@@ -378,6 +384,10 @@ impl Kernel {
             let field = |k: &str| ev.payload.get(k).and_then(Value::as_str).unwrap_or_default();
             let attachments = self.mail_attachments(ev.tenant_id, &ev.payload).await?;
             return mailer.send_with(field("to"), field("subject"), field("html"), &attachments).await;
+        }
+        self.queue_deliveries(ev).await?;
+        if ev.topic == crate::lifecycle::DEPROVISIONED_TOPIC {
+            self.hand_over(ev).await?;
         }
         // Followers hear about changes made by others; first and best effort:
         // a retry must not notify twice.

@@ -12,6 +12,10 @@ use tokio::sync::watch;
 fn default_packages_dir() -> String {
     "packages".into()
 }
+fn default_clamav_max_mb() -> u64 {
+    25
+}
+
 fn default_db_max() -> u32 {
     20
 }
@@ -92,6 +96,12 @@ pub struct Settings {
     /// Base64 of 32 random bytes sealing secret fields; required in production.
     #[serde(default)]
     pub secret_key: String,
+    /// The ClamAV daemon uploads pass through, `host:port` (`FERRUM_CLAMAV_ADDR`); empty: none.
+    #[serde(default)]
+    pub clamav_addr: String,
+    /// The scanner's `StreamMaxLength` in MiB (`FERRUM_CLAMAV_MAX_MB`): files past it stay unscanned.
+    #[serde(default = "default_clamav_max_mb")]
+    pub clamav_max_mb: u64,
     /// Keys being rotated out, comma-separated base64 (`FERRUM_RETIRED_SECRET_KEYS`).
     #[serde(default)]
     pub retired_secret_keys: String,

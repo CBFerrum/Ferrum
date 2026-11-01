@@ -68,6 +68,29 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   receive OpenID Connect's back-channel logout. Apps do not yet hand over what they keep when someone
   leaves: Drive shares and helpdesk queues stay with them.
 
+- **Merging duplicates** is for entities that opt in (customers and suppliers so far). It finds
+  duplicates by equal fields, not by resemblance, and is not undone. Append-only history keeps the id
+  it was posted under: a report on it must ask `Kernel::merged_ids`.
+- **Field masks** show part of a value to someone outside its field group. A masked field cannot be
+  filtered or sorted on by them, and they cannot write it back. No shipped package declares one yet.
+- **Restricting processing** stops queued mail, and what asks `Kernel::may_contact`. It does not stop
+  people reading or editing the records.
+- **Retention rules** are set per workspace and per entity; packages suggest none. Customizations made
+  before they remembered what they replaced are not compared with upgrades.
+- **Hook order** can be declared and is checked, but apps' hooks have not declared theirs yet: they run
+  in registration order.
+- **Background jobs** have no calendar: nothing schedules one for later or repeats it. Apps' periodic
+  work stays in their `maintenance`. A running job hears of a cancellation within 5 seconds, and work
+  done in earlier transactions stays done.
+- **Workspace exports** are for taking data away, and nothing here reads one back in: restoring a
+  workspace is done from a database backup. Each attached file is held in memory while it is written
+  (the largest attachment sets what a replica needs), and a part that fails to store costs the
+  attempt, which starts over. A person's erasure reaches exports already made only when they are
+  deleted, after 7 days. Tables nobody declared are named in the manifest, not carried.
+- **Malware scanning** looks at a file once, when it is uploaded: files stored earlier, or past the
+  scanner's size limit, stay `unscanned`, and nothing rescans them when signatures change.
+- **Bulk jobs** reach at most 100,000 records, and list the first 1,000 failures.
+
 ## Accounting and finance
 
 - Payment deductions are entered in the payment currency; the exchange difference posts to the
