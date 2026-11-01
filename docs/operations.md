@@ -111,9 +111,12 @@ up to ~11 replicas without a pooler; raise both together).
 Single host: `cp deploy/.env.example deploy/.env`, fill it in, then
 `docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d`.
 
-**Images.** For each commit on `main` whose images pass the checks below, CI publishes
-`ghcr.io/cbferrum/ferrum` and `ghcr.io/cbferrum/ferrum-editors`, tagged with the commit's full SHA
-and `latest`. The server's image answers every page: it carries the shell's and Studio's interfaces,
+**Images.** For each commit on `main` whose images pass every check, CI publishes
+`ghcr.io/cbferrum/ferrum` and `ghcr.io/cbferrum/ferrum-editors` tagged with the commit's full SHA.
+What is published is the image that was tested, promoted by digest, never a new build of it. The
+server's image carries an SBOM and build provenance, and the editors' image its provenance: check
+them with `gh attestation verify oci://<image>@<digest> --repo CBFerrum/Ferrum`. `latest` moves to a
+release only after it also passes the Kubernetes qualification. The server's image answers every page: it carries the shell's and Studio's interfaces,
 built from Ferrum-Frontend at the commit its Dockerfile pins (`FRONTEND_REV`), and apps' interfaces
 come compiled into their crates; Ferrum-Frontend publishes no image of its own. On a single host,
 pin them with `FERRUM_IMAGE` and `FERRUM_EDITORS_IMAGE`. Deploy a commit's tag and change it to upgrade: `latest`
