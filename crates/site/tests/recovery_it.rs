@@ -146,6 +146,10 @@ fn free_port() -> u16 {
 
 impl Site {
     fn new(w: &World, ws: &Workspace, extra: &str) -> Site {
+        Site::with_fleet(w, ws, extra, "")
+    }
+
+    fn with_fleet(w: &World, ws: &Workspace, extra: &str, fleet: &str) -> Site {
         let dir = std::env::temp_dir().join(format!("ferrum-site-it-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let console = format!("127.0.0.1:{}", free_port());
@@ -153,7 +157,7 @@ impl Site {
         std::fs::write(
             &config,
             format!(
-                "server: {}\ntenant: {}\nstate_dir: {}\nsync_secs: 1\nwork_millis: 50\nread_secs: 1\nconsole: \"{console}\"\nunknown_after_secs: 2\nadapter_timeout_secs: 2\n{extra}\nadapters:\n  - {{name: fleet, kind: sim, devices: [AMR-1], concurrency: 4, mission_millis: 300, silent_file: {}}}\n  - {{name: people, kind: operator, devices: [PACK-1]}}\n",
+                "server: {}\ntenant: {}\nstate_dir: {}\nsync_secs: 1\nwork_millis: 50\nread_secs: 1\nconsole: \"{console}\"\nunknown_after_secs: 2\nadapter_timeout_secs: 2\n{extra}\nadapters:\n  - {{name: fleet, kind: sim, devices: [AMR-1], concurrency: 4, mission_millis: 300, silent_file: {}{fleet}}}\n  - {{name: people, kind: operator, devices: [PACK-1]}}\n",
                 w.url,
                 ws.slug,
                 dir.display(),
@@ -313,6 +317,7 @@ async fn scenario() {
     a_crash_after_the_adapter_answers_does_not_repeat(&w).await;
     a_lost_answer_repeats_nothing(&w).await;
     equipment_that_cannot_say_leaves_the_outcome_unknown(&w).await;
+    a_fleet_with_no_memory_is_not_sent_twice(&w).await;
     what_the_lease_and_the_disk_allow(&w).await;
     a_replaced_gateway_stops(&w).await;
     people_at_the_console(&w).await;
@@ -427,6 +432,23 @@ async fn equipment_that_cannot_say_leaves_the_outcome_unknown(w: &World) {
     reaches(&ws, c3, "OutcomeUnknown", 20).await;
     assert_eq!(site.missions_for(c3), 0, "an unanswered dispatch is not a sent one, but nobody can prove that here");
     site.fleet_silent(false);
+}
+
+async fn a_fleet_with_no_memory_is_not_sent_twice(w: &World) {
+    let ws = workspace(w, "nomemory").await;
+    let mut site = Site::with_fleet(w, &ws, "", ", cannot_find: true");
+    site.enroll(&ws).await;
+    activate_gateway(&ws).await;
+    site.start(Some("after_dispatch"));
+    let c = issue(&ws, ws.robot, "warehouse.move", json!({"tote": "M"}), 60).await;
+    site.crashed().await;
+    assert_eq!(site.missions_for(c), 1, "it heard, and the journal did not");
+    site.start(None);
+    // Nothing can be asked, so nothing is resent. Its own later answer is what settles it.
+    reaches(&ws, c, "Completed", 20).await;
+    assert_eq!(site.missions_for(c), 1, "a retry here would run the mission twice");
+    let history = described(&ws, c).await;
+    assert!(history["history"].as_array().unwrap().iter().any(|e| e["state"] == "OutcomeUnknown"), "and it said it did not know: {history}");
 }
 
 async fn what_the_lease_and_the_disk_allow(w: &World) {
