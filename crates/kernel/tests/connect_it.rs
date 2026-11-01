@@ -316,6 +316,8 @@ async fn scenario() {
     assert!(health["quota"]["waiting_until"].is_string(), "after three failures in a row: {health}");
     assert_eq!(health["quota"]["failures"], json!(3));
     assert!(health["quota"]["reason"].as_str().unwrap().contains("provider is down"), "{health}");
+    let (on, failing, waiting, stale, _) = k.connection_gauges().await.unwrap();
+    assert_eq!((on, failing, waiting, stale), (1, 1, 1, 0), "and monitoring sees it across workspaces");
     let tried = world.lock().unwrap().calls.len();
     let attempts = k.job(&admin, run).await.unwrap()["attempts"].clone();
     again(k.clone()).await;

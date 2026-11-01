@@ -451,8 +451,10 @@ function ownEntry() {
 
 // ───────────────────────── the bar's search (§12.8) ─────────────────────────
 
-// Apps from the launcher, the records the person may read (/api/search), and what the apps'
-// providers find (`shell.search`, asked here in parallel), each group drawn as it arrives.
+// The way to anywhere from the keyboard: what you opened lately and what you can create, before
+// you type; then apps from the launcher, things to create, the records the person may read
+// (/api/search), and what the apps' providers find (`shell.search`, asked here in parallel), each
+// group drawn as it arrives.
 const finder = { q: "", ctl: null, timer: 0, groups: [], active: 0, input: null, list: null };
 
 /** A same-site page to open, or null (a provider's answer is not trusted further). */
@@ -480,8 +482,7 @@ function openFinder(b) {
     finder.q = input.value;
     clearTimeout(finder.timer);
     finder.timer = setTimeout(() => runFinder(), 180);
-    finder.groups = finder.groups.filter((g) => g.key !== "apps");
-    finder.groups.unshift({ key: "apps", title: "Apps", items: appsMatching(input.value) });
+    finder.groups = [...localGroups(input.value), ...finder.groups.filter((g) => !LOCAL.has(g.key))];
     finder.active = 0;
     drawFinder();
   });
@@ -506,6 +507,29 @@ function openFinder(b) {
   if (!shellData) loadShell().then(() => runFinder());
 }
 
+/** What this person opened from here lately. A convenience of this browser: it can come back empty. */
+const RECENT_KEY = "ferrum.finder.recent";
+const RECENT_MAX = 6;
+
+function recentItems() {
+  const list = memory.get(localStorage, RECENT_KEY);
+  return Array.isArray(list) ? list.filter((r) => r && typeof r.title === "string" && sitePath(r.url)).slice(0, RECENT_MAX) : [];
+}
+
+function remember({ title, subtitle, url, icon: glyph }) {
+  memory.set(localStorage, RECENT_KEY, [{ title, subtitle, url, icon: glyph }, ...recentItems().filter((r) => r.url !== url)].slice(0, RECENT_MAX));
+}
+
+/** Things to create: all of them before typing, those that match after ("new deal", "deal"). */
+function createsMatching(q) {
+  const t = q.trim().toLowerCase().replace(/^(new|create)\b\s*/, "");
+  return (shellData?.create ?? [])
+    .filter((c) => !t || String(c.label ?? "").toLowerCase().includes(t))
+    .slice(0, q.trim() ? 4 : 5)
+    .map((c) => ({ title: `New ${String(c.label ?? "").toLowerCase()}`, subtitle: appTitle_(c.app), url: sitePath(c.url), icon: "plus", fresh: true }))
+    .filter((c) => c.url);
+}
+
 function appsMatching(q) {
   const t = q.trim().toLowerCase();
   if (!t) return [];
@@ -515,13 +539,24 @@ function appsMatching(q) {
     .map((a) => ({ title: a.title, subtitle: a.description ?? "App", url: a.url, app: a }));
 }
 
+const LOCAL = new Set(["recent", "apps", "create"]);
+
+/** The groups known without asking the server, so they appear as the person types. */
+function localGroups(q) {
+  return [
+    ...(q.trim() ? [] : [{ key: "recent", title: "Recent", items: recentItems() }]),
+    { key: "apps", title: "Apps", items: appsMatching(q) },
+    { key: "create", title: "Create", items: createsMatching(q) },
+  ];
+}
+
 function runFinder() {
   finder.ctl?.abort();
   const ctl = new AbortController();
   finder.ctl = ctl;
   const q = finder.q.trim();
   finder.active = 0;
-  finder.groups = [{ key: "apps", title: "Apps", items: appsMatching(q) }];
+  finder.groups = localGroups(q);
   if (q.length >= 2) {
     const sources = [
       { key: "records", title: "Records", url: `/api/search?q=${encodeURIComponent(q)}&limit=12` },
@@ -609,7 +644,7 @@ function drawFinder() {
   }
   if (!rows.length) {
     const busy = finder.groups.some((g) => g.loading);
-    rows.push(el("p", { class: "rhint", text: q.length < 2 ? "Type to search apps, records, conversations and files." : busy ? "Searching…" : `Nothing found for “${q}”.` }));
+    rows.push(el("p", { class: "rhint", text: q.length < 2 ? "Type to search apps, records, conversations and files, or to create something new." : busy ? "Searching…" : `Nothing found for “${q}”.` }));
   }
   finder.list.replaceChildren(...rows);
   finder.input?.setAttribute("aria-activedescendant", n ? `ferrum-result-${finder.active}` : "");
@@ -618,6 +653,8 @@ function drawFinder() {
 
 function openFound(item) {
   bar()?.closePanels(false);
+  // Going back to an app or a new form is what the launcher and the groups above are for.
+  if (!item.app && !item.fresh) remember(item);
   navigate(item.url);
 }
 

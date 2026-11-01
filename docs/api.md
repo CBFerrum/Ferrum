@@ -143,7 +143,7 @@ several workspaces in turn and is left as it is.
 
 * `GET /api/meta` → `{version, packages, modules: [{name, label, icon, order, items: ["EntityName" | "report:<name>"], package}], entities: [{name, label, label_plural, kind, module, icon, submittable, custom, permissions}], warnings}`
 * `GET /api/meta/{Entity}` → full description used to render forms and lists:
-  `{name, label, label_plural, kind (master|document|child|settings|ledger), module, title_field, submittable, company_scoped, numbering, list: {columns, sort}, form: [{label, fields, columns (1-4), collapsible, tab?, visible_if?}], search_fields, rules, actions: [{name, label, docstatus[], permission, confirm?, condition?, read_only?, params?, group?}], workflow?: {initial_state, states: [{name, docstatus, edit_roles}], transitions: [{action, from, to, roles, condition?, not_creator}]}, fields: [Field], children: {tableField: {entity, label, fields: [Field]}}, permissions: {read|write|create|delete|submit|cancel|export|import: "none"|"own"|"all"}}`
+  `{name, label, label_plural, kind (master|document|child|settings|ledger), module, title_field, submittable, mergeable, linked_from: [{entity, label, field, field_label}] (the lists the caller may read that link here; `field` is a filter path, so `items.item` for a child table's row), company_scoped, numbering, list: {columns, sort}, form: [{label, fields, columns (1-4), collapsible, tab?, visible_if?}], search_fields, rules, actions: [{name, label, docstatus[], permission, confirm?, condition?, read_only?, params?, group?}], workflow?: {initial_state, states: [{name, docstatus, edit_roles}], transitions: [{action, from, to, roles, condition?, not_creator}]}, fields: [Field], children: {tableField: {entity, label, fields: [Field]}}, permissions: {read|write|create|delete|submit|cancel|export|import: "none"|"own"|"all"}}`
 * `Field`: `{name, label, type, required?, unique?, read_only?, hidden?, in_list?, in_filter?, options?, to?, of?, precision?, currency?, min?, max?, max_length?, default?, default_expr?, computed?, visible_if?, required_if?, read_only_if?, fetch_from?, description?, link_filters?, storage: "column"|"ext", can_read, can_write}`.
   Types: `data text markdown code int decimal currency percent date datetime check select link table json email phone url attach color secret`.
   `visible_if`/`required_if`/`read_only_if` are CEL over `doc` (and `parent` in child rows); the server is the authority.
@@ -197,6 +197,15 @@ several workspaces in turn and is left as it is.
 | `GET /api/v1/{E}/{id}/follow`, `PUT …` `{follow: bool}` | followers get a notification when the record changes |
 | `GET /api/v1/{E}/{id}/attachments` | → `{attachments: [{id, file_name, content_type, size_bytes, created_by, created_at, url}]}`; `DELETE /api/files/{id}` removes one (an attachment only by someone who can edit its record; a loose upload by its uploader) |
 | `GET /api/users` | directory of active users `[{id, full_name, email}]` for mentions and assignment |
+
+## Shared views — `/api/views/{Entity}`
+
+A list view a team shares: a question, not an answer, so what each person gets from it is still what
+they may read. `GET` → `{views: [{id, name, value, version, by, can_change}]}` for anyone who can read
+the entity; `POST` `{name, value}` shares one (`201`; `409` if the list already has that name, in any
+case; `value` is an object of at most 16 KB, and a list keeps at most 200). `PUT .../{id}`
+`{name, value, version}` and `DELETE .../{id}` are for whoever shared it or an administrator; a
+`version` someone else has moved past is a `409`.
 
 ## Preferences — `/api/prefs` (the signed-in user's own)
 

@@ -132,8 +132,10 @@ pub async fn search(k: &Arc<Kernel>, ctx: &Ctx, q: &str, limit: usize) -> Result
                         .or_else(|| (!number.is_empty()).then(|| number.clone()))?;
                     let updated = row.get("updated_at").and_then(Value::as_str).unwrap_or_default().to_string();
                     let subtitle = if number.is_empty() || number == title { label.clone() } else { format!("{label} · {number}") };
+                    // Between equal matches, the customer before the invoices that carry its name.
+                    let master = u8::from(matches!(ent.def.kind, EntityKind::Master));
                     Some(Hit {
-                        rank: rank(&title, &q).max(u8::from(number.to_lowercase().contains(&q.to_lowercase()))),
+                        rank: rank(&title, &q).max(u8::from(number.to_lowercase().contains(&q.to_lowercase()))) * 2 + master,
                         value: json!({"kind": "record", "entity": name, "id": id, "title": title, "subtitle": subtitle, "url": format!("/open/{name}/{id}"), "updated_at": updated}),
                         updated,
                     })

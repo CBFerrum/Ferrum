@@ -4,15 +4,15 @@
 
 use crate::runtime::{CALL_DEADLINE, HOOK_DEADLINE, HostApi};
 use crate::sockets::Outgoing;
-use crate::{Loaded, PluginHost};
+use crate::{Credential, Loaded, PluginHost};
 use async_trait::async_trait;
 use ferrum_kernel::query::parse_filters;
 use ferrum_kernel::{Action, Ctx, Doc, Error, HookCtx, Kernel, ListQuery, Result, Tx};
 use hmac::{Hmac, Mac};
 use serde_json::{Map, Value, json};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 /// How deep plugin-triggered work may nest (a hook creating a document whose hook creates...).
@@ -355,24 +355,70 @@ impl Loaded {
             .ok_or_else(|| Error::invalid(format!("set {name} in the {} plugin's settings", self.name)))
     }
 
-    /// `req` signed in with credential `name`, if it may go to `host`.
-    fn authorize(&self, req: reqwest::RequestBuilder, name: &str, host: &str) -> Result<reqwest::RequestBuilder> {
+    /// Credential `name`, with its value, if it may go to `host`.
+    fn declared_for(&self, name: &str, host: &str) -> Result<(&Credential, &str)> {
         let value = self.credential(name)?;
         let c = self.manifest.credentials.iter().find(|c| c.name == name).ok_or_else(|| Error::internal("credential checked above"))?;
         if !host_allowed(&c.hosts, host) {
             return Err(Error::Forbidden(format!("the credential {name} may not be sent to {host}")));
         }
-        Ok(match &c.user {
-            Some(user) => {
-                let user = self.credentials.get(user).or_else(|| self.config.get(user)).and_then(Value::as_str).unwrap_or_default();
-                req.basic_auth(user, Some(value))
-            }
-            None => req.bearer_auth(value),
-        })
+        Ok((c, value))
+    }
+
+    /// The user name paired with a credential.
+    fn user_of(&self, c: &Credential) -> &str {
+        c.user.as_ref().and_then(|u| self.credentials.get(u).or_else(|| self.config.get(u))).and_then(Value::as_str).unwrap_or_default()
     }
 }
 
+/// Reads a provider's answer, up to what a plugin may be handed.
+async fn body_of(mut resp: reqwest::Response) -> Result<Vec<u8>> {
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| Error::Unavailable(format!("reading the response: {e}")))? {
+        body.extend_from_slice(&chunk);
+        if body.len() > MAX_HTTP_RESPONSE {
+            return Err(Error::invalid("response larger than 1 MB"));
+        }
+    }
+    Ok(body)
+}
+
 impl PluginHost {
+    /// A token for an `oauth2` credential: the one held, until a minute before it expires, else a
+    /// new one. Held under a digest of the secret, so a changed secret is a new sign-in. `key` says
+    /// which token this was, so that a provider refusing it can have it dropped.
+    async fn access_token(&self, plugin: &Loaded, client: &reqwest::Client, c: &Credential, secret: &str, url: &reqwest::Url) -> Result<(String, String)> {
+        let host = url.host_str().unwrap_or_default();
+        let user = plugin.user_of(c);
+        let digest = hex::encode(Sha256::digest(format!("{user}:{secret}")));
+        let key = format!("{}/{}/{host}/{digest}", plugin.id, c.name);
+        if let Some(held) = self.tokens.get(&key).filter(|t| t.1 > Instant::now()) {
+            return Ok((held.0.clone(), key));
+        }
+        let mut at = url.clone();
+        at.set_path(c.token_path.as_deref().unwrap_or_default());
+        at.set_query(None);
+        let resp = client
+            .post(at)
+            .basic_auth(user, Some(secret))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header("accept", "application/json")
+            .body("grant_type=client_credentials")
+            .send()
+            .await
+            .map_err(|e| Error::Unavailable(format!("signing in to {host}: {e}")))?;
+        let status = resp.status();
+        let answer: Value = serde_json::from_slice(&body_of(resp).await?).unwrap_or(Value::Null);
+        let Some(token) = answer["access_token"].as_str().filter(|t| status.is_success() && !t.is_empty()) else {
+            let why = answer["error_description"].as_str().or(answer["error"].as_str()).unwrap_or("no reason given");
+            return Err(Error::invalid(format!("{host} refused the credential {}: {why}", c.name)));
+        };
+        let life = answer["expires_in"].as_u64().unwrap_or(300).saturating_sub(60);
+        self.tokens.retain(|_, t| t.1 > Instant::now());
+        self.tokens.insert(key.clone(), (token.to_string(), Instant::now() + Duration::from_secs(life)));
+        Ok((token.to_string(), key))
+    }
+
     /// Outbound HTTP for plugins: only hosts the plugin declared, never private addresses (unless
     /// allowed for development), DNS pinned between the check and the connection, no redirects.
     /// With `auth`, the host signs the request in with a credential the plugin never sees.
@@ -402,7 +448,7 @@ impl PluginHost {
             .map_err(Error::internal)?;
         let method = a.get("method").and_then(Value::as_str).unwrap_or("GET").to_ascii_uppercase();
         let method = reqwest::Method::from_bytes(method.as_bytes()).map_err(|_| Error::field("method", "is not an HTTP method"))?;
-        let mut req = client.request(method, url);
+        let mut req = client.request(method, url.clone());
         let auth = a.get("auth").and_then(Value::as_str);
         if let Some(Value::Object(h)) = a.get("headers") {
             for (k, v) in h {
@@ -414,8 +460,18 @@ impl PluginHost {
                 }
             }
         }
+        let mut token = None;
         if let Some(name) = auth {
-            req = plugin.authorize(req, name, &host)?;
+            let (c, secret) = plugin.declared_for(name, &host)?;
+            req = match c.scheme.as_str() {
+                "oauth2" => {
+                    let (value, key) = self.access_token(plugin, &client, c, secret, &url).await?;
+                    token = Some(key);
+                    req.bearer_auth(value)
+                }
+                "basic" => req.basic_auth(plugin.user_of(c), Some(secret)),
+                _ => req.bearer_auth(secret),
+            };
         }
         if let Some(body) = a.get("body") {
             req = match body {
@@ -424,16 +480,16 @@ impl PluginHost {
                 other => req.header("content-type", "application/json").body(other.to_string()),
             };
         }
-        let mut resp = req.send().await.map_err(|e| Error::Unavailable(format!("request failed: {e}")))?;
+        let resp = req.send().await.map_err(|e| Error::Unavailable(format!("request failed: {e}")))?;
         let status = resp.status().as_u16();
-        let headers: Map<String, Value> = resp.headers().iter().filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_string(), json!(v)))).collect();
-        let mut body = Vec::new();
-        while let Some(chunk) = resp.chunk().await.map_err(|e| Error::Unavailable(format!("reading the response: {e}")))? {
-            body.extend_from_slice(&chunk);
-            if body.len() > MAX_HTTP_RESPONSE {
-                return Err(Error::invalid("response larger than 1 MB"));
-            }
+        // A token the provider no longer takes (revoked, or the clock disagrees) is not tried again.
+        if status == 401
+            && let Some(key) = token
+        {
+            self.tokens.remove(&key);
         }
+        let headers: Map<String, Value> = resp.headers().iter().filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_string(), json!(v)))).collect();
+        let body = body_of(resp).await?;
         Ok(json!({"status": status, "headers": headers, "body": String::from_utf8_lossy(&body)}))
     }
 }
@@ -525,6 +581,91 @@ mod tests {
         );
         host.fetch(&p, &json!({"url": url, "auth": "key_secret"})).await.unwrap();
         assert!(seen.lock().unwrap()[0].contains("authorization: basic cnpwxze6czm="), "{:?}", seen.lock().unwrap());
+    }
+
+    /// A provider answering each request with the next of `answers`, then 200.
+    async fn scripted(answers: Vec<(u16, &'static str)>) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v2/payments?page=1", listener.local_addr().unwrap());
+        let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+        let kept = seen.clone();
+        tokio::spawn(async move {
+            let mut answers = answers.into_iter();
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                kept.lock().unwrap().push(String::from_utf8_lossy(&buf[..n]).to_string());
+                let (status, body) = answers.next().unwrap_or((200, "{}"));
+                let reply = format!("HTTP/1.1 {status} X\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                let _ = socket.write_all(reply.as_bytes()).await;
+            }
+        });
+        (url, seen)
+    }
+
+    fn oauth2_plugin(hosts: Value, secret: &str) -> Loaded {
+        plugin(
+            json!([{"name": "client_secret", "hosts": hosts, "scheme": "oauth2", "user": "client_id", "token_path": "/oauth/token"}]),
+            json!({"client_secret": secret, "client_id": "client-1"}),
+        )
+    }
+
+    #[tokio::test]
+    async fn the_host_keeps_an_oauth2_token_and_the_plugin_never_sees_it() {
+        let host = PluginHost::new(true).unwrap();
+        let token = r#"{"access_token": "tok_1", "expires_in": 3600}"#;
+        let (url, seen) = scripted(vec![(200, token), (200, "{}"), (200, "{}"), (401, "{}"), (200, r#"{"access_token": "tok_2", "expires_in": 3600}"#)]).await;
+        let p = oauth2_plugin(json!(["127.0.0.1"]), "s3");
+
+        let first = host.fetch(&p, &json!({"url": url, "auth": "client_secret"})).await.unwrap();
+        assert!(!first.to_string().contains("tok_1"), "the answer holds no token: {first}");
+        host.fetch(&p, &json!({"url": url, "auth": "client_secret"})).await.unwrap();
+        {
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen.len(), 3, "one sign-in for two calls: {seen:?}");
+            assert!(seen[0].starts_with("POST /oauth/token HTTP"), "at the path declared, without the call's query: {}", seen[0]);
+            assert!(seen[0].to_lowercase().contains("authorization: basic y2xpzw50lte6czm="), "as the client: {}", seen[0]);
+            assert!(seen[0].ends_with("grant_type=client_credentials"), "{}", seen[0]);
+            assert!(seen[1].starts_with("GET /v2/payments?page=1"), "{}", seen[1]);
+            assert!(seen[1].to_lowercase().contains("authorization: bearer tok_1"), "{}", seen[1]);
+        }
+
+        // Refused: that token is gone, and the next call signs in again.
+        assert_eq!(host.fetch(&p, &json!({"url": url, "auth": "client_secret"})).await.unwrap()["status"], 401);
+        host.fetch(&p, &json!({"url": url, "auth": "client_secret"})).await.unwrap();
+        let seen = seen.lock().unwrap();
+        assert!(seen[4].starts_with("POST /oauth/token"), "{}", seen[4]);
+        assert!(seen[5].to_lowercase().contains("authorization: bearer tok_2"), "{}", seen[5]);
+    }
+
+    #[tokio::test]
+    async fn a_refused_sign_in_stops_the_call_and_says_why() {
+        let host = PluginHost::new(true).unwrap();
+        let (url, seen) = scripted(vec![(401, r#"{"error_description": "Client Authentication failed"}"#), (200, "<html>not json</html>")]).await;
+        let p = oauth2_plugin(json!(["127.0.0.1"]), "wrong");
+        let refused = host.fetch(&p, &json!({"url": url, "auth": "client_secret"})).await.unwrap_err();
+        assert!(refused.to_string().contains("Client Authentication failed"), "{refused}");
+        assert!(host.fetch(&p, &json!({"url": url, "auth": "client_secret"})).await.is_err(), "and nothing is held from a bad answer");
+        assert_eq!(seen.lock().unwrap().len(), 2, "the call itself never left");
+    }
+
+    #[tokio::test]
+    async fn a_changed_secret_is_a_new_sign_in() {
+        let host = PluginHost::new(true).unwrap();
+        let (url, seen) =
+            scripted(vec![(200, r#"{"access_token": "old", "expires_in": 3600}"#), (200, "{}"), (200, r#"{"access_token": "new", "expires_in": 3600}"#)]).await;
+        host.fetch(&oauth2_plugin(json!(["127.0.0.1"]), "s1"), &json!({"url": url, "auth": "client_secret"})).await.unwrap();
+        host.fetch(&oauth2_plugin(json!(["127.0.0.1"]), "s2"), &json!({"url": url, "auth": "client_secret"})).await.unwrap();
+        assert!(seen.lock().unwrap()[3].to_lowercase().contains("authorization: bearer new"), "{:?}", seen.lock().unwrap());
+    }
+
+    #[tokio::test]
+    async fn an_oauth2_secret_goes_nowhere_it_was_not_declared_for() {
+        let host = PluginHost::new(true).unwrap();
+        let (url, seen) = scripted(vec![]).await;
+        let p = oauth2_plugin(json!(["other.example.com"]), "s3");
+        assert!(matches!(host.fetch(&p, &json!({"url": url, "auth": "client_secret"})).await, Err(Error::Forbidden(_))));
+        assert!(seen.lock().unwrap().is_empty(), "not even to sign in");
     }
 
     #[test]
