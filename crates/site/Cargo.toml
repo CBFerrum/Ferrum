@@ -14,15 +14,17 @@ name = "ferrum-site"
 path = "src/main.rs"
 
 [features]
-default = ["mqtt", "modbus", "ws"]
+default = ["mqtt", "modbus", "ws", "opcua"]
 mqtt = ["dep:rumqttc"]
 modbus = ["dep:tokio-modbus"]
 ws = ["dep:tokio-tungstenite", "dep:futures-util"]
+opcua = ["dep:async-opcua"]
 # Deliberate crashes at named points, for the recovery tests. Never in a release.
 failpoints = []
 
 [dependencies]
 ferrum-ops-contract = { path = "../ops-contract" }
+async-opcua = { version = "0.19", optional = true, default-features = false, features = ["client"] }
 async-trait = { workspace = true }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query"] }
 chrono = { workspace = true }
@@ -41,13 +43,15 @@ serde_yaml = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["net", "process", "io-util"] }
-tokio-modbus = { version = "0.17", optional = true, default-features = false, features = ["tcp"] }
+tokio-modbus = { version = "0.17", optional = true, default-features = false, features = ["tcp", "rtu"] }
 tokio-tungstenite = { version = "0.29", optional = true, default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
 uuid = { workspace = true }
 
 [dev-dependencies]
+rumqttd = { version = "0.20", default-features = false }
+async-opcua = { version = "0.19", default-features = false, features = ["client", "server"] }
 ferrum-domain = { path = "../domain" }
 ferrum-kernel = { path = "../kernel" }
 ferrum-meta = { path = "../meta" }

@@ -186,7 +186,10 @@ impl Adapter for Peer {
 
     async fn observe(&self, command: &Command, external: Option<&str>) -> Result<Observation, Failure> {
         // A link that is down says nothing about the work: it is still going, as far as anyone knows.
-        match self.call::<Result<Observation, Failure>>("observe", &Asked { command: Some(command.clone()), device: None, external: external.map(str::to_string) }).await {
+        match self
+            .call::<Result<Observation, Failure>>("observe", &Asked { command: Some(command.clone()), device: None, external: external.map(str::to_string) })
+            .await
+        {
             Ok(said) => said,
             Err(Failure::NotSent(_)) => Ok(Observation::Waiting),
             Err(e) => Err(e),

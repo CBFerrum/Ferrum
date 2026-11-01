@@ -156,7 +156,8 @@ impl Runtime {
             }
             adapters.push((format!("peer {}", p.name), adapter));
         }
-        let limits = OpenLimits { drivers_dir: cfg.drivers_dir.clone(), allow: cfg.allow.clone() };
+        let limits =
+            OpenLimits { drivers_dir: cfg.drivers_dir.clone(), allow: cfg.allow.clone(), listen: cfg.listen.clone(), tls_dir: Some(cfg.state_dir.join("tls")) };
         let defined = Arc::new(Defined::new(limits, json!(cfg.secrets)));
         adapters.push(("definitions".to_string(), defined.clone()));
         let high_water = journal.high_water().map_err(|e| e.to_string())?.map(|t| t.timestamp_millis()).unwrap_or(0);

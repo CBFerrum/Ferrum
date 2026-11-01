@@ -109,6 +109,9 @@ pub struct Config {
     /// Public keys that may sign a release of this software. Without one, it never updates itself.
     #[serde(default)]
     pub update_keys: Vec<String>,
+    /// Addresses a definition may listen on, for equipment that calls in.
+    #[serde(default)]
+    pub listen: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

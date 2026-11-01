@@ -87,7 +87,13 @@ mod tests {
     use ed25519_dalek::{Signer, SigningKey};
 
     fn signed(key: &SigningKey, version: &str, hours: i64) -> Release {
-        let mut r = Release { version: version.into(), url: "https://x".into(), sha256: "ab".into(), signature: String::new(), expires_at: Utc::now() + Duration::hours(hours) };
+        let mut r = Release {
+            version: version.into(),
+            url: "https://x".into(),
+            sha256: "ab".into(),
+            signature: String::new(),
+            expires_at: Utc::now() + Duration::hours(hours),
+        };
         r.signature = hex::encode(key.sign(&r.message()).to_bytes());
         r
     }
@@ -116,7 +122,13 @@ mod tests {
         let (exe, download) = (dir.join("ferrum-site"), dir.join("download"));
         std::fs::write(&exe, b"old").unwrap();
         std::fs::write(&download, b"tampered").unwrap();
-        let release = Release { version: "0.2.0".into(), url: String::new(), sha256: hex::encode(Sha256::digest(b"new")), signature: String::new(), expires_at: Utc::now() };
+        let release = Release {
+            version: "0.2.0".into(),
+            url: String::new(),
+            sha256: hex::encode(Sha256::digest(b"new")),
+            signature: String::new(),
+            expires_at: Utc::now(),
+        };
         assert!(install(&exe, &download, &release).is_err());
         assert_eq!(std::fs::read(&exe).unwrap(), b"old");
         assert!(!download.exists(), "and it does not stay");
