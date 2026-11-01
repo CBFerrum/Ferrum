@@ -3474,6 +3474,7 @@ dependencies = [
  "chrono",
  "ed25519-dalek",
  "ferrum-domain",
+ "ferrum-edge",
  "ferrum-kernel",
  "ferrum-meta",
  "ferrum-ops",
