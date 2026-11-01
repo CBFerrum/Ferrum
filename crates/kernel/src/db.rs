@@ -39,6 +39,11 @@ impl Trace {
     pub async fn scope<F: Future>(self, f: F) -> F::Output {
         TRACE.scope(self, f).await
     }
+
+    /// The current trace, with what it sets off at `priority`.
+    pub fn at_priority(priority: i16) -> Trace {
+        Trace { priority: Some(priority), ..TRACE.try_with(Trace::clone).unwrap_or_default() }
+    }
 }
 
 /// `settings` (their parameters start at `$5`) with the current [`Trace`] set beside them.

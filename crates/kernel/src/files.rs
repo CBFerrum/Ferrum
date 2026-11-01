@@ -26,7 +26,7 @@ impl Kernel {
         let _ = self.files.set(store);
     }
 
-    fn file_store(&self) -> Result<&Arc<dyn FileStore>> {
+    pub(crate) fn file_store(&self) -> Result<&Arc<dyn FileStore>> {
         self.files.get().ok_or_else(|| Error::Unavailable("no file storage is configured".into()))
     }
 
@@ -36,6 +36,11 @@ impl Kernel {
         if let Some((entity, record)) = attach_to {
             self.get(ctx, entity, record, false).await?;
         }
+        self.keep_file(ctx, attach_to, file_name, content_type, data).await
+    }
+
+    /// [`Kernel::store_file`] for a caller that decided what `attach_to` may name.
+    pub(crate) async fn keep_file(&self, ctx: &Ctx, attach_to: Option<(&str, Uuid)>, file_name: &str, content_type: &str, data: &[u8]) -> Result<Value> {
         let name: String = file_name.chars().filter(|c| !c.is_control() && *c != '/' && *c != '\\').take(200).collect();
         let name = if name.trim().is_empty() { "file.bin".to_string() } else { name };
         let ctype = content_type.to_lowercase();

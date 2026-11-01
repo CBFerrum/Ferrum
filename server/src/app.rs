@@ -406,6 +406,7 @@ impl Hooks for App {
             .add_route(controllers::collab::routes())
             .add_route(controllers::prefs::routes())
             .add_route(controllers::admin::routes())
+            .add_route(controllers::jobs::routes())
             .add_route(controllers::apps::routes())
             .add_route(controllers::compat::routes())
             .add_route(controllers::mcp::routes())

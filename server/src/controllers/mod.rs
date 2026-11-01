@@ -9,6 +9,7 @@ pub mod compat;
 pub mod dav;
 pub mod docs;
 pub mod domains;
+pub mod jobs;
 pub mod legacy;
 pub mod mcp;
 pub mod meta;

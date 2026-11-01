@@ -7,9 +7,10 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
+use ferrum_kernel::outbox::PRIORITY_BULK;
 use ferrum_kernel::query::parse_filters;
 use ferrum_kernel::value::canonical_json;
-use ferrum_kernel::{Action, Doc, Error, ListQuery};
+use ferrum_kernel::{Action, Doc, Error, ListQuery, Trace};
 use loco_rs::app::AppContext;
 use loco_rs::controller::Routes;
 use serde::Deserialize;
@@ -384,7 +385,8 @@ async fn import(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Pa
             errors.push(json!({"row": i, "error": "not an object"}));
             continue;
         };
-        match st.kernel.insert(&ctx, &entity, doc).await {
+        // What it sets off waits behind everyone's single edits.
+        match Trace::at_priority(PRIORITY_BULK).scope(st.kernel.insert(&ctx, &entity, doc)).await {
             Ok(d) => created.push(d.get("id").cloned().unwrap_or(Value::Null)),
             Err(Error::Validation(f)) => errors.push(json!({"row": i, "error": "validation_failed", "fields": f})),
             Err(e) => errors.push(json!({"row": i, "error": e.code(), "message": e.to_string()})),
@@ -416,6 +418,12 @@ async fn bulk(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Path
     Ok(Json(st.kernel.bulk(&ctx, &entity, target, &b.op).await?).into_response())
 }
 
+/// The same over more records than a request should wait for: queued as a job (`/api/jobs`).
+async fn bulk_job(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Path<String>, Json(b): Json<BulkRequest>) -> ApiResult<Response> {
+    let id = app_state(&app)?.kernel.bulk_job(&ctx, &entity, b.ids, b.filters, &b.op).await?;
+    Ok((StatusCode::ACCEPTED, Json(json!({"job": id}))).into_response())
+}
+
 pub fn routes() -> Routes {
     use axum::routing::{get, post};
     Routes::new()
@@ -425,6 +433,7 @@ pub fn routes() -> Routes {
         .add("/{entity}/_export", get(export))
         .add("/{entity}/_import", post(import))
         .add("/{entity}/_bulk", post(bulk))
+        .add("/{entity}/_bulk/jobs", post(bulk_job))
         .add("/{entity}/{id}", get(read).patch(update).put(update).delete(remove))
         .add("/{entity}/{id}/submit", post(submit))
         .add("/{entity}/{id}/cancel", post(cancel))

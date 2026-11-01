@@ -39,8 +39,10 @@ events. Anything that depends on order compares `source_version`.
 
 **Fairness.** A batch gives each workspace with work at most 10 events, of 50, and handles workspaces
 side by side. So one workspace's backlog, or its slow provider, does not delay another's events.
-Within a workspace, mail and push go first and bulk work last. Run an import under
-`Trace { priority: Some(PRIORITY_BULK), .. }` to keep it behind what people are waiting for.
+Within a workspace, mail and push go first and bulk work last: bulk operations, imports, jobs at
+bulk priority and sends to a whole list. A mail sent under bulk priority stays there, so 50,000
+campaign messages do not stand in front of someone's password reset. Run anything of the kind under
+`Trace::at_priority(PRIORITY_BULK)`.
 
 **Retries.** A failed event waits 10 s, 20 s, 40 s and so on, up to an hour, and is dead after 15
 attempts. One event's handlers get 120 seconds before they count as failed. Webhooks get 12 attempts

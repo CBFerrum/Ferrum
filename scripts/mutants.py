@@ -25,6 +25,9 @@ SCIM_UNIT = ("-p", "ferrum-kernel", "--lib", "scim::tests")
 RULES = ("-p", "ferrum-kernel", "--test", "rules_it")
 SECRETS = ("-p", "ferrum-kernel", "--test", "secret_it")
 PRIVACY = ("-p", "ferrum-kernel", "--test", "privacy_it")
+JOBS = ("-p", "ferrum-kernel", "--test", "jobs_it")
+HANDOVER = ("-p", "ferrum-kernel", "--test", "handover_it")
+KERNEL = ("-p", "ferrum-kernel", "--test", "kernel_it")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
@@ -64,6 +67,30 @@ MUTANTS = [
     ("privacy-account-stays-after-restore", "crates/kernel/src/privacy.rs", 'if present.is_some_and(|e| !e.ends_with("@erased.invalid")) {', "if false {", PRIVACY),
     ("privacy-journal-records-values", "crates/kernel/src/privacy.rs", '"records": journal, "reason": reason}', '"records": journal, "reason": reason, "email": email}', PRIVACY),
     ("unknown-filter-ignored", "crates/kernel/src/scim.rs", 'return Err(bad_filter(format!("cannot filter on {attr}")));', "return Ok(vec![]);", SCIM_UNIT),
+    ("job-outcome-unfenced", "crates/kernel/src/jobs.rs", """let fence = "tenant_id = $1 and id = $2 and lease_token = $3 and status = 'running'";""", """let fence = "tenant_id = $1 and id = $2 and $3::uuid is not null";""", JOBS),
+    ("job-retries-the-impossible", "crates/kernel/src/jobs.rs", "let last = gives_up(e) || job.attempts >= job.max_attempts;", "let last = job.attempts >= job.max_attempts;", JOBS),
+    ("job-retries-for-ever", "crates/kernel/src/jobs.rs", "let last = gives_up(e) || job.attempts >= job.max_attempts;", "let last = gives_up(e);", JOBS),
+    ("job-crash-free-of-charge", "crates/kernel/src/jobs.rs", "update job j set status = 'running', attempts = j.attempts + 1,", "update job j set status = 'running', attempts = j.attempts,", JOBS),
+    ("job-stop-costs-an-attempt", "crates/kernel/src/jobs.rs", "update job set status = 'queued', attempts = attempts - 1, run_at = now()", "update job set status = 'queued', run_at = now()", JOBS),
+    ("job-unfair-to-workspaces", "crates/kernel/src/jobs.rs", "order by j.priority, j.run_at limit 1 for update of j skip locked", "order by j.priority, j.run_at limit 50 for update of j skip locked", JOBS),
+    ("job-no-running-cap", "crates/kernel/src/jobs.rs", ".bind(TENANT_RUNNING)", ".bind(1000i64)", JOBS),
+    ("job-priority-ignored", "crates/kernel/src/jobs.rs", "order by j.priority, j.run_at limit 1", "order by j.run_at limit 1", JOBS),
+    ("job-cancel-unheard", "crates/kernel/src/jobs.rs", "Ok(Some(true)) => return Ended::Cancelled,", "Ok(Some(true)) => {}", JOBS),
+    ("job-internal-error-shown", "crates/kernel/src/jobs.rs", 'Error::Db(_) | Error::Internal(_) => "An internal error occurred".to_string(),', 'Error::Db(_) | Error::Internal(_) => e.to_string(),', JOBS),
+    ("job-seen-by-anyone", "crates/kernel/src/jobs.rs", 'format!("{VIEW} and id = $2 and ($3 or created_by = $4)")', 'format!("{VIEW} and id = $2 and ($3 or created_by = $4 or true)")', JOBS),
+    ("job-runs-without-asking-rights", "crates/kernel/src/jobs.rs", 'k.load_ctx(self.tenant_id, user, None, format!("job-{}", self.id)).await.map_err(|e| match e {', 'Ok(Ctx::system(self.tenant_id, k.registry.schema(self.tenant_id).await?)).map_err(|e: Error| match e {', JOBS),
+    ("bulk-pages-shift-under-it", "crates/kernel/src/export.rs", "ids.retain(|id| done.after.is_none_or(|after| *id > after));", "ids.truncate(MAX_BULK);", JOBS),
+    ("bulk-restarts-from-nothing", "crates/kernel/src/export.rs", "ids.retain(|id| done.after.is_none_or(|after| *id > after));", "", JOBS),
+    ("bulk-events-jump-the-queue", "crates/kernel/src/bulk.rs", "Trace::at_priority(PRIORITY_BULK)\n            .scope(async {", "Trace::default()\n            .scope(async {", JOBS),
+    ("list-mail-jumps-the-queue", "crates/kernel/src/outbox.rs", "case when $6 and coalesce(nullif(current_setting('ferrum.priority', true), '')::smallint, 1) < 2 then 0", "case when $6 then 0", JOBS),
+    ("export-for-anyone", "crates/kernel/src/export.rs", """if !ctx.is_admin {\n            return Err(Error::Forbidden("exports are for administrators".into()));\n        }""", "", JOBS),
+    ("export-on-the-file-route", "crates/kernel/src/export.rs", "self.stored.push(self.k.keep_file(self.ctx, Some((EXPORT_ENTITY, self.job)),", "self.stored.push(self.k.keep_file(self.ctx, None,", JOBS),
+    ("export-holds-hashes", "crates/kernel/src/export.rs", "'created_at', created_at, 'last_login_at', last_login_at) from app_user", "'created_at', created_at, 'password_hash', password_hash) from app_user", JOBS),
+    ("export-forgets-child-rows", "crates/kernel/src/export.rs", "k.whole_records(&all, name, !ent.children.is_empty(), cursor)", "k.whole_records(&all, name, false, cursor)", JOBS),
+    ("export-forgets-engines", "crates/kernel/src/export.rs", "ledgers.chain(all.schema.export_tables.iter().cloned()).collect();", "ledgers.collect();", JOBS),
+    ("export-stays-for-ever", "crates/kernel/src/lib.rs", " + self.purge_exports().await?;", ";", JOBS),
+    ("cursor-rounds-to-milliseconds", "crates/kernel/src/doc.rs", "let next_cursor = rows.get(limit as usize - 1).filter(|_| has_more && keyset_ok).and_then(|r| {\n            let ts = r.get(&sort_field)?.as_str()?;", "let next_cursor = rows.get(limit as usize - 1).filter(|_| has_more && keyset_ok).and_then(|r| {\n            let ts = crate::value::parse_datetime(r.get(&sort_field)?.as_str()?).ok()?.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);\n            let ts = ts.as_str();", KERNEL),
+    ("handover-ignores-state", "crates/kernel/src/lifecycle.rs", "condition: def.condition.clone(), ..Default::default()", "..Default::default()", HANDOVER),
 ]
 
 

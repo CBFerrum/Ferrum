@@ -141,11 +141,13 @@ pub async fn release_objects(tx: &mut Tx, tenant: Uuid, keys: &[String]) -> Resu
 }
 
 pub async fn enqueue(tx: &mut Tx, tenant: Uuid, topic: &str, entity: Option<&str>, record_id: Option<Uuid>, payload: Value) -> Result<()> {
-    // Mail and push carry what someone is waiting for, whatever work queued them.
+    // Mail and push carry what someone is waiting for, whatever work queued them; a send to a whole
+    // list carries nothing anyone is waiting for, and stays behind that.
     let urgent = matches!(topic, MAIL_TOPIC | crate::notify::MAIL_TOPIC | crate::webpush::PUSH_TOPIC);
     sqlx::query(
         "insert into outbox (tenant_id, topic, entity, record_id, payload, priority) \
-         values ($1, $2, $3, $4, $5, case when $6 then 0 else coalesce(nullif(current_setting('ferrum.priority', true), '')::smallint, 1) end)",
+         values ($1, $2, $3, $4, $5, case when $6 and coalesce(nullif(current_setting('ferrum.priority', true), '')::smallint, 1) < 2 then 0 \
+         else coalesce(nullif(current_setting('ferrum.priority', true), '')::smallint, 1) end)",
     )
     .bind(tenant)
     .bind(topic)

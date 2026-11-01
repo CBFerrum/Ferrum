@@ -175,6 +175,7 @@ several workspaces in turn and is left as it is.
 | `GET /api/v1/{E}/_export` | CSV (export permission), or Excel with `format=xlsx` (field labels as headers, numbers as numbers); same filters as list, at most 100,000 rows |
 | `POST /api/v1/{E}/_import` | JSON array (≤5000) → `{created, ids, errors: [{row, error, fields?}]}` (`207` if some failed) |
 | `POST /api/v1/{E}/_bulk` | one operation on a selection: `{ids: [...]}` or `{filters: [...]}` (≤500 records) plus `{"op": "update", "values": {...}}`, `{"op": "delete"}`, `{"op": "submit"}`, `{"op": "cancel"}`, `{"op": "workflow", "action"}`, `{"op": "action", "action", "params"?}`, `{"op": "assign", "user", "note"?, "due_date"?, "priority"?}`, `{"op": "add_tags" \| "remove_tags", "tags"}` → `{succeeded, failed, results: [{id, ok, error?}]}`. Each record runs in its own transaction with the caller's permissions; `error` has the API error shape |
+| `POST /api/v1/{E}/_bulk/jobs` | the same over up to 100,000 records, or all a filter matches when it starts → `202 {job}`; see [Background jobs](#background-jobs--apijobs) |
 
 ## Collaboration (any record the caller can read)
 
@@ -383,6 +384,23 @@ no cookie is read or set on it.
   settings, titles instead of ids and a totals line; the workbook keeps numbers as numbers and
   dates as dates in a sheet named after the report. Exports need export permission on the
   report's entity.
+
+## Background jobs — `/api/jobs`
+
+What takes longer than a request, or must survive a restart ([how they behave](operations.md#background-jobs)).
+
+| Route | |
+|---|---|
+| `GET /api/jobs?limit=` | newest first (≤200): the caller's own, everyone's for an administrator → `{jobs: [{id, kind, status, attempts, max_attempts, priority, progress, result, last_error, cancel_requested, created_by, created_at, started_at, finished_at}]}` |
+| `GET /api/jobs/{id}` | one of those; `404` to anyone but whoever asked for it and administrators |
+| `POST /api/jobs/{id}/cancel` | at once if it has not started; within 5 seconds if it has, and its open transaction rolls back |
+| `POST /api/jobs/{id}/retry` | a `failed` job, with its attempts back; it still runs as whoever asked |
+| `POST /api/admin/export` | administrators: queues the workspace's export (one at a time) → `202 {job}` |
+| `GET /api/jobs/{id}/parts/{part}` | administrators: one zip of a finished export (`result.parts[].id`); each download is on the audit trail |
+
+`status` is `queued`, `running`, `done`, `failed` or `cancelled`. A job runs with the rights its owner
+has when it runs, not when they asked. A bulk job's `result` is `{total, succeeded, failed, failures}`
+(the first 1,000 failures); its `progress` says how far it has got.
 
 ## Administration (administrators only)
 
