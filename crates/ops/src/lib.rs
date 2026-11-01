@@ -30,6 +30,7 @@ use uuid::Uuid;
 pub use ferrum_ops_contract as contract;
 
 include!(concat!(env!("OUT_DIR"), "/packages.rs"));
+include!(concat!(env!("OUT_DIR"), "/ui.rs"));
 
 /// This app's manifest (`app.yaml`).
 pub const MANIFEST: &str = include_str!("../app.yaml");

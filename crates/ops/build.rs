@@ -37,5 +37,19 @@ fn main() {
         }
     }
     code.push_str("];\n");
-    std::fs::write(Path::new(&std::env::var("OUT_DIR").expect("OUT_DIR")).join("packages.rs"), code).expect("write packages.rs");
+    let out = std::path::PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
+    std::fs::write(out.join("packages.rs"), code).expect("write packages.rs");
+
+    // The interface's built files (ui/dist, built from ui/src and committed), without the build's
+    // own notes (dotfiles such as .source).
+    println!("cargo:rerun-if-changed=ui/dist");
+    let mut code = String::from("/// This app's own interface: its built files (path under ui/dist, content).\npub static UI: &[(&str, &[u8])] = &[\n");
+    let mut files = Vec::new();
+    walk(&Path::new(env!("CARGO_MANIFEST_DIR")).join("ui").join("dist"), "", &mut files);
+    for (rel, _) in files.into_iter().filter(|(rel, _)| !rel.split('/').any(|s| s.starts_with('.'))) {
+        let file = format!("/ui/dist/{rel}");
+        writeln!(code, "    ({rel:?}, include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), {file:?}))),").expect("write");
+    }
+    code.push_str("];\n");
+    std::fs::write(out.join("ui.rs"), code).expect("write ui.rs");
 }
