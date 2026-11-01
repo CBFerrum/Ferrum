@@ -2,13 +2,20 @@
 //! them, then dispatched at-least-once by any replica (`FOR UPDATE SKIP LOCKED`). Consumers are
 //! idempotent (unique delivery/run keys), so a crash between "handled" and "marked" is harmless.
 //! Dispatchers poll (no NOTIFY from writers: it would serialize their commits).
+//!
+//! Each batch takes a few events from every workspace that has work, most urgent first, and handles
+//! workspaces side by side, so one workspace's backlog or slow provider cannot hold up another's
+//! password resets. Events carry their origin (docs/events.md). One that fails too often stays in
+//! the table as dead, for an administrator to see and replay.
 
 use crate::Kernel;
-use crate::db::Tx;
+use crate::ctx::Ctx;
+use crate::db::{Trace, Tx};
 use crate::error::{Error, Result};
 use hmac::{Hmac, Mac};
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::Sha256;
+use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,6 +27,17 @@ const OUTBOX_POLL: Duration = Duration::from_millis(250);
 const MAX_ATTEMPTS: i32 = 15;
 const WEBHOOK_MAX_ATTEMPTS: i32 = 12;
 const MAX_WEBHOOK_BODY: usize = 256 * 1024;
+
+/// What someone is waiting for: sign-in codes, invitations, notifications.
+pub const PRIORITY_URGENT: i16 = 0;
+/// Imports, mass changes: behind everything else of their workspace.
+pub const PRIORITY_BULK: i16 = 2;
+/// Events one workspace gets in a batch, however many are waiting ...
+const TENANT_SHARE: i64 = 10;
+/// ... of this many in all.
+const BATCH: i64 = 50;
+/// The longest one event's handlers may take before it counts as failed and is retried.
+const EVENT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Outbox topic of mail queued with [`Kernel::queue_mail`]; never fanned out to webhooks.
 pub const MAIL_TOPIC: &str = "ferrum.mail";
@@ -123,14 +141,48 @@ pub async fn release_objects(tx: &mut Tx, tenant: Uuid, keys: &[String]) -> Resu
 }
 
 pub async fn enqueue(tx: &mut Tx, tenant: Uuid, topic: &str, entity: Option<&str>, record_id: Option<Uuid>, payload: Value) -> Result<()> {
-    sqlx::query("insert into outbox (tenant_id, topic, entity, record_id, payload) values ($1, $2, $3, $4, $5)")
-        .bind(tenant)
-        .bind(topic)
-        .bind(entity)
-        .bind(record_id)
-        .bind(payload)
-        .execute(&mut **tx)
-        .await?;
+    // Mail and push carry what someone is waiting for, whatever work queued them.
+    let urgent = matches!(topic, MAIL_TOPIC | crate::notify::MAIL_TOPIC | crate::webpush::PUSH_TOPIC);
+    sqlx::query(
+        "insert into outbox (tenant_id, topic, entity, record_id, payload, priority) \
+         values ($1, $2, $3, $4, $5, case when $6 then 0 else coalesce(nullif(current_setting('ferrum.priority', true), '')::smallint, 1) end)",
+    )
+    .bind(tenant)
+    .bind(topic)
+    .bind(entity)
+    .bind(record_id)
+    .bind(payload)
+    .bind(urgent)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// The record an event is about.
+pub struct Source<'a> {
+    pub entity: &'a str,
+    pub record_id: Uuid,
+    pub actor: Option<Uuid>,
+    /// The company the record belongs to, when it has one.
+    pub legal_entity: Option<Uuid>,
+    pub version: Option<i32>,
+}
+
+/// [`enqueue`] for a change to a record, saying who made it and which version it made.
+pub async fn enqueue_change(tx: &mut Tx, tenant: Uuid, topic: &str, source: Source<'_>, payload: Value) -> Result<()> {
+    sqlx::query(
+        "insert into outbox (tenant_id, topic, entity, record_id, payload, actor, legal_entity, source_version) values ($1, $2, $3, $4, $5, $6, $7, $8)",
+    )
+    .bind(tenant)
+    .bind(topic)
+    .bind(source.entity)
+    .bind(source.record_id)
+    .bind(payload)
+    .bind(source.actor)
+    .bind(source.legal_entity)
+    .bind(source.version)
+    .execute(&mut **tx)
+    .await?;
     Ok(())
 }
 
@@ -143,10 +195,22 @@ pub struct Event {
     pub record_id: Option<Uuid>,
     pub payload: Value,
     pub attempts: i32,
+    pub correlation_id: Option<String>,
+    pub traceparent: Option<String>,
+    pub actor: Option<Uuid>,
+    pub legal_entity: Option<Uuid>,
+    pub source_version: Option<i32>,
+    pub schema_version: i16,
 }
 
 /// How long a claimed batch is reserved for the worker handling it.
 const LEASE_SECS: f64 = 600.0;
+/// The same for webhooks: requests run side by side and time out after 10 seconds.
+const WEBHOOK_LEASE_SECS: f64 = 60.0;
+
+fn require_admin(ctx: &Ctx) -> Result<()> {
+    if ctx.is_admin { Ok(()) } else { Err(Error::Forbidden("this is for administrators".into())) }
+}
 
 fn backoff(attempts: i32) -> i64 {
     // 5s, 10s, 20s ... capped at 1h.
@@ -163,20 +227,51 @@ impl Kernel {
     /// at least once, never stuck behind a lock.
     pub async fn dispatch_outbox_once(&self) -> Result<usize> {
         let mut tx = self.db.system_tx().await?;
+        // A loose index scan finds the workspaces with work, however long their backlogs. They come
+        // in random order, so that more workspaces than a batch holds all get their turn.
         let events: Vec<Event> = sqlx::query_as(
-            "update outbox set available_at = now() + make_interval(secs => $1) where id in (\
-               select id from outbox where processed_at is null and not dead and available_at <= now() \
-               order by id limit 50 for update skip locked) \
-             returning id, tenant_id, topic, entity, record_id, payload, attempts",
+            "with recursive waiting(tenant_id) as ( \
+               (select tenant_id from outbox where processed_at is null and not dead order by tenant_id limit 1) \
+               union all \
+               select (select o.tenant_id from outbox o where o.tenant_id > w.tenant_id and o.processed_at is null and not o.dead \
+                       order by o.tenant_id limit 1) \
+               from waiting w where w.tenant_id is not null) \
+             update outbox set available_at = now() + make_interval(secs => $1) where id in ( \
+               select claimed.id from (select tenant_id from waiting where tenant_id is not null order by random()) w \
+               cross join lateral (select o.id from outbox o where o.tenant_id = w.tenant_id and o.processed_at is null and not o.dead \
+                 and o.available_at <= now() order by o.priority, o.id limit $2 for update skip locked) claimed \
+               limit $3) \
+             returning id, tenant_id, topic, entity, record_id, payload, attempts, correlation_id, traceparent, actor, legal_entity, source_version, schema_version",
         )
         .bind(LEASE_SECS)
+        .bind(TENANT_SHARE)
+        .bind(BATCH)
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;
-        let mut events = events;
+        let claimed = events.len();
+        let mut by_tenant: BTreeMap<Uuid, Vec<Event>> = BTreeMap::new();
+        for ev in events {
+            by_tenant.entry(ev.tenant_id).or_default().push(ev);
+        }
+        for outcome in futures::future::join_all(by_tenant.into_values().map(|events| self.handle_events(events))).await {
+            outcome?;
+        }
+        Ok(claimed)
+    }
+
+    /// One workspace's share of a batch, in order: priority, then age.
+    async fn handle_events(&self, mut events: Vec<Event>) -> Result<()> {
         events.sort_by_key(|e| e.id);
         for ev in &events {
-            let outcome = self.handle_event(ev).await;
+            let trace = Trace {
+                correlation: ev.correlation_id.clone().unwrap_or_else(|| format!("event-{}", ev.id)),
+                causation: Some(ev.id),
+                traceparent: ev.traceparent.clone(),
+                priority: None,
+            };
+            let outcome = trace.scope(tokio::time::timeout(EVENT_TIMEOUT, self.handle_event(ev))).await;
+            let outcome = outcome.unwrap_or_else(|_| Err(Error::Unavailable(format!("handlers took longer than {} s", EVENT_TIMEOUT.as_secs()))));
             let mut tx = self.db.system_tx().await?;
             match outcome {
                 Ok(()) => {
@@ -200,7 +295,61 @@ impl Kernel {
             }
             tx.commit().await?;
         }
-        Ok(events.len())
+        Ok(())
+    }
+
+    /// The events this workspace's handlers gave up on, newest first: what they are and why, never
+    /// their payloads, which can hold anything (administrators only).
+    pub async fn dead_events(&self, ctx: &Ctx, limit: i64) -> Result<Vec<Value>> {
+        require_admin(ctx)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let rows: Vec<Value> = sqlx::query_scalar(
+            "select jsonb_build_object('id', id, 'topic', topic, 'entity', entity, 'record_id', record_id, 'attempts', attempts, \
+               'last_error', last_error, 'created_at', created_at, 'correlation_id', correlation_id) \
+             from outbox where tenant_id = $1 and dead order by id desc limit $2",
+        )
+        .bind(ctx.tenant)
+        .bind(limit.clamp(1, 500))
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(rows)
+    }
+
+    /// Queues a dead event again, from the first attempt. Consumers are idempotent, so those that
+    /// handled it before it failed are not repeated. Audited (administrators only).
+    pub async fn replay_event(&self, ctx: &Ctx, id: i64) -> Result<()> {
+        require_admin(ctx)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let topic: Option<String> = sqlx::query_scalar(
+            "update outbox set dead = false, attempts = 0, last_error = null, available_at = now() where tenant_id = $1 and id = $2 and dead returning topic",
+        )
+        .bind(ctx.tenant)
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(topic) = topic else { return Err(Error::NotFound("dead event".into())) };
+        crate::audit::record(&mut tx, ctx, "OutboxEvent", Uuid::from_u128(id as u128), "replay", None, json!({"event": id, "topic": topic})).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Queues a webhook delivery that gave up again, from the first attempt (administrators only).
+    pub async fn replay_webhook_delivery(&self, ctx: &Ctx, id: Uuid) -> Result<()> {
+        require_admin(ctx)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let topic: Option<String> = sqlx::query_scalar(
+            "update webhook_delivery set status = 'pending', attempts = 0, last_error = null, next_attempt_at = now(), updated_at = now() \
+             where tenant_id = $1 and id = $2 and status = 'dead' returning topic",
+        )
+        .bind(ctx.tenant)
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(topic) = topic else { return Err(Error::NotFound("dead webhook delivery".into())) };
+        crate::audit::record(&mut tx, ctx, "WebhookDelivery", id, "replay", None, json!({"topic": topic})).await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     async fn handle_event(&self, ev: &Event) -> Result<()> {
@@ -288,6 +437,9 @@ impl Kernel {
         })
     }
 
+    /// Sends one batch of webhooks. Like the outbox, the claim is a lease and no transaction stays
+    /// open across a request: a slow endpoint holds no row and no connection, and the batch's
+    /// requests run side by side, so it delays no other endpoint either.
     pub async fn deliver_webhooks_once(&self) -> Result<usize> {
         #[derive(sqlx::FromRow)]
         struct Due {
@@ -301,14 +453,20 @@ impl Kernel {
         }
         let mut tx = self.db.system_tx().await?;
         let due: Vec<Due> = sqlx::query_as(
-            "select d.tenant_id, d.id, d.topic, d.payload, d.attempts, w.url, w.secret from webhook_delivery d \
-             join webhook w on w.tenant_id = d.tenant_id and w.id = d.webhook_id \
-             where d.status = 'pending' and d.next_attempt_at <= now() order by d.next_attempt_at limit 20 for update of d skip locked",
+            "with claimed as (select tenant_id, id from webhook_delivery where status = 'pending' and next_attempt_at <= now() \
+               order by next_attempt_at limit 20 for update skip locked), \
+             leased as (update webhook_delivery d set next_attempt_at = now() + make_interval(secs => $1) from claimed c \
+               where d.tenant_id = c.tenant_id and d.id = c.id returning d.tenant_id, d.id, d.webhook_id, d.topic, d.payload, d.attempts) \
+             select l.tenant_id, l.id, l.topic, l.payload, l.attempts, w.url, w.secret from leased l \
+             join webhook w on w.tenant_id = l.tenant_id and w.id = l.webhook_id",
         )
+        .bind(WEBHOOK_LEASE_SECS)
         .fetch_all(&mut *tx)
         .await?;
-        for d in &due {
-            let outcome = self.post_webhook(&d.url, &d.secret, &d.topic, d.id, &d.payload).await;
+        tx.commit().await?;
+        let outcomes = futures::future::join_all(due.iter().map(|d| self.post_webhook(&d.url, &d.secret, &d.topic, d.id, &d.payload))).await;
+        let mut tx = self.db.system_tx().await?;
+        for (d, outcome) in due.iter().zip(outcomes) {
             let attempts = d.attempts + 1;
             match outcome {
                 Ok(code) => {

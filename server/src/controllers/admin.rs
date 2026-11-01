@@ -279,6 +279,28 @@ async fn import_custom(Auth(ctx): Auth, State(app): State<AppContext>, Json(bund
     Ok(Json(json!({"imported": n})).into_response())
 }
 
+// ── events that failed ──
+
+#[derive(Deserialize)]
+struct DeadEvents {
+    limit: Option<i64>,
+}
+
+async fn dead_events(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query<DeadEvents>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    Ok(Json(json!({"events": st.kernel.dead_events(&ctx, q.limit.unwrap_or(100)).await?})).into_response())
+}
+
+async fn replay_event(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<i64>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.replay_event(&ctx, id).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn replay_webhook_delivery(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.replay_webhook_delivery(&ctx, id).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 // ── webhooks ──
 
 async fn list_webhooks(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
@@ -451,6 +473,9 @@ pub fn routes() -> Routes {
         .add("/admin/personal-data", get(personal_data))
         .add("/admin/personal-data/erase", post(erase_personal_data))
         .add("/admin/packages", get(list_packages).post(install))
+        .add("/admin/events/dead", get(dead_events))
+        .add("/admin/events/{id}/replay", post(replay_event))
+        .add("/admin/webhook-deliveries/{id}/replay", post(replay_webhook_delivery))
         .add("/admin/webhooks", get(list_webhooks).post(create_webhook))
         .add("/admin/webhooks/{id}", delete(delete_webhook))
         .add("/admin/automations", get(list_automations).post(save_automation))

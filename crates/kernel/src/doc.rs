@@ -1229,7 +1229,14 @@ impl Kernel {
                 payload["doc"] = v;
             }
         }
-        outbox::enqueue(tx, ctx.tenant, &format!("{}.{event}", ent.def.name), Some(&ent.def.name), Some(id), payload).await
+        let source = outbox::Source {
+            entity: &ent.def.name,
+            record_id: id,
+            actor: (!ctx.user.is_nil()).then_some(ctx.user),
+            legal_entity: new.or(old).and_then(|d| uuid_of(d.get("company"))),
+            version: version.map(|v| v as i32),
+        };
+        outbox::enqueue_change(tx, ctx.tenant, &format!("{}.{event}", ent.def.name), source, payload).await
     }
 
     async fn hook_before_validate(&self, ctx: &Ctx, tx: &mut Tx, ent: &Arc<EffEntity>, doc: &mut Doc) -> Result<()> {
