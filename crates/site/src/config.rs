@@ -1,7 +1,9 @@
 //! A site's own configuration: what only the site knows, such as addresses on its own network and
 //! their secrets. What each device may be asked comes from the platform.
 
+use ferrum_ops_contract::edge::DeviceLink;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 fn five() -> u64 {
@@ -67,6 +69,25 @@ pub struct Config {
     pub console: Option<String>,
     #[serde(default)]
     pub adapters: Vec<AdapterConfig>,
+    /// Definitions kept here, each `<name>.yaml`, for a site that takes nothing from the platform.
+    #[serde(default)]
+    pub definitions_dir: Option<PathBuf>,
+    /// Devices reached by a definition.
+    #[serde(default)]
+    pub devices: Vec<DeviceLink>,
+    /// Take definitions, devices and rules from the platform as well. Off unless asked for, because
+    /// it lets a platform administrator decide what this gateway connects to.
+    #[serde(default)]
+    pub managed: bool,
+    /// Where external drivers live. Only these can be run, whoever asks.
+    #[serde(default)]
+    pub drivers_dir: Option<PathBuf>,
+    /// Addresses a definition may open, by how they start. Empty means any.
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// What `{secret.name}` stands for. These never leave this machine.
+    #[serde(default)]
+    pub secrets: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -123,7 +144,7 @@ impl Config {
             }
         }
         let mut owned = std::collections::BTreeSet::new();
-        for d in self.adapters.iter().flat_map(|a| &a.devices) {
+        for d in self.adapters.iter().flat_map(|a| &a.devices).chain(self.devices.iter().map(|d| &d.code)) {
             if !owned.insert(d) {
                 return Err(format!("{d} is listed under two adapters: one thing dispatches to a device"));
             }

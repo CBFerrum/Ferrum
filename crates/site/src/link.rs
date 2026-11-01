@@ -3,8 +3,11 @@
 
 use chrono::{DateTime, Utc};
 use ed25519_dalek::{Signer, SigningKey};
+use ferrum_ops_contract::edge::{ConfigRequest, ConfigResponse};
 use ferrum_ops_contract::sign::{Enroll, Enrolled, HEADER_KEY, HEADER_SIGNATURE, HEADER_TIME, message};
 use ferrum_ops_contract::{SyncRequest, SyncResponse};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::time::Duration;
 use uuid::Uuid;
@@ -50,8 +53,17 @@ impl Link {
     }
 
     pub async fn sync(&self, req: &SyncRequest, time_ms: i64) -> Result<SyncResponse, LinkError> {
+        self.post("ops/sync", req, time_ms).await
+    }
+
+    /// What this gateway should be, if that changed.
+    pub async fn edge_config(&self, req: &ConfigRequest, time_ms: i64) -> Result<ConfigResponse, LinkError> {
+        self.post("edge/config", req, time_ms).await
+    }
+
+    async fn post<Q: Serialize, R: DeserializeOwned>(&self, route: &str, req: &Q, time_ms: i64) -> Result<R, LinkError> {
         let body = serde_json::to_vec(req).map_err(|e| LinkError::Refused(e.to_string()))?;
-        let path = format!("/api/site/{}/ops/sync", self.tenant);
+        let path = format!("/api/site/{}/{route}", self.tenant);
         let signature = self.key.sign(&message("POST", &path, time_ms, &body));
         let response = self
             .http
