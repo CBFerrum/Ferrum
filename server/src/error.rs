@@ -45,7 +45,7 @@ impl IntoResponse for ApiError {
             _ => json!({"error": e.code(), "message": e.to_string()}),
         };
         let mut resp = (status, axum::Json(body)).into_response();
-        if matches!(e, Error::Retryable(_) | Error::Unavailable(_) | Error::TooManyRequests(_)) {
+        if matches!(e, Error::Retryable(_) | Error::Unavailable(_) | Error::TooManyRequests(_) | Error::Wait(..)) {
             resp.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_static("2"));
         }
         resp

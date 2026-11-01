@@ -45,6 +45,9 @@ TIMEOUT = 600
 
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
+    ("provider-never-left-alone", "crates/kernel/src/connect.rs", "if let Some((seconds, why)) = waiting {", "if let Some((seconds, why)) = waiting.filter(|_| false) {", CONNECT),
+    ("wait-costs-an-attempt", "crates/kernel/src/jobs.rs", "\"update job set status = 'queued', attempts = attempts - 1, last_error = $4,", "\"update job set status = 'queued', last_error = $4,", CONNECT),
+    ("breaker-never-opens", "crates/kernel/src/connect.rs", "(failures >= BREAK_AFTER).then(", "(failures >= BREAK_AFTER * 1000).then(", CONNECT),
     ("lease-taken-twice", "crates/kernel/src/outbox.rs", "where id = $1 and available_at = $2 and processed_at is null and not dead returning available_at", "where id = $1 and $2::timestamptz is not null and processed_at is null and not dead returning available_at", EVENTS),
     ("hook-may-call-out", "crates/plugins/src/host.rs", 'if matches!(self.scope, Scope::Hook(_)) => Err(Error::invalid(format!(', "if false => Err(Error::invalid(format!(", PLUGINS),
     ("hook-event-outlives-rollback", "crates/plugins/src/host.rs", "Scope::Hook(hc) => ferrum_kernel::outbox::enqueue(hc.tx, tenant, &topic, None, None, payload).await?,", "Scope::Hook(hc) => {\n                        let mut tx = hc.kernel.db.tenant_tx(tenant).await?;\n                        ferrum_kernel::outbox::enqueue(&mut tx, tenant, &topic, None, None, payload).await?;\n                        tx.commit().await?;\n                    }", PLUGINS),

@@ -17,7 +17,7 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
   * Sessions: cookie sessions with Fetch-Metadata checks, and bound tokens for today's web app.
   * Runtime: the bar runtime (`server/shell/`), with the launcher, intents, companion windows, the
     shared live channel and version checks.
-  * `ferrum-app dev --ui` (31 October 2026): on a development server (`FERRUM_DEV_UI=1`), an
+  * `ferrum-app dev --ui` (31 October 2026): on a development server (`FERRUM_DEV_UI=true`), an
     administrator points an installed app's pages at its interface's Vite server on the same machine
     (`/api/admin/apps/{id}/dev-ui`, kept in memory): the page that server gives, with the shell put
     in and its files and hot-reload socket allowed by the page's policy; an isolated interface stays
@@ -1001,7 +1001,7 @@ Ferrum-Frontend becomes an npm workspace that publishes:
 ### 10.6 Templates, dev loop and checks (ferrum-sdk)
 
 * `ferrum-app new crm --ui`: Vite, React, TypeScript, the packages, a bootstrap reader, Playwright.
-* `ferrum-app dev --ui`: on a development server (`FERRUM_DEV_UI=1` only), the core sends `/{route}/`
+* `ferrum-app dev --ui`: on a development server (`FERRUM_DEV_UI=true` only), the core sends `/{route}/`
   to the local Vite server behind the real session, bar and bootstrap, with hot reload.
 * `ferrum-app check`: manifest, routes, entry page rules, size budgets (§12.9), CSP origins, messages
   for the default locale, an automatic accessibility pass.
