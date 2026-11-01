@@ -34,7 +34,7 @@ this repository, 82 built and awaiting qualification.
 ## Ready: 5. Existing application completion
 
 - `FERRUM-UX-003` Help center
-- `FERRUM-UX-004` Application completeness contract per app (Seven apps have no interface of their own and use the records pages: Assets, Bookings, Campaigns, Field Service, Forms, Learn, Sign)
+- `FERRUM-UX-004` Application completeness contract per app (Every app has a hand-crafted interface, listed under FERRUM-UX-009; no written contract says what each must cover)
 - `FERRUM-UX-006` Translation, right-to-left, locale formatting (No translation infrastructure was found in the core; money and dates format per workspace)
 - `FERRUM-UX-007` Mobile and offline policy with leases (POS and Docs work offline; no shared policy for what is cached, who sees it or when it expires)
 - `FERRUM-ERP-004` Parallel accounting books
