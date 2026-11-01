@@ -92,6 +92,9 @@ pub struct Settings {
     /// Base64 of 32 random bytes sealing secret fields; required in production.
     #[serde(default)]
     pub secret_key: String,
+    /// Keys being rotated out, comma-separated base64 (`FERRUM_RETIRED_SECRET_KEYS`).
+    #[serde(default)]
+    pub retired_secret_keys: String,
     /// When set, `/metrics` requires `Authorization: Bearer <token>`.
     #[serde(default)]
     pub metrics_token: String,

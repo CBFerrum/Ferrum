@@ -21,6 +21,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 |---|---|---|
 | `DATABASE_URL` | yes | `postgres://user:pass@host:5432/db` |
 | `JWT_SECRET` | yes | Base64, ≥ 32 random bytes: `openssl rand -base64 48`. Rotating it signs everyone out |
+| `FERRUM_RETIRED_SECRET_KEYS` | no | Keys being rotated out, comma-separated: see *Rotating the secret key*. |
 | `FERRUM_SECRET_KEY` | yes | Base64 of exactly 32 random bytes: `openssl rand -base64 32`. Seals secret fields (mail passwords, API keys) and plugins' settings (payment gateways' keys among them) with AES-256-GCM; every replica needs the same key. Back it up: values sealed with a lost key must be entered again |
 | `FERRUM_BOOTSTRAP_TOKEN` | no | Enables `POST /api/tenants` with header `X-Ferrum-Bootstrap-Token`; empty disables it |
 | `FERRUM_METRICS_TOKEN` | recommended | `/metrics` then requires `Authorization: Bearer <token>` |
@@ -246,6 +247,33 @@ deploy/kind/install.sh && deploy/kind/smoke.sh
 
   Restoring in place, `docker compose stop ferrum` first.
 * Test a restore at least quarterly. After restoring, run the audit verification below.
+
+## Rotating the secret key
+
+`FERRUM_SECRET_KEY` seals secret fields, authenticator secrets, single sign-on client secrets,
+webhook signing secrets, plugins' settings and the Web Push key. To replace it, on a schedule or
+because the old key may have been seen:
+
+1. Generate a new key: `openssl rand -base64 32`.
+2. Give **every** replica both: add the new key to `FERRUM_RETIRED_SECRET_KEYS` and restart them all.
+   Nothing changes yet, but each replica can now open what the new key will seal, so a rolling
+   restart in the next step cannot leave one that cannot read a value.
+3. Set `FERRUM_SECRET_KEY` to the new key and `FERRUM_RETIRED_SECRET_KEYS` to the old one, and restart.
+   Each replica moves stored values to the new key as it starts. It is safe side by side with
+   traffic and with other replicas: a value changed meanwhile is left for the next start.
+4. Check the log. `secrets remain that no configured key opens` means some values were sealed with
+   a key you have not configured: keep the retired keys until you know why.
+5. Remove the old key from `FERRUM_RETIRED_SECRET_KEYS` and restart. Back up the new key.
+
+A backup taken before the rotation still needs the old key, so keep it as long as those backups.
+
+**If a key is lost**, what it sealed cannot be recovered: nothing else holds those values. Secret
+fields answer that they were sealed with another key. People with an authenticator app cannot use
+it, and an administrator resets their two-factor sign-in. Single sign-on fails until the client
+secret is entered again. Plugins start with those settings missing, so re-enter them. Webhooks fail
+rather than go out unsigned, so make new ones. The Web Push key is replaced, and devices subscribe
+again. Passwords, sessions and business data are not affected. Restoring a backup without its key
+leaves the same state.
 
 ## Monitoring
 

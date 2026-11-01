@@ -249,6 +249,8 @@ pub struct PluginHost {
     /// Seals each configuration value at rest (gateways' API keys and webhook secrets among them);
     /// without one (tests), configuration is stored as given.
     sealing: std::sync::OnceLock<SecretKey>,
+    /// Keys being rotated out: what they sealed still opens, and is sealed again at the next start.
+    retired: std::sync::OnceLock<Vec<SecretKey>>,
 }
 
 /// How a sealed configuration value is stored: `{"$sealed": <AES-256-GCM, base64>, "$key": <key id>}`.
@@ -278,10 +280,17 @@ fn is_sealed(v: &Value) -> bool {
     v.get(SEALED).is_some_and(Value::is_string)
 }
 
+/// A sealed value, opened with the first of `keys` that can.
+fn open_value<'k>(mut keys: impl Iterator<Item = &'k SecretKey>, tenant: Uuid, plugin: &str, name: &str, v: &Value) -> Option<Value> {
+    let aad = config_aad(tenant, plugin, name);
+    let plain = keys.find_map(|key| key.open(&aad, v[SEALED].as_str().unwrap_or_default()).ok())?;
+    serde_json::from_str(&plain).ok()
+}
+
 /// `config` as the plugin reads it: sealed values opened. One that cannot be opened (sealed with
-/// another key, or tampered with) is left out and logged, so the plugin reports it as missing
-/// rather than every plugin of the workspace failing to load.
-fn open_config(key: Option<&SecretKey>, tenant: Uuid, plugin: &str, config: Value) -> Value {
+/// a key this server does not have, or tampered with) is left out and logged, so the plugin reports
+/// it as missing rather than every plugin of the workspace failing to load.
+fn open_config<'k>(keys: impl Iterator<Item = &'k SecretKey> + Clone, tenant: Uuid, plugin: &str, config: Value) -> Value {
     let Value::Object(map) = config else { return config };
     let mut out = Map::new();
     for (k, v) in map {
@@ -289,18 +298,11 @@ fn open_config(key: Option<&SecretKey>, tenant: Uuid, plugin: &str, config: Valu
             out.insert(k, v);
             continue;
         }
-        let opened = key
-            .ok_or_else(|| "no key to open it with".to_string())
-            .and_then(|key| match v.get("$key").and_then(Value::as_str) {
-                Some(id) if id != key.id => Err(format!("it was sealed with another key ({id})")),
-                _ => key.open(&config_aad(tenant, plugin, &k), v[SEALED].as_str().unwrap_or_default()).map_err(|e| e.to_string()),
-            })
-            .and_then(|plain| serde_json::from_str::<Value>(&plain).map_err(|e| e.to_string()));
-        match opened {
-            Ok(value) => {
+        match open_value(keys.clone(), tenant, plugin, &k, &v) {
+            Some(value) => {
                 out.insert(k, value);
             }
-            Err(why) => tracing::warn!(%tenant, plugin, setting = %k, "a plugin setting could not be opened: {why}; set it again"),
+            None => tracing::warn!(%tenant, plugin, setting = %k, "a plugin setting could not be opened; set it again"),
         }
     }
     Value::Object(out)
@@ -379,6 +381,7 @@ impl PluginHost {
             sockets: SocketHub::new(),
             allow_private_http,
             sealing: std::sync::OnceLock::new(),
+            retired: std::sync::OnceLock::new(),
         });
         // The clock guests' deadlines run on; it stops with the host.
         let ticking = Arc::downgrade(&host);
@@ -407,9 +410,19 @@ impl PluginHost {
         let _ = self.sealing.set(key);
     }
 
-    /// Seals configuration stored before values were sealed, in every workspace; returns how many
-    /// plugins changed. Safe to run at every start: a plugin whose configuration an administrator
-    /// changes meanwhile is left for the next run.
+    /// Opens what `keys` sealed too, while they are being rotated out (set once).
+    pub fn open_also_with(&self, keys: Vec<SecretKey>) {
+        let _ = self.retired.set(keys);
+    }
+
+    /// The key to seal with, then those being rotated out.
+    fn sealing_keys(&self) -> impl Iterator<Item = &SecretKey> + Clone {
+        self.sealing.get().into_iter().chain(self.retired.get().into_iter().flatten())
+    }
+
+    /// Seals configuration stored before values were sealed, and seals again what a retired key
+    /// sealed, in every workspace; returns how many plugins changed. Safe to run at every start: a
+    /// plugin whose configuration an administrator changes meanwhile is left for the next run.
     pub async fn seal_stored(&self, db: &Db) -> Result<usize> {
         let Some(key) = self.sealing.get() else { return Ok(0) };
         let mut tx = db.system_tx().await?;
@@ -417,10 +430,23 @@ impl PluginHost {
         let mut changed = 0;
         for (tenant, id, name, config) in rows {
             let Value::Object(map) = &config else { continue };
-            if map.values().all(|v| is_sealed(v) || v.is_null()) {
+            let current = |v: &Value| v.is_null() || (is_sealed(v) && v.get("$key").and_then(Value::as_str) == Some(key.id.as_str()));
+            if map.values().all(current) {
                 continue;
             }
-            let sealed = Value::Object(seal_config(key, tenant, &name, map.clone())?);
+            // Values of a retired key are opened, then sealed like new ones. One that no key opens
+            // stays as it is, for a key configured later.
+            let rotated: Map<String, Value> = map
+                .iter()
+                .map(|(k, v)| match (is_sealed(v) && !current(v)).then(|| open_value(self.sealing_keys(), tenant, &name, k, v)).flatten() {
+                    Some(opened) => (k.clone(), opened),
+                    None => (k.clone(), v.clone()),
+                })
+                .collect();
+            let sealed = Value::Object(seal_config(key, tenant, &name, rotated)?);
+            if sealed == config {
+                continue;
+            }
             changed += sqlx::query("update plugin set config = $3 where tenant_id = $1 and id = $2 and config = $4")
                 .bind(tenant)
                 .bind(id)
@@ -463,7 +489,7 @@ impl PluginHost {
                 if m.hooks.is_empty() {
                     m.hooks = serde_json::from_value(hooks).unwrap_or_default();
                 }
-                let config = open_config(self.sealing.get(), tenant, &name, config);
+                let config = open_config(self.sealing_keys(), tenant, &name, config);
                 Loaded { id, name, sha, manifest: Arc::new(m), config: Arc::new(config), user_id, fuel: fuel.max(0) as u64, memory_mb: mem.max(1) as u32 }
             })
             .collect();

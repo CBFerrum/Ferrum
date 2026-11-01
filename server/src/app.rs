@@ -165,7 +165,15 @@ impl Hooks for App {
         let mailer: Option<Arc<dyn Mailer>> = ctx.mailer.clone().map(|sender| Arc::new(LocoMailer { sender, from: None, smtp }) as Arc<dyn Mailer>);
         let jwt = ctx.config.auth.as_ref().and_then(|a| a.jwt.as_ref()).ok_or_else(|| Error::Message("auth.jwt is not configured".into()))?;
         let secret_key = secret_key(&settings, &jwt.secret, &ctx.environment)?;
+        let retired = settings
+            .retired_secret_keys
+            .split(',')
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .map(|k| ferrum_kernel::secret::SecretKey::from_base64(k).map_err(|e| Error::Message(format!("settings.retired_secret_keys: {e}"))))
+            .collect::<Result<Vec<_>>>()?;
         plugins.seal_with(secret_key.clone());
+        plugins.open_also_with(retired.clone());
         let kernel = Kernel::boot(
             db,
             catalog,
@@ -174,6 +182,7 @@ impl Hooks for App {
                 webhooks_allow_private: settings.webhooks_allow_private,
                 sso_allow_private: settings.sso_allow_private,
                 secret_key: Some(secret_key),
+                retired_secret_keys: retired,
                 pdf_url: Some(settings.pdf_url.trim().to_string()).filter(|u| !u.is_empty()),
                 public_url: Some(ctx.config.server.host.trim().trim_end_matches('/').to_string()).filter(|u| u.starts_with("http")),
                 push_services: push_services(&settings.push_services),
@@ -190,6 +199,12 @@ impl Hooks for App {
             Ok(0) => {}
             Ok(n) => tracing::info!(plugins = n, "sealed stored plugin settings"),
             Err(e) => tracing::warn!("sealing stored plugin settings: {e}"),
+        }
+        match kernel.reseal_secrets().await {
+            Ok(done) if done.unopened > 0 => tracing::error!(moved = done.moved, unopened = done.unopened, "secrets remain that no configured key opens"),
+            Ok(done) if done.moved > 0 => tracing::info!(moved = done.moved, "moved stored secrets to the current key"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("resealing stored secrets: {e}"),
         }
         // Loco signs with the base64-decoded secret: reject anything that is not valid base64 at boot.
         if loco_rs::auth::jwt::JWT::new(&jwt.secret).generate_token(60, "probe".into(), serde_json::Map::new()).is_err() {

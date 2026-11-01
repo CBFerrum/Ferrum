@@ -16,9 +16,9 @@ use crate::query::{self, Filter, ListQuery, MAX_LIMIT, MAX_OFFSET, Page};
 use crate::store::{self, SYSTEM_KEYS, field_expr};
 use crate::value::{is_empty, normalize};
 use crate::{Doc, Kernel};
-use ferrum_meta::{EffEntity, EntityKind, FieldDef, FieldType, NumberingOn, RuleOn, Scope, Storage};
+use ferrum_meta::{EffEntity, EntityKind, FieldDef, FieldType, NumberingOn, Reference, RuleOn, Scope, Storage};
 use serde_json::{Map, Value, json};
-use sqlx::{AssertSqlSafe, QueryBuilder};
+use sqlx::{AssertSqlSafe, Postgres, QueryBuilder};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -222,14 +222,25 @@ impl Kernel {
             if tent.table.is_empty() || tent.def.kind == EntityKind::Ledger {
                 continue;
             }
+            // A restricted entity names itself only to those who may read that very record.
+            let scope = match tent.def.reference {
+                Reference::Open => None,
+                Reference::Restricted => match row_scope(ctx, tent, Action::Read) {
+                    Ok(scope) => Some(scope),
+                    Err(_) => continue,
+                },
+            };
             let title = tent.def.title_field.as_deref().and_then(|f| field_expr(tent, f, "a")).map(|e| format!("{e}::text")).unwrap_or_else(|| "null".into());
-            let sql = format!(
-                "select a.id, coalesce(nullif({title}, ''), a.number, a.id::text) from {} a where a.tenant_id = $1 and a.id = any($2){}",
-                crate::ddl::q(&tent.table),
-                store::entity_predicate(tent, "a")
-            );
             let ids: Vec<Uuid> = ids.into_iter().collect();
-            let rows: Vec<(Uuid, String)> = sqlx::query_as(AssertSqlSafe(sql)).bind(ctx.tenant).bind(&ids).fetch_all(&mut **tx).await?;
+            let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(format!(
+                "select a.id, coalesce(nullif({title}, ''), a.number, a.id::text) from {} a where a.tenant_id = ",
+                crate::ddl::q(&tent.table)
+            ));
+            qb.push_bind(ctx.tenant).push(" and a.id = any(").push_bind(ids).push(")").push(store::entity_predicate(tent, "a"));
+            if let Some(scope) = &scope {
+                scope.push_sql(&mut qb, "a");
+            }
+            let rows: Vec<(Uuid, String)> = qb.build_query_as().fetch_all(&mut **tx).await?;
             titles.extend(rows);
         }
         let annotate = |e: &EffEntity, d: &mut Map<String, Value>| {

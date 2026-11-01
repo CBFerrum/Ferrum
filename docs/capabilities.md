@@ -9,9 +9,9 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 53 |
-| Partially implemented | 48 |
-| Missing | 75 |
+| Implemented, qualification incomplete | 58 |
+| Partially implemented | 44 |
+| Missing | 74 |
 | Blocked by external dependency | 9 |
 | **All** | **185** |
 
@@ -52,15 +52,15 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-IDENTITY-007 | Linking accounts only on proof of ownership | Implemented, qualification incomplete | read |  |
 | FERRUM-IDENTITY-008 | Guests, portal people, service accounts, scoped keys | Partially implemented | read | API key scopes are dav and scim; there are no per-entity key scopes |
 | FERRUM-IDENTITY-009 | One policy system across tenant | Partially implemented | read | Department, branch and time-limited grants are not modelled |
-| FERRUM-IDENTITY-010 | Row rules beyond equality | Partially implemented | read | Equality tests only; no ranges, dates or expressions |
-| FERRUM-IDENTITY-011 | Explicit reference-disclosure policy for linked titles | Partially implemented | read | Titles of records the caller cannot open are shown, as documented |
+| FERRUM-IDENTITY-010 | Row rules beyond equality | Implemented, qualification incomplete | tested | Ranges and days from today; no expressions across fields |
+| FERRUM-IDENTITY-011 | Explicit reference-disclosure policy for linked titles | Implemented, qualification incomplete | tested | The default stays open; no package has marked its sensitive entities yet; Covers titles on records; counts, suggestions and search snippets are not audited against it |
 | FERRUM-IDENTITY-012 | Field masking and export restrictions | Partially implemented | read | Field groups give read and write; no masking |
-| FERRUM-IDENTITY-013 | Policy explanation and simulation | Missing | probe |  |
+| FERRUM-IDENTITY-013 | Policy explanation and simulation | Implemented, qualification incomplete | tested | An API only: no administrator screen yet; Simulates other roles, not other rules |
 | FERRUM-IDENTITY-014 | Segregation of duties and maker-checker | Partially implemented | read | Approvers can be barred from their own documents; no rule across roles or automations |
 | FERRUM-IDENTITY-015 | Authorization rechecked when delayed work runs | Partially implemented | read | Mail and push recheck; automations run as the system |
 | FERRUM-IDENTITY-016 | Browser session architecture with CSRF defence | Implemented, qualification incomplete | read | Bearer tokens on pages remain readable by script; CSP is the defence |
-| FERRUM-IDENTITY-017 | Secrets sealed at rest with bound context | Partially implemented | tested | Webhook signing secrets are still stored in the clear |
-| FERRUM-IDENTITY-018 | Key rotation while old values exist | Partially implemented | read | Values name their key, but a server opens one key at a time; a rotation needs a re-seal |
+| FERRUM-IDENTITY-017 | Secrets sealed at rest with bound context | Implemented, qualification incomplete | tested |  |
+| FERRUM-IDENTITY-018 | Key rotation while old values exist | Implemented, qualification incomplete | tested | One key per server, not per tenant; apps' signing keys kept elsewhere are not covered |
 | FERRUM-IDENTITY-019 | Key-management service integration | Missing | probe |  |
 | FERRUM-IDENTITY-020 | OWASP ASVS mapping and independent security testing | Blocked by external dependency | read | docs/security.md states the model; no independent test has been done |
 
