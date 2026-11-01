@@ -3,6 +3,52 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-01, evening: integrations, the record frame and every app's interface
+
+**State**: everything below is on `main` of its repository, except what is listed under "Not done".
+
+### What landed
+
+| Where | What |
+|---|---|
+| Ferrum PR 8, 9, 10, 11 | Plugin credentials the plugin cannot read, an OAuth client-credentials broker, per-event outbox leases, hook isolation; a connector contract with capabilities, discovery and health, connectors as plugins, a provider that says wait left alone; records that say what links to them, shared views, `/metrics` for connections, an evidence pack, journeys across apps, Services and Field Operations suites |
+| Ferrum-Frontend | Filters by period, emptiness and number; a panel beside lists, boards and calendars; import; merging; related records; shared views; calendar rescheduling; a Connections console; pdf.js |
+| All 16 apps | A hand-crafted interface for each. See [references/README.md](../references/README.md) for what each has, how far it was tried and what was left out |
+| Commerce gateways | Refunds, a Payment Exception a person decides, signed webhooks, PayPal's token held by the host |
+| ferrum-sdk | One SDK, usable as a git dependency, with `fetch_with`, `verify_hmac_sha256` and test helpers |
+
+### Evidence
+
+CI is green on main for every app and for Ferrum at the merge of each PR. `server/tests/journeys_it.rs`
+runs lead to cash and procure to pay across the apps and back, on figures worked out by hand. Each
+interface has its own tests, type checks and bundle budget. They were then tried by hand on the real
+binary in one browser, recorded per app in the references page.
+
+Exercising them found what their tests had not: the click that ends a drag starting a new booking,
+Helpdesk and Field Service both defining `ServiceContract` so the server would not boot, a launcher
+icon the shell could not draw, a draft asset shown as overdue, and a button that stayed grey with no
+reason. Helpdesk's replies had never reached a customer by email at all.
+
+Not run: any real payment, identity, AI, antivirus, mail delivery, media or connector provider;
+`preflight.sh` on a clean host; ERP's whole workspace on this machine (CI ran it). No independent
+security, legal or accessibility review has happened. Nothing is `verified_complete`.
+
+### Not done
+
+Listed in [backlog.md](backlog.md). The largest: a separate control plane, signup and closure,
+billing, a partner console, SAML, a key-management service, cross-system sagas, translation, a help
+centre, deferred revenue and accounting dimensions, parallel books and consolidation, and any
+certified connector. Publishing the SDK waits on packaging `@ferrum/*` and the owner's npm account;
+payment and tax providers wait on keys only the owner can obtain.
+
+### Findings to carry
+
+- Apps commit `ui/dist`, so a Frontend change reaches an app only when its `ui/dist` is rebuilt and
+  committed. `npm run check` compares only the app's own sources.
+- A workspace keeps an app's installed version: after a pin moves, `POST /api/admin/apps/{id}/upgrade`.
+- Locally, `journeys_it` needs a fresh database, because dropping every app's tables runs out of locks.
+- Several parallel builds in one `target` use about 4 GB an hour on this disk.
+
 ## 2026-11-01: evidence, registry and foundations
 
 **Read at** the revisions in [release-manifest.yaml](release-manifest.yaml). **Nothing here is pushed.**

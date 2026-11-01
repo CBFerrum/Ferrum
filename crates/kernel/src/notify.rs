@@ -168,9 +168,10 @@ fn mail_html(workspace: &str, heading: Option<&str>, items: &[Mailed], more: usi
 }
 
 impl crate::Kernel {
-    /// Where links in notification emails point: the workspace's own address when the server is
-    /// reached over HTTPS (or does not say), else the server's (`public_url`); none without either.
-    async fn link_base(&self, tenant: Uuid) -> Option<String> {
+    /// Where links a person follows from outside point: the workspace's own address when the
+    /// server is reached over HTTPS (or does not say), else the server's (`public_url`); none
+    /// without either. Apps use it for what they email, unless a setting of theirs says otherwise.
+    pub async fn link_base(&self, tenant: Uuid) -> Option<String> {
         let public = self.settings.public_url.clone();
         if public.as_deref().is_none_or(|u| u.starts_with("https://"))
             && let Ok(Some(host)) = self.primary_host(tenant, "shell").await
