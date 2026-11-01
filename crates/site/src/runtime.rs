@@ -3,6 +3,8 @@
 //! others losing anything, and a restart picks up from the file.
 
 use crate::adapter::{Adapter, Dispatched, Failure, Observation, Reading};
+use crate::adapters::defined::{Defined, LinkHealth};
+use crate::adapters::transport::Limits as OpenLimits;
 use crate::adapters::{operator::OperatorTasks, sim::Sim};
 use crate::config::{AdapterKind, Config};
 use crate::crash_point;
@@ -10,6 +12,7 @@ use crate::journal::{Entry, Journal};
 use crate::link::{Link, LinkError};
 use chrono::{DateTime, Utc};
 use ferrum_ops_contract::command::Report;
+use ferrum_ops_contract::edge::{AlarmChange, Comparison, ConfigRequest, ConfigResponse, EdgeConfig, Rule, Watch};
 use ferrum_ops_contract::schedule::{self, Held, Resource, Task};
 use ferrum_ops_contract::sync::{Fact, Health, SiteDevice};
 use ferrum_ops_contract::telemetry::{Class, Limits, Measurement};
@@ -67,9 +70,17 @@ impl Clock {
     }
 }
 
+#[derive(Clone)]
 struct Slot {
     adapter: Arc<dyn Adapter>,
     concurrency: u32,
+}
+
+/// The edge's own rules, and where each stands on each device.
+#[derive(Default)]
+struct Rules {
+    rules: Vec<Rule>,
+    watches: HashMap<(Uuid, Uuid), Watch>,
 }
 
 pub struct Runtime {
@@ -90,6 +101,11 @@ pub struct Runtime {
     latest: Mutex<HashMap<(Uuid, String), f64>>,
     repeats: Mutex<HashMap<(Uuid, String), (f64, u32)>>,
     last_state: Mutex<HashMap<String, String>>,
+    last_attribute: Mutex<HashMap<(Uuid, String), Value>>,
+    defined: Arc<Defined>,
+    rules: Mutex<Rules>,
+    /// Why what this gateway was given could not all start.
+    problems: Mutex<Vec<String>>,
 }
 
 fn free_disk(path: &Path) -> Option<i64> {
@@ -124,9 +140,12 @@ impl Runtime {
             }
             adapters.push((a.name.clone(), adapter));
         }
+        let limits = OpenLimits { drivers_dir: cfg.drivers_dir.clone(), allow: cfg.allow.clone() };
+        let defined = Arc::new(Defined::new(limits, json!(cfg.secrets)));
+        adapters.push(("definitions".to_string(), defined.clone()));
         let high_water = journal.high_water().map_err(|e| e.to_string())?.map(|t| t.timestamp_millis()).unwrap_or(0);
         let offset = journal.get("clock_offset").map_err(|e| e.to_string())?.and_then(|v| v.parse().ok()).unwrap_or(0);
-        Ok(Arc::new(Runtime {
+        let runtime = Arc::new(Runtime {
             cfg,
             journal,
             clock: Clock::new(high_water, offset),
@@ -141,7 +160,125 @@ impl Runtime {
             latest: Mutex::default(),
             repeats: Mutex::default(),
             last_state: Mutex::default(),
-        }))
+            last_attribute: Mutex::default(),
+            defined,
+            rules: Mutex::default(),
+            problems: Mutex::default(),
+        });
+        runtime.restore_alarms();
+        runtime.configure();
+        Ok(runtime)
+    }
+
+    /// Definitions kept on this machine, by file name.
+    fn local_definitions(&self) -> BTreeMap<String, String> {
+        let Some(dir) = &self.cfg.definitions_dir else { return BTreeMap::new() };
+        let Ok(files) = std::fs::read_dir(dir) else { return BTreeMap::new() };
+        let mut out = BTreeMap::new();
+        for path in files.filter_map(|f| f.ok()).map(|f| f.path()).filter(|p| p.extension().is_some_and(|e| e == "yaml" || e == "yml")) {
+            if let (Some(name), Ok(text)) = (path.file_stem().map(|s| s.to_string_lossy().to_string()), std::fs::read_to_string(&path)) {
+                out.insert(name, text);
+            }
+        }
+        out
+    }
+
+    /// What this gateway holds from the platform, as it was last told.
+    fn managed(&self) -> Option<EdgeConfig> {
+        let text = self.journal.get("edge_config").ok().flatten()?;
+        serde_json::from_str(&text).ok()
+    }
+
+    /// Becomes what its configuration says. What is on this machine wins over what the platform
+    /// sent, and what has not changed keeps its connections.
+    fn configure(&self) {
+        let managed = self.managed().filter(|_| self.cfg.managed).unwrap_or_default();
+        let mut definitions = managed.definitions.clone();
+        definitions.extend(self.local_definitions());
+        let mut devices = self.cfg.devices.clone();
+        for d in &managed.devices {
+            if !devices.iter().any(|mine| mine.code == d.code) && !self.by_device.contains_key(&d.code) {
+                devices.push(d.clone());
+            }
+        }
+        let problems = self.defined.apply(&definitions, &devices);
+        for p in &problems {
+            tracing::warn!("{p}");
+        }
+        *self.problems.lock().unwrap_or_else(|e| e.into_inner()) = problems;
+        self.rules.lock().unwrap_or_else(|e| e.into_inner()).rules = managed.rules;
+    }
+
+    fn restore_alarms(&self) {
+        let raised: Vec<(Uuid, Uuid)> = self.journal.get("alarms_raised").ok().flatten().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        self.rules.lock().unwrap_or_else(|e| e.into_inner()).watches = raised.into_iter().map(|k| (k, Watch::still_raised())).collect();
+    }
+
+    /// Writes down an alarm's change: a fact for the platform, and what is raised, for a restart.
+    fn alarm(&self, rules: &Rules, rule: Uuid, device: Uuid, raised: bool, value: Option<f64>) {
+        let change = AlarmChange { rule, device, raised, value };
+        let fact = Fact { fact_id: Uuid::now_v7(), kind: "edge.alarm".into(), at_source: self.clock.now(), actor: None, body: json!(change) };
+        let _ = self.journal.add_fact(&fact);
+        let up: Vec<&(Uuid, Uuid)> = rules.watches.iter().filter(|(_, w)| w.raised()).map(|(k, _)| k).collect();
+        let _ = self.journal.set("alarms_raised", &json!(up).to_string());
+    }
+
+    fn judge(&self, code: &str, device: Uuid, metric: &str, value: f64) {
+        let at = self.clock.now();
+        let mut guard = self.rules.lock().unwrap_or_else(|e| e.into_inner());
+        let matching: Vec<Rule> =
+            guard.rules.iter().filter(|r| r.metric == metric && (r.devices.is_empty() || r.devices.iter().any(|d| d == code))).cloned().collect();
+        for rule in matching {
+            let changed = guard.watches.entry((rule.id, device)).or_default().feed(&rule, value, at);
+            if let Some(raised) = changed {
+                self.alarm(&guard, rule.id, device, raised, Some(value));
+            }
+        }
+    }
+
+    /// Silence is only noticed by the clock.
+    fn tick_rules(&self) {
+        let now = self.clock.now();
+        let mut guard = self.rules.lock().unwrap_or_else(|e| e.into_inner());
+        let rules = guard.rules.clone();
+        for rule in rules.iter().filter(|r| r.when == Comparison::Silent) {
+            let keys: Vec<(Uuid, Uuid)> = guard.watches.keys().filter(|k| k.0 == rule.id).copied().collect();
+            for key in keys {
+                let changed = guard.watches.get_mut(&key).and_then(|w| w.tick(rule, now));
+                if let Some(raised) = changed {
+                    self.alarm(&guard, rule.id, key.1, raised, None);
+                }
+            }
+        }
+    }
+
+    pub fn links(&self) -> Vec<LinkHealth> {
+        self.defined.links()
+    }
+
+    /// Asks the platform what this gateway should be. Nothing here can stop work: a site keeps
+    /// running what it was last told.
+    pub async fn exchange_config(&self) {
+        let have = self.managed().map(|c| c.version).unwrap_or_default();
+        let request = ConfigRequest {
+            have,
+            strangers: self.defined.strangers(),
+            problems: self.problems.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            links: json!(self.defined.links()),
+            runtime: env!("CARGO_PKG_VERSION").to_string(),
+        };
+        match self.link.edge_config(&request, self.clock.signing_ms()).await {
+            Ok(ConfigResponse { config: Some(config) }) => {
+                let text = serde_json::to_string(&config).unwrap_or_default();
+                if let Err(e) = self.journal.set("edge_config", &text) {
+                    tracing::warn!("could not keep the new configuration: {e}");
+                    return;
+                }
+                self.configure();
+            }
+            Ok(_) => {}
+            Err(e) => tracing::debug!("edge configuration: {e:?}"),
+        }
     }
 
     fn link_up(&self) -> bool {
@@ -188,8 +325,11 @@ impl Runtime {
         }
     }
 
-    fn adapter_for(&self, code: &str) -> Option<&Slot> {
-        self.by_device.get(code)
+    fn adapter_for(&self, code: &str) -> Option<Slot> {
+        self.by_device.get(code).cloned().or_else(|| {
+            let concurrency = self.defined.concurrency(code)?;
+            Some(Slot { adapter: self.defined.clone(), concurrency })
+        })
     }
 
     fn devices_by_id(&self) -> HashMap<Uuid, SiteDevice> {
@@ -568,6 +708,7 @@ impl Runtime {
         if let Err(e) = self.journal.shed(self.cfg.telemetry_budget_mb << 20) {
             tracing::warn!("telemetry budget: {e}");
         }
+        self.tick_rules();
     }
 
     fn take(&self, reading: Reading, devices: &HashMap<String, SiteDevice>, batch: &mut Vec<Measurement>) {
@@ -586,6 +727,7 @@ impl Runtime {
                 let quality = limits.judge(value, repeats);
                 if quality != ferrum_ops_contract::Quality::Bad {
                     self.latest.lock().unwrap_or_else(|e| e.into_inner()).insert(key, value);
+                    self.judge(&device, d.id, &metric, value);
                 }
                 batch.push(Measurement {
                     device_id: d.id,
@@ -598,6 +740,31 @@ impl Runtime {
                     quality,
                     class,
                 });
+            }
+            Reading::Attribute { device, key, value } => {
+                let Some(d) = devices.get(&device) else { return };
+                let fresh = self.last_attribute.lock().unwrap_or_else(|e| e.into_inner()).insert((d.id, key.clone()), value.clone()).as_ref() != Some(&value);
+                if fresh {
+                    let fact = Fact {
+                        fact_id: Uuid::now_v7(),
+                        kind: "edge.attribute".into(),
+                        at_source: self.clock.now(),
+                        actor: None,
+                        body: json!({"device": d.id, "key": key, "value": value}),
+                    };
+                    let _ = self.journal.add_fact(&fact);
+                }
+            }
+            Reading::Event { device, name, value } => {
+                let Some(d) = devices.get(&device) else { return };
+                let fact = Fact {
+                    fact_id: Uuid::now_v7(),
+                    kind: "edge.event".into(),
+                    at_source: self.clock.now(),
+                    actor: None,
+                    body: json!({"device": d.id, "name": name, "value": value}),
+                };
+                let _ = self.journal.add_fact(&fact);
             }
             Reading::State { device, state, reason } => {
                 let Some(d) = devices.get(&device) else { return };
@@ -658,6 +825,9 @@ impl Runtime {
             "telemetry_shed": counts.shed,
             "disk_free_mb": free_disk(&self.cfg.state_dir).map(|f| f >> 20),
             "adapters": self.adapters.iter().map(|(n, a)| (n.clone(), a.health())).collect::<BTreeMap<_, _>>(),
+            "links": self.defined.links(),
+            "problems": *self.problems.lock().unwrap_or_else(|e| e.into_inner()),
+            "strangers": self.defined.strangers(),
             "notices": self.journal.notices(20).unwrap_or_default(),
         })
     }
@@ -710,6 +880,17 @@ impl Runtime {
                 tokio::select! { _ = s.changed() => return, _ = tokio::time::sleep(StdDuration::from_millis(work.cfg.work_millis)) => {} }
             }
         });
+        let manager = self.clone();
+        let mut s = stop.clone();
+        let managing = tokio::spawn(async move {
+            if !manager.cfg.managed {
+                return;
+            }
+            loop {
+                manager.exchange_config().await;
+                tokio::select! { _ = s.changed() => return, _ = tokio::time::sleep(StdDuration::from_secs(manager.cfg.sync_secs * 6)) => {} }
+            }
+        });
         let reader = self.clone();
         let mut s = stop.clone();
         let reading = tokio::spawn(async move {
@@ -718,7 +899,7 @@ impl Runtime {
                 tokio::select! { _ = s.changed() => return, _ = tokio::time::sleep(StdDuration::from_secs(reader.cfg.read_secs)) => {} }
             }
         });
-        let _ = tokio::join!(exchange, working, reading);
+        let _ = tokio::join!(exchange, working, reading, managing);
     }
 }
 

@@ -53,6 +53,18 @@ pub enum Reading {
         state: String,
         reason: Option<String>,
     },
+    /// A fact about it that changes rarely.
+    Attribute {
+        device: String,
+        key: String,
+        value: Value,
+    },
+    /// Something that happened.
+    Event {
+        device: String,
+        name: String,
+        value: Value,
+    },
 }
 
 #[async_trait]
