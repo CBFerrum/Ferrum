@@ -9,9 +9,9 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 70 |
+| Implemented, qualification incomplete | 71 |
 | Partially implemented | 40 |
-| Missing | 66 |
+| Missing | 65 |
 | Blocked by external dependency | 9 |
 | **All** | **185** |
 
@@ -176,7 +176,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Id | Requirement | Status | Basis | Known limitations |
 |---|---|---|---|---|
-| FERRUM-CONNECT-001 | Shared connector infrastructure: credentials, mapping, sync, reconciliation | Missing | probe | Each app and add-on holds its own connector code |
+| FERRUM-CONNECT-001 | Shared connector infrastructure: credentials, mapping, sync, reconciliation | Implemented, qualification incomplete | tested | Tested against a stand-in provider only: no real provider uses it yet; OAuth refresh and reconnect are each connector's for now; Deletions do not go out to providers; Rate limits are met with backoff, not a shared budget; Egress is not restricted per connection |
 | FERRUM-CONNECT-002 | Connector catalog with what each provider's API really offers | Missing | read |  |
 | FERRUM-CONNECT-003 | Payment gateways | Blocked by external dependency | read | Stripe, Razorpay and PayPal adapters tested only against fakes |
 | FERRUM-CONNECT-004 | Tax and e-invoicing networks | Blocked by external dependency | read | Adapters written to published specifications; none has run against a live or sandbox provider here |

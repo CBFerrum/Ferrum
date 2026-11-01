@@ -227,5 +227,6 @@ jobs:
           push-to-registry: true
       - name: Tag the commit's release
         run: |
-          docker buildx imagetools create -t "$SERVER:$GITHUB_SHA" "$SERVER@$SERVER_DIGEST"
-          docker buildx imagetools create -t "$EDITORS:$GITHUB_SHA" "$EDITORS@$EDITORS_DIGEST"
+          # Without --prefer-index=false a new index wraps the image, under a digest nothing attested.
+          docker buildx imagetools create --prefer-index=false -t "$SERVER:$GITHUB_SHA" "$SERVER@$SERVER_DIGEST"
+          docker buildx imagetools create --prefer-index=false -t "$EDITORS:$GITHUB_SHA" "$EDITORS@$EDITORS_DIGEST"

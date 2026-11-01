@@ -385,6 +385,7 @@ impl Kernel {
             let attachments = self.mail_attachments(ev.tenant_id, &ev.payload).await?;
             return mailer.send_with(field("to"), field("subject"), field("html"), &attachments).await;
         }
+        self.queue_deliveries(ev).await?;
         if ev.topic == crate::lifecycle::DEPROVISIONED_TOPIC {
             self.hand_over(ev).await?;
         }
