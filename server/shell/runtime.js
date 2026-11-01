@@ -507,17 +507,18 @@ function openFinder(b) {
   if (!shellData) loadShell().then(() => runFinder());
 }
 
-/** What this person opened from here lately. A convenience of this browser: it can come back empty. */
-const RECENT_KEY = "ferrum.finder.recent";
+/** What this person opened from here lately, kept apart per person: a browser can be shared. A
+ *  convenience of this browser, so it can come back empty. */
+const recentKey = () => `ferrum.finder.recent.${owner()}`;
 const RECENT_MAX = 6;
 
 function recentItems() {
-  const list = memory.get(localStorage, RECENT_KEY);
+  const list = memory.get(localStorage, recentKey());
   return Array.isArray(list) ? list.filter((r) => r && typeof r.title === "string" && sitePath(r.url)).slice(0, RECENT_MAX) : [];
 }
 
 function remember({ title, subtitle, url, icon: glyph }) {
-  memory.set(localStorage, RECENT_KEY, [{ title, subtitle, url, icon: glyph }, ...recentItems().filter((r) => r.url !== url)].slice(0, RECENT_MAX));
+  memory.set(localStorage, recentKey(), [{ title, subtitle, url, icon: glyph }, ...recentItems().filter((r) => r.url !== url)].slice(0, RECENT_MAX));
 }
 
 /** Things to create: all of them before typing, those that match after ("new deal", "deal"). */

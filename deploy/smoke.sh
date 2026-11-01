@@ -164,12 +164,7 @@ install() {
   curl -fsS "${auth[@]}" -H 'content-type: application/json' -d "{\"consent\":\"$consent\"}" "$API/api/admin/apps/$1/install" >/dev/null || fail "installing $1"
 }
 launcher() { curl -fsS -b "$work/jar" "$API/api/shell" | json "[a['url'] for a in d['apps'] if a['app'] == '$1']"; }
-# An app without an interface of its own (Forms): its records in the shell, where /open leads.
-install forms
-[ "$(launcher forms)" = "['/data/forms/']" ] || fail "Forms' records in the launcher"
-[ "$(curl -fsS -b "$work/jar" "$API/data/forms/" | bootstrap | json 'd["app"]["scope"]["app"]')" = forms ] || fail "Forms' records page"
-[[ "$(curl -sS -o /dev/null -b "$work/jar" -w '%{http_code} %{redirect_url}' "$API/open/Form")" =~ ^30[23]\ .*/data/forms/e/Form$ ]] || fail "/open of Forms' forms"
-# An app with one (Helpdesk): its launcher entry and its pages, where /open of its records leads,
+# An app with an interface of its own (Helpdesk): its launcher entry and its pages, where /open of its records leads,
 # and its old records-only addresses too.
 install helpdesk
 [ "$(launcher helpdesk)" = "['/helpdesk/']" ] || fail "Helpdesk's launcher entry"

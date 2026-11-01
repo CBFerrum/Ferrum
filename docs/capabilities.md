@@ -9,11 +9,11 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 82 |
+| Implemented, qualification incomplete | 83 |
 | Partially implemented | 45 |
 | Missing | 51 |
 | Blocked by external dependency | 9 |
-| **All** | **187** |
+| **All** | **188** |
 
 ## Platform
 
@@ -89,6 +89,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-UX-006 | Translation, right-to-left, locale formatting | Missing | probe | No translation infrastructure was found in the core; money and dates format per workspace |
 | FERRUM-UX-007 | Mobile and offline policy with leases | Partially implemented | read | POS and Docs work offline; no shared policy for what is cached, who sees it or when it expires |
 | FERRUM-UX-008 | The record frame: filters, side panel, import, merging, related records, shared views | Implemented, qualification incomplete | tested | Tried by hand in one browser; no standing browser test; A merge writes the chosen values, then merges: two steps, so a failed merge leaves those values on the record that stays; Related counts ask each linking list in turn, which for a much-used record is dozens of requests; only when the tab is opened; A shared view's columns are the view's; someone who did not share it saves a copy to change them |
+| FERRUM-UX-009 | A hand-crafted interface for every app, written against reference products | Implemented, qualification incomplete | tested | Each app's tests render its screens to markup; tried by hand in one browser as far as docs/references/README.md says, and no standing browser test exists; Each app lists what was left out in docs/references/README.md; No accessibility audit, translation or independent usability review |
 
 ## Apps
 
