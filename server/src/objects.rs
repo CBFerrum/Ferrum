@@ -49,6 +49,15 @@ impl Objects {
     }
 
     /// Whether the browser can upload straight to the store (S3 and compatibles; not a local disk).
+    /// The keys under `prefix` (for journals; not for anything a request waits on).
+    pub async fn list(&self, prefix: &str) -> Result<Vec<String>> {
+        match self.op.list_with(prefix).recursive(true).await {
+            Ok(entries) => Ok(entries.into_iter().map(|e| e.path().to_string()).filter(|p| !p.ends_with('/')).collect()),
+            Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(vec![]),
+            Err(e) => Err(storage_err(e)),
+        }
+    }
+
     pub fn direct_uploads(&self) -> bool {
         self.presigns
     }

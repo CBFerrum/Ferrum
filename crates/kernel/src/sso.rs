@@ -117,7 +117,7 @@ fn admin_only(ctx: &Ctx) -> Result<()> {
     if ctx.is_admin { Ok(()) } else { Err(Error::Forbidden("single sign-on is set up by administrators".into())) }
 }
 
-fn sealed_label(tenant: Uuid, id: Uuid) -> String {
+pub(crate) fn sealed_label(tenant: Uuid, id: Uuid) -> String {
     format!("sso|{tenant}|{id}")
 }
 
@@ -396,14 +396,7 @@ impl Kernel {
         .await?
         .ok_or_else(|| Error::NotFound("single sign-on provider".into()))?;
         let client_secret = match p.client_secret {
-            Some(sealed) => {
-                let key = self
-                    .settings
-                    .secret_key
-                    .as_ref()
-                    .ok_or_else(|| Error::Unavailable("single sign-on needs the server's secret key (FERRUM_SECRET_KEY)".into()))?;
-                Some(key.open(&sealed_label(p.tenant_id, id), &sealed)?)
-            }
+            Some(sealed) => Some(self.open_sealed(&sealed_label(p.tenant_id, id), &sealed)?),
             None => None,
         };
         let provider = Provider {

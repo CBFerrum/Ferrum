@@ -151,6 +151,8 @@ pub struct Schema {
     pub roles: Vec<RoleDef>,
     /// Where the installed packages keep people's personal data.
     pub personal_data: Vec<PersonalDataDef>,
+    /// Installed packages that declare no personal data, so requests do not search them.
+    pub undeclared_personal_data: Vec<String>,
     pub warnings: Vec<SchemaWarning>,
     /// The tenant's fiscal year start month (1-12), for contexts that act without a user.
     pub fy_start_month: u32,
@@ -204,6 +206,7 @@ impl Default for Schema {
             modules: vec![],
             roles: vec![],
             personal_data: vec![],
+            undeclared_personal_data: vec![],
             warnings: vec![],
             fy_start_month: 1,
             timezone: "UTC".into(),
@@ -373,6 +376,7 @@ pub(crate) fn apply_op(def: &mut EntityDef, op: &OverlayOp, source: OverlaySourc
                 "description" => def.description = as_opt_string(value, property)?,
                 "icon" => def.icon = as_opt_string(value, property)?,
                 "title_field" => def.title_field = as_opt_string(value, property)?,
+                "reference" => def.reference = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?,
                 "list" => def.list = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?,
                 "search_fields" => def.search_fields = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?,
                 "form" => {
@@ -438,6 +442,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
     let mut modules = Vec::new();
     let mut roles = Vec::new();
     let mut personal_data = Vec::new();
+    let mut undeclared_personal_data = Vec::new();
     let mut warnings = Vec::new();
 
     for pkg in catalog.packages().filter(|p| set.contains(p.name())) {
@@ -449,6 +454,9 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         modules.extend(pkg.manifest.modules.iter().map(|m| ModuleDef { package: pkg.name().into(), ..m.clone() }));
         roles.extend(pkg.manifest.roles.iter().cloned());
         personal_data.extend(pkg.manifest.personal_data.iter().cloned());
+        if pkg.manifest.personal_data.is_empty() {
+            undeclared_personal_data.push(pkg.manifest.package.clone());
+        }
     }
     // A package may print an entity of a package it depends on its own way (India's tax invoice);
     // the last in dependency order wins.
@@ -658,7 +666,19 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         );
     }
     modules.sort_by(|a, b| a.order.cmp(&b.order).then(a.name.cmp(&b.name)));
-    Ok(Schema { version, entities, packages, modules, roles, personal_data, warnings, fy_start_month: 1, timezone: "UTC".into(), shell_v2: false })
+    Ok(Schema {
+        version,
+        entities,
+        packages,
+        modules,
+        roles,
+        personal_data,
+        undeclared_personal_data,
+        warnings,
+        fy_start_month: 1,
+        timezone: "UTC".into(),
+        shell_v2: false,
+    })
 }
 
 fn compile_exprs(def: &EntityDef) -> Result<Exprs, String> {

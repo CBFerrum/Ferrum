@@ -16,9 +16,9 @@ use crate::query::{self, Filter, ListQuery, MAX_LIMIT, MAX_OFFSET, Page};
 use crate::store::{self, SYSTEM_KEYS, field_expr};
 use crate::value::{is_empty, normalize};
 use crate::{Doc, Kernel};
-use ferrum_meta::{EffEntity, EntityKind, FieldDef, FieldType, NumberingOn, RuleOn, Scope, Storage};
+use ferrum_meta::{EffEntity, EntityKind, FieldDef, FieldType, NumberingOn, Reference, RuleOn, Scope, Storage};
 use serde_json::{Map, Value, json};
-use sqlx::{AssertSqlSafe, QueryBuilder};
+use sqlx::{AssertSqlSafe, Postgres, QueryBuilder};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -222,14 +222,25 @@ impl Kernel {
             if tent.table.is_empty() || tent.def.kind == EntityKind::Ledger {
                 continue;
             }
+            // A restricted entity names itself only to those who may read that very record.
+            let scope = match tent.def.reference {
+                Reference::Open => None,
+                Reference::Restricted => match row_scope(ctx, tent, Action::Read) {
+                    Ok(scope) => Some(scope),
+                    Err(_) => continue,
+                },
+            };
             let title = tent.def.title_field.as_deref().and_then(|f| field_expr(tent, f, "a")).map(|e| format!("{e}::text")).unwrap_or_else(|| "null".into());
-            let sql = format!(
-                "select a.id, coalesce(nullif({title}, ''), a.number, a.id::text) from {} a where a.tenant_id = $1 and a.id = any($2){}",
-                crate::ddl::q(&tent.table),
-                store::entity_predicate(tent, "a")
-            );
             let ids: Vec<Uuid> = ids.into_iter().collect();
-            let rows: Vec<(Uuid, String)> = sqlx::query_as(AssertSqlSafe(sql)).bind(ctx.tenant).bind(&ids).fetch_all(&mut **tx).await?;
+            let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(format!(
+                "select a.id, coalesce(nullif({title}, ''), a.number, a.id::text) from {} a where a.tenant_id = ",
+                crate::ddl::q(&tent.table)
+            ));
+            qb.push_bind(ctx.tenant).push(" and a.id = any(").push_bind(ids).push(")").push(store::entity_predicate(tent, "a"));
+            if let Some(scope) = &scope {
+                scope.push_sql(&mut qb, "a");
+            }
+            let rows: Vec<(Uuid, String)> = qb.build_query_as().fetch_all(&mut **tx).await?;
             titles.extend(rows);
         }
         let annotate = |e: &EffEntity, d: &mut Map<String, Value>| {
@@ -491,6 +502,9 @@ impl Kernel {
         check_version(&old, expected_version)?;
         if ent.is_submittable() && docstatus_of(&old) == 1 {
             return Err(Error::invalid("submitted documents cannot be deleted; cancel first"));
+        }
+        if crate::privacy::record_held(tx, ctx.tenant, &ent.def.name, id).await? {
+            return Err(Error::Conflict("a legal hold covers this record; release it first".into()));
         }
         for h in self.hooks.for_tenant(&ent.def.name, &ctx.schema.packages) {
             let mut hc = HookCtx { kernel: self, ctx, tx: &mut *tx, entity: &ent };
@@ -1229,7 +1243,14 @@ impl Kernel {
                 payload["doc"] = v;
             }
         }
-        outbox::enqueue(tx, ctx.tenant, &format!("{}.{event}", ent.def.name), Some(&ent.def.name), Some(id), payload).await
+        let source = outbox::Source {
+            entity: &ent.def.name,
+            record_id: id,
+            actor: (!ctx.user.is_nil()).then_some(ctx.user),
+            legal_entity: new.or(old).and_then(|d| uuid_of(d.get("company"))),
+            version: version.map(|v| v as i32),
+        };
+        outbox::enqueue_change(tx, ctx.tenant, &format!("{}.{event}", ent.def.name), source, payload).await
     }
 
     async fn hook_before_validate(&self, ctx: &Ctx, tx: &mut Tx, ent: &Arc<EffEntity>, doc: &mut Doc) -> Result<()> {

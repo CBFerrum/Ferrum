@@ -1,0 +1,31 @@
+# The broader application ecosystem and industry packs (specification §9, §10). Nothing here assumes
+# code is absent: `missing` means no repository was found for it and keyword probes of the existing
+# ones found nothing. Each should be composed from shared services, not built as a new engine.
+defaults: {component: ecosystem, repositories: [], workstream: 8, basis: probe, status: missing}
+requirements:
+  - {id: FERRUM-ECOSYSTEM-001, title: Knowledge and intranet, spec: "9", status: partial, files: ["ferrum-app-helpdesk:src/kb.rs"], limits: ["Helpdesk's knowledge base only"]}
+  - {id: FERRUM-ECOSYSTEM-002, title: IT service management, spec: "9"}
+  - {id: FERRUM-ECOSYSTEM-003, title: IT asset and configuration management, spec: "9"}
+  - {id: FERRUM-ECOSYSTEM-004, title: Integration Hub, spec: "9", deps: [FERRUM-CONNECT-001]}
+  - {id: FERRUM-ECOSYSTEM-005, title: Social media management, spec: "9", deps: [FERRUM-CONNECT-001]}
+  - {id: FERRUM-ECOSYSTEM-006, title: Website and CMS, spec: "9", status: partial, files: ["ferrum-app-commerce:src/pages.rs"], limits: ["Commerce's storefront pages only"]}
+  - {id: FERRUM-ECOSYSTEM-007, title: "Customer, supplier and partner portals", spec: "9", status: partial, files: [server/shell/portal.js, "ferrum-app-helpdesk:ui/src/Portal.tsx"], limits: ["A portal shell with tickets and invoices; no supplier or partner portal"]}
+  - {id: FERRUM-ECOSYSTEM-008, title: Contract lifecycle management, spec: "9", deps: [FERRUM-SIGN-001]}
+  - {id: FERRUM-ECOSYSTEM-009, title: Subscription and revenue operations, spec: "9", status: partial, files: ["ferrum-app-erp:addons/finance/src/subscription.rs"], limits: ["Finance's subscriptions; no dunning-to-entitlement loop"]}
+  - {id: FERRUM-ECOSYSTEM-010, title: Governed enterprise analytics, spec: "9", deps: [FERRUM-STUDIO-001]}
+  - {id: FERRUM-ECOSYSTEM-011, title: Portfolio and objectives, spec: "9", deps: [FERRUM-PROJECTS-002]}
+  - {id: FERRUM-ECOSYSTEM-012, title: Digital asset management, spec: "9", deps: [FERRUM-DRIVE-001]}
+  - {id: FERRUM-ECOSYSTEM-013, title: Developer Hub, spec: "9", status: partial, files: ["ferrum-sdk:cli/src/main.rs", docs/plugins.md], limits: ["A CLI and documentation; no hub"]}
+  - {id: FERRUM-ECOSYSTEM-014, title: Governance and risk, spec: "9"}
+  - {id: FERRUM-INDUSTRY-001, title: "Hospitality: properties, rates, stays, folios, night audit", spec: "10", external: [BLOCK-HOSPITALITY-CHANNELS], deps: [FERRUM-CONNECT-001]}
+  - {id: FERRUM-INDUSTRY-002, title: "Restaurants: menus, tables, kitchen flow, delivery", spec: "10", deps: [FERRUM-POS-003]}
+  - {id: FERRUM-INDUSTRY-003, title: "Retail and distribution: replenishment, omnichannel, franchise", spec: "10", deps: [FERRUM-POS-001, FERRUM-COMMERCE-001]}
+  - {id: FERRUM-INDUSTRY-004, title: "Education: admissions, students, fees, timetables, examinations", spec: "10", deps: [FERRUM-LMS-001]}
+  - {id: FERRUM-INDUSTRY-005, title: "Healthcare administration: scheduling, consent, billing", spec: "10", external: [BLOCK-LEGAL-REVIEW], deps: [FERRUM-BOOKINGS-001]}
+  - {id: FERRUM-INDUSTRY-006, title: "Manufacturing: planning, quality, traceability, shop floor", spec: "10", status: partial, files: ["ferrum-app-erp:addons/mfg-ops/src/job_card.rs"], limits: ["ERP's manufacturing; no shop-floor or device integration"], deps: [FERRUM-ERP-012]}
+  - {id: FERRUM-INDUSTRY-007, title: "Construction and professional services: estimates, variations, site work", spec: "10", deps: [FERRUM-PROJECTS-001]}
+  - {id: FERRUM-INDUSTRY-008, title: "Property and facilities: leases, charges, inspections, portals", spec: "10"}
+  - {id: FERRUM-INDUSTRY-009, title: "Logistics and fleets: dispatch, routes, proof of delivery", spec: "10", external: [BLOCK-MAPS-KEY]}
+  - {id: FERRUM-INDUSTRY-010, title: "Government: cases, permits, citizen portals", spec: "10", external: [BLOCK-LEGAL-REVIEW]}
+  - {id: FERRUM-INDUSTRY-011, title: "Nonprofits: members, donations, grants, volunteers", spec: "10"}
+  - {id: FERRUM-INDUSTRY-012, title: "EV charging and IoT: devices, sessions, tariffs, settlement", spec: "10", status: partial, files: [plugins/examples/device-gateway/src/lib.rs], tests: [crates/plugins/tests/platform_it.rs], limits: ["An example plugin shaped like OCPP; no OCPP conformance"], external: [BLOCK-EV-HARDWARE]}

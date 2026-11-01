@@ -6,12 +6,14 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 ## Platform
 
 - **Row-level rules**: a role's rule reaches all records, the user's own (`if_owner`, with
-  `owner_fields`), and/or those whose fields hold given values (`where`), plus per-user scopes on
-  link values. Conditions are equality tests on data, select, check, link, email and int fields;
-  ranges, dates and expressions ("due in the next week") are not supported.
+  `owner_fields`), and/or those whose fields hold given values or fall in a range (`where`: `{lte:
+  10000}` on a number, `{from_today: 0, to_today: 7}` on a date), plus per-user scopes on link
+  values. Equality works on data, select, check, link, email and int fields; expressions across
+  fields are not supported. On datetime fields, a range compares the UTC date.
 - **Linked-record titles** (`titles=true`) are shown even when the caller cannot open the linked
-  record, as in ERPNext: a record you can read names what it links to. Only the target's title
-  field (or number) is exposed, never its other fields.
+  record, unless its entity says `reference: restricted`, or a workspace sets that: a record you can
+  read names what it links to, and only the target's title field (or number) is exposed, never its
+  other fields.
 - **Units of measure**: an item lists its other units with a factor to its stock unit, and order,
   delivery, receipt and invoice lines are entered in any of them (stock moves, valuation,
   reservations and planning count stock units). The factor always comes from the item, not typed
@@ -32,10 +34,13 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 - **Stock revaluation** is a stock reconciliation counting the same quantity at the new rate. Like
   every stock posting (and landed costs), it is valued when it is posted: a backdated document
   never re-values the ones after it (there is no reposting).
-- **Personal data** requests reach what packages declare (`personal_data`), matched by an email
-  field: data known only by name or phone is not found; files attached to records, messages sent to
-  the person and chat messages are not reached; submitted documents keep their copies of names. Backups taken
-  before an erasure still hold the data until they expire.
+- **Personal data** requests reach what packages declare (`personal_data`), matched by an email field
+  under every address the person has had, with the files attached to those records. Data known only
+  by name or phone is not found; comments they wrote keep their text under an anonymized name; and
+  packages that declare nothing are not searched (each answer names them). Records a package keeps
+  for a stated reason, and submitted documents' copies of names, stay. Backups taken before an
+  erasure still hold the data until they expire; after a restore, `ferrum task reapply_erasures`
+  erases it again. Restriction of processing is not built.
 - **Rate limits** (sign-ins, documents emailed, 300 requests a minute per address on public
   endpoints) are counted in the database, so they hold across replicas; apps use the same
   (`Kernel::rate_limit`). They are per address: Campaigns' tracking pixels and links opened
@@ -54,11 +59,14 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 - **Live pushes** (in-app notifications, chat messages) are NOTIFYs sent at commit, and PostgreSQL
   serializes the commits of notifying transactions: at very high message rates they queue. Record
   changes do not (they reach live screens through the outbox, within about 250 ms).
-- **Sign-in**: two-factor sign-in uses authenticator apps (TOTP); there are no text-message codes
-  or security keys (WebAuthn). Single sign-on speaks OpenID Connect, not SAML; accounts come from
-  the first sign-in or an administrator (no SCIM provisioning), and someone removed at the
-  provider keeps the session they have until it expires unless deactivated here. An account is
-  linked to one identity at a time: the one at the provider it last signed in through.
+- **Sign-in**: people sign in with a password, a passkey (WebAuthn) or single sign-on. Two-factor
+  sign-in uses authenticator apps (TOTP); there are no text-message codes. Single sign-on speaks
+  OpenID Connect, not SAML. An account is linked to one identity at a
+  time: the one at the provider it last signed in through. People and groups can be provisioned by
+  SCIM ([identity-lifecycle.md](identity-lifecycle.md)); without it, someone removed at the provider
+  keeps the session they have until it expires unless deactivated here, because Ferrum does not
+  receive OpenID Connect's back-channel logout. Apps do not yet hand over what they keep when someone
+  leaves: Drive shares and helpdesk queues stay with them.
 
 ## Accounting and finance
 
@@ -88,19 +96,23 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 
 ## Apps
 
-- **POS register** (`/app/pos`): pricing needs the server, so a sale can be completed offline only
-  if its total was shown before the connection dropped (it then waits on the device and is sent
-  later); no customer display, cash drawer or card terminal integration; receipts print through
-  the browser. Closing a session uses the POS Closing Entry form.
+- **POS register** (`/pos/`): sells offline from the register's price book, priced on the device with
+  the server's own engine (`@ferrum/calc`). Sales wait on the device and the server prices each again
+  when it arrives; one whose payments no longer cover it waits for a person. Stock is not reserved
+  for an offline till, so two tills can sell the last item. No customer display, cash drawer or card
+  terminal integration; receipts print through the browser. Closing a session uses the POS Closing
+  Entry form.
 - **Chat and calendar** (the Mail app): the chat screen (`/app/chat`) covers channels, direct
   messages, threads, mentions, edits, search and files (up to 20 and 25 MB per message; images
   are previewed). The calendar screen
   (`/app/calendar`) shows a month or a week of hours (an agenda on phones) with RSVPs; events
   you organize move by dragging them with a mouse (a repeating event is changed in its form, for
   the whole series); free/busy lookups are API-only.
-- **Bookings**: one resource per booking; no recurring
-  bookings, deposits or external calendar sync; notices can be up to a minute late. Without the Mail
-  app, guest emails carry an add-to-calendar link instead of an invitation.
+- **Bookings**: one resource per booking; bookings repeat weekly, every 2 or 4 weeks or monthly at the
+  staff member's local time, each an ordinary booking, and a guest gets a confirmation for each;
+  no deposits, and calendars go out as signed feeds with nothing read back; notices can be up to a
+  minute late. Without the Mail app, guest emails carry an add-to-calendar link instead of an
+  invitation.
 - **Field Service**: SLAs run in calendar hours; travel times are straight-line estimates.
 - **Forms**: views count bot fetches; deleting an anonymous response does not free its
   one-per-respondent slot; CSV export stops at 100,000 rows; up to 500 spam responses per form per

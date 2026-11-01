@@ -12,14 +12,14 @@ FROM scratch AS frontend
 ARG FRONTEND_REV
 ADD https://github.com/CBFerrum/Ferrum-Frontend.git#${FRONTEND_REV} /
 
-FROM node:22-bookworm-slim AS ui
+FROM node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS ui
 WORKDIR /web
 COPY --from=frontend package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY --from=frontend . .
 RUN npm run build:apps
 
-FROM rust:1.95-bookworm AS build
+FROM rust:1.95-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92ed2d47121282d4a1 AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rustfmt.toml ./
 COPY crates ./crates
@@ -32,7 +32,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked -p ferrum-server && cp target/release/ferrum /usr/local/bin/ferrum
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates tini \
  && rm -rf /var/lib/apt/lists/* \

@@ -35,6 +35,7 @@ ciborium = "0.2"
 chrono-tz = { version = "0.10", default-features = false }
 minijinja = { version = "2", features = ["loader", "fuel"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+futures = { workspace = true }
 # Documents edited together (coedit.rs). Patched in the workspace (third_party/yrs/FERRUM.md).
 yrs = "=0.28.0"
 # Documents as Word files (coedit/docx.rs).

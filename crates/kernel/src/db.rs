@@ -1,8 +1,9 @@
 //! Connection pool, tenant-scoped transactions and retry on transient conflicts.
 
 use crate::error::{Error, Result};
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::{Postgres, Transaction};
+use sqlx::postgres::{PgArguments, PgConnectOptions, PgPoolOptions};
+use sqlx::query::Query;
+use sqlx::{AssertSqlSafe, Postgres, Transaction};
 use std::future::Future;
 use std::str::FromStr;
 use std::time::Duration;
@@ -12,6 +13,46 @@ pub type Tx = Transaction<'static, Postgres>;
 
 /// Connections in the side pool (see [`Db::side`]); count them in the database's connection budget.
 pub const SIDE_CONNECTIONS: u32 = 4;
+
+/// What the work in progress belongs to. Every transaction opened inside [`Trace::scope`] carries
+/// it, and the events written there record it (the columns of `outbox` default to these settings),
+/// so a chain of events can be followed from the request that started it without any caller
+/// passing anything along.
+#[derive(Debug, Clone, Default)]
+pub struct Trace {
+    /// The request or job that started the chain.
+    pub correlation: String,
+    /// The event this work answers.
+    pub causation: Option<i64>,
+    /// The caller's W3C trace context, passed on as it came.
+    pub traceparent: Option<String>,
+    /// Events' priority; unset means normal ([`crate::outbox::PRIORITY_BULK`] for bulk work).
+    pub priority: Option<i16>,
+}
+
+tokio::task_local! {
+    static TRACE: Trace;
+}
+
+impl Trace {
+    /// Runs `f` under this trace (tasks it spawns start without one).
+    pub async fn scope<F: Future>(self, f: F) -> F::Output {
+        TRACE.scope(self, f).await
+    }
+}
+
+/// `settings` (their parameters start at `$5`) with the current [`Trace`] set beside them.
+fn carrying(settings: &str) -> Query<'static, Postgres, PgArguments> {
+    let t = TRACE.try_with(Trace::clone).unwrap_or_default();
+    sqlx::query(AssertSqlSafe(format!(
+        "select set_config('ferrum.correlation', $1, true), set_config('ferrum.causation', $2, true), \
+         set_config('ferrum.traceparent', $3, true), set_config('ferrum.priority', $4, true), {settings}"
+    )))
+    .bind(t.correlation)
+    .bind(t.causation.map(|c| c.to_string()).unwrap_or_default())
+    .bind(t.traceparent.unwrap_or_default())
+    .bind(t.priority.map(|p| p.to_string()).unwrap_or_default())
+}
 
 #[derive(Debug, Clone)]
 pub struct DbConfig {
@@ -104,7 +145,7 @@ impl Db {
     /// transaction of the same request is open.
     pub async fn side_tenant_tx(&self, tenant: Uuid) -> Result<Tx> {
         let mut tx = self.side.begin().await?;
-        sqlx::query("select set_config('ferrum.tenant_id', $1, true), set_config('statement_timeout', $2, true)")
+        carrying("set_config('ferrum.tenant_id', $5, true), set_config('statement_timeout', $6, true)")
             .bind(tenant.to_string())
             .bind(self.config.statement_timeout_ms.to_string())
             .execute(&mut *tx)
@@ -119,7 +160,7 @@ impl Db {
 
     pub async fn tenant_tx_with_timeout(&self, tenant: Uuid, timeout_ms: u64) -> Result<Tx> {
         let mut tx = self.pool.begin().await?;
-        sqlx::query("select set_config('ferrum.tenant_id', $1, true), set_config('statement_timeout', $2, true)")
+        carrying("set_config('ferrum.tenant_id', $5, true), set_config('statement_timeout', $6, true)")
             .bind(tenant.to_string())
             .bind(timeout_ms.to_string())
             .execute(&mut *tx)
@@ -130,7 +171,7 @@ impl Db {
     /// A transaction that bypasses tenant isolation. Only for cluster jobs (outbox, provisioning, login lookup).
     pub async fn system_tx(&self) -> Result<Tx> {
         let mut tx = self.pool.begin().await?;
-        sqlx::query("select set_config('ferrum.system', 'on', true), set_config('statement_timeout', $1, true)")
+        carrying("set_config('ferrum.system', 'on', true), set_config('statement_timeout', $5, true)")
             .bind(self.config.statement_timeout_ms.to_string())
             .execute(&mut *tx)
             .await?;
@@ -141,14 +182,11 @@ impl Db {
     /// `ferrum_tenant()` (defaults, policies in package SQL) sees the right tenant.
     pub async fn system_tenant_tx(&self, tenant: Uuid) -> Result<Tx> {
         let mut tx = self.pool.begin().await?;
-        sqlx::query(
-            "select set_config('ferrum.system', 'on', true), set_config('ferrum.tenant_id', $1, true), \
-             set_config('statement_timeout', $2, true)",
-        )
-        .bind(tenant.to_string())
-        .bind(self.config.statement_timeout_ms.to_string())
-        .execute(&mut *tx)
-        .await?;
+        carrying("set_config('ferrum.system', 'on', true), set_config('ferrum.tenant_id', $5, true), set_config('statement_timeout', $6, true)")
+            .bind(tenant.to_string())
+            .bind(self.config.statement_timeout_ms.to_string())
+            .execute(&mut *tx)
+            .await?;
         Ok(tx)
     }
 

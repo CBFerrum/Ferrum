@@ -279,6 +279,98 @@ async fn import_custom(Auth(ctx): Auth, State(app): State<AppContext>, Json(bund
     Ok(Json(json!({"imported": n})).into_response())
 }
 
+// ── legal holds ──
+
+#[derive(Deserialize)]
+struct NewHold {
+    email: Option<String>,
+    entity: Option<String>,
+    record_id: Option<Uuid>,
+    reason: String,
+}
+
+async fn legal_holds(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    Ok(Json(json!({"holds": app_state(&app)?.kernel.legal_holds(&ctx).await?})).into_response())
+}
+
+async fn place_legal_hold(Auth(ctx): Auth, State(app): State<AppContext>, Json(h): Json<NewHold>) -> ApiResult<Response> {
+    let record = h.entity.as_deref().zip(h.record_id);
+    let id = app_state(&app)?.kernel.place_legal_hold(&ctx, h.email.as_deref(), record, &h.reason).await?;
+    Ok((StatusCode::CREATED, Json(json!({"id": id}))).into_response())
+}
+
+async fn release_legal_hold(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.release_legal_hold(&ctx, id).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+// ── why someone may or may not do something ──
+
+#[derive(Deserialize)]
+struct ExplainAccess {
+    user: Uuid,
+    entity: String,
+    action: String,
+    record: Option<Uuid>,
+    /// Comma-separated: answers for these roles instead of the person's own.
+    roles: Option<String>,
+}
+
+async fn explain_access(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query<ExplainAccess>) -> ApiResult<Response> {
+    let action = ferrum_kernel::Action::parse(&q.action)
+        .ok_or_else(|| ApiError(Error::field("action", "must be read, write, create, delete, submit, cancel, export or import")))?;
+    let roles = q.roles.map(|r| r.split(',').map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect());
+    Ok(Json(app_state(&app)?.kernel.explain_access(&ctx, q.user, &q.entity, action, q.record, roles).await?).into_response())
+}
+
+// ── people leaving, and the identity provider's groups ──
+
+#[derive(Deserialize)]
+struct Deprovision {
+    reassign_to: Option<Uuid>,
+    reason: String,
+}
+
+async fn deprovision_user(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>, Json(b): Json<Deprovision>) -> ApiResult<Response> {
+    Ok(Json(app_state(&app)?.kernel.deprovision_user(&ctx, id, b.reassign_to, &b.reason).await?).into_response())
+}
+
+async fn scim_groups(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    Ok(Json(json!({"groups": app_state(&app)?.kernel.scim_group_map(&ctx).await?})).into_response())
+}
+
+#[derive(Deserialize)]
+struct GroupRoles {
+    roles: Vec<String>,
+}
+
+async fn map_scim_group(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>, Json(b): Json<GroupRoles>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.scim_map_group(&ctx, id, &b.roles).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+// ── events that failed ──
+
+#[derive(Deserialize)]
+struct DeadEvents {
+    limit: Option<i64>,
+}
+
+async fn dead_events(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query<DeadEvents>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    Ok(Json(json!({"events": st.kernel.dead_events(&ctx, q.limit.unwrap_or(100)).await?})).into_response())
+}
+
+async fn replay_event(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<i64>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.replay_event(&ctx, id).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn replay_webhook_delivery(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.replay_webhook_delivery(&ctx, id).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 // ── webhooks ──
 
 async fn list_webhooks(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
@@ -317,7 +409,7 @@ async fn create_webhook(Auth(ctx): Auth, State(app): State<AppContext>, Json(w):
         .bind(id)
         .bind(w.name.trim())
         .bind(&w.url)
-        .bind(&secret)
+        .bind(st.kernel.seal_webhook_secret(ctx.tenant, id, &secret)?)
         .bind(&w.topics)
         .bind(ctx.user)
         .execute(&mut *tx)
@@ -451,6 +543,15 @@ pub fn routes() -> Routes {
         .add("/admin/personal-data", get(personal_data))
         .add("/admin/personal-data/erase", post(erase_personal_data))
         .add("/admin/packages", get(list_packages).post(install))
+        .add("/admin/legal-holds", get(legal_holds).post(place_legal_hold))
+        .add("/admin/legal-holds/{id}/release", post(release_legal_hold))
+        .add("/admin/access/explain", get(explain_access))
+        .add("/admin/users/{id}/deprovision", post(deprovision_user))
+        .add("/admin/scim/groups", get(scim_groups))
+        .add("/admin/scim/groups/{id}/roles", put(map_scim_group))
+        .add("/admin/events/dead", get(dead_events))
+        .add("/admin/events/{id}/replay", post(replay_event))
+        .add("/admin/webhook-deliveries/{id}/replay", post(replay_webhook_delivery))
         .add("/admin/webhooks", get(list_webhooks).post(create_webhook))
         .add("/admin/webhooks/{id}", delete(delete_webhook))
         .add("/admin/automations", get(list_automations).post(save_automation))
