@@ -29,6 +29,7 @@ chrono = { workspace = true }
 ed25519-dalek = { version = "2.2", default-features = false, features = ["std", "fast"] }
 futures-util = { version = "0.3", optional = true, default-features = false, features = ["sink"] }
 hex = { workspace = true }
+hmac = "0.12"
 libc = "0.2"
 rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }

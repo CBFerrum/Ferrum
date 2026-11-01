@@ -3132,6 +3132,7 @@ dependencies = [
  "ferrum-ops-contract",
  "futures-util",
  "hex",
+ "hmac 0.12.1",
  "libc",
  "rand 0.9.5",
  "reqwest 0.12.28",

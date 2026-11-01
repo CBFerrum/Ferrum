@@ -12,7 +12,9 @@ Build or take `ferrum-site` for the gateway, then:
 
 ```bash
 sudo useradd --system --home /var/lib/ferrum-site --create-home ferrum-site
-sudo install -m 0755 ferrum-site /usr/local/bin/
+sudo install -d -o ferrum-site -m 0750 /var/lib/ferrum-site/bin
+sudo install -o ferrum-site -m 0755 ferrum-site /var/lib/ferrum-site/bin/
+sudo ln -sf /var/lib/ferrum-site/bin/ferrum-site /usr/local/bin/ferrum-site
 sudo install -d -o ferrum-site -m 0750 /etc/ferrum-site
 sudo install -m 0640 -g ferrum-site deploy/site/site.yaml /etc/ferrum-site/
 sudo install -m 0644 deploy/site/ferrum-site.service /etc/systemd/system/
@@ -21,6 +23,10 @@ sudo install -m 0644 deploy/site/ferrum-site.service /etc/systemd/system/
 Edit `site.yaml`. Keep `state_dir` on storage that survives power loss and is encrypted at rest: it
 holds this gateway's private key and the operators' PIN hashes. The console binds to `127.0.0.1`
 unless you say otherwise; anything wider belongs behind a segmented network.
+
+The binary lives under `/var/lib` because that is the one place the service may write, and taking a
+signed release (see [Edge](edge-definitions.md#updates)) means replacing it. With `update_keys` empty,
+which is the default, it never does.
 
 ## Enroll
 
