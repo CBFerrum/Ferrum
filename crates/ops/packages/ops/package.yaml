@@ -1,0 +1,55 @@
+package: ops
+version: 0.1.0
+label: Operations
+description: Sites, devices and their identity, the command ledger and telemetry
+depends: [core]
+
+modules:
+  - name: ops
+    label: Operations
+    icon: factory
+    order: 60
+    items: [Site, SiteArea, Device, DeviceProfile, AutomationEnvelope]
+
+roles:
+  - name: Ops Viewer
+    description: Sees sites, devices, commands and measurements.
+    permissions:
+      - {entity: Site, read: true}
+      - {entity: SiteArea, read: true}
+      - {entity: Device, read: true}
+      - {entity: DeviceProfile, read: true}
+      - {entity: AutomationEnvelope, read: true}
+  - name: Ops Dispatcher
+    description: Sends work to equipment and asks for it to be stopped. Cannot change devices or settle unknown outcomes.
+    permissions:
+      - {entity: Site, read: true}
+      - {entity: SiteArea, read: true}
+      - {entity: Device, read: true}
+      - {entity: DeviceProfile, read: true}
+      - {entity: AutomationEnvelope, read: true}
+  - name: Ops Recovery
+    description: Settles commands whose outcome is unknown, after looking at the equipment.
+    permissions:
+      - {entity: Site, read: true}
+      - {entity: SiteArea, read: true}
+      - {entity: Device, read: true}
+      - {entity: DeviceProfile, read: true}
+  - name: Device Administrator
+    description: Sets up sites and devices, enrolls and revokes their keys, moves them through their lifecycle and transfers authority between gateways. Sends no work.
+    permissions:
+      - {entity: Company, read: true}
+      - {entity: Site, read: true, write: true, create: true, export: true}
+      - {entity: SiteArea, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: Device, read: true, write: true, create: true, export: true, import: true}
+      - {entity: DeviceProfile, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: AutomationEnvelope, read: true}
+  - name: Ops Manager
+    description: Everything above, and approves what needs a second person, including automation's limits.
+    permissions:
+      - {entity: Company, read: true}
+      - {entity: Site, read: true, write: true, create: true, export: true}
+      - {entity: SiteArea, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: Device, read: true, write: true, create: true, export: true, import: true}
+      - {entity: DeviceProfile, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: AutomationEnvelope, read: true, write: true, create: true, delete: true}

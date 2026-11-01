@@ -42,11 +42,38 @@ COLLAB = ("-p", "ferrum-kernel", "--test", "collab_it")
 HOST_UNIT = ("-p", "ferrum-plugins", "--lib", "host::tests")
 EGRESS = ("-p", "ferrum-server", "--test", "assistant_egress_it")
 SUPPORT = ("-p", "ferrum-kernel", "--test", "support_it")
+CONTRACT = ("-p", "ferrum-ops-contract", "--lib")
+OPS = ("-p", "ferrum-ops", "--test", "ops_it")
+SITE = ("-p", "ferrum-site", "--features", "failpoints", "--test", "recovery_it")
+SITE_UNIT = ("-p", "ferrum-site", "--lib")
+ADAPTERS = ("-p", "ferrum-site", "--test", "adapters_it")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
+    ("ops-provisioned-by-saying-so", "crates/ops/src/devices.rs", "if to == Lifecycle::Provisioned && gateway.is_none() {", "if false {", OPS),
+    ("ops-site-never-hears", "crates/ops/src/commands.rs", "State::parse(&s).filter(|s| s.is_final())", "State::parse(&s).filter(|_| false)", SITE),
+    ("site-vda-late-state-wins", "crates/site/src/adapters/vda5050.rs", "if id > current || id < 2 {", "if true {", ADAPTERS),
+    ("site-vda-any-version", "crates/site/src/adapters/vda5050.rs", "if !supported(&self.cfg.version) {", "if false {", ADAPTERS),
+    ("site-mqtt-sent-with-no-broker", "crates/site/src/adapters/mqtt.rs", "        if !self.connected() {\n", "        if false {\n", ADAPTERS),
+    ("site-mqtt-no-expiry", "crates/site/src/adapters/mqtt.rs", "message_expiry_interval: Some(left)", "message_expiry_interval: None", ADAPTERS),
+    ("site-modbus-start-first", "crates/site/src/adapters/modbus.rs", "conn.write_single_register(h.job_register, job as u16).await", "conn.write_single_register(h.start_register, 1).await", ADAPTERS),
+    ("site-modbus-unknown-start-called-unsent", "crates/site/src/adapters/modbus.rs", "                *guard = None;\n                Err(Failure::Unknown(e.to_string()))", "                *guard = None;\n                Err(Failure::NotSent(e.to_string()))", ADAPTERS),
+    ("ops-report-goes-backwards", "crates/ops-contract/src/command.rs", "(a, b) if b.rank() > a.rank() => Step::Move,", "(a, b) if b.rank() != a.rank() => Step::Move,", CONTRACT),
+    ("ops-unknown-needs-no-evidence", "crates/ops-contract/src/command.rs", "            if evidence {\n                Step::Move", "            if true {\n                Step::Move", CONTRACT),
+    ("ops-old-authority-believed", "crates/ops/src/commands.rs", "    if r.epoch != epoch {", "    if false {", OPS),
+    ("ops-transfer-keeps-running-work", "crates/ops/src/authority.rs", "    commands::mark_in_doubt(&mut tx, ctx.tenant, domain, epoch, \"authority changed while this may have been running\").await?;\n", "", OPS),
+    ("ops-replay-accepted", "crates/ops/src/identity.rs", "    if fresh.rows_affected() == 0 {", "    if false {", OPS),
+    ("ops-signature-unchecked", "crates/ops/src/identity.rs", "    key.verify(&signed, &Signature::from_bytes(&signature)).map_err(|_| Refused::Key(\"the signature does not match\"))?;\n", "    let _ = (&key, &signed, &signature);\n", OPS),
+    ("ops-ai-queues-directly", "crates/ops/src/commands.rs", "            None => (State::Proposed, None),\n        },", "            None => (State::Queued, None),\n        },", OPS),
+    ("ops-own-approval", "crates/ops/src/commands.rs", "    if row.issued_by == person(ctx) && person(ctx).is_some() {", "    if false {", OPS),
+    ("ops-other-site-measurements", "crates/ops/src/telemetry.rs", "if !ours.contains(&m.device_id) || m.check(now).is_err() {", "if m.check(now).is_err() {", OPS),
+    ("site-no-intent", "crates/site/src/runtime.rs", "if let Err(err) = self.journal.intend(id, self.clock.now_ms()) {", "if let Err(err) = self.journal.answered(id, self.clock.now_ms()) {", SITE),
+    ("site-blind-retry", "crates/site/src/runtime.rs", 'None => self.establish(\n                    self.report(id, State::OutcomeUnknown, json!({"why": "this runtime stopped between deciding to send it and hearing back"}), None),\n                    None,\n                ),', 'None => { let _ = self.journal.withdraw_intent(id); }', SITE),
+    ("site-lease-ignored", "crates/site/src/runtime.rs", "if self.clock.now() >= lease {", "if false {", SITE),
+    ("site-restore-believed", "crates/site/src/runtime.rs", "if self.journal.get(\"restored\").ok().flatten().is_some() {", "if false {", SITE),
+    ("site-shed-commands-budget", "crates/site/src/journal.rs", "for class in [Class::Sample, Class::State, Class::Alarm] {", "for class in [Class::Alarm, Class::State, Class::Sample] {", SITE_UNIT),
     ("refused-token-kept", "crates/plugins/src/host.rs", "self.tokens.remove(&key);", "let _ = &key;", HOST_UNIT),
     ("secret-goes-anywhere-to-sign-in", "crates/plugins/src/host.rs", "if !host_allowed(&c.hosts, host) {", "if false && !host_allowed(&c.hosts, host) {", HOST_UNIT),
     ("rotated-secret-keeps-token", "crates/plugins/src/host.rs", 'let digest = hex::encode(Sha256::digest(format!("{user}:{secret}")));', 'let digest = user.to_string();', HOST_UNIT),
@@ -133,7 +160,7 @@ MUTANTS = [
     ("merge-misses-custom-fields", "crates/kernel/src/merge.rs", 'format!("update {t} set ext = jsonb_set(ext, array[$4], to_jsonb($1::text)) where tenant_id = $2 and ext->>$4 = $3")', 'format!("update {t} set ext = ext where tenant_id = $2 and ext->>$4 = $3 and $1 = $1")', MERGE),
     ("merge-past-a-legal-hold", "crates/kernel/src/merge.rs", 'if record_held(&mut tx, ctx.tenant, entity, id).await? {', 'if false {', MERGE),
     ("merge-history-unfindable", "crates/kernel/src/merge.rs", "ids.insert(0, stays);\n    Ok(ids)", "Ok(vec![stays])", MERGE),
-    ("merge-leaves-chains", "crates/kernel/src/merge.rs", 'sqlx::query("update record_alias set canonical_id = $1 where tenant_id = $2 and entity = $3 and canonical_id = $4").bind(keep).bind(ctx.tenant).bind(entity).bind(duplicate).execute(&mut *tx).await?;', '', MERGE),
+    ("merge-leaves-chains", "crates/kernel/src/merge.rs", 'sqlx::query("update record_alias set canonical_id = $1 where tenant_id = $2 and entity = $3 and canonical_id = $4")\n            .bind(keep)\n            .bind(ctx.tenant)\n            .bind(entity)\n            .bind(duplicate)\n            .execute(&mut *tx)\n            .await?;\n', "", MERGE),
     ("merged-record-still-editable", "crates/kernel/src/doc.rs", "if lock && ent.def.mergeable && crate::merge::canonical(tx, ctx.tenant, &ent.def.name, id).await?.is_some() {", "if false {", MERGE),
     ("stale-link-saved", "crates/kernel/src/doc.rs", "crate::merge::resolve_links(ctx, tx, ent, doc).await?;", "", MERGE),
     ("mask-shows-it-all", "crates/kernel/src/doc.rs", "doc.insert(f.name.clone(), Value::String(mask.apply(&v)));", "doc.insert(f.name.clone(), Value::String(v));", RETENTION),

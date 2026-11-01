@@ -21,66 +21,85 @@ fn to_value(v: impl serde::Serialize) -> Result<Value> {
 #[async_trait::async_trait]
 impl ToolProvider for AppTools {
     fn tools(&self, ctx: &Ctx) -> Vec<Value> {
-        if !ctx.is_admin {
-            return vec![];
-        }
-        let app = json!({"type": "string", "description": "App id, e.g. crm"});
-        let version = json!({"type": "string", "description": "An exact version; the newest one that fits when omitted"});
-        vec![
-            tool_definition(
-                "list_apps",
-                "List apps",
-                "Apps installed in this workspace (enabled or not, with any update available) and apps that can be installed from this server, uploads and app stores.",
-                json!({}),
-                &[],
-                true,
-                false,
-                true,
-            ),
-            tool_definition(
-                "plan_app",
-                "Plan an app install",
-                "What installing or upgrading an app would do: the apps it brings in dependency order, the permissions it asks for (and which are new), and the consent digest install_app needs. Show the permissions to the user and get their agreement before installing.",
-                json!({"app": app, "version": version}),
-                &["app"],
-                true,
-                false,
-                true,
-            ),
-            tool_definition(
-                "install_app",
-                "Install or upgrade an app",
-                "Carries out the plan from plan_app (upgrade: true for an installed app). consent must be that plan's digest; if the plan changed since, nothing is installed and the new plan comes back to review.",
-                json!({"app": app, "version": version, "consent": {"type": "string", "description": "The digest of the plan the user agreed to"}, "upgrade": {"type": "boolean"}}),
-                &["app", "consent"],
-                false,
-                false,
-                false,
-            ),
-            tool_definition(
-                "set_app_enabled",
-                "Enable or disable an app",
-                "Disabling takes an app's records and screens out of the workspace and turns its plugin off, keeping its data and who had which role; enabling brings everything back.",
-                json!({"app": app, "enabled": {"type": "boolean"}}),
-                &["app", "enabled"],
-                false,
-                false,
-                true,
-            ),
-            tool_definition(
-                "uninstall_app",
-                "Remove an app",
-                "Removes an app from this workspace. With delete_data: true its records are deleted for good — ask the user first.",
-                json!({"app": app, "delete_data": {"type": "boolean"}}),
-                &["app"],
-                false,
-                true,
-                false,
-            ),
-        ]
+        let tools = app_tools(ctx);
+        // Operations' tools go wherever these do: every agent looks and proposes the same way.
+        #[cfg(feature = "ops")]
+        let tools = tools.into_iter().chain(ferrum_ops::mcp::OpsTools.tools(ctx)).collect();
+        tools
     }
 
-    async fn call(&self, _k: &Kernel, ctx: &Ctx, name: &str, args: &Value) -> Option<Result<Value>> {
+    async fn call(&self, k: &Kernel, ctx: &Ctx, name: &str, args: &Value) -> Option<Result<Value>> {
+        #[cfg(feature = "ops")]
+        if let Some(done) = ferrum_ops::mcp::OpsTools.call(k, ctx, name, args).await {
+            return Some(done);
+        }
+        let _ = k;
+        self.call_app(ctx, name, args).await
+    }
+}
+
+fn app_tools(ctx: &Ctx) -> Vec<Value> {
+    if !ctx.is_admin {
+        return vec![];
+    }
+    let app = json!({"type": "string", "description": "App id, e.g. crm"});
+    let version = json!({"type": "string", "description": "An exact version; the newest one that fits when omitted"});
+    vec![
+        tool_definition(
+            "list_apps",
+            "List apps",
+            "Apps installed in this workspace (enabled or not, with any update available) and apps that can be installed from this server, uploads and app stores.",
+            json!({}),
+            &[],
+            true,
+            false,
+            true,
+        ),
+        tool_definition(
+            "plan_app",
+            "Plan an app install",
+            "What installing or upgrading an app would do: the apps it brings in dependency order, the permissions it asks for (and which are new), and the consent digest install_app needs. Show the permissions to the user and get their agreement before installing.",
+            json!({"app": app, "version": version}),
+            &["app"],
+            true,
+            false,
+            true,
+        ),
+        tool_definition(
+            "install_app",
+            "Install or upgrade an app",
+            "Carries out the plan from plan_app (upgrade: true for an installed app). consent must be that plan's digest; if the plan changed since, nothing is installed and the new plan comes back to review.",
+            json!({"app": app, "version": version, "consent": {"type": "string", "description": "The digest of the plan the user agreed to"}, "upgrade": {"type": "boolean"}}),
+            &["app", "consent"],
+            false,
+            false,
+            false,
+        ),
+        tool_definition(
+            "set_app_enabled",
+            "Enable or disable an app",
+            "Disabling takes an app's records and screens out of the workspace and turns its plugin off, keeping its data and who had which role; enabling brings everything back.",
+            json!({"app": app, "enabled": {"type": "boolean"}}),
+            &["app", "enabled"],
+            false,
+            false,
+            true,
+        ),
+        tool_definition(
+            "uninstall_app",
+            "Remove an app",
+            "Removes an app from this workspace. With delete_data: true its records are deleted for good — ask the user first.",
+            json!({"app": app, "delete_data": {"type": "boolean"}}),
+            &["app"],
+            false,
+            true,
+            false,
+        ),
+    ]
+}
+
+impl AppTools {
+    async fn call_app(&self, ctx: &Ctx, name: &str, args: &Value) -> Option<Result<Value>> {
         let text = |key: &str| args.get(key).and_then(Value::as_str).map(str::to_string);
         let flag = |key: &str| args.get(key).and_then(Value::as_bool).unwrap_or(false);
         let app = || text("app").ok_or_else(|| Error::field("app", "is required"));

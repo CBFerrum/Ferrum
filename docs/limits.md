@@ -94,6 +94,25 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   scanner's size limit, stay `unscanned`, and nothing rescans them when signatures change.
 - **Bulk jobs** reach at most 100,000 records, and list the first 1,000 failures.
 
+## Operations and the site runtime
+
+- **Nothing has run on hardware.** Every adapter was tried against stand-ins ([compatibility](compatibility.md)). Nothing here is a functional-safety claim or a vendor qualification.
+- **OPC UA, ROS 2, Open-RMF, Sparkplug B and VDA 5050 3.0.0** are not built.
+- **Failover** between gateways is a person's decision, by design. There is no standby that takes over by itself.
+- **Device keys** do not rotate in place: quarantine and enroll a new one.
+- **Site updates** are not signed by Ferrum. Take the binary from a source you trust.
+- **Console PINs** are short by nature, and the gateway holds their salted hashes: someone with its disk could recover them. Keep its storage encrypted; a site's list follows the platform's at each exchange, and the lease bounds how stale it gets.
+- **Site traffic** shares the 300 requests a minute per address and workspace of `/api/site`. At the default of an exchange every 5 seconds, that is about 25 gateways behind one address. Past it a site backs off and catches up.
+- **Telemetry** lives in PostgreSQL. It has not been measured against the strategy's 20,000 samples a second, which would be 345 GB a day: aggregate at the edge first.
+- **A floor report** names a run by its number and is applied when it arrives. One the run cannot take stays in `op_fact` and the run says so; one naming no run stays in `op_fact` alone.
+
+## Warehouse and shop floor
+
+- **Picking**: discrete and batch by wave. Zone, cluster and goods-to-person picking are not built, nor are substitutions, cartonization or carrier connectors. A shipment holds one tracking number at a time; earlier parcels are in its audit trail.
+- **Manufacturing execution** is discrete. Batch and continuous processes, and energy per run, are partner work. Recipes are approved job references, never controller logic.
+- **Leftover material at the line** stays in the production bin until someone moves it.
+- **OEE** is per workstation and period, by a written definition. A line's figure is not the product of its machines'.
+
 ## Accounting and finance
 
 - Payment deductions are entered in the payment currency; the exchange difference posts to the

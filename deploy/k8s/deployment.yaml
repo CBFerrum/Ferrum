@@ -59,6 +59,8 @@ spec:
               valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_CLAMAV_ADDR, optional: true}}
             - name: FERRUM_CLAMAV_MAX_MB
               valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_CLAMAV_MAX_MB, optional: true}}
+            - name: FERRUM_OPS_TELEMETRY_DAYS
+              valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_OPS_TELEMETRY_DAYS, optional: true}}
             - name: FERRUM_RETIRED_SECRET_KEYS
               valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_RETIRED_SECRET_KEYS, optional: true}}
             - name: FERRUM_BOOTSTRAP_TOKEN

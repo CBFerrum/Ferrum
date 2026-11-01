@@ -1,0 +1,12 @@
+# A site with a simulated fleet, for rehearsal. See docs/site-runtime.md.
+server: https://erp.example.com
+tenant: your-workspace
+state_dir: /var/lib/ferrum-site
+console: "127.0.0.1:7071"
+adapters:
+  - {name: fleet, kind: sim, devices: [AMR-1], concurrency: 2, mission_millis: 20000}
+  # - {name: stations, kind: operator, devices: [PACK-1]}
+  # - name: line
+  #   kind: mqtt
+  #   devices: [PRESS-1]
+  #   host: 127.0.0.1

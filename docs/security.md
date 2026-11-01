@@ -20,6 +20,16 @@ operator to know. Report a vulnerability privately to the maintainers rather tha
 
 ## Controls
 
+**Sites and devices** ([threat model](registry/threat-model.md), [authority](operations-authority.md))
+* Ferrum never replaces a safety system, and a safety function never depends on it.
+* Each device signs its requests with its own Ed25519 key. The server keeps public keys only. Enrollment
+  codes are one-time and short-lived. Signatures carry a rising timestamp, so a replay fails.
+* One gateway holds a domain at a time, under an epoch that only rises. Whatever a replaced holder says
+  joins the history and changes nothing. Nothing fails over by itself.
+* Operators with a role cannot edit a warehouse document they only scan against, and separation of
+  duties is enforced where it matters: whoever wrote a revision does not approve it, whoever placed a
+  hold does not release it, repaired does not mean returned to service.
+
 **The assistant** ([operations](operations.md#the-assistant))
 * It acts only as the signed-in person, through the same permission-checked tools as MCP clients
   and the REST API; it is never an administrator for someone who is not. App screens cannot call

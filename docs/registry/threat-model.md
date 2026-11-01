@@ -34,6 +34,13 @@ independently (`BLOCK-SECURITY-REVIEW`).
 | File uploads | Malware, decompression bombs | Size limits. *Gap:* no malware scanning (`FERRUM-OPS-007`) | |
 | Stored secrets | Database or backup theft | Sealed with AES-256-GCM, bound to their place; rotation | `secret_it`, `platform_it` |
 | Supply chain | A poisoned build | Pinned bases, attested promotion, advisory register | Not yet run in CI |
+| Site link | A stolen or replayed request moves equipment | Ed25519 per device, public keys only on the server, a timestamp that must rise. Quarantine ends a key's epoch at once | `ops_it`, mutants `ops-replay-accepted`, `ops-signature-unchecked` |
+| Old gateway | A replaced holder keeps commanding | An epoch per domain; its reports join the history and change nothing; it is fenced at its next exchange and stops at the end of its lease without one | `ops_it`, `recovery_it` |
+| Lost gateway disk | Its private key and operators' PIN hashes | Quarantine the device. PINs are short, so the hashes only slow an attacker: the disk must be encrypted | `docs/limits.md`; not tested |
+| Site console | Someone on the site's network | Off by default, binds to `127.0.0.1` unless told otherwise, PIN with lockout. No TLS of its own: it belongs on a segmented network. `/api/status` is unauthenticated and shows counts only | `recovery_it`; not reviewed |
+| Unattended retries | A timeout sends a robot twice | Intent is durable before the call; what is in doubt is never resent | `recovery_it`, mutant `site-blind-retry` |
+| Agents | Text steers an agent into moving something | Typed tools, read and propose only; nothing runs without a person | `ops_it`, mutant `ops-ai-queues-directly` |
+| Modbus, plain MQTT | No authentication on the wire | Only what the site's configuration names can be written. Segment the network; use TLS at the broker | Compatibility; not tested on a real network |
 | Prompt injection | Content steers the assistant | Writes need approval. *Gap:* no adversarial tests (`FERRUM-AI-005`) | |
 
 ## Privileged operations
