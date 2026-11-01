@@ -108,9 +108,11 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   (`/app/calendar`) shows a month or a week of hours (an agenda on phones) with RSVPs; events
   you organize move by dragging them with a mouse (a repeating event is changed in its form, for
   the whole series); free/busy lookups are API-only.
-- **Bookings**: one resource per booking; no recurring
-  bookings, deposits or external calendar sync; notices can be up to a minute late. Without the Mail
-  app, guest emails carry an add-to-calendar link instead of an invitation.
+- **Bookings**: one resource per booking; bookings repeat weekly, every 2 or 4 weeks or monthly at the
+  staff member's local time, each an ordinary booking, and a guest gets a confirmation for each;
+  no deposits, and calendars go out as signed feeds with nothing read back; notices can be up to a
+  minute late. Without the Mail app, guest emails carry an add-to-calendar link instead of an
+  invitation.
 - **Field Service**: SLAs run in calendar hours; travel times are straight-line estimates.
 - **Forms**: views count bot fetches; deleting an anonymous response does not free its
   one-per-respondent slot; CSV export stops at 100,000 rows; up to 500 spam responses per form per
