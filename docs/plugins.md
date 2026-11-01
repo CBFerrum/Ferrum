@@ -64,7 +64,7 @@ removes it with its private data (records it created stay).
 | `subscriptions` | Outbox topics: `SalesInvoice.submitted`, `SalesInvoice.*`, `plugin.other.*`, `*` |
 | `schedules` | `[{name, every_seconds}]` (at least 60) |
 | `http_hosts` | Hosts it may call: `api.example.com`, `*.example.com` |
-| `credentials` | `[{name, hosts, scheme?, user?}]`: configuration values the plugin uses without reading them. `scheme` is `bearer` (the default) or `basic` with `user`, the configuration key of the user name. `hosts`, from `http_hosts`, say where the value may be sent; none means it only checks signatures |
+| `credentials` | `[{name, hosts, scheme?, user?, token_path?}]`: configuration values the plugin uses without reading them. `scheme` is `bearer` (the default), `basic` with `user`, the configuration key of the user name, or `oauth2` with `user` and `token_path`: the host trades them for a short-lived token at that path on the host being called (client credentials), keeps it until a minute before it expires or the provider refuses it, and signs requests in with it. `hosts`, from `http_hosts`, say where the value may be sent; none means it only checks signatures |
 | `fuel_limit`, `memory_limit_mb` | Per-call CPU budget (default 50 M) and memory cap (default 32 MB) |
 
 ## Contract

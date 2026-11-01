@@ -358,6 +358,31 @@ async fn scenario() {
     k.delete_pref(&bea_ctx, "list:Customer").await.unwrap();
     assert_eq!(k.prefs(&bea_ctx).await.unwrap(), json!({}));
 
+    // ── shared views: whoever can read the list finds them, only their author changes them ──
+    let cal = k.create_user(&admin, "cal@collab.test", "Cal Sales", Some("Correct-Horse-9"), &["Sales".into()], false).await.unwrap();
+    let cal_ctx = k.load_ctx(tenant, cal, None, "it".into()).await.unwrap();
+    let open = json!({"query": {"f.status": "Open"}, "columns": ["customer_name"]});
+    let view = k.share_view(&bea_ctx, "Customer", "Open ones", &open).await.unwrap();
+    let view_id: Uuid = view["id"].as_str().unwrap().parse().unwrap();
+    assert!(matches!(k.share_view(&cal_ctx, "Customer", " open ONES ", &open).await, Err(Error::Conflict(_))), "a name is taken whatever its case");
+    assert!(k.share_view(&bea_ctx, "Customer", " ", &open).await.is_err());
+    assert!(k.share_view(&bea_ctx, "Customer", "Not an object", &json!([1])).await.is_err());
+    assert!(k.share_view(&bea_ctx, "Customer", "Too big", &json!({"q": "x".repeat(20_000)})).await.is_err());
+    let seen = k.shared_views(&cal_ctx, "Customer").await.unwrap();
+    assert_eq!((seen.len(), &seen[0]["value"], &seen[0]["by"], &seen[0]["can_change"]), (1, &open, &json!("Bea Sales"), &json!(false)));
+    assert_eq!(k.shared_views(&bea_ctx, "Customer").await.unwrap()[0]["can_change"], true);
+    assert_eq!(k.shared_views(&admin, "Customer").await.unwrap()[0]["can_change"], true, "an administrator tends them all");
+    assert!(matches!(k.shared_views(&otto_ctx, "Customer").await, Err(Error::Forbidden(_))), "not on a list you cannot read");
+    assert!(matches!(k.share_view(&otto_ctx, "Customer", "Mine", &open).await, Err(Error::Forbidden(_))));
+    assert!(matches!(k.change_shared_view(&cal_ctx, "Customer", view_id, "Mine now", &open, 1).await, Err(Error::Forbidden(_))));
+    assert!(matches!(k.unshare_view(&cal_ctx, "Customer", view_id).await, Err(Error::Forbidden(_))));
+    let view = k.change_shared_view(&bea_ctx, "Customer", view_id, "Open customers", &open, 1).await.unwrap();
+    assert_eq!(view["version"], 2);
+    assert!(matches!(k.change_shared_view(&bea_ctx, "Customer", view_id, "Stale", &open, 1).await, Err(Error::Conflict(_))), "a stale tab cannot overwrite");
+    k.unshare_view(&admin, "Customer", view_id).await.unwrap();
+    assert!(k.shared_views(&bea_ctx, "Customer").await.unwrap().is_empty());
+    assert!(matches!(k.unshare_view(&bea_ctx, "Customer", view_id).await, Err(Error::NotFound(_))));
+
     // ── bulk: record by record, with the caller's permissions ──
     use ferrum_kernel::bulk::{BulkOp, BulkTarget};
     let mut ids = vec![];

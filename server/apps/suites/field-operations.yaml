@@ -1,0 +1,11 @@
+# The suite for a business that keeps other people's equipment running: the work order, the visit,
+# the asset it was for, and the customer's ticket (docs/plan/integrations.md).
+id: field-operations
+name: Field Operations
+version: 0.1.0
+publisher: cbferrum
+summary: Field service, assets and helpdesk on top of ERP
+categories: [suite, support]
+runtime: meta
+platform: ">=0.3.2, <0.4"
+requires: {erp: ">=0.1", field-service: ">=0.1", assets: ">=0.1", helpdesk: ">=0.2", helpdesk-erp: ">=0.1"}
