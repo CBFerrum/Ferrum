@@ -8,6 +8,7 @@
 //! A figure with nothing to divide by is unknown, not zero and not 100%. Missing telemetry is never
 //! counted as running. OEE is an indicator, not a goal: maximizing one machine can worsen the line.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// The contract's revision: stored with every figure, so old figures stay explainable.
@@ -56,6 +57,42 @@ pub fn figures(i: &Input) -> Figures {
         _ => None,
     };
     Figures { availability, performance, quality, oee, coverage: ratio(known.max(0.0), i.planned_secs), version: VERSION }
+}
+
+/// A state equipment entered, at a time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StateAt {
+    pub at: DateTime<Utc>,
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct TimeInStates {
+    pub run_secs: f64,
+    /// Stopped for a planned reason: not planned production time at all.
+    pub planned_stop_secs: f64,
+    /// Nothing is known about it: before anything was reported, or marked unknown.
+    pub unknown_secs: f64,
+}
+
+/// Seconds of `[from, to)` in each state. Events must be in time order; `before` is the state that
+/// held when the period began, if anything had been reported by then. Late events are simply where
+/// they belong in that order, because states are kept as events and not as intervals.
+pub fn time_in_states(before: Option<&str>, events: &[StateAt], from: DateTime<Utc>, to: DateTime<Utc>) -> TimeInStates {
+    let mut out = TimeInStates::default();
+    let mut add = |state: Option<&str>, secs: f64| match state {
+        Some("Running") => out.run_secs += secs,
+        Some("Planned") => out.planned_stop_secs += secs,
+        None | Some("Unknown") => out.unknown_secs += secs,
+        Some(_) => {}
+    };
+    let (mut state, mut at) = (before, from);
+    for e in events.iter().filter(|e| e.at >= from && e.at < to) {
+        add(state, (e.at - at).num_milliseconds() as f64 / 1000.0);
+        (state, at) = (Some(e.state.as_str()), e.at);
+    }
+    add(state, (to - at).num_milliseconds() as f64 / 1000.0);
+    out
 }
 
 /// The count since `previous` on a counter that wraps at `max` or resets. A reading below the last
@@ -113,6 +150,19 @@ mod tests {
     fn a_wrong_ideal_cycle_shows_rather_than_being_capped() {
         let f = figures(&Input { planned_secs: 100.0, run_secs: 100.0, unknown_secs: 0.0, ideal_cycle_secs: 2.0, total_count: 100.0, good_count: 100.0 });
         assert!(close(f.performance, 2.0));
+    }
+
+    #[test]
+    fn time_is_counted_from_events_and_what_is_unseen_stays_unknown() {
+        let at = |m: i64| DateTime::from_timestamp(m * 60, 0).unwrap();
+        let e = |m: i64, s: &str| StateAt { at: at(m), state: s.into() };
+        let events = [e(10, "Running"), e(30, "Stopped"), e(40, "Running"), e(50, "Planned")];
+        let t = time_in_states(None, &events, at(0), at(60));
+        assert_eq!(t, TimeInStates { run_secs: 30.0 * 60.0, planned_stop_secs: 10.0 * 60.0, unknown_secs: 10.0 * 60.0 });
+        let t = time_in_states(Some("Running"), &[], at(0), at(60));
+        assert_eq!(t.run_secs, 3600.0, "what held before the period holds until something changes");
+        let t = time_in_states(None, &[e(90, "Running")], at(0), at(60));
+        assert_eq!(t.unknown_secs, 3600.0, "nothing reported in the period is not the same as running");
     }
 
     #[test]
