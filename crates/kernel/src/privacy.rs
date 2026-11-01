@@ -1,24 +1,43 @@
 //! Personal-data requests for one person, named by email: an export of every record the installed
-//! packages declare as theirs (`personal_data` in package manifests) and of their login account,
-//! and the erasure of that data.
+//! packages declare as theirs (`personal_data` in package manifests), of the files attached to those
+//! records and of their login account, and the erasure of that data.
+//!
+//! A person is found under every address they have had (`person_identifier`), not only their
+//! current one, and an answer names the installed packages that declare nothing, so a silence is
+//! never taken for a search.
 //!
 //! Erasure blanks the declared fields of those records (a placeholder where a value is required),
-//! takes the same fields' past values out of the records' audit history (each event keeps its hash
-//! and place in the chain and records the redaction), and anonymizes and deactivates the person's
-//! login account. Submitted documents keep the copies of names they carry, as bookkeeping law
-//! requires; erasure reaches the records the packages declare.
+//! deletes the files attached to them, takes the same fields' past values out of the records' audit
+//! history (each event keeps its hash and place in the chain and records the redaction), and
+//! anonymizes and deactivates the person's login account, with what hangs off it: sessions, keys,
+//! notifications, preferences, devices. Records a package keeps for a stated reason (`retain`) are
+//! exported and left, and the answer lists them, so nobody takes them for erased. Submitted
+//! documents keep the copies of names they carry, as bookkeeping law requires; erasure reaches the
+//! records the packages declare.
+//!
+//! Legal holds are separate from all of that: while one covers a person or a record, erasure and
+//! deletion refuse it. They are about what must stay, not about what may be seen.
+//!
+//! Each erasure is journalled outside the database, in object storage, by ids and field names and
+//! never by value. A database restored from a backup brings the erased data back, and
+//! [`Kernel::reapply_erasure`] erases it again before anyone sees it.
 
-use crate::audit;
+use crate::auth::notify_users;
 use crate::ctx::Ctx;
 use crate::db::Tx;
 use crate::ddl::q;
 use crate::error::{Error, Result};
 use crate::store::{entity_predicate, field_expr};
-use crate::{Doc, Kernel};
-use ferrum_meta::{FieldDef, FieldType, PersonalDataDef};
+use crate::{Doc, Kernel, audit, outbox};
+use ferrum_meta::{EffEntity, FieldDef, FieldType, PersonalDataDef};
 use serde_json::{Value, json};
 use sqlx::{Postgres, QueryBuilder};
 use uuid::Uuid;
+
+/// Published in an erasure's transaction, and written to [`JOURNAL_PREFIX`] once it has committed.
+pub const ERASED_TOPIC: &str = "ferrum.privacy.erased";
+/// Where erasures are journalled in object storage, one object each.
+pub const JOURNAL_PREFIX: &str = "privacy-journal/";
 
 /// Records of one person a declaration may reach (more means the email is not one person's).
 const MAX_RECORDS: i64 = 1000;
@@ -35,14 +54,33 @@ fn checked_email(email: &str) -> Result<String> {
     Ok(e)
 }
 
-/// The ids of the records each declaration reaches for `email`.
-async fn reached(ctx: &Ctx, tx: &mut Tx, email: &str) -> Result<Vec<(PersonalDataDef, Vec<Uuid>)>> {
+/// Every address `email` stands for: it, and if it is or was a person's, all of theirs.
+async fn addresses(tx: &mut Tx, tenant: Uuid, email: &str) -> Result<Vec<String>> {
+    let mut all: Vec<String> = sqlx::query_scalar(
+        "with person as (select id from app_user where tenant_id = $1 and email = $2::citext \
+           union select user_id from person_identifier where tenant_id = $1 and email = $2::citext) \
+         select lower(email::text) from app_user where tenant_id = $1 and id in (select id from person) \
+         union select lower(email::text) from person_identifier where tenant_id = $1 and user_id in (select id from person)",
+    )
+    .bind(tenant)
+    .bind(email)
+    .fetch_all(&mut **tx)
+    .await?;
+    if !all.iter().any(|a| a == email) {
+        all.push(email.to_string());
+    }
+    all.sort();
+    Ok(all)
+}
+
+/// The ids of the records each declaration reaches for these addresses.
+async fn reached(ctx: &Ctx, tx: &mut Tx, emails: &[String]) -> Result<Vec<(PersonalDataDef, Vec<Uuid>)>> {
     let mut out = Vec::new();
     for def in &ctx.schema.personal_data {
         let Some(ent) = ctx.schema.entity(&def.entity) else { continue };
         let Some(expr) = field_expr(ent, &def.match_field, "a") else { continue };
         let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(format!("select a.id from {} a where a.tenant_id = ", q(&ent.table)));
-        qb.push_bind(ctx.tenant).push(format!(" and lower(({expr})::text) = ")).push_bind(email.to_string());
+        qb.push_bind(ctx.tenant).push(format!(" and lower(({expr})::text) = any(")).push_bind(emails.to_vec()).push(")");
         for (field, v) in &def.condition {
             let Some(e) = field_expr(ent, field, "a") else { continue };
             let text = match v {
@@ -107,37 +145,146 @@ async fn redact(tx: &mut Tx, ctx: &Ctx, entity: &str, record: Uuid, fields: &[St
     Ok(done.rows_affected())
 }
 
+/// A record's files: id, name and storage key.
+async fn attached(tx: &mut Tx, tenant: Uuid, entity: &str, record: Uuid) -> Result<Vec<(Uuid, String, String)>> {
+    Ok(sqlx::query_as("select id, file_name, storage_key from file_object where tenant_id = $1 and entity = $2 and record_id = $3 order by id")
+        .bind(tenant)
+        .bind(entity)
+        .bind(record)
+        .fetch_all(&mut **tx)
+        .await?)
+}
+
+/// Blanks `fields` of a record and everything else an erasure takes from it. Returns how many audit
+/// events held those fields and how many files went. Deterministic, so that replaying a journal
+/// leaves what the erasure left.
+async fn erase_record(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, id: Uuid, fields: &[String], reason: &str) -> Result<(u64, u64)> {
+    let entity = &ent.def.name;
+    let engine = Ctx::system(ctx.tenant, ctx.schema.clone());
+    let mut values = Doc::new();
+    for f in fields {
+        match ent.field(f) {
+            Some(fd) if fd.ftype == FieldType::Table => k.set_child_rows_tx(&engine, tx, entity, f, id, vec![]).await?,
+            Some(fd) => {
+                values.insert(f.clone(), blank(fd, id));
+            }
+            None => {}
+        }
+    }
+    if !values.is_empty() {
+        k.set_values_tx(&engine, tx, entity, id, values).await?;
+    }
+    let events = redact(tx, ctx, entity, id, fields, reason).await?;
+    let files = attached(tx, ctx.tenant, entity, id).await?;
+    if !files.is_empty() {
+        let ids: Vec<Uuid> = files.iter().map(|f| f.0).collect();
+        let keys: Vec<String> = files.iter().map(|f| f.2.clone()).collect();
+        sqlx::query("delete from file_object where tenant_id = $1 and id = any($2)").bind(ctx.tenant).bind(&ids).execute(&mut **tx).await?;
+        outbox::release_objects(tx, ctx.tenant, &keys).await?;
+    }
+    audit::record(tx, ctx, entity, id, "erase_personal_data", None, json!({"fields": fields, "reason": reason, "files": files.len()})).await?;
+    Ok((events, files.len() as u64))
+}
+
+/// Anonymizes and deactivates a login account, with everything that hangs off it. What the person
+/// did stays, under a name that names no one.
+async fn erase_account(tx: &mut Tx, ctx: &Ctx, id: Uuid, reason: &str) -> Result<()> {
+    let tenant = ctx.tenant;
+    sqlx::query(
+        "update app_user set email = $3, full_name = $4, password_hash = null, is_active = false, settings = '{}', token_version = token_version + 1, \
+         totp_secret = null, totp_enabled_at = null, totp_last_step = null, sso_subject = null, scim_external_id = null, identity_id = null, updated_at = now() \
+         where tenant_id = $1 and id = $2",
+    )
+    .bind(tenant)
+    .bind(id)
+    .bind(erased_email(id))
+    .bind(format!("Erased user {}", tag(id)))
+    .execute(&mut **tx)
+    .await?;
+    // After the update: the trigger has just filed the old address.
+    for table in [
+        "user_role",
+        "user_scope",
+        "person_identifier",
+        "user_session",
+        "api_key",
+        "notification",
+        "notification_pref",
+        "ui_pref",
+        "push_subscription",
+        "user_recovery_code",
+        "passkey",
+        "scim_group_member",
+        "sign_in_code",
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(format!("delete from {table} where tenant_id = $1 and user_id = $2"))).bind(tenant).bind(id).execute(&mut **tx).await?;
+    }
+    sqlx::query("update oauth_refresh set revoked_at = now() where tenant_id = $1 and user_id = $2 and revoked_at is null")
+        .bind(tenant)
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+    notify_users(tx, tenant, Some(id)).await?;
+    audit::record(tx, ctx, "User", id, "erase_personal_data", None, json!({"reason": reason})).await
+}
+
+/// Whether an active hold covers a person under any of these addresses.
+async fn person_held(tx: &mut Tx, tenant: Uuid, emails: &[String]) -> Result<bool> {
+    Ok(sqlx::query_scalar("select exists (select 1 from legal_hold where tenant_id = $1 and released_at is null and lower(email::text) = any($2))")
+        .bind(tenant)
+        .bind(emails)
+        .fetch_one(&mut **tx)
+        .await?)
+}
+
+/// Whether an active hold covers this record.
+pub(crate) async fn record_held(tx: &mut Tx, tenant: Uuid, entity: &str, record: Uuid) -> Result<bool> {
+    Ok(sqlx::query_scalar("select exists (select 1 from legal_hold where tenant_id = $1 and released_at is null and entity = $2 and record_id = $3)")
+        .bind(tenant)
+        .bind(entity)
+        .bind(record)
+        .fetch_one(&mut **tx)
+        .await?)
+}
+
 impl Kernel {
-    /// Everything the installed packages keep about the person with this email, and their login
-    /// account (administrators only).
+    /// Everything the installed packages keep about the person with this email, under any address
+    /// they have had, and their login account (administrators only).
     pub async fn personal_data(&self, ctx: &Ctx, email: &str) -> Result<Value> {
         admin_only(ctx)?;
         let email = checked_email(email)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let emails = addresses(&mut tx, ctx.tenant, &email).await?;
         let mut records = Vec::new();
-        for (def, ids) in reached(ctx, &mut tx, &email).await? {
+        for (def, ids) in reached(ctx, &mut tx, &emails).await? {
             let label = ctx.schema.entity(&def.entity).map(|e| e.def.label.clone()).unwrap_or_else(|| def.entity.clone());
             for id in ids {
                 let data = self.get_tx(ctx, &mut tx, &def.entity, id, false).await?;
-                records.push(json!({"entity": def.entity, "label": label, "id": id, "number": data.get("number"), "erases": def.erase, "data": data}));
+                let files: Vec<Value> =
+                    attached(&mut tx, ctx.tenant, &def.entity, id).await?.into_iter().map(|(id, name, _)| json!({"id": id, "file_name": name})).collect();
+                records.push(json!({"entity": def.entity, "label": label, "id": id, "number": data.get("number"), "erases": def.erase, "retained_because": def.retain, "files": files, "data": data}));
             }
         }
         let account: Option<Value> = sqlx::query_scalar(
             "select jsonb_build_object('id', id, 'email', email, 'full_name', full_name, 'is_active', is_active, 'is_admin', is_admin, \
                'created_at', created_at, 'last_login_at', last_login_at, \
                'roles', coalesce((select jsonb_agg(role order by role) from user_role r where r.tenant_id = u.tenant_id and r.user_id = u.id), '[]'::jsonb)) \
-             from app_user u where tenant_id = $1 and lower(email::text) = $2",
+             from app_user u where tenant_id = $1 and lower(email::text) = any($2)",
         )
         .bind(ctx.tenant)
-        .bind(&email)
+        .bind(&emails)
         .fetch_optional(&mut *tx)
         .await?;
+        let held = person_held(&mut tx, ctx.tenant, &emails).await?;
         tx.rollback().await?;
-        Ok(json!({"email": email, "records": records, "account": account}))
+        Ok(
+            json!({"email": email, "addresses": emails, "records": records, "account": account, "held": held, "not_searched": ctx.schema.undeclared_personal_data}),
+        )
     }
 
-    /// Erases the person's data (administrators only; `reason` names the request): see the
-    /// module documentation. An administrator account is refused, as is the caller's own.
+    /// Erases the person's data (administrators only; `reason` names the request): see the module
+    /// documentation. An administrator account is refused, as is the caller's own, and anyone under
+    /// a legal hold. A record under one is left and listed.
     pub async fn erase_personal_data(&self, ctx: &Ctx, email: &str, reason: &str) -> Result<Value> {
         admin_only(ctx)?;
         let email = checked_email(email)?;
@@ -145,12 +292,18 @@ impl Kernel {
         if reason.is_empty() || reason.chars().count() > 500 {
             return Err(Error::field("reason", "say why (the request's reference, say), at most 500 characters"));
         }
-        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let account: Option<(Uuid, bool)> = sqlx::query_as("select id, is_admin from app_user where tenant_id = $1 and lower(email::text) = $2 for update")
-            .bind(ctx.tenant)
-            .bind(&email)
-            .fetch_optional(&mut *tx)
-            .await?;
+        // OAuth's tables are the server's, outside any workspace; every statement names the tenant.
+        let mut tx = self.db.system_tenant_tx(ctx.tenant).await?;
+        let emails = addresses(&mut tx, ctx.tenant, &email).await?;
+        if person_held(&mut tx, ctx.tenant, &emails).await? {
+            return Err(Error::Conflict("a legal hold covers this person; release it first".into()));
+        }
+        let account: Option<(Uuid, bool)> =
+            sqlx::query_as("select id, is_admin from app_user where tenant_id = $1 and lower(email::text) = any($2) for update")
+                .bind(ctx.tenant)
+                .bind(&emails)
+                .fetch_optional(&mut *tx)
+                .await?;
         if let Some((id, is_admin)) = account {
             if id == ctx.user {
                 return Err(Error::invalid("you cannot erase your own account"));
@@ -159,47 +312,159 @@ impl Kernel {
                 return Err(Error::invalid("this person is an administrator; take that away first"));
             }
         }
-        let engine = Ctx::system(ctx.tenant, ctx.schema.clone());
-        let (mut erased, mut events) = (Vec::new(), 0u64);
-        for (def, ids) in reached(ctx, &mut tx, &email).await? {
+        let (mut erased, mut retained, mut held, mut journal, mut events, mut files) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), 0u64, 0u64);
+        for (def, ids) in reached(ctx, &mut tx, &emails).await? {
             let ent = self.entity(ctx, &def.entity)?;
             for id in ids {
-                let mut values = Doc::new();
-                for f in &def.erase {
-                    match ent.field(f) {
-                        Some(fd) if fd.ftype == FieldType::Table => self.set_child_rows_tx(&engine, &mut tx, &def.entity, f, id, vec![]).await?,
-                        Some(fd) => {
-                            values.insert(f.clone(), blank(fd, id));
-                        }
-                        None => {}
-                    }
+                if let Some(why) = &def.retain {
+                    retained.push(json!({"entity": def.entity, "id": id, "because": why}));
+                    continue;
                 }
-                if !values.is_empty() {
-                    self.set_values_tx(&engine, &mut tx, &def.entity, id, values).await?;
+                if record_held(&mut tx, ctx.tenant, &def.entity, id).await? {
+                    held.push(json!({"entity": def.entity, "id": id}));
+                    continue;
                 }
-                events += redact(&mut tx, ctx, &def.entity, id, &def.erase, reason).await?;
-                audit::record(&mut tx, ctx, &def.entity, id, "erase_personal_data", None, json!({"fields": def.erase, "reason": reason})).await?;
+                let (e, f) = erase_record(self, ctx, &mut tx, &ent, id, &def.erase, reason).await?;
+                events += e;
+                files += f;
                 erased.push(json!({"entity": def.entity, "id": id}));
+                journal.push(json!({"entity": def.entity, "id": id, "fields": def.erase}));
             }
         }
-        let mut account_erased = false;
-        if let Some((id, _)) = account {
-            sqlx::query(
-                "update app_user set email = $3, full_name = $4, password_hash = null, is_active = false, settings = '{}', \
-                   token_version = token_version + 1, updated_at = now() where tenant_id = $1 and id = $2",
-            )
-            .bind(ctx.tenant)
-            .bind(id)
-            .bind(erased_email(id))
-            .bind(format!("Erased user {}", tag(id)))
-            .execute(&mut *tx)
-            .await?;
-            sqlx::query("delete from user_role where tenant_id = $1 and user_id = $2").bind(ctx.tenant).bind(id).execute(&mut *tx).await?;
-            audit::record(&mut tx, ctx, "User", id, "erase_personal_data", None, json!({"reason": reason})).await?;
-            account_erased = true;
+        let account = account.map(|a| a.0);
+        if let Some(id) = account {
+            erase_account(&mut tx, ctx, id, reason).await?;
+        }
+        // By id and field name only: it outlives the data, and must not hold what it erased.
+        outbox::enqueue(&mut tx, ctx.tenant, ERASED_TOPIC, None, None, json!({"account": account, "records": journal, "reason": reason})).await?;
+        tx.commit().await?;
+        if let Some(id) = account {
+            self.invalidate_user(ctx.tenant, id);
+        }
+        Ok(json!({
+            "email": email, "addresses": emails, "erased": erased, "retained": retained, "held": held, "account_erased": account.is_some(),
+            "audit_events_redacted": events, "files_deleted": files, "not_searched": ctx.schema.undeclared_personal_data,
+        }))
+    }
+
+    /// Writes an erasure's journal entry to object storage ([`ERASED_TOPIC`]'s handler). Named by the
+    /// event, so a retry writes the same object.
+    pub(crate) async fn journal_erasure(&self, tenant: Uuid, event: i64, payload: &Value) -> Result<()> {
+        let Some(store) = self.files.get() else {
+            tracing::warn!(%tenant, "no object storage: this erasure is not journalled, and a restore would bring it back");
+            return Ok(());
+        };
+        let entry = json!({"tenant": tenant, "at": chrono::Utc::now().to_rfc3339(), "erasure": payload});
+        let body = serde_json::to_vec(&entry).map_err(Error::internal)?;
+        store.put(&format!("{JOURNAL_PREFIX}{tenant}/{event}.json"), &body).await
+    }
+
+    /// Erases again what one journal entry names, after a database has been restored from a backup
+    /// older than the erasure. Run it before people or integrations reach the restored data. Records
+    /// the backup does not have are skipped, and running it twice changes nothing.
+    pub async fn reapply_erasure(&self, key: &str) -> Result<usize> {
+        let store = self.files.get().ok_or_else(|| Error::Unavailable("no file storage is configured".into()))?;
+        let entry: Value = serde_json::from_slice(&store.get(key).await?).map_err(Error::internal)?;
+        let tenant: Uuid = entry["tenant"].as_str().and_then(|t| t.parse().ok()).ok_or_else(|| Error::internal(format!("{key} names no workspace")))?;
+        let exists: Option<Uuid> = {
+            let mut tx = self.db.system_tx().await?;
+            sqlx::query_scalar("select id from tenant where id = $1").bind(tenant).fetch_optional(&mut *tx).await?
+        };
+        if exists.is_none() {
+            return Ok(0);
+        }
+        let ctx = Ctx::system(tenant, self.registry.schema(tenant).await?);
+        let erasure = &entry["erasure"];
+        let reason = erasure["reason"].as_str().unwrap_or("erased before this restore");
+        let mut tx = self.db.system_tenant_tx(tenant).await?;
+        let mut done = 0;
+        for r in erasure["records"].as_array().into_iter().flatten() {
+            let (Some(entity), Some(id)) = (r["entity"].as_str(), r["id"].as_str().and_then(|i| i.parse::<Uuid>().ok())) else { continue };
+            let Ok(ent) = self.entity(&ctx, entity) else { continue };
+            if self.get_tx(&ctx, &mut tx, entity, id, false).await.is_err() {
+                continue;
+            }
+            let fields: Vec<String> = r["fields"].as_array().into_iter().flatten().filter_map(|f| f.as_str().map(str::to_string)).collect();
+            erase_record(self, &ctx, &mut tx, &ent, id, &fields, reason).await?;
+            done += 1;
+        }
+        let account = erasure["account"].as_str().and_then(|i| i.parse::<Uuid>().ok());
+        if let Some(id) = account {
+            let present: Option<String> =
+                sqlx::query_scalar("select email::text from app_user where tenant_id = $1 and id = $2").bind(tenant).bind(id).fetch_optional(&mut *tx).await?;
+            if present.is_some_and(|e| !e.ends_with("@erased.invalid")) {
+                erase_account(&mut tx, &ctx, id, reason).await?;
+                done += 1;
+            }
         }
         tx.commit().await?;
-        Ok(json!({"email": email, "erased": erased, "account_erased": account_erased, "audit_events_redacted": events}))
+        if let Some(id) = account {
+            self.invalidate_user(tenant, id);
+        }
+        Ok(done)
+    }
+
+    /// Holds a person (`email`) or a record (`record`) against erasure and deletion, until released
+    /// (administrators only).
+    pub async fn place_legal_hold(&self, ctx: &Ctx, email: Option<&str>, record: Option<(&str, Uuid)>, reason: &str) -> Result<Uuid> {
+        admin_only(ctx)?;
+        let reason = reason.trim();
+        if reason.is_empty() || reason.chars().count() > 500 {
+            return Err(Error::field("reason", "say why (the matter's reference, say), at most 500 characters"));
+        }
+        if email.is_some() == record.is_some() {
+            return Err(Error::field("email", "hold one person or one record"));
+        }
+        let email = email.map(checked_email).transpose()?;
+        if let Some((entity, _)) = record {
+            self.entity(ctx, entity)?;
+        }
+        let id = Uuid::now_v7();
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        sqlx::query("insert into legal_hold (tenant_id, id, email, entity, record_id, reason, created_by) values ($1, $2, $3, $4, $5, $6, $7)")
+            .bind(ctx.tenant)
+            .bind(id)
+            .bind(&email)
+            .bind(record.map(|r| r.0))
+            .bind(record.map(|r| r.1))
+            .bind(reason)
+            .bind(ctx.user)
+            .execute(&mut *tx)
+            .await?;
+        audit::record(&mut tx, ctx, "LegalHold", id, "place", None, json!({"reason": reason})).await?;
+        tx.commit().await?;
+        Ok(id)
+    }
+
+    pub async fn release_legal_hold(&self, ctx: &Ctx, id: Uuid) -> Result<()> {
+        admin_only(ctx)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let done = sqlx::query("update legal_hold set released_at = now(), released_by = $3 where tenant_id = $1 and id = $2 and released_at is null")
+            .bind(ctx.tenant)
+            .bind(id)
+            .bind(ctx.user)
+            .execute(&mut *tx)
+            .await?;
+        if done.rows_affected() == 0 {
+            return Err(Error::NotFound("active legal hold".into()));
+        }
+        audit::record(&mut tx, ctx, "LegalHold", id, "release", None, json!({})).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn legal_holds(&self, ctx: &Ctx) -> Result<Vec<Value>> {
+        admin_only(ctx)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let rows: Vec<Value> = sqlx::query_scalar(
+            "select jsonb_build_object('id', id, 'email', email, 'entity', entity, 'record_id', record_id, 'reason', reason, \
+               'created_by', created_by, 'created_at', created_at, 'released_at', released_at) from legal_hold where tenant_id = $1 order by id desc",
+        )
+        .bind(ctx.tenant)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(rows)
     }
 }
 

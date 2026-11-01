@@ -21,7 +21,8 @@ Production reads `config/production.yaml`, which takes everything from the envir
 |---|---|---|
 | `DATABASE_URL` | yes | `postgres://user:pass@host:5432/db` |
 | `JWT_SECRET` | yes | Base64, ≥ 32 random bytes: `openssl rand -base64 48`. Rotating it signs everyone out |
-| `FERRUM_SECRET_KEY` | yes | Base64 of exactly 32 random bytes: `openssl rand -base64 32`. Seals secret fields (mail passwords, API keys) with AES-256-GCM; every replica needs the same key. Back it up: values sealed with a lost key must be entered again |
+| `FERRUM_RETIRED_SECRET_KEYS` | no | Keys being rotated out, comma-separated: see *Rotating the secret key*. |
+| `FERRUM_SECRET_KEY` | yes | Base64 of exactly 32 random bytes: `openssl rand -base64 32`. Seals secret fields (mail passwords, API keys) and plugins' settings (payment gateways' keys among them) with AES-256-GCM; every replica needs the same key. Back it up: values sealed with a lost key must be entered again |
 | `FERRUM_BOOTSTRAP_TOKEN` | no | Enables `POST /api/tenants` with header `X-Ferrum-Bootstrap-Token`; empty disables it |
 | `FERRUM_METRICS_TOKEN` | recommended | `/metrics` then requires `Authorization: Bearer <token>` |
 | `FERRUM_S3_BUCKET`, `FERRUM_S3_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | multi-replica | Attachment storage on S3 (region `auto` if empty) |
@@ -111,9 +112,12 @@ up to ~11 replicas without a pooler; raise both together).
 Single host: `cp deploy/.env.example deploy/.env`, fill it in, then
 `docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d`.
 
-**Images.** For each commit on `main` whose images pass the checks below, CI publishes
-`ghcr.io/cbferrum/ferrum` and `ghcr.io/cbferrum/ferrum-editors`, tagged with the commit's full SHA
-and `latest`. The server's image answers every page: it carries the shell's and Studio's interfaces,
+**Images.** For each commit on `main` whose images pass every check, CI publishes
+`ghcr.io/cbferrum/ferrum` and `ghcr.io/cbferrum/ferrum-editors` tagged with the commit's full SHA.
+What is published is the image that was tested, promoted by digest, never a new build of it. The
+server's image carries an SBOM and build provenance, and the editors' image its provenance: check
+them with `gh attestation verify oci://<image>@<digest> --repo CBFerrum/Ferrum`. `latest` moves to a
+release only after it also passes the Kubernetes qualification. The server's image answers every page: it carries the shell's and Studio's interfaces,
 built from Ferrum-Frontend at the commit its Dockerfile pins (`FRONTEND_REV`), and apps' interfaces
 come compiled into their crates; Ferrum-Frontend publishes no image of its own. On a single host,
 pin them with `FERRUM_IMAGE` and `FERRUM_EDITORS_IMAGE`. Deploy a commit's tag and change it to upgrade: `latest`
@@ -244,6 +248,48 @@ deploy/kind/install.sh && deploy/kind/smoke.sh
   Restoring in place, `docker compose stop ferrum` first.
 * Test a restore at least quarterly. After restoring, run the audit verification below.
 
+## After restoring a backup
+
+A database restored from a backup brings back whatever was erased since it was taken, so do this
+before people, integrations or the assistant reach it:
+
+```bash
+ferrum task reapply_erasures
+```
+
+Each erasure is journalled in object storage (`privacy-journal/`), by ids and field names and never
+by value, so the journal survives a database restore and holds nothing it erased. Keep that prefix out
+of any lifecycle rule that would expire it sooner than your oldest backup. If object storage was
+restored too, journals written after that backup are gone: take the erasures since then from your
+request records and run them again.
+
+## Rotating the secret key
+
+`FERRUM_SECRET_KEY` seals secret fields, authenticator secrets, single sign-on client secrets,
+webhook signing secrets, plugins' settings and the Web Push key. To replace it, on a schedule or
+because the old key may have been seen:
+
+1. Generate a new key: `openssl rand -base64 32`.
+2. Give **every** replica both: add the new key to `FERRUM_RETIRED_SECRET_KEYS` and restart them all.
+   Nothing changes yet, but each replica can now open what the new key will seal, so a rolling
+   restart in the next step cannot leave one that cannot read a value.
+3. Set `FERRUM_SECRET_KEY` to the new key and `FERRUM_RETIRED_SECRET_KEYS` to the old one, and restart.
+   Each replica moves stored values to the new key as it starts. It is safe side by side with
+   traffic and with other replicas: a value changed meanwhile is left for the next start.
+4. Check the log. `secrets remain that no configured key opens` means some values were sealed with
+   a key you have not configured: keep the retired keys until you know why.
+5. Remove the old key from `FERRUM_RETIRED_SECRET_KEYS` and restart. Back up the new key.
+
+A backup taken before the rotation still needs the old key, so keep it as long as those backups.
+
+**If a key is lost**, what it sealed cannot be recovered: nothing else holds those values. Secret
+fields answer that they were sealed with another key. People with an authenticator app cannot use
+it, and an administrator resets their two-factor sign-in. Single sign-on fails until the client
+secret is entered again. Plugins start with those settings missing, so re-enter them. Webhooks fail
+rather than go out unsigned, so make new ones. The Web Push key is replaced, and devices subscribe
+again. Passwords, sessions and business data are not affected. Restoring a backup without its key
+leaves the same state.
+
 ## Monitoring
 
 `/metrics` (Prometheus text) exposes `ferrum_up`, uptime, database pool size and idle
@@ -347,14 +393,31 @@ access.
 ## Personal-data requests
 
 A person (customer, supplier contact, employee, lead…) may ask for a copy of their data or its
-erasure. Administration → Personal data finds what the installed packages declare as theirs by
-email: download the JSON for an access request; for an erasure, give the request's reference as
-the reason and erase. Their details leave the records listed and those records' audit history
-(the events keep their place in the hash chain and record who redacted what, when and why), and
-their login account is anonymized and closed. Submitted documents keep the names they carry, as
-bookkeeping law requires; an administrator's account is not erased until it is no longer one. The
-same is available as `GET /api/admin/personal-data` and `POST /api/admin/personal-data/erase`;
-packages and apps declare their entities with `personal_data` in their manifests.
+erasure. Administration → Personal data finds what the installed packages declare as theirs, under
+every address they have had: download the JSON for an access request; for an erasure, give the
+request's reference as the reason and erase. Their details leave the records listed and those
+records' audit history (the events keep their place in the hash chain and record who redacted what,
+when and why), files attached to those records are deleted, and their login account is anonymized
+and closed, with its sessions, keys, notifications, preferences and devices. An administrator's
+account is not erased until it is no longer one. The same is available as `GET
+/api/admin/personal-data` and `POST /api/admin/personal-data/erase`; packages and apps declare their
+entities with `personal_data` in their manifests.
+
+Read the answer, because it says what was not done:
+
+| Key | Means |
+|---|---|
+| `retained` | Records a package keeps, each with `because`. They were exported and left as they are. Deciding that they may stay is yours or your counsel's, not Ferrum's. |
+| `held` | Records a legal hold covers, left as they are. |
+| `not_searched` | Installed packages that declare nothing, so were not looked at. |
+
+**Legal holds** stop erasure and deletion while a matter is open: `POST /api/admin/legal-holds` with
+`{"email": "...", "reason": "..."}` for a person, or `{"entity": "...", "record_id": "...", "reason":
+"..."}` for a record; `GET /api/admin/legal-holds`; `POST /api/admin/legal-holds/{id}/release`. They
+are audited, and released holds stay listed. A hold applies to the platform's erasure and deletion:
+an app that deletes rows in its own SQL (Drive's trash, for one) does not check it yet.
+
+Restriction of processing, as an operation of its own, is not built.
 
 ## Online editing
 

@@ -165,6 +165,15 @@ impl Hooks for App {
         let mailer: Option<Arc<dyn Mailer>> = ctx.mailer.clone().map(|sender| Arc::new(LocoMailer { sender, from: None, smtp }) as Arc<dyn Mailer>);
         let jwt = ctx.config.auth.as_ref().and_then(|a| a.jwt.as_ref()).ok_or_else(|| Error::Message("auth.jwt is not configured".into()))?;
         let secret_key = secret_key(&settings, &jwt.secret, &ctx.environment)?;
+        let retired = settings
+            .retired_secret_keys
+            .split(',')
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .map(|k| ferrum_kernel::secret::SecretKey::from_base64(k).map_err(|e| Error::Message(format!("settings.retired_secret_keys: {e}"))))
+            .collect::<Result<Vec<_>>>()?;
+        plugins.seal_with(secret_key.clone());
+        plugins.open_also_with(retired.clone());
         let kernel = Kernel::boot(
             db,
             catalog,
@@ -173,6 +182,7 @@ impl Hooks for App {
                 webhooks_allow_private: settings.webhooks_allow_private,
                 sso_allow_private: settings.sso_allow_private,
                 secret_key: Some(secret_key),
+                retired_secret_keys: retired,
                 pdf_url: Some(settings.pdf_url.trim().to_string()).filter(|u| !u.is_empty()),
                 public_url: Some(ctx.config.server.host.trim().trim_end_matches('/').to_string()).filter(|u| u.starts_with("http")),
                 push_services: push_services(&settings.push_services),
@@ -184,6 +194,18 @@ impl Hooks for App {
         .await
         .map_err(|e| Error::Message(format!("kernel boot: {e}")))?;
         ferrum_app_erp::maintenance(&kernel).await.map_err(|e| Error::Message(format!("ERP's upkeep: {e}")))?;
+        // Plugins configured before their settings were sealed (gateways' keys among them) are sealed now.
+        match plugins.seal_stored(&kernel.db).await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(plugins = n, "sealed stored plugin settings"),
+            Err(e) => tracing::warn!("sealing stored plugin settings: {e}"),
+        }
+        match kernel.reseal_secrets().await {
+            Ok(done) if done.unopened > 0 => tracing::error!(moved = done.moved, unopened = done.unopened, "secrets remain that no configured key opens"),
+            Ok(done) if done.moved > 0 => tracing::info!(moved = done.moved, "moved stored secrets to the current key"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("resealing stored secrets: {e}"),
+        }
         // Loco signs with the base64-decoded secret: reject anything that is not valid base64 at boot.
         if loco_rs::auth::jwt::JWT::new(&jwt.secret).generate_token(60, "probe".into(), serde_json::Map::new()).is_err() {
             return Err(Error::Message("auth.jwt.secret must be base64 (generate one with `openssl rand -base64 48`)".into()));
@@ -370,6 +392,7 @@ impl Hooks for App {
             .layer(axum::middleware::from_fn(speculation_csp))
             .layer(axum::middleware::from_fn(screen_paths))
             .layer(axum::middleware::from_fn(isolated_cors))
+            .layer(axum::middleware::from_fn(traced))
             .layer(axum::middleware::from_fn(move |req, next| app_origins(apps_base.clone(), req, next))))
     }
 
@@ -393,6 +416,7 @@ impl Hooks for App {
             .add_route(crate::coedit::routes())
             .add_route(controllers::sites::routes())
             .add_route(controllers::dav::routes())
+            .add_route(controllers::scim::routes())
             .add_route(controllers::assistant::routes())
             .add_route(controllers::search::routes())
             .add_route(controllers::notifications::routes())
@@ -408,6 +432,7 @@ impl Hooks for App {
 
     fn register_tasks(tasks: &mut Tasks) {
         tasks.register(crate::tasks::CreateTenant);
+        tasks.register(crate::tasks::ReapplyErasures);
         tasks.register(crate::tasks::SyncSchema);
         tasks.register(crate::tasks::ImportErpnext);
         tasks.register(crate::tasks::RunMaintenance);
@@ -432,6 +457,26 @@ impl Hooks for App {
 
 /// Each client address's budget. Only requests that came through the proxy (`X-Forwarded-For`)
 /// count: probes, port-forwards and the cluster's own calls have no address to tell apart.
+/// Runs a request under its trace: the events it writes name its request id, and the caller's W3C
+/// trace context travels with them. This layer sits outside Loco's request id, so it settles the id
+/// and puts it on the request: the log, the request's context and its events all name the same one.
+async fn traced(mut req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    let correlation = crate::extract::request_id(req.headers());
+    if let Ok(id) = axum::http::HeaderValue::from_str(&correlation) {
+        req.headers_mut().insert("x-request-id", id);
+    }
+    let traceparent = req.headers().get("traceparent").and_then(|v| v.to_str().ok()).filter(|v| valid_traceparent(v)).map(str::to_string);
+    ferrum_kernel::Trace { correlation, traceparent, ..Default::default() }.scope(next.run(req)).await
+}
+
+/// `version-traceid-parentid-flags` in lower-case hexadecimal (W3C Trace Context): anything else
+/// is dropped rather than stored as the caller sent it.
+fn valid_traceparent(v: &str) -> bool {
+    let parts: Vec<&str> = v.split('-').collect();
+    matches!(parts.as_slice(), [a, b, c, d] if a.len() == 2 && b.len() == 32 && c.len() == 16 && d.len() == 2)
+        && parts.iter().all(|p| p.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)))
+}
+
 async fn per_address(limiter: Arc<RateLimiter>, req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
     use axum::response::IntoResponse;
     if req.headers().contains_key("x-forwarded-for")
@@ -667,6 +712,25 @@ mod tests {
         assert_eq!(call(Some("203.0.113.7, 203.0.113.8")).await, 200, "another address");
         for _ in 0..10 {
             assert_eq!(call(None).await, 200, "not through the proxy: not counted");
+        }
+    }
+}
+
+#[cfg(test)]
+mod trace_tests {
+    use super::valid_traceparent;
+
+    #[test]
+    fn only_a_well_formed_traceparent_is_kept() {
+        assert!(valid_traceparent("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"));
+        for bad in [
+            "",
+            "00-abc-def-01",
+            "00-0AF7651916CD43DD8448EB211C80319C-b7ad6b7169203331-01",
+            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01-extra",
+            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-0g",
+        ] {
+            assert!(!valid_traceparent(bad), "{bad}");
         }
     }
 }

@@ -12,6 +12,27 @@ fn kernel(ctx: &AppContext) -> Result<std::sync::Arc<ferrum_kernel::Kernel>> {
     app_state(ctx).map(|s| s.kernel).map_err(|e| Error::Message(format!("{:?}", e.0)))
 }
 
+/// `reapply_erasures`: after restoring a database, erases again what was erased since that backup.
+pub struct ReapplyErasures;
+
+#[async_trait]
+impl Task for ReapplyErasures {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "reapply_erasures".into(), detail: "After a restore: erase again what the erasure journal names".into() }
+    }
+    async fn run(&self, ctx: &AppContext, _vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let st = app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?;
+        let keys = st.objects.list(ferrum_kernel::privacy::JOURNAL_PREFIX).await.map_err(|e| Error::Message(e.to_string()))?;
+        let mut records = 0;
+        for key in &keys {
+            records += k.reapply_erasure(key).await.map_err(|e| Error::Message(format!("{key}: {e}")))?;
+        }
+        println!("{} erasures replayed, {records} records and accounts erased again", keys.len());
+        Ok(())
+    }
+}
+
 /// `create_tenant slug:acme name:"Acme Ltd" email:admin@acme.com password:... packages:core,accounting,selling`
 pub struct CreateTenant;
 

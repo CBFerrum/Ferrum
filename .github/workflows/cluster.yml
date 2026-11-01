@@ -3,8 +3,9 @@ name: cluster
 # Deploys an image with deploy/k8s to a Kubernetes cluster (kind: a control plane and three
 # workers) next to the database operator and its backup plugin, a Gateway API implementation and
 # cert-manager, and checks it as an operator would (deploy/kind/smoke.sh): failover, rolling
-# restarts under traffic, attachments across replicas, backup and restore. Runs for each image CI
-# publishes from main, and on demand for any image.
+# restarts under traffic, attachments across replicas, backup and restore. Runs for each release CI
+# publishes from main, and on demand for any image. A release from main that passes here becomes
+# `latest`, by digest, once its provenance has been verified.
 on:
   workflow_run:
     workflows: [ci]
@@ -18,7 +19,8 @@ on:
 
 permissions:
   contents: read
-  packages: read
+  packages: write
+  attestations: read
 
 concurrency:
   group: cluster-${{ github.event.workflow_run.head_sha || github.sha }}
@@ -56,3 +58,16 @@ jobs:
         run: deploy/kind/install.sh
       - name: Deploy and check
         run: deploy/kind/smoke.sh
+      - uses: docker/setup-buildx-action@v3
+        if: github.event_name == 'workflow_run'
+      - name: Promote what was qualified
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          for image in ghcr.io/cbferrum/ferrum ghcr.io/cbferrum/ferrum-editors; do
+            ref="$image@$(docker buildx imagetools inspect "$image:$SHA" --format '{{.Manifest.Digest}}')"
+            gh attestation verify "oci://$ref" --repo "$GITHUB_REPOSITORY"
+            docker buildx imagetools create -t "$image:latest" "$ref"
+          done

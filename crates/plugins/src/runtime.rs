@@ -10,13 +10,30 @@ use wasmtime::{Caller, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBu
 const MAX_OUTPUT: usize = 1 << 20;
 const MAX_REQUEST: usize = 1 << 20;
 const MAX_HOST_CALLS: u32 = 1_000;
-const HOST_CALL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The longest a hook may run, host calls included: it holds the document's transaction open.
+pub const HOOK_DEADLINE: Duration = Duration::from_secs(15);
+/// The longest any other call may run.
+pub const CALL_DEADLINE: Duration = Duration::from_secs(300);
+/// How often the engine's epoch advances; a guest running past its deadline traps within a tick.
+pub const EPOCH_TICK: Duration = Duration::from_millis(100);
 
 /// Serves `host_call` requests for one invocation.
 #[async_trait]
 pub trait HostApi: Send {
     /// Errors are `{"code", "message", "fields"?}` objects, handed to the plugin as `{"error": …}`.
     async fn call(&mut self, op: &str, args: Value) -> Result<Value, Value>;
+
+    /// The longest this invocation may run, host calls included.
+    fn deadline(&self) -> Duration {
+        CALL_DEADLINE
+    }
+
+    /// Whether this invocation runs inside another plugin's host call (and so inside its place in
+    /// the workspace's limit on running calls).
+    fn nested(&self) -> bool {
+        false
+    }
 }
 
 /// A host that offers nothing (validation runs, pure hooks in tests).
@@ -44,6 +61,7 @@ struct StoreData {
 fn describe(e: wasmtime::Error) -> String {
     match e.downcast_ref::<Trap>() {
         Some(Trap::OutOfFuel) => "exceeded its CPU budget".to_string(),
+        Some(Trap::Interrupt) => "exceeded its time limit".to_string(),
         Some(t) => format!("trapped: {t}"),
         None => e.to_string(),
     }
@@ -79,7 +97,8 @@ fn host_call(mut caller: Caller<'_, StoreData>, ptr: i32, len: i32) -> wasmtime:
         if caller.data().bridge.blocking_send(HostRequest { op, args, reply: tx }).is_err() {
             break 'reply host_error("unavailable", "host is shutting down");
         }
-        rx.recv_timeout(HOST_CALL_TIMEOUT).unwrap_or_else(|_| host_error("unavailable", "host call timed out"))
+        // The async side answers, or drops the request when the invocation ends.
+        rx.recv().unwrap_or_else(|_| host_error("unavailable", "the call has ended"))
     };
     let out = serde_json::to_vec(&reply)?;
     let alloc = caller
@@ -97,6 +116,7 @@ fn execute(
     module: &Module,
     fuel: u64,
     memory_mb: u32,
+    deadline: Duration,
     input: &[u8],
     bridge: tokio::sync::mpsc::Sender<HostRequest>,
 ) -> Result<Vec<u8>, String> {
@@ -104,6 +124,8 @@ fn execute(
     let mut store = Store::new(engine, StoreData { limits, bridge, calls: 0 });
     store.limiter(|s| &mut s.limits);
     store.set_fuel(fuel).map_err(|e| e.to_string())?;
+    store.set_epoch_deadline((deadline.as_millis() / EPOCH_TICK.as_millis()) as u64 + 1);
+    store.epoch_deadline_trap();
     let mut linker = Linker::new(engine);
     linker.func_wrap("ferrum", "host_call", host_call).map_err(|e| e.to_string())?;
     let instance = linker.instantiate(&mut store, module).map_err(describe)?;
@@ -123,25 +145,134 @@ fn execute(
     Ok(out)
 }
 
-/// Runs one call, serving its host calls through `host` until the module returns.
+/// Runs one call, serving its host calls through `host` until the module returns or the host's
+/// deadline passes. At the deadline the host call in progress is dropped, not left to finish: its
+/// transaction rolls back, so nothing the plugin was told failed commits later. The guest traps at
+/// its next epoch check.
 pub async fn run(engine: &Engine, module: &Module, fuel: u64, memory_mb: u32, input: Vec<u8>, host: &mut dyn HostApi) -> Result<Vec<u8>, String> {
+    let deadline = host.deadline();
+    let end = tokio::time::Instant::now() + deadline;
+    let expired = || format!("exceeded its time limit of {} s", deadline.as_secs());
     let (tx, mut rx) = tokio::sync::mpsc::channel::<HostRequest>(1);
     let (engine, module) = (engine.clone(), module.clone());
-    let mut task = tokio::task::spawn_blocking(move || execute(&engine, &module, fuel, memory_mb, &input, tx));
+    let mut task = tokio::task::spawn_blocking(move || execute(&engine, &module, fuel, memory_mb, deadline, &input, tx));
     let mut open = true;
     loop {
         tokio::select! {
             request = rx.recv(), if open => match request {
                 Some(r) => {
-                    let answer = match host.call(&r.op, r.args).await {
-                        Ok(v) => json!({"ok": v}),
-                        Err(e) => json!({"error": e}),
+                    let answer = match tokio::time::timeout_at(end, host.call(&r.op, r.args)).await {
+                        Ok(Ok(v)) => json!({"ok": v}),
+                        Ok(Err(e)) => json!({"error": e}),
+                        Err(_) => return Err(expired()),
                     };
                     let _ = r.reply.send(answer);
                 }
                 None => open = false,
             },
             done = &mut task => return done.map_err(|e| format!("plugin task: {e}"))?,
+            _ = tokio::time::sleep_until(end) => return Err(expired()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use wasmtime::Config;
+
+    fn engine() -> Engine {
+        let mut config = Config::new();
+        config.consume_fuel(true);
+        config.epoch_interruption(true);
+        let engine = Engine::new(&config).unwrap();
+        let ticking = engine.clone();
+        std::thread::spawn(move || {
+            loop {
+                ticking.increment_epoch();
+                std::thread::sleep(EPOCH_TICK);
+            }
+        });
+        engine
+    }
+
+    /// A guest whose hook runs `body`.
+    fn guest(engine: &Engine, body: &str) -> Module {
+        let wat = format!(
+            r#"(module
+                 (import "ferrum" "host_call" (func $host (param i32 i32) (result i64)))
+                 (memory (export "memory") 1)
+                 (data (i32.const 16) "{{\22op\22:\22slow\22}}")
+                 (func (export "ferrum_alloc") (param i32) (result i32) (i32.const 1024))
+                 (func (export "ferrum_hook") (param i32 i32) (result i64) {body}))"#
+        );
+        Module::new(engine, wat).unwrap()
+    }
+
+    /// Answers nothing; says when its call was dropped.
+    struct Stuck {
+        deadline: Duration,
+        dropped: Arc<AtomicBool>,
+        committed: Arc<AtomicBool>,
+    }
+
+    struct Dropped(Arc<AtomicBool>);
+
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait]
+    impl HostApi for Stuck {
+        async fn call(&mut self, _: &str, _: Value) -> Result<Value, Value> {
+            let _guard = Dropped(self.dropped.clone());
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            self.committed.store(true, Ordering::SeqCst);
+            Ok(Value::Null)
+        }
+
+        fn deadline(&self) -> Duration {
+            self.deadline
+        }
+    }
+
+    fn stuck(deadline: Duration) -> Stuck {
+        Stuck { deadline, dropped: Arc::default(), committed: Arc::default() }
+    }
+
+    #[tokio::test]
+    async fn a_guest_that_never_returns_stops_at_its_deadline() {
+        let engine = engine();
+        let spin = guest(&engine, "(loop $l (br $l)) (i64.const 0)");
+        let started = std::time::Instant::now();
+        let fuel = u64::MAX / 2;
+        let out = run(&engine, &spin, fuel, 8, vec![], &mut stuck(Duration::from_millis(300))).await;
+        assert!(out.as_ref().is_err_and(|e| e.contains("time limit")), "{out:?}");
+        assert!(started.elapsed() < Duration::from_secs(3), "stopped by the deadline, not by fuel");
+    }
+
+    #[tokio::test]
+    async fn a_host_call_past_the_deadline_is_dropped_and_never_finishes() {
+        let engine = engine();
+        let calls = guest(&engine, "(call $host (i32.const 16) (i32.const 13))");
+        let mut host = stuck(Duration::from_millis(200));
+        let (dropped, committed) = (host.dropped.clone(), host.committed.clone());
+        let out = run(&engine, &calls, 1_000_000, 8, vec![], &mut host).await;
+        assert!(out.as_ref().is_err_and(|e| e.contains("time limit")), "{out:?}");
+        assert!(dropped.load(Ordering::SeqCst), "the call in progress is dropped at the deadline");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!committed.load(Ordering::SeqCst), "and what it was doing never completes");
+    }
+
+    #[tokio::test]
+    async fn fuel_still_stops_a_guest_inside_its_deadline() {
+        let engine = engine();
+        let spin = guest(&engine, "(loop $l (br $l)) (i64.const 0)");
+        let out = run(&engine, &spin, 100_000, 8, vec![], &mut stuck(Duration::from_secs(30))).await;
+        assert!(out.as_ref().is_err_and(|e| e.contains("CPU budget")), "{out:?}");
     }
 }

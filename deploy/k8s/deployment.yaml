@@ -55,6 +55,8 @@ spec:
               valueFrom: {secretKeyRef: {name: ferrum-secrets, key: JWT_SECRET}}
             - name: FERRUM_SECRET_KEY
               valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_SECRET_KEY}}
+            - name: FERRUM_RETIRED_SECRET_KEYS
+              valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_RETIRED_SECRET_KEYS, optional: true}}
             - name: FERRUM_BOOTSTRAP_TOKEN
               valueFrom: {secretKeyRef: {name: ferrum-secrets, key: FERRUM_BOOTSTRAP_TOKEN}}
             - name: FERRUM_METRICS_TOKEN

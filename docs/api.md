@@ -431,6 +431,36 @@ any method on `/api/ext/{plugin}/{path}` (signed in) or `/api/public/{tenant}/{p
 and WebSockets at `/ws/ext/{tenant}/{plugin}/{path}` (token in `Authorization` or `access_token` unless public).
 Manifest, contract and host calls: [plugins.md](plugins.md).
 
+People leaving and provisioning ([identity lifecycle](identity-lifecycle.md)): `POST
+/api/admin/users/{id}/deprovision` `{reason, reassign_to?}` → `{user, sessions_ended, api_keys_revoked,
+oauth_tokens_revoked, assignments_moved, assignments_left_open, reassign_to}`; `GET
+/api/admin/scim/groups` → `{groups: [{id, display_name, roles, members}]}`; `PUT
+/api/admin/scim/groups/{id}/roles` `{roles}`.
+
+Why someone may or may not do something: `GET
+/api/admin/access/explain?user=&entity=&action=&record=&roles=` → `{allowed, reason, roles, rules:
+[{role, entity, if_owner, where}], scoped_by, simulated, record?: {id, reached}}`. `action` is read,
+write, create, delete, submit, cancel, export or import; `record` asks about one record; `roles`
+(comma-separated) answers for those roles instead of the person's own. Nothing changes by asking.
+
+Personal data, beyond the entry above: answers also carry `addresses` (every address the person has
+had), `held`, `not_searched` (installed packages that declare nothing) and, per record,
+`retained_because` and `files`. Erasure answers `{erased, retained: [{entity, id, because}], held,
+files_deleted, audit_events_redacted, account_erased, not_searched}`. Legal holds:
+`/api/admin/legal-holds` (GET → `{holds}`; POST `{email, reason}` or `{entity, record_id, reason}` →
+`{id}`), `POST /api/admin/legal-holds/{id}/release`. Erasure and deletion answer 409 under one.
+
+Failed events ([events](events.md)): `GET /api/admin/events/dead?limit=` → `{events: [{id, topic,
+entity, record_id, attempts, last_error, created_at, correlation_id}]}`; `POST
+/api/admin/events/{id}/replay`; `POST /api/admin/webhook-deliveries/{id}/replay`.
+
+## SCIM 2.0 — `/api/scim/v2` ([identity lifecycle](identity-lifecycle.md))
+
+For identity providers, with an API key of scope `scim`, which opens nothing else: `Users` and
+`Groups` (GET, POST; `/{id}` GET, PUT, PATCH, DELETE), `ServiceProviderConfig`, `ResourceTypes`,
+`Schemas`. Bodies and answers are `application/scim+json`, and errors are RFC 7644's, so what the rest
+of this API answers with 422 is 400 here, with a `scimType`.
+
 ## Apps — `/api/admin/apps` (administrators; [design](plan/apps.md))
 
 `AppSummary` = `{id, name, version, runtime: native|wasm|meta, summary, categories[], publisher?, verified, icon_url, source: native|upload|store:<url>, private}`.

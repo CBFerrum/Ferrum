@@ -1,0 +1,21 @@
+# Each advisory .cargo/audit.toml ignores (specification §17.3). scripts/registry.py fails when one
+# is ignored without an entry here, or when an entry's review date has passed.
+advisories:
+  - id: RUSTSEC-2023-0071
+    crate: rsa
+    owner: Chinmoy Bhuyan
+    reason: Marvin timing attack, no fixed version; arrives through jsonwebtoken's RSA support, which loco-rs enables.
+    applicability: >-
+      Session tokens are HS256. RSA keys are used only to verify OIDC ID tokens, where timing does
+      not reveal a private key because Ferrum holds none. No private-key operation runs.
+    review_by: 2027-02-01
+    resolved_when: jsonwebtoken or loco-rs drops the rsa crate, or a fixed rsa is released.
+  - id: RUSTSEC-2026-0387
+    crate: crypto-bigint
+    owner: Chinmoy Bhuyan
+    reason: Timing variability; arrives the same way as rsa.
+    applicability: >-
+      Reached only through the verification paths above; no secret value passes through it.
+      This reading needs confirming by someone other than the author of this entry.
+    review_by: 2027-02-01
+    resolved_when: jsonwebtoken or loco-rs upgrade.

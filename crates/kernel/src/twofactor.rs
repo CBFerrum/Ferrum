@@ -51,7 +51,7 @@ fn now_seconds() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-fn sealed_label(tenant: Uuid, user: Uuid) -> String {
+pub(crate) fn sealed_label(tenant: Uuid, user: Uuid) -> String {
     format!("totp|{tenant}|{user}")
 }
 
@@ -96,11 +96,11 @@ impl Kernel {
     /// the credentials of the membership it was made from).
     pub(crate) fn reseal_totp(&self, from: (Uuid, Uuid), to: (Uuid, Uuid), sealed: &str) -> Result<String> {
         let key = self.totp_key()?;
-        key.seal(&sealed_label(to.0, to.1), &key.open(&sealed_label(from.0, from.1), sealed)?)
+        key.seal(&sealed_label(to.0, to.1), &self.open_sealed(&sealed_label(from.0, from.1), sealed)?)
     }
 
     fn open_secret(&self, tenant: Uuid, user: Uuid, sealed: &str) -> Result<Vec<u8>> {
-        let b32 = self.totp_key()?.open(&sealed_label(tenant, user), sealed)?;
+        let b32 = self.open_sealed(&sealed_label(tenant, user), sealed)?;
         BASE32_NOPAD.decode(b32.as_bytes()).map_err(|_| Error::Internal("corrupt two-factor secret".into()))
     }
 
@@ -146,7 +146,7 @@ impl Kernel {
             return Err(Error::invalid("two-factor sign-in is already on; turn it off first to change the device"));
         }
         let label = sealed_label(ctx.tenant, ctx.user);
-        let secret = match pending.map(|sealed| key.open(&label, &sealed)) {
+        let secret = match pending.map(|sealed| self.open_sealed(&label, &sealed)) {
             Some(Ok(secret)) => secret,
             _ => {
                 let mut raw = [0u8; 20];
