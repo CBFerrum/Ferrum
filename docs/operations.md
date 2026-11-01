@@ -26,6 +26,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_CLAMAV_ADDR` | recommended | A ClamAV daemon uploads pass through, `host:3310`. What it finds is refused and audited; with it set, a scanner that cannot answer refuses uploads too. See *Malware scanning*. |
 | `FERRUM_CLAMAV_MAX_MB` | with a scanner | The scanner's `StreamMaxLength` in MiB (default 25). Files past it are stored unscanned. |
 | `FERRUM_BOOTSTRAP_TOKEN` | no | Enables `POST /api/tenants` with header `X-Ferrum-Bootstrap-Token`; empty disables it |
+| `FERRUM_OPS_TELEMETRY_DAYS` | no | Days of device measurements kept (default 30). Rollups outlive them. |
 | `FERRUM_METRICS_TOKEN` | recommended | `/metrics` then requires `Authorization: Bearer <token>` |
 | `FERRUM_S3_BUCKET`, `FERRUM_S3_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | multi-replica | Attachment storage on S3 (region `auto` if empty) |
 | `FERRUM_S3_ENDPOINT` | no | Any S3-compatible store: MinIO, Cloudflare R2, Wasabi, Backblaze B2, DigitalOcean Spaces, GCS interoperability |
@@ -1147,6 +1148,16 @@ a person's sessions here when they sign out there or it disables them. Give it
 audience, event and age are checked, and each token works once. It ends all the person's sessions at
 Ferrum and their refresh tokens, on every replica, not only the session it names. Their API keys stay:
 those are not sign-ins, and removing the person ends them.
+## Industrial sites
+
+A site runs `ferrum-site` next to its equipment: [running a site](site-runtime.md). Who may command
+what is in [operational authority](operations-authority.md), and what has been tried on what in
+[compatibility](compatibility.md).
+
+After restoring the platform from a backup, sites may be ahead of it: their reports replay
+harmlessly, and commands issued after the backup was taken are gone from the ledger though a site may
+have run them. Before enabling dispatch, compare each site's console with **Needs a person**.
+
 ## Routine tasks
 
 ```bash

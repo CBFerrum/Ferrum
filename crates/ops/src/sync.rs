@@ -42,17 +42,20 @@ async fn apply_fact(tx: &mut Tx, tenant: Uuid, site: Uuid, f: &Fact) -> Result<(
     }
     if f.kind == "equipment.state" {
         // Equipment's own history is kept here, for every app's OEE. Late ones land in their place.
-        let (device, state) = (f.body.get("device").and_then(|v| v.as_str()).and_then(|v| v.parse::<Uuid>().ok()), f.body.get("state").and_then(|v| v.as_str()));
+        let (device, state) =
+            (f.body.get("device").and_then(|v| v.as_str()).and_then(|v| v.parse::<Uuid>().ok()), f.body.get("state").and_then(|v| v.as_str()));
         if let (Some(device), Some(state)) = (device, state.filter(|s| matches!(*s, "Running" | "Idle" | "Stopped" | "Maintenance" | "Unknown"))) {
-            sqlx::query("insert into op_equipment_event (tenant_id, device_id, at, state, reason, fact_id) values ($1, $2, $3, $4, $5, $6) on conflict do nothing")
-                .bind(tenant)
-                .bind(device)
-                .bind(f.at_source)
-                .bind(state)
-                .bind(f.body.get("reason").and_then(|v| v.as_str()))
-                .bind(f.fact_id)
-                .execute(&mut **tx)
-                .await?;
+            sqlx::query(
+                "insert into op_equipment_event (tenant_id, device_id, at, state, reason, fact_id) values ($1, $2, $3, $4, $5, $6) on conflict do nothing",
+            )
+            .bind(tenant)
+            .bind(device)
+            .bind(f.at_source)
+            .bind(state)
+            .bind(f.body.get("reason").and_then(|v| v.as_str()))
+            .bind(f.fact_id)
+            .execute(&mut **tx)
+            .await?;
         }
     }
     let payload = json!({"fact": f.fact_id, "site": site, "kind": f.kind, "at": f.at_source, "actor": f.actor, "body": f.body});
@@ -72,11 +75,13 @@ async fn site_devices(tx: &mut Tx, tenant: Uuid, domain: &str, site: Uuid) -> Re
     .await?;
     let ids: Vec<Uuid> = rows.iter().map(|r| r.0).collect();
     let mut operations: BTreeMap<Uuid, Vec<String>> = BTreeMap::new();
-    for (parent, op) in sqlx::query_as::<_, (Uuid, String)>("select parent_id, operation from e_device__operations where tenant_id = $1 and parent_id = any($2) order by operation")
-        .bind(tenant)
-        .bind(&ids)
-        .fetch_all(&mut **tx)
-        .await?
+    for (parent, op) in sqlx::query_as::<_, (Uuid, String)>(
+        "select parent_id, operation from e_device__operations where tenant_id = $1 and parent_id = any($2) order by operation",
+    )
+    .bind(tenant)
+    .bind(&ids)
+    .fetch_all(&mut **tx)
+    .await?
     {
         operations.entry(parent).or_default().push(op);
     }

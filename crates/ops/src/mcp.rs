@@ -64,8 +64,26 @@ impl ToolProvider for OpsTools {
             return vec![];
         }
         vec![
-            tool_definition("ops_overview", "Sites and what needs a person", "Each site: its gateway, what is waiting, what is running and what needs a person.", json!({}), &[], true, false, true),
-            tool_definition("ops_command", "A command and its history", "One command and everything recorded about it. A state says only what was established.", json!({"id": {"type": "string"}}), &["id"], true, false, true),
+            tool_definition(
+                "ops_overview",
+                "Sites and what needs a person",
+                "Each site: its gateway, what is waiting, what is running and what needs a person.",
+                json!({}),
+                &[],
+                true,
+                false,
+                true,
+            ),
+            tool_definition(
+                "ops_command",
+                "A command and its history",
+                "One command and everything recorded about it. A state says only what was established.",
+                json!({"id": {"type": "string"}}),
+                &["id"],
+                true,
+                false,
+                true,
+            ),
             tool_definition(
                 "ops_propose",
                 "Propose work for a device",

@@ -60,6 +60,7 @@ impl App {
         sessions.get(token).cloned()
     }
 
+    #[allow(clippy::result_large_err)] // The error is the answer to send: handlers return it as it is.
     fn needs(&self, headers: &HeaderMap, may: Option<&str>) -> Result<Session, Response> {
         let s = self.session(headers).ok_or_else(|| err(StatusCode::UNAUTHORIZED, "sign in with your PIN"))?;
         if let Some(what) = may

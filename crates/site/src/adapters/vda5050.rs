@@ -69,7 +69,8 @@ pub fn judge(state: &Value, order: &str) -> Observation {
     let empty = |k: &str| state[k].as_array().is_none_or(Vec::is_empty);
     let actions_done = state["actionStates"].as_array().is_none_or(|a| a.iter().all(|x| matches!(x["actionStatus"].as_str(), Some("FINISHED" | "FAILED"))));
     if empty("nodeStates") && empty("edgeStates") && state["driving"] != json!(true) && actions_done {
-        let failed: Vec<&Value> = state["actionStates"].as_array().map(|a| a.iter().filter(|x| x["actionStatus"] == json!("FAILED")).collect()).unwrap_or_default();
+        let failed: Vec<&Value> =
+            state["actionStates"].as_array().map(|a| a.iter().filter(|x| x["actionStatus"] == json!("FAILED")).collect()).unwrap_or_default();
         if failed.is_empty() {
             return Observation::Completed(json!({"lastNodeId": state["lastNodeId"], "agvPosition": state["agvPosition"], "timestamp": state["timestamp"]}));
         }
@@ -208,7 +209,10 @@ impl Adapter for Vda {
             "actions": [{"actionType": "cancelOrder", "actionId": c.id.to_string(), "blockingType": "HARD"}],
         });
         for serial in &self.serials {
-            self.client.publish(topic(&self.cfg, serial, "instantActions"), QoS::AtLeastOnce, false, actions.to_string()).await.map_err(|e| Failure::NotSent(e.to_string()))?;
+            self.client
+                .publish(topic(&self.cfg, serial, "instantActions"), QoS::AtLeastOnce, false, actions.to_string())
+                .await
+                .map_err(|e| Failure::NotSent(e.to_string()))?;
         }
         Ok(())
     }
@@ -218,7 +222,14 @@ impl Adapter for Vda {
         for serial in &self.serials {
             let Some(s) = self.state_of(serial) else { continue };
             if let Some(b) = s["batteryState"]["batteryCharge"].as_f64() {
-                out.push(Reading::Value { device: serial.clone(), metric: "battery.pct".into(), value: b, unit: Some("%".into()), class: Class::Sample, source_time: None });
+                out.push(Reading::Value {
+                    device: serial.clone(),
+                    metric: "battery.pct".into(),
+                    value: b,
+                    unit: Some("%".into()),
+                    class: Class::Sample,
+                    source_time: None,
+                });
             }
             let fault = s["errors"].as_array().is_some_and(|e| e.iter().any(|x| x["errorLevel"] == json!("FATAL")));
             let state = match (fault, s["driving"].as_bool(), s["paused"].as_bool()) {
@@ -246,7 +257,15 @@ mod tests {
     use super::*;
 
     fn cfg() -> VdaConfig {
-        VdaConfig { host: "x".into(), port: 1883, interface: "uagv".into(), version: "2.1.0".into(), manufacturer: "acme".into(), username: None, password: None }
+        VdaConfig {
+            host: "x".into(),
+            port: 1883,
+            interface: "uagv".into(),
+            version: "2.1.0".into(),
+            manufacturer: "acme".into(),
+            username: None,
+            password: None,
+        }
     }
 
     #[test]
@@ -272,7 +291,8 @@ mod tests {
         assert_eq!(judge(&stopped_at_last_node, "o"), Observation::Running, "still moving");
         let pending_action = json!({"orderId": "o", "nodeStates": [], "edgeStates": [], "driving": false, "actionStates": [{"actionStatus": "RUNNING"}]});
         assert_eq!(judge(&pending_action, "o"), Observation::Running, "it has not finished what it was asked to do there");
-        let done = json!({"orderId": "o", "nodeStates": [], "edgeStates": [], "driving": false, "actionStates": [{"actionStatus": "FINISHED"}], "lastNodeId": "b"});
+        let done =
+            json!({"orderId": "o", "nodeStates": [], "edgeStates": [], "driving": false, "actionStates": [{"actionStatus": "FINISHED"}], "lastNodeId": "b"});
         assert!(matches!(judge(&done, "o"), Observation::Completed(_)));
     }
 

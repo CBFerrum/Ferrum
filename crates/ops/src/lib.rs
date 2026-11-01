@@ -53,7 +53,8 @@ pub fn reports() -> Vec<Arc<dyn ReportSource>> {
 
 /// Tells everyone in `role` that a device's work needs them.
 pub(crate) async fn emit_people(tx: &mut Tx, tenant: Uuid, role: &str, title: &str, device: Uuid) -> Result<()> {
-    let people: Vec<Uuid> = sqlx::query_scalar("select user_id from user_role where tenant_id = $1 and role = $2").bind(tenant).bind(role).fetch_all(&mut **tx).await?;
+    let people: Vec<Uuid> =
+        sqlx::query_scalar("select user_id from user_role where tenant_id = $1 and role = $2").bind(tenant).bind(role).fetch_all(&mut **tx).await?;
     for user in people {
         notify::send(tx, tenant, user, title, None, Some("Device"), Some(device)).await?;
     }

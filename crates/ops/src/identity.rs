@@ -26,8 +26,11 @@ fn hash_code(code: &str) -> String {
 /// A one-time code for a claimed or quarantined device. Shown once, stored only as a hash.
 pub async fn new_enrollment(k: &Kernel, ctx: &Ctx, device: Uuid) -> Result<(String, DateTime<Utc>)> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let lifecycle: Option<String> =
-        sqlx::query_scalar("select lifecycle from e_device where tenant_id = $1 and id = $2 for update").bind(ctx.tenant).bind(device).fetch_optional(&mut *tx).await?;
+    let lifecycle: Option<String> = sqlx::query_scalar("select lifecycle from e_device where tenant_id = $1 and id = $2 for update")
+        .bind(ctx.tenant)
+        .bind(device)
+        .fetch_optional(&mut *tx)
+        .await?;
     let lifecycle = devices::lifecycle_of(&lifecycle.ok_or_else(|| Error::NotFound("device".into()))?)?;
     if !lifecycle.can_move(Lifecycle::Provisioned) {
         return Err(Error::invalid(format!("a device that is {} cannot enroll a key", lifecycle.as_str())));
@@ -36,7 +39,11 @@ pub async fn new_enrollment(k: &Kernel, ctx: &Ctx, device: Uuid) -> Result<(Stri
     rand::rng().fill_bytes(&mut bytes);
     let code = hex::encode(bytes);
     let expires = Utc::now() + Duration::hours(CODE_HOURS);
-    sqlx::query("update op_enrollment set used_at = now() where tenant_id = $1 and device_id = $2 and used_at is null").bind(ctx.tenant).bind(device).execute(&mut *tx).await?;
+    sqlx::query("update op_enrollment set used_at = now() where tenant_id = $1 and device_id = $2 and used_at is null")
+        .bind(ctx.tenant)
+        .bind(device)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("insert into op_enrollment (tenant_id, code_hash, device_id, expires_at, created_by) values ($1, $2, $3, $4, $5)")
         .bind(ctx.tenant)
         .bind(hash_code(&code))
@@ -61,13 +68,12 @@ fn parse_key(hex_key: &str) -> Result<([u8; 32], VerifyingKey)> {
 pub async fn enroll(k: &Kernel, tenant: Uuid, e: &Enroll) -> Result<Enrolled> {
     let (public_key, _) = parse_key(&e.public_key)?;
     let mut tx = k.db.tenant_tx(tenant).await?;
-    let found: Option<(Uuid, DateTime<Utc>)> = sqlx::query_as(
-        "update op_enrollment set used_at = now() where tenant_id = $1 and code_hash = $2 and used_at is null returning device_id, expires_at",
-    )
-    .bind(tenant)
-    .bind(hash_code(&e.code))
-    .fetch_optional(&mut *tx)
-    .await?;
+    let found: Option<(Uuid, DateTime<Utc>)> =
+        sqlx::query_as("update op_enrollment set used_at = now() where tenant_id = $1 and code_hash = $2 and used_at is null returning device_id, expires_at")
+            .bind(tenant)
+            .bind(hash_code(&e.code))
+            .fetch_optional(&mut *tx)
+            .await?;
     let (device, expires) = found.ok_or_else(|| Error::Forbidden("this code is not valid, or was used".into()))?;
     if expires <= Utc::now() {
         return Err(Error::Forbidden("this code has expired".into()));

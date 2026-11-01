@@ -116,7 +116,14 @@ impl Mqtt {
                         let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                         for sub in config.measurements.iter().filter(|m| matches(&m.topic, &topic)) {
                             if let Some(value) = number(&p.payload, sub.field.as_deref()) {
-                                s.readings.push(Reading::Value { device: sub.device.clone(), metric: sub.metric.clone(), value, unit: sub.unit.clone(), class: Class::Sample, source_time: None });
+                                s.readings.push(Reading::Value {
+                                    device: sub.device.clone(),
+                                    metric: sub.metric.clone(),
+                                    value,
+                                    unit: sub.unit.clone(),
+                                    class: Class::Sample,
+                                    source_time: None,
+                                });
                             }
                         }
                         // Bounded: a chatty broker costs samples, never memory.

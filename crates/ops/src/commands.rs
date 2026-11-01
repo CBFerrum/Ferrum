@@ -97,7 +97,19 @@ async fn announce(tx: &mut Tx, tenant: Uuid, id: Uuid, state: State, row: &Row, 
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn record(tx: &mut Tx, tenant: Uuid, id: Uuid, report: Option<Uuid>, state: State, step: Step, at_source: Option<DateTime<Utc>>, actor: Option<Uuid>, epoch: Option<i64>, detail: &Value, evidence: Option<&Value>) -> Result<()> {
+async fn record(
+    tx: &mut Tx,
+    tenant: Uuid,
+    id: Uuid,
+    report: Option<Uuid>,
+    state: State,
+    step: Step,
+    at_source: Option<DateTime<Utc>>,
+    actor: Option<Uuid>,
+    epoch: Option<i64>,
+    detail: &Value,
+    evidence: Option<&Value>,
+) -> Result<()> {
     let step = match step {
         Step::Move => "move",
         Step::Keep => "keep",
@@ -178,8 +190,11 @@ pub async fn issue(tx: &mut Tx, ctx: &Ctx, cmd: NewCommand) -> Result<Issued> {
     let Some(needs_approval) = devices::operation(tx, tenant, cmd.target, &cmd.operation).await? else {
         return Err(Error::invalid(format!("{} was not commissioned for {}", target.code, cmd.operation)));
     };
-    let epoch: Option<i64> =
-        sqlx::query_scalar("select epoch from op_authority where tenant_id = $1 and domain = $2").bind(tenant).bind(&target.domain).fetch_optional(&mut **tx).await?;
+    let epoch: Option<i64> = sqlx::query_scalar("select epoch from op_authority where tenant_id = $1 and domain = $2")
+        .bind(tenant)
+        .bind(&target.domain)
+        .fetch_optional(&mut **tx)
+        .await?;
     let Some(epoch) = epoch else {
         return Err(Error::invalid(format!("no gateway holds {}, so nothing can reach {}", target.domain, target.code)));
     };
@@ -222,7 +237,20 @@ pub async fn issue(tx: &mut Tx, ctx: &Ctx, cmd: NewCommand) -> Result<Issued> {
     .execute(&mut **tx)
     .await?;
     if state == State::Queued {
-        record(tx, tenant, id, None, State::Authorized, Step::Move, None, person(ctx), Some(epoch), &json!({"by": cmd.issuer.as_str(), "approval": approval}), None).await?;
+        record(
+            tx,
+            tenant,
+            id,
+            None,
+            State::Authorized,
+            Step::Move,
+            None,
+            person(ctx),
+            Some(epoch),
+            &json!({"by": cmd.issuer.as_str(), "approval": approval}),
+            None,
+        )
+        .await?;
     }
     record(tx, tenant, id, None, state, Step::Move, None, person(ctx), Some(epoch), &Value::Null, None).await?;
     let row = load(tx, tenant, id).await?;
@@ -284,8 +312,11 @@ pub enum Applied {
 
 /// Applies one report from the holder on `epoch`. Safe to repeat, and to deliver in any order.
 pub async fn apply(tx: &mut Tx, tenant: Uuid, r: &Report, epoch: i64) -> Result<Applied> {
-    let seen: Option<i32> =
-        sqlx::query_scalar("select 1 from op_command_event where tenant_id = $1 and report_id = $2").bind(tenant).bind(r.report_id).fetch_optional(&mut **tx).await?;
+    let seen: Option<i32> = sqlx::query_scalar("select 1 from op_command_event where tenant_id = $1 and report_id = $2")
+        .bind(tenant)
+        .bind(r.report_id)
+        .fetch_optional(&mut **tx)
+        .await?;
     if seen.is_some() {
         return Ok(Applied::Done(Step::Keep));
     }
@@ -296,12 +327,29 @@ pub async fn apply(tx: &mut Tx, tenant: Uuid, r: &Report, epoch: i64) -> Result<
     };
     let state = row.state()?;
     if r.epoch != epoch {
-        record(tx, tenant, r.command_id, Some(r.report_id), r.state, Step::Refuse, Some(r.at_source), None, Some(r.epoch), &json!({"refused": "from an old authority", "detail": r.detail}), r.evidence.as_ref()).await?;
+        record(
+            tx,
+            tenant,
+            r.command_id,
+            Some(r.report_id),
+            r.state,
+            Step::Refuse,
+            Some(r.at_source),
+            None,
+            Some(r.epoch),
+            &json!({"refused": "from an old authority", "detail": r.detail}),
+            r.evidence.as_ref(),
+        )
+        .await?;
         return Ok(Applied::Refused("this authority was replaced".into()));
     }
-    let reportable = matches!(r.state, State::Accepted | State::Rejected | State::Executing | State::Completed | State::Failed | State::Aborted | State::OutcomeUnknown | State::Expired);
+    let reportable = matches!(
+        r.state,
+        State::Accepted | State::Rejected | State::Executing | State::Completed | State::Failed | State::Aborted | State::OutcomeUnknown | State::Expired
+    );
     if !reportable || row.sent_at.is_none() {
-        record(tx, tenant, r.command_id, Some(r.report_id), r.state, Step::Refuse, Some(r.at_source), None, Some(r.epoch), &r.detail, r.evidence.as_ref()).await?;
+        record(tx, tenant, r.command_id, Some(r.report_id), r.state, Step::Refuse, Some(r.at_source), None, Some(r.epoch), &r.detail, r.evidence.as_ref())
+            .await?;
         return Ok(Applied::Refused(format!("{} cannot be reported for this command", r.state.as_str())));
     }
     let taken = step(state, r.state, r.evidence.is_some());
@@ -331,7 +379,12 @@ pub async fn approve(tx: &mut Tx, ctx: &Ctx, id: Uuid) -> Result<State> {
         return Err(Error::Forbidden("someone else has to approve this".into()));
     }
     let reference = format!("user:{}", ctx.user);
-    sqlx::query("update op_command set approval_ref = $3 where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).bind(&reference).execute(&mut **tx).await?;
+    sqlx::query("update op_command set approval_ref = $3 where tenant_id = $1 and id = $2")
+        .bind(ctx.tenant)
+        .bind(id)
+        .bind(&reference)
+        .execute(&mut **tx)
+        .await?;
     record(tx, ctx.tenant, id, None, State::Authorized, Step::Move, None, person(ctx), None, &json!({"approved_by": ctx.email}), None).await?;
     record(tx, ctx.tenant, id, None, State::Queued, Step::Move, None, person(ctx), None, &Value::Null, None).await?;
     set_state(tx, ctx.tenant, id, State::Queued, None).await?;
@@ -415,17 +468,15 @@ macro_rules! named {
 /// What a person sees of a command, with everything said about it.
 pub async fn describe(k: &Kernel, ctx: &Ctx, id: Uuid) -> Result<Value> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let command: Option<Value> = sqlx::query_scalar(concat!("select ", named!(""), " where c.tenant_id = $1 and c.id = $2"))
-        .bind(ctx.tenant)
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?;
+    let command: Option<Value> =
+        sqlx::query_scalar(concat!("select ", named!(""), " where c.tenant_id = $1 and c.id = $2")).bind(ctx.tenant).bind(id).fetch_optional(&mut *tx).await?;
     let mut command = command.ok_or_else(|| Error::NotFound("command".into()))?;
-    let history: Vec<Value> = sqlx::query_scalar("select to_jsonb(e) - 'tenant_id' - 'command_id' from op_command_event e where tenant_id = $1 and command_id = $2 order by seq")
-        .bind(ctx.tenant)
-        .bind(id)
-        .fetch_all(&mut *tx)
-        .await?;
+    let history: Vec<Value> =
+        sqlx::query_scalar("select to_jsonb(e) - 'tenant_id' - 'command_id' from op_command_event e where tenant_id = $1 and command_id = $2 order by seq")
+            .bind(ctx.tenant)
+            .bind(id)
+            .fetch_all(&mut *tx)
+            .await?;
     tx.commit().await?;
     command["history"] = json!(history);
     Ok(command)
@@ -434,14 +485,12 @@ pub async fn describe(k: &Kernel, ctx: &Ctx, id: Uuid) -> Result<Value> {
 /// Commands, newest first.
 pub async fn list(k: &Kernel, ctx: &Ctx, sites: Option<&[Uuid]>, state: Option<&str>, needs_person: bool, limit: i64) -> Result<Vec<Value>> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let rows: Vec<Value> = sqlx::query_scalar(
-        concat!(
-            "select ",
-            named!(" - 'payload'"),
-            " where c.tenant_id = $1 and ($2::uuid[] is null or c.site_id = any($2)) and ($3::text is null or c.state = $3) \
+    let rows: Vec<Value> = sqlx::query_scalar(concat!(
+        "select ",
+        named!(" - 'payload'"),
+        " where c.tenant_id = $1 and ($2::uuid[] is null or c.site_id = any($2)) and ($3::text is null or c.state = $3) \
              and (not $4 or c.state in ('Proposed', 'OutcomeUnknown') or c.conflict) order by c.issued_at desc limit $5"
-        ),
-    )
+    ))
     .bind(ctx.tenant)
     .bind(sites)
     .bind(state)
@@ -455,7 +504,12 @@ pub async fn list(k: &Kernel, ctx: &Ctx, sites: Option<&[Uuid]>, state: Option<&
 
 /// Of the commands a site is in doubt about, those that ended here: a person said what happened.
 pub async fn settled(tx: &mut Tx, tenant: Uuid, domain: &str, ids: &[Uuid]) -> Result<Vec<(Uuid, State)>> {
-    let rows: Vec<(Uuid, String)> = sqlx::query_as("select id, state from op_command where tenant_id = $1 and domain = $2 and id = any($3)").bind(tenant).bind(domain).bind(ids).fetch_all(&mut **tx).await?;
+    let rows: Vec<(Uuid, String)> = sqlx::query_as("select id, state from op_command where tenant_id = $1 and domain = $2 and id = any($3)")
+        .bind(tenant)
+        .bind(domain)
+        .bind(ids)
+        .fetch_all(&mut **tx)
+        .await?;
     Ok(rows.into_iter().filter_map(|(id, s)| State::parse(&s).filter(|s| s.is_final()).map(|s| (id, s))).collect())
 }
 

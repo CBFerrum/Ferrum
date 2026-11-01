@@ -39,9 +39,20 @@ pub enum Observation {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Reading {
-    Value { device: String, metric: String, value: f64, unit: Option<String>, class: Class, source_time: Option<DateTime<Utc>> },
+    Value {
+        device: String,
+        metric: String,
+        value: f64,
+        unit: Option<String>,
+        class: Class,
+        source_time: Option<DateTime<Utc>>,
+    },
     /// `state`: Running, Idle, Stopped, Maintenance or Unknown.
-    State { device: String, state: String, reason: Option<String> },
+    State {
+        device: String,
+        state: String,
+        reason: Option<String>,
+    },
 }
 
 #[async_trait]

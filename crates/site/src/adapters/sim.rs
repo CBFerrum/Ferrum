@@ -119,7 +119,14 @@ impl Adapter for Sim {
         Ok(self
             .devices
             .iter()
-            .map(|d| Reading::Value { device: d.clone(), metric: "battery.pct".into(), value: 70.0 + (t / 60.0).sin() * 20.0, unit: Some("%".into()), class: Class::Sample, source_time: None })
+            .map(|d| Reading::Value {
+                device: d.clone(),
+                metric: "battery.pct".into(),
+                value: 70.0 + (t / 60.0).sin() * 20.0,
+                unit: Some("%".into()),
+                class: Class::Sample,
+                source_time: None,
+            })
             .collect())
     }
 

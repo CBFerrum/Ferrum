@@ -103,6 +103,23 @@ The assessment's gates, as they stand. Status per gate is in the registry.
 | G9 controlled autonomy | Measured against a baseline on real data |
 | G10 release sustainability | A support policy the owner puts in force |
 
+## What a live plant taught
+
+On 2 November 2026 the whole chain was run on the real binary with a real site runtime: a warehouse, a
+press and a simulated fleet, in a browser. Separate scenarios had all been green. It found:
+
+- nothing brought material to a line, so a run in a managed warehouse could never post its output;
+- a second hand-over sent everything verified so far again, and a shipment closed with a difference
+  could be received twice;
+- a real barcode never matched, and part of a name did;
+- only an administrator could search an item: every test had signed in as one;
+- a person's finding never reached the site, and a frozen platform looked connected for a minute;
+- equipment behind a gateway could not be provisioned at all.
+
+So: run the real thing before trusting a green suite, and not as an administrator.
+
 ## Status
 
-Kept in the registry. In short: see the end of `docs/registry/handover.md`.
+Kept in the registry (`docs/registry/industrial.yaml`), with what is and is not proven. The scale of
+the assessment stands at 184 to 314 engineer-months, and most of what remains needs equipment and
+people, not code: see the blockers.

@@ -1,0 +1,19 @@
+[Unit]
+Description=Ferrum site runtime
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ferrum-site
+ExecStart=/usr/local/bin/ferrum-site run --config /etc/ferrum-site/site.yaml
+Restart=always
+RestartSec=5
+# It writes only its journal.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/ferrum-site
+
+[Install]
+WantedBy=multi-user.target

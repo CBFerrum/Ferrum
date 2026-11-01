@@ -50,7 +50,16 @@ async fn edge(State(p): State<Arc<Platform>>, UrlPath((tenant, path)): UrlPath<(
     let (tenant, _) = p.k.tenant_by_slug(&tenant).await.unwrap();
     let mut map: Map<String, Value> = headers.iter().filter_map(|(k, v)| Some((k.to_string(), json!(v.to_str().ok()?)))).collect();
     map.insert("x-ferrum-uri".into(), json!(uri.path()));
-    let req = SiteRequest { tenant, user: None, method: "POST".into(), path: format!("/{path}"), query: Map::new(), headers: map, body: body.to_vec(), client_ip: "127.0.0.1".into() };
+    let req = SiteRequest {
+        tenant,
+        user: None,
+        method: "POST".into(),
+        path: format!("/{path}"),
+        query: Map::new(),
+        headers: map,
+        body: body.to_vec(),
+        client_ip: "127.0.0.1".into(),
+    };
     let site = p.k.hooks.site("ops").unwrap().clone();
     match site.handle(&p.k, req).await {
         Ok(r) => (StatusCode::from_u16(r.status).unwrap(), r.body).into_response(),
@@ -97,7 +106,15 @@ async fn workspace(w: &World, slug: &str) -> Workspace {
     let k = w.p.k.clone();
     let email = format!("admin@{slug}.test");
     let tenant = k
-        .create_tenant(NewTenant { slug: slug.into(), name: slug.into(), admin_email: email.clone(), admin_password: "Correct-Horse-9".into(), admin_name: None, packages: vec!["ops".into()], settings: None })
+        .create_tenant(NewTenant {
+            slug: slug.into(),
+            name: slug.into(),
+            admin_email: email.clone(),
+            admin_password: "Correct-Horse-9".into(),
+            admin_name: None,
+            packages: vec!["ops".into()],
+            settings: None,
+        })
         .await
         .expect("tenant");
     let session = k.login(slug, &email, "Correct-Horse-9").await.unwrap();
@@ -128,7 +145,10 @@ fn hex_key(seed: Uuid) -> String {
 }
 
 async fn equipment(k: &Arc<Kernel>, admin: &Ctx, site: Uuid, code: &str, op: &str) -> Uuid {
-    let d = k.insert(admin, "Device", obj(json!({"device_name": code, "device_code": code, "kind": "Robot", "site": site, "operations": [{"operation": op}]}))).await.unwrap();
+    let d = k
+        .insert(admin, "Device", obj(json!({"device_name": code, "device_code": code, "kind": "Robot", "site": site, "operations": [{"operation": op}]})))
+        .await
+        .unwrap();
     devices::set_lifecycle(k, admin, id_of(&d), Lifecycle::Claimed, "ours").await.unwrap();
     id_of(&d)
 }
@@ -176,7 +196,8 @@ impl Site {
         let (code, _) = ferrum_ops::identity::new_enrollment(&ws.k, &ws.admin, ws.gateway).await.unwrap();
         let exe = env!("CARGO_BIN_EXE_ferrum-site").to_string();
         let config = self.config.clone();
-        let out = tokio::task::spawn_blocking(move || Command::new(exe).args(["enroll", "--code", &code, "--config"]).arg(config).output().unwrap()).await.unwrap();
+        let out =
+            tokio::task::spawn_blocking(move || Command::new(exe).args(["enroll", "--code", &code, "--config"]).arg(config).output().unwrap()).await.unwrap();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     }
 
@@ -229,7 +250,8 @@ impl Site {
     }
 
     async fn console(&self, method: &str, path: &str, token: Option<&str>, body: Option<Value>) -> (u16, Value) {
-        let (addr, path, method, token, body) = (self.console.clone(), path.to_string(), method.to_string(), token.map(str::to_string), body.map(|b| b.to_string()));
+        let (addr, path, method, token, body) =
+            (self.console.clone(), path.to_string(), method.to_string(), token.map(str::to_string), body.map(|b| b.to_string()));
         tokio::task::spawn_blocking(move || raw_http(&addr, &method, &path, token.as_deref(), body.as_deref())).await.unwrap()
     }
 }
@@ -247,7 +269,12 @@ fn raw_http(addr: &str, method: &str, path: &str, token: Option<&str>, body: Opt
     let Ok(mut s) = std::net::TcpStream::connect(addr) else { return (0, Value::Null) };
     let body = body.unwrap_or("");
     let auth = token.map(|t| format!("authorization: Bearer {t}\r\n")).unwrap_or_default();
-    write!(s, "{method} {path} HTTP/1.1\r\nhost: x\r\nconnection: close\r\ncontent-type: application/json\r\ncontent-length: {}\r\n{auth}\r\n{body}", body.len()).unwrap();
+    write!(
+        s,
+        "{method} {path} HTTP/1.1\r\nhost: x\r\nconnection: close\r\ncontent-type: application/json\r\ncontent-length: {}\r\n{auth}\r\n{body}",
+        body.len()
+    )
+    .unwrap();
     let mut out = String::new();
     let _ = s.read_to_string(&mut out);
     let status = out.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
@@ -265,7 +292,13 @@ async fn until(what: &str, seconds: u64, mut check: impl AsyncFnMut() -> bool) {
 
 async fn issue(ws: &Workspace, target: Uuid, operation: &str, payload: Value, expires: i64) -> Uuid {
     let mut tx = ws.k.db.tenant_tx(ws.tenant).await.unwrap();
-    let issued = commands::issue(&mut tx, &ws.admin, NewCommand { target, operation: operation.into(), schema_version: 1, payload, expires_in_secs: expires, ..Default::default() }).await.unwrap();
+    let issued = commands::issue(
+        &mut tx,
+        &ws.admin,
+        NewCommand { target, operation: operation.into(), schema_version: 1, payload, expires_in_secs: expires, ..Default::default() },
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
     issued.id
 }
@@ -352,15 +385,24 @@ async fn the_site_works_while_the_platform_is_gone(w: &World) {
     until("the site to hold them", 10, async || site.journal().entry(early).unwrap().is_some() && site.journal().entry(slow).unwrap().is_some()).await;
     w.p.down.store(true, Ordering::SeqCst);
     until("the site to notice", 10, async || site.console("GET", "/api/status", None, None).await.1["link_up"] == json!(false)).await;
-    until("the work to end offline", 10, async || site.missions_for(early) == 1 && site.journal().entry(early).unwrap().unwrap().state.as_str() == "Completed").await;
+    until("the work to end offline", 10, async || site.missions_for(early) == 1 && site.journal().entry(early).unwrap().unwrap().state.as_str() == "Completed")
+        .await;
     assert_eq!(state_of(&ws, early).await, "Queued", "the platform cannot know yet, and says only what it knows");
     let unsent = site.console("GET", "/api/status", None, None).await.1["unsent_reports"].as_i64().unwrap();
     assert!(unsent >= 2, "kept for later: {unsent}");
     w.p.down.store(false, Ordering::SeqCst);
     reaches(&ws, early, "Completed", 20).await;
     let history = described(&ws, early).await;
-    let source = history["history"].as_array().unwrap().iter().find(|e| e["state"] == "Completed").unwrap()["at_source"].as_str().unwrap().parse::<chrono::DateTime<Utc>>().unwrap();
-    let received = history["history"].as_array().unwrap().iter().find(|e| e["state"] == "Completed").unwrap()["received_at"].as_str().unwrap().parse::<chrono::DateTime<Utc>>().unwrap();
+    let source = history["history"].as_array().unwrap().iter().find(|e| e["state"] == "Completed").unwrap()["at_source"]
+        .as_str()
+        .unwrap()
+        .parse::<chrono::DateTime<Utc>>()
+        .unwrap();
+    let received = history["history"].as_array().unwrap().iter().find(|e| e["state"] == "Completed").unwrap()["received_at"]
+        .as_str()
+        .unwrap()
+        .parse::<chrono::DateTime<Utc>>()
+        .unwrap();
     assert!(received > source + Duration::milliseconds(200), "when it happened and when it was heard are told apart");
     assert_eq!(site.missions_for(early), 1, "nothing was sent twice around the outage");
 }
@@ -501,20 +543,38 @@ async fn what_the_lease_and_the_disk_allow(w: &World) {
 async fn a_replaced_gateway_stops(w: &World) {
     let ws = workspace(w, "fence").await;
     let site = running(w, &ws, "").await;
-    let spare = id_of(&ws.k.insert(&ws.admin, "Device", obj(json!({"device_name": "Spare", "device_code": "GW-2", "kind": "Gateway", "site": ws.site}))).await.unwrap());
+    let spare = id_of(
+        &ws.k.insert(&ws.admin, "Device", obj(json!({"device_name": "Spare", "device_code": "GW-2", "kind": "Gateway", "site": ws.site}))).await.unwrap(),
+    );
     devices::set_lifecycle(&ws.k, &ws.admin, spare, Lifecycle::Claimed, "ours").await.unwrap();
     let (code, _) = ferrum_ops::identity::new_enrollment(&ws.k, &ws.admin, spare).await.unwrap();
     ferrum_ops::identity::enroll(&ws.k, ws.tenant, &ferrum_ops::contract::sign::Enroll { code, public_key: hex_key(spare) }).await.unwrap();
     authority::transfer(&ws.k, &ws.admin, &ws.slug, spare, "the old one is being replaced").await.unwrap();
-    until("the old gateway to stop", 10, async || site.console("GET", "/api/status", None, None).await.1["stopped"].as_str().is_some_and(|s| s.contains("Another gateway"))).await;
+    until("the old gateway to stop", 10, async || {
+        site.console("GET", "/api/status", None, None).await.1["stopped"].as_str().is_some_and(|s| s.contains("Another gateway"))
+    })
+    .await;
 }
 
 async fn people_at_the_console(w: &World) {
     let ws = workspace(w, "people").await;
     let mut tx = ws.k.db.tenant_tx(ws.tenant).await.unwrap();
     let (user, may): (Uuid, Vec<String>) = (ws.admin.user, vec!["Ops Manager".to_string()]);
-    sqlx::query("insert into user_role (tenant_id, user_id, role) values ($1, $2, $3) on conflict do nothing").bind(ws.tenant).bind(user).bind(&may[0]).execute(&mut *tx).await.unwrap();
-    sqlx::query("insert into op_operator_pin (tenant_id, site_id, user_id, pin_hash) values ($1, $2, $3, $4)").bind(ws.tenant).bind(ws.site).bind(user).bind(ferrum_ops::identity::pin_hash("246810")).execute(&mut *tx).await.unwrap();
+    sqlx::query("insert into user_role (tenant_id, user_id, role) values ($1, $2, $3) on conflict do nothing")
+        .bind(ws.tenant)
+        .bind(user)
+        .bind(&may[0])
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("insert into op_operator_pin (tenant_id, site_id, user_id, pin_hash) values ($1, $2, $3, $4)")
+        .bind(ws.tenant)
+        .bind(ws.site)
+        .bind(user)
+        .bind(ferrum_ops::identity::pin_hash("246810"))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
     let site = running(w, &ws, "").await;
     until("the operator list", 10, async || !site.journal().operators().unwrap().is_empty()).await;
@@ -540,7 +600,10 @@ async fn people_at_the_console(w: &World) {
     assert_eq!(site.console("POST", "/api/floor", Some(&token), Some(json!({"reference": "RUN-9", "kind": "report"}))).await.0, 422, "how many came off?");
     assert_eq!(site.console("POST", "/api/floor", Some(&token), Some(json!({"reference": "RUN-9", "kind": "pause"}))).await.0, 422, "why it stopped");
     assert_eq!(site.console("POST", "/api/floor", Some(&token), Some(json!({"reference": " ", "kind": "resume"}))).await.0, 422, "which run");
-    assert_eq!(site.console("POST", "/api/floor", Some(&token), Some(json!({"reference": "RUN-9", "kind": "report", "good": "12", "lot": "W-1"}))).await.0, 204);
+    assert_eq!(
+        site.console("POST", "/api/floor", Some(&token), Some(json!({"reference": "RUN-9", "kind": "report", "good": "12", "lot": "W-1"}))).await.0,
+        204
+    );
     w.p.down.store(false, Ordering::SeqCst);
     reaches(&ws, c, "Completed", 20).await;
     until("the report to arrive", 10, async || {
@@ -570,8 +633,20 @@ async fn people_at_the_console(w: &World) {
 async fn a_restore_is_not_believed(w: &World) {
     let ws = workspace(w, "restore").await;
     let mut tx = ws.k.db.tenant_tx(ws.tenant).await.unwrap();
-    sqlx::query("insert into user_role (tenant_id, user_id, role) values ($1, $2, 'Ops Manager') on conflict do nothing").bind(ws.tenant).bind(ws.admin.user).execute(&mut *tx).await.unwrap();
-    sqlx::query("insert into op_operator_pin (tenant_id, site_id, user_id, pin_hash) values ($1, $2, $3, $4)").bind(ws.tenant).bind(ws.site).bind(ws.admin.user).bind(ferrum_ops::identity::pin_hash("135790")).execute(&mut *tx).await.unwrap();
+    sqlx::query("insert into user_role (tenant_id, user_id, role) values ($1, $2, 'Ops Manager') on conflict do nothing")
+        .bind(ws.tenant)
+        .bind(ws.admin.user)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("insert into op_operator_pin (tenant_id, site_id, user_id, pin_hash) values ($1, $2, $3, $4)")
+        .bind(ws.tenant)
+        .bind(ws.site)
+        .bind(ws.admin.user)
+        .bind(ferrum_ops::identity::pin_hash("135790"))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
     let mut site = running(w, &ws, "").await;
     until("the operator list", 10, async || !site.journal().operators().unwrap().is_empty()).await;
