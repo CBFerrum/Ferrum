@@ -158,6 +158,10 @@ macro_rules! apps {
             out.push(include_str!("../apps/suites/business.yaml"));
             #[cfg(all(feature = "commerce", feature = "pos"))]
             out.push(include_str!("../apps/suites/retail.yaml"));
+            #[cfg(all(feature = "crm", feature = "projects", feature = "helpdesk", feature = "bookings", feature = "forms", feature = "sign"))]
+            out.push(include_str!("../apps/suites/services.yaml"));
+            #[cfg(all(feature = "field-service", feature = "assets", feature = "helpdesk"))]
+            out.push(include_str!("../apps/suites/field-operations.yaml"));
             out
         }
 

@@ -356,8 +356,10 @@ step. The report holds no secret or connection string, so it can be pasted into 
 
 `/metrics` (Prometheus text) exposes `ferrum_up`, uptime, database pool size and idle
 connections, the outbox backlog (pending, dead, age of the oldest pending event), webhook
-deliveries (pending, dead) and the tenant count. Take request rates and latencies from the gateway
-controller's metrics. Suggested alerts:
+deliveries (pending, dead), the job queue (queued, running, failed in the last day, longest wait),
+connections to outside systems (on, failing, waiting on a provider, with no success for a day) and
+differences from a provider waiting for a person, and the tenant count. Take request rates and
+latencies from the gateway controller's metrics. Suggested alerts:
 
 | Alert | Condition |
 |---|---|
@@ -366,6 +368,8 @@ controller's metrics. Suggested alerts:
 | Pool saturation | `ferrum_db_pool_idle` at 0 for 5 min |
 | Outbox lag | oldest pending event older than 5 min |
 | Dead letters | any dead outbox events or webhook deliveries |
+| Failing jobs | `ferrum_jobs_failed_day` above 0 |
+| Outside systems | `ferrum_connections_stale` above 0, or `ferrum_connections_failing` above 0 for 30 min |
 | Database | CNPG: replication lag, failover events, storage above 80 %, connections above 85 % |
 
 Logs are JSON. Clients may send an `x-request-id` header to correlate their calls with the logs;

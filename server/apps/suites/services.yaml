@@ -1,0 +1,11 @@
+# The suite for a business that sells its time: winning work, agreeing it, delivering it, being paid
+# and looking after the client (docs/plan/integrations.md).
+id: services
+name: Services
+version: 0.1.0
+publisher: cbferrum
+summary: CRM, projects, helpdesk, bookings, forms and signatures on top of ERP
+categories: [suite, sales]
+runtime: meta
+platform: ">=0.3.2, <0.4"
+requires: {erp: ">=0.1", crm: ">=0.2", projects: ">=0.2", helpdesk: ">=0.2", bookings: ">=0.1", forms: ">=0.1", sign: ">=0.1", crm-erp: ">=0.1", helpdesk-erp: ">=0.1", projects-erp: ">=0.1"}
