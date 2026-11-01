@@ -149,6 +149,8 @@ macro_rules! apps {
             out.push(ferrum_app_hr::CONNECTOR_MANIFEST);
             #[cfg(feature = "projects")]
             out.push(ferrum_app_projects::CONNECTOR_MANIFEST);
+            #[cfg(all(feature = "assets", feature = "ops"))]
+            out.push(ferrum_app_assets::CONNECTOR_MANIFEST);
             // ERP, compiled into every build (docs/plan/erp-repo.md).
             out.push(ERP_MANIFEST);
             // Suites, where this build has their members.
@@ -206,6 +208,10 @@ macro_rules! apps {
             out.push(("ops", ferrum_ops::UI));
             #[cfg(feature = "edge")]
             out.push(("edge", ferrum_edge::UI));
+            #[cfg(feature = "wms")]
+            out.push(("wms", ferrum_wms::UI));
+            #[cfg(feature = "mes")]
+            out.push(("mes", ferrum_mes::UI));
             #[cfg(feature = "campaigns")]
             out.push(("campaigns", ferrum_app_campaigns::UI));
             out
@@ -274,6 +280,9 @@ apps! {
         "mfg-ops" => ferrum_mfg_ops,
         "ops" => ferrum_ops,
         "edge" => ferrum_edge,
+        "quality" => ferrum_quality,
+        "wms" => ferrum_wms,
+        "mes" => ferrum_mes,
         "studio" => ferrum_studio,
         "assets" => ferrum_app_assets,
         "bookings" => ferrum_app_bookings,
