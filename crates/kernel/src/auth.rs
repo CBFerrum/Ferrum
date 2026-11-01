@@ -348,7 +348,8 @@ impl Kernel {
     }
 
     /// API keys look like `fk_<prefix>_<secret>`; only a SHA-256 of the secret is stored. A key
-    /// with a `scope` works only there: `dav`, the app password of calendar and contacts apps.
+    /// with a `scope` works only there: `dav`, the app password of calendar and contacts apps, or
+    /// `scim`, an administrator's key for an identity provider.
     pub async fn create_api_key(
         &self,
         ctx: &Ctx,
@@ -360,8 +361,11 @@ impl Kernel {
         if !ctx.is_admin && user != ctx.user {
             return Err(Error::Forbidden("you can only create API keys for yourself".into()));
         }
-        if scope.is_some_and(|s| s != "dav") {
-            return Err(Error::field("scope", "must be dav, or none for a key to the whole API"));
+        if scope.is_some_and(|s| s != "dav" && s != "scim") {
+            return Err(Error::field("scope", "must be dav, scim, or none for a key to the whole API"));
+        }
+        if scope == Some("scim") && !ctx.is_admin {
+            return Err(Error::Forbidden("only administrators can make a key for an identity provider".into()));
         }
         let (prefix, secret) = {
             let mut rng = rand::rng();

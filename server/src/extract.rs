@@ -60,7 +60,9 @@ async fn session_of(st: &crate::state::AppState, token: &str) -> Result<TokenSes
     if token.starts_with("fk_") {
         let (s, scope) = st.kernel.verify_api_key(token).await?;
         if scope.is_some() {
-            return Err(ApiError(Error::Unauthorized("this key is an app password for calendar and contacts apps, and works only there".into())));
+            return Err(ApiError(Error::Unauthorized(
+                "this key has a single purpose (calendar and contacts apps, or an identity provider) and works only there".into(),
+            )));
         }
         st.user_limiter.check_local(&format!("{}|{}", s.tenant, s.user))?;
         return Ok(TokenSession { session: s, setup_only: false, sid: None, bound: None, app: None });

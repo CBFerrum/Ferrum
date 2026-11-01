@@ -195,6 +195,6 @@ Known and accepted:
   private IRP's codes are checked only when the company enters that IRP's key.
 * Session tokens are readable by script on the app's origin; the Content Security Policy is what
   keeps foreign script out.
-* Security keys (WebAuthn) and SAML are not supported.
+* SAML is not supported; single sign-on speaks OpenID Connect.
 * Workspace administrators author print templates (sandboxed as above), automations and roles:
   they are trusted with their workspace.

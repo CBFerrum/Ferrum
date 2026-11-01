@@ -401,6 +401,7 @@ impl Hooks for App {
             .add_route(crate::coedit::routes())
             .add_route(controllers::sites::routes())
             .add_route(controllers::dav::routes())
+            .add_route(controllers::scim::routes())
             .add_route(controllers::assistant::routes())
             .add_route(controllers::search::routes())
             .add_route(controllers::notifications::routes())
@@ -441,12 +442,15 @@ impl Hooks for App {
 /// Each client address's budget. Only requests that came through the proxy (`X-Forwarded-For`)
 /// count: probes, port-forwards and the cluster's own calls have no address to tell apart.
 /// Runs a request under its trace: the events it writes name its request id, and the caller's W3C
-/// trace context travels with them.
-async fn traced(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
-    let correlation = req.extensions().get::<loco_rs::controller::middleware::request_id::LocoRequestId>().map(|id| id.get().to_string());
+/// trace context travels with them. This layer sits outside Loco's request id, so it settles the id
+/// and puts it on the request: the log, the request's context and its events all name the same one.
+async fn traced(mut req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    let correlation = crate::extract::request_id(req.headers());
+    if let Ok(id) = axum::http::HeaderValue::from_str(&correlation) {
+        req.headers_mut().insert("x-request-id", id);
+    }
     let traceparent = req.headers().get("traceparent").and_then(|v| v.to_str().ok()).filter(|v| valid_traceparent(v)).map(str::to_string);
-    let trace = ferrum_kernel::Trace { correlation: correlation.unwrap_or_default(), traceparent, ..Default::default() };
-    trace.scope(next.run(req)).await
+    ferrum_kernel::Trace { correlation, traceparent, ..Default::default() }.scope(next.run(req)).await
 }
 
 /// `version-traceid-parentid-flags` in lower-case hexadecimal (W3C Trace Context): anything else
@@ -692,6 +696,25 @@ mod tests {
         assert_eq!(call(Some("203.0.113.7, 203.0.113.8")).await, 200, "another address");
         for _ in 0..10 {
             assert_eq!(call(None).await, 200, "not through the proxy: not counted");
+        }
+    }
+}
+
+#[cfg(test)]
+mod trace_tests {
+    use super::valid_traceparent;
+
+    #[test]
+    fn only_a_well_formed_traceparent_is_kept() {
+        assert!(valid_traceparent("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"));
+        for bad in [
+            "",
+            "00-abc-def-01",
+            "00-0AF7651916CD43DD8448EB211C80319C-b7ad6b7169203331-01",
+            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01-extra",
+            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-0g",
+        ] {
+            assert!(!valid_traceparent(bad), "{bad}");
         }
     }
 }
