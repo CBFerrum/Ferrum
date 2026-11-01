@@ -22,6 +22,7 @@ pub mod describe;
 pub mod doc;
 pub mod doctor;
 pub mod error;
+pub mod evidence;
 pub mod export;
 pub mod files;
 pub mod hooks;

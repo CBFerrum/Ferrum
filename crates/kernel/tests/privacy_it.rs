@@ -278,4 +278,30 @@ async fn scenario() {
 
     k.release_legal_hold(&admin, record_hold).await.unwrap();
     k.delete(&admin, "Visitor", late_id, None).await.expect("deletable once released");
+
+    // ───────────── what a reviewer is handed ─────────────
+    let plain = k.create_user(&admin, "pia@acme.test", "Pia Plain", Some("Correct-Horse-9"), &[], false).await.unwrap();
+    let plain = k.load_ctx(tenant, plain, None, "it".into()).await.unwrap();
+    assert!(matches!(k.evidence_pack(&plain).await, Err(Error::Forbidden(_))), "for administrators");
+    let pack = k.evidence_pack(&admin).await.expect("a pack");
+    let people = pack["access"]["people"].as_array().unwrap();
+    let ada = people.iter().find(|p| p["email"] == "admin@acme.test").expect("the administrator");
+    assert_eq!((&ada["administrator"], &ada["two_factor"], &ada["active"]), (&json!(true), &json!(false), &json!(true)));
+    assert!(!pack.to_string().contains("admin@other.test"), "this workspace only");
+    assert!(pack["note"].as_str().unwrap().contains("Not a claim of compliance"));
+    assert!(pack["personal_data"]["declared"].as_array().is_some_and(|d| !d.is_empty()));
+    assert!(pack["history"]["events"].as_i64().unwrap() > 0);
+    let text = pack.to_string();
+    for secret in ["password", "secret_hash", "totp_secret", "sealed", "Correct-Horse"] {
+        assert!(!text.contains(secret), "no {secret} in it");
+    }
+    let mut tx = k.db.system_tenant_tx(tenant).await.unwrap();
+    let taken: i64 = sqlx::query_scalar("select count(*) from audit_event where tenant_id = $1 and action = 'evidence_pack' and actor = $2")
+        .bind(tenant)
+        .bind(admin.user)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(taken, 1, "and taking one is itself in the history");
 }
