@@ -120,6 +120,14 @@ real identity provider, or a real payment or tax provider.
 - The audit's own errors are worth remembering: a zsh loop that did not split paths reported everything
   as missing, and `&&` after `grep` committed past a failing clippy. Gate on the tool's exit code.
 
+### Industrial operations (November 2026)
+
+Ledger, site runtime, warehouse, shop floor, quality and maintenance exist and were walked end to end
+on a real server with a simulated fleet ([plan](../plan/industrial.md), `industrial.yaml`). Nothing has
+touched hardware and nothing is a safety claim. Mutants live in both repositories: run
+`scripts/mutants.py` in `ferrum` and in `ferrum-app-erp` after changing an invariant. Test as a
+person with a role, not as an administrator: `links_out_of_reach` exists because that was missed.
+
 ### Next, in dependency order
 
 The generated [backlog](backlog.md) is the full list. The most valuable next steps:

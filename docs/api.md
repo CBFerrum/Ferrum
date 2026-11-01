@@ -272,6 +272,10 @@ they signed in with:
   workspace prints it, under `Content-Security-Policy: … sandbox`. Drafts, cancelled invoices and
   other customers' are 404.
 
+Operations, the warehouse and the shop floor document their endpoints at the top of
+`crates/ops/src/site.rs`, and in `addons/wms/src/site.rs` and `addons/mes/src/lib.rs` of the ERP
+repository. A scanner sends what it read (`code`): a lot, a barcode or an item code, matched exactly.
+
 For Home's My work (`shell.work`): `GET /api/app/helpdesk/work` (open tickets assigned to the
 caller, due on their SLA's resolution date) and `GET /api/app/projects/work` (the caller's open
 tasks, due on their expected end), each `{items: [{title, subtitle, url, due, priority,

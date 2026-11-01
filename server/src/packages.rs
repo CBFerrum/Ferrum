@@ -202,6 +202,8 @@ macro_rules! apps {
             out.push(("forms", ferrum_app_forms::UI));
             #[cfg(feature = "assets")]
             out.push(("assets", ferrum_app_assets::UI));
+            #[cfg(feature = "ops")]
+            out.push(("ops", ferrum_ops::UI));
             #[cfg(feature = "campaigns")]
             out.push(("campaigns", ferrum_app_campaigns::UI));
             out
@@ -268,6 +270,7 @@ apps! {
         "stock-ops" => ferrum_stock_ops,
         "finance" => ferrum_finance,
         "mfg-ops" => ferrum_mfg_ops,
+        "ops" => ferrum_ops,
         "studio" => ferrum_studio,
         "assets" => ferrum_app_assets,
         "bookings" => ferrum_app_bookings,

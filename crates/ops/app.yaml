@@ -1,0 +1,24 @@
+id: ops
+name: Operations
+version: 0.1.0
+publisher: cbferrum
+summary: Sites, devices, the durable ledger of commands to equipment, and telemetry
+description: README.md
+categories: [manufacturing, inventory]
+license: AGPL-3.0-only
+runtime: native
+platform: ">=0.3, <0.4"
+packages: [ops]
+uninstall: ask
+# Its own interface at /ops/ (built in Ferrum-Frontend, apps/ops, and carried by the server's image,
+# as Studio's is): what each site is doing, what needs a person, and the devices.
+ui:
+  dist: ui/dist
+contributes:
+  shell.app:
+    - {id: ops, route: ops, title: Operations, description: "Sites, devices and work on the floor", icon: factory, color: "#0f766e", roles: [Ops Manager, Ops Dispatcher, Ops Recovery, Ops Viewer, Device Administrator]}
+  shell.open:
+    - {id: ops, package: ops, path: "ops/e/{entity}/{id}", list: "ops/e/{entity}"}
+  shell.create:
+    - {id: site, label: Site, path: ops/e/Site/new, entity: Site}
+    - {id: device, label: Device, path: ops/e/Device/new, entity: Device}

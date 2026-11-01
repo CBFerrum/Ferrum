@@ -35,7 +35,7 @@ pub mod sockets;
 
 pub use events::PluginEvents;
 pub use hooks::PluginHook;
-pub use sockets::{Outgoing, SocketHub};
+pub use sockets::{Outgoing, Overflow, Sent, SocketHub};
 
 use dashmap::DashMap;
 use ferrum_kernel::secret::SecretKey;

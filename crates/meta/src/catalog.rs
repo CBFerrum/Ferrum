@@ -349,6 +349,28 @@ impl Catalog {
         self.order.iter().map(|n| &self.packages[n])
     }
 
+    /// Links a role of `package` may fill in and whose target it may not read: a form field that
+    /// cannot search. Roles that only read are not asked, because a title shows without that.
+    pub fn links_out_of_reach(&self, package: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for role in self.packages.get(package).map(|p| p.manifest.roles.as_slice()).unwrap_or_default() {
+            let reads = |e: &str| role.permissions.iter().any(|p| p.read && (p.entity == e || p.entity == "*"));
+            for p in role.permissions.iter().filter(|p| p.write || p.create) {
+                let mut pending: Vec<&EntityDef> = self.entity(&p.entity).into_iter().collect();
+                while let Some(e) = pending.pop() {
+                    for f in e.fields.iter().filter(|f| !f.read_only) {
+                        match (f.ftype, &f.to, &f.of) {
+                            (FieldType::Link, Some(to), _) if !reads(to) => out.push(format!("{}: {}.{} needs {to}", role.name, e.name, f.name)),
+                            (FieldType::Table, _, Some(of)) => pending.extend(self.entity(of)),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
     pub fn entity(&self, name: &str) -> Option<&EntityDef> {
         self.entities.get(name).map(|(_, e)| e)
     }

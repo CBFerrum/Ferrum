@@ -65,6 +65,11 @@ These are for administrators, stay within their workspace, and are recorded in t
 |---|---|---|
 | `ferrum.user.deprovisioned` | `{user, email, reassign_to, reason}` | Hand over what a package's `handover` declaration cannot express. It also fires when an administrator names a successor later, so handlers must be idempotent. |
 | `ferrum.privacy.erased` | `{account, records: [{entity, id, fields}], reason}` | The platform writes the journal from it. No value it erased is in it. |
+| `ops.command.{state}` | `{command, state, site, domain, target, operation, workflow_id, outcome}` | A command moved. `workflow_id` says whose it is (`wms-task:{id}`, `mes-run:{id}`). At least once and in any order, so a consumer works from the state, not the sequence. |
+| `ops.fact.{kind}` | `{site, kind, at_source, actor, body}` | Something recorded at a site, arriving when the link allowed. `mes.event` is a floor report from a console. |
+| `quality.hold.released` | `{hold}` | Stock a hold took goes back. The warehouse listens. |
+| `mes.run.released` | `{run, materials: [{item, warehouse, qty}]}` | A run needs its material. A managed warehouse opens the moves to its production bin, once per run. |
+| `wms.supply.short` | `{run, short}` | A warehouse cannot bring all of it. The run says so. |
 
 ## What may happen where
 

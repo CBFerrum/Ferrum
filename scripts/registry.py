@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parent.parent
 REGISTRY = ROOT / "docs" / "registry"
 CAPABILITIES = ROOT / "docs" / "capabilities.md"
 BACKLOG = REGISTRY / "backlog.md"
-AREAS = ["platform", "identity", "privacy", "experience", "apps", "ecosystem", "extensions", "ai", "cloud", "operations", "verification"]
+AREAS = ["platform", "identity", "privacy", "experience", "apps", "ecosystem", "extensions", "ai", "cloud", "operations", "industrial", "verification"]
 
 STATUSES = {
     "verified_complete": "Verified complete",
@@ -50,7 +50,7 @@ WORKSTREAMS = {
 }
 ACCEPTANCE = ["functional", "authorization", "cross_tenant", "concurrency", "migration", "recovery", "user_interface"]
 # Sibling checkouts, where a file of another repository is looked for. Absent ones (CI) are skipped.
-SIBLINGS = {"ferrum-app-erp": ["../erp4/ferrum-app-erp", "../ferrum-app-erp"]}
+SIBLINGS = {"ferrum-app-erp": ["../docs-work/ferrum-app-erp", "../erp4/ferrum-app-erp", "../ferrum-app-erp"]}
 # What the documents must no longer say, because the code says otherwise.
 DRIFT = [
     ("docs/limits.md", r"security keys \(WebAuthn\)", "passkeys exist: crates/kernel/src/passkey.rs"),
