@@ -1,0 +1,13 @@
+# about: A scale, scanner or instrument that speaks lines of text over TCP.
+# group: Generic
+name: tcp-line
+connect: tcp://scale:9100
+frame: {line: "\r\n"}
+poll:
+  - {every: 5s, send: "W\r\n"}
+read:
+  - {match: '^(?P<kg>-?[0-9.]+) kg$', metric: weight.kg, group: kg, unit: kg, deadband: 0.01}
+commands:
+  scale.tare:
+    send: "T\r\n"
+    status: {match: '^(?P<r>OK|ERR)', group: r, done: OK, failed: ERR}

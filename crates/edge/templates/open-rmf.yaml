@@ -1,0 +1,41 @@
+# about: A fleet of fleets through Open-RMF's rmf-web API server. Tasks, their states, and each robot.
+# group: Robots
+# One traffic authority per domain: RMF decides who moves where, and this asks it for tasks. Set the
+# fleet's name in the device's settings: {fleet: tinyRobot}. Each robot then reports by its own name.
+name: open-rmf
+connect: http://rmf-web:8000
+headers:
+  authorization: "Bearer {secret.rmf_token}"
+poll:
+  - {every: 5s, get: "/fleets/{settings.fleet}/state"}
+read:
+  - each: $.robots
+    device: "{each.key}"
+    values:
+      - {metric: battery.percent, json: $.value.battery, scale: 100, unit: "%", deadband: 1}
+      - {state: true, json: $.value.status, map: {idle: Idle, charging: Idle, working: Running, error: Stopped, offline: Unknown, uninitialized: Unknown, shutdown: Stopped}}
+      - {attribute: position.x, json: $.value.location.x}
+      - {attribute: position.y, json: $.value.location.y}
+      - {attribute: position.map, json: $.value.location.map}
+      - {attribute: task, json: $.value.task_id}
+commands:
+  transport.task:
+    post: /tasks/dispatch_task
+    send:
+      type: dispatch_task_request
+      request:
+        category: "{payload.category}"
+        description: "{payload.description}"
+        requester: ferrum
+        unix_millis_earliest_start_time: "{now_ms}"
+    id: $.state.booking.id
+    status:
+      poll: {get: "/tasks/{id}/state"}
+      json: $.status
+      running: [underway, delayed, blocked, standby, queued]
+      done: completed
+      failed: [failed, error]
+      aborted: [canceled, killed, skipped]
+    cancel:
+      post: /tasks/cancel_task
+      send: {type: cancel_task_request, task_id: "{id}", labels: [ferrum]}

@@ -5,6 +5,7 @@
 //! | Method & path | Who | What |
 //! |---|---|---|
 //! | `GET /overview` | Edge Viewer | gateways with their connections, what is alarmed, strangers |
+//! | `GET /templates` | Edge Viewer | definitions to start from |
 //! | `POST /definitions/try` | Edge Engineer | `{body, topic?, sample?, sample_hex?}`: checks a definition and reads a sample |
 //! | `POST /flows/try` | Edge Engineer or Reviewer | `{body, script?, until?}`: checks a flow and walks a script through it |
 //! | `POST /flows/{id}/simulate` | Edge Engineer | `{script, until?}`: the same for what is saved, which is what lets it go for review |
@@ -42,7 +43,7 @@ use uuid::Uuid;
 
 pub struct EdgeSite;
 
-const READ: &[&str] = &["Edge Viewer", "Edge Engineer"];
+const READ: &[&str] = &["Edge Viewer", "Edge Engineer", "Edge Reviewer"];
 const ENGINEER: &[&str] = &["Edge Engineer"];
 const FLOWS: &[&str] = &["Edge Engineer", "Edge Reviewer"];
 
@@ -295,6 +296,10 @@ async fn signed_in(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<SiteRespo
         ("GET", ["overview"]) => {
             may(ctx, READ)?;
             open_gateways(k, ctx).await?
+        }
+        ("GET", ["templates"]) => {
+            may(ctx, READ)?;
+            json!({"templates": crate::templates::all()})
         }
         ("POST", ["definitions", "try"]) => {
             may(ctx, ENGINEER)?;

@@ -1,0 +1,24 @@
+# about: Sparkplug B edge nodes on MQTT: every metric, by the name its birth certificate gave it.
+# group: Machines
+# Reads every metric of every device under the group, in one rule. This reads and sends commands: it
+# is not a Sparkplug primary host, so it publishes no STATE and asks for no rebirth.
+name: sparkplug-node
+connect: mqtt://broker:1883
+subscribe:
+  - spBv1.0/plant/+/+/+
+read:
+  - topic: spBv1.0/plant/+/+/+
+    format: sparkplug
+    device: "{topic.3}"
+    each: $.metrics
+    metric: "{each.name}"
+    json: $.value
+commands:
+  machine.set:
+    topic: spBv1.0/plant/DCMD/{settings.node}/{device}
+    format: sparkplug
+    send:
+      timestamp: "{now_ms}"
+      metrics:
+        - {name: "{payload.name}", value: "{payload.value}", type: "{payload.type}"}
+    once: true

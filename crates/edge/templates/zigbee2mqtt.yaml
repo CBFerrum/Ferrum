@@ -1,0 +1,13 @@
+# about: Zigbee sensors and plugs through Zigbee2MQTT.
+# group: Generic
+name: zigbee2mqtt
+connect: mqtt://broker:1883
+subscribe:
+  - zigbee2mqtt/+
+read:
+  - {topic: zigbee2mqtt/+, device: "{topic.1}", each: $, metric: "{each.key}", json: $.value}
+commands:
+  plug.set:
+    topic: zigbee2mqtt/{device}/set
+    send: {state: "{payload.state}"}
+    once: true
