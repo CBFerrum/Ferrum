@@ -97,10 +97,15 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 ## Operations and the site runtime
 
 - **Nothing has run on hardware.** Every adapter was tried against stand-ins ([compatibility](compatibility.md)). Nothing here is a functional-safety claim or a vendor qualification.
-- **OPC UA, ROS 2, Open-RMF, Sparkplug B and VDA 5050 3.0.0** are not built.
+- **Definitions reach what they describe, on paper.** OPC UA, Sparkplug B, MTConnect, VDA 5050 3.0.0, Open-RMF, openTCS and rosbridge are read by definitions tried against stand-ins and other people's libraries. Sparkplug is not a primary host, and OPC UA does not browse ([compatibility](compatibility.md)).
+- **Flows** have up to 500 steps and 2,000 wires, and run only at gateways: a device posting directly to the platform has none. What they remember is written down every 15 seconds, so a crash can lose that much and repeat an effect from it.
+- **What a gateway sustains is not measured.** Decoding alone did 369,000 JSON messages a second and flows 269,000 readings a second on an Apple M1 Pro. Disk and network come first, and on gateway hardware nobody has tried it.
+- **A link** keeps track of 20,000 different values, and a listener 1,024 callers. Past that, what is new is dropped and counted.
+- **Peers** are one hop, and signed but not encrypted. Two Ferrum platforms exchange data through exports and ingest: there is no federation.
+- **Certificates of a plant's own authority** work for `https` and `mqtts`, not `wss`.
 - **Failover** between gateways is a person's decision, by design. There is no standby that takes over by itself.
 - **Device keys** do not rotate in place: quarantine and enroll a new one.
-- **Site updates** are not signed by Ferrum. Take the binary from a source you trust.
+- **Signed site updates** check the signature, version, expiry and hash, and roll back a build that keeps dying. They are tested in pieces, and have not been run through systemd on a gateway. Ferrum publishes no signing keys or releases: a site makes its own.
 - **Console PINs** are short by nature, and the gateway holds their salted hashes: someone with its disk could recover them. Keep its storage encrypted; a site's list follows the platform's at each exchange, and the lease bounds how stale it gets.
 - **Site traffic** shares the 300 requests a minute per address and workspace of `/api/site`. At the default of an exchange every 5 seconds, that is about 25 gateways behind one address. Past it a site backs off and catches up.
 - **Telemetry** lives in PostgreSQL. It has not been measured against the strategy's 20,000 samples a second, which would be 345 GB a day: aggregate at the edge first.

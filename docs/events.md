@@ -67,6 +67,7 @@ These are for administrators, stay within their workspace, and are recorded in t
 | `ferrum.privacy.erased` | `{account, records: [{entity, id, fields}], reason}` | The platform writes the journal from it. No value it erased is in it. |
 | `ops.command.{state}` | `{command, state, site, domain, target, operation, workflow_id, outcome}` | A command moved. `workflow_id` says whose it is (`wms-task:{id}`, `mes-run:{id}`). At least once and in any order, so a consumer works from the state, not the sequence. |
 | `ops.fact.{kind}` | `{site, kind, at_source, actor, body}` | Something recorded at a site, arriving when the link allowed. `mes.event` is a floor report from a console. |
+| `ops.fact.edge.{kind}` | The same, with `kind` one of `attribute`, `event`, `alarm`, `notify`, `request` | What gateways report, and what flows decide. IoT Edge applies each by when it happened: `request` becomes a command if it is still wanted. |
 | `quality.hold.released` | `{hold}` | Stock a hold took goes back. The warehouse listens. |
 | `mes.run.released` | `{run, materials: [{item, warehouse, qty}]}` | A run needs its material. A managed warehouse opens the moves to its production bin, once per run. |
 | `wms.supply.short` | `{run, short}` | A warehouse cannot bring all of it. The run says so. |

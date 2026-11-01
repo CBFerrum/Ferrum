@@ -116,7 +116,7 @@ struct FlowHook;
 
 const REVIEWER: &str = "Edge Reviewer";
 
-fn flow_step<'a>(status: &str, wanted: &[&str], what: &'a str) -> Result<()> {
+fn flow_step(status: &str, wanted: &[&str], what: &str) -> Result<()> {
     if wanted.contains(&status) {
         return Ok(());
     }

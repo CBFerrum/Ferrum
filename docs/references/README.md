@@ -6,6 +6,7 @@ claim pointing at a file. Nothing here was run, so "does" means "the code does".
 
 | Page | Compared with |
 |---|---|
+| [edge.md](edge.md) | ThingsBoard, OpenRemote, EdgeX, Node-RED, Ignition, Open-RMF, VDA 5050 and others |
 | [crm.md](crm.md) | Twenty, Frappe CRM |
 | [projects.md](projects.md) | Huly, Plane |
 | [helpdesk.md](helpdesk.md) | Frappe Helpdesk, Chatwoot |

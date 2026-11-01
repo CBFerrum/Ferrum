@@ -58,6 +58,7 @@ jobs:
           create database ferrum_journeys_test owner ferrum;
           create database ferrum_ops_test owner ferrum;
           create database ferrum_site_test owner ferrum;
+          create database ferrum_edge_test owner ferrum;
           SQL
       # An S3-compatible endpoint for the object storage test.
       - name: Start an S3 emulator

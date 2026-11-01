@@ -9,11 +9,11 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 99 |
+| Implemented, qualification incomplete | 106 |
 | Partially implemented | 54 |
-| Missing | 47 |
+| Missing | 45 |
 | Blocked by external dependency | 9 |
-| **All** | **209** |
+| **All** | **214** |
 
 ## Platform
 
@@ -243,7 +243,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-IND-005 | Telemetry with quality, in day partitions, with rollups | Implemented, qualification incomplete | tested | Not measured against the strategy's 20,000 samples a second |
 | FERRUM-IND-006 | A site runtime that survives crashes, outages and restores | Implemented, qualification incomplete | tested | Crash-tested by killing the binary on a laptop, not by power loss on gateway hardware; A contracted offline duration has not been run |
 | FERRUM-IND-007 | Adapters: MQTT 5, VDA 5050 2.x, Modbus TCP, simulator, operator tasks | Implemented, qualification incomplete | tested | Real sockets against stand-ins: no real broker under load, no vehicle, no controller |
-| FERRUM-IND-008 | OPC UA, Sparkplug B, ROS 2, Open-RMF, VDA 5050 3.0.0 | Missing | tested | Recorded as unsupported, with what each would take |
+| FERRUM-IND-008 | OPC UA, Sparkplug B, ROS 2, Open-RMF, VDA 5050 3.0.0 | Implemented, qualification incomplete | tested | Tried against other people's libraries and stand-ins, and shaped from published schemas. Nothing has run on a vendor's device, vehicle or robot; Sparkplug is not a primary host. OPC UA does not browse, and has no events or history; ROS 2 is through rosbridge only |
 | FERRUM-IND-009 | Warehouse execution on ERP's stock, with one balance | Implemented, qualification incomplete | tested | No zone, cluster or goods-to-person picking, substitutions, cartonization or carrier connectors |
 | FERRUM-IND-010 | Robotic moves in seven steps: arriving is not delivering | Implemented, qualification incomplete | tested | Walked through on a simulated fleet only |
 | FERRUM-IND-011 | Execution on ERP's work orders: release gates, genealogy, OEE | Implemented, qualification incomplete | tested | Discrete only: batch, continuous and energy per run are partner work |
@@ -254,9 +254,14 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-IND-016 | Agents look and propose, and nothing else | Implemented, qualification incomplete | tested | Autonomy levels A0 to A2 only. Predictive maintenance, vision and the rest of the portfolio are not built |
 | FERRUM-IND-017 | Operations, warehouse and floor interfaces | Implemented, qualification incomplete | tested | Walked through by hand on a real server at phone width and in dark mode; no standing browser tests, no accessibility audit, English only |
 | FERRUM-IND-018 | An industrial solution package in .fapp | Missing | tested | Apps declare dependencies and permissions today, not connector capabilities, device profiles or acceptance packages |
-| FERRUM-IND-019 | Signed site updates | Missing | tested | Take the binary from a trusted source and check its digest |
+| FERRUM-IND-019 | Signed site updates | Implemented, qualification incomplete | tested | Tested in pieces, and not through systemd on a real gateway; Ferrum publishes no signing keys or releases yet: a site makes its own |
 | FERRUM-IND-020 | Threat model, standards scope and safety boundaries | Partially implemented | read | No hazard interface work, no IEC 62443 assessment, no independent review |
 | FERRUM-IND-021 | Partner fleet health, support grants, certification tiers | Missing | tested | Nothing built. Support access exists for workspaces (docs/support-access.md) |
+| FERRUM-IND-022 | Devices described as data, by one engine over any transport | Implemented, qualification incomplete | tested | Support for a protocol is not support for a device; RS-485 timing and real serial hardware are untested |
+| FERRUM-IND-023 | A gateway told what to be, that carries on alone | Implemented, qualification incomplete | tested | What a gateway sustains is not measured |
+| FERRUM-IND-024 | Server to server: peers, a relay, exports and webhooks | Implemented, qualification incomplete | tested | Peers are one hop, and signed but not encrypted; Two platforms exchange data through exports and ingest: there is no federation |
+| FERRUM-IND-025 | Flows: logic drawn, simulated, reviewed, run at the gateway | Implemented, qualification incomplete | tested | Flows run only at gateways; No enrichment from records; A crash can lose 15 seconds of what a flow remembers |
+| FERRUM-IND-026 | Alarms, attributes, strangers and robots at the platform | Implemented, qualification incomplete | tested | No history charts on a device; A map shows where robots say they are, and steers nothing |
 
 ## Verification
 

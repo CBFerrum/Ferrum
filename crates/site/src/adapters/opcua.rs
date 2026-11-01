@@ -245,7 +245,7 @@ impl Transport for Opcua {
                 let answer = tokio::time::timeout(ANSWER, session.read(&[read(id)], TimestampsToReturn::Both, 0.0)).await;
                 let values = answer.map_err(|_| Failure::NotSent("it did not answer".into()))?.map_err(|e| Failure::NotSent(e.to_string()))?;
                 let value = values.first().ok_or_else(|| Failure::NotSent("it answered nothing".into()))?;
-                message(&node, value).map(|m| Some(m)).ok_or_else(|| Failure::NotSent(format!("{node} has no good value")))
+                message(&node, value).map(Some).ok_or_else(|| Failure::NotSent(format!("{node} has no good value")))
             }
             Out::Node { node, value: Some(value) } => {
                 let id = node_of(&node)?;
