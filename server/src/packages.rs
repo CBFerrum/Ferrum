@@ -190,6 +190,20 @@ macro_rules! apps {
             out.push(("commerce", ferrum_app_commerce::UI));
             #[cfg(feature = "pos")]
             out.push(("pos", ferrum_app_pos::UI));
+            #[cfg(feature = "bookings")]
+            out.push(("bookings", ferrum_app_bookings::UI));
+            #[cfg(feature = "field-service")]
+            out.push(("field-service", ferrum_app_field_service::UI));
+            #[cfg(feature = "lms")]
+            out.push(("lms", ferrum_app_lms::UI));
+            #[cfg(feature = "sign")]
+            out.push(("sign", ferrum_app_sign::UI));
+            #[cfg(feature = "forms")]
+            out.push(("forms", ferrum_app_forms::UI));
+            #[cfg(feature = "assets")]
+            out.push(("assets", ferrum_app_assets::UI));
+            #[cfg(feature = "campaigns")]
+            out.push(("campaigns", ferrum_app_campaigns::UI));
             out
         }
 
@@ -360,6 +374,14 @@ mod tests {
                 let schema = owner.extension_points[point].schema.clone().unwrap_or_default();
                 for item in items {
                     ferrum_apps::contract::conforms(&ferrum_apps::contribution_body(item), &schema).unwrap_or_else(|e| panic!("{} on {point}: {e}", m.id));
+                }
+            }
+        }
+        // Every launcher tile has its picture: a name the shell cannot draw falls back to a letter.
+        for m in &natives {
+            for item in m.contributes.get("shell.app").into_iter().flatten() {
+                if let Some(icon) = item.get("icon").and_then(serde_json::Value::as_str) {
+                    assert!(crate::shell::lucide(icon).is_some(), "{}: the shell has no icon {icon}", m.id);
                 }
             }
         }

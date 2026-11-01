@@ -9,11 +9,11 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 82 |
-| Partially implemented | 44 |
-| Missing | 52 |
+| Implemented, qualification incomplete | 83 |
+| Partially implemented | 45 |
+| Missing | 51 |
 | Blocked by external dependency | 9 |
-| **All** | **187** |
+| **All** | **188** |
 
 ## Platform
 
@@ -75,7 +75,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-PRIVACY-005 | Retention rules by data category | Implemented, qualification incomplete | tested | Rules are by entity, set per workspace; packages suggest none; Reaches 5000 records a rule a day |
 | FERRUM-PRIVACY-006 | Deletion journal reapplied after a restore | Implemented, qualification incomplete | tested | The restore is simulated in the test; not yet rehearsed in deploy/smoke.sh; Restricted-processing has no journal because it has no operation yet |
 | FERRUM-PRIVACY-007 | Immutable evidence without duplicated personal data | Partially implemented | read | Audit diffs of records are redacted on erasure, keeping hashes; other audit payloads are not reviewed |
-| FERRUM-PRIVACY-008 | Evidence pack for compliance reviews | Missing | probe |  |
+| FERRUM-PRIVACY-008 | Evidence pack for compliance reviews | Partially implemented | tested | A workspace's pack holds its access review, outside parties, personal data declarations, retention and the state of its history; The control inventory, advisories and licences are in this repository; incident records and backup reports are the operator's and are not in it; No jurisdiction profiles; what a pack satisfies is for a reviewer to say |
 
 ## Experience
 
@@ -84,11 +84,12 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-UX-001 | Launcher, bar search, notifications, account switching, administration | Implemented, qualification incomplete | read | Tested per feature in three browsers in earlier work; no standing end-to-end suite in CI |
 | FERRUM-UX-002 | Command palette | Implemented, qualification incomplete | read | Finds, opens and creates; it does not run actions on the record in front of you; Tried in one browser; no standing browser test |
 | FERRUM-UX-003 | Help center | Missing | probe |  |
-| FERRUM-UX-004 | Application completeness contract per app | Partially implemented | probe | Seven apps have no interface of their own and use the records pages: Assets, Bookings, Campaigns, Field Service, Forms, Learn, Sign |
+| FERRUM-UX-004 | Application completeness contract per app | Partially implemented | read | Every app has a hand-crafted interface, listed under FERRUM-UX-009; no written contract says what each must cover |
 | FERRUM-UX-005 | WCAG 2.2 AA qualification | Blocked by external dependency | read | No automated accessibility checks in CI yet |
 | FERRUM-UX-006 | Translation, right-to-left, locale formatting | Missing | probe | No translation infrastructure was found in the core; money and dates format per workspace |
 | FERRUM-UX-007 | Mobile and offline policy with leases | Partially implemented | read | POS and Docs work offline; no shared policy for what is cached, who sees it or when it expires |
 | FERRUM-UX-008 | The record frame: filters, side panel, import, merging, related records, shared views | Implemented, qualification incomplete | tested | Tried by hand in one browser; no standing browser test; A merge writes the chosen values, then merges: two steps, so a failed merge leaves those values on the record that stays; Related counts ask each linking list in turn, which for a much-used record is dozens of requests; only when the tab is opened; A shared view's columns are the view's; someone who did not share it saves a copy to change them |
+| FERRUM-UX-009 | A hand-crafted interface for every app, written against reference products | Implemented, qualification incomplete | tested | Each app's tests render its screens to markup; tried by hand in one browser as far as docs/references/README.md says, and no standing browser test exists; Each app lists what was left out in docs/references/README.md; No accessibility audit, translation or independent usability review |
 
 ## Apps
 

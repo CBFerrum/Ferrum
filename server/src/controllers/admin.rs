@@ -7,7 +7,7 @@ use crate::extract::{Auth, BrowserSession};
 use crate::state::app_state;
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::{Method, StatusCode};
+use axum::http::{Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use ferrum_kernel::retention::RetentionInput;
 use ferrum_kernel::support::GrantInput;
@@ -631,10 +631,18 @@ async fn put_settings(Auth(ctx): Auth, State(app): State<AppContext>, Json(body)
     Ok(Json(st.kernel.update_tenant_settings(&ctx, &body).await?).into_response())
 }
 
+/// `GET /api/admin/evidence`: what a reviewer asks for, as a file (`ferrum_kernel::evidence`).
+async fn evidence(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    let pack = app_state(&app)?.kernel.evidence_pack(&ctx).await?;
+    let name = format!("attachment; filename=\"evidence-{}.json\"", chrono::Utc::now().format("%Y-%m-%d"));
+    Ok(([(header::CONTENT_DISPOSITION, name)], Json(pack)).into_response())
+}
+
 pub fn routes() -> Routes {
     use axum::routing::{delete, get, post, put};
     Routes::new()
         .prefix("/api")
+        .add("/admin/evidence", get(evidence))
         .add("/admin/settings", get(get_settings).put(put_settings))
         .add("/admin/users", get(list_users).post(create_user))
         .add("/admin/users/{id}/roles", put(set_roles))
