@@ -38,6 +38,8 @@ MERGE = ("-p", "ferrum-kernel", "--test", "merge_it")
 RETENTION = ("-p", "ferrum-kernel", "--test", "retention_it")
 DOCTOR = ("-p", "ferrum-kernel", "--test", "doctor_it")
 CONNECT = ("-p", "ferrum-kernel", "--test", "connect_it")
+COLLAB = ("-p", "ferrum-kernel", "--test", "collab_it")
+HOST_UNIT = ("-p", "ferrum-plugins", "--lib", "host::tests")
 EGRESS = ("-p", "ferrum-server", "--test", "assistant_egress_it")
 SUPPORT = ("-p", "ferrum-kernel", "--test", "support_it")
 # Generous enough to compile and run; passing it means the mutant hung the test.
@@ -45,6 +47,12 @@ TIMEOUT = 600
 
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
+    ("refused-token-kept", "crates/plugins/src/host.rs", "self.tokens.remove(&key);", "let _ = &key;", HOST_UNIT),
+    ("secret-goes-anywhere-to-sign-in", "crates/plugins/src/host.rs", "if !host_allowed(&c.hosts, host) {", "if false && !host_allowed(&c.hosts, host) {", HOST_UNIT),
+    ("rotated-secret-keeps-token", "crates/plugins/src/host.rs", 'let digest = hex::encode(Sha256::digest(format!("{user}:{secret}")));', 'let digest = user.to_string();', HOST_UNIT),
+    ("anyone-changes-a-shared-view", "crates/kernel/src/views.rs", "Some(by) if by == ctx.user || ctx.perms.admin => Ok(()),", "Some(_) if true => Ok(()),", COLLAB),
+    ("shared-view-on-a-closed-list", "crates/kernel/src/views.rs", "fn checked(ctx: &Ctx, entity: &str, name: &str, value: &Value) -> Result<String> {\n    ctx.require(entity, Action::Read)?;", "fn checked(ctx: &Ctx, entity: &str, name: &str, value: &Value) -> Result<String> {\n    let _ = (entity, Action::Read);", COLLAB),
+    ("closed-list-named-in-links", "crates/kernel/src/describe.rs", "ctx.perms.access(&e.def.name, Action::Read) != Access::None)", "!e.def.name.is_empty())", MERGE),
     ("provider-never-left-alone", "crates/kernel/src/connect.rs", "if let Some((seconds, why)) = waiting {", "if let Some((seconds, why)) = waiting.filter(|_| false) {", CONNECT),
     ("wait-costs-an-attempt", "crates/kernel/src/jobs.rs", "\"update job set status = 'queued', attempts = attempts - 1, last_error = $4,", "\"update job set status = 'queued', last_error = $4,", CONNECT),
     ("breaker-never-opens", "crates/kernel/src/connect.rs", "(failures >= BREAK_AFTER).then(", "(failures >= BREAK_AFTER * 1000).then(", CONNECT),

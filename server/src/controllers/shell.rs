@@ -1202,6 +1202,11 @@ struct VersionQuery {
 /// so an open tab can tell it is outdated (§12.12).
 async fn version(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query<VersionQuery>) -> ApiResult<Response> {
     let st = app_state(&app)?;
+    // The shell is no installed app, and its pages are the ones left open the longest.
+    if q.app == shell::SHELL_APP {
+        let release = st.shell.release_for(ctx.tenant, shell::SHELL_APP, shell::SHELL_VERSION).await?;
+        return Ok(Json(json!({"app": q.app, "version": shell::SHELL_VERSION, "release": release.map(|r| r.digest.clone())})).into_response());
+    }
     let apps = st.apps.shell_apps(ctx.tenant).await?;
     let Some(a) = apps.iter().find(|a| a.id == q.app) else { return Err(ApiError(Error::NotFound(format!("app {}", q.app)))) };
     // An app served by its developer's Vite server is never outdated: it reloads itself.

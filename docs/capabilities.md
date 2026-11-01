@@ -9,11 +9,11 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 79 |
-| Partially implemented | 43 |
-| Missing | 54 |
+| Implemented, qualification incomplete | 82 |
+| Partially implemented | 44 |
+| Missing | 52 |
 | Blocked by external dependency | 9 |
-| **All** | **185** |
+| **All** | **187** |
 
 ## Platform
 
@@ -82,12 +82,13 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | Id | Requirement | Status | Basis | Known limitations |
 |---|---|---|---|---|
 | FERRUM-UX-001 | Launcher, bar search, notifications, account switching, administration | Implemented, qualification incomplete | read | Tested per feature in three browsers in earlier work; no standing end-to-end suite in CI |
-| FERRUM-UX-002 | Command palette | Missing | probe |  |
+| FERRUM-UX-002 | Command palette | Implemented, qualification incomplete | read | Finds, opens and creates; it does not run actions on the record in front of you; Tried in one browser; no standing browser test |
 | FERRUM-UX-003 | Help center | Missing | probe |  |
 | FERRUM-UX-004 | Application completeness contract per app | Partially implemented | probe | Seven apps have no interface of their own and use the records pages: Assets, Bookings, Campaigns, Field Service, Forms, Learn, Sign |
 | FERRUM-UX-005 | WCAG 2.2 AA qualification | Blocked by external dependency | read | No automated accessibility checks in CI yet |
 | FERRUM-UX-006 | Translation, right-to-left, locale formatting | Missing | probe | No translation infrastructure was found in the core; money and dates format per workspace |
 | FERRUM-UX-007 | Mobile and offline policy with leases | Partially implemented | read | POS and Docs work offline; no shared policy for what is cached, who sees it or when it expires |
+| FERRUM-UX-008 | The record frame: filters, side panel, import, merging, related records, shared views | Implemented, qualification incomplete | tested | Tried by hand in one browser; no standing browser test; A merge writes the chosen values, then merges: two steps, so a failed merge leaves those values on the record that stays; Related counts ask each linking list in turn, which for a much-used record is dozens of requests; only when the tab is opened; A shared view's columns are the view's; someone who did not share it saves a copy to change them |
 
 ## Apps
 
@@ -176,20 +177,21 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Id | Requirement | Status | Basis | Known limitations |
 |---|---|---|---|---|
-| FERRUM-CONNECT-001 | Shared connector infrastructure: credentials, mapping, sync, reconciliation | Implemented, qualification incomplete | tested | Tested against a stand-in provider only: no real provider uses it yet; OAuth refresh and reconnect are each connector's for now; Deletions do not go out to providers; Rate limits are met with backoff, not a shared budget; Egress is not restricted per connection |
+| FERRUM-CONNECT-001 | Shared connector infrastructure: credentials, mapping, sync, reconciliation | Implemented, qualification incomplete | tested | Tested against stand-in providers only: no real provider uses it yet; Refresh tokens for a person-authorized OAuth app are not brokered: only client credentials are; Deletions do not go out to providers; A provider that says wait is left alone per connection; there is no budget shared across connections; Large media still goes through the plugin bridge; streaming by reference is not built; Egress is not restricted per connection |
 | FERRUM-CONNECT-002 | Connector catalog with what each provider's API really offers | Missing | read |  |
-| FERRUM-CONNECT-003 | Payment gateways | Blocked by external dependency | read | Stripe, Razorpay and PayPal adapters tested only against fakes |
+| FERRUM-CONNECT-003 | Payment gateways | Blocked by external dependency | tested | Stripe, Razorpay and PayPal tested against stand-ins and, for Stripe and PayPal, their published API definitions; never against a live or sandbox account here; Money that cannot be booked becomes a Payment Exception a person decides; a gateway cannot approve one; None is certified |
 | FERRUM-CONNECT-004 | Tax and e-invoicing networks | Blocked by external dependency | read | Adapters written to published specifications; none has run against a live or sandbox provider here |
 | FERRUM-EXT-001 | Four extension classes with their security models | Partially implemented | read | Metadata, WASM and native exist; external services are not a declared class |
 | FERRUM-EXT-002 | Plugin resource limits | Implemented, qualification incomplete | tested |  |
 | FERRUM-EXT-003 | Cancellation that stops consequential work | Implemented, qualification incomplete | tested |  |
 | FERRUM-EXT-004 | Bounded compilation and module cache | Implemented, qualification incomplete | read | The bound itself is not exercised by a test |
 | FERRUM-EXT-005 | Emergency disable | Implemented, qualification incomplete | tested |  |
-| FERRUM-EXT-006 | SDK, CLI, templates, testing utilities | Partially implemented | read | Not published to a package registry; examples for AI tools and industry packs are missing |
-| FERRUM-EXT-007 | Compatibility policy and permission review on upgrade | Partially implemented | read | Installation plans show permissions; no published compatibility policy |
+| FERRUM-EXT-006 | SDK, CLI, templates, testing utilities | Partially implemented | read | Not published to a package registry: @ferrum packages still reach into the frontend source, and publishing needs the owner's npm account; Examples for AI tools and industry packs are missing |
+| FERRUM-EXT-007 | Compatibility policy and permission review on upgrade | Partially implemented | read | Installation plans show permissions; docs/support-policy.md and the certification levels in docs/plan/integrations.md are drafts the owner has not put in force |
 | FERRUM-EXT-008 | Publisher onboarding, checks, review, signing, revocation | Implemented, qualification incomplete | probe |  |
 | FERRUM-EXT-009 | Monetization: plans, purchases, payouts, refunds, taxes | Missing | probe |  |
 | FERRUM-EXT-010 | Licensing of each artifact reviewed | Blocked by external dependency | read | Core AGPL-3.0-or-later; the SDK's terms and plugin obligations need counsel |
+| FERRUM-EXT-011 | Credential broker: a plugin uses a secret without reading it | Implemented, qualification incomplete | tested | Bearer, basic, HMAC checks and OAuth client credentials; no authorization-code or refresh-token flow; Not reviewed by an independent security tester |
 
 ## Ai
 
@@ -226,12 +228,12 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-OPS-006 | Safe large files: resumable uploads, limits | Partially implemented | read | Direct uploads to S3 up to 2 GiB; apps read files into memory |
 | FERRUM-OPS-007 | Malware scanning of uploads | Implemented, qualification incomplete | tested | Tested against a stand-in speaking clamd's protocol, not a real ClamAV; A file is scanned once, on upload; nothing rescans when signatures change; The direct-upload path is not covered by a test |
 | FERRUM-OPS-008 | Disaster recovery rehearsed into a clean environment | Implemented, qualification incomplete | read | Compose and kind rehearsals; zone, region and ransomware procedures not written |
-| FERRUM-OPS-009 | Structured logs and basic metrics | Partially implemented | read | No OpenTelemetry traces; no business metrics such as failed postings or stale syncs |
+| FERRUM-OPS-009 | Structured logs and basic metrics | Partially implemented | read | No OpenTelemetry traces; job, outbox and connection health are metrics, but not per-app business failures such as a posting that failed |
 | FERRUM-RELEASE-001 | Build once and promote the qualified digest | Implemented, qualification incomplete | read | The workflows have not run yet: they need a push to main |
 | FERRUM-RELEASE-002 | Provenance and SBOM attested at promotion | Implemented, qualification incomplete | read | Not run yet; requires the images to be attested by CI |
 | FERRUM-RELEASE-003 | Release manifest of every component | Partially implemented | read | Written by hand at this audit; not yet generated in CI |
 | FERRUM-RELEASE-004 | Accepted advisories with owner and review date | Implemented, qualification incomplete | tested |  |
-| FERRUM-RELEASE-005 | Published support and compatibility policy | Missing | probe |  |
+| FERRUM-RELEASE-005 | Published support and compatibility policy | Partially implemented | read | A draft: support windows are the owner's commitment to make, and none is in force |
 | FERRUM-RELEASE-006 | Base images pinned by digest | Implemented, qualification incomplete | read | Compose and Kubernetes still name some third-party images by tag |
 
 ## Verification

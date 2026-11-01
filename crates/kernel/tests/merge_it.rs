@@ -193,6 +193,21 @@ async fn scenario() {
     let file: Uuid = file["id"].as_str().unwrap().parse().unwrap();
 
     // Who may, and what cannot be merged.
+    // A record says what links to it, down to the rows of a child table, and whether it can be merged.
+    let described = |ctx| ferrum_kernel::describe::describe(ctx, &k.entity(ctx, "Party").expect("Party"));
+    let links = |ctx| {
+        described(ctx)["linked_from"]
+            .as_array()
+            .expect("links")
+            .iter()
+            .map(|l| format!("{}.{}", l["entity"].as_str().unwrap(), l["field"].as_str().unwrap()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(described(&admin)["mergeable"], true);
+    assert_eq!(links(&admin), ["Order.lines.bill_to", "Order.party", "Order.x_partner", "Party.parent", "Unique.party"], "a workspace's own fields too");
+    assert_eq!(links(&manager), ["Party.parent"], "a list closed to them stays out of it");
+    assert_eq!(ferrum_kernel::describe::describe(&admin, &k.entity(&admin, "Order").expect("Order"))["mergeable"], false);
+
     assert!(matches!(k.merge_records(&clerk, "Party", keep, dup, "same").await, Err(Error::Forbidden(_))), "needs delete");
     assert!(matches!(k.merge_records(&manager, "Party", keep, dup, " ").await, Err(Error::Validation(_))), "a reason");
     assert!(matches!(k.merge_records(&manager, "Party", keep, keep, "same").await, Err(Error::Invalid(_))));

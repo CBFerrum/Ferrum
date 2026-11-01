@@ -2,7 +2,7 @@
 //! the REST metadata endpoints, the MCP server and anything else that explains the schema.
 
 use crate::ctx::{Access, Action, Ctx};
-use ferrum_meta::{EffEntity, FieldDef};
+use ferrum_meta::{EffEntity, FieldDef, FieldType};
 use serde_json::{Value, json};
 
 pub fn access(a: Access) -> &'static str {
@@ -33,6 +33,31 @@ pub fn field_json(ctx: &Ctx, ent: &EffEntity, f: &FieldDef) -> Value {
     v
 }
 
+/// What links to `entity`, as far as the caller may read it: the entity, and the filter that finds
+/// a record's links there (`items.item` for a link in a child table).
+fn linked_from(ctx: &Ctx, entity: &str) -> Vec<Value> {
+    let links = |e: &EffEntity| -> Vec<FieldDef> {
+        e.value_fields()
+            .filter(|f| f.ftype == FieldType::Link && f.to.as_deref() == Some(entity) && ctx.perms.can_read_field(&e.def.name, f))
+            .cloned()
+            .collect()
+    };
+    let mut out = Vec::new();
+    for e in ctx.schema.entities.values().filter(|e| !e.table.is_empty() && ctx.perms.access(&e.def.name, Action::Read) != Access::None) {
+        for f in links(e) {
+            out.push(json!({"entity": e.def.name, "label": e.def.plural_label(), "field": f.name, "field_label": f.label()}));
+        }
+        for (table, info) in &e.children {
+            let Some(c) = ctx.schema.entity(&info.entity) else { continue };
+            for f in links(c) {
+                out.push(json!({"entity": e.def.name, "label": e.def.plural_label(), "field": format!("{table}.{}", f.name), "field_label": f.label()}));
+            }
+        }
+    }
+    out.sort_by_key(|v| (v["label"].as_str().unwrap_or_default().to_string(), v["field"].as_str().unwrap_or_default().to_string()));
+    out
+}
+
 pub fn describe(ctx: &Ctx, ent: &EffEntity) -> Value {
     let children: serde_json::Map<String, Value> = ent
         .children
@@ -57,6 +82,8 @@ pub fn describe(ctx: &Ctx, ent: &EffEntity) -> Value {
         "custom": ent.custom,
         "title_field": ent.def.title_field,
         "submittable": ent.def.submittable,
+        "mergeable": ent.def.mergeable,
+        "linked_from": linked_from(ctx, &ent.def.name),
         "company_scoped": ent.def.company_scoped,
         "numbering": ent.def.numbering,
         "list": ent.def.list,

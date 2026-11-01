@@ -84,6 +84,7 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
     .await
     .map_err(Error::from)?;
     tx.commit().await.map_err(Error::from)?;
+    let (conn_on, conn_failing, conn_waiting, conn_stale, drift_open) = st.kernel.connection_gauges().await?;
     let pool = &st.kernel.db.pool;
     let body = format!(
         "# HELP ferrum_up 1 when the process is serving.\n# TYPE ferrum_up gauge\nferrum_up 1\n\
@@ -99,7 +100,12 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
          # TYPE ferrum_jobs_queued gauge\nferrum_jobs_queued {jobs_queued}\n\
          # TYPE ferrum_jobs_running gauge\nferrum_jobs_running {jobs_running}\n\
          # HELP ferrum_jobs_failed_day Jobs that gave up in the last day.\n# TYPE ferrum_jobs_failed_day gauge\nferrum_jobs_failed_day {jobs_failed}\n\
-         # TYPE ferrum_jobs_oldest_waiting_seconds gauge\nferrum_jobs_oldest_waiting_seconds {}\n",
+         # TYPE ferrum_jobs_oldest_waiting_seconds gauge\nferrum_jobs_oldest_waiting_seconds {}\n\
+         # HELP ferrum_connections Connections to outside systems that are on.\n# TYPE ferrum_connections gauge\nferrum_connections {conn_on}\n\
+         # HELP ferrum_connections_failing Connections whose last calls failed.\n# TYPE ferrum_connections_failing gauge\nferrum_connections_failing {conn_failing}\n\
+         # HELP ferrum_connections_waiting Connections left alone because the provider said to wait.\n# TYPE ferrum_connections_waiting gauge\nferrum_connections_waiting {conn_waiting}\n\
+         # HELP ferrum_connections_stale Connections with no success for a day.\n# TYPE ferrum_connections_stale gauge\nferrum_connections_stale {conn_stale}\n\
+         # HELP ferrum_connection_drift_open Differences from a provider waiting for a person.\n# TYPE ferrum_connection_drift_open gauge\nferrum_connection_drift_open {drift_open}\n",
         STARTED.elapsed().as_secs(),
         pool.size(),
         pool.num_idle(),

@@ -296,6 +296,22 @@ enum Applied {
 }
 
 impl Kernel {
+    /// Across workspaces, for monitoring: connections that are on, failing, waiting on their
+    /// provider, with no success for a day, and differences waiting for a person.
+    pub async fn connection_gauges(&self) -> Result<(i64, i64, i64, i64, i64)> {
+        let mut tx = self.db.system_tx().await?;
+        let gauges = sqlx::query_as(
+            "select count(*) filter (where enabled), count(*) filter (where enabled and failures > 0), \
+             count(*) filter (where enabled and waiting_until > now()), \
+             count(*) filter (where enabled and coalesce(last_success_at, created_at) < now() - interval '1 day'), \
+             (select count(*) from connection_drift where resolved_at is null) from connection",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(gauges)
+    }
+
     async fn connector(&self, tenant: Uuid, provider: &str) -> Result<Arc<dyn Connector>> {
         if let Some(c) = self.hooks.connector(provider) {
             return Ok(c.clone());

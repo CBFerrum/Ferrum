@@ -103,11 +103,15 @@ pub struct Credential {
     /// Where it may go, from `http_hosts`. Empty: nowhere; it only checks signatures.
     #[serde(default)]
     pub hosts: Vec<String>,
-    /// `bearer`, or `basic` with `user`, the configuration key holding the user name.
+    /// `bearer`; `basic` with `user`, the configuration key holding the user name; or `oauth2`,
+    /// where the host trades `user` and this secret for a short-lived token at `token_path` on the
+    /// host being called, keeps it, and signs requests in with it. A plugin sees neither.
     #[serde(default = "default_scheme")]
     pub scheme: String,
     #[serde(default)]
     pub user: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_path: Option<String>,
 }
 
 fn default_scheme() -> String {
@@ -224,8 +228,17 @@ impl Manifest {
             if c.name.is_empty() || c.name.len() > 60 || self.credentials.iter().filter(|o| o.name == c.name).count() > 1 {
                 errors.push(FieldError::new("name", "needs a unique name of at most 60 characters").in_row("credentials", i));
             }
-            if !matches!((c.scheme.as_str(), &c.user), ("bearer", None) | ("basic", Some(_))) {
-                errors.push(FieldError::new("scheme", "bearer, or basic with a user").in_row("credentials", i));
+            let signs_in = match c.scheme.as_str() {
+                "bearer" => c.user.is_none(),
+                "basic" => c.user.is_some(),
+                "oauth2" => c.user.is_some() && c.token_path.as_deref().is_some_and(|p| p.starts_with('/')),
+                _ => false,
+            };
+            if !signs_in {
+                errors.push(
+                    FieldError::new("scheme", "use bearer, basic with user, or oauth2 with user and a token_path such as /oauth/token")
+                        .in_row("credentials", i),
+                );
             }
             if let Some(h) = c.hosts.iter().find(|h| !self.http_hosts.contains(h)) {
                 errors.push(FieldError::new("hosts", format!("{h} is not among http_hosts")).in_row("credentials", i));
@@ -293,6 +306,8 @@ pub struct PluginHost {
     /// One compilation at a time: it takes seconds of every core for a large module.
     compiling: Semaphore,
     running: DashMap<Uuid, Arc<Semaphore>>,
+    /// Tokens the host got for `oauth2` credentials, and when to stop using them.
+    tokens: DashMap<String, (String, Instant)>,
     pub sockets: Arc<SocketHub>,
     allow_private_http: bool,
     /// Seals each configuration value at rest (gateways' API keys and webhook secrets among them);
@@ -434,6 +449,7 @@ impl PluginHost {
             loaded: DashMap::new(),
             compiling: Semaphore::new(1),
             running: DashMap::new(),
+            tokens: DashMap::new(),
             sockets: SocketHub::new(),
             allow_private_http,
             sealing: std::sync::OnceLock::new(),
