@@ -180,7 +180,8 @@ pub struct HookRegistry {
     sites: HashMap<String, Arc<dyn Site>>,
     doc_hosts: HashMap<String, Arc<dyn DocHost>>,
     job_handlers: HashMap<&'static str, Arc<dyn crate::jobs::JobHandler>>,
-    connectors: HashMap<&'static str, Arc<dyn crate::connect::Connector>>,
+    connector_source: Option<Arc<dyn crate::connect::ConnectorSource>>,
+    connectors: HashMap<String, Arc<dyn crate::connect::Connector>>,
     /// The packages owning what is being registered (see [`HookRegistry::scoped`]).
     scope: Option<Arc<[String]>>,
 }
@@ -341,6 +342,16 @@ impl HookRegistry {
     pub fn add_connector(&mut self, connector: Arc<dyn crate::connect::Connector>) -> &mut Self {
         self.connectors.insert(connector.info().provider, connector);
         self
+    }
+
+    /// Where connectors a workspace installs come from, beside those compiled in.
+    pub fn set_connector_source(&mut self, source: Arc<dyn crate::connect::ConnectorSource>) -> &mut Self {
+        self.connector_source = Some(source);
+        self
+    }
+
+    pub fn connector_source(&self) -> Option<&Arc<dyn crate::connect::ConnectorSource>> {
+        self.connector_source.as_ref()
     }
 
     pub fn connector(&self, provider: &str) -> Option<&Arc<dyn crate::connect::Connector>> {

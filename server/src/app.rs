@@ -152,6 +152,7 @@ impl Hooks for App {
         let plugins = ferrum_plugins::PluginHost::new(settings.webhooks_allow_private).map_err(|e| Error::Message(format!("plugins: {e}")))?;
         hooks.register("*", Arc::new(ferrum_plugins::PluginHook(plugins.clone())));
         hooks.add_event_sink(Arc::new(ferrum_plugins::PluginEvents(plugins.clone())));
+        hooks.set_connector_source(Arc::new(ferrum_plugins::connect::PluginConnectors(plugins.clone())));
         hooks.add_event_sink(Arc::new(crate::live::LiveEvents));
         let smtp = ctx
             .config

@@ -37,6 +37,8 @@ struct World {
     calls: Vec<String>,
     /// Pulls to refuse with "slow down", by page.
     throttle: Vec<usize>,
+    /// The provider answers nothing but errors.
+    down: bool,
     pushes: Vec<(String, String)>,
     /// Pushes to fail before one succeeds.
     push_failures: usize,
@@ -50,18 +52,19 @@ const PAGE: usize = 2;
 impl Connector for Stub {
     fn info(&self) -> ConnectorInfo {
         ConnectorInfo {
-            provider: "stub",
-            label: "Stub CRM",
-            family: "crm",
-            api_version: "2026-01",
-            streams: &["people"],
-            writes: &["Contact"],
+            provider: "stub".into(),
+            label: "Stub CRM".into(),
+            family: "crm".into(),
+            api_version: "2026-01".into(),
+            streams: vec!["people".into()],
+            writes: vec!["Contact".into()],
             webhooks: true,
-            requirements: "",
+            capabilities: vec!["read_people".into()],
+            ..Default::default()
         }
     }
 
-    async fn check(&self, c: &Connection) -> Result<String> {
+    async fn check(&self, _k: &Kernel, c: &Connection) -> Result<String> {
         let w = self.0.lock().unwrap();
         if c.credentials["token"].as_str() == Some(w.token.as_str()) {
             Ok("account 42".into())
@@ -70,10 +73,13 @@ impl Connector for Stub {
         }
     }
 
-    async fn pull(&self, _c: &Connection, stream: &str, cursor: Option<&str>) -> Result<Pulled> {
+    async fn pull(&self, _k: &Kernel, _c: &Connection, stream: &str, cursor: Option<&str>) -> Result<Pulled> {
         let mut w = self.0.lock().unwrap();
         let start: usize = cursor.and_then(|c| c.parse().ok()).unwrap_or(0);
         w.calls.push(format!("{stream}@{start}"));
+        if w.down {
+            return Err(Error::Unavailable("the provider is down".into()));
+        }
         if let Some(i) = w.throttle.iter().position(|p| *p == start) {
             w.throttle.remove(i);
             return Err(Error::TooManyRequests("slow down".into()));
@@ -94,7 +100,7 @@ impl Connector for Stub {
         Ok(Pulled { records: page, next: (next < w.records.len()).then(|| next.to_string()).or_else(|| Some(next.to_string())) })
     }
 
-    async fn push(&self, _c: &Connection, change: &Outgoing) -> Result<String> {
+    async fn push(&self, _k: &Kernel, _c: &Connection, change: &Outgoing) -> Result<String> {
         let mut w = self.0.lock().unwrap();
         w.pushes.push((change.key.clone(), change.fields.get("name").and_then(Value::as_str).unwrap_or_default().to_string()));
         if w.push_failures > 0 {
@@ -104,7 +110,7 @@ impl Connector for Stub {
         Ok(change.external_id.clone().unwrap_or_else(|| format!("new-{}", change.record)))
     }
 
-    fn webhook(&self, _c: &Connection, headers: &BTreeMap<String, String>, body: &[u8]) -> Result<Vec<Hook>> {
+    async fn webhook(&self, _k: &Kernel, _c: &Connection, headers: &BTreeMap<String, String>, body: &[u8]) -> Result<Vec<Hook>> {
         if headers.get("x-stub-signature").map(String::as_str) != Some(SIGNATURE) {
             return Err(Error::Unauthorized("this webhook is not signed by the provider".into()));
         }
@@ -199,6 +205,7 @@ async fn scenario() {
         loop {
             let mut tx = k.db.system_tx().await.unwrap();
             sqlx::query("update job set run_at = now() where status = 'queued'").execute(&mut *tx).await.unwrap();
+            sqlx::query("update connection set waiting_until = now() where waiting_until is not null").execute(&mut *tx).await.unwrap();
             tx.commit().await.unwrap();
             if k.run_jobs_once(4).await.unwrap() == 0 {
                 break;
@@ -208,7 +215,9 @@ async fn scenario() {
     let drain = |k: Arc<Kernel>| async move { while k.dispatch_outbox_once().await.unwrap() > 0 {} };
 
     // ───────────── setting up ─────────────
-    assert_eq!(k.connectors()[0].streams, ["people"], "what the provider really offers");
+    assert_eq!(k.connectors(&admin).await.unwrap()[0].streams, ["people"], "what the provider really offers");
+    assert_eq!(k.connectors(&admin).await.unwrap()[0].capabilities, ["read_people"], "each thing it can do, by name");
+    assert!(matches!(k.connectors(&clerk).await, Err(Error::Forbidden(_))));
     assert!(matches!(k.save_connection(&clerk, None, input("x", "review", "keep", false)).await, Err(Error::Forbidden(_))));
     let mut bad = input("x", "review", "keep", false);
     bad.provider = "nobody".into();
@@ -259,8 +268,8 @@ async fn scenario() {
     let v = k.job(&admin, run).await.unwrap();
     assert_eq!(
         (v["status"].as_str(), v["attempts"].as_i64(), v["result"]["created"].as_i64(), v["result"]["failed"].as_i64()),
-        (Some("done"), Some(2), Some(2), Some(1)),
-        "{v}"
+        (Some("done"), Some(1), Some(2), Some(1)),
+        "being told to wait costs no attempt: {v}"
     );
     let calls = world.lock().unwrap().calls.clone();
     assert_eq!(calls.iter().filter(|c| *c == "people@0").count(), 1, "the retry carried on from its cursor, not from the top: {calls:?}");
@@ -283,6 +292,42 @@ async fn scenario() {
     let v = k.job(&admin, run).await.unwrap();
     assert_eq!((v["result"]["created"].as_i64(), v["result"]["updated"].as_i64()), (Some(0), Some(0)), "from the start, nothing doubles: {v}");
     assert_eq!(contacts().await.len(), 5);
+
+    // ───────────── what the provider holds, and how the connection is doing ─────────────
+    let schema = k.connection_schema(&admin, id).await.expect("schema");
+    assert_eq!(schema[0].stream, "people");
+    let health = k.connections(&admin).await.unwrap()[0]["health"].clone();
+    assert_eq!(health["authentication"], json!("ok"), "{health}");
+    assert!(health["freshness"].is_string() && health["quota"]["waiting_until"].is_null(), "{health}");
+
+    // ───────────── a provider that keeps failing is left alone ─────────────
+    world.lock().unwrap().down = true;
+    let run = k.sync_connection(&admin, id, false).await.unwrap();
+    let again = |k: Arc<Kernel>| async move {
+        let mut tx = k.db.system_tx().await.unwrap();
+        sqlx::query("update job set run_at = now() where status = 'queued'").execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        k.run_jobs_once(4).await.unwrap();
+    };
+    for _ in 0..3 {
+        again(k.clone()).await;
+    }
+    let health = k.connections(&admin).await.unwrap()[0]["health"].clone();
+    assert!(health["quota"]["waiting_until"].is_string(), "after three failures in a row: {health}");
+    assert_eq!(health["quota"]["failures"], json!(3));
+    assert!(health["quota"]["reason"].as_str().unwrap().contains("provider is down"), "{health}");
+    let tried = world.lock().unwrap().calls.len();
+    let attempts = k.job(&admin, run).await.unwrap()["attempts"].clone();
+    again(k.clone()).await;
+    again(k.clone()).await;
+    assert_eq!(world.lock().unwrap().calls.len(), tried, "nobody calls it while it is left alone");
+    let v = k.job(&admin, run).await.unwrap();
+    assert_eq!((v["status"].as_str(), &v["attempts"]), (Some("queued"), &attempts), "and the job waits, at no cost in attempts: {v}");
+    world.lock().unwrap().down = false;
+    jobs(k.clone()).await;
+    assert_eq!(k.job(&admin, run).await.unwrap()["status"], json!("done"), "when it is back, the work carries on");
+    let quota = k.connections(&admin).await.unwrap()[0]["health"]["quota"].clone();
+    assert_eq!((quota["failures"].as_i64(), quota["waiting_until"].is_null()), (Some(0), true), "{quota}");
 
     // ───────────── both sides changed ─────────────
     let ann = |k: Arc<Kernel>, admin: ferrum_kernel::Ctx| async move {
