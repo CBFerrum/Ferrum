@@ -414,7 +414,7 @@ mod opcua_server {
             .host("127.0.0.1")
             .port(port)
             .pki_dir(pki)
-            .create_sample_keypair(true)
+            .create_sample_keypair(false)
             .trust_client_certs(true)
             .discovery_urls(vec![format!("opc.tcp://127.0.0.1:{port}/")])
             .add_endpoint("none", ("/", SecurityPolicy::None, MessageSecurityMode::None, &[ANONYMOUS_USER_TOKEN_ID] as &[&str]))
