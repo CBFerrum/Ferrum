@@ -162,7 +162,8 @@ impl Opcua {
             .product_uri("urn:ferrum-site")
             // The link reconnects, with its own backoff and its own account of why.
             .session_retry_limit(0);
-        builder = match &self.store {
+        // A key takes seconds to make, and with security off nothing would use it.
+        builder = match self.store.as_ref().filter(|_| self.security != "None") {
             Some(dir) => builder.pki_dir(dir.clone()).create_sample_keypair(true).trust_server_certs(false),
             None => builder.create_sample_keypair(false).trust_server_certs(false),
         };
