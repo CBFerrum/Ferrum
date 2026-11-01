@@ -1,0 +1,30 @@
+[package]
+name = "ferrum-edge"
+description = "IoT Edge: devices described instead of programmed, gateways and their configuration, alarms, reported state and robots"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+ferrum-kernel = { path = "../kernel" }
+ferrum-meta = { path = "../meta" }
+ferrum-domain = { path = "../domain" }
+ferrum-ops = { path = "../ops" }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+hex = { workspace = true }
+rand = "0.9"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+sqlx = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+ed25519-dalek = { version = "2.2", default-features = false, features = ["std", "fast"] }
+tokio = { workspace = true }
+
+[lints]
+workspace = true
