@@ -12,6 +12,29 @@ fn kernel(ctx: &AppContext) -> Result<std::sync::Arc<ferrum_kernel::Kernel>> {
     app_state(ctx).map(|s| s.kernel).map_err(|e| Error::Message(format!("{:?}", e.0)))
 }
 
+/// `account_state slug:acme state:restricted note:"..."`: where a workspace's account stands.
+pub struct AccountState;
+
+#[async_trait]
+impl Task for AccountState {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "account_state".into(), detail: "Moves a workspace between active, grace and restricted. Nothing here touches its data".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let slug = vars.cli_arg("slug").map_err(|e| Error::Message(e.to_string()))?;
+        let state = vars.cli_arg("state").map_err(|e| Error::Message(e.to_string()))?;
+        let mut tx = k.db.system_tx().await.map_err(|e| Error::Message(e.to_string()))?;
+        let tenant: Option<uuid::Uuid> =
+            sqlx::query_scalar("select id from tenant where slug = $1").bind(slug).fetch_optional(&mut *tx).await.map_err(|e| Error::Message(e.to_string()))?;
+        tx.commit().await.map_err(|e| Error::Message(e.to_string()))?;
+        let tenant = tenant.ok_or_else(|| Error::Message(format!("no workspace {slug}")))?;
+        k.set_account_state(tenant, state, vars.cli_arg("note").ok()).await.map_err(|e| Error::Message(e.to_string()))?;
+        println!("{slug} is {state}");
+        Ok(())
+    }
+}
+
 /// `doctor`: a redacted report on this deployment; `format:json` for a machine. Fails when something
 /// must be fixed before it is safe to run.
 pub struct Doctor;

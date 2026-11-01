@@ -8,7 +8,9 @@ use crate::{Loaded, PluginHost};
 use async_trait::async_trait;
 use ferrum_kernel::query::parse_filters;
 use ferrum_kernel::{Action, Ctx, Doc, Error, HookCtx, Kernel, ListQuery, Result, Tx};
+use hmac::{Hmac, Mac};
 use serde_json::{Map, Value, json};
+use sha2::Sha256;
 use std::net::SocketAddr;
 use std::time::Duration;
 use uuid::Uuid;
@@ -17,6 +19,7 @@ use uuid::Uuid;
 pub const MAX_DEPTH: u8 = 4;
 const MAX_QUERY_ROWS: u32 = 500;
 const MAX_HTTP_RESPONSE: usize = 1 << 20;
+const MAX_LOG: usize = 2000;
 
 /// Where a call runs.
 pub enum Scope<'a, 'b> {
@@ -42,6 +45,12 @@ fn error_value(e: &Error) -> Value {
         v["fields"] = json!(fields);
     }
     v
+}
+
+/// What a plugin's log line keeps: its start, cut between characters. A plugin chooses this text, so
+/// a cut through a multi-byte character would let it panic the host.
+fn clip_log(message: &str) -> &str {
+    &message[..message.floor_char_boundary(MAX_LOG)]
 }
 
 fn s<'v>(a: &'v Value, k: &str) -> Result<&'v str> {
@@ -210,6 +219,10 @@ impl Host<'_, '_> {
             }
             "kv.get" | "kv.set" | "kv.delete" | "kv.list" => self.kv(op, &a).await,
             "http.fetch" => self.host.fetch(self.plugin, &a).await,
+            "crypto.verify_hmac_sha256" => {
+                let secret = self.plugin.credential(s(&a, "credential")?)?;
+                Ok(json!({"valid": signed_with(secret, s(&a, "message")?, s(&a, "signature")?)}))
+            }
             "events.emit" => {
                 let topic = s(&a, "topic")?;
                 if topic.len() > 100 || !topic.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) {
@@ -246,7 +259,7 @@ impl Host<'_, '_> {
             }
             "log" => {
                 let message = a.get("message").and_then(Value::as_str).unwrap_or_default();
-                let message = &message[..message.len().min(2000)];
+                let message = clip_log(message);
                 match a.get("level").and_then(Value::as_str).unwrap_or("info") {
                     "error" => tracing::error!(plugin = %self.plugin.name, tenant = %self.ctx().tenant, "{message}"),
                     "warn" => tracing::warn!(plugin = %self.plugin.name, tenant = %self.ctx().tenant, "{message}"),
@@ -318,16 +331,58 @@ impl Host<'_, '_> {
     }
 }
 
+/// Whether `signature` (hex) is `message` signed with `secret`, compared in constant time.
+fn signed_with(secret: &str, message: &str, signature: &str) -> bool {
+    let (Ok(mut mac), Ok(given)) = (Hmac::<Sha256>::new_from_slice(secret.as_bytes()), hex::decode(signature)) else { return false };
+    mac.update(message.as_bytes());
+    mac.verify_slice(&given).is_ok()
+}
+
+fn host_allowed(allowed: &[String], host: &str) -> bool {
+    allowed.iter().any(|h| host == h || h.strip_prefix("*.").is_some_and(|d| host.ends_with(&format!(".{d}"))))
+}
+
+impl Loaded {
+    /// A credential's value, for the host's own use. It is never handed to the plugin.
+    fn credential(&self, name: &str) -> Result<&str> {
+        if !self.manifest.credentials.iter().any(|c| c.name == name) {
+            return Err(Error::Forbidden(format!("plugin '{}' did not declare the credential {name}", self.name)));
+        }
+        self.credentials
+            .get(name)
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| Error::invalid(format!("set {name} in the {} plugin's settings", self.name)))
+    }
+
+    /// `req` signed in with credential `name`, if it may go to `host`.
+    fn authorize(&self, req: reqwest::RequestBuilder, name: &str, host: &str) -> Result<reqwest::RequestBuilder> {
+        let value = self.credential(name)?;
+        let c = self.manifest.credentials.iter().find(|c| c.name == name).ok_or_else(|| Error::internal("credential checked above"))?;
+        if !host_allowed(&c.hosts, host) {
+            return Err(Error::Forbidden(format!("the credential {name} may not be sent to {host}")));
+        }
+        Ok(match &c.user {
+            Some(user) => {
+                let user = self.credentials.get(user).or_else(|| self.config.get(user)).and_then(Value::as_str).unwrap_or_default();
+                req.basic_auth(user, Some(value))
+            }
+            None => req.bearer_auth(value),
+        })
+    }
+}
+
 impl PluginHost {
     /// Outbound HTTP for plugins: only hosts the plugin declared, never private addresses (unless
     /// allowed for development), DNS pinned between the check and the connection, no redirects.
+    /// With `auth`, the host signs the request in with a credential the plugin never sees.
     pub(crate) async fn fetch(&self, plugin: &Loaded, a: &Value) -> Result<Value> {
         let url = reqwest::Url::parse(s(a, "url")?).map_err(|e| Error::field("url", e.to_string()))?;
         let host = url.host_str().ok_or_else(|| Error::field("url", "has no host"))?.to_ascii_lowercase();
         if url.scheme() != "https" && !(url.scheme() == "http" && self.allow_private_http) {
             return Err(Error::field("url", "plugins may only call https URLs"));
         }
-        if !plugin.manifest.http_hosts.iter().any(|h| host == *h || h.strip_prefix("*.").is_some_and(|d| host.ends_with(&format!(".{d}")))) {
+        if !host_allowed(&plugin.manifest.http_hosts, &host) {
             return Err(Error::Forbidden(format!("plugin '{}' did not declare the host {host}", plugin.name)));
         }
         let port = url.port_or_known_default().unwrap_or(443);
@@ -348,12 +403,19 @@ impl PluginHost {
         let method = a.get("method").and_then(Value::as_str).unwrap_or("GET").to_ascii_uppercase();
         let method = reqwest::Method::from_bytes(method.as_bytes()).map_err(|_| Error::field("method", "is not an HTTP method"))?;
         let mut req = client.request(method, url);
+        let auth = a.get("auth").and_then(Value::as_str);
         if let Some(Value::Object(h)) = a.get("headers") {
             for (k, v) in h {
+                if auth.is_some() && k.eq_ignore_ascii_case("authorization") {
+                    return Err(Error::field("headers", "auth sets the Authorization header"));
+                }
                 if let Some(v) = v.as_str() {
                     req = req.header(k.as_str(), v);
                 }
             }
+        }
+        if let Some(name) = auth {
+            req = plugin.authorize(req, name, &host)?;
         }
         if let Some(body) = a.get("body") {
             req = match body {
@@ -373,5 +435,108 @@ impl PluginHost {
             }
         }
         Ok(json!({"status": status, "headers": headers, "body": String::from_utf8_lossy(&body)}))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Manifest;
+    use std::sync::{Arc, Mutex};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn a_long_log_line_is_cut_between_characters() {
+        let start = "x".repeat(MAX_LOG - 1);
+        assert_eq!(clip_log(&format!("{start}é and the rest")), start, "é would span the limit");
+        assert_eq!(clip_log(&format!("{start}e and the rest")).len(), MAX_LOG);
+        assert_eq!(clip_log("short"), "short");
+        assert_eq!(clip_log(""), "");
+    }
+
+    /// A provider that keeps what it is sent, and answers with its own idea of the secret.
+    async fn provider() -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+        let kept = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                kept.lock().unwrap().push(String::from_utf8_lossy(&buf[..n]).to_lowercase());
+                let _ = socket.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}").await;
+            }
+        });
+        (url, seen)
+    }
+
+    fn plugin(credentials: Value, config: Value) -> Loaded {
+        let manifest: Manifest = serde_json::from_value(json!({"http_hosts": ["127.0.0.1", "other.example.com"], "credentials": credentials})).unwrap();
+        let (config, held) = crate::split_credentials(&manifest, config);
+        Loaded {
+            id: Uuid::nil(),
+            name: "pay".into(),
+            sha: String::new(),
+            manifest: Arc::new(manifest),
+            config: Arc::new(config),
+            credentials: Arc::new(held),
+            user_id: None,
+            fuel: 1,
+            memory_mb: 1,
+        }
+    }
+
+    #[test]
+    fn a_plugin_does_not_read_what_it_declared_as_a_credential() {
+        let p = plugin(json!([{"name": "secret_key", "hosts": ["127.0.0.1"]}]), json!({"secret_key": "sk_live_1", "success_url": "https://x"}));
+        assert_eq!(*p.config, json!({"success_url": "https://x"}), "what stays is what it may read");
+        assert_eq!(p.credential("secret_key").unwrap(), "sk_live_1");
+    }
+
+    #[tokio::test]
+    async fn a_credential_goes_only_where_it_was_declared_for() {
+        let host = PluginHost::new(true).unwrap();
+        let (url, seen) = provider().await;
+        let p = plugin(
+            json!([{"name": "secret_key", "hosts": ["127.0.0.1"]}, {"name": "elsewhere", "hosts": ["other.example.com"]}, {"name": "unset", "hosts": ["127.0.0.1"]}]),
+            json!({"secret_key": "sk_live_1", "elsewhere": "sk_2"}),
+        );
+
+        host.fetch(&p, &json!({"url": url, "auth": "secret_key"})).await.unwrap();
+        assert!(seen.lock().unwrap()[0].contains("authorization: bearer sk_live_1"), "the host signed it in: {:?}", seen.lock().unwrap());
+
+        let refused = |e: Error| matches!(e, Error::Forbidden(_));
+        assert!(refused(host.fetch(&p, &json!({"url": url, "auth": "elsewhere"})).await.unwrap_err()), "not to another host");
+        assert!(refused(host.fetch(&p, &json!({"url": url, "auth": "undeclared"})).await.unwrap_err()), "not one it did not declare");
+        assert!(host.fetch(&p, &json!({"url": url, "auth": "unset"})).await.unwrap_err().to_string().contains("set unset in the pay plugin's settings"));
+        let forged = host.fetch(&p, &json!({"url": url, "auth": "secret_key", "headers": {"Authorization": "Bearer mine"}})).await;
+        assert!(matches!(forged, Err(Error::Validation(_))), "and a plugin does not choose the header: {forged:?}");
+        assert_eq!(seen.lock().unwrap().len(), 1, "none of these left");
+    }
+
+    #[tokio::test]
+    async fn basic_credentials_pair_a_user_with_the_secret() {
+        let host = PluginHost::new(true).unwrap();
+        let (url, seen) = provider().await;
+        let p = plugin(
+            json!([{"name": "key_secret", "hosts": ["127.0.0.1"], "scheme": "basic", "user": "key_id"}]),
+            json!({"key_secret": "s3", "key_id": "rzp_1"}),
+        );
+        host.fetch(&p, &json!({"url": url, "auth": "key_secret"})).await.unwrap();
+        assert!(seen.lock().unwrap()[0].contains("authorization: basic cnpwxze6czm="), "{:?}", seen.lock().unwrap());
+    }
+
+    #[test]
+    fn a_signature_is_checked_without_handing_over_the_secret() {
+        let p = plugin(json!([{"name": "webhook_secret"}]), json!({"webhook_secret": "whsec"}));
+        let mut mac = Hmac::<Sha256>::new_from_slice(b"whsec").unwrap();
+        mac.update(b"123.body");
+        let good = hex::encode(mac.finalize().into_bytes());
+        let secret = p.credential("webhook_secret").unwrap();
+        assert!(signed_with(secret, "123.body", &good));
+        assert!(!signed_with(secret, "123.bodY", &good), "another message");
+        assert!(!signed_with(secret, "123.body", &good[2..]), "a shortened signature");
+        assert!(!signed_with(secret, "123.body", "not hex"));
     }
 }

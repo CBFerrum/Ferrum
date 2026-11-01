@@ -70,7 +70,7 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 
 - **Merging duplicates** is for entities that opt in (customers and suppliers so far). It finds
   duplicates by equal fields, not by resemblance, and is not undone. Append-only history keeps the id
-  it was posted under: a report on it must ask `Kernel::merged_ids`.
+  it was posted under: a report on it must ask `ferrum_kernel::merge::merged_ids`.
 - **Field masks** show part of a value to someone outside its field group. A masked field cannot be
   filtered or sorted on by them, and they cannot write it back. No shipped package declares one yet.
 - **Restricting processing** stops queued mail, and what asks `Kernel::may_contact`. It does not stop
@@ -79,6 +79,9 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   before they remembered what they replaced are not compared with upgrades.
 - **Hook order** can be declared and is checked, but apps' hooks have not declared theirs yet: they run
   in registration order.
+- **The assistant** speaks one provider's protocol, or a proxy's that speaks it, and has no regional
+  routing. Budgets are in tokens. What may leave is decided by `internal` entities and permission groups:
+  a package that marks neither sends everything a person can read.
 - **Background jobs** have no calendar: nothing schedules one for later or repeats it. Apps' periodic
   work stays in their `maintenance`. A running job hears of a cancellation within 5 seconds, and work
   done in earlier transactions stays done.

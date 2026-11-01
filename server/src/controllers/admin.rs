@@ -3,13 +3,14 @@
 //! notifications.rs).
 
 use crate::error::{ApiError, ApiResult};
-use crate::extract::Auth;
+use crate::extract::{Auth, BrowserSession};
 use crate::state::app_state;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use ferrum_kernel::retention::RetentionInput;
+use ferrum_kernel::support::GrantInput;
 use ferrum_kernel::{Ctx, Error};
 use ferrum_meta::{OverlayOp, PermissionDef};
 use loco_rs::app::AppContext;
@@ -291,6 +292,45 @@ async fn restrict(Auth(ctx): Auth, State(app): State<AppContext>, Json(r): Json<
 async fn lift_restriction(Auth(ctx): Auth, State(app): State<AppContext>, Json(r): Json<Restriction>) -> ApiResult<Response> {
     app_state(&app)?.kernel.lift_restriction(&ctx, &r.email).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+// ── support access and the account ──
+
+async fn support_grants(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    Ok(Json(json!({"grants": app_state(&app)?.kernel.support_grants(&ctx).await?})).into_response())
+}
+
+async fn grant_support(BrowserSession(ctx, device): BrowserSession, State(app): State<AppContext>, Json(g): Json<GrantInput>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    // The strongest access there is asks the person to prove it is them, again.
+    if g.level == "incident" {
+        let device = device.ok_or_else(|| ApiError(Error::Forbidden("incident access is given from a signed-in browser".into())))?;
+        if !st.kernel.check_session(ctx.tenant, ctx.user, device).await?.stepped_up() {
+            return Err(ApiError(Error::Forbidden("confirm your sign-in first".into())));
+        }
+    }
+    let (id, key) = st.kernel.grant_support(&ctx, g).await?;
+    Ok((StatusCode::CREATED, Json(json!({"id": id, "key": key}))).into_response())
+}
+
+async fn revoke_support(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.revoke_support(&ctx, id).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn support_activity(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
+    Ok(Json(json!({"requests": app_state(&app)?.kernel.support_activity(&ctx, id).await?})).into_response())
+}
+
+async fn usage(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    Ok(Json(app_state(&app)?.kernel.usage(&ctx).await?).into_response())
+}
+
+/// `GET /api/support/report`: what a support key sees of how the workspace is doing.
+async fn support_report(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    let (_, level) = st.kernel.support_level(&ctx).await?.ok_or_else(|| ApiError(Error::Forbidden("this is for support access".into())))?;
+    Ok(Json(st.kernel.support_report(&ctx, &level).await?).into_response())
 }
 
 // ── customizations ──
@@ -632,11 +672,16 @@ pub fn routes() -> Routes {
         .add("/customize", get(list_custom).post(add_custom))
         .add("/customize/export", get(export_custom))
         .add("/customize/import", post(import_custom))
-        .add("/retention", get(list_retention).post(add_retention))
-        .add("/retention/{id}", put(save_retention).delete(delete_retention))
-        .add("/retention/{id}/preview", post(preview_retention))
-        .add("/restrictions", get(list_restrictions).post(restrict))
-        .add("/restrictions/lift", post(lift_restriction))
+        .add("/admin/support", get(support_grants).post(grant_support))
+        .add("/admin/support/{id}", delete(revoke_support))
+        .add("/admin/support/{id}/requests", get(support_activity))
+        .add("/admin/usage", get(usage))
+        .add("/support/report", get(support_report))
+        .add("/admin/retention", get(list_retention).post(add_retention))
+        .add("/admin/retention/{id}", put(save_retention).delete(delete_retention))
+        .add("/admin/retention/{id}/preview", post(preview_retention))
+        .add("/admin/restrictions", get(list_restrictions).post(restrict))
+        .add("/admin/restrictions/lift", post(lift_restriction))
         .add("/customize/conflicts", get(custom_conflicts))
         .add("/customize/{id}/active", put(toggle_custom))
         .add("/customize/{id}/keep", post(keep_custom))

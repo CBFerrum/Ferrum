@@ -233,6 +233,9 @@ impl Kernel {
             "shell_v2": settings.get("shell_v2").and_then(Value::as_bool).unwrap_or(false),
             // The assistant, where the server has one (on unless administrators turn it off).
             "assistant": settings.get("assistant").and_then(Value::as_bool).unwrap_or(true),
+            "assistant_model": settings.get("assistant_model").cloned().unwrap_or(Value::Null),
+            "assistant_monthly_tokens": settings.get("assistant_monthly_tokens").cloned().unwrap_or(Value::Null),
+            "assistant_egress": settings.get("assistant_egress").cloned().unwrap_or_else(|| serde_json::json!({})),
         }))
     }
 
@@ -260,6 +263,25 @@ impl Kernel {
                 "require_two_factor" | "require_sso" | "shell_v2" | "assistant" => {
                     let on = v.as_bool().ok_or_else(|| Error::field(k.clone(), "must be true or false"))?;
                     clean.insert(k.clone(), serde_json::json!(on));
+                }
+                // Which of the operator's models this workspace uses (the server checks it is allowed).
+                "assistant_model" => {
+                    if !v.is_null() && v.as_str().is_none_or(|m| m.is_empty() || m.len() > 100) {
+                        return Err(Error::field(k.clone(), "must be a model's name"));
+                    }
+                    clean.insert(k.clone(), v.clone());
+                }
+                // At most this many tokens to and from the model a month.
+                "assistant_monthly_tokens" => {
+                    if !v.is_null() && v.as_i64().is_none_or(|n| n < 0) {
+                        return Err(Error::field(k.clone(), "must be a number of tokens"));
+                    }
+                    clean.insert(k.clone(), v.clone());
+                }
+                // What may leave for the AI provider, beyond what always may (crate::ctx::Egress).
+                "assistant_egress" => {
+                    serde_json::from_value::<crate::ctx::Egress>(v.clone()).map_err(|e| Error::field(k.clone(), e.to_string()))?;
+                    clean.insert(k.clone(), v.clone());
                 }
                 other => return Err(Error::field(other, "unknown setting")),
             }
