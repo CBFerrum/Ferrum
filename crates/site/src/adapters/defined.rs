@@ -364,17 +364,17 @@ impl Link {
                     let key = (code.clone(), metric.clone());
                     let now = Instant::now();
                     match s.reported.get(&key) {
-                        Some((last, when)) => {
-                            if deadband.is_some_and(|band| (value - last).abs() < band) || every.is_some_and(|gap| now.duration_since(*when) < gap) {
-                                continue;
-                            }
+                        Some((last, when))
+                            if deadband.is_some_and(|band| (value - last).abs() < band) || every.is_some_and(|gap| now.duration_since(*when) < gap) =>
+                        {
+                            continue;
                         }
                         None if s.reported.len() >= MAX_NAMES => {
                             s.last_error = Some(format!("this link reports more than {MAX_NAMES} different values: {metric} was dropped"));
                             self.counters.dropped.fetch_add(1, Ordering::Relaxed);
                             continue;
                         }
-                        None => {}
+                        _ => {}
                     }
                     s.reported.insert(key, (value, now));
                     Reading::Value { device: code, metric, value, unit, class: class_of(class.as_deref()), source_time: at }

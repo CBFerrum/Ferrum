@@ -43,7 +43,13 @@ struct Platform {
     down: AtomicBool,
 }
 
-async fn edge(State(p): State<Arc<Platform>>, UrlPath((tenant, package, path)): UrlPath<(String, String, String)>, uri: Uri, headers: HeaderMap, body: Bytes) -> Response {
+async fn edge(
+    State(p): State<Arc<Platform>>,
+    UrlPath((tenant, package, path)): UrlPath<(String, String, String)>,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     if p.down.load(Ordering::SeqCst) {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }

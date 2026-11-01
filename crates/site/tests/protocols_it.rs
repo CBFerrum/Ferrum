@@ -311,7 +311,7 @@ fn broker() -> u16 {
         prometheus: None,
         metrics: None,
     };
-    std::thread::spawn(move || Broker::new(config).start());
+    std::thread::spawn(move || drop(Broker::new(config).start()));
     port
 }
 
@@ -376,7 +376,7 @@ mod opcua_server {
     use opcua::nodes::{MethodBuilder, ObjectBuilder, VariableBuilder};
     use opcua::server::diagnostics::NamespaceMetadata;
     use opcua::server::node_manager::memory::{SimpleNodeManager, simple_node_manager};
-    use opcua::server::{ANONYMOUS_USER_TOKEN_ID, ServerBuilder, ServerHandle};
+    use opcua::server::{ANONYMOUS_USER_TOKEN_ID, ServerBuilder, ServerHandle, ServerUserToken};
     use opcua::types::{DataTypeId, DataValue, MessageSecurityMode, NodeId, ObjectId, StatusCode, Variant};
     use std::sync::{Arc, Mutex};
 
@@ -405,8 +405,8 @@ mod opcua_server {
         }
     }
 
-    pub fn start(port: u16, pki: std::path::PathBuf) -> Plc {
-        let (server, handle) = ServerBuilder::new()
+    pub fn start(port: u16, pki: std::path::PathBuf, secure: bool) -> Plc {
+        let builder = ServerBuilder::new()
             .application_name("stand-in")
             .application_uri("urn:stand-in")
             .product_uri("urn:stand-in")
@@ -414,12 +414,16 @@ mod opcua_server {
             .host("127.0.0.1")
             .port(port)
             .pki_dir(pki)
-            .create_sample_keypair(false)
+            .create_sample_keypair(secure)
             .trust_client_certs(true)
             .discovery_urls(vec![format!("opc.tcp://127.0.0.1:{port}/")])
-            .add_endpoint("none", ("/", SecurityPolicy::None, MessageSecurityMode::None, &[ANONYMOUS_USER_TOKEN_ID] as &[&str]))
-            .build()
-            .unwrap();
+            .add_user_token("plant", ServerUserToken::user_pass("ferrum", "s3cret"));
+        let builder = if secure {
+            builder.add_endpoint("secure", ("/", SecurityPolicy::Basic256Sha256, MessageSecurityMode::SignAndEncrypt, &["plant"] as &[&str]))
+        } else {
+            builder.add_endpoint("none", ("/", SecurityPolicy::None, MessageSecurityMode::None, &[ANONYMOUS_USER_TOKEN_ID] as &[&str]))
+        };
+        let (server, handle) = builder.build().unwrap();
         let manager = handle.node_managers().get_of_type::<SimpleNodeManager>().unwrap();
         let ns = handle.get_namespace_index("urn:plc").unwrap();
         let calls: Arc<Mutex<Vec<Vec<Variant>>>> = Arc::default();
@@ -467,7 +471,7 @@ async fn a_plc_over_opc_ua_watched_written_and_called() {
     let seen = Seen::default();
     let port = free_port();
     let dir = std::env::temp_dir().join(format!("ferrum-opcua-{}", Uuid::now_v7()));
-    let plc = opcua_server::start(port, dir.join("server"));
+    let plc = opcua_server::start(port, dir.join("server"), false);
     let ns = plc.ns;
     let definition = format!(
         r#"
@@ -519,5 +523,52 @@ commands:
     plc.handle.cancel();
     until("the link to fall", async || !d.links()[0].up).await;
     assert!(matches!(d.dispatch(&command("press.start", json!({"job": 1})), &device("PRESS-1")).await, Err(Failure::NotSent(_))));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// With security on, a server is believed only once a person has said so, as OPC UA intends: the
+/// first connection fails, leaving its certificate where someone can look at it. Slow in a debug
+/// build, because each side makes itself an RSA key.
+#[cfg(feature = "opcua")]
+#[tokio::test(flavor = "multi_thread")]
+async fn an_encrypted_session_starts_only_with_a_server_someone_trusted() {
+    let seen = Seen::default();
+    let port = free_port();
+    let dir = std::env::temp_dir().join(format!("ferrum-opcua-{}", Uuid::now_v7()));
+    let plc = opcua_server::start(port, dir.join("server"), true);
+    let ns = plc.ns;
+    let definition = format!(
+        "name: press\nconnect: opcua://127.0.0.1:{port}/?security=Basic256Sha256&mode=SignAndEncrypt&user=ferrum&password=s3cret&interval=100\nsubscribe: [\"ns={ns};s=Temp\"]\nread:\n  - {{topic: \"ns={ns};s=Temp\", metric: temp, json: $.value}}\n"
+    );
+    let store = dir.join("client");
+    std::fs::create_dir_all(&store).unwrap();
+    let d = start(Limits { tls_dir: Some(store.clone()), ..Default::default() }, &definition, &[("PRESS-1", Value::Null)]);
+
+    let rejected = store.join("opcua/rejected");
+    let held = async {
+        loop {
+            if let Ok(mut files) = std::fs::read_dir(&rejected)
+                && let Some(Ok(file)) = files.next()
+            {
+                return file;
+            }
+            tokio::time::sleep(Wait::from_millis(100)).await;
+        }
+    };
+    let file = tokio::time::timeout(Wait::from_secs(60), held).await.expect("its certificate is kept for someone to look at");
+    assert!(!d.links()[0].up, "nothing is believed yet");
+    std::fs::rename(file.path(), store.join("opcua/trusted").join(file.file_name())).unwrap();
+
+    // The link tries again on its own, with its usual patience.
+    for _ in 0..1200 {
+        if d.links()[0].up {
+            break;
+        }
+        tokio::time::sleep(Wait::from_millis(50)).await;
+    }
+    assert!(d.links()[0].up, "a person moved it, so now it is trusted: {:?}", d.links()[0].last_error);
+    plc.set("Temp", 33.5f64);
+    seen.reading(&d, |r| metric(r, "temp", 33.5)).await;
+    plc.handle.cancel();
     let _ = std::fs::remove_dir_all(dir);
 }
