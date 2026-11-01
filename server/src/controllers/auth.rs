@@ -598,7 +598,8 @@ async fn change_password(Auth(ctx): Auth, State(app): State<AppContext>, headers
 struct KeyReq {
     name: String,
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
-    /// `dav`: an app password for calendar and contacts apps; none: a key to the whole API.
+    /// `dav`: an app password for calendar and contacts apps; `scim`: an administrator's key for an
+    /// identity provider; none: a key to the whole API.
     scope: Option<String>,
 }
 

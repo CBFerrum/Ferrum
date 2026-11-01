@@ -279,6 +279,32 @@ async fn import_custom(Auth(ctx): Auth, State(app): State<AppContext>, Json(bund
     Ok(Json(json!({"imported": n})).into_response())
 }
 
+// ── people leaving, and the identity provider's groups ──
+
+#[derive(Deserialize)]
+struct Deprovision {
+    reassign_to: Option<Uuid>,
+    reason: String,
+}
+
+async fn deprovision_user(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>, Json(b): Json<Deprovision>) -> ApiResult<Response> {
+    Ok(Json(app_state(&app)?.kernel.deprovision_user(&ctx, id, b.reassign_to, &b.reason).await?).into_response())
+}
+
+async fn scim_groups(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    Ok(Json(json!({"groups": app_state(&app)?.kernel.scim_group_map(&ctx).await?})).into_response())
+}
+
+#[derive(Deserialize)]
+struct GroupRoles {
+    roles: Vec<String>,
+}
+
+async fn map_scim_group(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>, Json(b): Json<GroupRoles>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.scim_map_group(&ctx, id, &b.roles).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 // ── events that failed ──
 
 #[derive(Deserialize)]
@@ -473,6 +499,9 @@ pub fn routes() -> Routes {
         .add("/admin/personal-data", get(personal_data))
         .add("/admin/personal-data/erase", post(erase_personal_data))
         .add("/admin/packages", get(list_packages).post(install))
+        .add("/admin/users/{id}/deprovision", post(deprovision_user))
+        .add("/admin/scim/groups", get(scim_groups))
+        .add("/admin/scim/groups/{id}/roles", put(map_scim_group))
         .add("/admin/events/dead", get(dead_events))
         .add("/admin/events/{id}/replay", post(replay_event))
         .add("/admin/webhook-deliveries/{id}/replay", post(replay_webhook_delivery))

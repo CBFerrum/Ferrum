@@ -54,11 +54,14 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 - **Live pushes** (in-app notifications, chat messages) are NOTIFYs sent at commit, and PostgreSQL
   serializes the commits of notifying transactions: at very high message rates they queue. Record
   changes do not (they reach live screens through the outbox, within about 250 ms).
-- **Sign-in**: two-factor sign-in uses authenticator apps (TOTP); there are no text-message codes
-  or security keys (WebAuthn). Single sign-on speaks OpenID Connect, not SAML; accounts come from
-  the first sign-in or an administrator (no SCIM provisioning), and someone removed at the
-  provider keeps the session they have until it expires unless deactivated here. An account is
-  linked to one identity at a time: the one at the provider it last signed in through.
+- **Sign-in**: people sign in with a password, a passkey (WebAuthn) or single sign-on. Two-factor
+  sign-in uses authenticator apps (TOTP); there are no text-message codes. Single sign-on speaks
+  OpenID Connect, not SAML. An account is linked to one identity at a
+  time: the one at the provider it last signed in through. People and groups can be provisioned by
+  SCIM ([identity-lifecycle.md](identity-lifecycle.md)); without it, someone removed at the provider
+  keeps the session they have until it expires unless deactivated here, because Ferrum does not
+  receive OpenID Connect's back-channel logout. Apps do not yet hand over what they keep when someone
+  leaves: Drive shares and helpdesk queues stay with them.
 
 ## Accounting and finance
 
