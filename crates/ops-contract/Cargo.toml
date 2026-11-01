@@ -1,0 +1,21 @@
+[package]
+name = "ferrum-ops-contract"
+description = "What the platform and a site runtime agree on: commands and their states, device lifecycle, telemetry, the sync call, dispatch policy and OEE. Types and pure functions, no I/O."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true
