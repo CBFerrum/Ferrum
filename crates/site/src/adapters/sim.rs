@@ -27,6 +27,9 @@ pub struct SimConfig {
     /// While true it answers nothing: the link to the fleet is down.
     #[serde(default)]
     pub silent_file: Option<PathBuf>,
+    /// It has no way to look up what it was sent, as many controllers do not.
+    #[serde(default)]
+    pub cannot_find: bool,
 }
 
 pub struct Sim {
@@ -98,6 +101,9 @@ impl Adapter for Sim {
     }
 
     async fn find(&self, c: &Command) -> Result<Option<Observation>, Failure> {
+        if self.cfg.cannot_find {
+            return Ok(None);
+        }
         if self.silent() {
             return Err(Failure::Unknown("no answer from the fleet".into()));
         }
