@@ -3,16 +3,18 @@
 // managers own traffic.
 
 import { useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import { relativeTime } from "@ferrum/client";
 import { Badge, EmptyState, ErrorState, PageLoading, statusTone, useShellTitle } from "@ferrum/kit";
 import { type Robot, robots } from "./data";
-import { fit, type Placed, placed } from "./map";
+import { type Bounds, fit, grown, type Placed, placed } from "./map";
 import { Tabs } from "./Tabs";
 
 function FleetMap({ list, chosen, choose }: { list: Placed[]; chosen: string | null; choose: (id: string) => void }) {
-  const toScreen = useMemo(() => fit(list, 640, 360, 32), [list]);
+  const seen = useRef<Bounds | null>(null);
+  seen.current = grown(seen.current, list);
+  const toScreen = fit(seen.current, 640, 360, 32);
   return (
     <svg className="edge-map" viewBox="0 0 640 360" role="img" aria-label={`${list.length} robots on a map of where they say they are`}>
       <rect x="0" y="0" width="640" height="360" className="edge-map-floor" />

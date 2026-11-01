@@ -310,15 +310,16 @@ a.edge-row-main:hover strong {
 }
 
 .edge-editor {
-  display: grid;
-  grid-template-columns: 13rem minmax(0, 1fr) 19rem;
+  display: flex;
+  flex-wrap: wrap;
   gap: 0.75rem;
-  align-items: start;
+  align-items: flex-start;
   min-width: 0;
 }
 
 .edge-board {
   display: flex;
+  flex: 1 1 24rem;
   flex-direction: column;
   gap: 0.5rem;
   min-width: 0;
@@ -428,6 +429,7 @@ a.edge-row-main:hover strong {
 
 .edge-palette {
   display: flex;
+  flex: 0 0 13rem;
   flex-direction: column;
   gap: 0.75rem;
   max-height: min(76vh, 44rem);
@@ -467,6 +469,7 @@ a.edge-row-main:hover strong {
 }
 
 .edge-inspector {
+  flex: 0 1 19rem;
   max-height: min(76vh, 44rem);
   overflow-y: auto;
   min-width: 0;
@@ -523,12 +526,8 @@ a.edge-row-main:hover strong {
 }
 
 @media (max-width: 1100px) {
-  .edge-editor {
-    grid-template-columns: minmax(0, 1fr) 19rem;
-  }
-
   .edge-palette {
-    grid-column: 1 / -1;
+    flex: 1 1 100%;
     flex-direction: row;
     flex-wrap: wrap;
     max-height: none;
@@ -541,7 +540,6 @@ a.edge-row-main:hover strong {
 }
 
 @media (max-width: 760px) {
-  .edge-editor,
   .edge-split {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -550,12 +548,22 @@ a.edge-row-main:hover strong {
     height: 55vh;
   }
 
+  .edge-board {
+    flex-basis: 100%;
+  }
+
   .edge-inspector {
+    flex: 1 1 100%;
     max-height: none;
   }
 
   .edge-line {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* The map scales down with the screen, and its names should not. */
+  .edge-robot text {
+    font-size: 22px;
   }
 }
 

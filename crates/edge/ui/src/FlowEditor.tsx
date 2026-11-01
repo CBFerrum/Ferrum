@@ -8,7 +8,7 @@ import { type KeyboardEvent, type PointerEvent, useCallback, useEffect, useId, u
 import { Link, useParams } from "react-router";
 import { refusal, relativeTime } from "@ferrum/client";
 import { Alert, Button, confirmDialog, Dialog, ErrorState, Field, PageLoading, toast, useDebounced, useShellTitle, useUnsavedGuard } from "@ferrum/kit";
-import { can, LinkInput, useEntityMeta } from "@ferrum/records";
+import { can, LinkInput, useEntityMeta, useMe } from "@ferrum/records";
 import { flowAction, type FlowDoc, flowDoc, type Moment, saveFlow, type Simulated, simulateFlow, tryFlow } from "./data";
 import {
   add,
@@ -167,11 +167,12 @@ function Canvas({
                 onKeyDown={(e) => nudge(e, n)}
               >
                 <rect width={NODE_W} height={NODE_H} rx="8" />
-                <text x="14" y="24" className="edge-node-title">
-                  {(n.label ?? k.label).slice(0, 24)}
+                {/* Named inputs sit on the left edge, so the words start after them. */}
+                <text x={ins.length > 1 ? 46 : 14} y="24" className="edge-node-title">
+                  {(n.label ?? k.label).slice(0, ins.length > 1 ? 18 : 22)}
                 </text>
-                <text x="14" y="44" className="edge-node-says">
-                  {summary(n).slice(0, 27)}
+                <text x={ins.length > 1 ? 46 : 14} y="44" className="edge-node-says">
+                  {summary(n).slice(0, ins.length > 1 ? 20 : 25)}
                 </text>
               </g>
               {!locked &&
@@ -459,7 +460,7 @@ function Simulation({
         <Button onClick={() => setLines(firstScript(flow))}>Start again from this flow</Button>
         <Button onClick={() => setLines((l) => [...l, { ...(l[l.length - 1] ?? { at: 0, device: "DEVICE-1", what: "metric", name: "", value: "1" }), at: (l[l.length - 1]?.at ?? -10) + 10 }])}>Add a line</Button>
         <Button variant="primary" disabled={lines.length === 0} loading={running} onClick={() => run(lines, waitFor(flow, lines))}>
-          Run it
+          Simulate it
         </Button>
       </div>
       {result && !result.ok ? <Alert tone="error">{result.error}</Alert> : null}
@@ -548,6 +549,8 @@ export function FlowEditor() {
   const dirty = doc !== undefined && text !== JSON.stringify(parseFlow(saved));
   const meta = useEntityMeta("EdgeFlow");
   const writable = meta.data ? can(meta.data.permissions, "write") : false;
+  const me = useMe().data?.user;
+  const reviewer = Boolean(me && (me.is_admin || me.roles.includes("Edge Reviewer")));
   const locked = doc?.status !== "Draft" || !writable;
   const { dialog } = useUnsavedGuard(dirty);
   const settled = useDebounced(text, 500);
@@ -622,7 +625,7 @@ export function FlowEditor() {
             Send for review
           </Button>
         ) : null}
-        {writable && d.status === "In Review" ? (
+        {reviewer && d.status === "In Review" ? (
           <>
             <Button onClick={() => setSendingBack(true)}>Send back…</Button>
             <Button variant="primary" loading={act.isPending} onClick={() => act.mutate({ name: "approve", done: "Approved." })}>
@@ -630,7 +633,7 @@ export function FlowEditor() {
             </Button>
           </>
         ) : null}
-        {writable && d.status === "Approved" ? (
+        {reviewer && d.status === "Approved" ? (
           <Button
             variant="primary"
             loading={act.isPending}

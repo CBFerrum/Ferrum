@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Robot } from "./data";
-import { fit, placed } from "./map";
+import { fit, grown, placed } from "./map";
 
 const robot = (id: string, attributes: Record<string, unknown>, metrics: Robot["metrics"] = {}): Robot => ({ id, code: id, name: id, lifecycle: "Active", site: null, state: null, running: 0, metrics, attributes });
 
@@ -17,17 +17,15 @@ describe("the map", () => {
   });
 
   it("keeps a lone robot in the middle, and north up", () => {
-    const one = fit([{ robot: robot("a", {}), x: 5, y: 5, theta: null }], 100, 100, 10);
+    const one = fit(grown(null, [{ x: 5, y: 5 }]), 100, 100, 10);
     expect(one({ x: 5, y: 5 })).toEqual({ x: 50, y: 50 });
-    const two = fit(
-      [
-        { robot: robot("a", {}), x: 0, y: 0, theta: null },
-        { robot: robot("b", {}), x: 10, y: 10, theta: null },
-      ],
-      100,
-      100,
-      10,
-    );
+    const two = fit(grown(null, [{ x: 0, y: 0 }, { x: 10, y: 10 }]), 100, 100, 10);
     expect(two({ x: 10, y: 10 }).y).toBeLessThan(two({ x: 0, y: 0 }).y);
+  });
+
+  it("does not rescale as a robot moves inside what it has seen", () => {
+    const seen = grown(null, [{ x: 0, y: 0 }, { x: 10, y: 10 }]);
+    expect(grown(seen, [{ x: 5, y: 5 }])).toEqual(seen);
+    expect(grown(seen, [{ x: 20, y: 5 }]).maxX).toBe(20);
   });
 });
