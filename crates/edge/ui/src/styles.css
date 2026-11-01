@@ -1,0 +1,569 @@
+/* Ferrum-Frontend's stylesheet (the kit's look and Tailwind), with the classes of the kit's
+   components and of this app's files. */
+@import "../../../../web/src/index.css";
+@source "../../../../web/src";
+@source ".";
+
+.edge-page {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.edge-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.1rem;
+}
+
+.edge-tabs a {
+  padding-bottom: 0.15rem;
+  border-bottom: 2px solid transparent;
+  color: var(--muted-foreground);
+  font-size: 20px;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.edge-tabs a:hover {
+  color: var(--text);
+}
+
+.edge-tabs a.active {
+  border-color: var(--primary);
+  color: var(--text);
+}
+
+.edge-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.edge-grow {
+  flex: 1;
+}
+
+.edge-title {
+  overflow-wrap: anywhere;
+}
+
+.edge-search {
+  flex: 1 1 14rem;
+  max-width: 24rem;
+}
+
+.edge-section {
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.edge-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 24rem), 1fr));
+  gap: 0.75rem;
+}
+
+.edge-gateway {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.edge-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.edge-head h2 {
+  font-size: 17px;
+  font-weight: 650;
+}
+
+.edge-links {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.edge-link {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border);
+  min-width: 0;
+}
+
+.edge-link-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.edge-address,
+.edge-token {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.edge-token {
+  display: block;
+  padding: 0.6rem;
+  border-radius: var(--radius);
+  background: var(--muted);
+}
+
+.edge-why {
+  color: var(--danger);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.edge-rows {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.edge-rows > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem 0;
+  border-top: 1px solid var(--border);
+  min-width: 0;
+}
+
+.edge-rows > li:first-child {
+  border-top: 0;
+}
+
+.edge-rows-pad > li {
+  padding: 0.65rem 0.9rem;
+}
+
+.edge-rows > li.edge-on {
+  background: var(--primary-soft);
+}
+
+.edge-row-main {
+  flex: 1 1 12rem;
+  min-width: 0;
+  color: inherit;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+}
+
+a.edge-row-main:hover strong {
+  text-decoration: underline;
+}
+
+.edge-values {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: 0.75rem;
+}
+
+.edge-values dt {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.edge-values dd:first-of-type {
+  font-size: 20px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.edge-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 14px;
+}
+
+.edge-split {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 0.75rem;
+  align-items: start;
+}
+
+.edge-code {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.edge-templates {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.edge-templates fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.edge-templates legend {
+  margin-bottom: 0.25rem;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.edge-template {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.edge-template span {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.edge-template.edge-on {
+  background: var(--primary-soft);
+}
+
+.edge-map {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: var(--radius);
+}
+
+.edge-map-floor {
+  fill: var(--muted);
+}
+
+.edge-robot {
+  cursor: pointer;
+}
+
+.edge-robot circle {
+  fill: var(--primary);
+  stroke: var(--card);
+  stroke-width: 2;
+}
+
+.edge-robot line {
+  stroke: var(--primary);
+  stroke-width: 3;
+}
+
+.edge-robot text {
+  fill: var(--text);
+  font-size: 12px;
+}
+
+.edge-robot-on circle {
+  stroke: var(--text);
+}
+
+/* The flow editor */
+
+.edge-stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.5rem;
+  font-size: 13px;
+}
+
+.edge-stages li {
+  padding: 0.1rem 0.6rem;
+  border-radius: 999px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+}
+
+.edge-stages .edge-stage-done {
+  color: var(--text);
+}
+
+.edge-stages .edge-stage-now {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-weight: 650;
+}
+
+.edge-editor {
+  display: grid;
+  grid-template-columns: 13rem minmax(0, 1fr) 19rem;
+  gap: 0.75rem;
+  align-items: start;
+  min-width: 0;
+}
+
+.edge-board {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.edge-canvas {
+  height: min(70vh, 40rem);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background-color: var(--card);
+  background-image: radial-gradient(var(--border) 1px, transparent 1px);
+  background-size: 16px 16px;
+  overflow: auto;
+}
+
+.edge-canvas svg {
+  display: block;
+}
+
+.edge-node {
+  cursor: grab;
+  outline: none;
+  touch-action: none;
+}
+
+.edge-node rect {
+  fill: var(--card);
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
+}
+
+.edge-node-listen rect {
+  stroke: var(--primary);
+}
+
+.edge-node-do rect {
+  stroke: var(--color-warning);
+}
+
+.edge-node-on rect {
+  stroke-width: 3;
+}
+
+.edge-node:focus-visible rect {
+  stroke: var(--focus-ring);
+  stroke-width: 3;
+}
+
+.edge-node-passed rect {
+  fill: var(--primary-soft);
+}
+
+.edge-node-title {
+  fill: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+  pointer-events: none;
+}
+
+.edge-node-says {
+  fill: var(--muted-foreground);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.edge-wire {
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-width: 1.75;
+}
+
+.edge-wire-on {
+  stroke: var(--primary);
+  stroke-width: 2.5;
+}
+
+.edge-arrow {
+  fill: var(--border-strong);
+}
+
+.edge-port {
+  cursor: crosshair;
+}
+
+.edge-port circle:not(.edge-port-hit) {
+  fill: var(--card);
+  stroke: var(--muted-foreground);
+  stroke-width: 1.5;
+}
+
+.edge-port-hit {
+  fill: transparent;
+  stroke: none;
+}
+
+.edge-port-name {
+  fill: var(--muted-foreground);
+  font-size: 10px;
+  pointer-events: none;
+}
+
+.edge-port-on circle:not(.edge-port-hit),
+.edge-port-ready circle:not(.edge-port-hit) {
+  fill: var(--primary);
+  stroke: var(--primary);
+}
+
+.edge-palette {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-height: min(76vh, 44rem);
+  overflow-y: auto;
+}
+
+.edge-palette-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.edge-palette-items {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.edge-add {
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.edge-add:hover {
+  border-color: var(--primary);
+}
+
+.edge-add:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.edge-inspector {
+  max-height: min(76vh, 44rem);
+  overflow-y: auto;
+  min-width: 0;
+}
+
+.edge-join {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.edge-join legend {
+  margin-bottom: 0.25rem;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.edge-line {
+  display: grid;
+  grid-template-columns: 5rem repeat(4, minmax(0, 1fr)) auto;
+  gap: 0.5rem;
+  align-items: end;
+}
+
+.edge-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.edge-moment {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.edge-moment.edge-on {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.edge-moment:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+@media (max-width: 1100px) {
+  .edge-editor {
+    grid-template-columns: minmax(0, 1fr) 19rem;
+  }
+
+  .edge-palette {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    flex-wrap: wrap;
+    max-height: none;
+  }
+
+  .edge-palette-items {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 760px) {
+  .edge-editor,
+  .edge-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .edge-canvas {
+    height: 55vh;
+  }
+
+  .edge-inspector {
+    max-height: none;
+  }
+
+  .edge-line {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .edge-wire,
+  .edge-node rect {
+    transition:
+      stroke 120ms,
+      fill 120ms;
+  }
+}
