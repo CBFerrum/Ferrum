@@ -7,9 +7,10 @@ only the permissions an administrator approved. That is enough to turn Ferrum in
 system (OCPP over WebSocket, OCPI over HTTPS), an IoT platform, a payment or telephony gateway,
 without changing Ferrum itself.
 
-`plugins/examples/device-gateway` is a complete example (devices over WebSocket, commands from
-users, readings as records, a public status route, an event subscription, a schedule and a
-configurable hook); [`ferrum-plugin-sdk`](https://github.com/CBFerrum/ferrum-sdk) is the Rust SDK it uses.
+`plugins/examples/device-gateway` is a complete example of the mechanisms (devices over WebSocket,
+commands from users, readings as records, a public status route, an event subscription, a schedule
+and a configurable hook), not a way to run equipment: it does not authenticate devices.
+[`ferrum-plugin-sdk`](https://github.com/CBFerrum/ferrum-sdk) is the Rust SDK it uses.
 
 ## Writing one (Rust)
 
@@ -77,7 +78,7 @@ fresh instance; input and output are UTF-8 JSON.
 |---|---|---|
 | `hook` | `entity`, `stage`, `doc`, `user` | `{}`, `{"patch": {...}}` (before_validate), `{"error"}` or `{"errors": [{field, message, row?}]}` |
 | `http` | `method`, `path`, `query`, `headers` (no credentials), `body`, `user` (null when public) | `{"status", "headers", "body"}` or `{"status", "json"}` |
-| `event` | `topic`, `event` (the outbox payload) | `{}`; an error makes the event retry |
+| `event` | `topic`, `event` (the outbox payload), `operation_id`, `attempt` | `{}`; an error makes the event retry |
 | `schedule` | `name` | `{}` |
 | `socket` | `event` (`connect`/`message`/`close`), `connection`, `path`, `query`, `subprotocol`, `message`, `user` | `{"send": text or [texts], "close": bool}` |
 
@@ -97,11 +98,11 @@ role is exactly its declared permissions. Everything it changes lands in the aud
 | `data.query` | `{entity, filters, fields?, sort?, limit?, cursor?}` → `{rows, next_cursor?}` |
 | `data.insert` / `data.update` / `data.delete` | `{entity, data}` / `{entity, id, data, expected_version?}` / `{entity, id}` |
 | `data.submit` / `data.cancel` / `data.action` | `{entity, id}` / `{entity, id}` / `{entity, id, action, params}` |
-| `kv.get` / `kv.set` / `kv.delete` / `kv.list` | private per-tenant storage: `{key}` / `{key, value}` / `{key}` / `{prefix}` |
+| `kv.get` / `kv.set` / `kv.delete` / `kv.list` | private per-tenant storage: `{key}` / `{key, value}` / `{key, if_value?}` → `{deleted}`, with `if_value` only while the key still holds it / `{prefix}` |
 | `http.fetch` | `{method, url, headers?, body?, auth?}` → `{status, headers, body}`; declared hosts only, https only, never private addresses, no redirects, 15 s, 1 MB; refused in hooks. `auth` names a credential: the host signs the request in, and only for that credential's hosts |
 | `crypto.verify_hmac_sha256` | `{credential, message, signature}` → `{valid}`; checks a provider's hex signature in constant time |
 | `events.emit` | `{topic, payload}` → publishes `plugin.{name}.{topic}` (inside the document's transaction for hooks) |
-| `sockets.send` / `sockets.close` | `{connection, message}` / `{connection, reason}` — on whichever replica holds the socket; refused in hooks |
+| `sockets.send` / `sockets.close` | `{connection, message, overflow?}` → `{sent, queued}` / `{connection, reason}` — on whichever replica holds the socket; refused in hooks. Each socket queues at most 256 messages. With `overflow: "fail"`, the default, a socket that is that far behind is closed and the call fails; with `"drop"`, for a snapshot the next one replaces, the message is dropped and `sent` is false. `queued` is false when the message went to another replica, where nobody can confirm it |
 | `log` | `{level?, message}`: `info` (default), `warn` or `error`, to the server log with the plugin and tenant |
 | `time.now` | → RFC 3339 UTC |
 
@@ -110,6 +111,16 @@ still roll back, so `http.fetch` and `sockets.*` are refused there. Decide in th
 the work and subscribe to it: the event exists only if the document commits, and the handler runs
 after the commit, at least once, once per plugin and event. `plugins/examples/after-commit` is this
 shape, and its handler is where a payment or an order goes out.
+
+**At least once, so say which operation it is.** The host records that a run started before it starts
+and that it finished after, and a plugin's effects cannot join either transaction. A crash between the
+provider's answer and that record brings the event back. `operation_id` is the same on every attempt:
+send it as the provider's idempotency key. `attempt` above 1 says an earlier run may have done the
+work, so a provider with no such key must be asked what it already did before it is asked again.
+
+**A socket is not a command channel.** `sockets.send` succeeding means the message was queued or
+published, not that a device got it or did anything. Anything with a physical effect belongs on the
+command ledger and the site runtime ([plan/industrial.md](plan/industrial.md)).
 
 **A secret a plugin does not hold cannot leak from it.** Declare API keys and signing secrets under
 `credentials`. The administrator sets them through `config` as before, and they are sealed at rest

@@ -4,8 +4,13 @@
 //! its socket, exposes a public status page, counts new customers from events, sweeps devices on a
 //! schedule and guards customer names with a configurable word. An OCPP charge-point plugin has
 //! exactly this shape: BootNotification ≈ boot, MeterValues ≈ reading, RemoteStart ≈ command.
+//!
+//! An example of what a plugin can do, not a way to run equipment. Anyone who knows a device's id
+//! can speak for it here, and a command is a message on a socket: delivered at most once, with no
+//! way to learn what happened. Real devices belong on the site runtime and its command ledger
+//! (docs/plan/industrial.md), and readings do not belong in records.
 
-use ferrum_plugin_sdk::{Request, Value, data, json, kv, plugin, send};
+use ferrum_plugin_sdk::{Request, Value, call, data, json, kv, plugin, send};
 
 plugin!(handle);
 
@@ -41,8 +46,12 @@ fn socket(req: &Request) -> Result<Value, String> {
             Ok(json!({}))
         }
         "close" => {
-            kv::delete(&format!("conn:{id}")).map_err(|e| e.to_string())?;
-            if let Some(d) = find_device(&id)? {
+            // A device that reconnected before its old socket closed already has a new mapping:
+            // this removes only its own, and only then is the device offline.
+            let gone = call("kv.delete", json!({"key": format!("conn:{id}"), "if_value": connection})).map_err(|e| e.to_string())?;
+            if gone["deleted"] == json!(true)
+                && let Some(d) = find_device(&id)?
+            {
                 data::update("XDevice", d["id"].as_str().unwrap_or_default(), json!({"status": "Offline"})).map_err(|e| e.to_string())?;
             }
             Ok(json!({}))

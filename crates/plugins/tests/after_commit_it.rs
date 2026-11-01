@@ -11,8 +11,8 @@ use ferrum_plugins::http::HttpCall;
 use ferrum_plugins::{NewPlugin, PluginEvents, PluginHook, PluginHost};
 use serde_json::{Map, Value, json};
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const WASM: &[u8] = include_bytes!("fixtures/after_commit.wasm");
@@ -22,20 +22,27 @@ fn obj(v: Value) -> ferrum_kernel::Doc {
     v.as_object().cloned().unwrap()
 }
 
-async fn provider() -> (String, Arc<AtomicUsize>) {
+async fn provider() -> (String, Arc<AtomicUsize>, Arc<Mutex<Vec<String>>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/pay", listener.local_addr().unwrap());
     let calls = Arc::new(AtomicUsize::new(0));
-    let counted = calls.clone();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let (counted, seen) = (calls.clone(), requests.clone());
     tokio::spawn(async move {
         while let Ok((mut socket, _)) = listener.accept().await {
             counted.fetch_add(1, Ordering::SeqCst);
             let mut buf = [0u8; 4096];
-            let _ = socket.read(&mut buf).await;
+            let n = socket.read(&mut buf).await.unwrap_or(0);
+            seen.lock().unwrap().push(String::from_utf8_lossy(&buf[..n]).to_lowercase());
             let _ = socket.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}").await;
         }
     });
-    (url, calls)
+    (url, calls, requests)
+}
+
+/// A request's header, as the provider saw it.
+fn header<'a>(request: &'a str, name: &str) -> &'a str {
+    request.lines().find_map(|l| l.strip_prefix(name)?.strip_prefix(": ")).unwrap_or_default().trim()
 }
 
 async fn boot(host: &Arc<PluginHost>) -> Arc<Kernel> {
@@ -63,7 +70,7 @@ fn what_leaves_the_system_waits_for_the_commit() {
 async fn scenario() {
     let host = PluginHost::new(true).unwrap();
     let k = boot(&host).await;
-    let (url, calls) = provider().await;
+    let (url, calls, requests) = provider().await;
     let tenant = k
         .create_tenant(NewTenant {
             slug: "shop".into(),
@@ -108,4 +115,26 @@ async fn scenario() {
     assert_eq!(calls.load(Ordering::SeqCst), 2, "the provider is called after the commit");
     while k.dispatch_outbox_once().await.unwrap() > 0 {}
     assert_eq!(calls.load(Ordering::SeqCst), 2, "and only once");
+
+    // The crash between the provider's answer and the host's record of it. The run looks unfinished
+    // and the event comes back: it cannot be avoided, so the retry says what it is, and the
+    // provider sees the same key.
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update plugin_event_run set finished_at = null").execute(&mut *tx).await.unwrap();
+    sqlx::query("update outbox set processed_at = null, available_at = now() where topic = $1").bind(topic).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    while k.dispatch_outbox_once().await.unwrap() > 0 {}
+    assert_eq!(calls.load(Ordering::SeqCst), 3, "repeated, as at-least-once allows");
+    let seen = requests.lock().unwrap().clone();
+    let (first, retry) = (&seen[1], &seen[2]);
+    assert!(!header(first, "idempotency-key").is_empty(), "{first}");
+    assert_eq!(header(first, "idempotency-key"), header(retry, "idempotency-key"), "the provider can tell it is the same operation");
+    assert_eq!((header(first, "x-attempt"), header(retry, "x-attempt")), ("1", "2"), "and so can the plugin");
+
+    // Once finished, it stays finished.
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update outbox set processed_at = null, available_at = now() where topic = $1").bind(topic).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    while k.dispatch_outbox_once().await.unwrap() > 0 {}
+    assert_eq!(calls.load(Ordering::SeqCst), 3, "a finished run is not repeated");
 }

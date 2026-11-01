@@ -3,7 +3,7 @@
 //! events, sockets, logging and the clock.
 
 use crate::runtime::{CALL_DEADLINE, HOOK_DEADLINE, HostApi};
-use crate::sockets::Outgoing;
+use crate::sockets::{Outgoing, Overflow, Sent};
 use crate::{Credential, Loaded, PluginHost};
 use async_trait::async_trait;
 use ferrum_kernel::query::parse_filters;
@@ -254,8 +254,13 @@ impl Host<'_, '_> {
                 } else {
                     Outgoing::Close(a.get("reason").and_then(Value::as_str).unwrap_or_default().to_string())
                 };
-                self.host.sockets.send(&self.kernel().db, self.ctx().tenant, connection, msg).await?;
-                Ok(json!({"sent": true}))
+                let overflow = match a.get("overflow").and_then(Value::as_str) {
+                    None | Some("fail") => Overflow::Fail,
+                    Some("drop") => Overflow::Drop,
+                    Some(_) => return Err(Error::field("overflow", "use fail or drop")),
+                };
+                let sent = self.host.sockets.send(&self.kernel().db, self.ctx().tenant, connection, msg, overflow).await?;
+                Ok(json!({"sent": sent != Sent::Dropped, "queued": sent == Sent::Queued}))
             }
             "log" => {
                 let message = a.get("message").and_then(Value::as_str).unwrap_or_default();
@@ -304,13 +309,16 @@ impl Host<'_, '_> {
                 Value::Null
             }
             "kv.delete" => {
-                sqlx::query("delete from plugin_kv where tenant_id = $1 and plugin_id = $2 and key = $3")
+                // With `if_value`, only while it still holds that value: an old connection closing
+                // late must not remove the mapping of the one that replaced it.
+                let deleted = sqlx::query("delete from plugin_kv where tenant_id = $1 and plugin_id = $2 and key = $3 and ($4::jsonb is null or value = $4)")
                     .bind(tenant)
                     .bind(plugin)
                     .bind(s(a, "key")?)
+                    .bind(a.get("if_value"))
                     .execute(&mut **tx)
                     .await?;
-                Value::Null
+                json!({"deleted": deleted.rows_affected() > 0})
             }
             _ => {
                 let prefix = a.get("prefix").and_then(Value::as_str).unwrap_or_default();
