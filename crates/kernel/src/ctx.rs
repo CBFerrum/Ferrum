@@ -6,7 +6,7 @@
 use crate::Doc;
 use crate::db::Tx;
 use crate::error::{Error, Result};
-use ferrum_meta::{EffEntity, FieldDef, FieldType, Schema, Storage};
+use ferrum_meta::{ConditionRange, EffEntity, FieldDef, FieldType, Schema, Storage};
 use serde::Serialize;
 use serde_json::{Value, json};
 use sqlx::{Postgres, QueryBuilder};
@@ -25,16 +25,18 @@ pub enum Access {
 }
 
 /// One rule's reach for an action: the user's own records (`owner`) and/or records whose fields
-/// hold given values (`condition`: field → accepted values, as text). Neither: every record.
+/// hold given values (`condition`: field → accepted values, as text) or fall in given ranges.
+/// None of these: every record.
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct Grant {
     pub owner: bool,
     pub condition: Vec<(String, Vec<String>)>,
+    pub ranges: Vec<(String, ConditionRange)>,
 }
 
 impl Grant {
     fn is_whole(&self) -> bool {
-        !self.owner && self.condition.is_empty()
+        !self.owner && self.condition.is_empty() && self.ranges.is_empty()
     }
 }
 
@@ -51,6 +53,11 @@ pub enum Action {
 }
 
 impl Action {
+    /// As rules and consents write it.
+    pub fn verb(self) -> &'static str {
+        ACTIONS.iter().find(|(a, _)| *a == self).map_or("read", |(_, verb)| verb)
+    }
+
     pub fn parse(s: &str) -> Option<Action> {
         Some(match s {
             "read" => Action::Read,
@@ -175,13 +182,14 @@ impl PermSet {
         for r in rows {
             // A condition that no longer parses (its field was removed) grants nothing.
             let condition = match r.match_rule {
-                None => Some(Vec::new()),
-                Some(v) => serde_json::from_value(v)
-                    .ok()
-                    .map(|condition| ferrum_meta::PermissionDef { entity: r.entity.clone(), condition, ..Default::default() }.condition_values()),
+                None => Some((Vec::new(), Vec::new())),
+                Some(v) => serde_json::from_value(v).ok().and_then(|condition| {
+                    let def = ferrum_meta::PermissionDef { entity: r.entity.clone(), condition, ..Default::default() };
+                    def.condition_ranges().map(|ranges| (def.condition_values(), ranges))
+                }),
             };
-            let Some(condition) = condition else { continue };
-            let grant = Grant { owner: r.if_owner, condition };
+            let Some((condition, ranges)) = condition else { continue };
+            let grant = Grant { owner: r.if_owner, condition, ranges };
             let level = if grant.is_whole() { Access::All } else { Access::Own };
             let e = set.entities.entry(r.entity).or_default();
             let allowed = [r.can_read, r.can_write, r.can_create, r.can_delete, r.can_submit, r.can_cancel, r.can_export, r.can_import];
@@ -271,7 +279,7 @@ impl PermSet {
                 // Partial access keeps every limit: the user's grants, each narrowed to their own
                 // records when the app is limited to those.
                 e.grants[i] = match (level, user, plugin) {
-                    (Access::Own, Access::All, _) => vec![Grant { owner: true, condition: vec![] }],
+                    (Access::Own, Access::All, _) => vec![Grant { owner: true, ..Default::default() }],
                     (Access::Own, _, Access::All) => self.grants(name, action).unwrap_or_default(),
                     (Access::Own, ..) => self.grants(name, action).unwrap_or_default().into_iter().map(|g| Grant { owner: true, ..g }).collect(),
                     _ => vec![],
@@ -396,11 +404,13 @@ pub struct RowScope {
     pub conds: Vec<ScopeCond>,
 }
 
-/// A rule's reach, ready to test: the user's own records and/or fields holding given values.
+/// A rule's reach, ready to test: the user's own records and/or fields holding given values or
+/// falling in given ranges.
 #[derive(Debug, Clone, Default)]
 pub struct ScopeGrant {
     pub owner: bool,
     pub fields: Vec<GrantField>,
+    pub ranges: Vec<GrantRange>,
 }
 
 /// A field of a grant's condition: its accepted values as text, and its SQL (`{a}`: the alias).
@@ -413,10 +423,47 @@ pub struct GrantField {
     check: bool,
 }
 
+/// A range of a grant's condition, with days from today resolved: its ends as text, and its SQL.
+#[derive(Debug, Clone)]
+pub struct GrantRange {
+    pub field: String,
+    low: Option<String>,
+    high: Option<String>,
+    /// Compared as dates, or else as numbers: in SQL and in [`RowScope::matches`] alike.
+    date: bool,
+    expr: String,
+}
+
+impl GrantRange {
+    /// `None` when the field is gone: the rule then reaches nothing, never more.
+    fn new(ctx: &Ctx, ent: &EffEntity, field: String, range: ConditionRange) -> Option<GrantRange> {
+        let date = matches!(ent.field(&field)?.ftype, FieldType::Date | FieldType::Datetime);
+        let expr = crate::store::field_expr(ent, &field, "{a}")?;
+        let day = |n: Option<i32>| n.map(|n| (ctx.today() + chrono::Duration::days(n.into())).to_string());
+        Some(GrantRange { low: range.gte.or(day(range.from_today)), high: range.lte.or(day(range.to_today)), date, expr, field })
+    }
+
+    /// Whether a document's value lies in the range. No value, or one that cannot be read, lies
+    /// outside it, as SQL's `null` comparisons leave it.
+    fn holds(&self, v: Option<&Value>) -> bool {
+        let text = condition_text(v);
+        let between = |low: Option<bool>, high: Option<bool>| low != Some(false) && high != Some(false);
+        if self.date {
+            let day = |s: &str| chrono::NaiveDate::parse_from_str(s.get(..10)?, "%Y-%m-%d").ok();
+            let Some(value) = day(&text) else { return false };
+            between(self.low.as_deref().map(|l| day(l).is_some_and(|l| value >= l)), self.high.as_deref().map(|h| day(h).is_some_and(|h| value <= h)))
+        } else {
+            let number = |s: &str| s.trim().parse::<rust_decimal::Decimal>().ok();
+            let Some(value) = number(&text) else { return false };
+            between(self.low.as_deref().map(|l| number(l).is_some_and(|l| value >= l)), self.high.as_deref().map(|h| number(h).is_some_and(|h| value <= h)))
+        }
+    }
+}
+
 impl ScopeGrant {
     /// The user's own records, nothing else.
     pub fn own() -> ScopeGrant {
-        ScopeGrant { owner: true, fields: vec![] }
+        ScopeGrant { owner: true, ..Default::default() }
     }
 }
 
@@ -474,7 +521,7 @@ pub fn row_scope(ctx: &Ctx, ent: &EffEntity, action: Action) -> Result<RowScope>
     if let Some(mut grants) = ctx.perms.grants(&ent.def.name, action) {
         if grants.is_empty() {
             // Partial access with no grant recorded (a hand-made permission set): own records.
-            grants.push(Grant { owner: true, condition: vec![] });
+            grants.push(Grant { owner: true, ..Default::default() });
         }
         if grants.iter().any(|g| g.owner) {
             scope.owner = Some(ctx.user);
@@ -491,16 +538,16 @@ pub fn row_scope(ctx: &Ctx, ent: &EffEntity, action: Action) -> Result<RowScope>
                     Some(GrantField { expr: if check { format!("coalesce({expr}, false)") } else { expr }, field, values, check })
                 })
                 .collect();
+            let ranges: Option<Vec<GrantRange>> = g.ranges.into_iter().map(|(field, range)| GrantRange::new(ctx, ent, field, range)).collect();
             // A condition on a field the entity no longer has reaches nothing (never more).
-            if let Some(fields) = fields {
-                scope.grants.push(ScopeGrant { owner: g.owner, fields });
+            if let (Some(fields), Some(ranges)) = (fields, ranges) {
+                scope.grants.push(ScopeGrant { owner: g.owner, fields, ranges });
             }
         }
         if scope.grants.is_empty() {
             // Every grant pointed at a missing field: nothing qualifies.
-            scope
-                .grants
-                .push(ScopeGrant { owner: false, fields: vec![GrantField { field: "id".into(), values: vec![], expr: "{a}.id".into(), check: false }] });
+            let nothing = GrantField { field: "id".into(), values: vec![], expr: "{a}.id".into(), check: false };
+            scope.grants.push(ScopeGrant { owner: false, fields: vec![nothing], ranges: vec![] });
         }
     }
     for (scope_entity, ids) in &ctx.scopes {
@@ -548,7 +595,9 @@ impl RowScope {
                 let v = doc.get(&f.field).filter(|v| !v.is_null());
                 f.values.contains(&if f.check && v.is_none() { "false".into() } else { condition_text(v) })
             };
-            let reached = self.grants.iter().any(|g| (!g.owner || self.owns(doc)) && g.fields.iter().all(holds));
+            let reached = self.grants.iter().any(|g| {
+                (!g.owner || self.owns(doc)) && g.fields.iter().all(holds) && g.ranges.iter().all(|r| r.holds(doc.get(&r.field).filter(|v| !v.is_null())))
+            });
             if !reached {
                 return false;
             }
@@ -574,22 +623,37 @@ impl RowScope {
     }
 
     /// One grant's predicate, parenthesized: `(owner)` for own records alone, else
-    /// `(owner and field = any(values) and ...)`.
+    /// `(owner and field = any(values) and range and ...)`.
     fn push_grant(&self, qb: &mut QueryBuilder<Postgres>, g: &ScopeGrant, alias: &str) {
-        if g.owner && g.fields.is_empty() {
+        if g.owner && g.fields.is_empty() && g.ranges.is_empty() {
             return self.push_owner(qb, alias);
         }
         qb.push("(");
-        if g.owner {
-            self.push_owner(qb, alias);
-        }
-        for (i, f) in g.fields.iter().enumerate() {
-            if g.owner || i > 0 {
+        let mut first = true;
+        let mut and = |qb: &mut QueryBuilder<Postgres>| {
+            if !std::mem::replace(&mut first, false) {
                 qb.push(" and ");
             }
+        };
+        if g.owner {
+            and(qb);
+            self.push_owner(qb, alias);
+        }
+        for f in &g.fields {
+            and(qb);
             qb.push(format!("({})::text = any(", f.expr.replace("{a}", alias))).push_bind(f.values.clone()).push(")");
         }
-        if !g.owner && g.fields.is_empty() {
+        for r in &g.ranges {
+            let cast = if r.date { "date" } else { "numeric" };
+            let value = format!("({})::{cast}", r.expr.replace("{a}", alias));
+            for (end, op) in [(&r.low, ">="), (&r.high, "<=")] {
+                if let Some(end) = end {
+                    and(qb);
+                    qb.push(format!("{value} {op} ")).push_bind(end.clone()).push(format!("::{cast}"));
+                }
+            }
+        }
+        if first {
             qb.push("true");
         }
         qb.push(")");
@@ -648,8 +712,8 @@ mod tests {
 
     #[test]
     fn screens_get_the_user_narrowed_to_the_declaration() {
-        let own = Grant { owner: true, condition: vec![] };
-        let goods = Grant { owner: false, condition: vec![("kind".into(), vec!["goods".into()])] };
+        let own = Grant { owner: true, ..Default::default() };
+        let goods = Grant { condition: vec![("kind".into(), vec!["goods".into()])], ..Default::default() };
         let mut user = PermSet::default();
         let mut c = EntityAccess { read: Access::All, write: Access::All, ..Default::default() };
         c.grants[0] = vec![Grant::default()];

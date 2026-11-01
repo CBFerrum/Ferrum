@@ -2,7 +2,7 @@
 //! `postgres://ferrum:ferrum@localhost:5432/ferrum_test`): sealed apart from the record, never
 //! shown, logged or published, bound to their record and key.
 
-use ferrum_kernel::secret::SecretKey;
+use ferrum_kernel::secret::{Resealed, SecretKey};
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings, ListQuery};
 use ferrum_meta::Catalog;
@@ -109,6 +109,59 @@ async fn secrets_are_write_only_sealed_and_bound() {
     assert!(matches!(reveal(&other, tenant, id).await, Err(Error::Unavailable(_))));
     let keyless = kernel(None, false).await;
     assert!(matches!(keyless.insert(&ctx, "Integration", obj(json!({"title": "No key", "api_key": "x"}))).await, Err(Error::Unavailable(_))));
+
+    // Rotation: a new key with the old one retired. Everything sealed moves, and keeps working.
+    let new_key = SecretKey::new([9u8; 32]);
+    let settings =
+        |secret_key: Option<SecretKey>, retired_secret_keys: Vec<SecretKey>| KernelSettings { secret_key, retired_secret_keys, ..Default::default() };
+    let boot = |s: KernelSettings| async move {
+        let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
+        let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
+        Kernel::boot(db, catalog(), HookRegistry::default(), s, None).await.expect("boot")
+    };
+    let hook = Uuid::now_v7();
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("insert into webhook (tenant_id, id, name, url, secret, topics) values ($1, $2, 'old', 'https://hooks.test/x', 'plain-signing-secret', '{*}')")
+        .bind(tenant)
+        .bind(hook)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("update app_user set totp_secret = $3 where tenant_id = $1 and id = $2")
+        .bind(tenant)
+        .bind(ctx.user)
+        .bind(key.seal(&format!("totp|{tenant}|{}", ctx.user), "JBSWY3DPEHPK3PXP").unwrap())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let stored_hook = |k: Arc<Kernel>| async move {
+        let mut tx = k.db.system_tx().await.unwrap();
+        let (s,): (String,) = sqlx::query_as("select secret from webhook where id = $1").bind(hook).fetch_one(&mut *tx).await.unwrap();
+        s
+    };
+    assert_eq!(k.reseal_secrets().await.unwrap().moved, 1, "webhook secrets are sealed even with no rotation under way");
+    let sealed_hook = stored_hook(k.clone()).await;
+    assert!(sealed_hook.starts_with("sealed:") && !sealed_hook.contains("plain-signing-secret"), "{sealed_hook}");
+    assert_eq!(k.reseal_secrets().await.unwrap().moved, 0, "nothing more to do");
+
+    let rotating = boot(settings(Some(new_key.clone()), vec![key.clone()])).await;
+    assert_eq!(reveal(&rotating, tenant, id).await.unwrap().as_deref(), Some("rotated-value"), "a retired key still opens what it sealed");
+    let done = rotating.reseal_secrets().await.unwrap();
+    assert_eq!(done, Resealed { moved: 3, unopened: 0 }, "the field, the authenticator secret and the webhook");
+    assert_eq!(rotating.reseal_secrets().await.unwrap(), Resealed::default(), "safe to repeat");
+    assert_ne!(stored_hook(k.clone()).await, sealed_hook);
+    let moved = boot(settings(Some(new_key.clone()), vec![])).await;
+    assert_eq!(reveal(&moved, tenant, id).await.unwrap().as_deref(), Some("rotated-value"), "and the old key is no longer needed");
+    assert_eq!(moved.reseal_secrets().await.unwrap(), Resealed::default());
+    // The old server, without the new key, now opens nothing: a rotation has one direction.
+    assert!(matches!(reveal(&k, tenant, id).await, Err(Error::Unavailable(_))));
+    // Without any key that opens them, values are counted and left, never destroyed.
+    let lost = boot(settings(Some(SecretKey::new([1u8; 32])), vec![SecretKey::new([2u8; 32])])).await;
+    let left = lost.reseal_secrets().await.unwrap();
+    assert_eq!((left.moved, left.unopened), (0, 3), "{left:?}");
+    assert_eq!(reveal(&moved, tenant, id).await.unwrap().as_deref(), Some("rotated-value"), "untouched: the right key still opens them");
+    let k = moved;
 
     // Clearing and deleting remove the sealed value.
     k.update(&ctx, "Integration", id, obj(json!({"api_key": null})), None).await.unwrap();

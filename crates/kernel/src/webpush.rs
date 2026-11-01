@@ -34,7 +34,7 @@ const MAX_PLAINTEXT: usize = RECORD_SIZE as usize - 86 - 1 - 16;
 const TTL_SECONDS: &str = "86400";
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 /// The aad sealing the VAPID key.
-const VAPID_LABEL: &str = "server_key|vapid";
+pub(crate) const VAPID_LABEL: &str = "server_key|vapid";
 
 fn internal(what: &str) -> Error {
     Error::Internal(format!("web push: {what}"))
@@ -186,7 +186,7 @@ impl Kernel {
             .execute(&mut *tx)
             .await?;
         let stored: String = sqlx::query_scalar("select sealed from server_key where name = 'vapid' for update").fetch_one(&mut *tx).await?;
-        let opened = key.open(VAPID_LABEL, &stored).ok().and_then(|b| B64URL.decode(b).ok()).and_then(|der| Vapid::from_pkcs8(&der).ok());
+        let opened = self.open_sealed(VAPID_LABEL, &stored).ok().and_then(|b| B64URL.decode(b).ok()).and_then(|der| Vapid::from_pkcs8(&der).ok());
         let vapid = match opened {
             Some(v) => v,
             None => {

@@ -20,6 +20,9 @@ PLUGINS = ("-p", "ferrum-plugins", "--test", "after_commit_it")
 EVENTS = ("-p", "ferrum-kernel", "--test", "events_it")
 LIFECYCLE = ("-p", "ferrum-kernel", "--test", "lifecycle_it")
 DEADLINE = ("-p", "ferrum-plugins", "--lib", "runtime::tests")
+SCIM_UNIT = ("-p", "ferrum-kernel", "--lib", "scim::tests")
+RULES = ("-p", "ferrum-kernel", "--test", "rules_it")
+SECRETS = ("-p", "ferrum-kernel", "--test", "secret_it")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
@@ -32,7 +35,8 @@ MUTANTS = [
     ("no-tenant-share", "crates/kernel/src/outbox.rs", ".bind(TENANT_SHARE)", ".bind(BATCH)", EVENTS),
     ("no-priority", "crates/kernel/src/outbox.rs", "order by o.priority, o.id limit $2", "order by o.id limit $2", EVENTS),
     ("event-loses-its-cause", "crates/kernel/src/outbox.rs", "causation: Some(ev.id),", "causation: None,", EVENTS),
-    ("replay-crosses-workspaces", "crates/kernel/src/outbox.rs", 'where tenant_id = $1 and id = $2 and dead returning topic",', 'where ($1::uuid is not null) and id = $2 and dead returning topic",', EVENTS),
+    # Row-level security holds even without the statement's filter, so both have to go.
+    ("replay-crosses-workspaces", "crates/kernel/src/outbox.rs", 'let mut tx = self.db.tenant_tx(ctx.tenant).await?;\n        let topic: Option<String> = sqlx::query_scalar(\n            "update outbox set dead = false, attempts = 0, last_error = null, available_at = now() where tenant_id = $1 and id = $2 and dead returning topic",', 'let mut tx = self.db.system_tx().await?;\n        let topic: Option<String> = sqlx::query_scalar(\n            "update outbox set dead = false, attempts = 0, last_error = null, available_at = now() where ($1::uuid is not null) and id = $2 and dead returning topic",', EVENTS),
     ("dead-list-shows-payloads", "crates/kernel/src/outbox.rs", "'last_error', last_error, 'created_at', created_at, 'correlation_id', correlation_id)", "'last_error', last_error, 'created_at', created_at, 'correlation_id', correlation_id, 'payload', payload)", EVENTS),
     ("webhook-holds-transaction", "crates/kernel/src/outbox.rs", "        .bind(WEBHOOK_LEASE_SECS)\n        .fetch_all(&mut *tx)\n        .await?;\n        tx.commit().await?;\n        let outcomes", "        .bind(WEBHOOK_LEASE_SECS)\n        .fetch_all(&mut *tx)\n        .await?;\n        let outcomes", EVENTS),
     ("keys-survive-deprovisioning", "crates/kernel/src/lifecycle.rs", '"update api_key set revoked_at = now() where tenant_id = $1 and user_id = $2 and revoked_at is null"', '"update api_key set revoked_at = revoked_at where tenant_id = $1 and user_id = $2 and revoked_at is null"', LIFECYCLE),
@@ -41,7 +45,16 @@ MUTANTS = [
     ("replicas-keep-the-session", "crates/kernel/src/lifecycle.rs", "notify_users(&mut tx, ctx.tenant, Some(user)).await?;\n        tx.commit().await?;", "tx.commit().await?;", LIFECYCLE),
     ("groups-take-hand-given-roles", "crates/kernel/src/scim.rs", 'delete from user_role where tenant_id = $1 and user_id = $2 and via_scim and role not in', "delete from user_role where tenant_id = $1 and user_id = $2 and role not in", LIFECYCLE),
     ("plugin-roles-through-groups", "crates/kernel/src/scim.rs", "and name = $3 and name not like 'plugin:%'), '{}'))", "and name = $3), '{}'))", LIFECYCLE),
-    ("unknown-filter-ignored", "crates/kernel/src/scim.rs", 'return Err(bad_filter(format!("cannot filter on {attr}")));', "return Ok(vec![]);", LIFECYCLE),
+    ("range-reads-open-in-sql", "crates/kernel/src/ctx.rs", 'for (end, op) in [(&r.low, ">="), (&r.high, "<=")] {', 'for (end, op) in [(&r.low, ">=")] {', RULES),
+    ("range-reads-open-in-memory", "crates/kernel/src/ctx.rs", "&& g.ranges.iter().all(|r| r.holds(doc.get(&r.field).filter(|v| !v.is_null())))", "", RULES),
+    ("empty-value-inside-a-range", "crates/kernel/src/ctx.rs", 'let Some(value) = number(&text) else { return false };', 'let Some(value) = number(&text) else { return true };', RULES),
+    ("restricted-title-shown", "crates/kernel/src/doc.rs", "Reference::Restricted => match row_scope(ctx, tent, Action::Read) {", "Reference::Restricted => match Ok::<_, Error>(crate::ctx::RowScope::default()) {", RULES),
+    ("restricted-title-ignores-rows", "crates/kernel/src/doc.rs", "            if let Some(scope) = &scope {\n                scope.push_sql(&mut qb, \"a\");\n            }\n            let rows: Vec<(Uuid, String)>", "            let _ = &scope;\n            let rows: Vec<(Uuid, String)>", RULES),
+    ("explanation-ignores-the-record", "crates/kernel/src/access.rs", "let reached = scope.matches(&doc);", "let reached = true;", RULES),
+    ("retired-key-forgotten", "crates/kernel/src/secret.rs", "self.settings.secret_key.iter().chain(&self.settings.retired_secret_keys)", "self.settings.secret_key.iter().chain(&[])", SECRETS),
+    ("lost-key-blanks-values", "crates/kernel/src/secret.rs", "                *unopened += 1;\n                Ok(None)", "                *unopened += 1;\n                current.seal(aad, \"\").map(Some)", SECRETS),
+    ("webhook-secret-stays-plain", "crates/kernel/src/secret.rs", 'None => Some(format!("{SEALED_WEBHOOK}{}", current.seal(&label, &stored)?)),', "None => None,", SECRETS),
+    ("unknown-filter-ignored", "crates/kernel/src/scim.rs", 'return Err(bad_filter(format!("cannot filter on {attr}")));', "return Ok(vec![]);", SCIM_UNIT),
 ]
 
 

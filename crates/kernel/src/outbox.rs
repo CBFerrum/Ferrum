@@ -445,6 +445,7 @@ impl Kernel {
         struct Due {
             tenant_id: Uuid,
             id: Uuid,
+            webhook_id: Uuid,
             topic: String,
             payload: Value,
             attempts: i32,
@@ -457,14 +458,19 @@ impl Kernel {
                order by next_attempt_at limit 20 for update skip locked), \
              leased as (update webhook_delivery d set next_attempt_at = now() + make_interval(secs => $1) from claimed c \
                where d.tenant_id = c.tenant_id and d.id = c.id returning d.tenant_id, d.id, d.webhook_id, d.topic, d.payload, d.attempts) \
-             select l.tenant_id, l.id, l.topic, l.payload, l.attempts, w.url, w.secret from leased l \
+             select l.tenant_id, l.id, l.webhook_id, l.topic, l.payload, l.attempts, w.url, w.secret from leased l \
              join webhook w on w.tenant_id = l.tenant_id and w.id = l.webhook_id",
         )
         .bind(WEBHOOK_LEASE_SECS)
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;
-        let outcomes = futures::future::join_all(due.iter().map(|d| self.post_webhook(&d.url, &d.secret, &d.topic, d.id, &d.payload))).await;
+        let outcomes = futures::future::join_all(due.iter().map(|d| async move {
+            // One whose secret cannot be opened is not sent unsigned: it fails, and says why.
+            let secret = self.webhook_secret(d.tenant_id, d.webhook_id, &d.secret).map_err(|e| (None, e.to_string()))?;
+            self.post_webhook(&d.url, &secret, &d.topic, d.id, &d.payload).await
+        }))
+        .await;
         let mut tx = self.db.system_tx().await?;
         for (d, outcome) in due.iter().zip(outcomes) {
             let attempts = d.attempts + 1;

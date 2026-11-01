@@ -230,6 +230,23 @@ async fn scenario() {
     let elsewhere = PluginHost::new(false).unwrap();
     elsewhere.seal_with(SecretKey::new([8u8; 32]));
     assert_eq!(*elsewhere.plugin(&k.db, tenant, "device-gateway").await.unwrap().config, json!({}), "another key opens nothing");
+    // A key rotated out: what it sealed still opens, and moves to the new key at the next start.
+    let rotated = PluginHost::new(false).unwrap();
+    let new_key = SecretKey::new([9u8; 32]);
+    rotated.seal_with(new_key.clone());
+    rotated.open_also_with(vec![key.clone()]);
+    assert_eq!(rotated.plugin(&k.db, tenant, "device-gateway").await.unwrap().config["api_key"], json!("s3cret"), "before the move");
+    assert_eq!(rotated.seal_stored(&k.db).await.unwrap(), 1);
+    assert_eq!(rotated.seal_stored(&k.db).await.unwrap(), 0, "nothing left to move");
+    assert_eq!(stored().await["api_key"]["$key"], json!(new_key.id));
+    rotated.invalidate(tenant);
+    assert_eq!(rotated.plugin(&k.db, tenant, "device-gateway").await.unwrap().config["api_key"], json!("s3cret"), "after it");
+    let lost = PluginHost::new(false).unwrap();
+    lost.seal_with(SecretKey::new([1u8; 32]));
+    assert!(lost.plugin(&k.db, tenant, "device-gateway").await.unwrap().config.get("api_key").is_none(), "without the key the setting is missing, not garbled");
+    assert_eq!(lost.seal_stored(&k.db).await.unwrap(), 0, "and a value no key opens is left for the key to come back");
+    assert_eq!(stored().await["api_key"]["$key"], json!(new_key.id));
+    assert_eq!(rotated.seal_stored(&k.db).await.unwrap(), 0);
     host.remove(&k, &admin, plugin_id).await.unwrap();
     assert!(host.list(&k, &admin).await.unwrap().is_empty());
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();

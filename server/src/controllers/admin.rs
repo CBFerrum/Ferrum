@@ -279,6 +279,25 @@ async fn import_custom(Auth(ctx): Auth, State(app): State<AppContext>, Json(bund
     Ok(Json(json!({"imported": n})).into_response())
 }
 
+// ── why someone may or may not do something ──
+
+#[derive(Deserialize)]
+struct ExplainAccess {
+    user: Uuid,
+    entity: String,
+    action: String,
+    record: Option<Uuid>,
+    /// Comma-separated: answers for these roles instead of the person's own.
+    roles: Option<String>,
+}
+
+async fn explain_access(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query<ExplainAccess>) -> ApiResult<Response> {
+    let action = ferrum_kernel::Action::parse(&q.action)
+        .ok_or_else(|| ApiError(Error::field("action", "must be read, write, create, delete, submit, cancel, export or import")))?;
+    let roles = q.roles.map(|r| r.split(',').map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect());
+    Ok(Json(app_state(&app)?.kernel.explain_access(&ctx, q.user, &q.entity, action, q.record, roles).await?).into_response())
+}
+
 // ── people leaving, and the identity provider's groups ──
 
 #[derive(Deserialize)]
@@ -365,7 +384,7 @@ async fn create_webhook(Auth(ctx): Auth, State(app): State<AppContext>, Json(w):
         .bind(id)
         .bind(w.name.trim())
         .bind(&w.url)
-        .bind(&secret)
+        .bind(st.kernel.seal_webhook_secret(ctx.tenant, id, &secret)?)
         .bind(&w.topics)
         .bind(ctx.user)
         .execute(&mut *tx)
@@ -499,6 +518,7 @@ pub fn routes() -> Routes {
         .add("/admin/personal-data", get(personal_data))
         .add("/admin/personal-data/erase", post(erase_personal_data))
         .add("/admin/packages", get(list_packages).post(install))
+        .add("/admin/access/explain", get(explain_access))
         .add("/admin/users/{id}/deprovision", post(deprovision_user))
         .add("/admin/scim/groups", get(scim_groups))
         .add("/admin/scim/groups/{id}/roles", put(map_scim_group))

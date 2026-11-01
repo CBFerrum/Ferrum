@@ -6,12 +6,14 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 ## Platform
 
 - **Row-level rules**: a role's rule reaches all records, the user's own (`if_owner`, with
-  `owner_fields`), and/or those whose fields hold given values (`where`), plus per-user scopes on
-  link values. Conditions are equality tests on data, select, check, link, email and int fields;
-  ranges, dates and expressions ("due in the next week") are not supported.
+  `owner_fields`), and/or those whose fields hold given values or fall in a range (`where`: `{lte:
+  10000}` on a number, `{from_today: 0, to_today: 7}` on a date), plus per-user scopes on link
+  values. Equality works on data, select, check, link, email and int fields; expressions across
+  fields are not supported. On datetime fields, a range compares the UTC date.
 - **Linked-record titles** (`titles=true`) are shown even when the caller cannot open the linked
-  record, as in ERPNext: a record you can read names what it links to. Only the target's title
-  field (or number) is exposed, never its other fields.
+  record, unless its entity says `reference: restricted`, or a workspace sets that: a record you can
+  read names what it links to, and only the target's title field (or number) is exposed, never its
+  other fields.
 - **Units of measure**: an item lists its other units with a factor to its stock unit, and order,
   delivery, receipt and invoice lines are entered in any of them (stock moves, valuation,
   reservations and planning count stock units). The factor always comes from the item, not typed

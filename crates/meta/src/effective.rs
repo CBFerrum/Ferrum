@@ -373,6 +373,7 @@ pub(crate) fn apply_op(def: &mut EntityDef, op: &OverlayOp, source: OverlaySourc
                 "description" => def.description = as_opt_string(value, property)?,
                 "icon" => def.icon = as_opt_string(value, property)?,
                 "title_field" => def.title_field = as_opt_string(value, property)?,
+                "reference" => def.reference = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?,
                 "list" => def.list = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?,
                 "search_fields" => def.search_fields = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?,
                 "form" => {

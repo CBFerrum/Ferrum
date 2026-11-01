@@ -9,7 +9,7 @@ independently (`BLOCK-SECURITY-REVIEW`).
 | Boundary | Enforced by | Weakest point |
 |---|---|---|
 | Tenant to tenant | Forced row-level security with `ferrum_tenant()`, a role that cannot bypass it | `system_tx`: code that opens one is trusted to filter by tenant |
-| Person to record | One rule set for reads and lists (`RowScope`) | Linked titles show records the reader cannot open |
+| Person to record | One rule set for reads and lists (`RowScope`), checked to agree in `rules_it` | Linked titles of open entities show records the reader cannot open |
 | Workspace to platform | Tenant administrators cannot reach other tenants | Cluster-level tasks run with full access |
 | Native app to platform | None: native apps are trusted code, reviewed and compiled in | A bad dependency in any app |
 | WASM plugin to platform | Fuel, memory, deadline, declared hosts and permissions, one import | Plugin output reaches apps as data |
@@ -32,7 +32,7 @@ independently (`BLOCK-SECURITY-REVIEW`).
 | SCIM | A filter that matches too much | Unknown filters are errors | `lifecycle_it` |
 | Identity linking | Takeover through a reused email | Linked by subject, on proof | `identity_it`, `sso_it` |
 | File uploads | Malware, decompression bombs | Size limits. *Gap:* no malware scanning (`FERRUM-OPS-007`) | |
-| Stored secrets | Database or backup theft | Sealed with AES-256-GCM, bound to their place. *Gap:* webhook secrets | `secret_it`, `platform_it` |
+| Stored secrets | Database or backup theft | Sealed with AES-256-GCM, bound to their place; rotation | `secret_it`, `platform_it` |
 | Supply chain | A poisoned build | Pinned bases, attested promotion, advisory register | Not yet run in CI |
 | Prompt injection | Content steers the assistant | Writes need approval. *Gap:* no adversarial tests (`FERRUM-AI-005`) | |
 

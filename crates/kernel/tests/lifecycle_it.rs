@@ -190,6 +190,14 @@ async fn scenario() {
     assert!(k.verify_api_key(&pat_key).await.is_err(), "API keys stop");
     assert!(k.login("acme", "pat@acme.test", PASSWORD).await.is_err(), "and so does signing in");
 
+    // Deprovisioning tells the replicas itself: SCIM's own update above also announced a change.
+    let quinn = k.create_user(&admin, "quinn@acme.test", "Quinn", Some(PASSWORD), &[], false).await.unwrap();
+    let quinn_session = k.login("acme", "quinn@acme.test", PASSWORD).await.unwrap();
+    assert!(b.load_ctx(tenant, quinn, Some(quinn_session.token_version), "it".into()).await.is_ok(), "cached on B");
+    k.deprovision_user(&admin, quinn, None, "left").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(matches!(b.load_ctx(tenant, quinn, Some(quinn_session.token_version), "it".into()).await, Err(Error::Unauthorized(_))), "B dropped its copy");
+
     let mut tx = k.db.system_tx().await.unwrap();
     let open: Vec<(Uuid, Uuid, String)> =
         sqlx::query_as("select record_id, user_id, status from record_assignment where tenant_id = $1 and record_id = any($2) order by created_at, user_id")

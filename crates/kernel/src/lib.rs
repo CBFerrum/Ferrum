@@ -4,6 +4,7 @@
 //! tenant can do (CRUD, lifecycle, customization, automation) goes through it, with tenant
 //! isolation enforced twice: by the code (scopes) and by Postgres row-level security.
 
+pub mod access;
 pub mod apps;
 pub mod audit;
 pub mod auth;
@@ -101,6 +102,9 @@ pub struct KernelSettings {
     pub event_retention_days: i32,
     /// Seals secret fields; without it they cannot be set or read.
     pub secret_key: Option<secret::SecretKey>,
+    /// Keys being rotated out: values they sealed still open, until [`Kernel::reseal_secrets`] has
+    /// moved them to `secret_key`.
+    pub retired_secret_keys: Vec<secret::SecretKey>,
     /// Base URL of a Gotenberg-compatible PDF renderer; without it there are no PDFs.
     pub pdf_url: Option<String>,
     /// The web app's address as people reach it (`PUBLIC_URL`), for links in mail.
@@ -121,6 +125,7 @@ impl Default for KernelSettings {
             ctx_ttl: Duration::from_secs(30),
             event_retention_days: 30,
             secret_key: None,
+            retired_secret_keys: Vec::new(),
             pdf_url: None,
             public_url: None,
             push_services: webpush::PUSH_SERVICES.iter().map(|s| s.to_string()).collect(),

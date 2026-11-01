@@ -130,6 +130,9 @@ pub struct EntityDef {
     pub table: Option<String>,
     #[serde(default)]
     pub title_field: Option<String>,
+    /// Who may see this entity's titles where a record they can read links to it.
+    #[serde(default)]
+    pub reference: Reference,
     #[serde(default)]
     pub numbering: Option<NumberingDef>,
     #[serde(default)]
@@ -488,6 +491,18 @@ pub struct RoleDef {
     pub permissions: Vec<PermissionDef>,
 }
 
+/// What a record shows of the records it links to.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Reference {
+    /// The target's title, to anyone who can read the record linking to it (a sales invoice names
+    /// its customer, whether or not the reader may open the customer).
+    #[default]
+    Open,
+    /// Only to those who may read the target itself; others see that there is a link, not to what.
+    Restricted,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PermissionDef {
@@ -517,8 +532,9 @@ pub struct PermissionDef {
     pub read_groups: Vec<String>,
     #[serde(default)]
     pub write_groups: Vec<String>,
-    /// Only records whose fields hold these values, all of them: `{field: value}` or
-    /// `{field: [values]}`. Combines with `if_owner`; a role may hold several rules for one
+    /// Only records whose fields hold these values, all of them: `{field: value}`,
+    /// `{field: [values]}`, or a range on a number or date, `{field: {lte: 10000}}` (see
+    /// [`ConditionRange`]). Combines with `if_owner`; a role may hold several rules for one
     /// entity with different conditions, and a record qualifies through any of them.
     #[serde(default, rename = "where", skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub condition: std::collections::BTreeMap<String, Value>,
@@ -526,6 +542,58 @@ pub struct PermissionDef {
 
 /// Field types a permission condition may test (compared as text, so they must be exact).
 const CONDITION_TYPES: &[FieldType] = &[FieldType::Data, FieldType::Select, FieldType::Check, FieldType::Link, FieldType::Email, FieldType::Int];
+
+/// A range a field's value must fall in, ends included: `{lte: 10000}` on a number, `{gte:
+/// "2026-01-01"}` on a date, or on a date days from today, `{from_today: 0, to_today: 7}` ("due in
+/// the next week"), read in the workspace's time zone each time the rule is used. A record with no
+/// value in the field is outside every range.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConditionRange {
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "number_or_text")]
+    pub gte: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "number_or_text")]
+    pub lte: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_today: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_today: Option<i32>,
+}
+
+fn number_or_text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    match Option::<Value>::deserialize(d)? {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.trim().to_string())),
+        Some(Value::Number(n)) => Ok(Some(n.to_string())),
+        Some(_) => Err(serde::de::Error::custom("give a number or a date")),
+    }
+}
+
+impl ConditionRange {
+    fn check(&self, name: &str, ftype: FieldType) -> Result<(), String> {
+        let relative = self.from_today.is_some() || self.to_today.is_some();
+        if self.gte.is_none() && self.lte.is_none() && !relative {
+            return Err(format!("condition field {name}: give gte, lte, from_today or to_today"));
+        }
+        if relative && (self.gte.is_some() || self.lte.is_some()) {
+            return Err(format!("condition field {name}: use dates or days from today, not both"));
+        }
+        let date = matches!(ftype, FieldType::Date | FieldType::Datetime);
+        if relative && !date {
+            return Err(format!("condition field {name}: days from today work on dates"));
+        }
+        if !date && !ftype.is_numeric() {
+            return Err(format!("condition field {name}: ranges work on numbers and dates"));
+        }
+        for end in [&self.gte, &self.lte].into_iter().flatten() {
+            let ok = if date { chrono::NaiveDate::parse_from_str(end, "%Y-%m-%d").is_ok() } else { end.parse::<rust_decimal::Decimal>().is_ok() };
+            if !ok {
+                return Err(format!("condition field {name}: {end} is not a {}", if date { "date (YYYY-MM-DD)" } else { "number" }));
+            }
+        }
+        Ok(())
+    }
+}
 
 impl PermissionDef {
     /// Checks `where` against the entity's fields (`field` looks one up by name).
@@ -541,6 +609,11 @@ impl PermissionDef {
         }
         for (name, v) in &self.condition {
             let f = field(name).ok_or_else(|| format!("condition field {name} is not a field of {}", self.entity))?;
+            if v.is_object() {
+                let range: ConditionRange = serde_json::from_value(v.clone()).map_err(|e| format!("condition field {name}: {e}"))?;
+                range.check(name, f.ftype)?;
+                continue;
+            }
             if !CONDITION_TYPES.contains(&f.ftype) {
                 return Err(format!("condition field {name} must be data, select, check, link, email or int"));
             }
@@ -578,6 +651,7 @@ impl PermissionDef {
         };
         self.condition
             .iter()
+            .filter(|(_, v)| !v.is_object())
             .map(|(k, v)| {
                 let mut vals: Vec<String> = match v {
                     Value::Array(a) => a.iter().map(text).collect(),
@@ -590,9 +664,21 @@ impl PermissionDef {
             .collect()
     }
 
+    /// The condition's ranges; `None` when one no longer reads as a range (the rule then grants
+    /// nothing).
+    pub fn condition_ranges(&self) -> Option<Vec<(String, ConditionRange)>> {
+        self.condition.iter().filter(|(_, v)| v.is_object()).map(|(k, v)| Some((k.clone(), serde_json::from_value(v.clone()).ok()?))).collect()
+    }
+
     /// The condition in one canonical form, telling apart rules of one role and entity ('' = none).
     pub fn condition_key(&self) -> String {
-        if self.condition.is_empty() { String::new() } else { serde_json::to_string(&self.condition_values()).unwrap_or_default() }
+        if self.condition.is_empty() {
+            return String::new();
+        }
+        match self.condition_ranges().filter(|r| !r.is_empty()) {
+            Some(ranges) => serde_json::to_string(&(self.condition_values(), ranges)).unwrap_or_default(),
+            None => serde_json::to_string(&self.condition_values()).unwrap_or_default(),
+        }
     }
 }
 
