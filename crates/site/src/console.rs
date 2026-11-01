@@ -161,6 +161,55 @@ async fn task_step(State(app): State<App>, headers: HeaderMap, Path((id, action)
 }
 
 #[derive(Deserialize)]
+struct FloorReport {
+    /// The run's reference, off the job sheet: nothing else about a run is known here.
+    reference: String,
+    /// `report`, `pause` or `resume`.
+    kind: String,
+    #[serde(default)]
+    good: Option<String>,
+    #[serde(default)]
+    scrap: Option<String>,
+    #[serde(default)]
+    lot: String,
+    #[serde(default)]
+    reason: String,
+}
+
+/// What happened on the floor, written down here and sent when the link is back. It is applied when
+/// it arrives: a run that cannot take it by then keeps it as a fact, for a person.
+async fn floor_report(State(app): State<App>, headers: HeaderMap, axum::Json(r): axum::Json<FloorReport>) -> Response {
+    let session = match app.needs(&headers, None) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    if r.reference.trim().is_empty() {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, "which run? It is on the job sheet");
+    }
+    let mut body = json!({"reference": r.reference.trim(), "event_id": Uuid::now_v7(), "kind": r.kind, "at": app.rt.clock.now()});
+    match r.kind.as_str() {
+        "report" => {
+            let count = |v: &Option<String>| v.as_deref().map_or(Some(0.0), |v| v.trim().parse::<f64>().ok().filter(|n| n.is_finite() && *n >= 0.0));
+            let (Some(good), Some(scrap)) = (count(&r.good), count(&r.scrap)) else { return err(StatusCode::UNPROCESSABLE_ENTITY, "a count is a number") };
+            if good + scrap == 0.0 {
+                return err(StatusCode::UNPROCESSABLE_ENTITY, "how many came off?");
+            }
+            body["good"] = json!(good);
+            body["scrap"] = json!(scrap);
+            body["lot"] = json!(r.lot.trim());
+        }
+        "pause" if r.reason.trim().is_empty() => return err(StatusCode::UNPROCESSABLE_ENTITY, "why has it stopped?"),
+        "pause" => body["reason"] = json!(r.reason.trim()),
+        "resume" => {}
+        _ => return err(StatusCode::NOT_FOUND, "no such report"),
+    }
+    match app.rt.record_fact("mes.event", Some(session.name), body) {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(why) => err(StatusCode::INTERNAL_SERVER_ERROR, why),
+    }
+}
+
+#[derive(Deserialize)]
 struct Settle {
     to: CommandState,
     found: String,
@@ -211,6 +260,7 @@ pub fn router(rt: Arc<Runtime>) -> Router {
         .route("/api/login", post(login))
         .route("/api/work", get(work))
         .route("/api/tasks/{id}/{action}", post(task_step))
+        .route("/api/floor", post(floor_report))
         .route("/api/commands/{id}/settle", post(settle))
         .route("/api/resume", post(resume))
         .with_state(app)

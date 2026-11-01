@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration as StdDuration;
 use tokio::sync::watch;
 use tokio::time::timeout;
@@ -82,7 +82,9 @@ pub struct Runtime {
     pub boot: Uuid,
     seq: AtomicI64,
     pub started_at: DateTime<Utc>,
-    link_up: AtomicBool,
+    /// When the platform last answered. A platform that hangs fails no call until it times out, so
+    /// silence counts as down.
+    heard: Mutex<Option<std::time::Instant>>,
     /// Cancels already passed to the equipment this run.
     cancelled: Mutex<HashSet<Uuid>>,
     latest: Mutex<HashMap<(Uuid, String), f64>>,
@@ -133,12 +135,17 @@ impl Runtime {
             boot: Uuid::now_v7(),
             seq: AtomicI64::new(0),
             started_at: Utc::now(),
-            link_up: AtomicBool::new(false),
+            heard: Mutex::default(),
             cancelled: Mutex::default(),
             latest: Mutex::default(),
             repeats: Mutex::default(),
             last_state: Mutex::default(),
         }))
+    }
+
+    fn link_up(&self) -> bool {
+        let quiet = StdDuration::from_secs(self.cfg.sync_secs * 3 + 5);
+        self.heard.lock().unwrap_or_else(|e| e.into_inner()).is_some_and(|at| at.elapsed() < quiet)
     }
 
     fn epoch(&self) -> i64 {
@@ -430,7 +437,7 @@ impl Runtime {
         Health {
             version: env!("CARGO_PKG_VERSION").to_string(),
             started_at: Some(self.started_at),
-            backlog_secs: 0,
+            backlog_secs: counts.oldest_report_at.map_or(0, |at| ((self.clock.now_ms() - at) / 1000).max(0)),
             queued_commands: counts.queued,
             unknown_outcomes: counts.unknown,
             telemetry_bytes: counts.sample_bytes,
@@ -460,6 +467,7 @@ impl Runtime {
             facts,
             health: self.health(),
             held: held.clone(),
+            in_doubt: self.journal.unknown().unwrap_or_default().iter().take(500).map(|e| e.command.id).collect(),
             want,
             config_version: self.journal.get("config_version").ok().flatten().unwrap_or_default(),
         };
@@ -467,7 +475,7 @@ impl Runtime {
         crash_point("after_exchange");
         match answer {
             Ok(r) => {
-                self.link_up.store(true, Ordering::Relaxed);
+                *self.heard.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now());
                 self.absorb(r, &held, upto);
                 Ok(())
             }
@@ -477,7 +485,7 @@ impl Runtime {
                 Err(LinkError::Clock(server))
             }
             Err(e) => {
-                self.link_up.store(false, Ordering::Relaxed);
+                *self.heard.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 Err(e)
             }
         }
@@ -521,6 +529,9 @@ impl Runtime {
         }
         for id in &r.cancel {
             let _ = self.journal.request_cancel(*id);
+        }
+        for (id, state) in &r.settled {
+            let _ = self.journal.settled(*id, *state);
         }
         let _ = self.journal.prune();
     }
@@ -625,7 +636,7 @@ impl Runtime {
         let counts = self.journal.counts().unwrap_or_default();
         json!({
             "stopped": self.stopped(),
-            "link_up": self.link_up.load(Ordering::Relaxed),
+            "link_up": self.link_up(),
             "server": self.cfg.server,
             "epoch": self.epoch(),
             "lease_until": self.lease_until(),

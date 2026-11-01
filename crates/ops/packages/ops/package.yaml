@@ -38,6 +38,7 @@ roles:
   - name: Device Administrator
     description: Sets up sites and devices, enrolls and revokes their keys, moves them through their lifecycle and transfers authority between gateways. Sends no work.
     permissions:
+      - {entity: Company, read: true}
       - {entity: Site, read: true, write: true, create: true, export: true}
       - {entity: SiteArea, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: Device, read: true, write: true, create: true, export: true, import: true}
@@ -46,6 +47,7 @@ roles:
   - name: Ops Manager
     description: Everything above, and approves what needs a second person, including automation's limits.
     permissions:
+      - {entity: Company, read: true}
       - {entity: Site, read: true, write: true, create: true, export: true}
       - {entity: SiteArea, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: Device, read: true, write: true, create: true, export: true, import: true}

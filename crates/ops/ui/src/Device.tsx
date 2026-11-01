@@ -4,11 +4,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { Link, useParams } from "react-router";
-import { api, docPath, errorMessage, formatDateTime, relativeTime } from "@ferrum/client";
+import { api, docPath, formatDateTime, refusal, relativeTime } from "@ferrum/client";
 import { Alert, Badge, Button, confirmDialog, Dialog, EmptyState, ErrorState, Field, PageLoading, toast, useShellTitle } from "@ferrum/kit";
 import { enrollment, latest, setLifecycle } from "./data";
 import { Tabs } from "./Tabs";
-import { canEnroll, canRetire, nextSteps } from "./words";
+import { canEnroll, canRetire, nextSteps, reading } from "./words";
 
 interface DeviceDoc {
   id: string;
@@ -16,6 +16,7 @@ interface DeviceDoc {
   device_code: string;
   kind: string;
   lifecycle: string;
+  gateway?: string | null;
   version: number;
 }
 
@@ -48,7 +49,7 @@ function Why({ to, label, device, onClose }: { to: string; label: string; device
       void qc.invalidateQueries({ queryKey: ["ops"] });
       onClose();
     },
-    onError: (e) => toast(errorMessage(e), "error"),
+    onError: (e) => toast(refusal(e), "error"),
   });
   return (
     <Dialog
@@ -105,7 +106,7 @@ export function DevicePage() {
               Enroll a key
             </Button>
           ) : null}
-          {nextSteps(d.lifecycle).map((s) => (
+          {nextSteps(d.lifecycle, d.gateway).map((s) => (
             <Button key={s.to} variant={s.serious ? "default" : "primary"} onClick={() => setAsking(s)}>
               {s.label}
             </Button>
@@ -129,12 +130,12 @@ export function DevicePage() {
         ) : metrics.isError ? (
           <ErrorState error={metrics.error} onRetry={() => void metrics.refetch()} />
         ) : metrics.data.length === 0 ? (
-          <EmptyState title="Nothing yet" icon="activity" />
+          <EmptyState title="Nothing yet" icon="chart" />
         ) : (
           <ul className="ops-facts ops-metrics">
             {metrics.data.map((m) => (
               <li key={m.metric}>
-                <strong>{m.metric}</strong> {m.value} <span className={m.age_secs > 600 ? "ops-stale" : "faint"}>{relativeTime(m.at)}</span>
+                <strong>{m.metric}</strong> {reading(m.value)} <span className={m.age_secs > 600 ? "ops-stale" : "faint"}>{relativeTime(m.at)}</span>
               </li>
             ))}
           </ul>

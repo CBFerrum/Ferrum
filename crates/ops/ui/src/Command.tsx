@@ -3,11 +3,11 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "react-router";
-import { errorMessage, formatDateTime } from "@ferrum/client";
+import { formatDateTime, refusal } from "@ferrum/client";
 import { Alert, Badge, Button, confirmDialog, ErrorState, PageLoading, toast, useShellTitle } from "@ferrum/kit";
 import { act, command, type HistoryRow } from "./data";
 import { Tabs } from "./Tabs";
-import { state, STEPS } from "./words";
+import { issuer, said, state, STEPS } from "./words";
 
 const shown = (v: unknown) => (v === null || v === undefined ? null : JSON.stringify(v, null, 2));
 
@@ -32,7 +32,7 @@ export function CommandPage() {
       toast(r.state === "Aborted" ? "Stopped" : "Asked to stop. It keeps its state until the site says what happened.");
       void qc.invalidateQueries({ queryKey: ["ops"] });
     },
-    onError: (e) => toast(errorMessage(e), "error"),
+    onError: (e) => toast(refusal(e), "error"),
   });
   if (q.isPending) return <PageLoading />;
   if (q.isError) return <ErrorState error={q.error} onRetry={() => void q.refetch()} />;
@@ -72,10 +72,10 @@ export function CommandPage() {
           <dd>{formatDateTime(c.expires_at)}</dd>
           <dt>Device</dt>
           <dd>
-            <Link to={`/d/${c.target_id}`}>Open the device</Link>
+            <Link to={`/d/${c.target_id}`}>{c.target_name ?? c.target_code ?? "Open the device"}</Link>
           </dd>
           <dt>By</dt>
-          <dd>{c.issued_kind}</dd>
+          <dd>{issuer(c.issued_kind, c.issued_by_email)}</dd>
         </dl>
         <pre className="ops-json">{shown(c.payload)}</pre>
       </section>
@@ -86,7 +86,7 @@ export function CommandPage() {
             <li key={h.seq}>
               <Badge tone={h.step === "move" ? state(h.state).tone : "neutral"}>{state(h.state).label}</Badge> <Heard row={h} />
               {STEPS[h.step] ? <div className="muted">{STEPS[h.step]}</div> : null}
-              {shown(h.detail) ? <pre className="ops-json">{shown(h.detail)}</pre> : null}
+              {shown(said(h.detail)) ? <pre className="ops-json">{shown(said(h.detail))}</pre> : null}
               {shown(h.evidence) ? (
                 <>
                   <div className="faint">Evidence</div>

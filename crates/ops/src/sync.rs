@@ -176,7 +176,7 @@ pub async fn exchange(k: &Kernel, tenant: Uuid, device: Uuid, req: SyncRequest) 
     .execute(&mut *tx)
     .await?;
 
-    let (mut lease, mut commands_out, mut cancel) = (None, vec![], vec![]);
+    let (mut lease, mut commands_out, mut cancel, mut settled) = (None, vec![], vec![], vec![]);
     let (mut devices_out, mut config_version, mut operators) = (None, String::new(), None);
     if let Some((domain, epoch)) = held.as_ref().filter(|_| !fenced) {
         let max_hours: Option<i64> = sqlx::query_scalar("select max_offline_hours from e_site where tenant_id = $1 and id = $2")
@@ -191,6 +191,7 @@ pub async fn exchange(k: &Kernel, tenant: Uuid, device: Uuid, req: SyncRequest) 
             commands_out = commands::take_for_site(&mut tx, tenant, domain, *epoch, i64::from(req.want)).await?;
         }
         cancel = commands::cancels(&mut tx, tenant, domain).await?;
+        settled = commands::settled(&mut tx, tenant, domain, &req.in_doubt).await?;
         let (devices, version) = site_devices(&mut tx, tenant, domain, gateway.site).await?;
         let (ops, ops_version) = operators_for(&mut tx, tenant, gateway.site).await?;
         config_version = format!("{version}.{ops_version}");
@@ -207,6 +208,7 @@ pub async fn exchange(k: &Kernel, tenant: Uuid, device: Uuid, req: SyncRequest) 
         fenced,
         commands: commands_out,
         cancel,
+        settled,
         reports_done: done,
         reports_refused: refused,
         facts_done,

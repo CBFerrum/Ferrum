@@ -32,13 +32,17 @@ export function Commands() {
       ) : q.isError ? (
         <ErrorState error={q.error} onRetry={() => void q.refetch()} />
       ) : q.data.length === 0 ? (
-        <EmptyState title={only ? "None like that" : "No commands yet"} icon="send" />
+        <EmptyState title={only ? "None like that" : "No commands yet"} icon="list" />
       ) : (
         <ul className="ops-list card">
           {q.data.map((c) => (
             <li key={c.id} className="ops-row">
               <div className="ops-row-body">
-                <Link to={`/c/${c.id}`}>{c.operation}</Link> <Badge tone={state(c.state).tone}>{state(c.state).label}</Badge>
+                <Link to={`/c/${c.id}`}>
+                  {c.operation}
+                  {c.target_code ? ` · ${c.target_code}` : ""}
+                </Link>{" "}
+                <Badge tone={state(c.state).tone}>{state(c.state).label}</Badge>
                 <div className="faint">
                   {formatDateTime(c.issued_at)} · {c.domain}
                 </div>

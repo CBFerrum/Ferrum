@@ -60,16 +60,18 @@ pub async fn set_lifecycle(k: &Kernel, ctx: &Ctx, id: Uuid, to: Lifecycle, reaso
 
 /// [`set_lifecycle`] inside the caller's transaction, so that what moved it commits with it.
 pub async fn set_lifecycle_tx(k: &Kernel, ctx: &Ctx, tx: &mut Tx, id: Uuid, to: Lifecycle, reason: &str) -> Result<()> {
-    if to == Lifecycle::Provisioned {
-        return Err(Error::invalid("a device is provisioned by enrolling a key"));
-    }
-    let row: Option<(String, String, Option<Uuid>)> = sqlx::query_as("select lifecycle, kind, site from e_device where tenant_id = $1 and id = $2 for update")
+    let row: Option<(String, String, Option<Uuid>, Option<Uuid>)> = sqlx::query_as("select lifecycle, kind, site, gateway from e_device where tenant_id = $1 and id = $2 for update")
         .bind(ctx.tenant)
         .bind(id)
         .fetch_optional(&mut **tx)
         .await?;
-    let (from, kind, site) = row.ok_or_else(|| Error::NotFound("device".into()))?;
+    let (from, kind, site, gateway) = row.ok_or_else(|| Error::NotFound("device".into()))?;
     let from = lifecycle_of(&from)?;
+    // Equipment behind a gateway has no key of its own: the gateway speaks for it, so naming the
+    // gateway is what provisions it. Anything else proves itself by enrolling.
+    if to == Lifecycle::Provisioned && gateway.is_none() {
+        return Err(Error::invalid("a device is provisioned by enrolling a key, or by naming the gateway that reaches it"));
+    }
     if !from.can_move(to) {
         return Err(Error::invalid(format!("a device that is {} cannot become {}", from.as_str(), to.as_str())));
     }

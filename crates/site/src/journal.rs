@@ -231,6 +231,12 @@ impl Journal {
         Ok(taken)
     }
 
+    /// A person settled this on the platform. Nothing goes back up: it came from there.
+    pub fn settled(&self, id: Uuid, to: State) -> Result<()> {
+        self.db().execute("update command set state = ?2 where id = ?1 and state = 'OutcomeUnknown'", params![id.to_string(), to.as_str()])?;
+        Ok(())
+    }
+
     pub fn request_cancel(&self, id: Uuid) -> Result<bool> {
         Ok(self.db().execute("update command set cancel_requested = 1 where id = ?1 and cancel_requested = 0", [id.to_string()])? > 0)
     }
@@ -383,7 +389,11 @@ impl Journal {
             unknown: count("select count(*) from command where state = 'OutcomeUnknown'")?,
             reports: count("select count(*) from report")?,
             facts: count("select count(*) from fact")?,
-            oldest_report_at: None,
+            oldest_report_at: db
+                .query_row("select body from report order by rowid limit 1", [], |r| r.get::<_, String>(0))
+                .optional()?
+                .and_then(|body| serde_json::from_str::<Report>(&body).ok())
+                .map(|r| r.at_source.timestamp_millis()),
             sample_bytes: count("select coalesce(sum(bytes), 0) from sample")?,
             shed: count("select coalesce((select cast(value as integer) from meta where key = 'shed'), 0)")?,
         })

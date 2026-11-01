@@ -400,10 +400,22 @@ pub async fn reconcile(tx: &mut Tx, ctx: &Ctx, id: Uuid, to: State, evidence: &s
     audit::record(tx, ctx, "Device", row.target_id, "ops.reconcile", None, json!({"command": id, "to": to.as_str(), "evidence": evidence})).await
 }
 
+/// A command row with the names a person reads it by, as a query's first part.
+macro_rules! named {
+    ($drop:literal) => {
+        concat!(
+            "to_jsonb(c) - 'tenant_id'",
+            $drop,
+            " || jsonb_build_object('target_code', d.device_code, 'target_name', d.device_name, 'issued_by_email', u.email) from op_command c \
+             left join e_device d on d.tenant_id = c.tenant_id and d.id = c.target_id left join app_user u on u.tenant_id = c.tenant_id and u.id = c.issued_by"
+        )
+    };
+}
+
 /// What a person sees of a command, with everything said about it.
 pub async fn describe(k: &Kernel, ctx: &Ctx, id: Uuid) -> Result<Value> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let command: Option<Value> = sqlx::query_scalar("select to_jsonb(c) - 'tenant_id' from op_command c where tenant_id = $1 and id = $2")
+    let command: Option<Value> = sqlx::query_scalar(concat!("select ", named!(""), " where c.tenant_id = $1 and c.id = $2"))
         .bind(ctx.tenant)
         .bind(id)
         .fetch_optional(&mut *tx)
@@ -423,9 +435,12 @@ pub async fn describe(k: &Kernel, ctx: &Ctx, id: Uuid) -> Result<Value> {
 pub async fn list(k: &Kernel, ctx: &Ctx, sites: Option<&[Uuid]>, state: Option<&str>, needs_person: bool, limit: i64) -> Result<Vec<Value>> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let rows: Vec<Value> = sqlx::query_scalar(
-        "select to_jsonb(c) - 'tenant_id' - 'payload' from op_command c where tenant_id = $1 \
-         and ($2::uuid[] is null or site_id = any($2)) and ($3::text is null or state = $3) \
-         and (not $4 or state in ('Proposed', 'OutcomeUnknown') or conflict) order by issued_at desc limit $5",
+        concat!(
+            "select ",
+            named!(" - 'payload'"),
+            " where c.tenant_id = $1 and ($2::uuid[] is null or c.site_id = any($2)) and ($3::text is null or c.state = $3) \
+             and (not $4 or c.state in ('Proposed', 'OutcomeUnknown') or c.conflict) order by c.issued_at desc limit $5"
+        ),
     )
     .bind(ctx.tenant)
     .bind(sites)
@@ -436,6 +451,12 @@ pub async fn list(k: &Kernel, ctx: &Ctx, sites: Option<&[Uuid]>, state: Option<&
     .await?;
     tx.commit().await?;
     Ok(rows)
+}
+
+/// Of the commands a site is in doubt about, those that ended here: a person said what happened.
+pub async fn settled(tx: &mut Tx, tenant: Uuid, domain: &str, ids: &[Uuid]) -> Result<Vec<(Uuid, State)>> {
+    let rows: Vec<(Uuid, String)> = sqlx::query_as("select id, state from op_command where tenant_id = $1 and domain = $2 and id = any($3)").bind(tenant).bind(domain).bind(ids).fetch_all(&mut **tx).await?;
+    Ok(rows.into_iter().filter_map(|(id, s)| State::parse(&s).filter(|s| s.is_final()).map(|s| (id, s))).collect())
 }
 
 /// What the holder of `domains` is to receive: anything queued its journal has not confirmed.
