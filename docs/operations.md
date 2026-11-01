@@ -746,6 +746,8 @@ It is off unless you set a key:
 | `FERRUM_ASSISTANT_EFFORT` | `low`, `medium` (default), `high`, `xhigh` or `max`: how hard the model thinks, and so its speed and cost |
 | `FERRUM_ASSISTANT_URL` | default `https://api.anthropic.com`; a proxy or gateway that speaks the same API |
 | `FERRUM_ASSISTANT_FALLBACKS` | `on`/`off`; on by default for Anthropic's API with a model that has them: a request the model's safety checks decline is answered by Anthropic's recommended other model in the same call |
+| `FERRUM_ASSISTANT_MODELS` | other models a workspace may choose, comma-separated |
+| `FERRUM_ASSISTANT_MONTHLY_TOKENS` | the most one workspace may use in a calendar month; it can set less |
 | `FERRUM_ASSISTANT_CALLS_PER_HOUR` | calls to the model one person may make in an hour, default 120 (a question that reads several things is several calls) |
 
 * **Checking it.** After setting the key, `ferrum task assistant_check` sends the model one short
@@ -770,6 +772,22 @@ It is off unless you set a key:
 * **Deleting.** People delete their conversations from the Conversations menu; removing a
   workspace removes its conversations.
 
+
+**What may leave.** Reading something does not make it the person's to send to a third party. So
+everything the assistant reads is narrowed, whoever is asking, an administrator included: entities
+marked `internal` are refused, and fields in a permission group or holding a secret are left out, in
+records, lists, filters, sorting, reports and audit trails. A workspace widens this deliberately with
+the `assistant_egress` setting, `{groups: [...], entities: [...]}`. Secrets never go.
+
+**What it may do.** A change waits for the person. What they allow is the call as it was shown, on the
+record as it stood: if the record changed meanwhile, or 30 minutes passed, nothing happens and the
+assistant has to look again. A model that does whatever a ticket tells it can read what the person's
+narrowed view allows, and can propose. `server/tests/assistant_egress_it.rs` runs exactly that.
+
+**How much.** Workspaces set `assistant_model` from the models the operator allows, and
+`assistant_monthly_tokens`, which cannot exceed the operator's. Past it, the provider is not called.
+`GET /api/assistant/usage` shows this month's tokens by person and model. The log records each call's
+model, tokens and tool names, and never what was said.
 ## Live documents
 
 Drive's documents (New → Document) are edited by everyone who has them open at once, with each

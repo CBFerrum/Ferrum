@@ -233,9 +233,9 @@ async fn scenario() {
     let posted: Vec<Uuid> =
         sqlx::query_scalar("select party_id from party_ledger where tenant_id = $1 order by seq").bind(tenant).fetch_all(&mut *tx).await.unwrap();
     assert_eq!(posted, [dup, keep], "history keeps the id it was posted under");
-    let ids = k.merged_ids(&mut tx, tenant, "Party", keep).await.unwrap();
+    let ids = ferrum_kernel::merge::merged_ids(&mut tx, tenant, "Party", keep).await.unwrap();
     assert_eq!(ids, [keep, dup], "and is found");
-    assert_eq!(k.merged_ids(&mut tx, tenant, "Party", dup).await.unwrap(), [keep, dup], "from either id");
+    assert_eq!(ferrum_kernel::merge::merged_ids(&mut tx, tenant, "Party", dup).await.unwrap(), [keep, dup], "from either id");
     let total: rust_decimal::Decimal = sqlx::query_scalar("select sum(amount) from party_ledger where tenant_id = $1 and party_id = any($2)")
         .bind(tenant)
         .bind(&ids)
@@ -262,7 +262,7 @@ async fn scenario() {
     let third = id(&k.insert(&admin, "Party", party("Globex Limited", "")).await.unwrap());
     k.merge_records(&admin, "Party", third, keep, "It has a better name").await.expect("merged again");
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();
-    assert_eq!(k.merged_ids(&mut tx, tenant, "Party", dup).await.unwrap().len(), 3, "the first duplicate still finds its way");
+    assert_eq!(ferrum_kernel::merge::merged_ids(&mut tx, tenant, "Party", dup).await.unwrap().len(), 3, "the first duplicate still finds its way");
     tx.commit().await.unwrap();
     assert_eq!(k.get(&admin, "Party", dup, false).await.unwrap()["id"], json!(third.to_string()));
     assert!(matches!(k.merge_records(&admin, "Party", dup, other, "into a ghost").await, Err(Error::Invalid(_))), "not into what is gone");

@@ -170,7 +170,16 @@ async fn scenario() {
 
     let model = Model::default();
     let base_url = serve(model.clone()).await;
-    let config = Config { api_key: "test-key".into(), model: "claude-opus-5-5".into(), base_url, effort: "low".into(), fallbacks: false, calls_per_hour: 100 };
+    let config = Config {
+        api_key: "test-key".into(),
+        model: "claude-opus-5-5".into(),
+        base_url,
+        effort: "low".into(),
+        fallbacks: false,
+        calls_per_hour: 100,
+        models: vec![],
+        monthly_tokens: None,
+    };
     let env = Env { kernel: k.clone(), apps: None, assistant: Assistant::new(Some(config)) };
     let thread = assistant::create_thread(&k, &ctx).await.unwrap();
     let ask = |text: &str| Input::Message { text: text.into(), context: "Page: the test".into() };

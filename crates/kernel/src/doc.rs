@@ -87,6 +87,20 @@ impl Kernel {
     /// Removes fields in permission groups the caller cannot read, or leaves the masked form of
     /// those that declare one.
     pub fn mask(&self, ctx: &Ctx, ent: &EffEntity, mut doc: Doc) -> Doc {
+        if let Some(egress) = &ctx.egress {
+            for f in &ent.def.fields {
+                if !egress.allows_field(f) {
+                    doc.remove(&f.name);
+                } else if f.ftype == FieldType::Table {
+                    let cent = f.of.as_deref().and_then(|c| ctx.schema.entity(c)).cloned();
+                    if let (Some(cent), Some(Value::Array(rows))) = (cent, doc.get_mut(&f.name)) {
+                        for m in rows.iter_mut().filter_map(Value::as_object_mut) {
+                            m.retain(|name, _| cent.field(name).is_none_or(|cf| egress.allows_field(cf)));
+                        }
+                    }
+                }
+            }
+        }
         if ctx.perms.admin {
             return doc;
         }

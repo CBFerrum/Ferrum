@@ -106,6 +106,7 @@ pub struct Session {
 
 #[derive(Debug, Clone)]
 pub struct CtxCore {
+    pub read_only: bool,
     pub email: String,
     pub full_name: String,
     pub roles: Vec<String>,
@@ -378,7 +379,7 @@ impl Kernel {
         if !ctx.is_admin && user != ctx.user {
             return Err(Error::Forbidden("you can only create API keys for yourself".into()));
         }
-        if scope.is_some_and(|s| s != "dav" && s != "scim") {
+        if scope.is_some_and(|s| s != "dav" && s != "scim" && s != "support") {
             return Err(Error::field("scope", "must be dav, scim, or none for a key to the whole API"));
         }
         if scope == Some("scim") && !ctx.is_admin {
@@ -454,15 +455,15 @@ impl Kernel {
 
     async fn load_core(&self, tenant: Uuid, user: Uuid) -> Result<CtxCore> {
         let mut tx = self.db.tenant_tx(tenant).await?;
-        let row: Option<(String, String, bool, bool, i32, serde_json::Value, String)> = sqlx::query_as(
-            "select u.email::text, u.full_name, u.is_admin, u.is_active and t.status = 'active', u.token_version, t.settings, u.kind \
+        let row: Option<(String, String, bool, bool, i32, serde_json::Value, String, bool)> = sqlx::query_as(
+            "select u.email::text, u.full_name, u.is_admin, u.is_active and t.status = 'active', u.token_version, t.settings, u.kind, t.account_state = 'restricted' \
              from app_user u join tenant t on t.id = u.tenant_id where u.tenant_id = $1 and u.id = $2",
         )
         .bind(tenant)
         .bind(user)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some((email, full_name, is_admin, active, token_version, settings, kind)) = row else {
+        let Some((email, full_name, is_admin, active, token_version, settings, kind, read_only)) = row else {
             return Err(Error::Unauthorized("user no longer exists".into()));
         };
         if !active {
@@ -504,7 +505,7 @@ impl Kernel {
         let perms = PermSet::load(&mut tx, tenant, &roles, is_admin).await?;
         tx.commit().await?;
         let fy_start_month = settings.get("fiscal_year_start_month").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 12) as u32;
-        Ok(CtxCore { email, full_name, roles, is_admin, token_version, scopes, default_company, fy_start_month, perms: Arc::new(perms) })
+        Ok(CtxCore { read_only, email, full_name, roles, is_admin, token_version, scopes, default_company, fy_start_month, perms: Arc::new(perms) })
     }
 
     /// Builds the request context; `token_version` (from a session token) must match the user's
@@ -528,6 +529,8 @@ impl Kernel {
         }
         let schema = self.registry.schema(tenant).await?;
         Ok(Ctx {
+            egress: None,
+            read_only: core.read_only,
             tenant,
             user,
             email: core.email.clone(),
