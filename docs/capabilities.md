@@ -9,9 +9,9 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 74 |
-| Partially implemented | 41 |
-| Missing | 61 |
+| Implemented, qualification incomplete | 79 |
+| Partially implemented | 43 |
+| Missing | 54 |
 | Blocked by external dependency | 9 |
 | **All** | **185** |
 
@@ -101,20 +101,20 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-ERP-006 | Accruals, deferred revenue, expense allocation | Partially implemented | probe | Recurring rules exist; deferred revenue and accruals as such were not found |
 | FERRUM-ERP-007 | Tax localization for 26 countries as add-ons | Implemented, qualification incomplete | read | Rates are moving from code to editable tax profiles; No country's output has been reviewed by a tax professional |
 | FERRUM-ERP-008 | Stock, transfers, serial and batch, expiry, picking, cycle counts | Implemented, qualification incomplete | probe |  |
-| FERRUM-ERP-009 | Reposting of backdated stock | Missing | read | Stated in docs/limits.md: a backdated document never re-values later ones |
+| FERRUM-ERP-009 | Reposting of backdated stock | Implemented, qualification incomplete | read | A deliberate definition, not a repost: a backdated document is valued when it is posted and never re-values later ones, so history is not rewritten; a correction is a stock reconciliation or landed cost, on its own date |
 | FERRUM-ERP-010 | Requisitions, RFQs, supplier quotations, scorecards | Implemented, qualification incomplete | probe |  |
 | FERRUM-ERP-011 | Supplier portal | Partially implemented | probe | Quotation links exist; no signed-in supplier portal was found |
 | FERRUM-ERP-012 | BOMs, routings, work orders, planning, job cards, quality | Implemented, qualification incomplete | probe |  |
-| FERRUM-ERP-013 | Subcontracting | Missing | probe |  |
+| FERRUM-ERP-013 | Subcontracting | Implemented, qualification incomplete | read | Found by reading the code after an earlier probe missed it: a supplier makes goods from materials sent to a warehouse of ours; its tests were not rerun for this entry |
 | FERRUM-CRM-001 | Leads, conversion, opportunities, territories, quotations | Implemented, qualification incomplete | probe |  |
-| FERRUM-CRM-002 | Deduplication, forecasting, attribution, quotation approvals, CPQ | Missing | probe |  |
+| FERRUM-CRM-002 | Deduplication, forecasting, attribution, quotation approvals, CPQ | Partially implemented | tested | Leads merge, and a weighted forecast and quotation approvals exist; no campaign attribution model or CPQ configuration rules |
 | FERRUM-PROJECTS-001 | Tasks, dependencies, milestones, timesheets, billing, profitability | Implemented, qualification incomplete | probe |  |
-| FERRUM-PROJECTS-002 | Recurring tasks, resource allocation, portfolios, risks, change requests | Missing | probe |  |
+| FERRUM-PROJECTS-002 | Recurring tasks, resource allocation, portfolios, risks, change requests | Implemented, qualification incomplete | tested | An approved change request is a record: it moves no budget or dates; Capacity is a fixed 40-hour week |
 | FERRUM-HELPDESK-001 | Tickets, SLA with business hours, internal notes, knowledge, satisfaction, portal | Implemented, qualification incomplete | probe |  |
-| FERRUM-HELPDESK-002 | Escalations, collision handling, entitlements | Missing | probe |  |
+| FERRUM-HELPDESK-002 | Escalations, collision handling, entitlements | Implemented, qualification incomplete | tested | Collisions are caught when the second agent saves; nobody sees that someone else is typing; Entitlements inform and do not refuse |
 | FERRUM-HR-001 | People, attendance, leave, shifts, expenses, recruitment, appraisals | Implemented, qualification incomplete | probe |  |
 | FERRUM-HR-002 | Payroll by jurisdiction with statutory reporting | Partially implemented | probe | No bank-payment file; statutory coverage not established; no independent fixtures |
-| FERRUM-HR-003 | Training | Missing | probe |  |
+| FERRUM-HR-003 | Training | Implemented, qualification incomplete | tested | Nothing reminds anyone when a certificate is about to lapse |
 | FERRUM-POS-001 | Till, sessions, barcodes, split tenders, returns, loyalty, closing | Implemented, qualification incomplete | probe |  |
 | FERRUM-POS-002 | Offline sales: versioned price book, device journal, re-pricing on arrival | Implemented, qualification incomplete | read | Stock is not preallocated to a till: the spec's overselling policy is unmet |
 | FERRUM-POS-003 | Printers | Blocked by external dependency | probe | No device code found; receipts print through the browser |
@@ -129,7 +129,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-BOOKINGS-003 | Deposits and refunds | Missing | probe |  |
 | FERRUM-BOOKINGS-004 | External calendar synchronization | Partially implemented | probe | Signed feeds and add-to-calendar files go out; nothing is read back, so outside appointments do not block slots |
 | FERRUM-FIELD-001 | Work orders, dispatch, skills, contracts, checklists, signatures | Implemented, qualification incomplete | probe |  |
-| FERRUM-FIELD-002 | Preventive maintenance and an offline technician app | Missing | probe |  |
+| FERRUM-FIELD-002 | Preventive maintenance and an offline technician app | Partially implemented | read | Maintenance plans make work orders, once per visit; there is no offline technician app |
 | FERRUM-FIELD-003 | Road travel through a mapping provider | Blocked by external dependency | probe | Straight-line estimates, stated as such |
 | FERRUM-FORMS-001 | Conditional logic, pages, spam controls, scoring, record mappings | Implemented, qualification incomplete | probe | No localization |
 | FERRUM-LMS-001 | Courses, prerequisites, cohorts, quizzes, assignments, certificates | Implemented, qualification incomplete | probe | Learners see draft course titles and summaries |
