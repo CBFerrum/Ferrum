@@ -11,7 +11,7 @@ use ferrum_meta::Catalog;
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
@@ -19,6 +19,7 @@ use uuid::Uuid;
 /// Fails `flaky` events while told to, and answers `chain.start` with `chain.next`.
 struct Sink {
     fail: AtomicBool,
+    second: AtomicUsize,
 }
 
 #[async_trait]
@@ -26,6 +27,19 @@ impl EventSink for Sink {
     async fn on_event(&self, k: &Kernel, ev: &Event) -> Result<()> {
         if ev.topic == "flaky" && self.fail.load(Ordering::SeqCst) {
             return Err(Error::Unavailable("the provider is down".into()));
+        }
+        // While this one runs, the rest of its batch passes to another worker, as it does when a
+        // claim runs out.
+        if ev.topic == "lease.first" {
+            let mut tx = k.db.system_tx().await?;
+            sqlx::query("update outbox set available_at = now() + interval '1 hour' where tenant_id = $1 and topic = 'lease.second'")
+                .bind(ev.tenant_id)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+        }
+        if ev.topic == "lease.second" {
+            self.second.fetch_add(1, Ordering::SeqCst);
         }
         if ev.topic == "chain.start" {
             let mut tx = k.db.tenant_tx(ev.tenant_id).await?;
@@ -83,13 +97,26 @@ async fn scenario() {
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
-    let sink = Arc::new(Sink { fail: AtomicBool::new(false) });
+    let sink = Arc::new(Sink { fail: AtomicBool::new(false), second: AtomicUsize::new(0) });
     let mut hooks = HookRegistry::default();
     hooks.add_event_sink(sink.clone());
     let settings = KernelSettings { webhooks_allow_private: true, ..Default::default() };
     let k = Kernel::boot(db, catalog, hooks, settings, None).await.expect("boot");
     let (loud, quiet) = (workspace(&k, "loud").await, workspace(&k, "quiet").await);
     drain(&k).await;
+
+    // ───────────── a batch that outlives its claim ─────────────
+    emit(&k, quiet, "lease.first", 1).await;
+    emit(&k, quiet, "lease.second", 1).await;
+    k.dispatch_outbox_once().await.unwrap();
+    assert_eq!(pending(&k, quiet, "lease.first").await, 0);
+    assert_eq!(sink.second.load(Ordering::SeqCst), 0, "what passed to another worker is not handled here too");
+    assert_eq!(pending(&k, quiet, "lease.second").await, 1, "and stays theirs to finish");
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update outbox set available_at = now() where topic = 'lease.second'").execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    drain(&k).await;
+    assert_eq!(sink.second.load(Ordering::SeqCst), 1, "when that claim runs out too, it is handled, once");
 
     // ───────────── one workspace's backlog does not hold up another's ─────────────
     emit(&k, loud, "backlog", 500).await;

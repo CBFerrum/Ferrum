@@ -92,6 +92,27 @@ pub struct SocketDef {
     pub subprotocols: Vec<String>,
 }
 
+/// A secret a plugin uses without ever holding it: the host adds it to a request for one of `hosts`,
+/// or checks a signature with it. Its value stays out of the `config` the plugin reads, so nothing
+/// the plugin logs, stores or is tricked into sending can give it away.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Credential {
+    /// Its key in the plugin's configuration.
+    pub name: String,
+    /// Where it may go, from `http_hosts`. Empty: nowhere; it only checks signatures.
+    #[serde(default)]
+    pub hosts: Vec<String>,
+    /// `bearer`, or `basic` with `user`, the configuration key holding the user name.
+    #[serde(default = "default_scheme")]
+    pub scheme: String,
+    #[serde(default)]
+    pub user: Option<String>,
+}
+
+fn default_scheme() -> String {
+    "bearer".into()
+}
+
 /// What a plugin brings and may do; approved by the administrator who installs it.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -106,6 +127,8 @@ pub struct Manifest {
     pub permissions: Vec<PermissionDef>,
     /// Hosts it may call over HTTPS (`api.example.com`, `*.example.com`).
     pub http_hosts: Vec<String>,
+    /// Configuration values only the host reads.
+    pub credentials: Vec<Credential>,
     /// Entities it brings (stored without DDL like any custom entity; names start with `X`).
     pub entities: Vec<EntityDef>,
 }
@@ -193,6 +216,17 @@ impl Manifest {
                 errors.push(FieldError::new("http_hosts", "use host names such as api.example.com or *.example.com").in_row("http_hosts", i));
             }
         }
+        for (i, c) in self.credentials.iter().enumerate() {
+            if c.name.is_empty() || c.name.len() > 60 || self.credentials.iter().filter(|o| o.name == c.name).count() > 1 {
+                errors.push(FieldError::new("name", "needs a unique name of at most 60 characters").in_row("credentials", i));
+            }
+            if !matches!((c.scheme.as_str(), &c.user), ("bearer", None) | ("basic", Some(_))) {
+                errors.push(FieldError::new("scheme", "bearer, or basic with a user").in_row("credentials", i));
+            }
+            if let Some(h) = c.hosts.iter().find(|h| !self.http_hosts.contains(h)) {
+                errors.push(FieldError::new("hosts", format!("{h} is not among http_hosts")).in_row("credentials", i));
+            }
+        }
         for (i, e) in self.entities.iter().enumerate() {
             if !e.name.starts_with('X') {
                 errors.push(FieldError::new("entities", "plugin entities must be named with an X prefix (like custom entities)").in_row("entities", i));
@@ -231,7 +265,10 @@ pub struct Loaded {
     pub name: String,
     pub sha: String,
     pub manifest: Arc<Manifest>,
+    /// What the plugin reads.
     pub config: Arc<Value>,
+    /// What only the host reads (`Manifest::credentials`).
+    pub credentials: Arc<Map<String, Value>>,
     pub user_id: Option<Uuid>,
     pub fuel: u64,
     pub memory_mb: u32,
@@ -278,6 +315,13 @@ fn seal_config(key: &SecretKey, tenant: Uuid, plugin: &str, config: Map<String, 
 
 fn is_sealed(v: &Value) -> bool {
     v.get(SEALED).is_some_and(Value::is_string)
+}
+
+/// `config` divided into what the plugin reads and what only the host does.
+fn split_credentials(m: &Manifest, config: Value) -> (Value, Map<String, Value>) {
+    let Value::Object(mut readable) = config else { return (config, Map::new()) };
+    let held = m.credentials.iter().filter_map(|c| readable.remove_entry(&c.name)).collect();
+    (Value::Object(readable), held)
 }
 
 /// A sealed value, opened with the first of `keys` that can.
@@ -489,8 +533,18 @@ impl PluginHost {
                 if m.hooks.is_empty() {
                     m.hooks = serde_json::from_value(hooks).unwrap_or_default();
                 }
-                let config = open_config(self.sealing_keys(), tenant, &name, config);
-                Loaded { id, name, sha, manifest: Arc::new(m), config: Arc::new(config), user_id, fuel: fuel.max(0) as u64, memory_mb: mem.max(1) as u32 }
+                let (config, credentials) = split_credentials(&m, open_config(self.sealing_keys(), tenant, &name, config));
+                Loaded {
+                    id,
+                    name,
+                    sha,
+                    manifest: Arc::new(m),
+                    config: Arc::new(config),
+                    credentials: Arc::new(credentials),
+                    user_id,
+                    fuel: fuel.max(0) as u64,
+                    memory_mb: mem.max(1) as u32,
+                }
             })
             .collect();
         let list = Arc::new(list);

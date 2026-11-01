@@ -207,6 +207,9 @@ pub struct Event {
     pub legal_entity: Option<Uuid>,
     pub source_version: Option<i32>,
     pub schema_version: i16,
+    /// The claim this worker holds: `available_at` as it set it, which changes if the claim passes on.
+    #[sqlx(default)]
+    pub lease: chrono::DateTime<chrono::Utc>,
 }
 
 /// How long a claimed batch is reserved for the worker handling it.
@@ -218,9 +221,10 @@ fn require_admin(ctx: &Ctx) -> Result<()> {
     if ctx.is_admin { Ok(()) } else { Err(Error::Forbidden("this is for administrators".into())) }
 }
 
-fn backoff(attempts: i32) -> i64 {
-    // 5s, 10s, 20s ... capped at 1h.
-    (5i64 << attempts.clamp(0, 10)).min(3600)
+fn backoff(attempts: i32) -> f64 {
+    // 5s, 10s, 20s ... capped at 1h, less up to a fifth at random, so that what failed together
+    // does not all come back together.
+    (5i64 << attempts.clamp(0, 10)).min(3600) as f64 * (1.0 - rand::random::<f64>() / 5.0)
 }
 
 impl Kernel {
@@ -247,7 +251,7 @@ impl Kernel {
                cross join lateral (select o.id from outbox o where o.tenant_id = w.tenant_id and o.processed_at is null and not o.dead \
                  and o.available_at <= now() order by o.priority, o.id limit $2 for update skip locked) claimed \
                limit $3) \
-             returning id, tenant_id, topic, entity, record_id, payload, attempts, correlation_id, traceparent, actor, legal_entity, source_version, schema_version",
+             returning id, tenant_id, topic, entity, record_id, payload, attempts, correlation_id, traceparent, actor, legal_entity, source_version, schema_version, available_at as lease",
         )
         .bind(LEASE_SECS)
         .bind(TENANT_SHARE)
@@ -270,6 +274,21 @@ impl Kernel {
     async fn handle_events(&self, mut events: Vec<Event>) -> Result<()> {
         events.sort_by_key(|e| e.id);
         for ev in &events {
+            // The claim covered the batch, and earlier events may have used it up: take this one
+            // afresh. If it has passed to another worker meanwhile, it is theirs, and running it
+            // here too would do the work twice.
+            let mut tx = self.db.system_tx().await?;
+            let lease: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+                "update outbox set available_at = now() + make_interval(secs => $3) \
+                 where id = $1 and available_at = $2 and processed_at is null and not dead returning available_at",
+            )
+            .bind(ev.id)
+            .bind(ev.lease)
+            .bind(LEASE_SECS)
+            .fetch_optional(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            let Some(lease) = lease else { continue };
             let trace = Trace {
                 correlation: ev.correlation_id.clone().unwrap_or_else(|| format!("event-{}", ev.id)),
                 causation: Some(ev.id),
@@ -281,20 +300,25 @@ impl Kernel {
             let mut tx = self.db.system_tx().await?;
             match outcome {
                 Ok(()) => {
-                    sqlx::query("update outbox set processed_at = now(), last_error = null where id = $1").bind(ev.id).execute(&mut *tx).await?;
+                    sqlx::query("update outbox set processed_at = now(), last_error = null where id = $1 and available_at = $2")
+                        .bind(ev.id)
+                        .bind(lease)
+                        .execute(&mut *tx)
+                        .await?;
                 }
                 Err(e) => {
                     let attempts = ev.attempts + 1;
                     tracing::warn!(event = ev.id, topic = %ev.topic, attempts, "outbox handler failed: {e}");
                     sqlx::query(
                         "update outbox set attempts = $2, last_error = $3, dead = $4, \
-                         available_at = now() + make_interval(secs => $5) where id = $1",
+                         available_at = now() + make_interval(secs => $5) where id = $1 and available_at = $6",
                     )
                     .bind(ev.id)
                     .bind(attempts)
                     .bind(e.to_string())
                     .bind(attempts >= MAX_ATTEMPTS)
-                    .bind(backoff(attempts) as f64)
+                    .bind(backoff(attempts))
+                    .bind(lease)
                     .execute(&mut *tx)
                     .await?;
                 }
@@ -642,7 +666,14 @@ mod tests {
         for ip in ["8.8.8.8", "1.1.1.1", "2606:4700::1111"] {
             assert!(!is_private(ip.parse().unwrap()), "{ip}");
         }
-        assert_eq!(backoff(1), 10);
-        assert_eq!(backoff(30), 3600);
+    }
+
+    #[test]
+    fn retries_double_up_to_an_hour_and_spread_out() {
+        for _ in 0..200 {
+            assert!((8.0..=10.0).contains(&backoff(1)));
+            assert!((2880.0..=3600.0).contains(&backoff(30)));
+        }
+        assert_ne!(backoff(30), backoff(30), "what failed together does not come back together");
     }
 }
