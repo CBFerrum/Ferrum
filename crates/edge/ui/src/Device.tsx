@@ -7,7 +7,7 @@ import { useId, useState } from "react";
 import { Link, useParams } from "react-router";
 import { refusal, relativeTime } from "@ferrum/client";
 import { Alert, Badge, Button, Dialog, EmptyState, ErrorState, Field, PageLoading, toast, useShellTitle } from "@ferrum/kit";
-import { type Attribute, desire, device, newToken } from "./data";
+import { type Attribute, desire, device, deviceRecord, newToken, sendCommand } from "./data";
 import { Acknowledge } from "./Alarms";
 import { Tabs } from "./Tabs";
 
@@ -64,6 +64,61 @@ function Ask({ id, attribute, onClose }: { id: string; attribute: Attribute | nu
   );
 }
 
+/** Work for a device, in the same ledger as everything else: what it was commissioned for, and no more. */
+function Send({ id, operations, onClose }: { id: string; operations: string[]; onClose: () => void }) {
+  const form = useId();
+  const [operation, setOperation] = useState(operations[0] ?? "");
+  const [payload, setPayload] = useState("{}");
+  const [minutes, setMinutes] = useState(10);
+  const parsed = (() => {
+    try {
+      return { ok: true, value: JSON.parse(payload) as unknown };
+    } catch {
+      return { ok: false, value: null };
+    }
+  })();
+  const send = useMutation({
+    mutationFn: () => sendCommand(id, operation, parsed.value, minutes * 60),
+    onSuccess: (made) => {
+      toast(made.state === "Proposed" ? "Sent for approval. Nothing moves until someone says so." : "Sent. Operations shows how it goes.");
+      onClose();
+    },
+    onError: (e) => toast(refusal(e), "error"),
+  });
+  return (
+    <Dialog
+      open
+      title="Send a command"
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>Back</Button>
+          <Button variant="primary" disabled={!operation || !parsed.ok || minutes < 1} loading={send.isPending} onClick={() => send.mutate()}>
+            Send it
+          </Button>
+        </>
+      }
+    >
+      <div className="stack">
+        <Field label="Operation" htmlFor={`${form}-o`} required>
+          <select id={`${form}-o`} className="input" value={operation} onChange={(e) => setOperation(e.target.value)}>
+            {operations.map((o) => (
+              <option key={o}>{o}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label="With" htmlFor={`${form}-p`} hint="JSON: what its definition asks of {payload.x}.">
+          <textarea id={`${form}-p`} className="input edge-code" spellCheck={false} rows={4} value={payload} onChange={(e) => setPayload(e.target.value)} />
+        </Field>
+        {parsed.ok ? null : <p className="edge-why">That is not JSON yet.</p>}
+        <Field label="Gives up after (minutes)" htmlFor={`${form}-m`} hint="Not started by then, it does not start.">
+          <input id={`${form}-m`} className="input" type="number" min="1" value={minutes} onChange={(e) => setMinutes(Number(e.target.value))} />
+        </Field>
+      </div>
+    </Dialog>
+  );
+}
+
 function Token({ id, onClose }: { id: string; onClose: () => void }) {
   const q = useQuery({ queryKey: ["edge", "token", id], queryFn: () => newToken(id), staleTime: Infinity, gcTime: 0 });
   return (
@@ -91,6 +146,9 @@ export function DevicePage() {
   const q = useQuery({ queryKey: ["edge", "device", id], queryFn: () => device(id), refetchInterval: 10_000 });
   const [asking, setAsking] = useState<Attribute | "new" | null>(null);
   const [token, setToken] = useState(false);
+  const [sending, setSending] = useState(false);
+  const record = useQuery({ queryKey: ["edge", "device-record", id], queryFn: () => deviceRecord(id) });
+  const operations = record.data?.operations?.map((o) => o.operation) ?? [];
   if (q.isPending) return <PageLoading />;
   if (q.isError) return <ErrorState error={q.error} onRetry={() => void q.refetch()} />;
   const d = q.data;
@@ -102,6 +160,11 @@ export function DevicePage() {
         <Link className="btn btn-default" to={`/e/Device/${id}`}>
           Open the record
         </Link>
+        {operations.length ? (
+          <Button variant="primary" onClick={() => setSending(true)}>
+            Send a command…
+          </Button>
+        ) : null}
         <Button onClick={() => setAsking("new")}>Ask for a value…</Button>
         <Button onClick={() => setToken(true)}>New token…</Button>
       </div>
@@ -182,6 +245,7 @@ export function DevicePage() {
       </section>
       {asking ? <Ask id={id} attribute={asking === "new" ? null : asking} onClose={() => setAsking(null)} /> : null}
       {token ? <Token id={id} onClose={() => setToken(false)} /> : null}
+      {sending ? <Send id={id} operations={operations} onClose={() => setSending(false)} /> : null}
     </div>
   );
 }

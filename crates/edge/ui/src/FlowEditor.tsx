@@ -8,7 +8,7 @@ import { type KeyboardEvent, type PointerEvent, useCallback, useEffect, useId, u
 import { Link, useParams } from "react-router";
 import { refusal, relativeTime } from "@ferrum/client";
 import { Alert, Button, confirmDialog, Dialog, ErrorState, Field, PageLoading, toast, useDebounced, useShellTitle, useUnsavedGuard } from "@ferrum/kit";
-import { LinkInput } from "@ferrum/records";
+import { can, LinkInput, useEntityMeta } from "@ferrum/records";
 import { flowAction, type FlowDoc, flowDoc, type Moment, saveFlow, type Simulated, simulateFlow, tryFlow } from "./data";
 import {
   add,
@@ -16,12 +16,14 @@ import {
   change,
   connect,
   disconnect,
+  firstInput,
   firstScript,
   type Flow,
   type FlowEdge,
   type FlowNode,
   type Group,
   inputsOf,
+  nextInput,
   kindOf,
   KINDS,
   NODE_H,
@@ -88,6 +90,12 @@ function Canvas({
   const width = Math.max(960, ...flow.nodes.map((n) => n.x + NODE_W + 64));
   const height = Math.max(420, ...flow.nodes.map((n) => n.y + NODE_H + 64));
   const down = (e: PointerEvent<SVGGElement>, n: FlowNode) => {
+    // A dot is a small thing to hit with a thumb, so the whole step will do.
+    const input = picked ? firstInput(flow, n) : null;
+    if (input) {
+      join(n.id, input);
+      return;
+    }
     select(n.id);
     if (locked) return;
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -281,10 +289,10 @@ function Wires({ flow, node, setFlow, locked }: { flow: Flow; node: FlowNode; se
   const arriving = flow.edges.filter((e) => e.to === node.id);
   const [port, setPort] = useState(outs[0] ?? "out");
   const [to, setTo] = useState("");
-  const [input, setInput] = useState("in");
+  const [input, setInput] = useState("");
   const target = flow.nodes.find((n) => n.id === to);
   const accepts = target ? (kindOf(target.kind).inputs ?? null) : null;
-  const edge: FlowEdge = { from: node.id, port, to, input: accepts ? (accepts.includes(input) ? input : accepts[0]) : input || "in" };
+  const edge: FlowEdge = { from: node.id, port, to, input: accepts ? (accepts.includes(input) ? input : accepts[0]) : input || (target ? nextInput(flow, target) : "in") };
   const refused = to ? whyNot(flow, edge) : null;
   const label = (nid: string) => {
     const n = flow.nodes.find((x) => x.id === nid);
@@ -337,7 +345,7 @@ function Wires({ flow, node, setFlow, locked }: { flow: Flow; node: FlowNode; se
           </Field>
           {target && accepts === null ? (
             <Field label="As input" htmlFor={`${id}-i`} hint="The name a formula knows it by.">
-              <input id={`${id}-i`} className="input" value={input} onChange={(e) => setInput(e.target.value)} />
+              <input id={`${id}-i`} className="input" placeholder={edge.input} value={input} onChange={(e) => setInput(e.target.value)} />
             </Field>
           ) : accepts && accepts.length > 1 ? (
             <Field label="Into" htmlFor={`${id}-i`}>
@@ -448,6 +456,7 @@ function Simulation({
         </div>
       ))}
       <div className="edge-bar">
+        <Button onClick={() => setLines(firstScript(flow))}>Start again from this flow</Button>
         <Button onClick={() => setLines((l) => [...l, { ...(l[l.length - 1] ?? { at: 0, device: "DEVICE-1", what: "metric", name: "", value: "1" }), at: (l[l.length - 1]?.at ?? -10) + 10 }])}>Add a line</Button>
         <Button variant="primary" disabled={lines.length === 0} loading={running} onClick={() => run(lines, waitFor(flow, lines))}>
           Run it
@@ -537,7 +546,9 @@ export function FlowEditor() {
   }, [doc]);
   const text = useMemo(() => JSON.stringify(flow), [flow]);
   const dirty = doc !== undefined && text !== JSON.stringify(parseFlow(saved));
-  const locked = doc?.status !== "Draft";
+  const meta = useEntityMeta("EdgeFlow");
+  const writable = meta.data ? can(meta.data.permissions, "write") : false;
+  const locked = doc?.status !== "Draft" || !writable;
   const { dialog } = useUnsavedGuard(dirty);
   const settled = useDebounced(text, 500);
   const check = useQuery({ queryKey: ["edge", "flow-check", settled], queryFn: () => tryFlow(settled), enabled: flow.nodes.length > 0, staleTime: Infinity });
@@ -606,12 +617,12 @@ export function FlowEditor() {
             Save
           </Button>
         )}
-        {d.status === "Draft" ? (
+        {!writable ? null : d.status === "Draft" ? (
           <Button variant="primary" disabled={problem !== null} loading={act.isPending} onClick={() => act.mutate({ name: "submit_for_review", done: "Sent. Someone else reviews it next." })}>
             Send for review
           </Button>
         ) : null}
-        {d.status === "In Review" ? (
+        {writable && d.status === "In Review" ? (
           <>
             <Button onClick={() => setSendingBack(true)}>Send back…</Button>
             <Button variant="primary" loading={act.isPending} onClick={() => act.mutate({ name: "approve", done: "Approved." })}>
@@ -619,7 +630,7 @@ export function FlowEditor() {
             </Button>
           </>
         ) : null}
-        {d.status === "Approved" ? (
+        {writable && d.status === "Approved" ? (
           <Button
             variant="primary"
             loading={act.isPending}
@@ -629,10 +640,10 @@ export function FlowEditor() {
             Run it
           </Button>
         ) : null}
-        {d.status !== "Draft" ? (
+        {writable && d.status !== "Draft" ? (
           <Button onClick={() => act.mutate({ name: "revise", done: "It is a draft again. What is running stays as it is." })}>Change it</Button>
         ) : null}
-        {d.live ? <Button onClick={() => void stop()}>Stop it</Button> : null}
+        {writable && d.live ? <Button onClick={() => void stop()}>Stop it</Button> : null}
       </div>
       <Stages doc={d} digest={check.data?.digest} />
       {d.live && d.status === "Draft" ? <Alert tone="info">Version {d.revision} is running. Your changes reach nobody until they have been through review.</Alert> : null}
@@ -690,7 +701,7 @@ export function FlowEditor() {
       <section className="card card-pad stack" aria-label="Where it runs">
         <SiteChoice doc={d} locked={locked} />
       </section>
-      {flow.nodes.length ? <Simulation key={flow.nodes.length} flow={flow} run={(l, u) => void run(l, u)} result={result} running={simulating} chosen={chosen} choose={choose} canRecord={!locked} /> : null}
+      {flow.nodes.length ? <Simulation flow={flow} run={(l, u) => void run(l, u)} result={result} running={simulating} chosen={chosen} choose={choose} canRecord={!locked} /> : null}
       {sendingBack ? (
         <SendBack
           onClose={() => setSendingBack(false)}

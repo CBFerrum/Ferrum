@@ -112,6 +112,11 @@ impl Limits {
         self.allow.is_empty() || self.allow.iter().any(|a| host.starts_with(a.as_str()))
     }
 
+    /// Whether an address may be reached, for what opens connections of its own.
+    pub fn reaches(&self, address: &str) -> bool {
+        address.split_once("://").is_some_and(|(_, rest)| self.host_allowed(host_of(rest)))
+    }
+
     /// The program a `process://` address names, which must be a file in `drivers_dir`, however it
     /// is written: a definition from the platform must not run whatever it likes on a gateway.
     fn driver(&self, name: &str) -> Result<PathBuf, String> {

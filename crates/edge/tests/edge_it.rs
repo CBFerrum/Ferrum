@@ -392,7 +392,9 @@ async fn scenario() {
 
     let locked = k.update(&engineer, "EdgeFlow", draft, obj(json!({"body": "{}"})), None).await;
     assert!(locked.is_err(), "what a reviewer is reading cannot change under them");
-    assert!(k.run_action(&engineer, "EdgeFlow", draft, "approve", json!({})).await.is_err(), "an engineer does not approve");
+    assert!(k.run_action(&engineer, "EdgeFlow", draft, "approve", json!({})).await.is_err(), "nor does its author");
+    let second = person("eng2@edge.test", &["Edge Engineer"]).await;
+    assert!(k.run_action(&second, "EdgeFlow", draft, "approve", json!({})).await.is_err(), "and another engineer is not a reviewer");
     assert!(k.run_action(&reviewer, "EdgeFlow", draft, "activate", json!({})).await.is_err(), "nothing runs before it is approved");
     assert!(gateway1.fetch(&t, "").await.unwrap().flows.is_empty(), "and no gateway hears of it");
     k.run_action(&reviewer, "EdgeFlow", draft, "send_back", json!({"note": "Say why 100"})).await.expect("sent back");

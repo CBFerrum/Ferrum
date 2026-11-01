@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { add, arrange, change, connect, disconnect, firstScript, inputsOf, parseFlow, portsOf, reaches, remove, sayEffect, scriptBody, STARTS, summary, waitFor, whyNot, wirePath, type Flow } from "./drawing";
+import { add, arrange, change, connect, disconnect, firstInput, firstScript, inputsOf, nextInput, parseFlow, portsOf, reaches, remove, sayEffect, scriptBody, STARTS, summary, waitFor, whyNot, wirePath, type Flow } from "./drawing";
 
 const chain: Flow = {
   nodes: [
@@ -61,6 +61,13 @@ describe("drawing", () => {
     const f: Flow = { nodes: [{ id: "k", kind: "combine", x: 0, y: 0 }], edges: [{ from: "a", to: "k", input: "v" }, { from: "b", to: "k", input: "a" }] };
     expect(inputsOf(f, f.nodes[0]!)).toEqual(["v", "a"]);
     expect(inputsOf(chain, chain.nodes[2]!)).toEqual(["in", "clear"]);
+  });
+
+  it("names each new wire into a combine, so that a formula can tell them apart", () => {
+    const f: Flow = { nodes: [{ id: "k", kind: "combine", x: 0, y: 0 }], edges: [{ from: "a", to: "k", input: "a" }] };
+    expect(nextInput(f, f.nodes[0]!)).toBe("b");
+    expect(firstInput(chain, chain.nodes[2]!)).toBe("in");
+    expect(firstInput(chain, chain.nodes[0]!)).toBeNull();
   });
 
   it("keeps a wire level where it leaves and arrives", () => {

@@ -136,6 +136,9 @@ commands:
     let n = tokio::time::timeout(Wait::from_secs(2), two.read(&mut buf)).await.unwrap().unwrap();
     assert_eq!(&buf[..n], b"PING T-2\n", "it reached the one it was for");
     assert!(tokio::time::timeout(Wait::from_millis(100), one.read(&mut buf)).await.is_err(), "and nobody else");
+    d.dispatch(&command("tracker.ping", json!({})), &device("T-1")).await.expect("sent");
+    let n = tokio::time::timeout(Wait::from_secs(2), one.read(&mut buf)).await.unwrap().unwrap();
+    assert_eq!(&buf[..n], b"PING T-1\n", "and so did the other");
 
     two.write_all(b"T-9 t=1.0\n").await.unwrap();
     until("the stranger", async || d.strangers().contains(&"T-9".to_string())).await;
@@ -393,6 +396,12 @@ mod opcua_server {
             self.manager.set_value(self.handle.subscriptions(), &NodeId::new(self.ns, name), None, value).unwrap();
         }
 
+        pub fn set_bad(&self, name: &str, value: impl Into<Variant>) {
+            let mut value = DataValue::new_now(value.into());
+            value.status = Some(StatusCode::BadSensorFailure);
+            self.manager.set_value(self.handle.subscriptions(), &NodeId::new(self.ns, name), None, value).unwrap();
+        }
+
         pub fn get(&self, name: &str) -> Option<Variant> {
             let space = self.manager.address_space().read();
             let id = NodeId::new(self.ns, name);
@@ -509,7 +518,15 @@ commands:
     // A value that does not fit is refused here, not rounded and sent.
     let wide = d.dispatch(&command("press.set_job", json!({"job": 70000})), &device("PRESS-1")).await;
     assert!(matches!(wide, Err(Failure::NotSent(ref why)) | Ok(Dispatched::Rejected(ref why)) if why.contains("does not fit")), "{wide:?}");
+    let cut = d.dispatch(&command("press.set_job", json!({"job": 1.5})), &device("PRESS-1")).await;
+    assert!(matches!(cut, Err(Failure::NotSent(ref why)) if why.contains("does not fit")), "nor is a fraction cut off: {cut:?}");
     assert_eq!(plc.get("Job"), Some(opcua::types::Variant::Int16(0)));
+
+    // What the server itself calls bad is not a reading, whatever number came with it.
+    plc.set_bad("Temp", 999.5f64);
+    plc.set("Temp", 22.5f64);
+    seen.reading(&d, |r| metric(r, "temp", 22.5)).await;
+    assert!(!seen.0.lock().unwrap().iter().any(|r| metric(r, "temp", 999.5)), "a failed sensor's number was recorded");
 
     let c = command("press.start", json!({"job": 42}));
     d.dispatch(&c, &device("PRESS-1")).await.expect("called");
