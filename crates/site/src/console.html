@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Site console</title>
+<style>
+:root { --bg: #fff; --fg: #1a1f24; --muted: #5b6570; --line: #d8dde3; --panel: #f4f6f8; --ok: #0f766e; --warn: #b45309; --bad: #b91c1c; --accent: #0f766e; }
+@media (prefers-color-scheme: dark) { :root { --bg: #14181c; --fg: #e8ecef; --muted: #9aa5b0; --line: #2d343b; --panel: #1c2126; --ok: #2dd4bf; --warn: #fbbf24; --bad: #f87171; --accent: #2dd4bf; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.45 system-ui, sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+header h1 { font-size: 18px; margin: 0; }
+main { max-width: 860px; margin: 0 auto; padding: 16px; }
+.banner { padding: 12px 14px; border-radius: 6px; border: 1px solid var(--bad); color: var(--bad); margin-bottom: 16px; font-weight: 600; }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-bottom: 20px; }
+.fact { background: var(--panel); border-radius: 6px; padding: 10px 12px; }
+.fact b { display: block; font-size: 22px; }
+.fact span { color: var(--muted); font-size: 13px; }
+h2 { font-size: 16px; margin: 24px 0 8px; }
+.item { border: 1px solid var(--line); border-radius: 6px; padding: 12px; margin-bottom: 10px; }
+.item h3 { margin: 0 0 4px; font-size: 16px; }
+.item p { margin: 4px 0; color: var(--muted); overflow-wrap: anywhere; }
+label { display: block; margin: 8px 0 4px; font-size: 14px; }
+input, textarea, select { width: 100%; padding: 12px; font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+button { min-height: 44px; padding: 8px 16px; margin: 8px 8px 0 0; font: inherit; font-weight: 600; color: var(--bg); background: var(--accent); border: 0; border-radius: 6px; cursor: pointer; }
+button.quiet { color: var(--fg); background: var(--panel); }
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 3px solid var(--warn); outline-offset: 1px; }
+.dot { font-weight: 600; }
+.up { color: var(--ok); } .down { color: var(--warn); }
+.error { color: var(--bad); min-height: 1.4em; }
+.empty { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Site console</h1>
+  <span id="link" class="dot"></span>
+  <span id="who"></span>
+</header>
+<main>
+  <div id="banner" class="banner" role="alert" hidden></div>
+  <section class="facts" aria-label="This site now">
+    <div class="fact"><b id="queued">0</b><span>waiting</span></div>
+    <div class="fact"><b id="running">0</b><span>running</span></div>
+    <div class="fact"><b id="unknown">0</b><span>unknown outcome</span></div>
+    <div class="fact"><b id="unsent">0</b><span>not yet sent up</span></div>
+    <div class="fact"><b id="lease">–</b><span>offline allowance left</span></div>
+  </section>
+  <section id="signin">
+    <h2>Sign in</h2>
+    <form id="pin-form">
+      <label for="pin">PIN</label>
+      <input id="pin" inputmode="numeric" autocomplete="off" type="password">
+      <button>Sign in</button>
+      <p class="error" id="pin-error" role="alert"></p>
+    </form>
+  </section>
+  <section id="work" hidden>
+    <h2>Unknown outcomes</h2>
+    <p class="empty" id="unknown-empty">Nothing is in doubt.</p>
+    <div id="unknown-list"></div>
+    <h2>Your tasks</h2>
+    <p class="empty" id="tasks-empty">No tasks for people right now.</p>
+    <div id="task-list"></div>
+    <h2>Waiting</h2>
+    <p class="empty" id="queued-empty">Nothing is waiting.</p>
+    <div id="queued-list"></div>
+  </section>
+  <section>
+    <h2>Notices</h2>
+    <div id="notices" class="empty">None.</div>
+  </section>
+</main>
+<script>
+let token = null;
+const $ = id => document.getElementById(id);
+const call = async (path, body) => {
+  const r = await fetch(path, { method: body === undefined ? 'GET' : 'POST', headers: { 'content-type': 'application/json', ...(token ? { authorization: 'Bearer ' + token } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
+  if (r.status === 204) return null;
+  const v = await r.json();
+  if (!r.ok) throw new Error(v.error || r.statusText);
+  return v;
+};
+const text = (tag, value, cls) => { const e = document.createElement(tag); e.textContent = value; if (cls) e.className = cls; return e; };
+const button = (label, fn, quiet) => { const b = text('button', label, quiet ? 'quiet' : ''); b.type = 'button'; b.onclick = fn; return b; };
+const describe = c => { const p = c.payload || {}; return Object.entries(p).filter(([k]) => k !== 'task' && k !== 'verify').map(([k, v]) => k + ': ' + (typeof v === 'object' ? JSON.stringify(v) : v)).join(' · ') || 'No details'; };
+function unknownItem(c) {
+  const box = text('div', '', 'item');
+  box.append(text('h3', c.operation), text('p', describe(c)), text('p', 'Nobody can say how this ended. Look at the equipment, then record what you found.'));
+  const id = 'found-' + c.id, l = text('label', 'What you found'); l.htmlFor = id;
+  const found = document.createElement('textarea'); found.id = id; found.rows = 2;
+  const error = text('p', '', 'error'); error.setAttribute('role', 'alert');
+  const settle = to => async () => { try { await call(`/api/commands/${c.id}/settle`, { to, found: found.value }); refresh(); } catch (e) { error.textContent = e.message; } };
+  box.append(l, found, button('It finished', settle('Completed')), button('It failed', settle('Failed'), true), button('It was stopped', settle('Aborted'), true), error);
+  return box;
+}
+function taskItem(c) {
+  const box = text('div', '', 'item');
+  box.append(text('h3', c.operation), text('p', describe(c)));
+  if (c.cancel_requested) box.append(text('p', 'A stop was requested. If you have not touched it, record that it failed and say so.'));
+  const id = 'scan-' + c.id, l = text('label', c.payload && c.payload.verify ? 'Scan to confirm' : 'Scan or note'); l.htmlFor = id;
+  const scan = document.createElement('input'); scan.id = id; scan.autocomplete = 'off';
+  const error = text('p', '', 'error'); error.setAttribute('role', 'alert');
+  const step = action => async () => { try { await call(`/api/tasks/${c.id}/${action}`, { scan: scan.value, note: scan.value }); refresh(); } catch (e) { error.textContent = e.message; } };
+  if (c.task === 'Waiting') box.append(button('Start', step('start')));
+  box.append(l, scan, button('Done', step('done')), button('Could not do it', step('fail'), true), error);
+  return box;
+}
+function fill(listId, emptyId, items, make) {
+  const list = $(listId); list.replaceChildren(...items.map(make)); $(emptyId).hidden = items.length > 0;
+}
+const left = until => { if (!until) return '–'; const ms = new Date(until) - Date.now(); if (ms <= 0) return 'none'; const h = Math.floor(ms / 3.6e6); return h >= 1 ? h + ' h' : Math.ceil(ms / 6e4) + ' min'; };
+let focused = null;
+async function refresh() {
+  try {
+    const s = await call('/api/status');
+    $('link').textContent = s.link_up ? 'Connected to the platform' : 'Working offline';
+    $('link').className = 'dot ' + (s.link_up ? 'up' : 'down');
+    $('banner').hidden = !s.stopped; $('banner').textContent = s.stopped || '';
+    $('queued').textContent = s.queued; $('running').textContent = s.running; $('unknown').textContent = s.unknown;
+    $('unsent').textContent = s.unsent_reports + s.unsent_facts; $('lease').textContent = left(s.lease_until);
+    const notices = s.notices || [];
+    $('notices').replaceChildren(...(notices.length ? notices.map(([at, t]) => text('p', new Date(at).toLocaleString() + ' — ' + t)) : [text('span', 'None.')]));
+    if (token && !(document.activeElement && ['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName))) {
+      const w = await call('/api/work');
+      fill('unknown-list', 'unknown-empty', w.unknown, unknownItem);
+      fill('task-list', 'tasks-empty', w.tasks, taskItem);
+      fill('queued-list', 'queued-empty', w.queued, c => { const b = text('div', '', 'item'); b.append(text('h3', c.operation), text('p', describe(c))); if (c.held) b.append(text('p', c.held)); return b; });
+    }
+  } catch (e) { if (/sign in/i.test(e.message)) { token = null; show(); } }
+}
+function show() { $('signin').hidden = !!token; $('work').hidden = !token; }
+$('pin-form').onsubmit = async e => {
+  e.preventDefault();
+  try { const r = await call('/api/login', { pin: $('pin').value }); token = r.token; $('who').textContent = r.name; $('pin').value = ''; $('pin-error').textContent = ''; show(); refresh(); }
+  catch (err) { $('pin-error').textContent = err.message; }
+};
+show(); refresh(); setInterval(refresh, 3000);
+</script>
+</body>
+</html>

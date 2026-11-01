@@ -1,0 +1,54 @@
+[package]
+name = "ferrum-site"
+description = "The site runtime: keeps physical work going next to the equipment when the link to the platform is down. One binary with an embedded journal."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+default-run = "ferrum-site"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "ferrum-site"
+path = "src/main.rs"
+
+[features]
+default = ["mqtt", "modbus"]
+mqtt = ["dep:rumqttc"]
+modbus = ["dep:tokio-modbus"]
+# Deliberate crashes at named points, for the recovery tests. Never in a release.
+failpoints = []
+
+[dependencies]
+ferrum-ops-contract = { path = "../ops-contract" }
+async-trait = { workspace = true }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query"] }
+chrono = { workspace = true }
+ed25519-dalek = { version = "2.2", default-features = false, features = ["std", "fast"] }
+hex = { workspace = true }
+libc = "0.2"
+rand = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+rumqttc = { version = "0.25", optional = true, default-features = false }
+rusqlite = { version = "0.39", features = ["bundled"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["net", "process", "io-util"] }
+tokio-modbus = { version = "0.17", optional = true, default-features = false, features = ["tcp"] }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+uuid = { workspace = true }
+
+[dev-dependencies]
+ferrum-domain = { path = "../domain" }
+ferrum-kernel = { path = "../kernel" }
+ferrum-meta = { path = "../meta" }
+ferrum-ops = { path = "../ops" }
+sqlx = { workspace = true }
+
+[lints]
+workspace = true
