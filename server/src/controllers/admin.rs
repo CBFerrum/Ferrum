@@ -335,6 +335,16 @@ async fn deprovision_user(Auth(ctx): Auth, State(app): State<AppContext>, Path(i
     Ok(Json(app_state(&app)?.kernel.deprovision_user(&ctx, id, b.reassign_to, &b.reason).await?).into_response())
 }
 
+#[derive(Deserialize)]
+struct HandOver {
+    to: Uuid,
+    reason: String,
+}
+
+async fn hand_over_work(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>, Json(b): Json<HandOver>) -> ApiResult<Response> {
+    Ok(Json(app_state(&app)?.kernel.hand_over_work(&ctx, id, b.to, &b.reason).await?).into_response())
+}
+
 async fn scim_groups(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
     Ok(Json(json!({"groups": app_state(&app)?.kernel.scim_group_map(&ctx).await?})).into_response())
 }
@@ -547,6 +557,7 @@ pub fn routes() -> Routes {
         .add("/admin/legal-holds/{id}/release", post(release_legal_hold))
         .add("/admin/access/explain", get(explain_access))
         .add("/admin/users/{id}/deprovision", post(deprovision_user))
+        .add("/admin/users/{id}/hand-over", post(hand_over_work))
         .add("/admin/scim/groups", get(scim_groups))
         .add("/admin/scim/groups/{id}/roles", put(map_scim_group))
         .add("/admin/events/dead", get(dead_events))
