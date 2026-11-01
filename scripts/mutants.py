@@ -66,6 +66,7 @@ MUTANTS = [
     ("flow-one-device-for-all", "crates/ops-contract/src/flow.rs", '        let key = device.unwrap_or_default();\n        match &node.kind {', '        let key = "";\n        match &node.kind {', CONTRACT),
     ("sparkplug-old-aliases-kept", "crates/ops-contract/src/sparkplug.rs", '        if *kind == "NBIRTH" {\n            names.clear();\n        }\n', "", CONTRACT),
     ("frame-check-ignored", "crates/ops-contract/src/driver.rs", "(self.over(body) == check).then_some(body)", "Some(body)", CONTRACT),
+    ("replaced-link-keeps-running", "crates/site/src/adapters/defined.rs", "            if !wanted {\n                link.close();\n            }\n", "            let _ = link;\n", PROTOCOLS),
     ("listen-on-any-port", "crates/site/src/adapters/transport.rs", "if !limits.listen.iter().any(|a| a == bind) {", "if false {", SITE_UNIT),
     ("certificate-from-anywhere", "crates/site/src/adapters/transport.rs", 'if !path.starts_with(&dir) {\n            return Err(format!("{name} is outside the certificates directory"));', 'if false {\n            return Err(format!("{name} is outside the certificates directory"));', SITE_UNIT),
     ("webhook-open-to-anyone", "crates/site/src/adapters/transport.rs", "if Sha256::digest(said) != Sha256::digest(want) {", "if false {", PROTOCOLS),

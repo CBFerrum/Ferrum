@@ -557,6 +557,12 @@ impl Link {
         locked(&self.shared).readings.drain(..).collect()
     }
 
+    /// Ends its tasks, and with them the connection. They hold this link alive, so nothing but this
+    /// stops them, and a replaced link left running would keep polling and keep its port.
+    fn close(&self) {
+        let _ = self.stop.send(true);
+    }
+
     fn health(&self) -> LinkHealth {
         let s = locked(&self.shared);
         LinkHealth {
@@ -570,12 +576,6 @@ impl Link {
             reconnects: self.counters.reconnects.load(Ordering::Relaxed),
             last_error: s.last_error.clone(),
         }
-    }
-}
-
-impl Drop for Link {
-    fn drop(&mut self) {
-        let _ = self.stop.send(true);
     }
 }
 
@@ -691,7 +691,13 @@ impl Defined {
             groups.entry((c.digest.clone(), address)).or_default().push(d.clone());
         }
         let mut links = self.links.write().unwrap_or_else(|e| e.into_inner());
-        links.retain(|key, _| groups.contains_key(key));
+        links.retain(|key, link| {
+            let wanted = groups.contains_key(key);
+            if !wanted {
+                link.close();
+            }
+            wanted
+        });
         let mut by_device = HashMap::new();
         for ((digest, address), devices) in groups {
             let key = (digest, address.clone());
