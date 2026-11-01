@@ -3,10 +3,10 @@
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{Auth, BrowserSession, SetupAuth, client_ip};
 use crate::state::{AppState, app_state};
-use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use axum::{Form, Json};
 use ferrum_kernel::Error;
 use ferrum_kernel::auth::{Session, SignIn};
 use ferrum_kernel::identity::DIRECTORY;
@@ -15,6 +15,7 @@ use loco_rs::auth::jwt::JWT;
 use loco_rs::controller::Routes;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 #[derive(Deserialize)]
@@ -256,6 +257,25 @@ async fn sso_finish(State(app): State<AppContext>, headers: HeaderMap, Json(req)
     }
     let s = st.kernel.sso_finish(&req.state, &req.code, &req.binding).await?;
     session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie")).await
+}
+
+/// `POST /api/auth/sso/{provider}/backchannel-logout`: a provider says someone signed out there. The
+/// answers are the standard's: 200 when done, 400 with `invalid_request` when the token is refused.
+async fn sso_backchannel_logout(
+    State(app): State<AppContext>,
+    headers: HeaderMap,
+    Path(provider): Path<Uuid>,
+    Form(form): Form<HashMap<String, String>>,
+) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    st.login_limiter.check(&format!("{}|sso-logout", client_ip(&headers))).await?;
+    let token = form.get("logout_token").map(String::as_str).filter(|t| t.len() <= 16 * 1024).unwrap_or_default();
+    let store = [(header::CACHE_CONTROL, "no-store")];
+    Ok(match st.kernel.sso_backchannel_logout(provider, token).await {
+        Ok(()) => (StatusCode::OK, store).into_response(),
+        Err(Error::Unauthorized(why)) => (StatusCode::BAD_REQUEST, store, Json(json!({"error": "invalid_request", "error_description": why}))).into_response(),
+        Err(e) => return Err(ApiError(e)),
+    })
 }
 
 async fn me(SetupAuth(ctx, setup_only): SetupAuth, State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
@@ -667,6 +687,7 @@ pub fn routes() -> Routes {
         .add("/sso", get(sso_options))
         .add("/sso/start", post(sso_start))
         .add("/sso/finish", post(sso_finish))
+        .add("/sso/{provider}/backchannel-logout", post(sso_backchannel_logout))
         .add("/me", get(me))
         .add("/2fa", get(two_factor_status))
         .add("/2fa/begin", post(two_factor_begin))

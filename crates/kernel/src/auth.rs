@@ -51,6 +51,23 @@ pub const USERS_CHANNEL: &str = "ferrum_users";
 
 /// Tells every replica, when `tx` commits, to drop its cached copy of a user (or of all the
 /// tenant's users when `user` is `None`).
+/// Ends everything someone is signed in with, on every replica: sessions and refresh tokens. API
+/// keys are not sign-ins, and stay.
+pub(crate) async fn end_sessions(tx: &mut Tx, tenant: Uuid, user: Uuid) -> Result<()> {
+    sqlx::query("update app_user set token_version = token_version + 1 where tenant_id = $1 and id = $2").bind(tenant).bind(user).execute(&mut **tx).await?;
+    sqlx::query("update user_session set revoked_at = now() where tenant_id = $1 and user_id = $2 and revoked_at is null")
+        .bind(tenant)
+        .bind(user)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("update oauth_refresh set revoked_at = now() where tenant_id = $1 and user_id = $2 and revoked_at is null")
+        .bind(tenant)
+        .bind(user)
+        .execute(&mut **tx)
+        .await?;
+    notify_users(tx, tenant, Some(user)).await
+}
+
 pub(crate) async fn notify_users(tx: &mut Tx, tenant: Uuid, user: Option<Uuid>) -> Result<()> {
     let payload = match user {
         Some(u) => format!("{tenant}:{u}"),

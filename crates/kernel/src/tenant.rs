@@ -89,6 +89,12 @@ impl Kernel {
         let catalog = self.registry.catalog();
         let closure = catalog.closure(names).map_err(|e| Error::invalid(e.to_string()))?;
         let mut tx = self.db.system_tenant_tx(tenant).await?;
+        // What it would install beside what is there: a hook must not run without one it waits for.
+        let installed: Vec<String> = sqlx::query_scalar("select name from installed_package where tenant_id = $1").bind(tenant).fetch_all(&mut *tx).await?;
+        let unmet = self.hooks.unmet(&installed.into_iter().chain(closure.iter().cloned()).collect::<Vec<_>>());
+        if !unmet.is_empty() {
+            return Err(Error::invalid(format!("these packages cannot be installed: {}", unmet.join("; "))));
+        }
         for name in &closure {
             let pkg = catalog.package(name).ok_or_else(|| Error::internal("package vanished"))?;
             sqlx::query(
@@ -150,6 +156,7 @@ impl Kernel {
                 }
             }
         }
+        self.report_conflicts(tenant).await?;
         Ok(closure)
     }
 

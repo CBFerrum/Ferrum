@@ -71,6 +71,10 @@ required?, description?}]`): the form asks for them, prefilled from the record's
 name, and sends them as the action's body. An action whose result carries `file: {name, type,
 content}` makes the form save that file (e-invoice JSON, say).
 
+`POST /api/auth/sso/{provider}/backchannel-logout` takes `logout_token` as a form field, from the
+provider ([OpenID Connect Back-Channel Logout](operations.md#sign-in-security)): `200`, or `400
+{error: "invalid_request"}` when the token is refused.
+
 ## Ferrum accounts — the accounts host (shapes B and C)
 
 With `FERRUM_BASE_DOMAIN` set ([operations](operations.md#many-workspaces-subdomains-and-ferrum-accounts),
