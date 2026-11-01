@@ -226,6 +226,11 @@ impl Catalog {
                     return invalid(format!("{name}: personal data of {}: {c} is not a field", pd.entity));
                 }
             }
+            for t in &p.manifest.export_tables {
+                if t.is_empty() || !t.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+                    return invalid(format!("{name}: export_tables: {t:?} is not a table name"));
+                }
+            }
             for h in &p.manifest.handover {
                 let Some((_, e)) = self.entities.get(&h.entity) else {
                     return invalid(format!("{name}: handover of unknown entity {}", h.entity));

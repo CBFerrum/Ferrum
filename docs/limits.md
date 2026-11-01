@@ -68,6 +68,16 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   receive OpenID Connect's back-channel logout. Apps do not yet hand over what they keep when someone
   leaves: Drive shares and helpdesk queues stay with them.
 
+- **Background jobs** have no calendar: nothing schedules one for later or repeats it. Apps' periodic
+  work stays in their `maintenance`. A running job hears of a cancellation within 5 seconds, and work
+  done in earlier transactions stays done.
+- **Workspace exports** are for taking data away, and nothing here reads one back in: restoring a
+  workspace is done from a database backup. Each attached file is held in memory while it is written
+  (the largest attachment sets what a replica needs), and a part that fails to store costs the
+  attempt, which starts over. A person's erasure reaches exports already made only when they are
+  deleted, after 7 days. Tables nobody declared are named in the manifest, not carried.
+- **Bulk jobs** reach at most 100,000 records, and list the first 1,000 failures.
+
 ## Accounting and finance
 
 - Payment deductions are entered in the payment currency; the exchange difference posts to the

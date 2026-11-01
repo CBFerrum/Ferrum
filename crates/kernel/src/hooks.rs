@@ -165,6 +165,7 @@ pub struct HookRegistry {
     sinks: Vec<Arc<dyn EventSink>>,
     sites: HashMap<String, Arc<dyn Site>>,
     doc_hosts: HashMap<String, Arc<dyn DocHost>>,
+    job_handlers: HashMap<&'static str, Arc<dyn crate::jobs::JobHandler>>,
     /// The packages owning what is being registered (see [`HookRegistry::scoped`]).
     scope: Option<Arc<[String]>>,
 }
@@ -226,6 +227,16 @@ impl HookRegistry {
 
     pub fn event_sinks(&self) -> &[Arc<dyn EventSink>] {
         &self.sinks
+    }
+
+    /// Adds a kind of background work (crate::jobs). Kinds are `{app}.{what}`.
+    pub fn add_job_handler(&mut self, handler: Arc<dyn crate::jobs::JobHandler>) -> &mut Self {
+        self.job_handlers.insert(handler.kind(), handler);
+        self
+    }
+
+    pub fn job_handler(&self, kind: &str) -> Option<&Arc<dyn crate::jobs::JobHandler>> {
+        self.job_handlers.get(kind)
     }
 
     pub fn entities(&self) -> impl Iterator<Item = &String> {

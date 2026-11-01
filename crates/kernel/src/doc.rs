@@ -153,16 +153,14 @@ impl Kernel {
         qb.push(") x");
         let rows: Vec<Value> = qb.build_query_scalar().fetch_all(&mut *tx).await?;
         let has_more = rows.len() as i64 > limit;
+        // From the row, not the document: documents show milliseconds, and a cursor rounded to one
+        // would repeat a record at the edge of a page, or skip those created within that millisecond.
+        let next_cursor = rows.get(limit as usize - 1).filter(|_| has_more && keyset_ok).and_then(|r| {
+            let ts = r.get(&sort_field)?.as_str()?;
+            let id = r.get("id")?.as_str()?;
+            Some(query::encode_cursor(ts, id))
+        });
         let mut docs: Vec<Doc> = rows.into_iter().take(limit as usize).map(|r| self.mask(ctx, &ent, store::row_to_doc(&ent, &ctx.schema, r))).collect();
-        let next_cursor = if has_more && keyset_ok {
-            docs.last().and_then(|d| {
-                let ts = d.get(&sort_field)?.as_str()?;
-                let id = d.get("id")?.as_str()?;
-                Some(query::encode_cursor(ts, id))
-            })
-        } else {
-            None
-        };
         let total = if q.with_count {
             let mut cq = QueryBuilder::new("select count(*)");
             query::push_from_where_for(&mut cq, ctx, &ent, &scope, &q.filters, q.search.as_deref())?;

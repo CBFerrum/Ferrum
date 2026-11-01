@@ -19,9 +19,11 @@ pub mod ddl;
 pub mod describe;
 pub mod doc;
 pub mod error;
+pub mod export;
 pub mod files;
 pub mod hooks;
 pub mod identity;
+pub mod jobs;
 pub mod lifecycle;
 pub mod notify;
 pub mod numbering;
@@ -226,14 +228,17 @@ impl Kernel {
                 }
             })
         };
-        vec![self.spawn_outbox_dispatcher(shutdown.clone()), self.spawn_webhook_sender(shutdown), maintenance]
+        vec![self.spawn_outbox_dispatcher(shutdown.clone()), self.spawn_webhook_sender(shutdown.clone()), self.spawn_job_runner(shutdown), maintenance]
     }
 
     /// Hourly: anchor yesterday's audit trail, purge expired events and idempotency keys.
     pub async fn maintenance(&self) -> Result<()> {
         let yesterday = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
         audit::anchor_day(&self.db, yesterday).await?;
-        let purged = self.purge_old_events(self.settings.event_retention_days).await? + self.oauth_purge().await? + self.purge_sessions().await?;
+        let purged = self.purge_old_events(self.settings.event_retention_days).await?
+            + self.oauth_purge().await?
+            + self.purge_sessions().await?
+            + self.purge_exports().await?;
         if purged > 0 {
             tracing::info!(purged, "old events purged");
         }

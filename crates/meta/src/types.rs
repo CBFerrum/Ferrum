@@ -34,6 +34,10 @@ pub struct PackageManifest {
     pub personal_data: Vec<PersonalDataDef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub handover: Vec<HandoverDef>,
+    /// Engine tables a workspace export carries (journals, stock moves): whole rows, so none of
+    /// these may hold a secret. Tables not named here are listed in the export as left out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub export_tables: Vec<String>,
 }
 
 /// Records of one entity that belong to a person: those whose `match` field (an email field, or a

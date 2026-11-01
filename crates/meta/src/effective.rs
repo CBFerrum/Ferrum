@@ -154,6 +154,7 @@ pub struct Schema {
     /// Installed packages that declare no personal data, so requests do not search them.
     pub undeclared_personal_data: Vec<String>,
     pub handover: Vec<HandoverDef>,
+    pub export_tables: Vec<String>,
     pub warnings: Vec<SchemaWarning>,
     /// The tenant's fiscal year start month (1-12), for contexts that act without a user.
     pub fy_start_month: u32,
@@ -209,6 +210,7 @@ impl Default for Schema {
             personal_data: vec![],
             undeclared_personal_data: vec![],
             handover: vec![],
+            export_tables: vec![],
             warnings: vec![],
             fy_start_month: 1,
             timezone: "UTC".into(),
@@ -446,6 +448,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
     let mut personal_data = Vec::new();
     let mut undeclared_personal_data = Vec::new();
     let mut handover = Vec::new();
+    let mut export_tables = Vec::new();
     let mut warnings = Vec::new();
 
     for pkg in catalog.packages().filter(|p| set.contains(p.name())) {
@@ -458,6 +461,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         roles.extend(pkg.manifest.roles.iter().cloned());
         personal_data.extend(pkg.manifest.personal_data.iter().cloned());
         handover.extend(pkg.manifest.handover.iter().cloned());
+        export_tables.extend(pkg.manifest.export_tables.iter().cloned());
         if pkg.manifest.personal_data.is_empty() {
             undeclared_personal_data.push(pkg.manifest.package.clone());
         }
@@ -679,6 +683,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         personal_data,
         undeclared_personal_data,
         handover,
+        export_tables,
         warnings,
         fy_start_month: 1,
         timezone: "UTC".into(),

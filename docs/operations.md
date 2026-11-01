@@ -9,7 +9,7 @@ through PostgreSQL `NOTIFY`. Any replica can be killed or added at any time.
 
 | Component | Role | Failure behaviour |
 |---|---|---|
-| API replicas (`ferrum start`) | Stateless HTTP API; each also runs the outbox dispatcher, webhook sender, metadata listener and maintenance loops | Any replica may die at any time; work is claimed with `SKIP LOCKED` / advisory locks and retried by the others. Stopped (`SIGTERM`), a replica stops its background loops and live connections, answers the requests in flight (up to 20 s), then closes its database pools: within Kubernetes' 40 s grace period |
+| API replicas (`ferrum start`) | Stateless HTTP API; each also runs the outbox dispatcher, webhook sender, job runner, metadata listener and maintenance loops | Any replica may die at any time; work is claimed with `SKIP LOCKED` / advisory locks and retried by the others. Stopped (`SIGTERM`), a replica stops its background loops and live connections, answers the requests in flight (up to 20 s), then closes its database pools: within Kubernetes' 40 s grace period |
 | PostgreSQL 17 (CloudNativePG) | All state: documents, ledgers, audit, outbox, plugins | Synchronous replica + automatic failover; WAL archiving for point-in-time recovery |
 | Object storage (S3 or compatible) | Attachments (`FERRUM_S3_BUCKET`, `FERRUM_S3_ENDPOINT`) | Required in production; checked with a write/delete probe at boot (logged, not fatal) |
 
@@ -289,6 +289,31 @@ secret is entered again. Plugins start with those settings missing, so re-enter 
 rather than go out unsigned, so make new ones. The Web Push key is replaced, and devices subscribe
 again. Passwords, sessions and business data are not affected. Restoring a backup without its key
 leaves the same state.
+
+## Background jobs
+
+Long work runs in the `job` table: bulk operations over many records, workspace exports, and whatever
+apps register (`HookRegistry::add_job_handler`). Every replica with background loops takes jobs, up
+to 4 at once; a workspace gets at most 3 running across the cluster, and each workspace with work
+takes its turn.
+
+| What happens | What the job does |
+|---|---|
+| Its replica dies | The lease (60 s) runs out and another replica takes it over. That counted as an attempt, so a job that kills its worker is given up on after `max_attempts` (5; 3 for exports) and stays `failed` for someone to look at, and the person who asked is told. |
+| Its replica is stopped | It goes back in the queue, the attempt uncounted, before the replica exits. A deployment costs nothing. |
+| It fails | Retried after 10 s, 20 s, 40 s and so on up to an hour. Something that cannot succeed (invalid, forbidden, not found) fails at once. Only the job's owner and administrators read `last_error`, and internal errors say so without detail: the detail is in the log, under the job's id. |
+| It is cancelled | At once if it has not started. Otherwise within 5 s: the work is dropped at its next `await`, and its open transaction rolls back. What earlier transactions finished stays done. |
+| Its owner left or lost a right | It runs as they are when it runs, so it fails, or the records they may no longer touch are listed in its result. A bulk job looks again at every 500 records. |
+
+Jobs run at least once: a handler must be safe to repeat. Bulk jobs resume after the last 500 records
+they recorded, so a lost worker repeats no more than those. Finished jobs are deleted after 30 days.
+
+**Workspace exports.** `POST /api/admin/export` gives an administrator a copy of everything: records
+with their child rows, what packages list in `export_tables` (journals, stock moves), attached files,
+the audit trail, people, roles, permissions, customizations and automations, in zip parts of about
+128 MB of JSON lines and files, deleted after 7 days. Passwords, sign-in factors, secret fields,
+sealed settings, API keys and sessions stay out. `manifest.json` names every workspace table it did
+not carry (`tables_left_out`): read it before relying on an export as a way out.
 
 ## Monitoring
 
