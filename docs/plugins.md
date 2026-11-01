@@ -97,11 +97,23 @@ role is exactly its declared permissions. Everything it changes lands in the aud
 | `data.insert` / `data.update` / `data.delete` | `{entity, data}` / `{entity, id, data, expected_version?}` / `{entity, id}` |
 | `data.submit` / `data.cancel` / `data.action` | `{entity, id}` / `{entity, id}` / `{entity, id, action, params}` |
 | `kv.get` / `kv.set` / `kv.delete` / `kv.list` | private per-tenant storage: `{key}` / `{key, value}` / `{key}` / `{prefix}` |
-| `http.fetch` | `{method, url, headers?, body?}` → `{status, headers, body}`; declared hosts only, https only, never private addresses, no redirects, 15 s, 1 MB |
+| `http.fetch` | `{method, url, headers?, body?}` → `{status, headers, body}`; declared hosts only, https only, never private addresses, no redirects, 15 s, 1 MB; refused in hooks |
 | `events.emit` | `{topic, payload}` → publishes `plugin.{name}.{topic}` (inside the document's transaction for hooks) |
-| `sockets.send` / `sockets.close` | `{connection, message}` / `{connection, reason}` — on whichever replica holds the socket |
+| `sockets.send` / `sockets.close` | `{connection, message}` / `{connection, reason}` — on whichever replica holds the socket; refused in hooks |
 | `log` | `{level?, message}`: `info` (default), `warn` or `error`, to the server log with the plugin and tenant |
 | `time.now` | → RFC 3339 UTC |
+
+**Nothing leaves the system from a hook.** A hook runs inside the document's transaction, which may
+still roll back, so `http.fetch` and `sockets.*` are refused there. Decide in the hook, `events.emit`
+the work and subscribe to it: the event exists only if the document commits, and the handler runs
+after the commit, at least once, once per plugin and event. `plugins/examples/after-commit` is this
+shape, and its handler is where a payment or an order goes out.
+
+**Limits of one call.** A hook has 15 seconds, host calls included, because it holds the document's
+transaction; any other call has 5 minutes. At the deadline the host call in progress is dropped
+(its transaction rolls back, so what the plugin was told failed does not commit later) and the guest
+stops. A workspace runs at most 32 calls at once and another waits 5 seconds for its turn before
+failing with 503; a hook started by a plugin's own host call runs inside its caller's turn.
 
 ## Extension points and add-ons
 

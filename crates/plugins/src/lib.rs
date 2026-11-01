@@ -7,6 +7,8 @@
 //!
 //! * `hook` — a document lifecycle stage, inside the document's transaction, as the user;
 //!   reply `{}`, `{"patch": {...}}` (before_validate) or a veto `{"error"}` / `{"errors": [...]}`.
+//!   Nothing leaves the system from a hook: `http.fetch` and `sockets.*` are refused there, and
+//!   `events.emit` carries the work past the commit.
 //! * `http` — a request to one of its routes (`/api/ext/{plugin}/…`, or `/api/public/{tenant}/{plugin}/…`
 //!   for public ones such as payment webhooks); reply `{"status", "headers", "body"}` or `{"json"}`.
 //! * `event` — an outbox event it subscribed to (at least once, deduplicated per plugin).
@@ -18,8 +20,9 @@
 //! and write records (as its own service user with the permissions it declared, or as the calling
 //! user limited to those permissions), keep private key-value data, call declared HTTPS hosts,
 //! emit events, write to any of its sockets on any replica, log and read the clock. Each call is
-//! a fresh instance with a fuel budget and a memory cap on the blocking pool; failures are
-//! fail-closed and logged, and an administrator can disable the plugin at once.
+//! a fresh instance with a fuel budget, a memory cap and a deadline on the blocking pool, with a
+//! limit per workspace on calls running at once; failures are fail-closed and logged, and an
+//! administrator can disable the plugin at once.
 
 pub mod events;
 pub mod hooks;
@@ -43,12 +46,19 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 use wasmtime::{Config, Engine, ExternType, Module};
 
 pub const STAGES: &[&str] = &["before_validate", "validate", "before_submit", "on_submit", "before_cancel", "on_cancel", "before_delete"];
 const MAX_WASM: usize = 8 << 20;
 const CACHE_TTL: Duration = Duration::from_secs(10);
+/// Compiled modules kept in memory (each is a few MB of machine code).
+const MAX_MODULES: usize = 256;
+/// Calls of one workspace running at once, each on a thread of the blocking pool ...
+const MAX_RUNNING: usize = 32;
+/// ... and how long another waits for its turn.
+const RUNNING_WAIT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HookBinding {
@@ -231,6 +241,9 @@ pub struct PluginHost {
     engine: Engine,
     modules: DashMap<String, Module>,
     loaded: DashMap<Uuid, (Instant, Arc<Vec<Loaded>>)>,
+    /// One compilation at a time: it takes seconds of every core for a large module.
+    compiling: Semaphore,
+    running: DashMap<Uuid, Arc<Semaphore>>,
     pub sockets: Arc<SocketHub>,
     allow_private_http: bool,
     /// Seals each configuration value at rest (gateways' API keys and webhook secrets among them);
@@ -293,6 +306,26 @@ fn open_config(key: Option<&SecretKey>, tenant: Uuid, plugin: &str, config: Valu
     Value::Object(out)
 }
 
+/// Compiles a module and checks the contract: its only import may be `ferrum.host_call`.
+fn compile(engine: &Engine, wasm: &[u8]) -> std::result::Result<Module, String> {
+    if wasm.len() > MAX_WASM {
+        return Err(format!("module is larger than {} MB", MAX_WASM >> 20));
+    }
+    let module = Module::new(engine, wasm).map_err(|e| format!("not a valid WebAssembly module: {e}"))?;
+    for i in module.imports() {
+        let ok = i.module() == "ferrum" && i.name() == "host_call" && matches!(i.ty(), ExternType::Func(f) if f.params().len() == 2 && f.results().len() == 1);
+        if !ok {
+            return Err(format!("plugins may only import ferrum.host_call (found {}::{})", i.module(), i.name()));
+        }
+    }
+    for name in ["memory", "ferrum_alloc", "ferrum_hook"] {
+        if module.get_export(name).is_none() {
+            return Err(format!("missing export `{name}`"));
+        }
+    }
+    Ok(module)
+}
+
 fn require_admin(ctx: &Ctx) -> Result<()> {
     if ctx.is_admin { Ok(()) } else { Err(Error::Forbidden("only administrators manage plugins".into())) }
 }
@@ -334,37 +367,34 @@ impl PluginHost {
     pub fn new(allow_private_http: bool) -> Result<Arc<PluginHost>> {
         let mut config = Config::new();
         config.consume_fuel(true);
+        config.epoch_interruption(true);
         config.max_wasm_stack(512 << 10);
         let engine = Engine::new(&config).map_err(|e| Error::internal(format!("wasm engine: {e}")))?;
-        Ok(Arc::new(PluginHost {
+        let host = Arc::new(PluginHost {
             engine,
             modules: DashMap::new(),
             loaded: DashMap::new(),
+            compiling: Semaphore::new(1),
+            running: DashMap::new(),
             sockets: SocketHub::new(),
             allow_private_http,
             sealing: std::sync::OnceLock::new(),
-        }))
+        });
+        // The clock guests' deadlines run on; it stops with the host.
+        let ticking = Arc::downgrade(&host);
+        std::thread::spawn(move || {
+            while let Some(host) = ticking.upgrade() {
+                host.engine.increment_epoch();
+                drop(host);
+                std::thread::sleep(runtime::EPOCH_TICK);
+            }
+        });
+        Ok(host)
     }
 
     /// Compiles a module and checks the contract: its only import may be `ferrum.host_call`.
     pub fn validate(&self, wasm: &[u8]) -> std::result::Result<Module, String> {
-        if wasm.len() > MAX_WASM {
-            return Err(format!("module is larger than {} MB", MAX_WASM >> 20));
-        }
-        let module = Module::new(&self.engine, wasm).map_err(|e| format!("not a valid WebAssembly module: {e}"))?;
-        for i in module.imports() {
-            let ok =
-                i.module() == "ferrum" && i.name() == "host_call" && matches!(i.ty(), ExternType::Func(f) if f.params().len() == 2 && f.results().len() == 1);
-            if !ok {
-                return Err(format!("plugins may only import ferrum.host_call (found {}::{})", i.module(), i.name()));
-            }
-        }
-        for name in ["memory", "ferrum_alloc", "ferrum_hook"] {
-            if module.get_export(name).is_none() {
-                return Err(format!("missing export `{name}`"));
-            }
-        }
-        Ok(module)
+        compile(&self.engine, wasm)
     }
 
     /// Runs one call without host access (tests, pure plugins).
@@ -454,14 +484,37 @@ impl PluginHost {
         let wasm: Vec<u8> =
             sqlx::query_scalar("select wasm from plugin where tenant_id = $1 and sha256 = $2 limit 1").bind(tenant).bind(sha).fetch_one(&mut *tx).await?;
         tx.commit().await?;
-        let module = self.validate(&wasm).map_err(|e| Error::internal(format!("stored plugin no longer loads: {e}")))?;
+        let _turn = self.compiling.acquire().await.map_err(Error::internal)?;
+        if let Some(m) = self.modules.get(sha) {
+            return Ok(m.clone());
+        }
+        let engine = self.engine.clone();
+        let module = tokio::task::spawn_blocking(move || compile(&engine, &wasm))
+            .await
+            .map_err(Error::internal)?
+            .map_err(|e| Error::internal(format!("stored plugin no longer loads: {e}")))?;
+        if self.modules.len() >= MAX_MODULES {
+            // ponytail: drops every module at once; an LRU if a server runs more modules than this.
+            self.modules.clear();
+        }
         self.modules.insert(sha.to_string(), module.clone());
         Ok(module)
+    }
+
+    /// A place among the calls this workspace may run at once, so that one workspace cannot take
+    /// every thread of the blocking pool.
+    async fn place(&self, tenant: Uuid) -> Result<OwnedSemaphorePermit> {
+        let places = self.running.entry(tenant).or_insert_with(|| Arc::new(Semaphore::new(MAX_RUNNING))).clone();
+        tokio::time::timeout(RUNNING_WAIT, places.acquire_owned())
+            .await
+            .map_err(|_| Error::Unavailable("too many plugin calls are running in this workspace; try again shortly".into()))?
+            .map_err(Error::internal)
     }
 
     /// Runs `p` with `input`, serving its host calls through `api`. Returns the parsed reply.
     pub async fn invoke(&self, db: &Db, tenant: Uuid, p: &Loaded, mut input: Value, api: &mut dyn HostApi) -> Result<Value> {
         let module = self.module(db, tenant, &p.sha).await?;
+        let _place = if api.nested() { None } else { Some(self.place(tenant).await?) };
         input["config"] = (*p.config).clone();
         let bytes = serde_json::to_vec(&input).map_err(Error::internal)?;
         let out = runtime::run(&self.engine, &module, p.fuel, p.memory_mb, bytes, api).await.map_err(|m| {

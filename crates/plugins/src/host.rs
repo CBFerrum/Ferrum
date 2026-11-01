@@ -2,7 +2,7 @@
 //! plugin's declared permissions), private key-value storage, outbound HTTP to declared hosts,
 //! events, sockets, logging and the clock.
 
-use crate::runtime::HostApi;
+use crate::runtime::{CALL_DEADLINE, HOOK_DEADLINE, HostApi};
 use crate::sockets::Outgoing;
 use crate::{Loaded, PluginHost};
 use async_trait::async_trait;
@@ -64,6 +64,14 @@ impl HostApi for Host<'_, '_> {
     async fn call(&mut self, op: &str, args: Value) -> std::result::Result<Value, Value> {
         self.dispatch(op, args).await.map_err(|e| error_value(&e))
     }
+
+    fn deadline(&self) -> Duration {
+        if matches!(self.scope, Scope::Hook(_)) { HOOK_DEADLINE } else { CALL_DEADLINE }
+    }
+
+    fn nested(&self) -> bool {
+        matches!(self.scope, Scope::Hook(_)) && self.ctx().depth > 0
+    }
 }
 
 impl Host<'_, '_> {
@@ -103,6 +111,11 @@ impl Host<'_, '_> {
 
     async fn dispatch(&mut self, op: &str, a: Value) -> Result<Value> {
         match op {
+            // What leaves the system cannot be taken back if the document's transaction rolls
+            // back, and a hook must not hold that transaction open waiting for a provider.
+            "http.fetch" | "sockets.send" | "sockets.close" if matches!(self.scope, Scope::Hook(_)) => Err(Error::invalid(format!(
+                "{op} cannot run in a hook: the document may still roll back. Emit an event and do it from the event, after the commit"
+            ))),
             "data.get" => {
                 let (e, id) = (s(&a, "entity")?, uuid(&a, "id")?);
                 self.check(e, Action::Read)?;

@@ -1,0 +1,21 @@
+# Example plugin: work that leaves the system waits for the document to commit.
+#   cargo build --release --target wasm32-unknown-unknown
+[package]
+name = "after-commit"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ferrum-plugin-sdk = { path = "../../sdk" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+strip = true
+
+[workspace]
