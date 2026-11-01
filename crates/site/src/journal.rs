@@ -98,7 +98,9 @@ fn decode(row: (String, String, Option<String>, Option<i64>, Option<i64>, i64, O
 impl Journal {
     pub fn open(path: &Path) -> Result<Journal> {
         let conn = Connection::open(path)?;
-        conn.execute_batch("pragma journal_mode = wal; pragma synchronous = full; pragma foreign_keys = on; pragma busy_timeout = 5000; pragma auto_vacuum = incremental;")?;
+        conn.execute_batch(
+            "pragma journal_mode = wal; pragma synchronous = full; pragma foreign_keys = on; pragma busy_timeout = 5000; pragma auto_vacuum = incremental;",
+        )?;
         let check: String = conn.query_row("pragma quick_check", [], |r| r.get(0))?;
         if check != "ok" {
             return Err(Error::Damaged(check));
@@ -225,7 +227,10 @@ impl Journal {
         }
         tx.execute("insert or ignore into report (id, command, body) values (?1, ?2, ?3)", params![r.report_id.to_string(), id, serde_json::to_string(r)?])?;
         if taken == Step::Move {
-            tx.execute("update command set state = ?2, external = coalesce(?3, external), held_reason = null where id = ?1", params![id, r.state.as_str(), external])?;
+            tx.execute(
+                "update command set state = ?2, external = coalesce(?3, external), held_reason = null where id = ?1",
+                params![id, r.state.as_str(), external],
+            )?;
         }
         tx.commit()?;
         Ok(taken)
@@ -443,14 +448,18 @@ impl Journal {
 
     pub fn task(&self, command: Uuid) -> Result<Option<(String, Option<Value>, Option<String>)>> {
         let db = self.db();
-        let row: Option<(String, Option<String>, Option<String>)> =
-            db.query_row("select state, evidence, by from operator_task where command = ?1", [command.to_string()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()?;
+        let row: Option<(String, Option<String>, Option<String>)> = db
+            .query_row("select state, evidence, by from operator_task where command = ?1", [command.to_string()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .optional()?;
         row.map(|(s, e, b)| Ok((s, e.map(|e| serde_json::from_str(&e)).transpose()?, b))).transpose()
     }
 
     pub fn set_task(&self, command: Uuid, state: &str, evidence: Option<&Value>, by: &str) -> Result<bool> {
         let evidence = evidence.map(serde_json::to_string).transpose()?;
-        Ok(self.db().execute("update operator_task set state = ?2, evidence = ?3, by = ?4 where command = ?1", params![command.to_string(), state, evidence, by])? > 0)
+        Ok(self
+            .db()
+            .execute("update operator_task set state = ?2, evidence = ?3, by = ?4 where command = ?1", params![command.to_string(), state, evidence, by])?
+            > 0)
     }
 
     pub fn tasks(&self) -> Result<Vec<(Entry, String)>> {

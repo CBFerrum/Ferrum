@@ -104,7 +104,8 @@ fn free_disk(path: &Path) -> Option<i64> {
 impl Runtime {
     pub fn open(cfg: Config, key: ed25519_dalek::SigningKey) -> Result<Arc<Runtime>, String> {
         let journal = Arc::new(Journal::open(&cfg.journal_path()).map_err(|e| e.to_string())?);
-        let key_id: Uuid = journal.get("key_id").map_err(|e| e.to_string())?.and_then(|v| v.parse().ok()).ok_or("this site is not enrolled: run `ferrum-site enroll`")?;
+        let key_id: Uuid =
+            journal.get("key_id").map_err(|e| e.to_string())?.and_then(|v| v.parse().ok()).ok_or("this site is not enrolled: run `ferrum-site enroll`")?;
         let link = Link::new(&cfg.server, &cfg.tenant, key, key_id);
         let (mut adapters, mut by_device): (Vec<(String, Arc<dyn Adapter>)>, HashMap<String, Slot>) = (Vec::new(), HashMap::new());
         for a in &cfg.adapters {
@@ -227,7 +228,10 @@ impl Runtime {
                 Some(Observation::Completed(v)) => self.establish(self.report(id, State::Completed, json!({"recovered": true}), Some(v)), None),
                 Some(Observation::Failed(v)) => self.establish(self.report(id, State::Failed, json!({"recovered": true}), Some(v)), None),
                 Some(Observation::Aborted(v)) => self.establish(self.report(id, State::Aborted, json!({"recovered": true}), Some(v)), None),
-                None => self.establish(self.report(id, State::OutcomeUnknown, json!({"why": "this runtime stopped between deciding to send it and hearing back"}), None), None),
+                None => self.establish(
+                    self.report(id, State::OutcomeUnknown, json!({"why": "this runtime stopped between deciding to send it and hearing back"}), None),
+                    None,
+                ),
             }
         }
     }
@@ -240,7 +244,10 @@ impl Runtime {
         doubts.extend(self.journal.in_doubt().map_err(|e| e.to_string())?);
         for e in doubts {
             if e.state != State::OutcomeUnknown {
-                self.establish(self.report(e.command.id, State::OutcomeUnknown, json!({"why": "restored from a backup taken while this was running"}), None), None);
+                self.establish(
+                    self.report(e.command.id, State::OutcomeUnknown, json!({"why": "restored from a backup taken while this was running"}), None),
+                    None,
+                );
             }
         }
         Ok(())

@@ -99,14 +99,16 @@ async fn site_open(k: &Kernel, ctx: &Ctx, site: Uuid) -> Result<()> {
 
 pub(crate) async fn command_site(k: &Kernel, ctx: &Ctx, id: Uuid) -> Result<()> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let site: Option<Uuid> = sqlx::query_scalar("select site_id from op_command where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).fetch_optional(&mut *tx).await?;
+    let site: Option<Uuid> =
+        sqlx::query_scalar("select site_id from op_command where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).fetch_optional(&mut *tx).await?;
     tx.commit().await?;
     site_open(k, ctx, site.ok_or_else(|| Error::NotFound("command".into()))?).await
 }
 
 pub(crate) async fn device_site(k: &Kernel, ctx: &Ctx, id: Uuid) -> Result<()> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let site: Option<Option<Uuid>> = sqlx::query_scalar("select site from e_device where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).fetch_optional(&mut *tx).await?;
+    let site: Option<Option<Uuid>> =
+        sqlx::query_scalar("select site from e_device where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).fetch_optional(&mut *tx).await?;
     tx.commit().await?;
     match site.ok_or_else(|| Error::NotFound("device".into()))? {
         Some(site) => site_open(k, ctx, site).await,
@@ -200,7 +202,10 @@ async fn signed_in(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<SiteRespo
             let mut tx = k.db.tenant_tx(ctx.tenant).await?;
             let issued = commands::issue(&mut tx, ctx, cmd).await?;
             tx.commit().await?;
-            Ok(SiteResponse::json(if issued.repeated { 200 } else { 201 }, &json!({"id": issued.id, "state": issued.state.as_str(), "repeated": issued.repeated})))
+            Ok(SiteResponse::json(
+                if issued.repeated { 200 } else { 201 },
+                &json!({"id": issued.id, "state": issued.state.as_str(), "repeated": issued.repeated}),
+            ))
         }
         ("GET", ["commands", id]) => {
             may(ctx, READ)?;
@@ -210,11 +215,14 @@ async fn signed_in(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<SiteRespo
         }
         ("POST", ["commands", id, act @ ("approve" | "refuse" | "cancel" | "reconcile")]) => {
             let id = uuid(id)?;
-            may(ctx, match *act {
-                "approve" | "refuse" => APPROVE,
-                "cancel" => DISPATCH,
-                _ => RECOVER,
-            })?;
+            may(
+                ctx,
+                match *act {
+                    "approve" | "refuse" => APPROVE,
+                    "cancel" => DISPATCH,
+                    _ => RECOVER,
+                },
+            )?;
             command_site(k, ctx, id).await?;
             let mut tx = k.db.tenant_tx(ctx.tenant).await?;
             let state = match *act {
@@ -286,7 +294,11 @@ async fn signed_in(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<SiteRespo
                 return Err(Error::field("pin", "at least six digits"));
             }
             let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-            let user: Option<Uuid> = sqlx::query_scalar("select id from app_user where tenant_id = $1 and lower(email) = lower($2)").bind(ctx.tenant).bind(p.email.trim()).fetch_optional(&mut *tx).await?;
+            let user: Option<Uuid> = sqlx::query_scalar("select id from app_user where tenant_id = $1 and lower(email) = lower($2)")
+                .bind(ctx.tenant)
+                .bind(p.email.trim())
+                .fetch_optional(&mut *tx)
+                .await?;
             let user = user.ok_or_else(|| Error::field("email", "nobody here has that email"))?;
             sqlx::query(
                 "insert into op_operator_pin (tenant_id, site_id, user_id, pin_hash, set_by) values ($1, $2, $3, $4, $5) \

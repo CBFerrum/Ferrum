@@ -75,7 +75,11 @@ async fn run(cfg: Config) -> Result<(), String> {
         tracing::info!("console on http://{bind}");
         let (router, mut stop) = (console::router(rt.clone()), stop_rx.clone());
         tokio::spawn(async move {
-            let _ = axum::serve(listener, router).with_graceful_shutdown(async move { let _ = stop.changed().await; }).await;
+            let _ = axum::serve(listener, router)
+                .with_graceful_shutdown(async move {
+                    let _ = stop.changed().await;
+                })
+                .await;
         });
     }
     rt.run(stop_rx).await;

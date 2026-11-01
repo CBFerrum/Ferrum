@@ -52,3 +52,8 @@ sqlx = { workspace = true }
 
 [lints]
 workspace = true
+
+# It kills the real binary at named points, which only a build with `failpoints` can do.
+[[test]]
+name = "recovery_it"
+required-features = ["failpoints"]

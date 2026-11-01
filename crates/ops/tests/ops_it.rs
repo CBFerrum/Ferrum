@@ -70,7 +70,16 @@ async fn workspace(k: &Arc<Kernel>, slug: &str) -> T {
 }
 
 fn request(t: &T, user: Option<&Ctx>, method: &str, path: &str, headers: Map<String, Value>, body: Vec<u8>) -> SiteRequest {
-    SiteRequest { tenant: t.tenant, user: user.cloned(), method: method.into(), path: path.into(), query: Map::new(), headers, body, client_ip: "127.0.0.1".into() }
+    SiteRequest {
+        tenant: t.tenant,
+        user: user.cloned(),
+        method: method.into(),
+        path: path.into(),
+        query: Map::new(),
+        headers,
+        body,
+        client_ip: "127.0.0.1".into(),
+    }
 }
 
 async fn api(t: &T, ctx: &Ctx, method: &str, path: &str, body: Value) -> Result<SiteResponse, Error> {
@@ -102,7 +111,9 @@ impl Gateway {
     fn signed(&self, t: &T, body: &[u8], time_ms: i64, key: &SigningKey) -> SiteRequest {
         let uri = format!("/api/site/{}/ops/sync", t.tenant);
         let signature = key.sign(&message("POST", &uri, time_ms, body));
-        let headers = obj(json!({HEADER_KEY: self.enrolled.key_id, HEADER_TIME: time_ms.to_string(), HEADER_SIGNATURE: hex::encode(signature.to_bytes()), "x-ferrum-uri": uri}));
+        let headers = obj(
+            json!({HEADER_KEY: self.enrolled.key_id, HEADER_TIME: time_ms.to_string(), HEADER_SIGNATURE: hex::encode(signature.to_bytes()), "x-ferrum-uri": uri}),
+        );
         request(t, None, "POST", "/sync", headers, body.to_vec())
     }
 
@@ -140,14 +151,18 @@ impl Gateway {
 }
 
 async fn gateway(t: &T, code: &str, site: Uuid, seed: u8) -> (Uuid, Gateway) {
-    let doc = t.k.insert(&t.admin, "Device", obj(json!({"device_name": code, "device_code": code, "kind": "Gateway", "site": site, "lifecycle": "Imported"}))).await.expect("gateway");
+    let doc =
+        t.k.insert(&t.admin, "Device", obj(json!({"device_name": code, "device_code": code, "kind": "Gateway", "site": site, "lifecycle": "Imported"})))
+            .await
+            .expect("gateway");
     let id = id_of(&doc);
     devices::set_lifecycle(&t.k, &t.admin, id, Lifecycle::Claimed, "ours").await.expect("claimed");
     (id, enroll(t, id, seed).await)
 }
 
 async fn enroll(t: &T, device: Uuid, seed: u8) -> Gateway {
-    let code = json_of(api(t, &t.admin, "POST", &format!("/devices/{device}/enrollment"), Value::Null).await.expect("code"))["code"].as_str().unwrap().to_string();
+    let code =
+        json_of(api(t, &t.admin, "POST", &format!("/devices/{device}/enrollment"), Value::Null).await.expect("code"))["code"].as_str().unwrap().to_string();
     let key = SigningKey::from_bytes(&[seed; 32]);
     let site = t.k.hooks.site("ops").unwrap().clone();
     let body = json!({"code": code, "public_key": hex::encode(key.verifying_key().to_bytes())}).to_string().into_bytes();
@@ -165,8 +180,15 @@ async fn activate(t: &T, device: Uuid) {
 
 /// A robot through its whole lifecycle, allowed `warehouse.move`, and `door.force` with approval.
 async fn robot(t: &T, code: &str, site: Uuid) -> Uuid {
-    let doc = t.k.insert(&t.admin, "Device", obj(json!({"device_name": code, "device_code": code, "kind": "Robot", "site": site,
-        "operations": [{"operation": "warehouse.move"}, {"operation": "door.force", "requires_approval": true}]}))).await.expect("robot");
+    let doc =
+        t.k.insert(
+            &t.admin,
+            "Device",
+            obj(json!({"device_name": code, "device_code": code, "kind": "Robot", "site": site,
+        "operations": [{"operation": "warehouse.move"}, {"operation": "door.force", "requires_approval": true}]})),
+        )
+        .await
+        .expect("robot");
     let id = id_of(&doc);
     devices::set_lifecycle(&t.k, &t.admin, id, Lifecycle::Claimed, "ours").await.unwrap();
     enroll(t, id, code.as_bytes()[0]).await;
@@ -182,7 +204,14 @@ async fn issue(t: &T, ctx: &Ctx, cmd: NewCommand) -> Result<commands::Issued, Er
 }
 
 fn move_tote(target: Uuid) -> NewCommand {
-    NewCommand { target, operation: "warehouse.move".into(), schema_version: 1, payload: json!({"tote": "T-481", "to": "PACK-1"}), expires_in_secs: 600, ..Default::default() }
+    NewCommand {
+        target,
+        operation: "warehouse.move".into(),
+        schema_version: 1,
+        payload: json!({"tote": "T-481", "to": "PACK-1"}),
+        expires_in_secs: 600,
+        ..Default::default()
+    }
 }
 
 async fn state(t: &T, id: Uuid) -> String {
@@ -268,7 +297,15 @@ async fn scenario() {
     let conflicted = json_of(api(&t, &t.admin, "GET", &format!("/commands/{c}"), Value::Null).await.unwrap());
     assert_eq!((conflicted["state"].as_str(), conflicted["conflict"].as_bool()), (Some("Completed"), Some(true)));
     assert_eq!(json_of(api(&t, &t.admin, "GET", "/overview", Value::Null).await.unwrap())["sites"][0]["needs_person"], json!(1));
-    api(&t, &t.admin, "POST", &format!("/commands/{c}/reconcile"), json!({"to": "Completed", "evidence": "The tote is at PACK-1; the robot's fault came after"})).await.unwrap();
+    api(
+        &t,
+        &t.admin,
+        "POST",
+        &format!("/commands/{c}/reconcile"),
+        json!({"to": "Completed", "evidence": "The tote is at PACK-1; the robot's fault came after"}),
+    )
+    .await
+    .unwrap();
     assert_eq!(json_of(api(&t, &t.admin, "GET", "/overview", Value::Null).await.unwrap())["sites"][0]["needs_person"], json!(0));
 
     // ───── nobody knows: only evidence settles it, and nothing retries it ─────
@@ -288,17 +325,54 @@ async fn scenario() {
     let dispatcher = person(&t, "dana@north.test", &["Ops Dispatcher"]).await;
     let recovery = person(&t, "rae@north.test", &["Ops Recovery"]).await;
     let viewer = person(&t, "vic@north.test", &["Ops Viewer"]).await;
-    assert!(matches!(api(&t, &dispatcher, "POST", &format!("/commands/{u}/reconcile"), json!({"to": "Failed", "evidence": "x"})).await, Err(Error::Forbidden(_))), "recovery is its own privilege");
-    assert!(matches!(api(&t, &recovery, "POST", &format!("/commands/{u}/reconcile"), json!({"to": "Failed", "evidence": " "})).await, Err(Error::Validation(_))), "say what you found");
-    assert!(matches!(api(&t, &recovery, "POST", "/commands", serde_json::to_value(json!({"target": bot, "operation": "warehouse.move", "expires_in_secs": 60})).unwrap()).await, Err(Error::Forbidden(_))), "and it does not include dispatching");
-    assert!(matches!(api(&t, &viewer, "POST", "/commands", json!({"target": bot, "operation": "warehouse.move", "expires_in_secs": 60})).await, Err(Error::Forbidden(_))));
-    api(&t, &recovery, "POST", &format!("/commands/{u}/reconcile"), json!({"to": "Failed", "evidence": "Tote still in its bin, robot stopped in aisle 4"})).await.expect("settled");
+    assert!(
+        matches!(api(&t, &dispatcher, "POST", &format!("/commands/{u}/reconcile"), json!({"to": "Failed", "evidence": "x"})).await, Err(Error::Forbidden(_))),
+        "recovery is its own privilege"
+    );
+    assert!(
+        matches!(api(&t, &recovery, "POST", &format!("/commands/{u}/reconcile"), json!({"to": "Failed", "evidence": " "})).await, Err(Error::Validation(_))),
+        "say what you found"
+    );
+    assert!(
+        matches!(
+            api(
+                &t,
+                &recovery,
+                "POST",
+                "/commands",
+                serde_json::to_value(json!({"target": bot, "operation": "warehouse.move", "expires_in_secs": 60})).unwrap()
+            )
+            .await,
+            Err(Error::Forbidden(_))
+        ),
+        "and it does not include dispatching"
+    );
+    assert!(matches!(
+        api(&t, &viewer, "POST", "/commands", json!({"target": bot, "operation": "warehouse.move", "expires_in_secs": 60})).await,
+        Err(Error::Forbidden(_))
+    ));
+    api(&t, &recovery, "POST", &format!("/commands/{u}/reconcile"), json!({"to": "Failed", "evidence": "Tote still in its bin, robot stopped in aisle 4"}))
+        .await
+        .expect("settled");
     assert_eq!(state(&t, u).await, "Failed");
-    assert!(api(&t, &recovery, "POST", &format!("/commands/{u}/reconcile"), json!({"to": "Completed", "evidence": "changed my mind"})).await.is_err(), "settled is settled");
+    assert!(
+        api(&t, &recovery, "POST", &format!("/commands/{u}/reconcile"), json!({"to": "Completed", "evidence": "changed my mind"})).await.is_err(),
+        "settled is settled"
+    );
 
     // ───── a second person, and software proposes ─────
     let force = NewCommand { operation: "door.force".into(), payload: json!({"door": 3}), ..move_tote(bot) };
-    let p = json_of(api(&t, &dispatcher, "POST", "/commands", serde_json::to_value(json!({"target": bot, "operation": "door.force", "payload": {"door": 3}, "expires_in_secs": 600})).unwrap()).await.expect("proposed"));
+    let p = json_of(
+        api(
+            &t,
+            &dispatcher,
+            "POST",
+            "/commands",
+            serde_json::to_value(json!({"target": bot, "operation": "door.force", "payload": {"door": 3}, "expires_in_secs": 600})).unwrap(),
+        )
+        .await
+        .expect("proposed"),
+    );
     let proposed: Uuid = p["id"].as_str().unwrap().parse().unwrap();
     assert_eq!(p["state"], json!("Proposed"));
     assert_eq!(gw.sync(&t, gw.sync_request()).await.commands.len(), 0, "not until it is approved");
@@ -321,19 +395,37 @@ async fn scenario() {
     for _ in 0..2 {
         assert_eq!(issue(&t, &manager, NewCommand { issuer: Issuer::Automation, ..move_tote(bot) }).await.unwrap().state, State::Queued, "inside its limits");
     }
-    assert_eq!(issue(&t, &manager, NewCommand { issuer: Issuer::Automation, ..move_tote(bot) }).await.unwrap().state, State::Proposed, "past them, a person decides");
+    assert_eq!(
+        issue(&t, &manager, NewCommand { issuer: Issuer::Automation, ..move_tote(bot) }).await.unwrap().state,
+        State::Proposed,
+        "past them, a person decides"
+    );
     k.update(&manager, "AutomationEnvelope", id_of(&envelope), obj(json!({"max_per_hour": 100, "enabled": false})), None).await.expect("switched off");
-    assert_eq!(issue(&t, &manager, NewCommand { issuer: Issuer::Ai, ..move_tote(bot) }).await.unwrap().state, State::Proposed, "switching it off takes effect at once");
+    assert_eq!(
+        issue(&t, &manager, NewCommand { issuer: Issuer::Ai, ..move_tote(bot) }).await.unwrap().state,
+        State::Proposed,
+        "switching it off takes effect at once"
+    );
 
     // An agent has one way in, and it proposes, whatever it asks for.
     let tools = ferrum_ops::mcp::OpsTools;
     use ferrum_mcp::ToolProvider;
     let names: Vec<String> = tools.tools(&dispatcher).iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
     assert_eq!(names, ["ops_overview", "ops_command", "ops_propose"], "looking and proposing, and no tool for anything else");
-    let proposed_by_ai = tools.call(&k, &dispatcher, "ops_propose", &json!({"target": bot, "operation": "warehouse.move", "reason": "Aisle 4 is congested", "issuer": "person"})).await.unwrap().unwrap();
+    let proposed_by_ai = tools
+        .call(&k, &dispatcher, "ops_propose", &json!({"target": bot, "operation": "warehouse.move", "reason": "Aisle 4 is congested", "issuer": "person"}))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(proposed_by_ai["state"], json!("Proposed"), "it cannot call itself a person");
-    assert!(tools.call(&k, &viewer, "ops_propose", &json!({"target": bot, "operation": "warehouse.move", "reason": "x"})).await.unwrap().is_err(), "and it has no more rights than its person");
-    assert!(tools.call(&k, &dispatcher, "ops_propose", &json!({"target": bot, "operation": "arm.swing", "reason": "x"})).await.unwrap().is_err(), "nor can it invent what a device can do");
+    assert!(
+        tools.call(&k, &viewer, "ops_propose", &json!({"target": bot, "operation": "warehouse.move", "reason": "x"})).await.unwrap().is_err(),
+        "and it has no more rights than its person"
+    );
+    assert!(
+        tools.call(&k, &dispatcher, "ops_propose", &json!({"target": bot, "operation": "arm.swing", "reason": "x"})).await.unwrap().is_err(),
+        "nor can it invent what a device can do"
+    );
     assert!(tools.call(&k, &dispatcher, "ops_overview", &json!({})).await.unwrap().is_ok());
 
     // ───── cancelling: what never left stops, the rest is a request ─────
@@ -364,7 +456,7 @@ async fn scenario() {
     // ───── deadlines ─────
     let late = issue(&t, &t.admin, NewCommand { expires_in_secs: 1, ..move_tote(bot) }).await.unwrap().id;
     tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
-    assert_eq!(commands::expire_unsent(&k).await.unwrap() >= 1, true);
+    assert!(commands::expire_unsent(&k).await.unwrap() >= 1);
     assert_eq!(state(&t, late).await, "Expired");
     assert_eq!(gw.sync(&t, gw.sync_request()).await.commands.len(), 0, "a stale intent never reaches the floor");
 
@@ -381,7 +473,12 @@ async fn scenario() {
 
     let (gw2_id, mut gw2) = gateway(&t, "GW-2", site, 8).await;
     assert!(matches!(api(&t, &viewer, "POST", "/authority/transfer", json!({"domain": "north", "to": gw2_id, "reason": "x"})).await, Err(Error::Forbidden(_))));
-    assert_eq!(gw2.sync(&t, { let mut r = gw2.sync_request(); r.epoch = 0; r }).await.fenced, true, "a second gateway holds nothing until it is given it");
+    let unheld = {
+        let mut r = gw2.sync_request();
+        r.epoch = 0;
+        r
+    };
+    assert!(gw2.sync(&t, unheld).await.fenced, "a second gateway holds nothing until it is given it");
     assert!(authority::transfer(&k, &t.admin, "north", gw2_id, " ").await.is_err(), "the reason is required");
     let epoch = authority::transfer(&k, &t.admin, "north", gw2_id, "GW-1 lost power").await.expect("transferred");
     assert_eq!(epoch, 2);
@@ -483,9 +580,13 @@ async fn scenario() {
 
     // A device of another site is not this site's to speak for; a wrong clock is kept and marked.
     let other_site = id_of(&k.insert(&t.admin, "Site", obj(json!({"site_name": "South", "site_code": "south"}))).await.unwrap());
-    let theirs = id_of(&k.insert(&t.admin, "Device", obj(json!({"device_name": "Far", "device_code": "FAR-1", "kind": "Sensor", "site": other_site}))).await.unwrap());
+    let theirs =
+        id_of(&k.insert(&t.admin, "Device", obj(json!({"device_name": "Far", "device_code": "FAR-1", "kind": "Sensor", "site": other_site}))).await.unwrap());
     let mut spoof = gw2.sync_request();
-    spoof.measurements = vec![Measurement { device_id: theirs, ..m(10, 1.0, Quality::Good) }, Measurement { source_time: now + Duration::days(4000), ..m(11, 2.0, Quality::Good) }];
+    spoof.measurements = vec![
+        Measurement { device_id: theirs, ..m(10, 1.0, Quality::Good) },
+        Measurement { source_time: now + Duration::days(4000), ..m(11, 2.0, Quality::Good) },
+    ];
     assert_eq!(gw2.sync(&t, spoof).await.measurements_stored, 1);
     let mut tx = k.db.tenant_tx(t.tenant).await.unwrap();
     let (quality, stored_for): (i16, Uuid) = sqlx::query_as("select quality, device_id from op_measurement where seq = 11").fetch_one(&mut *tx).await.unwrap();
@@ -499,8 +600,15 @@ async fn scenario() {
     assert!(telemetry::purge(&k, future).await.unwrap() >= 1);
 
     // ───── a business fact recorded at the site is applied once ─────
-    let fact = Fact { fact_id: Uuid::now_v7(), kind: "wms.task.completed".into(), at_source: Utc::now(), actor: Some("pia".into()), body: json!({"task": "T1"}) };
-    let state_fact = Fact { fact_id: Uuid::now_v7(), kind: "equipment.state".into(), at_source: Utc::now(), actor: None, body: json!({"device": bot, "state": "Stopped", "reason": "jam"}) };
+    let fact =
+        Fact { fact_id: Uuid::now_v7(), kind: "wms.task.completed".into(), at_source: Utc::now(), actor: Some("pia".into()), body: json!({"task": "T1"}) };
+    let state_fact = Fact {
+        fact_id: Uuid::now_v7(),
+        kind: "equipment.state".into(),
+        at_source: Utc::now(),
+        actor: None,
+        body: json!({"device": bot, "state": "Stopped", "reason": "jam"}),
+    };
     let mut f = gw2.sync_request();
     f.facts = vec![fact.clone(), state_fact.clone()];
     assert_eq!(gw2.sync(&t, f.clone()).await.facts_done.len(), 2);
@@ -530,11 +638,22 @@ async fn scenario() {
     let holders = json_of(api(&t, &t.admin, "GET", "/authority", Value::Null).await.unwrap());
     assert_eq!(holders["domains"][0]["holder"], Value::Null);
     assert_eq!(holders["domains"][0]["epoch"], json!(3));
-    assert!(matches!(devices::set_lifecycle(&k, &t.admin, gw2_id, Lifecycle::Active, "looks fine").await, Err(Error::Invalid(_))), "it comes back only with a new key");
+    assert!(
+        matches!(devices::set_lifecycle(&k, &t.admin, gw2_id, Lifecycle::Active, "looks fine").await, Err(Error::Invalid(_))),
+        "it comes back only with a new key"
+    );
     devices::set_lifecycle(&k, &t.admin, gw_id, Lifecycle::Retired, "scrapped").await.expect("retired");
 
     // Equipment behind a gateway has no key of its own: naming the gateway provisions it.
-    let behind = id_of(&t.k.insert(&t.admin, "Device", obj(json!({"device_name": "Press", "device_code": "PRESS-9", "kind": "Machine", "site": site, "operations": [{"operation": "machine.start_job"}]}))).await.unwrap());
+    let behind = id_of(
+        &t.k.insert(
+            &t.admin,
+            "Device",
+            obj(json!({"device_name": "Press", "device_code": "PRESS-9", "kind": "Machine", "site": site, "operations": [{"operation": "machine.start_job"}]})),
+        )
+        .await
+        .unwrap(),
+    );
     devices::set_lifecycle(&k, &t.admin, behind, Lifecycle::Claimed, "ours").await.unwrap();
     let alone = devices::set_lifecycle(&k, &t.admin, behind, Lifecycle::Provisioned, "says so").await;
     assert!(matches!(alone, Err(Error::Invalid(ref m)) if m.contains("enrolling a key")), "nothing is provisioned by saying so: {alone:?}");
@@ -546,14 +665,17 @@ async fn scenario() {
 
 /// A device that exists and is not active.
 async fn idle_free(t: &T, site: Uuid) -> Uuid {
-    id_of(&t.k.insert(&t.admin, "Device", obj(json!({"device_name": "Idle", "device_code": format!("IDLE-{}", Uuid::now_v7()), "kind": "Robot", "site": site}))).await.unwrap())
+    id_of(
+        &t.k.insert(&t.admin, "Device", obj(json!({"device_name": "Idle", "device_code": format!("IDLE-{}", Uuid::now_v7()), "kind": "Robot", "site": site})))
+            .await
+            .unwrap(),
+    )
 }
 
 async fn person(t: &T, email: &str, roles: &[&str]) -> Ctx {
-    let id = t
-        .k
-        .create_user(&t.admin, email, "Someone", Some("Correct-Horse-9"), &roles.iter().map(|r| r.to_string()).collect::<Vec<_>>(), false)
-        .await
-        .expect("user");
+    let id =
+        t.k.create_user(&t.admin, email, "Someone", Some("Correct-Horse-9"), &roles.iter().map(|r| r.to_string()).collect::<Vec<_>>(), false)
+            .await
+            .expect("user");
     t.k.load_ctx(t.tenant, id, None, "it".into()).await.unwrap()
 }

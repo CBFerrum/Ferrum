@@ -158,7 +158,14 @@ impl Adapter for Modbus {
         let mut out = Vec::with_capacity(self.cfg.registers.len());
         for r in &self.cfg.registers {
             let word = self.read_one(r.address).await.map_err(Failure::Unknown)?;
-            out.push(Reading::Value { device: r.device.clone(), metric: r.metric.clone(), value: f64::from(word) * r.scale, unit: r.unit.clone(), class: Class::Sample, source_time: None });
+            out.push(Reading::Value {
+                device: r.device.clone(),
+                metric: r.metric.clone(),
+                value: f64::from(word) * r.scale,
+                unit: r.unit.clone(),
+                class: Class::Sample,
+                source_time: None,
+            });
         }
         Ok(out)
     }

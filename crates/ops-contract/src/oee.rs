@@ -120,7 +120,14 @@ mod tests {
     #[test]
     fn the_worked_example() {
         // An eight-hour shift less 47 minutes stopped; 1 minute each; 400 made, 380 good.
-        let f = figures(&Input { planned_secs: 480.0 * 60.0, run_secs: 433.0 * 60.0, unknown_secs: 0.0, ideal_cycle_secs: 60.0, total_count: 400.0, good_count: 380.0 });
+        let f = figures(&Input {
+            planned_secs: 480.0 * 60.0,
+            run_secs: 433.0 * 60.0,
+            unknown_secs: 0.0,
+            ideal_cycle_secs: 60.0,
+            total_count: 400.0,
+            good_count: 380.0,
+        });
         assert!(close(f.availability, 433.0 / 480.0));
         assert!(close(f.performance, 400.0 / 433.0));
         assert!(close(f.quality, 0.95));
@@ -141,7 +148,8 @@ mod tests {
 
     #[test]
     fn missing_telemetry_is_not_runtime() {
-        let f = figures(&Input { planned_secs: 3600.0, run_secs: 1800.0, unknown_secs: 1800.0, ideal_cycle_secs: 1.0, total_count: 1800.0, good_count: 1800.0 });
+        let f =
+            figures(&Input { planned_secs: 3600.0, run_secs: 1800.0, unknown_secs: 1800.0, ideal_cycle_secs: 1.0, total_count: 1800.0, good_count: 1800.0 });
         assert!(close(f.availability, 1.0), "of the half that was seen, all of it ran");
         assert!(close(f.coverage, 0.5), "and the figure says it covers half");
     }

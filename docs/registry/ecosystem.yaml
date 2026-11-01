@@ -22,10 +22,10 @@ requirements:
   - {id: FERRUM-INDUSTRY-003, title: "Retail and distribution: replenishment, omnichannel, franchise", spec: "10", deps: [FERRUM-POS-001, FERRUM-COMMERCE-001]}
   - {id: FERRUM-INDUSTRY-004, title: "Education: admissions, students, fees, timetables, examinations", spec: "10", deps: [FERRUM-LMS-001]}
   - {id: FERRUM-INDUSTRY-005, title: "Healthcare administration: scheduling, consent, billing", spec: "10", external: [BLOCK-LEGAL-REVIEW], deps: [FERRUM-BOOKINGS-001]}
-  - {id: FERRUM-INDUSTRY-006, title: "Manufacturing: planning, quality, traceability, shop floor", spec: "10", status: partial, files: ["ferrum-app-erp:addons/mfg-ops/src/job_card.rs"], limits: ["ERP's manufacturing; no shop-floor or device integration"], deps: [FERRUM-ERP-012]}
+  - {id: FERRUM-INDUSTRY-006, title: "Manufacturing: planning, quality, traceability, shop floor", spec: "10", status: partial, files: ["ferrum-app-erp:addons/mfg-ops/src/job_card.rs", "ferrum-app-erp:addons/mes/src/runs.rs"], limits: ["Shop-floor execution exists (FERRUM-IND-011) and has run on simulated equipment only"], deps: [FERRUM-ERP-012, FERRUM-IND-011]}
   - {id: FERRUM-INDUSTRY-007, title: "Construction and professional services: estimates, variations, site work", spec: "10", deps: [FERRUM-PROJECTS-001]}
   - {id: FERRUM-INDUSTRY-008, title: "Property and facilities: leases, charges, inspections, portals", spec: "10"}
   - {id: FERRUM-INDUSTRY-009, title: "Logistics and fleets: dispatch, routes, proof of delivery", spec: "10", external: [BLOCK-MAPS-KEY]}
   - {id: FERRUM-INDUSTRY-010, title: "Government: cases, permits, citizen portals", spec: "10", external: [BLOCK-LEGAL-REVIEW]}
   - {id: FERRUM-INDUSTRY-011, title: "Nonprofits: members, donations, grants, volunteers", spec: "10"}
-  - {id: FERRUM-INDUSTRY-012, title: "EV charging and IoT: devices, sessions, tariffs, settlement", spec: "10", status: partial, files: [plugins/examples/device-gateway/src/lib.rs], tests: [crates/plugins/tests/platform_it.rs], limits: ["An example plugin shaped like OCPP; no OCPP conformance"], external: [BLOCK-EV-HARDWARE]}
+  - {id: FERRUM-INDUSTRY-012, title: "EV charging and IoT: devices, sessions, tariffs, settlement", spec: "10", status: partial, files: [plugins/examples/device-gateway/src/lib.rs, crates/ops/src/identity.rs], tests: [crates/plugins/tests/platform_it.rs], limits: ["Devices and telemetry are real (FERRUM-IND-004, FERRUM-IND-005); charging is an example plugin shaped like OCPP, with no OCPP conformance"], deps: [FERRUM-IND-004], external: [BLOCK-EV-HARDWARE]}

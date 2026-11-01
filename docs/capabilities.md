@@ -9,11 +9,11 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 83 |
-| Partially implemented | 53 |
-| Missing | 43 |
+| Implemented, qualification incomplete | 99 |
+| Partially implemented | 54 |
+| Missing | 47 |
 | Blocked by external dependency | 9 |
-| **All** | **188** |
+| **All** | **209** |
 
 ## Platform
 
@@ -166,13 +166,13 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-INDUSTRY-003 | Retail and distribution: replenishment, omnichannel, franchise | Missing | probe |  |
 | FERRUM-INDUSTRY-004 | Education: admissions, students, fees, timetables, examinations | Missing | probe |  |
 | FERRUM-INDUSTRY-005 | Healthcare administration: scheduling, consent, billing | Missing | probe |  |
-| FERRUM-INDUSTRY-006 | Manufacturing: planning, quality, traceability, shop floor | Partially implemented | probe | ERP's manufacturing; no shop-floor or device integration |
+| FERRUM-INDUSTRY-006 | Manufacturing: planning, quality, traceability, shop floor | Partially implemented | probe | Shop-floor execution exists (FERRUM-IND-011) and has run on simulated equipment only |
 | FERRUM-INDUSTRY-007 | Construction and professional services: estimates, variations, site work | Missing | probe |  |
 | FERRUM-INDUSTRY-008 | Property and facilities: leases, charges, inspections, portals | Missing | probe |  |
 | FERRUM-INDUSTRY-009 | Logistics and fleets: dispatch, routes, proof of delivery | Missing | probe |  |
 | FERRUM-INDUSTRY-010 | Government: cases, permits, citizen portals | Missing | probe |  |
 | FERRUM-INDUSTRY-011 | Nonprofits: members, donations, grants, volunteers | Missing | probe |  |
-| FERRUM-INDUSTRY-012 | EV charging and IoT: devices, sessions, tariffs, settlement | Partially implemented | probe | An example plugin shaped like OCPP; no OCPP conformance |
+| FERRUM-INDUSTRY-012 | EV charging and IoT: devices, sessions, tariffs, settlement | Partially implemented | probe | Devices and telemetry are real (FERRUM-IND-004, FERRUM-IND-005); charging is an example plugin shaped like OCPP, with no OCPP conformance |
 
 ## Extensions
 
@@ -236,6 +236,27 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-RELEASE-004 | Accepted advisories with owner and review date | Implemented, qualification incomplete | tested |  |
 | FERRUM-RELEASE-005 | Published support and compatibility policy | Partially implemented | read | A draft: support windows are the owner's commitment to make, and none is in force |
 | FERRUM-RELEASE-006 | Base images pinned by digest | Implemented, qualification incomplete | read | Compose and Kubernetes still name some third-party images by tag |
+| FERRUM-IND-001 | Sockets, events and connections hold what they claim | Implemented, qualification incomplete | tested | Socket delivery stays best effort, as it says: physical work never goes through it |
+| FERRUM-IND-002 | A durable command ledger with one state machine | Implemented, qualification incomplete | tested | No soak under production-like load |
+| FERRUM-IND-003 | One authority per domain, fenced by epoch, moved by a person | Implemented, qualification incomplete | tested | No automatic failover, by design |
+| FERRUM-IND-004 | Device identity: enrolled keys, a lifecycle, quarantine | Implemented, qualification incomplete | tested | No key rotation in place: quarantine and enroll; No PKI: mTLS terminates at a proxy the customer runs |
+| FERRUM-IND-005 | Telemetry with quality, in day partitions, with rollups | Implemented, qualification incomplete | tested | Not measured against the strategy's 20,000 samples a second |
+| FERRUM-IND-006 | A site runtime that survives crashes, outages and restores | Implemented, qualification incomplete | tested | Crash-tested by killing the binary on a laptop, not by power loss on gateway hardware; A contracted offline duration has not been run |
+| FERRUM-IND-007 | Adapters: MQTT 5, VDA 5050 2.x, Modbus TCP, simulator, operator tasks | Implemented, qualification incomplete | tested | Real sockets against stand-ins: no real broker under load, no vehicle, no controller |
+| FERRUM-IND-008 | OPC UA, Sparkplug B, ROS 2, Open-RMF, VDA 5050 3.0.0 | Missing | tested | Recorded as unsupported, with what each would take |
+| FERRUM-IND-009 | Warehouse execution on ERP's stock, with one balance | Implemented, qualification incomplete | tested | No zone, cluster or goods-to-person picking, substitutions, cartonization or carrier connectors |
+| FERRUM-IND-010 | Robotic moves in seven steps: arriving is not delivering | Implemented, qualification incomplete | tested | Walked through on a simulated fleet only |
+| FERRUM-IND-011 | Execution on ERP's work orders: release gates, genealogy, OEE | Implemented, qualification incomplete | tested | Discrete only: batch, continuous and energy per run are partner work |
+| FERRUM-IND-012 | Line supply: a released run brings its material | Implemented, qualification incomplete | tested | Leftovers stay at the line until someone moves them |
+| FERRUM-IND-013 | Quality holds that hold, across the warehouse and the floor | Implemented, qualification incomplete | tested |  |
+| FERRUM-IND-014 | Maintenance: meters, conditions, lockout, return to service | Implemented, qualification incomplete | tested | A lockout here is a record, not a physical lock |
+| FERRUM-IND-015 | A deterministic scheduler with an explained result | Implemented, qualification incomplete | tested | A bounded policy, not an optimizer |
+| FERRUM-IND-016 | Agents look and propose, and nothing else | Implemented, qualification incomplete | tested | Autonomy levels A0 to A2 only. Predictive maintenance, vision and the rest of the portfolio are not built |
+| FERRUM-IND-017 | Operations, warehouse and floor interfaces | Implemented, qualification incomplete | tested | Walked through by hand on a real server at phone width and in dark mode; no standing browser tests, no accessibility audit, English only |
+| FERRUM-IND-018 | An industrial solution package in .fapp | Missing | tested | Apps declare dependencies and permissions today, not connector capabilities, device profiles or acceptance packages |
+| FERRUM-IND-019 | Signed site updates | Missing | tested | Take the binary from a trusted source and check its digest |
+| FERRUM-IND-020 | Threat model, standards scope and safety boundaries | Partially implemented | read | No hazard interface work, no IEC 62443 assessment, no independent review |
+| FERRUM-IND-021 | Partner fleet health, support grants, certification tiers | Missing | tested | Nothing built. Support access exists for workspaces (docs/support-access.md) |
 
 ## Verification
 

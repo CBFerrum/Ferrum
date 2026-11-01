@@ -103,8 +103,13 @@ pub async fn ingest(tx: &mut Tx, tenant: Uuid, site: Uuid, batch: Vec<Measuremen
     if batch.is_empty() {
         return Ok((0, 0));
     }
-    let ours: HashSet<Uuid> =
-        sqlx::query_scalar("select id from e_device where tenant_id = $1 and site = $2").bind(tenant).bind(site).fetch_all(&mut **tx).await?.into_iter().collect();
+    let ours: HashSet<Uuid> = sqlx::query_scalar("select id from e_device where tenant_id = $1 and site = $2")
+        .bind(tenant)
+        .bind(site)
+        .fetch_all(&mut **tx)
+        .await?
+        .into_iter()
+        .collect();
     let retention = retention_days();
     let total = batch.len() as i64;
     let (mut devices, mut days, mut boots, mut seqs, mut metrics, mut times, mut values, mut units, mut qualities, mut classes) =
@@ -185,7 +190,10 @@ pub async fn series(k: &Kernel, ctx: &Ctx, device: Uuid, metric: &str, from: Dat
     .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;
-    Ok(rows.into_iter().map(|(at, samples, bad, min, max, avg)| json!({"at": at, "samples": samples, "bad": bad, "min": min, "max": max, "avg": avg})).collect())
+    Ok(rows
+        .into_iter()
+        .map(|(at, samples, bad, min, max, avg)| json!({"at": at, "samples": samples, "bad": bad, "min": min, "max": max, "avg": avg}))
+        .collect())
 }
 
 /// The latest good value of each metric of a device, and how old it is. Staleness is shown, not

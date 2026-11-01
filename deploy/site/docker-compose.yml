@@ -1,0 +1,6 @@
+# A broker for rehearsing the MQTT and VDA 5050 adapters: anonymous and on this machine only.
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0.20
+    command: ["mosquitto", "-c", "/mosquitto-no-auth.conf"]
+    ports: ["127.0.0.1:1883:1883"]

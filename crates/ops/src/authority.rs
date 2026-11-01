@@ -32,11 +32,12 @@ pub async fn transfer(k: &Kernel, ctx: &Ctx, domain: &str, to: Uuid, reason: &st
         return Err(Error::field("reason", "say why: this stops whatever the old gateway was doing from being believed"));
     }
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let row: Option<(Uuid, Option<Uuid>, i64)> = sqlx::query_as("select site_id, holder, epoch from op_authority where tenant_id = $1 and domain = $2 for update")
-        .bind(ctx.tenant)
-        .bind(domain)
-        .fetch_optional(&mut *tx)
-        .await?;
+    let row: Option<(Uuid, Option<Uuid>, i64)> =
+        sqlx::query_as("select site_id, holder, epoch from op_authority where tenant_id = $1 and domain = $2 for update")
+            .bind(ctx.tenant)
+            .bind(domain)
+            .fetch_optional(&mut *tx)
+            .await?;
     let (site, old, epoch) = row.ok_or_else(|| Error::NotFound("domain".into()))?;
     let gateway = devices::target(&mut tx, ctx.tenant, to).await?;
     if gateway.kind != "Gateway" {
@@ -54,7 +55,8 @@ pub async fn transfer(k: &Kernel, ctx: &Ctx, domain: &str, to: Uuid, reason: &st
     let epoch = epoch + 1;
     change(&mut tx, ctx.tenant, domain, Some(to), epoch, ctx, reason).await?;
     commands::mark_in_doubt(&mut tx, ctx.tenant, domain, epoch, "authority changed while this may have been running").await?;
-    audit::record(&mut tx, ctx, "Site", site, "ops.authority", None, json!({"domain": domain, "from": old, "to": to, "epoch": epoch, "reason": reason})).await?;
+    audit::record(&mut tx, ctx, "Site", site, "ops.authority", None, json!({"domain": domain, "from": old, "to": to, "epoch": epoch, "reason": reason}))
+        .await?;
     tx.commit().await?;
     Ok(epoch)
 }
