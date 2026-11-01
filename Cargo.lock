@@ -3329,10 +3329,12 @@ name = "ferrum-ops-contract"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "ferrum-calc",
  "hex",
  "proptest",
  "quick-xml 0.42.0",
  "regex",
+ "rust_decimal",
  "serde",
  "serde_json",
  "serde_yaml_ng",

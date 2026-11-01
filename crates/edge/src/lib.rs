@@ -35,6 +35,7 @@ pub fn packages() -> std::result::Result<Vec<ferrum_meta::Package>, ferrum_meta:
 pub fn register(h: &mut HookRegistry) {
     h.register("DeviceDefinition", Arc::new(DefinitionHook));
     h.register("EdgeRule", Arc::new(RuleHook));
+    h.register("EdgeFlow", Arc::new(FlowHook));
     h.add_event_sink(Arc::new(Facts));
     h.add_site("edge", Arc::new(site::EdgeSite));
 }
@@ -102,6 +103,109 @@ impl DocHook for RuleHook {
             }
         }
         Ok(())
+    }
+}
+
+/// The way a flow goes from a drawing to running at a site: simulated by its author, reviewed by
+/// someone else, and then run, one site first if that is wise. What a reviewer saw is what runs, so
+/// a flow cannot change once it has been sent for review, and changing a running one leaves that
+/// version running until the new one has been through the same.
+struct FlowHook;
+
+const REVIEWER: &str = "Edge Reviewer";
+
+fn flow_step<'a>(status: &str, wanted: &[&str], what: &'a str) -> Result<()> {
+    if wanted.contains(&status) {
+        return Ok(());
+    }
+    Err(Error::invalid(format!("this is {status}: it cannot be {what} now")))
+}
+
+fn reviewer(ctx: &Ctx) -> Result<()> {
+    if ctx.has_role(REVIEWER) {
+        return Ok(());
+    }
+    Err(Error::Forbidden(format!("this takes the role {REVIEWER}")))
+}
+
+#[async_trait]
+impl DocHook for FlowHook {
+    fn name(&self) -> &'static str {
+        "edge.flow"
+    }
+
+    async fn validate_change(&self, _hc: &mut HookCtx<'_>, old: Option<&Doc>, doc: &Doc) -> Result<()> {
+        if let Some(old) = old
+            && s(old, "status").is_some_and(|status| status != "Draft")
+            && s(old, "body") != s(doc, "body")
+        {
+            return Err(Error::field("body", "what is under review cannot change: choose Change It to draft it again"));
+        }
+        Ok(())
+    }
+
+    async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
+        let record = id(doc, "id").ok_or_else(|| Error::internal("no id"))?;
+        let status = s(doc, "status").unwrap_or("Draft").to_string();
+        let body = s(doc, "body").unwrap_or_default().to_string();
+        let me = hc.ctx.email.clone();
+        let now = chrono::Utc::now().to_rfc3339();
+        let parsed = |body: &str| ferrum_ops::contract::flow::parse(body).map_err(|why| Error::field("body", why));
+        let mut values = Doc::new();
+        match name {
+            "submit_for_review" => {
+                flow_step(&status, &["Draft"], "sent for review")?;
+                let flow = parsed(&body)?;
+                if s(doc, "simulated_digest") != Some(flow.digest.as_str()) {
+                    return Err(Error::invalid("simulate this version first: a reviewer should see what it does, not only what it says"));
+                }
+                values.insert("status".into(), json!("In Review"));
+                values.insert("submitted_by".into(), json!(me));
+                values.insert("review_note".into(), Value::Null);
+            }
+            "send_back" => {
+                reviewer(hc.ctx)?;
+                flow_step(&status, &["In Review"], "sent back")?;
+                values.insert("status".into(), json!("Draft"));
+                values.insert("review_note".into(), params.get("note").cloned().unwrap_or(Value::Null));
+            }
+            "approve" => {
+                reviewer(hc.ctx)?;
+                flow_step(&status, &["In Review"], "approved")?;
+                // A review is someone else looking, whatever roles the author also holds.
+                if s(doc, "submitted_by") == Some(me.as_str()) {
+                    return Err(Error::Forbidden("someone else has to review what you sent".into()));
+                }
+                parsed(&body)?;
+                values.insert("status".into(), json!("Approved"));
+                values.insert("approved_by".into(), json!(me));
+                values.insert("approved_at".into(), json!(now));
+            }
+            "activate" => {
+                reviewer(hc.ctx)?;
+                flow_step(&status, &["Approved"], "run")?;
+                parsed(&body)?;
+                values.insert("published_body".into(), json!(body));
+                values.insert("revision".into(), json!(doc.get("revision").and_then(Value::as_i64).unwrap_or(0) + 1));
+                values.insert("live".into(), json!(true));
+                values.insert("activated_by".into(), json!(me));
+                values.insert("activated_at".into(), json!(now));
+            }
+            // Stopping is never a question of review: whoever may work on flows may stop one.
+            "stop" => {
+                values.insert("live".into(), json!(false));
+            }
+            "revise" => {
+                flow_step(&status, &["In Review", "Approved"], "changed")?;
+                values.insert("status".into(), json!("Draft"));
+                values.insert("approved_by".into(), Value::Null);
+                values.insert("approved_at".into(), Value::Null);
+            }
+            _ => return Ok(None),
+        }
+        hc.kernel.set_values_tx(&sys(hc.ctx), hc.tx, "EdgeFlow", record, values).await?;
+        ferrum_kernel::audit::record(hc.tx, hc.ctx, "EdgeFlow", record, &format!("edge.flow.{name}"), None, json!({"by": me})).await?;
+        Ok(Some(json!({"done": name})))
     }
 }
 

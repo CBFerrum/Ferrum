@@ -76,6 +76,10 @@ impl T {
         while self.k.dispatch_outbox_once().await.unwrap() > 0 {}
     }
 
+    async fn tx(&self) -> ferrum_kernel::Tx {
+        self.k.db.tenant_tx(self.tenant).await.unwrap()
+    }
+
     async fn fact(&self, site: Uuid, kind: &str, at: chrono::DateTime<Utc>, body: Value) {
         let mut tx = self.k.db.tenant_tx(self.tenant).await.unwrap();
         ferrum_ops::sync::apply_fact(&mut tx, self.tenant, site, &Fact { fact_id: Uuid::now_v7(), kind: kind.into(), at_source: at, actor: None, body })
@@ -244,8 +248,8 @@ async fn scenario() {
 
     // ───── what comes back, in any order ─────
     let base = Utc::now();
-    let raised = AlarmChange { rule, device: scale, raised: true, value: Some(120.0) };
-    let cleared = AlarmChange { rule, device: scale, raised: false, value: Some(80.0) };
+    let raised = AlarmChange { rule, device: scale, raised: true, value: Some(120.0), node: None, name: None, severity: None };
+    let cleared = AlarmChange { rule, device: scale, raised: false, value: Some(80.0), node: None, name: None, severity: None };
     t.fact(site, "edge.alarm", base, json!(raised)).await;
     t.fact(site, "edge.alarm", base + Duration::seconds(1), json!(raised)).await;
     let overview = t.api(&viewer, "GET", "/overview", Value::Null).await.unwrap();
@@ -336,6 +340,136 @@ async fn scenario() {
     k.update(&t.admin, "EdgeRelease", r, obj(json!({"percent": 0})), None).await.unwrap();
     assert!(gateway1.fetch(&t, "").await.unwrap().release.is_none(), "not this gateway's turn");
     let _ = sha2::Sha256::digest(b"");
+
+    // ───── a flow is drawn, simulated, reviewed by someone else, and only then runs ─────
+    let reviewer = person("rev@edge.test", &["Edge Reviewer"]).await;
+    let both = person("both@edge.test", &["Edge Engineer", "Edge Reviewer"]).await;
+    let hot = json!({
+        "nodes": [
+            {"id": "t", "kind": "metric", "device": "SCALE-*", "metric": "weight.kg", "x": 10, "y": 10},
+            {"id": "c", "kind": "compare", "op": ">", "value": 100},
+            {"id": "a", "kind": "alarm", "name": "Overloaded", "severity": "Critical"},
+            {"id": "ask", "kind": "command", "operation": "tare", "payload": {"key": "tare", "value": 0}, "expires": "2m"},
+        ],
+        "edges": [
+            {"from": "t", "to": "c"},
+            {"from": "c", "port": "yes", "to": "a"},
+            {"from": "c", "port": "yes", "to": "ask"},
+            {"from": "c", "port": "no", "to": "a", "input": "clear"},
+        ],
+    });
+    let draft =
+        id_of(&k.insert(&engineer, "EdgeFlow", obj(json!({"flow_name": "Overload", "body": "not finished yet"}))).await.expect("a draft can have faults"));
+    assert!(k.insert(&viewer, "EdgeFlow", obj(json!({"flow_name": "Mine", "body": "{}"}))).await.is_err(), "a viewer does not draw flows");
+    let too_soon = k.run_action(&engineer, "EdgeFlow", draft, "submit_for_review", json!({})).await;
+    assert!(too_soon.is_err(), "not with faults");
+    let wrong = t.api(&engineer, "POST", "/flows/try", json!({"body": "{\"nodes\": []}"})).await.unwrap();
+    assert_eq!(wrong["ok"], json!(false), "{wrong}");
+    assert!(t.api(&viewer, "POST", "/flows/try", json!({"body": hot.to_string()})).await.is_err(), "nor try them");
+    k.update(&engineer, "EdgeFlow", draft, obj(json!({"body": hot.to_string()})), None).await.expect("finished");
+
+    let not_seen = k.run_action(&engineer, "EdgeFlow", draft, "submit_for_review", json!({})).await;
+    assert!(format!("{not_seen:?}").contains("simulate"), "{not_seen:?}");
+    let script = json!({"script": [{"at": 0, "device": "SCALE-1", "metric": "weight.kg", "value": 150}, {"at": 5, "device": "SCALE-1", "metric": "weight.kg", "value": 20}], "until": 6});
+    let idle = t.api(&engineer, "POST", &format!("/flows/{draft}/simulate"), json!({"script": []})).await.unwrap();
+    assert!(idle["error"].as_str().is_some_and(|e| e.contains("nothing happened")), "a run that showed nothing shows nothing: {idle}");
+    assert!(k.run_action(&engineer, "EdgeFlow", draft, "submit_for_review", json!({})).await.is_err());
+    let run = t.api(&engineer, "POST", &format!("/flows/{draft}/simulate"), script.clone()).await.unwrap();
+    assert_eq!(run["moments"][0]["effects"][0]["effect"], json!("alarm"), "{run}");
+    assert_eq!(run["moments"][0]["effects"][1]["effect"], json!("command"), "{run}");
+
+    // A change after the simulation means that was not this version.
+    let changed = {
+        let mut h = hot.clone();
+        h["nodes"][1]["value"] = json!(90);
+        h
+    };
+    k.update(&engineer, "EdgeFlow", draft, obj(json!({"body": changed.to_string()})), None).await.unwrap();
+    assert!(k.run_action(&engineer, "EdgeFlow", draft, "submit_for_review", json!({})).await.is_err(), "that simulation was of something else");
+    k.update(&engineer, "EdgeFlow", draft, obj(json!({"body": hot.to_string()})), None).await.unwrap();
+    t.api(&engineer, "POST", &format!("/flows/{draft}/simulate"), script).await.unwrap();
+    k.run_action(&engineer, "EdgeFlow", draft, "submit_for_review", json!({})).await.expect("sent");
+
+    let locked = k.update(&engineer, "EdgeFlow", draft, obj(json!({"body": "{}"})), None).await;
+    assert!(locked.is_err(), "what a reviewer is reading cannot change under them");
+    assert!(k.run_action(&engineer, "EdgeFlow", draft, "approve", json!({})).await.is_err(), "an engineer does not approve");
+    assert!(k.run_action(&reviewer, "EdgeFlow", draft, "activate", json!({})).await.is_err(), "nothing runs before it is approved");
+    assert!(gateway1.fetch(&t, "").await.unwrap().flows.is_empty(), "and no gateway hears of it");
+    k.run_action(&reviewer, "EdgeFlow", draft, "send_back", json!({"note": "Say why 100"})).await.expect("sent back");
+    k.update(&both, "EdgeFlow", draft, obj(json!({"notes": "100 kg is the rating of the platform"})), None).await.unwrap();
+    k.run_action(&both, "EdgeFlow", draft, "submit_for_review", json!({})).await.expect("sent again");
+    let own = k.run_action(&both, "EdgeFlow", draft, "approve", json!({})).await;
+    assert!(format!("{own:?}").contains("someone else"), "holding both roles is not two people: {own:?}");
+    k.run_action(&reviewer, "EdgeFlow", draft, "approve", json!({})).await.expect("approved");
+    k.run_action(&reviewer, "EdgeFlow", draft, "activate", json!({})).await.expect("running");
+    let flows = gateway1.fetch(&t, "").await.unwrap().flows;
+    assert_eq!((flows.len(), flows[0].revision), (1, 1), "{flows:?}");
+    assert!(ferrum_ops::contract::flow::parse(&flows[0].body).is_ok(), "a gateway gets what passed");
+
+    // Changing it leaves what runs alone until the new one has been through the same.
+    k.run_action(&engineer, "EdgeFlow", draft, "revise", json!({})).await.expect("a new draft");
+    k.update(&engineer, "EdgeFlow", draft, obj(json!({"body": changed.to_string()})), None).await.unwrap();
+    assert_eq!(gateway1.fetch(&t, "").await.unwrap().flows[0].body, hot.to_string());
+
+    // ───── what a flow does comes back ─────
+    let flow_alarm = |raised: bool, value: f64| json!({"rule": draft, "device": scale, "raised": raised, "value": value, "node": "a", "name": "Overloaded", "severity": "Critical"});
+    let base = Utc::now() - Duration::seconds(30);
+    t.fact(site, "edge.alarm", base, flow_alarm(true, 150.0)).await;
+    t.fact(site, "edge.alarm", base + Duration::seconds(1), flow_alarm(true, 151.0)).await;
+    let alarms: Vec<(String, Option<String>)> = sqlx::query_as("select summary, severity from e_edge_alarm where tenant_id = $1 and flow = $2")
+        .bind(tenant)
+        .bind(draft)
+        .fetch_all(&mut *t.tx().await)
+        .await
+        .unwrap();
+    assert_eq!(alarms, [("Overloaded on SCALE-1".to_string(), Some("Critical".to_string()))], "raised once, under its own name");
+    t.fact(site, "edge.alarm", base + Duration::seconds(2), flow_alarm(false, 20.0)).await;
+    let open: i64 = sqlx::query_scalar("select count(*) from e_edge_alarm where tenant_id = $1 and flow = $2 and status <> 'Cleared'")
+        .bind(tenant)
+        .bind(draft)
+        .fetch_one(&mut *t.tx().await)
+        .await
+        .unwrap();
+    assert_eq!(open, 0, "the flow cleared it");
+
+    t.fact(site, "edge.notify", Utc::now(), json!({"flow": draft, "device": scale, "title": "Look at the scale"})).await;
+    let told: i64 = sqlx::query_scalar("select count(*) from notification where tenant_id = $1 and title = 'Look at the scale'")
+        .bind(tenant)
+        .fetch_one(&mut *t.tx().await)
+        .await
+        .unwrap();
+    assert!(told >= 1, "the people who look after it heard");
+
+    // A request is only a request: it waits for a person, there being no envelope.
+    let ask = json!({"flow": draft, "node": "ask", "device": scale, "operation": "set.tare", "payload": {"key": "tare", "value": 0}, "expires_secs": 120});
+    t.fact(site, "edge.request", Utc::now(), ask.clone()).await;
+    let asked: Vec<(String, String)> = sqlx::query_as("select state, issued_kind from op_command where tenant_id = $1 and workflow_id = $2")
+        .bind(tenant)
+        .bind(format!("flow:{draft}"))
+        .fetch_all(&mut *t.tx().await)
+        .await
+        .unwrap();
+    assert_eq!(asked, [("Proposed".to_string(), "automation".to_string())], "nothing moves until someone says so");
+
+    // What waited out an outage has passed, and what its flow no longer wants is not issued.
+    t.fact(site, "edge.request", Utc::now() - Duration::minutes(5), ask.clone()).await;
+    k.run_action(&engineer, "EdgeFlow", draft, "stop", json!({})).await.expect("stopped");
+    assert!(gateway1.fetch(&t, "").await.unwrap().flows.is_empty(), "a stopped flow leaves its gateways");
+    t.fact(site, "edge.request", Utc::now(), ask).await;
+    let count: i64 = sqlx::query_scalar("select count(*) from op_command where tenant_id = $1 and workflow_id = $2")
+        .bind(tenant)
+        .bind(format!("flow:{draft}"))
+        .fetch_one(&mut *t.tx().await)
+        .await
+        .unwrap();
+    assert_eq!(count, 1, "those two became nothing");
+    let refused: Vec<String> = sqlx::query_scalar("select value->>'why' from edge_event where tenant_id = $1 and name = 'flow.request.refused' order by at")
+        .bind(tenant)
+        .fetch_all(&mut *t.tx().await)
+        .await
+        .unwrap();
+    assert_eq!(refused.len(), 2, "and they say so");
+    assert!(refused[0].contains("too long") && refused[1].contains("stopped"), "{refused:?}");
 
     // ───── robots ─────
     assert_eq!(t.api(&viewer, "GET", "/robots", Value::Null).await.unwrap()["robots"], json!([]));

@@ -38,16 +38,51 @@
     - {name: enabled, type: check, default: true, in_list: true, in_filter: true}
   list: {columns: [rule_name, metric, comparison, limit_value, severity, enabled], sort: rule_name asc}
 
+- name: EdgeFlow
+  label: Edge Flow
+  label_plural: Edge Flows
+  kind: master
+  module: edge
+  title_field: flow_name
+  search_fields: [flow_name]
+  description: Logic drawn as a flow and run at the gateway, so that it works with the link down. It is simulated and reviewed by someone else before it runs, and the strongest thing it can do is ask for a command.
+  fields:
+    - {name: flow_name, type: data, required: true, unique: true, in_list: true, max_length: 100}
+    - {name: status, type: select, options: [Draft, In Review, Approved], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: live, type: check, default: false, read_only: true, no_copy: true, in_list: true, in_filter: true, label: Running}
+    - {name: revision, type: int, default: 0, read_only: true, no_copy: true, in_list: true}
+    - {name: site, type: link, to: Site, in_list: true, in_filter: true, description: "Every site, if empty. One site first is how a change is tried."}
+    - {name: body, type: code, label: Flow, description: "What was drawn, as JSON"}
+    - {name: published_body, type: code, read_only: true, no_copy: true, label: What Gateways Run}
+    - {name: simulated_digest, type: data, read_only: true, no_copy: true, hidden: true}
+    - {name: submitted_by, type: data, read_only: true, no_copy: true}
+    - {name: approved_by, type: data, read_only: true, no_copy: true}
+    - {name: approved_at, type: datetime, read_only: true, no_copy: true}
+    - {name: activated_by, type: data, read_only: true, no_copy: true}
+    - {name: activated_at, type: datetime, read_only: true, no_copy: true}
+    - {name: review_note, type: text, read_only: true, no_copy: true}
+    - {name: notes, type: text}
+  actions:
+    - {name: submit_for_review, label: Send for Review, permission: write}
+    - {name: send_back, label: Send Back, permission: write}
+    - {name: approve, label: Approve, permission: write}
+    - {name: activate, label: Run It, permission: write}
+    - {name: stop, label: Stop It, permission: write}
+    - {name: revise, label: Change It, permission: write}
+  list: {columns: [flow_name, status, live, revision, site], sort: flow_name asc}
+
 - name: EdgeAlarm
   label: Edge Alarm
   label_plural: Edge Alarms
   kind: master
   module: edge
   title_field: summary
-  description: A rule that fired, from when it was raised at the edge until someone has dealt with it.
+  description: A rule or flow that fired, from when it was raised at the edge until someone has dealt with it.
   fields:
     - {name: summary, type: data, read_only: true, in_list: true}
     - {name: rule, type: link, to: EdgeRule, read_only: true, in_filter: true}
+    - {name: flow, type: link, to: EdgeFlow, read_only: true, in_filter: true}
+    - {name: flow_node, type: data, read_only: true, hidden: true}
     - {name: device, type: link, to: Device, read_only: true, in_list: true, in_filter: true}
     - {name: site, type: link, to: Site, read_only: true, in_filter: true}
     - {name: severity, type: select, options: [Info, Warning, Critical], read_only: true, in_list: true, in_filter: true}
