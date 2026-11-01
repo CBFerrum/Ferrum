@@ -432,6 +432,7 @@ impl Hooks for App {
 
     fn register_tasks(tasks: &mut Tasks) {
         tasks.register(crate::tasks::CreateTenant);
+        tasks.register(crate::tasks::ReapplyErasures);
         tasks.register(crate::tasks::SyncSchema);
         tasks.register(crate::tasks::ImportErpnext);
         tasks.register(crate::tasks::RunMaintenance);

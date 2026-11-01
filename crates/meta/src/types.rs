@@ -43,7 +43,13 @@ pub struct PersonalDataDef {
     pub entity: String,
     #[serde(rename = "match")]
     pub match_field: String,
+    /// The fields an erasure blanks. Empty with `retain`.
+    #[serde(default)]
     pub erase: Vec<String>,
+    /// Why these records stay when someone asks for erasure: exported, never blanked, and named in
+    /// the answer so that nobody takes them for erased.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retain: Option<String>,
     #[serde(default, rename = "where", skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub condition: std::collections::BTreeMap<String, Value>,
 }

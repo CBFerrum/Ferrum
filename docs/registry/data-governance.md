@@ -5,8 +5,10 @@ What Ferrum keeps about people, and what a request can reach. The table comes fr
 
 ## What a request reaches today
 
-`GET`/`DELETE` on a person's data ([privacy.rs](../../crates/kernel/src/privacy.rs)) reaches these
-records, matched by email:
+A request ([privacy.rs](../../crates/kernel/src/privacy.rs)) finds a person under every address they
+have had, and reaches the records declared below, the files attached to them and their login
+account. Records marked *retained* are exported and left, and the answer says why. Installed
+packages that declare nothing are named in every answer as `not_searched`.
 
 | Package | Record | Matched by | Erases |
 |---|---|---|---|
@@ -28,38 +30,30 @@ records, matched by email:
 | parties | Customer | `email` | email, phone |
 | parties | Supplier | `email` | email, phone |
 
+The ten apps' declarations for Sign, Learn, POS, Payroll, HR, Drive, Projects, Assets, Commerce and
+Chat are on local branches `privacy/declarations`, waiting for the platform's `retain` to be pushed
+first; until then those apps are in `not_searched`.
+
 ## What it does not reach
 
-**Eleven of the 32 packages declare anything at all.** A person's data in the others is not exported
-and not erased, and nothing tells the administrator so. Some of those hold no personal data
-(`core`, `products`). These certainly do, and come first (`FERRUM-PRIVACY-002`):
-
-| Package | Holds |
-|---|---|
-| `sign` | Signers' names, emails, signatures, addresses (salted) |
-| `lms` | Learners, grades, certificates |
-| `pos` | Customers on receipts, loyalty |
-| `payroll`, `hr_erp` | Salaries, bank details |
-| `drive`, `docs` | Authors, shares, whatever the files say |
-| `projects`, `assets` | Assignees, custodians |
-
-Also unreached: attachments on records, chat, notifications, search words, and analytics exports.
-Submitted financial documents keep the names they carry, by design.
+Data known only by name or phone, search words, analytics exports, and comments' text, which stays
+under an anonymized author. Submitted financial documents keep the names they carry, by design.
 
 ## By kind of data
 
 | Kind | Retained | Export | Erasure | Legal hold |
 |---|---|---|---|---|
-| Declared records | Until erased | Yes | Blanked | None |
-| Financial documents | Kept for bookkeeping law | Yes | Refused, by design | None |
+| Declared records | Until erased | Yes | Blanked | Holds on the person or record |
+| Retained records | As their package says | Yes | Left, with the reason given | Holds on the person or record |
+| Financial documents | Kept for bookkeeping law | Yes | Refused, by design | Holds on the record |
 | Audit trail | Kept; diffs of erased fields redacted, hashes intact | Yes | Redacted | None |
 | Events | `event_retention_days` once processed; dead ones stay | No | Purged by age | None |
-| Files | Until deleted | Per app | Not reached | None |
-| Backups | Until they expire | n/a | Not reached; no journal to reapply (`FERRUM-PRIVACY-006`) | None |
-| Login account | Until erased | Yes | Anonymized, deactivated | None |
+| Files attached to reached records | Until deleted | Named | Deleted, from storage too | Holds on the record |
+| Backups | Until they expire | n/a | Reapplied after a restore from the journal | n/a |
+| Login account | Until erased | Yes | Anonymized, deactivated, what hangs off it deleted | Holds on the person |
 
-Retention by category, restriction of processing and legal holds do not exist yet
-(`FERRUM-PRIVACY-003`, `FERRUM-PRIVACY-004`, `FERRUM-PRIVACY-005`). Whether what is here meets any
+Retention by category and restriction of processing do not exist yet (`FERRUM-PRIVACY-003`,
+`FERRUM-PRIVACY-005`). Whether what is here, or what a package says it retains, meets any
 jurisdiction's law is for counsel (`BLOCK-LEGAL-REVIEW`).
 
 **Residency.** One deployment is one region; data stays where the deployment is. External destinations

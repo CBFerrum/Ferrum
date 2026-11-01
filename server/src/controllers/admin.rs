@@ -279,6 +279,31 @@ async fn import_custom(Auth(ctx): Auth, State(app): State<AppContext>, Json(bund
     Ok(Json(json!({"imported": n})).into_response())
 }
 
+// ── legal holds ──
+
+#[derive(Deserialize)]
+struct NewHold {
+    email: Option<String>,
+    entity: Option<String>,
+    record_id: Option<Uuid>,
+    reason: String,
+}
+
+async fn legal_holds(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    Ok(Json(json!({"holds": app_state(&app)?.kernel.legal_holds(&ctx).await?})).into_response())
+}
+
+async fn place_legal_hold(Auth(ctx): Auth, State(app): State<AppContext>, Json(h): Json<NewHold>) -> ApiResult<Response> {
+    let record = h.entity.as_deref().zip(h.record_id);
+    let id = app_state(&app)?.kernel.place_legal_hold(&ctx, h.email.as_deref(), record, &h.reason).await?;
+    Ok((StatusCode::CREATED, Json(json!({"id": id}))).into_response())
+}
+
+async fn release_legal_hold(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.release_legal_hold(&ctx, id).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 // ── why someone may or may not do something ──
 
 #[derive(Deserialize)]
@@ -518,6 +543,8 @@ pub fn routes() -> Routes {
         .add("/admin/personal-data", get(personal_data))
         .add("/admin/personal-data/erase", post(erase_personal_data))
         .add("/admin/packages", get(list_packages).post(install))
+        .add("/admin/legal-holds", get(legal_holds).post(place_legal_hold))
+        .add("/admin/legal-holds/{id}/release", post(release_legal_hold))
         .add("/admin/access/explain", get(explain_access))
         .add("/admin/users/{id}/deprovision", post(deprovision_user))
         .add("/admin/scim/groups", get(scim_groups))
