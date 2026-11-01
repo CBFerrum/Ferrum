@@ -372,3 +372,11 @@ routes that `sockets.send` a `RemoteStartTransaction` or `UnlockConnector` to th
 A schedule marks silent charge points offline, an event subscription turns finished sessions into
 sales invoices, and OCPI roaming is HTTPS to declared partner hosts plus public routes for their
 callbacks.
+
+## Order of native hooks
+
+Native apps' document hooks run in the order they are registered, unless they say otherwise. A hook can
+name itself (`name`), list what must run first on the same entity (`after`), and list the fields its
+`before_validate` fills (`fills`). The server refuses to start on a cycle, on a hook waiting for one
+that is not registered, or on two hooks filling one field with neither ordered. Installing a package
+refuses what would leave a hook without one it waits for.

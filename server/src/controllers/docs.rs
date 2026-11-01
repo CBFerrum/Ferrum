@@ -418,6 +418,26 @@ async fn bulk(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Path
     Ok(Json(st.kernel.bulk(&ctx, &entity, target, &b.op).await?).into_response())
 }
 
+#[derive(Deserialize)]
+struct MergeRequest {
+    duplicate: Uuid,
+    reason: String,
+}
+
+/// Merges a duplicate into this record ([`ferrum_kernel::merge`]): all its links come here.
+async fn merge(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity, id)): Path<(String, Uuid)>, Json(m): Json<MergeRequest>) -> ApiResult<Response> {
+    Ok(Json(app_state(&app)?.kernel.merge_records(&ctx, &entity, id, m.duplicate, &m.reason).await?).into_response())
+}
+
+#[derive(Deserialize)]
+struct Duplicates {
+    limit: Option<i64>,
+}
+
+async fn duplicates(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Path<String>, Query(d): Query<Duplicates>) -> ApiResult<Response> {
+    Ok(Json(json!({"groups": app_state(&app)?.kernel.duplicates(&ctx, &entity, d.limit.unwrap_or(50)).await?})).into_response())
+}
+
 /// The same over more records than a request should wait for: queued as a job (`/api/jobs`).
 async fn bulk_job(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Path<String>, Json(b): Json<BulkRequest>) -> ApiResult<Response> {
     let id = app_state(&app)?.kernel.bulk_job(&ctx, &entity, b.ids, b.filters, &b.op).await?;
@@ -434,6 +454,8 @@ pub fn routes() -> Routes {
         .add("/{entity}/_import", post(import))
         .add("/{entity}/_bulk", post(bulk))
         .add("/{entity}/_bulk/jobs", post(bulk_job))
+        .add("/{entity}/_duplicates", get(duplicates))
+        .add("/{entity}/{id}/merge", post(merge))
         .add("/{entity}/{id}", get(read).patch(update).put(update).delete(remove))
         .add("/{entity}/{id}/submit", post(submit))
         .add("/{entity}/{id}/cancel", post(cancel))

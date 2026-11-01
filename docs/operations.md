@@ -481,6 +481,18 @@ an app that deletes rows in its own SQL (Drive's trash, for one) does not check 
 
 Restriction of processing, as an operation of its own, is not built.
 
+**Restricting processing** keeps someone's data and stops using it: `POST /api/admin/restrictions`
+`{email, reason}` covers every address they have had. No queued mail goes to them, and apps with
+their own delivery ask `Kernel::may_contact`. It deletes nothing, and hides nothing from people who
+can read the records. `POST /api/admin/restrictions/lift` undoes it.
+
+**Retention rules** say how long an entity's records are kept: `POST /api/admin/retention` `{entity,
+after_days, date_field, action: delete | anonymize, condition, reason}`. They run once a day as a job,
+5,000 records a rule at most. A legal hold stops a rule, what a package keeps for a stated reason cannot
+have a rule that deletes it, and a record that cannot be deleted is counted in `last_result`, not forced.
+`POST /api/admin/retention/{id}/preview` says what a rule would reach, without touching it. Immutable
+financial history is out of their reach by design.
+
 ## Online editing
 
 Drive opens documents, spreadsheets and presentations in an editor server you run beside Ferrum:

@@ -227,6 +227,11 @@ impl Catalog {
                     return invalid(format!("{name}: personal data of {}: {c} is not a field", pd.entity));
                 }
             }
+            for m in &p.manifest.merge_links {
+                if !is_ident(&m.table) || !is_ident(&m.column) || !self.entities.get(&m.to).is_some_and(|(_, e)| e.mergeable) {
+                    return invalid(format!("{name}: merge_links: {}.{} must point at a mergeable entity, not {}", m.table, m.column, m.to));
+                }
+            }
             for t in &p.manifest.export_tables {
                 if t.is_empty() || !t.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
                     return invalid(format!("{name}: export_tables: {t:?} is not a table name"));

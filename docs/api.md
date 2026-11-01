@@ -180,6 +180,8 @@ several workspaces in turn and is left as it is.
 | `POST /api/v1/{E}/_import` | JSON array (≤5000) → `{created, ids, errors: [{row, error, fields?}]}` (`207` if some failed) |
 | `POST /api/v1/{E}/_bulk` | one operation on a selection: `{ids: [...]}` or `{filters: [...]}` (≤500 records) plus `{"op": "update", "values": {...}}`, `{"op": "delete"}`, `{"op": "submit"}`, `{"op": "cancel"}`, `{"op": "workflow", "action"}`, `{"op": "action", "action", "params"?}`, `{"op": "assign", "user", "note"?, "due_date"?, "priority"?}`, `{"op": "add_tags" \| "remove_tags", "tags"}` → `{succeeded, failed, results: [{id, ok, error?}]}`. Each record runs in its own transaction with the caller's permissions; `error` has the API error shape |
 | `POST /api/v1/{E}/_bulk/jobs` | the same over up to 100,000 records, or all a filter matches when it starts → `202 {job}`; see [Background jobs](#background-jobs--apijobs) |
+| `GET /api/v1/{E}/_duplicates?limit=` | a mergeable entity's likely duplicates: `{groups: [{field, value, ids}]}` (needs delete) |
+| `POST /api/v1/{E}/{id}/merge` | `{duplicate, reason}`: moves everything linked to the duplicate onto this record → `{keep, merged, links_moved}` (needs delete). Whole or not at all, and not undone. The old id then answers with this record. |
 
 ## Collaboration (any record the caller can read)
 
@@ -475,6 +477,13 @@ files_deleted, audit_events_redacted, account_erased, not_searched}`. Legal hold
 Failed events ([events](events.md)): `GET /api/admin/events/dead?limit=` → `{events: [{id, topic,
 entity, record_id, attempts, last_error, created_at, correlation_id}]}`; `POST
 /api/admin/events/{id}/replay`; `POST /api/admin/webhook-deliveries/{id}/replay`.
+
+Personal data, beside `/api/admin/privacy`: `GET`/`POST /api/admin/restrictions`, `POST
+/api/admin/restrictions/lift` `{email}`; `GET`/`POST /api/admin/retention`, `PUT`/`DELETE
+/api/admin/retention/{id}`, `POST /api/admin/retention/{id}/preview` → `{reaches, more}`.
+
+Customizations and upgrades: `GET /api/admin/customize/conflicts` → `{conflicts: [{id, entity, op, was,
+now, gone, suspended}]}`; `POST /api/admin/customize/{id}/keep` keeps one over what its package says now.
 
 ## SCIM 2.0 — `/api/scim/v2` ([identity lifecycle](identity-lifecycle.md))
 

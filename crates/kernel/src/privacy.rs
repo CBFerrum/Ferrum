@@ -46,7 +46,7 @@ fn admin_only(ctx: &Ctx) -> Result<()> {
     if ctx.is_admin { Ok(()) } else { Err(Error::Forbidden("personal-data requests are for administrators".into())) }
 }
 
-fn checked_email(email: &str) -> Result<String> {
+pub(crate) fn checked_email(email: &str) -> Result<String> {
     let e = email.trim().to_lowercase();
     if e.len() > 254 || !e.contains('@') || e.chars().any(char::is_whitespace) {
         return Err(Error::field("email", "give the person's email address"));
@@ -55,7 +55,7 @@ fn checked_email(email: &str) -> Result<String> {
 }
 
 /// Every address `email` stands for: it, and if it is or was a person's, all of theirs.
-async fn addresses(tx: &mut Tx, tenant: Uuid, email: &str) -> Result<Vec<String>> {
+pub(crate) async fn addresses(tx: &mut Tx, tenant: Uuid, email: &str) -> Result<Vec<String>> {
     let mut all: Vec<String> = sqlx::query_scalar(
         "with person as (select id from app_user where tenant_id = $1 and email = $2::citext \
            union select user_id from person_identifier where tenant_id = $1 and email = $2::citext) \
@@ -184,6 +184,18 @@ async fn erase_record(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, id: U
     }
     audit::record(tx, ctx, entity, id, "erase_personal_data", None, json!({"fields": fields, "reason": reason, "files": files.len()})).await?;
     Ok((events, files.len() as u64))
+}
+
+impl Kernel {
+    /// Blanks the fields a package declares personal on one record: a retention rule's work.
+    pub(crate) async fn anonymize_record(&self, sys: &Ctx, entity: &str, id: Uuid, reason: &str) -> Result<()> {
+        let ent = self.entity(sys, entity)?;
+        let fields: Vec<String> = sys.schema.personal_data.iter().filter(|d| d.entity == entity).flat_map(|d| d.erase.iter().cloned()).collect();
+        let mut tx = self.db.system_tenant_tx(sys.tenant).await?;
+        erase_record(self, sys, &mut tx, &ent, id, &fields, reason).await?;
+        tx.commit().await?;
+        Ok(())
+    }
 }
 
 /// Anonymizes and deactivates a login account, with everything that hangs off it. What the person

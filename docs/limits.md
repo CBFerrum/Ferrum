@@ -68,6 +68,17 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   receive OpenID Connect's back-channel logout. Apps do not yet hand over what they keep when someone
   leaves: Drive shares and helpdesk queues stay with them.
 
+- **Merging duplicates** is for entities that opt in (customers and suppliers so far). It finds
+  duplicates by equal fields, not by resemblance, and is not undone. Append-only history keeps the id
+  it was posted under: a report on it must ask `Kernel::merged_ids`.
+- **Field masks** show part of a value to someone outside its field group. A masked field cannot be
+  filtered or sorted on by them, and they cannot write it back. No shipped package declares one yet.
+- **Restricting processing** stops queued mail, and what asks `Kernel::may_contact`. It does not stop
+  people reading or editing the records.
+- **Retention rules** are set per workspace and per entity; packages suggest none. Customizations made
+  before they remembered what they replaced are not compared with upgrades.
+- **Hook order** can be declared and is checked, but apps' hooks have not declared theirs yet: they run
+  in registration order.
 - **Background jobs** have no calendar: nothing schedules one for later or repeats it. Apps' periodic
   work stays in their `maintenance`. A running job hears of a cancellation within 5 seconds, and work
   done in earlier transactions stays done.

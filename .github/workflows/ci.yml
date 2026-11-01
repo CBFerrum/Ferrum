@@ -81,6 +81,8 @@ jobs:
       # Every accepted advisory has an owner, a reason and a review date (scripts/registry.py).
       - name: Requirements registry, accepted advisories and generated documents
         run: python3 -m pip install --quiet pyyaml && python3 scripts/registry.py check
+      - name: Licenses of everything compiled in
+        run: python3 scripts/licenses.py check
 
   # The editor server for Drive's browser editors (deploy/editors, docs/plan/browser-editors.md):
   # built from the pinned editor builds, exercised in Chromium, Firefox and WebKit as the cluster

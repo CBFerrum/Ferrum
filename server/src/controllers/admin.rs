@@ -9,6 +9,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
+use ferrum_kernel::retention::RetentionInput;
 use ferrum_kernel::{Ctx, Error};
 use ferrum_meta::{OverlayOp, PermissionDef};
 use loco_rs::app::AppContext;
@@ -244,6 +245,52 @@ async fn install(Auth(ctx): Auth, State(app): State<AppContext>, Json(req): Json
     admin(&ctx)?;
     let installed = app_state(&app)?.kernel.install_packages(ctx.tenant, &req.packages).await?;
     Ok(Json(json!({"installed": installed})).into_response())
+}
+
+// ── retention and restriction of processing ──
+
+async fn list_retention(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    Ok(Json(json!({"rules": app_state(&app)?.kernel.retention_rules(&ctx).await?})).into_response())
+}
+
+async fn add_retention(Auth(ctx): Auth, State(app): State<AppContext>, Json(r): Json<RetentionInput>) -> ApiResult<Response> {
+    let id = app_state(&app)?.kernel.save_retention_rule(&ctx, None, r).await?;
+    Ok((StatusCode::CREATED, Json(json!({"id": id}))).into_response())
+}
+
+async fn save_retention(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>, Json(r): Json<RetentionInput>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.save_retention_rule(&ctx, Some(id), r).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn delete_retention(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.delete_retention_rule(&ctx, id).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn preview_retention(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
+    Ok(Json(app_state(&app)?.kernel.retention_preview(&ctx, id).await?).into_response())
+}
+
+#[derive(Deserialize)]
+struct Restriction {
+    email: String,
+    #[serde(default)]
+    reason: String,
+}
+
+async fn list_restrictions(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    Ok(Json(json!({"restrictions": app_state(&app)?.kernel.restrictions(&ctx).await?})).into_response())
+}
+
+async fn restrict(Auth(ctx): Auth, State(app): State<AppContext>, Json(r): Json<Restriction>) -> ApiResult<Response> {
+    let addresses = app_state(&app)?.kernel.restrict_processing(&ctx, &r.email, &r.reason).await?;
+    Ok((StatusCode::CREATED, Json(json!({"addresses": addresses}))).into_response())
+}
+
+async fn lift_restriction(Auth(ctx): Auth, State(app): State<AppContext>, Json(r): Json<Restriction>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.lift_restriction(&ctx, &r.email).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 // ── customizations ──
@@ -585,6 +632,11 @@ pub fn routes() -> Routes {
         .add("/customize", get(list_custom).post(add_custom))
         .add("/customize/export", get(export_custom))
         .add("/customize/import", post(import_custom))
+        .add("/retention", get(list_retention).post(add_retention))
+        .add("/retention/{id}", put(save_retention).delete(delete_retention))
+        .add("/retention/{id}/preview", post(preview_retention))
+        .add("/restrictions", get(list_restrictions).post(restrict))
+        .add("/restrictions/lift", post(lift_restriction))
         .add("/customize/conflicts", get(custom_conflicts))
         .add("/customize/{id}/active", put(toggle_custom))
         .add("/customize/{id}/keep", post(keep_custom))
