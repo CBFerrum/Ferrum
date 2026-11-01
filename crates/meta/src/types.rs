@@ -353,9 +353,12 @@ pub struct ActionDef {
 pub struct ActionParam {
     pub name: String,
     pub label: String,
-    /// `data` (one line), `text` (several lines), `select` (one of `options`), `int` or `date`.
+    /// `data` (one line), `text` (several lines), `select` (one of `options`), `int`, `date`, or
+    /// `link` (a record of `to`).
     #[serde(rename = "type", default = "default_param_type")]
     pub ptype: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

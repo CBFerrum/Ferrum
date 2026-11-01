@@ -37,6 +37,9 @@ pub enum Error {
     Unauthorized(String),
     #[error("{0}")]
     TooManyRequests(String),
+    /// Not now: come back after this many seconds. A job waits without using up an attempt.
+    #[error("{0}")]
+    Wait(String, u64),
     #[error("temporary conflict, please retry: {0}")]
     Retryable(String),
     #[error("{0}")]
@@ -68,7 +71,7 @@ impl Error {
             Error::Conflict(_) => 409,
             Error::Forbidden(_) => 403,
             Error::Unauthorized(_) => 401,
-            Error::TooManyRequests(_) => 429,
+            Error::TooManyRequests(_) | Error::Wait(..) => 429,
             Error::Retryable(_) | Error::Unavailable(_) => 503,
             Error::Db(_) | Error::Internal(_) => 500,
         }
@@ -82,7 +85,7 @@ impl Error {
             Error::Conflict(_) => "conflict",
             Error::Forbidden(_) => "forbidden",
             Error::Unauthorized(_) => "unauthorized",
-            Error::TooManyRequests(_) => "too_many_requests",
+            Error::TooManyRequests(_) | Error::Wait(..) => "too_many_requests",
             Error::Retryable(_) => "retry",
             Error::Unavailable(_) => "unavailable",
             Error::Db(_) => "database_error",

@@ -1,0 +1,20 @@
+# Example plugin: a connector, the contract in docs/connectors.md.
+#   cargo build --release --target wasm32-unknown-unknown
+[package]
+name = "connector-demo"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ferrum-plugin-sdk = { git = "https://github.com/CBFerrum/ferrum-sdk" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+
+[workspace]

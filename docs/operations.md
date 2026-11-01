@@ -960,7 +960,7 @@ the bar runtime (`/_shell/…`) and the app's files (`/_ui/…`).
 * **Size budgets.** An interface's first script (its entry and the modules preloaded with it) is at
   most 200 KB compressed and its CSS 50 KB; pages load when opened. Ferrum-Frontend's build and each
   app's `check` (`packages/build`) fail over budget, so a release cannot grow past it unnoticed.
-* **Developing an interface.** On a development server run with `FERRUM_DEV_UI=1`: in the app's
+* **Developing an interface.** On a development server run with `FERRUM_DEV_UI=true`: in the app's
   `ui/`, `npm run dev` starts Vite (`packages/build/cli.mjs dev`), and `ferrum-app dev --ui
   http://localhost:5173 --no-upload` serves the app's pages from it behind the real session, bar
   and bootstrap, with hot reload, until `--ui off` or a restart. `ferrum-app new <id> --ui` makes an

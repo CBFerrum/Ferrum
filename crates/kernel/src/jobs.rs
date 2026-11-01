@@ -299,6 +299,21 @@ impl Kernel {
                 Some(result),
                 Some(format!("{title} finished")),
             ),
+            // Told to wait: this did not fail, so it costs no attempt.
+            Ended::Failed(Error::Wait(why, seconds)) => {
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "update job set status = 'queued', attempts = attempts - 1, last_error = $4, lease_token = null, run_at = now() + make_interval(secs => $5) where {fence}"
+                )))
+                .bind(job.tenant_id)
+                .bind(job.id)
+                .bind(job.lease_token)
+                .bind(why)
+                .bind(*seconds as f64)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+                return Ok(());
+            }
             Ended::Failed(e) => {
                 let last = gives_up(e) || job.attempts >= job.max_attempts;
                 tracing::warn!(job = %job.id, kind = %job.kind, attempts = job.attempts, last, "job failed: {e}");

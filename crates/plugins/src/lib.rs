@@ -24,6 +24,7 @@
 //! limit per workspace on calls running at once; failures are fail-closed and logged, and an
 //! administrator can disable the plugin at once.
 
+pub mod connect;
 pub mod events;
 pub mod hooks;
 pub mod host;
@@ -129,6 +130,9 @@ pub struct Manifest {
     pub http_hosts: Vec<String>,
     /// Configuration values only the host reads.
     pub credentials: Vec<Credential>,
+    /// This plugin is a connector, and this is what it offers (`docs/connectors.md`). Its provider's
+    /// name is the plugin's.
+    pub connector: Option<ferrum_kernel::connect::ConnectorInfo>,
     /// Entities it brings (stored without DDL like any custom entity; names start with `X`).
     pub entities: Vec<EntityDef>,
 }
@@ -225,6 +229,14 @@ impl Manifest {
             }
             if let Some(h) = c.hosts.iter().find(|h| !self.http_hosts.contains(h)) {
                 errors.push(FieldError::new("hosts", format!("{h} is not among http_hosts")).in_row("credentials", i));
+            }
+        }
+        if let Some(c) = &self.connector {
+            if c.label.is_empty() || c.api_version.is_empty() {
+                errors.push(FieldError::new("connector", "needs a label, and the API version it was written against"));
+            }
+            if c.streams.is_empty() && c.writes.is_empty() {
+                errors.push(FieldError::new("connector", "needs a stream to read or an entity to write"));
             }
         }
         for (i, e) in self.entities.iter().enumerate() {
@@ -627,8 +639,8 @@ impl PluginHost {
             errors.push(FieldError::new("name", "use 2-40 lower-case letters, digits or '-', starting with a letter"));
         }
         let m = &p.manifest;
-        if m.hooks.is_empty() && m.routes.is_empty() && m.subscriptions.is_empty() && m.schedules.is_empty() && m.sockets.is_empty() {
-            errors.push(FieldError::new("hooks", "a plugin needs at least one hook, route, subscription, schedule or socket"));
+        if m.hooks.is_empty() && m.routes.is_empty() && m.subscriptions.is_empty() && m.schedules.is_empty() && m.sockets.is_empty() && m.connector.is_none() {
+            errors.push(FieldError::new("hooks", "a plugin needs at least one hook, route, subscription, schedule or socket, or to be a connector"));
         }
         errors.extend(m.validate(ctx));
         // The same caps as app bundles (ferrum-apps MAX_PLUGIN_FUEL / MAX_PLUGIN_MEMORY_MB).
