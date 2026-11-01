@@ -2,7 +2,7 @@
 //! exchange per round: everything in a request may be sent again, and nothing is forgotten on the
 //! site until the response says it arrived.
 
-use crate::command::{Command, Report};
+use crate::command::{Command, Report, State};
 use crate::telemetry::{Limits, Measurement};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -65,6 +65,9 @@ pub struct SyncRequest {
     /// Commands its journal now holds, so they stop being sent.
     #[serde(default)]
     pub held: Vec<Uuid>,
+    /// Commands nobody here can say the outcome of, so that a person's finding reaches this site.
+    #[serde(default)]
+    pub in_doubt: Vec<Uuid>,
     /// How many more commands it can hold.
     pub want: u32,
     /// The versions of what it was last told, so that only a change is sent.
@@ -107,6 +110,9 @@ pub struct SyncResponse {
     /// Stop these if you can. Not a statement that they stopped.
     #[serde(default)]
     pub cancel: Vec<Uuid>,
+    /// What became of the commands it was in doubt about, now that a person has said.
+    #[serde(default)]
+    pub settled: Vec<(Uuid, State)>,
     #[serde(default)]
     pub reports_done: Vec<Uuid>,
     /// Reports the platform refused, with the reason, so they are not resent for ever.

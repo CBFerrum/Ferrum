@@ -9,12 +9,13 @@
 // 20,000 samples a second is 345 GB a day, which belongs on an analytical store fed by sites; nothing
 // here has been measured against that, and a site should aggregate at the edge first.
 
-use chrono::{DateTime, Duration, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use ferrum_kernel::{Ctx, Error, Kernel, Result, Tx};
 use ferrum_ops_contract::telemetry::Measurement;
 use ferrum_ops_contract::telemetry::Quality;
 use serde_json::{Value, json};
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicI32, Ordering};
 use uuid::Uuid;
 
 /// Days of samples, from `FERRUM_OPS_TELEMETRY_DAYS` (default 30).
@@ -36,8 +37,16 @@ fn file_day(source: DateTime<Utc>, now: DateTime<Utc>, retention: i64) -> NaiveD
     source.date_naive().clamp(oldest, newest)
 }
 
+/// The day partitions were last made for: every sync with measurements asks, and the answer changes
+/// once a day.
+static READY: AtomicI32 = AtomicI32::new(0);
+
 /// Makes sure every day from `retention` ago to tomorrow has its partition.
 pub async fn ensure_partitions(k: &Kernel, now: DateTime<Utc>) -> Result<()> {
+    let today = now.date_naive().num_days_from_ce();
+    if READY.load(Ordering::Relaxed) == today {
+        return Ok(());
+    }
     let retention = retention_days();
     let mut tx = k.db.system_tx().await?;
     sqlx::query("select pg_advisory_xact_lock(hashtext('ferrum.op_measurement'))").execute(&mut *tx).await?;
@@ -63,6 +72,7 @@ pub async fn ensure_partitions(k: &Kernel, now: DateTime<Utc>) -> Result<()> {
         day = day.succ_opt().ok_or_else(|| Error::internal("no day follows"))?;
     }
     tx.commit().await?;
+    READY.store(today, Ordering::Relaxed);
     Ok(())
 }
 

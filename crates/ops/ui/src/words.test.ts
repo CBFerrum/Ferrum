@@ -1,5 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { canEnroll, canRetire, nextSteps, silence, state, STATES } from "./words";
+import { canEnroll, canRetire, issuer, nextSteps, reading, said, silence, state, STATES } from "./words";
+
+describe("what a command says", () => {
+  it("names the person who asked, or what kind of thing did", () => {
+    expect(issuer("person", "ada@plant.test")).toBe("ada@plant.test");
+    expect(issuer("engine", null)).toBe("An application");
+    expect(issuer("new-kind", null)).toBe("new-kind");
+  });
+
+  it("drops what repeats the command, and keeps what a site said", () => {
+    expect(said({ approval: null, by: "person" })).toBeNull();
+    expect(said({ approval: "CAB-7", by: "person" })).toEqual({ approval: "CAB-7" });
+    expect(said(null)).toBeNull();
+  });
+
+  it("reads a dial to two places", () => {
+    expect(reading(63.06087946710097)).toBe("63.06");
+    expect(reading(40)).toBe("40");
+  });
+});
 
 describe("words for what was established", () => {
   it("never calls an accepted command done", () => {
@@ -39,6 +58,11 @@ describe("a device's next steps", () => {
       expect(nextSteps(from).map((s) => s.to)).not.toContain("Active");
     }
     expect(nextSteps("Commissioned").map((s) => s.to)).toContain("Active");
+  });
+
+  it("reaches provisioned through its gateway when it has no key of its own", () => {
+    expect(nextSteps("Claimed", "gw").map((s) => s.to)).toEqual(["Provisioned"]);
+    expect(nextSteps("Claimed")).toEqual([]);
   });
 
   it("comes back from quarantine only by enrolling", () => {

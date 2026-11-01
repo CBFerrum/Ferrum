@@ -43,6 +43,7 @@ async fn boot() -> Arc<Kernel> {
     let mut packages = ferrum_domain::packages().expect("packages");
     packages.extend(ferrum_ops::packages().expect("ops"));
     let catalog = Catalog::from_packages(packages).expect("catalog");
+    assert_eq!(catalog.links_out_of_reach("ops"), Vec::<String>::new(), "whoever fills in a link can look up what it points at");
     let mut hooks = HookRegistry::default();
     ferrum_domain::register(&mut hooks);
     hooks.scoped(&["ops".to_string()], ferrum_ops::register);
@@ -110,6 +111,7 @@ impl Gateway {
             contract: VERSION,
             epoch: self.epoch,
             boot: self.boot,
+            in_doubt: vec![],
             reports: vec![],
             measurements: vec![],
             facts: vec![],
@@ -530,6 +532,14 @@ async fn scenario() {
     assert_eq!(holders["domains"][0]["epoch"], json!(3));
     assert!(matches!(devices::set_lifecycle(&k, &t.admin, gw2_id, Lifecycle::Active, "looks fine").await, Err(Error::Invalid(_))), "it comes back only with a new key");
     devices::set_lifecycle(&k, &t.admin, gw_id, Lifecycle::Retired, "scrapped").await.expect("retired");
+
+    // Equipment behind a gateway has no key of its own: naming the gateway provisions it.
+    let behind = id_of(&t.k.insert(&t.admin, "Device", obj(json!({"device_name": "Press", "device_code": "PRESS-9", "kind": "Machine", "site": site, "operations": [{"operation": "machine.start_job"}]}))).await.unwrap());
+    devices::set_lifecycle(&k, &t.admin, behind, Lifecycle::Claimed, "ours").await.unwrap();
+    let alone = devices::set_lifecycle(&k, &t.admin, behind, Lifecycle::Provisioned, "says so").await;
+    assert!(matches!(alone, Err(Error::Invalid(ref m)) if m.contains("enrolling a key")), "nothing is provisioned by saying so: {alone:?}");
+    t.k.update(&t.admin, "Device", behind, obj(json!({"gateway": gw2_id})), None).await.expect("reached through it");
+    devices::set_lifecycle(&k, &t.admin, behind, Lifecycle::Provisioned, "reached through the gateway").await.expect("provisioned");
     let dead = gw.send(&t, gw.sync_request()).await;
     assert_eq!(dead.status, 401, "a retired device's keys are gone");
 }

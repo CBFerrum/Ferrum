@@ -5,10 +5,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { Link } from "react-router";
-import { errorMessage, relativeTime } from "@ferrum/client";
+import { refusal, relativeTime } from "@ferrum/client";
 import { Alert, Badge, Button, Dialog, EmptyState, ErrorState, Field, PageLoading, toast, useShellTitle } from "@ferrum/kit";
 import { LinkInput } from "@ferrum/records";
-import { type Domain, overview, type SiteRow, transfer } from "./data";
+import { type Domain, overview, setPin, type SiteRow, transfer } from "./data";
 import { Tabs } from "./Tabs";
 import { silence } from "./words";
 
@@ -26,7 +26,7 @@ function Transfer({ domain, onClose }: { domain: Domain; onClose: () => void }) 
       void qc.invalidateQueries({ queryKey: ["ops"] });
       onClose();
     },
-    onError: (e) => toast(errorMessage(e), "error"),
+    onError: (e) => toast(refusal(e), "error"),
   });
   return (
     <Dialog
@@ -55,6 +55,45 @@ function Transfer({ domain, onClose }: { domain: Domain; onClose: () => void }) 
   );
 }
 
+/** The site's console works with the link down, so it cannot ask the platform who someone is. */
+function Pin({ site, onClose }: { site: SiteRow; onClose: () => void }) {
+  const id = useId();
+  const [email, setEmail] = useState("");
+  const [pin, setValue] = useState("");
+  const save = useMutation({
+    mutationFn: () => setPin(site.id, email.trim(), pin),
+    onSuccess: () => {
+      toast("Saved. It reaches the site at its next exchange.");
+      onClose();
+    },
+    onError: (e) => toast(refusal(e), "error"),
+  });
+  return (
+    <Dialog
+      open
+      title={`Console PIN at ${site.name}`}
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>Back</Button>
+          <Button variant="primary" disabled={!email.trim() || pin.length < 6} loading={save.isPending} onClick={() => save.mutate()}>
+            Save it
+          </Button>
+        </>
+      }
+    >
+      <div className="stack">
+        <Field label="Email of the person" htmlFor={`${id}-e`} required>
+          <input id={`${id}-e`} className="input" type="email" autoComplete="off" value={email} onChange={(e) => setEmail(e.target.value)} />
+        </Field>
+        <Field label="PIN" htmlFor={`${id}-p`} required hint="At least six digits. Replaces the one they had.">
+          <input id={`${id}-p`} className="input" type="password" inputMode="numeric" autoComplete="new-password" value={pin} onChange={(e) => setValue(e.target.value.replace(/\D/g, ""))} />
+        </Field>
+      </div>
+    </Dialog>
+  );
+}
+
 function DomainRow({ d }: { d: Domain }) {
   const [moving, setMoving] = useState(false);
   const seen = silence(d.silent_secs);
@@ -74,6 +113,7 @@ function DomainRow({ d }: { d: Domain }) {
       <ul className="ops-facts">
         {h?.version ? <li>Runtime {h.version}</li> : null}
         {h?.disk_free_bytes ? <li>{megabytes(h.disk_free_bytes)}</li> : null}
+        {h?.backlog_secs && h.backlog_secs > 60 ? <li>{Math.round(h.backlog_secs / 60)} min of reports still to arrive</li> : null}
         {h?.telemetry_shed ? <li>{h.telemetry_shed} measurements given up</li> : null}
         {Object.entries(h?.adapters ?? {}).map(([name, state]) => (
           <li key={name}>
@@ -87,6 +127,7 @@ function DomainRow({ d }: { d: Domain }) {
 }
 
 function Site({ s }: { s: SiteRow }) {
+  const [pin, setAsking] = useState(false);
   return (
     <section className="card card-pad ops-site" aria-label={s.name}>
       <header className="ops-site-head">
@@ -98,7 +139,11 @@ function Site({ s }: { s: SiteRow }) {
           <Link to="/attention" className="ops-need">
             {s.needs_person} {s.needs_person === 1 ? "needs" : "need"} a person
           </Link>
-        ) : null}
+        ) : (
+          <Button size="sm" onClick={() => setAsking(true)}>
+            Console PIN…
+          </Button>
+        )}
       </header>
       <dl className="ops-counts">
         <div>
@@ -120,6 +165,7 @@ function Site({ s }: { s: SiteRow }) {
           ))}
         </div>
       ) : null}
+      {pin ? <Pin site={s} onClose={() => setAsking(false)} /> : null}
     </section>
   );
 }
@@ -137,7 +183,7 @@ export function Home() {
       ) : q.isError ? (
         <ErrorState error={q.error} onRetry={() => void q.refetch()} />
       ) : sites.length === 0 ? (
-        <EmptyState title="No sites yet" icon="factory">
+        <EmptyState title="No sites yet" icon="dashboard">
           <Link to="/e/Site/new">Add your first site</Link>
         </EmptyState>
       ) : (

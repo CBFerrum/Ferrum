@@ -34,6 +34,21 @@ export const STEPS: Record<string, string> = {
   refuse: "Refused: it came from a gateway that no longer holds this",
 };
 
+const ISSUERS: Record<string, string> = { person: "A person", engine: "An application", automation: "An automation", ai: "An agent's proposal" };
+
+/** Who asked for a command: the person if there was one. */
+export const issuer = (kind: string, email: string | null | undefined) => email ?? ISSUERS[kind] ?? kind;
+
+/** What is worth showing of a step's detail: who issued it is on the command already. */
+export function said(detail: unknown): unknown {
+  if (typeof detail !== "object" || detail === null) return detail;
+  const left = Object.entries(detail).filter(([k, v]) => k !== "by" && v !== null);
+  return left.length ? Object.fromEntries(left) : null;
+}
+
+/** A reading as a person reads a dial. */
+export const reading = (value: number) => String(Math.round(value * 100) / 100);
+
 /** How long a gateway has been silent, and how worried to be. It may be working offline: silence
  *  is not failure, so the worst it says is that nobody can see the site. */
 export function silence(secs: number | null | undefined): { label: string; tone: Tone } {
@@ -52,10 +67,13 @@ export interface LifecycleStep {
 }
 
 /** What can happen next to a device. Enrolling is separate: it takes a code, and a site to use it. */
-export function nextSteps(lifecycle: string): LifecycleStep[] {
+export function nextSteps(lifecycle: string, gateway?: string | null): LifecycleStep[] {
   switch (lifecycle) {
     case "Imported":
       return [{ to: "Claimed", label: "Claim it" }];
+    case "Claimed":
+      // Equipment behind a gateway has no key of its own: the gateway speaks for it.
+      return gateway ? [{ to: "Provisioned", label: "It is reached through its gateway" }] : [];
     case "Provisioned":
       return [{ to: "Commissioned", label: "Commission it" }, { to: "Quarantined", label: "Quarantine", serious: true }];
     case "Commissioned":
@@ -64,6 +82,8 @@ export function nextSteps(lifecycle: string): LifecycleStep[] {
       return [{ to: "Maintenance", label: "Take out for maintenance" }, { to: "Quarantined", label: "Quarantine", serious: true }];
     case "Maintenance":
       return [{ to: "Active", label: "Put back in service" }, { to: "Quarantined", label: "Quarantine", serious: true }];
+    case "Quarantined":
+      return gateway ? [{ to: "Provisioned", label: "It is safe again, behind its gateway", serious: true }] : [];
     default:
       return [];
   }

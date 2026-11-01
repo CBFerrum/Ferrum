@@ -432,6 +432,12 @@ async fn equipment_that_cannot_say_leaves_the_outcome_unknown(w: &World) {
     reaches(&ws, c3, "OutcomeUnknown", 20).await;
     assert_eq!(site.missions_for(c3), 0, "an unanswered dispatch is not a sent one, but nobody can prove that here");
     site.fleet_silent(false);
+
+    // A person says what happened, on the platform, and the site stops being in doubt.
+    let mut tx = ws.k.db.tenant_tx(ws.tenant).await.unwrap();
+    ferrum_ops::commands::reconcile(&mut tx, &ws.admin, c3, ferrum_ops::contract::State::Failed, "It never reached the fleet").await.unwrap();
+    tx.commit().await.unwrap();
+    until("the site to hear", 10, async || site.console("GET", "/api/status", None, None).await.1["unknown"] == json!(0)).await;
 }
 
 async fn a_fleet_with_no_memory_is_not_sent_twice(w: &World) {
@@ -529,8 +535,21 @@ async fn people_at_the_console(w: &World) {
     assert_eq!(wrong, 409, "a wrong scan completes nothing: {why}");
     assert_eq!(site.console("POST", &format!("{path}done"), Some(&token), Some(json!({"scan": "A-01-03"}))).await.0, 204);
     until("it to finish offline", 10, async || site.journal().entry(c).unwrap().unwrap().state.as_str() == "Completed").await;
+    // What happened on the floor is written down here, and goes up with everything else.
+    assert_eq!(site.console("POST", "/api/floor", None, Some(json!({"reference": "RUN-9", "kind": "resume"}))).await.0, 401);
+    assert_eq!(site.console("POST", "/api/floor", Some(&token), Some(json!({"reference": "RUN-9", "kind": "report"}))).await.0, 422, "how many came off?");
+    assert_eq!(site.console("POST", "/api/floor", Some(&token), Some(json!({"reference": "RUN-9", "kind": "pause"}))).await.0, 422, "why it stopped");
+    assert_eq!(site.console("POST", "/api/floor", Some(&token), Some(json!({"reference": " ", "kind": "resume"}))).await.0, 422, "which run");
+    assert_eq!(site.console("POST", "/api/floor", Some(&token), Some(json!({"reference": "RUN-9", "kind": "report", "good": "12", "lot": "W-1"}))).await.0, 204);
     w.p.down.store(false, Ordering::SeqCst);
     reaches(&ws, c, "Completed", 20).await;
+    until("the report to arrive", 10, async || {
+        let mut tx = ws.k.db.tenant_tx(ws.tenant).await.unwrap();
+        let body: Option<Value> = sqlx::query_scalar("select body from op_fact where kind = 'mes.event'").fetch_optional(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        body.is_some_and(|b| b["reference"] == json!("RUN-9") && b["good"] == json!(12.0))
+    })
+    .await;
     assert_eq!(described(&ws, c).await["outcome"]["evidence"]["found"]["scan"], json!("A-01-03"), "what the person scanned is the evidence");
     let mut tx = ws.k.db.tenant_tx(ws.tenant).await.unwrap();
     let wrong_scans: i64 = sqlx::query_scalar("select count(*) from op_fact where kind = 'site.scan.mismatch'").fetch_one(&mut *tx).await.unwrap();

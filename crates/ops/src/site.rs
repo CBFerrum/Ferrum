@@ -17,7 +17,7 @@
 //! | `POST /devices/{id}/lifecycle` | Device Administrator | `{to, reason}` |
 //! | `GET /devices/{id}/latest` | | each metric's newest value and its age |
 //! | `GET /series?device=&metric=&from=&to=&bucket=` | | minute rollups |
-//! | `POST /operators/pin` | Device Administrator | `{site, user, pin}`: for the site's console, offline |
+//! | `POST /operators/pin` | Device Administrator | `{site, email, pin}`: for the site's console, offline |
 //!
 //! Under `/api/site/{tenant}/ops/`, for a site runtime, which signs what it sends:
 //! `POST /enroll` with a code, and `POST /sync`.
@@ -168,7 +168,7 @@ struct SetLifecycle {
 #[derive(Deserialize)]
 struct Pin {
     site: Uuid,
-    user: Uuid,
+    email: String,
     pin: String,
 }
 
@@ -286,13 +286,15 @@ async fn signed_in(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<SiteRespo
                 return Err(Error::field("pin", "at least six digits"));
             }
             let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+            let user: Option<Uuid> = sqlx::query_scalar("select id from app_user where tenant_id = $1 and lower(email) = lower($2)").bind(ctx.tenant).bind(p.email.trim()).fetch_optional(&mut *tx).await?;
+            let user = user.ok_or_else(|| Error::field("email", "nobody here has that email"))?;
             sqlx::query(
                 "insert into op_operator_pin (tenant_id, site_id, user_id, pin_hash, set_by) values ($1, $2, $3, $4, $5) \
                  on conflict (tenant_id, site_id, user_id) do update set pin_hash = excluded.pin_hash, set_by = excluded.set_by, set_at = now()",
             )
             .bind(ctx.tenant)
             .bind(p.site)
-            .bind(p.user)
+            .bind(user)
             .bind(identity::pin_hash(&p.pin))
             .bind(ctx.user)
             .execute(&mut *tx)

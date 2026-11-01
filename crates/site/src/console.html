@@ -63,6 +63,20 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
     <h2>Your tasks</h2>
     <p class="empty" id="tasks-empty">No tasks for people right now.</p>
     <div id="task-list"></div>
+    <h2>On the floor</h2>
+    <form id="floor-form" class="item">
+      <label for="floor-ref">Run, from the job sheet</label><input id="floor-ref" autocomplete="off">
+      <label for="floor-kind">What happened</label>
+      <select id="floor-kind"><option value="report">What came off</option><option value="pause">It stopped</option><option value="resume">Running again</option></select>
+      <div id="floor-report">
+        <label for="floor-good">Good</label><input id="floor-good" inputmode="decimal" autocomplete="off">
+        <label for="floor-scrap">Scrap</label><input id="floor-scrap" inputmode="decimal" autocomplete="off">
+        <label for="floor-lot">Lot made</label><input id="floor-lot" autocomplete="off">
+      </div>
+      <div id="floor-pause" hidden><label for="floor-reason">Why it stopped</label><input id="floor-reason" autocomplete="off"></div>
+      <button type="submit">Write it down</button>
+      <p id="floor-said" role="status"></p>
+    </form>
     <h2>Waiting</h2>
     <p class="empty" id="queued-empty">Nothing is waiting.</p>
     <div id="queued-list"></div>
@@ -84,7 +98,8 @@ const call = async (path, body) => {
 };
 const text = (tag, value, cls) => { const e = document.createElement(tag); e.textContent = value; if (cls) e.className = cls; return e; };
 const button = (label, fn, quiet) => { const b = text('button', label, quiet ? 'quiet' : ''); b.type = 'button'; b.onclick = fn; return b; };
-const describe = c => { const p = c.payload || {}; return Object.entries(p).filter(([k]) => k !== 'task' && k !== 'verify').map(([k, v]) => k + ': ' + (typeof v === 'object' ? JSON.stringify(v) : v)).join(' · ') || 'No details'; };
+const plain = v => typeof v === 'string' && /^\d+\.\d+$/.test(v) ? String(Number(v)) : typeof v === 'object' ? JSON.stringify(v) : v;
+const describe = c => { const p = c.payload || {}; return Object.entries(p).filter(([k, v]) => k !== 'task' && k !== 'verify' && v !== null && v !== '').map(([k, v]) => k + ': ' + plain(v)).join(' · ') || 'No details'; };
 function unknownItem(c) {
   const box = text('div', '', 'item');
   box.append(text('h3', c.operation), text('p', describe(c)), text('p', 'Nobody can say how this ended. Look at the equipment, then record what you found.'));
@@ -135,6 +150,14 @@ $('pin-form').onsubmit = async e => {
   e.preventDefault();
   try { const r = await call('/api/login', { pin: $('pin').value }); token = r.token; $('who').textContent = r.name; $('pin').value = ''; $('pin-error').textContent = ''; show(); refresh(); }
   catch (err) { $('pin-error').textContent = err.message; }
+};
+$('floor-kind').onchange = () => { const k = $('floor-kind').value; $('floor-report').hidden = k !== 'report'; $('floor-pause').hidden = k !== 'pause'; };
+$('floor-form').onsubmit = async e => {
+  e.preventDefault();
+  const number = id => $(id).value.trim() || null;
+  const body = { reference: $('floor-ref').value, kind: $('floor-kind').value, good: number('floor-good'), scrap: number('floor-scrap'), lot: $('floor-lot').value, reason: $('floor-reason').value };
+  try { await call('/api/floor', body); $('floor-said').textContent = 'Written down. It goes up when the link allows.'; for (const id of ['floor-good', 'floor-scrap', 'floor-reason']) $(id).value = ''; refresh(); }
+  catch (err) { $('floor-said').textContent = err.message; }
 };
 show(); refresh(); setInterval(refresh, 3000);
 </script>

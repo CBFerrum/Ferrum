@@ -4,7 +4,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { Link } from "react-router";
-import { errorMessage, formatDateTime } from "@ferrum/client";
+import { formatDateTime, refusal } from "@ferrum/client";
 import { Badge, Button, Dialog, EmptyState, ErrorState, Field, PageLoading, toast, useShellTitle } from "@ferrum/kit";
 import { act, type CommandRow, commands } from "./data";
 import { Tabs } from "./Tabs";
@@ -28,7 +28,7 @@ function Settle({ c, onClose }: { c: CommandRow; onClose: () => void }) {
       void qc.invalidateQueries({ queryKey: ["ops"] });
       onClose();
     },
-    onError: (e) => toast(errorMessage(e), "error"),
+    onError: (e) => toast(refusal(e), "error"),
   });
   return (
     <Dialog
@@ -67,14 +67,15 @@ function Row({ c }: { c: CommandRow }) {
   const [settling, setSettling] = useState(false);
   const word = state(c.state);
   const done = () => void qc.invalidateQueries({ queryKey: ["ops"] });
-  const approve = useMutation({ mutationFn: () => act(c.id, "approve"), onSuccess: done, onError: (e) => toast(errorMessage(e), "error") });
-  const refuse = useMutation({ mutationFn: () => act(c.id, "refuse", { reason: "Refused" }), onSuccess: done, onError: (e) => toast(errorMessage(e), "error") });
+  const approve = useMutation({ mutationFn: () => act(c.id, "approve"), onSuccess: done, onError: (e) => toast(refusal(e), "error") });
+  const refuse = useMutation({ mutationFn: () => act(c.id, "refuse", { reason: "Refused" }), onSuccess: done, onError: (e) => toast(refusal(e), "error") });
   return (
     <li className="ops-row">
       <div className="ops-row-body">
         <Link to={`/c/${c.id}`}>{c.operation}</Link> <Badge tone={c.conflict ? "red" : word.tone}>{c.conflict ? "Two endings" : word.label}</Badge>
         {c.issued_kind === "ai" ? <Badge tone="purple">Proposed by AI</Badge> : null}
         <div className="faint">
+          {c.target_code ? `${c.target_code} · ` : ""}
           {formatDateTime(c.issued_at)} · {c.domain}
         </div>
         <p className="muted">{c.conflict ? "It reported two different endings. The first stands until someone looks." : word.says}</p>
