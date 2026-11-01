@@ -9,9 +9,9 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 58 |
+| Implemented, qualification incomplete | 60 |
 | Partially implemented | 44 |
-| Missing | 74 |
+| Missing | 72 |
 | Blocked by external dependency | 9 |
 | **All** | **185** |
 
@@ -69,11 +69,11 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | Id | Requirement | Status | Basis | Known limitations |
 |---|---|---|---|---|
 | FERRUM-PRIVACY-001 | Packages declare personal data | Implemented, qualification incomplete | read | Match by email field only |
-| FERRUM-PRIVACY-002 | Relationship-aware discovery: identities, attachments, messages | Partially implemented | read | 21 of 32 packages declare no personal data, including Sign, Learn, POS and Payroll, so requests silently miss them; Files attached to records, messages and chat are not reached; historical identifiers are not kept |
+| FERRUM-PRIVACY-002 | Relationship-aware discovery: identities, attachments, messages | Partially implemented | tested | Found by email, under every address held, with attached files; not by name or phone; The apps' new declarations are on local branches, unpushed; packages that declare nothing are named in each answer, not searched; Search words and analytics exports are not reached |
 | FERRUM-PRIVACY-003 | Restriction of processing as its own operation | Missing | probe |  |
-| FERRUM-PRIVACY-004 | Legal holds | Missing | probe |  |
+| FERRUM-PRIVACY-004 | Legal holds | Implemented, qualification incomplete | tested | Holds apply to the platform's erasure and deletion; apps' own SQL deletes do not check them yet |
 | FERRUM-PRIVACY-005 | Retention rules by data category | Partially implemented | probe | Event retention only; no category-based policy |
-| FERRUM-PRIVACY-006 | Deletion journal reapplied after a restore | Missing | probe |  |
+| FERRUM-PRIVACY-006 | Deletion journal reapplied after a restore | Implemented, qualification incomplete | tested | The restore is simulated in the test; not yet rehearsed in deploy/smoke.sh; Restricted-processing has no journal because it has no operation yet |
 | FERRUM-PRIVACY-007 | Immutable evidence without duplicated personal data | Partially implemented | read | Audit diffs of records are redacted on erasure, keeping hashes; other audit payloads are not reviewed |
 | FERRUM-PRIVACY-008 | Evidence pack for compliance reviews | Missing | probe |  |
 

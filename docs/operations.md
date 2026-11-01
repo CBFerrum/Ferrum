@@ -248,6 +248,21 @@ deploy/kind/install.sh && deploy/kind/smoke.sh
   Restoring in place, `docker compose stop ferrum` first.
 * Test a restore at least quarterly. After restoring, run the audit verification below.
 
+## After restoring a backup
+
+A database restored from a backup brings back whatever was erased since it was taken, so do this
+before people, integrations or the assistant reach it:
+
+```bash
+ferrum task reapply_erasures
+```
+
+Each erasure is journalled in object storage (`privacy-journal/`), by ids and field names and never
+by value, so the journal survives a database restore and holds nothing it erased. Keep that prefix out
+of any lifecycle rule that would expire it sooner than your oldest backup. If object storage was
+restored too, journals written after that backup are gone: take the erasures since then from your
+request records and run them again.
+
 ## Rotating the secret key
 
 `FERRUM_SECRET_KEY` seals secret fields, authenticator secrets, single sign-on client secrets,
@@ -378,14 +393,31 @@ access.
 ## Personal-data requests
 
 A person (customer, supplier contact, employee, lead…) may ask for a copy of their data or its
-erasure. Administration → Personal data finds what the installed packages declare as theirs by
-email: download the JSON for an access request; for an erasure, give the request's reference as
-the reason and erase. Their details leave the records listed and those records' audit history
-(the events keep their place in the hash chain and record who redacted what, when and why), and
-their login account is anonymized and closed. Submitted documents keep the names they carry, as
-bookkeeping law requires; an administrator's account is not erased until it is no longer one. The
-same is available as `GET /api/admin/personal-data` and `POST /api/admin/personal-data/erase`;
-packages and apps declare their entities with `personal_data` in their manifests.
+erasure. Administration → Personal data finds what the installed packages declare as theirs, under
+every address they have had: download the JSON for an access request; for an erasure, give the
+request's reference as the reason and erase. Their details leave the records listed and those
+records' audit history (the events keep their place in the hash chain and record who redacted what,
+when and why), files attached to those records are deleted, and their login account is anonymized
+and closed, with its sessions, keys, notifications, preferences and devices. An administrator's
+account is not erased until it is no longer one. The same is available as `GET
+/api/admin/personal-data` and `POST /api/admin/personal-data/erase`; packages and apps declare their
+entities with `personal_data` in their manifests.
+
+Read the answer, because it says what was not done:
+
+| Key | Means |
+|---|---|
+| `retained` | Records a package keeps, each with `because`. They were exported and left as they are. Deciding that they may stay is yours or your counsel's, not Ferrum's. |
+| `held` | Records a legal hold covers, left as they are. |
+| `not_searched` | Installed packages that declare nothing, so were not looked at. |
+
+**Legal holds** stop erasure and deletion while a matter is open: `POST /api/admin/legal-holds` with
+`{"email": "...", "reason": "..."}` for a person, or `{"entity": "...", "record_id": "...", "reason":
+"..."}` for a record; `GET /api/admin/legal-holds`; `POST /api/admin/legal-holds/{id}/release`. They
+are audited, and released holds stay listed. A hold applies to the platform's erasure and deletion:
+an app that deletes rows in its own SQL (Drive's trash, for one) does not check it yet.
+
+Restriction of processing, as an operation of its own, is not built.
 
 ## Online editing
 

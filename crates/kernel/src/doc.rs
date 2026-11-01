@@ -503,6 +503,9 @@ impl Kernel {
         if ent.is_submittable() && docstatus_of(&old) == 1 {
             return Err(Error::invalid("submitted documents cannot be deleted; cancel first"));
         }
+        if crate::privacy::record_held(tx, ctx.tenant, &ent.def.name, id).await? {
+            return Err(Error::Conflict("a legal hold covers this record; release it first".into()));
+        }
         for h in self.hooks.for_tenant(&ent.def.name, &ctx.schema.packages) {
             let mut hc = HookCtx { kernel: self, ctx, tx: &mut *tx, entity: &ent };
             h.before_delete(&mut hc, &old).await?;

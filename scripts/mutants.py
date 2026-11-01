@@ -11,6 +11,7 @@ when interrupted, and refuses to start on a dirty file.
 """
 
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +24,7 @@ DEADLINE = ("-p", "ferrum-plugins", "--lib", "runtime::tests")
 SCIM_UNIT = ("-p", "ferrum-kernel", "--lib", "scim::tests")
 RULES = ("-p", "ferrum-kernel", "--test", "rules_it")
 SECRETS = ("-p", "ferrum-kernel", "--test", "secret_it")
+PRIVACY = ("-p", "ferrum-kernel", "--test", "privacy_it")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
@@ -54,6 +56,13 @@ MUTANTS = [
     ("retired-key-forgotten", "crates/kernel/src/secret.rs", "self.settings.secret_key.iter().chain(&self.settings.retired_secret_keys)", "self.settings.secret_key.iter().chain(&[])", SECRETS),
     ("lost-key-blanks-values", "crates/kernel/src/secret.rs", "                *unopened += 1;\n                Ok(None)", "                *unopened += 1;\n                current.seal(aad, \"\").map(Some)", SECRETS),
     ("webhook-secret-stays-plain", "crates/kernel/src/secret.rs", 'None => Some(format!("{SEALED_WEBHOOK}{}", current.seal(&label, &stored)?)),', "None => None,", SECRETS),
+    ("privacy-hold-on-a-person-ignored", "crates/kernel/src/privacy.rs", 'if person_held(&mut tx, ctx.tenant, &emails).await? {\n            return Err(Error::Conflict', 'if false {\n            return Err(Error::Conflict', PRIVACY),
+    ("privacy-held-record-deletable", "crates/kernel/src/doc.rs", "if crate::privacy::record_held(tx, ctx.tenant, &ent.def.name, id).await? {", "if false {", PRIVACY),
+    ("privacy-retained-records-erased", "crates/kernel/src/privacy.rs", "if let Some(why) = &def.retain {", "if let Some(why) = None::<&String> {", PRIVACY),
+    ("privacy-erased-files-stay", "crates/kernel/src/privacy.rs", "        outbox::release_objects(tx, ctx.tenant, &keys).await?;\n", "        let _ = &keys;\n", PRIVACY),
+    ("privacy-old-address-lost", "crates/kernel/src/privacy.rs", "           union select user_id from person_identifier where tenant_id = $1 and email = $2::citext) \\\n", "           ) \\\n", PRIVACY),
+    ("privacy-account-stays-after-restore", "crates/kernel/src/privacy.rs", 'if present.is_some_and(|e| !e.ends_with("@erased.invalid")) {', "if false {", PRIVACY),
+    ("privacy-journal-records-values", "crates/kernel/src/privacy.rs", '"records": journal, "reason": reason}', '"records": journal, "reason": reason, "email": email}', PRIVACY),
     ("unknown-filter-ignored", "crates/kernel/src/scim.rs", 'return Err(bad_filter(format!("cannot filter on {attr}")));', "return Ok(vec![]);", SCIM_UNIT),
 ]
 
@@ -79,17 +88,20 @@ def main() -> int:
         original = file.read_text()
         try:
             file.write_text(original.replace(old, new, 1))
+            # Its own process group: a hung test binary must go with cargo, not spin on as an orphan.
+            job = subprocess.Popen(["cargo", "test", "--locked", *test], cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
             try:
-                done = subprocess.run(["cargo", "test", "--locked", *test], cwd=ROOT, env=env, capture_output=True, text=True, timeout=TIMEOUT)
+                output, _ = job.communicate(timeout=TIMEOUT)
             except subprocess.TimeoutExpired:
                 # A guest left spinning keeps the test's runtime from shutting down: that is noticed.
+                os.killpg(job.pid, signal.SIGKILL)
+                job.wait()
                 print(f"caught   {name} (it hung)", flush=True)
                 continue
-            output = done.stdout + done.stderr
             if "error[E" in output or "could not compile" in output:
                 print(f"BROKEN   {name}: the mutant does not compile\n{output[-1500:]}")
                 survived.append(name)
-            elif done.returncode == 0:
+            elif job.returncode == 0:
                 print(f"SURVIVED {name}: the tests stayed green")
                 survived.append(name)
             else:
