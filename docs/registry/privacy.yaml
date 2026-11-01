@@ -1,0 +1,11 @@
+# Privacy and records management (specification §6).
+defaults: {component: privacy, repositories: [CBFerrum/Ferrum], workstream: 4}
+requirements:
+  - {id: FERRUM-PRIVACY-001, title: Packages declare personal data, status: implemented_unqualified, basis: read, spec: "6.1", files: [crates/kernel/src/privacy.rs], tests: [crates/kernel/tests/kernel_it.rs], limits: ["Match by email field only"]}
+  - {id: FERRUM-PRIVACY-002, title: "Relationship-aware discovery: identities, attachments, messages", status: partial, basis: read, spec: "1.2 6.1", files: [crates/kernel/src/privacy.rs, docs/registry/data-governance.md], limits: ["21 of 32 packages declare no personal data, including Sign, Learn, POS and Payroll, so requests silently miss them", "Files attached to records, messages and chat are not reached; historical identifiers are not kept"], deps: [FERRUM-PRIVACY-001]}
+  - {id: FERRUM-PRIVACY-003, title: Restriction of processing as its own operation, status: missing, basis: probe, spec: "6.2"}
+  - {id: FERRUM-PRIVACY-004, title: Legal holds, status: missing, basis: probe, spec: "6.2"}
+  - {id: FERRUM-PRIVACY-005, title: Retention rules by data category, status: partial, basis: probe, spec: "6.1", files: [crates/kernel/src/lib.rs], limits: ["Event retention only; no category-based policy"]}
+  - {id: FERRUM-PRIVACY-006, title: Deletion journal reapplied after a restore, status: missing, basis: probe, spec: "6.3", deps: [FERRUM-PRIVACY-002]}
+  - {id: FERRUM-PRIVACY-007, title: Immutable evidence without duplicated personal data, status: partial, basis: read, spec: "6.2", files: [crates/kernel/src/audit.rs, crates/kernel/src/privacy.rs], limits: ["Audit diffs of records are redacted on erasure, keeping hashes; other audit payloads are not reviewed"]}
+  - {id: FERRUM-PRIVACY-008, title: Evidence pack for compliance reviews, status: missing, basis: probe, spec: "6.4", external: [BLOCK-LEGAL-REVIEW]}

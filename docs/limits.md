@@ -91,10 +91,12 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 
 ## Apps
 
-- **POS register** (`/app/pos`): pricing needs the server, so a sale can be completed offline only
-  if its total was shown before the connection dropped (it then waits on the device and is sent
-  later); no customer display, cash drawer or card terminal integration; receipts print through
-  the browser. Closing a session uses the POS Closing Entry form.
+- **POS register** (`/pos/`): sells offline from the register's price book, priced on the device with
+  the server's own engine (`@ferrum/calc`). Sales wait on the device and the server prices each again
+  when it arrives; one whose payments no longer cover it waits for a person. Stock is not reserved
+  for an offline till, so two tills can sell the last item. No customer display, cash drawer or card
+  terminal integration; receipts print through the browser. Closing a session uses the POS Closing
+  Entry form.
 - **Chat and calendar** (the Mail app): the chat screen (`/app/chat`) covers channels, direct
   messages, threads, mentions, edits, search and files (up to 20 and 25 MB per message; images
   are previewed). The calendar screen

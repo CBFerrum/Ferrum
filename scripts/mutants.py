@@ -20,12 +20,14 @@ PLUGINS = ("-p", "ferrum-plugins", "--test", "after_commit_it")
 EVENTS = ("-p", "ferrum-kernel", "--test", "events_it")
 LIFECYCLE = ("-p", "ferrum-kernel", "--test", "lifecycle_it")
 DEADLINE = ("-p", "ferrum-plugins", "--lib", "runtime::tests")
+# Generous enough to compile and run; passing it means the mutant hung the test.
+TIMEOUT = 600
 
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
     ("hook-may-call-out", "crates/plugins/src/host.rs", 'if matches!(self.scope, Scope::Hook(_)) => Err(Error::invalid(format!(', "if false => Err(Error::invalid(format!(", PLUGINS),
     ("hook-event-outlives-rollback", "crates/plugins/src/host.rs", "Scope::Hook(hc) => ferrum_kernel::outbox::enqueue(hc.tx, tenant, &topic, None, None, payload).await?,", "Scope::Hook(hc) => {\n                        let mut tx = hc.kernel.db.tenant_tx(tenant).await?;\n                        ferrum_kernel::outbox::enqueue(&mut tx, tenant, &topic, None, None, payload).await?;\n                        tx.commit().await?;\n                    }", PLUGINS),
-    ("host-call-outlives-deadline", "crates/plugins/src/runtime.rs", "Err(_) => return Err(expired()),\n                    };\n                    let _ = r.reply.send(answer);", "Err(_) => json!({\"error\": \"late\"}),\n                    };\n                    let _ = r.reply.send(answer);", DEADLINE),
+    ("host-call-outlives-deadline", "crates/plugins/src/runtime.rs", "match tokio::time::timeout_at(end, host.call(&r.op, r.args)).await {", "match Ok::<_, tokio::time::error::Elapsed>(host.call(&r.op, r.args).await) {", DEADLINE),
     ("no-epoch-deadline", "crates/plugins/src/runtime.rs", "store.set_epoch_deadline((deadline.as_millis() / EPOCH_TICK.as_millis()) as u64 + 1);", "store.set_epoch_deadline(u64::MAX / 2);", DEADLINE),
     ("no-tenant-share", "crates/kernel/src/outbox.rs", ".bind(TENANT_SHARE)", ".bind(BATCH)", EVENTS),
     ("no-priority", "crates/kernel/src/outbox.rs", "order by o.priority, o.id limit $2", "order by o.id limit $2", EVENTS),
@@ -64,7 +66,12 @@ def main() -> int:
         original = file.read_text()
         try:
             file.write_text(original.replace(old, new, 1))
-            done = subprocess.run(["cargo", "test", "--locked", *test], cwd=ROOT, env=env, capture_output=True, text=True)
+            try:
+                done = subprocess.run(["cargo", "test", "--locked", *test], cwd=ROOT, env=env, capture_output=True, text=True, timeout=TIMEOUT)
+            except subprocess.TimeoutExpired:
+                # A guest left spinning keeps the test's runtime from shutting down: that is noticed.
+                print(f"caught   {name} (it hung)", flush=True)
+                continue
             output = done.stdout + done.stderr
             if "error[E" in output or "could not compile" in output:
                 print(f"BROKEN   {name}: the mutant does not compile\n{output[-1500:]}")
