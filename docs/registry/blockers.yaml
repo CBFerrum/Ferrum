@@ -1,0 +1,18 @@
+# What only someone outside this repository can give (specification §2.2). Work that depends on one
+# stays open until its evidence exists; nothing here is to be simulated.
+blockers:
+  - {id: BLOCK-PAYMENT-KEYS, needs: "Stripe, Razorpay and PayPal test keys", owner: Chinmoy Bhuyan, blocks: "Gateways against real sandboxes; deposits; cloud billing"}
+  - {id: BLOCK-NIC-SANDBOX, needs: NIC e-invoice sandbox credentials, owner: Chinmoy Bhuyan, blocks: India's IRP connection against the sandbox}
+  - {id: BLOCK-EINVOICE-PROVIDERS, needs: "Accounts with Peppol access points, HMRC, Avalara, ANAF and the rest", owner: Chinmoy Bhuyan, blocks: Each country's live connection}
+  - {id: BLOCK-IDP-TENANT, needs: Test tenants at Okta and Microsoft Entra, owner: Chinmoy Bhuyan, blocks: Running SCIM against real providers}
+  - {id: BLOCK-SECURITY-REVIEW, needs: An independent penetration test and ASVS assessment, owner: Chinmoy Bhuyan, blocks: Any claim of security verification}
+  - {id: BLOCK-ACCESSIBILITY-AUDIT, needs: A manual WCAG 2.2 AA audit, owner: Chinmoy Bhuyan, blocks: Any claim of accessibility conformance}
+  - {id: BLOCK-LEGAL-REVIEW, needs: "Counsel on licensing, partner terms, privacy duties and regulated industries", owner: Chinmoy Bhuyan, blocks: "Licensing claims, partner program, healthcare and government packs"}
+  - {id: BLOCK-TAX-REVIEW, needs: A qualified accountant's review of each country's output, owner: Chinmoy Bhuyan, blocks: Any claim that a country's taxes are right}
+  - {id: BLOCK-PAYROLL-REVIEW, needs: Payroll fixtures prepared independently per jurisdiction, owner: Chinmoy Bhuyan, blocks: Any jurisdiction's payroll}
+  - {id: BLOCK-POS-HARDWARE, needs: "Receipt printers, drawers, displays and a card terminal with a provider account", owner: Chinmoy Bhuyan, blocks: Device adapters}
+  - {id: BLOCK-EV-HARDWARE, needs: Charge points and OCPP conformance testing, owner: Chinmoy Bhuyan, blocks: EV charging pack}
+  - {id: BLOCK-MAPS-KEY, needs: A routing provider's account, owner: Chinmoy Bhuyan, blocks: Road travel times}
+  - {id: BLOCK-SIGNING-PROVIDER, needs: A qualified trust service provider, owner: Chinmoy Bhuyan, blocks: PAdES and qualified signatures}
+  - {id: BLOCK-HOSPITALITY-CHANNELS, needs: "Certification with Booking.com and other channels", owner: Chinmoy Bhuyan, blocks: Hospitality channel connections}
+  - {id: BLOCK-GHCR-VISIBILITY, needs: "A decision on making the ghcr packages public, which cannot be undone", owner: Chinmoy Bhuyan, blocks: Anonymous image pulls in Frontend CI and by self-hosters}

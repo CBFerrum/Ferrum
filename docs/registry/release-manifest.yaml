@@ -1,0 +1,25 @@
+# The revisions this registry was read at (specification §17.2). Written by hand for this audit;
+# CI does not generate it yet (FERRUM-RELEASE-003). `pinned` is what Ferrum's Cargo.lock builds.
+audited: 2026-11-01
+components:
+  - {repository: CBFerrum/Ferrum, read_at: 2f1917d524db15f7ef8435419ade5d4e5d1b2c41}
+  - {repository: CBFerrum/Ferrum-Frontend, read_at: 9ecf5bfc84049ee9586cbcbda72857d1ce44402d}
+  - {repository: CBFerrum/ferrum-sdk, read_at: ff325b89f9ca7f04fcefa59f271518901171d414}
+  - {repository: CBFerrum/ferrum-store, read_at: 88b922a94d88ec13d5568f9d81772b921ae1e564}
+  - {repository: CBFerrum/ferrum-app-erp, read_at: 954e5877235759e9ae17a88474f0f7fb2f84634c, pinned: 954e5877235759e9ae17a88474f0f7fb2f84634c}
+  - {repository: CBFerrum/ferrum-app-assets, read_at: 8033f19ede3fa0cd46dee190f31c913f310fb99e, pinned: c371ca5a4aacea8a43d3350b707782c7bfa5ce1d}
+  - {repository: CBFerrum/ferrum-app-bookings, read_at: c6bc48cacb8c89b18c926722eb6bd41bb43dffe2, pinned: 11fa6efb69c35a37ae419e924d62ca87e174595b}
+  - {repository: CBFerrum/ferrum-app-campaigns, read_at: 69c91460c6bd2aa755468a9ae41295b5013f8890, pinned: ee4b60971799d3c6f70a9f522b5723cf264339a5}
+  - {repository: CBFerrum/ferrum-app-commerce, read_at: 6c74dbd208827cbc914aee51014bc8c0bf665f20, pinned: 6c74dbd208827cbc914aee51014bc8c0bf665f20}
+  - {repository: CBFerrum/ferrum-app-comms, read_at: 4b1fbd4375aac80c9eb2d49a5e10244397fd065f, pinned: 398f336d72f317d274eb14caae1735eb89eefe36}
+  - {repository: CBFerrum/ferrum-app-crm, read_at: 14813928f52235f2cab8a0ede53b534d9c3e8e80, pinned: 1e932f34faa5881b816d076a6bf780f1859a746e}
+  - {repository: CBFerrum/ferrum-app-docs, read_at: a7662e9237aa4d7ad07685b5c1269b94ebe838d4, pinned: 890ff208ec0be1842149b85059528b4043ace30b}
+  - {repository: CBFerrum/ferrum-app-drive, read_at: 9ee612f38d7742498a38feb29014d35a82c391aa, pinned: c8f977e04fc3a8d668ae3dfc805b11f3097a3343}
+  - {repository: CBFerrum/ferrum-app-field-service, read_at: d11f644ac72b11c9a053cc3a6af3073756f7a528, pinned: 5b8f9f68d78e3f37b44564579acbbfe8ee7abfba}
+  - {repository: CBFerrum/ferrum-app-forms, read_at: 0a6a503791230a9a540cb3f2d4731d59ada3c034, pinned: b3428f98fe9ea0c8db9974220584f30e26d09187}
+  - {repository: CBFerrum/ferrum-app-helpdesk, read_at: bd0e7ac7efe149b896779855183163ab7098cb20, pinned: b39d19aec46c16a5551b4008c01f218bcc26c96c}
+  - {repository: CBFerrum/ferrum-app-hr, read_at: 70540d1b1f391aa970cf46a5aa9e16adf80bfdb5, pinned: b5acbf5d325fc6a806dbf2dee801fe41d659ea63}
+  - {repository: CBFerrum/ferrum-app-lms, read_at: 474129ceb77608d57e939660005ca7abeb75f414, pinned: 1598fd491a401d72f3427509d90c1ff446709b95}
+  - {repository: CBFerrum/ferrum-app-pos, read_at: ed9413be3e4db393e162f6cfed369c1381e98ccb, pinned: 3b0318fe8dbc6932e2821acab5bac0aaf54f1875}
+  - {repository: CBFerrum/ferrum-app-projects, read_at: afa77616f9124639fa2b08e5818c8c7792d24fe9, pinned: f66b79ea01bd713c558e969728ade6f9588e412d}
+  - {repository: CBFerrum/ferrum-app-sign, read_at: 8ba22b8237cf85f0c17bca09ce40b296e5400964, pinned: ba9c2d6cd0484217e11d37d84650db3171bf3d71}

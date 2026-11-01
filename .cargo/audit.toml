@@ -1,9 +1,9 @@
-# Advisories reviewed and accepted, with the reason. Re-check whenever dependencies change.
+# Advisories reviewed and accepted. Each has its owner, reasoning and review date in
+# docs/registry/advisories.yaml, which CI checks against this list. Re-check when dependencies change.
 [advisories]
 ignore = [
-  # rsa (Marvin timing attack, no fixed version) and crypto-bigint (timing variability) arrive only
-  # through jsonwebtoken's RSA/ECDSA support, which loco-rs enables. Ferrum signs and verifies HMAC
-  # (HS*) tokens only, so neither code path ever runs. Drop these once jsonwebtoken/loco-rs upgrade.
+  # rsa and crypto-bigint arrive through jsonwebtoken's RSA/ECDSA support. Ferrum signs HMAC tokens
+  # and holds no RSA private key; it verifies providers' RS256 ID tokens with public keys only.
   "RUSTSEC-2023-0071",
   "RUSTSEC-2026-0387",
 ]

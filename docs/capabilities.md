@@ -1,0 +1,257 @@
+# Capabilities
+
+Generated from [docs/registry](registry/README.md) by `scripts/registry.py generate`; edit the registry, not this.
+This is what Ferrum can claim, and how it knows. *Basis* says how far an entry was established:
+**tested** (tests run in this audit), **read** (code read), **probe** (keyword probe).
+
+Nothing is `Verified complete` until its tests have run against a released digest and a person has
+reviewed it. An entry resting on a keyword probe is a lead, not a finding.
+
+| Status | Requirements |
+|---|---|
+| Implemented, qualification incomplete | 53 |
+| Partially implemented | 48 |
+| Missing | 75 |
+| Blocked by external dependency | 9 |
+| **All** | **185** |
+
+## Platform
+
+| Id | Requirement | Status | Basis | Known limitations |
+|---|---|---|---|---|
+| FERRUM-PLATFORM-001 | Modular monolith with a Rust kernel and apps as crates | Implemented, qualification incomplete | read |  |
+| FERRUM-PLATFORM-002 | Authoritative ownership of each shared concept | Partially implemented | read | Person, party, product and project are shared packages; employee, payment and consent are not yet one owned model across apps |
+| FERRUM-PLATFORM-003 | Controlled merging of duplicate customers with aliases | Missing | probe |  |
+| FERRUM-PLATFORM-004 | Typed cross-application contracts with stated idempotency and failure behaviour | Partially implemented | read | Apps call ERP's engine as a crate, without a published contract for each operation |
+| FERRUM-PLATFORM-005 | Hook dependencies and ordering checked at startup | Partially implemented | read | Order is registration order; cycles and conflicts are not detected |
+| FERRUM-PLATFORM-006 | Isolation profiles: shared cells, dedicated, on-premises, disconnected | Partially implemented | read | Single-server and Kubernetes deployments exist; cells and a disconnected profile do not |
+| FERRUM-PLATFORM-007 | Strong types at consequential boundaries | Partially implemented | read | Money and tax go through ferrum-calc with decimals; documents stay JSON-shaped maps |
+| FERRUM-PLATFORM-008 | Explicit document state machine with per-state field rules | Partially implemented | read | Draft, submitted and cancelled are general; approved, amended and archived vary by app |
+| FERRUM-PLATFORM-009 | Custom fields and entities with conflict detection | Partially implemented | read | Conflict detection between vendor, partner and tenant layers is not built |
+| FERRUM-PLATFORM-010 | Schema evolution: expand, migrate, contract, resumable backfills | Partially implemented | read | Upgrade steps exist; resumable backfills and validation reports do not |
+| FERRUM-PLATFORM-011 | Equivalent integrity on every mutation path | Partially implemented | read | Not audited path by path; app maintenance jobs that write SQL directly need a review |
+| FERRUM-PLATFORM-012 | Transactional outbox with idempotent consumers | Implemented, qualification incomplete | tested |  |
+| FERRUM-PLATFORM-013 | Event envelope: origin, correlation, causation, trace context, versions | Implemented, qualification incomplete | tested | Tasks an event handler spawns start without a trace |
+| FERRUM-PLATFORM-014 | Tenant fairness and priority classes for events | Implemented, qualification incomplete | tested | Fairness covers the outbox and plugins; apps' own background jobs (Campaigns sending, upkeep) have none yet; Bulk paths must set the bulk priority; importer and bulk.rs do not yet |
+| FERRUM-PLATFORM-015 | Dead letters with inspection and audited replay | Implemented, qualification incomplete | tested | An API only: no administrator screen yet |
+| FERRUM-PLATFORM-016 | Durable jobs with leases, cancellation and poison isolation | Partially implemented | read | Each scheduler is its own; there is no shared job queue with cancellation or retry budgets |
+| FERRUM-PLATFORM-017 | External effects run after commit | Implemented, qualification incomplete | tested | Enforced for plugins; native hooks are held to it by review (IRP and VIES read; other connectors not) |
+| FERRUM-PLATFORM-018 | No transaction held across an external call | Implemented, qualification incomplete | tested |  |
+| FERRUM-PLATFORM-019 | Stateful cross-system workflows with compensation | Missing | probe |  |
+
+## Identity
+
+| Id | Requirement | Status | Basis | Known limitations |
+|---|---|---|---|---|
+| FERRUM-IDENTITY-001 | Local accounts, passkeys, TOTP, OIDC single sign-on | Implemented, qualification incomplete | tested |  |
+| FERRUM-IDENTITY-002 | Session and token revocation across replicas | Implemented, qualification incomplete | tested |  |
+| FERRUM-IDENTITY-003 | Deprovisioning with work handed over | Implemented, qualification incomplete | tested | No app handles ferrum.user.deprovisioned yet, so Drive shares and helpdesk queues stay put |
+| FERRUM-IDENTITY-004 | SCIM 2.0 people and groups | Implemented, qualification incomplete | tested | Not yet run against a real Okta or Entra tenant |
+| FERRUM-IDENTITY-005 | OIDC back-channel logout | Missing | probe |  |
+| FERRUM-IDENTITY-006 | SAML single sign-on | Missing | probe |  |
+| FERRUM-IDENTITY-007 | Linking accounts only on proof of ownership | Implemented, qualification incomplete | read |  |
+| FERRUM-IDENTITY-008 | Guests, portal people, service accounts, scoped keys | Partially implemented | read | API key scopes are dav and scim; there are no per-entity key scopes |
+| FERRUM-IDENTITY-009 | One policy system across tenant | Partially implemented | read | Department, branch and time-limited grants are not modelled |
+| FERRUM-IDENTITY-010 | Row rules beyond equality | Partially implemented | read | Equality tests only; no ranges, dates or expressions |
+| FERRUM-IDENTITY-011 | Explicit reference-disclosure policy for linked titles | Partially implemented | read | Titles of records the caller cannot open are shown, as documented |
+| FERRUM-IDENTITY-012 | Field masking and export restrictions | Partially implemented | read | Field groups give read and write; no masking |
+| FERRUM-IDENTITY-013 | Policy explanation and simulation | Missing | probe |  |
+| FERRUM-IDENTITY-014 | Segregation of duties and maker-checker | Partially implemented | read | Approvers can be barred from their own documents; no rule across roles or automations |
+| FERRUM-IDENTITY-015 | Authorization rechecked when delayed work runs | Partially implemented | read | Mail and push recheck; automations run as the system |
+| FERRUM-IDENTITY-016 | Browser session architecture with CSRF defence | Implemented, qualification incomplete | read | Bearer tokens on pages remain readable by script; CSP is the defence |
+| FERRUM-IDENTITY-017 | Secrets sealed at rest with bound context | Partially implemented | tested | Webhook signing secrets are still stored in the clear |
+| FERRUM-IDENTITY-018 | Key rotation while old values exist | Partially implemented | read | Values name their key, but a server opens one key at a time; a rotation needs a re-seal |
+| FERRUM-IDENTITY-019 | Key-management service integration | Missing | probe |  |
+| FERRUM-IDENTITY-020 | OWASP ASVS mapping and independent security testing | Blocked by external dependency | read | docs/security.md states the model; no independent test has been done |
+
+## Privacy
+
+| Id | Requirement | Status | Basis | Known limitations |
+|---|---|---|---|---|
+| FERRUM-PRIVACY-001 | Packages declare personal data | Implemented, qualification incomplete | read | Match by email field only |
+| FERRUM-PRIVACY-002 | Relationship-aware discovery: identities, attachments, messages | Partially implemented | read | 21 of 32 packages declare no personal data, including Sign, Learn, POS and Payroll, so requests silently miss them; Files attached to records, messages and chat are not reached; historical identifiers are not kept |
+| FERRUM-PRIVACY-003 | Restriction of processing as its own operation | Missing | probe |  |
+| FERRUM-PRIVACY-004 | Legal holds | Missing | probe |  |
+| FERRUM-PRIVACY-005 | Retention rules by data category | Partially implemented | probe | Event retention only; no category-based policy |
+| FERRUM-PRIVACY-006 | Deletion journal reapplied after a restore | Missing | probe |  |
+| FERRUM-PRIVACY-007 | Immutable evidence without duplicated personal data | Partially implemented | read | Audit diffs of records are redacted on erasure, keeping hashes; other audit payloads are not reviewed |
+| FERRUM-PRIVACY-008 | Evidence pack for compliance reviews | Missing | probe |  |
+
+## Experience
+
+| Id | Requirement | Status | Basis | Known limitations |
+|---|---|---|---|---|
+| FERRUM-UX-001 | Launcher, bar search, notifications, account switching, administration | Implemented, qualification incomplete | read | Tested per feature in three browsers in earlier work; no standing end-to-end suite in CI |
+| FERRUM-UX-002 | Command palette | Missing | probe |  |
+| FERRUM-UX-003 | Help center | Missing | probe |  |
+| FERRUM-UX-004 | Application completeness contract per app | Partially implemented | probe | Seven apps have no interface of their own and use the records pages: Assets, Bookings, Campaigns, Field Service, Forms, Learn, Sign |
+| FERRUM-UX-005 | WCAG 2.2 AA qualification | Blocked by external dependency | read | No automated accessibility checks in CI yet |
+| FERRUM-UX-006 | Translation, right-to-left, locale formatting | Missing | probe | No translation infrastructure was found in the core; money and dates format per workspace |
+| FERRUM-UX-007 | Mobile and offline policy with leases | Partially implemented | read | POS and Docs work offline; no shared policy for what is cached, who sees it or when it expires |
+
+## Apps
+
+| Id | Requirement | Status | Basis | Known limitations |
+|---|---|---|---|---|
+| FERRUM-ERP-001 | Ledger, receivables, payables, invoices, notes, payments, allocations | Implemented, qualification incomplete | probe |  |
+| FERRUM-ERP-002 | Bank reconciliation, budgets, period close, statements | Implemented, qualification incomplete | probe |  |
+| FERRUM-ERP-003 | Multiple companies, currencies, fiscal years, dimensions | Implemented, qualification incomplete | probe | Dimensions are cost centers |
+| FERRUM-ERP-004 | Parallel accounting books | Missing | probe |  |
+| FERRUM-ERP-005 | Intercompany transactions, consolidation, eliminations | Missing | probe |  |
+| FERRUM-ERP-006 | Accruals, deferred revenue, expense allocation | Partially implemented | probe | Recurring rules exist; deferred revenue and accruals as such were not found |
+| FERRUM-ERP-007 | Tax localization for 26 countries as add-ons | Implemented, qualification incomplete | read | Rates are moving from code to editable tax profiles; No country's output has been reviewed by a tax professional |
+| FERRUM-ERP-008 | Stock, transfers, serial and batch, expiry, picking, cycle counts | Implemented, qualification incomplete | probe |  |
+| FERRUM-ERP-009 | Reposting of backdated stock | Missing | read | Stated in docs/limits.md: a backdated document never re-values later ones |
+| FERRUM-ERP-010 | Requisitions, RFQs, supplier quotations, scorecards | Implemented, qualification incomplete | probe |  |
+| FERRUM-ERP-011 | Supplier portal | Partially implemented | probe | Quotation links exist; no signed-in supplier portal was found |
+| FERRUM-ERP-012 | BOMs, routings, work orders, planning, job cards, quality | Implemented, qualification incomplete | probe |  |
+| FERRUM-ERP-013 | Subcontracting | Missing | probe |  |
+| FERRUM-CRM-001 | Leads, conversion, opportunities, territories, quotations | Implemented, qualification incomplete | probe |  |
+| FERRUM-CRM-002 | Deduplication, forecasting, attribution, quotation approvals, CPQ | Missing | probe |  |
+| FERRUM-PROJECTS-001 | Tasks, dependencies, milestones, timesheets, billing, profitability | Implemented, qualification incomplete | probe |  |
+| FERRUM-PROJECTS-002 | Recurring tasks, resource allocation, portfolios, risks, change requests | Missing | probe |  |
+| FERRUM-HELPDESK-001 | Tickets, SLA with business hours, internal notes, knowledge, satisfaction, portal | Implemented, qualification incomplete | probe |  |
+| FERRUM-HELPDESK-002 | Escalations, collision handling, entitlements | Missing | probe |  |
+| FERRUM-HR-001 | People, attendance, leave, shifts, expenses, recruitment, appraisals | Implemented, qualification incomplete | probe |  |
+| FERRUM-HR-002 | Payroll by jurisdiction with statutory reporting | Partially implemented | probe | No bank-payment file; statutory coverage not established; no independent fixtures |
+| FERRUM-HR-003 | Training | Missing | probe |  |
+| FERRUM-POS-001 | Till, sessions, barcodes, split tenders, returns, loyalty, closing | Implemented, qualification incomplete | probe |  |
+| FERRUM-POS-002 | Offline sales: versioned price book, device journal, re-pricing on arrival | Implemented, qualification incomplete | read | Stock is not preallocated to a till: the spec's overselling policy is unmet |
+| FERRUM-POS-003 | Printers | Blocked by external dependency | probe | No device code found; receipts print through the browser |
+| FERRUM-COMMERCE-001 | Catalog, cart, coupons, checkout, shipping, refunds, abandoned carts | Implemented, qualification incomplete | probe |  |
+| FERRUM-COMMERCE-002 | Subscriptions | Missing | probe |  |
+| FERRUM-COMMS-001 | Mail, shared mailboxes, chat, calendar, meetings, CalDAV and CardDAV | Implemented, qualification incomplete | probe |  |
+| FERRUM-COMMS-002 | Captions, transcripts, recording, presence | Missing | probe |  |
+| FERRUM-ASSETS-001 | Assets, depreciation, movements, maintenance, disposal | Implemented, qualification incomplete | probe |  |
+| FERRUM-ASSETS-002 | Finance books that keep their own values | Partially implemented | probe | Finance books are labels only; Grouped assets are sold whole; repairs neither extend life nor consume parts |
+| FERRUM-BOOKINGS-001 | Resources, buffers, capacity, waitlist, cancellation, guest pages | Implemented, qualification incomplete | probe |  |
+| FERRUM-BOOKINGS-002 | Recurring appointments | Missing | probe |  |
+| FERRUM-BOOKINGS-003 | Deposits and refunds | Missing | probe |  |
+| FERRUM-BOOKINGS-004 | External calendar synchronization | Partially implemented | probe | Add-to-calendar files only |
+| FERRUM-FIELD-001 | Work orders, dispatch, skills, contracts, checklists, signatures | Implemented, qualification incomplete | probe |  |
+| FERRUM-FIELD-002 | Preventive maintenance and an offline technician app | Missing | probe |  |
+| FERRUM-FIELD-003 | Road travel through a mapping provider | Blocked by external dependency | probe | Straight-line estimates, stated as such |
+| FERRUM-FORMS-001 | Conditional logic, pages, spam controls, scoring, record mappings | Implemented, qualification incomplete | probe | No localization |
+| FERRUM-LMS-001 | Courses, prerequisites, cohorts, quizzes, assignments, certificates | Implemented, qualification incomplete | probe | Learners see draft course titles and summaries |
+| FERRUM-LMS-002 | SCORM, xAPI, LTI, and paid courses | Missing | probe |  |
+| FERRUM-DRIVE-001 | Folders, versions, sharing, links, trash, quotas, previews, search, office editing | Implemented, qualification incomplete | probe | Public links outlive their creator's access |
+| FERRUM-DOCS-001 | Documents with comments, suggestions, templates, version restore, exports | Implemented, qualification incomplete | probe |  |
+| FERRUM-CAMPAIGNS-001 | Audiences, consent, suppression, segments, journeys, tests, bounce handling | Implemented, qualification incomplete | probe | Suppression is Campaigns' own, not shared by every send path; imports are set-based |
+| FERRUM-SIGN-001 | Signer order, parallel routing, reminders, sealed PDF, audit certificate, verification | Implemented, qualification incomplete | probe | An electronic signature with an audit trail, not PAdES; no delegation |
+| FERRUM-SIGN-002 | PAdES or a qualified signing provider | Blocked by external dependency | probe |  |
+| FERRUM-STUDIO-001 | Reports, dashboards, spaces | Implemented, qualification incomplete | read | One child table per query; fields at most table.link.field deep; no comparison periods with pivots |
+
+## Ecosystem
+
+| Id | Requirement | Status | Basis | Known limitations |
+|---|---|---|---|---|
+| FERRUM-ECOSYSTEM-001 | Knowledge and intranet | Partially implemented | probe | Helpdesk's knowledge base only |
+| FERRUM-ECOSYSTEM-002 | IT service management | Missing | probe |  |
+| FERRUM-ECOSYSTEM-003 | IT asset and configuration management | Missing | probe |  |
+| FERRUM-ECOSYSTEM-004 | Integration Hub | Missing | probe |  |
+| FERRUM-ECOSYSTEM-005 | Social media management | Missing | probe |  |
+| FERRUM-ECOSYSTEM-006 | Website and CMS | Partially implemented | probe | Commerce's storefront pages only |
+| FERRUM-ECOSYSTEM-007 | Customer, supplier and partner portals | Partially implemented | probe | A portal shell with tickets and invoices; no supplier or partner portal |
+| FERRUM-ECOSYSTEM-008 | Contract lifecycle management | Missing | probe |  |
+| FERRUM-ECOSYSTEM-009 | Subscription and revenue operations | Partially implemented | probe | Finance's subscriptions; no dunning-to-entitlement loop |
+| FERRUM-ECOSYSTEM-010 | Governed enterprise analytics | Missing | probe |  |
+| FERRUM-ECOSYSTEM-011 | Portfolio and objectives | Missing | probe |  |
+| FERRUM-ECOSYSTEM-012 | Digital asset management | Missing | probe |  |
+| FERRUM-ECOSYSTEM-013 | Developer Hub | Partially implemented | probe | A CLI and documentation; no hub |
+| FERRUM-ECOSYSTEM-014 | Governance and risk | Missing | probe |  |
+| FERRUM-INDUSTRY-001 | Hospitality: properties, rates, stays, folios, night audit | Missing | probe |  |
+| FERRUM-INDUSTRY-002 | Restaurants: menus, tables, kitchen flow, delivery | Missing | probe |  |
+| FERRUM-INDUSTRY-003 | Retail and distribution: replenishment, omnichannel, franchise | Missing | probe |  |
+| FERRUM-INDUSTRY-004 | Education: admissions, students, fees, timetables, examinations | Missing | probe |  |
+| FERRUM-INDUSTRY-005 | Healthcare administration: scheduling, consent, billing | Missing | probe |  |
+| FERRUM-INDUSTRY-006 | Manufacturing: planning, quality, traceability, shop floor | Partially implemented | probe | ERP's manufacturing; no shop-floor or device integration |
+| FERRUM-INDUSTRY-007 | Construction and professional services: estimates, variations, site work | Missing | probe |  |
+| FERRUM-INDUSTRY-008 | Property and facilities: leases, charges, inspections, portals | Missing | probe |  |
+| FERRUM-INDUSTRY-009 | Logistics and fleets: dispatch, routes, proof of delivery | Missing | probe |  |
+| FERRUM-INDUSTRY-010 | Government: cases, permits, citizen portals | Missing | probe |  |
+| FERRUM-INDUSTRY-011 | Nonprofits: members, donations, grants, volunteers | Missing | probe |  |
+| FERRUM-INDUSTRY-012 | EV charging and IoT: devices, sessions, tariffs, settlement | Partially implemented | probe | An example plugin shaped like OCPP; no OCPP conformance |
+
+## Extensions
+
+| Id | Requirement | Status | Basis | Known limitations |
+|---|---|---|---|---|
+| FERRUM-CONNECT-001 | Shared connector infrastructure: credentials, mapping, sync, reconciliation | Missing | probe | Each app and add-on holds its own connector code |
+| FERRUM-CONNECT-002 | Connector catalog with what each provider's API really offers | Missing | read |  |
+| FERRUM-CONNECT-003 | Payment gateways | Blocked by external dependency | read | Stripe, Razorpay and PayPal adapters tested only against fakes |
+| FERRUM-CONNECT-004 | Tax and e-invoicing networks | Blocked by external dependency | read | Adapters written to published specifications; none has run against a live or sandbox provider here |
+| FERRUM-EXT-001 | Four extension classes with their security models | Partially implemented | read | Metadata, WASM and native exist; external services are not a declared class |
+| FERRUM-EXT-002 | Plugin resource limits | Implemented, qualification incomplete | tested |  |
+| FERRUM-EXT-003 | Cancellation that stops consequential work | Implemented, qualification incomplete | tested |  |
+| FERRUM-EXT-004 | Bounded compilation and module cache | Implemented, qualification incomplete | read | The bound itself is not exercised by a test |
+| FERRUM-EXT-005 | Emergency disable | Implemented, qualification incomplete | tested |  |
+| FERRUM-EXT-006 | SDK, CLI, templates, testing utilities | Partially implemented | read | Not published to a package registry; examples for AI tools and industry packs are missing |
+| FERRUM-EXT-007 | Compatibility policy and permission review on upgrade | Partially implemented | read | Installation plans show permissions; no published compatibility policy |
+| FERRUM-EXT-008 | Publisher onboarding, checks, review, signing, revocation | Implemented, qualification incomplete | probe |  |
+| FERRUM-EXT-009 | Monetization: plans, purchases, payouts, refunds, taxes | Missing | probe |  |
+| FERRUM-EXT-010 | Licensing of each artifact reviewed | Blocked by external dependency | read | Core AGPL-3.0-or-later; the SDK's terms and plugin obligations need counsel |
+
+## Ai
+
+| Id | Requirement | Status | Basis | Known limitations |
+|---|---|---|---|---|
+| FERRUM-AI-001 | Assistant acts as the person with writes approved in the conversation | Partially implemented | read | An approval is not bound to an exact proposal with versions and an expiry |
+| FERRUM-AI-002 | Shared AI gateway: providers, allowlists, regions, spending limits | Missing | probe | One provider through one key |
+| FERRUM-AI-003 | Egress policy separate from read permission | Missing | probe |  |
+| FERRUM-AI-004 | Authorization-aware retrieval | Partially implemented | read | Tools run as the person, so reads are theirs; no retrieval index, so caches and embeddings do not arise yet |
+| FERRUM-AI-005 | Evaluation datasets and prompt-injection tests | Missing | probe | Prompt-injection acceptance not tested |
+| FERRUM-AI-006 | Domain-specific assistants with sources shown | Missing | probe |  |
+
+## Cloud
+
+| Id | Requirement | Status | Basis | Known limitations |
+|---|---|---|---|---|
+| FERRUM-CLOUD-001 | Control plane separate from customer workloads | Missing | probe |  |
+| FERRUM-CLOUD-002 | Tenant lifecycle: signup, provisioning, plans, closure | Partially implemented | read | Tenants are created by a task or API; no signup, plans or closure |
+| FERRUM-CLOUD-003 | Metering, billing, entitlements | Missing | probe |  |
+| FERRUM-CLOUD-004 | Fleet inventory, staged upgrades, customer-facing status | Missing | probe |  |
+| FERRUM-PARTNER-001 | Partner console | Missing | probe |  |
+| FERRUM-PARTNER-002 | Layered support access that expires and is visible to the customer | Partially implemented | read | user_session has an `actor` for acting as someone; no grants, levels or customer view |
+| FERRUM-PARTNER-003 | Program terms separate from open-source rights | Blocked by external dependency | read |  |
+
+## Operations
+
+| Id | Requirement | Status | Basis | Known limitations |
+|---|---|---|---|---|
+| FERRUM-OPS-001 | Local development and single-server deployment | Implemented, qualification incomplete | read |  |
+| FERRUM-OPS-002 | High availability on Kubernetes | Implemented, qualification incomplete | read |  |
+| FERRUM-OPS-003 | Dedicated, on-premises and disconnected profiles | Partially implemented | read | No registry mirroring or offline install procedure |
+| FERRUM-OPS-004 | Installer preflight and a doctor command | Missing | probe |  |
+| FERRUM-OPS-005 | Reference workloads and measured capacity | Partially implemented | read | A short load test; no published reference workload or targets |
+| FERRUM-OPS-006 | Safe large files: resumable uploads, limits | Partially implemented | read | Direct uploads to S3 up to 2 GiB; apps read files into memory |
+| FERRUM-OPS-007 | Malware scanning of uploads | Missing | probe |  |
+| FERRUM-OPS-008 | Disaster recovery rehearsed into a clean environment | Implemented, qualification incomplete | read | Compose and kind rehearsals; zone, region and ransomware procedures not written |
+| FERRUM-OPS-009 | Structured logs and basic metrics | Partially implemented | read | No OpenTelemetry traces; no business metrics such as failed postings or stale syncs |
+| FERRUM-RELEASE-001 | Build once and promote the qualified digest | Implemented, qualification incomplete | read | The workflows have not run yet: they need a push to main |
+| FERRUM-RELEASE-002 | Provenance and SBOM attested at promotion | Implemented, qualification incomplete | read | Not run yet; requires the images to be attested by CI |
+| FERRUM-RELEASE-003 | Release manifest of every component | Partially implemented | read | Written by hand at this audit; not yet generated in CI |
+| FERRUM-RELEASE-004 | Accepted advisories with owner and review date | Implemented, qualification incomplete | tested |  |
+| FERRUM-RELEASE-005 | Published support and compatibility policy | Missing | probe |  |
+| FERRUM-RELEASE-006 | Base images pinned by digest | Implemented, qualification incomplete | read | Compose and Kubernetes still name some third-party images by tag |
+
+## Verification
+
+| Id | Requirement | Status | Basis | Known limitations |
+|---|---|---|---|---|
+| FERRUM-VERIFY-001 | Tests detect broken invariants | Implemented, qualification incomplete | tested | Covers this work's invariants, not the whole platform |
+| FERRUM-VERIFY-002 | Independent domain fixtures for finance and payroll | Missing | read |  |
+| FERRUM-JOURNEY-001 | Lead to cash | Missing | read |  |
+| FERRUM-JOURNEY-002 | Procure to pay | Missing | read |  |
+| FERRUM-JOURNEY-003 | Hire to retire | Missing | read |  |
+| FERRUM-JOURNEY-004 | Support to resolution | Missing | read |  |
+| FERRUM-JOURNEY-005 | Project to profit | Missing | read |  |
+| FERRUM-JOURNEY-006 | Online order to return | Missing | read |  |
+| FERRUM-JOURNEY-007 | Field work to invoice | Missing | read |  |
+| FERRUM-JOURNEY-008 | Document to signature | Missing | read |  |
+| FERRUM-JOURNEY-009 | Marketing to consent enforcement | Missing | read |  |
+| FERRUM-JOURNEY-010 | Hospitality stay | Missing | read |  |
+| FERRUM-JOURNEY-011 | Learning completion | Missing | read |  |
+| FERRUM-JOURNEY-012 | Tenant lifecycle | Missing | read |  |
+| FERRUM-JOURNEY-013 | Partner support | Missing | read |  |
+| FERRUM-JOURNEY-014 | AI-assisted operation | Missing | read |  |
+

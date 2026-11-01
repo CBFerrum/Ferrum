@@ -1,0 +1,10 @@
+# The workspace people use (specification §7).
+defaults: {component: experience, repositories: [CBFerrum/Ferrum, CBFerrum/Ferrum-Frontend], workstream: 5}
+requirements:
+  - {id: FERRUM-UX-001, title: "Launcher, bar search, notifications, account switching, administration", status: implemented_unqualified, basis: read, spec: "7.1", files: [server/src/shell.rs, docs/plan/apps-ui.md], limits: ["Tested per feature in three browsers in earlier work; no standing end-to-end suite in CI"]}
+  - {id: FERRUM-UX-002, title: Command palette, status: missing, basis: probe, spec: "7.1"}
+  - {id: FERRUM-UX-003, title: Help center, status: missing, basis: probe, spec: "7.1"}
+  - {id: FERRUM-UX-004, title: Application completeness contract per app, status: partial, basis: probe, spec: "7.2", files: [docs/plan/apps-ui.md], limits: ["Seven apps have no interface of their own and use the records pages: Assets, Bookings, Campaigns, Field Service, Forms, Learn, Sign"]}
+  - {id: FERRUM-UX-005, title: WCAG 2.2 AA qualification, status: blocked_external, basis: read, spec: "7.3", external: [BLOCK-ACCESSIBILITY-AUDIT], limits: ["No automated accessibility checks in CI yet"]}
+  - {id: FERRUM-UX-006, title: "Translation, right-to-left, locale formatting", status: missing, basis: probe, spec: "7.3", limits: ["No translation infrastructure was found in the core; money and dates format per workspace"]}
+  - {id: FERRUM-UX-007, title: Mobile and offline policy with leases, status: partial, basis: read, spec: "7.4", files: [ferrum-app-pos:ui/src/lib/offline.ts], limits: ["POS and Docs work offline; no shared policy for what is cached, who sees it or when it expires"]}
