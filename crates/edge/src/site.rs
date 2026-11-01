@@ -9,7 +9,9 @@
 //! | `POST /definitions/try` | Edge Engineer | `{body, topic?, sample?, sample_hex?}`: checks a definition and reads a sample |
 //! | `POST /flows/try` | Edge Engineer or Reviewer | `{body, script?, until?}`: checks a flow and walks a script through it |
 //! | `POST /flows/{id}/simulate` | Edge Engineer | `{script, until?}`: the same for what is saved, which is what lets it go for review |
+//! | `GET /devices` | Edge Viewer | `?q=`: what is reached, by what and from where |
 //! | `GET /devices/{id}` | Edge Viewer | attributes, newest values, open alarms, recent events |
+//! | `GET /alarms` | Edge Viewer | `?all=1` for those cleared too: newest first |
 //! | `PUT /devices/{id}/desired` | Edge Engineer | `{key, value}`: asks for an attribute through the ledger |
 //! | `POST /devices/{id}/token` | Edge Engineer | a token for a device that talks to us directly, shown once |
 //! | `POST /strangers/claim` | Edge Engineer | `{gateway, code, name?, definition?}`: a device heard on a shared connection becomes a record |
@@ -269,14 +271,56 @@ async fn acknowledge(k: &Kernel, ctx: &Ctx, id: Uuid, note: Option<&str>) -> Res
     Ok(json!({"status": "Acknowledged"}))
 }
 
-/// Robots and what they last said. `position.x`, `position.y` and `position.theta` are metrics like
-/// any other, so anything a definition can read can be drawn.
+/// What this tenant reaches. Sites a person may not see are left out, as everywhere.
+async fn device_list(k: &Kernel, ctx: &Ctx, q: Option<&str>) -> Result<Value> {
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let rows: Value = sqlx::query_scalar(
+        "select coalesce(jsonb_agg(r order by r.code), '[]') from ( \
+           select d.id, d.device_code as code, d.device_name as name, d.kind, d.lifecycle, s.site_name as site, g.device_name as gateway, f.definition_name as definition, \
+             (select count(*) from e_edge_alarm a where a.tenant_id = d.tenant_id and a.device = d.id and a.status <> 'Cleared') as alarms \
+           from e_device d left join e_site s on s.tenant_id = d.tenant_id and s.id = d.site \
+           left join e_device g on g.tenant_id = d.tenant_id and g.id = d.gateway \
+           left join e_device_definition f on f.tenant_id = d.tenant_id and f.id = d.edge_definition \
+           where d.tenant_id = $1 and d.lifecycle <> 'Retired' and d.kind <> 'Gateway' \
+             and ($2::text is null or d.device_code ilike '%' || $2 || '%' or d.device_name ilike '%' || $2 || '%') \
+           order by d.device_code limit 500) r",
+    )
+    .bind(ctx.tenant)
+    .bind(q)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(json!({"devices": rows}))
+}
+
+async fn alarm_list(k: &Kernel, ctx: &Ctx, all: bool) -> Result<Value> {
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let rows: Value = sqlx::query_scalar(
+        "select coalesce(jsonb_agg(r order by r.raised_at desc), '[]') from ( \
+           select a.id, a.summary, a.severity, a.status, a.raised_at, a.cleared_at, a.acknowledged_by, a.acknowledged_at, a.note, a.value, a.device, d.device_code as code, \
+             f.flow_name as flow, r.rule_name as rule \
+           from e_edge_alarm a left join e_device d on d.tenant_id = a.tenant_id and d.id = a.device \
+           left join e_edge_flow f on f.tenant_id = a.tenant_id and f.id = a.flow \
+           left join e_edge_rule r on r.tenant_id = a.tenant_id and r.id = a.rule \
+           where a.tenant_id = $1 and ($2 or a.status <> 'Cleared') order by a.raised_at desc limit 300) r",
+    )
+    .bind(ctx.tenant)
+    .bind(all)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(json!({"alarms": rows}))
+}
+
+/// Robots and what they last said. A position may be a metric or an attribute, whichever suited the
+/// definition, so anything a definition can read can be drawn.
 async fn robots(k: &Kernel, ctx: &Ctx) -> Result<Value> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let rows: Value = sqlx::query_scalar(
         "select coalesce(jsonb_agg(jsonb_build_object('id', d.id, 'code', d.device_code, 'name', d.device_name, 'lifecycle', d.lifecycle, 'site', s.site_name, \
            'metrics', (select coalesce(jsonb_object_agg(l.metric, jsonb_build_object('value', l.last_value, 'at', l.last_time)), '{}') from ( \
               select distinct on (r.metric) r.metric, r.last_value, r.last_time from op_rollup_minute r where r.tenant_id = d.tenant_id and r.device_id = d.id and r.last_time is not null order by r.metric, r.minute desc) l), \
+           'attributes', (select coalesce(jsonb_object_agg(a.key, a.value), '{}') from edge_attribute a where a.tenant_id = d.tenant_id and a.device_id = d.id), \
            'state', (select e.state from op_equipment_event e where e.tenant_id = d.tenant_id and e.device_id = d.id order by e.at desc limit 1), \
            'running', (select count(*) from op_command c where c.tenant_id = d.tenant_id and c.target_id = d.id and c.state in ('Accepted', 'Executing'))) order by d.device_code), '[]') \
          from e_device d left join e_site s on s.tenant_id = d.tenant_id and s.id = d.site \
@@ -313,6 +357,14 @@ async fn signed_in(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<SiteRespo
         ("POST", ["flows", id, "simulate"]) => {
             may(ctx, ENGINEER)?;
             return simulate_flow(k, ctx, uuid(id)?, &body(req)?).await.map(ok);
+        }
+        ("GET", ["devices"]) => {
+            may(ctx, READ)?;
+            device_list(k, ctx, req.query.get("q").and_then(Value::as_str).filter(|q| !q.is_empty())).await?
+        }
+        ("GET", ["alarms"]) => {
+            may(ctx, READ)?;
+            alarm_list(k, ctx, req.query.contains_key("all")).await?
         }
         ("GET", ["devices", id]) => {
             may(ctx, READ)?;
