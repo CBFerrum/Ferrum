@@ -18,7 +18,13 @@
 //!   the work happens in a job.
 //! - **Reconciliation**: compares what the provider has with what we hold, and records drift for a
 //!   person to look at rather than repairing it by guesswork.
-//! - **Operations**: last success, last error, backlog, drift, in one place.
+//! - **Operations**: authentication, freshness, backlog, drift and quota, each told apart: a
+//!   connection is never just "connected".
+//! - **Being a good client**: a provider that says to wait is left alone, and one that keeps failing
+//!   is left alone for longer. Every job of the connection waits together, at no cost in attempts.
+//!
+//! A connector is compiled in, or comes with a workspace's plugin (`crates/plugins`): the contract is
+//! the same, and only [`ConnectorSource`] knows the difference.
 //!
 //! A connector is finished only with evidence against the real provider or its sandbox. Passing here
 //! with a stand-in proves this machinery, and nothing about any provider.
@@ -47,23 +53,42 @@ const DELIVERY_ATTEMPTS: i32 = 8;
 const SEEN_EVENT_DAYS: i32 = 30;
 /// Differences one reconciliation records.
 const MAX_DRIFT: usize = 1000;
+/// Failures in a row before a provider is left alone.
+const BREAK_AFTER: i32 = 3;
+/// The longest a provider is left alone on our own account. It may ask for longer.
+const MAX_PAUSE_SECS: u64 = 3600;
+/// How long to wait when a provider says "too many" and not for how long.
+const TOO_MANY_SECS: u64 = 60;
 
 /// What a provider's API offers, as it is: no connector pretends to more.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ConnectorInfo {
-    pub provider: &'static str,
-    pub label: &'static str,
+    pub provider: String,
+    pub label: String,
     /// `payments`, `calendar`, `marketplace` ...
-    pub family: &'static str,
+    pub family: String,
     /// The API version this connector was written against.
-    pub api_version: &'static str,
+    pub api_version: String,
     /// Streams `pull` reads.
-    pub streams: &'static [&'static str],
+    pub streams: Vec<String>,
     /// Whether `push` writes, and of which entities.
-    pub writes: &'static [&'static str],
+    pub writes: Vec<String>,
     pub webhooks: bool,
     /// What it takes to use: partner approval, certification, a contract. Empty when an account will do.
-    pub requirements: &'static str,
+    pub requirements: String,
+    /// What this account can really do (`publish_text`, `read_comments`, `insights`), each named, so
+    /// that nothing promises what a provider grants only some accounts.
+    pub capabilities: Vec<String>,
+}
+
+/// A stream's shape at the provider, for mapping it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StreamSchema {
+    pub stream: String,
+    /// Field names, including what the account has customized.
+    pub fields: Vec<String>,
 }
 
 /// A connection as a connector sees it: its settings and credentials, for the length of a call.
@@ -120,26 +145,38 @@ pub struct Hook {
     pub record: Incoming,
 }
 
+/// Connectors that come with a workspace's plugins, found by provider.
+#[async_trait]
+pub trait ConnectorSource: Send + Sync {
+    async fn find(&self, kernel: &Kernel, tenant: Uuid, provider: &str) -> Result<Option<Arc<dyn Connector>>>;
+    async fn list(&self, kernel: &Kernel, tenant: Uuid) -> Result<Vec<ConnectorInfo>>;
+}
+
 /// A provider. Everything it does is outside any transaction.
 #[async_trait]
 pub trait Connector: Send + Sync {
     fn info(&self) -> ConnectorInfo;
 
     /// Proves the credentials work, without changing anything there.
-    async fn check(&self, c: &Connection) -> Result<String>;
+    async fn check(&self, k: &Kernel, c: &Connection) -> Result<String>;
 
-    /// A page of a stream's changes after `cursor`, or from the beginning. An error that says wait
-    /// (`TooManyRequests`, `Unavailable`) is retried with backoff.
-    async fn pull(&self, c: &Connection, stream: &str, cursor: Option<&str>) -> Result<Pulled>;
+    /// What each stream holds in this account, for mapping it. Without one, its streams, unnamed.
+    async fn discover(&self, _k: &Kernel, _c: &Connection) -> Result<Vec<StreamSchema>> {
+        Ok(self.info().streams.into_iter().map(|stream| StreamSchema { stream, fields: vec![] }).collect())
+    }
+
+    /// A page of a stream's changes after `cursor`, or from the beginning. `Error::Wait` says how
+    /// long the provider wants left alone; `TooManyRequests` and `Unavailable` mean soon.
+    async fn pull(&self, k: &Kernel, c: &Connection, stream: &str, cursor: Option<&str>) -> Result<Pulled>;
 
     /// Sends one change; answers the provider's id for the record.
-    async fn push(&self, _c: &Connection, _change: &Outgoing) -> Result<String> {
+    async fn push(&self, _k: &Kernel, _c: &Connection, _change: &Outgoing) -> Result<String> {
         Err(Error::invalid("this provider's API does not take changes"))
     }
 
     /// Authenticates a webhook (signature, freshness) and says what it carried. Refuses anything it
     /// cannot prove came from the provider.
-    fn webhook(&self, _c: &Connection, _headers: &BTreeMap<String, String>, _body: &[u8]) -> Result<Vec<Hook>> {
+    async fn webhook(&self, _k: &Kernel, _c: &Connection, _headers: &BTreeMap<String, String>, _body: &[u8]) -> Result<Vec<Hook>> {
         Err(Error::invalid("this provider sends no webhooks"))
     }
 }
@@ -213,6 +250,25 @@ pub fn mapped(map: &StreamMap, fields: &serde_json::Map<String, Value>) -> Doc {
     doc
 }
 
+/// How long to leave a provider alone after `failures` failures in a row: not at all for the first
+/// few, then doubling up to an hour.
+fn pause_after(failures: i32) -> Option<u64> {
+    (failures >= BREAK_AFTER).then(|| (30u64 << (failures - BREAK_AFTER).min(10)).min(MAX_PAUSE_SECS))
+}
+
+/// Whether a connection's credentials are known to work, which is one thing a connection can be.
+fn authentication(c: &Value) -> &'static str {
+    if c["has_credentials"] != json!(true) {
+        "none"
+    } else if c["last_checked_at"].is_null() {
+        "untested"
+    } else if c["enabled"] == json!(true) {
+        "ok"
+    } else {
+        "failing"
+    }
+}
+
 #[derive(Debug, sqlx::FromRow)]
 struct Row {
     id: Uuid,
@@ -240,13 +296,106 @@ enum Applied {
 }
 
 impl Kernel {
-    fn connector(&self, provider: &str) -> Result<Arc<dyn Connector>> {
-        self.hooks.connector(provider).cloned().ok_or_else(|| Error::invalid(format!("no connector for {provider} on this server")))
+    async fn connector(&self, tenant: Uuid, provider: &str) -> Result<Arc<dyn Connector>> {
+        if let Some(c) = self.hooks.connector(provider) {
+            return Ok(c.clone());
+        }
+        if let Some(source) = self.hooks.connector_source()
+            && let Some(c) = source.find(self, tenant, provider).await?
+        {
+            return Ok(c);
+        }
+        Err(Error::invalid(format!("no connector for {provider} here")))
     }
 
-    /// The providers this server has connectors for, as they describe themselves.
-    pub fn connectors(&self) -> Vec<ConnectorInfo> {
-        self.hooks.connectors().map(|c| c.info()).collect()
+    /// The providers this workspace has connectors for, as they describe themselves.
+    pub async fn connectors(&self, ctx: &Ctx) -> Result<Vec<ConnectorInfo>> {
+        admin_only(ctx)?;
+        let mut all: Vec<ConnectorInfo> = self.hooks.connectors().map(|c| c.info()).collect();
+        if let Some(source) = self.hooks.connector_source() {
+            all.extend(source.list(self, ctx.tenant).await?);
+        }
+        Ok(all)
+    }
+
+    /// What a provider holds for this account, for mapping it.
+    pub async fn connection_schema(&self, ctx: &Ctx, id: Uuid) -> Result<Vec<StreamSchema>> {
+        admin_only(ctx)?;
+        let row = self.row(ctx.tenant, id).await?;
+        let connection = self.opened(ctx.tenant, &row)?;
+        let connector = self.connector(ctx.tenant, &row.provider).await?;
+        self.calling(ctx.tenant, id, connector.discover(self, &connection)).await
+    }
+
+    /// A call to a provider, unless it is being left alone, and what came of it remembered. Every
+    /// job of a connection goes through here, so they all wait together.
+    async fn calling<T>(&self, tenant: Uuid, connection: Uuid, call: impl std::future::Future<Output = Result<T>>) -> Result<T> {
+        let mut tx = self.db.system_tenant_tx(tenant).await?;
+        let waiting: Option<(f64, Option<String>)> = sqlx::query_as(
+            "select extract(epoch from waiting_until - now())::float8, waiting_reason from connection \
+             where tenant_id = $1 and id = $2 and waiting_until > now()",
+        )
+        .bind(tenant)
+        .bind(connection)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        if let Some((seconds, why)) = waiting {
+            return Err(Error::Wait(why.unwrap_or_else(|| "the provider is being left alone for a while".into()), seconds.ceil() as u64 + 1));
+        }
+        let outcome = call.await;
+        match outcome {
+            Ok(v) => {
+                let mut tx = self.db.system_tenant_tx(tenant).await?;
+                sqlx::query(
+                    "update connection set failures = 0, waiting_until = null, waiting_reason = null where tenant_id = $1 and id = $2 and (failures <> 0 or waiting_until is not null)",
+                )
+                .bind(tenant)
+                .bind(connection)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+                Ok(v)
+            }
+            Err(Error::Wait(why, seconds)) => {
+                self.leave_alone(tenant, connection, &why, seconds).await?;
+                Err(Error::Wait(why, seconds))
+            }
+            Err(Error::TooManyRequests(why)) => {
+                self.leave_alone(tenant, connection, &why, TOO_MANY_SECS).await?;
+                Err(Error::Wait(why, TOO_MANY_SECS))
+            }
+            Err(Error::Unavailable(why)) => {
+                let mut tx = self.db.system_tenant_tx(tenant).await?;
+                let failures: i32 = sqlx::query_scalar("update connection set failures = failures + 1 where tenant_id = $1 and id = $2 returning failures")
+                    .bind(tenant)
+                    .bind(connection)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                tx.commit().await?;
+                if let Some(seconds) = pause_after(failures) {
+                    self.leave_alone(tenant, connection, &format!("{why} ({failures} failures in a row)"), seconds).await?;
+                }
+                // A call that failed costs an attempt, so what can never succeed still ends as a dead
+                // letter. Only waiting for the pause is free.
+                Err(Error::Unavailable(why))
+            }
+            // The provider answered: it refused this, and is working.
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn leave_alone(&self, tenant: Uuid, connection: Uuid, why: &str, seconds: u64) -> Result<()> {
+        let mut tx = self.db.system_tenant_tx(tenant).await?;
+        sqlx::query("update connection set waiting_until = now() + make_interval(secs => $3), waiting_reason = $4 where tenant_id = $1 and id = $2")
+            .bind(tenant)
+            .bind(connection)
+            .bind(seconds as f64)
+            .bind(why)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     fn seal(&self, tenant: Uuid, id: Uuid, credentials: &Value) -> Result<String> {
@@ -280,9 +429,9 @@ impl Kernel {
         if name.is_empty() || name.chars().count() > 100 {
             return Err(Error::field("name", "give it a name of at most 100 characters"));
         }
-        let info = self.connector(&input.provider)?.info();
+        let info = self.connector(ctx.tenant, &input.provider).await?.info();
         for (stream, map) in &input.mapping {
-            if !info.streams.contains(&stream.as_str()) {
+            if !info.streams.contains(stream) {
                 return Err(Error::field("mapping", format!("{} has no stream {stream}", info.label)));
             }
             let ent = self.entity(ctx, &map.entity)?;
@@ -292,7 +441,7 @@ impl Kernel {
             if !matches!(map.conflict.as_str(), "source" | "local" | "review") || !matches!(map.tombstone.as_str(), "keep" | "delete") {
                 return Err(Error::field("mapping", "conflict is source, local or review; tombstone is keep or delete"));
             }
-            if map.push && !info.writes.contains(&map.entity.as_str()) {
+            if map.push && !info.writes.contains(&map.entity) {
                 return Err(Error::field("mapping", format!("{} does not take changes to {}", info.label, map.entity)));
             }
         }
@@ -337,7 +486,8 @@ impl Kernel {
         admin_only(ctx)?;
         let row = self.row(ctx.tenant, id).await?;
         let connection = self.opened(ctx.tenant, &row)?;
-        let outcome = self.connector(&row.provider)?.check(&connection).await;
+        let connector = self.connector(ctx.tenant, &row.provider).await?;
+        let outcome = connector.check(self, &connection).await;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         sqlx::query("update connection set enabled = $3, last_error = $4, last_checked_at = now() where tenant_id = $1 and id = $2")
             .bind(ctx.tenant)
@@ -356,7 +506,8 @@ impl Kernel {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let rows: Vec<Value> = sqlx::query_scalar(
             "select jsonb_build_object('id', c.id, 'provider', c.provider, 'name', c.name, 'enabled', c.enabled, 'config', c.config, 'mapping', c.mapping, \
-             'has_credentials', c.sealed is not null, 'last_success_at', c.last_success_at, 'last_checked_at', c.last_checked_at, 'last_error', c.last_error, 'cursors', c.cursors, \
+             'has_credentials', c.sealed is not null, 'failures', c.failures, 'waiting_until', c.waiting_until, 'waiting_reason', c.waiting_reason, \
+             'last_success_at', c.last_success_at, 'last_checked_at', c.last_checked_at, 'last_error', c.last_error, 'cursors', c.cursors, \
              'linked', (select count(*) from connection_link l where l.tenant_id = c.tenant_id and l.connection_id = c.id), \
              'drift', (select count(*) from connection_drift d where d.tenant_id = c.tenant_id and d.connection_id = c.id and d.resolved_at is null), \
              'backlog', (select count(*) from job j where j.tenant_id = c.tenant_id and j.status in ('queued', 'running') and j.kind like 'platform.connector.%' and j.payload->>'connection' = c.id::text), \
@@ -368,7 +519,22 @@ impl Kernel {
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(rows)
+        // Told apart, because each goes wrong on its own: a working token on a stale feed is not
+        // a healthy connection, and an upstream outage is not ours.
+        Ok(rows
+            .into_iter()
+            .map(|mut c| {
+                c["health"] = json!({
+                    "authentication": authentication(&c),
+                    "freshness": c["last_success_at"],
+                    "backlog": c["backlog"],
+                    "dead_letters": c["dead_letters"],
+                    "drift": c["drift"],
+                    "quota": {"waiting_until": c["waiting_until"], "reason": c["waiting_reason"], "failures": c["failures"]},
+                });
+                c
+            })
+            .collect())
     }
 
     /// Stops a connection and forgets its credentials. The links stay: reconnecting finds what it knew.
@@ -564,7 +730,7 @@ impl Kernel {
             return Err(Error::invalid("this connection is off"));
         }
         let conn = self.opened(job.tenant_id, &row)?;
-        let connector = self.connector(&row.provider)?;
+        let connector = self.connector(job.tenant_id, &row.provider).await?;
         let maps: BTreeMap<String, StreamMap> =
             serde_json::from_value(row.mapping.clone()).map_err(|e| Error::invalid(format!("this connection's mapping: {e}")))?;
         let sys = Ctx::system(job.tenant_id, self.registry.schema(job.tenant_id).await?);
@@ -577,7 +743,7 @@ impl Kernel {
                 self.stored_cursor(job.tenant_id, connection, stream).await?
             };
             loop {
-                let page = connector.pull(&conn, stream, cursor.as_deref()).await?;
+                let page = self.calling(job.tenant_id, connection, connector.pull(self, &conn, stream, cursor.as_deref())).await?;
                 for item in &page.records {
                     match self.apply_incoming(&sys, connection, stream, map, item).await {
                         Ok(Applied::Created) => created += 1,
@@ -675,7 +841,8 @@ impl Kernel {
         }
         let change = Outgoing { key: key.to_string(), entity: map.entity.clone(), record, external_id: external, fields };
         // No transaction here: a provider's slowness must not hold one (docs/events.md).
-        let external_id = self.connector(&row.provider)?.push(&conn, &change).await?;
+        let connector = self.connector(job.tenant_id, &row.provider).await?;
+        let external_id = self.calling(job.tenant_id, connection, connector.push(self, &conn, &change)).await?;
         let item = Incoming { external_id: external_id.clone(), ..Default::default() };
         let mut tx = self.db.system_tenant_tx(job.tenant_id).await?;
         self.save_link(&mut tx, job.tenant_id, connection, stream, &item, &map.entity, record, &digest(&mapped(map, &change.fields)), &doc).await?;
@@ -688,14 +855,14 @@ impl Kernel {
             job.payload["connection"].as_str().and_then(|s| s.parse().ok()).ok_or_else(|| Error::invalid("a reconciliation names its connection"))?;
         let row = self.row(job.tenant_id, connection).await?;
         let conn = self.opened(job.tenant_id, &row)?;
-        let connector = self.connector(&row.provider)?;
+        let connector = self.connector(job.tenant_id, &row.provider).await?;
         let maps: BTreeMap<String, StreamMap> = serde_json::from_value(row.mapping.clone()).map_err(|e| Error::invalid(e.to_string()))?;
         let (mut compared, mut drift) = (0u64, 0usize);
         for (stream, map) in &maps {
             let mut seen = std::collections::BTreeSet::new();
             let mut cursor = None;
             loop {
-                let page = connector.pull(&conn, stream, cursor.as_deref()).await?;
+                let page = self.calling(job.tenant_id, connection, connector.pull(self, &conn, stream, cursor.as_deref())).await?;
                 let mut tx = self.db.system_tenant_tx(job.tenant_id).await?;
                 for item in page.records.iter().filter(|i| !i.deleted) {
                     compared += 1;
@@ -746,7 +913,7 @@ impl Kernel {
         let tenant = tenant.ok_or_else(|| Error::NotFound("connection".into()))?;
         let row = self.row(tenant, connection).await?;
         let conn = self.opened(tenant, &row)?;
-        let hooks = self.connector(&row.provider)?.webhook(&conn, headers, body)?;
+        let hooks = self.connector(tenant, &row.provider).await?.webhook(self, &conn, headers, body).await?;
         let mut tx = self.db.system_tenant_tx(tenant).await?;
         let mut queued = 0;
         for hook in hooks {
@@ -791,7 +958,9 @@ impl Kernel {
     /// Queues a change for every connection that sends this entity out, unless the change is one
     /// that came from there.
     pub(crate) async fn queue_deliveries(&self, ev: &Event) -> Result<()> {
-        if !(ev.topic.ends_with(".created") || ev.topic.ends_with(".updated")) || self.hooks.connectors().next().is_none() {
+        if !(ev.topic.ends_with(".created") || ev.topic.ends_with(".updated"))
+            || (self.hooks.connectors().next().is_none() && self.hooks.connector_source().is_none())
+        {
             return Ok(());
         }
         let (Some(entity), Some(record)) = (&ev.entity, ev.record_id) else { return Ok(()) };

@@ -1,0 +1,16 @@
+{
+  "name": "connector-demo",
+  "version": "0.1.0",
+  "description": "A connector as a plugin: reads people from a provider and pushes changes back, with a token it never holds",
+  "http_hosts": ["127.0.0.1"],
+  "credentials": [{"name": "token", "hosts": ["127.0.0.1"]}, {"name": "webhook_secret"}],
+  "connector": {
+    "label": "Connector demo",
+    "family": "crm",
+    "api_version": "2026-01",
+    "streams": ["people"],
+    "writes": ["Contact"],
+    "webhooks": true,
+    "capabilities": ["read_people", "write_people"]
+  }
+}

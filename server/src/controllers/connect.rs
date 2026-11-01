@@ -1,7 +1,7 @@
 //! Connections to outside systems (crates/kernel/src/connect.rs): administrators set them up here,
 //! and providers' webhooks arrive here.
 
-use crate::error::{ApiError, ApiResult};
+use crate::error::ApiResult;
 use crate::extract::{Auth, client_ip};
 use crate::state::app_state;
 use axum::Json;
@@ -18,10 +18,7 @@ use std::collections::BTreeMap;
 use uuid::Uuid;
 
 async fn connectors(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
-    if !ctx.is_admin {
-        return Err(ApiError(ferrum_kernel::Error::Forbidden("connections are for administrators".into())));
-    }
-    Ok(Json(json!({"connectors": app_state(&app)?.kernel.connectors()})).into_response())
+    Ok(Json(json!({"connectors": app_state(&app)?.kernel.connectors(&ctx).await?})).into_response())
 }
 
 async fn list(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
@@ -45,6 +42,11 @@ async fn disconnect(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Pa
 
 async fn test(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
     Ok(Json(json!({"ok": app_state(&app)?.kernel.test_connection(&ctx, id).await?})).into_response())
+}
+
+/// What each of the provider's streams holds in this account, for mapping it.
+async fn schema(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
+    Ok(Json(json!({"streams": app_state(&app)?.kernel.connection_schema(&ctx, id).await?})).into_response())
 }
 
 #[derive(Deserialize, Default)]
@@ -89,6 +91,7 @@ pub fn routes() -> Routes {
         .add("/admin/connections", get(list).post(create))
         .add("/admin/connections/{id}", put(update).delete(disconnect))
         .add("/admin/connections/{id}/test", post(test))
+        .add("/admin/connections/{id}/schema", get(schema))
         .add("/admin/connections/{id}/sync", post(sync))
         .add("/admin/connections/{id}/reconcile", post(reconcile))
         .add("/admin/connections/{id}/drift", get(drift))
