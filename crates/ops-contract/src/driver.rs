@@ -1085,6 +1085,10 @@ impl Compiled {
         let mut seen = Seen::new(topic, body);
         seen.format = rule.format;
         if let Some(filter) = &rule.topic {
+            // After a restart a running command's device may not be known here. Where the answer
+            // names its command, any device's topic will do. Where it does not, nothing can say
+            // whose it is, and this waits rather than believing another device's news.
+            let device = if device.is_empty() && rule.id.is_some() { "+" } else { device };
             topic_matches(&filter.replace("{device}", device), topic)?;
         }
         let groups = match pattern {
@@ -1460,6 +1464,13 @@ commands:
         assert_eq!(status(r#"{"orderId":"c1","errors":[],"nodeStates":[]}"#), Some(Ending::Done));
         assert_eq!(status(r#"{"orderId":"c1","errors":[{"errorLevel":"FATAL"}],"nodeStates":[{"id":"n"}]}"#), Some(Ending::Failed));
         assert_eq!(status(r#"{"orderId":"other","errors":[],"nodeStates":[]}"#), None, "another order's news is not this one's");
+
+        // After a restart the device is not known here, and the id is enough to go on.
+        let body = br#"{"orderId":"c1","errors":[],"nodeStates":[]}"#;
+        assert_eq!(d.status("transport.move", "", "agv/A1/state", body, &["c1"]), Some(Ending::Done));
+        let unnamed =
+            def("name: x\nconnect: mqtt://b:1\ncommands:\n  a.b:\n    topic: t\n    send: go\n    status: {topic: \"m/{device}/s\", json: $.s, done: IDLE}\n");
+        assert_eq!(unnamed.status("a.b", "", "m/OTHER/s", br#"{"s":"IDLE"}"#, &["c1"]), None, "with no id it could be anyone's, so it proves nothing");
         assert!(
             parse(
                 "name: x\nconnect: mqtt://b:1\ncommands:\n  a:\n    topic: t\n    send: x\n    status: {json: $.s, failed: F, also: [{json: $.t, failed: G}]}\n"

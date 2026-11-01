@@ -149,6 +149,39 @@ commands:
     assert!(matches!(gone, Err(Failure::NotSent(_))), "a caller that hung up is not there to hear it: {gone:?}");
 }
 
+/// A replaced link must stop. Its tasks keep it alive, so left to itself it would go on polling, and
+/// hold a listening port or a serial line so that its replacement could never open it.
+#[tokio::test]
+async fn a_new_version_takes_over_the_port_from_the_old_one() {
+    let seen = Seen::default();
+    let port = free_port();
+    let address = format!("127.0.0.1:{port}");
+    let version = |metric: &str| {
+        format!(
+            "name: tracker\nconnect: listen://{address}\nframe: {{line: \"\\n\"}}\nread:\n  - {{match: '^t=(?P<t>[0-9.]+)$', metric: {metric}, group: t}}\n"
+        )
+    };
+    let d = Defined::new(Limits { listen: vec![address.clone()], ..Default::default() }, json!({}));
+    let links = [DeviceLink { code: "T-1".into(), definition: "it".into(), connect: None, settings: Value::Null, concurrency: 1 }];
+    let first = BTreeMap::from([("it".to_string(), version("old"))]);
+    assert_eq!(d.apply(&first, &links), Vec::<String>::new());
+    until("the port", async || d.links()[0].up).await;
+    let mut caller = TcpStream::connect(&address).await.unwrap();
+    caller.write_all(b"t=1.5\n").await.unwrap();
+    seen.reading(&d, |r| metric(r, "old", 1.5)).await;
+
+    let second = BTreeMap::from([("it".to_string(), version("new"))]);
+    assert_eq!(d.apply(&second, &links), Vec::<String>::new());
+    let mut buf = [0u8; 8];
+    let closed = tokio::time::timeout(Wait::from_secs(2), caller.read(&mut buf)).await.expect("the old link let its caller go");
+    assert_eq!(closed.unwrap_or(0), 0);
+    assert_eq!(d.links().len(), 1);
+    until("the new link to have the port", async || d.links()[0].up).await;
+    let mut caller = TcpStream::connect(&address).await.unwrap();
+    caller.write_all(b"t=2.5\n").await.unwrap();
+    seen.reading(&d, |r| metric(r, "new", 2.5)).await;
+}
+
 #[tokio::test]
 async fn datagrams_from_anyone_and_answers_back() {
     let seen = Seen::default();
