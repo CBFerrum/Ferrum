@@ -34,6 +34,9 @@ CUSTOMIZE = ("-p", "ferrum-kernel", "--test", "customize_it")
 HOOKS_UNIT = ("-p", "ferrum-kernel", "--lib", "hooks::tests")
 SSO = ("-p", "ferrum-server", "--test", "sso_it")
 SSO_UNIT = ("-p", "ferrum-kernel", "--lib", "sso::tests")
+MERGE = ("-p", "ferrum-kernel", "--test", "merge_it")
+RETENTION = ("-p", "ferrum-kernel", "--test", "retention_it")
+DOCTOR = ("-p", "ferrum-kernel", "--test", "doctor_it")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
@@ -110,6 +113,21 @@ MUTANTS = [
     ("logout-accepts-id-tokens", "crates/kernel/src/sso.rs", "if self.nonce.is_some() {", "if false {", SSO_UNIT),
     ("logout-accepts-old-tokens", "crates/kernel/src/sso.rs", "if self.iat > now + CLOCK_SKEW_SECS || self.iat < now - LOGOUT_TOKEN_SECS {", "if self.iat > now + CLOCK_SKEW_SECS {", SSO_UNIT),
     ("logout-leaves-sessions", "crates/kernel/src/sso.rs", "crate::auth::end_sessions(&mut tx, tenant, user).await?;", "", SSO),
+    ("merged-id-still-listed", "crates/kernel/src/query.rs", "    if ent.def.mergeable {\n        qb.push(\" and not exists", "    if false {\n        qb.push(\" and not exists", MERGE),
+    ("merge-misses-child-rows", "crates/kernel/src/merge.rs", 'out.push((info.table.clone(), f.name.clone(), c.storage_of(&f.name) == Some(Storage::Ext), false));', '', MERGE),
+    ("merge-misses-custom-fields", "crates/kernel/src/merge.rs", 'format!("update {t} set ext = jsonb_set(ext, array[$4], to_jsonb($1::text)) where tenant_id = $2 and ext->>$4 = $3")', 'format!("update {t} set ext = ext where tenant_id = $2 and ext->>$4 = $3 and $1 = $1")', MERGE),
+    ("merge-past-a-legal-hold", "crates/kernel/src/merge.rs", 'if record_held(&mut tx, ctx.tenant, entity, id).await? {', 'if false {', MERGE),
+    ("merge-history-unfindable", "crates/kernel/src/merge.rs", "ids.insert(0, stays);\n        Ok(ids)", "Ok(vec![stays])", MERGE),
+    ("merge-leaves-chains", "crates/kernel/src/merge.rs", 'sqlx::query("update record_alias set canonical_id = $1 where tenant_id = $2 and entity = $3 and canonical_id = $4").bind(keep).bind(ctx.tenant).bind(entity).bind(duplicate).execute(&mut *tx).await?;', '', MERGE),
+    ("merged-record-still-editable", "crates/kernel/src/doc.rs", "if lock && ent.def.mergeable && crate::merge::canonical(tx, ctx.tenant, &ent.def.name, id).await?.is_some() {", "if false {", MERGE),
+    ("stale-link-saved", "crates/kernel/src/doc.rs", "crate::merge::resolve_links(ctx, tx, ent, doc).await?;", "", MERGE),
+    ("mask-shows-it-all", "crates/kernel/src/doc.rs", "doc.insert(f.name.clone(), Value::String(mask.apply(&v)));", "doc.insert(f.name.clone(), Value::String(v));", RETENTION),
+    ("restriction-ignored", "crates/kernel/src/outbox.rs", "if !self.may_contact(tx, tenant, to).await? {", "if false {", RETENTION),
+    ("restriction-misses-old-addresses", "crates/kernel/src/retention.rs", "let emails = addresses(tx, tenant, &email).await?;\n        let restricted", "let emails = vec![email.clone()];\n        let restricted", RETENTION),
+    ("retention-past-a-legal-hold", "crates/kernel/src/retention.rs", "if on_hold {", "if false {", RETENTION),
+    ("retention-deletes-what-is-kept", "crates/kernel/src/retention.rs", "if let Some(why) = declared.iter().find_map(|d| d.retain.as_deref()) {", "if let Some(why) = None::<&str> {", RETENTION),
+    ("retention-more-than-once-a-day", "crates/kernel/src/retention.rs", "if ran {", "if false {", RETENTION),
+    ("doctor-misses-unforced-security", "crates/kernel/src/doctor.rs", "not (c.relrowsecurity and c.relforcerowsecurity)", "not c.relrowsecurity", DOCTOR),
 ]
 
 

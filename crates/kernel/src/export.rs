@@ -53,6 +53,7 @@ pub(crate) fn handler(kind: &str) -> Option<Arc<dyn JobHandler>> {
     match kind {
         BULK_KIND => Some(Arc::new(BulkJob)),
         EXPORT_KIND => Some(Arc::new(ExportJob)),
+        crate::retention::RETENTION_KIND => Some(Arc::new(crate::retention::RetentionJob)),
         _ => None,
     }
 }

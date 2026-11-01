@@ -26,6 +26,7 @@ pub mod hooks;
 pub mod identity;
 pub mod jobs;
 pub mod lifecycle;
+pub mod merge;
 pub mod notify;
 pub mod numbering;
 pub mod oauth;
@@ -38,6 +39,7 @@ pub mod print;
 pub mod privacy;
 pub mod query;
 pub mod registry;
+pub mod retention;
 pub mod scan;
 pub mod scim;
 pub mod secret;
@@ -244,6 +246,9 @@ impl Kernel {
     pub async fn maintenance(&self) -> Result<()> {
         let yesterday = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
         audit::anchor_day(&self.db, yesterday).await?;
+        if let Err(e) = self.queue_retention().await {
+            tracing::warn!("queueing retention: {e}");
+        }
         let purged = self.purge_old_events(self.settings.event_retention_days).await?
             + self.oauth_purge().await?
             + self.purge_sessions().await?

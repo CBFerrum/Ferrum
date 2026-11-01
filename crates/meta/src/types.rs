@@ -38,6 +38,19 @@ pub struct PackageManifest {
     /// these may hold a secret. Tables not named here are listed in the export as left out.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub export_tables: Vec<String>,
+    /// Engine tables holding links to a `mergeable` entity, moved when two records merge. Not
+    /// append-only history: that keeps the id it was posted under (`Kernel::merged_ids`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub merge_links: Vec<MergeLinkDef>,
+}
+
+/// A column of an engine table that holds a record's id.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MergeLinkDef {
+    pub table: String,
+    pub column: String,
+    pub to: String,
 }
 
 /// Records of one entity that belong to a person: those whose `match` field (an email field, or a
@@ -161,6 +174,12 @@ pub struct EntityDef {
     pub numbering: Option<NumberingDef>,
     #[serde(default)]
     pub submittable: bool,
+    /// Duplicates can be merged into one record (crates/kernel/src/merge.rs).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mergeable: bool,
+    /// Fields that, equal apart from case and spaces, suggest two records are one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub duplicate_fields: Vec<String>,
     /// Requires a `company` link field; records are scoped by the user's allowed companies.
     #[serde(default)]
     pub company_scoped: bool,
@@ -477,6 +496,10 @@ pub struct FieldDef {
     /// Field-level permission group; roles grant read/write per group.
     #[serde(default)]
     pub perm_group: Option<String>,
+    /// For a field in a `perm_group`: who is outside the group sees this much of it, not nothing.
+    /// It stays closed to them in every other way: they cannot filter or sort on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask: Option<FieldMask>,
     #[serde(default)]
     pub on_delete: OnDelete,
     /// Static equality filters applied to link candidates and validated on write, e.g. `{is_group: false}`.
@@ -757,6 +780,37 @@ pub struct SeedDef {
 pub struct Overlay {
     pub entity: String,
     pub ops: Vec<OverlayOp>,
+}
+
+/// How a field looks to someone who may not read it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldMask {
+    /// `•••• 1234`.
+    Last4,
+    /// `p•••@example.com`.
+    Email,
+    /// Says there is a value, and shows none of it.
+    Hidden,
+}
+
+impl FieldMask {
+    pub fn apply(self, value: &str) -> String {
+        const DOT: char = '•';
+        match self {
+            FieldMask::Hidden => DOT.to_string().repeat(8),
+            FieldMask::Last4 => {
+                let chars: Vec<char> = value.chars().filter(|c| !c.is_whitespace()).collect();
+                let shown: String = chars.iter().skip(chars.len().saturating_sub(4)).collect();
+                // A value of four or fewer characters is all "last four": none of it shows.
+                if chars.len() <= 4 { DOT.to_string().repeat(8) } else { format!("{} {shown}", DOT.to_string().repeat(4)) }
+            }
+            FieldMask::Email => match value.split_once('@') {
+                Some((local, domain)) => format!("{}{}@{domain}", local.chars().next().map(String::from).unwrap_or_default(), DOT.to_string().repeat(3)),
+                None => DOT.to_string().repeat(8),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

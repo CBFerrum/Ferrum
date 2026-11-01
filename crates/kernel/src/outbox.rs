@@ -75,6 +75,10 @@ impl Kernel {
     pub async fn queue_mail_with(&self, tx: &mut Tx, tenant: Uuid, to: &str, subject: &str, html: &str, files: &[Uuid]) -> Result<()> {
         let to = to.trim();
         check_mail(to, subject)?;
+        if !self.may_contact(tx, tenant, to).await? {
+            tracing::info!(%tenant, "a queued mail was not sent: processing of its recipient's data is restricted");
+            return Ok(());
+        }
         if html.len() > 1 << 20 {
             return Err(Error::field("html", "is larger than 1 MB"));
         }
