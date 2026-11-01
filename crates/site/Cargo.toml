@@ -53,6 +53,7 @@ uuid = { workspace = true }
 rumqttd = { version = "0.20", default-features = false }
 async-opcua = { version = "0.19", default-features = false, features = ["client", "server"] }
 ferrum-domain = { path = "../domain" }
+ferrum-edge = { path = "../edge" }
 ferrum-kernel = { path = "../kernel" }
 ferrum-meta = { path = "../meta" }
 ferrum-ops = { path = "../ops" }

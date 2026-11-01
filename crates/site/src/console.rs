@@ -86,7 +86,7 @@ async fn metrics(State(app): State<App>) -> impl IntoResponse {
     let s = app.rt.status();
     let mut out = String::new();
     let mut line = |name: &str, labels: String, value: f64| out.push_str(&format!("ferrum_site_{name}{labels} {value}\n"));
-    for key in ["queued", "active", "unknown_outcomes", "unsent_reports", "unsent_facts", "telemetry_bytes", "telemetry_shed", "disk_free_mb", "exports_shed"] {
+    for key in ["queued", "running", "unknown", "unsent_reports", "unsent_facts", "telemetry_bytes", "telemetry_shed", "disk_free_mb", "exports_shed"] {
         if let Some(n) = s[key].as_f64() {
             line(key, String::new(), n);
         }
