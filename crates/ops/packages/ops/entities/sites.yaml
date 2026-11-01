@@ -1,0 +1,64 @@
+- name: SiteMember
+  label: Site Member
+  kind: child
+  fields:
+    - {name: user_email, type: email, required: true, in_list: true}
+
+- name: Site
+  label: Site
+  kind: master
+  module: ops
+  title_field: site_name
+  search_fields: [site_code]
+  description: A place where physical work happens. Its offline limit says how long it may go on without hearing from the platform.
+  fields:
+    - {name: site_name, type: data, required: true, in_list: true}
+    - {name: site_code, type: data, required: true, unique: true, in_list: true, max_length: 40}
+    - {name: company, type: link, to: Company, in_list: true, in_filter: true}
+    - {name: time_zone, type: data, max_length: 64, description: "IANA time zone, e.g. Europe/Berlin"}
+    - {name: status, type: select, options: [Active, Inactive], default: Active, in_list: true, in_filter: true}
+    - {name: max_offline_hours, type: int, default: 72, min: 1, max: 720, label: Longest Offline (Hours), description: "After this long without the platform a site starts no new work. A site offline cannot learn that a person was revoked, so this is also how long that can go unnoticed."}
+    - {name: telemetry_budget_mb, type: int, default: 1024, min: 1, label: Telemetry Budget (MB), description: "What the site may hold of unsent measurements. Past it, the oldest plain samples go first. Commands and evidence are never counted in this."}
+    - {name: restricted, type: check, label: Members Only, description: "Only the people listed may see or act on this site, whatever their roles"}
+    - {name: members, type: table, of: SiteMember, visible_if: "doc.restricted"}
+    - {name: notes, type: text}
+  form:
+    - {label: Site, fields: [site_name, site_code, company, time_zone, status]}
+    - {label: Offline, fields: [max_offline_hours, telemetry_budget_mb]}
+    - {label: Access, fields: [restricted, members]}
+    - {label: Notes, collapsible: true, fields: [notes]}
+  list: {columns: [site_name, site_code, company, status], sort: site_name asc}
+
+- name: SiteArea
+  label: Site Area
+  label_plural: Site Areas
+  kind: master
+  module: ops
+  title_field: area_name
+  description: A zone, line, cell or work centre inside a site.
+  fields:
+    - {name: area_name, type: data, required: true, in_list: true}
+    - {name: site, type: link, to: Site, required: true, in_list: true, in_filter: true}
+    - {name: kind, type: select, options: [Zone, Aisle, Dock, Line, Cell, Work Center, Room], default: Zone, in_list: true, in_filter: true}
+    - {name: parent_area, type: link, to: SiteArea}
+  unique: [[site, area_name]]
+  list: {columns: [area_name, site, kind], sort: area_name asc}
+
+- name: AutomationEnvelope
+  label: Automation Envelope
+  label_plural: Automation Envelopes
+  kind: master
+  module: ops
+  title_field: envelope_name
+  description: What software may do on its own, approved by a person, with limits. Anything outside it goes to a person. Switching one off takes effect at once.
+  fields:
+    - {name: envelope_name, type: data, required: true, in_list: true}
+    - {name: site, type: link, to: Site, required: true, in_list: true, in_filter: true}
+    - {name: operation, type: data, required: true, in_list: true, max_length: 100}
+    - {name: enabled, type: check, default: true, in_list: true, in_filter: true}
+    - {name: max_per_hour, type: int, required: true, min: 1, label: Most per Hour, in_list: true}
+    - {name: valid_until, type: datetime, required: true, in_list: true}
+    - {name: approved_by, type: data, read_only: true}
+    - {name: notes, type: text}
+  unique: [[site, operation]]
+  list: {columns: [envelope_name, site, operation, enabled, valid_until], sort: envelope_name asc}

@@ -1,0 +1,81 @@
+- name: DeviceProfile
+  label: Device Profile
+  label_plural: Device Profiles
+  kind: master
+  module: ops
+  title_field: profile_name
+  description: What was actually tried with a product, on what firmware, and what it can and cannot do. A profile is a record of evidence, never a claim of compatibility beyond it.
+  fields:
+    - {name: profile_name, type: data, required: true, in_list: true}
+    - {name: vendor, type: data, in_list: true, in_filter: true}
+    - {name: model, type: data, in_list: true}
+    - {name: firmware, type: data, label: Firmware or Software Version, in_list: true}
+    - {name: protocol, type: data, label: Protocol and Version, in_list: true, description: "e.g. VDA 5050 2.1.0, OPC UA 1.05, Modbus TCP"}
+    - {name: tested_on, type: select, options: [Simulator, Bench Hardware, Production Hardware], default: Simulator, in_list: true, in_filter: true, description: "How far this profile has been tried. Simulator means no equipment was involved"}
+    - {name: reads, type: text, label: Read Capabilities}
+    - {name: writes, type: text, label: Write and Command Capabilities}
+    - {name: authentication, type: text, label: Authentication and Certificates}
+    - {name: licenses, type: text, label: Required Licenses and Options}
+    - {name: max_load, type: text, label: Maximum Qualified Load}
+    - {name: offline_behaviour, type: text, label: Offline Behaviour}
+    - {name: cancellation, type: text, label: Cancellation and Retry Semantics}
+    - {name: recovery, type: text, label: Supported Recovery Procedures}
+    - {name: exclusions, type: text, label: Known Exclusions}
+    - {name: maintainer, type: data, label: Maintainer}
+    - {name: support_ends, type: date, label: Support Ends, in_list: true}
+  form:
+    - {label: Product, fields: [profile_name, vendor, model, firmware, protocol, tested_on]}
+    - {label: Capabilities, fields: [reads, writes, authentication, licenses, max_load]}
+    - {label: Behaviour, fields: [offline_behaviour, cancellation, recovery, exclusions]}
+    - {label: Ownership, fields: [maintainer, support_ends]}
+  list: {columns: [profile_name, vendor, model, firmware, tested_on], sort: profile_name asc}
+
+- name: DeviceOperation
+  label: Allowed Operation
+  kind: child
+  fields:
+    - {name: operation, type: data, required: true, in_list: true, max_length: 100}
+    - {name: requires_approval, type: check, in_list: true, description: "A second person approves each one"}
+
+- name: DeviceMetric
+  label: Metric Limits
+  kind: child
+  fields:
+    - {name: metric, type: data, required: true, in_list: true, max_length: 120}
+    - {name: min_value, type: decimal, in_list: true}
+    - {name: max_value, type: decimal, in_list: true}
+    - {name: stuck_after, type: int, default: 0, min: 0, in_list: true, description: "Identical readings in a row after which the value is doubted; 0 for a value that may stand still"}
+
+- name: Device
+  label: Device
+  kind: master
+  module: ops
+  title_field: device_name
+  search_fields: [device_code, serial_no]
+  description: An authenticated endpoint. The maintained object is the asset; a device can be replaced without losing the asset's history.
+  fields:
+    - {name: device_name, type: data, required: true, in_list: true}
+    - {name: device_code, type: data, required: true, unique: true, in_list: true, max_length: 80}
+    - {name: kind, type: select, options: [Gateway, Sensor, Meter, Controller, Robot, Fleet, Machine, Scanner, Station], default: Sensor, required: true, in_list: true, in_filter: true}
+    - {name: site, type: link, to: Site, in_list: true, in_filter: true}
+    - {name: area, type: link, to: SiteArea, in_filter: true}
+    - {name: domain, type: data, max_length: 100, description: "The authority domain whose gateway reaches this device. Empty means the site's code"}
+    - {name: gateway, type: link, to: Device, description: "Which gateway reaches it, for information. Work goes to whoever holds the domain"}
+    - {name: profile, type: link, to: DeviceProfile, in_list: true}
+    - {name: asset_ref, type: data, label: Asset, description: "The asset this device belongs to, by its code, when Assets is used"}
+    - {name: serial_no, type: data, label: Serial No}
+    - {name: lifecycle, type: select, options: [Imported, Claimed, Provisioned, Commissioned, Active, Maintenance, Quarantined, Retired], default: Imported, read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: operations, type: table, of: DeviceOperation, label: Allowed Operations, description: "Nothing else can be sent to it"}
+    - {name: metrics, type: table, of: DeviceMetric, label: Metric Limits}
+    - {name: topics, type: text, label: Allowed Topics, description: "MQTT topics it may use, one per line"}
+    - {name: configuration_version, type: data, read_only: true, no_copy: true}
+    - {name: commissioned_by, type: data, read_only: true, no_copy: true}
+    - {name: commissioned_at, type: datetime, read_only: true, no_copy: true}
+    - {name: notes, type: text}
+  form:
+    - {label: Device, fields: [device_name, device_code, kind, site, area, domain, gateway]}
+    - {label: Product, fields: [profile, serial_no, asset_ref]}
+    - {label: Lifecycle, fields: [lifecycle, configuration_version, commissioned_by, commissioned_at]}
+    - {label: What It May Do, fields: [operations, metrics, topics]}
+    - {label: Notes, collapsible: true, fields: [notes]}
+  list: {columns: [device_name, device_code, kind, site, lifecycle], sort: device_name asc}
