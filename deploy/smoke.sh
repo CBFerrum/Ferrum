@@ -171,6 +171,13 @@ install helpdesk
 [ "$(curl -fsS -b "$work/jar" "$API/helpdesk/" | bootstrap | json 'd["app"]["id"]')" = helpdesk ] || fail "Helpdesk's page"
 [[ "$(curl -sS -o /dev/null -b "$work/jar" -w '%{http_code} %{redirect_url}' "$API/open/Ticket")" =~ ^30[23]\ .*/helpdesk/$ ]] || fail "/open of Helpdesk's tickets"
 [[ "$(curl -sS -o /dev/null -b "$work/jar" -w '%{http_code} %{redirect_url}' "$API/data/helpdesk/e/Ticket")" =~ ^30[23]\ .*/helpdesk/e/Ticket$ ]] || fail "Helpdesk's old records address"
+# A view a team shares, and what a reviewer is handed: over HTTP, with a person's rights.
+view=$(curl -fsS "${auth[@]}" -H 'content-type: application/json' -d '{"name":"Smoke view","value":{"query":{"f.status":"Open"}}}' "$API/api/views/Customer" | json 'd["id"]') || fail "sharing a view"
+[ "$(curl -fsS "${auth[@]}" "$API/api/views/Customer" | json 'd["views"][0]["name"]')" = "Smoke view" ] || fail "a shared view is listed"
+[ "$(code "${auth[@]}" -X DELETE "$API/api/views/Customer/$view")" = 204 ] || fail "stopping sharing a view"
+[ "$(curl -fsS "${auth[@]}" "$API/api/admin/evidence" | json 'len(d["access"]["people"]) > 0 and "Not a claim" in d["note"]')" = True ] || fail "the evidence pack"
+[ "$(code "$API/api/admin/evidence")" = 401 ] || fail "the evidence pack without signing in"
+[ "$(curl -fsS "${auth[@]}" "$API/api/meta/Customer" | json 'd["mergeable"] and len(d["linked_from"]) > 0')" = True ] || fail "what links to a customer"
 # OAuth clients (MCP): the server's consent page, for the person signed in with the cookie.
 [[ "$(curl -fsS "$API/.well-known/oauth-authorization-server" | json 'd["authorization_endpoint"]')" == */oauth/authorize ]] || fail "the OAuth authorization endpoint"
 client=$(curl -fsS -H 'content-type: application/json' -d '{"client_name":"Smoke","redirect_uris":["http://127.0.0.1/cb"]}' "$API/oauth/register" | json 'd["client_id"]') || fail "registering an OAuth client"
