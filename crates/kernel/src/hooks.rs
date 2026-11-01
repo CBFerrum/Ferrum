@@ -180,6 +180,7 @@ pub struct HookRegistry {
     sites: HashMap<String, Arc<dyn Site>>,
     doc_hosts: HashMap<String, Arc<dyn DocHost>>,
     job_handlers: HashMap<&'static str, Arc<dyn crate::jobs::JobHandler>>,
+    connectors: HashMap<&'static str, Arc<dyn crate::connect::Connector>>,
     /// The packages owning what is being registered (see [`HookRegistry::scoped`]).
     scope: Option<Arc<[String]>>,
 }
@@ -334,6 +335,20 @@ impl HookRegistry {
 
     pub fn job_handler(&self, kind: &str) -> Option<&Arc<dyn crate::jobs::JobHandler>> {
         self.job_handlers.get(kind)
+    }
+
+    /// Adds a provider a workspace can connect to (crate::connect).
+    pub fn add_connector(&mut self, connector: Arc<dyn crate::connect::Connector>) -> &mut Self {
+        self.connectors.insert(connector.info().provider, connector);
+        self
+    }
+
+    pub fn connector(&self, provider: &str) -> Option<&Arc<dyn crate::connect::Connector>> {
+        self.connectors.get(provider)
+    }
+
+    pub fn connectors(&self) -> impl Iterator<Item = &Arc<dyn crate::connect::Connector>> {
+        self.connectors.values()
     }
 
     pub fn entities(&self) -> impl Iterator<Item = &String> {

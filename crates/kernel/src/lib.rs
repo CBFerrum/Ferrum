@@ -12,6 +12,7 @@ pub mod automation;
 pub mod bulk;
 pub mod coedit;
 pub mod collab;
+pub mod connect;
 pub mod ctx;
 pub mod customize;
 pub mod db;
@@ -252,7 +253,8 @@ impl Kernel {
         let purged = self.purge_old_events(self.settings.event_retention_days).await?
             + self.oauth_purge().await?
             + self.purge_sessions().await?
-            + self.purge_exports().await?;
+            + self.purge_exports().await?
+            + self.purge_connection_events().await?;
         if purged > 0 {
             tracing::info!(purged, "old events purged");
         }

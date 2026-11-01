@@ -6,6 +6,7 @@ pub mod auth;
 pub mod cards;
 pub mod collab;
 pub mod compat;
+pub mod connect;
 pub mod dav;
 pub mod docs;
 pub mod domains;

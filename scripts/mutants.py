@@ -37,6 +37,7 @@ SSO_UNIT = ("-p", "ferrum-kernel", "--lib", "sso::tests")
 MERGE = ("-p", "ferrum-kernel", "--test", "merge_it")
 RETENTION = ("-p", "ferrum-kernel", "--test", "retention_it")
 DOCTOR = ("-p", "ferrum-kernel", "--test", "doctor_it")
+CONNECT = ("-p", "ferrum-kernel", "--test", "connect_it")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
@@ -128,6 +129,16 @@ MUTANTS = [
     ("retention-deletes-what-is-kept", "crates/kernel/src/retention.rs", "if let Some(why) = declared.iter().find_map(|d| d.retain.as_deref()) {", "if let Some(why) = None::<&str> {", RETENTION),
     ("retention-more-than-once-a-day", "crates/kernel/src/retention.rs", "if ran {", "if false {", RETENTION),
     ("doctor-misses-unforced-security", "crates/kernel/src/doctor.rs", "not (c.relrowsecurity and c.relforcerowsecurity)", "not c.relrowsecurity", DOCTOR),
+    ("connection-credentials-shown", "crates/kernel/src/connect.rs", "'has_credentials', c.sealed is not null,", "'has_credentials', c.sealed is not null, 'sealed', c.sealed,", CONNECT),
+    ("sync-restarts-from-the-top", "crates/kernel/src/connect.rs", "self.stored_cursor(job.tenant_id, connection, stream).await?", "None", CONNECT),
+    ("sync-doubles-on-a-repeat", "crates/kernel/src/connect.rs", "(Some(l), false) if l.hash.as_deref() == Some(hash.as_str()) => Applied::Unchanged,", "", CONNECT),
+    ("conflict-overwrites-ours", "crates/kernel/src/connect.rs", 'if changed_here && map.conflict != "source" {', "if false {", CONNECT),
+    ("bad-record-stops-the-run", "crates/kernel/src/connect.rs", "Err(e) if !e.is_retryable() && !matches!(e, Error::Unavailable(_)) => {", "Err(e) if false => {", CONNECT),
+    ("webhook-repeat-applied", "crates/kernel/src/connect.rs", "            if !fresh {\n                continue;\n            }\n            let record", "            let record", CONNECT),
+    ("change-echoes-back", "crates/kernel/src/connect.rs", "if synced.flatten().zip(ev.source_version).is_some_and(|(synced, version)| synced >= version) {", "if false {", CONNECT),
+    ("delivery-key-changes", "crates/kernel/src/connect.rs", "let change = Outgoing { key: key.to_string(),", "let change = Outgoing { key: Uuid::now_v7().to_string(),", CONNECT),
+    ("untested-connection-runs", "crates/kernel/src/connect.rs", """        if !row.enabled {\n            return Err(Error::invalid("test this connection first"));\n        }\n""", "", CONNECT),
+    ("disconnect-keeps-credentials", "crates/kernel/src/connect.rs", "update connection set enabled = false, sealed = null where", "update connection set enabled = false where", CONNECT),
 ]
 
 
