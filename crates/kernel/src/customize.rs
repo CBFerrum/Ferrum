@@ -1,12 +1,18 @@
 //! Zero-code customization: tenant overlays are validated against the effective schema *before*
 //! they are stored, can be disabled (rollback) at any time, and can be exported/imported as a
 //! change-set to promote sandbox work into production.
+//!
+//! A customization remembers what it replaced. When a package's upgrade changes that same thing the
+//! two have parted ways, and [`Kernel::customization_conflicts`] says so: an upgrade neither undoes a
+//! customization nor is silently undone by it. The one case that does not wait for a person is a
+//! field a package has come to require, which a customization made optional before it did: the
+//! requirement applies until an administrator keeps the customization.
 
-use crate::Kernel;
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 use crate::registry::Registry;
-use ferrum_meta::{Overlay, OverlayOp, effective};
+use crate::{Kernel, notify};
+use ferrum_meta::{Overlay, OverlayOp, Schema, effective};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -19,6 +25,34 @@ pub struct OverlayRow {
     pub is_active: bool,
     pub note: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// A customization and an upgrade that parted ways.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Conflict {
+    pub id: Uuid,
+    pub entity: String,
+    pub note: Option<String>,
+    pub op: Value,
+    /// What the customization replaced when it was made.
+    pub was: Value,
+    /// What the packages say now; `null` also when what it names is gone.
+    pub now: Value,
+    pub gone: bool,
+    /// The customization is not applied until someone keeps it.
+    pub suspended: bool,
+}
+
+/// Whether `op` makes a field optional that was not required when it was made: such a customization
+/// said nothing about a requirement that came later.
+pub(crate) fn relaxes(op: &OverlayOp, base: Option<&Value>) -> bool {
+    let OverlayOp::SetProperty { property, value, .. } = op else { return false };
+    property == "required" && *value == json!(false) && base.is_some_and(|b| *b != json!(true))
+}
+
+pub(crate) fn now_required(packaged: &Schema, entity: &str, op: &OverlayOp) -> bool {
+    let OverlayOp::SetProperty { field, .. } = op else { return false };
+    packaged.entity(entity).and_then(|e| e.field(field)).is_some_and(|f| f.required)
 }
 
 fn require_admin(ctx: &Ctx) -> Result<()> {
@@ -45,6 +79,87 @@ impl Kernel {
         Ok(())
     }
 
+    /// The packages' schema, without this workspace's customizations.
+    fn packaged(&self, ctx: &Ctx) -> Result<Schema> {
+        effective::build(&self.registry.catalog(), &ctx.schema.packages, &[], 0).map_err(|e| Error::invalid(e.to_string()))
+    }
+
+    /// Customizations that have parted ways with their packages since they were made, for an
+    /// administrator to keep (their value stands) or switch off (the package's does).
+    pub async fn customization_conflicts(&self, ctx: &Ctx) -> Result<Vec<Conflict>> {
+        require_admin(ctx)?;
+        let packaged = self.packaged(ctx)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let rows: Vec<(Uuid, String, Value, Value, Option<String>)> =
+            sqlx::query_as("select id, entity, op, base, note from meta_overlay where tenant_id = $1 and is_active and base is not null order by seq")
+                .bind(ctx.tenant)
+                .fetch_all(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        let mut out = Vec::new();
+        for (id, entity, raw, was, note) in rows {
+            let Ok(op) = serde_json::from_value::<OverlayOp>(raw.clone()) else { continue };
+            let now = packaged.entity(&entity).and_then(|e| effective::replaced_value(&e.def, &op));
+            if now.as_ref() != Some(&was) {
+                let suspended = relaxes(&op, Some(&was)) && now_required(&packaged, &entity, &op);
+                out.push(Conflict { id, entity, note, op: raw, was, gone: now.is_none(), now: now.unwrap_or(Value::Null), suspended });
+            }
+        }
+        Ok(out)
+    }
+
+    /// An administrator looked at a conflict and the customization stands: it now replaces what the
+    /// packages say today, and is compared from there. Locks and validation still apply.
+    pub async fn keep_customization(&self, ctx: &Ctx, id: Uuid) -> Result<()> {
+        require_admin(ctx)?;
+        let packaged = self.packaged(ctx)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let row: Option<(String, Value)> = sqlx::query_as("select entity, op from meta_overlay where tenant_id = $1 and id = $2 and is_active")
+            .bind(ctx.tenant)
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let (entity, op) = row.ok_or_else(|| Error::NotFound("customization".into()))?;
+        let op: OverlayOp = serde_json::from_value(op).map_err(|e| Error::invalid(e.to_string()))?;
+        let now = packaged
+            .entity(&entity)
+            .and_then(|e| effective::replaced_value(&e.def, &op))
+            .ok_or_else(|| Error::invalid("what this customization replaced is gone; switch it off"))?;
+        sqlx::query("update meta_overlay set base = $3 where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).bind(now).execute(&mut *tx).await?;
+        Registry::bump_version(&mut tx, ctx.tenant).await?;
+        tx.commit().await?;
+        self.registry.invalidate(ctx.tenant);
+        Ok(())
+    }
+
+    /// Tells a workspace's administrators when an installation parted ways with its customizations.
+    pub(crate) async fn report_conflicts(&self, tenant: Uuid) -> Result<()> {
+        let system = Ctx::system(tenant, self.registry.schema(tenant).await?);
+        let conflicts = self.customization_conflicts(&system).await?.len();
+        if conflicts == 0 {
+            return Ok(());
+        }
+        let mut tx = self.db.system_tenant_tx(tenant).await?;
+        let admins: Vec<Uuid> = sqlx::query_scalar("select id from app_user where tenant_id = $1 and is_admin and is_active and kind = 'member'")
+            .bind(tenant)
+            .fetch_all(&mut *tx)
+            .await?;
+        for admin in admins {
+            notify::send(
+                &mut tx,
+                tenant,
+                admin,
+                "An update changed what your customizations replace",
+                Some(&format!("{conflicts} to look at, under Customizations")),
+                None,
+                None,
+            )
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn add_customization(&self, ctx: &Ctx, entity: &str, op: OverlayOp, note: Option<String>) -> Result<Uuid> {
         require_admin(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
@@ -55,13 +170,15 @@ impl Kernel {
         };
         self.check_overlays(ctx, &base, &[Overlay { entity: target.clone(), ops: vec![op.clone()] }])?;
         let id = Uuid::now_v7();
-        sqlx::query("insert into meta_overlay (tenant_id, id, entity, op, note, created_by) values ($1, $2, $3, $4, $5, $6)")
+        let replaced = self.packaged(ctx)?.entity(&target).and_then(|e| effective::replaced_value(&e.def, &op));
+        sqlx::query("insert into meta_overlay (tenant_id, id, entity, op, note, created_by, base) values ($1, $2, $3, $4, $5, $6, $7)")
             .bind(ctx.tenant)
             .bind(id)
             .bind(&target)
             .bind(serde_json::to_value(&op).map_err(Error::internal)?)
             .bind(note)
             .bind((!ctx.user.is_nil()).then_some(ctx.user))
+            .bind(replaced)
             .execute(&mut *tx)
             .await?;
         Registry::bump_version(&mut tx, ctx.tenant).await?;
@@ -143,14 +260,17 @@ impl Kernel {
         let base = self.active_overlays(&mut tx, ctx.tenant).await?;
         let extra: Vec<Overlay> = new.iter().map(|(e, op, _, _)| Overlay { entity: e.clone(), ops: vec![op.clone()] }).collect();
         self.check_overlays(ctx, &base, &extra)?;
-        for (entity, _, op_v, note) in &new {
-            sqlx::query("insert into meta_overlay (tenant_id, id, entity, op, note, created_by) values ($1, $2, $3, $4, $5, $6)")
+        let packaged = self.packaged(ctx)?;
+        for (entity, op, op_v, note) in &new {
+            let replaced = packaged.entity(entity).and_then(|e| effective::replaced_value(&e.def, op));
+            sqlx::query("insert into meta_overlay (tenant_id, id, entity, op, note, created_by, base) values ($1, $2, $3, $4, $5, $6, $7)")
                 .bind(ctx.tenant)
                 .bind(Uuid::now_v7())
                 .bind(entity)
                 .bind(op_v)
                 .bind(note)
                 .bind((!ctx.user.is_nil()).then_some(ctx.user))
+                .bind(replaced)
                 .execute(&mut *tx)
                 .await?;
         }

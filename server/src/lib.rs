@@ -6,6 +6,7 @@ pub mod assistant;
 pub mod coedit;
 pub mod controllers;
 pub mod demo;
+pub mod doctor;
 pub mod error;
 pub mod extract;
 pub mod importer;

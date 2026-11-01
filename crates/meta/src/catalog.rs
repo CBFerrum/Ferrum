@@ -3,6 +3,7 @@
 use crate::expr::Expr;
 use crate::types::*;
 use crate::{MetaError, RESERVED_FIELDS, invalid, is_entity_name, is_ident, is_package_name};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -265,6 +266,30 @@ impl Catalog {
             for m in &p.manifest.modules {
                 if !is_ident(&m.name) {
                     return invalid(format!("{name}: invalid module name {}", m.name));
+                }
+            }
+        }
+        // Two packages setting one thing differently: the later would win by accident of order.
+        // One that depends on the other has seen it, and means to.
+        let mut set: BTreeMap<(String, String, String), (String, Value)> = BTreeMap::new();
+        for name in &self.order {
+            let needs = self.closure(std::slice::from_ref(name))?;
+            for ov in &self.packages[name].manifest.overlays {
+                for op in &ov.ops {
+                    let (field, property, value) = match op {
+                        OverlayOp::SetProperty { field, property, value } => (field.as_str(), property, value),
+                        OverlayOp::SetEntityProperty { property, value } => ("", property, value),
+                        _ => continue,
+                    };
+                    let key = (ov.entity.clone(), field.to_string(), property.clone());
+                    match set.get(&key) {
+                        Some((other, seen)) if seen != value && !needs.contains(other) => {
+                            return invalid(format!("{name} and {other} set {} {field} {property} differently, and neither depends on the other", ov.entity));
+                        }
+                        _ => {
+                            set.insert(key, (name.clone(), value.clone()));
+                        }
+                    }
                 }
             }
         }
@@ -863,6 +888,21 @@ mod tests {
             "[]",
         );
         assert!(Catalog::from_packages(vec![pkg("{package: core, version: '1'}", CORE), ok]).is_ok());
+
+        // Two packages setting one thing differently need one to have seen the other.
+        let overlay = |name: &str, depends: &str, label: &str| {
+            pkg(
+                &format!(
+                    "{{package: {name}, version: '1', depends: [{depends}], overlays: [{{entity: Customer, ops: [{{op: set_property, field: customer_name, property: label, value: {label}}}]}}]}}"
+                ),
+                "",
+            )
+        };
+        let core = || pkg("{package: core, version: '1'}", CORE);
+        let conflict = Catalog::from_packages(vec![core(), overlay("one", "core", "One"), overlay("two", "core", "Two")]);
+        assert!(conflict.is_err_and(|e| e.to_string().contains("differently")));
+        assert!(Catalog::from_packages(vec![core(), overlay("one", "core", "Same"), overlay("two", "core", "Same")]).is_ok(), "they agree");
+        assert!(Catalog::from_packages(vec![core(), overlay("one", "core", "One"), overlay("two", "one", "Two")]).is_ok(), "one builds on the other");
         let no_prefix = pkg(
             "{package: india, version: '1', depends: [core], field_prefix: in_, overlays: [{entity: Customer, ops: [{op: add_field, field: {name: gstin, type: data}}]}]}",
             "[]",

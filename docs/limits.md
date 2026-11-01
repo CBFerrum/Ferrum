@@ -76,6 +76,8 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   (the largest attachment sets what a replica needs), and a part that fails to store costs the
   attempt, which starts over. A person's erasure reaches exports already made only when they are
   deleted, after 7 days. Tables nobody declared are named in the manifest, not carried.
+- **Malware scanning** looks at a file once, when it is uploaded: files stored earlier, or past the
+  scanner's size limit, stay `unscanned`, and nothing rescans them when signatures change.
 - **Bulk jobs** reach at most 100,000 records, and list the first 1,000 failures.
 
 ## Accounting and finance

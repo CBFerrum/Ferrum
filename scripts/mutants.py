@@ -28,6 +28,12 @@ PRIVACY = ("-p", "ferrum-kernel", "--test", "privacy_it")
 JOBS = ("-p", "ferrum-kernel", "--test", "jobs_it")
 HANDOVER = ("-p", "ferrum-kernel", "--test", "handover_it")
 KERNEL = ("-p", "ferrum-kernel", "--test", "kernel_it")
+SCAN = ("-p", "ferrum-kernel", "--test", "scan_it")
+SCAN_UNIT = ("-p", "ferrum-kernel", "--lib", "scan::tests")
+CUSTOMIZE = ("-p", "ferrum-kernel", "--test", "customize_it")
+HOOKS_UNIT = ("-p", "ferrum-kernel", "--lib", "hooks::tests")
+SSO = ("-p", "ferrum-server", "--test", "sso_it")
+SSO_UNIT = ("-p", "ferrum-kernel", "--lib", "sso::tests")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
@@ -91,6 +97,19 @@ MUTANTS = [
     ("export-stays-for-ever", "crates/kernel/src/lib.rs", " + self.purge_exports().await?;", ";", JOBS),
     ("cursor-rounds-to-milliseconds", "crates/kernel/src/doc.rs", "let next_cursor = rows.get(limit as usize - 1).filter(|_| has_more && keyset_ok).and_then(|r| {\n            let ts = r.get(&sort_field)?.as_str()?;", "let next_cursor = rows.get(limit as usize - 1).filter(|_| has_more && keyset_ok).and_then(|r| {\n            let ts = crate::value::parse_datetime(r.get(&sort_field)?.as_str()?).ok()?.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);\n            let ts = ts.as_str();", KERNEL),
     ("handover-ignores-state", "crates/kernel/src/lifecycle.rs", "condition: def.condition.clone(), ..Default::default()", "..Default::default()", HANDOVER),
+    ("scan-passes-the-unknown", "crates/kernel/src/scan.rs", 'None => Err(Error::Unavailable(format!("the malware scanner answered: {answer}"))),', "None => Ok(Verdict::Clean),", SCAN_UNIT),
+    ("scan-fails-open", "crates/kernel/src/scan.rs", ".map_err(|_| Error::Unavailable(\"the malware scanner did not answer in time\".into()))??;", ".unwrap_or(Ok(Verdict::Clean)).unwrap_or(Verdict::Clean);", SCAN),
+    ("scan-keeps-what-it-found", "crates/kernel/src/scan.rs", 'Err(Error::Invalid(format!("{file_name} was not stored: the scanner found {signature} in it")))', 'Ok("clean")', SCAN),
+    ("scan-skipped", "crates/kernel/src/files.rs", 'let scanned = self.scan_stream(ctx, file_name, futures::stream::iter([Ok::<_, Error>(data)])).await?;', 'let scanned = "clean";', SCAN),
+    ("conflict-unnoticed", "crates/kernel/src/customize.rs", "if now.as_ref() != Some(&was) {", "if false {", CUSTOMIZE),
+    ("requirement-silently-undone", "crates/kernel/src/customize.rs", "packaged.entity(entity).and_then(|e| e.field(field)).is_some_and(|f| f.required)", "packaged.entity(entity).and_then(|e| e.field(field)).is_some_and(|_| false)", CUSTOMIZE),
+    ("hooks-cycle-accepted", "crates/kernel/src/hooks.rs", 'let Some(next) = (0..hooks.len()).find(|&i| !placed[i] && waits[i].iter().all(|&w| placed[w])) else {', 'let Some(next) = (0..hooks.len()).find(|&i| !placed[i]) else {', HOOKS_UNIT),
+    ("hooks-conflict-accepted", "crates/kernel/src/hooks.rs", "if !shared.is_empty() && !reaches(&waits, i, j) && !reaches(&waits, j, i) {", "if false {", HOOKS_UNIT),
+    ("logout-token-replayed", "crates/kernel/src/sso.rs", "        if !fresh {\n            return Ok(tx.commit().await?);\n        }\n", "", SSO),
+    ("logout-event-unchecked", "crates/kernel/src/sso.rs", 'if !self.events.get(LOGOUT_EVENT).is_some_and(Value::is_object) {', 'if false {', SSO_UNIT),
+    ("logout-accepts-id-tokens", "crates/kernel/src/sso.rs", "if self.nonce.is_some() {", "if false {", SSO_UNIT),
+    ("logout-accepts-old-tokens", "crates/kernel/src/sso.rs", "if self.iat > now + CLOCK_SKEW_SECS || self.iat < now - LOGOUT_TOKEN_SECS {", "if self.iat > now + CLOCK_SKEW_SECS {", SSO_UNIT),
+    ("logout-leaves-sessions", "crates/kernel/src/sso.rs", "crate::auth::end_sessions(&mut tx, tenant, user).await?;", "", SSO),
 ]
 
 

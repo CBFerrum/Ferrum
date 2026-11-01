@@ -18,6 +18,7 @@ pub mod db;
 pub mod ddl;
 pub mod describe;
 pub mod doc;
+pub mod doctor;
 pub mod error;
 pub mod export;
 pub mod files;
@@ -37,6 +38,7 @@ pub mod print;
 pub mod privacy;
 pub mod query;
 pub mod registry;
+pub mod scan;
 pub mod scim;
 pub mod secret;
 pub mod shell;
@@ -104,6 +106,10 @@ pub struct KernelSettings {
     pub event_retention_days: i32,
     /// Seals secret fields; without it they cannot be set or read.
     pub secret_key: Option<secret::SecretKey>,
+    /// The ClamAV daemon uploads pass through (`host:port`); without one they are stored unscanned.
+    pub clamd: Option<String>,
+    /// The scanner's `StreamMaxLength`: files past it are stored unscanned.
+    pub clamd_max_bytes: u64,
     /// Keys being rotated out: values they sealed still open, until [`Kernel::reseal_secrets`] has
     /// moved them to `secret_key`.
     pub retired_secret_keys: Vec<secret::SecretKey>,
@@ -127,6 +133,8 @@ impl Default for KernelSettings {
             ctx_ttl: Duration::from_secs(30),
             event_retention_days: 30,
             secret_key: None,
+            clamd: None,
+            clamd_max_bytes: 25 << 20,
             retired_secret_keys: Vec::new(),
             pdf_url: None,
             public_url: None,
@@ -166,7 +174,8 @@ impl Kernel {
     }
 
     /// Migrates the kernel schema, syncs entity tables for the catalog, and returns a ready kernel.
-    pub async fn boot(db: Db, catalog: Catalog, hooks: HookRegistry, settings: KernelSettings, mailer: Option<Arc<dyn Mailer>>) -> Result<Arc<Kernel>> {
+    pub async fn boot(db: Db, catalog: Catalog, mut hooks: HookRegistry, settings: KernelSettings, mailer: Option<Arc<dyn Mailer>>) -> Result<Arc<Kernel>> {
+        hooks.settle().map_err(|problems| Error::Invalid(format!("hooks cannot run as registered: {}", problems.join("; "))))?;
         // Superusers and BYPASSRLS roles ignore row-level security, which would silently remove
         // tenant isolation. Refuse to run that way.
         let (superuser, bypass): (bool, bool) =

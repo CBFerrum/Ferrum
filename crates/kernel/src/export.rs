@@ -160,7 +160,7 @@ impl<'a> Parts<'a> {
         let finished = std::mem::replace(&mut self.zip, zip::ZipWriter::new(Cursor::new(Vec::new())));
         let bytes = finished.finish().map_err(|e| Error::internal(format!("writing the export: {e}")))?.into_inner();
         let name = format!("workspace-export-{}-part-{}.zip", self.job, self.stored.len() + 1);
-        self.stored.push(self.k.keep_file(self.ctx, Some((EXPORT_ENTITY, self.job)), &name, "application/zip", &bytes).await?);
+        self.stored.push(self.k.keep_file(self.ctx, Some((EXPORT_ENTITY, self.job)), &name, "application/zip", &bytes, "unscanned").await?);
         self.size = 0;
         Ok(())
     }

@@ -248,6 +248,17 @@ async fn install(Auth(ctx): Auth, State(app): State<AppContext>, Json(req): Json
 
 // ── customizations ──
 
+async fn custom_conflicts(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    admin(&ctx)?;
+    Ok(Json(json!({"conflicts": app_state(&app)?.kernel.customization_conflicts(&ctx).await?})).into_response())
+}
+
+async fn keep_custom(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
+    admin(&ctx)?;
+    app_state(&app)?.kernel.keep_customization(&ctx, id).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 async fn list_custom(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
     let rows = app_state(&app)?.kernel.list_customizations(&ctx).await?;
     Ok(Json(json!({"customizations": rows, "warnings": ctx.schema.warnings})).into_response())
@@ -574,5 +585,7 @@ pub fn routes() -> Routes {
         .add("/customize", get(list_custom).post(add_custom))
         .add("/customize/export", get(export_custom))
         .add("/customize/import", post(import_custom))
+        .add("/customize/conflicts", get(custom_conflicts))
         .add("/customize/{id}/active", put(toggle_custom))
+        .add("/customize/{id}/keep", post(keep_custom))
 }

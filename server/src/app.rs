@@ -183,6 +183,8 @@ impl Hooks for App {
                 sso_allow_private: settings.sso_allow_private,
                 secret_key: Some(secret_key),
                 retired_secret_keys: retired,
+                clamd: Some(settings.clamav_addr.trim().to_string()).filter(|a| !a.is_empty()),
+                clamd_max_bytes: settings.clamav_max_mb << 20,
                 pdf_url: Some(settings.pdf_url.trim().to_string()).filter(|u| !u.is_empty()),
                 public_url: Some(ctx.config.server.host.trim().trim_end_matches('/').to_string()).filter(|u| u.starts_with("http")),
                 push_services: push_services(&settings.push_services),
@@ -433,6 +435,7 @@ impl Hooks for App {
 
     fn register_tasks(tasks: &mut Tasks) {
         tasks.register(crate::tasks::CreateTenant);
+        tasks.register(crate::tasks::Doctor);
         tasks.register(crate::tasks::ReapplyErasures);
         tasks.register(crate::tasks::SyncSchema);
         tasks.register(crate::tasks::ImportErpnext);
