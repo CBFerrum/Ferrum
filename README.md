@@ -230,7 +230,7 @@ flowchart TB
 | [ferrum-app-erp](https://github.com/CBFerrum/ferrum-app-erp) | ERP: its manifest, interface, packages (`accounting`, `inventory`, `selling`, `buying`, `manufacturing`) and engine (ledger, open items, stock valuation, selling and buying, manufacturing and MRP, the books' reports), which other apps post through; its add-ons: 26 countries on its localization seam (India, the European Union and eight of its members, the United Kingdom, the United States, Canada and thirteen more), Finance, Procurement, Stock Operations and Manufacturing Operations |
 | `packages/*` | The shared packages: `core`, `contacts`, `parties`, `products`, `project_records` |
 | `server` | HTTP API (Loco/Axum), auth, admin, OpenAPI, ERPNext-compatible `/api/resource` shim, CLI tasks |
-| `plugins/sdk`, `plugins/examples` | Rust plugin SDK and example plugins |
+| `plugins/examples` | Example plugins, on [`ferrum-plugin-sdk`](https://github.com/CBFerrum/ferrum-sdk) |
 | `deploy` | Docker Compose and Kubernetes manifests |
 | `docs` | [API contract](docs/api.md), [plugins](docs/plugins.md), [operations runbook](docs/operations.md), [security](docs/security.md), [known limits](docs/limits.md), [plan and analysis](docs/plan/PLAN.md) |
 | `tools` | `loadtest.py`: a load test of a running server (see the runbook's Capacity section) |
@@ -448,7 +448,7 @@ becomes an EV charging, IoT, payment or telephony platform without changing its 
 | 🗝️ | Keep state of its own | private key-value storage per tenant |
 
 Every row is subject to the permissions the administrator approved, a CPU budget (fuel) and a
-memory cap. See [docs/plugins.md](docs/plugins.md), the Rust SDK in `plugins/sdk` and the complete
+memory cap. See [docs/plugins.md](docs/plugins.md), the Rust SDK in [ferrum-sdk](https://github.com/CBFerrum/ferrum-sdk) and the complete
 `plugins/examples/device-gateway`. Apps can also bring their own screens (pages, Home widgets,
 panels on forms, settings) in sandboxed frames, and offer extension points for add-ons to fill;
 ferrum-sdk's `examples/board` shows both.

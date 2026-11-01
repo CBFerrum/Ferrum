@@ -9,7 +9,7 @@ without changing Ferrum itself.
 
 `plugins/examples/device-gateway` is a complete example (devices over WebSocket, commands from
 users, readings as records, a public status route, an event subscription, a schedule and a
-configurable hook); `plugins/sdk` is the Rust SDK it uses.
+configurable hook); [`ferrum-plugin-sdk`](https://github.com/CBFerrum/ferrum-sdk) is the Rust SDK it uses.
 
 ## Writing one (Rust)
 
