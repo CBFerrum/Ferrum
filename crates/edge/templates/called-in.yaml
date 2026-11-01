@@ -1,0 +1,12 @@
+# about: Equipment that calls the gateway: trackers, terminals, controllers that dial out.
+# group: Generic
+# The site must list the address under `listen` in site.yaml, or this will not open.
+name: called-in
+connect: listen://0.0.0.0:5020
+frame: {line: "\n"}
+read:
+  - {match: '^(?P<id>[A-Z0-9-]+) t=(?P<t>[0-9.]+)$', device: "{group.id}", metric: temp.c, group: t}
+commands:
+  device.ping:
+    send: "PING\n"
+    once: true

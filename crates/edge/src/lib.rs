@@ -3,7 +3,8 @@
 //!
 //! * [`config`]: what each gateway should be, worked out from the records;
 //! * [`facts`]: what gateways report, arriving when the link allows;
-//! * [`site`]: the HTTP endpoints.
+//! * [`site`]: the HTTP endpoints;
+//! * [`templates`]: definitions to start from.
 //!
 //! Commands, identity, telemetry and authority are Operations'. This adds how devices are described
 //! and looked after. Rules raise alarms and move nothing: anything physical goes through the ledger.
@@ -11,6 +12,7 @@
 pub mod config;
 pub mod facts;
 pub mod site;
+pub mod templates;
 
 use async_trait::async_trait;
 use ferrum_domain::reports::ReportSource;

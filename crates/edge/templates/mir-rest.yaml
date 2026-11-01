@@ -1,0 +1,33 @@
+# about: A MiR robot by its REST API: status, battery, position and missions from its queue.
+# group: Robots
+# Missions are the ones already on the robot: send the id of one in `mission`. Put the authorization
+# value MiR's documentation describes in a secret named mir_auth. Not tried on a real MiR.
+name: mir-rest
+connect: http://mir.local/api/v2.0.0
+headers:
+  authorization: "{secret.mir_auth}"
+poll:
+  - {every: 2s, get: /status}
+read:
+  - topic: /status
+    values:
+      - {metric: battery.percent, json: $.battery_percentage, unit: "%", deadband: 1}
+      - {state: true, json: $.state_text, map: {Ready: Idle, Executing: Running, Pause: Stopped, Error: Stopped, EmergencyStop: Stopped, ManualControl: Stopped, Docking: Running}}
+      - {attribute: position.x, json: $.position.x}
+      - {attribute: position.y, json: $.position.y}
+      - {attribute: position.theta, json: $.position.orientation}
+      - {attribute: mission, json: $.mission_text}
+commands:
+  transport.mission:
+    post: /mission_queue
+    send: {mission_id: "{payload.mission}"}
+    id: $.id
+    status:
+      poll: {get: "/mission_queue/{id}"}
+      json: $.state
+      running: [Pending, Executing]
+      done: Done
+      failed: Error
+      aborted: Aborted
+    cancel:
+      delete: "/mission_queue/{id}"

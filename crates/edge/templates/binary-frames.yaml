@@ -1,0 +1,13 @@
+# about: A binary protocol on a serial line: a start marker, a length, a checksum and fixed fields.
+# group: Generic
+name: binary-frames
+connect: serial:///dev/ttyUSB0?baud=115200
+checksum: {kind: crc16-modbus}
+frame:
+  length: {start: "AA 55", at: 2, size: 1, add: 5}
+read:
+  - {when: {at: 3, is: "01"}, values: [{metric: speed.rpm, at: 4, type: u16}, {metric: temp.c, at: 6, type: i16, scale: 0.1}]}
+commands:
+  drive.stop:
+    hex: AA 55 00 80
+    once: true

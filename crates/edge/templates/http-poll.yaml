@@ -1,0 +1,22 @@
+# about: A device with a JSON status page: asked every few seconds, a command by POST.
+# group: Generic
+name: http-poll
+connect: http://device.local
+poll:
+  - {every: 5s, get: /status}
+read:
+  - topic: /status
+    values:
+      - {metric: temp.c, json: $.temperature, unit: C, deadband: 0.2}
+      - {state: true, json: $.running, map: {"true": Running, "false": Idle}}
+commands:
+  machine.start:
+    post: /start
+    send: {job: "{payload.job}"}
+    id: $.id
+    status:
+      poll: {get: "/jobs/{id}"}
+      json: $.state
+      running: running
+      done: done
+      failed: failed

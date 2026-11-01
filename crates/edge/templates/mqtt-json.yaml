@@ -1,0 +1,8 @@
+# about: Anything publishing JSON to MQTT: one topic per device, every key a value.
+# group: Generic
+name: mqtt-json
+connect: mqtt://broker:1883
+subscribe:
+  - sensors/+/data
+read:
+  - {topic: sensors/+/data, device: "{topic.1}", each: $, metric: "{each.key}", json: $.value}
