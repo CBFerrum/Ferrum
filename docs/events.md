@@ -57,6 +57,13 @@ of their own, and a request that takes more than 10 seconds fails.
 
 These are for administrators, stay within their workspace, and are recorded in the audit trail.
 
+## Topics the platform publishes
+
+| Topic | Payload | Listen to |
+|---|---|---|
+| `ferrum.user.deprovisioned` | `{user, email, reassign_to, reason}` | Hand over what a package's `handover` declaration cannot express. It also fires when an administrator names a successor later, so handlers must be idempotent. |
+| `ferrum.privacy.erased` | `{account, records: [{entity, id, fields}], reason}` | The platform writes the journal from it. No value it erased is in it. |
+
 ## What may happen where
 
 | Where | May | May not |

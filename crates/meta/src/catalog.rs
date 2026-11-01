@@ -226,6 +226,27 @@ impl Catalog {
                     return invalid(format!("{name}: personal data of {}: {c} is not a field", pd.entity));
                 }
             }
+            for h in &p.manifest.handover {
+                let Some((_, e)) = self.entities.get(&h.entity) else {
+                    return invalid(format!("{name}: handover of unknown entity {}", h.entity));
+                };
+                let target = match h.field.split_once('.') {
+                    None => e.fields.iter().find(|x| x.name == h.field),
+                    Some((table, f)) => e
+                        .fields
+                        .iter()
+                        .find(|x| x.name == table && x.ftype == FieldType::Table)
+                        .and_then(|t| t.of.as_ref())
+                        .and_then(|child| self.entities.get(child))
+                        .and_then(|(_, c)| c.fields.iter().find(|x| x.name == f)),
+                };
+                if target.is_none_or(|f| !matches!(f.ftype, FieldType::Email | FieldType::Data)) {
+                    return invalid(format!("{name}: handover of {}: {} must be an email (or data) field", h.entity, h.field));
+                }
+                if let Some(c) = h.condition.keys().find(|c| !e.fields.iter().any(|x| &x.name == *c)) {
+                    return invalid(format!("{name}: handover of {}: {c} is not a field", h.entity));
+                }
+            }
             for seed in &p.manifest.seed {
                 let Some((_, e)) = self.entities.get(&seed.entity) else {
                     return invalid(format!("{name}: seed for unknown entity {}", seed.entity));

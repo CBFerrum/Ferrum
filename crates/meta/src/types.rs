@@ -32,6 +32,8 @@ pub struct PackageManifest {
     /// erases for a person (an email).
     #[serde(default)]
     pub personal_data: Vec<PersonalDataDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub handover: Vec<HandoverDef>,
 }
 
 /// Records of one entity that belong to a person: those whose `match` field (an email field, or a
@@ -50,6 +52,18 @@ pub struct PersonalDataDef {
     /// the answer so that nobody takes them for erased.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retain: Option<String>,
+    #[serde(default, rename = "where", skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub condition: std::collections::BTreeMap<String, Value>,
+}
+
+/// Work a person is named on, which moves to whoever takes over when they leave: an email field of
+/// a record, or `table.field` of its child rows, on the records `where` picks (open ones, usually;
+/// what is finished keeps the name of who did it).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct HandoverDef {
+    pub entity: String,
+    pub field: String,
     #[serde(default, rename = "where", skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub condition: std::collections::BTreeMap<String, Value>,
 }

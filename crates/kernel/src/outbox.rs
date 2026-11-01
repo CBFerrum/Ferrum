@@ -186,7 +186,7 @@ pub async fn enqueue_change(tx: &mut Tx, tenant: Uuid, topic: &str, source: Sour
     Ok(())
 }
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone, Default, sqlx::FromRow)]
 pub struct Event {
     pub id: i64,
     pub tenant_id: Uuid,
@@ -378,6 +378,9 @@ impl Kernel {
             let field = |k: &str| ev.payload.get(k).and_then(Value::as_str).unwrap_or_default();
             let attachments = self.mail_attachments(ev.tenant_id, &ev.payload).await?;
             return mailer.send_with(field("to"), field("subject"), field("html"), &attachments).await;
+        }
+        if ev.topic == crate::lifecycle::DEPROVISIONED_TOPIC {
+            self.hand_over(ev).await?;
         }
         // Followers hear about changes made by others; first and best effort:
         // a retry must not notify twice.
