@@ -9,11 +9,11 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 122 |
+| Implemented, qualification incomplete | 124 |
 | Partially implemented | 53 |
 | Missing | 45 |
 | Blocked by external dependency | 9 |
-| **All** | **229** |
+| **All** | **231** |
 
 ## Platform
 
@@ -277,6 +277,8 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-IND-039 | A dependency needs a recorded completion | Implemented, qualification incomplete | tested | Only Completed satisfies one. What waits on a failure waits for its deadline, or a person; A dependency in another domain is never answered |
 | FERRUM-IND-040 | Where a gateway may reach, redirects included | Implemented, qualification incomplete | tested | The list is by host: a name on it is trusted to the site's resolver, and the address it resolves to is not checked |
 | FERRUM-IND-041 | Envelopes that say where, what, when and how much | Implemented, qualification incomplete | tested | Material and quality conditions are not envelope conditions: such operations are kept to the app that owns them; Evidence is the age of one reading, not its value; No costing |
+| FERRUM-IND-042 | What a lost mission was bringing is still owed | Implemented, qualification incomplete | tested | Stock nobody found stays on the books where it was, for a count to settle; A batch wave's shortfall names no order |
+| FERRUM-IND-043 | A gateway's failure never says what an address held | Implemented, qualification incomplete | tested | HTTP errors only. A password written into an address is the definition's to keep out, with {secret.x} |
 
 ## Verification
 

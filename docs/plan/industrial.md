@@ -139,6 +139,8 @@ and more of the same kind turned up beside it. All are fixed, each with a test a
 | Wrong-scan audit was rolled back | Written in the transaction that was then refused | A refusal commits what it recorded, then says no |
 | Redirects could leave the allow list | The first host was checked, and `plant.example.com` matched `plant.example.com.elsewhere.org` | Every hop is checked, and an entry means the host it names |
 | An envelope was a rate | Site, operation and a count, and it could stand in for a required second person | It says where, what, when and how much, covers agents only if told to, and never replaces a second person |
+| Recovery forgot what a mission was for | Found stock ended the task, so an order could be left with nothing to pick it and a wave saying Picked. A run's material found at the line was not counted. The walk below found this, not the review | Found on the way, a pick or a line's supply goes on as a new task, and found where it was going it has arrived. What nobody found is on the wave's shortfall, and a shipment nothing reached closes |
+| Receipts and issues could not be taken back | Cancelling one in a managed warehouse failed | A receipt goes back out by the inbound bin if it is still there, and an issue comes back in by it |
 
 The same review left five checks on what was closed earlier. They were made on the same day:
 
@@ -152,6 +154,14 @@ The same review left five checks on what was closed earlier. They were made on t
 
 Aggregate memory under many slow sockets stays unmeasured: each socket's queue is bounded, and their
 sum has not been loaded.
+
+The whole chain was then walked again on the real binaries, signed in as a supervisor, an operator and
+a recovery person, in a browser and through the API: a run released and its material brought to the
+line, wrong scans refused and kept in the audit chain, the press started only then, a pick released
+three times with the gateway dead, gateways killed mid-mission and restarted with equipment that had
+forgotten, a person finding the stock and settling the ledger, packing, a carrier's label and weight,
+a delivery and a receipt taken back. The books reconciled at every step and no log held an error. It
+found the recovery defect in the table above. A simulator stood in for the equipment.
 
 Two things this does not change. Nothing has run on physical equipment, so a robot-commanding or
 machine-starting pilot still waits on equipment, its recovery and its people (the blockers below), and no
