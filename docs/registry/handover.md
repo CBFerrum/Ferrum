@@ -3,6 +3,31 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-02, evening: what holds when things repeat, arrive late or go wrong
+
+**State**: the review's source findings are fixed, tested and landed. [Plan](../plan/industrial.md) has
+the table. This is software correctness only: **nothing has run on physical equipment**.
+
+| Where | What |
+|---|---|
+| Ferrum (Operations 0.2.0) | One live command per named thing, operations kept to their app, envelopes with limits, `release_evidence.py` |
+| ERP (Warehouse and Shop Floor 0.2.0) | Idempotent release, load evidence, refusals that stay on record, reservations, a second gate for the machine, `line_it.rs` |
+| IoT Edge 0.4.0 | Execution bindings, `clock.rs`, the gate before dispatch, recorded dependencies, redirects and the allow list, a frozen CI lane, `dispatch_it.rs` |
+
+**Behaviour that changes for anyone using these:** confirming a task needs a scan of the load; a
+machine's `machine.start_job` must be marked **Through Its App Only**; a run waits for its material
+unless it says Preloaded; an `allow` entry means the host it names; a gateway upgrade wants nothing
+running.
+
+**Not done, and not code:** the review's P2 (one warehouse and one discrete manufacturing reference
+deployment on real equipment, against exact artifacts) waits on BLOCK-INDUSTRIAL-HARDWARE and
+-VENDORS. Operator trials with gloves and scanners, sustained multi-site load, and a penetration test
+are not done. Its P4 (optimization, more protocols, autonomy) stays frozen until those are.
+
+**Lessons:** mutants found two tests that claimed more than they proved, and one mutant pointed at the
+wrong suite. A killed mutant run leaves its edit behind: `git status` before anything else. A local
+Ferrum patch rewrites an app's `Cargo.lock`, and `git add -A` commits it.
+
 ## 2026-11-01, evening: integrations, the record frame and every app's interface
 
 **State**: everything below is on `main` of its repository, except what is listed under "Not done".
