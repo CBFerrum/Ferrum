@@ -189,8 +189,8 @@ or any other vertical is a plugin, not a fork.
 | 🗂️ | **[Drive](https://github.com/CBFerrum/ferrum-app-drive)**<br><sub>ferrum-app-drive</sub> | Files, sharing, documents edited together live, online editing of office documents; browser editors as an add-on |
 | 📄 | **[Docs](https://github.com/CBFerrum/ferrum-app-docs)**<br><sub>ferrum-app-docs</sub> | A home for documents written together, templates, search by what they say, AI agents that draft and add to them |
 | 📣 | **[Campaigns](https://github.com/CBFerrum/ferrum-app-campaigns)**<br><sub>ferrum-app-campaigns</sub> | Email marketing with consent, segments, A/B tests and journeys |
-| 🏭 | **Operations**<br><sub>crates/ops</sub> | Durable commands to equipment, one authority per site, device identity and a [site runtime](docs/site-runtime.md) that keeps working with the link down. It coordinates above controllers, fleet managers and safety systems, and never replaces them |
-| 📡 | **IoT Edge**<br><sub>crates/edge</sub> | Devices described in a few lines instead of programmed, over TCP, serial, HTTP, MQTT, Modbus, OPC UA, Sparkplug and more, with templates for robots and fleets. [Flows](docs/edge-flows.md) drawn on a canvas, simulated, reviewed and run at the gateway. Alarms, robots on a map, and links between servers. Nothing has run on physical equipment yet: see [compatibility](docs/compatibility.md) |
+| 🏭 | **Operations**<br><sub>crates/ops</sub> | Durable commands to equipment, one authority per site, device identity and a [site runtime](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/gateway.md) that keeps working with the link down. It coordinates above controllers, fleet managers and safety systems, and never replaces them |
+| 📡 | **[IoT Edge](https://github.com/CBFerrum/ferrum-app-edge)**<br><sub>ferrum-app-edge</sub> | Devices described in a few lines instead of programmed, over TCP, serial, HTTP, MQTT, Modbus, OPC UA, Sparkplug and more, with templates for robots and fleets. [Flows](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/flows.md) drawn on a canvas, simulated, reviewed and run at the gateway. Alarms, robots on a map, and links between servers. Nothing has run on physical equipment yet: see [compatibility](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/compatibility.md) |
 | ✍️ | **[Sign](https://github.com/CBFerrum/ferrum-app-sign)**<br><sub>ferrum-app-sign</sub> | Electronic signatures in order, by secure link, with a sealed PDF and an audit trail |
 
 ```mermaid
@@ -229,8 +229,8 @@ flowchart TB
 | `crates/apps` | Signed `.fapp` app bundles, manifests, permissions and dependency resolution (shared by server, SDK and store) |
 | `crates/mcp` | MCP server: every entity, action and report available to AI agents |
 | `crates/studio` | Analytics engine and the no-code report builder, charts, number cards, dashboards and Spaces |
-| `crates/ops`, `crates/ops-contract`, `crates/site` | Operations: the command ledger, what it and a site agree on, and `ferrum-site`, the runtime next to the equipment |
-| `crates/edge` | IoT Edge: definitions, flows, alarms, and what each gateway should be |
+| `crates/ops`, `crates/ops-contract` | Operations: the command ledger, and what it and a site agree on |
+| [ferrum-app-edge](https://github.com/CBFerrum/ferrum-app-edge) | IoT Edge and `ferrum-site`, the gateway next to the equipment: definitions, flows, alarms, and what each gateway should be |
 | [ferrum-app-erp](https://github.com/CBFerrum/ferrum-app-erp) | ERP: its manifest, interface, packages (`accounting`, `inventory`, `selling`, `buying`, `manufacturing`) and engine (ledger, open items, stock valuation, selling and buying, manufacturing and MRP, the books' reports), which other apps post through; its add-ons: 26 countries on its localization seam (India, the European Union and eight of its members, the United Kingdom, the United States, Canada and thirteen more), Finance, Procurement, Stock Operations and Manufacturing Operations |
 | `packages/*` | The shared packages: `core`, `contacts`, `parties`, `products`, `project_records` |
 | `server` | HTTP API (Loco/Axum), auth, admin, OpenAPI, ERPNext-compatible `/api/resource` shim, CLI tasks |
@@ -556,8 +556,8 @@ flowchart LR
 | 🛠️ | [Operations runbook](docs/operations.md) | Components, configuration, first deployment, upgrades, backups, monitoring, scaling, capacity, incident playbooks |
 | 🔐 | [Security](docs/security.md) | The model, the controls, and the latest review |
 | ⚖️ | [Known limits](docs/limits.md) | What is deliberately simpler than you might expect |
-| 🏭 | [Running a site](docs/site-runtime.md), [compatibility](docs/compatibility.md) | Installing a gateway, what it was tried against, and what remains |
-| 📡 | [Definitions](docs/edge-definitions.md), [flows](docs/edge-flows.md) | Describing a device, and drawing logic that runs at the gateway |
+| 🏭 | [Running a site](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/gateway.md), [compatibility](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/compatibility.md) | Installing a gateway, what it was tried against, and what remains |
+| 📡 | [Definitions](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/definitions.md), [flows](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/flows.md) | Describing a device, and drawing logic that runs at the gateway |
 | 🗺️ | [Plan and analysis](docs/plan/PLAN.md) | The plan, the architecture and the design notes behind each part |
 
 ## Licence

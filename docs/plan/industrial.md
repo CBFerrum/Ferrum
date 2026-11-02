@@ -20,7 +20,7 @@ controller.
 | The device gateway is only an example | Stays an example, and its documentation says so. Identity is `crates/ops/src/identity.rs`: a key per device, bound to its workspace, site and allowed commands at commissioning | |
 | Connection replacement | Closed. `kv.delete` takes `if_value`, so an old socket's close cannot remove the new one's mapping. The example uses it | `crates/plugins/src/host.rs` |
 | Telemetry stored as business records | Closed for anything on the site runtime: measurements keep source time, receipt time, boot, sequence and quality, in day partitions outside the document engine | `crates/ops/src/telemetry.rs` |
-| Plugin schedules are not an industrial scheduler | Stays as it is. Site scheduling runs on the site | `crates/site` |
+| Plugin schedules are not an industrial scheduler | Stays as it is. Site scheduling runs on the site | `gateway/` in ferrum-app-edge |
 | Private networks unreachable from `http.fetch` | Preserved. OT is reached through the site runtime, never by weakening the plugin sandbox | |
 | HTTP from transactional hooks, secrets in plugin configuration | Already closed (`integrations.md`). Commands are intents written in the business transaction, so a command exists only if the document commits | `crates/ops/src/commands.rs` |
 
@@ -28,7 +28,7 @@ controller.
 
 | Decision | Why |
 |---|---|
-| Three crates: `ferrum-ops-contract` (types and state machines, no I/O), `ferrum-ops` (the platform side, on PostgreSQL), `ferrum-site` (the site runtime, on SQLite) | The site must run with no PostgreSQL and no kernel, and both sides must agree on one state machine |
+| Three crates: `ferrum-ops-contract` (types and state machines, no I/O), `ferrum-ops` (the platform side, on PostgreSQL), `ferrum-site` (the site runtime, on SQLite, since 2 November 2026 in [ferrum-app-edge](https://github.com/CBFerrum/ferrum-app-edge)) | The site must run with no PostgreSQL and no kernel, and both sides must agree on one state machine |
 | The site runtime is one Rust binary with an embedded journal | A small facility should not run a cluster. Separate services can be split out when availability, hardware access or ownership justifies it |
 | The site journal is SQLite, WAL, `synchronous=FULL` | One writer, a single file to back up, survives power loss, nothing to operate |
 | No message broker in the first scope | The journal plus one idempotent sync call covers store and forward. NATS JetStream stays the candidate when several consumers at a site need a stream. MQTT is an adapter, not the backbone |
@@ -82,7 +82,7 @@ authorized before the link went down.
 - After a restore, dispatch stays off until a person has reconciled the state against the equipment.
 
 Adapters are small: the simulator, operator tasks, MQTT, VDA 5050 over MQTT, Modbus TCP. Each states
-what it can prove, and none claims a certification. `docs/compatibility.md` is the record of what was
+what it can prove, and none claims a certification. [Compatibility](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/compatibility.md) is the record of what was
 tried, on what: today, simulators only.
 
 ## Gates

@@ -355,6 +355,9 @@ async fn scenario() {
         .await
         .expect("settled");
     assert_eq!(state(&t, u).await, "Failed");
+    let mut asking = gw.sync_request();
+    asking.in_doubt = vec![u];
+    assert_eq!(gw.sync(&t, asking).await.settled, vec![(u, State::Failed)], "the site that could not tell hears what a person found");
     assert!(
         api(&t, &recovery, "POST", &format!("/commands/{u}/reconcile"), json!({"to": "Completed", "evidence": "changed my mind"})).await.is_err(),
         "settled is settled"
