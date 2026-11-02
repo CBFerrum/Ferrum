@@ -44,6 +44,21 @@
   unique: [[site, area_name]]
   list: {columns: [area_name, site, kind], sort: area_name asc}
 
+- name: EnvelopeDevice
+  label: Envelope Device
+  kind: child
+  fields:
+    - {name: device, type: link, to: Device, required: true, in_list: true}
+
+- name: EnvelopeLimit
+  label: Envelope Limit
+  kind: child
+  fields:
+    - {name: parameter, type: data, required: true, in_list: true, max_length: 200, description: "Where it is in the command's payload, with dots: qty, task.station"}
+    - {name: min_value, type: decimal, in_list: true}
+    - {name: max_value, type: decimal, in_list: true}
+    - {name: allowed, type: text, in_list: true, description: "The values it may take, separated by commas: approved job numbers, destinations"}
+
 - name: AutomationEnvelope
   label: Automation Envelope
   label_plural: Automation Envelopes
@@ -56,9 +71,23 @@
     - {name: site, type: link, to: Site, required: true, in_list: true, in_filter: true}
     - {name: operation, type: data, required: true, in_list: true, max_length: 100}
     - {name: enabled, type: check, default: true, in_list: true, in_filter: true}
+    - {name: agents, type: check, label: AI Agents Too, in_filter: true, description: "Off, only rules and schedules run under this, and whatever an agent proposes goes to a person"}
+    - {name: devices, type: table, of: EnvelopeDevice, description: "Only these. Empty means every device at the site that may do this"}
+    - {name: limits, type: table, of: EnvelopeLimit, label: Parameter Limits, description: "A payload outside any of these, or without one of them, goes to a person"}
+    - {name: equipment_state, type: select, options: [Running, Idle, Stopped], description: "The state the device must last have reported. Empty asks nothing of it"}
+    - {name: evidence_metric, type: data, max_length: 120, description: "A reading that must be recent, or nobody knows how the device stands"}
+    - {name: evidence_max_age_secs, type: int, min: 1, label: Evidence Age (Seconds), description: "How old that reading may be"}
     - {name: max_per_hour, type: int, required: true, min: 1, label: Most per Hour, in_list: true}
+    - {name: max_in_progress, type: int, min: 1, label: Most Unfinished at Once, description: "Commands under this envelope that have not ended, unknown outcomes included. Empty means no limit"}
     - {name: valid_until, type: datetime, required: true, in_list: true}
     - {name: approved_by, type: data, read_only: true}
     - {name: notes, type: text}
+  form:
+    - {label: Envelope, fields: [envelope_name, site, operation, enabled, agents, valid_until, approved_by]}
+    - {label: Where, fields: [devices]}
+    - {label: What, fields: [limits]}
+    - {label: When, fields: [equipment_state, evidence_metric, evidence_max_age_secs]}
+    - {label: How Much, fields: [max_per_hour, max_in_progress]}
+    - {label: Notes, collapsible: true, fields: [notes]}
   unique: [[site, operation]]
   list: {columns: [envelope_name, site, operation, enabled, valid_until], sort: envelope_name asc}

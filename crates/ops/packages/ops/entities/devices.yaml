@@ -35,7 +35,8 @@
   kind: child
   fields:
     - {name: operation, type: data, required: true, in_list: true, max_length: 100}
-    - {name: requires_approval, type: check, in_list: true, description: "A second person approves each one"}
+    - {name: requires_approval, type: check, in_list: true, description: "A second person approves each one, and no envelope stands in for them"}
+    - {name: engine_only, type: check, in_list: true, label: Through Its App Only, description: "Only the app that owns this work may ask for it, past its own gates: not a person at the ledger, a rule or an agent"}
 
 - name: DeviceMetric
   label: Metric Limits

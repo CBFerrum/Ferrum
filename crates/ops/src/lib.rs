@@ -43,6 +43,7 @@ pub fn packages() -> std::result::Result<Vec<ferrum_meta::Package>, ferrum_meta:
 /// Registers this app's document hooks and endpoints.
 pub fn register(h: &mut HookRegistry) {
     h.register("Device", Arc::new(devices::DeviceHook));
+    h.register("AutomationEnvelope", Arc::new(commands::EnvelopeHook));
     h.add_site("ops", Arc::new(site::OpsSite));
 }
 

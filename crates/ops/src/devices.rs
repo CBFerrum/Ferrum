@@ -40,14 +40,26 @@ pub async fn target(tx: &mut Tx, tenant: Uuid, id: Uuid) -> Result<Target> {
     Ok(Target { id, code, kind, lifecycle: lifecycle_of(&lifecycle)?, site, domain, config_version })
 }
 
-/// Whether `operation` was allowed for this device, and whether each one needs a second person.
-pub async fn operation(tx: &mut Tx, tenant: Uuid, device: Uuid, operation: &str) -> Result<Option<bool>> {
-    Ok(sqlx::query_scalar("select coalesce(requires_approval, false) from e_device__operations where tenant_id = $1 and parent_id = $2 and operation = $3")
-        .bind(tenant)
-        .bind(device)
-        .bind(operation)
-        .fetch_optional(&mut **tx)
-        .await?)
+/// How an operation was allowed for a device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Allowed {
+    /// A second person approves each one.
+    pub needs_approval: bool,
+    /// Only the app that owns this work may ask for it.
+    pub engine_only: bool,
+}
+
+/// Whether `operation` was allowed for this device, and on what terms.
+pub async fn operation(tx: &mut Tx, tenant: Uuid, device: Uuid, operation: &str) -> Result<Option<Allowed>> {
+    let row: Option<(bool, bool)> = sqlx::query_as(
+        "select coalesce(requires_approval, false), coalesce(engine_only, false) from e_device__operations where tenant_id = $1 and parent_id = $2 and operation = $3",
+    )
+    .bind(tenant)
+    .bind(device)
+    .bind(operation)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.map(|(needs_approval, engine_only)| Allowed { needs_approval, engine_only }))
 }
 
 /// Moves a device through its lifecycle. Provisioned is reached only by enrolling.

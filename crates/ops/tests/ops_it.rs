@@ -233,6 +233,7 @@ fn the_ledger_says_only_what_was_established() {
 
 async fn scenario() {
     let k = boot().await;
+    envelopes_and_exclusive_work(&k).await;
     let t = workspace(&k, "north").await;
     let site = id_of(&k.insert(&t.admin, "Site", obj(json!({"site_name": "North DC", "site_code": "north"}))).await.expect("site"));
     let (gw_id, gw) = gateway(&t, "GW-1", site, 7).await;
@@ -704,6 +705,166 @@ async fn scenario() {
     devices::set_lifecycle(&k, &t.admin, behind, Lifecycle::Provisioned, "reached through the gateway").await.expect("provisioned");
     let dead = gw.send(&t, gw.sync_request()).await;
     assert_eq!(dead.status, 401, "a retired device's keys are gone");
+}
+
+/// What software may do on its own, and what one physical thing may have alive at once, in a
+/// workspace of their own so that nothing here is counted by what the ledger's scenario expects.
+async fn envelopes_and_exclusive_work(k: &Arc<Kernel>) {
+    let t = workspace(k, "bounded").await;
+    let site = id_of(&k.insert(&t.admin, "Site", obj(json!({"site_name": "Bounded", "site_code": "bounded"}))).await.unwrap());
+    let (gw_id, gw) = gateway(&t, "GW-9", site, 9).await;
+    activate(&t, gw_id).await;
+    let bot = robot(&t, "BOT-1", site).await;
+    let manager = person(&t, "mo@north.test", &["Ops Manager"]).await;
+    let force = NewCommand { operation: "door.force".into(), payload: json!({"door": 3}), ..move_tote(bot) };
+    let envelope = k
+        .insert(&manager, "AutomationEnvelope", obj(json!({"envelope_name": "Moves", "site": site, "operation": "warehouse.move", "max_per_hour": 2, "valid_until": (Utc::now() + Duration::hours(1)).to_rfc3339()})))
+        .await
+        .expect("envelope");
+
+    let outside = async |id: Uuid| -> String {
+        let seen = json_of(api(&t, &t.admin, "GET", &format!("/commands/{id}"), Value::Null).await.unwrap());
+        seen["history"].as_array().unwrap().iter().find_map(|e| e["detail"]["outside"].as_str()).unwrap_or_default().to_string()
+    };
+    let envelope_set = async |v: Value| k.update(&manager, "AutomationEnvelope", id_of(&envelope), obj(v), None).await.expect("changed");
+
+    // ───── an envelope is more than a rate: where, what, when and how much ─────
+    envelope_set(json!({"enabled": true, "max_per_hour": 1000})).await;
+    assert_eq!(k.get(&t.admin, "AutomationEnvelope", id_of(&envelope), false).await.unwrap()["approved_by"], json!("mo@north.test"), "whoever turned it on");
+    let ai = issue(&t, &manager, NewCommand { issuer: Issuer::Ai, ..move_tote(bot) }).await.unwrap();
+    assert_eq!(ai.state, State::Proposed, "an envelope for rules says nothing about agents");
+    assert!(outside(ai.id).await.contains("does not cover agents"));
+    envelope_set(json!({"agents": true})).await;
+    assert_eq!(issue(&t, &manager, NewCommand { issuer: Issuer::Ai, ..move_tote(bot) }).await.unwrap().state, State::Queued, "until a person says so");
+
+    let other_bot = robot(&t, "BOT-OTHER", site).await;
+    envelope_set(json!({"devices": [{"device": bot}]})).await;
+    let elsewhere = issue(&t, &manager, NewCommand { issuer: Issuer::Automation, ..move_tote(other_bot) }).await.unwrap();
+    assert_eq!(elsewhere.state, State::Proposed);
+    assert!(outside(elsewhere.id).await.contains("not one of its devices"), "only the devices it names");
+    assert_eq!(issue(&t, &manager, NewCommand { issuer: Issuer::Automation, ..move_tote(bot) }).await.unwrap().state, State::Queued);
+
+    envelope_set(json!({"limits": [{"parameter": "to", "allowed": "PACK-1, PACK-2"}, {"parameter": "qty", "max_value": 30}]})).await;
+    let payload = |to: &str, qty: i64| NewCommand { issuer: Issuer::Automation, payload: json!({"to": to, "qty": qty}), ..move_tote(bot) };
+    assert_eq!(issue(&t, &manager, payload("PACK-2", 30)).await.unwrap().state, State::Queued, "inside every limit");
+    let wrong_place = issue(&t, &manager, payload("DOCK-9", 1)).await.unwrap();
+    assert!(outside(wrong_place.id).await.contains("not one of those approved"), "a destination nobody approved");
+    let too_many = issue(&t, &manager, payload("PACK-1", 31)).await.unwrap();
+    assert_eq!(too_many.state, State::Proposed, "a quantity past its limit");
+    let unsaid = issue(&t, &manager, NewCommand { issuer: Issuer::Automation, ..move_tote(bot) }).await.unwrap();
+    assert!(outside(unsaid.id).await.contains("does not say qty"), "what it does not say cannot be judged");
+    envelope_set(json!({"limits": []})).await;
+
+    envelope_set(json!({"equipment_state": "Idle"})).await;
+    let unheard = issue(&t, &manager, NewCommand { issuer: Issuer::Automation, ..move_tote(bot) }).await.unwrap();
+    assert!(outside(unheard.id).await.contains("not known to be Idle"), "silence is not a state");
+    let mut tx = k.db.tenant_tx(t.tenant).await.unwrap();
+    sqlx::query("insert into op_equipment_event (tenant_id, device_id, at, state, fact_id) values ($1, $2, now(), 'Idle', $3)")
+        .bind(t.tenant)
+        .bind(bot)
+        .bind(Uuid::now_v7())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(issue(&t, &manager, NewCommand { issuer: Issuer::Automation, ..move_tote(bot) }).await.unwrap().state, State::Queued);
+    envelope_set(json!({"equipment_state": ""})).await;
+
+    envelope_set(json!({"evidence_metric": "aisle.clear", "evidence_max_age_secs": 120})).await;
+    let blind = issue(&t, &manager, NewCommand { issuer: Issuer::Automation, ..move_tote(bot) }).await.unwrap();
+    assert!(outside(blind.id).await.contains("nothing recent"), "no reading, no evidence");
+    let reading = |at: chrono::DateTime<Utc>, seq: i64| Measurement {
+        device_id: bot,
+        metric: "aisle.clear".into(),
+        value: 80.0,
+        unit: None,
+        source_time: at,
+        boot: Uuid::now_v7(),
+        seq,
+        quality: Quality::Good,
+        class: Class::Sample,
+    };
+    let mut old = gw.sync_request();
+    old.measurements = vec![reading(Utc::now() - Duration::hours(1), 1)];
+    gw.sync(&t, old).await;
+    let stale = issue(&t, &manager, NewCommand { issuer: Issuer::Automation, ..move_tote(bot) }).await.unwrap();
+    assert_eq!(stale.state, State::Proposed, "an hour old is not recent");
+    let mut new = gw.sync_request();
+    new.measurements = vec![reading(Utc::now(), 2)];
+    gw.sync(&t, new).await;
+    assert_eq!(issue(&t, &manager, NewCommand { issuer: Issuer::Automation, ..move_tote(bot) }).await.unwrap().state, State::Queued, "a fresh one is");
+    envelope_set(json!({"evidence_metric": ""})).await;
+
+    let mut tx = k.db.tenant_tx(t.tenant).await.unwrap();
+    let unfinished: i64 = sqlx::query_scalar("select count(*) from op_command where approval_ref = $1 and state = 'Queued'")
+        .bind(format!("envelope:{}", id_of(&envelope)))
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    envelope_set(json!({"max_in_progress": unfinished})).await;
+    let busy = issue(&t, &manager, NewCommand { issuer: Issuer::Automation, ..move_tote(bot) }).await.unwrap();
+    assert!(outside(busy.id).await.contains("have not finished"), "a budget of work in hand, not only of starts");
+    envelope_set(json!({"max_in_progress": null})).await;
+
+    k.insert(&manager, "AutomationEnvelope", obj(json!({"envelope_name": "Doors", "site": site, "operation": "door.force", "agents": true, "max_per_hour": 100, "valid_until": (Utc::now() + Duration::hours(1)).to_rfc3339()})))
+        .await
+        .expect("doors");
+    let door = issue(&t, &manager, NewCommand { issuer: Issuer::Ai, ..force.clone() }).await.unwrap();
+    assert_eq!(door.state, State::Proposed, "what needs a second person each time is not decided in advance");
+    assert!(outside(door.id).await.contains("second person"));
+
+    // ───── an operation that belongs to an app's own gates ─────
+    let press = id_of(
+        &k.insert(
+            &t.admin,
+            "Device",
+            obj(json!({"device_name": "Press", "device_code": "PRESS-9", "kind": "Machine", "site": site, "operations": [{"operation": "machine.start_job", "engine_only": true}]})),
+        )
+        .await
+        .unwrap(),
+    );
+    devices::set_lifecycle(k, &t.admin, press, Lifecycle::Claimed, "ours").await.unwrap();
+    enroll(&t, press, b'P').await;
+    activate(&t, press).await;
+    let start = NewCommand { operation: "machine.start_job".into(), payload: json!({"job": 412}), ..move_tote(press) };
+    for issuer in [Issuer::Person, Issuer::Automation, Issuer::Ai] {
+        let asked = issue(&t, &manager, NewCommand { issuer, ..start.clone() }).await;
+        assert!(asked.is_err_and(|e| e.to_string().contains("goes through the app")), "only through the app that owns it");
+    }
+    assert_eq!(issue(&t, &manager, NewCommand { issuer: Issuer::Engine, ..start.clone() }).await.unwrap().state, State::Queued);
+
+    // ───── one physical thing, one live command ─────
+    let held = |n: &str| NewCommand {
+        issuer: Issuer::Engine,
+        exclusive_key: Some("wms-task:1".into()),
+        dedupe_key: Some(format!("attempt:{n}")),
+        ..move_tote(other_bot)
+    };
+    let first = issue(&t, &manager, held("0")).await.unwrap();
+    let second = issue(&t, &manager, held("1")).await.unwrap();
+    assert_eq!((second.id, second.repeated), (first.id, true), "another attempt while the first is alive is the first");
+    let (a, b) = {
+        let (one, two) = (t.k.clone(), t.k.clone());
+        let (ctx1, ctx2) = (manager.clone(), manager.clone());
+        let tenant = t.tenant;
+        let race = |k: Arc<Kernel>, ctx: Ctx, n: &'static str, target: Uuid| async move {
+            let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+            let cmd =
+                NewCommand { issuer: Issuer::Engine, exclusive_key: Some("wms-task:2".into()), dedupe_key: Some(format!("race:{n}")), ..move_tote(target) };
+            let issued = commands::issue(&mut tx, &ctx, cmd).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            tx.commit().await.unwrap();
+            issued
+        };
+        tokio::join!(race(one, ctx1, "a", other_bot), race(two, ctx2, "b", other_bot))
+    };
+    assert_eq!(a.id, b.id, "two at once write one");
+    assert!(a.repeated != b.repeated, "and one of them is told it repeated");
+    let cancelled = api(&t, &manager, "POST", &format!("/commands/{}/cancel", first.id), json!({"reason": "not needed"})).await;
+    cancelled.expect("stopped before it left");
+    let again = issue(&t, &manager, held("1")).await.unwrap();
+    assert!(!again.repeated && again.id != first.id, "once it has ended, the next attempt is its own");
 }
 
 /// A device that exists and is not active.
