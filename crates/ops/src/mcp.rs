@@ -4,15 +4,46 @@
 //!
 //! Instructions in manuals, logs or device strings are data. No text an agent reads can change what
 //! these tools do, because what they do does not depend on the model.
+//!
+//! A proposal says when what it rests on was read, and is refused if that is old or if nothing has been
+//! heard from the site since. Saying that nobody knows is the answer then, not a guess.
 
 use crate::commands::{self, Issuer, NewCommand};
 use crate::site;
+use chrono::{DateTime, Utc};
 use ferrum_kernel::{Ctx, Error, Kernel, Result};
 use ferrum_mcp::{ToolProvider, tool_definition};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 pub struct OpsTools;
+
+/// How old what a proposal rests on may be, and how long a site may have been silent.
+const EVIDENCE_SECS: i64 = 300;
+
+/// Refuses what rests on old evidence, or on a site nobody has heard from.
+async fn current(k: &Kernel, ctx: &Ctx, target: Uuid, args: &Value) -> Result<()> {
+    let at: DateTime<Utc> = text(args, "evidence_at")?.parse().map_err(|_| Error::field("evidence_at", "the time what this rests on was read"))?;
+    let age = (Utc::now() - at).num_seconds();
+    if !(-5..=EVIDENCE_SECS).contains(&age) {
+        return Err(Error::Conflict(format!("What this rests on was read {age} seconds ago. Read it again before proposing anything from it")));
+    }
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let silent: Option<Option<i64>> = sqlx::query_scalar(
+        "select max(extract(epoch from now() - g.last_seen_at)::int8) from e_device d join op_authority a on a.tenant_id = d.tenant_id and a.site_id = d.site \
+         left join op_gateway g on g.tenant_id = a.tenant_id and g.device_id = a.holder where d.tenant_id = $1 and d.id = $2 group by d.id",
+    )
+    .bind(ctx.tenant)
+    .bind(target)
+    .fetch_optional(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    match silent.flatten() {
+        Some(secs) if secs <= EVIDENCE_SECS => Ok(()),
+        Some(secs) => Err(Error::Conflict(format!("Nothing has been heard from this site for {secs} seconds, so what it is doing is unknown"))),
+        None => Err(Error::Conflict("Nothing has been heard from this site, so what it is doing is unknown".into())),
+    }
+}
 
 fn text(args: &Value, key: &str) -> Result<String> {
     args.get(key).and_then(Value::as_str).filter(|v| !v.trim().is_empty()).map(str::to_string).ok_or_else(|| Error::field(key, "is required"))
@@ -38,6 +69,7 @@ async fn run(k: &Kernel, ctx: &Ctx, name: &str, args: &Value) -> Result<Value> {
             site::may(ctx, site::DISPATCH)?;
             let target = uuid(args, "target")?;
             site::device_site(k, ctx, target).await?;
+            current(k, ctx, target, args).await?;
             let why = text(args, "reason")?;
             let cmd = NewCommand {
                 target,
@@ -88,8 +120,8 @@ impl ToolProvider for OpsTools {
                 "ops_propose",
                 "Propose work for a device",
                 "Writes a proposal for a person to approve. It cannot start anything itself, and a device accepts only what it was commissioned for.",
-                json!({"target": {"type": "string", "description": "The device's id"}, "operation": {"type": "string"}, "payload": {"type": "object"}, "expires_in_secs": {"type": "integer"}, "reason": {"type": "string", "description": "Why, for the person deciding"}}),
-                &["target", "operation", "reason"],
+                json!({"target": {"type": "string", "description": "The device's id"}, "evidence_at": {"type": "string", "description": "The server_time of the ops_overview this rests on"}, "operation": {"type": "string"}, "payload": {"type": "object"}, "expires_in_secs": {"type": "integer"}, "reason": {"type": "string", "description": "Why, for the person deciding"}}),
+                &["target", "operation", "reason", "evidence_at"],
                 false,
                 false,
                 false,

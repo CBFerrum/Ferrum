@@ -6,14 +6,24 @@
 //! stops, what was waiting is set aside where a person can see it, and it stays that way until a person
 //! says it can go on. Nothing runs merely because its record came back.
 //!
+//! **One workspace** can need going back while the others do not. A restored copy, held apart, is the
+//! place to take it from: only that workspace's rows change, in one transaction, and what has happened
+//! since is not unlearned. See [`Kernel::extract_tenant`].
+//!
 //! **Two regions** can each believe they are the one that writes. A witness, a small database neither
 //! region depends on for anything else, says who is. A region writes only while it knows it holds that,
 //! and stops before anyone else can be given it, so there is no moment with two. A region that lost it
 //! does not take it back by itself: its data is behind, and a person decides what becomes of it.
 
+use crate::auth::notify_users;
 use crate::{Ctx, Error, Kernel, Result, audit};
+use crate::{Db, DbConfig};
 use async_trait::async_trait;
+use futures::TryStreamExt;
+use serde_json::{Value, json};
+use sqlx::AssertSqlSafe;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
+use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -23,10 +33,89 @@ use uuid::Uuid;
 /// An app's own part of a restore: anything it had in hand may or may not have happened since.
 #[async_trait]
 pub trait Restored: Send + Sync {
-    async fn set_aside(&self, tx: &mut crate::Tx) -> Result<u64>;
+    /// `tenant`: one workspace, when only it went back. Everyone's otherwise.
+    async fn set_aside(&self, tx: &mut crate::Tx, tenant: Option<Uuid>) -> Result<u64>;
+
+    /// Tables that record what has happened, which a workspace going back must not unlearn: a key
+    /// revoked since stays revoked. They may refer to each other, and not to anything that goes back.
+    fn kept(&self) -> &'static [&'static str] {
+        &[]
+    }
 }
 
 const NOTE: &str = "the database was restored: this may or may not have happened since, so a person decides";
+
+/// What stays as it is when a workspace goes back, because it happened: the audit trail, and who was
+/// let in, and what they did there.
+const KEPT: &[&str] = &["audit_event", "support_grant", "support_access"];
+/// How many rows go across at once.
+const BATCH: usize = 1000;
+
+/// Every table a workspace has rows in, with each column's name, type, and whether it is generated.
+async fn shape(db: &Db) -> Result<BTreeMap<String, Vec<(String, String, bool)>>> {
+    let rows: Vec<(String, String, String, bool)> = sqlx::query_as(
+        "select c.table_name::text, c.column_name::text, c.udt_name::text, c.is_generated = 'ALWAYS' \
+         from information_schema.columns c join information_schema.tables t on t.table_schema = c.table_schema and t.table_name = c.table_name \
+         join pg_class r on r.relnamespace = 'public'::regnamespace and r.relname = c.table_name \
+         where c.table_schema = 'public' and t.table_type = 'BASE TABLE' and not r.relispartition and exists \
+           (select 1 from information_schema.columns x where x.table_schema = 'public' and x.table_name = c.table_name and x.column_name = 'tenant_id') \
+         order by c.table_name, c.ordinal_position",
+    )
+    .fetch_all(&db.pool)
+    .await?;
+    let mut tables: BTreeMap<String, Vec<(String, String, bool)>> = BTreeMap::new();
+    for (table, column, kind, generated) in rows {
+        tables.entry(table).or_default().push((column, kind, generated));
+    }
+    Ok(tables)
+}
+
+/// Every reference a workspace's rows make, written out so that it can be checked by hand: the tables
+/// are filled with referential triggers off, because tables here refer to each other in circles.
+async fn dangling(tx: &mut crate::Tx, tenant: Uuid, tables: &BTreeMap<String, Vec<(String, String, bool)>>) -> Result<Vec<String>> {
+    let references: Vec<(String, String, String, Vec<String>, Vec<String>)> = sqlx::query_as(
+        "select c.conname::text, c.conrelid::regclass::text, c.confrelid::regclass::text, \
+         (select array_agg(a.attname::text order by k.ord) from unnest(c.conkey) with ordinality k(n, ord) join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k.n), \
+         (select array_agg(a.attname::text order by k.ord) from unnest(c.confkey) with ordinality k(n, ord) join pg_attribute a on a.attrelid = c.confrelid and a.attnum = k.n) \
+         from pg_constraint c where c.contype = 'f' and c.connamespace = 'public'::regnamespace and c.conparentid = 0",
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut broken = Vec::new();
+    for (name, child, parent, from, to) in references {
+        if !tables.contains_key(&child) {
+            continue;
+        }
+        let set: Vec<String> = from.iter().map(|c| format!("c.\"{c}\" is not null")).collect();
+        let same: Vec<String> = from.iter().zip(&to).map(|(c, p)| format!("p.\"{p}\" = c.\"{c}\"")).collect();
+        let missing = format!(
+            "select exists (select 1 from \"{child}\" c where c.tenant_id = $1 and {} and not exists (select 1 from \"{parent}\" p where {}))",
+            set.join(" and "),
+            same.join(" and ")
+        );
+        if sqlx::query_scalar::<_, bool>(AssertSqlSafe(missing)).bind(tenant).fetch_one(&mut **tx).await? {
+            broken.push(name);
+        }
+    }
+    Ok(broken)
+}
+
+/// Whether this connection may turn referential triggers off, which only extraction ever does.
+async fn may_copy(db: &Db) -> Result<()> {
+    let mut tx = db.system_tx().await?;
+    let granted = sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await;
+    tx.rollback().await?;
+    granted.map(|_| ()).map_err(|_| {
+        Error::Conflict("this role needs granting first, for as long as this takes: GRANT SET ON PARAMETER session_replication_role TO ferrum".into())
+    })
+}
+
+/// Which database this is: a copy can have the same name in another cluster, or another name in this one.
+async fn which(db: &Db) -> Result<(i64, sqlx::postgres::types::Oid)> {
+    Ok(sqlx::query_as("select (select system_identifier from pg_control_system()), (select oid from pg_database where datname = current_database())")
+        .fetch_one(&db.pool)
+        .await?)
+}
 
 impl Kernel {
     /// What this database is now, against what it was. Safe on every replica at once.
@@ -71,20 +160,175 @@ impl Kernel {
         .bind(because)
         .execute(&mut *tx)
         .await?;
-        sqlx::query("update outbox set dead = true, last_error = $1 where processed_at is null and not dead").bind(NOTE).execute(&mut *tx).await?;
-        sqlx::query("update job set status = 'failed', last_error = $1, finished_at = now(), lease_token = null where status in ('queued', 'running')")
-            .bind(NOTE)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("update webhook_delivery set status = 'dead', last_error = $1 where status not in ('delivered', 'dead')")
-            .bind(NOTE)
-            .execute(&mut *tx)
-            .await?;
-        for app in self.hooks.restored() {
-            app.set_aside(&mut tx).await?;
-        }
+        self.set_aside(&mut tx, None).await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Puts what was waiting where a person can see it, so that nothing runs because its record came back.
+    async fn set_aside(&self, tx: &mut crate::Tx, tenant: Option<Uuid>) -> Result<()> {
+        sqlx::query("update outbox set dead = true, last_error = $1 where processed_at is null and not dead and ($2::uuid is null or tenant_id = $2)")
+            .bind(NOTE)
+            .bind(tenant)
+            .execute(&mut **tx)
+            .await?;
+        sqlx::query(
+            "update job set status = 'failed', last_error = $1, finished_at = now(), lease_token = null \
+             where status in ('queued', 'running') and ($2::uuid is null or tenant_id = $2)",
+        )
+        .bind(NOTE)
+        .bind(tenant)
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query(
+            "update webhook_delivery set status = 'dead', last_error = $1 where status not in ('delivered', 'dead') and ($2::uuid is null or tenant_id = $2)",
+        )
+        .bind(NOTE)
+        .bind(tenant)
+        .execute(&mut **tx)
+        .await?;
+        for app in self.hooks.restored() {
+            app.set_aside(tx, tenant).await?;
+        }
+        Ok(())
+    }
+
+    /// Takes one workspace back to what a restored copy holds, and leaves every other workspace alone.
+    /// The copy is a database restored somewhere apart from this one, at the version this one runs. Without
+    /// `apply` this only compares, and changes nothing.
+    ///
+    /// It happens in one transaction, with the workspace suspended first so that nobody is writing to it:
+    /// if it stops part way, nothing has changed, the workspace is still suspended, and it can run again.
+    /// Referential triggers are off in that transaction, and every reference is checked before it commits.
+    ///
+    /// Going back does not unlearn what has happened. [`KEPT`] tables and each app's own stay as they are.
+    /// Nobody who cannot get in now can get in afterwards: passwords, second factors and deactivations stay
+    /// as they are now, passkeys removed since stay removed, and every session and API key stops working.
+    /// Roles and everything else are as they were in the copy, and files are not checked against the store.
+    pub async fn extract_tenant(&self, ctx: &Ctx, source_url: &str, apply: bool, note: &str) -> Result<Value> {
+        if !ctx.is_admin {
+            return Err(Error::Forbidden("administrator access required".into()));
+        }
+        if note.trim().is_empty() {
+            return Err(Error::field("note", "say why"));
+        }
+        let tenant = ctx.tenant;
+        let source = Db::connect(DbConfig { url: source_url.to_string(), max_connections: 2, ..Default::default() }).await?;
+        if which(&source).await? == which(&self.db).await? {
+            return Err(Error::Conflict("that is this database, not a copy of it".into()));
+        }
+        let there: Option<Uuid> = sqlx::query_scalar("select id from tenant where id = $1").bind(tenant).fetch_optional(&source.pool).await?;
+        if there.is_none() {
+            return Err(Error::Conflict("that copy does not hold this workspace".into()));
+        }
+        let (here, copy) = (shape(&self.db).await?, shape(&source).await?);
+        let differ: Vec<&str> = here.keys().chain(copy.keys()).filter(|t| here.get(*t) != copy.get(*t)).map(String::as_str).collect();
+        if !differ.is_empty() {
+            return Err(Error::Conflict(format!("that copy is of another version: bring it to this one first ({})", differ.join(", "))));
+        }
+        let kept: BTreeSet<&str> = KEPT.iter().copied().chain(self.hooks.restored().iter().flat_map(|app| app.kept().iter().copied())).collect();
+        let back: Vec<&String> = here.keys().filter(|t| !kept.contains(t.as_str())).collect();
+        may_copy(&self.db).await?;
+
+        // What is about to change, however far this goes.
+        let mut tables = Vec::with_capacity(back.len());
+        let mut expected = BTreeMap::new();
+        for t in &back {
+            let count = AssertSqlSafe(format!("select count(*) from \"{t}\" where tenant_id = $1"));
+            let mut tx = source.system_tx().await?;
+            let in_copy: i64 = sqlx::query_scalar(count).bind(tenant).fetch_one(&mut *tx).await?;
+            tx.commit().await?;
+            let mut tx = self.db.system_tx().await?;
+            let now: i64 =
+                sqlx::query_scalar(AssertSqlSafe(format!("select count(*) from \"{t}\" where tenant_id = $1"))).bind(tenant).fetch_one(&mut *tx).await?;
+            tx.commit().await?;
+            expected.insert(t.as_str(), in_copy);
+            if now != 0 || in_copy != 0 {
+                tables.push(json!({"table": t, "now": now, "in_copy": in_copy}));
+            }
+        }
+        if !apply {
+            return Ok(json!({"applied": false, "tables": tables, "kept": kept}));
+        }
+
+        let mut tx = self.db.system_tx().await?;
+        let was: String = sqlx::query_scalar("update tenant t set status = 'suspended' from tenant o where o.id = t.id and t.id = $1 returning o.status")
+            .bind(tenant)
+            .fetch_one(&mut *tx)
+            .await?;
+        notify_users(&mut tx, tenant, None).await?;
+        tx.commit().await?;
+
+        let mut tx = self.db.system_tx().await?;
+        let mut from = source.system_tx().await?;
+        sqlx::query("set local statement_timeout = 0").execute(&mut *tx).await?;
+        sqlx::query("set local statement_timeout = 0").execute(&mut *from).await?;
+        sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await?;
+        let people: Value = sqlx::query_scalar(
+            "select coalesce(jsonb_agg(jsonb_build_object('id', id, 'password_hash', password_hash, 'totp_secret', totp_secret, \
+             'totp_enabled_at', totp_enabled_at, 'is_active', is_active)), '[]') from app_user where tenant_id = $1",
+        )
+        .bind(tenant)
+        .fetch_one(&mut *tx)
+        .await?;
+        let version: i32 =
+            sqlx::query_scalar("select coalesce(max(token_version), 0) + 1 from app_user where tenant_id = $1").bind(tenant).fetch_one(&mut *tx).await?;
+        let passkeys: Vec<Uuid> = sqlx::query_scalar("select id from passkey where tenant_id = $1").bind(tenant).fetch_all(&mut *tx).await?;
+
+        for t in &back {
+            sqlx::query(AssertSqlSafe(format!("delete from \"{t}\" where tenant_id = $1"))).bind(tenant).execute(&mut *tx).await?;
+        }
+        for t in &back {
+            let columns: Vec<String> = here[*t].iter().filter(|(_, _, generated)| !generated).map(|(c, _, _)| format!("\"{c}\"")).collect();
+            let columns = columns.join(", ");
+            let insert = format!("insert into \"{t}\" ({columns}) overriding system value select {columns} from jsonb_populate_recordset(null::\"{t}\", $1)");
+            let read = AssertSqlSafe(format!("select to_jsonb(x) from \"{t}\" x where tenant_id = $1"));
+            let mut rows = sqlx::query_scalar::<_, Value>(read).bind(tenant).fetch(&mut *from);
+            let mut waiting = Vec::new();
+            loop {
+                let row = rows.try_next().await?;
+                let end = row.is_none();
+                waiting.extend(row);
+                if !waiting.is_empty() && (end || waiting.len() >= BATCH) {
+                    sqlx::query(AssertSqlSafe(insert.clone())).bind(Value::Array(std::mem::take(&mut waiting))).execute(&mut *tx).await?;
+                }
+                if end {
+                    break;
+                }
+            }
+            drop(rows);
+            let arrived: i64 =
+                sqlx::query_scalar(AssertSqlSafe(format!("select count(*) from \"{t}\" where tenant_id = $1"))).bind(tenant).fetch_one(&mut *tx).await?;
+            if Some(&arrived) != expected.get(t.as_str()) {
+                return Err(Error::Internal(format!("{t}: {arrived} rows arrived of {:?}", expected.get(t.as_str()))));
+            }
+        }
+        let broken = dangling(&mut tx, tenant, &here).await?;
+        if !broken.is_empty() {
+            return Err(Error::Conflict(format!("this would leave references to nothing, so nothing was changed: {}", broken.join(", "))));
+        }
+
+        sqlx::query(
+            "update app_user u set password_hash = p.password_hash, totp_secret = p.totp_secret, totp_enabled_at = p.totp_enabled_at, is_active = p.is_active \
+             from jsonb_to_recordset($2) as p(id uuid, password_hash text, totp_secret text, totp_enabled_at timestamptz, is_active boolean) \
+             where u.tenant_id = $1 and u.id = p.id",
+        )
+        .bind(tenant)
+        .bind(&people)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("update app_user set token_version = $2 where tenant_id = $1").bind(tenant).bind(version).execute(&mut *tx).await?;
+        sqlx::query("delete from passkey where tenant_id = $1 and not (id = any($2))").bind(tenant).bind(&passkeys).execute(&mut *tx).await?;
+        sqlx::query("update user_session set revoked_at = now() where tenant_id = $1 and revoked_at is null").bind(tenant).execute(&mut *tx).await?;
+        sqlx::query("update api_key set revoked_at = now() where tenant_id = $1 and revoked_at is null").bind(tenant).execute(&mut *tx).await?;
+        self.set_aside(&mut tx, Some(tenant)).await?;
+        audit::record(&mut tx, ctx, "Tenant", tenant, "platform.tenant_restored", None, json!({"note": note, "tables": tables, "kept": kept})).await?;
+        sqlx::query("update tenant set status = $2 where id = $1").bind(tenant).bind(&was).execute(&mut *tx).await?;
+        notify_users(&mut tx, tenant, None).await?;
+        tx.commit().await?;
+        from.rollback().await?;
+        self.invalidate_tenant_users(tenant);
+        Ok(json!({"applied": true, "status": was, "tables": tables, "kept": kept}))
     }
 
     /// Whether a restore is waiting for a person. Everything that reaches outside asks this first.

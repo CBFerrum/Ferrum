@@ -39,6 +39,8 @@ impl Finding {
 /// The oldest an event may wait, and how long a job may run without a renewal, before someone should
 /// look.
 const STALE_EVENT_SECS: f64 = 300.0;
+/// Connections the application must leave for an administrator, replication and a migration.
+const RESERVED_CONNECTIONS: i32 = 20;
 /// Read before anyone's workspace is known, so they hold a tenant's id without row-level security:
 /// the host a request came to, and slugs retired for good. Their migrations say why.
 const CLUSTER_TABLES: [&str; 2] = ["tenant_host", "tenant_slug_retired"];
@@ -62,6 +64,16 @@ impl Kernel {
                 "database.connections",
                 format!("{max_connections} allowed, {pool_size} per replica: room for fewer than two replicas"),
                 "Raise max_connections, or lower FERRUM_DB_MAX_CONNECTIONS (docs/operations.md, Database role).",
+            )
+        });
+        let limit: i32 = sqlx::query_scalar("select rolconnlimit from pg_roles where rolname = current_user").fetch_one(&mut *tx).await?;
+        out.push(if (0..=max_connections - RESERVED_CONNECTIONS).contains(&limit) {
+            Finding::ok("database.reserve", format!("this role may hold {limit} of {max_connections}"))
+        } else {
+            Finding::warning(
+                "database.reserve",
+                format!("this role can take all {max_connections} connections, leaving none to repair anything with"),
+                "ALTER ROLE ... CONNECTION LIMIT, at least 20 below max_connections (docs/operations.md, Database role).",
             )
         });
         let extensions: Vec<String> = sqlx::query_scalar(

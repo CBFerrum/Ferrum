@@ -480,6 +480,7 @@ impl Hooks for App {
         tasks.register(crate::tasks::CloudController);
         tasks.register(crate::tasks::ReleaseRestore);
         tasks.register(crate::tasks::AcceptAuthority);
+        tasks.register(crate::tasks::ExtractTenant);
     }
 
     async fn truncate(_ctx: &AppContext) -> Result<()> {
