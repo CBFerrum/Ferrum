@@ -64,6 +64,40 @@ impl Task for ReleaseRestore {
     }
 }
 
+/// `extract_tenant from:"postgres://..." tenant:acme note:"..." [apply:yes]`: takes one workspace back to
+/// what a restored copy holds. Without `apply:yes` it only compares.
+pub struct ExtractTenant;
+
+#[async_trait]
+impl Task for ExtractTenant {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "extract_tenant".into(), detail: "Takes one workspace back to what a restored copy holds. Compares unless apply:yes".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let arg = |name: &str| vars.cli_arg(name).map_err(|e| Error::Message(e.to_string()));
+        let mut tx = k.db.system_tx().await.map_err(|e| Error::Message(e.to_string()))?;
+        let tenant: Option<uuid::Uuid> = sqlx::query_scalar("select id from tenant where slug = $1")
+            .bind(arg("tenant")?)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| Error::Message(e.to_string()))?;
+        tx.commit().await.map_err(|e| Error::Message(e.to_string()))?;
+        let tenant = tenant.ok_or_else(|| Error::Message("no such workspace".into()))?;
+        let schema = k.registry.schema(tenant).await.map_err(|e| Error::Message(e.to_string()))?;
+        let apply = vars.cli_arg("apply").is_ok_and(|v| v == "yes");
+        let done = k
+            .extract_tenant(&ferrum_kernel::Ctx::system(tenant, schema), arg("from")?, apply, arg("note")?)
+            .await
+            .map_err(|e| Error::Message(e.to_string()))?;
+        println!("{}", serde_json::to_string_pretty(&done).unwrap_or_default());
+        if apply {
+            println!("done. Every session and API key of this workspace has stopped working, and what was waiting is set aside");
+        }
+        Ok(())
+    }
+}
+
 /// `accept_authority note:"..."`: this region, which lost the right to write, may have it again.
 pub struct AcceptAuthority;
 
