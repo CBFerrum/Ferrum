@@ -140,6 +140,19 @@ and more of the same kind turned up beside it. All are fixed, each with a test a
 | Redirects could leave the allow list | The first host was checked, and `plant.example.com` matched `plant.example.com.elsewhere.org` | Every hop is checked, and an entry means the host it names |
 | An envelope was a rate | Site, operation and a count, and it could stand in for a required second person | It says where, what, when and how much, covers agents only if told to, and never replaces a second person |
 
+The same review left five checks on what was closed earlier. They were made on the same day:
+
+| Asked | Found |
+|---|---|
+| Every external effect is refused in a hook | `http.fetch`, `sockets.send` and `sockets.close` are all that leave the system. Only the first was tested; each now has a test and a mutant of its own |
+| Every integration that can command uses the ledger | Everything that reaches equipment issues through `commands::issue` or `issue_exclusive`: Edge's site, fleet, firmware, schedules and facts, Warehouse, Shop Floor and the agents' tools. On a gateway, a tag is written from one place, a command's dispatch. `plugins/examples/device-gateway` pushes over a socket and says it is an example; nothing installs it |
+| Adapters use `operation_id` or reconcile | Stripe and PayPal give the provider a key that is stable per request, which holds across events as well as attempts. Razorpay has no such key for a refund, so it looks for its own note first |
+| Connection management deletes conditionally | The example gateway is the only caller, and it passes `if_value`. The SDK offers both |
+| Credentials: migration and leaks | Every plugin that holds one names it in its manifest, and the host keeps it out of `config`, sealed. No plugin reads a secret from `config`. A gateway's were not as safe: an HTTP failure quoted its URL, which can hold a `{secret.x}`, and the reason went to the platform. Fixed in Edge 0.4.0 |
+
+Aggregate memory under many slow sockets stays unmeasured: each socket's queue is bounded, and their
+sum has not been loaded.
+
 Two things this does not change. Nothing has run on physical equipment, so a robot-commanding or
 machine-starting pilot still waits on equipment, its recovery and its people (the blockers below), and no
 claim of autonomy is made. And a gateway offline carries on with what it was given: it does not
