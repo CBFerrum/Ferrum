@@ -69,8 +69,11 @@ These are for administrators, stay within their workspace, and are recorded in t
 | `ops.fact.{kind}` | `{site, kind, at_source, actor, body}` | Something recorded at a site, arriving when the link allowed. `mes.event` is a floor report from a console. |
 | `ops.fact.edge.{kind}` | The same, with `kind` one of `attribute`, `event`, `alarm`, `notify`, `request` | What gateways report, and what flows decide. IoT Edge applies each by when it happened: `request` becomes a command if it is still wanted. |
 | `quality.hold.released` | `{hold}` | Stock a hold took goes back. The warehouse listens. |
-| `mes.run.released` | `{run, materials: [{item, warehouse, qty}]}` | A run needs its material. A managed warehouse opens the moves to its production bin, once per run. |
-| `wms.supply.short` | `{run, short}` | A warehouse cannot bring all of it. The run says so. |
+| `mes.run.released` | `{run, materials: [{item, warehouse, qty}]}` | A run needs its material at the station. A managed warehouse opens the moves to its production bin, once per run. |
+| `mes.run.closed` | `{run}` | A run finished or was cancelled. What it claimed at a line is free again. |
+| `wms.supply.reserved` | `{run}` | A warehouse has the material in hand, and some of it is still on its way. |
+| `wms.supply.ready` | `{run}` | All of it is at the line and usable. Only this, or a supervisor saying so, starts the machine. May be said more than once. |
+| `wms.supply.short` | `{run, short}` | Some of it cannot be brought, or stopped being usable. The run says so, and a start that has not reached the machine stops. |
 
 ## What may happen where
 

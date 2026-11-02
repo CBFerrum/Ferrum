@@ -57,9 +57,11 @@ reviewer. No entry has that yet, because no release has been qualified against t
   is a lead to confirm when the work starts, not proof of absence. An `implemented_unqualified` on
   this basis means code and tests exist; nobody has run the specification's acceptance scenario.
 
-The revisions read are in [release-manifest.yaml](release-manifest.yaml). Keep a checkout fresh before
-probing: the audit found every sibling checkout behind its remote, which made finished work look
-absent.
+What this commit builds is in [release-manifest.yaml](release-manifest.yaml), generated from
+`Cargo.lock` and checked here, so it cannot say anything else. What one build was made of, with its
+image, migrations, run and how far it was qualified, is `release-evidence.json` on its CI run, from
+`scripts/release_evidence.py`. Keep a checkout fresh before probing: the audit found every sibling
+checkout behind its remote, which made finished work look absent.
 
 ## The other working documents
 
@@ -77,4 +79,5 @@ absent.
 | Handover, session by session | [handover.md](handover.md) |
 | Accepted advisories | [advisories.yaml](advisories.yaml) |
 
-Release notes and a completion report are not generated yet; the registry holds what they need.
+Release notes and a completion report are not generated yet; the registry and a run's
+`release-evidence.json` hold what they need.

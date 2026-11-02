@@ -98,6 +98,10 @@ async fn scenario() {
     // From a hook the same call is refused, and the provider hears nothing.
     let refused = k.insert(&admin, "Customer", obj(json!({"customer_name": "Called from the hook"}))).await;
     assert!(matches!(refused, Err(Error::Invalid(ref m)) if m.contains("cannot run in a hook")), "{refused:?}");
+    for op in ["sockets.send", "sockets.close"] {
+        let refused = k.insert(&admin, "Customer", obj(json!({"customer_name": format!("{op} in the hook")}))).await;
+        assert!(matches!(refused, Err(Error::Invalid(ref m)) if m.contains(op) && m.contains("cannot run in a hook")), "{refused:?}");
+    }
     assert_eq!(calls.load(Ordering::SeqCst), 1, "nothing left the transaction");
 
     // A document that asks for the provider and then rolls back leaves nothing to deliver.

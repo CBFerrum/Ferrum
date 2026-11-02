@@ -136,6 +136,14 @@ jobs:
           docker push "$candidate"
           ref=$(docker inspect --format '{{index .RepoDigests 0}}' "$candidate")
           echo "digest=${ref#*@}" >> "$GITHUB_OUTPUT"
+      # What this build is made of, with its image and this run, kept with the run.
+      - if: github.event_name == 'push'
+        run: python3 -m pip install --quiet pyyaml && python3 scripts/release_evidence.py evidence --image "${{ steps.candidate.outputs.digest }}" > release-evidence.json
+      - if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence
+          path: release-evidence.json
 
   image:
     needs: [rust]
