@@ -7,10 +7,10 @@ lives in the registry (`docs/registry/industrial.yaml`, FERRUM-IND-022 onward).
 
 ## What it is
 
-**Definitions** ([guide](../edge-definitions.md)) say a device as data, so that supporting one is a few
+**Definitions** ([guide](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/definitions.md)) say a device as data, so that supporting one is a few
 lines of YAML. **Gateways** run `ferrum-site` on location: it reads, decides, runs commands within its
-lease and keeps everything in its journal through an outage. **Flows** ([guide](../edge-flows.md)) are
-logic drawn on a canvas, simulated and reviewed, run at the gateway. **The app** (`crates/edge`) holds
+lease and keeps everything in its journal through an outage. **Flows** ([guide](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/flows.md)) are
+logic drawn on a canvas, simulated and reviewed, run at the gateway. **The app** ([ferrum-app-edge](https://github.com/CBFerrum/ferrum-app-edge)) holds
 all of that as records and tells each gateway what to be, over a second signed call, so that Operations
 stays independent of it.
 
@@ -27,15 +27,19 @@ stays independent of it.
 
 ## What was decided, and why
 
-- **Edge lives in the Ferrum repository**, in `crates/edge`, because it moves with Operations.
+- **Edge has a repository of its own**, [ferrum-app-edge](https://github.com/CBFerrum/ferrum-app-edge), like every other app
+  (apps-ui.md §10.5): the app, the gateway (`ferrum-site`) and what they share (`ferrum-edge-contract`).
+  Commands, identity, telemetry and the sync call stay in Operations, here, because ERP and Assets build
+  on them too, and the gateway takes `ferrum-ops-contract` from this repository. It began here, in
+  `crates/edge`, and moved on 2 November 2026 with its history.
 - **`managed` is off by default**, because it lets a platform administrator decide what a gateway
   connects to. What is on the machine wins over what the platform sends.
 - **Rules and flows move nothing.** A flow can ask, as automation, and the ledger decides.
 - **A flow is a list of known steps and not a script**, so that it can be reviewed and simulated.
-- **The same code simulates and runs**, in `ferrum-ops-contract`, so that what a reviewer saw is what runs.
+- **The same code simulates and runs**, in `ferrum-edge-contract`, so that what a reviewer saw is what runs.
 - **No broker in the binary.** rumqttd 0.20 was tried: it panics when a message with properties
   reaches a 3.1.1 subscriber, which takes its listener down. Mosquitto beside the runtime is sturdier,
-  and a fault in one leaves the other standing (`deploy/site/mosquitto.conf`).
+  and a fault in one leaves the other standing (`deploy/mosquitto.conf`).
 - **OPC UA in the process, through async-opcua**, because a definition should read it as it reads
   anything else. A vendor's stack belongs behind a process boundary, as an external driver.
 - **Peers are one hop**, so that nobody can build a loop. **Full Ferrum-to-Ferrum federation** is not
@@ -45,5 +49,5 @@ stays independent of it.
 ## What is left
 
 See the gap table in [references](../references/edge.md). In order of what would matter first: trying
-definitions on real equipment and recording it in [compatibility](../compatibility.md), history charts
+definitions on real equipment and recording it in [compatibility](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/compatibility.md), history charts
 on a device, flows for devices with no gateway, and Sparkplug primary host duties.

@@ -57,8 +57,6 @@ jobs:
           create database ferrum_assistant_test owner ferrum;
           create database ferrum_journeys_test owner ferrum;
           create database ferrum_ops_test owner ferrum;
-          create database ferrum_site_test owner ferrum;
-          create database ferrum_edge_test owner ferrum;
           SQL
       # An S3-compatible endpoint for the object storage test.
       - name: Start an S3 emulator
@@ -70,8 +68,6 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
-      # The site runtime killed at each named point. Failpoints never reach a release build.
-      - run: cargo test -p ferrum-site --features failpoints --test recovery_it --locked
         env:
           FERRUM_TEST_S3_ENDPOINT: http://localhost:9000
           FERRUM_TEST_S3_BUCKET: ferrum-ci

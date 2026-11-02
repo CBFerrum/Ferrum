@@ -44,61 +44,13 @@ EGRESS = ("-p", "ferrum-server", "--test", "assistant_egress_it")
 SUPPORT = ("-p", "ferrum-kernel", "--test", "support_it")
 CONTRACT = ("-p", "ferrum-ops-contract", "--lib")
 OPS = ("-p", "ferrum-ops", "--test", "ops_it")
-SITE = ("-p", "ferrum-site", "--features", "failpoints", "--test", "recovery_it")
-SITE_UNIT = ("-p", "ferrum-site", "--lib")
-ADAPTERS = ("-p", "ferrum-site", "--test", "adapters_it")
-PROTOCOLS = ("-p", "ferrum-site", "--test", "protocols_it")
-LINKS = ("-p", "ferrum-site", "--test", "links_it")
-EDGE = ("-p", "ferrum-edge", "--test", "edge_it")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
     ("ops-provisioned-by-saying-so", "crates/ops/src/devices.rs", "if to == Lifecycle::Provisioned && gateway.is_none() {", "if false {", OPS),
-    ("ops-site-never-hears", "crates/ops/src/commands.rs", "State::parse(&s).filter(|s| s.is_final())", "State::parse(&s).filter(|_| false)", SITE),
-    ("flow-may-go-in-a-circle", "crates/ops-contract/src/flow.rs", "    if ordered != nodes.len() {", "    if false {", CONTRACT),
-    ("flow-hold-never-starts-again", "crates/ops-contract/src/flow.rs", "                    (m.since, m.on, m.last) = (None, false, None);\n                    return vec![];", "                    return vec![];", CONTRACT),
-    ("flow-alarm-said-every-time", "crates/ops-contract/src/flow.rs", "                if m.on == raised {\n                    return vec![];\n                }\n", "", CONTRACT),
-    ("flow-floods-the-ledger", "crates/ops-contract/src/flow.rs", "                if m.since.is_some_and(|last| at - last < span(*every)) {\n                    return vec![];\n                }\n                m.since = Some(at);\n                match fill(payload", "                match fill(payload", CONTRACT),
-    ("flow-stale-reading-counts", "crates/ops-contract/src/flow.rs", ".filter(|(_, (when, _))| fresh.is_none_or(|f| at - *when <= span(f)))", ".filter(|_| true)", CONTRACT),
-    ("flow-half-a-command", "crates/ops-contract/src/driver.rs", 'at_path(vars, key).filter(|v| !v.is_null()).ok_or_else(|| format!("nothing to put in {{{key}}}"))?', 'at_path(vars, key).unwrap_or(&Value::Null)', CONTRACT),
-    ("flow-one-device-for-all", "crates/ops-contract/src/flow.rs", '        let key = device.unwrap_or_default();\n        match &node.kind {', '        let key = "";\n        match &node.kind {', CONTRACT),
-    ("sparkplug-old-aliases-kept", "crates/ops-contract/src/sparkplug.rs", '        if *kind == "NBIRTH" {\n            names.clear();\n        }\n', "", CONTRACT),
-    ("frame-check-ignored", "crates/ops-contract/src/driver.rs", "(self.over(body) == check).then_some(body)", "Some(body)", CONTRACT),
-    ("replaced-link-keeps-running", "crates/site/src/adapters/defined.rs", "            if !wanted {\n                link.close();\n            }\n", "            let _ = link;\n", PROTOCOLS),
-    ("listen-on-any-port", "crates/site/src/adapters/transport.rs", "if !limits.listen.iter().any(|a| a == bind) {", "if false {", SITE_UNIT),
-    ("certificate-from-anywhere", "crates/site/src/adapters/transport.rs", 'if !path.starts_with(&dir) {\n            return Err(format!("{name} is outside the certificates directory"));', 'if false {\n            return Err(format!("{name} is outside the certificates directory"));', SITE_UNIT),
-    ("webhook-open-to-anyone", "crates/site/src/adapters/transport.rs", "if Sha256::digest(said) != Sha256::digest(want) {", "if false {", PROTOCOLS),
-    ("called-in-goes-to-the-last-caller", "crates/site/src/adapters/defined.rs", "let peer = device.and_then(|d| locked(&self.shared).routes.get(d).cloned());", "let peer = locked(&self.shared).routes.values().next().cloned();", PROTOCOLS),
-    ("opcua-value-rounded", "crates/site/src/adapters/opcua.rs", "same.then_some(cast).ok_or_else(wrong)", "Ok(cast)", PROTOCOLS),
-    ("opcua-bad-value-is-a-reading", "crates/site/src/adapters/opcua.rs", "    if status.is_bad() {\n        return None;\n    }\n", "", PROTOCOLS),
-    ("peer-starts-it-again", "crates/site/src/peer.rs", 'Ok(Some(None)) => return Err(Failure::Unknown("asked before, and it stopped before it could answer".into())),', "Ok(Some(None)) => {}", LINKS),
-    ("peer-repeats-a-mission", "crates/site/src/journal.rs", "        tx.commit()?;\n        Ok(seen)\n", "        tx.commit()?;\n        Ok(None)\n", LINKS),
-    ("peer-replay-accepted", "crates/site/src/peer.rs", "if time <= *seen {", "if false {", LINKS),
-    ("peer-signature-unchecked", "crates/site/src/peer.rs", 'key.verify(&message("POST", path, time, body), &Signature::from_bytes(&signature)).map_err(|_| "the signature does not match")?;', "let _ = (key, signature, body);", LINKS),
-    ("link-password-shown", "crates/site/src/adapters/defined.rs", "let address = address.split('?').next().unwrap_or(address);\n", "", SITE_UNIT),
-    ("relay-passes-anything", "crates/site/src/relay.rs", "if !allowed(&package, &route) || !tenant", "if !tenant", LINKS),
-    ("export-unsigned", "crates/site/src/export.rs", 'request = request.header("x-ferrum-signature", signature(secret, &body).ok_or("could not sign")?);', "let _ = secret;", LINKS),
-    ("update-unsigned", "crates/site/src/update.rs", "if key.verify(&release.message(), &Signature::from_bytes(&signature)).is_ok() {", "if true {", SITE_UNIT),
-    ("update-old-build-taken", "crates/site/src/update.rs", "if !newer(&release.version, running) {", "if false {", SITE_UNIT),
-    ("update-never-rolled-back", "crates/site/src/update.rs", "if p.tries + 1 < MAX_TRIES {", "if true {", SITE_UNIT),
-    ("flow-goes-unsimulated", "crates/edge/src/lib.rs", 'if s(doc, "simulated_digest") != Some(flow.digest.as_str()) {', "if false {", EDGE),
-    ("flow-author-approves", "crates/edge/src/lib.rs", 'if s(doc, "submitted_by") == Some(me.as_str()) {', "if false {", EDGE),
-    ("flow-changes-under-review", "crates/edge/src/lib.rs", '&& s(old, "body") != s(doc, "body")', "&& false", EDGE),
-    ("flow-runs-before-approval", "crates/edge/src/lib.rs", 'flow_step(&status, &["Approved"], "run")?;', "", EDGE),
-    ("flow-engineer-approves", "crates/edge/src/lib.rs", '                reviewer(hc.ctx)?;\n                flow_step(&status, &["In Review"], "approved")?;', '                flow_step(&status, &["In Review"], "approved")?;', EDGE),
-    ("flow-stale-request-issued", "crates/edge/src/facts.rs", "} else if left <= 0 {", "} else if false {", EDGE),
-    ("flow-stopped-still-asks", "crates/edge/src/facts.rs", "let refused = if live != Some(true) {", "let refused = if false {", EDGE),
-    ("flow-issues-as-a-person", "crates/edge/src/facts.rs", "issuer: Issuer::Automation,", "issuer: Issuer::Engine,", EDGE),
-    ("stopped-flow-stays-on-gateways", "crates/edge/src/config.rs", "where tenant_id = $1 and live and published_body is not null", "where tenant_id = $1 and published_body is not null", EDGE),
-    ("flow-alarm-raised-twice", "crates/edge/src/facts.rs", "    if open.is_some() {\n        return Ok(());\n    }\n    let cleared_since", "    let cleared_since", EDGE),
-    ("site-vda-late-state-wins", "crates/site/src/adapters/vda5050.rs", "if id > current || id < 2 {", "if true {", ADAPTERS),
-    ("site-vda-any-version", "crates/site/src/adapters/vda5050.rs", "if !supported(&self.cfg.version) {", "if false {", ADAPTERS),
-    ("site-mqtt-sent-with-no-broker", "crates/site/src/adapters/mqtt.rs", "        if !self.connected() {\n", "        if false {\n", ADAPTERS),
-    ("site-mqtt-no-expiry", "crates/site/src/adapters/mqtt.rs", "message_expiry_interval: Some(left)", "message_expiry_interval: None", ADAPTERS),
-    ("site-modbus-start-first", "crates/site/src/adapters/modbus.rs", "conn.write_single_register(h.job_register, job as u16).await", "conn.write_single_register(h.start_register, 1).await", ADAPTERS),
-    ("site-modbus-unknown-start-called-unsent", "crates/site/src/adapters/modbus.rs", "                *guard = None;\n                Err(Failure::Unknown(e.to_string()))", "                *guard = None;\n                Err(Failure::NotSent(e.to_string()))", ADAPTERS),
+    ("ops-site-never-hears", "crates/ops/src/commands.rs", "State::parse(&s).filter(|s| s.is_final())", "State::parse(&s).filter(|_| false)", OPS),
     ("ops-report-goes-backwards", "crates/ops-contract/src/command.rs", "(a, b) if b.rank() > a.rank() => Step::Move,", "(a, b) if b.rank() != a.rank() => Step::Move,", CONTRACT),
     ("ops-unknown-needs-no-evidence", "crates/ops-contract/src/command.rs", "            if evidence {\n                Step::Move", "            if true {\n                Step::Move", CONTRACT),
     ("ops-old-authority-believed", "crates/ops/src/commands.rs", "    if r.epoch != epoch {", "    if false {", OPS),
@@ -108,11 +60,6 @@ MUTANTS = [
     ("ops-ai-queues-directly", "crates/ops/src/commands.rs", "            None => (State::Proposed, None),\n        },", "            None => (State::Queued, None),\n        },", OPS),
     ("ops-own-approval", "crates/ops/src/commands.rs", "    if row.issued_by == person(ctx) && person(ctx).is_some() {", "    if false {", OPS),
     ("ops-other-site-measurements", "crates/ops/src/telemetry.rs", "if !ours.contains(&m.device_id) || m.check(now).is_err() {", "if m.check(now).is_err() {", OPS),
-    ("site-no-intent", "crates/site/src/runtime.rs", "if let Err(err) = self.journal.intend(id, self.clock.now_ms()) {", "if let Err(err) = self.journal.answered(id, self.clock.now_ms()) {", SITE),
-    ("site-blind-retry", "crates/site/src/runtime.rs", 'None => self.establish(\n                    self.report(id, State::OutcomeUnknown, json!({"why": "this runtime stopped between deciding to send it and hearing back"}), None),\n                    None,\n                ),', 'None => { let _ = self.journal.withdraw_intent(id); }', SITE),
-    ("site-lease-ignored", "crates/site/src/runtime.rs", "if self.clock.now() >= lease {", "if false {", SITE),
-    ("site-restore-believed", "crates/site/src/runtime.rs", "if self.journal.get(\"restored\").ok().flatten().is_some() {", "if false {", SITE),
-    ("site-shed-commands-budget", "crates/site/src/journal.rs", "for class in [Class::Sample, Class::State, Class::Alarm] {", "for class in [Class::Alarm, Class::State, Class::Sample] {", SITE_UNIT),
     ("refused-token-kept", "crates/plugins/src/host.rs", "self.tokens.remove(&key);", "let _ = &key;", HOST_UNIT),
     ("secret-goes-anywhere-to-sign-in", "crates/plugins/src/host.rs", "if !host_allowed(&c.hosts, host) {", "if false && !host_allowed(&c.hosts, host) {", HOST_UNIT),
     ("rotated-secret-keeps-token", "crates/plugins/src/host.rs", 'let digest = hex::encode(Sha256::digest(format!("{user}:{secret}")));', 'let digest = user.to_string();', HOST_UNIT),
