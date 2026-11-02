@@ -208,6 +208,8 @@ macro_rules! apps {
             out.push(("ops", ferrum_ops::UI));
             #[cfg(feature = "edge")]
             out.push(("edge", ferrum_app_edge::UI));
+            #[cfg(feature = "cloud")]
+            out.push(("cloud", ferrum_app_cloud::UI));
             #[cfg(feature = "wms")]
             out.push(("wms", ferrum_wms::UI));
             #[cfg(feature = "mes")]
@@ -280,6 +282,7 @@ apps! {
         "mfg-ops" => ferrum_mfg_ops,
         "ops" => ferrum_ops,
         "edge" => ferrum_app_edge,
+        "cloud" => ferrum_app_cloud,
         "quality" => ferrum_quality,
         "wms" => ferrum_wms,
         "mes" => ferrum_mes,

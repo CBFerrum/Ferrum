@@ -47,6 +47,29 @@ async fn operator(k: &ferrum_kernel::Kernel) -> Result<ferrum_kernel::Ctx> {
     Ok(ferrum_kernel::Ctx::system(tenant, schema))
 }
 
+/// `cloud_controller`: what acts on providers, until told to stop (ferrum-app-cloud's D-03). Its own
+/// deployment, with its own service account: the API never holds what this holds.
+#[cfg(feature = "cloud")]
+pub struct CloudController;
+
+#[cfg(feature = "cloud")]
+#[async_trait]
+impl Task for CloudController {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "cloud_controller".into(), detail: "Runs Cloud's controllers until told to stop".into() }
+    }
+    async fn run(&self, ctx: &AppContext, _vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let settings = ferrum_app_cloud::controller::Settings::from_environment().map_err(|e| Error::Message(e.to_string()))?;
+        let (tell, stop) = tokio::sync::watch::channel(false);
+        tokio::spawn(async move {
+            loco_rs::boot::shutdown_signal().await;
+            let _ = tell.send(true);
+        });
+        ferrum_app_cloud::controller::run(k, settings, stop).await.map_err(|e| Error::Message(e.to_string()))
+    }
+}
+
 /// `release_restore note:"..."`: a person has looked at what came back from a backup.
 pub struct ReleaseRestore;
 
