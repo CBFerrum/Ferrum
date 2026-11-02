@@ -85,11 +85,14 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
     .map_err(Error::from)?;
     tx.commit().await.map_err(Error::from)?;
     let (conn_on, conn_failing, conn_waiting, conn_stale, drift_open) = st.kernel.connection_gauges().await?;
+    let (held, fenced) = (u8::from(st.kernel.holding().await?), u8::from(st.kernel.db.fenced()));
     let pool = &st.kernel.db.pool;
     let (socket_dropped, socket_closed_slow) = st.plugins.sockets.overflow_counts();
     let socket_queued = st.plugins.sockets.queued_bytes();
     let body = format!(
         "# HELP ferrum_up 1 when the process is serving.\n# TYPE ferrum_up gauge\nferrum_up 1\n\
+         # TYPE ferrum_restore_held gauge\nferrum_restore_held {held}\n\
+         # TYPE ferrum_region_fenced gauge\nferrum_region_fenced {fenced}\n\
          # TYPE ferrum_uptime_seconds counter\nferrum_uptime_seconds {}\n\
          # TYPE ferrum_db_pool_connections gauge\nferrum_db_pool_connections {}\n\
          # TYPE ferrum_db_pool_idle gauge\nferrum_db_pool_idle {}\n\
