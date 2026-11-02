@@ -2289,6 +2289,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrum-app-cloud"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-cloud?branch=w03-code-builds#33be3597e6ebe5541828a22c6b922376239de9e6"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "ed25519-dalek",
+ "ferrum-cloud-contract",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac 0.12.1",
+ "opendal",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tar",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "ferrum-app-commerce"
 version = "0.1.0"
 source = "git+https://github.com/CBFerrum/ferrum-app-commerce?branch=main#6c4f45f5c9045f386765d9a44a064b41d9ff385f"
@@ -2680,6 +2709,22 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "ferrum-cloud-contract"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-cloud?branch=w03-code-builds#33be3597e6ebe5541828a22c6b922376239de9e6"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "chrono-tz 0.10.4",
+ "ed25519-dalek",
+ "hex",
+ "idna",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -3101,6 +3146,7 @@ dependencies = [
  "ferrum-app-assets",
  "ferrum-app-bookings",
  "ferrum-app-campaigns",
+ "ferrum-app-cloud",
  "ferrum-app-commerce",
  "ferrum-app-comms",
  "ferrum-app-crm",
