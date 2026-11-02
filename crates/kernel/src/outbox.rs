@@ -634,7 +634,11 @@ impl Kernel {
             .execute(&mut *tx)
             .await?
             .rows_affected();
-        n += sqlx::query("delete from event_receipt where received_at < now() - make_interval(days => $1)").bind(keep_days).execute(&mut *tx).await?.rows_affected();
+        n += sqlx::query("delete from event_receipt where received_at < now() - make_interval(days => $1)")
+            .bind(keep_days)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
         n += sqlx::query("delete from idempotency_key where created_at < now() - interval '24 hours'").execute(&mut *tx).await?.rows_affected();
         tx.commit().await?;
         Ok(n)
