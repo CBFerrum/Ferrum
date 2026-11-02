@@ -2412,10 +2412,11 @@ dependencies = [
 
 [[package]]
 name = "ferrum-app-edge"
-version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-edge?branch=main#39e4d6fc9e057b2dd892c99003e72fb400ae72bf"
+version = "0.2.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-edge?branch=main#334fcd8448d5abf298ece2e0b6ee22a5922c0b2d"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "ferrum-domain",
  "ferrum-edge-contract",
@@ -2426,6 +2427,7 @@ dependencies = [
  "rand 0.9.5",
  "serde",
  "serde_json",
+ "serde_yaml_ng",
  "sha2 0.10.9",
  "sqlx",
  "tracing",
@@ -2735,8 +2737,8 @@ dependencies = [
 
 [[package]]
 name = "ferrum-edge-contract"
-version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-edge?branch=main#39e4d6fc9e057b2dd892c99003e72fb400ae72bf"
+version = "0.2.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-edge?branch=main#334fcd8448d5abf298ece2e0b6ee22a5922c0b2d"
 dependencies = [
  "chrono",
  "ferrum-calc",
