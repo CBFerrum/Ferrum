@@ -1,5 +1,5 @@
 package: ops
-version: 0.1.0
+version: 0.2.0
 label: Operations
 description: Sites, devices and their identity, the command ledger and telemetry
 depends: [core]

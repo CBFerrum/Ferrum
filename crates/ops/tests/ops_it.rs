@@ -844,6 +844,9 @@ async fn envelopes_and_exclusive_work(k: &Arc<Kernel>) {
     let first = issue(&t, &manager, held("0")).await.unwrap();
     let second = issue(&t, &manager, held("1")).await.unwrap();
     assert_eq!((second.id, second.repeated), (first.id, true), "another attempt while the first is alive is the first");
+    devices::set_lifecycle(k, &t.admin, other_bot, Lifecycle::Maintenance, "a wheel").await.unwrap();
+    assert_eq!(issue(&t, &manager, held("0")).await.unwrap().id, first.id, "a repeat gets its first answer, whatever has happened to the device since");
+    devices::set_lifecycle(k, &t.admin, other_bot, Lifecycle::Active, "mended").await.unwrap();
     let (a, b) = {
         let (one, two) = (t.k.clone(), t.k.clone());
         let (ctx1, ctx2) = (manager.clone(), manager.clone());
