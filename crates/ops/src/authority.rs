@@ -4,6 +4,7 @@
 //! fences the old holder first. What it may have started becomes `OutcomeUnknown`.
 
 use crate::commands;
+use crate::connections;
 use crate::devices;
 use ferrum_kernel::{Ctx, Error, Kernel, Result, Tx, audit};
 use ferrum_ops_contract::Lifecycle;
@@ -74,8 +75,34 @@ async fn change(tx: &mut Tx, tenant: Uuid, domain: &str, holder: Option<Uuid>, e
     Ok(())
 }
 
+/// Lets a site's gateways share a domain, for devices that call in to whichever they are sent to. The
+/// epoch rises, so that nothing issued for one holder carries on as if nothing had changed.
+pub async fn pool(k: &Kernel, ctx: &Ctx, domain: &str, reason: &str) -> Result<i64> {
+    if reason.trim().is_empty() {
+        return Err(Error::field("reason", "say why: who may act for these devices is changing"));
+    }
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let row: Option<(Uuid, i64, bool)> = sqlx::query_as("select site_id, epoch, pooled from op_authority where tenant_id = $1 and domain = $2 for update")
+        .bind(ctx.tenant)
+        .bind(domain)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let (site, epoch, pooled) = row.ok_or_else(|| Error::NotFound("domain".into()))?;
+    if pooled {
+        return Ok(epoch);
+    }
+    let epoch = epoch + 1;
+    change(&mut tx, ctx.tenant, domain, None, epoch, ctx, reason).await?;
+    sqlx::query("update op_authority set pooled = true where tenant_id = $1 and domain = $2").bind(ctx.tenant).bind(domain).execute(&mut *tx).await?;
+    commands::mark_in_doubt(&mut tx, ctx.tenant, domain, epoch, "its domain was pooled while this may have been running").await?;
+    audit::record(&mut tx, ctx, "Site", site, "ops.authority", None, json!({"domain": domain, "pooled": true, "epoch": epoch, "reason": reason})).await?;
+    tx.commit().await?;
+    Ok(epoch)
+}
+
 /// A gateway stops being trusted: whatever it holds is held by nobody, until a person transfers it.
 pub async fn fence_holder(tx: &mut Tx, ctx: &Ctx, gateway: Uuid, reason: &str) -> Result<()> {
+    connections::close_all(tx, ctx.tenant, gateway).await?;
     let held: Vec<(String, i64)> = sqlx::query_as("select domain, epoch from op_authority where tenant_id = $1 and holder = $2 for update")
         .bind(ctx.tenant)
         .bind(gateway)
