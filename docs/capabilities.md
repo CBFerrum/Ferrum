@@ -9,11 +9,11 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 106 |
+| Implemented, qualification incomplete | 110 |
 | Partially implemented | 54 |
 | Missing | 45 |
 | Blocked by external dependency | 9 |
-| **All** | **214** |
+| **All** | **218** |
 
 ## Platform
 
@@ -261,7 +261,11 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-IND-023 | A gateway told what to be, that carries on alone | Implemented, qualification incomplete | tested | What a gateway sustains is not measured |
 | FERRUM-IND-024 | Server to server: peers, a relay, exports and webhooks | Implemented, qualification incomplete | tested | Peers are one hop, and signed but not encrypted; Two platforms exchange data through exports and ingest: there is no federation |
 | FERRUM-IND-025 | Flows: logic drawn, simulated, reviewed, run at the gateway | Implemented, qualification incomplete | tested | Flows run only at gateways; No enrichment from records; A crash can lose 15 seconds of what a flow remembers |
-| FERRUM-IND-026 | Alarms, attributes, strangers and robots at the platform | Implemented, qualification incomplete | tested | No history charts on a device; A map shows where robots say they are, and steers nothing |
+| FERRUM-IND-026 | Alarms, attributes, strangers and robots at the platform | Implemented, qualification incomplete | tested | A map shows where robots say they are, and steers nothing |
+| FERRUM-IND-027 | A device API, dashboards and history, with people told in steps | Implemented, qualification incomplete | tested | No DTLS, so CoAP and LwM2M stay on private networks; Pages poll |
+| FERRUM-IND-028 | Protocols by name: S7, EtherNet/IP, ADS, BACnet, SNMP, KNX, IEC 104, M-Bus, OCPP, LwM2M, Sparkplug hosts and nodes | Implemented, qualification incomplete | tested | Each met software, none met equipment; KNX met only a stand-in; No DNP3, DLMS or OPC UA server |
+| FERRUM-IND-029 | A fleet: import, bulk commands, firmware rollouts, schedules, solutions, reports | Implemented, qualification incomplete | tested | Firmware never reaches a robot, a controller, a machine or a fleet; No device maker has tried it |
+| FERRUM-IND-030 | Exports to buses, stores and clouds, flows on the platform, and twins | Implemented, qualification incomplete | tested | Google and Azure are checked against the documented shape of the calls only; A platform flow hears closed minutes and stops with the platform |
 
 ## Verification
 
