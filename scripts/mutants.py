@@ -40,6 +40,7 @@ DOCTOR = ("-p", "ferrum-kernel", "--test", "doctor_it")
 CONNECT = ("-p", "ferrum-kernel", "--test", "connect_it")
 COLLAB = ("-p", "ferrum-kernel", "--test", "collab_it")
 HOST_UNIT = ("-p", "ferrum-plugins", "--lib", "host::tests")
+SOCKETS_UNIT = ("-p", "ferrum-plugins", "--lib", "sockets::tests")
 EGRESS = ("-p", "ferrum-server", "--test", "assistant_egress_it")
 SUPPORT = ("-p", "ferrum-kernel", "--test", "support_it")
 CONTRACT = ("-p", "ferrum-ops-contract", "--lib")
@@ -69,7 +70,7 @@ MUTANTS = [
     ("ops-transfer-keeps-running-work", "crates/ops/src/authority.rs", "    commands::mark_in_doubt(&mut tx, ctx.tenant, domain, epoch, \"authority changed while this may have been running\").await?;\n", "", OPS),
     ("ops-replay-accepted", "crates/ops/src/identity.rs", "    if fresh.rows_affected() == 0 {", "    if false {", OPS),
     ("ops-signature-unchecked", "crates/ops/src/identity.rs", "    key.verify(&signed, &Signature::from_bytes(&signature)).map_err(|_| Refused::Key(\"the signature does not match\"))?;\n", "    let _ = (&key, &signed, &signature);\n", OPS),
-    ("ops-ai-queues-directly", "crates/ops/src/commands.rs", "            None => (State::Proposed, None),\n        },", "            None => (State::Queued, None),\n        },", OPS),
+    ("ops-ai-queues-directly", "crates/ops/src/commands.rs", "            Err(why) => (State::Proposed, None, Some(why)),", "            Err(why) => (State::Queued, None, Some(why)),", OPS),
     ("ops-own-approval", "crates/ops/src/commands.rs", "    if row.issued_by == person(ctx) && person(ctx).is_some() {", "    if false {", OPS),
     ("ops-other-site-measurements", "crates/ops/src/telemetry.rs", "if !ours.contains(&m.device_id) || m.check(now).is_err() {", "if m.check(now).is_err() {", OPS),
     ("refused-token-kept", "crates/plugins/src/host.rs", "self.tokens.remove(&key);", "let _ = &key;", HOST_UNIT),
@@ -85,6 +86,10 @@ MUTANTS = [
     ("hook-may-call-out", "crates/plugins/src/host.rs", 'if matches!(self.scope, Scope::Hook(_)) => Err(Error::invalid(format!(', "if false => Err(Error::invalid(format!(", PLUGINS),
     ("hook-may-send-on-a-socket", "crates/plugins/src/host.rs", '"http.fetch" | "sockets.send" | "sockets.close" if matches!', '"http.fetch" | "sockets.close" if matches!', PLUGINS),
     ("hook-may-close-a-socket", "crates/plugins/src/host.rs", '"http.fetch" | "sockets.send" | "sockets.close" if matches!', '"http.fetch" | "sockets.send" if matches!', PLUGINS),
+    ("socket-budget-ignored", "crates/plugins/src/sockets.rs", "if behind && self.queued.load(Ordering::Relaxed) + bytes > self.budget {", "if false {", SOCKETS_UNIT),
+    ("socket-budget-punishes-the-quick", "crates/plugins/src/sockets.rs", "if behind && self.queued.load(Ordering::Relaxed) + bytes > self.budget {", "if self.queued.load(Ordering::Relaxed) + bytes > self.budget {", SOCKETS_UNIT),
+    ("socket-budget-never-given-back", "crates/plugins/src/sockets.rs", "        let msg = self.rx.try_recv()?;\n        self.queued.fetch_sub(weight(&msg), Ordering::Relaxed);\n", "        let msg = self.rx.try_recv()?;\n", SOCKETS_UNIT),
+    ("socket-closing-keeps-its-bytes", "crates/plugins/src/sockets.rs", "        self.rx.close();\n        while self.try_recv().is_ok() {}\n", "        self.rx.close();\n", SOCKETS_UNIT),
     ("hook-event-outlives-rollback", "crates/plugins/src/host.rs", "Scope::Hook(hc) => ferrum_kernel::outbox::enqueue(hc.tx, tenant, &topic, None, None, payload).await?,", "Scope::Hook(hc) => {\n                        let mut tx = hc.kernel.db.tenant_tx(tenant).await?;\n                        ferrum_kernel::outbox::enqueue(&mut tx, tenant, &topic, None, None, payload).await?;\n                        tx.commit().await?;\n                    }", PLUGINS),
     ("host-call-outlives-deadline", "crates/plugins/src/runtime.rs", "match tokio::time::timeout_at(end, host.call(&r.op, r.args)).await {", "match Ok::<_, tokio::time::error::Elapsed>(host.call(&r.op, r.args).await) {", DEADLINE),
     ("no-epoch-deadline", "crates/plugins/src/runtime.rs", "store.set_epoch_deadline((deadline.as_millis() / EPOCH_TICK.as_millis()) as u64 + 1);", "store.set_epoch_deadline(u64::MAX / 2);", DEADLINE),
