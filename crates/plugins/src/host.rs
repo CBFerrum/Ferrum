@@ -7,7 +7,7 @@ use crate::sockets::{Outgoing, Overflow, Sent};
 use crate::{Credential, Loaded, PluginHost};
 use async_trait::async_trait;
 use ferrum_kernel::query::parse_filters;
-use ferrum_kernel::{Action, Ctx, Doc, Error, HookCtx, Kernel, ListQuery, Result, Tx};
+use ferrum_kernel::{Action, Ctx, Doc, Error, HookCtx, Kernel, ListQuery, Result, Tx, audit};
 use hmac::{Hmac, Mac};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -279,6 +279,10 @@ impl Host<'_, '_> {
                 // Who is asking is the host's to say. A plugin names a handle, and nothing about itself.
                 if let Some(field) = a.as_object().into_iter().flatten().map(|(k, _)| k).find(|k| !matches!(k.as_str(), "handle" | "sql" | "params")) {
                     tracing::warn!(plugin = %self.plugin.name, tenant = %self.ctx().tenant, field, "a plugin tried to say more than a resource call takes");
+                    let ctx = self.ctx();
+                    let mut tx = self.kernel().db.tenant_tx(ctx.tenant).await?;
+                    audit::record(&mut tx, ctx, "Plugin", self.plugin.id, "resource.refused", None, json!({"call": op, "tried": field})).await?;
+                    tx.commit().await?;
                     return Err(Error::field(field, "is not something a plugin can say"));
                 }
                 let (handle, sql) = (s(&a, "handle")?, s(&a, "sql")?);
