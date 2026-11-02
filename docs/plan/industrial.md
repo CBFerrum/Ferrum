@@ -170,6 +170,15 @@ a delivery taken back, and a receipt refused while its stock was on a task. The 
 every step and no log held an error. It found the recovery defect in the table above, which the suites
 then proved, along with taking a receipt back. A simulator stood in for the equipment.
 
+Upgrades were walked the same way, because every walk before had started from a clean install. A
+workspace seeded on the server from before this work, with a released run, an open line move and a robot
+mission in flight, had the server swapped under it and Operations, Warehouse and Shop Floor upgraded. The
+plan refused the last two until Operations was at 0.2, the mission finished across the swap, and the run
+released under 0.1.0, which has no material status, stayed behind the new gate until a supervisor said
+the material was there, and then finished with the books reconciled. A 0.3.1 gateway killed mid-mission
+and restarted as 0.4.0 opened its journal, marked that mission unknown with a plain reason, and took what
+had been issued meanwhile. A person settled it and the order was still owed.
+
 Two things this does not change. Nothing has run on physical equipment, so a robot-commanding or
 machine-starting pilot still waits on equipment, its recovery and its people (the blockers below), and no
 claim of autonomy is made. And a gateway offline carries on with what it was given: it does not

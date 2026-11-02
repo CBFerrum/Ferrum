@@ -6,9 +6,10 @@ What is true of each requirement is in the registry; this says what happened and
 ## 2026-11-02, evening: what holds when things repeat, arrive late or go wrong
 
 **State**: the review's source findings are fixed, tested, walked on the real binaries as people who
-are not administrators, and on `main` of each repository: Ferrum PR 20 and 21, ERP PR 2, IoT Edge PR 6
-and 7, and this commit's pins. No release was tagged: signing is a person's. [Plan](../plan/industrial.md)
-has the table. This is software correctness only: **nothing has run on physical equipment**.
+are not administrators, and on `main` of each repository: Ferrum PR 20, 21 and 22, ERP PR 2, IoT Edge
+PR 6, 7 and 8. Upgrades from the versions before them were walked too. No release was tagged: signing is
+a person's. [Plan](../plan/industrial.md) has the table. This is software correctness only: **nothing has
+run on physical equipment**.
 
 | Where | What |
 |---|---|
@@ -34,7 +35,8 @@ walk through the real thing found that recovering a mission could leave an order
 it and its wave saying Picked. Walking is not optional. A mutant whose text has moved guards nothing
 and stops a full run: four had, and a full run on the final commits found a fifth test that passed for
 the wrong reason. Only real CI found that a called workflow shared a concurrency group with its caller's
-sibling, and that the frozen lane's frontend was older than the interface needed.
+sibling, and that the frozen lane's frontend was older than the interface needed. Running a green suite
+again is cheap: three tries found two flakes in tests written this week.
 
 ## 2026-11-01, evening: integrations, the record frame and every app's interface
 
