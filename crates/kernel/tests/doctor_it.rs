@@ -36,7 +36,14 @@ async fn scenario() {
     let level = |f: &[ferrum_kernel::doctor::Finding], check: &str| f.iter().find(|x| x.check == check).map(|x| x.level);
 
     let healthy = k.doctor(30).await.unwrap();
-    assert!(healthy.iter().all(|f| f.level == Level::Ok || f.check == "database.connections"), "{healthy:?}");
+    assert!(healthy.iter().all(|f| f.level == Level::Ok || f.check == "database.connections" || f.check == "database.reserve"), "{healthy:?}");
+    assert_eq!(level(&healthy, "database.reserve"), Some(Level::Warning), "this role could take every connection there is");
+    let base = std::env::var("FERRUM_TEST_SUPERUSER").unwrap_or_else(|_| format!("postgres://{}@localhost:5432", std::env::var("USER").unwrap_or_default()));
+    let root = Db::connect(DbConfig { url: format!("{base}/postgres"), max_connections: 1, ..Default::default() }).await.expect("a superuser");
+    sqlx::raw_sql("alter role ferrum connection limit 60").execute(&root.pool).await.unwrap();
+    let held = k.doctor(30).await.unwrap();
+    sqlx::raw_sql("alter role ferrum connection limit -1").execute(&root.pool).await.unwrap();
+    assert_eq!(level(&held, "database.reserve"), Some(Level::Ok), "{held:?}");
     assert_eq!(level(&healthy, "isolation.row_security"), Some(Level::Ok), "every table the kernel creates enforces it");
 
     sqlx::raw_sql("create table leaky (tenant_id uuid not null, notes text)").execute(&k.db.pool).await.unwrap();
