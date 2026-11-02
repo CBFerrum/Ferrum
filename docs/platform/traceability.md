@@ -5,10 +5,10 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Not started | 89 |
-| Partial | 83 |
+| Not started | 83 |
+| Partial | 74 |
 | Implemented, unverified | 14 |
-| Verified in software | 7 |
+| Verified in software | 22 |
 | Blocked externally | 4 |
 | **All** | **197** |
 
@@ -29,23 +29,23 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
-| FCP-POL-001 | Tenant context | Partial | AT-POL-001 | 2 | Holds for today's APIs; project and environment scope does not exist |
-| FCP-POL-002 | Scoped delegation | Partial | AT-POL-002 | 0 | Apps and support narrow a user's rights; no workload grant intersects them |
-| FCP-POL-003 | Separation of duties | Partial | AT-POL-003 | 1 | Commands and revisions have it; capability changes do not |
-| FCP-POL-004 | Immutable approval | Not started | AT-POL-004 | 0 | No approval bound to a canonical digest of artifact, configuration and plan |
-| FCP-POL-005 | Subject lifecycle | Partial | AT-POL-005 | 1 | Subjects have stable ids; workload, partner and build subjects are not modelled |
-| FCP-POL-006 | Federation security | Partial | AT-POL-006 | 1 | Tested against a stand-in provider; no real IdP tenant |
-| FCP-POL-007 | Downstream offboarding | Partial | AT-POL-007 | 1 | Sessions, API keys and OAuth grants end at once; nothing tracks Git, peers or privileged credentials |
-| FCP-POL-008 | Policy freshness | Not started | AT-POL-008 | 0 | Nothing records which policy revision an enforcement point runs |
-| FCP-POL-009 | Emergency access | Partial | AT-POL-009 | 1 | Support's incident level is not break-glass: it depends on the same sign-in |
-| FCP-POL-010 | Negative authorization matrix | Not started | AT-POL-010 | 0 | Roles are tested per app; there is no matrix over every route |
-| FCP-SECRET-001 | Secret indirection | Partial | AT-SECRET-001 | 2 | Sealed values and brokered credentials; no leases or application secret references |
-| FCP-SECRET-002 | Workload attestation | Not started | AT-SECRET-002 | 0 | Nothing exists |
-| FCP-SECRET-003 | Root rotation | Partial | AT-SECRET-003 | 1 | The sealing key rotates; no signing or trust-root rotation |
+| FCP-POL-001 | Tenant context | Verified in software | AT-POL-001 | 2 | One gate over a table of routes, walked as non-members and as another workspace's administrator. SDK and MCP aliases of these routes do not exist yet, so they are not covered |
+| FCP-POL-002 | Scoped delegation | Verified in software | AT-POL-002 | 2 | Workload grant, the caller's rights and the person delegating intersect in one decision. Only one workload route exists so far |
+| FCP-POL-003 | Separation of duties | Verified in software | AT-POL-003 | 2 | Self-approval is refused, and production widening needs two people. Capability plans are the only plans so far; release plans arrive with W05 |
+| FCP-POL-004 | Immutable approval | Verified in software | AT-POL-004 | 2 | Approval is bound to a digest and policy revision, and rechecked at execution. A digest vector was computed independently in Python; no other SDK language exists yet |
+| FCP-POL-005 | Subject lifecycle | Verified in software | AT-POL-005 | 1 | Workforce, partner, workload and emergency subjects decide differently. Partner access through Ferrum accounts is not yet connected to Cloud projects |
+| FCP-POL-006 | Federation security | Verified in software | AT-POL-006 | 1 | Wrong audience, stale nonce, reused code and the rest are refused against a stand-in provider; the redirect URI is the server's own, never the caller's. No real identity provider tenant has been exercised, and SAML is not offered |
+| FCP-POL-007 | Downstream offboarding | Verified in software | AT-POL-007 | 3 | Tracks each downstream target, shows residual access and retries with nothing held open. The forge and network revokers are test doubles until W03 and W07 add real ones |
+| FCP-POL-008 | Policy freshness | Verified in software | AT-POL-008 | 2 | Coverage shows which point runs which revision, and a point past its age refuses. No real enforcement point reports yet; W05 and W07 add them |
+| FCP-POL-009 | Emergency access | Verified in software | AT-POL-009 | 2 | Codes work once, for an hour, tell the security administrators and reach project administration only. Offline storage of the codes is the customer's procedure, and no drill has been run with one |
+| FCP-POL-010 | Negative authorization matrix | Verified in software | AT-POL-010 | 1 | Walks every entry of the route table. The table is the only way in today; generated SDK and MCP aliases must join it when they exist |
+| FCP-SECRET-001 | Secret indirection | Verified in software | AT-SECRET-001 | 2 | Secrets are references sealed per environment, never returned. Leased delivery to a running workload arrives with W05 and W06 |
+| FCP-SECRET-002 | Workload attestation | Verified in software | AT-SECRET-002 | 2 | Short-lived signed tokens whose claims come from server records, for one audience, class and job. Attestation of the workload itself depends on the runtime W04 and W05 qualify |
+| FCP-SECRET-003 | Root rotation | Verified in software | AT-SECRET-003 | 2 | Signing keys rotate with overlap and enforcement points see the new bundle. The sealing key's rotation is the platform's own, and has no drill yet |
 | FCP-SECRET-004 | Key recovery | Partial | AT-SECRET-004 | 0 | Documented, not exercised |
 | FCP-SECRET-005 | Credential expiry | Partial | AT-SECRET-005 | 0 | Gateways check expiry; no general policy |
-| FCP-SECRET-006 | Environment secret scope | Not started | AT-SECRET-006 | 0 | Nothing exists |
-| FCP-SECRET-007 | Compromise response | Not started | AT-SECRET-007 | 0 | Nothing exists |
+| FCP-SECRET-006 | Environment secret scope | Verified in software | AT-SECRET-006 | 2 | Preview cannot read production's secrets and a public-prefixed name cannot hold one. Delivery into builds is W04's |
+| FCP-SECRET-007 | Compromise response | Verified in software | AT-SECRET-007 | 2 | A compromised key stops at once and its unexpired tokens are listed. Running workloads do not yet renew by themselves, so that recovery is unexercised |
 | FCP-SECRET-008 | Operator visibility honesty | Partial | AT-SECRET-008 | 0 | Stated for support; not for every hosted profile |
 
 ## W02: Resource management
