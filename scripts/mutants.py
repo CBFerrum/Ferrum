@@ -50,6 +50,8 @@ TIMEOUT = 600
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
     ("ops-provisioned-by-saying-so", "crates/ops/src/devices.rs", "if to == Lifecycle::Provisioned && gateway.is_none() {", "if false {", OPS),
+    ("ops-allowance-ignored", "crates/ops/src/sync.rs", "let kept_back = !req.measurements.is_empty() && telemetry::over_allowance(&mut tx, tenant, now).await?;", "let kept_back = false;", OPS),
+    ("ops-devices-beyond-allowance", "crates/ops/src/devices.rs", "if over.unwrap_or(false) {", "if false {", OPS),
     ("ops-site-never-hears", "crates/ops/src/commands.rs", "State::parse(&s).filter(|s| s.is_final())", "State::parse(&s).filter(|_| false)", OPS),
     ("ops-report-goes-backwards", "crates/ops-contract/src/command.rs", "(a, b) if b.rank() > a.rank() => Step::Move,", "(a, b) if b.rank() != a.rank() => Step::Move,", CONTRACT),
     ("ops-unknown-needs-no-evidence", "crates/ops-contract/src/command.rs", "            if evidence {\n                Step::Move", "            if true {\n                Step::Move", CONTRACT),

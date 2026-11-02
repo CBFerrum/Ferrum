@@ -120,8 +120,21 @@ impl DocHook for DeviceHook {
         "ops.device"
     }
 
-    async fn validate_change(&self, _hc: &mut HookCtx<'_>, old: Option<&Doc>, doc: &Doc) -> Result<()> {
-        let Some(old) = old else { return Ok(()) };
+    async fn validate_change(&self, hc: &mut HookCtx<'_>, old: Option<&Doc>, doc: &Doc) -> Result<()> {
+        let Some(old) = old else {
+            let tenant = hc.ctx.tenant;
+            let over: Option<bool> = sqlx::query_scalar(
+                "select (select count(*) from e_device where tenant_id = $1 and lifecycle <> 'Retired') \
+                   >= (select (quotas->>'devices')::bigint from tenant where id = $1)",
+            )
+            .bind(tenant)
+            .fetch_one(&mut **hc.tx)
+            .await?;
+            if over.unwrap_or(false) {
+                return Err(Error::Conflict("this workspace has reached its allowance of devices".into()));
+            }
+            return Ok(());
+        };
         let commissioned = matches!(old.get("lifecycle").and_then(Value::as_str), Some("Commissioned" | "Active" | "Maintenance"));
         if commissioned && (changed(old.get("site"), doc.get("site")) || changed(old.get("domain"), doc.get("domain"))) {
             return Err(Error::field("site", "a commissioned device is bound to its site and domain: quarantine it and commission it again"));
