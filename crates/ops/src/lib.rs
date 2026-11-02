@@ -14,6 +14,7 @@
 
 pub mod authority;
 pub mod commands;
+pub mod connections;
 pub mod devices;
 pub mod identity;
 pub mod mcp;

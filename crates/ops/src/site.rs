@@ -13,6 +13,8 @@
 //! | `POST /commands/{id}/reconcile` | Ops Recovery | `{to, evidence}` |
 //! | `GET /authority` | | who holds each domain |
 //! | `POST /authority/transfer` | Device Administrator | `{domain, to, reason}` |
+//! | `POST /authority/pool` | Device Administrator | `{domain, reason}` |
+//! | `GET /connections` | Ops Viewer | Which gateway each device that calls in is on |
 //! | `POST /devices/{id}/enrollment` | Device Administrator | a one-time code |
 //! | `POST /devices/{id}/lifecycle` | Device Administrator | `{to, reason}` |
 //! | `GET /devices/{id}/latest` | | each metric's newest value and its age |
@@ -24,7 +26,7 @@
 
 use crate::commands::{self, NewCommand};
 use crate::identity::{self, Refused};
-use crate::{authority, devices, sync, telemetry};
+use crate::{authority, connections, devices, sync, telemetry};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use ferrum_kernel::{Ctx, Error, Kernel, Result, Site, SiteRequest, SiteResponse};
@@ -154,6 +156,12 @@ struct Reconcile {
 }
 
 #[derive(Deserialize)]
+struct Pool {
+    domain: String,
+    reason: String,
+}
+
+#[derive(Deserialize)]
 struct Transfer {
     domain: String,
     to: Uuid,
@@ -211,7 +219,8 @@ async fn signed_in(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<SiteRespo
             may(ctx, READ)?;
             let id = uuid(id)?;
             command_site(k, ctx, id).await?;
-            Ok(ok(commands::describe(k, ctx, id).await?))
+            let after = param(req, "after").map(|v| v.parse().map_err(|_| Error::field("after", "not a position in this history"))).transpose()?;
+            Ok(ok(commands::describe(k, ctx, id, after).await?))
         }
         ("POST", ["commands", id, act @ ("approve" | "refuse" | "cancel" | "reconcile")]) => {
             let id = uuid(id)?;
@@ -248,6 +257,15 @@ async fn signed_in(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<SiteRespo
         ("GET", ["authority"]) => {
             may(ctx, READ)?;
             Ok(ok(json!({"domains": authority::list(k, ctx).await?})))
+        }
+        ("POST", ["authority", "pool"]) => {
+            may(ctx, CONFIGURE)?;
+            let t: Pool = body(req)?;
+            Ok(ok(json!({"epoch": authority::pool(k, ctx, &t.domain, &t.reason).await?})))
+        }
+        ("GET", ["connections"]) => {
+            may(ctx, READ)?;
+            Ok(ok(json!({"connections": connections::list(k, ctx).await?})))
         }
         ("POST", ["authority", "transfer"]) => {
             may(ctx, CONFIGURE)?;

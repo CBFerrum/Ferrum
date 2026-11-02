@@ -233,6 +233,7 @@ fn the_ledger_says_only_what_was_established() {
 
 async fn scenario() {
     let k = boot().await;
+    a_charger_is_where_its_connection_is(&k).await;
     envelopes_and_exclusive_work(&k).await;
     let t = workspace(&k, "north").await;
     let site = id_of(&k.insert(&t.admin, "Site", obj(json!({"site_name": "North DC", "site_code": "north"}))).await.expect("site"));
@@ -709,6 +710,121 @@ async fn scenario() {
 
 /// What software may do on its own, and what one physical thing may have alive at once, in a
 /// workspace of their own so that nothing here is counted by what the ledger's scenario expects.
+/// AT-OPS-002 and 003: two gateways behind a load balancer and one charger going between them.
+async fn a_charger_is_where_its_connection_is(k: &Arc<Kernel>) {
+    let t = workspace(k, "charging").await;
+    let site = id_of(&k.insert(&t.admin, "Site", obj(json!({"site_name": "Depot", "site_code": "depot"}))).await.unwrap());
+    let (g3_id, mut g3) = gateway(&t, "GW-3", site, 33).await;
+    activate(&t, g3_id).await;
+    let (g4_id, mut g4) = gateway(&t, "GW-4", site, 44).await;
+    activate(&t, g4_id).await;
+    let cp = robot(&t, "CP-1", site).await;
+    let fact = |kind: &str, device: Uuid, at: chrono::DateTime<Utc>| Fact { fact_id: Uuid::now_v7(), kind: kind.into(), at_source: at, actor: None, body: json!({"device": device}) };
+    let with = |g: &Gateway, facts: Vec<Fact>, reports: Vec<Report>| SyncRequest { facts, reports, ..g.sync_request() };
+
+    // Unpooled, the second gateway holds nothing, as ever.
+    assert!(g4.sync(&t, with(&g4, vec![], vec![])).await.fenced);
+    let viewer = person(&t, "vi@depot.test", &["Ops Viewer"]).await;
+    assert!(matches!(api(&t, &viewer, "POST", "/authority/pool", json!({"domain": "depot", "reason": "chargers"})).await, Err(Error::Forbidden(_))));
+    assert!(authority::pool(k, &t.admin, "depot", " ").await.is_err(), "the reason is required");
+    let epoch = authority::pool(k, &t.admin, "depot", "chargers call whichever gateway they are sent to").await.expect("pooled");
+    assert_eq!(authority::pool(k, &t.admin, "depot", "again").await.unwrap(), epoch);
+    (g3.epoch, g4.epoch) = (epoch, epoch);
+    assert!(!g3.sync(&t, with(&g3, vec![], vec![])).await.fenced && !g4.sync(&t, with(&g4, vec![], vec![])).await.fenced, "both work under one epoch");
+
+    // Nothing is connected, so nobody is given anything.
+    let first = issue(&t, &t.admin, move_tote(cp)).await.unwrap();
+    assert!(g3.sync(&t, with(&g3, vec![], vec![])).await.commands.is_empty());
+    assert!(g4.sync(&t, with(&g4, vec![], vec![])).await.commands.is_empty());
+
+    // Only the gateway holding the connection gets it, whoever asks first.
+    let t0 = Utc::now();
+    let opened = with(&g3, vec![fact("connection.opened", cp, t0)], vec![]);
+    let got = g3.sync(&t, opened.clone()).await;
+    assert_eq!(got.commands.iter().map(|c| c.id).collect::<Vec<_>>(), [first.id]);
+    assert!(g4.sync(&t, with(&g4, vec![], vec![])).await.commands.is_empty(), "a gateway that has no socket gets nothing to send");
+
+    // A gateway that was not given it cannot say how it went.
+    let mut held = with(&g3, vec![], vec![]);
+    held.held = vec![first.id];
+    g3.sync(&t, held).await;
+    let false_ack = g4.report(first.id, State::Completed);
+    let answer = g4.sync(&t, with(&g4, vec![], vec![false_ack.clone()])).await;
+    assert!(answer.reports_refused.iter().any(|(id, why)| *id == false_ack.report_id && why.contains("another gateway")), "{answer:?}");
+    assert_eq!(state(&t, first.id).await, "Queued");
+    let g3_accepts = g3.report(first.id, State::Accepted);
+    g3.sync(&t, with(&g3, vec![], vec![g3_accepts])).await;
+    assert_eq!(state(&t, first.id).await, "Accepted");
+
+    // It calls the other gateway. What the first had started may have happened.
+    let moved = t0 + Duration::seconds(10);
+    g4.sync(&t, with(&g4, vec![fact("connection.opened", cp, moved)], vec![])).await;
+    assert_eq!(state(&t, first.id).await, "OutcomeUnknown");
+    let second = issue(&t, &t.admin, NewCommand { payload: json!({"tote": "T-2", "to": "PACK-2"}), ..move_tote(cp) }).await.unwrap();
+
+    // The old gateway noticing its socket died says nothing about the new connection.
+    g3.sync(&t, with(&g3, vec![fact("connection.closed", cp, moved + Duration::seconds(5))], vec![])).await;
+    assert!(g3.sync(&t, with(&g3, vec![], vec![])).await.commands.is_empty(), "the old connection is given no new work");
+    let got = g4.sync(&t, with(&g4, vec![], vec![])).await;
+    assert_eq!(got.commands.iter().map(|c| c.id).collect::<Vec<_>>(), [second.id], "the mapping stayed");
+
+    // Nor does an old journal replayed late take it back.
+    g3.sync(&t, with(&g3, vec![fact("connection.opened", cp, t0 + Duration::seconds(5))], vec![])).await;
+    let shown = json_of(api(&t, &t.admin, "GET", "/connections", Value::Null).await.unwrap());
+    let row = &shown["connections"][0];
+    assert_eq!((&row["gateway_code"], &row["generation"], &row["closed_at"]), (&json!("GW-4"), &json!(2), &Value::Null), "{shown}");
+
+    // Its command's report joins the history and changes nothing: a person says what happened.
+    let late = g3.report(first.id, State::Completed);
+    g3.sync(&t, with(&g3, vec![], vec![late])).await;
+    assert_eq!(state(&t, first.id).await, "OutcomeUnknown");
+
+    // AT-OPS-013: the workspace has used today's allowance, in the middle of a session. Readings wait.
+    // A stop, and everything said about how work went, do not.
+    let mut tx = k.db.system_tenant_tx(t.tenant).await.unwrap();
+    sqlx::query("update tenant set quotas = $2 where id = $1").bind(t.tenant).bind(json!({"measurements_per_day": 0})).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let stop = issue(&t, &t.admin, NewCommand { payload: json!({"tote": "stop", "to": "here"}), ..move_tote(cp) }).await.unwrap();
+    let accepted = g4.report(second.id, State::Accepted);
+    let mut busy = with(&g4, vec![fact("edge.transaction", cp, Utc::now())], vec![accepted.clone()]);
+    busy.measurements = vec![Measurement {
+        device_id: cp,
+        metric: "energy".into(),
+        value: 1.0,
+        unit: None,
+        source_time: Utc::now(),
+        boot: g4.boot,
+        seq: 1,
+        quality: Quality::Good,
+        class: Class::Sample,
+    }];
+    let answer = g4.sync(&t, busy).await;
+    assert_eq!((answer.measurements_stored, answer.measurements_held), (0, true), "readings wait at the gateway");
+    assert!(answer.lease.is_some() && answer.reports_done.contains(&accepted.report_id) && answer.facts_done.len() == 1, "{answer:?}");
+    assert!(answer.commands.iter().any(|c| c.id == stop.id), "and a stop is delivered: {answer:?}");
+    let mut tx = k.db.system_tenant_tx(t.tenant).await.unwrap();
+    sqlx::query("update tenant set quotas = '{}' where id = $1").bind(t.tenant).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+
+    // AT-OPS-014: a client that went away reads what it missed from wherever it comes back, and one
+    // holding a position this history never reached is told to start again.
+    let seen = commands::describe(k, &t.admin, second.id, None).await.unwrap();
+    let cursor = seen["cursor"].as_i64().unwrap();
+    assert_eq!(commands::describe(k, &t.admin, second.id, Some(cursor)).await.unwrap()["history"], json!([]));
+    let done = g4.report(second.id, State::Completed);
+    g4.sync(&t, with(&g4, vec![], vec![done])).await;
+    let back = commands::describe(k, &t.admin, second.id, Some(cursor)).await.unwrap();
+    assert_eq!((&back["state"], back["history"].as_array().unwrap().len()), (&json!("Completed"), 1), "{back}");
+    assert_eq!(back["resync_required"], Value::Null);
+    let lost = commands::describe(k, &t.admin, second.id, Some(cursor + 1_000_000)).await.unwrap();
+    assert_eq!((&lost["resync_required"], &lost["state"]), (&json!(true), &json!("Completed")), "and is given the state to start from");
+
+    // A gateway that stops being trusted loses what is connected to it, and the device can start again.
+    devices::set_lifecycle(k, &t.admin, g4_id, Lifecycle::Quarantined, "lost").await.expect("quarantined");
+    let shown = json_of(api(&t, &t.admin, "GET", "/connections", Value::Null).await.unwrap());
+    assert!(shown["connections"][0]["closed_at"].is_string(), "{shown}");
+}
+
 async fn envelopes_and_exclusive_work(k: &Arc<Kernel>) {
     let t = workspace(k, "bounded").await;
     let site = id_of(&k.insert(&t.admin, "Site", obj(json!({"site_name": "Bounded", "site_code": "bounded"}))).await.unwrap());

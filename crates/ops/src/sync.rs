@@ -3,7 +3,7 @@
 //! nothing: reports by `report_id`, facts by `fact_id`, measurements by boot and sequence.
 
 use crate::commands::{self, Applied};
-use crate::{devices, telemetry};
+use crate::{connections, devices, telemetry};
 use chrono::{Duration, Utc};
 use ferrum_kernel::notify::LIVE_CHANNEL;
 use ferrum_kernel::{Error, Kernel, Result, Tx, outbox};
@@ -23,7 +23,7 @@ fn valid_kind(kind: &str) -> bool {
     !kind.is_empty() && kind.len() <= 100 && kind.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_')
 }
 
-pub async fn apply_fact(tx: &mut Tx, tenant: Uuid, site: Uuid, f: &Fact) -> Result<()> {
+pub async fn apply_fact(tx: &mut Tx, tenant: Uuid, site: Uuid, gateway: Uuid, f: &Fact) -> Result<()> {
     let new = sqlx::query(
         "insert into op_fact (tenant_id, id, site_id, kind, at_source, actor, body) values ($1, $2, $3, $4, $5, $6, $7) on conflict (tenant_id, id) do nothing",
     )
@@ -40,6 +40,13 @@ pub async fn apply_fact(tx: &mut Tx, tenant: Uuid, site: Uuid, f: &Fact) -> Resu
         > 0;
     if !new {
         return Ok(());
+    }
+    if let Some(device) = f.kind.starts_with("connection.").then(|| f.body.get("device").and_then(|v| v.as_str()).and_then(|v| v.parse::<Uuid>().ok())).flatten() {
+        if f.kind == "connection.opened" {
+            connections::opened(tx, tenant, device, gateway, site, f.at_source).await?;
+        } else if f.kind == "connection.closed" {
+            connections::closed(tx, tenant, device, gateway, f.at_source).await?;
+        }
     }
     if f.kind == "equipment.state" {
         // Equipment's own history is kept here, for every app's OEE. Late ones land in their place.
@@ -132,16 +139,20 @@ pub async fn exchange(k: &Kernel, tenant: Uuid, device: Uuid, req: SyncRequest) 
     if !gateway.lifecycle.may_connect() {
         return Err(Error::Forbidden(format!("this gateway is {}", gateway.lifecycle.as_str())));
     }
-    let held: Option<(String, i64)> = sqlx::query_as("select domain, epoch from op_authority where tenant_id = $1 and holder = $2 for update")
-        .bind(tenant)
-        .bind(device)
-        .fetch_optional(&mut *tx)
-        .await?;
-    let current: Option<i64> = sqlx::query_scalar("select epoch from op_authority where tenant_id = $1 and domain = $2")
-        .bind(tenant)
-        .bind(&gateway.domain)
-        .fetch_optional(&mut *tx)
-        .await?;
+    let (current, pooled): (Option<i64>, bool) =
+        sqlx::query_as::<_, (i64, bool)>("select epoch, pooled from op_authority where tenant_id = $1 and domain = $2 and site_id = $3")
+            .bind(tenant)
+            .bind(&gateway.domain)
+            .bind(gateway.site)
+            .fetch_optional(&mut *tx)
+            .await?
+            .map_or((None, false), |(epoch, pooled)| (Some(epoch), pooled));
+    // A pooled domain's gateways all work under its epoch, each for the devices connected to it.
+    let held: Option<(String, i64)> = if pooled {
+        current.map(|epoch| (gateway.domain.clone(), epoch))
+    } else {
+        sqlx::query_as("select domain, epoch from op_authority where tenant_id = $1 and holder = $2 for update").bind(tenant).bind(device).fetch_optional(&mut *tx).await?
+    };
     let fenced = match &held {
         Some((_, epoch)) => req.epoch != 0 && req.epoch != *epoch,
         None => true,
@@ -153,14 +164,14 @@ pub async fn exchange(k: &Kernel, tenant: Uuid, device: Uuid, req: SyncRequest) 
     for r in &reports {
         // Reports from a holder that was replaced join the history and change nothing, however true
         // they may be. A person settles those commands.
-        match commands::apply(&mut tx, tenant, r, current.unwrap_or(0)).await? {
+        match commands::apply(&mut tx, tenant, r, current.unwrap_or(0), device).await? {
             Applied::Done(_) => done.push(r.report_id),
             Applied::Refused(why) => refused.push((r.report_id, why)),
         }
     }
     let mut facts_done = Vec::new();
     for f in &req.facts {
-        apply_fact(&mut tx, tenant, gateway.site, f).await?;
+        apply_fact(&mut tx, tenant, gateway.site, device, f).await?;
         facts_done.push(f.fact_id);
     }
     // Past a workspace's allowance measurements stay at the gateway, within its own budget, until
@@ -203,7 +214,7 @@ pub async fn exchange(k: &Kernel, tenant: Uuid, device: Uuid, req: SyncRequest) 
         lease = Some(Lease { epoch: *epoch, valid_until: now + Duration::hours(max_hours.unwrap_or(72)) });
         commands::confirm_held(&mut tx, tenant, domain, &req.held).await?;
         if gateway.lifecycle.takes_commands() {
-            commands_out = commands::take_for_site(&mut tx, tenant, domain, *epoch, i64::from(req.want)).await?;
+            commands_out = commands::take_for_site(&mut tx, tenant, domain, *epoch, i64::from(req.want), device, pooled).await?;
         }
         cancel = commands::cancels(&mut tx, tenant, domain).await?;
         settled = commands::settled(&mut tx, tenant, domain, &req.in_doubt).await?;
