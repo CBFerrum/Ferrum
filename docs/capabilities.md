@@ -9,11 +9,11 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 110 |
+| Implemented, qualification incomplete | 111 |
 | Partially implemented | 54 |
 | Missing | 45 |
 | Blocked by external dependency | 9 |
-| **All** | **218** |
+| **All** | **219** |
 
 ## Platform
 
@@ -263,9 +263,10 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-IND-025 | Flows: logic drawn, simulated, reviewed, run at the gateway | Implemented, qualification incomplete | tested | Flows run only at gateways; No enrichment from records; A crash can lose 15 seconds of what a flow remembers |
 | FERRUM-IND-026 | Alarms, attributes, strangers and robots at the platform | Implemented, qualification incomplete | tested | A map shows where robots say they are, and steers nothing |
 | FERRUM-IND-027 | A device API, dashboards and history, with people told in steps | Implemented, qualification incomplete | tested | No DTLS, so CoAP and LwM2M stay on private networks; Pages poll |
-| FERRUM-IND-028 | Protocols by name: S7, EtherNet/IP, ADS, BACnet, SNMP, KNX, IEC 104, M-Bus, OCPP, LwM2M, Sparkplug hosts and nodes | Implemented, qualification incomplete | tested | Each met software, none met equipment; KNX met only a stand-in; No DNP3, DLMS or OPC UA server |
+| FERRUM-IND-028 | Protocols by name: S7, EtherNet/IP, ADS, BACnet, SNMP, KNX, IEC 104, DNP3, DLMS, M-Bus, OCPP, LwM2M, Sparkplug hosts and nodes, and a gateway as an OPC UA server | Implemented, qualification incomplete | tested | Each met software, none met equipment; KNX met only a stand-in; DLMS met no independent server; No certificates over DTLS |
 | FERRUM-IND-029 | A fleet: import, bulk commands, firmware rollouts, schedules, solutions, reports | Implemented, qualification incomplete | tested | Firmware never reaches a robot, a controller, a machine or a fleet; No device maker has tried it |
 | FERRUM-IND-030 | Exports to buses, stores and clouds, flows on the platform, and twins | Implemented, qualification incomplete | tested | Google and Azure are checked against the documented shape of the calls only; A platform flow hears closed minutes and stops with the platform |
+| FERRUM-IND-031 | Customers in the portal, relations, reports by the clock, allowances and live pages | Implemented, qualification incomplete | tested | No customer has used the portal; The report PDF path has not been run; Allowances are set by the operator in tenant.quotas, with no screen |
 
 ## Verification
 

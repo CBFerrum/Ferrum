@@ -2412,8 +2412,8 @@ dependencies = [
 
 [[package]]
 name = "ferrum-app-edge"
-version = "0.2.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-edge?branch=main#334fcd8448d5abf298ece2e0b6ee22a5922c0b2d"
+version = "0.3.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-edge?branch=main#d48b6a769f8dc5e4a945fdc2d9b88155b6e1e067"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2737,9 +2737,10 @@ dependencies = [
 
 [[package]]
 name = "ferrum-edge-contract"
-version = "0.2.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-edge?branch=main#334fcd8448d5abf298ece2e0b6ee22a5922c0b2d"
+version = "0.3.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-edge?branch=main#d48b6a769f8dc5e4a945fdc2d9b88155b6e1e067"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "ferrum-calc",
  "hex",
