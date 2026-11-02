@@ -6,9 +6,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use ferrum_ops_contract::telemetry::Class;
 use ferrum_ops_contract::{Command, sync::SiteDevice};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Dispatched {
     /// The equipment or its manager took it. `external` is its name for the work, if it has one.
     Accepted { external: Option<String> },
@@ -16,7 +17,7 @@ pub enum Dispatched {
     Rejected(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Failure {
     /// It did not leave this machine: safe to try again.
     NotSent(String),
@@ -26,7 +27,7 @@ pub enum Failure {
 
 /// What the equipment says about work now. Only `Completed`, `Failed` and `Aborted` settle it, and
 /// their value is the evidence.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Observation {
     Waiting,
     Running,
@@ -37,7 +38,7 @@ pub enum Observation {
     NotFound,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Reading {
     Value {
         device: String,
@@ -52,6 +53,18 @@ pub enum Reading {
         device: String,
         state: String,
         reason: Option<String>,
+    },
+    /// A fact about it that changes rarely.
+    Attribute {
+        device: String,
+        key: String,
+        value: Value,
+    },
+    /// Something that happened.
+    Event {
+        device: String,
+        name: String,
+        value: Value,
     },
 }
 

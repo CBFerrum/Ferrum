@@ -1,0 +1,11 @@
+# about: Another system posting events to the gateway, with no platform needed.
+# group: Generic
+# The site must list the address under `listen` in site.yaml. Callers send the token as a bearer.
+name: webhook-events
+connect: webhook://0.0.0.0:8088?token={secret.webhook_token}
+read:
+  - topic: /events/+
+    device: "{topic.1}"
+    values:
+      - {metric: battery.percent, json: $.battery, unit: "%"}
+      - {event: arrived, json: $.at}

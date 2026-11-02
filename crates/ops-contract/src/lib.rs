@@ -4,9 +4,13 @@
 
 pub mod command;
 pub mod device;
+pub mod driver;
+pub mod edge;
+pub mod flow;
 pub mod oee;
 pub mod schedule;
 pub mod sign;
+pub mod sparkplug;
 pub mod sync;
 pub mod telemetry;
 

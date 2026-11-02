@@ -1,0 +1,25 @@
+# about: A PLC by Modbus registers, with a handshake: write the job, then the start bit, then watch.
+# group: Machines
+# Addresses are examples. Register 100 is written last because writing it is what starts the machine.
+name: modbus-tcp-plc
+connect: modbus+tcp://plc:502?unit=1
+poll:
+  - {every: 1s, read: holding, at: 0, count: 6}
+read:
+  - values:
+      - {metric: temp.c, reg: 0, type: i16, scale: 0.1, unit: C, deadband: 0.2}
+      - {metric: pressure.bar, reg: 1, type: f32, order: cdab, unit: bar, deadband: 0.05}
+      - {metric: cycles.count, reg: 3, type: u32}
+      - {state: true, reg: 5, map: {"0": Idle, "1": Running, "2": Stopped}}
+commands:
+  machine.start_job:
+    write:
+      - {at: 101, value: "{payload.job}"}
+      - {at: 100, value: 1}
+    status:
+      poll: {read: holding, at: 102, count: 1}
+      at: 0
+      type: u16
+      running: "1"
+      done: "2"
+      failed: "3"

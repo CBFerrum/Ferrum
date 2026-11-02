@@ -19,3 +19,53 @@ advisories:
       This reading needs confirming by someone other than the author of this entry.
     review_by: 2027-02-01
     resolved_when: jsonwebtoken or loco-rs upgrade.
+  - id: RUSTSEC-2026-0049
+    crate: rustls-webpki
+    owner: Chinmoy Bhuyan
+    reason: Certificate validation faults in rustls-webpki 0.102.8, which rumqttc 0.25 depends on for `mqtts` at gateways.
+    applicability: >-
+      rumqttc names one error type from this version and calls nothing in it. TLS goes through
+      tokio-rustls and rustls 0.23, which verify with rustls-webpki 0.103.16, where these are fixed.
+      This reading needs confirming by someone other than the author of this entry.
+    review_by: 2027-02-01
+    resolved_when: rumqttc moves to a current rustls-webpki, or drops it.
+  - id: RUSTSEC-2026-0098
+    crate: rustls-webpki
+    owner: Chinmoy Bhuyan
+    reason: Certificate validation faults in rustls-webpki 0.102.8, which rumqttc 0.25 depends on for `mqtts` at gateways.
+    applicability: >-
+      rumqttc names one error type from this version and calls nothing in it. TLS goes through
+      tokio-rustls and rustls 0.23, which verify with rustls-webpki 0.103.16, where these are fixed.
+      This reading needs confirming by someone other than the author of this entry.
+    review_by: 2027-02-01
+    resolved_when: rumqttc moves to a current rustls-webpki, or drops it.
+  - id: RUSTSEC-2026-0099
+    crate: rustls-webpki
+    owner: Chinmoy Bhuyan
+    reason: Certificate validation faults in rustls-webpki 0.102.8, which rumqttc 0.25 depends on for `mqtts` at gateways.
+    applicability: >-
+      rumqttc names one error type from this version and calls nothing in it. TLS goes through
+      tokio-rustls and rustls 0.23, which verify with rustls-webpki 0.103.16, where these are fixed.
+      This reading needs confirming by someone other than the author of this entry.
+    review_by: 2027-02-01
+    resolved_when: rumqttc moves to a current rustls-webpki, or drops it.
+  - id: RUSTSEC-2026-0104
+    crate: rustls-webpki
+    owner: Chinmoy Bhuyan
+    reason: Certificate validation faults in rustls-webpki 0.102.8, which rumqttc 0.25 depends on for `mqtts` at gateways.
+    applicability: >-
+      rumqttc names one error type from this version and calls nothing in it. TLS goes through
+      tokio-rustls and rustls 0.23, which verify with rustls-webpki 0.103.16, where these are fixed.
+      This reading needs confirming by someone other than the author of this entry.
+    review_by: 2027-02-01
+    resolved_when: rumqttc moves to a current rustls-webpki, or drops it.
+  - id: RUSTSEC-2026-0382
+    crate: rustls-webpki
+    owner: Chinmoy Bhuyan
+    reason: Certificate validation faults in rustls-webpki 0.102.8, which rumqttc 0.25 depends on for `mqtts` at gateways.
+    applicability: >-
+      rumqttc names one error type from this version and calls nothing in it. TLS goes through
+      tokio-rustls and rustls 0.23, which verify with rustls-webpki 0.103.16, where these are fixed.
+      This reading needs confirming by someone other than the author of this entry.
+    review_by: 2027-02-01
+    resolved_when: rumqttc moves to a current rustls-webpki, or drops it.

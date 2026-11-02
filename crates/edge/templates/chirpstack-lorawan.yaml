@@ -1,0 +1,10 @@
+# about: LoRaWAN sensors through ChirpStack's MQTT integration, with its decoded payload.
+# group: Generic
+# Set a payload decoder in ChirpStack so that `object` is filled in. Every decoded key is a value.
+name: chirpstack-lorawan
+connect: mqtt://chirpstack:1883
+subscribe:
+  - application/+/device/+/event/up
+read:
+  - {topic: application/+/device/+/event/up, device: "{topic.2}", each: $.object, metric: "{each.key}", json: $.value}
+  - {topic: application/+/device/+/event/up, device: "{topic.2}", attribute: rssi, json: "$.rxInfo[0].rssi"}

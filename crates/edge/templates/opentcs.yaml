@@ -1,0 +1,39 @@
+# about: Automated vehicles through an openTCS kernel's web API, version 8.
+# group: Robots
+# openTCS routes and dispatches, and this creates its transport orders. The command's own id names
+# the order, so after a crash a site can ask openTCS whether it ever arrived, and not guess.
+name: opentcs
+connect: http://opentcs:55300/v8
+poll:
+  - {every: 5s, get: /vehicles}
+read:
+  - each: $
+    device: "{each.name}"
+    values:
+      - {metric: battery.percent, json: $.energyLevel, unit: "%", deadband: 1}
+      - {state: true, json: $.state, map: {IDLE: Idle, EXECUTING: Running, CHARGING: Idle, ERROR: Stopped, UNAVAILABLE: Stopped, UNKNOWN: Unknown}}
+      - {attribute: position.point, json: $.currentPosition}
+      - {attribute: order, json: $.transportOrder}
+commands:
+  transport.move:
+    post: "/transportOrders/{command}"
+    send:
+      intendedVehicle: "{device}"
+      destinations:
+        - {locationName: "{payload.location}", operation: "{payload.operation}"}
+    status:
+      poll: {get: "/transportOrders/{command}"}
+      json: $.state
+      running: [RAW, ACTIVE, DISPATCHABLE, BEING_PROCESSED]
+      done: FINISHED
+      failed: [FAILED, UNROUTABLE]
+      aborted: WITHDRAWN
+    find:
+      poll: {get: "/transportOrders/{command}"}
+      json: $.state
+      running: [RAW, ACTIVE, DISPATCHABLE, BEING_PROCESSED]
+      done: FINISHED
+      failed: [FAILED, UNROUTABLE]
+      aborted: WITHDRAWN
+    cancel:
+      post: "/transportOrders/{command}/withdrawal"

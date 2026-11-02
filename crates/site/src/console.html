@@ -82,6 +82,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
     <div id="queued-list"></div>
   </section>
   <section>
+    <h2>Connections</h2>
+    <div id="links" class="empty">None.</div>
+    <h2>Flows</h2>
+    <div id="flows" class="empty">None.</div>
+  </section>
+  <section>
     <h2>Notices</h2>
     <div id="notices" class="empty">None.</div>
   </section>
@@ -135,6 +141,10 @@ async function refresh() {
     $('banner').hidden = !s.stopped; $('banner').textContent = s.stopped || '';
     $('queued').textContent = s.queued; $('running').textContent = s.running; $('unknown').textContent = s.unknown;
     $('unsent').textContent = s.unsent_reports + s.unsent_facts; $('lease').textContent = left(s.lease_until);
+    const links = s.links || [];
+    $('links').replaceChildren(...(links.length ? links.map((l) => text('p', `${l.up ? 'Connected' : 'Not connected'}: ${l.definition}, ${l.address}, ${l.messages} messages${l.dropped ? `, ${l.dropped} dropped` : ''}${l.last_error ? `. ${l.last_error}` : ''}`)) : [text('span', 'None.')]));
+    const flows = s.flows || [];
+    $('flows').replaceChildren(...(flows.length ? flows.map((f) => text('p', `${f.name}, version ${f.revision}`)) : [text('span', 'None.')]));
     const notices = s.notices || [];
     $('notices').replaceChildren(...(notices.length ? notices.map(([at, t]) => text('p', new Date(at).toLocaleString() + ' — ' + t)) : [text('span', 'None.')]));
     if (token && !(document.activeElement && ['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName))) {

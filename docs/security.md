@@ -29,6 +29,16 @@ operator to know. Report a vulnerability privately to the maintainers rather tha
 * Operators with a role cannot edit a warehouse document they only scan against, and separation of
   duties is enforced where it matters: whoever wrote a revision does not approve it, whoever placed a
   hold does not release it, repaired does not mean returned to service.
+* A definition from the platform runs on a gateway, so the gateway limits it: hosts by `allow`, ports
+  to listen on by `listen`, programs to `drivers_dir`, certificates to its own folder, and serial ports
+  to `/dev`. Taking anything from the platform at all is off until `managed: true`.
+* A flow holds no code and cannot loop, is simulated and approved by someone else before it runs, and
+  can only ask the ledger for a command. Simulation runs the code a gateway runs, on the platform,
+  with nothing reaching a device.
+* A release is believed only if a key the gateway was installed with signed it, and an old one cannot
+  be replayed. Peers and relays carry signed requests and hold no platform secrets. Webhooks take a
+  bearer token, compared by hash. Peers and webhooks are not encrypted: keep them on a segmented
+  network.
 
 **The assistant** ([operations](operations.md#the-assistant))
 * It acts only as the signed-in person, through the same permission-checked tools as MCP clients
