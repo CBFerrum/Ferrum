@@ -27,3 +27,4 @@ blockers:
   - {id: BLOCK-EDGE-SERVICE-TIER, needs: "A chosen CDN, WAF and PAM service tier", owner: Chinmoy Bhuyan, blocks: "Global delivery and perimeter claims"}
   - {id: BLOCK-RESIDENCY-POLICY, needs: "Decisions on residency, retention and legal hold per customer", owner: Chinmoy Bhuyan, blocks: "Cross-boundary transfer, which stays refused"}
   - {id: BLOCK-LTS-SUPPORT, needs: "A funded support and LTS commitment", owner: Chinmoy Bhuyan, blocks: "Any SLA or production-supported label"}
+  - {id: BLOCK-CLOUD-VISIBILITY, needs: "A decision to make CBFerrum/ferrum-app-cloud public, or to give this repository's CI access to it", owner: Chinmoy Bhuyan, blocks: "Linking the cloud feature into the server on main: a public CI cannot fetch a private dependency"}
