@@ -5,6 +5,7 @@
 use crate::commands::{self, Applied};
 use crate::{devices, telemetry};
 use chrono::{Duration, Utc};
+use ferrum_kernel::notify::LIVE_CHANNEL;
 use ferrum_kernel::{Error, Kernel, Result, Tx, outbox};
 use ferrum_ops_contract::sync::{Lease, Operator, SiteDevice};
 use ferrum_ops_contract::telemetry::Limits;
@@ -162,9 +163,18 @@ pub async fn exchange(k: &Kernel, tenant: Uuid, device: Uuid, req: SyncRequest) 
         apply_fact(&mut tx, tenant, gateway.site, f).await?;
         facts_done.push(f.fact_id);
     }
-    let (stored, skipped) = telemetry::ingest(&mut tx, tenant, gateway.site, req.measurements, now).await?;
+    // Past a workspace's allowance measurements stay at the gateway, within its own budget, until
+    // there is room. Everything else goes on: a lease or a command's report never runs out.
+    let kept_back = !req.measurements.is_empty() && telemetry::over_allowance(&mut tx, tenant, now).await?;
+    let (stored, skipped) = if kept_back { (0, 0) } else { telemetry::ingest(&mut tx, tenant, gateway.site, req.measurements, now).await? };
     if skipped > 0 {
         tracing::warn!(%tenant, %device, skipped, "measurements left out: another site's, or not storable");
+    }
+    if stored > 0 {
+        // Whoever is looking at this site asks again at once. It goes at commit, so nobody hears
+        // of what did not land.
+        let said = json!({"tenant": tenant, "entity": "Site", "id": gateway.site, "event": "ops.measurements"}).to_string();
+        sqlx::query("select pg_notify($1, $2)").bind(LIVE_CHANNEL).bind(said).execute(&mut *tx).await?;
     }
 
     sqlx::query(
@@ -206,6 +216,9 @@ pub async fn exchange(k: &Kernel, tenant: Uuid, device: Uuid, req: SyncRequest) 
         }
     }
     tx.commit().await?;
+    if stored > 0 {
+        telemetry::meter(k, tenant, now, stored).await;
+    }
     Ok(SyncResponse {
         contract: VERSION,
         server_time: Utc::now(),
@@ -218,6 +231,7 @@ pub async fn exchange(k: &Kernel, tenant: Uuid, device: Uuid, req: SyncRequest) 
         reports_refused: refused,
         facts_done,
         measurements_stored: stored,
+        measurements_held: kept_back,
         devices: devices_out,
         config_version,
         operators,

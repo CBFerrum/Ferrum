@@ -597,6 +597,46 @@ async fn scenario() {
     assert_eq!((quality, stored_for), (Quality::Bad.code(), bot));
     assert_eq!(telemetry::quality_name(quality), "bad");
 
+    // A workspace's allowance is the operator's. Past it measurements stay at the gateway, and the
+    // rest of an exchange goes on as it did.
+    let set_quotas = |quotas: Value| {
+        let k = k.clone();
+        let tenant = t.tenant;
+        async move {
+            let mut tx = k.db.system_tenant_tx(tenant).await.unwrap();
+            sqlx::query("update tenant set quotas = $2 where id = $1").bind(tenant).bind(quotas).execute(&mut *tx).await.unwrap();
+            tx.commit().await.unwrap();
+        }
+    };
+    let metered = {
+        let k = k.clone();
+        let tenant = t.tenant;
+        async move || -> i64 {
+            let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+            let n = sqlx::query_scalar("select quantity from usage_day where tenant_id = $1 and meter = 'measurements'")
+                .bind(tenant)
+                .fetch_optional(&mut *tx)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            n.unwrap_or(0)
+        }
+    };
+    assert_eq!(metered().await, 4, "what was stored, and not what was sent twice");
+    set_quotas(json!({"measurements_per_day": 4})).await;
+    let mut over = gw2.sync_request();
+    over.measurements = vec![m(20, 70.0, Quality::Good)];
+    let answer = gw2.sync(&t, over.clone()).await;
+    assert_eq!((answer.measurements_stored, answer.measurements_held), (0, true), "kept for later, and not lost");
+    assert!(answer.lease.is_some(), "a lease never runs out with an allowance");
+    set_quotas(json!({"measurements_per_day": 10})).await;
+    let answer = gw2.sync(&t, over).await;
+    assert_eq!((answer.measurements_stored, answer.measurements_held), (1, false), "there is room again");
+    set_quotas(json!({"devices": 0})).await;
+    let refused = k.insert(&t.admin, "Device", obj(json!({"device_name": "One More", "device_code": "ONE-MORE", "kind": "Sensor", "site": site}))).await;
+    assert!(matches!(refused, Err(Error::Conflict(_))), "{refused:?}");
+    set_quotas(json!({})).await;
+
     // Retention drops a day, and nothing today.
     assert_eq!(telemetry::purge(&k, Utc::now()).await.unwrap(), 0);
     let future = Utc::now() + Duration::days(telemetry::retention_days() + 3);

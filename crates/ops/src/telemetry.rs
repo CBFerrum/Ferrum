@@ -97,6 +97,48 @@ pub async fn purge(k: &Kernel, now: DateTime<Utc>) -> Result<u64> {
     Ok(dropped)
 }
 
+/// What a day's measurements are metered as, in `usage_day`.
+const METER: &str = "measurements";
+
+/// Whether a workspace has stored what it may today: `measurements_per_day` in `tenant.quotas`, which
+/// is the operator's, and no limit without one.
+pub async fn over_allowance(tx: &mut Tx, tenant: Uuid, now: DateTime<Utc>) -> Result<bool> {
+    let over: Option<bool> = sqlx::query_scalar(
+        "select coalesce((select quantity from usage_day where tenant_id = $1 and day = $2 and meter = $3), 0) \
+           >= (select (quotas->>'measurements_per_day')::bigint from tenant where id = $1)",
+    )
+    .bind(tenant)
+    .bind(now.date_naive())
+    .bind(METER)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(over.unwrap_or(false))
+}
+
+/// Adds to today's meter, apart from the exchange: every gateway of a workspace writes this one row,
+/// and they should not queue for it while holding everything else. A crash in between loses a batch's
+/// count, and a batch over the allowance is the most that gets through.
+pub async fn meter(k: &Kernel, tenant: Uuid, now: DateTime<Utc>, stored: i64) {
+    let count = async || -> Result<()> {
+        let mut tx = k.db.tenant_tx(tenant).await?;
+        sqlx::query(
+            "insert into usage_day (tenant_id, day, meter, quantity) values ($1, $2, $3, $4) \
+             on conflict (tenant_id, day, meter) do update set quantity = usage_day.quantity + excluded.quantity",
+        )
+        .bind(tenant)
+        .bind(now.date_naive())
+        .bind(METER)
+        .bind(stored)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    };
+    if let Err(e) = count().await {
+        tracing::warn!(%tenant, "measurements not metered: {e}");
+    }
+}
+
 /// Stores what `gateway`'s site may report. Returns how many were new. Measurements for devices of
 /// another site, and ones that cannot be stored honestly, are left out and counted.
 pub async fn ingest(tx: &mut Tx, tenant: Uuid, site: Uuid, batch: Vec<Measurement>, now: DateTime<Utc>) -> Result<(i64, i64)> {
