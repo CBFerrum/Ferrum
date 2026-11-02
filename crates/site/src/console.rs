@@ -80,6 +80,32 @@ async fn status(State(app): State<App>) -> impl IntoResponse {
     axum::Json(app.rt.status())
 }
 
+/// Everything `status` knows that is a number, for whatever watches this site. Nothing here is
+/// secret beyond what the console already shows, and it binds where the console binds.
+async fn metrics(State(app): State<App>) -> impl IntoResponse {
+    let s = app.rt.status();
+    let mut out = String::new();
+    let mut line = |name: &str, labels: String, value: f64| out.push_str(&format!("ferrum_site_{name}{labels} {value}\n"));
+    for key in ["queued", "running", "unknown", "unsent_reports", "unsent_facts", "telemetry_bytes", "telemetry_shed", "disk_free_mb", "exports_shed"] {
+        if let Some(n) = s[key].as_f64() {
+            line(key, String::new(), n);
+        }
+    }
+    let quoted = |v: &Value| v.as_str().unwrap_or_default().replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " ");
+    for l in s["links"].as_array().into_iter().flatten() {
+        let labels = format!("{{definition=\"{}\",address=\"{}\"}}", quoted(&l["definition"]), quoted(&l["address"]));
+        line("link_up", labels.clone(), f64::from(u8::from(l["up"] == json!(true))));
+        for key in ["messages", "readings", "dropped", "reconnects"] {
+            line(&format!("link_{key}_total"), labels.clone(), l[key].as_f64().unwrap_or(0.0));
+        }
+    }
+    for e in s["exports"].as_array().into_iter().flatten() {
+        line("export_waiting", format!("{{export=\"{}\"}}", quoted(&e["name"])), e["waiting"].as_f64().unwrap_or(0.0));
+    }
+    line("flows", String::new(), s["flows"].as_array().map_or(0.0, |f| f.len() as f64));
+    ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], out)
+}
+
 #[derive(Deserialize)]
 struct Login {
     pin: String,
@@ -258,6 +284,7 @@ pub fn router(rt: Arc<Runtime>) -> Router {
     Router::new()
         .route("/", get(page))
         .route("/api/status", get(status))
+        .route("/metrics", get(metrics))
         .route("/api/login", post(login))
         .route("/api/work", get(work))
         .route("/api/tasks/{id}/{action}", post(task_step))

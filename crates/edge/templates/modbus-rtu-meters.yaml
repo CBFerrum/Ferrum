@@ -1,0 +1,14 @@
+# about: Energy meters sharing one RS-485 line by Modbus RTU, each with its own unit number.
+# group: Machines
+# One link for the whole line, so requests take turns. Give each device its unit in its settings:
+# {unit: 3}. Use the register map in your meter's manual: these are an example.
+name: modbus-rtu-meters
+connect: modbus+rtu:///dev/ttyUSB0?baud=9600&parity=E
+poll:
+  - {every: 5s, read: input, at: 0, count: 8, unit: "{settings.unit}"}
+read:
+  - values:
+      - {metric: volts, reg: 0, type: f32, unit: V, deadband: 0.5}
+      - {metric: amps, reg: 2, type: f32, unit: A, deadband: 0.1}
+      - {metric: power.kw, reg: 4, type: f32, unit: kW, deadband: 0.05}
+      - {metric: energy.kwh, reg: 6, type: f32, unit: kWh}

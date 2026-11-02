@@ -43,7 +43,13 @@ struct Platform {
     down: AtomicBool,
 }
 
-async fn edge(State(p): State<Arc<Platform>>, UrlPath((tenant, path)): UrlPath<(String, String)>, uri: Uri, headers: HeaderMap, body: Bytes) -> Response {
+async fn edge(
+    State(p): State<Arc<Platform>>,
+    UrlPath((tenant, package, path)): UrlPath<(String, String, String)>,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     if p.down.load(Ordering::SeqCst) {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
@@ -60,7 +66,7 @@ async fn edge(State(p): State<Arc<Platform>>, UrlPath((tenant, path)): UrlPath<(
         body: body.to_vec(),
         client_ip: "127.0.0.1".into(),
     };
-    let site = p.k.hooks.site("ops").unwrap().clone();
+    let site = p.k.hooks.site(&package).unwrap().clone();
     match site.handle(&p.k, req).await {
         Ok(r) => (StatusCode::from_u16(r.status).unwrap(), r.body).into_response(),
         Err(Error::Conflict(m)) => (StatusCode::CONFLICT, axum::Json(json!({"error": m}))).into_response(),
@@ -79,14 +85,16 @@ async fn world() -> World {
     sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let mut packages = ferrum_domain::packages().unwrap();
     packages.extend(ferrum_ops::packages().unwrap());
+    packages.extend(ferrum_edge::packages().unwrap());
     let mut hooks = HookRegistry::default();
     ferrum_domain::register(&mut hooks);
     hooks.scoped(&["ops".to_string()], ferrum_ops::register);
+    hooks.scoped(&["edge".to_string()], ferrum_edge::register);
     let k = Kernel::boot(db, Catalog::from_packages(packages).unwrap(), hooks, KernelSettings::default(), None).await.expect("boot");
     let p = Arc::new(Platform { k, down: AtomicBool::new(false) });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let router = Router::new().route("/api/site/{tenant}/ops/{path}", post(edge)).with_state(p.clone());
+    let router = Router::new().route("/api/site/{tenant}/{package}/{path}", post(edge)).with_state(p.clone());
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     World { p, url: format!("http://{addr}") }
 }
@@ -112,7 +120,7 @@ async fn workspace(w: &World, slug: &str) -> Workspace {
             admin_email: email.clone(),
             admin_password: "Correct-Horse-9".into(),
             admin_name: None,
-            packages: vec!["ops".into()],
+            packages: vec!["ops".into(), "edge".into()],
             settings: None,
         })
         .await
@@ -355,6 +363,7 @@ async fn scenario() {
     a_replaced_gateway_stops(&w).await;
     people_at_the_console(&w).await;
     a_restore_is_not_believed(&w).await;
+    a_gateway_is_told_what_to_be_and_carries_on_alone(&w).await;
 }
 
 async fn a_mission_runs_and_the_platform_hears(w: &World) {
@@ -678,4 +687,159 @@ async fn a_restore_is_not_believed(w: &World) {
     }
     assert_eq!(site.console("POST", "/api/resume", Some(&token), Some(json!({"found": "Walked aisles 1 to 4"}))).await.0, 204);
     reaches(&ws, parked, "Completed", 20).await;
+}
+
+/// A machine on TCP that says what it is told to, to whoever is connected. It outlives the site.
+struct Machine {
+    say: tokio::sync::broadcast::Sender<String>,
+    address: String,
+}
+
+async fn machine() -> Machine {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let (say, _) = tokio::sync::broadcast::channel::<String>(16);
+    let lines = say.clone();
+    tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let mut heard = lines.subscribe();
+            tokio::spawn(async move {
+                while let Ok(line) = heard.recv().await {
+                    if socket.write_all(line.as_bytes()).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    Machine { say, address }
+}
+
+/// What the platform has been told. There is no background dispatcher here, so this is it.
+async fn alarms(ws: &Workspace) -> Vec<(String, String)> {
+    while ws.k.dispatch_outbox_once().await.unwrap() > 0 {}
+    let mut tx = ws.k.db.tenant_tx(ws.tenant).await.unwrap();
+    sqlx::query_as("select summary, status from e_edge_alarm where tenant_id = $1 order by raised_at").bind(ws.tenant).fetch_all(&mut *tx).await.unwrap()
+}
+
+/// All of it at once, with the real binary: a gateway takes its definition and a reviewed flow from
+/// the platform, reads a device with no local configuration, and the flow goes on deciding through
+/// an outage and a power cut, from what it last heard and what it remembered.
+async fn a_gateway_is_told_what_to_be_and_carries_on_alone(w: &World) {
+    let ws = workspace(w, "managed").await;
+    let (k, admin) = (&ws.k, &ws.admin);
+    let plc = machine().await;
+
+    let definition = format!(
+        "name: press\nconnect: tcp://{}\nframe: {{line: \"\\n\"}}\nread:\n  - {{match: '^temp=(?P<t>[0-9.]+)$', metric: temp.c, group: t}}\n",
+        plc.address
+    );
+    let definition = id_of(&k.insert(admin, "DeviceDefinition", obj(json!({"definition_name": "press", "body": definition}))).await.unwrap());
+    k.run_action(admin, "DeviceDefinition", definition, "publish", json!({})).await.expect("published");
+    let press = equipment(k, admin, ws.site, "PRESS-1", "press.set").await;
+    k.update(admin, "Device", press, obj(json!({"gateway": ws.gateway, "edge_definition": definition})), None).await.expect("assigned");
+    devices::set_lifecycle(k, admin, press, Lifecycle::Provisioned, "behind its gateway").await.unwrap();
+    devices::set_lifecycle(k, admin, press, Lifecycle::Commissioned, "checked").await.unwrap();
+    devices::set_lifecycle(k, admin, press, Lifecycle::Active, "in service").await.unwrap();
+
+    // Hot for a moment does nothing. Hot for two seconds raises, and cooling clears.
+    let body = json!({
+        "nodes": [
+            {"id": "t", "kind": "metric", "metric": "temp.c"},
+            {"id": "hot", "kind": "compare", "op": ">", "value": 80},
+            {"id": "long", "kind": "hold", "for": "2s"},
+            {"id": "a", "kind": "alarm", "name": "Running hot", "severity": "Warning"},
+        ],
+        "edges": [
+            {"from": "t", "to": "hot"},
+            {"from": "hot", "port": "yes", "to": "long"},
+            {"from": "hot", "port": "no", "to": "long", "input": "reset"},
+            {"from": "hot", "port": "no", "to": "a", "input": "clear"},
+            {"from": "long", "to": "a"},
+        ],
+    });
+    let flow = id_of(&k.insert(admin, "EdgeFlow", obj(json!({"flow_name": "Hot press", "body": body.to_string()}))).await.unwrap());
+    let edge = k.hooks.site("edge").unwrap().clone();
+    let simulate = SiteRequest {
+        tenant: ws.tenant,
+        user: Some(admin.clone()),
+        method: "POST".into(),
+        path: format!("/flows/{flow}/simulate"),
+        query: Map::new(),
+        headers: Map::new(),
+        body: json!({"script": [{"at": 0, "device": "PRESS-1", "metric": "temp.c", "value": 90}], "until": 3}).to_string().into_bytes(),
+        client_ip: "::1".into(),
+    };
+    edge.handle(k, simulate).await.expect("simulated");
+    k.run_action(admin, "EdgeFlow", flow, "submit_for_review", json!({})).await.expect("sent");
+    let reviewer = k.create_user(admin, "rev@managed.test", "Reviewer", Some("Correct-Horse-9"), &["Edge Reviewer".to_string()], false).await.unwrap();
+    let reviewer = k.load_ctx(ws.tenant, reviewer, None, "it".into()).await.unwrap();
+    k.run_action(&reviewer, "EdgeFlow", flow, "approve", json!({})).await.expect("approved");
+    k.run_action(&reviewer, "EdgeFlow", flow, "activate", json!({})).await.expect("running");
+
+    let mut site = running(w, &ws, "managed: true\n").await;
+    until("the link to the press", 15, async || site.console("GET", "/api/status", None, None).await.1["links"][0]["up"] == json!(true)).await;
+    let status = site.console("GET", "/api/status", None, None).await.1;
+    assert_eq!(status["flows"][0]["name"], json!("Hot press"), "{status}");
+
+    let say = |line: &str| {
+        let _ = plc.say.send(format!("{line}\n"));
+    };
+    let keep_saying = |line: &'static str| {
+        let say = plc.say.clone();
+        tokio::spawn(async move {
+            loop {
+                let _ = say.send(format!("{line}\n"));
+                tokio::time::sleep(StdDuration::from_millis(200)).await;
+            }
+        })
+    };
+    let hot = keep_saying("temp=90");
+    until("the alarm to reach the platform", 20, async || alarms(&ws).await == [("Running hot on PRESS-1".to_string(), "Active".to_string())]).await;
+    hot.abort();
+    let latest = ferrum_ops::telemetry::latest(k, admin, press).await.unwrap();
+    assert!(latest.iter().any(|m| m["metric"] == json!("temp.c")), "and what it read: {latest:?}");
+
+    // The link goes, and then the power. Nothing on this machine says what to read or what to
+    // decide: only what it last heard.
+    w.p.down.store(true, Ordering::SeqCst);
+    until("the site to notice", 10, async || site.console("GET", "/api/status", None, None).await.1["link_up"] == json!(false)).await;
+    site.kill();
+    site.start(None);
+    until("it to find the press again", 15, async || site.console("GET", "/api/status", None, None).await.1["links"][0]["up"] == json!(true)).await;
+    let status = site.console("GET", "/api/status", None, None).await.1;
+    assert_eq!(status["flows"][0]["name"], json!("Hot press"), "it remembers its flow with no link: {status}");
+
+    // Cooled while nobody could hear. It decides anyway, and keeps what it decided for later.
+    let before = status["unsent_facts"].as_i64().unwrap();
+    let cool = keep_saying("temp=40");
+    until("the flow to decide offline", 15, async || site.console("GET", "/api/status", None, None).await.1["unsent_facts"].as_i64().unwrap() > before).await;
+    cool.abort();
+    assert_eq!(alarms(&ws).await[0].1, "Active", "the platform cannot know yet, and says only what it knows");
+
+    let metrics = tokio::task::spawn_blocking({
+        let console = site.console.clone();
+        move || {
+            use std::io::{Read, Write};
+            let mut s = std::net::TcpStream::connect(console).unwrap();
+            s.write_all(b"GET /metrics HTTP/1.0\r\n\r\n").unwrap();
+            let mut out = String::new();
+            s.read_to_string(&mut out).unwrap();
+            out
+        }
+    })
+    .await
+    .unwrap();
+    assert!(metrics.contains("ferrum_site_link_up{definition=\"press\"") && metrics.contains("ferrum_site_flows 1"), "{metrics}");
+
+    w.p.down.store(false, Ordering::SeqCst);
+    until("the alarm to clear on the platform", 20, async || alarms(&ws).await[0].1 == "Cleared").await;
+
+    // A flow that is stopped stops.
+    k.run_action(admin, "EdgeFlow", flow, "stop", json!({})).await.expect("stopped");
+    until("the gateway to drop it", 15, async || site.console("GET", "/api/status", None, None).await.1["flows"] == json!([])).await;
+    say("temp=95");
+    tokio::time::sleep(StdDuration::from_secs(3)).await;
+    assert_eq!(alarms(&ws).await.len(), 1, "nothing raises any more");
 }

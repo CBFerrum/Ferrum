@@ -1,0 +1,25 @@
+# about: A Universal Robots arm by its Dashboard Server: mode, program state and starting a program.
+# group: Robots
+# Plays a program already installed and approved on the robot. It sends no motion, and it does not
+# write programs: the robot's own safety system stays in charge. Not tried on a real arm.
+name: ur-dashboard
+connect: tcp://ur:29999
+frame: {line: "\n"}
+poll:
+  - {every: 2s, send: "robotmode\n"}
+  - {every: 2s, send: "programState\n"}
+read:
+  - {match: '^Robotmode: (?P<m>[A-Z_]+)', attribute: mode, group: m}
+  - {match: '^(?P<s>PLAYING|PAUSED|STOPPED)\b', state: true, group: s, map: {PLAYING: Running, PAUSED: Stopped, STOPPED: Idle}}
+  - {match: '^(?P<s>PLAYING|PAUSED|STOPPED) (?P<p>\S+)', attribute: program, group: p}
+commands:
+  program.start:
+    send: "play\n"
+    status:
+      poll: {send: "programState\n"}
+      match: '^(?P<s>PLAYING|PAUSED|STOPPED)\b'
+      group: s
+      running: [PLAYING, PAUSED]
+      done: STOPPED
+    cancel:
+      send: "stop\n"

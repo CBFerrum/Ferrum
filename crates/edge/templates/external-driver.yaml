@@ -1,0 +1,6 @@
+# about: Anything else: a program of your own in any language, speaking JSON lines.
+# group: Generic
+# The program must be in the site's drivers_dir. See docs/edge-definitions.md for what it says and
+# hears. With no `read` here, it reports in the driver protocol.
+name: external-driver
+connect: process://my-driver --port /dev/ttyUSB0

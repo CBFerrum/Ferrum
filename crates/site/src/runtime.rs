@@ -3,13 +3,20 @@
 //! others losing anything, and a restart picks up from the file.
 
 use crate::adapter::{Adapter, Dispatched, Failure, Observation, Reading};
+use crate::adapters::defined::{Defined, LinkHealth};
+use crate::adapters::transport::Limits as OpenLimits;
 use crate::adapters::{operator::OperatorTasks, sim::Sim};
 use crate::config::{AdapterKind, Config};
 use crate::crash_point;
+use crate::export::{self, Sender};
 use crate::journal::{Entry, Journal};
 use crate::link::{Link, LinkError};
+use crate::peer::Peer;
+use crate::update::{self, Pending};
 use chrono::{DateTime, Utc};
 use ferrum_ops_contract::command::Report;
+use ferrum_ops_contract::edge::{AlarmChange, Comparison, ConfigRequest, ConfigResponse, EdgeConfig, Export, FlowSpec, Release, Rule, Watch};
+use ferrum_ops_contract::flow::{self, Effect};
 use ferrum_ops_contract::schedule::{self, Held, Resource, Task};
 use ferrum_ops_contract::sync::{Fact, Health, SiteDevice};
 use ferrum_ops_contract::telemetry::{Class, Limits, Measurement};
@@ -67,10 +74,30 @@ impl Clock {
     }
 }
 
+#[derive(Clone)]
 struct Slot {
     adapter: Arc<dyn Adapter>,
     concurrency: u32,
 }
+
+/// The edge's own rules, and where each stands on each device.
+#[derive(Default)]
+struct Rules {
+    rules: Vec<Rule>,
+    watches: HashMap<(Uuid, Uuid), Watch>,
+}
+
+/// A flow in force, with what it remembers.
+struct RunningFlow {
+    id: Uuid,
+    name: String,
+    revision: i64,
+    compiled: flow::Compiled,
+    state: flow::State,
+}
+
+/// How often what flows remember is written down. A crash loses this much of a window or a hold.
+const FLOW_SAVE_MS: i64 = 15_000;
 
 pub struct Runtime {
     pub cfg: Config,
@@ -90,6 +117,18 @@ pub struct Runtime {
     latest: Mutex<HashMap<(Uuid, String), f64>>,
     repeats: Mutex<HashMap<(Uuid, String), (f64, u32)>>,
     last_state: Mutex<HashMap<String, String>>,
+    last_attribute: Mutex<HashMap<(Uuid, String), Value>>,
+    defined: Arc<Defined>,
+    rules: Mutex<Rules>,
+    flows: Mutex<Vec<RunningFlow>>,
+    flows_saved: AtomicI64,
+    /// Why what this gateway was given could not all start.
+    problems: Mutex<Vec<String>>,
+    /// Signed calls go one at a time: each must carry a later time than the last that arrived.
+    signing: tokio::sync::Mutex<()>,
+    exports: Mutex<Vec<Export>>,
+    sender: Sender,
+    export_shed: AtomicI64,
 }
 
 fn free_disk(path: &Path) -> Option<i64> {
@@ -104,9 +143,10 @@ fn free_disk(path: &Path) -> Option<i64> {
 impl Runtime {
     pub fn open(cfg: Config, key: ed25519_dalek::SigningKey) -> Result<Arc<Runtime>, String> {
         let journal = Arc::new(Journal::open(&cfg.journal_path()).map_err(|e| e.to_string())?);
-        let key_id: Uuid =
-            journal.get("key_id").map_err(|e| e.to_string())?.and_then(|v| v.parse().ok()).ok_or("this site is not enrolled: run `ferrum-site enroll`")?;
-        let link = Link::new(&cfg.server, &cfg.tenant, key, key_id);
+        let key_id: Option<Uuid> = journal.get("key_id").map_err(|e| e.to_string())?.and_then(|v| v.parse().ok());
+        // A box that only answers a peer has no platform, so nothing to enroll with.
+        let key_id = key_id.or(cfg.peer_only.then(Uuid::nil)).ok_or("this site is not enrolled: run `ferrum-site enroll`")?;
+        let link = Link::new(&cfg.server, &cfg.tenant, key.clone(), key_id);
         let (mut adapters, mut by_device): (Vec<(String, Arc<dyn Adapter>)>, HashMap<String, Slot>) = (Vec::new(), HashMap::new());
         for a in &cfg.adapters {
             let adapter: Arc<dyn Adapter> = match &a.kind {
@@ -124,9 +164,21 @@ impl Runtime {
             }
             adapters.push((a.name.clone(), adapter));
         }
+        for p in &cfg.peers {
+            let adapter: Arc<dyn Adapter> = Arc::new(Peer::new(&p.url, key.clone()));
+            for d in &p.devices {
+                by_device.insert(d.clone(), Slot { adapter: adapter.clone(), concurrency: p.concurrency.max(1) });
+            }
+            adapters.push((format!("peer {}", p.name), adapter));
+        }
+        let limits =
+            OpenLimits { drivers_dir: cfg.drivers_dir.clone(), allow: cfg.allow.clone(), listen: cfg.listen.clone(), tls_dir: Some(cfg.state_dir.join("tls")) };
+        let exporting = OpenLimits { allow: cfg.allow.clone(), tls_dir: Some(cfg.state_dir.join("tls")), ..OpenLimits::default() };
+        let defined = Arc::new(Defined::new(limits, json!(cfg.secrets)));
+        adapters.push(("definitions".to_string(), defined.clone()));
         let high_water = journal.high_water().map_err(|e| e.to_string())?.map(|t| t.timestamp_millis()).unwrap_or(0);
         let offset = journal.get("clock_offset").map_err(|e| e.to_string())?.and_then(|v| v.parse().ok()).unwrap_or(0);
-        Ok(Arc::new(Runtime {
+        let runtime = Arc::new(Runtime {
             cfg,
             journal,
             clock: Clock::new(high_water, offset),
@@ -141,7 +193,358 @@ impl Runtime {
             latest: Mutex::default(),
             repeats: Mutex::default(),
             last_state: Mutex::default(),
-        }))
+            last_attribute: Mutex::default(),
+            defined,
+            rules: Mutex::default(),
+            flows: Mutex::default(),
+            flows_saved: AtomicI64::new(0),
+            problems: Mutex::default(),
+            signing: tokio::sync::Mutex::new(()),
+            exports: Mutex::default(),
+            sender: Sender::new(exporting),
+            export_shed: AtomicI64::new(0),
+        });
+        runtime.settle_update();
+        runtime.restore_alarms();
+        runtime.configure();
+        Ok(runtime)
+    }
+
+    /// Definitions kept on this machine, by file name.
+    fn local_definitions(&self) -> BTreeMap<String, String> {
+        let Some(dir) = &self.cfg.definitions_dir else { return BTreeMap::new() };
+        let Ok(files) = std::fs::read_dir(dir) else { return BTreeMap::new() };
+        let mut out = BTreeMap::new();
+        for path in files.filter_map(|f| f.ok()).map(|f| f.path()).filter(|p| p.extension().is_some_and(|e| e == "yaml" || e == "yml")) {
+            if let (Some(name), Ok(text)) = (path.file_stem().map(|s| s.to_string_lossy().to_string()), std::fs::read_to_string(&path)) {
+                out.insert(name, text);
+            }
+        }
+        out
+    }
+
+    /// What this gateway holds from the platform, as it was last told.
+    fn managed(&self) -> Option<EdgeConfig> {
+        let text = self.journal.get("edge_config").ok().flatten()?;
+        serde_json::from_str(&text).ok()
+    }
+
+    /// Becomes what its configuration says. What is on this machine wins over what the platform
+    /// sent, and what has not changed keeps its connections.
+    fn configure(&self) {
+        let managed = self.managed().filter(|_| self.cfg.managed).unwrap_or_default();
+        let mut definitions = managed.definitions.clone();
+        definitions.extend(self.local_definitions());
+        let mut devices = self.cfg.devices.clone();
+        for d in &managed.devices {
+            if !devices.iter().any(|mine| mine.code == d.code) && !self.by_device.contains_key(&d.code) {
+                devices.push(d.clone());
+            }
+        }
+        let mut problems = self.defined.apply(&definitions, &devices);
+        problems.extend(self.start_flows(managed.flows));
+        for p in &problems {
+            tracing::warn!("{p}");
+        }
+        *self.problems.lock().unwrap_or_else(|e| e.into_inner()) = problems;
+        self.rules.lock().unwrap_or_else(|e| e.into_inner()).rules = managed.rules;
+        *self.exports.lock().unwrap_or_else(|e| e.into_inner()) = managed.exports;
+    }
+
+    /// Becomes the flows it was given. One unchanged keeps what it remembers, and a new revision
+    /// starts afresh: its nodes may mean something else now.
+    fn start_flows(&self, specs: Vec<FlowSpec>) -> Vec<String> {
+        let saved: HashMap<String, flow::State> = self.journal.get("flow_state").ok().flatten().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let mut running = self.flows.lock().unwrap_or_else(|e| e.into_inner());
+        let mut was: Vec<RunningFlow> = running.drain(..).collect();
+        let mut problems = Vec::new();
+        for spec in specs {
+            if let Some(i) = was.iter().position(|f| f.id == spec.id && f.revision == spec.revision) {
+                running.push(was.swap_remove(i));
+                continue;
+            }
+            match flow::parse(&spec.body) {
+                Ok(compiled) => {
+                    let state = saved.get(&format!("{}:{}", spec.id, spec.revision)).cloned().unwrap_or_default();
+                    running.push(RunningFlow { id: spec.id, name: spec.name, revision: spec.revision, compiled, state });
+                }
+                Err(why) => problems.push(format!("flow {}: {why}", spec.name)),
+            }
+        }
+        problems
+    }
+
+    /// Passes something a device did to every flow, and does what they make of it.
+    fn feed(&self, input: &flow::Input, devices: &HashMap<String, SiteDevice>, batch: &mut Vec<Measurement>) {
+        let now = self.clock.now();
+        let mut running = self.flows.lock().unwrap_or_else(|e| e.into_inner());
+        for f in running.iter_mut() {
+            let output = f.compiled.input(&mut f.state, input, now);
+            self.act(f.id, &f.name, output, devices, batch);
+        }
+    }
+
+    /// What the clock alone causes in flows, and now and then writing down where they stand.
+    fn tick_flows(&self, devices: &HashMap<String, SiteDevice>, batch: &mut Vec<Measurement>) {
+        let now = self.clock.now();
+        let mut running = self.flows.lock().unwrap_or_else(|e| e.into_inner());
+        for f in running.iter_mut() {
+            let output = f.compiled.tick(&mut f.state, now);
+            self.act(f.id, &f.name, output, devices, batch);
+        }
+        let now_ms = self.clock.now_ms();
+        if !running.is_empty() && now_ms - self.flows_saved.load(Ordering::Relaxed) >= FLOW_SAVE_MS {
+            self.flows_saved.store(now_ms, Ordering::Relaxed);
+            let states: HashMap<String, &flow::State> = running.iter().map(|f| (format!("{}:{}", f.id, f.revision), &f.state)).collect();
+            let _ = self.journal.set("flow_state", &json!(states).to_string());
+        }
+    }
+
+    /// Does what a flow decided. Everything here is recorded before it counts, and nothing here
+    /// reaches equipment: a command is only a request, for the ledger to decide.
+    fn act(&self, id: Uuid, name: &str, output: flow::Output, devices: &HashMap<String, SiteDevice>, batch: &mut Vec<Measurement>) {
+        for p in output.problems {
+            tracing::warn!(flow = %name, "{p}");
+        }
+        let fact = |kind: &str, body: Value| {
+            let _ = self.journal.add_fact(&Fact { fact_id: Uuid::now_v7(), kind: kind.into(), at_source: self.clock.now(), actor: None, body });
+        };
+        let known = |code: &Option<String>| code.as_ref().and_then(|c| devices.get(c));
+        for effect in output.effects {
+            match effect {
+                Effect::Alarm { node, name: title, severity, device, raised, value } => {
+                    let Some(d) = known(&device) else {
+                        tracing::warn!(flow = %name, "{node} has no device to raise an alarm on");
+                        continue;
+                    };
+                    let change = AlarmChange { rule: id, device: d.id, raised, value, node: Some(node), name: Some(title), severity: Some(severity) };
+                    fact("edge.alarm", json!(change));
+                }
+                Effect::Event { device, name: event, value } => {
+                    if let Some(d) = known(&device) {
+                        fact("edge.event", json!({"device": d.id, "name": event, "value": value}));
+                    }
+                }
+                Effect::Attribute { device, key, value } => {
+                    if let Some(d) = known(&device) {
+                        fact("edge.attribute", json!({"device": d.id, "key": key, "value": value}));
+                    }
+                }
+                Effect::Metric { device, name: metric, value, unit } => {
+                    if let Some(d) = known(&device) {
+                        batch.push(Measurement {
+                            device_id: d.id,
+                            metric,
+                            value,
+                            unit,
+                            source_time: self.clock.now(),
+                            boot: self.boot,
+                            seq: self.seq.fetch_add(1, Ordering::Relaxed) + 1,
+                            quality: ferrum_ops_contract::Quality::Good,
+                            class: Class::Sample,
+                        });
+                    }
+                }
+                Effect::Notify { device, title } => fact("edge.notify", json!({"flow": id, "device": known(&device).map(|d| d.id), "title": title})),
+                Effect::Export { to, body } => {
+                    // Nothing would ever take it from a queue with no export behind it.
+                    if !self.exports.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|e| e.name == to) {
+                        tracing::warn!(flow = %name, "there is no export called {to} at this site");
+                        continue;
+                    }
+                    if let Ok(shed) = self.journal.add_exports(&to, &[body.to_string()], export::BUDGET) {
+                        self.export_shed.fetch_add(shed, Ordering::Relaxed);
+                    }
+                }
+                Effect::Command { node, device, operation, payload, expires_secs } => {
+                    let Some(d) = known(&device) else {
+                        tracing::warn!(flow = %name, "{node} has no device to ask {operation} of");
+                        continue;
+                    };
+                    fact(
+                        "edge.request",
+                        json!({"flow": id, "node": node, "device": d.id, "operation": operation, "payload": payload, "expires_secs": expires_secs}),
+                    );
+                }
+            }
+        }
+    }
+
+    /// An adapter on this machine, for a peer that asks. What is itself reached through a peer is
+    /// not offered on: one hop, so that nobody can build a loop.
+    pub fn local_adapter(&self, code: &str) -> Option<Arc<dyn Adapter>> {
+        let slot = self.adapter_for(code)?;
+        (!self.cfg.peers.iter().any(|p| p.devices.iter().any(|d| d == code))).then_some(slot.adapter)
+    }
+
+    /// What this machine's equipment has said, for the peer that holds authority over it.
+    pub async fn read_local(&self) -> Vec<Reading> {
+        let mut out = Vec::new();
+        for (name, a) in self.adapters.iter().filter(|(n, _)| !n.starts_with("peer ")) {
+            match timeout(self.call_limit(), a.read()).await {
+                Ok(Ok(readings)) => out.extend(readings),
+                Ok(Err(e)) => tracing::debug!(adapter = %name, "read: {e:?}"),
+                Err(_) => tracing::debug!(adapter = %name, "read timed out"),
+            }
+        }
+        out
+    }
+
+    /// Queues measurements for whatever wants them.
+    fn offer_exports(&self, batch: &[Measurement], devices: &HashMap<Uuid, SiteDevice>) {
+        let exports = self.exports.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        for e in &exports {
+            let lines: Vec<String> = batch
+                .iter()
+                .filter(|m| export::wanted(e, &m.metric))
+                .map(|m| json!({"device": devices.get(&m.device_id).map(|d| d.code.as_str()), "metric": m.metric, "value": m.value, "unit": m.unit, "at": m.source_time, "quality": m.quality}).to_string())
+                .collect();
+            if !lines.is_empty()
+                && let Ok(shed) = self.journal.add_exports(&e.name, &lines, export::BUDGET)
+            {
+                self.export_shed.fetch_add(shed, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// One round of delivery. An export that is down waits and holds up nothing else.
+    pub async fn deliver_exports(&self) {
+        let exports = self.exports.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        for e in &exports {
+            let Ok((bodies, upto)) = self.journal.exports(&e.name, export::BATCH) else { continue };
+            if bodies.is_empty() {
+                continue;
+            }
+            match self.sender.deliver(e, &bodies, &json!(self.cfg.secrets)).await {
+                Ok(()) => {
+                    let _ = self.journal.exports_gone(&e.name, upto);
+                }
+                Err(why) => tracing::debug!(export = %e.name, "{why}"),
+            }
+        }
+    }
+
+    /// Deals with an update that was under way when this started.
+    fn settle_update(&self) {
+        let Ok(exe) = std::env::current_exe() else { return };
+        let pending: Option<Pending> = self.journal.get("update_pending").ok().flatten().and_then(|t| serde_json::from_str(&t).ok());
+        match update::at_start(&exe, pending, env!("CARGO_PKG_VERSION")) {
+            Ok(Some(p)) => {
+                let _ = self.journal.set("update_pending", &json!(p).to_string());
+            }
+            Ok(None) => {
+                let _ = self.journal.clear("update_pending");
+            }
+            Err(version) => {
+                let _ = self.journal.clear("update_pending");
+                let _ = self.journal.set("update_refused", &version);
+                let _ = self.journal.notice(self.clock.now_ms(), &format!("{version} kept failing, so this went back to what worked before"));
+                std::process::exit(update::RESTART);
+            }
+        }
+    }
+
+    /// Takes a release that is meant for this site. Everything is checked before anything changes,
+    /// and work in hand is not interrupted: it waits for a moment with nothing running.
+    async fn consider_update(&self, release: &Release) -> Result<(), String> {
+        let refused = self.journal.get("update_refused").ok().flatten();
+        update::judge(release, env!("CARGO_PKG_VERSION"), &self.cfg.update_keys, self.clock.now(), refused.as_deref())?;
+        let counts = self.journal.counts().map_err(|e| e.to_string())?;
+        if counts.active > 0 || counts.unknown > 0 {
+            return Err("waiting for what is running to end".into());
+        }
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let download = self.cfg.state_dir.join("update.bin");
+        let bytes = self.sender.fetch(&release.url).await?;
+        std::fs::write(&download, bytes).map_err(|e| e.to_string())?;
+        // Written first: a build that went in unrecorded could never be rolled back. A record with no
+        // build behind it ends at the next start, because that start is not running this version.
+        let pending = Pending { version: release.version.clone(), tries: 0 };
+        self.journal.set("update_pending", &json!(pending).to_string()).map_err(|e| e.to_string())?;
+        update::install(&exe, &download, release)?;
+        let _ = self.journal.notice(self.clock.now_ms(), &format!("Updated to {}: restarting", release.version));
+        std::process::exit(update::RESTART);
+    }
+
+    fn restore_alarms(&self) {
+        let raised: Vec<(Uuid, Uuid)> = self.journal.get("alarms_raised").ok().flatten().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        self.rules.lock().unwrap_or_else(|e| e.into_inner()).watches = raised.into_iter().map(|k| (k, Watch::still_raised())).collect();
+    }
+
+    /// Writes down an alarm's change: a fact for the platform, and what is raised, for a restart.
+    fn alarm(&self, rules: &Rules, rule: Uuid, device: Uuid, raised: bool, value: Option<f64>) {
+        let change = AlarmChange { rule, device, raised, value, node: None, name: None, severity: None };
+        let fact = Fact { fact_id: Uuid::now_v7(), kind: "edge.alarm".into(), at_source: self.clock.now(), actor: None, body: json!(change) };
+        let _ = self.journal.add_fact(&fact);
+        let up: Vec<&(Uuid, Uuid)> = rules.watches.iter().filter(|(_, w)| w.raised()).map(|(k, _)| k).collect();
+        let _ = self.journal.set("alarms_raised", &json!(up).to_string());
+    }
+
+    fn judge(&self, code: &str, device: Uuid, metric: &str, value: f64) {
+        let at = self.clock.now();
+        let mut guard = self.rules.lock().unwrap_or_else(|e| e.into_inner());
+        let matching: Vec<Rule> =
+            guard.rules.iter().filter(|r| r.metric == metric && (r.devices.is_empty() || r.devices.iter().any(|d| d == code))).cloned().collect();
+        for rule in matching {
+            let changed = guard.watches.entry((rule.id, device)).or_default().feed(&rule, value, at);
+            if let Some(raised) = changed {
+                self.alarm(&guard, rule.id, device, raised, Some(value));
+            }
+        }
+    }
+
+    /// Silence is only noticed by the clock.
+    fn tick_rules(&self) {
+        let now = self.clock.now();
+        let mut guard = self.rules.lock().unwrap_or_else(|e| e.into_inner());
+        let rules = guard.rules.clone();
+        for rule in rules.iter().filter(|r| r.when == Comparison::Silent) {
+            let keys: Vec<(Uuid, Uuid)> = guard.watches.keys().filter(|k| k.0 == rule.id).copied().collect();
+            for key in keys {
+                let changed = guard.watches.get_mut(&key).and_then(|w| w.tick(rule, now));
+                if let Some(raised) = changed {
+                    self.alarm(&guard, rule.id, key.1, raised, None);
+                }
+            }
+        }
+    }
+
+    pub fn links(&self) -> Vec<LinkHealth> {
+        self.defined.links()
+    }
+
+    /// Asks the platform what this gateway should be. Nothing here can stop work: a site keeps
+    /// running what it was last told.
+    pub async fn exchange_config(&self) {
+        let have = self.managed().map(|c| c.version).unwrap_or_default();
+        let request = ConfigRequest {
+            have,
+            strangers: self.defined.strangers(),
+            problems: self.problems.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            links: json!(self.defined.links()),
+            runtime: env!("CARGO_PKG_VERSION").to_string(),
+        };
+        let answer = {
+            let _turn = self.signing.lock().await;
+            self.link.edge_config(&request, self.clock.signing_ms()).await
+        };
+        match answer {
+            Ok(ConfigResponse { config: Some(config) }) => {
+                let text = serde_json::to_string(&config).unwrap_or_default();
+                if let Err(e) = self.journal.set("edge_config", &text) {
+                    tracing::warn!("could not keep the new configuration: {e}");
+                    return;
+                }
+                self.configure();
+            }
+            Ok(_) => {}
+            Err(e) => tracing::debug!("edge configuration: {e:?}"),
+        }
+        if let Some(release) = self.managed().and_then(|c| c.release)
+            && let Err(why) = self.consider_update(&release).await
+        {
+            tracing::debug!("release {}: {why}", release.version);
+        }
     }
 
     fn link_up(&self) -> bool {
@@ -188,8 +591,11 @@ impl Runtime {
         }
     }
 
-    fn adapter_for(&self, code: &str) -> Option<&Slot> {
-        self.by_device.get(code)
+    fn adapter_for(&self, code: &str) -> Option<Slot> {
+        self.by_device.get(code).cloned().or_else(|| {
+            let concurrency = self.defined.concurrency(code)?;
+            Some(Slot { adapter: self.defined.clone(), concurrency })
+        })
     }
 
     fn devices_by_id(&self) -> HashMap<Uuid, SiteDevice> {
@@ -478,11 +884,16 @@ impl Runtime {
             want,
             config_version: self.journal.get("config_version").ok().flatten().unwrap_or_default(),
         };
-        let answer = self.link.sync(&req, self.clock.signing_ms()).await;
+        let answer = {
+            let _turn = self.signing.lock().await;
+            self.link.sync(&req, self.clock.signing_ms()).await
+        };
         crash_point("after_exchange");
         match answer {
             Ok(r) => {
                 *self.heard.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now());
+                // It came up and reached the platform, so it stays.
+                let _ = self.journal.clear("update_pending");
                 self.absorb(r, &held, upto);
                 Ok(())
             }
@@ -558,16 +969,19 @@ impl Runtime {
                 Err(_) => tracing::debug!(adapter = %name, "read timed out"),
             }
         }
+        self.tick_flows(&devices, &mut batch);
         // Past the reserve only what someone has to know is kept, and what cannot be kept is counted.
         if free_disk(&self.cfg.state_dir).is_some_and(|f| f < self.cfg.reserve_mb << 20) {
             batch.retain(|m| m.class == Class::Alarm);
         }
+        self.offer_exports(&batch, &self.devices_by_id());
         if let Err(e) = self.journal.add_samples(&batch) {
             tracing::warn!("measurements not kept: {e}");
         }
         if let Err(e) = self.journal.shed(self.cfg.telemetry_budget_mb << 20) {
             tracing::warn!("telemetry budget: {e}");
         }
+        self.tick_rules();
     }
 
     fn take(&self, reading: Reading, devices: &HashMap<String, SiteDevice>, batch: &mut Vec<Measurement>) {
@@ -586,6 +1000,9 @@ impl Runtime {
                 let quality = limits.judge(value, repeats);
                 if quality != ferrum_ops_contract::Quality::Bad {
                     self.latest.lock().unwrap_or_else(|e| e.into_inner()).insert(key, value);
+                    self.judge(&device, d.id, &metric, value);
+                    let input = flow::Input { device: device.clone(), metric: Some(metric.clone()), value: json!(value), ..Default::default() };
+                    self.feed(&input, devices, batch);
                 }
                 batch.push(Measurement {
                     device_id: d.id,
@@ -599,9 +1016,36 @@ impl Runtime {
                     class,
                 });
             }
+            Reading::Attribute { device, key, value } => {
+                let Some(d) = devices.get(&device) else { return };
+                let fresh = self.last_attribute.lock().unwrap_or_else(|e| e.into_inner()).insert((d.id, key.clone()), value.clone()).as_ref() != Some(&value);
+                if fresh {
+                    let fact = Fact {
+                        fact_id: Uuid::now_v7(),
+                        kind: "edge.attribute".into(),
+                        at_source: self.clock.now(),
+                        actor: None,
+                        body: json!({"device": d.id, "key": key, "value": value}),
+                    };
+                    let _ = self.journal.add_fact(&fact);
+                    self.feed(&flow::Input { device, attribute: Some(key), value, ..Default::default() }, devices, batch);
+                }
+            }
+            Reading::Event { device, name, value } => {
+                let Some(d) = devices.get(&device) else { return };
+                let fact = Fact {
+                    fact_id: Uuid::now_v7(),
+                    kind: "edge.event".into(),
+                    at_source: self.clock.now(),
+                    actor: None,
+                    body: json!({"device": d.id, "name": name, "value": value}),
+                };
+                let _ = self.journal.add_fact(&fact);
+                self.feed(&flow::Input { device, event: Some(name), value, ..Default::default() }, devices, batch);
+            }
             Reading::State { device, state, reason } => {
                 let Some(d) = devices.get(&device) else { return };
-                let changed = self.last_state.lock().unwrap_or_else(|e| e.into_inner()).insert(device, state.clone()).as_ref() != Some(&state);
+                let changed = self.last_state.lock().unwrap_or_else(|e| e.into_inner()).insert(device.clone(), state.clone()).as_ref() != Some(&state);
                 if changed {
                     let fact = Fact {
                         fact_id: Uuid::now_v7(),
@@ -611,6 +1055,7 @@ impl Runtime {
                         body: json!({"device": d.id, "state": state, "reason": reason}),
                     };
                     let _ = self.journal.add_fact(&fact);
+                    self.feed(&flow::Input { device, state: Some(state), ..Default::default() }, devices, batch);
                 }
             }
         }
@@ -658,6 +1103,12 @@ impl Runtime {
             "telemetry_shed": counts.shed,
             "disk_free_mb": free_disk(&self.cfg.state_dir).map(|f| f >> 20),
             "adapters": self.adapters.iter().map(|(n, a)| (n.clone(), a.health())).collect::<BTreeMap<_, _>>(),
+            "links": self.defined.links(),
+            "problems": *self.problems.lock().unwrap_or_else(|e| e.into_inner()),
+            "strangers": self.defined.strangers(),
+            "flows": self.flows.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|f| json!({"name": f.name, "revision": f.revision})).collect::<Vec<_>>(),
+            "exports": self.exports.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|e| json!({"name": e.name, "waiting": self.journal.export_backlog(&e.name).unwrap_or(0)})).collect::<Vec<_>>(),
+            "exports_shed": self.export_shed.load(Ordering::Relaxed),
             "notices": self.journal.notices(20).unwrap_or_default(),
         })
     }
@@ -665,6 +1116,12 @@ impl Runtime {
     /// Runs until `stop` says otherwise. Each loop owns its own timing, so a slow adapter does not
     /// hold up the exchange with the platform.
     pub async fn run(self: Arc<Self>, stop: watch::Receiver<bool>) {
+        if self.cfg.peer_only {
+            // It only answers. Its adapters hold what they read until the peer asks.
+            let mut s = stop;
+            let _ = s.changed().await;
+            return;
+        }
         self.recover().await;
         let sync = self.clone();
         let mut s = stop.clone();
@@ -710,6 +1167,25 @@ impl Runtime {
                 tokio::select! { _ = s.changed() => return, _ = tokio::time::sleep(StdDuration::from_millis(work.cfg.work_millis)) => {} }
             }
         });
+        let courier = self.clone();
+        let mut s = stop.clone();
+        let exporting = tokio::spawn(async move {
+            loop {
+                courier.deliver_exports().await;
+                tokio::select! { _ = s.changed() => return, _ = tokio::time::sleep(StdDuration::from_secs(2)) => {} }
+            }
+        });
+        let manager = self.clone();
+        let mut s = stop.clone();
+        let managing = tokio::spawn(async move {
+            if !manager.cfg.managed {
+                return;
+            }
+            loop {
+                manager.exchange_config().await;
+                tokio::select! { _ = s.changed() => return, _ = tokio::time::sleep(StdDuration::from_secs(manager.cfg.sync_secs * 6)) => {} }
+            }
+        });
         let reader = self.clone();
         let mut s = stop.clone();
         let reading = tokio::spawn(async move {
@@ -718,7 +1194,7 @@ impl Runtime {
                 tokio::select! { _ = s.changed() => return, _ = tokio::time::sleep(StdDuration::from_secs(reader.cfg.read_secs)) => {} }
             }
         });
-        let _ = tokio::join!(exchange, working, reading);
+        let _ = tokio::join!(exchange, working, reading, managing, exporting);
     }
 }
 

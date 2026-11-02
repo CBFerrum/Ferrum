@@ -1,0 +1,58 @@
+# about: A mobile robot speaking VDA 5050 3.0.0 over MQTT, by its master control's topics.
+# group: Robots
+# VDA 5050 3.0 renamed agvPosition to mobileRobotPosition and batteryState to powerSupply. For a 2.x
+# vehicle use the runtime's built-in VDA 5050 adapter, which refuses versions it was not written for.
+name: vda5050-3
+connect: mqtt://broker:1883
+subscribe:
+  - uagv/v3/+/+/state
+  - uagv/v3/+/+/connection
+  - uagv/v3/+/+/factsheet
+read:
+  - topic: uagv/v3/+/+/state
+    device: "{topic.2}"
+    values:
+      - {metric: battery.percent, json: $.powerSupply.stateOfCharge, unit: "%", deadband: 1, time: $.timestamp}
+      - {attribute: position.x, json: $.mobileRobotPosition.x}
+      - {attribute: position.y, json: $.mobileRobotPosition.y}
+      - {attribute: position.theta, json: $.mobileRobotPosition.theta}
+      - {attribute: position.map, json: $.mobileRobotPosition.mapId}
+      - {attribute: mode, json: $.operatingMode}
+      - {attribute: driving, json: $.driving}
+      - {attribute: emergency_stop, json: $.safetyState.activeEmergencyStop}
+      - {attribute: order, json: $.orderId}
+      # What a robot reports, for people to see. It does not make this a safety function.
+      - {state: true, json: $.driving, map: {"true": Running, "false": Idle}}
+  - {topic: uagv/v3/+/+/state, device: "{topic.2}", each: $.errors, event: "{each.errorType}", json: $.errorLevel}
+  - {topic: uagv/v3/+/+/connection, device: "{topic.2}", attribute: connection, json: $.connectionState}
+commands:
+  transport.move:
+    topic: uagv/v3/{settings.manufacturer}/{device}/order
+    send:
+      headerId: "{seq}"
+      timestamp: "{now}"
+      version: 3.0.0
+      manufacturer: "{settings.manufacturer}"
+      serialNumber: "{device}"
+      orderId: "{command}"
+      orderUpdateId: 0
+      nodes: "{payload.nodes}"
+      edges: "{payload.edges}"
+    status:
+      topic: uagv/v3/+/{device}/state
+      id: $.orderId
+      json: $.errors[0].errorLevel
+      failed: FATAL
+      also:
+        # An order is finished when nothing is left to do in it.
+        - {topic: "uagv/v3/+/{device}/state", id: $.orderId, json: $.nodeStates, done: "[]"}
+    cancel:
+      topic: uagv/v3/{settings.manufacturer}/{device}/instantActions
+      send:
+        headerId: "{seq}"
+        timestamp: "{now}"
+        version: 3.0.0
+        manufacturer: "{settings.manufacturer}"
+        serialNumber: "{device}"
+        actions:
+          - {actionType: cancelOrder, actionId: "{command}-cancel", blockingType: HARD}

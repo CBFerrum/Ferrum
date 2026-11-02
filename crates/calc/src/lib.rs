@@ -8,6 +8,8 @@
 //!   `rounded_total == grand_total + rounding_adjustment`;
 //! * when every tax row is price-inclusive and there is no document discount, `grand_total == Σ line.amount`.
 
+pub mod formula;
+
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};

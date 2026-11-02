@@ -1,0 +1,22 @@
+# about: A machine or PLC over OPC UA: nodes watched, a job number written and a method called.
+# group: Machines
+# Node ids are examples: browse your server with any OPC UA client to find yours.
+name: opcua-machine
+connect: opcua://plc:4840/?interval=500
+subscribe:
+  - ns=2;s=Machine.Temperature
+  - ns=2;s=Machine.State
+  - ns=2;s=Machine.JobDone
+read:
+  - {topic: ns=2;s=Machine.Temperature, metric: temp.c, json: $.value, time: $.time, unit: C, deadband: 0.2}
+  - {topic: ns=2;s=Machine.State, state: true, json: $.value, map: {"0": Idle, "1": Running, "2": Stopped}}
+commands:
+  machine.start_job:
+    node: ns=2;s=Machine.JobNumber
+    send: "{payload.job}"
+    status: {topic: ns=2;s=Machine.JobDone, json: $.value, done: "true", running: "false"}
+  machine.reset:
+    node: ns=2;s=Machine
+    call: ns=2;s=Machine.Reset
+    send: []
+    once: true

@@ -22,7 +22,7 @@ fn valid_kind(kind: &str) -> bool {
     !kind.is_empty() && kind.len() <= 100 && kind.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_')
 }
 
-async fn apply_fact(tx: &mut Tx, tenant: Uuid, site: Uuid, f: &Fact) -> Result<()> {
+pub async fn apply_fact(tx: &mut Tx, tenant: Uuid, site: Uuid, f: &Fact) -> Result<()> {
     let new = sqlx::query(
         "insert into op_fact (tenant_id, id, site_id, kind, at_source, actor, body) values ($1, $2, $3, $4, $5, $6, $7) on conflict (tenant_id, id) do nothing",
     )

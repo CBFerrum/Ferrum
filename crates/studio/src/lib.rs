@@ -7,7 +7,7 @@
 //! * [`site`] — the `/api/app/studio/...` endpoints.
 
 pub mod builder;
-pub mod formula;
+pub use ferrum_calc::formula;
 pub mod query;
 pub mod run;
 pub mod site;

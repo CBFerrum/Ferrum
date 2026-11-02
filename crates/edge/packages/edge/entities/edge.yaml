@@ -1,0 +1,132 @@
+- name: DeviceDefinition
+  label: Device Definition
+  label_plural: Device Definitions
+  kind: master
+  module: edge
+  title_field: definition_name
+  search_fields: [definition_name]
+  description: How a kind of device is reached, read and commanded, as data. Gateways run the published version, so a draft cannot break anything.
+  fields:
+    - {name: definition_name, type: data, required: true, unique: true, in_list: true, max_length: 100}
+    - {name: status, type: select, options: [Draft, Published], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: revision, type: int, default: 0, read_only: true, no_copy: true, in_list: true}
+    - {name: body, type: code, required: true, label: Definition}
+    - {name: published_body, type: code, read_only: true, no_copy: true, label: What Gateways Run}
+    - {name: notes, type: text}
+  actions:
+    - {name: publish, label: Publish, permission: write}
+  list: {columns: [definition_name, status, revision], sort: definition_name asc}
+
+- name: EdgeRule
+  label: Edge Rule
+  label_plural: Edge Rules
+  kind: master
+  module: edge
+  title_field: rule_name
+  description: Watches a number at the edge, so that it works with the link down. A rule raises an alarm. It moves nothing.
+  fields:
+    - {name: rule_name, type: data, required: true, in_list: true}
+    - {name: metric, type: data, required: true, in_list: true, in_filter: true, max_length: 120}
+    - {name: comparison, type: select, options: [Above, Below, Silent], default: Above, required: true, in_list: true}
+    - {name: limit_value, type: decimal, label: Limit, in_list: true}
+    - {name: clear_value, type: decimal, label: Clears At, description: "Where it stops, when that is not the limit: a gap stops a reading on the limit from raising and clearing for ever"}
+    - {name: hold_secs, type: int, default: 0, min: "0", label: Must Hold (seconds), description: "How long before anyone is told, so that one spike is not an alarm. For Silent, how long nothing is heard"}
+    - {name: severity, type: select, options: [Info, Warning, Critical], default: Warning, in_list: true, in_filter: true}
+    - {name: site, type: link, to: Site, description: "Every site, if empty"}
+    - {name: device, type: link, to: Device, description: "One device. Empty means all with this metric"}
+    - {name: definition, type: link, to: DeviceDefinition, description: "Every device of one definition"}
+    - {name: enabled, type: check, default: true, in_list: true, in_filter: true}
+  list: {columns: [rule_name, metric, comparison, limit_value, severity, enabled], sort: rule_name asc}
+
+- name: EdgeFlow
+  label: Edge Flow
+  label_plural: Edge Flows
+  kind: master
+  module: edge
+  title_field: flow_name
+  search_fields: [flow_name]
+  description: Logic drawn as a flow and run at the gateway, so that it works with the link down. It is simulated and reviewed by someone else before it runs, and the strongest thing it can do is ask for a command.
+  fields:
+    - {name: flow_name, type: data, required: true, unique: true, in_list: true, max_length: 100}
+    - {name: status, type: select, options: [Draft, In Review, Approved], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: live, type: check, default: false, read_only: true, no_copy: true, in_list: true, in_filter: true, label: Running}
+    - {name: revision, type: int, default: 0, read_only: true, no_copy: true, in_list: true}
+    - {name: site, type: link, to: Site, in_list: true, in_filter: true, description: "Every site, if empty. One site first is how a change is tried."}
+    - {name: body, type: code, label: Flow, description: "What was drawn, as JSON"}
+    - {name: published_body, type: code, read_only: true, no_copy: true, label: What Gateways Run}
+    - {name: simulated_digest, type: data, read_only: true, no_copy: true, hidden: true}
+    - {name: submitted_by, type: data, read_only: true, no_copy: true}
+    - {name: approved_by, type: data, read_only: true, no_copy: true}
+    - {name: approved_at, type: datetime, read_only: true, no_copy: true}
+    - {name: activated_by, type: data, read_only: true, no_copy: true}
+    - {name: activated_at, type: datetime, read_only: true, no_copy: true}
+    - {name: review_note, type: text, read_only: true, no_copy: true}
+    - {name: notes, type: text}
+  actions:
+    - {name: submit_for_review, label: Send for Review, permission: write}
+    - {name: send_back, label: Send Back, permission: write}
+    - {name: approve, label: Approve, permission: write}
+    - {name: activate, label: Run It, permission: write}
+    - {name: stop, label: Stop It, permission: write}
+    - {name: revise, label: Change It, permission: write}
+  list: {columns: [flow_name, status, live, revision, site], sort: flow_name asc}
+
+- name: EdgeAlarm
+  label: Edge Alarm
+  label_plural: Edge Alarms
+  kind: master
+  module: edge
+  title_field: summary
+  description: A rule or flow that fired, from when it was raised at the edge until someone has dealt with it.
+  fields:
+    - {name: summary, type: data, read_only: true, in_list: true}
+    - {name: rule, type: link, to: EdgeRule, read_only: true, in_filter: true}
+    - {name: flow, type: link, to: EdgeFlow, read_only: true, in_filter: true}
+    - {name: flow_node, type: data, read_only: true, hidden: true}
+    - {name: device, type: link, to: Device, read_only: true, in_list: true, in_filter: true}
+    - {name: site, type: link, to: Site, read_only: true, in_filter: true}
+    - {name: severity, type: select, options: [Info, Warning, Critical], read_only: true, in_list: true, in_filter: true}
+    - {name: status, type: select, options: [Active, Acknowledged, Cleared], default: Active, read_only: true, in_list: true, in_filter: true}
+    - {name: value, type: decimal, read_only: true}
+    - {name: raised_at, type: datetime, read_only: true, in_list: true}
+    - {name: cleared_at, type: datetime, read_only: true}
+    - {name: acknowledged_by, type: data, read_only: true}
+    - {name: acknowledged_at, type: datetime, read_only: true}
+    - {name: note, type: text, read_only: true}
+  list: {columns: [summary, device, severity, status, raised_at], sort: raised_at desc}
+
+- name: EdgeExport
+  label: Edge Export
+  label_plural: Edge Exports
+  kind: master
+  module: edge
+  title_field: export_name
+  description: Where else a site's measurements go. A site keeps them until they are delivered, within a budget.
+  fields:
+    - {name: export_name, type: data, required: true, in_list: true}
+    - {name: site, type: link, to: Site, in_list: true, description: "Every site, if empty"}
+    - {name: send_to, type: data, required: true, label: Send To, in_list: true, description: "https://historian/in takes batches, mqtt://broker takes a message per measurement"}
+    - {name: topic, type: data, description: "MQTT: {device} and {metric} work here"}
+    - {name: metrics, type: data, description: "Only these, comma separated, with * for the rest of a name. All, if empty"}
+    - {name: sign_with, type: data, label: Sign With, description: "The name of a secret kept at the site. Signs each batch with HMAC-SHA256"}
+    - {name: enabled, type: check, default: true, in_list: true}
+  list: {columns: [export_name, site, send_to, enabled], sort: export_name asc}
+
+- name: EdgeRelease
+  label: Edge Release
+  label_plural: Edge Releases
+  kind: master
+  module: edge
+  title_field: release_version
+  description: A build of the site runtime, signed where it was built, and how far it has gone. Robot, PLC and safety firmware stay with their makers' procedures.
+  fields:
+    - {name: release_version, type: data, required: true, unique: true, in_list: true, label: Version}
+    - {name: url, type: data, required: true, label: Address}
+    - {name: sha256, type: data, required: true}
+    - {name: signature, type: data, required: true}
+    - {name: expires_at, type: datetime, required: true, in_list: true}
+    - {name: status, type: select, options: [Held, Rolling Out], default: Held, in_list: true, in_filter: true}
+    - {name: percent, type: percent, default: 0, min: "0", max: "100", label: Share of Gateways, in_list: true}
+    - {name: site, type: link, to: Site, in_list: true, description: "Every site, if empty"}
+    - {name: notes, type: text}
+  list: {columns: [release_version, status, percent, site, expires_at], sort: release_version desc}

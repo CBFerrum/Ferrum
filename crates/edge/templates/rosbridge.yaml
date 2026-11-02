@@ -1,0 +1,40 @@
+# about: A ROS 2 robot through rosbridge_suite, over its WebSocket. Battery, pose and Nav2 goals.
+# group: Robots
+# Runs beside the robot's own stack and asks it things. Navigation, collision avoidance and safety
+# stay in the robot. Topic and action names here are the common defaults: check them on your robot.
+name: rosbridge
+connect: ws://robot:9090
+on_connect:
+  - send: {op: subscribe, topic: /battery_state, type: sensor_msgs/msg/BatteryState, throttle_rate: 2000}
+  - send: {op: subscribe, topic: /amcl_pose, type: geometry_msgs/msg/PoseWithCovarianceStamped, throttle_rate: 1000}
+  - send: {op: subscribe, topic: /diagnostics, type: diagnostic_msgs/msg/DiagnosticArray, throttle_rate: 5000}
+read:
+  - when: {json: $.topic, is: /battery_state}
+    values:
+      - {metric: battery.percent, json: $.msg.percentage, scale: 100, unit: "%", deadband: 1}
+      - {metric: battery.volts, json: $.msg.voltage, unit: V, deadband: 0.1}
+  - when: {json: $.topic, is: /amcl_pose}
+    values:
+      - {attribute: position.x, json: $.msg.pose.pose.position.x}
+      - {attribute: position.y, json: $.msg.pose.pose.position.y}
+  - {when: {json: $.topic, is: /diagnostics}, each: $.msg.status, event: "{each.name}", json: $.message}
+commands:
+  transport.move:
+    send:
+      op: send_action_goal
+      id: "{command}"
+      action: /navigate_to_pose
+      action_type: nav2_msgs/action/NavigateToPose
+      args:
+        pose:
+          header: {frame_id: map}
+          pose:
+            position: {x: "{payload.x}", y: "{payload.y}", z: 0}
+            orientation: {x: 0, y: 0, z: 0, w: 1}
+    status:
+      id: $.id
+      json: $.result
+      done: "true"
+      failed: "false"
+    cancel:
+      send: {op: cancel_action_goal, id: "{command}", action: /navigate_to_pose}
