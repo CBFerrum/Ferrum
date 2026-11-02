@@ -2291,7 +2291,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-cloud"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-cloud?branch=w03-code-builds#33be3597e6ebe5541828a22c6b922376239de9e6"
+source = "git+https://github.com/CBFerrum/ferrum-app-cloud?branch=w03-code-builds#449c173010682eb0d19165119b952da8866b5329"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2714,7 +2714,7 @@ dependencies = [
 [[package]]
 name = "ferrum-cloud-contract"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-cloud?branch=w03-code-builds#33be3597e6ebe5541828a22c6b922376239de9e6"
+source = "git+https://github.com/CBFerrum/ferrum-app-cloud?branch=w03-code-builds#449c173010682eb0d19165119b952da8866b5329"
 dependencies = [
  "base64 0.22.1",
  "chrono",

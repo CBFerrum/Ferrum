@@ -89,8 +89,14 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
     let pool = &st.kernel.db.pool;
     let (socket_dropped, socket_closed_slow) = st.plugins.sockets.overflow_counts();
     let socket_queued = st.plugins.sockets.queued_bytes();
+    #[allow(unused_mut)]
+    let mut apps = String::new();
+    #[cfg(feature = "cloud")]
+    for (state, count) in ferrum_app_cloud::views::operation_counts(&st.kernel).await? {
+        apps.push_str(&format!("ferrum_cloud_operations{{state=\"{state}\"}} {count}\n"));
+    }
     let body = format!(
-        "# HELP ferrum_up 1 when the process is serving.\n# TYPE ferrum_up gauge\nferrum_up 1\n\
+        "# HELP ferrum_up 1 when the process is serving.\n# TYPE ferrum_up gauge\nferrum_up 1\n{apps}\
          # TYPE ferrum_restore_held gauge\nferrum_restore_held {held}\n\
          # TYPE ferrum_region_fenced gauge\nferrum_region_fenced {fenced}\n\
          # TYPE ferrum_uptime_seconds counter\nferrum_uptime_seconds {}\n\
