@@ -28,6 +28,8 @@ const MAX_SOCKET_MESSAGE: usize = 64 << 10;
 const SOCKET_BURST: u32 = 100;
 const SOCKET_WINDOW: Duration = Duration::from_secs(10);
 const KEEPALIVE: Duration = Duration::from_secs(30);
+/// How long a socket may take over one message. A peer that stopped reading holds its queue until then.
+const SOCKET_SEND: Duration = Duration::from_secs(30);
 
 /// Headers passed to plugins: everything except credentials.
 fn plugin_headers(headers: &HeaderMap) -> Map<String, Value> {
@@ -217,7 +219,7 @@ async fn serve(st: AppState, tenant: Uuid, p: Loaded, path: String, query: Map<S
             },
             out = outgoing.recv() => match out {
                 Some(Outgoing::Text(t)) => {
-                    if sink.send(Message::Text(t.into())).await.is_err() {
+                    if !matches!(tokio::time::timeout(SOCKET_SEND, sink.send(Message::Text(t.into()))).await, Ok(Ok(()))) {
                         break;
                     }
                 }
