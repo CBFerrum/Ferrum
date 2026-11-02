@@ -51,8 +51,37 @@ WORKSTREAMS = {
     12: "Production release and operating handover",
 }
 ACCEPTANCE = ["functional", "authorization", "cross_tenant", "concurrency", "migration", "recovery", "user_interface"]
+# The states of the Code, Deploy, Access and Resources program (docs/registry/fcp.yaml). Each asks for
+# more evidence than the last, and none stands in for a later one.
+FCP_STATES = {
+    "not_started": "Not started",
+    "partial": "Partial",
+    "implemented_unverified": "Implemented, unverified",
+    "verified_software": "Verified in software",
+    "qualified_profile": "Qualified for a profile",
+    "production_supported": "Production supported",
+    "verification_failed": "Verification failed",
+    "blocked_external": "Blocked externally",
+    "deprecated": "Deprecated",
+    "not_applicable_with_approved_rationale": "Not applicable",
+}
+FCP_WORKSTREAMS = {
+    "W00": "Baseline and regression reconciliation",
+    "W01": "Identity, policy and control plane",
+    "W02": "Resource management",
+    "W03": "Code",
+    "W04": "Build and artifact supply chain",
+    "W05": "Deploy, static delivery and domains",
+    "W06": "SSR, private apps and workers",
+    "W07": "Access, network and endpoints",
+    "W08": "Distributed execution",
+    "W09": "Corporate operations",
+    "W10": "Qualification and rollout",
+}
+PLATFORM = ROOT / "docs" / "platform"
+TRACEABILITY = PLATFORM / "traceability.md"
 # Sibling checkouts, where a file of another repository is looked for. Absent ones (CI) are skipped.
-SIBLINGS = {"ferrum-app-erp": ["../docs-work/ferrum-app-erp", "../erp4/ferrum-app-erp", "../ferrum-app-erp"], "ferrum-app-edge": ["../docs-work/ferrum-app-edge", "../ferrum-app-edge"]}
+SIBLINGS = {"ferrum-app-erp": ["../docs-work/ferrum-app-erp", "../erp4/ferrum-app-erp", "../ferrum-app-erp"], "ferrum-app-edge": ["../docs-work/ferrum-app-edge", "../ferrum-app-edge"], "Ferrum-Frontend": ["web"]}
 # What the documents must no longer say, because the code says otherwise.
 DRIFT = [
     ("docs/limits.md", r"security keys \(WebAuthn\)", "passkeys exist: crates/kernel/src/passkey.rs"),
@@ -156,6 +185,78 @@ def problems(reqs: list) -> list:
     return bad
 
 
+def fcp_load() -> list:
+    return yaml.safe_load((REGISTRY / "fcp.yaml").read_text())["requirements"]
+
+
+def fcp_problems(entries: list) -> list:
+    """What a status may claim. A file, a menu or a green build is not evidence of a later state."""
+    catalog = json.loads((PLATFORM / "catalog.json").read_text())
+    expected = {r["id"]: r for r in catalog["requirements"]}
+    blockers = {b["id"] for b in yaml.safe_load((REGISTRY / "blockers.yaml").read_text())["blockers"]}
+    bad = [f"{i}: missing from fcp.yaml" for i in expected.keys() - {e["id"] for e in entries}]
+    seen = Counter(e["id"] for e in entries)
+    bad += [f"{i}: appears {n} times" for i, n in seen.items() if n > 1]
+    for e in entries:
+        i, status = e["id"], e.get("status")
+        files, tests = e.get("files", []), e.get("tests", [])
+        if i not in expected:
+            bad.append(f"{i}: not in the catalog")
+        elif e["workstream"] != expected[i]["workstream"] or e["title"] != expected[i]["title"]:
+            bad.append(f"{i}: differs from the catalog")
+        if status not in FCP_STATES:
+            bad.append(f"{i}: unknown state {status}")
+        for path in files + tests:
+            where = located(path)
+            if where is not None and not where.exists():
+                bad.append(f"{i}: cites {path}, which does not exist")
+        if status in ("partial", "implemented_unverified", "verified_software", "qualified_profile", "production_supported") and not files:
+            bad.append(f"{i}: {status} cites no implementation")
+        if status == "not_started" and files:
+            bad.append(f"{i}: not_started, yet it cites an implementation")
+        if status in ("verified_software", "qualified_profile", "production_supported") and not tests:
+            bad.append(f"{i}: {status} names no tests")
+        if status in ("qualified_profile", "production_supported"):
+            digest = e.get("release_digest") or ""
+            if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest) or not e.get("reviewer") or not e.get("profile"):
+                bad.append(f"{i}: {status} needs a profile, a release digest and a reviewer")
+        if status == "blocked_external" and not e.get("blockers"):
+            bad.append(f"{i}: blocked, but on nothing named")
+        for b in e.get("blockers", []):
+            if b not in blockers:
+                bad.append(f"{i}: names unknown blocker {b}")
+        if status == "not_applicable_with_approved_rationale" and not (e.get("rationale") and e.get("approved_by")):
+            bad.append(f"{i}: needs a rationale and who approved it")
+        if status != "production_supported" and not e.get("limits"):
+            bad.append(f"{i}: says what it does not yet do")
+    return bad
+
+
+def traceability(entries: list) -> str:
+    counts = Counter(e["status"] for e in entries)
+    cases = {c["id"]: c for c in json.loads((PLATFORM / "catalog.json").read_text())["acceptance"]}
+    by_requirement = {c["requirement"]: c for c in cases.values()}
+    out = [
+        "# Traceability",
+        "",
+        "Generated from [docs/registry/fcp.yaml](../registry/fcp.yaml) by `scripts/registry.py generate`; edit the registry, not this.",
+        "Each requirement's acceptance case is in [catalog.json](catalog.json). See [README.md](README.md) for what a state may claim.",
+        "",
+        "| State | Requirements |",
+        "|---|---|",
+    ]
+    out += [f"| {label} | {counts[key]} |" for key, label in FCP_STATES.items() if counts[key]]
+    out += [f"| **All** | **{len(entries)}** |", ""]
+    for w, label in FCP_WORKSTREAMS.items():
+        rows = [e for e in entries if e["workstream"] == w]
+        out += [f"## {w}: {label}", "", "| Id | Requirement | State | Case | Tests | What it does not yet do |", "|---|---|---|---|---|---|"]
+        for e in rows:
+            limits = e.get("limits", "").replace("|", "\\|")
+            out.append(f"| {e['id']} | {e['title']} | {FCP_STATES[e['status']]} | {by_requirement[e['id']]['id']} | {len(e.get('tests', []))} | {limits} |")
+        out.append("")
+    return "\n".join(out)
+
+
 def advisory_problems() -> list:
     ignored = set(re.findall(r'"(RUSTSEC-[\d-]+)"', (ROOT / ".cargo" / "audit.toml").read_text()))
     entries = yaml.safe_load((REGISTRY / "advisories.yaml").read_text())["advisories"]
@@ -249,11 +350,12 @@ def main() -> int:
     if command == "export":
         print(json.dumps(reqs, indent=2))
         return 0
-    bad = problems(reqs) + advisory_problems() + drift_problems()
+    fcp = fcp_load()
+    bad = problems(reqs) + fcp_problems(fcp) + advisory_problems() + drift_problems()
     if bad:
         print("\n".join(bad), file=sys.stderr)
         return 1
-    generated = {CAPABILITIES: matrix(reqs) + "\n", BACKLOG: backlog(reqs), MANIFEST: release_evidence.manifest()}
+    generated = {CAPABILITIES: matrix(reqs) + "\n", BACKLOG: backlog(reqs), MANIFEST: release_evidence.manifest(), TRACEABILITY: traceability(fcp) + "\n"}
     if command == "generate":
         for path, text in generated.items():
             path.write_text(text)
@@ -263,7 +365,7 @@ def main() -> int:
     if stale:
         print(f"out of date, run scripts/registry.py generate: {', '.join(stale)}", file=sys.stderr)
         return 1
-    print(f"{len(reqs)} requirements check out")
+    print(f"{len(reqs)} requirements and {len(fcp)} of the platform program check out")
     return 0
 
 
