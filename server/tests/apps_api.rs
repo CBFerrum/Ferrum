@@ -12,6 +12,7 @@ use axum::routing::get;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use ferrum_apps::{Bundle, PLATFORM_VERSION, Role, Signer, TrustedKey, Uninstall};
+use ferrum_kernel::apps::Label;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Access, Action, Ctx, Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::Catalog;
@@ -111,6 +112,13 @@ fn plugin_only(id: &str) -> BTreeMap<String, Vec<u8>> {
         ("plugin.json", &json!({"name": id, "routes": [{"path": "/ping"}]}).to_string()),
     ]);
     f.insert("plugin.wasm".into(), wasm());
+    f
+}
+
+/// A sandboxed app reaching a host of its own, for something else to bring in.
+fn helper() -> BTreeMap<String, Vec<u8>> {
+    let mut f = plugin_only("helper");
+    f.insert("plugin.json".into(), json!({"name": "helper", "routes": [{"path": "/ping"}], "http_hosts": ["pay.example.com"]}).to_string().into_bytes());
     f
 }
 
@@ -586,6 +594,19 @@ async fn scenario() {
     assert!(up.warnings.iter().any(|w| w.contains("without a signature")), "{:?}", up.warnings);
     assert!(k.releases(Some(other)).await.unwrap().iter().any(|r| r.app_id == "tick"), "cluster uploads reach every workspace");
 
+    // AT-EXT-001: code for the trusted process comes with the build, and calling a bundle native
+    // gets it neither in nor relabelled as sandboxed, however it is signed.
+    let mut native = plugin_only("sneak");
+    let manifest = String::from_utf8(native["app.yaml"].clone()).unwrap().replace("runtime: wasm", "runtime: native").replace("plugin: plugin.json\n", "");
+    native.insert("app.yaml".into(), manifest.into_bytes());
+    native.remove("plugin.json");
+    native.remove("plugin.wasm");
+    for signers in [&[][..], &store_sig[..]] {
+        let err = dev.upload(&admin, bundle(native.clone(), signers).write().unwrap().into()).await.unwrap_err();
+        assert!(matches!(&err, Error::Forbidden(m) if m.contains("native app")), "{err}");
+    }
+    assert!(!k.releases(Some(tenant)).await.unwrap().iter().any(|r| r.app_id == "sneak"));
+
     // ── private uploads: sandboxed code without tables, for this workspace only ──
     let pv = bundle(plugin_only("pv"), &[(&keys.publisher, Role::Publisher)]).write().unwrap();
     let (app, up) = prod.upload(&admin, pv.into()).await.unwrap();
@@ -680,15 +701,74 @@ async fn scenario() {
     assert_eq!(plugin(&host, &k, &c, "gw").await.unwrap()["version"], json!("2.2.0"));
     assert_eq!(installed(&dev.overview(&c).await.unwrap(), "gw").unwrap()["version"], json!("2.2.0"));
 
+    // AT-EXT-008: a label is about one build. It says who looked, at what, under which profile, and
+    // goes no further than that.
+    let current = k.release_history("gw").await.unwrap().remove(0);
+    let label = Label {
+        dimension: "security_reviewed".into(),
+        profile: "RP-01".into(),
+        evidence: "reviews/gw-2.2.0".into(),
+        reviewer: "someone independent".into(),
+        expires_at: None,
+    };
+    k.grant_label("gw", &current.digest, &label).await.unwrap();
+    let here = dev.plan(&admin, "gw", None).await.unwrap();
+    assert_eq!(
+        here.app.labels.iter().map(|l| (l.dimension.as_str(), l.profile.as_str(), l.evidence.as_str())).collect::<Vec<_>>(),
+        [("security_reviewed", "RP-01", "reviews/gw-2.2.0")]
+    );
+
+    // AT-EXT-006: an update that brings something new with it asks for that too, by name.
+    fake.publish(&bundle(helper(), &store_sig));
+    let mut deeper = gw("2.3.0", &["api.example.com", "hooks.example.com"]);
+    let manifest = String::from_utf8(deeper["app.yaml"].clone()).unwrap().replace("requires: {kit: \"^1\"}", "requires: {kit: \"^1\", helper: \"^1\"}");
+    deeper.insert("app.yaml".into(), manifest.into_bytes());
+    fake.publish(&bundle(deeper, &store_sig));
+    let dev = manager(Uploads::Cluster, true);
+    let up = dev.plan(&admin, "gw", Some("2.3.0")).await.unwrap();
+    assert_eq!(
+        up.steps.iter().filter(|s| s.action != StepAction::Already).map(|s| (s.id.as_str(), s.action)).collect::<Vec<_>>(),
+        [("helper", StepAction::Install), ("gw", StepAction::Upgrade)]
+    );
+    assert!(up.increases.contains(&"brings in helper 1.0.0".to_string()), "{:?}", up.increases);
+    assert!(up.increases.contains(&"helper: calls host: pay.example.com".to_string()), "{:?}", up.increases);
+    assert!(
+        matches!(dev.install(&admin, "gw", Some("2.3.0"), &here.digest, true).await, Err(Refusal::Stale(_))),
+        "what was agreed to before does not cover it"
+    );
+    assert!(up.app.labels.is_empty(), "and the label of the build before does not follow it: {:?}", up.app.labels);
+    dev.install(&admin, "gw", Some("2.3.0"), &up.digest, true).await.unwrap();
+    let c = ctx().await;
+    assert!(plugin(&host, &k, &c, "helper").await.is_some() && plugin(&host, &k, &c, "gw").await.unwrap()["version"] == json!("2.3.0"));
+    assert!(dev.plan(&admin, "gw", None).await.unwrap().app.labels.is_empty(), "installed now, and still unreviewed");
+
+    // AT-EXT-009: support ending is said out loud, with the way out, before anyone agrees to it.
+    let mut retiring = gw("2.4.0", &["api.example.com", "hooks.example.com"]);
+    let manifest = String::from_utf8(retiring["app.yaml"].clone())
+        .unwrap()
+        .replace("requires: {kit: \"^1\"}", "requires: {kit: \"^1\", helper: \"^1\"}\ndeprecation: {support_ends: 2027-06-30, replacement: helper, export: Download devices from the settings page}");
+    retiring.insert("app.yaml".into(), manifest.into_bytes());
+    fake.publish(&bundle(retiring, &store_sig));
+    let dev = manager(Uploads::Cluster, true);
+    let up = dev.plan(&admin, "gw", Some("2.4.0")).await.unwrap();
+    assert!(
+        up.warnings
+            .iter()
+            .any(|w| w.contains("gw is being retired") && w.contains("2027-06-30") && w.contains("helper replaces it") && w.contains("Download devices")),
+        "{:?}",
+        up.warnings
+    );
+    dev.install(&admin, "gw", Some("2.4.0"), &up.digest, true).await.unwrap();
+
     // ── revocation: a forged list is ignored; the store's list disables the app everywhere ──
-    *fake.revocations.lock().unwrap() = signed_list(&keys.publisher_pair, &keys.publisher.key_id(), json!([{"app": "gw", "version": "2.2.0"}]));
+    *fake.revocations.lock().unwrap() = signed_list(&keys.publisher_pair, &keys.publisher.key_id(), json!([{"app": "gw", "version": "2.4.0"}]));
     assert_eq!(dev.sync_revocations().await.unwrap(), 0);
     assert_eq!(k.release_history("gw").await.unwrap()[0].status, "active");
-    *fake.revocations.lock().unwrap() = signed_list(&keys.store_pair, &keys.store.key_id(), json!([{"app": "gw", "version": "2.2.0", "reason": "leaks data"}]));
+    *fake.revocations.lock().unwrap() = signed_list(&keys.store_pair, &keys.store.key_id(), json!([{"app": "gw", "version": "2.4.0", "reason": "leaks data"}]));
     assert_eq!(dev.sync_revocations().await.unwrap(), 1);
     assert_eq!(dev.sync_revocations().await.unwrap(), 0, "applied once");
     let r = &k.release_history("gw").await.unwrap()[0];
-    assert_eq!((r.version.as_str(), r.status.as_str()), ("2.2.0", "revoked"));
+    assert_eq!((r.version.as_str(), r.status.as_str()), ("2.4.0", "revoked"));
     assert!(r.status_reason.as_deref().is_some_and(|s| s.contains("leaks data")));
     let c = ctx().await;
     assert_eq!(plugin(&host, &k, &c, "gw").await.unwrap()["enabled"], json!(false));
@@ -696,7 +776,7 @@ async fn scenario() {
     let err = dev.set_enabled(&admin, "gw", true).await.unwrap_err();
     assert!(matches!(&err, Error::Forbidden(m) if m.contains("revoked")), "{err}");
     let lines = dev.release_lines(Some("gw")).await.unwrap();
-    assert!(lines[0].starts_with("gw 2.2.0 revoked wasm store:"), "{lines:?}");
+    assert!(lines[0].starts_with("gw 2.4.0 revoked wasm store:"), "{lines:?}");
     // A revoked app can still be removed; its rows stay (the cluster no longer defines its tables).
     k.insert(&ctx().await, "KtThing", json!({"title": "second"}).as_object().cloned().unwrap()).await.unwrap();
     assert!(!dev.uninstall(&admin, "gw", true).await.unwrap());
@@ -706,14 +786,15 @@ async fn scenario() {
 
     // A list older than the newest one applied (a stale cache or a replay) is ignored.
     let list = |entries: Value, at: &str| dated_list(&keys.store_pair, &keys.store.key_id(), entries, at);
-    *fake.revocations.lock().unwrap() = list(json!([{"app": "gw", "version": "2.2.0"}]), "2026-10-29T10:00:00Z");
+    *fake.revocations.lock().unwrap() = list(json!([{"app": "gw", "version": "2.4.0"}]), "2026-10-29T10:00:00Z");
     assert_eq!(dev.sync_revocations().await.unwrap(), 0, "already revoked");
     *fake.revocations.lock().unwrap() = list(json!([{"app": "gw", "version": "2.1.0"}]), "2026-10-29T09:00:00Z");
     assert_eq!(dev.sync_revocations().await.unwrap(), 0, "an older list is ignored");
-    assert_ne!(k.release_history("gw").await.unwrap()[1].status, "revoked");
+    let first = || async { k.release_history("gw").await.unwrap().into_iter().find(|r| r.version == "2.1.0").unwrap().status };
+    assert_ne!(first().await, "revoked");
     *fake.revocations.lock().unwrap() = list(json!([{"app": "gw", "version": "2.1.0"}]), "2026-10-29T11:00:00Z");
     assert_eq!(dev.sync_revocations().await.unwrap(), 1, "a newer one applies");
-    assert_eq!(k.release_history("gw").await.unwrap()[1].status, "revoked");
+    assert_eq!(first().await, "revoked");
 
     // ── screens, extension points and add-ons (docs/plugins.md) ──
     let (_, up) = dev.upload(&admin, bundle(board(), &[]).write().unwrap().into()).await.unwrap();

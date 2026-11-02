@@ -219,6 +219,10 @@ async fn execute(
 
 /// Validates and stores an automation definition.
 pub async fn save(k: &Kernel, ctx: &Ctx, input: &Map<String, Value>) -> Result<Uuid> {
+    // What it says runs as the system, so saying it takes an administrator.
+    if !ctx.is_admin {
+        return Err(Error::Forbidden("administrator access required".into()));
+    }
     let get = |key: &str| input.get(key).and_then(Value::as_str).map(str::to_string);
     let name = get("name").filter(|n| !n.trim().is_empty()).ok_or_else(|| Error::field("name", "is required"))?;
     let entity = get("entity").ok_or_else(|| Error::field("entity", "is required"))?;
