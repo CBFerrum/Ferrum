@@ -251,6 +251,9 @@ impl Kernel {
     /// leaves leases that simply expire, and another replica picks the events up — delivery stays
     /// at least once, never stuck behind a lock.
     pub async fn dispatch_outbox_once(&self) -> Result<usize> {
+        if self.db.fenced() || self.holding().await? {
+            return Ok(0);
+        }
         let mut tx = self.db.system_tx().await?;
         // A loose index scan finds the workspaces with work, however long their backlogs. They come
         // in random order, so that more workspaces than a batch holds all get their turn.
@@ -493,6 +496,9 @@ impl Kernel {
     /// open across a request: a slow endpoint holds no row and no connection, and the batch's
     /// requests run side by side, so it delays no other endpoint either.
     pub async fn deliver_webhooks_once(&self) -> Result<usize> {
+        if self.db.fenced() || self.holding().await? {
+            return Ok(0);
+        }
         #[derive(sqlx::FromRow)]
         struct Due {
             tenant_id: Uuid,
@@ -634,7 +640,11 @@ impl Kernel {
             .execute(&mut *tx)
             .await?
             .rows_affected();
-        n += sqlx::query("delete from event_receipt where received_at < now() - make_interval(days => $1)").bind(keep_days).execute(&mut *tx).await?.rows_affected();
+        n += sqlx::query("delete from event_receipt where received_at < now() - make_interval(days => $1)")
+            .bind(keep_days)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
         n += sqlx::query("delete from idempotency_key where created_at < now() - interval '24 hours'").execute(&mut *tx).await?.rows_affected();
         tx.commit().await?;
         Ok(n)

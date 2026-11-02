@@ -183,6 +183,7 @@ pub struct HookRegistry {
     connector_source: Option<Arc<dyn crate::connect::ConnectorSource>>,
     connectors: HashMap<String, Arc<dyn crate::connect::Connector>>,
     resources: Option<Arc<dyn crate::resources::Resources>>,
+    restored: Vec<Arc<dyn crate::recovery::Restored>>,
     /// The packages owning what is being registered (see [`HookRegistry::scoped`]).
     scope: Option<Arc<[String]>>,
 }
@@ -369,6 +370,15 @@ impl HookRegistry {
 
     /// Mounts `site` under the package's name; it answers only tenants that installed the package.
     /// What provides declared resources on this server. There is at most one.
+    /// What an app does about work it had in hand when a restore is noticed.
+    pub fn add_restored(&mut self, app: Arc<dyn crate::recovery::Restored>) {
+        self.restored.push(app);
+    }
+
+    pub fn restored(&self) -> &[Arc<dyn crate::recovery::Restored>] {
+        &self.restored
+    }
+
     pub fn set_resources(&mut self, resources: Arc<dyn crate::resources::Resources>) -> &mut Self {
         self.resources = Some(resources);
         self

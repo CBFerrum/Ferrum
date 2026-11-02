@@ -220,7 +220,7 @@ async fn signed_in(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<SiteRespo
             let id = uuid(id)?;
             command_site(k, ctx, id).await?;
             let after = param(req, "after").map(|v| v.parse().map_err(|_| Error::field("after", "not a position in this history"))).transpose()?;
-            Ok(ok(commands::describe(k, ctx, id, after).await?))
+            Ok(ok(commands::describe_from(k, ctx, id, after).await?))
         }
         ("POST", ["commands", id, act @ ("approve" | "refuse" | "cancel" | "reconcile")]) => {
             let id = uuid(id)?;

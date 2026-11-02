@@ -3,6 +3,7 @@
 //! through a socket. What became of it is reported, not assumed: see `ferrum_ops_contract::command`.
 
 use crate::{devices, emit_people};
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use ferrum_domain::util::sys;
 use ferrum_kernel::{Ctx, Doc, DocHook, Error, HookCtx, Kernel, Result, Tx, audit, outbox};
@@ -638,13 +639,16 @@ macro_rules! named {
 /// What a person sees of a command, with everything said about it, or everything since `after`. This
 /// is the whole story from any replica, so a client that was away for the ending reads it here, and one
 /// holding a position this history never reached (a backup was restored since) is told to start again.
-pub async fn describe(k: &Kernel, ctx: &Ctx, id: Uuid, after: Option<i64>) -> Result<Value> {
+pub async fn describe_from(k: &Kernel, ctx: &Ctx, id: Uuid, after: Option<i64>) -> Result<Value> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let command: Option<Value> =
         sqlx::query_scalar(concat!("select ", named!(""), " where c.tenant_id = $1 and c.id = $2")).bind(ctx.tenant).bind(id).fetch_optional(&mut *tx).await?;
     let mut command = command.ok_or_else(|| Error::NotFound("command".into()))?;
-    let reached: Option<i64> =
-        sqlx::query_scalar("select max(seq) from op_command_event where tenant_id = $1 and command_id = $2").bind(ctx.tenant).bind(id).fetch_one(&mut *tx).await?;
+    let reached: Option<i64> = sqlx::query_scalar("select max(seq) from op_command_event where tenant_id = $1 and command_id = $2")
+        .bind(ctx.tenant)
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
     let history: Vec<Value> = sqlx::query_scalar(
         "select to_jsonb(e) - 'tenant_id' - 'command_id' from op_command_event e where tenant_id = $1 and command_id = $2 and seq > $3 order by seq",
     )
@@ -660,6 +664,10 @@ pub async fn describe(k: &Kernel, ctx: &Ctx, id: Uuid, after: Option<i64>) -> Re
         command["resync_required"] = json!(true);
     }
     Ok(command)
+}
+
+pub async fn describe(k: &Kernel, ctx: &Ctx, id: Uuid) -> Result<Value> {
+    describe_from(k, ctx, id, None).await
 }
 
 /// Commands, newest first.
@@ -829,6 +837,26 @@ pub async fn mark_in_doubt(tx: &mut Tx, tenant: Uuid, domain: &str, epoch: i64, 
         .execute(&mut **tx)
         .await?;
     Ok(rows.len() as u64)
+}
+
+/// A backup came back. What was running then may have finished since, and a gateway may have started
+/// what was queued, so every domain moves to a new epoch and all of it is for a person to settle.
+pub struct Restored;
+
+#[async_trait]
+impl ferrum_kernel::recovery::Restored for Restored {
+    async fn set_aside(&self, tx: &mut Tx) -> Result<u64> {
+        let domains: Vec<(Uuid, String, i64)> = sqlx::query_as(
+            "update op_authority set epoch = epoch + 1, changed_at = now(), reason = 'the database was restored' returning tenant_id, domain, epoch",
+        )
+        .fetch_all(&mut **tx)
+        .await?;
+        let mut touched = 0;
+        for (tenant, domain, epoch) in domains {
+            touched += mark_in_doubt(tx, tenant, &domain, epoch, "the database was restored while this may have been running").await?;
+        }
+        Ok(touched)
+    }
 }
 
 /// A device left the gateway that was given work for it. What that gateway's journal took may have

@@ -41,6 +41,7 @@ pub mod prefs;
 pub mod print;
 pub mod privacy;
 pub mod query;
+pub mod recovery;
 pub mod registry;
 pub mod resources;
 pub mod retention;
@@ -131,6 +132,9 @@ pub struct KernelSettings {
     /// Who push services may contact about this server's pushes (`mailto:` or `https:`); the
     /// public address when it is https.
     pub push_contact: Option<String>,
+    /// Treat a new timeline as a restore, which it can be. Turn off only where failover is synchronous,
+    /// so that promoting a replica loses nothing and a person need not look (docs/operations.md).
+    pub hold_on_timeline: bool,
 }
 
 impl Default for KernelSettings {
@@ -148,6 +152,7 @@ impl Default for KernelSettings {
             public_url: None,
             push_services: webpush::PUSH_SERVICES.iter().map(|s| s.to_string()).collect(),
             push_contact: None,
+            hold_on_timeline: true,
         }
     }
 }
@@ -206,7 +211,7 @@ impl Kernel {
             tracing::info!(statements = report.statements, sql = ?report.sql_files_applied, warnings = report.warnings.len(), "schema synced");
         }
         let registry = Arc::new(Registry::new(&catalog, Arc::new(full), db.clone()));
-        Ok(Arc::new(Kernel {
+        let kernel = Arc::new(Kernel {
             db,
             registry,
             hooks,
@@ -218,7 +223,9 @@ impl Kernel {
             files: std::sync::OnceLock::new(),
             directory: std::sync::OnceLock::new(),
             vapid: tokio::sync::OnceCell::new(),
-        }))
+        });
+        kernel.notice_restore().await?;
+        Ok(kernel)
     }
 
     /// Cache invalidation (metadata, users) — every replica that serves requests needs these, or it
