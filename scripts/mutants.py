@@ -49,6 +49,16 @@ TIMEOUT = 600
 
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
+    ("ops-second-live-command", "crates/ops/packages/ops/sql/002_one_live_command.sql", "create unique index op_command_one_live", "create index op_command_one_live", OPS),
+    ("ops-second-live-command-issued", "crates/ops/src/commands.rs", "    if let Some(found) = existing(tx, tenant, &cmd, exclusive).await? {\n        return Ok(found);\n    }\n", "", OPS),
+    ("ops-engine-only-ignored", "crates/ops/src/commands.rs", "if allowed.engine_only && cmd.issuer != Issuer::Engine {", "if false {", OPS),
+    ("ops-envelope-beats-a-second-person", "crates/ops/src/commands.rs", "Issuer::Automation | Issuer::Ai if allowed.needs_approval =>", "Issuer::Automation | Issuer::Ai if false =>", OPS),
+    ("ops-envelope-covers-agents", "crates/ops/src/commands.rs", "if cmd.issuer == Issuer::Ai && agents != Some(true) {", "if false {", OPS),
+    ("ops-envelope-any-device", "crates/ops/src/commands.rs", "if !listed.is_empty() && !listed.contains(&target.id) {", "if false {", OPS),
+    ("ops-envelope-any-payload", "crates/ops/src/commands.rs", "if let Some(why) = limits.iter().find_map(|l| l.outside(&cmd.payload)) {", "if let Some(why) = limits.iter().find_map(|_| None::<String>) {", OPS),
+    ("ops-envelope-any-state", "crates/ops/src/commands.rs", "if last.as_deref() != Some(wanted.as_str()) {", "if false {", OPS),
+    ("ops-envelope-old-evidence", "crates/ops/src/commands.rs", "and source_time > now() - make_interval(secs => $4) limit 1", "and source_time > now() - make_interval(secs => $4 * 1000000) limit 1", OPS),
+    ("ops-envelope-no-budget", "crates/ops/src/commands.rs", "if max_in_progress.is_some_and(|max| unfinished >= max) {", "if false {", OPS),
     ("ops-provisioned-by-saying-so", "crates/ops/src/devices.rs", "if to == Lifecycle::Provisioned && gateway.is_none() {", "if false {", OPS),
     ("ops-allowance-ignored", "crates/ops/src/sync.rs", "let kept_back = !req.measurements.is_empty() && telemetry::over_allowance(&mut tx, tenant, now).await?;", "let kept_back = false;", OPS),
     ("ops-devices-beyond-allowance", "crates/ops/src/devices.rs", "if over.unwrap_or(false) {", "if false {", OPS),
@@ -73,6 +83,8 @@ MUTANTS = [
     ("breaker-never-opens", "crates/kernel/src/connect.rs", "(failures >= BREAK_AFTER).then(", "(failures >= BREAK_AFTER * 1000).then(", CONNECT),
     ("lease-taken-twice", "crates/kernel/src/outbox.rs", "where id = $1 and available_at = $2 and processed_at is null and not dead returning available_at", "where id = $1 and $2::timestamptz is not null and processed_at is null and not dead returning available_at", EVENTS),
     ("hook-may-call-out", "crates/plugins/src/host.rs", 'if matches!(self.scope, Scope::Hook(_)) => Err(Error::invalid(format!(', "if false => Err(Error::invalid(format!(", PLUGINS),
+    ("hook-may-send-on-a-socket", "crates/plugins/src/host.rs", '"http.fetch" | "sockets.send" | "sockets.close" if matches!', '"http.fetch" | "sockets.close" if matches!', PLUGINS),
+    ("hook-may-close-a-socket", "crates/plugins/src/host.rs", '"http.fetch" | "sockets.send" | "sockets.close" if matches!', '"http.fetch" | "sockets.send" if matches!', PLUGINS),
     ("hook-event-outlives-rollback", "crates/plugins/src/host.rs", "Scope::Hook(hc) => ferrum_kernel::outbox::enqueue(hc.tx, tenant, &topic, None, None, payload).await?,", "Scope::Hook(hc) => {\n                        let mut tx = hc.kernel.db.tenant_tx(tenant).await?;\n                        ferrum_kernel::outbox::enqueue(&mut tx, tenant, &topic, None, None, payload).await?;\n                        tx.commit().await?;\n                    }", PLUGINS),
     ("host-call-outlives-deadline", "crates/plugins/src/runtime.rs", "match tokio::time::timeout_at(end, host.call(&r.op, r.args)).await {", "match Ok::<_, tokio::time::error::Elapsed>(host.call(&r.op, r.args).await) {", DEADLINE),
     ("no-epoch-deadline", "crates/plugins/src/runtime.rs", "store.set_epoch_deadline((deadline.as_millis() / EPOCH_TICK.as_millis()) as u64 + 1);", "store.set_epoch_deadline(u64::MAX / 2);", DEADLINE),

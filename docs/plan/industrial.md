@@ -118,6 +118,56 @@ press and a simulated fleet, in a browser. Separate scenarios had all been green
 
 So: run the real thing before trusting a green suite, and not as an administrator.
 
+## What a review of the connected system found
+
+A source review on 2 November 2026, of the path from a business request to a device and back, found
+that the foundations held and the seams between them did not. Each finding was confirmed in the code,
+and more of the same kind turned up beside it. All are fixed, each with a test and a mutant:
+
+| Finding | What it was | What holds now |
+|---|---|---|
+| A retried release made a second mission | Release took `Released` tasks and wrote another attempt | A release said twice is one mission, and the ledger's `op_command_one_live` index refuses a second live command for a task or run |
+| Recovery chose a device by operation name | A restart could ask another device, whose "never heard of it" looked like leave to resend | What a command went out on is written with its intent, and everything after goes back to exactly that, or nowhere |
+| Cancelling one vehicle's order stopped them all | `cancelOrder` went to every vehicle on the adapter | It goes to the vehicle that has the order, once that vehicle says so |
+| A backward clock stretched leases | Time stayed at its high-water mark, and elapsed time stopped counting | Time is the platform's, carried by a clock nothing on the machine can set; a reboot is not believed |
+| A clock that ran ahead locked out signing | Nothing could bring it back | The platform's time is believed, backwards too |
+| Dispatch checks went stale in a batch | Planned once, sent later, and an expired command went with a second to live | Every command passes the gate the moment before it goes, and fencing is in the statement that writes the intent |
+| An absent dependency counted as done | "Done" was what was not in the current lists | Only a recorded `Completed` satisfies one, and endings outlive their rows |
+| A move verified the place and not the load | Any tote at the right bin finished the task | The load is scanned too, and a manager's word never reads as a scan |
+| A reused scan could finish a task with nothing moved | A move that landed nowhere was ignored | It is refused |
+| A machine could start before its material arrived | Release issued the start beside the supply request, on a quantity anyone could also count | Material is set aside on release, and a second gate starts the machine once it is at the station |
+| Wrong-scan audit was rolled back | Written in the transaction that was then refused | A refusal commits what it recorded, then says no |
+| Redirects could leave the allow list | The first host was checked, and `plant.example.com` matched `plant.example.com.elsewhere.org` | Every hop is checked, and an entry means the host it names |
+| An envelope was a rate | Site, operation and a count, and it could stand in for a required second person | It says where, what, when and how much, covers agents only if told to, and never replaces a second person |
+| Recovery forgot what a mission was for | Found stock ended the task, so an order could be left with nothing to pick it and a wave saying Picked. A run's material found at the line was not counted. The walk below found this, not the review | Found on the way, a pick or a line's supply goes on as a new task, and found where it was going it has arrived. What nobody found is on the wave's shortfall, and a shipment nothing reached closes |
+| Receipts and issues could not be taken back | Cancelling one in a managed warehouse failed | A receipt goes back out by the inbound bin if it is still there, and an issue comes back in by it |
+
+The same review left five checks on what was closed earlier. They were made on the same day:
+
+| Asked | Found |
+|---|---|
+| Every external effect is refused in a hook | `http.fetch`, `sockets.send` and `sockets.close` are all that leave the system. Only the first was tested; each now has a test and a mutant of its own |
+| Every integration that can command uses the ledger | Everything that reaches equipment issues through `commands::issue` or `issue_exclusive`: Edge's site, fleet, firmware, schedules and facts, Warehouse, Shop Floor and the agents' tools. On a gateway, a tag is written from one place, a command's dispatch. `plugins/examples/device-gateway` pushes over a socket and says it is an example; nothing installs it |
+| Adapters use `operation_id` or reconcile | Stripe and PayPal give the provider a key that is stable per request, which holds across events as well as attempts. Razorpay has no such key for a refund, so it looks for its own note first |
+| Connection management deletes conditionally | The example gateway is the only caller, and it passes `if_value`. The SDK offers both |
+| Credentials: migration and leaks | Every plugin that holds one names it in its manifest, and the host keeps it out of `config`, sealed. No plugin reads a secret from `config`. A gateway's were not as safe: an HTTP failure quoted its URL, which can hold a `{secret.x}`, and the reason went to the platform. Fixed in Edge 0.4.0 |
+
+Aggregate memory under many slow sockets stays unmeasured: each socket's queue is bounded, and their
+sum has not been loaded.
+
+The whole chain was then walked again on the real binaries, signed in as a supervisor, an operator and
+a recovery person, in a browser and through the API: a run released and its material brought to the
+line, wrong scans refused and kept in the audit chain, the press started only then, a pick released
+three times with the gateway dead, gateways killed mid-mission and restarted with equipment that had
+forgotten, a person finding the stock and settling the ledger, packing, a carrier's label and weight,
+a delivery and a receipt taken back. The books reconciled at every step and no log held an error. It
+found the recovery defect in the table above. A simulator stood in for the equipment.
+
+Two things this does not change. Nothing has run on physical equipment, so a robot-commanding or
+machine-starting pilot still waits on equipment, its recovery and its people (the blockers below), and no
+claim of autonomy is made. And a gateway offline carries on with what it was given: it does not
+originate new work, by design ([gateway guide](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/gateway.md)).
+
 ## Status
 
 Kept in the registry (`docs/registry/industrial.yaml`), with what is and is not proven. The scale of

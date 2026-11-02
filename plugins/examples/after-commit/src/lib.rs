@@ -3,7 +3,7 @@
 //! back, the event never existed and the provider is never called. A hook cannot call out itself:
 //! the host refuses `http.fetch` and `sockets.*` there.
 
-use ferrum_plugin_sdk::{Request, Value, emit, fetch, json, plugin};
+use ferrum_plugin_sdk::{Request, Value, call, emit, fetch, json, plugin};
 
 plugin!(handle);
 
@@ -27,6 +27,10 @@ fn hook(req: &Request) -> Result<Value, String> {
     if name.contains("from the hook") {
         // Refused: the document may still roll back.
         call_provider(req, json!({}), name)?;
+    }
+    if let Some(op) = name.strip_suffix(" in the hook") {
+        // Refused for the same reason. It comes first, so no such connection is needed.
+        call(op, json!({"connection": "gone", "message": ""})).map_err(|e| e.to_string())?;
     }
     if name.contains("after commit") {
         emit("provider", json!({"customer": name})).map_err(|e| e.to_string())?;
