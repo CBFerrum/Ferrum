@@ -21,7 +21,7 @@ stays independent of it.
 | A gateway and the platform | Signed exchange. A gateway runs on what it last heard |
 | A gateway and a box in a cabinet | `peers`: one more adapter over a signed link, with no cloud. A command is answered from what the box kept, so a retry cannot start work twice. One hop only |
 | A closed network and the platform | `relay`: passes only what gateways use, unchanged, since the signature covers it |
-| A gateway and a historian, a broker, someone's cloud | Exports, by HTTP with an HMAC or MQTT, held until delivered, within a budget |
+| A gateway and a historian, a broker, someone's cloud | [Exports](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/gateway.md#exports), held until delivered, within a budget: HTTP, MQTT, Sparkplug, NATS, Kafka, AMQP, InfluxDB, ClickHouse and the clouds |
 | Another system and a gateway | `webhook://`, or a definition that polls it |
 | A device and the platform with no gateway | `POST /api/site/{tenant}/edge/ingest`, with a token |
 
@@ -44,10 +44,16 @@ stays independent of it.
   anything else. A vendor's stack belongs behind a process boundary, as an external driver.
 - **Peers are one hop**, so that nobody can build a loop. **Full Ferrum-to-Ferrum federation** is not
   built: two platforms exchange data through exports and ingest, as any two systems would.
-- **Updates are the gateway's own software only.** Robot, PLC and safety firmware stay with their makers.
+- **A gateway's own updates are signed. Device firmware reaches sensors and meters only**, whose
+  definition allows it, in rollouts through the ledger. Robot, PLC and safety firmware stay with their
+  makers, whatever a definition says.
+- **A definition cannot write by polling, or read a gateway's files.** Writing is a command, and a site
+  names the one folder a definition may read.
 
 ## What is left
 
-See the gap table in [references](../references/edge.md). In order of what would matter first: trying
-definitions on real equipment and recording it in [compatibility](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/compatibility.md), history charts
-on a device, flows for devices with no gateway, and Sparkplug primary host duties.
+ferrum-app-edge's [parity record](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/parity.md)
+says what each reference has and where this stands. In order of what would matter first: trying
+definitions on real equipment and recording it in
+[compatibility](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/compatibility.md), DTLS and
+SNMP v3 for devices off a private network, sub-flows, DNP3 and DLMS, and an OPC UA server.
