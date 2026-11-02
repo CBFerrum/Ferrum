@@ -122,9 +122,11 @@ impl Host<'_, '_> {
         match op {
             // What leaves the system cannot be taken back if the document's transaction rolls
             // back, and a hook must not hold that transaction open waiting for a provider.
-            "http.fetch" | "sockets.send" | "sockets.close" if matches!(self.scope, Scope::Hook(_)) => Err(Error::invalid(format!(
-                "{op} cannot run in a hook: the document may still roll back. Emit an event and do it from the event, after the commit"
-            ))),
+            "http.fetch" | "sockets.send" | "sockets.close" | "resource.query" | "resource.execute" if matches!(self.scope, Scope::Hook(_)) => {
+                Err(Error::invalid(format!(
+                    "{op} cannot run in a hook: the document may still roll back. Emit an event and do it from the event, after the commit"
+                )))
+            }
             "data.get" => {
                 let (e, id) = (s(&a, "entity")?, uuid(&a, "id")?);
                 self.check(e, Action::Read)?;
@@ -273,6 +275,23 @@ impl Host<'_, '_> {
                 Ok(Value::Null)
             }
             "time.now" => Ok(json!(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true))),
+            "resource.query" | "resource.execute" => {
+                // Who is asking is the host's to say. A plugin names a handle, and nothing about itself.
+                if let Some(field) = a.as_object().into_iter().flatten().map(|(k, _)| k).find(|k| !matches!(k.as_str(), "handle" | "sql" | "params")) {
+                    tracing::warn!(plugin = %self.plugin.name, tenant = %self.ctx().tenant, field, "a plugin tried to say more than a resource call takes");
+                    return Err(Error::field(field, "is not something a plugin can say"));
+                }
+                let (handle, sql) = (s(&a, "handle")?, s(&a, "sql")?);
+                let params = a.get("params").and_then(Value::as_array).cloned().unwrap_or_default();
+                let k = self.kernel();
+                let (tenant, app) = (self.ctx().tenant, &self.plugin.name);
+                let resources = k.hooks.resources().ok_or_else(|| Error::Unavailable("nothing provides resources on this server".into()))?;
+                if op == "resource.query" {
+                    resources.query(k, tenant, app, handle, sql, &params).await
+                } else {
+                    Ok(json!({"changed": resources.execute(k, tenant, app, handle, sql, &params).await?}))
+                }
+            }
             other => Err(Error::invalid(format!("unknown host call {other}"))),
         }
     }

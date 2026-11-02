@@ -196,6 +196,9 @@ pub struct Permissions {
     /// Entities it adds: its packages' (tables) and its plugin's (custom records).
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub new_entities: BTreeSet<String>,
+    /// What it needs beyond the platform's records, with what they are expected to carry.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub resources: BTreeSet<String>,
     /// Changes to entities it does not define: entity → changes (fields, rules, properties,
     /// actions, workflows, seed records, print formats).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -291,6 +294,7 @@ impl Permissions {
         added_items(&mut out, "schedule", &self.schedules, &previous.schedules);
         added_items(&mut out, "receives events", &self.subscriptions, &previous.subscriptions);
         added_items(&mut out, "new entity", &self.new_entities, &previous.new_entities);
+        added_items(&mut out, "resource", &self.resources, &previous.resources);
         added_pairs(&mut out, &self.overlays, &previous.overlays, |e, c| format!("changes {e}: {c}"));
         let none = BTreeMap::new();
         for (role, grants) in &self.roles {
@@ -317,7 +321,11 @@ impl Bundle {
     /// sockets, schedules and subscriptions; its packages' new entities, changes to other
     /// entities, roles and SQL.
     pub fn permissions(&self) -> Result<Permissions, AppError> {
-        let mut out = Permissions { native: self.manifest.runtime == Runtime::Native, ..Permissions::default() };
+        let mut out = Permissions {
+            native: self.manifest.runtime == Runtime::Native,
+            resources: self.manifest.resources.iter().map(|r| r.consent_line()).collect(),
+            ..Permissions::default()
+        };
         let packages = self.packages()?;
         let own: BTreeSet<String> = packages.iter().flat_map(|p| p.entities.iter().map(|e| e.name.clone())).collect();
         out.new_entities.extend(own.iter().cloned());
@@ -502,6 +510,28 @@ mod tests {
         // Limiting access to own records and then lifting the limit is an increase.
         let own = with_plugin(|j| j["permissions"][1]["if_owner"] = true.into()).unwrap().permissions().unwrap();
         assert_eq!(v1.increases(&own), vec!["records: read Customer"]);
+    }
+
+    fn with_resource(line: &str) -> Bundle {
+        let mut files = wasm_app();
+        let yaml = String::from_utf8(files["app.yaml"].clone()).unwrap();
+        files.insert("app.yaml".into(), format!("{yaml}\nresources:\n  - {line}\n").into_bytes());
+        Bundle::from_files(files).unwrap()
+    }
+
+    #[test]
+    fn a_new_resource_is_a_new_consent() {
+        let before = Bundle::from_files(wasm_app()).unwrap().permissions().unwrap();
+        let small =
+            with_resource("{name: ledger, class: relational, isolation: database, authority: primary, capacity: {storage_gb: 1}}").permissions().unwrap();
+        assert_ne!(small.digest(), before.digest());
+        assert_eq!(small.increases(&before), vec!["resource: ledger: relational primary, 1 GB"]);
+        // The same interface and code, asking for more: nothing but the manifest moved.
+        let large =
+            with_resource("{name: ledger, class: relational, isolation: database, authority: primary, capacity: {storage_gb: 500}}").permissions().unwrap();
+        assert_ne!(large.digest(), small.digest());
+        assert_eq!(large.increases(&small), vec!["resource: ledger: relational primary, 500 GB"]);
+        assert!(before.increases(&small).is_empty());
     }
 
     #[test]
