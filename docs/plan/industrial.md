@@ -160,8 +160,9 @@ a recovery person, in a browser and through the API: a run released and its mate
 line, wrong scans refused and kept in the audit chain, the press started only then, a pick released
 three times with the gateway dead, gateways killed mid-mission and restarted with equipment that had
 forgotten, a person finding the stock and settling the ledger, packing, a carrier's label and weight,
-a delivery and a receipt taken back. The books reconciled at every step and no log held an error. It
-found the recovery defect in the table above. A simulator stood in for the equipment.
+a delivery taken back, and a receipt refused while its stock was on a task. The books reconciled at
+every step and no log held an error. It found the recovery defect in the table above, which the suites
+then proved, along with taking a receipt back. A simulator stood in for the equipment.
 
 Two things this does not change. Nothing has run on physical equipment, so a robot-commanding or
 machine-starting pilot still waits on equipment, its recovery and its people (the blockers below), and no
