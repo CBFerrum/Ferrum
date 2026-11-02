@@ -8,6 +8,7 @@ when interrupted, and refuses to start on a dirty file.
 
     scripts/mutants.py            # all of them, 10-20 minutes
     scripts/mutants.py hook       # those whose name contains `hook`
+    scripts/mutants.py --check    # only that each still finds its text, which CI does on every push
 """
 
 import os
@@ -225,15 +226,19 @@ def dirty(path: str) -> bool:
 
 
 def main() -> int:
-    only = sys.argv[1] if len(sys.argv) > 1 else ""
+    check = "--check" in sys.argv
+    only = next((a for a in sys.argv[1:] if not a.startswith("--")), "")
     chosen = [m for m in MUTANTS if only in m[0]]
     for name, path, old, _, _ in chosen:
         if old not in (ROOT / path).read_text():
             print(f"{name}: its text is gone from {path}; update this script", file=sys.stderr)
             return 2
-        if dirty(path):
+        if not check and dirty(path):
             print(f"{path} has uncommitted changes; commit them first", file=sys.stderr)
             return 2
+    if check:
+        print(f"{len(chosen)} mutants find their text")
+        return 0
     env = {**os.environ, "CARGO_INCREMENTAL": "0"}
     survived = []
     for name, path, old, new, test in chosen:
