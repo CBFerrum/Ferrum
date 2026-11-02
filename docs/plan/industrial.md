@@ -15,7 +15,7 @@ controller.
 | Finding | Status | Where |
 |---|---|---|
 | Socket delivery is not a durable command channel | Stays best effort, as it says. Physical work goes through the command ledger, which never touches a socket | `crates/ops/src/commands.rs`, `crates/plugins/src/sockets.rs` |
-| Socket buffers are unbounded | Closed. Each socket has a bounded queue. A sender says what overflow means: fail (the slow socket is closed and the caller told) or drop (a snapshot the next one replaces) | `crates/plugins/src/sockets.rs` |
+| Socket buffers are unbounded | Closed. Each socket has a bounded queue, and a replica a budget across all of them. A sender says what overflow means: fail (the slow socket is closed and the caller told) or drop (a snapshot the next one replaces) | `crates/plugins/src/sockets.rs` |
 | Event receipts do not make effects exactly once | Closed as far as it can be. The attempt is recorded before the plugin runs, so a retry after a crash is told so, with an `operation_id` that is the same on every attempt, to give the provider | `crates/plugins/src/events.rs`, `docs/plugins.md` |
 | The device gateway is only an example | Stays an example, and its documentation says so. Identity is `crates/ops/src/identity.rs`: a key per device, bound to its workspace, site and allowed commands at commissioning | |
 | Connection replacement | Closed. `kv.delete` takes `if_value`, so an old socket's close cannot remove the new one's mapping. The example uses it | `crates/plugins/src/host.rs` |
@@ -142,7 +142,7 @@ and more of the same kind turned up beside it. All are fixed, each with a test a
 | Recovery forgot what a mission was for | Found stock ended the task, so an order could be left with nothing to pick it and a wave saying Picked. A run's material found at the line was not counted. The walk below found this, not the review | Found on the way, a pick or a line's supply goes on as a new task, and found where it was going it has arrived. What nobody found is on the wave's shortfall, and a shipment nothing reached closes |
 | Receipts and issues could not be taken back | Cancelling one in a managed warehouse failed | A receipt goes back out by the inbound bin if it is still there, and an issue comes back in by it |
 
-The same review left five checks on what was closed earlier. They were made on the same day:
+The same review left six checks on what was closed earlier. They were made on the same day:
 
 | Asked | Found |
 |---|---|
@@ -152,8 +152,11 @@ The same review left five checks on what was closed earlier. They were made on t
 | Connection management deletes conditionally | The example gateway is the only caller, and it passes `if_value`. The SDK offers both |
 | Credentials: migration and leaks | Every plugin that holds one names it in its manifest, and the host keeps it out of `config`, sealed. No plugin reads a secret from `config`. A gateway's were not as safe: an HTTP failure quoted its URL, which can hold a `{secret.x}`, and the reason went to the platform. Fixed in Edge 0.4.0 |
 
-Aggregate memory under many slow sockets stays unmeasured: each socket's queue is bounded, and their
-sum has not been loaded.
+The sixth asked for aggregate limits on sockets to be validated, and there were none to validate: each
+queue was bounded and their sum was not. A replica now holds at most 256 MB for all its sockets, a socket
+that is behind counts as full past that while one keeping up is left alone, and a peer that stops
+reading is given up on after 30 seconds rather than holding its queue. `ferrum_plugin_socket_queued_bytes`
+shows it. That is proved by a test, not by load: thousands of slow clients have not been measured.
 
 The whole chain was then walked again on the real binaries, signed in as a supervisor, an operator and
 a recovery person, in a browser and through the API: a run released and its material brought to the
