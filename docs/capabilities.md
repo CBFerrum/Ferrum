@@ -9,11 +9,11 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 111 |
-| Partially implemented | 54 |
+| Implemented, qualification incomplete | 122 |
+| Partially implemented | 53 |
 | Missing | 45 |
 | Blocked by external dependency | 9 |
-| **All** | **219** |
+| **All** | **229** |
 
 ## Platform
 
@@ -232,7 +232,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-OPS-009 | Structured logs and basic metrics | Partially implemented | read | No OpenTelemetry traces; job, outbox and connection health are metrics, but not per-app business failures such as a posting that failed |
 | FERRUM-RELEASE-001 | Build once and promote the qualified digest | Implemented, qualification incomplete | read | The workflows have not run yet: they need a push to main |
 | FERRUM-RELEASE-002 | Provenance and SBOM attested at promotion | Implemented, qualification incomplete | read | Not run yet; requires the images to be attested by CI |
-| FERRUM-RELEASE-003 | Release manifest of every component | Partially implemented | read | Written by hand at this audit; not yet generated in CI |
+| FERRUM-RELEASE-003 | Release manifest of every component | Implemented, qualification incomplete | tested | Generated from Cargo.lock and checked in CI, and each build's evidence kept on its run. Not yet attached to a release, because none has been qualified; Evidence names the migrations in this repository: an app's are at the commit it names |
 | FERRUM-RELEASE-004 | Accepted advisories with owner and review date | Implemented, qualification incomplete | tested |  |
 | FERRUM-RELEASE-005 | Published support and compatibility policy | Partially implemented | read | A draft: support windows are the owner's commitment to make, and none is in force |
 | FERRUM-RELEASE-006 | Base images pinned by digest | Implemented, qualification incomplete | read | Compose and Kubernetes still name some third-party images by tag |
@@ -267,6 +267,16 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-IND-029 | A fleet: import, bulk commands, firmware rollouts, schedules, solutions, reports | Implemented, qualification incomplete | tested | Firmware never reaches a robot, a controller, a machine or a fleet; No device maker has tried it |
 | FERRUM-IND-030 | Exports to buses, stores and clouds, flows on the platform, and twins | Implemented, qualification incomplete | tested | Google and Azure are checked against the documented shape of the calls only; A platform flow hears closed minutes and stops with the platform |
 | FERRUM-IND-031 | Customers in the portal, relations, reports by the clock, allowances and live pages | Implemented, qualification incomplete | tested | No customer has used the portal; The report PDF path has not been run; Allowances are set by the operator in tenant.quotas, with no screen |
+| FERRUM-IND-032 | One live mission for one task or run, enforced by the ledger | Implemented, qualification incomplete | tested | Commands issued before this carry no name: two already alive stay for a person to settle |
+| FERRUM-IND-033 | A move proves what moved, and a manager's word never reads as a scan | Implemented, qualification incomplete | tested | A scan proves a label: a label on the wrong load is not caught, and nothing weighs or images one; Scanners and gloves have not been tried |
+| FERRUM-IND-034 | A refused scan stays on record | Implemented, qualification incomplete | tested |  |
+| FERRUM-IND-035 | A machine starts only with its material at the station | Implemented, qualification incomplete | tested | A claim at the line shrinks only when its run closes, so a run sharing a line may bring more than it needs; Which lot at the line a run takes is not fixed in advance; A start the machine already accepted can only be asked to stop |
+| FERRUM-IND-036 | Recovery, status and stopping go back to what a command went out on | Implemented, qualification incomplete | tested | Killed on a laptop, against stand-ins; Work running when a definition or address changes becomes unknown, by design |
+| FERRUM-IND-037 | Time on a site that nothing on the machine can stretch | Implemented, qualification incomplete | tested | Clocks are moved by hand in tests: no real suspend, power cut or battery-less board has been tried; clock_drift_ppm is a default, not a measurement of any gateway; A restored virtual machine snapshot rewinds this with its disk |
+| FERRUM-IND-038 | The last word before a command goes | Implemented, qualification incomplete | tested | After the intent is written, only equipment that checks a deadline or an epoch can refuse a late arrival |
+| FERRUM-IND-039 | A dependency needs a recorded completion | Implemented, qualification incomplete | tested | Only Completed satisfies one. What waits on a failure waits for its deadline, or a person; A dependency in another domain is never answered |
+| FERRUM-IND-040 | Where a gateway may reach, redirects included | Implemented, qualification incomplete | tested | The list is by host: a name on it is trusted to the site's resolver, and the address it resolves to is not checked |
+| FERRUM-IND-041 | Envelopes that say where, what, when and how much | Implemented, qualification incomplete | tested | Material and quality conditions are not envelope conditions: such operations are kept to the app that owns them; Evidence is the age of one reading, not its value; No costing |
 
 ## Verification
 

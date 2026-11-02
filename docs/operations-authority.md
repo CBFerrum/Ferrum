@@ -62,6 +62,27 @@ authorization.
 Agents hold none of these. They read, and they propose; a proposal runs only when a person approves
 it (`crates/ops/src/mcp.rs`).
 
+## What software may do on its own
+
+Software asks through the ledger like anything else: a rule or schedule as `automation`, an agent as
+`ai`. What it asks for waits for a person unless an **Automation Envelope** covers it, and the
+command's history says which limit it fell outside of. An envelope is one person's decision made in
+advance, and it has to say what was decided:
+
+| It says | With | Anything else |
+|---|---|---|
+| Who | **AI Agents Too**: off, it covers rules and schedules only | Goes to a person |
+| Where | **Devices**: empty means every device at the site that may do this | Goes to a person |
+| What | **Parameter Limits**: a path in the payload, a range, a list of values. What a payload does not say cannot be judged | Goes to a person |
+| When | **Equipment State**, and a reading no older than **Evidence Age** | Goes to a person |
+| How much | **Most per Hour**, and **Most Unfinished at Once**, unknown outcomes included | Goes to a person |
+
+An operation marked as needing a second person needs one every time: no envelope stands in for that.
+An operation marked **Through Its App Only** can be asked for by nothing but the app that owns the work,
+past that app's own gates, and that takes it out of the envelopes altogether. Production's
+`machine.start_job` has to be marked so, or a run on that machine is refused: a start that can be asked
+for around a material check is not behind it.
+
 ## The chain from a business event to a machine
 
 `WMS task` or `MES run` → `op_command` in the same transaction as the business change → site journal,

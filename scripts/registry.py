@@ -2,7 +2,7 @@
 """The requirements registry (docs/registry): checks it and writes what is generated from it.
 
     scripts/registry.py check      # fails on anything wrong, or a generated file out of date
-    scripts/registry.py generate   # writes docs/capabilities.md and docs/registry/backlog.md
+    scripts/registry.py generate   # writes docs/capabilities.md, backlog.md and release-manifest.yaml
     scripts/registry.py export     # the whole registry, each entry in full, as JSON
 
 A requirement does not become complete because someone says so: `verified_complete` needs test
@@ -16,12 +16,14 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
+import release_evidence
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 REGISTRY = ROOT / "docs" / "registry"
 CAPABILITIES = ROOT / "docs" / "capabilities.md"
 BACKLOG = REGISTRY / "backlog.md"
+MANIFEST = REGISTRY / "release-manifest.yaml"
 AREAS = ["platform", "identity", "privacy", "experience", "apps", "ecosystem", "extensions", "ai", "cloud", "operations", "industrial", "verification"]
 
 STATUSES = {
@@ -50,7 +52,7 @@ WORKSTREAMS = {
 }
 ACCEPTANCE = ["functional", "authorization", "cross_tenant", "concurrency", "migration", "recovery", "user_interface"]
 # Sibling checkouts, where a file of another repository is looked for. Absent ones (CI) are skipped.
-SIBLINGS = {"ferrum-app-erp": ["../docs-work/ferrum-app-erp", "../erp4/ferrum-app-erp", "../ferrum-app-erp"]}
+SIBLINGS = {"ferrum-app-erp": ["../docs-work/ferrum-app-erp", "../erp4/ferrum-app-erp", "../ferrum-app-erp"], "ferrum-app-edge": ["../docs-work/ferrum-app-edge", "../ferrum-app-edge"]}
 # What the documents must no longer say, because the code says otherwise.
 DRIFT = [
     ("docs/limits.md", r"security keys \(WebAuthn\)", "passkeys exist: crates/kernel/src/passkey.rs"),
@@ -101,10 +103,8 @@ def located(path: str):
     if ":" not in path:
         return ROOT / path
     repo, rest = path.split(":", 1)
-    for base in [f"../{repo}", *SIBLINGS.get(repo, [])]:
-        if (ROOT / base).is_dir():
-            return ROOT / base / rest
-    return None
+    bases = [ROOT / base for base in [f"../{repo}", *SIBLINGS.get(repo, [])] if (ROOT / base).is_dir()]
+    return next((base / rest for base in bases if (base / rest).exists()), bases[0] / rest if bases else None)
 
 
 def problems(reqs: list) -> list:
@@ -253,7 +253,7 @@ def main() -> int:
     if bad:
         print("\n".join(bad), file=sys.stderr)
         return 1
-    generated = {CAPABILITIES: matrix(reqs) + "\n", BACKLOG: backlog(reqs)}
+    generated = {CAPABILITIES: matrix(reqs) + "\n", BACKLOG: backlog(reqs), MANIFEST: release_evidence.manifest()}
     if command == "generate":
         for path, text in generated.items():
             path.write_text(text)

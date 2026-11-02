@@ -118,6 +118,33 @@ press and a simulated fleet, in a browser. Separate scenarios had all been green
 
 So: run the real thing before trusting a green suite, and not as an administrator.
 
+## What a review of the connected system found
+
+A source review on 2 November 2026, of the path from a business request to a device and back, found
+that the foundations held and the seams between them did not. Each finding was confirmed in the code,
+and more of the same kind turned up beside it. All are fixed, each with a test and a mutant:
+
+| Finding | What it was | What holds now |
+|---|---|---|
+| A retried release made a second mission | Release took `Released` tasks and wrote another attempt | A release said twice is one mission, and the ledger's `op_command_one_live` index refuses a second live command for a task or run |
+| Recovery chose a device by operation name | A restart could ask another device, whose "never heard of it" looked like leave to resend | What a command went out on is written with its intent, and everything after goes back to exactly that, or nowhere |
+| Cancelling one vehicle's order stopped them all | `cancelOrder` went to every vehicle on the adapter | It goes to the vehicle that has the order, once that vehicle says so |
+| A backward clock stretched leases | Time stayed at its high-water mark, and elapsed time stopped counting | Time is the platform's, carried by a clock nothing on the machine can set; a reboot is not believed |
+| A clock that ran ahead locked out signing | Nothing could bring it back | The platform's time is believed, backwards too |
+| Dispatch checks went stale in a batch | Planned once, sent later, and an expired command went with a second to live | Every command passes the gate the moment before it goes, and fencing is in the statement that writes the intent |
+| An absent dependency counted as done | "Done" was what was not in the current lists | Only a recorded `Completed` satisfies one, and endings outlive their rows |
+| A move verified the place and not the load | Any tote at the right bin finished the task | The load is scanned too, and a manager's word never reads as a scan |
+| A reused scan could finish a task with nothing moved | A move that landed nowhere was ignored | It is refused |
+| A machine could start before its material arrived | Release issued the start beside the supply request, on a quantity anyone could also count | Material is set aside on release, and a second gate starts the machine once it is at the station |
+| Wrong-scan audit was rolled back | Written in the transaction that was then refused | A refusal commits what it recorded, then says no |
+| Redirects could leave the allow list | The first host was checked, and `plant.example.com` matched `plant.example.com.elsewhere.org` | Every hop is checked, and an entry means the host it names |
+| An envelope was a rate | Site, operation and a count, and it could stand in for a required second person | It says where, what, when and how much, covers agents only if told to, and never replaces a second person |
+
+Two things this does not change. Nothing has run on physical equipment, so a robot-commanding or
+machine-starting pilot still waits on equipment, its recovery and its people (the blockers below), and no
+claim of autonomy is made. And a gateway offline carries on with what it was given: it does not
+originate new work, by design ([gateway guide](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/gateway.md)).
+
 ## Status
 
 Kept in the registry (`docs/registry/industrial.yaml`), with what is and is not proven. The scale of
