@@ -194,6 +194,7 @@ def fcp_problems(entries: list) -> list:
     catalog = json.loads((PLATFORM / "catalog.json").read_text())
     expected = {r["id"]: r for r in catalog["requirements"]}
     blockers = {b["id"] for b in yaml.safe_load((REGISTRY / "blockers.yaml").read_text())["blockers"]}
+    reviewers = set(yaml.safe_load((REGISTRY / "reviewers.yaml").read_text())["independent"] or [])
     bad = [f"{i}: missing from fcp.yaml" for i in expected.keys() - {e["id"] for e in entries}]
     seen = Counter(e["id"] for e in entries)
     bad += [f"{i}: appears {n} times" for i, n in seen.items() if n > 1]
@@ -220,6 +221,12 @@ def fcp_problems(entries: list) -> list:
             digest = e.get("release_digest") or ""
             if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest) or not e.get("reviewer") or not e.get("profile"):
                 bad.append(f"{i}: {status} needs a profile, a release digest and a reviewer")
+            # Someone independent, on the list, by name. Another model instance is not that.
+            if e.get("reviewer") and e["reviewer"] not in reviewers:
+                bad.append(f"{i}: {e['reviewer']} is not an independent reviewer on record")
+            # A qualification does not stand on something still waiting for a provider or equipment.
+            if e.get("blockers"):
+                bad.append(f"{i}: {status} while blocked on {', '.join(e['blockers'])}")
         if status == "blocked_external" and not e.get("blockers"):
             bad.append(f"{i}: blocked, but on nothing named")
         for b in e.get("blockers", []):
@@ -229,6 +236,33 @@ def fcp_problems(entries: list) -> list:
             bad.append(f"{i}: needs a rationale and who approved it")
         if status != "production_supported" and not e.get("limits"):
             bad.append(f"{i}: says what it does not yet do")
+    return bad
+
+
+JOURNEY_STATES = {"passes", "passes_in_parts", "blocked", "not_run"}
+
+
+def journey_problems() -> list:
+    """Every golden journey has an honest state. Only one run whole can say it passes, and what was left
+    out stays on the page."""
+    journeys = yaml.safe_load((PLATFORM / "journeys.yaml").read_text())["journeys"]
+    blockers = {b["id"] for b in yaml.safe_load((REGISTRY / "blockers.yaml").read_text())["blockers"]}
+    bad = [f"J{n:02}: missing from journeys.yaml" for n in range(1, 13) if f"J{n:02}" not in {j["id"] for j in journeys}]
+    for j in journeys:
+        i, state = j["id"], j.get("state")
+        if state not in JOURNEY_STATES:
+            bad.append(f"{i}: unknown state {state}")
+        if state in ("passes", "passes_in_parts") and not j.get("tests"):
+            bad.append(f"{i}: {state} names no tests")
+        if state == "passes" and j.get("missing"):
+            bad.append(f"{i}: passes, with steps still missing")
+        if state != "passes" and not j.get("missing"):
+            bad.append(f"{i}: says what is missing")
+        if state == "blocked" and not j.get("blockers"):
+            bad.append(f"{i}: blocked, but on nothing named")
+        for b in j.get("blockers", []):
+            if b not in blockers:
+                bad.append(f"{i}: names unknown blocker {b}")
     return bad
 
 
@@ -351,7 +385,7 @@ def main() -> int:
         print(json.dumps(reqs, indent=2))
         return 0
     fcp = fcp_load()
-    bad = problems(reqs) + fcp_problems(fcp) + advisory_problems() + drift_problems()
+    bad = problems(reqs) + fcp_problems(fcp) + journey_problems() + advisory_problems() + drift_problems()
     if bad:
         print("\n".join(bad), file=sys.stderr)
         return 1
