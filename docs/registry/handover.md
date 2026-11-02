@@ -5,8 +5,10 @@ What is true of each requirement is in the registry; this says what happened and
 
 ## 2026-11-02, evening: what holds when things repeat, arrive late or go wrong
 
-**State**: the review's source findings are fixed, tested and landed. [Plan](../plan/industrial.md) has
-the table. This is software correctness only: **nothing has run on physical equipment**.
+**State**: the review's source findings are fixed and tested, and walked on the real binaries as
+people who are not administrators. They land in the order below: Ferrum, then ERP, then IoT Edge, then
+Ferrum's pins. [Plan](../plan/industrial.md) has the table. This is software correctness only:
+**nothing has run on physical equipment**.
 
 | Where | What |
 |---|---|
@@ -26,7 +28,10 @@ are not done. Its P4 (optimization, more protocols, autonomy) stays frozen until
 
 **Lessons:** mutants found two tests that claimed more than they proved, and one mutant pointed at the
 wrong suite. A killed mutant run leaves its edit behind: `git status` before anything else. A local
-Ferrum patch rewrites an app's `Cargo.lock`, and `git add -A` commits it.
+Ferrum patch rewrites an app's `Cargo.lock`, and `git add -A` commits it. A patch is silently unused
+when the lock pins another version of the crate: read `[[patch.unused]]`. Every suite was green when a
+walk through the real thing found that recovering a mission could leave an order with nothing to pick
+it and its wave saying Picked. Walking is not optional.
 
 ## 2026-11-01, evening: integrations, the record frame and every app's interface
 
