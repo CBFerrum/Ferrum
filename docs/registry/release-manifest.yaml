@@ -6,6 +6,7 @@ components:
   - {repository: CBFerrum/Ferrum-Frontend, read_at: 9ecf5bfc84049ee9586cbcbda72857d1ce44402d}
   - {repository: CBFerrum/ferrum-sdk, read_at: ff325b89f9ca7f04fcefa59f271518901171d414}
   - {repository: CBFerrum/ferrum-store, read_at: 88b922a94d88ec13d5568f9d81772b921ae1e564}
+  - {repository: CBFerrum/ferrum-app-edge, read_at: 39e4d6fc9e057b2dd892c99003e72fb400ae72bf, pinned: 39e4d6fc9e057b2dd892c99003e72fb400ae72bf}
   - {repository: CBFerrum/ferrum-app-erp, read_at: 954e5877235759e9ae17a88474f0f7fb2f84634c, pinned: 954e5877235759e9ae17a88474f0f7fb2f84634c}
   - {repository: CBFerrum/ferrum-app-assets, read_at: 8033f19ede3fa0cd46dee190f31c913f310fb99e, pinned: c371ca5a4aacea8a43d3350b707782c7bfa5ce1d}
   - {repository: CBFerrum/ferrum-app-bookings, read_at: c6bc48cacb8c89b18c926722eb6bd41bb43dffe2, pinned: 11fa6efb69c35a37ae419e924d62ca87e174595b}

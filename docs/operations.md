@@ -1150,9 +1150,9 @@ Ferrum and their refresh tokens, on every replica, not only the session it names
 those are not sign-ins, and removing the person ends them.
 ## Industrial sites
 
-A site runs `ferrum-site` next to its equipment: [running a site](site-runtime.md). Who may command
+A site runs `ferrum-site` next to its equipment: [running a site](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/gateway.md). Who may command
 what is in [operational authority](operations-authority.md), and what has been tried on what in
-[compatibility](compatibility.md).
+[compatibility](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/compatibility.md).
 
 After restoring the platform from a backup, sites may be ahead of it: their reports replay
 harmlessly, and commands issued after the backup was taken are gone from the ledger though a site may

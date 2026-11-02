@@ -96,8 +96,8 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 
 ## Operations and the site runtime
 
-- **Nothing has run on hardware.** Every adapter was tried against stand-ins ([compatibility](compatibility.md)). Nothing here is a functional-safety claim or a vendor qualification.
-- **Definitions reach what they describe, on paper.** OPC UA, Sparkplug B, MTConnect, VDA 5050 3.0.0, Open-RMF, openTCS and rosbridge are read by definitions tried against stand-ins and other people's libraries. Sparkplug is not a primary host, and OPC UA does not browse ([compatibility](compatibility.md)).
+- **Nothing has run on hardware.** Every adapter was tried against stand-ins ([compatibility](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/compatibility.md)). Nothing here is a functional-safety claim or a vendor qualification.
+- **Definitions reach what they describe, on paper.** OPC UA, Sparkplug B, MTConnect, VDA 5050 3.0.0, Open-RMF, openTCS and rosbridge are read by definitions tried against stand-ins and other people's libraries. Sparkplug is not a primary host, and OPC UA does not browse ([compatibility](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/compatibility.md)).
 - **Flows** have up to 500 steps and 2,000 wires, and run only at gateways: a device posting directly to the platform has none. What they remember is written down every 15 seconds, so a crash can lose that much and repeat an effect from it.
 - **What a gateway sustains is not measured.** Decoding alone did 369,000 JSON messages a second and flows 269,000 readings a second on an Apple M1 Pro. Disk and network come first, and on gateway hardware nobody has tried it.
 - **A link** keeps track of 20,000 different values, and a listener 1,024 callers. Past that, what is new is dropped and counted.

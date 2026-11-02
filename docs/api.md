@@ -275,7 +275,7 @@ they signed in with:
 Operations, the warehouse and the shop floor document their endpoints at the top of
 `crates/ops/src/site.rs`, and in `addons/wms/src/site.rs` and `addons/mes/src/lib.rs` of the ERP
 repository. A scanner sends what it read (`code`): a lot, a barcode or an item code, matched exactly.
-IoT Edge documents its own at the top of `crates/edge/src/site.rs`: gateways, definitions tried on a
+IoT Edge documents its own at the top of `src/site.rs` in [its repository](https://github.com/CBFerrum/ferrum-app-edge): gateways, definitions tried on a
 sample, flows simulated, devices, alarms and robots, and `POST /api/site/{tenant}/edge/ingest` for a
 device that talks to the platform directly, with `x-ferrum-device-token`.
 
