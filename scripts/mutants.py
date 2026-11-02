@@ -70,7 +70,7 @@ MUTANTS = [
     ("ops-transfer-keeps-running-work", "crates/ops/src/authority.rs", "    commands::mark_in_doubt(&mut tx, ctx.tenant, domain, epoch, \"authority changed while this may have been running\").await?;\n", "", OPS),
     ("ops-replay-accepted", "crates/ops/src/identity.rs", "    if fresh.rows_affected() == 0 {", "    if false {", OPS),
     ("ops-signature-unchecked", "crates/ops/src/identity.rs", "    key.verify(&signed, &Signature::from_bytes(&signature)).map_err(|_| Refused::Key(\"the signature does not match\"))?;\n", "    let _ = (&key, &signed, &signature);\n", OPS),
-    ("ops-ai-queues-directly", "crates/ops/src/commands.rs", "            None => (State::Proposed, None),\n        },", "            None => (State::Queued, None),\n        },", OPS),
+    ("ops-ai-queues-directly", "crates/ops/src/commands.rs", "            Err(why) => (State::Proposed, None, Some(why)),", "            Err(why) => (State::Queued, None, Some(why)),", OPS),
     ("ops-own-approval", "crates/ops/src/commands.rs", "    if row.issued_by == person(ctx) && person(ctx).is_some() {", "    if false {", OPS),
     ("ops-other-site-measurements", "crates/ops/src/telemetry.rs", "if !ours.contains(&m.device_id) || m.check(now).is_err() {", "if m.check(now).is_err() {", OPS),
     ("refused-token-kept", "crates/plugins/src/host.rs", "self.tokens.remove(&key);", "let _ = &key;", HOST_UNIT),
