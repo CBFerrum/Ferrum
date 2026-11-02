@@ -282,17 +282,23 @@ async fn existing(tx: &mut Tx, tenant: Uuid, cmd: &NewCommand, exclusive: Option
     if cmd.dedupe_key.is_none() && exclusive.is_none() {
         return Ok(None);
     }
-    let found: Option<(Uuid, String)> = sqlx::query_as(
-        "select id, state from op_command where tenant_id = $1 and (dedupe_key = $2 or (exclusive_key = $3 \
-           and state in ('Proposed', 'Authorized', 'Queued', 'Accepted', 'Executing', 'OutcomeUnknown'))) \
+    let found: Option<(Uuid, String, bool)> = sqlx::query_as(
+        "select id, state, coalesce(dedupe_key = $2, false) and (target_id, operation, payload_hash) is distinct from ($4, $5, $6) from op_command \
+         where tenant_id = $1 and (dedupe_key = $2 or (exclusive_key = $3 and state in ('Proposed', 'Authorized', 'Queued', 'Accepted', 'Executing', 'OutcomeUnknown'))) \
          order by dedupe_key = $2 desc nulls last, issued_at desc limit 1",
     )
     .bind(tenant)
     .bind(&cmd.dedupe_key)
     .bind(exclusive)
+    .bind(cmd.target)
+    .bind(&cmd.operation)
+    .bind(payload_hash(&cmd.payload))
     .fetch_optional(&mut **tx)
     .await?;
-    let Some((id, state)) = found else { return Ok(None) };
+    let Some((id, state, different)) = found else { return Ok(None) };
+    if different {
+        return Err(Error::Conflict("this key was used for different work, so nothing was done".into()));
+    }
     let state = State::parse(&state).ok_or_else(|| Error::internal("a command in an unknown state"))?;
     Ok(Some(Issued { id, state, repeated: true }))
 }
@@ -845,10 +851,13 @@ pub struct Restored;
 
 #[async_trait]
 impl ferrum_kernel::recovery::Restored for Restored {
-    async fn set_aside(&self, tx: &mut Tx) -> Result<u64> {
+    async fn set_aside(&self, tx: &mut Tx, tenant: Option<Uuid>) -> Result<u64> {
+        // Past anything a gateway saw after the backup was taken, which a plain increment may not be.
         let domains: Vec<(Uuid, String, i64)> = sqlx::query_as(
-            "update op_authority set epoch = epoch + 1, changed_at = now(), reason = 'the database was restored' returning tenant_id, domain, epoch",
+            "update op_authority set epoch = greatest(epoch + 1, extract(epoch from now())::bigint), changed_at = now(), reason = 'the database was restored' \
+             where $1::uuid is null or tenant_id = $1 returning tenant_id, domain, epoch",
         )
+        .bind(tenant)
         .fetch_all(&mut **tx)
         .await?;
         let mut touched = 0;
