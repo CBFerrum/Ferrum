@@ -50,7 +50,7 @@ TIMEOUT = 600
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
     ("ops-second-live-command", "crates/ops/packages/ops/sql/002_one_live_command.sql", "create unique index op_command_one_live", "create index op_command_one_live", OPS),
-    ("ops-second-live-command-issued", "crates/ops/src/commands.rs", "    if let Some(found) = existing(tx, tenant, &cmd).await? {\n        return Ok(found);\n    }\n", "", OPS),
+    ("ops-second-live-command-issued", "crates/ops/src/commands.rs", "    if let Some(found) = existing(tx, tenant, &cmd, exclusive).await? {\n        return Ok(found);\n    }\n", "", OPS),
     ("ops-engine-only-ignored", "crates/ops/src/commands.rs", "if allowed.engine_only && cmd.issuer != Issuer::Engine {", "if false {", OPS),
     ("ops-envelope-beats-a-second-person", "crates/ops/src/commands.rs", "Issuer::Automation | Issuer::Ai if allowed.needs_approval =>", "Issuer::Automation | Issuer::Ai if false =>", OPS),
     ("ops-envelope-covers-agents", "crates/ops/src/commands.rs", "if cmd.issuer == Issuer::Ai && agents != Some(true) {", "if false {", OPS),

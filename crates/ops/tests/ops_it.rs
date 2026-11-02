@@ -835,17 +835,18 @@ async fn envelopes_and_exclusive_work(k: &Arc<Kernel>) {
     assert_eq!(issue(&t, &manager, NewCommand { issuer: Issuer::Engine, ..start.clone() }).await.unwrap().state, State::Queued);
 
     // ───── one physical thing, one live command ─────
-    let held = |n: &str| NewCommand {
-        issuer: Issuer::Engine,
-        exclusive_key: Some("wms-task:1".into()),
-        dedupe_key: Some(format!("attempt:{n}")),
-        ..move_tote(other_bot)
+    let held = |n: &str| NewCommand { issuer: Issuer::Engine, dedupe_key: Some(format!("attempt:{n}")), ..move_tote(other_bot) };
+    let exclusive = async |cmd: NewCommand, key: &str| {
+        let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+        let issued = commands::issue_exclusive(&mut tx, &manager, cmd, key).await.unwrap();
+        tx.commit().await.unwrap();
+        issued
     };
-    let first = issue(&t, &manager, held("0")).await.unwrap();
-    let second = issue(&t, &manager, held("1")).await.unwrap();
+    let first = exclusive(held("0"), "wms-task:1").await;
+    let second = exclusive(held("1"), "wms-task:1").await;
     assert_eq!((second.id, second.repeated), (first.id, true), "another attempt while the first is alive is the first");
     devices::set_lifecycle(k, &t.admin, other_bot, Lifecycle::Maintenance, "a wheel").await.unwrap();
-    assert_eq!(issue(&t, &manager, held("0")).await.unwrap().id, first.id, "a repeat gets its first answer, whatever has happened to the device since");
+    assert_eq!(exclusive(held("0"), "wms-task:1").await.id, first.id, "a repeat gets its first answer, whatever has happened to the device since");
     devices::set_lifecycle(k, &t.admin, other_bot, Lifecycle::Active, "mended").await.unwrap();
     let (a, b) = {
         let (one, two) = (t.k.clone(), t.k.clone());
@@ -853,9 +854,8 @@ async fn envelopes_and_exclusive_work(k: &Arc<Kernel>) {
         let tenant = t.tenant;
         let race = |k: Arc<Kernel>, ctx: Ctx, n: &'static str, target: Uuid| async move {
             let mut tx = k.db.tenant_tx(tenant).await.unwrap();
-            let cmd =
-                NewCommand { issuer: Issuer::Engine, exclusive_key: Some("wms-task:2".into()), dedupe_key: Some(format!("race:{n}")), ..move_tote(target) };
-            let issued = commands::issue(&mut tx, &ctx, cmd).await.unwrap();
+            let cmd = NewCommand { issuer: Issuer::Engine, dedupe_key: Some(format!("race:{n}")), ..move_tote(target) };
+            let issued = commands::issue_exclusive(&mut tx, &ctx, cmd, "wms-task:2").await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             tx.commit().await.unwrap();
             issued
@@ -866,7 +866,7 @@ async fn envelopes_and_exclusive_work(k: &Arc<Kernel>) {
     assert!(a.repeated != b.repeated, "and one of them is told it repeated");
     let cancelled = api(&t, &manager, "POST", &format!("/commands/{}/cancel", first.id), json!({"reason": "not needed"})).await;
     cancelled.expect("stopped before it left");
-    let again = issue(&t, &manager, held("1")).await.unwrap();
+    let again = exclusive(held("1"), "wms-task:1").await;
     assert!(!again.repeated && again.id != first.id, "once it has ended, the next attempt is its own");
 }
 

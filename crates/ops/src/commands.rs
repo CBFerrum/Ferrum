@@ -55,10 +55,6 @@ pub struct NewCommand {
     /// The same key names the same intent: issuing it again returns the first.
     #[serde(default)]
     pub dedupe_key: Option<String>,
-    /// What this takes over, such as a warehouse task. While a command holding this can still act,
-    /// issuing another returns that one: two intents cannot be alive for one physical thing.
-    #[serde(default)]
-    pub exclusive_key: Option<String>,
     #[serde(default)]
     pub workflow_id: Option<String>,
     #[serde(default)]
@@ -281,8 +277,8 @@ impl DocHook for EnvelopeHook {
 }
 
 /// A command already written for this intent or this physical thing.
-async fn existing(tx: &mut Tx, tenant: Uuid, cmd: &NewCommand) -> Result<Option<Issued>> {
-    if cmd.dedupe_key.is_none() && cmd.exclusive_key.is_none() {
+async fn existing(tx: &mut Tx, tenant: Uuid, cmd: &NewCommand, exclusive: Option<&str>) -> Result<Option<Issued>> {
+    if cmd.dedupe_key.is_none() && exclusive.is_none() {
         return Ok(None);
     }
     let found: Option<(Uuid, String)> = sqlx::query_as(
@@ -292,7 +288,7 @@ async fn existing(tx: &mut Tx, tenant: Uuid, cmd: &NewCommand) -> Result<Option<
     )
     .bind(tenant)
     .bind(&cmd.dedupe_key)
-    .bind(&cmd.exclusive_key)
+    .bind(exclusive)
     .fetch_optional(&mut **tx)
     .await?;
     let Some((id, state)) = found else { return Ok(None) };
@@ -304,6 +300,18 @@ async fn existing(tx: &mut Tx, tenant: Uuid, cmd: &NewCommand) -> Result<Option<
 /// their own app; the ledger's endpoints check the caller's role first. Whatever the caller's rights,
 /// a device receives only what it was commissioned for, and software proposes rather than decides.
 pub async fn issue(tx: &mut Tx, ctx: &Ctx, cmd: NewCommand) -> Result<Issued> {
+    write(tx, ctx, cmd, None).await
+}
+
+/// [`issue`], for what takes over one physical thing, named by `key`: a warehouse task, a production
+/// run. While a command holding that name can still act, or nobody knows whether it did, issuing
+/// another returns that one, so two intents cannot be alive for it. Only an engine has one of these
+/// to give: no endpoint takes a name from its caller.
+pub async fn issue_exclusive(tx: &mut Tx, ctx: &Ctx, cmd: NewCommand, key: &str) -> Result<Issued> {
+    write(tx, ctx, cmd, Some(key)).await
+}
+
+async fn write(tx: &mut Tx, ctx: &Ctx, cmd: NewCommand, exclusive: Option<&str>) -> Result<Issued> {
     if cmd.operation.is_empty() || cmd.operation.len() > 100 {
         return Err(Error::field("operation", "is required, at most 100 characters"));
     }
@@ -311,7 +319,7 @@ pub async fn issue(tx: &mut Tx, ctx: &Ctx, cmd: NewCommand) -> Result<Issued> {
         return Err(Error::field("expires_in_secs", format!("must be between 1 second and {MAX_LIFETIME_HOURS} hours")));
     }
     let tenant = ctx.tenant;
-    if let Some(found) = existing(tx, tenant, &cmd).await? {
+    if let Some(found) = existing(tx, tenant, &cmd, exclusive).await? {
         return Ok(found);
     }
     let target = devices::target(tx, tenant, cmd.target).await?;
@@ -371,12 +379,12 @@ pub async fn issue(tx: &mut Tx, ctx: &Ctx, cmd: NewCommand) -> Result<Issued> {
     .bind(&cmd.correlation_id)
     .bind(&target.config_version)
     .bind(&cmd.dedupe_key)
-    .bind(&cmd.exclusive_key)
+    .bind(exclusive)
     .bind(state.as_str())
     .execute(&mut **tx)
     .await?;
     if written.rows_affected() == 0 {
-        return existing(tx, tenant, &cmd).await?.ok_or_else(|| Error::Conflict("this was just issued, and has ended: try again".into()));
+        return existing(tx, tenant, &cmd, exclusive).await?.ok_or_else(|| Error::Conflict("this was just issued, and has ended: try again".into()));
     }
     if state == State::Queued {
         record(
