@@ -11,7 +11,7 @@ use ferrum_kernel::{Db, Error, Result};
 use serde_json::{Value, json};
 use sqlx::postgres::PgListener;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
@@ -21,6 +21,9 @@ const CHANNEL: &str = "ferrum_plugin_ws";
 pub const MAX_CROSS_REPLICA_MESSAGE: usize = 7_000;
 /// Messages waiting for one socket. Memory is bounded by this and the 1 MB message limit.
 pub const QUEUE: usize = 256;
+/// Bytes waiting across every socket on a replica. [`QUEUE`] bounds one slow client, and this bounds
+/// many at once. Past it, a socket with anything still waiting is treated as if its queue were full.
+pub const QUEUED_BYTES: usize = 256 << 20;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outgoing {
@@ -56,11 +59,51 @@ enum Local {
     Absent,
 }
 
-#[derive(Default)]
+fn weight(msg: &Outgoing) -> usize {
+    match msg {
+        Outgoing::Text(t) | Outgoing::Close(t) => t.len(),
+    }
+}
+
+/// What a socket's writer reads. Whatever it never reads comes off the replica's total when it goes.
+pub struct Outbox {
+    rx: mpsc::Receiver<Outgoing>,
+    queued: Arc<AtomicUsize>,
+}
+
+impl Outbox {
+    pub async fn recv(&mut self) -> Option<Outgoing> {
+        let msg = self.rx.recv().await?;
+        self.queued.fetch_sub(weight(&msg), Ordering::Relaxed);
+        Some(msg)
+    }
+
+    fn try_recv(&mut self) -> std::result::Result<Outgoing, mpsc::error::TryRecvError> {
+        let msg = self.rx.try_recv()?;
+        self.queued.fetch_sub(weight(&msg), Ordering::Relaxed);
+        Ok(msg)
+    }
+}
+
+impl Drop for Outbox {
+    fn drop(&mut self) {
+        self.rx.close();
+        while self.try_recv().is_ok() {}
+    }
+}
+
 pub struct SocketHub {
     local: DashMap<Uuid, (Uuid, mpsc::Sender<Outgoing>)>,
     dropped: AtomicU64,
     closed_slow: AtomicU64,
+    queued: Arc<AtomicUsize>,
+    budget: usize,
+}
+
+impl Default for SocketHub {
+    fn default() -> Self {
+        SocketHub { local: DashMap::new(), dropped: AtomicU64::new(0), closed_slow: AtomicU64::new(0), queued: Arc::default(), budget: QUEUED_BYTES }
+    }
 }
 
 impl SocketHub {
@@ -69,10 +112,10 @@ impl SocketHub {
     }
 
     /// A socket opened on this replica; its writer task reads the receiver.
-    pub fn register(&self, tenant: Uuid, connection: Uuid) -> mpsc::Receiver<Outgoing> {
+    pub fn register(&self, tenant: Uuid, connection: Uuid) -> Outbox {
         let (tx, rx) = mpsc::channel(QUEUE);
         self.local.insert(connection, (tenant, tx));
-        rx
+        Outbox { rx, queued: self.queued.clone() }
     }
 
     pub fn unregister(&self, connection: Uuid) {
@@ -81,6 +124,11 @@ impl SocketHub {
 
     pub fn local_count(&self) -> usize {
         self.local.len()
+    }
+
+    /// Bytes waiting for sockets on this replica.
+    pub fn queued_bytes(&self) -> usize {
+        self.queued.load(Ordering::Relaxed)
     }
 
     /// Snapshots dropped, and sockets closed for not keeping up, since this replica started.
@@ -93,7 +141,19 @@ impl SocketHub {
         if entry.0 != tenant {
             return Local::Absent;
         }
-        match entry.1.try_send(msg) {
+        // A socket keeping up has nothing waiting, and is not to blame for another's backlog.
+        let bytes = weight(&msg);
+        let behind = entry.1.capacity() < entry.1.max_capacity();
+        if behind && self.queued.load(Ordering::Relaxed) + bytes > self.budget {
+            return Local::Full;
+        }
+        // Counted first: the writer may have it before this line would otherwise run.
+        self.queued.fetch_add(bytes, Ordering::Relaxed);
+        let sent = entry.1.try_send(msg);
+        if sent.is_err() {
+            self.queued.fetch_sub(bytes, Ordering::Relaxed);
+        }
+        match sent {
             Ok(()) => Local::Queued,
             Err(TrySendError::Full(_)) => Local::Full,
             Err(TrySendError::Closed(_)) => Local::Absent,
@@ -228,6 +288,25 @@ mod tests {
         assert_eq!(hub.overflowed(connection, Overflow::Drop).unwrap(), Sent::Dropped);
         assert_eq!(hub.local_count(), 1);
         assert_eq!(hub.overflow_counts(), (1, 0));
+    }
+
+    #[test]
+    fn a_replica_holds_only_so_much_for_all_its_sockets() {
+        let hub = SocketHub { budget: 10, ..Default::default() };
+        let (tenant, slow, quick) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        let mut behind = hub.register(tenant, slow);
+        let _quick = hub.register(tenant, quick);
+        let text = |n: usize| Outgoing::Text("x".repeat(n));
+        assert!(matches!(hub.deliver_local(tenant, slow, text(8)), Local::Queued), "under the budget");
+        assert!(matches!(hub.deliver_local(tenant, slow, text(8)), Local::Full), "past it, a socket with a backlog is full");
+        assert!(matches!(hub.deliver_local(tenant, quick, text(8)), Local::Queued), "and one keeping up is not punished for it");
+        assert_eq!(hub.queued_bytes(), 16);
+        behind.try_recv().unwrap();
+        assert_eq!(hub.queued_bytes(), 8, "what left no longer counts");
+        assert!(matches!(hub.deliver_local(tenant, slow, text(2)), Local::Queued));
+        assert_eq!(hub.queued_bytes(), 10);
+        drop(behind);
+        assert_eq!(hub.queued_bytes(), 8, "nor does what a closed socket left behind");
     }
 
     #[test]
