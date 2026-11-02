@@ -51,3 +51,6 @@ deletes a workspace for it.
 `GET /api/admin/usage` shows storage, people, AI tokens and jobs now, and day by day: readings are kept in
 `usage_day`, so a bill can be explained later from the same numbers. Ferrum sets no prices. A storage
 quota is the operator's, in `tenant.quotas.storage_bytes`; reaching it refuses new files and nothing else.
+Operations adds two more: `measurements_per_day`, past which gateways hold their measurements until
+there is room, and `devices`, past which no new device can be added. Commands, leases and reports go on
+either way.

@@ -121,6 +121,10 @@ pub struct SyncResponse {
     #[serde(default)]
     pub facts_done: Vec<Uuid>,
     pub measurements_stored: i64,
+    /// This workspace has used today's allowance, so none of these were taken: keep them and send
+    /// them again. Nothing else in the exchange is affected.
+    #[serde(default)]
+    pub measurements_held: bool,
     /// Present when it changed: compare with what is held.
     #[serde(default)]
     pub devices: Option<Vec<SiteDevice>>,
