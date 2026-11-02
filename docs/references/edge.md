@@ -19,13 +19,13 @@ purpose. **No** is a gap.
 | HTTP polling, WebSocket, raw TCP and UDP, serial | OpenRemote, EdgeX | Yes |
 | Equipment calling in, TCP, UDP, webhooks | ThingsBoard transports, OpenRemote | Yes, on ports the site names |
 | Modbus TCP and RTU, shared bus, word orders | Most | Yes. Tested on a stand-in and a pseudo-terminal |
-| OPC UA client: watch, read, write, method, encryption, users | Ignition, Kura, PLC4X, Azure IoT Operations | Yes, against async-opcua's own server. **Not** browsing, events and conditions, or history |
+| OPC UA client: watch, read, write, method, encryption, users | Ignition, Kura, PLC4X, Azure IoT Operations | Yes, against async-opcua's own server, with browsing. Events are built and have not yet been raised by a server. **Not** history |
 | Sparkplug B | Ignition, EMQX, HiveMQ | Yes: primary host and edge node, over rumqttd. No other Sparkplug software has met them. **Not** datasets or templates |
 | MTConnect | Ignition modules, Fanuc gateways | Yes, read-only: everything, then the sample stream, against a stand-in |
 | Binary frames with checksums | OpenRemote filters, custom drivers elsewhere | Yes, by definition |
 | Siemens S7, EtherNet/IP, ADS, BACnet, KNX, IEC 60870-5-104, M-Bus | PLC4X, Ignition, OpenRemote | Yes, built in, by name. All but KNX met someone else's stack. No controller |
 | CANopen, Bluetooth | ThingsBoard Gateway, Kura | External drivers that ship with the app. **PROFINET, EtherCAT, DNP3 and DLMS: No** |
-| CoAP, LwM2M, SNMP, OCPP | ThingsBoard, Hono | Yes. Met aiocoap, Leshan, PySNMP and the Python `ocpp` library. **No DTLS, no SNMP v3** |
+| CoAP, LwM2M, SNMP, OCPP | ThingsBoard, Hono | Yes, with SNMP v3. Met aiocoap, Leshan, PySNMP and the Python `ocpp` library. **No DTLS** |
 | LoRaWAN, Zigbee, Sigfox | ThingsBoard, OpenRemote, Hono | Through ChirpStack or Zigbee2MQTT over MQTT, with templates. Direct radios: No |
 | Any other protocol | Process drivers in EdgeX and Kura | Yes: JSON lines in any language, as a process of its own |
 | Discovery of devices on a shared connection | EdgeX provision watchers | Partly: strangers are noticed and a person claims them. No network scanning, on purpose |

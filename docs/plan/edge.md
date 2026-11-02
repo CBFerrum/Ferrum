@@ -55,5 +55,5 @@ stays independent of it.
 ferrum-app-edge's [parity record](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/parity.md)
 says what each reference has and where this stands. In order of what would matter first: trying
 definitions on real equipment and recording it in
-[compatibility](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/compatibility.md), DTLS and
-SNMP v3 for devices off a private network, sub-flows, DNP3 and DLMS, and an OPC UA server.
+[compatibility](https://github.com/CBFerrum/ferrum-app-edge/blob/main/docs/compatibility.md), DTLS for
+devices off a private network, DNP3 and DLMS, and an OPC UA server.
