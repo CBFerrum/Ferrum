@@ -19,14 +19,14 @@ purpose. **No** is a gap.
 | HTTP polling, WebSocket, raw TCP and UDP, serial | OpenRemote, EdgeX | Yes |
 | Equipment calling in, TCP, UDP, webhooks | ThingsBoard transports, OpenRemote | Yes, on ports the site names |
 | Modbus TCP and RTU, shared bus, word orders | Most | Yes. Tested on a stand-in and a pseudo-terminal |
-| OPC UA client: watch, read, write, method, encryption, users | Ignition, Kura, PLC4X, Azure IoT Operations | Yes, against async-opcua's own server, with browsing. Events are built and have not yet been raised by a server. **Not** history |
-| Sparkplug B | Ignition, EMQX, HiveMQ | Yes: primary host and edge node, over rumqttd. No other Sparkplug software has met them. **Not** datasets or templates |
+| OPC UA client and server: watch, read, write, method, encryption, users, browsing, events, history | Ignition, Kura, PLC4X, Azure IoT Operations | Yes. Met async-opcua and asyncua at both ends. The server is read only, as an export. Acknowledging a condition has met no server |
+| Sparkplug B | Ignition, EMQX, HiveMQ | Yes: primary host and edge node, over rumqttd, with payloads read both ways by Eclipse Tahu's definitions. No other host or node has met them. **Not** datasets or templates |
 | MTConnect | Ignition modules, Fanuc gateways | Yes, read-only: everything, then the sample stream, against a stand-in |
 | Binary frames with checksums | OpenRemote filters, custom drivers elsewhere | Yes, by definition |
-| Siemens S7, EtherNet/IP, ADS, BACnet, KNX, IEC 60870-5-104, M-Bus | PLC4X, Ignition, OpenRemote | Yes, built in, by name. All but KNX met someone else's stack. No controller |
-| CANopen, Bluetooth | ThingsBoard Gateway, Kura | External drivers that ship with the app. **PROFINET, EtherCAT, DNP3 and DLMS: No** |
-| CoAP, LwM2M, SNMP, OCPP | ThingsBoard, Hono | Yes, with SNMP v3. Met aiocoap, Leshan, PySNMP and the Python `ocpp` library. **No DTLS** |
-| LoRaWAN, Zigbee, Sigfox | ThingsBoard, OpenRemote, Hono | Through ChirpStack or Zigbee2MQTT over MQTT, with templates. Direct radios: No |
+| Siemens S7, EtherNet/IP, ADS, BACnet, KNX, IEC 60870-5-104, DNP3, DLMS/COSEM, M-Bus | PLC4X, Ignition, OpenRemote | Yes, built in, by name. All but KNX and DLMS met someone else's stack, DNP3 by opendnp3. No controller, RTU or meter |
+| CANopen, Bluetooth | ThingsBoard Gateway, Kura | External drivers that ship with the app. **PROFINET and EtherCAT: No**, and they belong to a controller |
+| CoAP, LwM2M, SNMP, OCPP | ThingsBoard, Hono | Yes, CoAP and LwM2M over DTLS by pre-shared key, SNMP v3 with traps, and OCPP profiles 0 to 3. Met aiocoap, Leshan with its own DTLS stack, PySNMP and the Python `ocpp` library. **No certificates over DTLS** |
+| LoRaWAN, Zigbee, Sigfox | ThingsBoard, OpenRemote, Hono | Through ChirpStack, The Things Stack, LORIOT, ThingPark, Sigfox callbacks or Zigbee2MQTT, with templates, and `bytes:` decodes a payload inside JSON. None has met the service it names. Direct radios: No |
 | Any other protocol | Process drivers in EdgeX and Kura | Yes: JSON lines in any language, as a process of its own |
 | Discovery of devices on a shared connection | EdgeX provision watchers | Partly: strangers are noticed and a person claims them. No network scanning, on purpose |
 
@@ -69,7 +69,10 @@ purpose. **No** is a gap.
 | Reverse tunnels, remote shell | ThingsBoard, Greengrass | By design: no way in from the platform |
 | Gateway to gateway | ThingsBoard cloud-edge, Kura | Yes: signed peers, one hop, with no cloud |
 | Relay out of a closed network | Hono, Azure Layered Network | Yes |
-| Exports, store until delivered | Kura wires, Greengrass stream manager | Yes: HTTP, MQTT, NATS, Kafka, RabbitMQ, InfluxDB and ClickHouse, real in CI. S3, SQS and SNS against moto. Pub/Sub and Azure by the documented shape of the calls |
+| Exports, store until delivered | Kura wires, Greengrass stream manager | Yes: HTTP, MQTT, NATS, Kafka, RabbitMQ, InfluxDB, ClickHouse and a table of your own in PostgreSQL, real in CI. S3, SQS and SNS against moto. Pub/Sub and Azure by the documented shape of the calls |
+| Customers who own devices, in a portal | ThingsBoard | Yes: their people see their devices, alarms and given dashboards, and a device can limit which readings. No role is needed, and none is given |
+| Allowances per workspace, reports by the clock | ThingsBoard PE | Yes. Past an allowance gateways hold readings and commands go on. Reports go through the outbox, as CSV or PDF |
+| Live updates | ThingsBoard | Yes: pages hear on the platform's socket that readings landed, and ask again |
 | An embedded broker | Greengrass Moquette, Azure IoT Operations | By design: Mosquitto beside it. See [the plan](../plan/edge.md) |
 | Clustering, automatic failover | EMQX, NATS | By design for authority: failover is a person's decision. A broker cluster is the site's own |
 | Prometheus metrics | Most | Yes: `/metrics` on the console |
@@ -81,11 +84,11 @@ purpose. **No** is a gap.
 | Device identity and lifecycle | All | Yes: Operations' enrolled keys, claimed to retired |
 | Tokens for devices with no gateway | ThingsBoard, Hono | Yes |
 | Attributes, reported and desired | ThingsBoard shared attributes, Ditto, Azure device twin | Yes: desired goes through the ledger and stays out of step until it is true |
-| Twin hierarchies, AAS, Thing Descriptions | Ditto, BaSyx | Partly: assets in a tree, and a twin, a Thing Description and an AAS for each device, read only |
+| Twin hierarchies, AAS, Thing Descriptions, EPCIS | Ditto, BaSyx, GS1 | Partly: assets in a tree, and a twin, a Thing Description and an AAS for each device, with AAS Part 2's repository and EPCIS 2.0 documents of what scanners saw, read only. Each validates against its published schema |
 | Alarms with acknowledge and clear | ThingsBoard, Ignition | Yes |
 | Dashboards with widgets | ThingsBoard, Ignition Perspective, OpenRemote | Yes: a grid of widgets, variables, shared links, history charts |
 | Multi-tenancy with row-level security | ThingsBoard PE, Magistrala | Yes: the kernel's |
-| Time-series store at scale | ClickHouse-backed products, Timescale | Partly: PostgreSQL partitions and rollups, not measured against the strategy's 20,000 a second |
+| Time-series store at scale | ClickHouse-backed products, Timescale | Partly: PostgreSQL partitions and rollups. One gateway stored 28,500 readings a second end to end on a laptop, past the strategy's 20,000, with 37,000 the sustained limit and nothing lost silently. Many gateways, long runs and a table that has grown are not measured |
 
 ## Licences that shaped this
 
