@@ -37,9 +37,15 @@ struct T {
 }
 
 async fn boot() -> Arc<Kernel> {
+    let k = start().await;
+    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&k.db.pool).await.expect("reset");
+    start().await
+}
+
+/// A server, on the database as it finds it.
+async fn start() -> Arc<Kernel> {
     let url = std::env::var("FERRUM_OPS_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_ops_test".into());
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let mut packages = ferrum_domain::packages().expect("packages");
     packages.extend(ferrum_ops::packages().expect("ops"));
     let catalog = Catalog::from_packages(packages).expect("catalog");
@@ -261,7 +267,18 @@ async fn scenario() {
     let again = issue(&t, &t.admin, NewCommand { dedupe_key: Some("wave-1/line-1".into()), ..move_tote(bot) }).await.unwrap();
     assert_eq!((first.id, first.state, first.repeated), (again.id, State::Queued, false));
     assert!(again.repeated);
+    // AT-OPS-004: the same key for different work is a mistake, and repeating it must not look like success.
+    let changed = issue(&t, &t.admin, NewCommand { dedupe_key: Some("wave-1/line-1".into()), payload: json!({"tote": "T-999"}), ..move_tote(bot) }).await;
+    assert!(matches!(&changed, Err(Error::Conflict(m)) if m.contains("different work")), "{changed:?}");
     let c = first.id;
+
+    // AT-OPS-001: whichever server is asked, what was accepted is there, by the same key or by its id.
+    let elsewhere = start().await;
+    let mut tx = elsewhere.db.tenant_tx(t.tenant).await.unwrap();
+    let through_another = commands::issue(&mut tx, &t.admin, NewCommand { dedupe_key: Some("wave-1/line-1".into()), ..move_tote(bot) }).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!((through_another.id, through_another.repeated), (c, true));
+    assert_eq!(commands::describe(&elsewhere, &t.admin, c).await.unwrap()["id"], json!(c));
 
     // ───── a lost answer: the site never heard, so it is sent again until the journal has it ─────
     let lost = gw.sync(&t, gw.sync_request()).await;
@@ -417,21 +434,55 @@ async fn scenario() {
     use ferrum_mcp::ToolProvider;
     let names: Vec<String> = tools.tools(&dispatcher).iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
     assert_eq!(names, ["ops_overview", "ops_command", "ops_propose"], "looking and proposing, and no tool for anything else");
+    gw.sync(&t, gw.sync_request()).await;
+    let read = tools.call(&k, &dispatcher, "ops_overview", &json!({})).await.unwrap().unwrap()["server_time"].clone();
     let proposed_by_ai = tools
-        .call(&k, &dispatcher, "ops_propose", &json!({"target": bot, "operation": "warehouse.move", "reason": "Aisle 4 is congested", "issuer": "person"}))
+        .call(
+            &k,
+            &dispatcher,
+            "ops_propose",
+            &json!({"target": bot, "operation": "warehouse.move", "reason": "Aisle 4 is congested", "issuer": "person", "evidence_at": read}),
+        )
         .await
         .unwrap()
         .unwrap();
     assert_eq!(proposed_by_ai["state"], json!("Proposed"), "it cannot call itself a person");
     assert!(
-        tools.call(&k, &viewer, "ops_propose", &json!({"target": bot, "operation": "warehouse.move", "reason": "x"})).await.unwrap().is_err(),
+        tools
+            .call(&k, &viewer, "ops_propose", &json!({"target": bot, "operation": "warehouse.move", "reason": "x", "evidence_at": read}))
+            .await
+            .unwrap()
+            .is_err(),
         "and it has no more rights than its person"
     );
     assert!(
-        tools.call(&k, &dispatcher, "ops_propose", &json!({"target": bot, "operation": "arm.swing", "reason": "x"})).await.unwrap().is_err(),
+        tools
+            .call(&k, &dispatcher, "ops_propose", &json!({"target": bot, "operation": "arm.swing", "reason": "x", "evidence_at": read}))
+            .await
+            .unwrap()
+            .is_err(),
         "nor can it invent what a device can do"
     );
-    assert!(tools.call(&k, &dispatcher, "ops_overview", &json!({})).await.unwrap().is_ok());
+
+    // AT-AI-006: what a model makes up, or relies on after it stopped being true, goes no further.
+    let refused = |r: Option<ferrum_kernel::Result<Value>>| r.unwrap().err().map(|e| e.to_string()).unwrap_or_default();
+    let invented =
+        tools.call(&k, &dispatcher, "ops_propose", &json!({"target": Uuid::now_v7(), "operation": "warehouse.move", "reason": "x", "evidence_at": read})).await;
+    assert!(matches!(invented, Some(Err(Error::NotFound(_)))), "a device that does not exist: {invented:?}");
+    let no_evidence = refused(tools.call(&k, &dispatcher, "ops_propose", &json!({"target": bot, "operation": "warehouse.move", "reason": "x"})).await);
+    assert!(no_evidence.contains("evidence_at"), "{no_evidence}");
+    let old = (chrono::Utc::now() - chrono::Duration::minutes(6)).to_rfc3339();
+    let stale =
+        refused(tools.call(&k, &dispatcher, "ops_propose", &json!({"target": bot, "operation": "warehouse.move", "reason": "x", "evidence_at": old})).await);
+    assert!(stale.contains("Read it again"), "{stale}");
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update op_gateway set last_seen_at = now() - interval '10 minutes' where tenant_id = $1").bind(t.tenant).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let read = tools.call(&k, &dispatcher, "ops_overview", &json!({})).await.unwrap().unwrap()["server_time"].clone();
+    let silent =
+        refused(tools.call(&k, &dispatcher, "ops_propose", &json!({"target": bot, "operation": "warehouse.move", "reason": "x", "evidence_at": read})).await);
+    assert!(silent.contains("unknown"), "a site gone quiet is a site nobody can speak for: {silent}");
+    gw.sync(&t, gw.sync_request()).await;
 
     // ───── cancelling: what never left stops, the rest is a request ─────
     let unsent = issue(&t, &t.admin, NewCommand { payload: json!({"tote": "T-9"}), expires_in_secs: 1, ..move_tote(idle_free(&t, site).await) }).await;

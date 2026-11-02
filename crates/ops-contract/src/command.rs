@@ -176,6 +176,10 @@ pub struct Command {
     pub config_version: Option<String>,
 }
 
+/// The newest form of a command this build knows the meaning of. A new field that can be ignored does not
+/// change this, and an older build ignores it. A new meaning does, and an older build then refuses.
+pub const COMMAND_SCHEMA: i32 = 1;
+
 impl Command {
     /// The payload is what was authorized.
     pub fn intact(&self) -> bool {
@@ -184,6 +188,9 @@ impl Command {
 
     /// Fit to start, at `now`, by a holder on `epoch`. The reason is for the operator.
     pub fn startable(&self, now: DateTime<Utc>, epoch: i64) -> Result<(), &'static str> {
+        if self.schema_version > COMMAND_SCHEMA {
+            return Err("it was written for a newer version than this one, which would be guessing at what it means");
+        }
         if !self.intact() {
             return Err("its payload does not match what was authorized");
         }
@@ -357,11 +364,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_command_starts_only_as_authorized_in_time_and_under_its_authority() {
-        let now = Utc::now();
+    fn command(now: DateTime<Utc>) -> Command {
         let payload = json!({"tote": "T-481", "to": "PACK-1"});
-        let c = Command {
+        Command {
             id: Uuid::now_v7(),
             tenant_id: Uuid::now_v7(),
             site_id: Uuid::now_v7(),
@@ -381,12 +386,30 @@ mod tests {
             step_id: None,
             correlation_id: None,
             config_version: None,
-        };
+        }
+    }
+
+    #[test]
+    fn a_command_starts_only_as_authorized_in_time_and_under_its_authority() {
+        let now = Utc::now();
+        let c = command(now);
         assert_eq!(c.startable(now, 4), Ok(()));
         assert!(c.startable(now, 5).is_err(), "an old command under a new holder");
         assert!(c.startable(now + chrono::Duration::minutes(5), 4).is_err(), "the deadline itself is too late");
         let mut tampered = c.clone();
         tampered.payload["to"] = json!("DOCK-9");
         assert!(tampered.startable(now, 4).is_err());
+    }
+
+    /// AT-MSG-008.
+    #[test]
+    fn an_old_build_ignores_what_it_may_and_refuses_what_it_must() {
+        let c = command(Utc::now());
+        let mut sent = serde_json::to_value(&c).unwrap();
+        sent["priority"] = json!("high");
+        let read: Command = serde_json::from_value(sent).expect("a field it does not know does no harm");
+        assert_eq!(read.startable(read.issued_at, read.epoch), Ok(()));
+        let newer = Command { schema_version: COMMAND_SCHEMA + 1, ..c };
+        assert!(newer.startable(newer.issued_at, newer.epoch).unwrap_err().contains("newer version"));
     }
 }
