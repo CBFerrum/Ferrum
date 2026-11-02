@@ -156,7 +156,10 @@ The sixth asked for aggregate limits on sockets to be validated, and there were 
 queue was bounded and their sum was not. A replica now holds at most 256 MB for all its sockets, a socket
 that is behind counts as full past that while one keeping up is left alone, and a peer that stops
 reading is given up on after 30 seconds rather than holding its queue. `ferrum_plugin_socket_queued_bytes`
-shows it. That is proved by a test, not by load: thousands of slow clients have not been measured.
+shows it. Run on the real binary with ten clients that stopped reading and 700 KB messages, what was
+queued stopped at exactly the budget, all ten were closed, a client that kept reading was never touched,
+and the queue was empty 30 seconds after they stalled. Thousands of slow clients have not been measured,
+and connections themselves are capped by whatever proxy stands in front.
 
 The whole chain was then walked again on the real binaries, signed in as a supervisor, an operator and
 a recovery person, in a browser and through the API: a run released and its material brought to the
