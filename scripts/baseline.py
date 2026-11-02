@@ -11,6 +11,7 @@ the reason, because a thing that could not be seen is not a thing that is absent
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -77,7 +78,7 @@ def repositories(offline: bool) -> list:
         where = next((ROOT / p for p in places if (ROOT / p / ".git").exists()), None)
         row = {"repository": repo, "visibility": remote.get(repo, {}).get("visibility"), "checkout": None}
         if where is not None:
-            row["checkout"] = str(where.resolve().relative_to(ROOT.parent.resolve())) if where.resolve() != ROOT.resolve() else "ferrum"
+            row["checkout"] = "ferrum" if where.resolve() == ROOT.resolve() else os.path.relpath(where.resolve(), ROOT.parent.resolve())
             row["branch"] = run("git", "rev-parse", "--abbrev-ref", "HEAD", cwd=where)[1]
             row["commit"] = run("git", "rev-parse", "HEAD", cwd=where)[1]
             row["dirty"] = sorted(line.split(None, 1)[1] for line in run("git", "status", "--porcelain", cwd=where)[1].splitlines())
