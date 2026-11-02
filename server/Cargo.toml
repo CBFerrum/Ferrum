@@ -56,7 +56,7 @@ quality = ["dep:ferrum-quality", "stock-ops"]
 wms = ["dep:ferrum-wms", "quality", "ops"]
 mes = ["dep:ferrum-mes", "mfg-ops", "quality", "ops"]
 ops = ["dep:ferrum-ops"]
-edge = ["dep:ferrum-edge", "ops"]
+edge = ["dep:ferrum-app-edge", "ops"]
 studio = ["dep:ferrum-studio"]
 assets = ["dep:ferrum-app-assets"]
 bookings = ["dep:ferrum-app-bookings"]
@@ -101,7 +101,7 @@ ferrum-quality = { git = "https://github.com/CBFerrum/ferrum-app-erp", branch = 
 ferrum-wms = { git = "https://github.com/CBFerrum/ferrum-app-erp", branch = "main", optional = true }
 ferrum-mes = { git = "https://github.com/CBFerrum/ferrum-app-erp", branch = "main", optional = true }
 ferrum-ops = { path = "../crates/ops", optional = true }
-ferrum-edge = { path = "../crates/edge", optional = true }
+ferrum-app-edge = { git = "https://github.com/CBFerrum/ferrum-app-edge", branch = "main", optional = true }
 ferrum-studio = { path = "../crates/studio", optional = true }
 ferrum-app-commerce = { git = "https://github.com/CBFerrum/ferrum-app-commerce", branch = "main", optional = true }
 ferrum-app-assets = { git = "https://github.com/CBFerrum/ferrum-app-assets", branch = "main", optional = true }

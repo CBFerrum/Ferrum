@@ -7,8 +7,6 @@ members = ["crates/calc", "crates/meta", "crates/kernel", "crates/domain",
     "crates/studio",
     "crates/ops-contract",
     "crates/ops",
-    "crates/edge",
-    "crates/site",
     "server", "server/migration"]
 # Vendored crates are dependencies, not members: yrs with a fix (third_party/yrs/FERRUM.md).
 exclude = ["third_party"]
@@ -51,6 +49,7 @@ ferrum-meta = { path = "crates/meta" }
 ferrum-domain = { path = "crates/domain" }
 ferrum-calc = { path = "crates/calc" }
 ferrum-ops = { path = "crates/ops" }
+ferrum-ops-contract = { path = "crates/ops-contract" }
 
 [profile.dev]
 # Keep target/ small (disk is constrained) and builds fast; line tables are enough for backtraces.
