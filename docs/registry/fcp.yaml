@@ -1,0 +1,201 @@
+# Ferrum Code, Deploy, Access and Resources: the supplied specification's requirements (FCP-*), imported
+# without overwriting what the rest of this registry knows. A status is what the evidence supports. See
+# docs/platform/README.md for the states and docs/platform/catalog.json for each acceptance case.
+requirements:
+  - {id: FCP-BASE-001, title: "Frozen inventory", workstream: W00, status: partial, files: ["scripts/baseline.py", "docs/platform/baseline.json"], limits: "Image digests need a token with read:packages, and no production tenant is reachable from here"}
+  - {id: FCP-BASE-002, title: "Existing capability reuse", workstream: W00, status: partial, files: ["docs/registry/fcp.yaml", "docs/platform/decisions.md"], limits: "Mapped by reading and probing; each entry is confirmed when its workstream starts"}
+  - {id: FCP-BASE-003, title: "Prior invariant regressions", workstream: W00, status: verified_software, files: ["docs/platform/regressions.md"], tests: ["crates/ops/tests/ops_it.rs", "ferrum-app-erp:addons/wms/tests/line_it.rs", "ferrum-app-erp:addons/wms/tests/wms_it.rs", "ferrum-app-erp:addons/mes/tests/mes_it.rs", "ferrum-app-edge:gateway/tests/dispatch_it.rs", "ferrum-app-edge:gateway/tests/recovery_it.rs"], limits: "Simulators only: no physical equipment"}
+  - {id: FCP-BASE-004, title: "Release pins", workstream: W00, status: verified_software, files: ["scripts/release_evidence.py", "scripts/registry.py", "docs/registry/release-manifest.yaml"], tests: [".github/workflows/ci.yml"], limits: "Generated and checked in CI; a signed evidence bundle is FCP-QUAL-008"}
+  - {id: FCP-BASE-005, title: "Worktree safety", workstream: W00, status: verified_software, files: ["scripts/baseline.py"], tests: ["scripts/test_baseline.py"], limits: "Reports dirty files and unused patches; it does not stop anyone committing them"}
+  - {id: FCP-BASE-006, title: "Frozen and forward CI", workstream: W00, status: implemented_unverified, files: [".github/workflows/ci.yml", ".github/workflows/forward.yml", "ferrum-app-edge:.github/workflows/ci.yml", "ferrum-app-edge:.github/workflows/release.yml"], limits: "Both lanes exist in Ferrum and Edge; Ferrum's forward lane has not run yet"}
+  - {id: FCP-BASE-007, title: "Evidence classification", workstream: W00, status: partial, files: ["scripts/registry.py", "docs/registry/README.md"], limits: "This registry records evidence states; the older registry's `basis` is coarser"}
+  - {id: FCP-BASE-008, title: "Feature inventory", workstream: W00, status: partial, files: ["scripts/baseline.py"], limits: "Lists every repository this token can see; images and production are recorded as unread, not absent"}
+  - {id: FCP-POL-001, title: "Tenant context", workstream: W01, status: partial, files: ["crates/kernel/src/ctx.rs", "server/src/extract.rs"], tests: ["crates/kernel/tests/kernel_it.rs", "crates/kernel/tests/shell_it.rs"], limits: "Holds for today's APIs; project and environment scope does not exist"}
+  - {id: FCP-POL-002, title: "Scoped delegation", workstream: W01, status: partial, files: ["crates/apps/src/permissions.rs", "crates/kernel/src/oauth.rs", "crates/kernel/src/support.rs"], limits: "Apps and support narrow a user's rights; no workload grant intersects them"}
+  - {id: FCP-POL-003, title: "Separation of duties", workstream: W01, status: partial, files: ["crates/ops/src/commands.rs", "ferrum-app-erp:addons/mes/src/runs.rs"], tests: ["crates/ops/tests/ops_it.rs"], limits: "Commands and revisions have it; capability changes do not"}
+  - {id: FCP-POL-004, title: "Immutable approval", workstream: W01, status: not_started, limits: "No approval bound to a canonical digest of artifact, configuration and plan"}
+  - {id: FCP-POL-005, title: "Subject lifecycle", workstream: W01, status: partial, files: ["crates/kernel/src/identity.rs", "crates/kernel/src/scim.rs", "crates/kernel/src/sso.rs"], tests: ["crates/kernel/tests/identity_it.rs"], limits: "Subjects have stable ids; workload, partner and build subjects are not modelled"}
+  - {id: FCP-POL-006, title: "Federation security", workstream: W01, status: partial, files: ["crates/kernel/src/sso.rs", "crates/kernel/src/oauth.rs"], tests: ["server/tests/sso_it.rs"], limits: "Tested against a stand-in provider; no real IdP tenant"}
+  - {id: FCP-POL-007, title: "Downstream offboarding", workstream: W01, status: partial, files: ["crates/kernel/src/lifecycle.rs"], tests: ["crates/kernel/tests/lifecycle_it.rs"], limits: "Sessions, API keys and OAuth grants end at once; nothing tracks Git, peers or privileged credentials"}
+  - {id: FCP-POL-008, title: "Policy freshness", workstream: W01, status: not_started, limits: "Nothing records which policy revision an enforcement point runs"}
+  - {id: FCP-POL-009, title: "Emergency access", workstream: W01, status: partial, files: ["crates/kernel/src/support.rs"], tests: ["crates/kernel/tests/support_it.rs"], limits: "Support's incident level is not break-glass: it depends on the same sign-in"}
+  - {id: FCP-POL-010, title: "Negative authorization matrix", workstream: W01, status: not_started, limits: "Roles are tested per app; there is no matrix over every route"}
+  - {id: FCP-CODE-001, title: "Repository lifecycle", workstream: W03, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-CODE-002, title: "Ref consistency", workstream: W03, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-CODE-003, title: "Git storage authority", workstream: W03, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-CODE-004, title: "Backup completeness", workstream: W03, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-CODE-005, title: "Scoped Git credentials", workstream: W03, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-CODE-006, title: "Server hook restriction", workstream: W03, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-CODE-007, title: "Import and mirror egress", workstream: W03, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-CODE-008, title: "Git resource limits", workstream: W03, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-CODE-009, title: "PR approval integrity", workstream: W03, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-CODE-010, title: "LFS access", workstream: W03, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-CODE-011, title: "Forge outage isolation", workstream: W03, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-CODE-012, title: "Repository portability", workstream: W03, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-BUILD-001, title: "Webhook authenticity", workstream: W04, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-BUILD-002, title: "Exact commit checkout", workstream: W04, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-BUILD-003, title: "Builder sandbox", workstream: W04, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-BUILD-004, title: "Production isolation", workstream: W04, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-BUILD-005, title: "Secret exposure controls", workstream: W04, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-BUILD-006, title: "Cache trust", workstream: W04, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-BUILD-007, title: "Dependency pinning", workstream: W04, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-BUILD-008, title: "Artifact finalization", workstream: W04, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-BUILD-009, title: "Signing authority", workstream: W04, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-BUILD-010, title: "Provenance privacy", workstream: W04, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-BUILD-011, title: "Build cancellation", workstream: W04, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-BUILD-012, title: "Tenant fairness", workstream: W04, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-BUILD-013, title: "Log safety", workstream: W04, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-BUILD-014, title: "Customer runner trust", workstream: W04, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-DEPLOY-001, title: "Environment separation", workstream: W05, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-DEPLOY-002, title: "Release immutability", workstream: W05, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-DEPLOY-003, title: "Promotion serialization", workstream: W05, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-DEPLOY-004, title: "Readiness gating", workstream: W05, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-DEPLOY-005, title: "Migration compatibility", workstream: W05, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-DEPLOY-006, title: "Preview access", workstream: W05, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-DEPLOY-007, title: "Preview cleanup", workstream: W05, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-DEPLOY-008, title: "Graceful rollout", workstream: W05, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-DEPLOY-009, title: "Rollback correctness", workstream: W05, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-DEPLOY-010, title: "Durable background work", workstream: W05, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-DEPLOY-011, title: "Scheduler semantics", workstream: W05, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-DEPLOY-012, title: "Capability reconsent", workstream: W05, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-DEPLOY-013, title: "Serving independence", workstream: W05, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-WEB-001, title: "Public/private cache separation", workstream: W06, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-WEB-002, title: "Framework conformance", workstream: W06, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-WEB-003, title: "Deployment skew", workstream: W06, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-WEB-004, title: "Browser origin isolation", workstream: W06, status: partial, files: ["server/src/controllers/origins.rs", "server/src/controllers/plugins.rs"], limits: "Isolated apps have their own origins; customer sites do not exist"}
+  - {id: FCP-WEB-005, title: "Domain ownership", workstream: W06, status: partial, files: ["server/src/controllers/domains.rs", "crates/kernel/src/shell.rs"], tests: ["crates/kernel/tests/shell_it.rs"], limits: "One HTTP token per host; no TXT proof, generations, wildcard rules or tombstones"}
+  - {id: FCP-WEB-006, title: "Origin bypass", workstream: W06, status: partial, files: ["server/src/controllers/domains.rs"], limits: "Unknown hosts are refused for the shell; no customer-site ingress exists"}
+  - {id: FCP-WEB-007, title: "Certificate lifecycle", workstream: W06, status: partial, files: ["server/src/controllers/domains.rs"], limits: "`/_tls/ask` gates on-demand certificates; no lifecycle or rate-limit handling"}
+  - {id: FCP-WEB-008, title: "Image and fetch SSRF", workstream: W06, status: partial, files: ["crates/plugins/src/http.rs", "ferrum-app-edge:gateway/src/adapters/transport.rs"], limits: "Plugins' fetch and gateways check destinations; no customer runtime exists"}
+  - {id: FCP-WEB-009, title: "Request resource budgets", workstream: W06, status: partial, files: ["server/src/controllers/sites.rs"], limits: "Bodies are limited per route; no customer runtime exists"}
+  - {id: FCP-WEB-010, title: "Upload finalization", workstream: W06, status: partial, files: ["crates/kernel/src/scan.rs", "crates/kernel/src/files.rs", "server/src/objects.rs"], tests: ["crates/kernel/tests/scan_it.rs"], limits: "Uploads scan and finalize; not offered to customer applications"}
+  - {id: FCP-WEB-011, title: "Storefront authority", workstream: W06, status: partial, files: ["ferrum-app-commerce:README.md"], limits: "Commerce recalculates server-side; no storefront profile has been qualified against it"}
+  - {id: FCP-WEB-012, title: "Headless content lifecycle", workstream: W06, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-RES-001, title: "Logical resource binding", workstream: W02, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-RES-002, title: "Idempotent provisioning", workstream: W02, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-RES-003, title: "Required resource readiness", workstream: W02, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-RES-004, title: "Tenant database isolation", workstream: W02, status: partial, files: ["crates/kernel/src/db.rs"], tests: ["crates/kernel/tests/kernel_it.rs"], limits: "Row-level security protects platform tables; app-private resources do not exist"}
+  - {id: FCP-RES-005, title: "Scoped credentials", workstream: W02, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-RES-006, title: "Resource migration", workstream: W02, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-RES-007, title: "Provider capability mismatch", workstream: W02, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-RES-008, title: "Data authority classification", workstream: W02, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-RES-009, title: "Object consistency", workstream: W02, status: partial, files: ["crates/kernel/src/files.rs", "server/src/objects.rs"], limits: "Uploads reconcile; no general object resource class"}
+  - {id: FCP-RES-010, title: "Backup semantics", workstream: W02, status: partial, files: ["deploy/k8s/database.yaml", "deploy/kind/restore.yaml"], limits: "CNPG backups for the platform database; no resource-level consistency points"}
+  - {id: FCP-RES-011, title: "Customer resource detachment", workstream: W02, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-RES-012, title: "Destructive deletion controls", workstream: W02, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-RES-013, title: "Query console safety", workstream: W02, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-RES-014, title: "Licensing gate", workstream: W02, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-RES-015, title: "Resource portability", workstream: W02, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-SCALE-001, title: "Single scaler owner", workstream: W09, status: partial, files: ["deploy/k8s/hpa.yaml"], limits: "One HPA for the API; no rule for anything else"}
+  - {id: FCP-SCALE-002, title: "Connection budgeting", workstream: W09, status: partial, files: ["deploy/k8s/hpa.yaml", "crates/kernel/src/db.rs"], limits: "The API budget is documented; plugins, workers and migrations are not accounted for"}
+  - {id: FCP-SCALE-003, title: "Stateful scaling", workstream: W09, status: partial, files: ["deploy/k8s/database.yaml"], limits: "CNPG replicas only"}
+  - {id: FCP-SCALE-004, title: "Budget enforcement", workstream: W09, status: partial, files: ["crates/kernel/src/account.rs"], tests: ["crates/kernel/tests/support_it.rs"], limits: "Storage quota enforced; no budget or spend cap"}
+  - {id: FCP-SCALE-005, title: "Critical reserve", workstream: W09, status: partial, files: ["ferrum-app-edge:gateway/src/journal.rs"], tests: ["ferrum-app-edge:gateway/tests/recovery_it.rs"], limits: "Gateways shed telemetry first; the platform has no reserve"}
+  - {id: FCP-SCALE-006, title: "Gateway drain", workstream: W09, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-SCALE-007, title: "Noisy neighbor", workstream: W09, status: partial, files: ["crates/kernel/src/outbox.rs", "crates/kernel/src/jobs.rs"], tests: ["crates/kernel/tests/jobs_it.rs", "crates/kernel/tests/events_it.rs"], limits: "Events and jobs are fair per workspace; no quota on shared resources"}
+  - {id: FCP-SCALE-008, title: "Capacity evidence", workstream: W09, status: partial, files: ["ferrum-app-edge:scripts/soak.py"], limits: "Edge rates measured once on one machine; nothing for the platform"}
+  - {id: FCP-ACCESS-001, title: "Reachability versus rights", workstream: W07, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-ACCESS-002, title: "Provider administration isolation", workstream: W07, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-ACCESS-003, title: "Posture trust", workstream: W07, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-ACCESS-004, title: "Private connectors", workstream: W07, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-ACCESS-005, title: "Overlapping addresses", workstream: W07, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-ACCESS-006, title: "Revocation coverage", workstream: W07, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-ACCESS-007, title: "Privileged session scope", workstream: W07, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-ACCESS-008, title: "Header spoofing", workstream: W07, status: partial, files: ["server/src/extract.rs"], limits: "Trusted-proxy handling for client addresses; no identity assertions"}
+  - {id: FCP-ACCESS-009, title: "Access outage policy", workstream: W07, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-ACCESS-010, title: "OT access boundary", workstream: W07, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-SECRET-001, title: "Secret indirection", workstream: W01, status: partial, files: ["crates/kernel/src/secret.rs", "crates/plugins/src/lib.rs", "crates/kernel/src/connect.rs"], tests: ["crates/kernel/tests/secret_it.rs", "crates/plugins/tests/connector_it.rs"], limits: "Sealed values and brokered credentials; no leases or application secret references"}
+  - {id: FCP-SECRET-002, title: "Workload attestation", workstream: W01, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-SECRET-003, title: "Root rotation", workstream: W01, status: partial, files: ["crates/kernel/src/secret.rs"], tests: ["crates/kernel/tests/secret_it.rs"], limits: "The sealing key rotates; no signing or trust-root rotation"}
+  - {id: FCP-SECRET-004, title: "Key recovery", workstream: W01, status: partial, files: ["docs/operations.md"], limits: "Documented, not exercised"}
+  - {id: FCP-SECRET-005, title: "Credential expiry", workstream: W01, status: partial, files: ["ferrum-app-edge:gateway/src/update.rs"], limits: "Gateways check expiry; no general policy"}
+  - {id: FCP-SECRET-006, title: "Environment secret scope", workstream: W01, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-SECRET-007, title: "Compromise response", workstream: W01, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-SECRET-008, title: "Operator visibility honesty", workstream: W01, status: partial, files: ["docs/support-access.md"], limits: "Stated for support; not for every hosted profile"}
+  - {id: FCP-MSG-001, title: "Transactional outbox", workstream: W08, status: implemented_unverified, files: ["crates/kernel/src/outbox.rs"], tests: ["crates/kernel/tests/events_it.rs"], limits: "Acceptance case not run as written"}
+  - {id: FCP-MSG-002, title: "Consumer idempotency", workstream: W08, status: partial, files: ["crates/kernel/src/automation.rs", "crates/kernel/src/outbox.rs"], tests: ["crates/kernel/tests/events_it.rs"], limits: "Per consumer, by convention; no shared inbox"}
+  - {id: FCP-MSG-003, title: "External ambiguity", workstream: W08, status: partial, files: ["crates/ops/src/commands.rs"], tests: ["crates/ops/tests/ops_it.rs"], limits: "The ledger has OutcomeUnknown; other external calls do not"}
+  - {id: FCP-MSG-004, title: "Lease fencing", workstream: W08, status: implemented_unverified, files: ["crates/kernel/src/jobs.rs", "crates/ops/src/sync.rs"], tests: ["crates/kernel/tests/jobs_it.rs", "crates/ops/tests/ops_it.rs"], limits: "Acceptance case not run as written"}
+  - {id: FCP-MSG-005, title: "Notification recovery", workstream: W08, status: implemented_unverified, files: ["crates/kernel/src/outbox.rs", "crates/plugins/src/sockets.rs"], tests: ["crates/kernel/tests/events_it.rs"], limits: "Writers do not NOTIFY; dispatchers poll"}
+  - {id: FCP-MSG-006, title: "Cursor correctness", workstream: W08, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-MSG-007, title: "Snapshot subscription", workstream: W08, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-MSG-008, title: "Contract evolution", workstream: W08, status: partial, files: ["crates/ops-contract/src/command.rs"], limits: "Contract schema versions on commands only"}
+  - {id: FCP-MSG-009, title: "Regional authority", workstream: W08, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-MSG-010, title: "Service delegation", workstream: W08, status: partial, files: ["crates/kernel/src/ctx.rs"], limits: "Users are delegated through context; no workload identity"}
+  - {id: FCP-OPS-001, title: "Any-replica intake", workstream: W08, status: implemented_unverified, files: ["crates/ops/src/commands.rs", "crates/ops/src/site.rs"], tests: ["crates/ops/tests/ops_it.rs"], limits: "Commands are durable and dedupe; no charger start intent above them"}
+  - {id: FCP-OPS-002, title: "Exact connection owner", workstream: W08, status: partial, files: ["ferrum-app-edge:gateway/src/adapters/ocpp.rs", "ferrum-app-edge:gateway/src/adapters/hub.rs"], limits: "One gateway owns a station's socket in process; no ownership record or generation across gateways"}
+  - {id: FCP-OPS-003, title: "Reconnect generation", workstream: W08, status: partial, files: ["ferrum-app-edge:gateway/src/adapters/ocpp.rs"], limits: "A reconnect replaces the local socket; no generation survives a move between gateways"}
+  - {id: FCP-OPS-004, title: "Physical intent deduplication", workstream: W08, status: implemented_unverified, files: ["crates/ops/src/commands.rs"], tests: ["crates/ops/tests/ops_it.rs"], limits: "Dedupe key and one live command; canonical digest mismatch not checked"}
+  - {id: FCP-OPS-005, title: "Final deadline gate", workstream: W08, status: verified_software, files: ["ferrum-app-edge:gateway/src/runtime.rs", "ferrum-app-edge:gateway/src/journal.rs"], tests: ["ferrum-app-edge:gateway/tests/dispatch_it.rs"], limits: "Simulators only"}
+  - {id: FCP-OPS-006, title: "Clock correctness", workstream: W08, status: verified_software, files: ["ferrum-app-edge:gateway/src/clock.rs"], tests: ["ferrum-app-edge:gateway/tests/dispatch_it.rs", "ferrum-app-edge:gateway/tests/recovery_it.rs"], limits: "Simulators only"}
+  - {id: FCP-OPS-007, title: "Recovery target binding", workstream: W08, status: verified_software, files: ["ferrum-app-edge:gateway/src/journal.rs", "ferrum-app-edge:gateway/src/runtime.rs"], tests: ["ferrum-app-edge:gateway/tests/recovery_it.rs"], limits: "Simulators only"}
+  - {id: FCP-OPS-008, title: "Inbound durability", workstream: W08, status: partial, files: ["ferrum-app-edge:gateway/src/adapters/ocpp.rs"], limits: "Replies follow an in-memory hand-over, not a durable write"}
+  - {id: FCP-OPS-009, title: "Protocol versus business outcome", workstream: W08, status: partial, files: ["crates/ops/src/commands.rs"], tests: ["ferrum-app-edge:gateway/tests/ocpp_it.rs"], limits: "Commands end Completed on the charger's reply; no session domain"}
+  - {id: FCP-OPS-010, title: "Durable correlation", workstream: W08, status: not_started, limits: "Transaction ids are in process memory"}
+  - {id: FCP-OPS-011, title: "Safe unknown outcome", workstream: W08, status: verified_software, files: ["crates/ops/src/commands.rs", "ferrum-app-edge:gateway/src/runtime.rs"], tests: ["crates/ops/tests/ops_it.rs", "ferrum-app-edge:gateway/tests/recovery_it.rs"], limits: "Simulators only"}
+  - {id: FCP-OPS-012, title: "Meter evidence", workstream: W08, status: partial, files: ["ferrum-app-edge:gateway/src/adapters/ocpp.rs", "crates/ops/src/telemetry.rs"], limits: "Readings keep source time and quality; no billing-grade meter evidence"}
+  - {id: FCP-OPS-013, title: "Critical quota behavior", workstream: W08, status: partial, files: ["crates/kernel/src/account.rs", "docs/operations-authority.md"], limits: "Quotas hold readings and leave commands alone; not tested for stop and report paths"}
+  - {id: FCP-OPS-014, title: "Client replay", workstream: W08, status: partial, files: ["crates/ops/src/commands.rs"], limits: "Status can be read back; no replay cursor for clients"}
+  - {id: FCP-EXT-001, title: "Execution trust classes", workstream: W02, status: implemented_unverified, files: ["crates/apps/src/manifest.rs", "crates/plugins/src/runtime.rs"], tests: ["crates/kernel/tests/apps_it.rs", "server/tests/apps_api.rs"], limits: "No isolated service extension class"}
+  - {id: FCP-EXT-002, title: "Manifest versioning", workstream: W02, status: implemented_unverified, files: ["crates/apps/src/manifest.rs"], tests: ["crates/kernel/tests/apps_it.rs"], limits: "Unknown fields are refused; resource fields are not declared yet"}
+  - {id: FCP-EXT-003, title: "Capability consent", workstream: W02, status: partial, files: ["crates/apps/src/resolve.rs", "server/src/appmgr.rs"], tests: ["server/tests/apps_api.rs"], limits: "Consent digest for permissions; no resources, network or cost"}
+  - {id: FCP-EXT-004, title: "Host resource scoping", workstream: W02, status: partial, files: ["crates/plugins/src/host.rs"], tests: ["crates/plugins/tests/platform_it.rs"], limits: "Host derives tenant scope; no resource handles"}
+  - {id: FCP-EXT-005, title: "UI isolation", workstream: W02, status: implemented_unverified, files: ["server/src/controllers/plugins.rs", "server/src/controllers/origins.rs"], limits: "Sandboxed frames and narrowed tokens"}
+  - {id: FCP-EXT-006, title: "Dependency safety", workstream: W02, status: partial, files: ["crates/apps/src/resolve.rs"], limits: "Dependencies shown in the plan; no privilege roll-up"}
+  - {id: FCP-EXT-007, title: "Lifecycle cleanup", workstream: W02, status: partial, files: ["server/src/appmgr.rs"], tests: ["server/tests/apps_api.rs"], limits: "Uninstall retains data; no resource bindings to revoke"}
+  - {id: FCP-EXT-008, title: "Certification scope", workstream: W02, status: partial, files: ["crates/apps/src/signing.rs"], limits: "Signatures exist; no certification labels tied to a profile"}
+  - {id: FCP-EXT-009, title: "Deprecation migration", workstream: W02, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-EXT-010, title: "Core invariants", workstream: W02, status: partial, files: ["crates/kernel/src/automation.rs", "crates/studio/src/lib.rs"], limits: "Automations run through permissions; not tested as an adversary"}
+  - {id: FCP-AI-001, title: "Agent capability boundary", workstream: W06, status: partial, files: ["crates/mcp/src/lib.rs", "crates/ops/src/mcp.rs", "server/src/assistant.rs"], tests: ["crates/mcp/tests/mcp_it.rs"], limits: "Typed tools under the caller's rights; no capability boundary for development tools"}
+  - {id: FCP-AI-002, title: "Model/provider policy", workstream: W06, status: partial, files: ["server/src/assistant.rs"], tests: ["server/tests/assistant_egress_it.rs"], limits: "Egress policy per workspace; no model catalog"}
+  - {id: FCP-AI-003, title: "Approval integrity", workstream: W06, status: partial, files: ["crates/ops/src/commands.rs"], tests: ["crates/ops/tests/ops_it.rs"], limits: "Agents' commands wait for a person unless an envelope covers them"}
+  - {id: FCP-AI-004, title: "Development sandbox", workstream: W06, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-AI-005, title: "Budget and cancellation", workstream: W06, status: partial, files: ["server/src/assistant.rs"], limits: "Budgets per workspace"}
+  - {id: FCP-AI-006, title: "Evidence and abstention", workstream: W06, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-AI-007, title: "Data boundary disclosure", workstream: W06, status: partial, files: ["server/src/assistant.rs"], limits: "The egress policy is shown to administrators; nothing for local clients"}
+  - {id: FCP-AI-008, title: "Operational autonomy", workstream: W06, status: implemented_unverified, files: ["docs/operations-authority.md", "crates/ops/src/commands.rs"], tests: ["crates/ops/tests/ops_it.rs"], limits: "No safety function depends on Ferrum; not an AI evaluation"}
+  - {id: FCP-UI-001, title: "Consistent scope UI", workstream: W09, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-UI-002, title: "Asynchronous UX", workstream: W09, status: partial, files: ["Ferrum-Frontend:packages"], limits: "Jobs survive a refresh; no operation record for platform work"}
+  - {id: FCP-UI-003, title: "Accessible administration", workstream: W09, status: partial, files: ["Ferrum-Frontend:packages"], limits: "Automated checks per app; no manual WCAG review"}
+  - {id: FCP-UI-004, title: "Localization correctness", workstream: W09, status: partial, files: ["Ferrum-Frontend:packages"], limits: "Locale formatting exists; this work's strings are new"}
+  - {id: FCP-UI-005, title: "Permission explanation", workstream: W09, status: partial, files: ["crates/kernel/src/access.rs"], limits: "Administrators can ask why; ordinary denials are short"}
+  - {id: FCP-UI-006, title: "Operator recovery UX", workstream: W09, status: partial, files: ["ferrum-app-erp:addons/wms/ui/src/Task.tsx"], limits: "Warehouse and Shop Floor show uncertainty; nothing for platform operations"}
+  - {id: FCP-UI-007, title: "Bundle provenance", workstream: W09, status: implemented_unverified, files: ["crates/apps/src/ui.rs"], limits: "`dist/.source` digests each app's sources; not checked at install"}
+  - {id: FCP-UI-008, title: "Audit visibility", workstream: W09, status: partial, files: ["crates/kernel/src/audit.rs", "crates/kernel/src/evidence.rs"], limits: "Audit and evidence exist; no platform approvals to show"}
+  - {id: FCP-OBS-001, title: "Telemetry correlation", workstream: W09, status: partial, files: ["server/src/controllers/system.rs"], limits: "Request ids and metrics; no traces"}
+  - {id: FCP-OBS-002, title: "Tenant telemetry isolation", workstream: W09, status: partial, files: ["crates/kernel/src/db.rs"], limits: "Row-level security covers audit and job data; no customer log service"}
+  - {id: FCP-OBS-003, title: "Bounded cardinality", workstream: W09, status: partial, files: ["server/src/controllers/system.rs"], limits: "Metrics carry no tenant label"}
+  - {id: FCP-OBS-004, title: "Operational alert coverage", workstream: W09, status: partial, files: ["deploy/k8s/servicemonitor.yaml", "crates/kernel/src/doctor.rs"], limits: "Doctor and metrics exist; no alert rules"}
+  - {id: FCP-OBS-005, title: "Metering idempotency", workstream: W09, status: partial, files: ["crates/kernel/src/account.rs"], limits: "Daily usage counts; no event ledger or price plans"}
+  - {id: FCP-OBS-006, title: "Money precision", workstream: W09, status: partial, files: ["crates/calc"], limits: "Exact decimals in the platform; no invoice lines"}
+  - {id: FCP-OBS-007, title: "Budget transparency", workstream: W09, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-OBS-008, title: "Incident process", workstream: W09, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-OBS-009, title: "Abuse controls", workstream: W09, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-CLOUD-001, title: "Tenant lifecycle", workstream: W09, status: partial, files: ["crates/kernel/src/tenant.rs", "crates/kernel/src/account.rs"], tests: ["crates/kernel/tests/support_it.rs"], limits: "Tenants, account states and exports exist; no signup, plan or closure workflow"}
+  - {id: FCP-CLOUD-002, title: "Official partner scope", workstream: W09, status: blocked_external, blockers: [BLOCK-LEGAL-REVIEW], limits: "Partner terms are a legal and commercial decision"}
+  - {id: FCP-CLOUD-003, title: "Support least privilege", workstream: W09, status: implemented_unverified, files: ["crates/kernel/src/support.rs"], tests: ["crates/kernel/tests/support_it.rs"], limits: "Named, expiring and audited; a partner identity is not modelled"}
+  - {id: FCP-CLOUD-004, title: "No standing partner admin", workstream: W09, status: partial, files: ["crates/kernel/src/support.rs"], tests: ["crates/kernel/tests/support_it.rs"], limits: "No standing partner access exists; nothing proves it stays so"}
+  - {id: FCP-CLOUD-005, title: "Support revocation", workstream: W09, status: implemented_unverified, files: ["crates/kernel/src/support.rs"], tests: ["crates/kernel/tests/support_it.rs"], limits: "Revoked at once; active session tracking is by API key"}
+  - {id: FCP-CLOUD-006, title: "Residency coverage", workstream: W09, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-CLOUD-007, title: "Account restriction safety", workstream: W09, status: implemented_unverified, files: ["crates/kernel/src/account.rs"], tests: ["crates/kernel/tests/support_it.rs"], limits: "Restricted keeps reading and export"}
+  - {id: FCP-CLOUD-008, title: "Customer controlled profile", workstream: W09, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-CLOUD-009, title: "Service ownership", workstream: W09, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-DR-001, title: "Complete backups", workstream: W09, status: partial, files: ["deploy/k8s/database.yaml", "docs/operations.md"], limits: "Platform database backed up; no complete inventory"}
+  - {id: FCP-DR-002, title: "Restore isolation", workstream: W09, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-DR-003, title: "Tenant-level recovery", workstream: W09, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-DR-004, title: "Key recovery test", workstream: W09, status: partial, files: ["docs/operations.md"], limits: "Documented, not exercised"}
+  - {id: FCP-DR-005, title: "Failover fencing", workstream: W09, status: partial, files: ["ferrum-app-edge:gateway/src/journal.rs", "crates/ops/src/sync.rs"], tests: ["ferrum-app-edge:gateway/tests/recovery_it.rs"], limits: "Gateways fence on restore and epoch; no regional failover"}
+  - {id: FCP-DR-006, title: "Object and Git integrity", workstream: W09, status: partial, files: ["deploy/kind/restore.yaml"], limits: "A database restore runs in CI; no Git or object checks"}
+  - {id: FCP-DR-007, title: "Capacity recovery", workstream: W09, status: partial, files: ["crates/kernel/src/outbox.rs"], tests: ["crates/kernel/tests/events_it.rs"], limits: "Fair dispatch; no reconnect storm test"}
+  - {id: FCP-DR-008, title: "Update trust", workstream: W09, status: partial, files: ["ferrum-app-edge:gateway/src/update.rs", "crates/apps/src/signing.rs"], limits: "Signed gateway updates and app bundles; no rollback-protected metadata"}
+  - {id: FCP-DR-009, title: "Runbook exercise", workstream: W09, status: partial, files: ["docs/operations.md"], limits: "Runbooks written; drills not recorded"}
+  - {id: FCP-DR-010, title: "RPO RTO evidence", workstream: W09, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-QUAL-001, title: "Requirement traceability", workstream: W10, status: partial, files: ["scripts/registry.py"], limits: "This registry maps requirements to evidence; no supported profile yet"}
+  - {id: FCP-QUAL-002, title: "Security baseline", workstream: W10, status: partial, files: ["docs/registry/threat-model.md"], limits: "No pinned ASVS or SSDF mapping"}
+  - {id: FCP-QUAL-003, title: "Independent review", workstream: W10, status: blocked_external, blockers: [BLOCK-SECURITY-REVIEW], limits: "Needs an independent assessor"}
+  - {id: FCP-QUAL-004, title: "Provider qualification", workstream: W10, status: blocked_external, blockers: [BLOCK-REAL-TENANTS], limits: "Needs real provider tenants"}
+  - {id: FCP-QUAL-005, title: "Hardware qualification", workstream: W10, status: blocked_external, blockers: [BLOCK-EV-HARDWARE, BLOCK-INDUSTRIAL-HARDWARE], limits: "Needs equipment and a site"}
+  - {id: FCP-QUAL-006, title: "Golden journeys", workstream: W10, status: not_started, limits: "Nothing exists"}
+  - {id: FCP-QUAL-007, title: "Mutation and fault coverage", workstream: W10, status: partial, files: ["scripts/mutants.py"], limits: "Mutants for what they cover; none for new platform work yet"}
+  - {id: FCP-QUAL-008, title: "Release evidence integrity", workstream: W10, status: partial, files: ["scripts/release_evidence.py"], limits: "Generated, attested image; not signed per bundle"}
+  - {id: FCP-QUAL-009, title: "Supported limits", workstream: W10, status: partial, files: ["docs/limits.md"], limits: "Limits written for what exists"}

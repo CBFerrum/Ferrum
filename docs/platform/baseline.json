@@ -1,0 +1,979 @@
+{
+ "apps_declared": [
+  {
+   "id": "assets",
+   "manifest": "ferrum-app-assets/app.yaml",
+   "ui_source": "{\n  \"sources\": \"1e299ebad51009ed7319e5a374faac4682574b064999591d1b87f3c5d59a5b73\",\n  \"frontend\": \"6cc2db25f49b3ae2563db3df03196b04242a3bc0\"\n}",
+   "version": "0.2.0"
+  },
+  {
+   "id": "bookings",
+   "manifest": "ferrum-app-bookings/app.yaml",
+   "ui_source": "{\n  \"sources\": \"107f95880df6f55483496cb0f3eb6544f23a9979247ea3ba3b8bcc685999b2ba\",\n  \"frontend\": \"6cc2db25f49b3ae2563db3df03196b04242a3bc0\"\n}",
+   "version": "0.2.0"
+  },
+  {
+   "id": "campaigns",
+   "manifest": "ferrum-app-campaigns/app.yaml",
+   "ui_source": "{\n  \"sources\": \"8cd3320bbbea6e28f820fac4e09624c1220e120d1890c97f7aaef6c9d4b538cc\",\n  \"frontend\": \"6cc2db25f49b3ae2563db3df03196b04242a3bc0\"\n}",
+   "version": "0.2.0"
+  },
+  {
+   "id": "commerce",
+   "manifest": "ferrum-app-commerce/app.yaml",
+   "ui_source": "{\n  \"sources\": \"80dd562d094e61d5d30adb4de935791bb972e9df6f9296bdc230452419b525b7\",\n  \"frontend\": \"6cc2db25f49b3ae2563db3df03196b04242a3bc0\"\n}",
+   "version": "0.5.0"
+  },
+  {
+   "id": "comms",
+   "manifest": "ferrum-app-comms/app.yaml",
+   "ui_source": "{\n  \"sources\": \"e43c1b81fc99f7ac1cc1bef1a885e78185cc3dab0d9d8ccc39cdbf19393d661a\",\n  \"frontend\": \"6cc2db25f49b3ae2563db3df03196b04242a3bc0\"\n}",
+   "version": "0.8.0"
+  },
+  {
+   "id": "crm",
+   "manifest": "ferrum-app-crm/app.yaml",
+   "ui_source": "{\n  \"sources\": \"f9c07eeb38cfa8b525f8a366dc324146ce8878c5a505f9ebb1449a7cc887a772\",\n  \"frontend\": \"6cc2db25f49b3ae2563db3df03196b04242a3bc0\"\n}",
+   "version": "0.4.0"
+  },
+  {
+   "id": "docs",
+   "manifest": "ferrum-app-docs/app.yaml",
+   "ui_source": "{\n  \"sources\": \"d307d2a4a819fb4bd66f6f48f58272232140ab3a09b67b5c052e7b8595e6282a\",\n  \"frontend\": \"6cc2db25f49b3ae2563db3df03196b04242a3bc0\"\n}",
+   "version": "0.6.0"
+  },
+  {
+   "id": "drive",
+   "manifest": "ferrum-app-drive/app.yaml",
+   "ui_source": "{\n  \"sources\": \"496706f9c4a99cef4d6c589e844bccc5a4294288cfe79027a3d69b983146528c\",\n  \"frontend\": \"1e6aac7d7a3f1f0e4550dbf3d7c5986bb4519e6c\"\n}",
+   "version": "0.12.0"
+  },
+  {
+   "id": "edge",
+   "manifest": "ferrum-app-edge/app.yaml",
+   "ui_source": "{\n  \"sources\": \"f4194cac72aa0ce8f1d9dcb6fc6108c77c61fc572dc67cc9d50188fe84ad53cf\",\n  \"frontend\": \"e20c4d2b1d073ccef4d5bc11afa154cd6107fff6\"\n}",
+   "version": "0.3.1"
+  },
+  {
+   "id": "field-service",
+   "manifest": "ferrum-app-field-service/app.yaml",
+   "ui_source": "{\n  \"sources\": \"935f9e30ebff750d552ff72e0410bcda43965c06d7c57d2aaed263648b49c7eb\",\n  \"frontend\": \"1e6aac7d7a3f1f0e4550dbf3d7c5986bb4519e6c\"\n}",
+   "version": "0.2.0"
+  },
+  {
+   "id": "forms",
+   "manifest": "ferrum-app-forms/app.yaml",
+   "ui_source": "{\n  \"sources\": \"91ea8ccc21c518d46578153ea91e957725ec7a8d58454bf2f90c6772df41e2ce\",\n  \"frontend\": \"1e6aac7d7a3f1f0e4550dbf3d7c5986bb4519e6c\"\n}",
+   "version": "0.2.0"
+  },
+  {
+   "id": "helpdesk",
+   "manifest": "ferrum-app-helpdesk/app.yaml",
+   "ui_source": "{\n  \"sources\": \"ac50131764fbef36106d7e1f83c96904d03b9034a18052814665ebaa738c73b6\",\n  \"frontend\": \"6cc2db25f49b3ae2563db3df03196b04242a3bc0\"\n}",
+   "version": "0.6.0"
+  },
+  {
+   "id": "hr",
+   "manifest": "ferrum-app-hr/app.yaml",
+   "ui_source": "{\n  \"sources\": \"82d7a428ac67f3d0563c891ffa4222c96cfec0a509b5734b87c8b91223e16c4e\",\n  \"frontend\": \"6cc2db25f49b3ae2563db3df03196b04242a3bc0\"\n}",
+   "version": "0.5.0"
+  },
+  {
+   "id": "lms",
+   "manifest": "ferrum-app-lms/app.yaml",
+   "ui_source": "{\n  \"sources\": \"878977fa8f6b25ec46c87e355c7cee3d4b53ea7a9675ae15fcd3d126ab8c54cc\",\n  \"frontend\": \"1e6aac7d7a3f1f0e4550dbf3d7c5986bb4519e6c\"\n}",
+   "version": "0.2.0"
+  },
+  {
+   "id": "pos",
+   "manifest": "ferrum-app-pos/app.yaml",
+   "ui_source": "{\n  \"sources\": \"d0893dbd684d5bd73fd32da9d30a55d274777aae879a60745069e74d5e765ced\",\n  \"frontend\": \"6cc2db25f49b3ae2563db3df03196b04242a3bc0\"\n}",
+   "version": "0.3.0"
+  },
+  {
+   "id": "projects",
+   "manifest": "ferrum-app-projects/app.yaml",
+   "ui_source": "{\n  \"sources\": \"63fafd8e3fe16de1c0607a28dc09223cf63e23b099a88a01edb19d4cd21ce186\",\n  \"frontend\": \"1e6aac7d7a3f1f0e4550dbf3d7c5986bb4519e6c\"\n}",
+   "version": "0.6.0"
+  },
+  {
+   "id": "sign",
+   "manifest": "ferrum-app-sign/app.yaml",
+   "ui_source": "{\n  \"sources\": \"325e9970e4c347edb7d8649b6e14fd0abf25ee99e37c8111a0da546a29702ff8\",\n  \"frontend\": \"1e6aac7d7a3f1f0e4550dbf3d7c5986bb4519e6c\"\n}",
+   "version": "0.2.0"
+  },
+  {
+   "id": "assets",
+   "manifest": "docs-work/ferrum-app-assets/app.yaml",
+   "ui_source": null,
+   "version": "0.1.1"
+  },
+  {
+   "id": "bookings",
+   "manifest": "docs-work/ferrum-app-bookings/app.yaml",
+   "ui_source": null,
+   "version": "0.1.1"
+  },
+  {
+   "id": "campaigns",
+   "manifest": "docs-work/ferrum-app-campaigns/app.yaml",
+   "ui_source": null,
+   "version": "0.1.1"
+  },
+  {
+   "id": "commerce",
+   "manifest": "docs-work/ferrum-app-commerce/app.yaml",
+   "ui_source": "{\n  \"sources\": \"319fe3f679ee61c971dab19f5f2979d2e1c3fc93c3cce3bcd80f6b9f428953a4\",\n  \"frontend\": \"bba09f7b9bbb481777ab59955cff3ef78f0b72fe\"\n}",
+   "version": "0.3.2"
+  },
+  {
+   "id": "comms",
+   "manifest": "docs-work/ferrum-app-comms/app.yaml",
+   "ui_source": "{\n  \"sources\": \"a01c08f090e990a5f99d4fbed58825071d6e5336cc9b1d2b8b967fe079c61fd6\",\n  \"frontend\": \"7074b3fe259569a249b9768706cb2a13e33dcdb8\"\n}",
+   "version": "0.7.5"
+  },
+  {
+   "id": "crm",
+   "manifest": "docs-work/ferrum-app-crm/app.yaml",
+   "ui_source": "{\n  \"sources\": \"2981726b37c266754b14b814c626c234725bb31ccb4e7a6b25c2406a840bf631\",\n  \"frontend\": \"bba09f7b9bbb481777ab59955cff3ef78f0b72fe\"\n}",
+   "version": "0.3.5"
+  },
+  {
+   "id": "docs",
+   "manifest": "docs-work/ferrum-app-docs/app.yaml",
+   "ui_source": "{\n  \"sources\": \"1d23085d48ea9c46bec9babe06c2c5dcf136d8de1bc2ec42ebedfa9da1154598\",\n  \"frontend\": \"bba09f7b9bbb481777ab59955cff3ef78f0b72fe\"\n}",
+   "version": "0.5.2"
+  },
+  {
+   "id": "drive",
+   "manifest": "docs-work/ferrum-app-drive/app.yaml",
+   "ui_source": "{\n  \"sources\": \"084d19917e48e19ebacfc90a3e8b395cfbe9b5a50dfde272cd99dca0e9787458\",\n  \"frontend\": \"bba09f7b9bbb481777ab59955cff3ef78f0b72fe\"\n}",
+   "version": "0.11.1"
+  },
+  {
+   "id": "edge",
+   "manifest": "docs-work/ferrum-app-edge/app.yaml",
+   "ui_source": "{\n  \"sources\": \"f4194cac72aa0ce8f1d9dcb6fc6108c77c61fc572dc67cc9d50188fe84ad53cf\",\n  \"frontend\": \"e20c4d2b1d073ccef4d5bc11afa154cd6107fff6\"\n}",
+   "version": "0.4.0"
+  },
+  {
+   "id": "erp",
+   "manifest": "docs-work/ferrum-app-erp/app.yaml",
+   "ui_source": "{\n  \"sources\": \"4dc03bd86ec044663aa82e7e3460fa1a0f535cc162c43037863664481f5dab6e\",\n  \"frontend\": \"6cc2db25f49b3ae2563db3df03196b04242a3bc0\"\n}",
+   "version": "0.5.0"
+  },
+  {
+   "id": "field-service",
+   "manifest": "docs-work/ferrum-app-field-service/app.yaml",
+   "ui_source": null,
+   "version": "0.1.1"
+  },
+  {
+   "id": "forms",
+   "manifest": "docs-work/ferrum-app-forms/app.yaml",
+   "ui_source": null,
+   "version": "0.1.0"
+  },
+  {
+   "id": "helpdesk",
+   "manifest": "docs-work/ferrum-app-helpdesk/app.yaml",
+   "ui_source": "{\n  \"sources\": \"4ddd98b27677058533f309da246150a6582cff70cc2bebe594bbd4b57d67ef18\",\n  \"frontend\": \"bba09f7b9bbb481777ab59955cff3ef78f0b72fe\"\n}",
+   "version": "0.4.1"
+  },
+  {
+   "id": "hr",
+   "manifest": "docs-work/ferrum-app-hr/app.yaml",
+   "ui_source": "{\n  \"sources\": \"bf5425e6a2f6ca7b277b42aaaf3de99f217cbc8d7cf3ee5ac0f9c1fac7f2b233\",\n  \"frontend\": \"bba09f7b9bbb481777ab59955cff3ef78f0b72fe\"\n}",
+   "version": "0.3.4"
+  },
+  {
+   "id": "lms",
+   "manifest": "docs-work/ferrum-app-lms/app.yaml",
+   "ui_source": null,
+   "version": "0.1.0"
+  },
+  {
+   "id": "pos",
+   "manifest": "docs-work/ferrum-app-pos/app.yaml",
+   "ui_source": "{\n  \"sources\": \"50bf7c1f9e2c8c13a1c56916c5216557f3a6a04f46a874967a0a7bc4acbb0fb5\",\n  \"frontend\": \"9ecf5bfc84049ee9586cbcbda72857d1ce44402d\"\n}",
+   "version": "0.2.3"
+  },
+  {
+   "id": "projects",
+   "manifest": "docs-work/ferrum-app-projects/app.yaml",
+   "ui_source": "{\n  \"sources\": \"3c041120ad71e019ab15c6428878ab499a8ad6af6abf22c2a190572ce7c55f00\",\n  \"frontend\": \"bba09f7b9bbb481777ab59955cff3ef78f0b72fe\"\n}",
+   "version": "0.4.1"
+  },
+  {
+   "id": "sign",
+   "manifest": "docs-work/ferrum-app-sign/app.yaml",
+   "ui_source": null,
+   "version": "0.1.0"
+  },
+  {
+   "id": "ca",
+   "manifest": "docs-work/ferrum-app-erp/addons/ca/app.yaml",
+   "ui_source": null,
+   "version": "0.1.0"
+  },
+  {
+   "id": "de",
+   "manifest": "docs-work/ferrum-app-erp/addons/de/app.yaml",
+   "ui_source": null,
+   "version": "0.1.0"
+  },
+  {
+   "id": "eu",
+   "manifest": "docs-work/ferrum-app-erp/addons/eu/app.yaml",
+   "ui_source": null,
+   "version": "0.1.6"
+  },
+  {
+   "id": "finance",
+   "manifest": "docs-work/ferrum-app-erp/addons/finance/app.yaml",
+   "ui_source": null,
+   "version": "0.2.0"
+  },
+  {
+   "id": "gb",
+   "manifest": "docs-work/ferrum-app-erp/addons/gb/app.yaml",
+   "ui_source": null,
+   "version": "0.1.0"
+  },
+  {
+   "id": "india",
+   "manifest": "docs-work/ferrum-app-erp/addons/india/app.yaml",
+   "ui_source": null,
+   "version": "0.2.1"
+  },
+  {
+   "id": "mes",
+   "manifest": "docs-work/ferrum-app-erp/addons/mes/app.yaml",
+   "ui_source": "{\n  \"sources\": \"1823c0d2e1ebb66dd16cdd5e223204f5ed53bbd6a0b5eee2671c9cefb3ed4c19\",\n  \"frontend\": \"e20c4d2b1d073ccef4d5bc11afa154cd6107fff6\"\n}",
+   "version": "0.2.0"
+  },
+  {
+   "id": "mfg-ops",
+   "manifest": "docs-work/ferrum-app-erp/addons/mfg-ops/app.yaml",
+   "ui_source": null,
+   "version": "0.1.1"
+  },
+  {
+   "id": "procurement",
+   "manifest": "docs-work/ferrum-app-erp/addons/procurement/app.yaml",
+   "ui_source": null,
+   "version": "0.1.1"
+  },
+  {
+   "id": "quality",
+   "manifest": "docs-work/ferrum-app-erp/addons/quality/app.yaml",
+   "ui_source": null,
+   "version": "0.1.0"
+  },
+  {
+   "id": "stock-ops",
+   "manifest": "docs-work/ferrum-app-erp/addons/stock-ops/app.yaml",
+   "ui_source": null,
+   "version": "0.1.1"
+  },
+  {
+   "id": "us",
+   "manifest": "docs-work/ferrum-app-erp/addons/us/app.yaml",
+   "ui_source": null,
+   "version": "0.1.0"
+  },
+  {
+   "id": "wms",
+   "manifest": "docs-work/ferrum-app-erp/addons/wms/app.yaml",
+   "ui_source": "{\n  \"sources\": \"f5b73aeec3582a847b543f176b8ed5047679eda8fb738c8af9bbb69a4e48e9c7\",\n  \"frontend\": \"e20c4d2b1d073ccef4d5bc11afa154cd6107fff6\"\n}",
+   "version": "0.2.0"
+  }
+ ],
+ "ci_runs": {
+  "CBFerrum/Ferrum": [
+   {
+    "conclusion": "",
+    "databaseId": 41491162164,
+    "headSha": "f62aed2bd90e4c3765c2b0ee17acbffbfbdb2322",
+    "name": "ci",
+    "status": "pending"
+   },
+   {
+    "conclusion": "",
+    "databaseId": 41489197422,
+    "headSha": "bc7a4f1622672bf550dd6d0872244802202c356c",
+    "name": "ci",
+    "status": "in_progress"
+   },
+   {
+    "conclusion": "success",
+    "databaseId": 41488956368,
+    "headSha": "ecbc228537903a4d05364771b9c1ee245fc5a33c",
+    "name": "cluster",
+    "status": "completed"
+   },
+   {
+    "conclusion": "success",
+    "databaseId": 41482804041,
+    "headSha": "ecbc228537903a4d05364771b9c1ee245fc5a33c",
+    "name": "ci",
+    "status": "completed"
+   },
+   {
+    "conclusion": "success",
+    "databaseId": 41450029910,
+    "headSha": "a0f11cb39ffac76e42da56f5634975f5fd302b73",
+    "name": "cluster",
+    "status": "completed"
+   },
+   {
+    "conclusion": "success",
+    "databaseId": 41445485287,
+    "headSha": "a0f11cb39ffac76e42da56f5634975f5fd302b73",
+    "name": "ci",
+    "status": "completed"
+   }
+  ],
+  "CBFerrum/ferrum-app-edge": [
+   {
+    "conclusion": "success",
+    "databaseId": 41491945965,
+    "headSha": "fbe1e996270f29c6f8dd152a890193fa12f8ef79",
+    "name": "ci",
+    "status": "completed"
+   },
+   {
+    "conclusion": "success",
+    "databaseId": 41481129989,
+    "headSha": "45ea51926e80e4e47372bd3a294bdd8ac51288bd",
+    "name": "ci",
+    "status": "completed"
+   },
+   {
+    "conclusion": "success",
+    "databaseId": 41479013018,
+    "headSha": "572834efbba4f5f43537d77794164ccb9a66e7ee",
+    "name": "ci",
+    "status": "completed"
+   },
+   {
+    "conclusion": "success",
+    "databaseId": 41460002245,
+    "headSha": "3f7f77f6edee93bbd65416efdb8a26e219d65f5d",
+    "name": "ci",
+    "status": "completed"
+   },
+   {
+    "conclusion": "success",
+    "databaseId": 41439231843,
+    "headSha": "d48b6a769f8dc5e4a945fdc2d9b88155b6e1e067",
+    "name": "release",
+    "status": "completed"
+   },
+   {
+    "conclusion": "success",
+    "databaseId": 41439228376,
+    "headSha": "d48b6a769f8dc5e4a945fdc2d9b88155b6e1e067",
+    "name": "ci",
+    "status": "completed"
+   }
+  ],
+  "CBFerrum/ferrum-app-erp": [
+   {
+    "conclusion": "success",
+    "databaseId": 41485743757,
+    "headSha": "d1246422235159232d5915aad502cfcc9a91906b",
+    "name": "ci",
+    "status": "completed"
+   },
+   {
+    "conclusion": "success",
+    "databaseId": 41356452936,
+    "headSha": "9a4c6bdd57cce21e28b0bca4909a66c2014a4fb3",
+    "name": "ci",
+    "status": "completed"
+   },
+   {
+    "conclusion": "success",
+    "databaseId": 41327267441,
+    "headSha": "27c501cc6a6c8a94748a803b61909b0fe41d35ee",
+    "name": "ci",
+    "status": "completed"
+   },
+   {
+    "conclusion": "success",
+    "databaseId": 41316767219,
+    "headSha": "92c56e4fb00d9817c56b4ebbc6dbdcad001d10ec",
+    "name": "ci",
+    "status": "completed"
+   },
+   {
+    "conclusion": "failure",
+    "databaseId": 41316061437,
+    "headSha": "993017fc502a905e8eb873635fbe59e2ad399dc6",
+    "name": "ci",
+    "status": "completed"
+   },
+   {
+    "conclusion": "success",
+    "databaseId": 41239877672,
+    "headSha": "954e5877235759e9ae17a88474f0f7fb2f84634c",
+    "name": "ci",
+    "status": "completed"
+   }
+  ]
+ },
+ "dependency_pins": {
+  "CBFerrum/ferrum-app-assets": {
+   "crates": {
+    "ferrum-app-assets": "0.1.0"
+   },
+   "revision": "d3f5bae353ca3091929344f7a572911b20407b60"
+  },
+  "CBFerrum/ferrum-app-bookings": {
+   "crates": {
+    "ferrum-app-bookings": "0.1.0"
+   },
+   "revision": "ea6f3bdb87f38befb6671390007ba8b0802bfc45"
+  },
+  "CBFerrum/ferrum-app-campaigns": {
+   "crates": {
+    "ferrum-app-campaigns": "0.1.0"
+   },
+   "revision": "80a70cfdbd2bb65a87d32b35719c6c9513b39cd0"
+  },
+  "CBFerrum/ferrum-app-commerce": {
+   "crates": {
+    "ferrum-app-commerce": "0.1.0"
+   },
+   "revision": "6c4f45f5c9045f386765d9a44a064b41d9ff385f"
+  },
+  "CBFerrum/ferrum-app-comms": {
+   "crates": {
+    "ferrum-app-comms": "0.7.0"
+   },
+   "revision": "887282ce1beb016332d685649c70ef3c1e7b2b80"
+  },
+  "CBFerrum/ferrum-app-crm": {
+   "crates": {
+    "ferrum-app-crm": "0.1.0"
+   },
+   "revision": "94b306e353289e35bc267880bae3fd80d4c724f1"
+  },
+  "CBFerrum/ferrum-app-docs": {
+   "crates": {
+    "ferrum-app-docs": "0.2.1"
+   },
+   "revision": "6766a8d90a391d63220a35cf7b5e83cd020024ce"
+  },
+  "CBFerrum/ferrum-app-drive": {
+   "crates": {
+    "ferrum-app-drive": "0.1.0"
+   },
+   "revision": "ac48a9d4ee3b3b230a667d61b65e9f5f1b0c3e6c"
+  },
+  "CBFerrum/ferrum-app-edge": {
+   "crates": {
+    "ferrum-app-edge": "0.4.0",
+    "ferrum-edge-contract": "0.4.0"
+   },
+   "revision": "45ea51926e80e4e47372bd3a294bdd8ac51288bd"
+  },
+  "CBFerrum/ferrum-app-erp": {
+   "crates": {
+    "ferrum-app-erp": "0.1.0",
+    "ferrum-ca": "0.1.0",
+    "ferrum-countries": "0.1.0",
+    "ferrum-de": "0.1.0",
+    "ferrum-eu": "0.1.0",
+    "ferrum-eu-members": "0.1.0",
+    "ferrum-finance": "0.1.0",
+    "ferrum-gb": "0.1.0",
+    "ferrum-india": "0.1.0",
+    "ferrum-mes": "0.1.0",
+    "ferrum-mfg-ops": "0.1.0",
+    "ferrum-procurement": "0.1.0",
+    "ferrum-quality": "0.1.0",
+    "ferrum-stock-ops": "0.1.0",
+    "ferrum-us": "0.1.0",
+    "ferrum-wms": "0.1.0"
+   },
+   "revision": "d1246422235159232d5915aad502cfcc9a91906b"
+  },
+  "CBFerrum/ferrum-app-field-service": {
+   "crates": {
+    "ferrum-app-field-service": "0.1.0"
+   },
+   "revision": "b6317a0fc470be2031eba2a3fd991e9178f0c655"
+  },
+  "CBFerrum/ferrum-app-forms": {
+   "crates": {
+    "ferrum-app-forms": "0.1.0"
+   },
+   "revision": "c6da819cb31c57c0bcff0abc6dd28105b22bca31"
+  },
+  "CBFerrum/ferrum-app-helpdesk": {
+   "crates": {
+    "ferrum-app-helpdesk": "0.1.0"
+   },
+   "revision": "11bfe134cabd7d4655ba64395f450d99c7b6195d"
+  },
+  "CBFerrum/ferrum-app-hr": {
+   "crates": {
+    "ferrum-app-hr": "0.1.0"
+   },
+   "revision": "c9f7f78800dccff1ab9ed62cac6efbb41d64499a"
+  },
+  "CBFerrum/ferrum-app-lms": {
+   "crates": {
+    "ferrum-app-lms": "0.1.0"
+   },
+   "revision": "c125e96981678eb2382d2c82b65733c11b5040f9"
+  },
+  "CBFerrum/ferrum-app-pos": {
+   "crates": {
+    "ferrum-app-pos": "0.1.0"
+   },
+   "revision": "65ebe6944bd20cef8f0527462f9cd8bda1abeef3"
+  },
+  "CBFerrum/ferrum-app-projects": {
+   "crates": {
+    "ferrum-app-projects": "0.1.0"
+   },
+   "revision": "8b32fb57ae2bcdbd324238d9d784b66463122a87"
+  },
+  "CBFerrum/ferrum-app-sign": {
+   "crates": {
+    "ferrum-app-sign": "0.1.0"
+   },
+   "revision": "426401a9680ed15a9da309e0b0ec54dcf3c0a18c"
+  }
+ },
+ "frontend_rev": "6cc2db25f49b3ae2563db3df03196b04242a3bc0",
+ "generated_at": "2026-11-02T17:43:28Z",
+ "images": {
+  "unread": "gh: You need at least read:packages scope to list packages. (HTTP 403)"
+ },
+ "installed": {
+  "database": "ferrum_dev (local development only)",
+  "production": "No production environment is reachable from this checkout, so no production tenant's versions are known",
+  "rows": [
+   {
+    "app_id": "customer-cards",
+    "enabled": true,
+    "slug": "demo",
+    "version": "1.0.0-dev.1793417022"
+   },
+   {
+    "app_id": "docs",
+    "enabled": true,
+    "slug": "demo",
+    "version": "0.6.0"
+   },
+   {
+    "app_id": "drive",
+    "enabled": true,
+    "slug": "demo",
+    "version": "0.12.0"
+   },
+   {
+    "app_id": "drive-editors",
+    "enabled": true,
+    "slug": "demo",
+    "version": "0.1.1"
+   },
+   {
+    "app_id": "erp",
+    "enabled": true,
+    "slug": "demo",
+    "version": "0.5.0"
+   },
+   {
+    "app_id": "studio",
+    "enabled": true,
+    "slug": "demo",
+    "version": "0.2.0"
+   },
+   {
+    "app_id": "u0-deals",
+    "enabled": true,
+    "slug": "demo",
+    "version": "0.1.2"
+   },
+   {
+    "app_id": "u0-notes",
+    "enabled": true,
+    "slug": "demo",
+    "version": "0.1.2"
+   },
+   {
+    "app_id": "business",
+    "enabled": true,
+    "slug": "fresh",
+    "version": "0.1.0"
+   },
+   {
+    "app_id": "crm",
+    "enabled": true,
+    "slug": "fresh",
+    "version": "0.2.0"
+   },
+   {
+    "app_id": "crm-erp",
+    "enabled": true,
+    "slug": "fresh",
+    "version": "0.1.0"
+   },
+   {
+    "app_id": "erp",
+    "enabled": true,
+    "slug": "fresh",
+    "version": "0.1.0"
+   },
+   {
+    "app_id": "helpdesk",
+    "enabled": true,
+    "slug": "fresh",
+    "version": "0.2.0"
+   },
+   {
+    "app_id": "helpdesk-erp",
+    "enabled": true,
+    "slug": "fresh",
+    "version": "0.1.0"
+   },
+   {
+    "app_id": "projects",
+    "enabled": true,
+    "slug": "fresh",
+    "version": "0.1.0"
+   },
+   {
+    "app_id": "crm",
+    "enabled": true,
+    "slug": "fresh2",
+    "version": "0.2.0"
+   },
+   {
+    "app_id": "helpdesk",
+    "enabled": true,
+    "slug": "u4bfresh",
+    "version": "0.2.0"
+   }
+  ]
+ },
+ "migrations": {
+  "package_sql": {
+   "crates/ops/packages/ops/sql/001_ops.sql": "sha256:e0b1d6d0a6a2cc8bc32facba719d4c805b936a78564af9faabe0510b4a1e498d",
+   "crates/ops/packages/ops/sql/002_one_live_command.sql": "sha256:e067de4b4ff2a093c763e35ad8c44d3c03d97db78eab24043cce2751533e56a3"
+  },
+  "server": []
+ },
+ "native_features": {
+  "default": [
+   "india",
+   "eu",
+   "de",
+   "be",
+   "es",
+   "fr",
+   "it",
+   "pl",
+   "pt",
+   "ro",
+   "gb",
+   "ca",
+   "us",
+   "sg",
+   "my",
+   "id",
+   "th",
+   "ph",
+   "vn",
+   "sa",
+   "ae",
+   "au",
+   "nz",
+   "jp",
+   "mx",
+   "cn",
+   "crm",
+   "projects",
+   "helpdesk",
+   "pos",
+   "hr",
+   "comms",
+   "commerce",
+   "procurement",
+   "stock-ops",
+   "finance",
+   "mfg-ops",
+   "quality",
+   "wms",
+   "mes",
+   "ops",
+   "edge",
+   "studio",
+   "assets",
+   "bookings",
+   "field-service",
+   "forms",
+   "lms",
+   "drive",
+   "docs",
+   "campaigns",
+   "sign"
+  ]
+ },
+ "platform_commit": "d723eb9b49d7ea82ff218debbae74d56ba765036",
+ "repositories": [
+  {
+   "branch": "platform/w00-baseline",
+   "checkout": "ferrum",
+   "commit": "d723eb9b49d7ea82ff218debbae74d56ba765036",
+   "default_branch": "main",
+   "default_head": "d723eb9b49d7ea82ff218debbae74d56ba765036",
+   "dirty": [
+    "docs/platform/",
+    "scripts/baseline.py"
+   ],
+   "lock_digest": "sha256:c31df7c79a8c551fca7b959719163b25f5907a27682506a1e3b2fed2e42f8740",
+   "repository": "CBFerrum/Ferrum",
+   "visibility": "PUBLIC"
+  },
+  {
+   "branch": "main",
+   "checkout": "ferrum/web",
+   "commit": "e20c4d2b1d073ccef4d5bc11afa154cd6107fff6",
+   "default_branch": "main",
+   "default_head": "e20c4d2b1d073ccef4d5bc11afa154cd6107fff6",
+   "dirty": [],
+   "lock_digest": null,
+   "repository": "CBFerrum/Ferrum-Frontend",
+   "visibility": "PUBLIC"
+  },
+  {
+   "branch": "main",
+   "checkout": "ferrum-app-assets",
+   "commit": "d3f5bae353ca3091929344f7a572911b20407b60",
+   "default_branch": "main",
+   "default_head": "d3f5bae353ca3091929344f7a572911b20407b60",
+   "dirty": [],
+   "lock_digest": "sha256:ff413c43979c5230dedd0e1eda6b51cfaea70f06c9d4c9cb4dbd988fba50f83e",
+   "repository": "CBFerrum/ferrum-app-assets",
+   "visibility": "PUBLIC"
+  },
+  {
+   "branch": "main",
+   "checkout": "ferrum-app-bookings",
+   "commit": "ea6f3bdb87f38befb6671390007ba8b0802bfc45",
+   "default_branch": "main",
+   "default_head": "ea6f3bdb87f38befb6671390007ba8b0802bfc45",
+   "dirty": [],
+   "lock_digest": "sha256:0fa79ab0147c9b98ef8956bd137cd74d800f6ae7eee58f2df11e24195c9e2457",
+   "repository": "CBFerrum/ferrum-app-bookings",
+   "visibility": "PUBLIC"
+  },
+  {
+   "branch": "main",
+   "checkout": "ferrum-app-campaigns",
+   "commit": "80a70cfdbd2bb65a87d32b35719c6c9513b39cd0",
+   "default_branch": "main",
+   "default_head": "80a70cfdbd2bb65a87d32b35719c6c9513b39cd0",
+   "dirty": [],
+   "lock_digest": "sha256:2c4f88faa267ca743b230b1529a30f401ab049402f42f51bc5ec9693ad5e024b",
+   "repository": "CBFerrum/ferrum-app-campaigns",
+   "visibility": "PUBLIC"
+  },
+  {
+   "branch": "main",
+   "checkout": "ferrum-app-commerce",
+   "commit": "6c4f45f5c9045f386765d9a44a064b41d9ff385f",
+   "default_branch": "main",
+   "default_head": "6c4f45f5c9045f386765d9a44a064b41d9ff385f",
+   "dirty": [],
+   "lock_digest": "sha256:5bdbf1c0232692b9847af2497f01f7f3f447e1a5e9c9261ead64863607e21e6f",
+   "repository": "CBFerrum/ferrum-app-commerce",
+   "visibility": "PUBLIC"
+  },
+  {
+   "branch": "main",
+   "checkout": "ferrum-app-comms",
+   "commit": "887282ce1beb016332d685649c70ef3c1e7b2b80",
+   "default_branch": "main",
+   "default_head": "887282ce1beb016332d685649c70ef3c1e7b2b80",
+   "dirty": [],
+   "lock_digest": "sha256:20c5f0c102b56d29ea9ed9d108e4a793b78f3907a692ace1b01dda8781eb8fc0",
+   "repository": "CBFerrum/ferrum-app-comms",
+   "visibility": "PUBLIC"
+  },
+  {
+   "branch": "main",
+   "checkout": "ferrum-app-crm",
+   "commit": "94b306e353289e35bc267880bae3fd80d4c724f1",
+   "default_branch": "main",
+   "default_head": "94b306e353289e35bc267880bae3fd80d4c724f1",
+   "dirty": [],
+   "lock_digest": "sha256:71cdf2049fd0ee02f52305530a9f4c68f300fe14e1926f1c7e8d4055a06cc22b",
+   "repository": "CBFerrum/ferrum-app-crm",
+   "visibility": "PUBLIC"
+  },
+  {
+   "branch": "main",
+   "checkout": "ferrum-app-docs",
+   "commit": "6766a8d90a391d63220a35cf7b5e83cd020024ce",
+   "default_branch": "main",
+   "default_head": "6766a8d90a391d63220a35cf7b5e83cd020024ce",
+   "dirty": [],
+   "lock_digest": "sha256:36fc08931b7356b6ecfb3c6676b306272c06827ef4ea3fad35e3d099d4714058",
+   "repository": "CBFerrum/ferrum-app-docs",
+   "visibility": "PUBLIC"
+  },
+  {
+   "branch": "main",
+   "checkout": "ferrum-app-drive",
+   "commit": "ac48a9d4ee3b3b230a667d61b65e9f5f1b0c3e6c",
+   "default_branch": "main",
+   "default_head": "ac48a9d4ee3b3b230a667d61b65e9f5f1b0c3e6c",
+   "dirty": [],
+   "lock_digest": "sha256:fbd887ad15490afc01c5a0d7a01ffc80f59f33a27b2aac3aeb28ed75c2d88071",
+   "repository": "CBFerrum/ferrum-app-drive",
+   "visibility": "PUBLIC"
+  },
+  {
+   "branch": "HEAD",
+   "checkout": "docs-work/ferrum-app-edge",
+   "commit": "fbe1e996270f29c6f8dd152a890193fa12f8ef79",
+   "default_branch": "main",
+   "default_head": "fbe1e996270f29c6f8dd152a890193fa12f8ef79",
+   "dirty": [],
+   "lock_digest": "sha256:95b78f32e746f753b13c6f7e8754944b110bc82bb94f01ef7b26aeb962269156",
+   "repository": "CBFerrum/ferrum-app-edge",
+   "visibility": "PUBLIC"
+  },
+  {
+   "branch": "main",
+   "checkout": "docs-work/ferrum-app-erp",
+   "commit": "d1246422235159232d5915aad502cfcc9a91906b",
+   "default_branch": "main",
+   "default_head": "d1246422235159232d5915aad502cfcc9a91906b",
+   "dirty": [],
+   "lock_digest": "sha256:fa8668bc7fb7586e82b5a864cd9904d753cdb9b3366d5948c0076dcaa092b9f8",
+   "repository": "CBFerrum/ferrum-app-erp",
+   "visibility": "PUBLIC"
+  },
+  {
+   "branch": "main",
+   "checkout": "ferrum-app-field-service",
+   "commit": "b6317a0fc470be2031eba2a3fd991e9178f0c655",
+   "default_branch": "main",
+   "default_head": "b6317a0fc470be2031eba2a3fd991e9178f0c655",
+   "dirty": [],
+   "lock_digest": "sha256:f89757935ffb229ab7acc96cf016502bb3a640cf0f7cf5d2b270f894dd07b961",
+   "repository": "CBFerrum/ferrum-app-field-service",
+   "visibility": "PUBLIC"
+  },
+  {
+   "branch": "main",
+   "checkout": "ferrum-app-forms",
+   "commit": "c6da819cb31c57c0bcff0abc6dd28105b22bca31",
+   "default_branch": "main",
+   "default_head": "c6da819cb31c57c0bcff0abc6dd28105b22bca31",
+   "dirty": [],
+   "lock_digest": "sha256:9ed61329619480b6d2b495ad5fa736a8b379cdce6cfba66ff36107574e4ab5b4",
+   "repository": "CBFerrum/ferrum-app-forms",
+   "visibility": "PUBLIC"
+  },
+  {
+   "branch": "main",
+   "checkout": "ferrum-app-helpdesk",
+   "commit": "11bfe134cabd7d4655ba64395f450d99c7b6195d",
+   "default_branch": "main",
+   "default_head": "11bfe134cabd7d4655ba64395f450d99c7b6195d",
+   "dirty": [],
+   "lock_digest": "sha256:82a714cecc8ca8de8eb5549cbefb41f24fb9b9caf38ac03ed30796070dd81004",
+   "repository": "CBFerrum/ferrum-app-helpdesk",
+   "visibility": "PUBLIC"
+  },
+  {
+   "branch": "main",
+   "checkout": "ferrum-app-hr",
+   "commit": "c9f7f78800dccff1ab9ed62cac6efbb41d64499a",
+   "default_branch": "main",
+   "default_head": "c9f7f78800dccff1ab9ed62cac6efbb41d64499a",
+   "dirty": [],
+   "lock_digest": "sha256:fb55f2db999af4664136579d13456924534c18bf3646ad570b22b8a147e9b1ed",
+   "repository": "CBFerrum/ferrum-app-hr",
+   "visibility": "PUBLIC"
+  },
+  {
+   "branch": "main",
+   "checkout": "ferrum-app-lms",
+   "commit": "c125e96981678eb2382d2c82b65733c11b5040f9",
+   "default_branch": "main",
+   "default_head": "c125e96981678eb2382d2c82b65733c11b5040f9",
+   "dirty": [],
+   "lock_digest": "sha256:4af41b69303aaad25fb9acc613323492862ab437789df7479141688fb0fe4b8b",
+   "repository": "CBFerrum/ferrum-app-lms",
+   "visibility": "PUBLIC"
+  },
+  {
+   "branch": "main",
+   "checkout": "ferrum-app-pos",
+   "commit": "65ebe6944bd20cef8f0527462f9cd8bda1abeef3",
+   "default_branch": "main",
+   "default_head": "65ebe6944bd20cef8f0527462f9cd8bda1abeef3",
+   "dirty": [],
+   "lock_digest": "sha256:ea911b211d4ae472af5b58d41d4d811c5a6b3e09eeb57ec04344628f52e7fa3e",
+   "repository": "CBFerrum/ferrum-app-pos",
+   "visibility": "PUBLIC"
+  },
+  {
+   "branch": "main",
+   "checkout": "ferrum-app-projects",
+   "commit": "8b32fb57ae2bcdbd324238d9d784b66463122a87",
+   "default_branch": "main",
+   "default_head": "8b32fb57ae2bcdbd324238d9d784b66463122a87",
+   "dirty": [],
+   "lock_digest": "sha256:4546f0afb6dffc89a3d78be6378ea70734ae0dd8884fc83f525463be85b107ab",
+   "repository": "CBFerrum/ferrum-app-projects",
+   "visibility": "PUBLIC"
+  },
+  {
+   "branch": "main",
+   "checkout": "ferrum-app-sign",
+   "commit": "426401a9680ed15a9da309e0b0ec54dcf3c0a18c",
+   "default_branch": "main",
+   "default_head": "426401a9680ed15a9da309e0b0ec54dcf3c0a18c",
+   "dirty": [],
+   "lock_digest": "sha256:1e1c5bbe96e13654ae6862039c2081e6dbf4813c110291a2c22fc2fa55058562",
+   "repository": "CBFerrum/ferrum-app-sign",
+   "visibility": "PUBLIC"
+  },
+  {
+   "branch": "plugins/delivery-and-replacement",
+   "checkout": "ferrum-sdk",
+   "commit": "d4497b6e46770fa7634b6ca195f6be16375a24ba",
+   "default_branch": "main",
+   "default_head": "32976aed55b636667a946d2e9f71c1ac8ba0268e",
+   "dirty": [
+    "argo.lock",
+    "plugin-sdk/Cargo.lock"
+   ],
+   "lock_digest": "sha256:1270cf423808eb502ace7fec019682e9b79022debf786b46c2c01390119afacc",
+   "repository": "CBFerrum/ferrum-sdk",
+   "visibility": "PUBLIC"
+  },
+  {
+   "branch": "main",
+   "checkout": "ferrum-store",
+   "commit": "88b922a94d88ec13d5568f9d81772b921ae1e564",
+   "default_branch": "main",
+   "default_head": "88b922a94d88ec13d5568f9d81772b921ae1e564",
+   "dirty": [],
+   "lock_digest": "sha256:18ada68b985a81bdf4bddd5459ba0cf49962a632f49feee53444965b390f45bc",
+   "repository": "CBFerrum/ferrum-store",
+   "visibility": "PRIVATE"
+  }
+ ]
+}
