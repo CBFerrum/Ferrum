@@ -33,6 +33,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       FERRUM_TEST_DATABASE_URL: postgres://ferrum:ferrum@localhost:5432/ferrum_test
+      FERRUM_TEST_SUPERUSER: postgres://postgres:postgres@localhost:5432
       FERRUM_MCP_TEST_DATABASE_URL: postgres://ferrum:ferrum@localhost:5432/ferrum_mcp_test
       FERRUM_PLUGINS_TEST_DATABASE_URL: postgres://ferrum:ferrum@localhost:5432/ferrum_plugins_test
     steps:
@@ -43,6 +44,12 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       # The application role must not be a superuser: superusers bypass row-level security.
+      # A backup and restore are part of the tests, and pg_dump refuses a server newer than itself.
+      - name: PostgreSQL 17's tools
+        run: |
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-client-17
+          echo /usr/lib/postgresql/17/bin >> "$GITHUB_PATH"
       - name: Create the application role and test databases
         run: |
           psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 <<'SQL'
@@ -51,6 +58,8 @@ jobs:
           create database ferrum_mcp_test owner ferrum;
           create database ferrum_plugins_test owner ferrum;
           create database ferrum_plugin_resources_test owner ferrum;
+          create database ferrum_restore_test owner ferrum;
+          create database ferrum_witness_test owner ferrum;
           create database ferrum_app_resources_test owner ferrum;
           create database ferrum_studio_test owner ferrum;
           create database ferrum_apps_api_test owner ferrum;

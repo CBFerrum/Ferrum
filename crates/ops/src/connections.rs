@@ -58,13 +58,15 @@ pub async fn opened(tx: &mut Tx, tenant: Uuid, device: Uuid, gateway: Uuid, site
 
 /// A gateway's connection to a device ended. Only ever that one: a newer connection stays.
 pub async fn closed(tx: &mut Tx, tenant: Uuid, device: Uuid, gateway: Uuid, at: DateTime<Utc>) -> Result<bool> {
-    let ended = sqlx::query("update op_connection set closed_at = $4 where tenant_id = $1 and device_id = $2 and gateway_id = $3 and closed_at is null and opened_at <= $4")
-        .bind(tenant)
-        .bind(device)
-        .bind(gateway)
-        .bind(at)
-        .execute(&mut **tx)
-        .await?;
+    let ended = sqlx::query(
+        "update op_connection set closed_at = $4 where tenant_id = $1 and device_id = $2 and gateway_id = $3 and closed_at is null and opened_at <= $4",
+    )
+    .bind(tenant)
+    .bind(device)
+    .bind(gateway)
+    .bind(at)
+    .execute(&mut **tx)
+    .await?;
     Ok(ended.rows_affected() > 0)
 }
 

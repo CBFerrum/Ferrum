@@ -719,7 +719,13 @@ async fn a_charger_is_where_its_connection_is(k: &Arc<Kernel>) {
     let (g4_id, mut g4) = gateway(&t, "GW-4", site, 44).await;
     activate(&t, g4_id).await;
     let cp = robot(&t, "CP-1", site).await;
-    let fact = |kind: &str, device: Uuid, at: chrono::DateTime<Utc>| Fact { fact_id: Uuid::now_v7(), kind: kind.into(), at_source: at, actor: None, body: json!({"device": device}) };
+    let fact = |kind: &str, device: Uuid, at: chrono::DateTime<Utc>| Fact {
+        fact_id: Uuid::now_v7(),
+        kind: kind.into(),
+        at_source: at,
+        actor: None,
+        body: json!({"device": device}),
+    };
     let with = |g: &Gateway, facts: Vec<Fact>, reports: Vec<Report>| SyncRequest { facts, reports, ..g.sync_request() };
 
     // Unpooled, the second gateway holds nothing, as ever.
@@ -808,15 +814,15 @@ async fn a_charger_is_where_its_connection_is(k: &Arc<Kernel>) {
 
     // AT-OPS-014: a client that went away reads what it missed from wherever it comes back, and one
     // holding a position this history never reached is told to start again.
-    let seen = commands::describe(k, &t.admin, second.id, None).await.unwrap();
+    let seen = commands::describe(k, &t.admin, second.id).await.unwrap();
     let cursor = seen["cursor"].as_i64().unwrap();
-    assert_eq!(commands::describe(k, &t.admin, second.id, Some(cursor)).await.unwrap()["history"], json!([]));
+    assert_eq!(commands::describe_from(k, &t.admin, second.id, Some(cursor)).await.unwrap()["history"], json!([]));
     let done = g4.report(second.id, State::Completed);
     g4.sync(&t, with(&g4, vec![], vec![done])).await;
-    let back = commands::describe(k, &t.admin, second.id, Some(cursor)).await.unwrap();
+    let back = commands::describe_from(k, &t.admin, second.id, Some(cursor)).await.unwrap();
     assert_eq!((&back["state"], back["history"].as_array().unwrap().len()), (&json!("Completed"), 1), "{back}");
     assert_eq!(back["resync_required"], Value::Null);
-    let lost = commands::describe(k, &t.admin, second.id, Some(cursor + 1_000_000)).await.unwrap();
+    let lost = commands::describe_from(k, &t.admin, second.id, Some(cursor + 1_000_000)).await.unwrap();
     assert_eq!((&lost["resync_required"], &lost["state"]), (&json!(true), &json!("Completed")), "and is given the state to start from");
 
     // A gateway that stops being trusted loses what is connected to it, and the device can start again.

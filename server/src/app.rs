@@ -190,6 +190,7 @@ impl Hooks for App {
                 public_url: Some(ctx.config.server.host.trim().trim_end_matches('/').to_string()).filter(|u| u.starts_with("http")),
                 push_services: push_services(&settings.push_services),
                 push_contact: Some(settings.push_contact.trim().to_string()).filter(|c| c.starts_with("mailto:") || c.starts_with("https://")),
+                hold_on_timeline: std::env::var("FERRUM_HOLD_ON_TIMELINE").map_or(true, |v| v != "false"),
                 ..Default::default()
             },
             mailer,
@@ -309,6 +310,17 @@ impl Hooks for App {
             }));
         }
         state.background.lock().await.extend(listeners);
+        // Where a region can fail over, it writes only while a witness says it may (docs/operations.md).
+        if let Ok(witness) = std::env::var("FERRUM_AUTHORITY_WITNESS_URL")
+            && !witness.trim().is_empty()
+        {
+            let region = std::env::var("FERRUM_REGION").map_err(|_| Error::Message("FERRUM_AUTHORITY_WITNESS_URL needs FERRUM_REGION".into()))?;
+            let ttl = std::env::var("FERRUM_AUTHORITY_TTL_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(30);
+            let authority = ferrum_kernel::recovery::Authority::connect(&witness, "ferrum", &region, Duration::from_secs(ttl))
+                .await
+                .map_err(|e| Error::Message(e.to_string()))?;
+            state.background.lock().await.push(state.kernel.spawn_authority(authority, state.shutdown.subscribe()));
+        }
         if state.settings.run_background {
             let mut handles = state.kernel.spawn_background(state.shutdown.subscribe());
             // ERP's upkeep (journal partitions for the coming year) on the same cadence.
@@ -464,6 +476,8 @@ impl Hooks for App {
         tasks.register(crate::tasks::AppRevoke);
         tasks.register(crate::tasks::AppReleases);
         tasks.register(crate::tasks::AssistantCheck);
+        tasks.register(crate::tasks::ReleaseRestore);
+        tasks.register(crate::tasks::AcceptAuthority);
     }
 
     async fn truncate(_ctx: &AppContext) -> Result<()> {

@@ -6,6 +6,8 @@ use sqlx::query::Query;
 use sqlx::{AssertSqlSafe, Postgres, Transaction};
 use std::future::Future;
 use std::str::FromStr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -94,9 +96,29 @@ pub struct Db {
     /// every connection held by a transaction that waits for a second one.
     pub side: sqlx::PgPool,
     pub config: DbConfig,
+    /// This region does not hold the right to write (`recovery`): every transaction is read-only, so
+    /// nothing has to remember to check.
+    fenced: Arc<AtomicBool>,
 }
 
 impl Db {
+    pub fn fence(&self, fenced: bool) {
+        if self.fenced.swap(fenced, Ordering::SeqCst) != fenced {
+            tracing::warn!(fenced, "this region's right to write changed");
+        }
+    }
+
+    pub fn fenced(&self) -> bool {
+        self.fenced.load(Ordering::SeqCst)
+    }
+
+    async fn stay_fenced(&self, tx: &mut Tx) -> Result<()> {
+        if self.fenced() {
+            sqlx::query("set transaction read only").execute(&mut **tx).await?;
+        }
+        Ok(())
+    }
+
     pub async fn connect(config: DbConfig) -> Result<Db> {
         let opts = PgConnectOptions::from_str(&config.url)
             .map_err(|e| Error::Invalid(format!("invalid database url: {e}")))?
@@ -118,7 +140,7 @@ impl Db {
             .test_before_acquire(true)
             .connect_with(opts)
             .await?;
-        Ok(Db { pool, side, config })
+        Ok(Db { pool, side, config, fenced: Arc::default() })
     }
 
     /// Applies the kernel's own SQL migrations (idempotent; safe with several replicas).
@@ -155,6 +177,7 @@ impl Db {
             .bind(self.config.statement_timeout_ms.to_string())
             .execute(&mut *tx)
             .await?;
+        self.stay_fenced(&mut tx).await?;
         Ok(tx)
     }
 
@@ -170,6 +193,7 @@ impl Db {
             .bind(timeout_ms.to_string())
             .execute(&mut *tx)
             .await?;
+        self.stay_fenced(&mut tx).await?;
         Ok(tx)
     }
 
@@ -180,6 +204,7 @@ impl Db {
             .bind(self.config.statement_timeout_ms.to_string())
             .execute(&mut *tx)
             .await?;
+        self.stay_fenced(&mut tx).await?;
         Ok(tx)
     }
 
@@ -192,6 +217,7 @@ impl Db {
             .bind(self.config.statement_timeout_ms.to_string())
             .execute(&mut *tx)
             .await?;
+        self.stay_fenced(&mut tx).await?;
         Ok(tx)
     }
 

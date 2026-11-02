@@ -251,7 +251,44 @@ deploy/kind/install.sh && deploy/kind/smoke.sh
   Restoring in place, `docker compose stop ferrum` first.
 * Test a restore at least quarterly. After restoring, run the audit verification below.
 
+## Regions
+
+Where a region can fail over, give each one the same witness: a small PostgreSQL neither depends on for
+anything else, in a third place.
+
+| Setting | What it is |
+|---|---|
+| `FERRUM_AUTHORITY_WITNESS_URL` | The witness. Unset, this server writes without asking anyone, which is right for one region |
+| `FERRUM_REGION` | This region's name |
+| `FERRUM_AUTHORITY_TTL_SECS` | How long it holds the right to write between renewals. 30 by default |
+
+A region writes only while it knows it holds that right. It stops itself a quarter of the way before its
+time runs out, measured from before it last asked, so by the time anyone else can be given it, this region
+has stopped. Stopped means every transaction is read-only: reading works, writing answers 503, and work
+that reaches outside does not run. Losing the witness therefore stops writes everywhere until it is back.
+That is the choice being made: no writes over two writers.
+
+A region that lost the right does not take it back by itself, even if nobody else holds it, because its data
+is behind. Rebuild it from the region that took over, then:
+
+```bash
+ferrum task accept_authority note:"rebuilt from eu-west at 14:20"
+```
+
+This has been tested with real connections to a real witness, and two databases on one machine. It has not
+been run across real regions, and the database's own replication and promotion are yours to run.
+
 ## After restoring a backup
+
+When a server starts on a database that is not the one it knows, or one on a new timeline, it holds
+everything that reaches outside: mail, webhooks, jobs, what apps have in hand, and commands to equipment.
+What was waiting is set aside, because some of it may have happened after the backup was taken and nothing
+here can tell. Mail and webhooks go to the dead events and deliveries, jobs fail with a reason, and operations
+and commands become unknown. `ferrum task doctor` says so.
+
+A failover to a synchronous replica is also a new timeline, and loses nothing. Set
+`FERRUM_HOLD_ON_TIMELINE=false` if that is the only way a timeline changes here. Then an in-place
+point-in-time restore is not noticed, so run the steps below by hand after one.
 
 A database restored from a backup brings back whatever was erased since it was taken, so do this
 before people, integrations or the assistant reach it:

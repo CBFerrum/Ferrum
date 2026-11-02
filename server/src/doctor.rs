@@ -84,6 +84,18 @@ pub async fn report(st: &AppState, ctx: &AppContext) -> Result<Vec<Finding>, fer
     let production = ctx.environment == Environment::Production;
     let mut out = settings_findings(production, &st.jwt_secret, &st.settings, &ctx.config.server.host);
     out.extend(st.kernel.doctor(st.settings.db_max_connections).await?);
+    out.push(if st.kernel.holding().await? {
+        Finding::blocker(
+            "restore",
+            "this database was restored and nothing that reaches outside is running",
+            "Follow docs/operations.md, After restoring a backup, then: ferrum task release_restore note:\"what was checked\"",
+        )
+    } else {
+        Finding::ok("restore", "no restore is waiting for anyone")
+    });
+    if st.kernel.db.fenced() {
+        out.push(Finding::blocker("authority", "this region does not hold the right to write", "See docs/operations.md, Regions."));
+    }
 
     out.push(match st.objects.probe().await {
         Ok(()) => Finding::ok("storage", "object storage takes a write, a read and a delete"),
