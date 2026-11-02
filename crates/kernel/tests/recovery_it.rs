@@ -10,7 +10,7 @@ use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, Error, EventSink, HookRegistry, Kernel, KernelSettings, Result, Tx};
 use ferrum_meta::Catalog;
 use serde_json::json;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -46,7 +46,7 @@ struct App {
 
 #[async_trait]
 impl Restored for App {
-    async fn set_aside(&self, _: &mut Tx) -> Result<u64> {
+    async fn set_aside(&self, _: &mut Tx, _: Option<Uuid>) -> Result<u64> {
         self.told.fetch_add(1, Ordering::SeqCst);
         Ok(0)
     }
@@ -98,11 +98,33 @@ async fn drain(k: &Kernel) {
     while k.dispatch_outbox_once().await.unwrap() > 0 {}
 }
 
+/// As in docs/operations.md: row-level security stops anyone but a superuser reading everything.
+fn superuser(address: &str) -> String {
+    let base = std::env::var("FERRUM_TEST_SUPERUSER").unwrap_or_else(|_| format!("postgres://{}@localhost:5432", std::env::var("USER").unwrap_or_default()));
+    format!("{base}/{}", address.rsplit('/').next().unwrap())
+}
+
+fn backup(address: &str) -> PathBuf {
+    let dump = std::env::temp_dir().join(format!("ferrum-restore-{}.dump", Uuid::now_v7()));
+    let done = Command::new("pg_dump").args(["-Fc", "-f", dump.to_str().unwrap(), &superuser(address)]).status().expect("pg_dump");
+    assert!(done.success());
+    dump
+}
+
+async fn restore(dump: &Path, address: &str) {
+    let db = database(address, true).await;
+    db.pool.close().await;
+    let done = Command::new("pg_restore").args(["--exit-on-error", "-d", &superuser(address), dump.to_str().unwrap()]).status().expect("pg_restore");
+    assert!(done.success());
+    let _ = std::fs::remove_file(dump);
+}
+
 #[test]
 fn restores_and_regions() {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
     rt.block_on(async {
         tokio::spawn(a_restored_database_does_not_act_on_its_past()).await.unwrap();
+        tokio::spawn(one_workspace_goes_back_alone()).await.unwrap();
         tokio::spawn(only_one_region_writes()).await.unwrap();
     });
 }
@@ -122,26 +144,13 @@ async fn a_restored_database_does_not_act_on_its_past() {
     drain(&k).await;
     assert_eq!(sent.count.load(Ordering::SeqCst), 1);
     pay(&k, admin.tenant).await;
-    let dump = std::env::temp_dir().join(format!("ferrum-restore-{}.dump", Uuid::now_v7()));
-    // As in docs/operations.md: row-level security stops anyone but a superuser reading everything.
-    let superuser = |database: &str| {
-        let base =
-            std::env::var("FERRUM_TEST_SUPERUSER").unwrap_or_else(|_| format!("postgres://{}@localhost:5432", std::env::var("USER").unwrap_or_default()));
-        format!("{base}/{database}")
-    };
-    let of = |address: &str| address.rsplit('/').next().unwrap().to_string();
-    let done = Command::new("pg_dump").args(["-Fc", "-f", dump.to_str().unwrap(), &superuser(&of(&live))]).status().expect("pg_dump");
-    assert!(done.success());
+    let dump = backup(&live);
     // It goes out after the backup, as far as the world is concerned. The backup does not know.
     drain(&k).await;
     assert_eq!(sent.count.load(Ordering::SeqCst), 2);
 
     // The database is lost, and comes back from that backup.
-    let db = database(&restored, true).await;
-    db.pool.close().await;
-    let done = Command::new("pg_restore").args(["--exit-on-error", "-d", &superuser(&of(&restored)), dump.to_str().unwrap()]).status().expect("pg_restore");
-    assert!(done.success());
-    let _ = std::fs::remove_file(&dump);
+    restore(&dump, &restored).await;
     let (sent, app) = (Arc::new(Sent::default()), Arc::new(App::default()));
     let k = kernel(database(&restored, false).await, sent.clone(), app.clone()).await;
     assert!(k.holding().await.unwrap(), "this is not the database this server knew");
@@ -175,6 +184,126 @@ async fn a_restored_database_does_not_act_on_its_past() {
     drain(&k).await;
     assert_eq!(sent.count.load(Ordering::SeqCst), 1, "what came after goes out, and what was set aside stays set aside");
     assert_eq!(k.dead_events(&admin, 10).await.unwrap().len(), 1);
+}
+
+/// AT-DR-003.
+async fn one_workspace_goes_back_alone() {
+    const PASSWORD: &str = "Correct-Horse-9";
+    let (live, copy) = (url("FERRUM_TEST_DATABASE_URL", "ferrum_test"), url("FERRUM_RESTORE_TEST_DATABASE_URL", "ferrum_restore_test"));
+    let (sent, app) = (Arc::new(Sent::default()), Arc::new(App::default()));
+    let k = kernel(database(&live, true).await, sent.clone(), app.clone()).await;
+    let (acme, bravo) = (workspace(&k, "acme").await, workspace(&k, "bravo").await);
+    drain(&k).await;
+    assert!(k.extract_tenant(&acme, &copy, false, "not yet").await.is_err(), "there is nothing there");
+    let stays = k.create_user(&acme, "stays@acme.test", "Stays", Some(PASSWORD), &[], false).await.unwrap();
+    let leaves = k.create_user(&acme, "leaves@acme.test", "Leaves", Some(PASSWORD), &[], false).await.unwrap();
+    let (_, key) = k.create_api_key(&acme, stays, "a key", None, None).await.unwrap();
+    let signed_in = k.login("acme", "stays@acme.test", PASSWORD).await.unwrap();
+    pay(&k, acme.tenant).await;
+    let dump = backup(&live);
+    restore(&dump, &copy).await;
+
+    // Both workspaces carry on after the backup. Acme's payment goes out; Bravo's is still waiting.
+    drain(&k).await;
+    assert_eq!(sent.count.load(Ordering::SeqCst), 1);
+    k.create_user(&acme, "later@acme.test", "Later", Some(PASSWORD), &[], false).await.unwrap();
+    k.create_user(&bravo, "later@bravo.test", "Later", Some(PASSWORD), &[], false).await.unwrap();
+    k.set_password(&acme, stays, None, "Another-Horse-7").await.unwrap();
+    k.set_user_active(&acme, leaves, false).await.unwrap();
+    pay(&k, bravo.tenant).await;
+
+    let emails = async |tenant: Uuid| -> Vec<String> {
+        let mut tx = k.db.system_tx().await.unwrap();
+        let found = sqlx::query_scalar("select email::text from app_user where tenant_id = $1 order by 1").bind(tenant).fetch_all(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        found
+    };
+    let (acme_now, bravo_now) = (emails(acme.tenant).await, emails(bravo.tenant).await);
+    assert!(acme_now.contains(&"later@acme.test".to_string()));
+
+    // It takes being let, for as long as it takes.
+    let r = k.extract_tenant(&acme, &copy, false, "to see").await;
+    assert!(matches!(&r, Err(Error::Conflict(m)) if m.contains("GRANT SET ON PARAMETER")), "{r:?}");
+    let grant = async |sql: &'static str| {
+        let root = database(&superuser(&live), false).await;
+        sqlx::query(sql).execute(&root.pool).await.unwrap();
+        root.pool.close().await;
+    };
+    grant("grant set on parameter session_replication_role to ferrum").await;
+
+    // Comparing changes nothing, and it says what would go.
+    let compared = k.extract_tenant(&acme, &copy, false, "to see").await.expect("compared");
+    let people = compared["tables"].as_array().unwrap().iter().find(|t| t["table"] == json!("app_user")).unwrap().clone();
+    assert_eq!((people["now"].clone(), people["in_copy"].clone()), (json!(4), json!(3)), "{compared}");
+    assert_eq!(compared["applied"], json!(false));
+    assert_eq!(emails(acme.tenant).await, acme_now);
+
+    // What it will not do.
+    assert!(k.extract_tenant(&acme, &copy, true, " ").await.is_err(), "it takes saying why");
+    let clerk = k.load_ctx(acme.tenant, stays, None, "it".into()).await.unwrap();
+    assert!(matches!(k.extract_tenant(&clerk, &copy, true, "mine").await, Err(Error::Forbidden(_))));
+    let r = k.extract_tenant(&acme, &live, true, "the wrong address").await;
+    assert!(matches!(&r, Err(Error::Conflict(m)) if m.contains("this database")), "{r:?}");
+
+    let done = k.extract_tenant(&acme, &copy, true, "the customer asked").await.expect("extracted");
+    assert_eq!((done["applied"].clone(), done["status"].clone()), (json!(true), json!("active")), "{done}");
+    assert!(!emails(acme.tenant).await.contains(&"later@acme.test".to_string()), "acme is as it was");
+    assert_eq!(emails(bravo.tenant).await, bravo_now, "and nobody else went anywhere");
+
+    // Nobody gets in who could not before.
+    assert!(k.login("acme", "stays@acme.test", PASSWORD).await.is_err(), "the password from before");
+    k.login("acme", "stays@acme.test", "Another-Horse-7").await.expect("the password as it is now");
+    assert!(k.login("acme", "leaves@acme.test", PASSWORD).await.is_err(), "someone who left has still left");
+    assert!(k.verify_api_key(&key).await.is_err(), "every key has to be issued again");
+    assert!(k.load_ctx(acme.tenant, stays, Some(signed_in.token_version), "it".into()).await.is_err(), "and every sign-in");
+
+    // Nothing runs because its record came back, and what Bravo had waiting is not affected.
+    drain(&k).await;
+    assert_eq!(sent.count.load(Ordering::SeqCst), 2, "Bravo's went out, and Acme's did not go out twice");
+    assert_eq!(app.told.load(Ordering::SeqCst), 1);
+    let admin = k.load_ctx(acme.tenant, acme.user, None, "it".into()).await.unwrap();
+    let waiting = k.dead_events(&admin, 10).await.unwrap();
+    assert_eq!(waiting.len(), 1, "{waiting:?}");
+
+    // What happened since is still known, including this.
+    let mut tx = k.db.system_tx().await.unwrap();
+    let said: i64 = sqlx::query_scalar("select count(*) from audit_event where tenant_id = $1 and action = 'platform.tenant_restored'")
+        .bind(acme.tenant)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    let status: String = sqlx::query_scalar("select status from tenant where id = $1").bind(acme.tenant).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!((said, status.as_str()), (1, "active"));
+
+    // A reference that would point at nothing stops it, and leaves everything as it was. A support record is
+    // kept while what it refers to goes back, so this one is what such a thing looks like.
+    let dangling = Uuid::now_v7();
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await.unwrap();
+    sqlx::query("insert into support_access (tenant_id, grant_id, method, path) values ($1, $2, 'GET', '/')")
+        .bind(acme.tenant)
+        .bind(dangling)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let before = emails(acme.tenant).await;
+    let r = k.extract_tenant(&acme, &copy, true, "again").await;
+    assert!(matches!(&r, Err(Error::Conflict(m)) if m.contains("support_access_tenant_id_grant_id_fkey")), "{r:?}");
+    assert_eq!(emails(acme.tenant).await, before);
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await.unwrap();
+    sqlx::query("delete from support_access where grant_id = $1").bind(dangling).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+
+    // A copy that does not match what is running goes no further.
+    let older = database(&superuser(&copy), false).await;
+    sqlx::query("alter table app_user add column left_over text").execute(&older.pool).await.unwrap();
+    older.pool.close().await;
+    let r = k.extract_tenant(&acme, &copy, true, "too late").await;
+    assert!(matches!(&r, Err(Error::Conflict(m)) if m.contains("another version") && m.contains("app_user")), "{r:?}");
+    grant("revoke set on parameter session_replication_role from ferrum").await;
 }
 
 /// A connection to the witness that can be cut, the way a partition does.

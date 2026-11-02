@@ -68,9 +68,20 @@ the Compose setup (`deploy/postgres-init`) are already set up this way. The role
 trusted extensions `btree_gist`, `citext` and `pg_trgm`, which a database owner can do.
 
 Each replica opens up to `FERRUM_DB_MAX_CONNECTIONS` connections plus 4 for short side writes
-(document numbering). Keep `replicas × (FERRUM_DB_MAX_CONNECTIONS + 4)` below the database's
-`max_connections` minus ~20 for administration and replication (the manifests use 400 and 30, so
-up to ~11 replicas without a pooler; raise both together).
+(document numbering). Give the role a connection limit at least 20 below the database's
+`max_connections`, so that however far things scale there are connections left for an administrator,
+replication and a migration: PostgreSQL enforces that one, and `ferrum task doctor` warns without it.
+
+| Who | Connections at the most, in the manifests |
+|---|---|
+| API, 10 replicas × (30 + 4) | 340 |
+| Cloud's controller, 2 replicas × (6 + 4), if deployed | 20 |
+| The role's limit | 370 |
+| Left for administration and replication | 30 |
+
+`python3 scripts/check_manifests.py` fails when those stop adding up, and when a workload sets `replicas`
+under an autoscaler: every apply would put the count back. A migration runs on a replica's own connections.
+Past the limit a request waits for its pool and answers 503; nothing queues without bound.
 
 ## First deployment (Kubernetes)
 
@@ -1195,12 +1206,56 @@ After restoring the platform from a backup, sites may be ahead of it: their repo
 harmlessly, and commands issued after the backup was taken are gone from the ledger though a site may
 have run them. Before enabling dispatch, compare each site's console with **Needs a person**.
 
+## Taking one workspace back
+
+Restoring a shared database takes everyone back, which is rarely what one workspace's accident calls for.
+Instead, restore a backup to a database of its own, at the version this deployment runs, and take that one
+workspace from it:
+
+```bash
+ferrum task extract_tenant from:"postgres://ferrum:...@restore-host/ferrum_copy" tenant:acme note:"deleted a ledger by mistake"
+```
+
+That compares and changes nothing: it shows, table by table, how many rows there are now and in the copy. Add
+`apply:yes` to do it, then run `ferrum task reapply_erasures`, because the copy brings back whatever was erased
+since it was taken.
+
+Tables here refer to each other in circles, so the rows go in with referential triggers off. That takes a grant,
+which is worth taking away again afterwards. As a superuser:
+
+```sql
+GRANT SET ON PARAMETER session_replication_role TO ferrum;
+-- and when it is done
+REVOKE SET ON PARAMETER session_replication_role FROM ferrum;
+```
+
+It happens in one transaction, with the workspace suspended first so that nobody is writing to it. Every
+reference the workspace's rows make is checked before it commits, and one that would point at nothing stops it.
+If it stops part way, nothing has changed and the workspace is still suspended: run it again. Other workspaces
+are not touched and do not wait, but a workspace of many rows holds its transaction open for as long as it takes.
+Numbers issued since, such as invoice numbers, may be issued again.
+
+| Going back does not undo | Because |
+|---|---|
+| The audit trail, support grants and what support did | They record what happened |
+| Each app's records of the same kind, such as Cloud's signing keys, revocations and usage | The same |
+| Passwords, second factors and deactivations, as they are now | Nobody gets in who could not before |
+| Passkeys removed since | The same |
+
+Everyone has to sign in again and **every API key has to be issued again**, because a revocation since the
+copy was taken would otherwise come undone. Roles and everything else are as they were in the copy, and what
+was waiting in the copy is set aside as it is after a restore. Workspace settings and quotas stay as they are
+now. Files are not checked against the store, and a resource made since is no longer known to the workspace
+though it still exists at its provider. Look at `cloud_resource_instance` in the live database first if that
+matters.
+
 ## Routine tasks
 
 ```bash
 ferrum task run_maintenance          # anchor audit trails, purge expired events, ledger partitions, queue notification digests (also runs in-process, hourly)
 ferrum task sync_schema              # force the metadata → DDL sync (normally automatic at boot)
 ferrum task create_tenant slug:... name:... email:... password:... [packages:...]   # core only without packages:
+ferrum task extract_tenant from:<url> tenant:<slug> note:"..." [apply:yes]   # take one workspace back to what a restored copy holds
 ferrum task deps_report [schema:<file>]   # what ties packages together; schema: writes the canonical schema to compare across a package move
 ferrum task upgrade_back step:<name>      # before going back to the release before a one-time upgrade step
 ferrum task seed_demo tenant:<slug>  # demo data (never in production tenants)
