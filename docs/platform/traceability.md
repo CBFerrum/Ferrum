@@ -5,11 +5,11 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Not started | 83 |
-| Partial | 74 |
-| Implemented, unverified | 14 |
-| Verified in software | 22 |
-| Blocked externally | 4 |
+| Not started | 18 |
+| Partial | 60 |
+| Implemented, unverified | 11 |
+| Verified in software | 103 |
+| Blocked externally | 5 |
 | **All** | **197** |
 
 ## W00: Baseline and regression reconciliation
@@ -52,100 +52,100 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
-| FCP-RES-001 | Logical resource binding | Not started | AT-RES-001 | 0 | Nothing exists |
-| FCP-RES-002 | Idempotent provisioning | Not started | AT-RES-002 | 0 | Nothing exists |
-| FCP-RES-003 | Required resource readiness | Not started | AT-RES-003 | 0 | Nothing exists |
-| FCP-RES-004 | Tenant database isolation | Partial | AT-RES-004 | 1 | Row-level security protects platform tables; app-private resources do not exist |
-| FCP-RES-005 | Scoped credentials | Not started | AT-RES-005 | 0 | Nothing exists |
-| FCP-RES-006 | Resource migration | Not started | AT-RES-006 | 0 | Nothing exists |
-| FCP-RES-007 | Provider capability mismatch | Not started | AT-RES-007 | 0 | Nothing exists |
-| FCP-RES-008 | Data authority classification | Not started | AT-RES-008 | 0 | Nothing exists |
-| FCP-RES-009 | Object consistency | Partial | AT-RES-009 | 0 | Uploads reconcile; no general object resource class |
-| FCP-RES-010 | Backup semantics | Partial | AT-RES-010 | 0 | CNPG backups for the platform database; no resource-level consistency points |
-| FCP-RES-011 | Customer resource detachment | Not started | AT-RES-011 | 0 | Nothing exists |
-| FCP-RES-012 | Destructive deletion controls | Not started | AT-RES-012 | 0 | Nothing exists |
-| FCP-RES-013 | Query console safety | Not started | AT-RES-013 | 0 | Nothing exists |
-| FCP-RES-014 | Licensing gate | Not started | AT-RES-014 | 0 | Nothing exists |
-| FCP-RES-015 | Resource portability | Not started | AT-RES-015 | 0 | Nothing exists |
-| FCP-EXT-001 | Execution trust classes | Implemented, unverified | AT-EXT-001 | 2 | No isolated service extension class |
-| FCP-EXT-002 | Manifest versioning | Implemented, unverified | AT-EXT-002 | 1 | Unknown fields are refused; resource fields are not declared yet |
-| FCP-EXT-003 | Capability consent | Partial | AT-EXT-003 | 1 | Consent digest for permissions; no resources, network or cost |
-| FCP-EXT-004 | Host resource scoping | Partial | AT-EXT-004 | 1 | Host derives tenant scope; no resource handles |
-| FCP-EXT-005 | UI isolation | Implemented, unverified | AT-EXT-005 | 0 | Sandboxed frames and narrowed tokens |
-| FCP-EXT-006 | Dependency safety | Partial | AT-EXT-006 | 0 | Dependencies shown in the plan; no privilege roll-up |
-| FCP-EXT-007 | Lifecycle cleanup | Partial | AT-EXT-007 | 1 | Uninstall retains data; no resource bindings to revoke |
-| FCP-EXT-008 | Certification scope | Partial | AT-EXT-008 | 0 | Signatures exist; no certification labels tied to a profile |
-| FCP-EXT-009 | Deprecation migration | Not started | AT-EXT-009 | 0 | Nothing exists |
-| FCP-EXT-010 | Core invariants | Partial | AT-EXT-010 | 0 | Automations run through permissions; not tested as an adversary |
+| FCP-RES-001 | Logical resource binding | Verified in software | AT-RES-001 | 2 | A logical name resolves to a managed database or a customer's own, and the workload gets a role of its own. Tested with PostgreSQL only |
+| FCP-RES-002 | Idempotent provisioning | Verified in software | AT-RES-002 | 2 | Lost answers, a dead worker and a blind provider, against real PostgreSQL. No billable provider has been exercised |
+| FCP-RES-003 | Required resource readiness | Verified in software | AT-RES-003 | 2 | Ready means inspected. An app waits, off, for what it requires. Activation polls every 30 seconds |
+| FCP-RES-004 | Tenant database isolation | Verified in software | AT-RES-004 | 2 | Isolation is a database and roles per resource. Shared-database row security is not offered for app resources |
+| FCP-RES-005 | Scoped credentials | Verified in software | AT-RES-005 | 2 | Rotation overlaps, then ends the old login and its sessions. Customer-owned databases are not rotated: the credential is theirs |
+| FCP-RES-006 | Resource migration | Verified in software | AT-RES-006 | 2 | Sessions really killed mid-backfill. Session advisory locks do not survive a connection pooler; the generation check covers that case but it was not run through one |
+| FCP-RES-007 | Provider capability mismatch | Verified in software | AT-RES-007 | 2 | Classes without a provider are refused |
+| FCP-RES-008 | Data authority classification | Verified in software | AT-RES-008 | 2 | Detects a resource or a table gone. Corrupted rows are not detected: that takes checksums and integrity queries an app has to declare |
+| FCP-RES-009 | Object consistency | Verified in software | AT-RES-009 | 2 | Up to 16 MiB through the broker, with a store double that fails on request. Not yet run against S3 itself |
+| FCP-RES-010 | Backup semantics | Verified in software | AT-RES-010 | 2 | Logical copies at a moment, with marks and digests. No point-in-time recovery for app resources, and copies are not encrypted apart from the store |
+| FCP-RES-011 | Customer resource detachment | Verified in software | AT-RES-011 | 1 | PostgreSQL. Attaching a customer's bucket is written and has not run against S3 |
+| FCP-RES-012 | Destructive deletion controls | Verified in software | AT-RES-012 | 2 | Dependents, holds, retention and ownership block it, and are read again at execution. Which retention rules apply to whom is a customer's decision |
+| FCP-RES-013 | Query console safety | Verified in software | AT-RES-013 | 2 | Read-only, on app resources. Elevated writes are not offered at all |
+| FCP-RES-014 | Licensing gate | Blocked externally | AT-RES-014 | 2 | The gate refuses to the letter and is verified. Offering Timescale waits for approved terms, and no Timescale provider exists |
+| FCP-RES-015 | Resource portability | Verified in software | AT-RES-015 | 1 | PostgreSQL to a second PostgreSQL server and objects to a second store. Roles, grants and outside extensions do not travel, and the manifest says so |
+| FCP-EXT-001 | Execution trust classes | Verified in software | AT-EXT-001 | 2 | A bundle saying native is refused however it is signed. Native code comes with the build. Isolated service extensions are not a class yet |
+| FCP-EXT-002 | Manifest versioning | Verified in software | AT-EXT-002 | 1 | Unknown fields are refused and named, including new resource fields. No format version: a field this server does not know stops the install |
+| FCP-EXT-003 | Capability consent | Verified in software | AT-EXT-003 | 2 | Permissions, resources and hosts are in the consent digest, so a change needs a new consent. Network cost is not estimated |
+| FCP-EXT-004 | Host resource scoping | Verified in software | AT-EXT-004 | 2 | Workspace and app come from the host. An attempt to say more, and a foreign handle, are refused and audited. No precompiled wasm fixture calls these: the test drives the host API directly |
+| FCP-EXT-005 | UI isolation | Verified in software | AT-EXT-005 | 2 | A port per screen, an allowlist of paths and methods, sandboxed frames. Tested in jsdom, not a browser. A forged cross-origin message has no port to arrive on |
+| FCP-EXT-006 | Dependency safety | Verified in software | AT-EXT-006 | 1 | An upgrade that brings something in names it, its hosts and its permissions, and the old consent does not cover it |
+| FCP-EXT-007 | Lifecycle cleanup | Verified in software | AT-EXT-007 | 2 | Stopping ends access at once and starting restores it. Removing detaches and keeps the data. Jobs of a stopped app are not covered here |
+| FCP-EXT-008 | Certification scope | Verified in software | AT-EXT-008 | 1 | A label is of one digest, with a profile, evidence and a reviewer, and is shown in the plan. Nothing in the server grants one: no certification process exists |
+| FCP-EXT-009 | Deprecation migration | Verified in software | AT-EXT-009 | 2 | End of support, replacement and the way to get data out are shown before anyone agrees. The export itself is the app's to provide |
+| FCP-EXT-010 | Core invariants | Verified in software | AT-EXT-010 | 1 | An automation goes through hooks and the submitted-document rule like anything else, can only say the four things it can say, and takes an administrator to save. Studio scripts are not covered here |
 
 ## W03: Code
 
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
-| FCP-CODE-001 | Repository lifecycle | Not started | AT-CODE-001 | 0 | Nothing exists |
-| FCP-CODE-002 | Ref consistency | Not started | AT-CODE-002 | 0 | Nothing exists |
-| FCP-CODE-003 | Git storage authority | Not started | AT-CODE-003 | 0 | Nothing exists |
-| FCP-CODE-004 | Backup completeness | Not started | AT-CODE-004 | 0 | Nothing exists |
-| FCP-CODE-005 | Scoped Git credentials | Not started | AT-CODE-005 | 0 | Nothing exists |
-| FCP-CODE-006 | Server hook restriction | Not started | AT-CODE-006 | 0 | Nothing exists |
-| FCP-CODE-007 | Import and mirror egress | Not started | AT-CODE-007 | 0 | Nothing exists |
-| FCP-CODE-008 | Git resource limits | Not started | AT-CODE-008 | 0 | Nothing exists |
-| FCP-CODE-009 | PR approval integrity | Not started | AT-CODE-009 | 0 | Nothing exists |
-| FCP-CODE-010 | LFS access | Not started | AT-CODE-010 | 0 | Nothing exists |
-| FCP-CODE-011 | Forge outage isolation | Not started | AT-CODE-011 | 0 | Nothing exists |
-| FCP-CODE-012 | Repository portability | Not started | AT-CODE-012 | 0 | Nothing exists |
+| FCP-CODE-001 | Repository lifecycle | Verified in software | AT-CODE-001 | 2 | A crash after the forge made it binds what is there. Against real Gitea 28.2.0 |
+| FCP-CODE-002 | Ref consistency | Verified in software | AT-CODE-002 | 1 | Conflicting pushes over HTTPS and SSH race on real Git. Protection is the forge's and holds on both |
+| FCP-CODE-003 | Git storage authority | Verified in software | AT-CODE-003 | 1 | One writable instance by design (D-08), so there is no second writer to split with. A killed forge keeps what it acknowledged. No high availability |
+| FCP-CODE-004 | Backup completeness | Verified in software | AT-CODE-004 | 1 | History, pull requests and protection come out and a second forge fscks clean. Not a scheduled backup of a whole forge yet: DR-006 covers that gap |
+| FCP-CODE-005 | Scoped Git credentials | Verified in software | AT-CODE-005 | 2 | Per-repository tokens, collected once, ended by revocation and by a person leaving |
+| FCP-CODE-006 | Server hook restriction | Verified in software | AT-CODE-006 | 1 | DISABLE_GIT_HOOKS is required configuration, and every management path was tried against it |
+| FCP-CODE-007 | Import and mirror egress | Verified in software | AT-CODE-007 | 2 | Refused before fetching and again by the forge when fetching. Submodules are not fetched |
+| FCP-CODE-008 | Git resource limits | Partial | AT-CODE-008 | 1 | An oversized push fails plainly. Concurrent-clone limits and per-tenant fairness at the forge are not exercised |
+| FCP-CODE-009 | PR approval integrity | Verified in software | AT-CODE-009 | 1 | A force-push dismisses approvals and required checks are by name. Real Gitea |
+| FCP-CODE-010 | LFS access | Verified in software | AT-CODE-010 | 1 | A known object id from another repository gets nothing. Expiry of a signed URL is Gitea's |
+| FCP-CODE-011 | Forge outage isolation | Verified in software | AT-CODE-011 | 1 | What is live needs no forge. A build says why it waits, fails with that reason, and asking again afterwards builds once |
+| FCP-CODE-012 | Repository portability | Verified in software | AT-CODE-012 | 1 | Moved to a second real Gitea, every branch to the commit, in plain Git. No other forge product has been tried |
 
 ## W04: Build and artifact supply chain
 
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
-| FCP-BUILD-001 | Webhook authenticity | Not started | AT-BUILD-001 | 0 | Nothing exists |
-| FCP-BUILD-002 | Exact commit checkout | Not started | AT-BUILD-002 | 0 | Nothing exists |
-| FCP-BUILD-003 | Builder sandbox | Not started | AT-BUILD-003 | 0 | Nothing exists |
-| FCP-BUILD-004 | Production isolation | Not started | AT-BUILD-004 | 0 | Nothing exists |
-| FCP-BUILD-005 | Secret exposure controls | Not started | AT-BUILD-005 | 0 | Nothing exists |
-| FCP-BUILD-006 | Cache trust | Not started | AT-BUILD-006 | 0 | Nothing exists |
-| FCP-BUILD-007 | Dependency pinning | Not started | AT-BUILD-007 | 0 | Nothing exists |
-| FCP-BUILD-008 | Artifact finalization | Not started | AT-BUILD-008 | 0 | Nothing exists |
-| FCP-BUILD-009 | Signing authority | Not started | AT-BUILD-009 | 0 | Nothing exists |
-| FCP-BUILD-010 | Provenance privacy | Not started | AT-BUILD-010 | 0 | Nothing exists |
-| FCP-BUILD-011 | Build cancellation | Not started | AT-BUILD-011 | 0 | Nothing exists |
-| FCP-BUILD-012 | Tenant fairness | Not started | AT-BUILD-012 | 0 | Nothing exists |
-| FCP-BUILD-013 | Log safety | Not started | AT-BUILD-013 | 0 | Nothing exists |
-| FCP-BUILD-014 | Customer runner trust | Not started | AT-BUILD-014 | 0 | Nothing exists |
+| FCP-BUILD-001 | Webhook authenticity | Verified in software | AT-BUILD-001 | 2 | Signed, replay-safe, and bound to the repository it claims |
+| FCP-BUILD-002 | Exact commit checkout | Verified in software | AT-BUILD-002 | 2 | Fetched by commit, checked after, and the moved branch does not appear |
+| FCP-BUILD-003 | Builder sandbox | Verified in software | AT-BUILD-003 | 1 | A hostile build reached nothing, on Docker. A container is not a boundary against a kernel exploit: this proves the configuration, not the isolation a shared host needs |
+| FCP-BUILD-004 | Production isolation | Verified in software | AT-BUILD-004 | 1 | No network unless a mirror network is named. The mirror path has not been exercised |
+| FCP-BUILD-005 | Secret exposure controls | Verified in software | AT-BUILD-005 | 1 | No credential is in reach, so there is nothing to print. Redaction exists for test secrets only |
+| FCP-BUILD-006 | Cache trust | Verified in software | AT-BUILD-006 | 2 | A cache per repository and level of trust, at /cache. It goes when it passes 1 GiB, and a second worker on another host starts empty |
+| FCP-BUILD-007 | Dependency pinning | Verified in software | AT-BUILD-007 | 1 | Images pinned by digest and the lockfile recorded. Packages a build fetches are as pinned as its lockfile: nothing proxies them |
+| FCP-BUILD-008 | Artifact finalization | Verified in software | AT-BUILD-008 | 3 | Measured at finalization and again at promotion, by a process that did not run the build |
+| FCP-BUILD-009 | Signing authority | Verified in software | AT-BUILD-009 | 2 | What is signed is what the finalizer computed. An attempt at anything else is refused and recorded. Keys are in the database, not a KMS |
+| FCP-BUILD-010 | Provenance privacy | Verified in software | AT-BUILD-010 | 2 | What leaves is a view with nothing of whose it is. Nothing is published to a transparency log |
+| FCP-BUILD-011 | Build cancellation | Verified in software | AT-BUILD-011 | 2 | Cancelled, killed or lost, the container goes and the fetch token was already gone |
+| FCP-BUILD-012 | Tenant fairness | Verified in software | AT-BUILD-012 | 2 | A cap per workspace. Measured with one flood and one small build, not under sustained load |
+| FCP-BUILD-013 | Log safety | Verified in software | AT-BUILD-013 | 2 | Escapes are gone at rest, logs are bounded and scoped. Pages still have to treat them as text |
+| FCP-BUILD-014 | Customer runner trust | Verified in software | AT-BUILD-014 | 2 | The finalizer sets assurance from what it knows. A runner's claim goes nowhere near production |
 
 ## W05: Deploy, static delivery and domains
 
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
-| FCP-DEPLOY-001 | Environment separation | Not started | AT-DEPLOY-001 | 0 | Nothing exists |
-| FCP-DEPLOY-002 | Release immutability | Not started | AT-DEPLOY-002 | 0 | Nothing exists |
-| FCP-DEPLOY-003 | Promotion serialization | Not started | AT-DEPLOY-003 | 0 | Nothing exists |
-| FCP-DEPLOY-004 | Readiness gating | Not started | AT-DEPLOY-004 | 0 | Nothing exists |
-| FCP-DEPLOY-005 | Migration compatibility | Not started | AT-DEPLOY-005 | 0 | Nothing exists |
-| FCP-DEPLOY-006 | Preview access | Not started | AT-DEPLOY-006 | 0 | Nothing exists |
-| FCP-DEPLOY-007 | Preview cleanup | Not started | AT-DEPLOY-007 | 0 | Nothing exists |
-| FCP-DEPLOY-008 | Graceful rollout | Not started | AT-DEPLOY-008 | 0 | Nothing exists |
-| FCP-DEPLOY-009 | Rollback correctness | Not started | AT-DEPLOY-009 | 0 | Nothing exists |
-| FCP-DEPLOY-010 | Durable background work | Not started | AT-DEPLOY-010 | 0 | Nothing exists |
-| FCP-DEPLOY-011 | Scheduler semantics | Not started | AT-DEPLOY-011 | 0 | Nothing exists |
-| FCP-DEPLOY-012 | Capability reconsent | Not started | AT-DEPLOY-012 | 0 | Nothing exists |
-| FCP-DEPLOY-013 | Serving independence | Not started | AT-DEPLOY-013 | 0 | Nothing exists |
+| FCP-DEPLOY-001 | Environment separation | Verified in software | AT-DEPLOY-001 | 2 | Capabilities are per environment, and a workload token reaches its own environment only |
+| FCP-DEPLOY-002 | Release immutability | Verified in software | AT-DEPLOY-002 | 2 | By digest, and measured again at promotion. Images of what runs are pinned the same way |
+| FCP-DEPLOY-003 | Promotion serialization | Verified in software | AT-DEPLOY-003 | 2 | One compare-and-swap on the route generation. The loser fails and has to be planned again |
+| FCP-DEPLOY-004 | Readiness gating | Verified in software | AT-DEPLOY-004 | 2 | Every replica has to answer. One that does not leaves what was live, and is stopped |
+| FCP-DEPLOY-005 | Migration compatibility | Verified in software | AT-DEPLOY-005 | 2 | Resumes from its checkpoint, and rollback is refused when old code would not work |
+| FCP-DEPLOY-006 | Preview access | Verified in software | AT-DEPLOY-006 | 2 | Every name, the address and a forged header. TLS and anything in front of the node are not exercised |
+| FCP-DEPLOY-007 | Preview cleanup | Verified in software | AT-DEPLOY-007 | 1 | Two steps that each find their own work, stopped between them, and only what the preview holds |
+| FCP-DEPLOY-008 | Graceful rollout | Partial | AT-DEPLOY-008 | 1 | Requests in flight finish and replicas drain. WebSockets do not pass a node, so nothing to reconnect is exercised |
+| FCP-DEPLOY-009 | Rollback correctness | Verified in software | AT-DEPLOY-009 | 2 | Refused across a contracting migration or an older schema. A rollback restarts what it ran |
+| FCP-DEPLOY-010 | Durable background work | Verified in software | AT-DEPLOY-010 | 2 | Written down before the caller hears anything, delivered at least once with a stable id |
+| FCP-DEPLOY-011 | Scheduler semantics | Verified in software | AT-DEPLOY-011 | 2 | DST, missed runs and overlap are decided from the database |
+| FCP-DEPLOY-012 | Capability reconsent | Verified in software | AT-DEPLOY-012 | 2 | A release cannot ask beyond what its environment was given, and an approval does not outlive what it was of. Egress capabilities are not enforced by Docker |
+| FCP-DEPLOY-013 | Serving independence | Verified in software | AT-DEPLOY-013 | 1 | As a separate process, with nothing else up. Trust files are rotated by hand |
 
 ## W06: SSR, private apps and workers
 
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
-| FCP-WEB-001 | Public/private cache separation | Not started | AT-WEB-001 | 0 | Nothing exists |
-| FCP-WEB-002 | Framework conformance | Not started | AT-WEB-002 | 0 | Nothing exists |
-| FCP-WEB-003 | Deployment skew | Not started | AT-WEB-003 | 0 | Nothing exists |
-| FCP-WEB-004 | Browser origin isolation | Partial | AT-WEB-004 | 0 | Isolated apps have their own origins; customer sites do not exist |
-| FCP-WEB-005 | Domain ownership | Partial | AT-WEB-005 | 1 | One HTTP token per host; no TXT proof, generations, wildcard rules or tombstones |
-| FCP-WEB-006 | Origin bypass | Partial | AT-WEB-006 | 0 | Unknown hosts are refused for the shell; no customer-site ingress exists |
-| FCP-WEB-007 | Certificate lifecycle | Partial | AT-WEB-007 | 0 | `/_tls/ask` gates on-demand certificates; no lifecycle or rate-limit handling |
-| FCP-WEB-008 | Image and fetch SSRF | Partial | AT-WEB-008 | 0 | Plugins' fetch and gateways check destinations; no customer runtime exists |
-| FCP-WEB-009 | Request resource budgets | Partial | AT-WEB-009 | 0 | Bodies are limited per route; no customer runtime exists |
-| FCP-WEB-010 | Upload finalization | Partial | AT-WEB-010 | 1 | Uploads scan and finalize; not offered to customer applications |
+| FCP-WEB-001 | Public/private cache separation | Verified in software | AT-WEB-001 | 1 | Only what a node adds. A CDN in front is not exercised |
+| FCP-WEB-002 | Framework conformance | Partial | AT-WEB-002 | 2 | Files and a process on $PORT, on two replicas, streamed. The table in the docs says what is not supported. No framework has been qualified |
+| FCP-WEB-003 | Deployment skew | Verified in software | AT-WEB-003 | 2 | Old assets stay for two releases. Mutations from old pages are the application's to version |
+| FCP-WEB-004 | Browser origin isolation | Verified in software | AT-WEB-004 | 1 | One host per deployment and cookie domains stripped. A browser was not used: a service-worker scope is decided by origin |
+| FCP-WEB-005 | Domain ownership | Verified in software | AT-WEB-005 | 3 | One spelling, unique across every workspace, wildcards overlap |
+| FCP-WEB-006 | Origin bypass | Verified in software | AT-WEB-006 | 2 | Name, address, old preview and forged headers. Direct access to a replica depends on the network |
+| FCP-WEB-007 | Certificate lifecycle | Partial | AT-WEB-007 | 1 | A name that stops proving itself stops being served and a released one starts again. No certificate has been issued or renewed |
+| FCP-WEB-008 | Image and fetch SSRF | Verified in software | AT-WEB-008 | 3 | Checked when named, and again at every connection, IPv6 and mapped addresses included. No redirect is followed. No image optimizer exists to attack |
+| FCP-WEB-009 | Request resource budgets | Verified in software | AT-WEB-009 | 1 | A limit per site on a node, and a body limit. Not measured under sustained load |
+| FCP-WEB-010 | Upload finalization | Verified in software | AT-WEB-010 | 2 | An intent first, bytes under a temporary name, one commit to make them visible, and a sweep for what was left |
 | FCP-WEB-011 | Storefront authority | Partial | AT-WEB-011 | 0 | Commerce recalculates server-side; no storefront profile has been qualified against it |
 | FCP-WEB-012 | Headless content lifecycle | Not started | AT-WEB-012 | 0 | Nothing exists |
 | FCP-AI-001 | Agent capability boundary | Partial | AT-AI-001 | 1 | Typed tools under the caller's rights; no capability boundary for development tools |
@@ -161,16 +161,16 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
-| FCP-ACCESS-001 | Reachability versus rights | Not started | AT-ACCESS-001 | 0 | Nothing exists |
-| FCP-ACCESS-002 | Provider administration isolation | Not started | AT-ACCESS-002 | 0 | Nothing exists |
-| FCP-ACCESS-003 | Posture trust | Not started | AT-ACCESS-003 | 0 | Nothing exists |
-| FCP-ACCESS-004 | Private connectors | Not started | AT-ACCESS-004 | 0 | Nothing exists |
-| FCP-ACCESS-005 | Overlapping addresses | Not started | AT-ACCESS-005 | 0 | Nothing exists |
-| FCP-ACCESS-006 | Revocation coverage | Not started | AT-ACCESS-006 | 0 | Nothing exists |
-| FCP-ACCESS-007 | Privileged session scope | Not started | AT-ACCESS-007 | 0 | Nothing exists |
-| FCP-ACCESS-008 | Header spoofing | Partial | AT-ACCESS-008 | 0 | Trusted-proxy handling for client addresses; no identity assertions |
-| FCP-ACCESS-009 | Access outage policy | Not started | AT-ACCESS-009 | 0 | Nothing exists |
-| FCP-ACCESS-010 | OT access boundary | Not started | AT-ACCESS-010 | 0 | Nothing exists |
+| FCP-ACCESS-001 | Reachability versus rights | Verified in software | AT-ACCESS-001 | 2 | The decision only. Nothing here moves packets |
+| FCP-ACCESS-002 | Provider administration isolation | Verified in software | AT-ACCESS-002 | 2 | Ferrum's own side. A real provider's boundary is not exercised |
+| FCP-ACCESS-003 | Posture trust | Verified in software | AT-ACCESS-003 | 2 | Stale and self-reported posture are treated as unknown. No MDM is connected |
+| FCP-ACCESS-004 | Private connectors | Verified in software | AT-ACCESS-004 | 2 | A connector holds a token naming it and asks for its own routes. A real connector does not exist yet |
+| FCP-ACCESS-005 | Overlapping addresses | Verified in software | AT-ACCESS-005 | 1 | Routes follow the connector, never the address |
+| FCP-ACCESS-006 | Revocation coverage | Verified in software | AT-ACCESS-006 | 2 | Outstanding enforcement points are shown, and token life bounds what is left |
+| FCP-ACCESS-007 | Privileged session scope | Verified in software | AT-ACCESS-007 | 1 | A grant names its target and verbs and ends. A PAM service is not connected |
+| FCP-ACCESS-008 | Header spoofing | Verified in software | AT-ACCESS-008 | 1 | Stripped at the node and tested with a real upstream. Only a serving node is a data path here |
+| FCP-ACCESS-009 | Access outage policy | Verified in software | AT-ACCESS-009 | 2 | Members-only stops after an hour alone, public sites go on, and emergency access is separate |
+| FCP-ACCESS-010 | OT access boundary | Verified in software | AT-ACCESS-010 | 1 | OT destinations refuse anything but a site-specific path, with no hardware behind them |
 
 ## W08: Distributed execution
 
@@ -181,11 +181,11 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-MSG-003 | External ambiguity | Partial | AT-MSG-003 | 1 | The ledger has OutcomeUnknown; other external calls do not |
 | FCP-MSG-004 | Lease fencing | Implemented, unverified | AT-MSG-004 | 2 | Acceptance case not run as written |
 | FCP-MSG-005 | Notification recovery | Implemented, unverified | AT-MSG-005 | 1 | Writers do not NOTIFY; dispatchers poll |
-| FCP-MSG-006 | Cursor correctness | Not started | AT-MSG-006 | 0 | Nothing exists |
+| FCP-MSG-006 | Cursor correctness | Verified in software | AT-MSG-006 | 2 | A cursor never passes a transaction still open. Retention and resync are not implemented |
 | FCP-MSG-007 | Snapshot subscription | Not started | AT-MSG-007 | 0 | Nothing exists |
 | FCP-MSG-008 | Contract evolution | Partial | AT-MSG-008 | 0 | Contract schema versions on commands only |
 | FCP-MSG-009 | Regional authority | Not started | AT-MSG-009 | 0 | Nothing exists |
-| FCP-MSG-010 | Service delegation | Partial | AT-MSG-010 | 0 | Users are delegated through context; no workload identity |
+| FCP-MSG-010 | Service delegation | Verified in software | AT-MSG-010 | 2 | Tokens name who they are for, and a forged one is refused and recorded |
 | FCP-OPS-001 | Any-replica intake | Implemented, unverified | AT-OPS-001 | 1 | Commands are durable and dedupe; no charger start intent above them |
 | FCP-OPS-002 | Exact connection owner | Partial | AT-OPS-002 | 0 | One gateway owns a station's socket in process; no ownership record or generation across gateways |
 | FCP-OPS-003 | Reconnect generation | Partial | AT-OPS-003 | 0 | A reconnect replaces the local socket; no generation survives a move between gateways |
