@@ -167,6 +167,8 @@ macro_rules! apps {
             out.push(ferrum_app_projects::CONNECTOR_MANIFEST);
             #[cfg(all(feature = "assets", feature = "ops"))]
             out.push(ferrum_app_assets::CONNECTOR_MANIFEST);
+            #[cfg(all(feature = "commerce", feature = "finance"))]
+            out.push(ferrum_app_commerce::CONNECTOR_MANIFEST);
             // ERP, compiled into every build (docs/plan/erp-repo.md).
             out.push(ERP_MANIFEST);
             // Suites, where this build has their members.
