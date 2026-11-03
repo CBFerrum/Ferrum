@@ -252,6 +252,7 @@ impl Hooks for App {
         let db = kernel.db.clone();
         let user_requests = settings.user_requests_per_minute;
         let address_requests = settings.address_requests_per_minute;
+        let tenant_requests = settings.tenant_requests.unwrap_or((settings.db_max_connections / 2).max(2));
         let state = AppState {
             kernel,
             plugins,
@@ -270,6 +271,8 @@ impl Hooks for App {
             user_limiter: Arc::new(RateLimiter::local_only("user", Duration::from_secs(60), user_requests)),
             // One address flooding the API is turned away cheaply, whatever proxy is in front.
             address_limiter: Arc::new(RateLimiter::local_only("address", Duration::from_secs(60), address_requests)),
+            // A workspace that floods the server waits for itself; everyone else has the rest.
+            shares: Arc::new(crate::state::Shares::new(tenant_requests, Duration::from_secs(5))),
             apps: Arc::new(apps),
             objects,
             shell,
@@ -415,6 +418,7 @@ impl Hooks for App {
         let limiter = state.address_limiter.clone();
         let apps_base: Arc<str> = Arc::from(state.settings.apps_base.trim());
         Ok(router
+            .layer(axum::middleware::from_fn(hold_place))
             .layer(axum::middleware::from_fn(move |req, next| per_address(limiter.clone(), req, next)))
             .layer(axum::middleware::from_fn(api_no_store))
             .layer(axum::middleware::from_fn(speculation_csp))
@@ -531,6 +535,18 @@ async fn per_address(limiter: Arc<RateLimiter>, req: axum::extract::Request, nex
         return crate::error::ApiError(e).into_response();
     }
     next.run(req).await
+}
+
+/// Keeps the turn a request takes among its workspace's (`Auth`) until its response is made, and says how
+/// long it waited for it, so that a slow answer can be told from a slow server.
+async fn hold_place(mut req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    let place = crate::state::Place::default();
+    req.extensions_mut().insert(place.clone());
+    let mut response = next.run(req).await;
+    if let Some(waited) = place.waited().filter(|w| *w >= Duration::from_millis(1)) {
+        response.headers_mut().insert("x-ferrum-waited-ms", axum::http::HeaderValue::from(waited.as_millis() as u64));
+    }
+    response
 }
 
 /// A call marked as coming from an app's screen (`X-Ferrum-App`) goes only where screens may, on
