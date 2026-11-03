@@ -63,7 +63,8 @@ MUTANTS = [
     ("extract-waiting-work-runs", "crates/kernel/src/recovery.rs", "        self.set_aside(&mut tx, Some(tenant)).await?;\n", "", RECOVERY),
     ("extract-sets-aside-everyone", "crates/kernel/src/recovery.rs", "        self.set_aside(&mut tx, Some(tenant)).await?;\n", "        self.set_aside(&mut tx, None).await?;\n", RECOVERY),
     ("extract-stays-suspended", "crates/kernel/src/recovery.rs", '        sqlx::query("update tenant set status = $2 where id = $1").bind(tenant).bind(&was).execute(&mut *tx).await?;\n', "", RECOVERY),
-    ("ops-a-moved-device-starts-twice", "crates/ops/src/commands.rs", "and (state in ('Accepted', 'Executing') or (state = 'Queued' and sent_at is not null)) for update", "and (state in ('Accepted', 'Executing') or (state = 'Queued' and held_at is not null)) for update", OPS),
+    ("ops-a-moved-device-starts-twice", "crates/ops/src/commands.rs", "and taken_by = $3 \\\n         and (state in ('Accepted', 'Executing') or (state = 'Queued' and sent_at is not null)) for update", "and taken_by = $3 \\\n         and (state in ('Accepted', 'Executing') or (state = 'Queued' and held_at is not null)) for update", OPS),
+    ("ops-a-new-holder-starts-it-twice", "crates/ops/src/commands.rs", "and domain = $2 and (state in ('Accepted', 'Executing') or (state = 'Queued' and sent_at is not null)) for update", "and domain = $2 and (state in ('Accepted', 'Executing') or (state = 'Queued' and held_at is not null)) for update", OPS),
     ("ops-a-key-for-different-work", "crates/ops/src/commands.rs", "    if different {\n", "    if false {\n", OPS),
     ("ops-a-stale-proposal", "crates/ops/src/mcp.rs", "    if !(-5..=EVIDENCE_SECS).contains(&age) {\n", "    if false {\n", OPS),
     ("ops-a-silent-site-is-fine", "crates/ops/src/mcp.rs", "Some(secs) if secs <= EVIDENCE_SECS => Ok(()),", "Some(_) => Ok(()),", OPS),
@@ -227,6 +228,9 @@ def dirty(path: str) -> bool:
 
 
 def main() -> int:
+    if any(a.startswith("--") and a != "--check" for a in sys.argv[1:]):
+        print(__doc__, file=sys.stderr)
+        return 2
     check = "--check" in sys.argv
     only = next((a for a in sys.argv[1:] if not a.startswith("--")), "")
     chosen = [m for m in MUTANTS if only in m[0]]

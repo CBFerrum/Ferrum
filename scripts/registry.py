@@ -89,6 +89,16 @@ DRIFT = [
     ("docs/limits.md", r"no SCIM provisioning", "SCIM exists: crates/kernel/src/scim.rs"),
     ("docs/limits.md", r"a sale can be completed offline only", "POS prices offline: ferrum-app-pos/ui/src/lib/offline.ts"),
 ]
+# Two claims nothing here can honestly make, wherever they appear (AT-SECRET-008, AT-AI-007).
+CLAIMS = [
+    (r"(?i)zero.knowledge|operators? (cannot|can't|never) (see|read|reach)|blind to (your|customer)", "whoever runs a process can reach what it handles"),
+    (r"(?i)(data|everything) (stays|remains) on (your|the) (device|machine|laptop)", "a client that calls a hosted model sends it what it reads"),
+]
+DRIFT += [
+    (path, pattern, why)
+    for path in ("README.md", "docs/security.md", "docs/support-access.md", "docs/platform/customer-controlled.md", "../ferrum-app-cloud/docs/user-guide.md", "../ferrum-app-cloud/docs/security.md")
+    for pattern, why in CLAIMS
+]
 
 
 def normalize(entry: dict, defaults: dict) -> dict:

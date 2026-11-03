@@ -105,6 +105,18 @@ fn no_app_token(t: &TokenSession) -> Result<(), ApiError> {
     }
 }
 
+/// Support access goes through [`Auth`], where the customer sees it request by request. Anywhere else
+/// it is refused, and the attempt is on their list as well.
+async fn only_through_the_api(st: &crate::state::AppState, ctx: &Ctx, method: &str) -> Result<(), ApiError> {
+    if !ctx.email.ends_with(ferrum_kernel::support::SUPPORT_DOMAIN) {
+        return Ok(());
+    }
+    if let Some((grant, _)) = st.kernel.support_level(ctx).await? {
+        st.kernel.support_used(ctx, grant, method, "outside the API").await?;
+    }
+    Err(ApiError(Error::Forbidden("support access works only through the API".into())))
+}
+
 /// Resolves a token (session JWT, cookie token or `fk_` API key) to the caller's context. Sockets
 /// use it for both kinds; HTTP requests go through [`Auth`], which also checks where each kind
 /// may come from.
@@ -118,7 +130,9 @@ pub async fn ctx_from_token(st: &crate::state::AppState, token: &str, request_id
     if st.kernel.directory().await? == Some(t.session.tenant) {
         return Err(ApiError(Error::Unauthorized("this sign-in works only on the accounts host".into())));
     }
-    Ok(st.kernel.load_ctx(t.session.tenant, t.session.user, Some(t.session.token_version), request_id).await?)
+    let ctx = st.kernel.load_ctx(t.session.tenant, t.session.user, Some(t.session.token_version), request_id).await?;
+    only_through_the_api(st, &ctx, "SOCKET").await?;
+    Ok(ctx)
 }
 
 /// The credential of an HTTP request: a bearer token, or the session cookie of a browser page.
@@ -136,6 +150,7 @@ pub async fn caller_on(st: &crate::state::AppState, method: &axum::http::Method,
     if app.is_some() {
         return Err(ApiError(Error::Unauthorized("an app token works only for its app's calls to the API".into())));
     }
+    only_through_the_api(st, &ctx, method.as_str()).await?;
     Ok((ctx, device))
 }
 
@@ -221,10 +236,10 @@ impl FromRequestParts<AppContext> for Auth {
         // Support access is seen by the customer, request by request (crates/kernel/src/support.rs).
         if ctx.email.ends_with(ferrum_kernel::support::SUPPORT_DOMAIN) {
             let (grant, level) = st.kernel.support_level(&ctx).await?.ok_or_else(|| ApiError(Error::Unauthorized("this support access has ended".into())))?;
+            st.kernel.support_used(&ctx, grant, parts.method.as_str(), parts.uri.path()).await?;
             if !ferrum_kernel::support::reaches_records(&level) && parts.uri.path() != "/api/support/report" {
                 return Err(ApiError(Error::Forbidden(format!("{level} access reaches no records"))));
             }
-            st.kernel.support_used(&ctx, grant, parts.method.as_str(), parts.uri.path()).await?;
         }
         match (token_app, parts.headers.get("x-ferrum-app")) {
             (Some(app), Some(header)) if header.as_bytes() != app.as_bytes() => {
@@ -280,6 +295,7 @@ impl FromRequestParts<AppContext> for SetupAuth {
             return Err(ApiError(Error::Unauthorized("this token works only as the browser's session cookie".into())));
         }
         let ctx = st.kernel.load_ctx(t.session.tenant, t.session.user, Some(t.session.token_version), rid).await?;
+        only_through_the_api(&st, &ctx, parts.method.as_str()).await?;
         Ok(SetupAuth(ctx, t.setup_only.then_some(t.session)))
     }
 }

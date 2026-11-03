@@ -272,6 +272,26 @@ async fn scenario() {
     assert!(matches!(&changed, Err(Error::Conflict(m)) if m.contains("different work")), "{changed:?}");
     let c = first.id;
 
+    // And at the same moment: one wins, the other is told it repeated, and different work is still a conflict.
+    let at_once = |payload: Value| {
+        let (k, admin, tenant) = (t.k.clone(), t.admin.clone(), t.tenant);
+        async move {
+            let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+            let issued = commands::issue(&mut tx, &admin, NewCommand { dedupe_key: Some("wave-1/line-2".into()), payload, ..move_tote(bot) }).await;
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            tx.commit().await.unwrap();
+            issued
+        }
+    };
+    let same = move_tote(bot).payload;
+    let (one, two) = tokio::join!(at_once(same.clone()), at_once(same.clone()));
+    let (one, two) = (one.unwrap(), two.unwrap());
+    assert_eq!((one.id == two.id, one.repeated != two.repeated), (true, true), "two at once are one");
+    let (three, four) = tokio::join!(at_once(same), at_once(json!({"tote": "T-998"})));
+    assert!(three.is_ok_and(|c| c.id == one.id && c.repeated), "the first is still the first");
+    assert!(matches!(&four, Err(Error::Conflict(m)) if m.contains("different work")), "{four:?}");
+    api(&t, &t.admin, "POST", &format!("/commands/{}/cancel", one.id), json!({"reason": "that was the point"})).await.expect("cancelled");
+
     // AT-OPS-001: whichever server is asked, what was accepted is there, by the same key or by its id.
     let elsewhere = start().await;
     let mut tx = elsewhere.db.tenant_tx(t.tenant).await.unwrap();
@@ -519,8 +539,9 @@ async fn scenario() {
     // ───── a gateway dies with work running: a person moves authority and fences it ─────
     let running = issue(&t, &t.admin, move_tote(bot)).await.unwrap().id;
     let queued_on_site = issue(&t, &t.admin, move_tote(bot)).await.unwrap().id;
+    let only_sent = issue(&t, &t.admin, move_tote(bot)).await.unwrap().id;
     let got = gw.sync(&t, gw.sync_request()).await;
-    assert_eq!(got.commands.len(), 2);
+    assert_eq!(got.commands.len(), 3);
     let mut h = gw.sync_request();
     h.held = vec![running, queued_on_site];
     h.reports = vec![gw.report(running, State::Executing)];
@@ -540,6 +561,7 @@ async fn scenario() {
     assert_eq!(epoch, 2);
     assert_eq!(state(&t, running).await, "OutcomeUnknown", "the new holder cannot know how it went");
     assert_eq!(state(&t, queued_on_site).await, "OutcomeUnknown", "the old one may have started it");
+    assert_eq!(state(&t, only_sent).await, "OutcomeUnknown", "it can start something and die before saying it has it");
     assert_eq!(state(&t, waiting).await, "Queued", "what never left is the new holder's");
 
     // The old gateway comes back, and believes it still holds the domain.
