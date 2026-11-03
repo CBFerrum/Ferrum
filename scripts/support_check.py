@@ -7,10 +7,12 @@
 Makes a grant, tries it, reads what the customer sees of that, and ends it. Run it against a staging or demo workspace.
 """
 
+import http.client
 import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 BASE = os.environ.get("FERRUM_URL", "http://127.0.0.1:5150").rstrip("/")
@@ -19,13 +21,11 @@ EMAIL = os.environ.get("FERRUM_EMAIL", "admin@demo.test")
 PASSWORD = os.environ.get("FERRUM_PASSWORD", "Correct-Horse-9")
 
 
-def call(method, path, token=None, body=None, headers=None):
+def call(method, path, token=None, body=None):
     req = urllib.request.Request(BASE + path, data=None if body is None else json.dumps(body).encode(), method=method)
     req.add_header("content-type", "application/json")
     if token:
         req.add_header("authorization", f"Bearer {token}")
-    for k, v in (headers or {}).items():
-        req.add_header(k, v)
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             raw = r.read()
@@ -36,6 +36,15 @@ def call(method, path, token=None, body=None, headers=None):
             return e.code, json.loads(raw)
         except ValueError:
             return e.code, raw.decode(errors="replace")
+
+
+def socket_status(token):
+    """What a WebSocket upgrade is answered with. urllib would insist on `Connection: close`."""
+    url = urllib.parse.urlsplit(BASE)
+    c = http.client.HTTPConnection(url.hostname, url.port, timeout=30)
+    upgrade = {"Connection": "Upgrade", "Upgrade": "websocket", "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="}
+    c.request("GET", "/ws/live", headers={"Authorization": f"Bearer {token}", **upgrade})
+    return c.getresponse().status
 
 
 def check(cond, what):
@@ -67,13 +76,12 @@ def main():
         s, _ = call(method, path, key, {} if method == "POST" else None)
         check(s in (401, 403, 404), f"{method} {path} is refused ({s})")
 
-    upgrade = {"Connection": "Upgrade", "Upgrade": "websocket", "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="}
-    s, _ = call("GET", "/ws/live", key, headers=upgrade)
-    check(s in (401, 403), f"a live socket is refused ({s})")
+    check(socket_status(key) in (401, 403), "a live socket is refused")
 
     s, r = call("GET", f"/api/admin/support/{grant}/requests", admin)
-    seen = {x["path"] for x in r["requests"]} if s == 200 else set()
-    check({"/api/support/report", "/api/v1/Customer", "outside the API"} <= seen, f"the customer sees it, refused attempts too: {sorted(seen)}")
+    seen = {x["path"]: x["refused"] for x in r["requests"]} if s == 200 else {}
+    check(seen.get("/api/support/report") is False, "the customer sees what it reached")
+    check(seen.get("/api/v1/Customer") is True and seen.get("outside the API") is True, f"and what it tried and was refused: {sorted(seen)}")
 
     s, _ = call("DELETE", f"/api/admin/support/{grant}", admin)
     check(s in (200, 204), "the customer ends it")
