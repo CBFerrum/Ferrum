@@ -133,9 +133,10 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 
 ## Assets
 
-- Finance books are labels only; grouped assets are sold whole; capitalization comes from purchase
-  invoices only; company currency only; repairs neither extend life nor consume parts; declining
-  balance never switches to straight line.
+- Depreciation booked before a grouped asset is split is shared by the two assets, so neither can
+  then be cancelled; an asset a repair or a value adjustment changed is not split. Capitalization
+  comes from purchase invoices only; company currency only; declining balance never switches to
+  straight line.
 
 ## Studio (reports, dashboards, spaces)
 

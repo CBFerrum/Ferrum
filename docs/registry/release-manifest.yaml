@@ -2,7 +2,7 @@
 # and checked by scripts/registry.py. A build's own evidence is release-evidence.json, on its CI run.
 components:
   - {repository: CBFerrum/Ferrum-Frontend, pinned: 154d25e1784b3a831e6ff5ac63d2cf877fe25f87}
-  - {repository: CBFerrum/ferrum-app-assets, pinned: d3f5bae353ca3091929344f7a572911b20407b60}
+  - {repository: CBFerrum/ferrum-app-assets, pinned: dfb504434c5000596905a6fe43a3a3c8f55b3c88}
   - {repository: CBFerrum/ferrum-app-bookings, pinned: ea6f3bdb87f38befb6671390007ba8b0802bfc45}
   - {repository: CBFerrum/ferrum-app-campaigns, pinned: 80a70cfdbd2bb65a87d32b35719c6c9513b39cd0}
   - {repository: CBFerrum/ferrum-app-commerce, pinned: 6c4f45f5c9045f386765d9a44a064b41d9ff385f}
@@ -11,7 +11,7 @@ components:
   - {repository: CBFerrum/ferrum-app-docs, pinned: 6766a8d90a391d63220a35cf7b5e83cd020024ce}
   - {repository: CBFerrum/ferrum-app-drive, pinned: ac48a9d4ee3b3b230a667d61b65e9f5f1b0c3e6c}
   - {repository: CBFerrum/ferrum-app-edge, pinned: 45ea51926e80e4e47372bd3a294bdd8ac51288bd}
-  - {repository: CBFerrum/ferrum-app-erp, pinned: d1246422235159232d5915aad502cfcc9a91906b}
+  - {repository: CBFerrum/ferrum-app-erp, pinned: 97569f5c17135e767e12aa21b80e2ba9f211b2c1}
   - {repository: CBFerrum/ferrum-app-field-service, pinned: b6317a0fc470be2031eba2a3fd991e9178f0c655}
   - {repository: CBFerrum/ferrum-app-forms, pinned: c6da819cb31c57c0bcff0abc6dd28105b22bca31}
   - {repository: CBFerrum/ferrum-app-helpdesk, pinned: 11bfe134cabd7d4655ba64395f450d99c7b6195d}
