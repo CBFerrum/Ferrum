@@ -94,6 +94,14 @@ macro_rules! apps {
                     }
                 }
             )*
+            // Apps built in elsewhere, scoped to their packages as native ones are.
+            for app in crate::extensions::all() {
+                let packages: Vec<String> = (app.packages)().map(|ps| ps.iter().map(|p| p.name().to_string()).collect()).unwrap_or_default();
+                hooks.scoped(&packages, |h| (app.register)(h));
+                for source in (app.reports)() {
+                    ferrum_domain::reports::add_source(source);
+                }
+            }
             let _ = hooks;
         }
 
@@ -114,6 +122,11 @@ macro_rules! apps {
                     tracing::warn!(app = $lfeature, "app maintenance failed: {e}");
                 }
             )*
+            for app in crate::extensions::all() {
+                if let Err(e) = (app.maintenance)(k).await {
+                    tracing::warn!(app = app.id, "app maintenance failed: {e}");
+                }
+            }
             let _ = k;
         }
 
@@ -125,6 +138,9 @@ macro_rules! apps {
                 #[cfg(feature = $nfeature)]
                 out.extend($nkrate::packages().map_err(|e| format!("app {}: {e}", $nfeature))?);
             )*
+            for app in crate::extensions::all() {
+                out.extend((app.packages)().map_err(|e| format!("app {}: {e}", app.id))?);
+            }
             Ok(out)
         }
 
@@ -164,6 +180,7 @@ macro_rules! apps {
             out.push(include_str!("../apps/suites/services.yaml"));
             #[cfg(all(feature = "field-service", feature = "assets", feature = "helpdesk"))]
             out.push(include_str!("../apps/suites/field-operations.yaml"));
+            out.extend(crate::extensions::all().iter().map(|app| app.manifest));
             out
         }
 
@@ -214,6 +231,7 @@ macro_rules! apps {
             out.push(("mes", ferrum_mes::UI));
             #[cfg(feature = "campaigns")]
             out.push(("campaigns", ferrum_app_campaigns::UI));
+            out.extend(crate::extensions::all().iter().filter(|app| !app.ui.is_empty()).map(|app| (app.id, app.ui)));
             out
         }
 
