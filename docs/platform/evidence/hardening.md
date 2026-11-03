@@ -132,6 +132,7 @@ forge, and Cloud refuses new and restored ones, saying how much it keeps and wha
 past a 1 MB quota against the real forge: its push, a new repository and a restore were refused with the reason, another
 workspace pushed and was not held, a forge that did not answer changed nothing, and given room the hold lifted and the
 same push went through, while what a person had archived stayed archived. Six mutants break each of those.
+The platform's database grows or shrinks through `deploy/scale-database.sh` (FCP-SCALE-003), which changes nothing while replication is impaired, says why, and refuses what is never safe. The cluster check fenced a standby and saw a change refused with the cluster unchanged, then went to two instances and back to three under writes.
 The cluster check now makes room on its runner first, after one run's database could not pull its image with 97 MB left.
 
 ## Figures
