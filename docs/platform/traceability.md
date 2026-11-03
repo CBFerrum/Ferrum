@@ -5,9 +5,9 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Partial | 35 |
+| Partial | 33 |
 | Implemented, unverified | 4 |
-| Verified in software | 153 |
+| Verified in software | 155 |
 | Blocked externally | 5 |
 | **All** | **197** |
 
@@ -147,11 +147,11 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-WEB-010 | Upload finalization | Verified in software | AT-WEB-010 | 2 | An intent first, bytes under a temporary name, one commit to make them visible, and a sweep for what was left |
 | FCP-WEB-011 | Storefront authority | Verified in software | AT-WEB-011 | 1 | Prices sent from a browser are ignored, totals are refused, another customer's order is not there, and only the gateway's user can mark a payment, for the right amount and currency. No payment provider, and no deployed storefront driving it |
 | FCP-WEB-012 | Headless content lifecycle | Partial | AT-WEB-012 | 1 | A release is bound to the route it was planned against, and a pass expires. There is no content model |
-| FCP-AI-001 | Agent capability boundary | Verified in software | AT-AI-001 | 3 | Whatever a model is told, a tool does what its person may do, changes wait for that person, and physical work can only be proposed. Scripted models, no real one. A client running elsewhere is bound by its token, not by this |
-| FCP-AI-002 | Model/provider policy | Partial | AT-AI-002 | 1 | Egress policy per workspace; no model catalog |
-| FCP-AI-003 | Approval integrity | Verified in software | AT-AI-003 | 2 | A command has no way to change after approval, an approval names the digest shown, a change to what it rests on makes it stale, and nobody approves their own, whatever roles they hold |
+| FCP-AI-001 | Agent capability boundary | Verified in software | AT-AI-001 | 4 | A stand-in that does whatever a ticket tells it gets nothing its person could not do, changes wait for that person, and physical work can only be proposed. Nothing relies on a model's judgement, and no real model was tried. A client running elsewhere is bound by its token, not by this |
+| FCP-AI-002 | Model/provider policy | Verified in software | AT-AI-002 | 1 | A model the operator has not allowed is not used, and what a workspace forbids does not leave it, whichever model is asked. A model has no region here: the operator chooses the address it is reached at |
+| FCP-AI-003 | Approval integrity | Verified in software | AT-AI-003 | 3 | A change approved and then altered, or approved too long ago, does not run. A command has no way to change after approval, a plan's approval names the digest shown, and nobody approves their own, whatever roles they hold |
 | FCP-AI-004 | Development sandbox | Partial | AT-AI-004 | 1 | A token for a workstation exists for previews and not production, and reaches only that environment. Nothing makes it the default for any client, and nothing stops someone pasting in a production credential |
-| FCP-AI-005 | Budget and cancellation | Partial | AT-AI-005 | 0 | Budgets per workspace |
+| FCP-AI-005 | Budget and cancellation | Verified in software | AT-AI-005 | 1 | Past a workspace's allowance the provider is not called, a turn stops at 25 steps, a failing service is tried four times, and one turn runs per thread. Usage is shown in tokens, not money. Scripted models |
 | FCP-AI-006 | Evidence and abstention | Verified in software | AT-AI-006 | 1 | For physical work: a proposal says when what it rests on was read, and old evidence or a silent site is refused as unknown. An invented id is not found anywhere. The ERP's generic tools carry no freshness |
 | FCP-AI-007 | Data boundary disclosure | Verified in software | AT-AI-007 | 1 | The guide says a client you run sends what it reads to its model's provider, and the check fails a document that claims otherwise. Cloud cannot see or limit such a client |
 | FCP-AI-008 | Operational autonomy | Verified in software | AT-AI-008 | 1 | An agent has three tools: two to look and one to propose an operation the device declares. Nothing reaches a PLC or a safety function, which stay with their makers. Not an evaluation of any model |
@@ -219,7 +219,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-UI-005 | Permission explanation | Implemented, unverified | AT-UI-005 | 2 | The server says why and not who could, and the console offers a proof where one would cure it and not where it would not. Seen in a browser for a missing proof, not yet for a missing role |
 | FCP-UI-006 | Operator recovery UX | Verified in software | AT-UI-006 | 1 | Unknown, failed, replaced and lost stay different words. Warehouse and Shop Floor have their own |
 | FCP-UI-007 | Bundle provenance | Verified in software | AT-UI-007 | 1 | dist/.source digests the sources and CI checks it. Not checked at install |
-| FCP-UI-008 | Audit visibility | Partial | AT-UI-008 | 1 | Who, what and detail per project, in the console. A customer sees support sessions in the shell, not here |
+| FCP-UI-008 | Audit visibility | Partial | AT-UI-008 | 1 | Who, what and detail per project in the console, and tested through the API. Support grants have an API and, until now, no page |
 | FCP-OBS-001 | Telemetry correlation | Verified in software | AT-OBS-001 | 1 | One id from a request through other processes, also confirmed on a real server. There is no tracing backend, and logs go where a deployment sends them |
 | FCP-OBS-002 | Tenant telemetry isolation | Verified in software | AT-OBS-002 | 1 | Row-level security refuses another workspace's operations and events, however the question is put. There is no customer log service to refuse |
 | FCP-OBS-003 | Bounded cardinality | Verified in software | AT-OBS-003 | 1 | No tenant or site in a label |
