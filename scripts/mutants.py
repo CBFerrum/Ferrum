@@ -227,6 +227,9 @@ def dirty(path: str) -> bool:
 
 
 def main() -> int:
+    if any(a.startswith("--") and a != "--check" for a in sys.argv[1:]):
+        print(__doc__, file=sys.stderr)
+        return 2
     check = "--check" in sys.argv
     only = next((a for a in sys.argv[1:] if not a.startswith("--")), "")
     chosen = [m for m in MUTANTS if only in m[0]]
