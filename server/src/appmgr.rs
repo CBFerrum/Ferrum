@@ -302,6 +302,27 @@ struct Enabled {
 /// Screens and extension points (docs/plugins.md): what a workspace's enabled apps contribute,
 /// what their screens may reach, and the files of those screens.
 impl AppManager {
+    /// The bundles of apps uploaded for one workspace alone, before that workspace is deleted. A bundle
+    /// another release still uses stays. Returns the keys that went.
+    pub async fn forget_private(&self, tenant: Uuid) -> Result<Vec<String>> {
+        let keys: Vec<String> = sqlx::query_scalar(
+            "select distinct bundle_key from app_release r where private_tenant = $1 and bundle_key is not null \
+             and not exists (select 1 from app_release o where o.bundle_key = r.bundle_key and o.private_tenant is distinct from $1)",
+        )
+        .bind(tenant)
+        .fetch_all(&self.kernel.db.pool)
+        .await?;
+        for key in &keys {
+            // Already gone is as good as deleted.
+            if let Err(e) = self.storage.delete(Path::new(key)).await
+                && self.storage.exists(Path::new(key)).await.unwrap_or(true)
+            {
+                return Err(Error::Unavailable(format!("object storage ({key}): {e}")));
+            }
+        }
+        Ok(keys)
+    }
+
     async fn enabled_apps(&self, tenant: Uuid) -> Result<Arc<Vec<Enabled>>> {
         if let Some(hit) = self.enabled.get(&tenant).filter(|e| e.0.elapsed() < ENABLED_TTL) {
             return Ok(hit.1.clone());
