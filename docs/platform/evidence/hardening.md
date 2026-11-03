@@ -164,5 +164,4 @@ network failed, and a dump of a real database takes as long as it takes.
 - Alerts route to stand-in receivers. No real pager or chat has received one.
 - A workspace's share is per replica, and the database's CPU is not divided between workspaces.
 - A person has not followed a runbook or run a tabletop. Nobody has used the console with a screen reader.
-- The shell's own findings are fixed in Ferrum-Frontend#9, which has not been merged.
 - Nobody independent has reviewed any of this.
