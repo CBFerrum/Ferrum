@@ -10,7 +10,7 @@ the software. No customer environment has been run, so nothing here has been qua
 | PostgreSQL 17 | Everything | Nothing works |
 | Object storage | Files, artifacts, copies | Those stop. A filesystem path works for one machine |
 | A container runtime | Builds and running services | Builds and those services stop. Sites keep being served |
-| Gitea, a static binary | Code | Code stops. Sites keep being served |
+| Forgejo, a static binary | Code | Code stops. Sites keep being served |
 | Outbound internet | Nothing that is required | See below |
 
 Nothing asks a licence server. Every dependency is open source and can be run inside: `docs/licenses.md` lists the licence

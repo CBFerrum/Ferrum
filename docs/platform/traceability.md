@@ -14,7 +14,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
-| FCP-BASE-001 | Frozen inventory | Partial | AT-BASE-001 | 0 | Image digests need a token with read:packages, and no production tenant is reachable from here |
+| FCP-BASE-001 | Frozen inventory | Partial | AT-BASE-001 | 0 | What each published image's `latest` and commit tags point at is recorded (docs/platform/baseline.json, read with read:packages). No production tenant is reachable from here, so no production installation is known |
 | FCP-BASE-002 | Existing capability reuse | Partial | AT-BASE-002 | 0 | Mapped by reading and probing; each entry is confirmed when its workstream starts |
 | FCP-BASE-003 | Prior invariant regressions | Verified in software | AT-BASE-003 | 6 | Simulators only: no physical equipment |
 | FCP-BASE-004 | Release pins | Verified in software | AT-BASE-004 | 1 | Generated and checked in CI; a signed evidence bundle is FCP-QUAL-008 |
@@ -80,18 +80,18 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
-| FCP-CODE-001 | Repository lifecycle | Verified in software | AT-CODE-001 | 2 | A crash after the forge made it binds what is there. Against real Gitea 28.2.0 |
+| FCP-CODE-001 | Repository lifecycle | Verified in software | AT-CODE-001 | 2 | A crash after the forge made it binds what is there. Against real Forgejo 17.0.1 |
 | FCP-CODE-002 | Ref consistency | Verified in software | AT-CODE-002 | 1 | Conflicting pushes over HTTPS and SSH race on real Git. Protection is the forge's and holds on both |
 | FCP-CODE-003 | Git storage authority | Verified in software | AT-CODE-003 | 1 | One writable instance by design (D-08), so there is no second writer to split with. A killed forge keeps what it acknowledged. No high availability |
 | FCP-CODE-004 | Backup completeness | Verified in software | AT-CODE-004 | 1 | History, pull requests and protection come out and a second forge fscks clean. Not a scheduled backup of a whole forge yet: DR-006 covers that gap |
 | FCP-CODE-005 | Scoped Git credentials | Verified in software | AT-CODE-005 | 2 | Per-repository tokens, collected once, ended by revocation and by a person leaving |
 | FCP-CODE-006 | Server hook restriction | Verified in software | AT-CODE-006 | 1 | DISABLE_GIT_HOOKS is required configuration, and every management path was tried against it |
 | FCP-CODE-007 | Import and mirror egress | Verified in software | AT-CODE-007 | 2 | Refused before fetching and again by the forge when fetching. Submodules are not fetched |
-| FCP-CODE-008 | Git resource limits | Verified in software | AT-CODE-008 | 3 | An oversized push fails plainly, and so does a tree deeper than 2048, refused by the forge's own git as it arrives from a client that does not hold itself back. Clones and pushes take turns per workspace at the gate in front of the forge, which also bounds their processes and CPU, one each, and one kept waiting is refused with 429: six of one workspace at two at a time took three packs' time while another's took one. What a workspace keeps at the forge is bounded: past its quota its repositories are held read-only, saying why, while another workspace pushes, and given room the hold lifts. The quota is looked at every five minutes, so a workspace can pass it by what it pushes meanwhile, each push bounded by the push size limit |
-| FCP-CODE-009 | PR approval integrity | Verified in software | AT-CODE-009 | 1 | A force-push dismisses approvals and required checks are by name. Real Gitea |
-| FCP-CODE-010 | LFS access | Verified in software | AT-CODE-010 | 1 | A known object id from another repository gets nothing. Expiry of a signed URL is Gitea's |
+| FCP-CODE-008 | Git resource limits | Verified in software | AT-CODE-008 | 3 | An oversized push fails plainly, and so does a tree deeper than 2048, refused by the forge's own git as it arrives from a client that does not hold itself back. Clones and pushes take turns per workspace at the gate in front of the forge, which also bounds their processes and CPU, one each, and one kept waiting is refused with 429: six of one workspace at two at a time took three packs' time while another's took one. What a workspace keeps at the forge is bounded by the forge itself, Forgejo's quota over everything it keeps: past it, a push is refused as it arrives, saying so, and so is a new repository, while another workspace pushes and a person keeps nothing of their own; given room, it pushes again. Forgejo counts a push a moment after taking it, so a workspace can go past by the pushes of that moment, each bounded by the push size limit |
+| FCP-CODE-009 | PR approval integrity | Verified in software | AT-CODE-009 | 1 | A force-push dismisses approvals and required checks are by name. Real Forgejo 17.0.1 |
+| FCP-CODE-010 | LFS access | Verified in software | AT-CODE-010 | 1 | A known object id from another repository gets nothing. Expiry of a signed URL is Forgejo's |
 | FCP-CODE-011 | Forge outage isolation | Verified in software | AT-CODE-011 | 1 | What is live needs no forge. A build says why it waits, fails with that reason, and asking again afterwards builds once |
-| FCP-CODE-012 | Repository portability | Verified in software | AT-CODE-012 | 1 | Moved to a second real Gitea, every branch to the commit, in plain Git. No other forge product has been tried |
+| FCP-CODE-012 | Repository portability | Verified in software | AT-CODE-012 | 1 | Moved to a second real Forgejo, every branch to the commit, in plain Git. No other forge product has been tried |
 
 ## W04: Build and artifact supply chain
 
@@ -135,7 +135,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
 | FCP-WEB-001 | Public/private cache separation | Verified in software | AT-WEB-001 | 1 | Only what a node adds. A CDN in front is not exercised |
-| FCP-WEB-002 | Framework conformance | Partial | AT-WEB-002 | 2 | Node on two replicas, with an answer streamed through a node as it is made, WebSockets through a node, and files beside it. The table in the docs says what is not supported. No framework has been qualified |
+| FCP-WEB-002 | Framework conformance | Partial | AT-WEB-002 | 3 | Next.js 15 on two replicas through a serving node, built in the sandbox through a package mirror: pages rendered per request by both, a prerendered page the same on both, streaming as it is made, a server action from a form without JavaScript on either replica, image optimisation and time-based revalidation, each replica making its own. On-demand revalidation reaches only the replica that took it: the docs say it is not supported, but nothing tells the caller at the time. No other framework is qualified, and nothing was measured under load |
 | FCP-WEB-003 | Deployment skew | Verified in software | AT-WEB-003 | 2 | Old assets stay for two releases. Mutations from old pages are the application's to version |
 | FCP-WEB-004 | Browser origin isolation | Verified in software | AT-WEB-004 | 1 | One host per deployment and cookie domains stripped. A browser was not used: a service-worker scope is decided by origin |
 | FCP-WEB-005 | Domain ownership | Verified in software | AT-WEB-005 | 3 | One spelling, unique across every workspace, wildcards overlap |
@@ -242,7 +242,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-DR-003 | Tenant-level recovery | Verified in software | AT-DR-003 | 2 | Through real dump and restore, on the kernel's schema and Cloud's. The task itself has not been run, and a full ERP schema has not been taken back: circular references were read from a real one. Files are not checked against the store, and a resource made since is left at its provider |
 | FCP-DR-004 | Key recovery test | Partial | AT-DR-004 | 1 | Recovery without the primary database works through the operator's copy of the key, with no plaintext in the backup. There is no KMS path to remove, so that half of the scenario cannot be run here |
 | FCP-DR-005 | Failover fencing | Verified in software | AT-DR-005 | 1 | It stops before its time at the witness runs out, and does not take the right back. Gateways have their own fencing. One machine |
-| FCP-DR-006 | Object and Git integrity | Verified in software | AT-DR-006 | 2 | Real repositories with a damaged pack and a missing LFS object. It is run by hand after a restore, and has not been run on a restored Gitea |
+| FCP-DR-006 | Object and Git integrity | Verified in software | AT-DR-006 | 2 | Real repositories with a damaged pack and a missing LFS object. It is run by hand after a restore, and has not been run on a restored Forgejo |
 | FCP-DR-007 | Capacity recovery | Partial | AT-DR-007 | 2 | Charger and MQTT ports let new connections in at a steady rate, 100 a second unless set. A hundred chargers at 25 a second were all back in 3.3 s on one machine, with waiting work through in 5.5 s, while one already connected was answered in 0.2 ms. There is no profile target to meet, so no recovery is claimed to be fast enough |
 | FCP-DR-008 | Update trust | Verified in software | AT-DR-008 | 4 | A gateway refuses a release that is unsigned, expired, not newer or was rolled back here, and a bad file never replaces what runs. A node refuses a snapshot that is older or not signed by a key it holds. A bundle changed after signing is refused and an older revocation list is ignored. An app store's listing has no expiry of its own |
 | FCP-DR-009 | Runbook exercise | Partial | AT-DR-009 | 0 | Written. Nobody who did not write it has followed it |

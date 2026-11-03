@@ -19,6 +19,12 @@
    "version": "0.2.0"
   },
   {
+   "id": "cloud",
+   "manifest": "ferrum-app-cloud/app.yaml",
+   "ui_source": "{\n  \"sources\": \"242e1dd288cd85a5dd5da751c01fb7bc5a9a81a5ef9ca2ecb4b62b33df563124\",\n  \"frontend\": \"e20c4d2b1d073ccef4d5bc11afa154cd6107fff6\"\n}",
+   "version": "0.1.0"
+  },
+  {
    "id": "commerce",
    "manifest": "ferrum-app-commerce/app.yaml",
    "ui_source": "{\n  \"sources\": \"80dd562d094e61d5d30adb4de935791bb972e9df6f9296bdc230452419b525b7\",\n  \"frontend\": \"6cc2db25f49b3ae2563db3df03196b04242a3bc0\"\n}",
@@ -292,49 +298,63 @@
  "ci_runs": {
   "CBFerrum/Ferrum": [
    {
-    "conclusion": "",
-    "databaseId": 41491162164,
-    "headSha": "f62aed2bd90e4c3765c2b0ee17acbffbfbdb2322",
-    "name": "ci",
-    "status": "pending"
-   },
-   {
-    "conclusion": "",
-    "databaseId": 41489197422,
-    "headSha": "bc7a4f1622672bf550dd6d0872244802202c356c",
-    "name": "ci",
-    "status": "in_progress"
-   },
-   {
     "conclusion": "success",
-    "databaseId": 41488956368,
-    "headSha": "ecbc228537903a4d05364771b9c1ee245fc5a33c",
+    "databaseId": 41646824816,
+    "headSha": "fc1f301cd7ebe59411fea65aaa2fa10210253a23",
     "name": "cluster",
     "status": "completed"
    },
    {
     "conclusion": "success",
-    "databaseId": 41482804041,
-    "headSha": "ecbc228537903a4d05364771b9c1ee245fc5a33c",
-    "name": "ci",
-    "status": "completed"
-   },
-   {
-    "conclusion": "success",
-    "databaseId": 41450029910,
-    "headSha": "a0f11cb39ffac76e42da56f5634975f5fd302b73",
+    "databaseId": 41641624988,
+    "headSha": "fc1f301cd7ebe59411fea65aaa2fa10210253a23",
     "name": "cluster",
     "status": "completed"
    },
    {
     "conclusion": "success",
-    "databaseId": 41445485287,
-    "headSha": "a0f11cb39ffac76e42da56f5634975f5fd302b73",
+    "databaseId": 41639104919,
+    "headSha": "5f785e4e7b0642941d1f60b771a11527c48c030a",
     "name": "ci",
+    "status": "completed"
+   },
+   {
+    "conclusion": "success",
+    "databaseId": 41635865608,
+    "headSha": "39710a3e75c84662158580c1672801bbf20a76da",
+    "name": "cluster",
+    "status": "completed"
+   },
+   {
+    "conclusion": "success",
+    "databaseId": 41634293892,
+    "headSha": "39710a3e75c84662158580c1672801bbf20a76da",
+    "name": "ci",
+    "status": "completed"
+   },
+   {
+    "conclusion": "failure",
+    "databaseId": 41630655001,
+    "headSha": "8e8406ab39090c07a7c8d4382a6d43df15ae91bc",
+    "name": "cluster",
     "status": "completed"
    }
   ],
   "CBFerrum/ferrum-app-edge": [
+   {
+    "conclusion": "success",
+    "databaseId": 41617629064,
+    "headSha": "782c0b0079769e78147df2296513177b9338e228",
+    "name": "ci",
+    "status": "completed"
+   },
+   {
+    "conclusion": "cancelled",
+    "databaseId": 41617608054,
+    "headSha": "eb9c91f6ff7a0fbcef10a7d83db4b74673799962",
+    "name": "ci",
+    "status": "completed"
+   },
    {
     "conclusion": "success",
     "databaseId": 41491945965,
@@ -360,20 +380,6 @@
     "conclusion": "success",
     "databaseId": 41460002245,
     "headSha": "3f7f77f6edee93bbd65416efdb8a26e219d65f5d",
-    "name": "ci",
-    "status": "completed"
-   },
-   {
-    "conclusion": "success",
-    "databaseId": 41439231843,
-    "headSha": "d48b6a769f8dc5e4a945fdc2d9b88155b6e1e067",
-    "name": "release",
-    "status": "completed"
-   },
-   {
-    "conclusion": "success",
-    "databaseId": 41439228376,
-    "headSha": "d48b6a769f8dc5e4a945fdc2d9b88155b6e1e067",
     "name": "ci",
     "status": "completed"
    }
@@ -549,10 +555,297 @@
    "revision": "426401a9680ed15a9da309e0b0ec54dcf3c0a18c"
   }
  },
- "frontend_rev": "6cc2db25f49b3ae2563db3df03196b04242a3bc0",
- "generated_at": "2026-11-02T17:49:10Z",
+ "frontend_rev": "296a539a509f02f078f7680fc5b1dab7dabde31a",
+ "generated_at": "2026-11-03T15:09:08Z",
  "images": {
-  "unread": "gh: You need at least read:packages scope to list packages. (HTTP 403)"
+  "ghcr.io/cbferrum/ferrum": {
+   "17e168911f57d1aac171a7e8294f2e88bf50f1a9": {
+    "at": "2026-11-01T22:26:43Z",
+    "digest": "sha256:1dccef79f59d1fa8c1d0332b7c2ad8ccc0632cc2323e22d2e8f1e613de04c6c6"
+   },
+   "1da77fdeef210f6a1160f737f2d0461e3c3c3761": {
+    "at": "2026-11-03T11:48:13Z",
+    "digest": "sha256:b11f0b842fcb1baa0fd8a6878e9de22c1aa25696815e09cf2301cd0170ce6f0e"
+   },
+   "1f86f04dd20c13f86343e4a0e8b124934c0f97a3": {
+    "at": "2026-11-01T15:25:29Z",
+    "digest": "sha256:089206e4cf711004ab7bb641202277cb786b8153f9565fafb7f7d1467c1f54f3"
+   },
+   "20cc9822255df2633363e22245e1fac7489f2693": {
+    "at": "2026-11-02T01:05:04Z",
+    "digest": "sha256:cf27b8825e82a0d609a4863dd8e9f0f730af8b2805fc08b4c4d88ca28f3962bf"
+   },
+   "2c2eeb907da457852b3fb7e6aa1f27ba3894be5c": {
+    "at": "2026-11-01T18:00:27Z",
+    "digest": "sha256:fe588c7cafb13ea70ec3576331c09a960c7b54b2151651fd687525494ebfa4a9"
+   },
+   "39710a3e75c84662158580c1672801bbf20a76da": {
+    "at": "2026-11-03T13:06:19Z",
+    "digest": "sha256:4d056d8a8670ec9c87cde5cdf9188a534a8dc97152b5d751e33fa98765fe6ed4"
+   },
+   "5f785e4e7b0642941d1f60b771a11527c48c030a": {
+    "at": "2026-11-03T13:40:57Z",
+    "digest": "sha256:e8f36a47375a05851cfd39042493fa96fa8dc5ff52f7d33bed41b1c7be540611"
+   },
+   "6917dd8b7b98f364c1db31dba5861370cd5e903e": {
+    "at": "2026-11-02T09:50:28Z",
+    "digest": "sha256:5cc82e85329df6b09ccb9a07ceae73298474e2399aa7d811533a9b7883ff3d54"
+   },
+   "6a218c8817d0e5c0eb75b07653329596912722d8": {
+    "at": "2026-11-02T00:03:59Z",
+    "digest": "sha256:57df51f64265ad14b6eb20a5d3c067fde4d743ddf5f3a2528e41adbd3fee58bc"
+   },
+   "8bfd9568b79f0f36012c90497239b69034e05d61": {
+    "at": "2026-11-01T18:33:03Z",
+    "digest": "sha256:ddd4a0aadffb35105c412fce0f9847904be8cb27bf8762495be5c3d3b1a18ac7"
+   },
+   "8ffb686e8972346a60b173f4c511dc189058478b": {
+    "at": "2026-11-02T10:33:57Z",
+    "digest": "sha256:0e9a3cfaba7f17351bfe7fa279e9c1a735ee001f6c8cadc6c1260e877132d37c"
+   },
+   "a0160b3200c7bd35ef1fcd1032f2a2c4b6e01516": {
+    "at": "2026-11-03T10:32:45Z",
+    "digest": "sha256:6b231fd1550b0f872917ead814e94cf216d256684fe29c492147626c9aafab93"
+   },
+   "a0f11cb39ffac76e42da56f5634975f5fd302b73": {
+    "at": "2026-11-02T13:04:06Z",
+    "digest": "sha256:6491ebf9a635abfcc7bced93d5c1254e916fddce32dc81a75c6049a1709615c8"
+   },
+   "bc7a4f1622672bf550dd6d0872244802202c356c": {
+    "at": "2026-11-02T17:50:22Z",
+    "digest": "sha256:a79bd81caf42e618fab200d0bee74f7887cbd436c85542fa9464e18d29485173"
+   },
+   "d601e94813f49c75f0fde3b77d7cbb0b380bba14": {
+    "at": "2026-11-01T16:37:27Z",
+    "digest": "sha256:49699e0014132ba4e8d22902eef841cd09e88b1435d6e9671a93611bb496c3f6"
+   },
+   "dcf43c596a8076c43cca160d11562c5afbd3afe2": {
+    "at": "2026-11-03T11:10:33Z",
+    "digest": "sha256:7704f402c4aebec985729de81c6141331ad70a69227f1eca8d792a4788664280"
+   },
+   "ecbc228537903a4d05364771b9c1ee245fc5a33c": {
+    "at": "2026-11-02T17:10:47Z",
+    "digest": "sha256:a27b019d6594adeaa253032098b46335f316e27d6829667be8062f24a94ce1a3"
+   },
+   "eddb3f7644da020545fc3fbd92d233649fb101b0": {
+    "at": "2026-11-03T12:25:26Z",
+    "digest": "sha256:dec107f5ac276f3d716a55621c3cf71699ed9026a91fd091eb688fe62428f2c1"
+   },
+   "f62aed2bd90e4c3765c2b0ee17acbffbfbdb2322": {
+    "at": "2026-11-02T18:22:39Z",
+    "digest": "sha256:d6dd0199b4a077e5c80de18efb549eac9cd11c00ad4c4691eba4a9f3c6a9b73f"
+   },
+   "fb0f859e3c7c76c2cf73a3d0d80eeb482f2b6992": {
+    "at": "2026-11-02T06:05:19Z",
+    "digest": "sha256:292d762d9b56c816d0c1a16c6de48083a292b547a16345e229d4e20e60bad315"
+   },
+   "latest": {
+    "at": "2026-11-03T13:40:57Z",
+    "digest": "sha256:e8f36a47375a05851cfd39042493fa96fa8dc5ff52f7d33bed41b1c7be540611"
+   }
+  },
+  "ghcr.io/cbferrum/ferrum-editors": {
+   "02cef1c391a18be64a399366d39fd36929efcd50": {
+    "at": "2026-10-31T11:09:49Z",
+    "digest": "sha256:93993732ea9e69f39d3c2e363e8b00996349c5f9516c4d708a7242a58a3b0f15"
+   },
+   "08493df592f43eae2f00c86496bed21d3fe8749d": {
+    "at": "2026-10-31T16:43:27Z",
+    "digest": "sha256:c0f136fe748248e7372dbca57a7082631a7417a2c4a3ed3be34e96d1605c0d1a"
+   },
+   "08835c915d7c99d03293ac9db72295c6338f1276": {
+    "at": "2026-10-31T16:00:53Z",
+    "digest": "sha256:86099e09b93e15f650d077e54d664b44ecd56ff715ebd8a33a263e9de3643d6c"
+   },
+   "0ad733d51a2a31e0c46f0a8c6e24638a8b7d6677": {
+    "at": "2026-10-31T13:05:03Z",
+    "digest": "sha256:05ab7c0d3a7bf3ee1fe01d3718134cb1f1c4283f3c1333e920f0e11bd5257769"
+   },
+   "11444133a3c44e042ff9e393b71dded3783b4e6c": {
+    "at": "2026-10-31T19:28:04Z",
+    "digest": "sha256:57e7fa40576d204840c896a376ebbe9175425468dca9a300d088ca62186beb7d"
+   },
+   "17e168911f57d1aac171a7e8294f2e88bf50f1a9": {
+    "at": "2026-11-01T11:39:26Z",
+    "digest": "sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19"
+   },
+   "1b532f4bce79b5eaf310032ece4e382b5e1c04cf": {
+    "at": "2026-10-31T13:37:30Z",
+    "digest": "sha256:7748887aa1465b63ae40fbb13e1cd6d4702340d675cd6e8a2a949993ea2ecece"
+   },
+   "1da77fdeef210f6a1160f737f2d0461e3c3c3761": {
+    "at": "2026-11-01T11:39:26Z",
+    "digest": "sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19"
+   },
+   "1f86f04dd20c13f86343e4a0e8b124934c0f97a3": {
+    "at": "2026-11-01T11:39:26Z",
+    "digest": "sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19"
+   },
+   "20cc9822255df2633363e22245e1fac7489f2693": {
+    "at": "2026-11-01T11:39:26Z",
+    "digest": "sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19"
+   },
+   "2c2eeb907da457852b3fb7e6aa1f27ba3894be5c": {
+    "at": "2026-11-01T11:39:26Z",
+    "digest": "sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19"
+   },
+   "2ce96d8b215a486e8a7adf17493fa5edc0d4dc9f": {
+    "at": "2026-10-31T09:45:26Z",
+    "digest": "sha256:a127a9aa57f0af0206830785a2e53d66e8809e0a2b301a2851377db433b40e09"
+   },
+   "2f1917d524db15f7ef8435419ade5d4e5d1b2c41": {
+    "at": "2026-10-31T21:07:38Z",
+    "digest": "sha256:e18be1e47862ad911c22d4e882ed1ad57b3ea1e4566f0f4b2740ceb30e93618e"
+   },
+   "3124ae522ccd8f78a59edf33ad74e409dedde0aa": {
+    "at": "2026-10-31T17:23:43Z",
+    "digest": "sha256:afcc493394d3e27d6f2f2c0787ebfa4fdb3466c29991dc90d7e35af2f28fbe97"
+   },
+   "39710a3e75c84662158580c1672801bbf20a76da": {
+    "at": "2026-11-01T11:39:26Z",
+    "digest": "sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19"
+   },
+   "52e3784cee0a0cc553f8a51f7ed283d9232d6271": {
+    "at": "2026-10-31T12:17:11Z",
+    "digest": "sha256:ecbcd1e78a2bc51db56705dbbf5f06f590fb83485ca39116f825b4c61c846a9f"
+   },
+   "5d3b837517111c1e77a39c6c4cb8f8209d19c49c": {
+    "at": "2026-10-31T19:04:03Z",
+    "digest": "sha256:dddc69947234fe048cd7473f0b0ff617a8ca4071132d73e6a70d0438353ca23b"
+   },
+   "5f785e4e7b0642941d1f60b771a11527c48c030a": {
+    "at": "2026-11-01T11:39:26Z",
+    "digest": "sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19"
+   },
+   "6917dd8b7b98f364c1db31dba5861370cd5e903e": {
+    "at": "2026-11-01T11:39:26Z",
+    "digest": "sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19"
+   },
+   "6a218c8817d0e5c0eb75b07653329596912722d8": {
+    "at": "2026-11-01T11:39:26Z",
+    "digest": "sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19"
+   },
+   "6c405d68a4d5e73e0ec78592bf97d4e909eddecf": {
+    "at": "2026-10-31T10:40:42Z",
+    "digest": "sha256:5cb12c50dd6d21f0419726d2bfdd2683ea46ed199f3a2219bdf4b31b0845b939"
+   },
+   "748f6969ed7fc2a16e49e6536a5cd23256f9017b": {
+    "at": "2026-10-31T09:16:28Z",
+    "digest": "sha256:798137d9fede4065ef44fea47066b2636bd0063d139d40a56994c7623d7fb3d9"
+   },
+   "75d308343bde194fc51cc0059dc045b2573d810b": {
+    "at": "2026-10-31T20:38:27Z",
+    "digest": "sha256:14aa434b43163321b0234a3f273a4936fdc67467e84b39fe11a10b85e04ee025"
+   },
+   "7bfbbb78af840a3900a9eedb5c75a5ab8ca07d88": {
+    "at": "2026-11-01T11:39:26Z",
+    "digest": "sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19"
+   },
+   "8bfd9568b79f0f36012c90497239b69034e05d61": {
+    "at": "2026-11-01T11:39:26Z",
+    "digest": "sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19"
+   },
+   "8fd070e8ad2cebaaabf8e8025ccfbb57a698af0c": {
+    "at": "2026-10-31T07:29:39Z",
+    "digest": "sha256:10d96938822b7071dd1e4bb91abf870802cae31bdbf47bb3b2df8f36afa42ea0"
+   },
+   "8ffb686e8972346a60b173f4c511dc189058478b": {
+    "at": "2026-11-01T11:39:26Z",
+    "digest": "sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19"
+   },
+   "97b907e5b2e4b43a320e1ce0b8faa80f0003a0ca": {
+    "at": "2026-10-31T06:59:39Z",
+    "digest": "sha256:022eacb63b38c1cfcd45772376df61ac8383de8531b98fb2be5b447039f19c59"
+   },
+   "97d960b2721abfc357de95f95e1f546730651fa2": {
+    "at": "2026-10-31T10:14:47Z",
+    "digest": "sha256:bfad96bab3cf90fb08d43fd7ee11ac9aed9ecb6cc1e46068faf02a4b8208d583"
+   },
+   "a0160b3200c7bd35ef1fcd1032f2a2c4b6e01516": {
+    "at": "2026-11-01T11:39:26Z",
+    "digest": "sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19"
+   },
+   "a0f11cb39ffac76e42da56f5634975f5fd302b73": {
+    "at": "2026-11-01T11:39:26Z",
+    "digest": "sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19"
+   },
+   "a1fc1312df592479f7ce7265f13d4c9d0add9718": {
+    "at": "2026-10-31T14:26:42Z",
+    "digest": "sha256:80d53af72bd52e347f6e6e6b1e6cc942722f7e5856940d6feeb73ad92133262a"
+   },
+   "b32f6dc5792eb03be3d9ceb40fc92adb6f58b541": {
+    "at": "2026-10-31T14:52:03Z",
+    "digest": "sha256:dacdeda6c82c70c46f2db82c2434e8a564e0cb4d9783a2f65ad2f01642050124"
+   },
+   "b48d7367123a324fdfe2dcb0c782294fd4f9a23e": {
+    "at": "2026-11-01T12:07:57Z",
+    "digest": "sha256:7ab2a94123e4a880338e6c83bdcecea1b53fee940028a3c559cd642c8b0dd6b0"
+   },
+   "b5b2d3fbf7ad57a87767946f24ea7a915ad97a92": {
+    "at": "2026-10-31T14:03:46Z",
+    "digest": "sha256:1aa135f2b2eace870fdb56306c8367758b9fea71b89b325a1525c1e865885783"
+   },
+   "b8bb087e5926e86c54f75198ab69d3b2cc3b1867": {
+    "at": "2026-10-31T18:49:31Z",
+    "digest": "sha256:08dd51d7190b3a358b38a7fd000a58ba7cdda03f3c4cbbd526dbf9e9c81fbcf6"
+   },
+   "bc7a4f1622672bf550dd6d0872244802202c356c": {
+    "at": "2026-11-01T11:39:26Z",
+    "digest": "sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19"
+   },
+   "c5372bd1eaf494eb1ae6fc928ef8ba3d2f84f95c": {
+    "at": "2026-11-01T11:39:26Z",
+    "digest": "sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19"
+   },
+   "d346df890771d8ef9f048ad466c4518e71761239": {
+    "at": "2026-10-31T08:26:44Z",
+    "digest": "sha256:4051e5646ee887c2d3fc82d06a672dcb29ebf3fd3f900e740d867b4898a76e14"
+   },
+   "d601e94813f49c75f0fde3b77d7cbb0b380bba14": {
+    "at": "2026-11-01T11:39:26Z",
+    "digest": "sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19"
+   },
+   "dcab5db1c3f74ae75fce00a3ff94b3a367c4404e": {
+    "at": "2026-10-31T08:18:38Z",
+    "digest": "sha256:7aeaa523920dbe827aeda5629b91bc90b6b021f96532733ae7243f33c6b87dec"
+   },
+   "dcf43c596a8076c43cca160d11562c5afbd3afe2": {
+    "at": "2026-11-01T11:39:26Z",
+    "digest": "sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19"
+   },
+   "e3cb0379cbe426cc8901e948393c33732bfff7dc": {
+    "at": "2026-10-31T08:48:12Z",
+    "digest": "sha256:30e95dea90d8f6d97fae3d10318e178f6fc3c83e1b58292aa88a1424f366774d"
+   },
+   "ecbc228537903a4d05364771b9c1ee245fc5a33c": {
+    "at": "2026-11-01T11:39:26Z",
+    "digest": "sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19"
+   },
+   "eddb3f7644da020545fc3fbd92d233649fb101b0": {
+    "at": "2026-11-01T11:39:26Z",
+    "digest": "sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19"
+   },
+   "f0bebd4e760fffa5e891b5dc5066ad57b61e684d": {
+    "at": "2026-10-31T11:48:46Z",
+    "digest": "sha256:09f52cf2c08da759f8a64730bd7ad034fdc50c4e3b4080ea5579846650e003fe"
+   },
+   "f62aed2bd90e4c3765c2b0ee17acbffbfbdb2322": {
+    "at": "2026-11-01T11:39:26Z",
+    "digest": "sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19"
+   },
+   "f7647c291a53d0225ca0dfc680ee4e0bd5007f77": {
+    "at": "2026-10-31T20:08:23Z",
+    "digest": "sha256:2a74746d6e21c920cd5292a2f3353fc99249c7cccdaadb23004d9755d53d598e"
+   },
+   "fb0f859e3c7c76c2cf73a3d0d80eeb482f2b6992": {
+    "at": "2026-11-01T11:39:26Z",
+    "digest": "sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19"
+   },
+   "latest": {
+    "at": "2026-11-01T11:39:26Z",
+    "digest": "sha256:6fb0e26edd3cd378fcc9b16393e3c241278bc19f3b85925ccc2c610f127e7d19"
+   }
+  }
  },
  "installed": {
   "database": "ferrum_dev (local development only)",
@@ -665,7 +958,8 @@
  "migrations": {
   "package_sql": {
    "crates/ops/packages/ops/sql/001_ops.sql": "sha256:e0b1d6d0a6a2cc8bc32facba719d4c805b936a78564af9faabe0510b4a1e498d",
-   "crates/ops/packages/ops/sql/002_one_live_command.sql": "sha256:e067de4b4ff2a093c763e35ad8c44d3c03d97db78eab24043cce2751533e56a3"
+   "crates/ops/packages/ops/sql/002_one_live_command.sql": "sha256:e067de4b4ff2a093c763e35ad8c44d3c03d97db78eab24043cce2751533e56a3",
+   "crates/ops/packages/ops/sql/003_connection.sql": "sha256:57aa2f6a6f1ba87b1defc30460aaaa832ff6000a213b496c6214487de7b1ab17"
   },
   "server": []
  },
@@ -725,14 +1019,14 @@
    "sign"
   ]
  },
- "platform_commit": "c8360159d48a9c1e7866c8b32be66835a19519fe",
+ "platform_commit": "f0cf5285972ac11da67c4d340dd83229af181656",
  "repositories": [
   {
-   "branch": "platform/w00-baseline",
+   "branch": "platform/baseline-images",
    "checkout": "ferrum",
-   "commit": "c8360159d48a9c1e7866c8b32be66835a19519fe",
+   "commit": "f0cf5285972ac11da67c4d340dd83229af181656",
    "default_branch": "main",
-   "default_head": "d723eb9b49d7ea82ff218debbae74d56ba765036",
+   "default_head": "d4b5f505f436346bc5c826744a265fc50a1a53db",
    "dirty": [],
    "local_patch": false,
    "lock_digest": "sha256:c31df7c79a8c551fca7b959719163b25f5907a27682506a1e3b2fed2e42f8740",
@@ -741,11 +1035,11 @@
    "visibility": "PUBLIC"
   },
   {
-   "branch": "main",
+   "branch": "shell/landmarks-rtl",
    "checkout": "ferrum/web",
-   "commit": "e20c4d2b1d073ccef4d5bc11afa154cd6107fff6",
+   "commit": "7893e1293ee51b247ee835d17c544d5d8cb9a018",
    "default_branch": "main",
-   "default_head": "e20c4d2b1d073ccef4d5bc11afa154cd6107fff6",
+   "default_head": "296a539a509f02f078f7680fc5b1dab7dabde31a",
    "dirty": [],
    "local_patch": false,
    "lock_digest": null,
@@ -791,6 +1085,19 @@
    "repository": "CBFerrum/ferrum-app-campaigns",
    "unused_patches": [],
    "visibility": "PUBLIC"
+  },
+  {
+   "branch": "main",
+   "checkout": "ferrum-app-cloud",
+   "commit": "0f821d8fb7091efb609b69607660e90629bd065f",
+   "default_branch": "main",
+   "default_head": "0f821d8fb7091efb609b69607660e90629bd065f",
+   "dirty": [],
+   "local_patch": true,
+   "lock_digest": "sha256:2bc5995debe6ce623632a3cc71bfcdb56bb666dafa4571ca55aa877910047005",
+   "repository": "CBFerrum/ferrum-app-cloud",
+   "unused_patches": [],
+   "visibility": "PRIVATE"
   },
   {
    "branch": "main",
@@ -858,14 +1165,14 @@
    "visibility": "PUBLIC"
   },
   {
-   "branch": "HEAD",
+   "branch": "edge/journey",
    "checkout": "docs-work/ferrum-app-edge",
-   "commit": "fbe1e996270f29c6f8dd152a890193fa12f8ef79",
+   "commit": "4e1c261adfcfd441addd1242e008c6a1f0cf3ac3",
    "default_branch": "main",
-   "default_head": "fbe1e996270f29c6f8dd152a890193fa12f8ef79",
+   "default_head": "782c0b0079769e78147df2296513177b9338e228",
    "dirty": [],
    "local_patch": false,
-   "lock_digest": "sha256:95b78f32e746f753b13c6f7e8754944b110bc82bb94f01ef7b26aeb962269156",
+   "lock_digest": "sha256:daca7d3f1e7bd0a12c3ddf076a50af75c3c95b00260ca5add1fec143ad2b6ca0",
    "repository": "CBFerrum/ferrum-app-edge",
    "unused_patches": [],
    "visibility": "PUBLIC"
