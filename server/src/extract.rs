@@ -146,7 +146,7 @@ async fn caller(st: &crate::state::AppState, parts: &Parts) -> Result<(Ctx, Opti
 /// See [`caller`]; for handlers that read the request themselves. `.1` is the browser session
 /// behind the credential (the cookie's, or the one a page's bearer token is bound to).
 pub async fn caller_on(st: &crate::state::AppState, method: &axum::http::Method, headers: &HeaderMap) -> Result<(Ctx, Option<Uuid>), ApiError> {
-    let (ctx, device, app) = caller_with_app(st, method, headers).await?;
+    let (ctx, device, app) = caller_with_app(st, method, headers, None).await?;
     if app.is_some() {
         return Err(ApiError(Error::Unauthorized("an app token works only for its app's calls to the API".into())));
     }
@@ -155,10 +155,13 @@ pub async fn caller_on(st: &crate::state::AppState, method: &axum::http::Method,
 }
 
 /// [`caller_on`], where an app token is welcome: `.2` names its app (the caller narrows to it).
+/// With a `place`, the request also waits for its turn among its workspace's, before anything of the
+/// workspace's is read.
 async fn caller_with_app(
     st: &crate::state::AppState,
     method: &axum::http::Method,
     headers: &HeaderMap,
+    place: Option<&crate::state::Place>,
 ) -> Result<(Ctx, Option<Uuid>, Option<String>), ApiError> {
     let rid = request_id(headers);
     let (token, from_cookie) = match bearer(headers) {
@@ -180,6 +183,9 @@ async fn caller_with_app(
     }
     if t.setup_only {
         return Err(ApiError(Error::Forbidden("set up two-factor sign-in first; this workspace requires it".into())));
+    }
+    if let Some(place) = place {
+        st.shares.take(place, t.session.tenant).await?;
     }
     if from_cookie {
         st.shell.check_host(headers, t.session.tenant).await?;
@@ -232,7 +238,8 @@ impl FromRequestParts<AppContext> for Auth {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppContext) -> Result<Self, Self::Rejection> {
         let st = app_state(state)?;
-        let (ctx, _, token_app) = caller_with_app(&st, &parts.method, &parts.headers).await?;
+        let place = parts.extensions.get::<crate::state::Place>().cloned();
+        let (ctx, _, token_app) = caller_with_app(&st, &parts.method, &parts.headers, place.as_ref()).await?;
         // Support access is seen by the customer, request by request (crates/kernel/src/support.rs).
         if ctx.email.ends_with(ferrum_kernel::support::SUPPORT_DOMAIN) {
             let (grant, level) = st.kernel.support_level(&ctx).await?.ok_or_else(|| ApiError(Error::Unauthorized("this support access has ended".into())))?;
