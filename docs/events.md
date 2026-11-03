@@ -84,3 +84,25 @@ These are for administrators, stay within their workspace, and are recorded in t
 
 A long process that crosses systems is a chain of events with its own state and a way to compensate,
 never one transaction held open across a provider or a person.
+
+## Workflows that cross systems
+
+`ferrum_kernel::saga` makes such a chain a durable job: steps that each do one thing outside, in
+order, and know how to undo it (`Step::run`, `Step::undo`). Register it as a job handler
+(`hooks.add_job_handler(Arc::new(Saga::new("order", "Order", steps)))`) and start it in your
+transaction (`Saga::start(tx, tenant, user, "order", input, dedupe)`), so it starts only if that
+commits.
+
+* It records what each step gave back as it goes, so a retry, a restart or another replica resumes at
+  the step that was under way. A step still runs at least once: `cx.key` is the same every time it
+  runs for that workflow, for the other system to recognise a repeat (send it as an
+  `Idempotency-Key`). Later steps read earlier ones' answers (`cx.output("reserve")`).
+* An error that says it cannot succeed (invalid, forbidden, not found) turns it around at once. Any
+  other is tried again with the job's backoff, ten tries forward; after that it turns around too.
+* Turned around, it undoes what was done, newest first, each undo at least once, with the tries left.
+  It ends `failed` saying why and what was undone. An undo that cannot be done stops it there: the
+  error names what a person must still undo, and the job's progress shows what was done and undone.
+* Cancelling it (`POST /api/jobs/{id}/cancel`) does not drop it mid-step: it hears the request before
+  its next step, undoes what it did, and ends `cancelled`.
+
+A step returning `Error::Wait` comes back later without using a try, as any job does.
