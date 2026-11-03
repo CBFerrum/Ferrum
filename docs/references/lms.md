@@ -27,8 +27,8 @@ Short Frappe paths: `pages/...` and `components/...` start at `frontend/src/`; `
 | Lesson notes and discussion | `frontend/src/components/Notes/Notes.vue`, `components/Discussions.vue` | None in the app; records have a Discussion tab (`ferrum/web/src/app/Collab.tsx`) but learners cannot open lessons | later | M |
 | Course reviews and ratings | `lms/lms/doctype/lms_course_review`, `frontend/src/components/CourseReviews.vue` | None | later | S |
 | Live classes through Zoom or Google Meet, batch timetable | `lms/lms/doctype/lms_live_class`, `lms_zoom_settings`, `lms_google_meet_settings`, `lms_batch_timetable` | Sessions with a pasted `join_url`, reminders once (`LmsCohortSession` in `catalog.yaml`, `src/cohort.rs`) | later (needs provider keys) | M |
-| Paid courses, coupons | `lms/lms/doctype/lms_payment`, `lms_coupon`, `lms/lms/payments.py` | None; FERRUM-LMS-002 is "missing" (`ferrum/docs/registry/apps.yaml`) | later | L |
-| SCORM packages | `frontend/src/pages/SCORMChapter.vue` | None; FERRUM-LMS-002 | later | L |
+| Paid courses, coupons | `lms/lms/doctype/lms_payment`, `lms_coupon`, `lms/lms/payments.py` | Paid courses through the store (Paid Courses connector, `packages/lms_payments`, `src/payments.rs`, Learn 0.3.0); no coupons | coupons later | S |
+| SCORM packages | `frontend/src/pages/SCORMChapter.vue` | SCORM 1.2 and 2004 through scorm-again (`src/scorm.rs`, `ui/src/Scorm.tsx`, Learn 0.4.0), also xAPI (`src/xapi.rs`) and LTI 1.3 (`src/lti.rs`, 0.5.0); no SCORM 2004 sequencing | done | — |
 | Video watch time and skip guard | `lms/lms/doctype/lms_video_watch_duration`, `frontend/src/pages/Lesson.vue` (`allowSkipUpTo`) | None; `src/video.rs` only checks the host | later | M |
 | Programming exercises with a code runner, badges, jobs board, evaluator-led certification | `frontend/src/components/ProgrammingExercises/`, `lms/lms/code_runner.py`, `lms/lms/doctype/lms_badge`, `frontend/src/pages/Jobs.vue`, `lms/lms/doctype/lms_certificate_evaluation` | None | no | - |
 

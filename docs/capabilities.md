@@ -9,9 +9,9 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 133 |
+| Implemented, qualification incomplete | 134 |
 | Partially implemented | 53 |
-| Missing | 35 |
+| Missing | 34 |
 | Blocked by external dependency | 10 |
 | **All** | **231** |
 
@@ -135,7 +135,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-FIELD-003 | Road travel through a mapping provider | Blocked by external dependency | probe | Straight-line estimates, stated as such |
 | FERRUM-FORMS-001 | Conditional logic, pages, spam controls, scoring, record mappings | Implemented, qualification incomplete | probe | No localization |
 | FERRUM-LMS-001 | Courses, prerequisites, cohorts, quizzes, assignments, certificates | Implemented, qualification incomplete | probe | Learners see draft course titles and summaries |
-| FERRUM-LMS-002 | SCORM, xAPI, LTI, and paid courses | Missing | probe |  |
+| FERRUM-LMS-002 | SCORM, xAPI, LTI, and paid courses | Implemented, qualification incomplete | tested | SCORM and xAPI packages run on the workspace's origin with the learner's session, as in Moodle or Frappe LMS: Learn Settings must allow them (off by default); there is no separate content origin; SCORM 2004 sequencing between SCOs is not run: a lesson plays its package's first SCO; xAPI is an endpoint for Learn's own lessons: no activity or agent profiles, attachments or paging, and no cmi5; LTI 1.3 is resource link launches and grades back (AGS scores): no Deep Linking or Names and Role Provisioning, and authorization requests come by redirect only; Paid courses have one price in the selling company's currency: no coupons, no partial refunds; Not yet run with real SCORM or xAPI content in a browser, or with a certified LTI tool; no IMS certification; Packages are capped at 256 MB and read whole into memory |
 | FERRUM-DRIVE-001 | Folders, versions, sharing, links, trash, quotas, previews, search, office editing | Implemented, qualification incomplete | probe | Public links outlive their creator's access |
 | FERRUM-DOCS-001 | Documents with comments, suggestions, templates, version restore, exports | Implemented, qualification incomplete | probe |  |
 | FERRUM-CAMPAIGNS-001 | Audiences, consent, suppression, segments, journeys, tests, bounce handling | Implemented, qualification incomplete | probe | Suppression is Campaigns' own, not shared by every send path; imports are set-based |
