@@ -24,6 +24,13 @@ written to find them, and each would have reached production with every suite gr
 | Two events on one project had the same revision | The second restriction failed | `control_it` |
 | A copy refused for good stayed pending for ever | Nothing said it had failed | Reading the copy path |
 | The console: a second `main` landmark on every page, faint text at 2.87:1, no heading on an environment's page | Worse for anyone using a screen reader or with low vision | axe against the running console |
+| **Cloud ignored a workspace restricted for billing** | A workspace that had stopped paying could go on building and provisioning | Asking what a restriction does in Cloud, for AT-CLOUD-007 |
+| Support keys were checked by one extractor of several | A health-only key opened a live socket and reached browser-session routes, and no refused attempt was recorded | Reading every way a token becomes a caller, for AT-CLOUD-003 |
+| A mutant meant for `mark_moved` changed `mark_in_doubt`, whose text it matched first | It survived, and showed nothing tested a command that was sent and never confirmed when authority moves | The mutant surviving |
+| Two controllers announcing a provider notice at once | The one that lost the race could have told everyone a second time | The notice mutant surviving |
+| Support grants had an API and no page | A customer could not see who had access without calling the API | Checking AT-UI-008 in a browser |
+| A refusal said why and not what to do | Someone without the role had no way forward | A viewer trying it in a browser |
+| On a phone, a plan was wider than the screen, and a history table could not be scrolled from the keyboard | Both pages unusable in part | axe and a keyboard walk at 375 pixels |
 
 ## Mutants
 
@@ -48,6 +55,18 @@ relies on assistive technology.
 for the test that speaks OCPP 1.6. It runs in CI. No charger made by anyone was involved, and on one machine two gateways take turns
 with one port.
 
+## The second round
+
+`scripts/support_check.py` against a real server: a health-only key reaches its report and nothing else, on every kind of route,
+and every attempt is on the customer's list, marked refused or let in. In a browser against real processes: an operation
+followed across a stopped controller, a provider refusing and coming back, a reload and a second session (AT-UI-002); a
+viewer told why and what to do (AT-UI-005); a partner's grant reviewed and ended (AT-UI-008); the main pages worked by
+keyboard alone. A billing restriction applied with the operator's task refused new work and left reading alone.
+
+`tests/drill_it.rs` loses the database, the forge, the artifacts and their store at once and brings them back somewhere new
+with the key from where an operator keeps it. The runbook said a forge restored elsewhere refuses pushes until its hooks are
+rewritten; the drill pushed without that, so the runbook now calls it a precaution.
+
 ## Figures
 
 An Apple M1 Pro with 8 cores and 16 GB, PostgreSQL 17 with default settings, on one laptop, with the load generator on the same
@@ -64,6 +83,11 @@ A serving node, release build, a 16 KB static page, 30 seconds at each level:
 | 256 | 53,593 | 4.06 | 9.94 | 16.95 | 131 | 0 | 29 MB |
 
 Back serving 105 ms after a restart, from its own disk.
+
+A gateway killed with a hundred chargers on it, which all call the next one at once: every charger answered in 125 ms, all
+known to the platform in 1.4 s, work asked for in the middle of it through in 2.3 s, and nothing sent twice.
+
+The whole-profile drill: backed up in about half a second, back and checked in 4.5 s, with a tiny database and one repository.
 
 Durable work, debug build, so a floor: 5,400 operations across eight workspaces, one with twenty times the backlog of the others.
 
@@ -84,5 +108,7 @@ network failed, and a dump of a real database takes as long as it takes.
 - Nothing has met a real provider, identity provider, DNS, certificate, KMS, charger or meter.
 - Sustained means minutes here. Nothing has run for days, so nothing is known about memory growth, or anything slower than that.
 - Alerts fire under `promtool` and nothing routes them anywhere.
-- A person has not followed a runbook, run a tabletop, or reviewed accessibility by hand.
+- A person has not followed a runbook or run a tabletop. Nobody has used the console with a screen reader.
+- The shell's own findings: a skip link outside a landmark, a second banner on a phone, and a menu that makes the page scroll
+  sideways right to left.
 - Nobody independent has reviewed any of this.
