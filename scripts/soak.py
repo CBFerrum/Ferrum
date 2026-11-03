@@ -8,7 +8,8 @@ refusals, errors and latency, and every half minute the server's memory, the dat
 At the end it checks that:
 
 - outside an outage, errors stay under half a percent, and the light workspace is never refused;
-- the light workspace is not starved while the heavy one floods (the per-workspace share);
+- the per-workspace share holds: the light workspace never waits for a turn while the heavy one is held to its share,
+  and the light one stays ahead of the flood and is answered (it divides turns, not the database's CPU);
 - the service is back within two minutes of each outage, and the backup is taken and read back while it serves;
 - the server's memory does not keep growing while one container runs;
 - the outbox drains once the load stops, and nothing more died in it.
@@ -61,7 +62,7 @@ class Soak:
         self.compose = shlex.split(args.compose)
         self.duration = args.hours * 3600
         self.window = min(600.0, max(60.0, self.duration / 12))
-        self.windows = defaultdict(lambda: defaultdict(lambda: {"n": 0, "errors": 0, "refused": 0, "lat": []}))
+        self.windows = defaultdict(lambda: defaultdict(lambda: {"n": 0, "errors": 0, "refused": 0, "waited": 0, "lat": []}))
         self.errors = defaultdict(list)  # workspace -> times of errors, for telling them from incidents
         self.samples = []
         self.incidents = []
@@ -93,9 +94,10 @@ class Soak:
             name = random.choices(names, weights)[0]
             started = time.monotonic()
             try:
-                status = (await funcs[name](client)).status_code
+                answer = await funcs[name](client)
+                status, waited = answer.status_code, answer.headers.get("x-ferrum-waited-ms")
             except httpx.HTTPError:
-                status = 0
+                status, waited = 0, None
             ms = (time.monotonic() - started) * 1000
             if latencies is not None:
                 latencies.append(ms)
@@ -103,6 +105,8 @@ class Soak:
                 continue
             w = self.windows[int((started - self.t0) // self.window)][slug]
             w["n"] += 1
+            if waited and float(waited) > 0:
+                w["waited"] += 1
             if status == 429:
                 w["refused"] += 1
             elif status == 0 or status >= 400:
@@ -225,13 +229,16 @@ class Soak:
             check(f"{slug}: errors outside outages", total > 0 and outside <= 0.005 * total, f"{outside} of {total} requests")
         light_refused = sum(self.windows[w]["light"]["refused"] for w in self.windows)
         check("light: never refused", light_refused == 0, f"{light_refused} refused")
-        worst = max((loadtest.percentile(self.windows[w]["light"]["lat"], 0.95) for w in quiet_windows), default=0.0)
-        # Starved, not slower: the database's CPU is everyone's (docs/operations.md), the turns are not.
-        check(
-            "light: not starved while heavy floods",
-            quiet_windows and worst <= 4 * baseline + 100,
-            f"p95 {worst:.0f} ms at worst in {len(quiet_windows)} quiet windows, {baseline:.0f} ms alone",
-        )
+        # The share divides turns, not the database's CPU (docs/operations.md): what it promises is that a workspace
+        # within its share never waits for one, and the one past it does.
+        waited = {slug: sum(self.windows[w][slug]["waited"] for w in self.windows) for slug in WORKERS}
+        check("light: never waits for a turn", waited["light"] == 0, f"{waited['light']} of its requests waited")
+        check("heavy: held to its share", waited["heavy"] > 0, f"{waited['heavy']} of its requests waited for a turn")
+        p95 = lambda w, slug: loadtest.percentile(self.windows[w][slug]["lat"], 0.95)  # noqa: E731
+        ratio = max((p95(w, "light") / p95(w, "heavy") for w in quiet_windows if p95(w, "heavy") > 0), default=1.0)
+        check("light: ahead of the flood", bool(quiet_windows) and ratio <= 0.75, f"its p95 at most {ratio:.2f} of heavy's in {len(quiet_windows)} quiet windows")
+        worst = max((p95(w, "light") for w in quiet_windows), default=0.0)
+        check("light: answered while heavy floods", bool(quiet_windows) and worst < 2000, f"p95 {worst:.0f} ms at worst, {baseline:.0f} ms alone")
         for i in self.incidents:
             if i["kind"] in OUTAGES:
                 check(f"recovered from: {i['kind']}", i["ok"] and i["seconds"] <= RECOVERY_SECS, f"back after {i['seconds']} s")
@@ -268,6 +275,17 @@ class Soak:
         out = {"hours": self.args.hours, "image": self.args.image, "window_secs": self.window, "baseline_p95_ms": baseline, "checks": checks,
                "incidents": self.incidents, "samples": self.samples,
                "windows": {w: {s: {k: v for k, v in d.items() if k != "lat"} | {"p95": loadtest.percentile(d["lat"], 0.95)} for s, d in self.windows[w].items()} for w in sorted(self.windows)}}
+        during = [x for x in self.samples if x["at"] <= self.duration and x.get("ferrum_outbox_pending") is not None]
+        peak = max(during, key=lambda x: x["ferrum_outbox_pending"], default={})
+        sizes = [x["database"] for x in self.samples if x.get("database")]
+        findings = [
+            f"The light workspace's p95 went from {baseline:.0f} ms alone to {worst:.0f} ms at worst while the others worked: "
+            "the share keeps its turns, and the database's CPU is everyone's.",
+            f"The outbox held up to {peak.get('ferrum_outbox_pending', 0):.0f} events while the load ran (at {peak.get('at', 0) / 60:.0f} min), "
+            f"and was empty {(drained_at - self.duration) if drained_at else 'never'} s after the load stopped.",
+            f"The database grew from {sizes[0] >> 20} MiB to {sizes[-1] >> 20} MiB." if sizes else "The database's size was not read.",
+        ]
+        out["findings"] = findings
         Path("soak.json").write_text(json.dumps(out, indent=1))
         lines = [
             f"# Soak: {self.args.hours} h on {self.args.image}",
@@ -277,6 +295,10 @@ class Soak:
             "| Check | | |",
             "|---|---|---|",
             *[f"| {c['check']} | {'pass' if c['ok'] else '**FAIL**'} | {c['said']} |" for c in checks],
+            "",
+            "What it found, beside the checks:",
+            "",
+            *[f"- {f}" for f in findings],
             "",
             "| Incident | At (min) | Back after (s) | |",
             "|---|---|---|---|",
