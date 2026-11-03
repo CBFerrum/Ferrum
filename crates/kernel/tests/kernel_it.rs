@@ -38,6 +38,23 @@ async fn kernel_end_to_end() {
         .await
         .expect("tenant");
 
+    // Lists read their default order from an index, not by sorting the workspace's every row: with
+    // sorting made dear, a plan sorts only where no index gives the order (the soak of 3 November
+    // found the first page of invoices slowing as they grew, and parallel sorts running PostgreSQL
+    // out of shared memory).
+    let schema = k.registry.schema(t1).await.unwrap();
+    for entity in ["Customer", "Item", "Project"] {
+        let ent = schema.entity(entity).unwrap();
+        let (field, desc) = ferrum_kernel::query::parse_sort(ent, None).unwrap();
+        let order = ferrum_kernel::query::order_by(ent, &field, desc, "a").unwrap();
+        let mut tx = k.db.tenant_tx(t1).await.unwrap();
+        sqlx::query("set local enable_sort = off").execute(&mut *tx).await.unwrap();
+        let explain = format!("explain (format json) select a.id from {} a where a.tenant_id = $1 order by {order} limit 21", ent.table);
+        let plan: Value = sqlx::query_scalar(sqlx::AssertSqlSafe(explain)).bind(t1).fetch_one(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        assert!(!plan.to_string().contains("Sort\""), "{entity} ({order}) is sorted: {plan}");
+    }
+
     let session = k.login("acme", "ADMIN@acme.test", "Correct-Horse-9").await.expect("login");
     assert!(k.login("acme", "admin@acme.test", "wrong-password").await.is_err());
     let ctx = k.load_ctx(t1, session.user, Some(session.token_version), "it".into()).await.expect("ctx");

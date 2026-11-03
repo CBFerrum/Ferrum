@@ -195,6 +195,9 @@ MUTANTS = [
     ("logout-accepts-id-tokens", "crates/kernel/src/sso.rs", "if self.nonce.is_some() {", "if false {", SSO_UNIT),
     ("logout-accepts-old-tokens", "crates/kernel/src/sso.rs", "if self.iat > now + CLOCK_SKEW_SECS || self.iat < now - LOGOUT_TOKEN_SECS {", "if self.iat > now + CLOCK_SKEW_SECS {", SSO_UNIT),
     ("logout-leaves-sessions", "crates/kernel/src/sso.rs", "crate::auth::end_sessions(&mut tx, tenant, user).await?;", "", SSO),
+    # Lists read in an order an index gives.
+    ("lists-without-their-index", "crates/kernel/src/ddl.rs", "        ddl.sort_index(&t, ent).await?;\n", "", KERNEL),
+    ("lists-say-nulls-last-always", "crates/kernel/src/query.rs", 'if NEVER_EMPTY.contains(&field) { dir.to_string() } else { format!("{dir} nulls last") }', 'format!("{dir} nulls last")', KERNEL),
     ("merged-id-still-listed", "crates/kernel/src/query.rs", "    if ent.def.mergeable {\n        qb.push(\" and not exists", "    if false {\n        qb.push(\" and not exists", MERGE),
     ("merge-misses-child-rows", "crates/kernel/src/merge.rs", 'out.push((info.table.clone(), f.name.clone(), c.storage_of(&f.name) == Some(Storage::Ext), false));', '', MERGE),
     ("merge-misses-custom-fields", "crates/kernel/src/merge.rs", 'format!("update {t} set ext = jsonb_set(ext, array[$4], to_jsonb($1::text)) where tenant_id = $2 and ext->>$4 = $3")', 'format!("update {t} set ext = ext where tenant_id = $2 and ext->>$4 = $3 and $1 = $1")', MERGE),

@@ -17,6 +17,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
       FERRUM_DB_PASSWORD: ${FERRUM_DB_PASSWORD:?set FERRUM_DB_PASSWORD in deploy/.env}
     command: ["postgres", "-c", "max_connections=200", "-c", "shared_buffers=512MB", "-c", "wal_level=replica"]
+    # Parallel queries share memory through /dev/shm, which Docker makes 64 MB: a three-hour soak
+    # ran out of it ("could not resize shared memory segment") once tables had grown.
+    shm_size: 512mb
     volumes:
       - db:/var/lib/postgresql/data
       - ./postgres-init:/docker-entrypoint-initdb.d:ro
