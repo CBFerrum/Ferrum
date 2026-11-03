@@ -135,7 +135,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
 | FCP-WEB-001 | Public/private cache separation | Verified in software | AT-WEB-001 | 1 | Only what a node adds. A CDN in front is not exercised |
-| FCP-WEB-002 | Framework conformance | Partial | AT-WEB-002 | 2 | Node on two replicas, with an answer streamed through a node as it is made, WebSockets through a node, and files beside it. The table in the docs says what is not supported. No framework has been qualified |
+| FCP-WEB-002 | Framework conformance | Partial | AT-WEB-002 | 3 | Next.js 15 on two replicas through a serving node, built in the sandbox through a package mirror: pages rendered per request by both, a prerendered page the same on both, streaming as it is made, a server action from a form without JavaScript on either replica, image optimisation and time-based revalidation, each replica making its own. On-demand revalidation reaches only the replica that took it: the docs say it is not supported, but nothing tells the caller at the time. No other framework is qualified, and nothing was measured under load |
 | FCP-WEB-003 | Deployment skew | Verified in software | AT-WEB-003 | 2 | Old assets stay for two releases. Mutations from old pages are the application's to version |
 | FCP-WEB-004 | Browser origin isolation | Verified in software | AT-WEB-004 | 1 | One host per deployment and cookie domains stripped. A browser was not used: a service-worker scope is decided by origin |
 | FCP-WEB-005 | Domain ownership | Verified in software | AT-WEB-005 | 3 | One spelling, unique across every workspace, wildcards overlap |
