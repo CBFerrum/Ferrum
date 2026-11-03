@@ -117,6 +117,8 @@ async fn scenario() {
         assert_eq!(level(&f, check), Some(Level::Warning), "{check}");
     }
     assert_eq!(level(&k.doctor(1000).await.unwrap(), "database.connections"), Some(Level::Warning), "more than two replicas could open");
+    assert_eq!(level(&k.doctor(4).await.unwrap(), "database.pool"), Some(Level::Warning), "too few for requests beside the replica's own work");
+    assert_eq!(level(&f, "database.pool"), Some(Level::Ok));
 
     let text = json!(f).to_string();
     assert!(!text.contains(&url) && !text.contains("ferrum:ferrum"), "no connection string");
