@@ -484,6 +484,8 @@ impl Hooks for App {
         tasks.register(crate::tasks::CloudLift);
         #[cfg(feature = "cloud")]
         tasks.register(crate::tasks::CloudProviderNotice);
+        #[cfg(feature = "cloud")]
+        tasks.register(crate::tasks::CloudRetire);
         tasks.register(crate::tasks::ReleaseRestore);
         tasks.register(crate::tasks::AcceptAuthority);
         tasks.register(crate::tasks::ExtractTenant);
