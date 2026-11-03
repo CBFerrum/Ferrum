@@ -397,6 +397,25 @@ pub fn parse_sort(ent: &EffEntity, sort: Option<&str>) -> Result<(String, bool)>
     Ok((field, desc))
 }
 
+/// Columns that are never empty: a list by one says nothing of where empty values go, so the
+/// index on `(tenant_id, created_at, id)` serves it both ways.
+const NEVER_EMPTY: [&str; 4] = ["created_at", "updated_at", "docstatus", "version"];
+
+/// The direction a list by `field` is read in, as SQL: `desc nulls last`, or `desc` alone for a
+/// column that is never empty. The index that serves the order is made with the same words
+/// (ddl.rs), so the two cannot drift apart.
+pub fn direction(field: &str, desc: bool) -> String {
+    let dir = if desc { "desc" } else { "asc" };
+    if NEVER_EMPTY.contains(&field) { dir.to_string() } else { format!("{dir} nulls last") }
+}
+
+/// How a list is read: by `field` (see [`direction`]), then by id the same way; `None` for a field
+/// a list cannot be ordered by.
+pub fn order_by(ent: &EffEntity, field: &str, desc: bool, alias: &str) -> Option<String> {
+    let expr = field_expr(ent, field, alias)?;
+    Some(format!("{expr} {}, {alias}.id {}", direction(field, desc), if desc { "desc" } else { "asc" }))
+}
+
 pub fn encode_cursor(ts: &str, id: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::json!([ts, id]).to_string())
 }
