@@ -6,8 +6,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | State | Requirements |
 |---|---|
 | Partial | 19 |
-| Implemented, unverified | 1 |
-| Verified in software | 172 |
+| Verified in software | 173 |
 | Blocked externally | 5 |
 | **All** | **197** |
 
@@ -20,7 +19,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-BASE-003 | Prior invariant regressions | Verified in software | AT-BASE-003 | 6 | Simulators only: no physical equipment |
 | FCP-BASE-004 | Release pins | Verified in software | AT-BASE-004 | 1 | Generated and checked in CI; a signed evidence bundle is FCP-QUAL-008 |
 | FCP-BASE-005 | Worktree safety | Verified in software | AT-BASE-005 | 1 | Reports dirty files and unused patches; it does not stop anyone committing them |
-| FCP-BASE-006 | Frozen and forward CI | Implemented, unverified | AT-BASE-006 | 0 | Both lanes exist in Ferrum and Edge; Ferrum's forward lane has not run yet |
+| FCP-BASE-006 | Frozen and forward CI | Verified in software | AT-BASE-006 | 2 | On 2026-11-03 Edge's main moved to 782c0b0 while Ferrum's frozen run on main built --locked against 45ea519; the forward lane followed Edge to 782c0b0, and checked and tested the server, on this fix's branch, after its first run on main stopped for want of a database. Edge's own two lanes have not been put through the same |
 | FCP-BASE-007 | Evidence classification | Verified in software | AT-BASE-007 | 1 | A simulator or a mock cannot be labelled qualified while the real thing is missing, and the check fails if one tries. The older registry's `basis` is coarser than these states |
 | FCP-BASE-008 | Feature inventory | Verified in software | AT-BASE-008 | 1 | A repository a lock file pins and nothing here can read is listed as unread, as are images and production, not as absent. Git dependencies only |
 
