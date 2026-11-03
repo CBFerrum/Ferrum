@@ -259,6 +259,44 @@ async fn sso_finish(State(app): State<AppContext>, headers: HeaderMap, Json(req)
     session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie")).await
 }
 
+/// `GET /api/auth/saml/{workspace}`: the workspace's SAML metadata, for identity providers to load.
+async fn saml_metadata(State(app): State<AppContext>, Path(tenant): Path<Uuid>) -> ApiResult<Response> {
+    let xml = app_state(&app)?.kernel.saml_metadata(tenant).await?;
+    Ok(([(header::CONTENT_TYPE, "application/samlmetadata+xml"), (header::CACHE_CONTROL, "no-cache")], xml).into_response())
+}
+
+/// `POST /api/auth/saml/{workspace}/acs`: a SAML provider posts its answer here (HTTP-POST binding).
+/// A good one sends the browser on to finish signing in where it started; a refused one is said
+/// plainly, on a page with the way back.
+async fn saml_acs(
+    State(app): State<AppContext>,
+    headers: HeaderMap,
+    Path(tenant): Path<Uuid>,
+    Form(form): Form<HashMap<String, String>>,
+) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    st.login_limiter.check(&format!("{}|sso", client_ip(&headers))).await?;
+    let (relay, response) = (form.get("RelayState").map(String::as_str).unwrap_or_default(), form.get("SAMLResponse").map(String::as_str).unwrap_or_default());
+    let refused = |why: &str| {
+        let mut page = crate::shell::status_page(StatusCode::UNAUTHORIZED, "Single sign-on did not work", why, &[("Sign in", "/app/login")], None);
+        page.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        page
+    };
+    if relay.is_empty() || relay.len() > 80 || response.is_empty() {
+        return Ok(refused("The identity provider's answer is incomplete; sign in again."));
+    }
+    // A browser comes here, not a program: whatever happens is a page.
+    Ok(match st.kernel.saml_acs(tenant, relay, response).await {
+        Ok(next) => (StatusCode::SEE_OTHER, [(header::LOCATION, next.as_str()), (header::CACHE_CONTROL, "no-store")]).into_response(),
+        Err(Error::Validation(fields)) => refused(&fields.iter().map(|f| f.message.as_str()).collect::<Vec<_>>().join("; ")),
+        Err(e @ (Error::Db(_) | Error::Internal(_))) => {
+            tracing::error!("a SAML answer: {e}");
+            refused("Something went wrong on the server; try again.")
+        }
+        Err(e) => refused(&e.to_string()),
+    })
+}
+
 /// `POST /api/auth/sso/{provider}/backchannel-logout`: a provider says someone signed out there. The
 /// answers are the standard's: 200 when done, 400 with `invalid_request` when the token is refused.
 async fn sso_backchannel_logout(
@@ -688,6 +726,8 @@ pub fn routes() -> Routes {
         .add("/sso/start", post(sso_start))
         .add("/sso/finish", post(sso_finish))
         .add("/sso/{provider}/backchannel-logout", post(sso_backchannel_logout))
+        .add("/saml/{tenant}", get(saml_metadata))
+        .add("/saml/{tenant}/acs", post(saml_acs))
         .add("/me", get(me))
         .add("/2fa", get(two_factor_status))
         .add("/2fa/begin", post(two_factor_begin))
