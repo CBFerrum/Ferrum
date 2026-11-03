@@ -184,6 +184,7 @@ pub struct HookRegistry {
     connectors: HashMap<String, Arc<dyn crate::connect::Connector>>,
     resources: Option<Arc<dyn crate::resources::Resources>>,
     restored: Vec<Arc<dyn crate::recovery::Restored>>,
+    leaving: Vec<Arc<dyn crate::account::Leaving>>,
     /// The packages owning what is being registered (see [`HookRegistry::scoped`]).
     scope: Option<Arc<[String]>>,
 }
@@ -377,6 +378,14 @@ impl HookRegistry {
 
     pub fn restored(&self) -> &[Arc<dyn crate::recovery::Restored>] {
         &self.restored
+    }
+
+    pub fn add_leaving(&mut self, app: Arc<dyn crate::account::Leaving>) {
+        self.leaving.push(app);
+    }
+
+    pub fn leaving(&self) -> &[Arc<dyn crate::account::Leaving>] {
+        &self.leaving
     }
 
     pub fn set_resources(&mut self, resources: Arc<dyn crate::resources::Resources>) -> &mut Self {
