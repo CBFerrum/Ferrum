@@ -5,9 +5,9 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Partial | 22 |
+| Partial | 21 |
 | Implemented, unverified | 1 |
-| Verified in software | 169 |
+| Verified in software | 170 |
 | Blocked externally | 5 |
 | **All** | **197** |
 
@@ -210,7 +210,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-SCALE-004 | Budget enforcement | Verified in software | AT-SCALE-004 | 2 | Builds, running hours and held resources are counted, once an hour however many look, and a hard budget stops new ones with what is up left up. Storage is not metered by size |
 | FCP-SCALE-005 | Critical reserve | Verified in software | AT-SCALE-005 | 2 | On a gateway: only plain samples count against the budget and go first, commands and evidence are outside it, and with almost no disk it takes no new work and says why. Not tried on a disk that really filled, and the platform's own database has no such reserve |
 | FCP-SCALE-006 | Gateway drain | Verified in software | AT-SCALE-006 | 2 | A real gateway killed with a hundred chargers on it and work out on twenty: nothing in doubt is sent again, waiting work and new work get through. A kill, not a graceful scale-in, on one machine |
-| FCP-SCALE-007 | Noisy neighbor | Partial | AT-SCALE-007 | 2 | A workspace with twenty times the backlog does not make others wait behind it, measured once. A build cap per workspace and a request cap per site. Nothing bounds a tenant's share of a shared database |
+| FCP-SCALE-007 | Noisy neighbor | Verified in software | AT-SCALE-007 | 4 | Queries: a workspace's API requests take turns within half of each replica's database connections, say how long they waited, and are refused and counted past five seconds. Flooded from 64 threads on one laptop, another workspace's p95 went from 13 to 25 ms, and to 145 ms with the share off. Backlogs: one with twenty times the work does not make others wait. Builds: a cap per workspace; sites, a request cap each. Per replica, measured once on one machine, and the database's CPU is not divided |
 | FCP-SCALE-008 | Capacity evidence | Partial | AT-SCALE-008 | 1 | Percentiles, backlog and fairness measured for minutes on one laptop, so they describe that and not a deployment. Edge rates were measured the same way |
 | FCP-UI-001 | Consistent scope UI | Verified in software | AT-UI-001 | 2 | The digest on screen when the form opened goes with the decision, and the server refuses a stale one. No automated browser test |
 | FCP-UI-002 | Asynchronous UX | Verified in software | AT-UI-002 | 1 | In a browser against real processes: a resource asked for with the controller stopped, its provider refusing, and then back. The page followed each attempt and the reason, a reload and a second session showed the same, someone with no standing got nothing, and the retry finished. Relative times do not tick between updates |
@@ -223,7 +223,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-OBS-001 | Telemetry correlation | Verified in software | AT-OBS-001 | 1 | One id from a request through other processes, also confirmed on a real server. There is no tracing backend, and logs go where a deployment sends them |
 | FCP-OBS-002 | Tenant telemetry isolation | Verified in software | AT-OBS-002 | 1 | Row-level security refuses another workspace's operations and events, however the question is put. There is no customer log service to refuse |
 | FCP-OBS-003 | Bounded cardinality | Verified in software | AT-OBS-003 | 1 | No tenant or site in a label |
-| FCP-OBS-004 | Operational alert coverage | Verified in software | AT-OBS-004 | 2 | Each alert fires on its condition under promtool and not otherwise, routes to its owner and every critical one to on-call under amtool, and a real Alertmanager delivers a cause with its runbook and holds back what it explains. The receivers there are stand-ins: real paging needs the deployment's addresses and keys |
+| FCP-OBS-004 | Operational alert coverage | Verified in software | AT-OBS-004 | 3 | Drift, backlogs, operations nobody can vouch for, backup age, access past its time, terms and certificates near their end: each fires on its condition under promtool and not otherwise, once however many replicas report it, routes to its owner and every critical one to on-call under amtool, and a real Alertmanager delivers a cause with its runbook and holds back what it explains. The receivers there are stand-ins: real paging needs the deployment's addresses and keys |
 | FCP-OBS-005 | Metering idempotency | Verified in software | AT-OBS-005 | 2 | Replays, late usage and corrections, explained line by line. Builds are the only meter recording itself |
 | FCP-OBS-006 | Money precision | Verified in software | AT-OBS-006 | 2 | Exact numbers in the database, rounded a line at a time, half up, with currencies of no minor unit handled. Refunds are corrections. No invoice |
 | FCP-OBS-007 | Budget transparency | Verified in software | AT-OBS-007 | 1 | A month in progress says it is an estimate, and late usage is counted on the statement. No page shows it yet |
@@ -244,7 +244,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-DR-004 | Key recovery test | Partial | AT-DR-004 | 1 | Recovery without the primary database works through the operator's copy of the key, with no plaintext in the backup. There is no KMS path to remove, so that half of the scenario cannot be run here |
 | FCP-DR-005 | Failover fencing | Verified in software | AT-DR-005 | 1 | It stops before its time at the witness runs out, and does not take the right back. Gateways have their own fencing. One machine |
 | FCP-DR-006 | Object and Git integrity | Verified in software | AT-DR-006 | 2 | Real repositories with a damaged pack and a missing LFS object. It is run by hand after a restore, and has not been run on a restored Gitea |
-| FCP-DR-007 | Capacity recovery | Partial | AT-DR-007 | 2 | A hundred chargers reconnecting at once were all back in 1.4 s on one machine, with waiting work through in 2.3 s. Nothing limits the rate of reconnection, and there is no profile target to meet |
+| FCP-DR-007 | Capacity recovery | Partial | AT-DR-007 | 2 | Charger and MQTT ports let new connections in at a steady rate, 100 a second unless set. A hundred chargers at 25 a second were all back in 3.3 s on one machine, with waiting work through in 5.5 s, while one already connected was answered in 0.2 ms. There is no profile target to meet, so no recovery is claimed to be fast enough |
 | FCP-DR-008 | Update trust | Verified in software | AT-DR-008 | 4 | A gateway refuses a release that is unsigned, expired, not newer or was rolled back here, and a bad file never replaces what runs. A node refuses a snapshot that is older or not signed by a key it holds. A bundle changed after signing is refused and an older revocation list is ignored. An app store's listing has no expiry of its own |
 | FCP-DR-009 | Runbook exercise | Partial | AT-DR-009 | 0 | Written. Nobody who did not write it has followed it |
 | FCP-DR-010 | RPO RTO evidence | Partial | AT-DR-010 | 1 | Dump, restore and start measured once, on one laptop and a small database. No zone, database or provider failed, so no objective is claimed |
