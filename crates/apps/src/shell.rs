@@ -25,6 +25,7 @@ pub const SHELL_POINTS: &[&str] = &[
     "shell.card",
     "shell.public",
     "shell.portal",
+    "shell.assistant",
 ];
 
 /// First path segments the core keeps for itself. The core only ever adds names starting with
@@ -136,6 +137,9 @@ pub(crate) fn contract(point: &str) -> Value {
         // A page of the workspace's portal at `/portal/{id}/`, drawn by the app's interface;
         // `open`: where under it a record of `entity` opens (`t/{id}`).
         "shell.portal" => (json!({"title": text(60), "description": text(200), "entity": text(80), "open": text(200)}), vec!["title"]),
+        // What the assistant should know while the person is in the app's pages, and questions it
+        // suggests there: the app's own words about its records, never the person's.
+        "shell.assistant" => (json!({"title": text(60), "instructions": text(2000), "suggestions": list(6, text(160))}), vec!["title", "instructions"]),
         _ => (json!({}), vec![]),
     };
     json!({"type": "object", "additionalProperties": false, "required": required, "properties": props})

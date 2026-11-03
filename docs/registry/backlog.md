@@ -108,7 +108,6 @@ this repository, 129 built and awaiting qualification.
 - `FERRUM-PRIVACY-008` Evidence pack for compliance reviews: waits for BLOCK-LEGAL-REVIEW
 - `FERRUM-BOOKINGS-003` Deposits and refunds: waits for BLOCK-PAYMENT-KEYS
 - `FERRUM-HR-002` Payroll by jurisdiction with statutory reporting: waits for BLOCK-PAYROLL-REVIEW
-- `FERRUM-AI-006` Domain-specific assistants with sources shown: waits for FERRUM-AI-002
 - `FERRUM-IND-020` Threat model, standards scope and safety boundaries: waits for BLOCK-INDUSTRIAL-SAFETY, BLOCK-INDUSTRIAL-SECURITY
 - `FERRUM-INDUSTRY-001` Hospitality: properties, rates, stays, folios, night audit: waits for BLOCK-HOSPITALITY-CHANNELS
 - `FERRUM-INDUSTRY-002` Restaurants: menus, tables, kitchen flow, delivery: waits for FERRUM-POS-003

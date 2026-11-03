@@ -347,6 +347,17 @@ impl AppManager {
     /// `GET /api/meta/contributions/{point}`: what the enabled apps contribute to a screen slot
     /// or to an enabled app's extension point, each item with its `app` and `version`. Panels
     /// only on entities the caller may read; the settings page only for administrators.
+    /// What the enabled app at `route` tells the assistant about working in its pages
+    /// (`shell.assistant`): each item's title, instructions and suggested questions.
+    pub async fn assistant_domain(&self, tenant: Uuid, route: &str) -> Result<Vec<Value>> {
+        let apps = self.enabled_apps(tenant).await?;
+        Ok(apps
+            .iter()
+            .filter(|a| a.manifest.routes().iter().any(|(r, _)| r == route))
+            .flat_map(|a| a.manifest.contributes.get("shell.assistant").cloned().unwrap_or_default())
+            .collect())
+    }
+
     pub async fn contributions(&self, ctx: &Ctx, point: &str) -> Result<Vec<Value>> {
         let apps = self.enabled_apps(ctx.tenant).await?;
         if !ferrum_apps::UI_POINTS.contains(&point) {
