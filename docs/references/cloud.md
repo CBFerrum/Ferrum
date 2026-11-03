@@ -54,10 +54,22 @@ rather than a forge or a proxy.
 
 D-08 chose Gitea and called Forgejo "an equal alternative, not both". The quota is now the difference.
 
-## Order
+## Order, and where each stands
 
-1. Forgejo with its quota, and Cloud's storage round removed.
-2. Caddy's on-demand TLS for customers' domains, tested against Pebble.
-3. Falco for the egress and mining watch.
-4. k6 for the soak's load, and cargo-mutants beside the hand-written mutants.
-5. An evaluation of Railpack or BuildKit builds and of a Kubernetes runtime.
+1. **Forgejo with its quota**, and Cloud's storage round removed: Cloud #11. Forgejo also runs from its own manifest,
+   checked in CI as it is configured.
+2. **Caddy's on-demand TLS** for customers' domains, tried against Pebble, and **Prometheus's blackbox exporter** for
+   an alert when one is not being renewed: Cloud #12.
+3. **cargo-mutants** beside the hand-written mutants: tried on the contract crate first.
+4. **Falco** for the egress and mining watch, with the Kubernetes runtime and not before. Today's runtime is Docker,
+   for development and CI only (`ferrum-app-cloud:docs/operating-deploy.md`), and Falco watches the hosts that
+   customers' workloads run on: wiring it to a runtime that will not run in production would prove nothing about the
+   one that will.
+5. **An evaluation of Railpack or BuildKit builds and of a Kubernetes runtime**, which is also the way to the blocked
+   qualified runtime.
+
+**k6, looked at and not taken for now.** The soak's checks are about windows of time around outages: which requests
+failed while the database restarted, and how one workspace fared in the windows without one. k6 gives per-request
+times only through its outputs, which for three hours of a soak are gigabytes on a CI runner, or through a Prometheus
+to write them into. The soak keeps its own small load generator (`scripts/soak.py`, a few dozen lines), and k6 is
+the choice once the soak runs against a deployment that has a Prometheus.
