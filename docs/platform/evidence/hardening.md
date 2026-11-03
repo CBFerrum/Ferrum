@@ -121,8 +121,18 @@ reached nothing and saw gVisor's kernel.
 Cloud is no longer meant to be linked into this repository's server, which a public CI cannot do. A server can now be
 built elsewhere with an app this repository does not name (`ferrum_server::extensions`, `server/tests/extensions_it.rs`),
 and Cloud builds `ferrum-cloud` that way. Its CI starts it on PostgreSQL with this repository's configuration and
-packages, makes a workspace with Cloud, and calls Cloud's routes and metrics. The cluster check now makes room on its
-runner first, after one run's database could not pull its image with 97 MB left.
+packages, makes a workspace with Cloud, and calls Cloud's routes and metrics. Its images are built there too, the web
+replicas' and the controller's, from public sources at one commit of this repository and with this repository's crates,
+and started as deployed: read-only, with no capabilities, serving the shell and Cloud's console, and a controller that
+stops when told (Cloud #7, its `image` job). Where they are published is the owner's decision (`BLOCK-CLOUD-VISIBILITY`).
+
+What one workspace keeps at the forge is bounded now (Cloud #8, FCP-CODE-008). The controller adds up what the forge
+says each repository holds, every five minutes; past the quota it holds the workspace's repositories read-only at the
+forge, and Cloud refuses new and restored ones, saying how much it keeps and what it may. `code_it` filled one workspace
+past a 1 MB quota against the real forge: its push, a new repository and a restore were refused with the reason, another
+workspace pushed and was not held, a forge that did not answer changed nothing, and given room the hold lifted and the
+same push went through, while what a person had archived stayed archived. Six mutants break each of those.
+The cluster check now makes room on its runner first, after one run's database could not pull its image with 97 MB left.
 
 ## Figures
 
