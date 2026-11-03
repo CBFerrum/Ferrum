@@ -456,7 +456,7 @@ impl Kernel {
     async fn load_core(&self, tenant: Uuid, user: Uuid) -> Result<CtxCore> {
         let mut tx = self.db.tenant_tx(tenant).await?;
         let row: Option<(String, String, bool, bool, i32, serde_json::Value, String, bool)> = sqlx::query_as(
-            "select u.email::text, u.full_name, u.is_admin, u.is_active and t.status = 'active', u.token_version, t.settings, u.kind, t.account_state = 'restricted' \
+            "select u.email::text, u.full_name, u.is_admin, u.is_active and t.status = 'active', u.token_version, t.settings, u.kind, t.account_state in ('restricted', 'closed') \
              from app_user u join tenant t on t.id = u.tenant_id where u.tenant_id = $1 and u.id = $2",
         )
         .bind(tenant)
