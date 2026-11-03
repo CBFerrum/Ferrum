@@ -469,8 +469,8 @@ async fn scenario() {
     let invented =
         tools.call(&k, &dispatcher, "ops_propose", &json!({"target": Uuid::now_v7(), "operation": "warehouse.move", "reason": "x", "evidence_at": read})).await;
     assert!(matches!(invented, Some(Err(Error::NotFound(_)))), "a device that does not exist: {invented:?}");
-    let no_evidence = refused(tools.call(&k, &dispatcher, "ops_propose", &json!({"target": bot, "operation": "warehouse.move", "reason": "x"})).await);
-    assert!(no_evidence.contains("evidence_at"), "{no_evidence}");
+    let no_evidence = tools.call(&k, &dispatcher, "ops_propose", &json!({"target": bot, "operation": "warehouse.move", "reason": "x"})).await;
+    assert!(matches!(&no_evidence, Some(Err(Error::Validation(v))) if v[0].field == "evidence_at"), "{no_evidence:?}");
     let old = (chrono::Utc::now() - chrono::Duration::minutes(6)).to_rfc3339();
     let stale =
         refused(tools.call(&k, &dispatcher, "ops_propose", &json!({"target": bot, "operation": "warehouse.move", "reason": "x", "evidence_at": old})).await);
