@@ -193,6 +193,10 @@ templates, CI workflow templates and the developer guide.
 * Each app's CI tests against the platform version it targets; the platform's CI builds the
   official image with every official app.
 * Self-hosters build custom images with any set of native apps.
+* An app this repository may not name, a private one, builds its own server instead: a binary in its repository
+  that depends on `ferrum-server`, adds the app with `ferrum_server::extensions::extend` (its packages, hooks,
+  reports, upkeep, manifest, interface, tasks and metrics) and calls `ferrum_server::run`. The platform's CI never
+  fetches it; the app's CI builds and tests that server (`server/tests/extensions_it.rs` holds the platform to it).
 
 ## 12. Repositories
 
