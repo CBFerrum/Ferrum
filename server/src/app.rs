@@ -325,6 +325,19 @@ impl Hooks for App {
                 }
             }));
             handles.push(crate::packages::spawn(state.kernel.clone(), state.shutdown.subscribe()));
+            // Apps that were waiting for their resources.
+            let (apps, mut stop) = (state.apps.clone(), state.shutdown.subscribe());
+            handles.push(tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = stop.changed() => return,
+                        _ = tokio::time::sleep(Duration::from_secs(30)) => {}
+                    }
+                    if let Err(e) = apps.activate_waiting().await {
+                        tracing::warn!("activating waiting apps failed: {e}");
+                    }
+                }
+            }));
             // Plugin schedules.
             handles.push(ferrum_plugins::schedule::spawn_scheduler(state.plugins.clone(), state.kernel.clone(), state.shutdown.subscribe()));
             // App stores' revocation lists.

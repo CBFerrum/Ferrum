@@ -55,6 +55,17 @@ pub struct Release {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// What was established about one exact artifact, on one profile, by whom. None of these says anything
+/// about safety, and none carries over to a new build.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, sqlx::FromRow)]
+pub struct Label {
+    pub dimension: String,
+    pub profile: String,
+    pub evidence: String,
+    pub reviewer: String,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 impl Release {
     pub fn package_names(&self) -> Vec<String> {
         self.packages.as_object().map(|m| m.keys().cloned().collect()).unwrap_or_default()
@@ -281,6 +292,61 @@ impl Kernel {
             .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Records a label. Operators do this, from the evidence: no route reaches it.
+    pub async fn grant_label(&self, app_id: &str, digest: &str, label: &Label) -> Result<()> {
+        let mut tx = self.db.system_tx().await?;
+        sqlx::query(
+            "insert into app_label (app_id, digest, dimension, profile, evidence, reviewer, expires_at) values ($1, $2, $3, $4, $5, $6, $7) \
+             on conflict (app_id, digest, dimension, profile) do update set evidence = excluded.evidence, reviewer = excluded.reviewer, expires_at = excluded.expires_at, granted_at = now()",
+        )
+        .bind(app_id)
+        .bind(digest)
+        .bind(&label.dimension)
+        .bind(&label.profile)
+        .bind(&label.evidence)
+        .bind(&label.reviewer)
+        .bind(label.expires_at)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// What currently holds for exactly this artifact.
+    pub async fn labels_of(&self, app_id: &str, digest: &str) -> Result<Vec<Label>> {
+        let mut tx = self.db.system_tx().await?;
+        let rows = sqlx::query_as::<_, Label>(
+            "select dimension, profile, evidence, reviewer, expires_at from app_label where app_id = $1 and digest = $2 and (expires_at is null or expires_at > now()) order by dimension, profile",
+        )
+        .bind(app_id)
+        .bind(digest)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(rows)
+    }
+
+    /// What an installed app is waiting for before it can be activated, or that it is not.
+    pub async fn set_app_waiting(&self, ctx: &Ctx, app_id: &str, waiting: Option<&[String]>) -> Result<()> {
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        sqlx::query("update tenant_app set waiting_for = $3 where tenant_id = $1 and app_id = $2")
+            .bind(ctx.tenant)
+            .bind(app_id)
+            .bind(waiting)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Every app waiting for something, in every workspace.
+    pub async fn apps_waiting(&self) -> Result<Vec<(Uuid, String)>> {
+        let mut tx = self.db.system_tx().await?;
+        let rows = sqlx::query_as("select tenant_id, app_id from tenant_app where waiting_for is not null").fetch_all(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(rows)
     }
 
     pub async fn set_app_enabled(&self, ctx: &Ctx, app_id: &str, enabled: bool) -> Result<()> {

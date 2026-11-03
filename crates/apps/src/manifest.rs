@@ -143,6 +143,95 @@ pub struct SettingDef {
     pub description: Option<String>,
 }
 
+/// Classes of resource an app can ask for. A class is a contract about behaviour, not a product.
+pub const RESOURCE_CLASSES: &[&str] = &["relational", "object", "time_series", "search", "cache", "stream"];
+const RESOURCE_ISOLATIONS: &[&str] = &["database", "prefix"];
+const RESOURCE_AUTHORITIES: &[&str] = &["primary", "derived", "archival", "disposable"];
+const RESOURCE_SEMANTICS: &[&str] = &["transactions", "row_security", "read_after_write", "conditional_writes", "immutable_versions", "point_in_time_recovery"];
+const RESOURCE_CLASSIFICATIONS: &[&str] = &["public", "internal", "confidential", "restricted"];
+
+fn resource_version() -> u32 {
+    1
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// What it is expected to carry, as whole numbers: what a consent screen shows of its cost.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceCapacity {
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub storage_gb: u32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub connections: u32,
+}
+
+/// Something the app needs that is not the platform's own records: an entry of `resources`. It says
+/// what is needed. Who provides it is for the workspace to choose.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceDef {
+    /// `[a-z][a-z0-9_]{0,39}`: how the app's code names it.
+    pub name: String,
+    /// One of [`RESOURCE_CLASSES`].
+    pub class: String,
+    /// The version of the class's contract this was written against.
+    #[serde(default = "resource_version")]
+    pub version: u32,
+    /// The app cannot run without it, so it is not activated until it is there.
+    #[serde(default)]
+    pub required: bool,
+    /// What it depends on the provider guaranteeing.
+    #[serde(default)]
+    pub semantics: BTreeSet<String>,
+    pub isolation: String,
+    /// Whether it is the only copy of something, which decides what losing it means.
+    pub authority: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classification: Option<String>,
+    #[serde(default)]
+    pub retention_days: u32,
+    #[serde(default)]
+    pub backup: bool,
+    /// `retain`, or `offer_deletion`. Destroying data always takes someone's decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_uninstall: Option<String>,
+    #[serde(default)]
+    pub capacity: ResourceCapacity,
+}
+
+impl ResourceDef {
+    /// One line for a consent screen. Anything here changing is a change someone has to agree to.
+    pub fn consent_line(&self) -> String {
+        let mut line = format!("{}: {} {}", self.name, self.class, self.authority);
+        if self.required {
+            line.push_str(", required");
+        }
+        if self.capacity.storage_gb > 0 {
+            line.push_str(&format!(", {} GB", self.capacity.storage_gb));
+        }
+        if self.capacity.connections > 0 {
+            line.push_str(&format!(", {} connections", self.capacity.connections));
+        }
+        line
+    }
+}
+
+/// That its publisher is retiring it, and what to do about that.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Deprecation {
+    /// `YYYY-MM-DD`: when support ends. Nothing here promises anything beyond that date.
+    pub support_ends: String,
+    /// The app that takes over, when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacement: Option<String>,
+    /// How to get data out.
+    pub export: String,
+}
+
 /// The manifest, `app.yaml` at the root of a bundle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -208,6 +297,12 @@ pub struct AppManifest {
     /// plugin.json). Consented to at install, like the rest of its permissions.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub access: Vec<AccessDef>,
+    /// What it needs beyond the platform's records. Consented to at install, like its permissions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<ResourceDef>,
+    /// Set by its publisher when it is being retired.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecation: Option<Deprecation>,
     #[serde(default)]
     pub uninstall: Uninstall,
 }
@@ -347,7 +442,17 @@ fn is_prefix(p: &str) -> bool {
 impl AppManifest {
     /// Parses and validates `app.yaml`.
     pub fn parse(yaml: &str) -> Result<AppManifest, AppError> {
-        let m: AppManifest = serde_yaml::from_str(yaml).map_err(|e| AppError::Manifest(e.to_string()))?;
+        let m: AppManifest = serde_yaml::from_str(yaml).map_err(|e| {
+            let text = e.to_string();
+            // What this server does not know may be a requirement, so it is never skipped.
+            if text.contains("unknown field") {
+                AppError::Manifest(format!(
+                    "{text}. This server does not know that field, and will not ignore what may be a requirement: this app needs a newer Ferrum"
+                ))
+            } else {
+                AppError::Manifest(text)
+            }
+        })?;
         m.validate()?;
         Ok(m)
     }
@@ -421,6 +526,20 @@ impl AppManifest {
             && !is_email(s)
         {
             return bad(format!("support must be an http(s) URL or an e-mail address, not '{s}'"));
+        }
+
+        self.validate_resources()?;
+        if let Some(d) = &self.deprecation {
+            let date = d.support_ends.as_bytes();
+            if date.len() != 10 || date[4] != b'-' || date[7] != b'-' || !date.iter().enumerate().all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit()) {
+                return bad(format!("deprecation.support_ends must be YYYY-MM-DD, not {}", d.support_ends));
+            }
+            line("deprecation.export", &d.export, 300)?;
+            if let Some(r) = &d.replacement
+                && !is_app_id(r)
+            {
+                return bad(format!("deprecation.replacement: '{r}' is not an app id"));
+            }
         }
 
         for dep in self.requires.keys() {
@@ -501,6 +620,47 @@ impl AppManifest {
 
     /// `parent`, `extension_points` and `contributes`. Contributions to another app's point are
     /// checked against its contract when a plan brings the two together.
+    fn validate_resources(&self) -> Result<(), AppError> {
+        if self.runtime == Runtime::Meta && !self.resources.is_empty() {
+            return bad("resources: an app with no code has nothing to use them with");
+        }
+        let mut seen = BTreeSet::new();
+        for r in &self.resources {
+            let at = format!("resources.{}", r.name);
+            let name = r.name.as_bytes();
+            if name.is_empty()
+                || name.len() > 40
+                || !name[0].is_ascii_lowercase()
+                || !name.iter().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'_')
+            {
+                return bad(format!("resources: '{}' must be a lower-case letter, then lower-case letters, digits or '_', up to 40", r.name));
+            }
+            if !seen.insert(&r.name) {
+                return bad(format!("{at} is listed twice"));
+            }
+            if r.version == 0 {
+                return bad(format!("{at}.version starts at 1"));
+            }
+            for (field, value, allowed) in
+                [("class", &r.class, RESOURCE_CLASSES), ("isolation", &r.isolation, RESOURCE_ISOLATIONS), ("authority", &r.authority, RESOURCE_AUTHORITIES)]
+            {
+                if !allowed.contains(&value.as_str()) {
+                    return bad(format!("{at}.{field}: this server does not know '{value}' (use: {})", allowed.join(", ")));
+                }
+            }
+            if let Some(s) = r.semantics.iter().find(|s| !RESOURCE_SEMANTICS.contains(&s.as_str())) {
+                return bad(format!("{at}.semantics: this server does not know '{s}', and will not ignore what may be a requirement"));
+            }
+            if let Some(c) = r.classification.as_ref().filter(|c| !RESOURCE_CLASSIFICATIONS.contains(&c.as_str())) {
+                return bad(format!("{at}.classification: '{c}' is not one of {}", RESOURCE_CLASSIFICATIONS.join(", ")));
+            }
+            if let Some(u) = r.on_uninstall.as_ref().filter(|u| !["retain", "offer_deletion"].contains(&u.as_str())) {
+                return bad(format!("{at}.on_uninstall: '{u}' is not retain or offer_deletion"));
+            }
+        }
+        Ok(())
+    }
+
     fn validate_extensions(&self) -> Result<(), AppError> {
         if self.id == "ui" || self.id == "shell" {
             return bad(format!("the id '{}' is reserved for the platform's points", self.id));
@@ -618,6 +778,50 @@ uninstall: keep
     fn with(from: &str, to: &str) -> Result<AppManifest, AppError> {
         assert!(VALID.contains(from), "{from}");
         AppManifest::parse(&VALID.replacen(from, to, 1))
+    }
+
+    const RESOURCE: &str = "resources:\n  - {name: ledger, class: relational, isolation: database, authority: primary, required: true, semantics: [transactions], capacity: {storage_gb: 10}}\nuninstall: keep\n";
+
+    fn with_resources(yaml: &str) -> Result<AppManifest, AppError> {
+        with("uninstall: keep\n", yaml)
+    }
+
+    fn refused_resource(from: &str, to: &str, needle: &str) {
+        let err = with_resources(&RESOURCE.replacen(from, to, 1)).expect_err(needle).to_string();
+        assert!(err.contains(needle), "expected '{needle}' in: {err}");
+    }
+
+    #[test]
+    fn resources_are_declared_strictly() {
+        let m = with_resources(RESOURCE).unwrap();
+        assert_eq!(m.resources[0].consent_line(), "ledger: relational primary, required, 10 GB");
+        assert_eq!(m.resources[0].version, 1);
+        refused_resource("name: ledger", "name: Ledger", "lower-case");
+        refused_resource("class: relational", "class: quantum", "does not know 'quantum'");
+        refused_resource("isolation: database", "isolation: hope", "does not know 'hope'");
+        refused_resource("authority: primary", "authority: vibes", "does not know 'vibes'");
+        refused_resource("semantics: [transactions]", "semantics: [teleportation]", "will not ignore what may be a requirement");
+        refused_resource("required: true", "required: true, tenant: someone-else", "unknown field");
+        refused_resource("capacity: {storage_gb: 10}", "capacity: {storage_gb: 10, cost_ceiling: 5}", "unknown field");
+        let twice = "resources:\n  - {name: a, class: cache, isolation: prefix, authority: disposable}\n  - {name: a, class: cache, isolation: prefix, authority: disposable}\nuninstall: keep\n";
+        assert!(with_resources(twice).unwrap_err().to_string().contains("listed twice"));
+        let meta = VALID.replace("runtime: wasm", "runtime: meta").replace("plugin: plugin.json\n", "").replace("uninstall: keep\n", RESOURCE);
+        assert!(AppManifest::parse(&meta).unwrap_err().to_string().contains("no code"), "metadata cannot use a database");
+    }
+
+    #[test]
+    fn what_this_server_does_not_know_is_refused_not_skipped() {
+        let err = with("uninstall: keep\n", "services:\n  - {image: sha256:abc, egress: everywhere}\nuninstall: keep\n").unwrap_err().to_string();
+        assert!(err.contains("services") && err.contains("newer Ferrum"), "{err}");
+    }
+
+    #[test]
+    fn retiring_says_when_and_how_to_leave() {
+        let good = "deprecation: {support_ends: 2027-06-30, replacement: other-app, export: Download everything from its settings page}\nuninstall: keep\n";
+        assert_eq!(with("uninstall: keep\n", good).unwrap().deprecation.unwrap().support_ends, "2027-06-30");
+        assert!(with("uninstall: keep\n", &good.replace("2027-06-30", "soon")).is_err());
+        assert!(with("uninstall: keep\n", &good.replace("other-app", "Not An App")).is_err());
+        assert!(with("uninstall: keep\n", "deprecation: {support_ends: 2027-06-30}\nuninstall: keep\n").is_err(), "with a way out");
     }
 
     fn rejected(from: &str, to: &str, needle: &str) {

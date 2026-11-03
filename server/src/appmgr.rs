@@ -96,6 +96,8 @@ pub struct PlanApp {
     pub screenshots: Vec<String>,
     /// Its interface runs isolated: a bundle this server does not trust, private to the workspace.
     pub isolated: bool,
+    /// What was established about this exact artifact. A new build has none until it earns them.
+    pub labels: Vec<ferrum_kernel::apps::Label>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -615,7 +617,7 @@ fn merge(into: &mut Permissions, p: &Permissions) {
         }
     }
     // Destructured so that a new kind of permission cannot be forgotten here.
-    let Permissions { native, entities, hooks, hosts, public_routes, sockets, schedules, subscriptions, new_entities, overlays, roles, sql } = p;
+    let Permissions { native, entities, hooks, hosts, public_routes, sockets, schedules, subscriptions, new_entities, resources, overlays, roles, sql } = p;
     into.native |= native;
     sets(&mut into.entities, entities);
     sets(&mut into.hooks, hooks);
@@ -629,6 +631,7 @@ fn merge(into: &mut Permissions, p: &Permissions) {
     into.schedules.extend(schedules.iter().cloned());
     into.subscriptions.extend(subscriptions.iter().cloned());
     into.new_entities.extend(new_entities.iter().cloned());
+    into.resources.extend(resources.iter().cloned());
     into.sql.extend(sql.iter().cloned());
 }
 
@@ -738,7 +741,7 @@ impl AppManager {
     fn native_permissions(&self, m: &AppManifest) -> Permissions {
         let catalog = self.kernel.registry.catalog();
         let new_entities = m.packages.iter().filter_map(|p| catalog.package(p)).flat_map(|p| p.entities.iter().map(|e| e.name.clone())).collect();
-        Permissions { native: true, new_entities, ..Permissions::default() }
+        Permissions { native: true, new_entities, resources: m.resources.iter().map(|r| r.consent_line()).collect(), ..Permissions::default() }
     }
 
     /// Whether the workspace's packages of a native app predate this build's (roles and seed
@@ -1284,6 +1287,11 @@ impl AppManager {
                 return Err(Error::invalid(format!("{} needs {dep}, which is disabled in this workspace; enable it first", s.id)));
             }
         }
+        if self.kernel.hooks.resources().is_none()
+            && let Some(s) = changing.iter().find(|s| s.manifest.resources.iter().any(|r| r.required))
+        {
+            return Err(Error::invalid(format!("{} needs resources this server has nothing to provide: it cannot run here", s.id)));
+        }
         let mut permissions = Permissions::default();
         if changing.is_empty() {
             permissions = root.permissions.clone();
@@ -1299,6 +1307,11 @@ impl AppManager {
                 None => Permissions::default(),
             };
             increases.extend(s.permissions.increases(&before).into_iter().map(|l| if s.id == id { l } else { format!("{}: {l}", s.id) }));
+        }
+        // Something an upgrade brings with it is new trust, however it got into the plan.
+        for s in changing.iter().filter(|s| s.action == StepAction::Install && s.id != id && ws.apps.contains_key(id)) {
+            increases.push(format!("brings in {} {}", s.id, s.version));
+            increases.extend(s.permissions.increases(&Permissions::default()).into_iter().map(|l| format!("{}: {l}", s.id)));
         }
         let mut warnings: Vec<String> = changing
             .iter()
@@ -1316,6 +1329,12 @@ impl AppManager {
             }
             for line in rel.manifest.get("review").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
                 warnings.push(format!("{}: {line}.", s.id));
+            }
+        }
+        for s in &changing {
+            if let Some(d) = &s.manifest.deprecation {
+                let after = d.replacement.as_ref().map(|r| format!(", and {r} replaces it")).unwrap_or_default();
+                warnings.push(format!("{} is being retired: its support ends on {}{after}. To get data out: {}", s.id, d.support_ends, d.export));
             }
         }
         if !errors.is_empty() {
@@ -1354,6 +1373,10 @@ impl AppManager {
             Origin::Local(rel) => recorded(rel).is_some_and(|r| r.isolated),
             _ => false,
         };
+        let labels = match &root.origin {
+            Origin::Local(rel) => self.kernel.labels_of(id, &rel.digest).await?,
+            _ => Vec::new(),
+        };
         let plan = Plan {
             app: PlanApp {
                 summary: summary(m, &origin, root.verified, root.source == "private", icon_url),
@@ -1363,6 +1386,7 @@ impl AppManager {
                 homepage: m.homepage.clone(),
                 screenshots,
                 isolated,
+                labels,
             },
             steps: steps.iter().map(|s| Step { id: s.id.clone(), version: s.version.to_string(), action: s.action, source: s.source.clone() }).collect(),
             permissions,
@@ -1430,6 +1454,9 @@ impl AppManager {
                 return Err(e.into());
             }
         }
+        for s in steps.iter().filter(|s| s.action != StepAction::Already) {
+            self.declare_resources(ctx, &s.id, &s.manifest).await?;
+        }
         // What this installation brought in for itself is marked so; the app asked for is the
         // administrator's own choice, even if something brought it in before.
         for s in steps.iter().filter(|s| s.action == StepAction::Install && s.id != id && !ws.apps.contains_key(&s.id)) {
@@ -1440,6 +1467,47 @@ impl AppManager {
         }
         tracing::info!(tenant = %ctx.tenant, app = %id, version = %plan.app.summary.version, consent = %plan.digest, "app installed");
         Ok(plan)
+    }
+
+    /// Tells what provides resources that this app needs them. An app that cannot run yet stays
+    /// installed and off, and [`AppManager::activate_waiting`] turns it on when it can.
+    async fn declare_resources(&self, ctx: &Ctx, id: &str, manifest: &AppManifest) -> Result<()> {
+        if manifest.resources.is_empty() {
+            return Ok(());
+        }
+        let Some(resources) = self.kernel.hooks.resources().cloned() else { return Ok(()) };
+        let declared: Vec<Value> = manifest.resources.iter().filter_map(|r| serde_json::to_value(r).ok()).collect();
+        resources.declare(&self.kernel, ctx, id, &declared).await?;
+        let required: Vec<String> = manifest.resources.iter().filter(|r| r.required).map(|r| r.name.clone()).collect();
+        let missing = resources.missing(&self.kernel, ctx.tenant, id, &required).await?;
+        if !missing.is_empty() {
+            self.set_enabled_locked(ctx, id, false).await?;
+            self.kernel.set_app_waiting(ctx, id, Some(&missing)).await?;
+            self.enabled.remove(&ctx.tenant);
+            tracing::info!(tenant = %ctx.tenant, app = %id, waiting_for = ?missing, "app installed, waiting for its resources");
+        }
+        Ok(())
+    }
+
+    /// Turns on the apps whose resources are now there. Returns how many.
+    pub async fn activate_waiting(&self) -> Result<usize> {
+        let Some(resources) = self.kernel.hooks.resources().cloned() else { return Ok(0) };
+        let mut activated = 0;
+        for (tenant, id) in self.kernel.apps_waiting().await? {
+            let ctx = Ctx::system(tenant, self.kernel.registry.schema(tenant).await?);
+            let Some(inst) = self.workspace(tenant).await?.apps.get(&id).map(|i| i.version.clone()) else { continue };
+            let Some(manifest) = self.manifest_of(tenant, &id, &inst).await? else { continue };
+            let required: Vec<String> = manifest.resources.iter().filter(|r| r.required).map(|r| r.name.clone()).collect();
+            let missing = resources.missing(&self.kernel, tenant, &id, &required).await?;
+            if !missing.is_empty() {
+                self.kernel.set_app_waiting(&ctx, &id, Some(&missing)).await?;
+                continue;
+            }
+            self.set_enabled(&ctx, &id, true).await?;
+            self.kernel.set_app_waiting(&ctx, &id, None).await?;
+            activated += 1;
+        }
+        Ok(activated)
     }
 
     async fn apply_step(&self, ctx: &Ctx, s: &StepData, release: Option<&Release>, digest: &str, undo: &mut Undo) -> Result<()> {
@@ -1530,6 +1598,14 @@ impl AppManager {
             None => release.as_ref().and_then(recorded).map(|r| r.app),
         };
         let packages = manifest.as_ref().map(|m| m.packages.clone()).unwrap_or_default();
+        let resources = self.kernel.hooks.resources().cloned();
+        if let (true, Some(m), Some(r)) = (enabled, &manifest, &resources) {
+            let required: Vec<String> = m.resources.iter().filter(|r| r.required).map(|r| r.name.clone()).collect();
+            let missing = r.missing(&self.kernel, ctx.tenant, id, &required).await?;
+            if !missing.is_empty() {
+                return Err(Error::invalid(format!("{id} is waiting for its resources: {}", missing.join(", "))));
+            }
+        }
         if enabled {
             if let Some(r) = release.as_ref().filter(|r| r.status == "revoked") {
                 return Err(Error::Forbidden(format!(
@@ -1562,6 +1638,17 @@ impl AppManager {
             }
             if !inst.row {
                 self.kernel.record_installation(ctx, id, &inst.version, None, None).await?;
+            }
+        }
+        if let (Some(m), Some(r)) = (&manifest, &resources)
+            && !m.resources.is_empty()
+        {
+            if enabled {
+                let declared: Vec<Value> = m.resources.iter().filter_map(|d| serde_json::to_value(d).ok()).collect();
+                r.declare(&self.kernel, ctx, id, &declared).await?;
+            } else {
+                // New access ends with the app, whatever anything else is still doing.
+                r.withdraw(&self.kernel, ctx, id, false).await?;
             }
         }
         self.kernel.set_app_enabled(ctx, id, enabled).await
@@ -1624,6 +1711,11 @@ impl AppManager {
         }
         if let Some(p) = inst.plugin_id {
             ignore_missing(self.plugins.remove(&self.kernel, ctx, p).await)?;
+        }
+        if let (Some(m), Some(r)) = (&manifest, self.kernel.hooks.resources())
+            && !m.resources.is_empty()
+        {
+            r.withdraw(&self.kernel, ctx, id, true).await?;
         }
         self.kernel.forget_installation(ctx, id, delete).await?;
         tracing::info!(tenant = %ctx.tenant, app = %id, deleted_data = delete, "app removed");
@@ -1866,6 +1958,9 @@ impl AppManager {
                 let ctx = Ctx::system(tenant, self.kernel.registry.schema(tenant).await?);
                 if let Some(p) = plugin {
                     ignore_missing(self.plugins.set_enabled(&self.kernel, &ctx, p, false).await)?;
+                }
+                if let Some(r) = self.kernel.hooks.resources() {
+                    r.withdraw(&self.kernel, &ctx, id, false).await?;
                 }
                 self.kernel.set_app_enabled(&ctx, id, false).await
             }
