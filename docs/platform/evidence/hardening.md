@@ -111,6 +111,13 @@ burning its CPU and another project's quieter looks left alone). Writing it foun
 build-time rule's next round within the same hour; a lifted hold now stays lifted. A tree deeper than 2048 is refused at the
 forge by its own `git` (`tests/code_it.rs`, 2101 levels).
 
+## After the merge
+
+The platform program merged on 2026-11-03. The forward lane's first run on `main` found every app's `main` still
+builds with the platform, and that the lane itself lacked a database, now fixed. Builds and customers' services can run
+under gVisor (`FERRUM_CLOUD_CONTAINER_RUNTIME=runsc`); CI's `gvisor` job installs it and runs the hostile builds, which
+reached nothing and saw gVisor's kernel.
+
 ## Figures
 
 An Apple M1 Pro with 8 cores and 16 GB, PostgreSQL 17 with default settings, on one laptop, with the load generator on the same
