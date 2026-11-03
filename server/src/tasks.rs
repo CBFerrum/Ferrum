@@ -64,11 +64,8 @@ impl Task for DeleteTenant {
         if apply && said["held_outside"].as_array().is_some_and(|a| a.is_empty()) {
             // Through a system transaction: row-level security hides workspaces from the pool itself.
             let mut tx = st.kernel.db.system_tx().await.map_err(|e| Error::Message(e.to_string()))?;
-            let tenant: uuid::Uuid = sqlx::query_scalar("select id from tenant where slug = $1")
-                .bind(slug)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(|e| Error::Message(e.to_string()))?;
+            let tenant: uuid::Uuid =
+                sqlx::query_scalar("select id from tenant where slug = $1").bind(slug).fetch_one(&mut *tx).await.map_err(|e| Error::Message(e.to_string()))?;
             tx.commit().await.map_err(|e| Error::Message(e.to_string()))?;
             let gone = st.apps.forget_private(tenant).await.map_err(|e| Error::Message(e.to_string()))?;
             let done = st.kernel.delete_tenant(slug, confirm, true, note).await.map_err(|e| Error::Message(e.to_string()))?;
