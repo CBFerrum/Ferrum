@@ -23,7 +23,12 @@ fn valid_kind(kind: &str) -> bool {
     !kind.is_empty() && kind.len() <= 100 && kind.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_')
 }
 
-pub async fn apply_fact(tx: &mut Tx, tenant: Uuid, site: Uuid, gateway: Uuid, f: &Fact) -> Result<()> {
+pub async fn apply_fact(tx: &mut Tx, tenant: Uuid, site: Uuid, f: &Fact) -> Result<()> {
+    apply_fact_from(tx, tenant, site, None, f).await
+}
+
+/// The same, from a gateway, which may be saying who is connected to it.
+pub async fn apply_fact_from(tx: &mut Tx, tenant: Uuid, site: Uuid, gateway: Option<Uuid>, f: &Fact) -> Result<()> {
     let new = sqlx::query(
         "insert into op_fact (tenant_id, id, site_id, kind, at_source, actor, body) values ($1, $2, $3, $4, $5, $6, $7) on conflict (tenant_id, id) do nothing",
     )
@@ -41,8 +46,8 @@ pub async fn apply_fact(tx: &mut Tx, tenant: Uuid, site: Uuid, gateway: Uuid, f:
     if !new {
         return Ok(());
     }
-    if let Some(device) =
-        f.kind.starts_with("connection.").then(|| f.body.get("device").and_then(|v| v.as_str()).and_then(|v| v.parse::<Uuid>().ok())).flatten()
+    if let (Some(gateway), Some(device)) =
+        (gateway, f.kind.starts_with("connection.").then(|| f.body.get("device").and_then(|v| v.as_str()).and_then(|v| v.parse::<Uuid>().ok())).flatten())
     {
         if f.kind == "connection.opened" {
             connections::opened(tx, tenant, device, gateway, site, f.at_source).await?;
@@ -177,7 +182,7 @@ pub async fn exchange(k: &Kernel, tenant: Uuid, device: Uuid, req: SyncRequest) 
     }
     let mut facts_done = Vec::new();
     for f in &req.facts {
-        apply_fact(&mut tx, tenant, gateway.site, device, f).await?;
+        apply_fact_from(&mut tx, tenant, gateway.site, Some(device), f).await?;
         facts_done.push(f.fact_id);
     }
     // Past a workspace's allowance measurements stay at the gateway, within its own budget, until
