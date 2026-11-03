@@ -191,6 +191,9 @@ impl Kernel {
     /// Settles jobs nobody will come back for, then claims up to `slots`, fairly: see the module
     /// documentation.
     pub async fn claim_jobs(&self, slots: usize) -> Result<Vec<Job>> {
+        if self.db.fenced() || self.holding().await? {
+            return Ok(Vec::new());
+        }
         let mut tx = self.db.system_tx().await?;
         // Asked to stop, with nobody left to tell (a job handed back counts: it is running nowhere).
         sqlx::query("update job set status = 'cancelled', finished_at = now(), lease_token = null where cancel_requested and (status = 'queued' or (status = 'running' and lease_until < now()))")

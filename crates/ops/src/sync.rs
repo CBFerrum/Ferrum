@@ -224,7 +224,7 @@ pub async fn exchange(k: &Kernel, tenant: Uuid, device: Uuid, req: SyncRequest) 
             .flatten();
         lease = Some(Lease { epoch: *epoch, valid_until: now + Duration::hours(max_hours.unwrap_or(72)) });
         commands::confirm_held(&mut tx, tenant, domain, &req.held).await?;
-        if gateway.lifecycle.takes_commands() {
+        if gateway.lifecycle.takes_commands() && !k.holding().await? {
             commands_out = commands::take_for_site(&mut tx, tenant, domain, *epoch, i64::from(req.want), device, pooled).await?;
         }
         cancel = commands::cancels(&mut tx, tenant, domain).await?;

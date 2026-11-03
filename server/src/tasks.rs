@@ -35,6 +35,55 @@ impl Task for AccountState {
     }
 }
 
+/// A system identity, for what an operator does from a shell. Any workspace's will do: what these do is
+/// the whole server's, and is on record against the first.
+async fn operator(k: &ferrum_kernel::Kernel) -> Result<ferrum_kernel::Ctx> {
+    let mut tx = k.db.system_tx().await.map_err(|e| Error::Message(e.to_string()))?;
+    let tenant: Option<uuid::Uuid> =
+        sqlx::query_scalar("select id from tenant order by created_at limit 1").fetch_optional(&mut *tx).await.map_err(|e| Error::Message(e.to_string()))?;
+    tx.commit().await.map_err(|e| Error::Message(e.to_string()))?;
+    let tenant = tenant.ok_or_else(|| Error::Message("this server has no workspaces".into()))?;
+    let schema = k.registry.schema(tenant).await.map_err(|e| Error::Message(e.to_string()))?;
+    Ok(ferrum_kernel::Ctx::system(tenant, schema))
+}
+
+/// `release_restore note:"..."`: a person has looked at what came back from a backup.
+pub struct ReleaseRestore;
+
+#[async_trait]
+impl Task for ReleaseRestore {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "release_restore".into(), detail: "After a restore: says what was checked, and lets work that reaches outside carry on".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let note = vars.cli_arg("note").map_err(|e| Error::Message(e.to_string()))?;
+        k.release_hold(&operator(&k).await?, note).await.map_err(|e| Error::Message(e.to_string()))?;
+        println!("released. What was set aside stays set aside: replay what should still happen");
+        Ok(())
+    }
+}
+
+/// `accept_authority note:"..."`: this region, which lost the right to write, may have it again.
+pub struct AcceptAuthority;
+
+#[async_trait]
+impl Task for AcceptAuthority {
+    fn task(&self) -> TaskInfo {
+        TaskInfo {
+            name: "accept_authority".into(),
+            detail: "After a failover: says this region's data is good, so it may take the right to write again".into(),
+        }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let note = vars.cli_arg("note").map_err(|e| Error::Message(e.to_string()))?;
+        k.accept_authority(&operator(&k).await?, note).await.map_err(|e| Error::Message(e.to_string()))?;
+        println!("accepted. This region writes once the witness gives it the authority");
+        Ok(())
+    }
+}
+
 /// `doctor`: a redacted report on this deployment; `format:json` for a machine. Fails when something
 /// must be fixed before it is safe to run.
 pub struct Doctor;

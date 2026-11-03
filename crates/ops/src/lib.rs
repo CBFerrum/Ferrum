@@ -46,6 +46,7 @@ pub fn register(h: &mut HookRegistry) {
     h.register("Device", Arc::new(devices::DeviceHook));
     h.register("AutomationEnvelope", Arc::new(commands::EnvelopeHook));
     h.add_site("ops", Arc::new(site::OpsSite));
+    h.add_restored(Arc::new(commands::Restored));
 }
 
 /// This app's reports.
