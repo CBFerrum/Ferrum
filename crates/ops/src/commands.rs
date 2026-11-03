@@ -868,12 +868,13 @@ impl ferrum_kernel::recovery::Restored for Restored {
     }
 }
 
-/// A device left the gateway that was given work for it. What that gateway's journal took may have
-/// started, so a person says what happened. What it never confirmed goes to whoever has the device now.
+/// A device left the gateway that was given work for it. Anything sent there may have started, whether
+/// or not the gateway lived to say so: it can act on a command and die before its next report, and giving
+/// that command to whoever has the device now would start it twice. So a person says what happened.
 pub async fn mark_moved(tx: &mut Tx, tenant: Uuid, device: Uuid, gateway: Uuid) -> Result<()> {
     let rows: Vec<Uuid> = sqlx::query_scalar(
         "select id from op_command where tenant_id = $1 and target_id = $2 and taken_by = $3 \
-         and (state in ('Accepted', 'Executing') or (state = 'Queued' and held_at is not null)) for update",
+         and (state in ('Accepted', 'Executing') or (state = 'Queued' and sent_at is not null)) for update",
     )
     .bind(tenant)
     .bind(device)
