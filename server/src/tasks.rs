@@ -82,6 +82,40 @@ async fn acting_in(k: &ferrum_kernel::Kernel, slug: &str) -> Result<ferrum_kerne
     Ok(ferrum_kernel::Ctx::system(tenant, schema))
 }
 
+/// `cloud_retire slug:acme [apply:yes]`: after a closed workspace's date, what Cloud made for it goes, and then
+/// `delete_tenant` can delete the workspace. Without apply:yes it says what Cloud still holds.
+#[cfg(feature = "cloud")]
+pub struct CloudRetire;
+
+#[cfg(feature = "cloud")]
+#[async_trait]
+impl Task for CloudRetire {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "cloud_retire".into(), detail: "After a closed workspace's date, destroys what Cloud made for it. Says what it holds unless apply:yes".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        use ferrum_kernel::account::Leaving;
+        let k = kernel(ctx)?;
+        let slug = vars.cli_arg("slug").map_err(|e| Error::Message(e.to_string()))?;
+        let tenant = acting_in(&k, slug).await?.tenant;
+        if vars.cli_arg("apply").is_ok_and(|v| v == "yes") {
+            let done = ferrum_app_cloud::projects::retire_workspace(&k, tenant).await.map_err(|e| Error::Message(e.to_string()))?;
+            println!("{}", serde_json::to_string_pretty(&done).unwrap_or_default());
+            println!("started. The controller does the rest; run this without apply:yes to see what is still held");
+            return Ok(());
+        }
+        let mut tx = k.db.system_tx().await.map_err(|e| Error::Message(e.to_string()))?;
+        let held = ferrum_app_cloud::projects::Holdings.held_outside(&mut tx, tenant).await.map_err(|e| Error::Message(e.to_string()))?;
+        tx.commit().await.map_err(|e| Error::Message(e.to_string()))?;
+        if held.is_empty() {
+            println!("Cloud holds nothing of {slug} elsewhere");
+        } else {
+            println!("{slug} still has: {}", held.join("; "));
+        }
+        Ok(())
+    }
+}
+
 /// `cloud_restrict tenant:acme project:shop category:phishing scope:all detail:"..." [evidence:'{...}']`:
 /// stops a project being used for what it may not be, and nothing else.
 #[cfg(feature = "cloud")]
