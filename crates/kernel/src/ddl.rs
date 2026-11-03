@@ -7,6 +7,7 @@
 
 use crate::db::Db;
 use crate::error::{Error, Result};
+use crate::store::SYSTEM_KEYS;
 use ferrum_meta::{Catalog, EffEntity, EntityKind, FieldDef, FieldType, OnDelete, Schema, Storage, effective};
 use sha2::{Digest, Sha256};
 use sqlx::{AssertSqlSafe, PgConnection};
@@ -56,6 +57,10 @@ fn pg_type_name(f: &FieldDef) -> &'static str {
 fn short_hash(s: &str) -> String {
     hex::encode(&Sha256::digest(s.as_bytes())[..4])
 }
+
+/// What this file makes of a catalog, beside the catalog itself: a new version syncs every database
+/// once, though no package changed. 2: indexes in lists' default order.
+const DDL_VERSION: u32 = 2;
 
 /// Constraint/index name that fits Postgres' 63-byte limit and is stable.
 fn obj_name(kind: &str, table: &str, cols: &[&str]) -> String {
@@ -180,6 +185,39 @@ impl Ddl<'_> {
         self.exec(format!("create {}index if not exists {} on {} ({collist}){where_}", if unique { "unique " } else { "" }, q(name), q(table))).await
     }
 
+    /// An entity's lists read in their default order from an index, rather than by sorting every
+    /// row of the workspace for each page (`query::order_by` makes the order with the same words).
+    /// Built without blocking writes, since an upgrade can add it to a large table; a build that
+    /// failed leaves an invalid index behind, which is dropped and built again.
+    async fn sort_index(&mut self, table: &str, ent: &EffEntity) -> Result<()> {
+        let Ok((field, desc)) = crate::query::parse_sort(ent, None) else { return Ok(()) };
+        let column = SYSTEM_KEYS.contains(&field.as_str()) || ent.storage_of(&field) == Some(Storage::Column);
+        // The `(tenant_id, created_at, id)` index serves `created_at` both ways.
+        if !column || field == "created_at" {
+            return Ok(());
+        }
+        let dir = if desc { "desc" } else { "asc" };
+        let name = obj_name("ixs", table, &[&field, dir]);
+        let invalid: bool = sqlx::query_scalar(
+            "select exists (select 1 from pg_index i join pg_class c on c.oid = i.indexrelid join pg_namespace n on n.oid = c.relnamespace \
+             where c.relname = $1 and n.nspname = current_schema() and not i.indisvalid)",
+        )
+        .bind(&name)
+        .fetch_one(&mut *self.conn)
+        .await?;
+        if invalid {
+            self.exec(format!("drop index concurrently if exists {}", q(&name))).await?;
+        }
+        self.exec(format!(
+            "create index concurrently if not exists {} on {} (tenant_id, {} {}, id {dir})",
+            q(&name),
+            q(table),
+            q(&field),
+            crate::query::direction(&field, desc)
+        ))
+        .await
+    }
+
     async fn links(&mut self, table: &str, ent: &EffEntity, schema: &Schema) -> Result<()> {
         for f in ent.value_fields().filter(|f| f.ftype == FieldType::Link) {
             if ent.storage_of(&f.name) != Some(Storage::Column) {
@@ -262,7 +300,8 @@ pub async fn sync(db: &Db, catalog: &Catalog, force: bool) -> Result<SyncReport>
 
 async fn sync_locked(conn: &mut PgConnection, catalog: &Catalog, force: bool) -> Result<SyncReport> {
     let current: Option<String> = sqlx::query_scalar("select value from cluster_state where key = 'catalog_fingerprint'").fetch_optional(&mut *conn).await?;
-    if !force && current.as_deref() == Some(catalog.fingerprint()) {
+    let fingerprint = format!("{}:{DDL_VERSION}", catalog.fingerprint());
+    if !force && current.as_deref() == Some(fingerprint.as_str()) {
         return Ok(SyncReport { skipped: true, ..Default::default() });
     }
     let schema = cluster_schema(catalog)?;
@@ -303,6 +342,7 @@ async fn sync_locked(conn: &mut PgConnection, catalog: &Catalog, force: bool) ->
         let t = ent.table.clone();
         ddl.links(&t, ent, &schema).await?;
         ddl.index(&t, &["created_at", "id"], false, None).await?;
+        ddl.sort_index(&t, ent).await?;
         if ent.def.numbering.is_some() {
             ddl.index(&t, &["number"], true, Some("number is not null")).await?;
         }
@@ -415,7 +455,7 @@ async fn sync_locked(conn: &mut PgConnection, catalog: &Catalog, force: bool) ->
         "insert into cluster_state (key, value) values ('catalog_fingerprint', $1) \
          on conflict (key) do update set value = excluded.value, updated_at = now()",
     )
-    .bind(catalog.fingerprint())
+    .bind(&fingerprint)
     .execute(&mut *ddl.conn)
     .await?;
     for w in &ddl.report.warnings {
