@@ -104,6 +104,9 @@ wait_up "$API/_health" "the server"
 [ "$(curl -fsS "${auth[@]}" "$API/api/auth/me" | json 'd["user"]["email"]')" = "smoke@smoke.test" ] || fail "the session after the replacement"
 [ "$(curl -fsS "${auth[@]}" "$API/api/v1/SalesInvoice/$before" | json 'd["docstatus"]')" = "1" ] || fail "the invoice made before the replacement"
 [ "$(curl -fsS "${auth[@]}" "$API/api/v1/SalesInvoice/$before/audit" | json 'd["chain_valid"]')" = "True" ] || fail "the audit chain across the replacement"
+# On the new image: the one before may not have what this checks.
+FERRUM_URL=$API FERRUM_TENANT=smoke FERRUM_EMAIL=smoke@smoke.test FERRUM_PASSWORD=$PASSWORD python3 ../scripts/support_check.py \
+  || fail "support access reaches more than it was given"
 
 step "checking headers"
 headers=$(curl -fsS -D - -o /dev/null "${auth[@]}" "$API/api/v1/Customer?limit=1")

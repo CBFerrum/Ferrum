@@ -39,18 +39,19 @@ journeys:
   - id: J07
     title: Server 1 to charger on server 3
     state: passes_in_parts
-    tests: ["crates/ops/tests/ops_it.rs", "ferrum-app-edge:gateway/tests/ocpp_it.rs", "ferrum-app-edge:tests/charging_it.rs"]
-    missing: "The parts have not been run together on two gateways, and no charger was involved"
+    tests: ["ferrum-app-edge:gateway/tests/charger_it.rs", "crates/ops/tests/ops_it.rs", "ferrum-app-edge:gateway/tests/ocpp_it.rs", "ferrum-app-edge:tests/charging_it.rs"]
+    missing: "Run whole on two API servers and real gateway processes, one of them killed, against chargers written for the test, a hundred at once. No charger or meter made by anyone. On one machine the two gateways take turns with one port"
     blockers: [BLOCK-EV-HARDWARE]
   - id: J08
     title: Restore and regional recovery
     state: passes_in_parts
-    tests: ["crates/kernel/tests/recovery_it.rs", "ferrum-app-cloud:tests/resources_it.rs", "ferrum-app-cloud:tests/control_it.rs"]
-    missing: "One restore of everything at once: database, Git, objects and keys. Across real regions"
+    tests: ["ferrum-app-cloud:tests/drill_it.rs", "crates/kernel/tests/recovery_it.rs", "ferrum-app-cloud:tests/recovery_it.rs", "ferrum-app-cloud:tests/resources_it.rs"]
+    missing: "Database, repositories, artifacts and the key come back at once on one machine. Customer databases in the same run, and real regions"
   - id: J09
     title: Partner least privilege
-    state: not_run
-    missing: "Support access exists and is tested. A partner across two customers has not been modelled"
+    state: passes_in_parts
+    tests: ["ferrum-app-cloud:tests/control_it.rs", "crates/kernel/tests/support_it.rs"]
+    missing: "One partner across two customers, in software. Partner terms are not written, and no partner has used it"
     blockers: [BLOCK-LEGAL-REVIEW]
   - id: J10
     title: Provider failure and portability
@@ -66,4 +67,4 @@ journeys:
   - id: J12
     title: Sustained corporate operation
     state: not_run
-    missing: "No load or endurance run has been made. Limits in the documentation are not measured figures"
+    missing: "No endurance run has been made. Serving, durable work and recovery were each measured for minutes on one laptop"

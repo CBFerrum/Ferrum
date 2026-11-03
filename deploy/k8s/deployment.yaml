@@ -7,7 +7,7 @@ metadata:
   name: ferrum
   labels: {app.kubernetes.io/name: ferrum}
 spec:
-  replicas: 3
+  # No replicas here: the HorizontalPodAutoscaler owns the count, and every apply of a number would undo it.
   revisionHistoryLimit: 5
   selector:
     matchLabels: {app.kubernetes.io/name: ferrum}

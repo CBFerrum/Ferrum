@@ -18,7 +18,10 @@ pub struct AccountState;
 #[async_trait]
 impl Task for AccountState {
     fn task(&self) -> TaskInfo {
-        TaskInfo { name: "account_state".into(), detail: "Moves a workspace between active, grace and restricted. Nothing here touches its data".into() }
+        TaskInfo {
+            name: "account_state".into(),
+            detail: "Moves a workspace between active, grace, restricted and closed (with retain_until:YYYY-MM-DD). Nothing here touches its data".into(),
+        }
     }
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
         let k = kernel(ctx)?;
@@ -29,8 +32,51 @@ impl Task for AccountState {
             sqlx::query_scalar("select id from tenant where slug = $1").bind(slug).fetch_optional(&mut *tx).await.map_err(|e| Error::Message(e.to_string()))?;
         tx.commit().await.map_err(|e| Error::Message(e.to_string()))?;
         let tenant = tenant.ok_or_else(|| Error::Message(format!("no workspace {slug}")))?;
+        if state == "closed" {
+            let until = vars.cli_arg("retain_until").map_err(|_| Error::Message("a closed workspace is kept: retain_until:YYYY-MM-DD".into()))?;
+            let until = chrono::NaiveDate::parse_from_str(until, "%Y-%m-%d").map_err(|_| Error::Message("retain_until is a date: YYYY-MM-DD".into()))?;
+            let note = vars.cli_arg("note").map_err(|_| Error::Message("say why: note:\"...\"".into()))?;
+            k.close_account(tenant, until, note).await.map_err(|e| Error::Message(e.to_string()))?;
+            println!("{slug} is closed, and kept until {until}");
+            return Ok(());
+        }
         k.set_account_state(tenant, state, vars.cli_arg("note").ok()).await.map_err(|e| Error::Message(e.to_string()))?;
         println!("{slug} is {state}");
+        Ok(())
+    }
+}
+
+/// `delete_tenant slug:acme confirm:acme note:"..." [apply:yes]`: deletes a closed workspace whose time to be kept has passed.
+pub struct DeleteTenant;
+
+#[async_trait]
+impl Task for DeleteTenant {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "delete_tenant".into(), detail: "Deletes a closed workspace after its retention date. Says what would go unless apply:yes".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let st = app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?;
+        let arg = |name: &str| vars.cli_arg(name).map_err(|e| Error::Message(e.to_string()));
+        let (slug, confirm, note) = (arg("slug")?, arg("confirm")?, arg("note")?);
+        let apply = vars.cli_arg("apply").is_ok_and(|v| v == "yes");
+        // Everything that could stop it is asked first, so nothing goes from storage for a deletion that will not happen.
+        let said = st.kernel.delete_tenant(slug, confirm, false, note).await.map_err(|e| Error::Message(e.to_string()))?;
+        if apply && said["held_outside"].as_array().is_some_and(|a| a.is_empty()) {
+            // Through a system transaction: row-level security hides workspaces from the pool itself.
+            let mut tx = st.kernel.db.system_tx().await.map_err(|e| Error::Message(e.to_string()))?;
+            let tenant: uuid::Uuid =
+                sqlx::query_scalar("select id from tenant where slug = $1").bind(slug).fetch_one(&mut *tx).await.map_err(|e| Error::Message(e.to_string()))?;
+            tx.commit().await.map_err(|e| Error::Message(e.to_string()))?;
+            let gone = st.apps.forget_private(tenant).await.map_err(|e| Error::Message(e.to_string()))?;
+            let done = st.kernel.delete_tenant(slug, confirm, true, note).await.map_err(|e| Error::Message(e.to_string()))?;
+            println!("{}", serde_json::to_string_pretty(&done).unwrap_or_default());
+            println!("deleted, with {} private app bundles", gone.len());
+            return Ok(());
+        }
+        println!("{}", serde_json::to_string_pretty(&said).unwrap_or_default());
+        if apply {
+            return Err(Error::Message("not deleted: something is still held outside this database".into()));
+        }
         Ok(())
     }
 }
@@ -60,6 +106,40 @@ impl Task for ReleaseRestore {
         let note = vars.cli_arg("note").map_err(|e| Error::Message(e.to_string()))?;
         k.release_hold(&operator(&k).await?, note).await.map_err(|e| Error::Message(e.to_string()))?;
         println!("released. What was set aside stays set aside: replay what should still happen");
+        Ok(())
+    }
+}
+
+/// `extract_tenant from:"postgres://..." tenant:acme note:"..." [apply:yes]`: takes one workspace back to
+/// what a restored copy holds. Without `apply:yes` it only compares.
+pub struct ExtractTenant;
+
+#[async_trait]
+impl Task for ExtractTenant {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "extract_tenant".into(), detail: "Takes one workspace back to what a restored copy holds. Compares unless apply:yes".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let arg = |name: &str| vars.cli_arg(name).map_err(|e| Error::Message(e.to_string()));
+        let mut tx = k.db.system_tx().await.map_err(|e| Error::Message(e.to_string()))?;
+        let tenant: Option<uuid::Uuid> = sqlx::query_scalar("select id from tenant where slug = $1")
+            .bind(arg("tenant")?)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| Error::Message(e.to_string()))?;
+        tx.commit().await.map_err(|e| Error::Message(e.to_string()))?;
+        let tenant = tenant.ok_or_else(|| Error::Message("no such workspace".into()))?;
+        let schema = k.registry.schema(tenant).await.map_err(|e| Error::Message(e.to_string()))?;
+        let apply = vars.cli_arg("apply").is_ok_and(|v| v == "yes");
+        let done = k
+            .extract_tenant(&ferrum_kernel::Ctx::system(tenant, schema), arg("from")?, apply, arg("note")?)
+            .await
+            .map_err(|e| Error::Message(e.to_string()))?;
+        println!("{}", serde_json::to_string_pretty(&done).unwrap_or_default());
+        if apply {
+            println!("done. Every session and API key of this workspace has stopped working, and what was waiting is set aside");
+        }
         Ok(())
     }
 }

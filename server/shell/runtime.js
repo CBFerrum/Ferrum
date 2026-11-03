@@ -228,8 +228,9 @@ button[aria-pressed="true"], button[aria-expanded="true"] { background: var(--fe
   color: var(--ferrum-surface, #fff); box-shadow: var(--ferrum-shadow); font-size: 13.5px; animation: pop .14s ease-out; }
 .notice button { color: inherit; border-color: color-mix(in srgb, currentColor 35%, transparent); height: 28px; font-size: 13px; }
 .notice button:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
-.skip { position: absolute; left: -9999px; }
-.skip:focus { left: 8px; top: 8px; z-index: 1; padding: 6px 10px; background: var(--ferrum-surface, #fff); border-radius: 6px; }
+/* Hidden until focused without being parked off one side, which a right-to-left page would scroll to. */
+.skip { position: absolute; inset-inline-start: 8px; top: 8px; z-index: 1; padding: 6px 10px; background: var(--ferrum-surface, #fff); border-radius: 6px; }
+.skip:not(:focus) { width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .banner { position: absolute; top: var(--ferrum-bar-height, 48px); left: 0; right: 0; padding: 4px 12px; text-align: center; font-size: 12px;
   background: var(--ferrum-warning-soft, #fff3d6); }
 .group-title { font-weight: 600; }

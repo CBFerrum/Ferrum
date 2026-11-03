@@ -25,6 +25,14 @@ spec:
     initdb:
       database: ferrum
       owner: ferrum
+  # What the application may hold, so that however far it scales, 30 connections are left for an
+  # administrator, replication and a migration. scripts/check_manifests.py keeps the budget honest.
+  managed:
+    roles:
+      - name: ferrum
+        ensure: present
+        login: true
+        connectionLimit: 370
   postgresql:
     parameters:
       max_connections: "400"

@@ -8,6 +8,7 @@ when interrupted, and refuses to start on a dirty file.
 
     scripts/mutants.py            # all of them, 10-20 minutes
     scripts/mutants.py hook       # those whose name contains `hook`
+    scripts/mutants.py --check    # only that each still finds its text, which CI does on every push
 """
 
 import os
@@ -32,6 +33,7 @@ SCAN = ("-p", "ferrum-kernel", "--test", "scan_it")
 SCAN_UNIT = ("-p", "ferrum-kernel", "--lib", "scan::tests")
 CUSTOMIZE = ("-p", "ferrum-kernel", "--test", "customize_it")
 HOOKS_UNIT = ("-p", "ferrum-kernel", "--lib", "hooks::tests")
+CLOSURE = ("-p", "ferrum-kernel", "--test", "closure_it")
 SSO = ("-p", "ferrum-server", "--test", "sso_it")
 SSO_UNIT = ("-p", "ferrum-kernel", "--lib", "sso::tests")
 MERGE = ("-p", "ferrum-kernel", "--test", "merge_it")
@@ -42,14 +44,43 @@ COLLAB = ("-p", "ferrum-kernel", "--test", "collab_it")
 HOST_UNIT = ("-p", "ferrum-plugins", "--lib", "host::tests")
 SOCKETS_UNIT = ("-p", "ferrum-plugins", "--lib", "sockets::tests")
 EGRESS = ("-p", "ferrum-server", "--test", "assistant_egress_it")
+SHARES_UNIT = ("-p", "ferrum-server", "--lib", "state::tests")
 SUPPORT = ("-p", "ferrum-kernel", "--test", "support_it")
 CONTRACT = ("-p", "ferrum-ops-contract", "--lib")
 OPS = ("-p", "ferrum-ops", "--test", "ops_it")
+RECOVERY = ("-p", "ferrum-kernel", "--test", "recovery_it")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
+    # A workspace's share of a replica.
+    ("share-is-no-limit", "server/src/state.rs", "        if self.each == 0 || place.0.get().is_some() {\n            return Ok(());", "        if true {\n            return Ok(());", SHARES_UNIT),
+    ("share-is-everyones", "server/src/state.rs", "            held.entry(tenant).or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(self.each))).clone()", "            held.entry(uuid::Uuid::nil()).or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(self.each))).clone()", SHARES_UNIT),
+    ("share-hides-its-wait", "server/src/state.rs", "                let _ = place.0.set((turn, asked.elapsed()));", "                let _ = place.0.set((turn, Duration::ZERO));", SHARES_UNIT),
+    ("extract-any-copy-will-do", "crates/kernel/src/recovery.rs", "        if !differ.is_empty() {\n", "        if false {\n", RECOVERY),
+    ("extract-onto-itself", "crates/kernel/src/recovery.rs", "        if which(&source).await? == which(&self.db).await? {\n", "        if false {\n", RECOVERY),
+    ("extract-without-looking", "crates/kernel/src/recovery.rs", "        if !apply {\n", "        if false {\n", RECOVERY),
+    ("extract-references-unchecked", "crates/kernel/src/recovery.rs", "        if !broken.is_empty() {\n", "        if false {\n", RECOVERY),
+    ("extract-old-password-returns", "crates/kernel/src/recovery.rs", "password_hash = p.password_hash, ", "", RECOVERY),
+    ("extract-leaver-returns", "crates/kernel/src/recovery.rs", ", is_active = p.is_active", "", RECOVERY),
+    ("extract-sessions-survive", "crates/kernel/src/recovery.rs", 'sqlx::query("update app_user set token_version = $2 where tenant_id = $1").bind(tenant).bind(version).execute(&mut *tx).await?;\n', "", RECOVERY),
+    ("extract-keys-survive", "crates/kernel/src/recovery.rs", 'sqlx::query("update api_key set revoked_at = now() where tenant_id = $1 and revoked_at is null").bind(tenant).execute(&mut *tx).await?;\n', "", RECOVERY),
+    ("extract-waiting-work-runs", "crates/kernel/src/recovery.rs", "        self.set_aside(&mut tx, Some(tenant)).await?;\n", "", RECOVERY),
+    ("extract-sets-aside-everyone", "crates/kernel/src/recovery.rs", "        self.set_aside(&mut tx, Some(tenant)).await?;\n", "        self.set_aside(&mut tx, None).await?;\n", RECOVERY),
+    ("extract-stays-suspended", "crates/kernel/src/recovery.rs", '        sqlx::query("update tenant set status = $2 where id = $1").bind(tenant).bind(&was).execute(&mut *tx).await?;\n', "", RECOVERY),
+    ("closure-deletes-before-its-date", "crates/kernel/src/recovery.rs", "        if retain_until >= chrono::Utc::now().date_naive() {\n", "        if false {\n", CLOSURE),
+    ("closure-deletes-what-is-held-elsewhere", "crates/kernel/src/recovery.rs", "        if !outside.is_empty() {\n", "        if false {\n", CLOSURE),
+    ("closure-rows-go-without-their-files", "crates/kernel/src/recovery.rs", "        if !failed.is_empty() {\n", "        if false {\n", CLOSURE),
+    ("closure-misses-other-references", "crates/kernel/src/recovery.rs", "        columns.extend(others);\n", "", CLOSURE),
+    ("closure-closed-is-writable", "crates/kernel/src/auth.rs", "t.account_state in ('restricted', 'closed')", "t.account_state in ('restricted')", CLOSURE),
+    ("ops-a-moved-device-starts-twice", "crates/ops/src/commands.rs", "and taken_by = $3 \\\n         and (state in ('Accepted', 'Executing') or (state = 'Queued' and sent_at is not null)) for update", "and taken_by = $3 \\\n         and (state in ('Accepted', 'Executing') or (state = 'Queued' and held_at is not null)) for update", OPS),
+    ("ops-a-new-holder-starts-it-twice", "crates/ops/src/commands.rs", "and domain = $2 and (state in ('Accepted', 'Executing') or (state = 'Queued' and sent_at is not null)) for update", "and domain = $2 and (state in ('Accepted', 'Executing') or (state = 'Queued' and held_at is not null)) for update", OPS),
+    ("ops-a-key-for-different-work", "crates/ops/src/commands.rs", "    if different {\n", "    if false {\n", OPS),
+    ("ops-a-stale-proposal", "crates/ops/src/mcp.rs", "    if !(-5..=EVIDENCE_SECS).contains(&age) {\n", "    if false {\n", OPS),
+    ("ops-a-silent-site-is-fine", "crates/ops/src/mcp.rs", "Some(secs) if secs <= EVIDENCE_SECS => Ok(()),", "Some(_) => Ok(()),", OPS),
+    ("ops-a-newer-command-is-guessed-at", "crates/ops-contract/src/command.rs", "        if self.schema_version > COMMAND_SCHEMA {\n", "        if false {\n", CONTRACT),
+    ("doctor-reserve-unwatched", "crates/kernel/src/doctor.rs", "        out.push(if (0..=max_connections - RESERVED_CONNECTIONS).contains(&limit) {\n", "        out.push(if true {\n", ("-p", "ferrum-kernel", "--test", "doctor_it")),
     ("ops-second-live-command", "crates/ops/packages/ops/sql/002_one_live_command.sql", "create unique index op_command_one_live", "create index op_command_one_live", OPS),
     ("ops-second-live-command-issued", "crates/ops/src/commands.rs", "    if let Some(found) = existing(tx, tenant, &cmd, exclusive).await? {\n        return Ok(found);\n    }\n", "", OPS),
     ("ops-engine-only-ignored", "crates/ops/src/commands.rs", "if allowed.engine_only && cmd.issuer != Issuer::Engine {", "if false {", OPS),
@@ -83,9 +114,9 @@ MUTANTS = [
     ("wait-costs-an-attempt", "crates/kernel/src/jobs.rs", "\"update job set status = 'queued', attempts = attempts - 1, last_error = $4,", "\"update job set status = 'queued', last_error = $4,", CONNECT),
     ("breaker-never-opens", "crates/kernel/src/connect.rs", "(failures >= BREAK_AFTER).then(", "(failures >= BREAK_AFTER * 1000).then(", CONNECT),
     ("lease-taken-twice", "crates/kernel/src/outbox.rs", "where id = $1 and available_at = $2 and processed_at is null and not dead returning available_at", "where id = $1 and $2::timestamptz is not null and processed_at is null and not dead returning available_at", EVENTS),
-    ("hook-may-call-out", "crates/plugins/src/host.rs", 'if matches!(self.scope, Scope::Hook(_)) => Err(Error::invalid(format!(', "if false => Err(Error::invalid(format!(", PLUGINS),
-    ("hook-may-send-on-a-socket", "crates/plugins/src/host.rs", '"http.fetch" | "sockets.send" | "sockets.close" if matches!', '"http.fetch" | "sockets.close" if matches!', PLUGINS),
-    ("hook-may-close-a-socket", "crates/plugins/src/host.rs", '"http.fetch" | "sockets.send" | "sockets.close" if matches!', '"http.fetch" | "sockets.send" if matches!', PLUGINS),
+    ("hook-may-call-out", "crates/plugins/src/host.rs", '"http.fetch" | "sockets.send" | "sockets.close" | "resource.query" | "resource.execute" if matches!(self.scope, Scope::Hook(_)) => {', '"http.fetch" | "sockets.send" | "sockets.close" | "resource.query" | "resource.execute" if false => {', PLUGINS),
+    ("hook-may-send-on-a-socket", "crates/plugins/src/host.rs", '"http.fetch" | "sockets.send" | "sockets.close" | "resource.query" | "resource.execute" if matches!(self.scope, Scope::Hook(_)) => {', '"http.fetch" | "sockets.close" | "resource.query" | "resource.execute" if matches!(self.scope, Scope::Hook(_)) => {', PLUGINS),
+    ("hook-may-close-a-socket", "crates/plugins/src/host.rs", '"http.fetch" | "sockets.send" | "sockets.close" | "resource.query" | "resource.execute" if matches!(self.scope, Scope::Hook(_)) => {', '"http.fetch" | "sockets.send" | "resource.query" | "resource.execute" if matches!(self.scope, Scope::Hook(_)) => {', PLUGINS),
     ("socket-budget-ignored", "crates/plugins/src/sockets.rs", "if behind && self.queued.load(Ordering::Relaxed) + bytes > self.budget {", "if false {", SOCKETS_UNIT),
     ("socket-budget-punishes-the-quick", "crates/plugins/src/sockets.rs", "if behind && self.queued.load(Ordering::Relaxed) + bytes > self.budget {", "if self.queued.load(Ordering::Relaxed) + bytes > self.budget {", SOCKETS_UNIT),
     ("socket-budget-never-given-back", "crates/plugins/src/sockets.rs", "        let msg = self.rx.try_recv()?;\n        self.queued.fetch_sub(weight(&msg), Ordering::Relaxed);\n", "        let msg = self.rx.try_recv()?;\n", SOCKETS_UNIT),
@@ -208,15 +239,22 @@ def dirty(path: str) -> bool:
 
 
 def main() -> int:
-    only = sys.argv[1] if len(sys.argv) > 1 else ""
+    if any(a.startswith("--") and a != "--check" for a in sys.argv[1:]):
+        print(__doc__, file=sys.stderr)
+        return 2
+    check = "--check" in sys.argv
+    only = next((a for a in sys.argv[1:] if not a.startswith("--")), "")
     chosen = [m for m in MUTANTS if only in m[0]]
     for name, path, old, _, _ in chosen:
         if old not in (ROOT / path).read_text():
             print(f"{name}: its text is gone from {path}; update this script", file=sys.stderr)
             return 2
-        if dirty(path):
+        if not check and dirty(path):
             print(f"{path} has uncommitted changes; commit them first", file=sys.stderr)
             return 2
+    if check:
+        print(f"{len(chosen)} mutants find their text")
+        return 0
     env = {**os.environ, "CARGO_INCREMENTAL": "0"}
     survived = []
     for name, path, old, new, test in chosen:
