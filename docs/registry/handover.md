@@ -3,6 +3,45 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-04: single sign-on by SAML, keys from a KMS, workflows that undo, and a group's books
+
+**State**: on `main` of each repository, every PR green on its CI before merging. No release was tagged.
+
+| Where | What |
+|---|---|
+| Ferrum PR 44 | SAML 2.0 (FERRUM-IDENTITY-006) on samael 0.0.22 and libxmlsec1, behind the `saml` cargo feature (on in the image). Each workspace signs its requests with a sealed key of its own, answers become one-time codes, and encrypted assertions are refused. Keycloak 26.8.1 in CI and once in a real browser |
+| Ferrum PR 45 | Lists read their default order from an index (DDL version 2 resyncs once); Compose's database gets 512 MB of shared memory. This was the slowdown and the `/dev/shm` errors in the three-hour soak |
+| Ferrum PR 46 | `FERRUM_SECRET_KEY` may be OpenBao or Vault Transit ciphertext (`FERRUM_KMS_TRANSIT`), or come from `FERRUM_SECRET_KEY_COMMAND` (FERRUM-IDENTITY-019). OpenBao 2.7.1 in CI |
+| Ferrum PR 47 | Sagas on durable jobs: steps saved as they finish, a stable idempotency key per step, compensation newest first, `undo_on_cancel` (FERRUM-PLATFORM-019) |
+| Cloud PR 14 | Tests for the 26 serve mutants that had survived, and a weekly `generated-serve` job |
+| ERP PR 3 | Finance books (FERRUM-ERP-004), ERP 0.6.0 and Finance 0.3.0 |
+| ERP PR 4 | A group's books (FERRUM-ERP-005), ERP 0.7.0: consolidated trial balance, profit and loss and balance sheet, eliminations, what each pair of companies says they owe each other |
+| Assets PR 2, 3 | Finance books keep their own values, repairs add life and use parts, grouped assets split (FERRUM-ASSETS-002), Assets 0.3.0 |
+
+**Evidence**: every figure in the new tests was worked out by hand first, and the working is written in
+each test's comments. Mutants for each change: 11 for SAML, 2 for KMS, 6 for sagas, 2 for list order, 4 for finance books and 9 for the group's books
+(`scripts/mutants.py`, all caught); 13 for Assets, run by hand (all caught after two tests were made
+stronger). The three-hour soak is running again on the image with the list order fix (soak run 41719722922); J12 is recorded when it ends.
+
+**Not done, and not code:** an identity provider in a customer's tenant (BLOCK-IDP-TENANT) and a key
+service run for real (BLOCK-KMS) are a person's to arrange. Consolidation translates at one closing rate.
+It has no ownership percentages, no minority interest, no consolidated cash flow, and does not mirror
+intercompany invoices (in the registry). Real provider connectors (FERRUM-CONNECT-002) need accounts with
+each provider to verify against: blocked outside.
+
+**Lessons:**
+- On macOS, brew's libxmlsec1 and the system libxml2 both got linked, and the test segfaulted. brew's
+  libxslt has to come first on `PKG_CONFIG_PATH` (operations.md has the line).
+- Keycloak refuses unsigned requests by default.
+- Two packages that define the same entity stop a server holding both.
+- An app's CI that resolves Ferrum's main unlocked breaks quietly when Ferrum's API moves, and it shows
+  only on that app's next PR.
+- A mutant that is equivalent for straight-line plans (re-planning a book nothing changed) survived
+  until a manual plan was in the test.
+- `gh pr edit --body-file` with an empty file empties the description: chain the steps with `&&`.
+- The disk filled twice in a day. Superseded artifacts in the shared target, old cargo git checkouts and
+  `incremental/` are safe to remove when nothing is building.
+
 ## 2026-11-02, evening: what holds when things repeat, arrive late or go wrong
 
 **State**: the review's source findings are fixed, tested, walked on the real binaries as people who
