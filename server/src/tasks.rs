@@ -137,7 +137,10 @@ pub struct CloudRetire;
 #[async_trait]
 impl Task for CloudRetire {
     fn task(&self) -> TaskInfo {
-        TaskInfo { name: "cloud_retire".into(), detail: "After a closed workspace's date, destroys what Cloud made for it. Says what it holds unless apply:yes".into() }
+        TaskInfo {
+            name: "cloud_retire".into(),
+            detail: "After a closed workspace's date, destroys what Cloud made for it. Says what it holds unless apply:yes".into(),
+        }
     }
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
         use ferrum_kernel::account::Leaving;
