@@ -5,9 +5,9 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Partial | 45 |
-| Implemented, unverified | 5 |
-| Verified in software | 142 |
+| Partial | 35 |
+| Implemented, unverified | 4 |
+| Verified in software | 153 |
 | Blocked externally | 5 |
 | **All** | **197** |
 
@@ -21,8 +21,8 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-BASE-004 | Release pins | Verified in software | AT-BASE-004 | 1 | Generated and checked in CI; a signed evidence bundle is FCP-QUAL-008 |
 | FCP-BASE-005 | Worktree safety | Verified in software | AT-BASE-005 | 1 | Reports dirty files and unused patches; it does not stop anyone committing them |
 | FCP-BASE-006 | Frozen and forward CI | Implemented, unverified | AT-BASE-006 | 0 | Both lanes exist in Ferrum and Edge; Ferrum's forward lane has not run yet |
-| FCP-BASE-007 | Evidence classification | Partial | AT-BASE-007 | 0 | This registry records evidence states; the older registry's `basis` is coarser |
-| FCP-BASE-008 | Feature inventory | Partial | AT-BASE-008 | 0 | Lists every repository this token can see; images and production are recorded as unread, not absent |
+| FCP-BASE-007 | Evidence classification | Verified in software | AT-BASE-007 | 1 | A simulator or a mock cannot be labelled qualified while the real thing is missing, and the check fails if one tries. The older registry's `basis` is coarser than these states |
+| FCP-BASE-008 | Feature inventory | Verified in software | AT-BASE-008 | 1 | A repository a lock file pins and nothing here can read is listed as unread, as are images and production, not as absent. Git dependencies only |
 
 ## W01: Identity, policy and control plane
 
@@ -45,7 +45,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-SECRET-005 | Credential expiry | Verified in software | AT-SECRET-005 | 4 | A gateway past its lease stops starting work, and a node that has heard nothing for an hour refuses members with public sites going on. There is no setting to carry on regardless. Not tried on equipment. A connector past its token is refused by the same check, and no connector process exists to leave offline |
 | FCP-SECRET-006 | Environment secret scope | Verified in software | AT-SECRET-006 | 2 | Preview cannot read production's secrets and a public-prefixed name cannot hold one. Delivery into builds is W04's |
 | FCP-SECRET-007 | Compromise response | Verified in software | AT-SECRET-007 | 2 | A compromised key stops at once and its unexpired tokens are listed. Running workloads do not yet renew by themselves, so that recovery is unexercised |
-| FCP-SECRET-008 | Operator visibility honesty | Partial | AT-SECRET-008 | 0 | Says what an operator can reach in each profile, and that nobody running a process is blind to it. No one has reviewed it |
+| FCP-SECRET-008 | Operator visibility honesty | Verified in software | AT-SECRET-008 | 1 | Says what an operator can reach in each profile, and the check fails a document claiming an operator cannot see. Nobody has reviewed it, and there is no customer-managed-key profile to review it against |
 
 ## W02: Resource management
 
@@ -145,16 +145,16 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-WEB-008 | Image and fetch SSRF | Verified in software | AT-WEB-008 | 3 | Checked when named, and again at every connection, IPv6 and mapped addresses included. No redirect is followed. No image optimizer exists to attack |
 | FCP-WEB-009 | Request resource budgets | Verified in software | AT-WEB-009 | 1 | A limit per site on a node, and a body limit. Not measured under sustained load |
 | FCP-WEB-010 | Upload finalization | Verified in software | AT-WEB-010 | 2 | An intent first, bytes under a temporary name, one commit to make them visible, and a sweep for what was left |
-| FCP-WEB-011 | Storefront authority | Partial | AT-WEB-011 | 0 | Commerce recalculates server-side; no storefront profile has been qualified against it |
+| FCP-WEB-011 | Storefront authority | Verified in software | AT-WEB-011 | 1 | Prices sent from a browser are ignored, totals are refused, another customer's order is not there, and only the gateway's user can mark a payment, for the right amount and currency. No payment provider, and no deployed storefront driving it |
 | FCP-WEB-012 | Headless content lifecycle | Partial | AT-WEB-012 | 1 | A release is bound to the route it was planned against, and a pass expires. There is no content model |
-| FCP-AI-001 | Agent capability boundary | Partial | AT-AI-001 | 1 | Typed tools under the caller's rights; no capability boundary for development tools |
+| FCP-AI-001 | Agent capability boundary | Verified in software | AT-AI-001 | 3 | Whatever a model is told, a tool does what its person may do, changes wait for that person, and physical work can only be proposed. Scripted models, no real one. A client running elsewhere is bound by its token, not by this |
 | FCP-AI-002 | Model/provider policy | Partial | AT-AI-002 | 1 | Egress policy per workspace; no model catalog |
-| FCP-AI-003 | Approval integrity | Partial | AT-AI-003 | 1 | Agents' commands wait for a person unless an envelope covers them |
+| FCP-AI-003 | Approval integrity | Verified in software | AT-AI-003 | 2 | A command has no way to change after approval, an approval names the digest shown, a change to what it rests on makes it stale, and nobody approves their own, whatever roles they hold |
 | FCP-AI-004 | Development sandbox | Partial | AT-AI-004 | 1 | A token for a workstation exists for previews and not production, and reaches only that environment. Nothing makes it the default for any client, and nothing stops someone pasting in a production credential |
 | FCP-AI-005 | Budget and cancellation | Partial | AT-AI-005 | 0 | Budgets per workspace |
 | FCP-AI-006 | Evidence and abstention | Verified in software | AT-AI-006 | 1 | For physical work: a proposal says when what it rests on was read, and old evidence or a silent site is refused as unknown. An invented id is not found anywhere. The ERP's generic tools carry no freshness |
-| FCP-AI-007 | Data boundary disclosure | Partial | AT-AI-007 | 0 | The egress policy is shown to administrators. The guide says a client you run sends what it reads to its model's provider, and Cloud cannot see or limit that |
-| FCP-AI-008 | Operational autonomy | Implemented, unverified | AT-AI-008 | 1 | No safety function depends on Ferrum; not an AI evaluation |
+| FCP-AI-007 | Data boundary disclosure | Verified in software | AT-AI-007 | 1 | The guide says a client you run sends what it reads to its model's provider, and the check fails a document that claims otherwise. Cloud cannot see or limit such a client |
+| FCP-AI-008 | Operational autonomy | Verified in software | AT-AI-008 | 1 | An agent has three tools: two to look and one to propose an operation the device declares. Nothing reaches a PLC or a safety function, which stay with their makers. Not an evaluation of any model |
 
 ## W07: Access, network and endpoints
 
@@ -208,7 +208,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-SCALE-002 | Connection budgeting | Partial | AT-SCALE-002 | 2 | The budget adds up in CI, the role has a limit, and doctor warns without one. Nothing has been scaled to its maximum with a migration running |
 | FCP-SCALE-003 | Stateful scaling | Partial | AT-SCALE-003 | 0 | CNPG replicas only |
 | FCP-SCALE-004 | Budget enforcement | Verified in software | AT-SCALE-004 | 2 | Builds, running hours and held resources are counted, once an hour however many look, and a hard budget stops new ones with what is up left up. Storage is not metered by size |
-| FCP-SCALE-005 | Critical reserve | Partial | AT-SCALE-005 | 1 | Gateways shed telemetry first; the platform has no reserve |
+| FCP-SCALE-005 | Critical reserve | Verified in software | AT-SCALE-005 | 2 | On a gateway: only plain samples count against the budget and go first, commands and evidence are outside it, and with almost no disk it takes no new work and says why. Not tried on a disk that really filled, and the platform's own database has no such reserve |
 | FCP-SCALE-006 | Gateway drain | Partial | AT-SCALE-006 | 1 | A device leaving makes in-flight work unknown, without redispatch. No drain of many sockets has been run |
 | FCP-SCALE-007 | Noisy neighbor | Partial | AT-SCALE-007 | 2 | A workspace with twenty times the backlog does not make others wait behind it, measured once. A build cap per workspace and a request cap per site. Nothing bounds a tenant's share of a shared database |
 | FCP-SCALE-008 | Capacity evidence | Partial | AT-SCALE-008 | 1 | Percentiles, backlog and fairness measured for minutes on one laptop, so they describe that and not a deployment. Edge rates were measured the same way |
@@ -245,7 +245,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-DR-005 | Failover fencing | Verified in software | AT-DR-005 | 1 | It stops before its time at the witness runs out, and does not take the right back. Gateways have their own fencing. One machine |
 | FCP-DR-006 | Object and Git integrity | Verified in software | AT-DR-006 | 2 | Real repositories with a damaged pack and a missing LFS object. It is run by hand after a restore, and has not been run on a restored Gitea |
 | FCP-DR-007 | Capacity recovery | Partial | AT-DR-007 | 1 | Fair dispatch; no reconnect storm test |
-| FCP-DR-008 | Update trust | Partial | AT-DR-008 | 0 | Signed gateway updates and app bundles; no rollback-protected metadata |
+| FCP-DR-008 | Update trust | Verified in software | AT-DR-008 | 4 | A gateway refuses a release that is unsigned, expired, not newer or was rolled back here, and a bad file never replaces what runs. A node refuses a snapshot that is older or not signed by a key it holds. A bundle changed after signing is refused and an older revocation list is ignored. An app store's listing has no expiry of its own |
 | FCP-DR-009 | Runbook exercise | Partial | AT-DR-009 | 0 | Written. Nobody who did not write it has followed it |
 | FCP-DR-010 | RPO RTO evidence | Partial | AT-DR-010 | 1 | Dump, restore and start measured once, on one laptop and a small database. No zone, database or provider failed, so no objective is claimed |
 
@@ -260,6 +260,6 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-QUAL-005 | Hardware qualification | Blocked externally | AT-QUAL-005 | 0 | Needs equipment and a site |
 | FCP-QUAL-006 | Golden journeys | Partial | AT-QUAL-006 | 0 | Ten of twelve have their steps exercised in parts, none run whole, two not run. The check keeps that visible |
 | FCP-QUAL-007 | Mutation and fault coverage | Partial | AT-QUAL-007 | 0 | Mutants for what they cover; none for new platform work yet |
-| FCP-QUAL-008 | Release evidence integrity | Partial | AT-QUAL-008 | 0 | Generated, attested image; not signed per bundle |
+| FCP-QUAL-008 | Release evidence integrity | Verified in software | AT-QUAL-008 | 3 | For a release: an artifact that is not what was built or signed is refused before it is promoted, and a node refuses bytes that are not what they are named. Ferrum's own image is attested, and that is checked at deployment only on a cluster |
 | FCP-QUAL-009 | Supported limits | Partial | AT-QUAL-009 | 2 | Upgrades get 501, oversized bodies 413, replicas past 16 are refused. A node's figures are measured once on a laptop, and no limit in the documentation is measured on anything else |
 

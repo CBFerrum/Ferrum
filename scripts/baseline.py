@@ -89,7 +89,20 @@ def repositories(offline: bool) -> list:
             got = run("gh", "api", f"repos/{repo}/commits/{row['default_branch']}", "--jq", ".sha")
             row["default_head"] = got[1] if got[0] == 0 else None
         out.append(row)
+    # A pin on something nothing here can read is an access limit, not a missing repository.
+    known = {r["repository"] for r in out}
+    pinned = set().union(*(depended_on(p) for r in out if r["checkout"] for p in places_of(names[r["repository"]])))
+    out += [{"repository": repo, "visibility": None, "checkout": None, "unread": "a dependency pins it, and nothing here can read it"} for repo in sorted(pinned - known)]
     return out
+
+
+def places_of(places: list) -> list:
+    return [ROOT / p for p in places if (ROOT / p / "Cargo.lock").exists()]
+
+
+def depended_on(where: Path) -> set:
+    """Repositories a lock file pins."""
+    return set(re.findall(r'source = "git\+https://github\.com/([^/"]+/[^/?#"]+?)(?:\.git)?[?#]', (where / "Cargo.lock").read_text()))
 
 
 def apps() -> list:
@@ -162,6 +175,7 @@ def markdown(b: dict) -> str:
         pin = pins.get(r["repository"], {}).get("revision", "-")[:10]
         drift = " **behind**" if pin not in ("-",) and r.get("default_head") and not r["default_head"].startswith(pin) else ""
         out.append(f"| {r['repository']} | {r.get('visibility') or '?'} | `{head}` | {r.get('checkout') or 'not here'} | `{(r.get('commit') or '-')[:10]}` on {r.get('branch', '-')} | {len(r.get('dirty', []))} | `{pin}`{drift} |")
+    out += [f"\n{r['repository']}: {r['unread']}." for r in b["repositories"] if r.get("unread")]
     out += ["", "## Uncommitted work, preserved", ""]
     dirty = [(r["repository"], f) for r in b["repositories"] for f in r.get("dirty", [])]
     out += [f"- {repo}: `{f}`" for repo, f in dirty] or ["None."]
