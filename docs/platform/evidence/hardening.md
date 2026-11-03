@@ -121,8 +121,11 @@ reached nothing and saw gVisor's kernel.
 Cloud is no longer meant to be linked into this repository's server, which a public CI cannot do. A server can now be
 built elsewhere with an app this repository does not name (`ferrum_server::extensions`, `server/tests/extensions_it.rs`),
 and Cloud builds `ferrum-cloud` that way. Its CI starts it on PostgreSQL with this repository's configuration and
-packages, makes a workspace with Cloud, and calls Cloud's routes and metrics. The cluster check now makes room on its
-runner first, after one run's database could not pull its image with 97 MB left.
+packages, makes a workspace with Cloud, and calls Cloud's routes and metrics. Its images are built there too, the web
+replicas' and the controller's, from public sources at one commit of this repository and with this repository's crates,
+and started as deployed: read-only, with no capabilities, serving the shell and Cloud's console, and a controller that
+stops when told (Cloud #7, its `image` job). Where they are published is the owner's decision (`BLOCK-CLOUD-VISIBILITY`).
+The cluster check now makes room on its runner first, after one run's database could not pull its image with 97 MB left.
 
 ## Figures
 
