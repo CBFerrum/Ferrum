@@ -145,7 +145,8 @@ async fn unlink_sso(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Pa
 // ── single sign-on providers ──
 
 async fn list_sso(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
-    Ok(Json(json!({"providers": app_state(&app)?.kernel.sso_providers(&ctx).await?})).into_response())
+    let kernel = &app_state(&app)?.kernel;
+    Ok(Json(json!({"providers": kernel.sso_providers(&ctx).await?, "saml": kernel.saml_service_provider(ctx.tenant)})).into_response())
 }
 
 async fn create_sso(Auth(ctx): Auth, State(app): State<AppContext>, Json(p): Json<ferrum_kernel::sso::SsoProviderInput>) -> ApiResult<Response> {

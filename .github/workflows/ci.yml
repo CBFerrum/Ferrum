@@ -85,6 +85,52 @@ jobs:
           AWS_ACCESS_KEY_ID: test
           AWS_SECRET_ACCESS_KEY: test
 
+  # SAML, whose signatures xmlsec1 checks (crates/saml), is a feature the job above does not build:
+  # its own tests, the sign-in round trip through the kernel, and a sign-in on Keycloak's login page,
+  # a real identity provider signing with another implementation (Apache Santuario).
+  saml:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      CARGO_TERM_COLOR: always
+      FERRUM_SAML_TEST_DATABASE_URL: postgres://ferrum:ferrum@localhost:5432/ferrum_saml_test
+      FERRUM_SAML_KEYCLOAK: http://localhost:8180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: saml
+      - name: xmlsec1, libxml2 and libclang
+        run: sudo apt-get update -q && sudo apt-get install -y -q libxml2-dev libxmlsec1-dev libclang-dev pkg-config
+      - name: Keycloak
+        run: |
+          docker run -d --name keycloak -p 8180:8080 -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
+            quay.io/keycloak/keycloak:26.8.1 start-dev
+      - name: The application role and test database
+        run: |
+          psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 <<'SQL'
+          create role ferrum login password 'ferrum';
+          create database ferrum_saml_test owner ferrum;
+          SQL
+      - run: cargo clippy -p ferrum-saml -p ferrum-kernel --features ferrum-saml/xmlsec,ferrum-kernel/saml --all-targets --locked -- -D warnings
+      - run: cargo test -p ferrum-saml --features xmlsec --locked
+      - name: Keycloak is up
+        run: for i in $(seq 1 90); do curl -fs http://localhost:8180/realms/master > /dev/null && exit 0; sleep 2; done; docker logs keycloak; exit 1
+      - run: cargo test -p ferrum-kernel --features saml --locked --test saml_it --test saml_keycloak_it
+
   audit:
     runs-on: ubuntu-latest
     steps:

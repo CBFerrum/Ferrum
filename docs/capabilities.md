@@ -9,9 +9,9 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 124 |
+| Implemented, qualification incomplete | 125 |
 | Partially implemented | 53 |
-| Missing | 45 |
+| Missing | 44 |
 | Blocked by external dependency | 9 |
 | **All** | **231** |
 
@@ -48,7 +48,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-IDENTITY-003 | Deprovisioning with work handed over | Implemented, qualification incomplete | tested | No app handles ferrum.user.deprovisioned yet, so Drive shares and helpdesk queues stay put |
 | FERRUM-IDENTITY-004 | SCIM 2.0 people and groups | Implemented, qualification incomplete | tested | Not yet run against a real Okta or Entra tenant |
 | FERRUM-IDENTITY-005 | OIDC back-channel logout | Implemented, qualification incomplete | tested | Ends all the person's sessions, not only the one the token names; Not tried against a real identity provider |
-| FERRUM-IDENTITY-006 | SAML single sign-on | Missing | probe |  |
+| FERRUM-IDENTITY-006 | SAML single sign-on | Implemented, qualification incomplete | tested | Tried against Keycloak 26.8.1 only; not Microsoft Entra ID, Okta or AD FS; No single logout, signed requests or encrypted assertions; sign-ins the provider starts unasked are refused; Built only with the saml feature (xmlsec1); the release image has it |
 | FERRUM-IDENTITY-007 | Linking accounts only on proof of ownership | Implemented, qualification incomplete | read |  |
 | FERRUM-IDENTITY-008 | Guests, portal people, service accounts, scoped keys | Partially implemented | read | API key scopes are dav and scim; there are no per-entity key scopes |
 | FERRUM-IDENTITY-009 | One policy system across tenant | Partially implemented | read | Department, branch and time-limited grants are not modelled |

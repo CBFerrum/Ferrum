@@ -14,6 +14,14 @@
 //! they sign out there, or when it disables them: it posts a signed logout token to
 //! `/api/auth/sso/{provider}/backchannel-logout`. That ends all their sessions at Ferrum, on every
 //! replica, not only the one the token names: refusing too much is the safe way to be wrong.
+//!
+//! A provider can speak SAML 2.0 instead (crates/saml). The browser is sent to it with a request, and
+//! it posts its signed answer to the workspace's assertion consumer service
+//! (`/api/auth/saml/{workspace}/acs`). The server checks the answer, keeps who it names on the
+//! sign-in, and sends the browser back to where it started with a one-time code, which finishes the
+//! sign-in as with OpenID Connect: binding, linking and account rules are the same. A SAML provider
+//! never says whether it checked an address, so it is trusted for the email domains listed, and only
+//! for them. The return address must be one of this server's own: the code travels in it.
 
 use crate::auth::Session;
 use crate::ctx::Ctx;
@@ -90,13 +98,46 @@ impl LogoutClaims {
     }
 }
 
+/// How a provider signs people in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Protocol {
+    #[default]
+    Oidc,
+    Saml,
+}
+
+impl Protocol {
+    fn name(self) -> &'static str {
+        match self {
+            Protocol::Oidc => "oidc",
+            Protocol::Saml => "saml",
+        }
+    }
+}
+
+/// Whether this server checks SAML signatures: `None` when it was built without SAML, else whether
+/// xmlsec1 signs and verifies here (crates/saml, `self_check`).
+pub fn saml_self_check() -> Option<std::result::Result<(), String>> {
+    ferrum_saml::AVAILABLE.then(ferrum_saml::self_check)
+}
+
 /// A provider as an administrator sets it up.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SsoProviderInput {
     pub label: String,
-    /// The provider's issuer URL (its discovery document lives under it).
+    #[serde(default)]
+    pub protocol: Protocol,
+    /// OpenID Connect: the provider's issuer URL (its discovery document lives under it).
+    #[serde(default)]
     pub issuer: String,
+    /// OpenID Connect: the client ID the provider issued.
+    #[serde(default)]
     pub client_id: String,
+    /// SAML: the identity provider's metadata, as XML or the https address it is published at
+    /// (fetched again at each sign-in, so a new signing certificate is picked up).
+    #[serde(default)]
+    pub saml_metadata: Option<String>,
     /// `None` keeps the stored secret; empty clears it (a public client, PKCE only).
     #[serde(default)]
     pub client_secret: Option<String>,
@@ -128,7 +169,7 @@ struct Discovery {
     token_endpoint_auth_methods_supported: Vec<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct IdClaims {
     sub: String,
     #[serde(default)]
@@ -156,9 +197,11 @@ struct IdClaims {
 struct Provider {
     id: Uuid,
     label: String,
+    protocol: Protocol,
     issuer: String,
     client_id: String,
     client_secret: Option<String>,
+    saml_metadata: Option<String>,
     domains: Vec<String>,
     auto_create: bool,
     default_roles: Vec<String>,
@@ -219,6 +262,14 @@ impl Kernel {
     /// allowed: `sso_allow_private`), its host resolved once, vetted like a webhook target and pinned,
     /// no redirects, ten seconds, a megabyte at most. → the status and the JSON answer.
     async fn idp_request(&self, url: &str, form: Option<&[(&str, &str)]>, basic: Option<(&str, &str)>) -> Result<(u16, Value)> {
+        let (status, body, host) = self.idp_fetch(url, form, basic, "application/json").await?;
+        let v = serde_json::from_slice(&body)
+            .map_err(|_| Error::Unavailable(format!("the identity provider cannot be reached: HTTP {status} without a JSON answer from {host}")))?;
+        Ok((status, v))
+    }
+
+    /// [`Kernel::idp_request`] without reading the answer: the status, the body and the host.
+    async fn idp_fetch(&self, url: &str, form: Option<&[(&str, &str)]>, basic: Option<(&str, &str)>, accept: &str) -> Result<(u16, Vec<u8>, String)> {
         let unreachable = |e: String| Error::Unavailable(format!("the identity provider cannot be reached: {e}"));
         let (client, parsed) = self.vetted_client(url, self.settings.sso_allow_private, Duration::from_secs(10), "Ferrum-SSO/1").await?;
         let host = parsed.host_str().unwrap_or_default().to_string();
@@ -229,7 +280,7 @@ impl Kernel {
         if let Some((user, password)) = basic {
             req = req.basic_auth(form_encode(user), Some(form_encode(password)));
         }
-        let mut resp = req.header("accept", "application/json").send().await.map_err(|e| unreachable(e.to_string()))?;
+        let mut resp = req.header("accept", accept).send().await.map_err(|e| unreachable(e.to_string()))?;
         let status = resp.status().as_u16();
         let mut body = Vec::new();
         while let Some(chunk) = resp.chunk().await.map_err(|e| unreachable(e.to_string()))? {
@@ -238,8 +289,75 @@ impl Kernel {
                 return Err(unreachable("its answer is too large".into()));
             }
         }
-        let v = serde_json::from_slice(&body).map_err(|_| unreachable(format!("HTTP {status} without a JSON answer from {host}")))?;
-        Ok((status, v))
+        Ok((status, body, host))
+    }
+
+    /// A SAML identity provider from its metadata as stored: the XML itself, or the address it is
+    /// published at, fetched now.
+    async fn saml_idp(&self, source: &str) -> Result<ferrum_saml::Idp> {
+        let xml = if source.starts_with("https://") || source.starts_with("http://") {
+            let (status, body, host) = self.idp_fetch(source, None, None, "application/samlmetadata+xml, application/xml, text/xml").await?;
+            if status != 200 {
+                return Err(Error::Unavailable(format!("the provider's metadata ({source}) answered HTTP {status}")));
+            }
+            String::from_utf8(body).map_err(|_| Error::Unavailable(format!("the metadata {host} sent is not text")))?
+        } else {
+            source.to_string()
+        };
+        ferrum_saml::Idp::read(&xml).map_err(Error::invalid)
+    }
+
+    /// This workspace as SAML identity providers know it: its entity ID (where its metadata is) and
+    /// its assertion consumer service. One per workspace, so it can be given to a provider before the
+    /// provider is added here.
+    fn saml_sp(&self, tenant: Uuid) -> Result<(String, String)> {
+        let base = self
+            .settings
+            .public_url
+            .as_deref()
+            .map(|u| u.trim().trim_end_matches('/'))
+            .filter(|u| u.starts_with("https://") || u.starts_with("http://"))
+            .ok_or_else(|| Error::Unavailable("SAML needs the server's public address (PUBLIC_URL)".into()))?;
+        let entity_id = format!("{base}/api/auth/saml/{tenant}");
+        Ok((entity_id.clone(), format!("{entity_id}/acs")))
+    }
+
+    /// What a SAML identity provider's administrator needs about this workspace; `None` when this
+    /// server cannot do SAML.
+    pub fn saml_service_provider(&self, tenant: Uuid) -> Option<Value> {
+        let (entity_id, acs_url) = self.saml_sp(tenant).ok().filter(|_| ferrum_saml::AVAILABLE)?;
+        Some(json!({"entity_id": entity_id, "acs_url": acs_url, "metadata_url": entity_id}))
+    }
+
+    /// This workspace's SAML metadata, for identity providers to load (it is public: it says only
+    /// where answers go). Not found for a workspace that is not active.
+    pub async fn saml_metadata(&self, tenant: Uuid) -> Result<String> {
+        let mut tx = self.db.system_tx().await?;
+        let active: bool =
+            sqlx::query_scalar("select exists (select 1 from tenant where id = $1 and status = 'active')").bind(tenant).fetch_one(&mut *tx).await?;
+        tx.commit().await?;
+        if !active {
+            return Err(Error::NotFound("workspace".into()));
+        }
+        let (entity_id, acs_url) = self.saml_sp(tenant)?;
+        ferrum_saml::sp_metadata(&ferrum_saml::Sp { entity_id: &entity_id, acs_url: &acs_url }).map_err(Error::Unavailable)
+    }
+
+    /// Whether a sign-in may come back to `url`, which will carry its one-time code: the server's
+    /// public address, a host of this workspace, or the accounts host; over https when the server is.
+    async fn own_return(&self, tenant: Uuid, url: &reqwest::Url) -> Result<bool> {
+        let public = self.settings.public_url.as_deref().and_then(|u| reqwest::Url::parse(u).ok());
+        if public.as_ref().is_some_and(|p| p.origin() == url.origin()) {
+            return Ok(true);
+        }
+        if public.as_ref().is_some_and(|p| p.scheme() == "https") && url.scheme() != "https" {
+            return Ok(false);
+        }
+        let Some(host) = url.host_str() else { return Ok(false) };
+        if self.settings.accounts_host.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(host)) {
+            return Ok(true);
+        }
+        Ok(matches!(self.route_host(host).await?, crate::shell::HostRoute::Serve { tenant: t, .. } if t == tenant))
     }
 
     /// The provider's discovery document, which must name the issuer it was found under.
@@ -261,8 +379,8 @@ impl Kernel {
         admin_only(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let rows: Vec<Value> = sqlx::query_scalar(
-            "select jsonb_build_object('id', id, 'label', label, 'issuer', issuer, 'client_id', client_id, 'has_secret', client_secret is not null, \
-               'domains', domains, 'auto_create', auto_create, 'default_roles', default_roles, 'enabled', enabled, \
+            "select jsonb_build_object('id', id, 'label', label, 'protocol', protocol, 'issuer', issuer, 'client_id', client_id, 'has_secret', client_secret is not null, \
+               'saml_metadata', saml_metadata, 'domains', domains, 'auto_create', auto_create, 'default_roles', default_roles, 'enabled', enabled, \
                'linked_users', (select count(*) from app_user u where u.tenant_id = p.tenant_id and u.sso_subject like p.id::text || '|%'), \
                'created_at', created_at, 'updated_at', updated_at) \
              from sso_provider p where tenant_id = $1 order by label",
@@ -281,10 +399,6 @@ impl Kernel {
         if label.is_empty() || label.chars().count() > 60 {
             return Err(Error::field("label", "name it, in at most 60 characters (it shows on the sign-in button)"));
         }
-        let client_id = input.client_id.trim();
-        if client_id.is_empty() || client_id.len() > 255 {
-            return Err(Error::field("client_id", "give the client ID the provider issued"));
-        }
         let mut domains = input.domains.iter().filter(|d| !d.trim().is_empty()).map(|d| clean_domain(d)).collect::<Result<Vec<_>>>()?;
         domains.sort();
         domains.dedup();
@@ -294,19 +408,56 @@ impl Kernel {
         let mut roles: Vec<String> = input.default_roles.iter().map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect();
         roles.sort();
         roles.dedup();
-        let issuer = input.issuer.trim();
-        if issuer.len() > 500 {
-            return Err(Error::field("issuer", "is too long"));
-        }
-        // The issuer as the provider spells it (a trailing slash matters to its tokens).
-        let issuer = self.discover(issuer).await.map_err(|e| Error::field("issuer", e.to_string()))?.issuer;
-        let key =
-            self.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("single sign-on needs the server's secret key (FERRUM_SECRET_KEY)".into()))?;
         let (id, new) = match id {
             Some(id) => (id, false),
             None => (Uuid::now_v7(), true),
         };
+        if !new {
+            let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+            let was: Option<String> = sqlx::query_scalar("select protocol from sso_provider where tenant_id = $1 and id = $2")
+                .bind(ctx.tenant)
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            match was {
+                None => return Err(Error::NotFound("single sign-on provider".into())),
+                // People are linked to their identity at the provider, which another protocol names otherwise.
+                Some(p) if p != input.protocol.name() => return Err(Error::field("protocol", "a provider keeps its protocol; add another provider instead")),
+                Some(_) => {}
+            }
+        }
+        let (issuer, client_id, saml_metadata) = match input.protocol {
+            Protocol::Oidc => {
+                let client_id = input.client_id.trim();
+                if client_id.is_empty() || client_id.len() > 255 {
+                    return Err(Error::field("client_id", "give the client ID the provider issued"));
+                }
+                let issuer = input.issuer.trim();
+                if issuer.len() > 500 {
+                    return Err(Error::field("issuer", "is too long"));
+                }
+                // The issuer as the provider spells it (a trailing slash matters to its tokens).
+                (self.discover(issuer).await.map_err(|e| Error::field("issuer", e.to_string()))?.issuer, client_id.to_string(), None)
+            }
+            Protocol::Saml => {
+                if domains.is_empty() {
+                    return Err(Error::field("domains", "list the email domains this provider vouches for: SAML never says whether an address was checked"));
+                }
+                let source = input.saml_metadata.as_deref().map(str::trim).filter(|m| !m.is_empty());
+                let source = source.ok_or_else(|| Error::field("saml_metadata", "paste the provider's metadata, or the https address it is published at"))?;
+                if source.len() > MAX_ANSWER {
+                    return Err(Error::field("saml_metadata", "is larger than a megabyte"));
+                }
+                self.saml_sp(ctx.tenant).map_err(|e| Error::field("saml_metadata", e.to_string()))?;
+                let idp = self.saml_idp(source).await.map_err(|e| Error::field("saml_metadata", e.to_string()))?;
+                (idp.entity_id, String::new(), Some(source.to_string()))
+            }
+        };
+        let key =
+            self.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("single sign-on needs the server's secret key (FERRUM_SECRET_KEY)".into()))?;
         let secret = match input.client_secret.as_deref().map(str::trim) {
+            _ if input.protocol == Protocol::Saml => Some(None),
             Some("") => Some(None),
             Some(s) if s.len() > 1000 => return Err(Error::field("client_secret", "is too long")),
             Some(s) => Some(Some(key.seal(&sealed_label(ctx.tenant, id), s)?)),
@@ -314,9 +465,10 @@ impl Kernel {
         };
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         if !new
-            && sqlx::query_scalar::<_, i64>("select count(*) from sso_provider where tenant_id = $1 and id = $2")
+            && sqlx::query_scalar::<_, i64>("select count(*) from sso_provider where tenant_id = $1 and id = $2 and protocol = $3")
                 .bind(ctx.tenant)
                 .bind(id)
+                .bind(input.protocol.name())
                 .fetch_one(&mut *tx)
                 .await?
                 == 0
@@ -332,26 +484,29 @@ impl Kernel {
             self.keep_one_for_required(&mut tx, ctx.tenant, id).await?;
         }
         sqlx::query(
-            "insert into sso_provider (tenant_id, id, label, issuer, client_id, client_secret, domains, auto_create, default_roles, enabled) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+            "insert into sso_provider (tenant_id, id, label, issuer, client_id, client_secret, domains, auto_create, default_roles, enabled, protocol, saml_metadata) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $12, $13) \
              on conflict (tenant_id, id) do update set label = excluded.label, issuer = excluded.issuer, client_id = excluded.client_id, \
                client_secret = case when $11 then excluded.client_secret else sso_provider.client_secret end, \
-               domains = excluded.domains, auto_create = excluded.auto_create, default_roles = excluded.default_roles, enabled = excluded.enabled, updated_at = now()",
+               domains = excluded.domains, auto_create = excluded.auto_create, default_roles = excluded.default_roles, enabled = excluded.enabled, \
+               saml_metadata = excluded.saml_metadata, updated_at = now()",
         )
         .bind(ctx.tenant)
         .bind(id)
         .bind(label)
         .bind(&issuer)
-        .bind(client_id)
+        .bind(&client_id)
         .bind(secret.clone().flatten())
         .bind(&domains)
         .bind(input.auto_create)
         .bind(&roles)
         .bind(input.enabled)
         .bind(secret.is_some())
+        .bind(input.protocol.name())
+        .bind(&saml_metadata)
         .execute(&mut *tx)
         .await?;
-        let what = json!({"label": label, "issuer": issuer, "client_id": client_id, "secret_changed": secret.is_some(), "domains": domains, "auto_create": input.auto_create, "default_roles": roles, "enabled": input.enabled});
+        let what = json!({"label": label, "protocol": input.protocol.name(), "issuer": issuer, "client_id": client_id, "secret_changed": secret.is_some(), "metadata_changed": saml_metadata.is_some(), "domains": domains, "auto_create": input.auto_create, "default_roles": roles, "enabled": input.enabled});
         audit::record(&mut tx, ctx, "SsoProvider", id, "save", None, what).await?;
         tx.commit().await?;
         Ok(id)
@@ -428,15 +583,17 @@ impl Kernel {
         struct P {
             tenant_id: Uuid,
             label: String,
+            protocol: String,
             issuer: String,
             client_id: String,
             client_secret: Option<String>,
+            saml_metadata: Option<String>,
             domains: Vec<String>,
             auto_create: bool,
             default_roles: Vec<String>,
         }
         let p: P = sqlx::query_as(
-            "select p.tenant_id, p.label, p.issuer, p.client_id, p.client_secret, p.domains, p.auto_create, p.default_roles \
+            "select p.tenant_id, p.label, p.protocol, p.issuer, p.client_id, p.client_secret, p.saml_metadata, p.domains, p.auto_create, p.default_roles \
              from sso_provider p join tenant t on t.id = p.tenant_id \
              where p.id = $1 and p.enabled and t.status = 'active' and (t.id = $2 or t.slug = $3)",
         )
@@ -453,9 +610,11 @@ impl Kernel {
         let provider = Provider {
             id,
             label: p.label,
+            protocol: if p.protocol == "saml" { Protocol::Saml } else { Protocol::Oidc },
             issuer: p.issuer,
             client_id: p.client_id,
             client_secret,
+            saml_metadata: p.saml_metadata,
             domains: p.domains,
             auto_create: p.auto_create,
             default_roles: p.default_roles,
@@ -478,27 +637,24 @@ impl Kernel {
         let mut tx = self.db.system_tx().await?;
         let (tenant, p) = self.sign_in_provider(&mut tx, None, Some(tenant_slug), provider).await?;
         tx.commit().await?;
+        if p.protocol == Protocol::Saml {
+            if !self.own_return(tenant, &back).await? {
+                return Err(Error::field("redirect_uri", "a SAML sign-in comes back only to this server's own addresses"));
+            }
+            let idp = self.saml_idp(p.saml_metadata.as_deref().unwrap_or_default()).await?;
+            let (entity_id, acs_url) = self.saml_sp(tenant)?;
+            // An XML ID: a letter or `_` first.
+            let (state, request) = (random_secret(""), format!("_{}", hex::encode(rand::random::<[u8; 16]>())));
+            self.store_flow(&state, tenant, provider, &request, "", redirect_uri, binding).await?;
+            return ferrum_saml::request_url(&ferrum_saml::Sp { entity_id: &entity_id, acs_url: &acs_url }, &idp, &request, &state).map_err(Error::Unavailable);
+        }
         let d = self.discover(&p.issuer).await?;
         let mut url = reqwest::Url::parse(&d.authorization_endpoint).map_err(|_| Error::Unavailable("the provider's sign-in address is not a URL".into()))?;
         if url.scheme() != "https" && !self.settings.sso_allow_private {
             return Err(Error::Unavailable("the provider's sign-in address must use https".into()));
         }
         let (state, nonce, verifier) = (random_secret(""), random_secret(""), random_secret(""));
-        let mut tx = self.db.system_tx().await?;
-        sqlx::query("delete from sso_flow where created_at < now() - make_interval(mins => $1)").bind(FLOW_MINUTES).execute(&mut *tx).await?;
-        sqlx::query(
-            "insert into sso_flow (state_hash, tenant_id, provider_id, nonce, verifier, redirect_uri, binding_hash) values ($1, $2, $3, $4, $5, $6, $7)",
-        )
-        .bind(hash(&state))
-        .bind(tenant)
-        .bind(provider)
-        .bind(&nonce)
-        .bind(&verifier)
-        .bind(redirect_uri)
-        .bind(hash(binding))
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
+        self.store_flow(&state, tenant, provider, &nonce, &verifier, redirect_uri, binding).await?;
         url.query_pairs_mut()
             .append_pair("response_type", "code")
             .append_pair("client_id", &p.client_id)
@@ -511,21 +667,106 @@ impl Kernel {
         Ok(url.to_string())
     }
 
+    /// A sign-in on its way through a provider: `nonce` is the OpenID Connect nonce, or the SAML
+    /// request's ID.
+    async fn store_flow(&self, state: &str, tenant: Uuid, provider: Uuid, nonce: &str, verifier: &str, redirect_uri: &str, binding: &str) -> Result<()> {
+        let mut tx = self.db.system_tx().await?;
+        sqlx::query("delete from sso_flow where created_at < now() - make_interval(mins => $1)").bind(FLOW_MINUTES).execute(&mut *tx).await?;
+        sqlx::query(
+            "insert into sso_flow (state_hash, tenant_id, provider_id, nonce, verifier, redirect_uri, binding_hash) values ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(hash(state))
+        .bind(tenant)
+        .bind(provider)
+        .bind(nonce)
+        .bind(verifier)
+        .bind(redirect_uri)
+        .bind(hash(binding))
+        .execute(&mut *tx)
+        .await?;
+        Ok(tx.commit().await?)
+    }
+
+    /// A SAML provider posted its answer (`SAMLResponse`) to a sign-in (`RelayState`) of this
+    /// workspace's → where to send the browser: back where the sign-in started, with a one-time code
+    /// to finish with ([`Kernel::sso_finish`]). The sign-in is used up when the answer is refused, and
+    /// an answer counts once.
+    pub async fn saml_acs(&self, tenant: Uuid, relay_state: &str, response: &str) -> Result<String> {
+        let again = |why: &str| Error::Unauthorized(format!("{why}; sign in again"));
+        let mut tx = self.db.system_tx().await?;
+        let flow: Option<(Uuid, String, String)> = sqlx::query_as(
+            "select provider_id, nonce, redirect_uri from sso_flow \
+             where state_hash = $1 and tenant_id = $2 and code_hash is null and created_at > now() - make_interval(mins => $3)",
+        )
+        .bind(hash(relay_state))
+        .bind(tenant)
+        .bind(FLOW_MINUTES)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((provider, request, redirect_uri)) = flow else {
+            tx.commit().await?;
+            return Err(again("this sign-in has expired or was already used"));
+        };
+        let (_, p) = self.sign_in_provider(&mut tx, Some(tenant), None, provider).await?;
+        tx.commit().await?;
+        let checked = match p.protocol {
+            Protocol::Saml => self.saml_check(tenant, &p, response, request).await,
+            Protocol::Oidc => Err(again("this provider does not speak SAML")),
+        };
+        let mut tx = self.db.system_tx().await?;
+        let person = match checked {
+            Ok(person) => person,
+            Err(e) => {
+                sqlx::query("delete from sso_flow where state_hash = $1").bind(hash(relay_state)).execute(&mut *tx).await?;
+                tx.commit().await?;
+                return Err(e);
+            }
+        };
+        let code = random_secret("");
+        let done = sqlx::query("update sso_flow set code_hash = $2, answer = $3 where state_hash = $1 and code_hash is null")
+            .bind(hash(relay_state))
+            .bind(hash(&code))
+            .bind(serde_json::to_value(&person).map_err(|e| Error::Unavailable(e.to_string()))?)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        if done.rows_affected() == 0 {
+            return Err(again("this sign-in was already used"));
+        }
+        let mut back = reqwest::Url::parse(&redirect_uri).map_err(|_| again("this sign-in's return address is not a URL"))?;
+        back.query_pairs_mut().append_pair("state", relay_state).append_pair("code", &code);
+        Ok(back.to_string())
+    }
+
+    /// A SAML provider's answer checked against its metadata, for this workspace and request.
+    async fn saml_check(&self, tenant: Uuid, p: &Provider, response: &str, request: String) -> Result<ferrum_saml::Person> {
+        let idp = self.saml_idp(p.saml_metadata.as_deref().unwrap_or_default()).await?;
+        let (entity_id, acs_url) = self.saml_sp(tenant)?;
+        let response = response.to_string();
+        // xmlsec1 is synchronous work, kept off the request threads.
+        let checked =
+            tokio::task::spawn_blocking(move || ferrum_saml::verify(&ferrum_saml::Sp { entity_id: &entity_id, acs_url: &acs_url }, &idp, &response, &request))
+                .await
+                .map_err(|e| Error::Unavailable(format!("checking the answer stopped: {e}")))?;
+        checked.map_err(|why| Error::Unauthorized(format!("{}'s answer was refused: {why}; sign in again", p.label)))
+    }
+
     /// Finishes signing in through a provider with the `state` and `code` it sent the browser back
     /// with, and the browser's `binding`.
     pub async fn sso_finish(&self, state: &str, code: &str, binding: &str) -> Result<Session> {
         let again = |why: &str| Error::Unauthorized(format!("{why}; sign in again"));
         // The sign-in is used up whatever happens next.
         let mut tx = self.db.system_tx().await?;
-        let flow: Option<(Uuid, Uuid, String, String, String, String)> = sqlx::query_as(
+        type Flow = (Uuid, Uuid, String, String, String, String, Option<String>, Option<Value>);
+        let flow: Option<Flow> = sqlx::query_as(
             "delete from sso_flow where state_hash = $1 and created_at > now() - make_interval(mins => $2) \
-             returning tenant_id, provider_id, nonce, verifier, redirect_uri, binding_hash",
+             returning tenant_id, provider_id, nonce, verifier, redirect_uri, binding_hash, code_hash, answer",
         )
         .bind(hash(state))
         .bind(FLOW_MINUTES)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some((tenant, provider, nonce, verifier, redirect_uri, binding_hash)) = flow else {
+        let Some((tenant, provider, nonce, verifier, redirect_uri, binding_hash, code_hash, answer)) = flow else {
             tx.commit().await?;
             return Err(again("this sign-in has expired or was already used"));
         };
@@ -535,6 +776,17 @@ impl Kernel {
         }
         let (_, p) = self.sign_in_provider(&mut tx, Some(tenant), None, provider).await?;
         tx.commit().await?;
+        if p.protocol == Protocol::Saml {
+            // The code is the one the server sent the browser on with, once the provider's answer
+            // checked out (saml_acs); the answer is what it named.
+            let person: Option<ferrum_saml::Person> = answer.and_then(|a| serde_json::from_value(a).ok());
+            let (Some(person), true) = (person, code_hash.as_deref() == Some(hash(code).as_str())) else {
+                return Err(again("this sign-in was not finished at the provider"));
+            };
+            let claims = IdClaims { sub: person.subject, email: person.email, name: person.name, ..IdClaims::default() };
+            let email = verified_email(&claims, &p)?;
+            return self.sso_account(tenant, &p, &claims, &email).await;
+        }
         let d = self.discover(&p.issuer).await?;
         let mut form =
             vec![("grant_type", "authorization_code"), ("code", code), ("redirect_uri", redirect_uri.as_str()), ("code_verifier", verifier.as_str())];
@@ -584,6 +836,9 @@ impl Kernel {
         let tenant = tenant.ok_or_else(|| Error::NotFound("single sign-on provider".into()))?;
         let (_, p) = self.sign_in_provider(&mut tx, Some(tenant), None, provider).await?;
         tx.commit().await?;
+        if p.protocol != Protocol::Oidc {
+            return Err(Error::Unauthorized(format!("{} does not sign people in with OpenID Connect", p.label)));
+        }
         let d = self.discover(&p.issuer).await?;
         let (key, mut v) = self.token_key(&d, &p, token, "logout token").await?;
         v.set_required_spec_claims(&["iss", "aud"]);
@@ -773,9 +1028,11 @@ mod tests {
         Provider {
             id: Uuid::nil(),
             label: "Okta".into(),
+            protocol: Protocol::Oidc,
             issuer: "https://example.okta.com".into(),
             client_id: "ferrum".into(),
             client_secret: None,
+            saml_metadata: None,
             domains: domains.iter().map(|d| d.to_string()).collect(),
             auto_create: false,
             default_roles: vec![],

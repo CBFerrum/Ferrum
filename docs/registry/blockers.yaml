@@ -8,7 +8,7 @@ blockers:
   - {id: BLOCK-PAYMENT-KEYS, needs: "Stripe, Razorpay and PayPal test keys", owner: Chinmoy Bhuyan, blocks: "Gateways against real sandboxes; deposits; cloud billing"}
   - {id: BLOCK-NIC-SANDBOX, needs: NIC e-invoice sandbox credentials, owner: Chinmoy Bhuyan, blocks: India's IRP connection against the sandbox}
   - {id: BLOCK-EINVOICE-PROVIDERS, needs: "Accounts with Peppol access points, HMRC, Avalara, ANAF and the rest", owner: Chinmoy Bhuyan, blocks: Each country's live connection}
-  - {id: BLOCK-IDP-TENANT, needs: Test tenants at Okta and Microsoft Entra, owner: Chinmoy Bhuyan, blocks: Running SCIM against real providers}
+  - {id: BLOCK-IDP-TENANT, needs: Test tenants at Okta and Microsoft Entra, owner: Chinmoy Bhuyan, blocks: "Running SCIM, OpenID Connect and SAML sign-in against real providers"}
   - {id: BLOCK-SECURITY-REVIEW, needs: An independent penetration test and ASVS assessment, owner: Chinmoy Bhuyan, blocks: Any claim of security verification}
   - {id: BLOCK-ACCESSIBILITY-AUDIT, needs: A manual WCAG 2.2 AA audit, owner: Chinmoy Bhuyan, blocks: Any claim of accessibility conformance}
   - {id: BLOCK-LEGAL-REVIEW, needs: "Counsel on licensing, partner terms, privacy duties and regulated industries", owner: Chinmoy Bhuyan, blocks: "Licensing claims, partner program, healthcare and government packs"}
