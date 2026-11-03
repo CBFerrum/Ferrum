@@ -9,9 +9,9 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 126 |
+| Implemented, qualification incomplete | 127 |
 | Partially implemented | 53 |
-| Missing | 43 |
+| Missing | 42 |
 | Blocked by external dependency | 9 |
 | **All** | **231** |
 
@@ -37,7 +37,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-PLATFORM-016 | Durable jobs with leases, cancellation and poison isolation | Implemented, qualification incomplete | tested | Nothing schedules a job for later or repeats one; apps' periodic work stays in their maintenance; Plugin schedules and app maintenance are not moved onto it yet |
 | FERRUM-PLATFORM-017 | External effects run after commit | Implemented, qualification incomplete | tested | Enforced for plugins; native hooks are held to it by review (IRP and VIES read; other connectors not) |
 | FERRUM-PLATFORM-018 | No transaction held across an external call | Implemented, qualification incomplete | tested |  |
-| FERRUM-PLATFORM-019 | Stateful cross-system workflows with compensation | Missing | probe |  |
+| FERRUM-PLATFORM-019 | Stateful cross-system workflows with compensation | Implemented, qualification incomplete | tested | No app's process runs on it yet; Steps run in order, one at a time: no parallel branches, timers or waiting for a person within a workflow; Rust steps only: plugins cannot define workflows |
 
 ## Identity
 

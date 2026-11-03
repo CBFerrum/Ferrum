@@ -69,11 +69,14 @@ pub struct NewJob {
     pub max_attempts: i32,
     /// A job with this key already queued or running is returned instead of a second one.
     pub dedupe_key: Option<String>,
+    /// Asked to stop, it is run to undo what it did instead of being dropped (saga.rs): it hears the
+    /// request at [`Job::cancel_requested`].
+    pub undo_on_cancel: bool,
 }
 
 impl NewJob {
     pub fn new(kind: &str, payload: Value) -> NewJob {
-        NewJob { kind: kind.to_string(), payload, priority: 1, max_attempts: 5, dedupe_key: None }
+        NewJob { kind: kind.to_string(), payload, priority: 1, max_attempts: 5, dedupe_key: None, undo_on_cancel: false }
     }
 }
 
@@ -92,6 +95,7 @@ pub struct Job {
     pub lease_token: Option<Uuid>,
     /// What the last [`Job::progress`] said, from this attempt or an earlier one.
     pub resumed: Value,
+    pub undo_on_cancel: bool,
 }
 
 impl Job {
@@ -110,6 +114,18 @@ impl Job {
         Ok(held.rows_affected() > 0)
     }
 
+    /// Whether someone has asked it to stop (for a job that undoes its work rather than being dropped).
+    pub async fn cancel_requested(&self, k: &Kernel) -> Result<bool> {
+        let mut tx = k.db.system_tx().await?;
+        let asked: Option<bool> = sqlx::query_scalar("select cancel_requested from job where tenant_id = $1 and id = $2")
+            .bind(self.tenant_id)
+            .bind(self.id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(asked.unwrap_or(true))
+    }
+
     /// The person who asked, with the rights they have now.
     pub async fn creator(&self, k: &Kernel) -> Result<Ctx> {
         let user = self.created_by.ok_or_else(|| Error::Forbidden("this job has nobody behind it".into()))?;
@@ -123,7 +139,7 @@ impl Job {
 /// Queues a job in the caller's transaction: it exists only if that commits. Returns its id.
 pub async fn enqueue(tx: &mut Tx, tenant: Uuid, created_by: Option<Uuid>, job: NewJob) -> Result<Uuid> {
     let inserted: Option<Uuid> = sqlx::query_scalar(
-        "insert into job (tenant_id, id, kind, payload, priority, max_attempts, dedupe_key, created_by) values ($1, $2, $3, $4, $5, $6, $7, $8) \
+        "insert into job (tenant_id, id, kind, payload, priority, max_attempts, dedupe_key, created_by, undo_on_cancel) values ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
          on conflict (tenant_id, kind, dedupe_key) where dedupe_key is not null and status in ('queued', 'running') do nothing returning id",
     )
     .bind(tenant)
@@ -134,6 +150,7 @@ pub async fn enqueue(tx: &mut Tx, tenant: Uuid, created_by: Option<Uuid>, job: N
     .bind(job.max_attempts)
     .bind(&job.dedupe_key)
     .bind(created_by)
+    .bind(job.undo_on_cancel)
     .fetch_optional(&mut **tx)
     .await?;
     if let Some(id) = inserted {
@@ -196,7 +213,7 @@ impl Kernel {
         }
         let mut tx = self.db.system_tx().await?;
         // Asked to stop, with nobody left to tell (a job handed back counts: it is running nowhere).
-        sqlx::query("update job set status = 'cancelled', finished_at = now(), lease_token = null where cancel_requested and (status = 'queued' or (status = 'running' and lease_until < now()))")
+        sqlx::query("update job set status = 'cancelled', finished_at = now(), lease_token = null where cancel_requested and not undo_on_cancel and (status = 'queued' or (status = 'running' and lease_until < now()))")
             .execute(&mut *tx)
             .await?;
         // Their workers died, and that was their last attempt.
@@ -221,7 +238,7 @@ impl Kernel {
                from waiting w where w.tenant_id is not null), \
              picked as ( \
                select claimed.tenant_id, claimed.id from (select tenant_id from waiting where tenant_id is not null order by random()) w \
-               cross join lateral (select j.tenant_id, j.id from job j where j.tenant_id = w.tenant_id and not j.cancel_requested \
+               cross join lateral (select j.tenant_id, j.id from job j where j.tenant_id = w.tenant_id and (not j.cancel_requested or j.undo_on_cancel) \
                  and ((j.status = 'queued' and j.run_at <= now()) or (j.status = 'running' and j.lease_until < now())) \
                  and (select count(*) from job r where r.tenant_id = w.tenant_id and r.status = 'running' and r.lease_until >= now()) < $3 \
                  order by j.priority, j.run_at limit 1 for update of j skip locked) claimed \
@@ -229,7 +246,7 @@ impl Kernel {
              update job j set status = 'running', attempts = j.attempts + 1, lease_token = $1, lease_until = now() + make_interval(secs => $2), \
                started_at = coalesce(j.started_at, now()) \
              from picked p where j.tenant_id = p.tenant_id and j.id = p.id \
-             returning j.tenant_id, j.id, j.kind, j.payload, j.priority, j.attempts, j.max_attempts, j.created_by, j.correlation_id, j.lease_token, j.progress as resumed",
+             returning j.tenant_id, j.id, j.kind, j.payload, j.priority, j.attempts, j.max_attempts, j.created_by, j.correlation_id, j.lease_token, j.progress as resumed, j.undo_on_cancel",
         )
         .bind(Uuid::now_v7())
         .bind(LEASE.as_secs_f64())
@@ -263,6 +280,8 @@ impl Kernel {
             tokio::time::sleep(RENEW).await;
             match self.renew_job(job).await {
                 Ok(Some(false)) => {}
+                // It hears the request itself, and undoes what it did.
+                Ok(Some(true)) if job.undo_on_cancel => {}
                 Ok(Some(true)) => return Ended::Cancelled,
                 Ok(None) => return Ended::Lost,
                 // A database too unwell to renew on: keep working, the outcome is fenced anyway.
@@ -321,7 +340,7 @@ impl Kernel {
                 let last = gives_up(e) || job.attempts >= job.max_attempts;
                 tracing::warn!(job = %job.id, kind = %job.kind, attempts = job.attempts, last, "job failed: {e}");
                 let failed = sqlx::query(sqlx::AssertSqlSafe(format!(
-                    "update job set status = case when $4 then 'failed' else 'queued' end, last_error = $5, lease_token = null, \
+                    "update job set status = case when not $4 then 'queued' when undo_on_cancel and cancel_requested then 'cancelled' else 'failed' end, last_error = $5, lease_token = null, \
                      finished_at = case when $4 then now() end, run_at = now() + make_interval(secs => $6) where {fence}"
                 )))
                 .bind(job.tenant_id)
@@ -441,8 +460,9 @@ impl Kernel {
     pub async fn cancel_job(&self, ctx: &Ctx, id: Uuid) -> Result<()> {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let done = sqlx::query(
-            "update job set cancel_requested = true, status = case when status = 'queued' then 'cancelled' else status end, \
-             finished_at = case when status = 'queued' then now() end \
+            "update job set cancel_requested = true, status = case when status = 'queued' and not undo_on_cancel then 'cancelled' else status end, \
+             finished_at = case when status = 'queued' and not undo_on_cancel then now() end, \
+             run_at = case when undo_on_cancel then now() else run_at end \
              where tenant_id = $1 and id = $2 and ($3 or created_by = $4) and status in ('queued', 'running')",
         )
         .bind(ctx.tenant)
