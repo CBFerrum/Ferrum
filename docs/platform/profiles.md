@@ -21,5 +21,5 @@ G4, G5, G7 or G8, because each names something real.
 | RP-02 Corporate application | Access decisions, offboarding across the forge, members-only sites | A real IdP, MDM and access provider. Nothing here moves packets |
 | RP-03 Specialized resources | Apps declare resources, PostgreSQL and objects provisioned, migrated, copied, restored, retained, under a region policy and a budget | A real object store, time-series or log analytics, scaling on a provider, real cost |
 | RP-04 Distributed charging | Connection ownership, durable billing frames and transaction numbers, evidence-based sessions, run together across a gateway dying | Chargers, meters, OCPP conformance, two gateways listening at once |
-| RP-05 Developer platform | Gitea repositories, protected branches, builds, previews, approvals, console | A registry, starters, an SDK, a qualified sandbox |
+| RP-05 Developer platform | Forgejo repositories, protected branches, builds, previews, approvals, console | A registry, starters, an SDK, a qualified sandbox |
 | RP-06 Customer network | Serving nodes and gateways that need nothing else to keep working | Everything else: no customer-network deployment has been attempted |
