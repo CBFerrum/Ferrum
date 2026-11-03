@@ -105,6 +105,12 @@ On a workstation the server starter takes a development token and nothing else, 
 Content for sites is a record with a workflow (`tests/content_it.rs`): published only by someone other than its author, only as
 reviewed, only when written from what is live, read by a site's key that sees no draft, and previewed with a key that expires.
 
+A release whose services stay at their CPU limit, as mining does, is seen from `docker stats` as the controller watches it, and
+a rule holds its project's new builds for a person with the looks as evidence (`tests/deploy_it.rs`, with a real container
+burning its CPU and another project's quieter looks left alone). Writing it found that a person lifting a hold was undone by the
+build-time rule's next round within the same hour; a lifted hold now stays lifted. A tree deeper than 2048 is refused at the
+forge by its own `git` (`tests/code_it.rs`, 2101 levels).
+
 ## Figures
 
 An Apple M1 Pro with 8 cores and 16 GB, PostgreSQL 17 with default settings, on one laptop, with the load generator on the same
