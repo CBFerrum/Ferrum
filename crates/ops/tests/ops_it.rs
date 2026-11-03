@@ -719,7 +719,13 @@ async fn a_charger_is_where_its_connection_is(k: &Arc<Kernel>) {
     let (g4_id, mut g4) = gateway(&t, "GW-4", site, 44).await;
     activate(&t, g4_id).await;
     let cp = robot(&t, "CP-1", site).await;
-    let fact = |kind: &str, device: Uuid, at: chrono::DateTime<Utc>| Fact { fact_id: Uuid::now_v7(), kind: kind.into(), at_source: at, actor: None, body: json!({"device": device}) };
+    let fact = |kind: &str, device: Uuid, at: chrono::DateTime<Utc>| Fact {
+        fact_id: Uuid::now_v7(),
+        kind: kind.into(),
+        at_source: at,
+        actor: None,
+        body: json!({"device": device}),
+    };
     let with = |g: &Gateway, facts: Vec<Fact>, reports: Vec<Report>| SyncRequest { facts, reports, ..g.sync_request() };
 
     // Unpooled, the second gateway holds nothing, as ever.

@@ -643,8 +643,11 @@ pub async fn describe(k: &Kernel, ctx: &Ctx, id: Uuid, after: Option<i64>) -> Re
     let command: Option<Value> =
         sqlx::query_scalar(concat!("select ", named!(""), " where c.tenant_id = $1 and c.id = $2")).bind(ctx.tenant).bind(id).fetch_optional(&mut *tx).await?;
     let mut command = command.ok_or_else(|| Error::NotFound("command".into()))?;
-    let reached: Option<i64> =
-        sqlx::query_scalar("select max(seq) from op_command_event where tenant_id = $1 and command_id = $2").bind(ctx.tenant).bind(id).fetch_one(&mut *tx).await?;
+    let reached: Option<i64> = sqlx::query_scalar("select max(seq) from op_command_event where tenant_id = $1 and command_id = $2")
+        .bind(ctx.tenant)
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
     let history: Vec<Value> = sqlx::query_scalar(
         "select to_jsonb(e) - 'tenant_id' - 'command_id' from op_command_event e where tenant_id = $1 and command_id = $2 and seq > $3 order by seq",
     )

@@ -41,7 +41,9 @@ pub async fn apply_fact(tx: &mut Tx, tenant: Uuid, site: Uuid, gateway: Uuid, f:
     if !new {
         return Ok(());
     }
-    if let Some(device) = f.kind.starts_with("connection.").then(|| f.body.get("device").and_then(|v| v.as_str()).and_then(|v| v.parse::<Uuid>().ok())).flatten() {
+    if let Some(device) =
+        f.kind.starts_with("connection.").then(|| f.body.get("device").and_then(|v| v.as_str()).and_then(|v| v.parse::<Uuid>().ok())).flatten()
+    {
         if f.kind == "connection.opened" {
             connections::opened(tx, tenant, device, gateway, site, f.at_source).await?;
         } else if f.kind == "connection.closed" {
@@ -151,7 +153,11 @@ pub async fn exchange(k: &Kernel, tenant: Uuid, device: Uuid, req: SyncRequest) 
     let held: Option<(String, i64)> = if pooled {
         current.map(|epoch| (gateway.domain.clone(), epoch))
     } else {
-        sqlx::query_as("select domain, epoch from op_authority where tenant_id = $1 and holder = $2 for update").bind(tenant).bind(device).fetch_optional(&mut *tx).await?
+        sqlx::query_as("select domain, epoch from op_authority where tenant_id = $1 and holder = $2 for update")
+            .bind(tenant)
+            .bind(device)
+            .fetch_optional(&mut *tx)
+            .await?
     };
     let fenced = match &held {
         Some((_, epoch)) => req.epoch != 0 && req.epoch != *epoch,
