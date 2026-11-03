@@ -9,9 +9,9 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 127 |
+| Implemented, qualification incomplete | 129 |
 | Partially implemented | 53 |
-| Missing | 42 |
+| Missing | 40 |
 | Blocked by external dependency | 9 |
 | **All** | **231** |
 
@@ -98,8 +98,8 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-ERP-001 | Ledger, receivables, payables, invoices, notes, payments, allocations | Implemented, qualification incomplete | probe |  |
 | FERRUM-ERP-002 | Bank reconciliation, budgets, period close, statements | Implemented, qualification incomplete | probe |  |
 | FERRUM-ERP-003 | Multiple companies, currencies, fiscal years, dimensions | Implemented, qualification incomplete | probe | Dimensions are cost centers |
-| FERRUM-ERP-004 | Parallel accounting books | Missing | probe |  |
-| FERRUM-ERP-005 | Intercompany transactions, consolidation, eliminations | Missing | probe |  |
+| FERRUM-ERP-004 | Parallel accounting books | Implemented, qualification incomplete | tested | A book's entries may not touch receivables or payables: what parties owe is the same in every book; Budgets, exchange revaluation and the finance overview read the common books |
+| FERRUM-ERP-005 | Intercompany transactions, consolidation, eliminations | Partially implemented | tested | Every account is translated at one closing rate, as ERPNext does: no rates of the day for income and expense, no translation reserve (IAS 21); No ownership percentages or minority interest; The cash flow is not consolidated; An intercompany invoice is not mirrored into the other company |
 | FERRUM-ERP-006 | Accruals, deferred revenue, expense allocation | Partially implemented | probe | Recurring rules exist; deferred revenue and accruals as such were not found |
 | FERRUM-ERP-007 | Tax localization for 26 countries as add-ons | Implemented, qualification incomplete | read | Rates are moving from code to editable tax profiles; No country's output has been reviewed by a tax professional |
 | FERRUM-ERP-008 | Stock, transfers, serial and batch, expiry, picking, cycle counts | Implemented, qualification incomplete | probe |  |
@@ -125,7 +125,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-COMMS-001 | Mail, shared mailboxes, chat, calendar, meetings, CalDAV and CardDAV | Implemented, qualification incomplete | probe |  |
 | FERRUM-COMMS-002 | Captions, transcripts, recording, presence | Missing | probe |  |
 | FERRUM-ASSETS-001 | Assets, depreciation, movements, maintenance, disposal | Implemented, qualification incomplete | probe |  |
-| FERRUM-ASSETS-002 | Finance books that keep their own values | Partially implemented | probe | Finance books are labels only; Grouped assets are sold whole; repairs neither extend life nor consume parts |
+| FERRUM-ASSETS-002 | Finance books that keep their own values | Implemented, qualification incomplete | tested | Depreciation booked before a split is shared by the two assets: neither can then be cancelled; An asset a repair or a value adjustment changed is not split |
 | FERRUM-BOOKINGS-001 | Resources, buffers, capacity, waitlist, cancellation, guest pages | Implemented, qualification incomplete | probe |  |
 | FERRUM-BOOKINGS-002 | Recurring appointments | Implemented, qualification incomplete | tested | On local branch bookings/series, unpushed; A guest gets a confirmation per occurrence; Staff repeat a booking; guests cannot yet from the public page |
 | FERRUM-BOOKINGS-003 | Deposits and refunds | Missing | probe |  |

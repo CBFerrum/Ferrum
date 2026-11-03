@@ -2283,7 +2283,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-assets"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-assets?branch=main#d3f5bae353ca3091929344f7a572911b20407b60"
+source = "git+https://github.com/CBFerrum/ferrum-app-assets?branch=main#dfb504434c5000596905a6fe43a3a3c8f55b3c88"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2504,7 +2504,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-erp"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#d1246422235159232d5915aad502cfcc9a91906b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#97569f5c17135e767e12aa21b80e2ba9f211b2c1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2722,7 +2722,7 @@ dependencies = [
 [[package]]
 name = "ferrum-ca"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#d1246422235159232d5915aad502cfcc9a91906b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#97569f5c17135e767e12aa21b80e2ba9f211b2c1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2752,7 +2752,7 @@ dependencies = [
 [[package]]
 name = "ferrum-countries"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#d1246422235159232d5915aad502cfcc9a91906b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#97569f5c17135e767e12aa21b80e2ba9f211b2c1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2774,7 +2774,7 @@ dependencies = [
 [[package]]
 name = "ferrum-de"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#d1246422235159232d5915aad502cfcc9a91906b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#97569f5c17135e767e12aa21b80e2ba9f211b2c1"
 dependencies = [
  "async-trait",
  "ferrum-app-erp",
@@ -2824,7 +2824,7 @@ dependencies = [
 [[package]]
 name = "ferrum-eu"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#d1246422235159232d5915aad502cfcc9a91906b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#97569f5c17135e767e12aa21b80e2ba9f211b2c1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2844,7 +2844,7 @@ dependencies = [
 [[package]]
 name = "ferrum-eu-members"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#d1246422235159232d5915aad502cfcc9a91906b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#97569f5c17135e767e12aa21b80e2ba9f211b2c1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2868,7 +2868,7 @@ dependencies = [
 [[package]]
 name = "ferrum-finance"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#d1246422235159232d5915aad502cfcc9a91906b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#97569f5c17135e767e12aa21b80e2ba9f211b2c1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2890,7 +2890,7 @@ dependencies = [
 [[package]]
 name = "ferrum-gb"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#d1246422235159232d5915aad502cfcc9a91906b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#97569f5c17135e767e12aa21b80e2ba9f211b2c1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2911,7 +2911,7 @@ dependencies = [
 [[package]]
 name = "ferrum-india"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#d1246422235159232d5915aad502cfcc9a91906b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#97569f5c17135e767e12aa21b80e2ba9f211b2c1"
 dependencies = [
  "aes",
  "async-trait",
@@ -2993,7 +2993,7 @@ dependencies = [
 [[package]]
 name = "ferrum-mes"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#d1246422235159232d5915aad502cfcc9a91906b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#97569f5c17135e767e12aa21b80e2ba9f211b2c1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3030,7 +3030,7 @@ dependencies = [
 [[package]]
 name = "ferrum-mfg-ops"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#d1246422235159232d5915aad502cfcc9a91906b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#97569f5c17135e767e12aa21b80e2ba9f211b2c1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3117,7 +3117,7 @@ dependencies = [
 [[package]]
 name = "ferrum-procurement"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#d1246422235159232d5915aad502cfcc9a91906b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#97569f5c17135e767e12aa21b80e2ba9f211b2c1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3141,7 +3141,7 @@ dependencies = [
 [[package]]
 name = "ferrum-quality"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#d1246422235159232d5915aad502cfcc9a91906b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#97569f5c17135e767e12aa21b80e2ba9f211b2c1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3250,7 +3250,7 @@ dependencies = [
 [[package]]
 name = "ferrum-stock-ops"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#d1246422235159232d5915aad502cfcc9a91906b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#97569f5c17135e767e12aa21b80e2ba9f211b2c1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3294,7 +3294,7 @@ dependencies = [
 [[package]]
 name = "ferrum-us"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#d1246422235159232d5915aad502cfcc9a91906b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#97569f5c17135e767e12aa21b80e2ba9f211b2c1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3312,7 +3312,7 @@ dependencies = [
 [[package]]
 name = "ferrum-wms"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#d1246422235159232d5915aad502cfcc9a91906b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#97569f5c17135e767e12aa21b80e2ba9f211b2c1"
 dependencies = [
  "async-trait",
  "chrono",
