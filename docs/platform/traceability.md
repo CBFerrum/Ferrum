@@ -99,8 +99,8 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 |---|---|---|---|---|---|
 | FCP-BUILD-001 | Webhook authenticity | Verified in software | AT-BUILD-001 | 2 | Signed, replay-safe, and bound to the repository it claims |
 | FCP-BUILD-002 | Exact commit checkout | Verified in software | AT-BUILD-002 | 2 | Fetched by commit, checked after, and the moved branch does not appear |
-| FCP-BUILD-003 | Builder sandbox | Verified in software | AT-BUILD-003 | 1 | A hostile build reached nothing, on Docker. A container is not a boundary against a kernel exploit: this proves the configuration, not the isolation a shared host needs |
-| FCP-BUILD-004 | Production isolation | Verified in software | AT-BUILD-004 | 1 | No network unless a mirror network is named. The mirror path has not been exercised |
+| FCP-BUILD-003 | Builder sandbox | Verified in software | AT-BUILD-003 | 1 | A hostile build reached nothing, on Docker and under gVisor (CI's gvisor job, where it saw gVisor's kernel instead of the host's). That proves the configuration and that gVisor holds it; qualifying a runtime class for shared hosts needs a real cluster with egress enforced, and a review |
+| FCP-BUILD-004 | Production isolation | Verified in software | AT-BUILD-004 | 1 | No network unless a mirror network is named, under Docker and under gVisor. The mirror path has not been exercised |
 | FCP-BUILD-005 | Secret exposure controls | Verified in software | AT-BUILD-005 | 1 | No credential is in reach, so there is nothing to print. Redaction exists for test secrets only |
 | FCP-BUILD-006 | Cache trust | Verified in software | AT-BUILD-006 | 2 | A cache per repository and level of trust, at /cache. It goes when it passes 1 GiB, and a second worker on another host starts empty |
 | FCP-BUILD-007 | Dependency pinning | Verified in software | AT-BUILD-007 | 1 | Images pinned by digest and the lockfile recorded. Packages a build fetches are as pinned as its lockfile: nothing proxies them |
