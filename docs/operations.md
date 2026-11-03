@@ -36,7 +36,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_PDF_URL` | no | A Gotenberg-compatible renderer (`gotenberg/gotenberg:8`, included in both deployments as `pdf` / `ferrum-pdf`) for PDFs of print formats; empty turns PDFs off. Run it with JavaScript off and an allow-list of `^(data:\|file:///tmp/).*` so templates cannot make it fetch anything; print formats then use inline (data:) images |
 | `FERRUM_REQUIRE_OBJECT_STORAGE` | no | Production default `true`: refuse to start without object storage, so no replica keeps files locally. `false` only for single-server installs |
 | `FERRUM_FILES_DIR` | no | Local attachment directory (default `/var/lib/ferrum/files`) |
-| `FERRUM_DB_MAX_CONNECTIONS` | no | Pool size per replica (default 30) |
+| `FERRUM_DB_MAX_CONNECTIONS` | no | Pool size per replica (default 30). Below 10, requests wait behind the replica's own job workers and event loops, which can hold seven at once; the server warns as it starts, and `ferrum task doctor` says so |
 | `FERRUM_RUN_BACKGROUND` | no | `false` turns a replica into API-only |
 | `PUBLIC_URL` | recommended | The address people open, scheme and port included (`https://erp.example.com`). Apps' screens name it in their Content Security Policy, which Safari needs when a proxy in front rewrites the host, and links mailed to people outside the workspace (Drive guests) are built on it |
 | `PORT`, `BINDING`, `LOG_LEVEL` | no | Usual meanings; logs are JSON on stdout |

@@ -134,6 +134,13 @@ impl Hooks for App {
     async fn after_context(ctx: AppContext) -> Result<AppContext> {
         let settings = Settings::from_ctx(&ctx)?;
         crate::extract::PROXY_HOPS.store(settings.proxy_hops, std::sync::atomic::Ordering::Relaxed);
+        if settings.db_max_connections < ferrum_kernel::doctor::POOL_FLOOR {
+            tracing::warn!(
+                connections = settings.db_max_connections,
+                "fewer than {} database connections: requests will wait behind this replica's own job workers and event loops",
+                ferrum_kernel::doctor::POOL_FLOOR
+            );
+        }
         let db = Db::connect(DbConfig { url: ctx.config.database.uri.clone(), max_connections: settings.db_max_connections, ..Default::default() })
             .await
             .map_err(|e| Error::Message(format!("database: {e}")))?;
