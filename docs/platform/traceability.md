@@ -14,7 +14,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
-| FCP-BASE-001 | Frozen inventory | Partial | AT-BASE-001 | 0 | Image digests need a token with read:packages, and no production tenant is reachable from here |
+| FCP-BASE-001 | Frozen inventory | Partial | AT-BASE-001 | 0 | What each published image's `latest` and commit tags point at is recorded (docs/platform/baseline.json, read with read:packages). No production tenant is reachable from here, so no production installation is known |
 | FCP-BASE-002 | Existing capability reuse | Partial | AT-BASE-002 | 0 | Mapped by reading and probing; each entry is confirmed when its workstream starts |
 | FCP-BASE-003 | Prior invariant regressions | Verified in software | AT-BASE-003 | 6 | Simulators only: no physical equipment |
 | FCP-BASE-004 | Release pins | Verified in software | AT-BASE-004 | 1 | Generated and checked in CI; a signed evidence bundle is FCP-QUAL-008 |
