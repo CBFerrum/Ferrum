@@ -112,7 +112,7 @@ async fn only_through_the_api(st: &crate::state::AppState, ctx: &Ctx, method: &s
         return Ok(());
     }
     if let Some((grant, _)) = st.kernel.support_level(ctx).await? {
-        st.kernel.support_used(ctx, grant, method, "outside the API").await?;
+        st.kernel.support_tried(ctx, grant, method, "outside the API", true).await?;
     }
     Err(ApiError(Error::Forbidden("support access works only through the API".into())))
 }
@@ -236,8 +236,9 @@ impl FromRequestParts<AppContext> for Auth {
         // Support access is seen by the customer, request by request (crates/kernel/src/support.rs).
         if ctx.email.ends_with(ferrum_kernel::support::SUPPORT_DOMAIN) {
             let (grant, level) = st.kernel.support_level(&ctx).await?.ok_or_else(|| ApiError(Error::Unauthorized("this support access has ended".into())))?;
-            st.kernel.support_used(&ctx, grant, parts.method.as_str(), parts.uri.path()).await?;
-            if !ferrum_kernel::support::reaches_records(&level) && parts.uri.path() != "/api/support/report" {
+            let refused = !ferrum_kernel::support::reaches_records(&level) && parts.uri.path() != "/api/support/report";
+            st.kernel.support_tried(&ctx, grant, parts.method.as_str(), parts.uri.path(), refused).await?;
+            if refused {
                 return Err(ApiError(Error::Forbidden(format!("{level} access reaches no records"))));
             }
         }
