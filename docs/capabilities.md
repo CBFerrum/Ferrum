@@ -203,7 +203,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-AI-003 | Egress policy separate from read permission | Implemented, qualification incomplete | tested | Packages must mark entities `internal` and fields with perm_group: HR's are marked, others not yet reviewed; Fields free of any group go, whatever they hold |
 | FERRUM-AI-004 | Authorization-aware retrieval | Partially implemented | read | Tools run as the person, so reads are theirs; no retrieval index, so caches and embeddings do not arise yet |
 | FERRUM-AI-005 | Evaluation datasets and prompt-injection tests | Partially implemented | tested | An adversarial test with a model that obeys injected instructions; no evaluation against real models, no grounded-answer datasets, no recorded prompt versions |
-| FERRUM-AI-006 | Domain-specific assistants with sources shown | Missing | probe |  |
+| FERRUM-AI-006 | Domain-specific assistants with sources shown | Implemented, qualification incomplete | read | An app tells the assistant about its records through shell.assistant, added to the context of each message written in its pages; ERP's is written, other apps' not yet; Sources are the records, lists and reports the answer's reads looked at, shown under it; what the model took from each is not marked sentence by sentence; Not tried in a browser against a real model when it was built |
 
 ## Cloud
 

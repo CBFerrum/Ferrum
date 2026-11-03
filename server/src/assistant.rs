@@ -25,6 +25,21 @@ use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
+/// The app a message was written in: the first segment of the page's path in its context
+/// ("Page: Sales Invoices (/erp/e/SalesInvoice)" was written in `erp`).
+pub fn page_route(context: &str) -> Option<&str> {
+    let line = context.lines().find_map(|l| l.strip_prefix("Page: "))?;
+    let path = line.rsplit_once('(')?.1.strip_suffix(')')?;
+    path.strip_prefix('/')?.split('/').next().filter(|s| !s.is_empty())
+}
+
+/// What the app the person is in says about working there (`shell.assistant`), for the context
+/// block: the app's words, set apart from the person's.
+pub fn guidance(items: &[Value]) -> Option<String> {
+    let parts: Vec<String> = items.iter().filter_map(|i| Some(format!("- {}: {}", i["title"].as_str()?, i["instructions"].as_str()?.trim()))).collect();
+    (!parts.is_empty()).then(|| format!("The app this page belongs to says, about its records:\n{}", parts.join("\n")))
+}
+
 /// The Messages API version this module speaks.
 const API_VERSION: &str = "2026-10-21";
 /// Models that take `fallbacks: "default"` (a request the model's safety classifiers decline is
@@ -1013,7 +1028,13 @@ async fn run(env: &Env, ctx: &Ctx, thread: Uuid, live: &Live, t: Thread, input: 
     }
     if let Input::Message { text, context } = &input {
         if !context.trim().is_empty() {
-            opening.push(json!({"type": "text", "text": format!("<context>\n{}\n</context>", context.trim())}));
+            let mut block = context.trim().to_string();
+            if let (Some(apps), Some(route)) = (&env.apps, page_route(context))
+                && let Some(g) = guidance(&apps.assistant_domain(ctx.tenant, route).await.unwrap_or_default())
+            {
+                block = format!("{block}\n{g}");
+            }
+            opening.push(json!({"type": "text", "text": format!("<context>\n{block}\n</context>")}));
         }
         opening.push(json!({"type": "text", "text": text}));
     }
@@ -1356,6 +1377,17 @@ mod tests {
         let items = display(2, "assistant", &answer)["items"].clone();
         assert_eq!(items.as_array().unwrap().len(), 2, "empty reasoning is left out: {items}");
         assert_eq!(items[1]["kind"], "tool");
+    }
+
+    #[test]
+    fn an_apps_guidance_follows_the_page() {
+        assert_eq!(page_route("When: today\nPage: Sales Invoices (/erp/e/SalesInvoice)"), Some("erp"));
+        assert_eq!(page_route("Page: Home (/)"), None);
+        assert_eq!(page_route("Page: the assistant's own page"), None);
+        assert_eq!(page_route("Page: Notes (Q3) (/notes/)"), Some("notes"), "the path is the last parenthesis");
+        let items = [json!({"title": "Accounting", "instructions": "Amounts are in the company currency. "}), json!({"title": "No instructions"})];
+        assert_eq!(guidance(&items).unwrap(), "The app this page belongs to says, about its records:\n- Accounting: Amounts are in the company currency.");
+        assert_eq!(guidance(&[]), None);
     }
 
     #[test]

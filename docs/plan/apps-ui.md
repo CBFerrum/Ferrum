@@ -854,6 +854,8 @@ contributes:
     - { id: invitations, endpoint: /api/ext/comms/work }
   shell.card:                     # previews of its records elsewhere (§11.6)
     - { entity: CommsEvent, endpoint: /api/ext/comms/cards/event }
+  shell.assistant:                # what the assistant should know in its pages (§11.4), and what to ask there
+    - { id: mail, title: Mail, instructions: "…", suggestions: ["What needs a reply today?"] }
   ui.widget:
     - { id: agenda, title: Today, entry: ui/dist/widget-agenda.html, size: [4, 3] }
 extension_points:

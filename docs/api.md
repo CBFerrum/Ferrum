@@ -631,6 +631,11 @@ records from before their workflow), else Draft/Submitted/Cancelled for submitta
 `fields` are up to six the list shows, not the title, a link as the linked record's title, masked
 as reads are. Cached by the browser for 30 seconds.
 
+The assistant (`/api/assistant`) adds to the context of each message what the app of the page it was
+written in says about its records (`shell.assistant: [{id, title, instructions, suggestions}]`), and
+`GET /api/assistant/suggestions?path=` gives that app's suggested questions for a new conversation.
+Under each answer the panel lists the records, lists and reports its reads looked at.
+
 An app may serve its entities' cards itself (`shell.card: [{entity, endpoint}]`): the bar then asks
 `GET {endpoint}?id=` and draws `{title, kind?, number?, icon?, state?, fields?: [{label, value,
 type?}], updated_at?}`; the endpoint checks the caller's access itself. `type` (`date`,
