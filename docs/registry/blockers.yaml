@@ -20,3 +20,11 @@ blockers:
   - {id: BLOCK-SIGNING-PROVIDER, needs: A qualified trust service provider, owner: Chinmoy Bhuyan, blocks: PAdES and qualified signatures}
   - {id: BLOCK-HOSPITALITY-CHANNELS, needs: "Certification with Booking.com and other channels", owner: Chinmoy Bhuyan, blocks: Hospitality channel connections}
   - {id: BLOCK-GHCR-VISIBILITY, needs: "A decision on making the ghcr packages public, which cannot be undone", owner: Chinmoy Bhuyan, blocks: Anonymous image pulls in Frontend CI and by self-hosters}
+  - {id: BLOCK-PRODUCTION-DOMAINS, needs: "A production domain and a DNS account Ferrum may change", owner: Chinmoy Bhuyan, blocks: "Real custom domains and certificates; staging and test domains only until then"}
+  - {id: BLOCK-PROVIDER-CONTRACTS, needs: "Provider contracts, redistribution and managed-use rights for each hosted component", owner: Chinmoy Bhuyan, blocks: "Offering Gitea, Harbor, Pomerium, NetBird or similar as a managed service; their adapters stay off for that mode"}
+  - {id: BLOCK-TIMESCALE-LICENSE, needs: "A decision on Timescale's editions and hosting terms", owner: Chinmoy Bhuyan, blocks: "A managed Timescale offering; a customer-owned path or an alternative stands in"}
+  - {id: BLOCK-REAL-TENANTS, needs: "Real tenants at an IdP, a private network provider, an MDM and a PAM service", owner: Chinmoy Bhuyan, blocks: "Provider qualification; contract tests stay labelled software-only"}
+  - {id: BLOCK-EDGE-SERVICE-TIER, needs: "A chosen CDN, WAF and PAM service tier", owner: Chinmoy Bhuyan, blocks: "Global delivery and perimeter claims"}
+  - {id: BLOCK-RESIDENCY-POLICY, needs: "Decisions on residency, retention and legal hold per customer", owner: Chinmoy Bhuyan, blocks: "Cross-boundary transfer, which stays refused"}
+  - {id: BLOCK-LTS-SUPPORT, needs: "A funded support and LTS commitment", owner: Chinmoy Bhuyan, blocks: "Any SLA or production-supported label"}
+  - {id: BLOCK-CLOUD-VISIBILITY, needs: "A decision to make CBFerrum/ferrum-app-cloud public, or to give this repository's CI access to it", owner: Chinmoy Bhuyan, blocks: "Linking the cloud feature into the server on main: a public CI cannot fetch a private dependency"}

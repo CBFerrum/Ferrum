@@ -1,0 +1,3559 @@
+{
+ "source": {
+  "file": "Ferrum_Claude_Full_Handoff.md",
+  "sha256": "2916ddda1498ea163c37971d39d3147906be2ce8b3caf0e24ffd21919db01472",
+  "version": "1.0",
+  "prepared": "2026-11-02",
+  "note": "The handoff's ZIP (requirements.json, acceptance-tests.json, workstreams.json, contracts/, examples/, validate_handoff.py) was not supplied; these come from its combined Markdown"
+ },
+ "requirements": [
+  {
+   "id": "FCP-BASE-001",
+   "title": "Frozen inventory",
+   "workstream": "W00",
+   "requirement": "Record current repository commits, dirty files, lock digests, features and installed app versions before modifying code.",
+   "acceptance": "AT-BASE-001"
+  },
+  {
+   "id": "FCP-BASE-002",
+   "title": "Existing capability reuse",
+   "workstream": "W00",
+   "requirement": "Map each proposed capability to current source and tests before creating a new implementation.",
+   "acceptance": "AT-BASE-002"
+  },
+  {
+   "id": "FCP-BASE-003",
+   "title": "Prior invariant regressions",
+   "workstream": "W00",
+   "requirement": "Revalidate earlier execution findings against the actual assembled release.",
+   "acceptance": "AT-BASE-003"
+  },
+  {
+   "id": "FCP-BASE-004",
+   "title": "Release pins",
+   "workstream": "W00",
+   "requirement": "Generate release inventory from actual lockfiles and artifact builds.",
+   "acceptance": "AT-BASE-004"
+  },
+  {
+   "id": "FCP-BASE-005",
+   "title": "Worktree safety",
+   "workstream": "W00",
+   "requirement": "Preserve uncommitted changes and validate unused local patches.",
+   "acceptance": "AT-BASE-005"
+  },
+  {
+   "id": "FCP-BASE-006",
+   "title": "Frozen and forward CI",
+   "workstream": "W00",
+   "requirement": "Separate exact-release qualification from latest-compatible dependency testing.",
+   "acceptance": "AT-BASE-006"
+  },
+  {
+   "id": "FCP-BASE-007",
+   "title": "Evidence classification",
+   "workstream": "W00",
+   "requirement": "Distinguish source, mock, provider and hardware evidence.",
+   "acceptance": "AT-BASE-007"
+  },
+  {
+   "id": "FCP-BASE-008",
+   "title": "Feature inventory",
+   "workstream": "W00",
+   "requirement": "Discover inaccessible and private components without assuming their absence.",
+   "acceptance": "AT-BASE-008"
+  },
+  {
+   "id": "FCP-POL-001",
+   "title": "Tenant context",
+   "workstream": "W01",
+   "requirement": "Derive trusted tenant scope from identity and membership, never a browser tenant header.",
+   "acceptance": "AT-POL-001"
+  },
+  {
+   "id": "FCP-POL-002",
+   "title": "Scoped delegation",
+   "workstream": "W01",
+   "requirement": "Intersect user authority with workload and resource grants.",
+   "acceptance": "AT-POL-002"
+  },
+  {
+   "id": "FCP-POL-003",
+   "title": "Separation of duties",
+   "workstream": "W01",
+   "requirement": "Require independent approval for sensitive capability changes.",
+   "acceptance": "AT-POL-003"
+  },
+  {
+   "id": "FCP-POL-004",
+   "title": "Immutable approval",
+   "workstream": "W01",
+   "requirement": "Bind approval to artifact, config, resource plan and policy digests.",
+   "acceptance": "AT-POL-004"
+  },
+  {
+   "id": "FCP-POL-005",
+   "title": "Subject lifecycle",
+   "workstream": "W01",
+   "requirement": "Use immutable subject IDs and explicit tenant memberships.",
+   "acceptance": "AT-POL-005"
+  },
+  {
+   "id": "FCP-POL-006",
+   "title": "Federation security",
+   "workstream": "W01",
+   "requirement": "Implement qualified OAuth/OIDC flows and issuer/audience checks.",
+   "acceptance": "AT-POL-006"
+  },
+  {
+   "id": "FCP-POL-007",
+   "title": "Downstream offboarding",
+   "workstream": "W01",
+   "requirement": "Track revocation independently for Git, sessions, private peers and privileged credentials.",
+   "acceptance": "AT-POL-007"
+  },
+  {
+   "id": "FCP-POL-008",
+   "title": "Policy freshness",
+   "workstream": "W01",
+   "requirement": "Track effective policy revisions at enforcement points.",
+   "acceptance": "AT-POL-008"
+  },
+  {
+   "id": "FCP-POL-009",
+   "title": "Emergency access",
+   "workstream": "W01",
+   "requirement": "Provide protected, audited recovery independent of the failed primary IdP.",
+   "acceptance": "AT-POL-009"
+  },
+  {
+   "id": "FCP-POL-010",
+   "title": "Negative authorization matrix",
+   "workstream": "W01",
+   "requirement": "Test every API through ordinary roles and service identities.",
+   "acceptance": "AT-POL-010"
+  },
+  {
+   "id": "FCP-CODE-001",
+   "title": "Repository lifecycle",
+   "workstream": "W03",
+   "requirement": "Support create, archive, restore, delete-retain and portable export with ownership.",
+   "acceptance": "AT-CODE-001"
+  },
+  {
+   "id": "FCP-CODE-002",
+   "title": "Ref consistency",
+   "workstream": "W03",
+   "requirement": "Preserve expected-old-value and protected-reference checks on every Git transport.",
+   "acceptance": "AT-CODE-002"
+  },
+  {
+   "id": "FCP-CODE-003",
+   "title": "Git storage authority",
+   "workstream": "W03",
+   "requirement": "Qualify repository storage and failover rather than assume generic S3 filesystem semantics.",
+   "acceptance": "AT-CODE-003"
+  },
+  {
+   "id": "FCP-CODE-004",
+   "title": "Backup completeness",
+   "workstream": "W03",
+   "requirement": "Restore repository objects, refs, metadata, LFS and required forge configuration together.",
+   "acceptance": "AT-CODE-004"
+  },
+  {
+   "id": "FCP-CODE-005",
+   "title": "Scoped Git credentials",
+   "workstream": "W03",
+   "requirement": "Bind PATs, SSH/deploy keys and build tokens to required repositories and actions.",
+   "acceptance": "AT-CODE-005"
+  },
+  {
+   "id": "FCP-CODE-006",
+   "title": "Server hook restriction",
+   "workstream": "W03",
+   "requirement": "Disallow tenant executable hooks inside trusted Git service.",
+   "acceptance": "AT-CODE-006"
+  },
+  {
+   "id": "FCP-CODE-007",
+   "title": "Import and mirror egress",
+   "workstream": "W03",
+   "requirement": "Apply route, redirect, DNS and credential restrictions to imports and mirrors.",
+   "acceptance": "AT-CODE-007"
+  },
+  {
+   "id": "FCP-CODE-008",
+   "title": "Git resource limits",
+   "workstream": "W03",
+   "requirement": "Bound pack, object, process, CPU, storage and concurrency consumption.",
+   "acceptance": "AT-CODE-008"
+  },
+  {
+   "id": "FCP-CODE-009",
+   "title": "PR approval integrity",
+   "workstream": "W03",
+   "requirement": "Require protected checks/reviews for the exact candidate source.",
+   "acceptance": "AT-CODE-009"
+  },
+  {
+   "id": "FCP-CODE-010",
+   "title": "LFS access",
+   "workstream": "W03",
+   "requirement": "Enforce repository authorization for LFS reads, uploads and signed URLs.",
+   "acceptance": "AT-CODE-010"
+  },
+  {
+   "id": "FCP-CODE-011",
+   "title": "Forge outage isolation",
+   "workstream": "W03",
+   "requirement": "Keep existing runtime sites independent of forge availability.",
+   "acceptance": "AT-CODE-011"
+  },
+  {
+   "id": "FCP-CODE-012",
+   "title": "Repository portability",
+   "workstream": "W03",
+   "requirement": "Export standard Git and documented review/configuration metadata.",
+   "acceptance": "AT-CODE-012"
+  },
+  {
+   "id": "FCP-BUILD-001",
+   "title": "Webhook authenticity",
+   "workstream": "W04",
+   "requirement": "Authenticate, deduplicate and bind source events to approved repositories.",
+   "acceptance": "AT-BUILD-001"
+  },
+  {
+   "id": "FCP-BUILD-002",
+   "title": "Exact commit checkout",
+   "workstream": "W04",
+   "requirement": "Build the recorded immutable commit and record submodule/LFS inputs.",
+   "acceptance": "AT-BUILD-002"
+  },
+  {
+   "id": "FCP-BUILD-003",
+   "title": "Builder sandbox",
+   "workstream": "W04",
+   "requirement": "Execute repository scripts and dependency hooks in disposable isolated workers.",
+   "acceptance": "AT-BUILD-003"
+  },
+  {
+   "id": "FCP-BUILD-004",
+   "title": "Production isolation",
+   "workstream": "W04",
+   "requirement": "Deny build and preview access to production data, payments and OT routes.",
+   "acceptance": "AT-BUILD-004"
+  },
+  {
+   "id": "FCP-BUILD-005",
+   "title": "Secret exposure controls",
+   "workstream": "W04",
+   "requirement": "Avoid unnecessary build secrets and scope necessary temporary package credentials.",
+   "acceptance": "AT-BUILD-005"
+  },
+  {
+   "id": "FCP-BUILD-006",
+   "title": "Cache trust",
+   "workstream": "W04",
+   "requirement": "Partition mutable caches by tenant and source trust level.",
+   "acceptance": "AT-BUILD-006"
+  },
+  {
+   "id": "FCP-BUILD-007",
+   "title": "Dependency pinning",
+   "workstream": "W04",
+   "requirement": "Pin builder images, package locks and executable build dependencies.",
+   "acceptance": "AT-BUILD-007"
+  },
+  {
+   "id": "FCP-BUILD-008",
+   "title": "Artifact finalization",
+   "workstream": "W04",
+   "requirement": "Publish immutable artifacts only through a trusted finalizer.",
+   "acceptance": "AT-BUILD-008"
+  },
+  {
+   "id": "FCP-BUILD-009",
+   "title": "Signing authority",
+   "workstream": "W04",
+   "requirement": "Keep production signing authority outside untrusted build execution.",
+   "acceptance": "AT-BUILD-009"
+  },
+  {
+   "id": "FCP-BUILD-010",
+   "title": "Provenance privacy",
+   "workstream": "W04",
+   "requirement": "Protect private repository and customer metadata in attestations.",
+   "acceptance": "AT-BUILD-010"
+  },
+  {
+   "id": "FCP-BUILD-011",
+   "title": "Build cancellation",
+   "workstream": "W04",
+   "requirement": "Cancel sandbox work, revoke temporary identity and clean unused outputs.",
+   "acceptance": "AT-BUILD-011"
+  },
+  {
+   "id": "FCP-BUILD-012",
+   "title": "Tenant fairness",
+   "workstream": "W04",
+   "requirement": "Schedule builds under per-tenant concurrency and budget controls.",
+   "acceptance": "AT-BUILD-012"
+  },
+  {
+   "id": "FCP-BUILD-013",
+   "title": "Log safety",
+   "workstream": "W04",
+   "requirement": "Authenticate logs and escape untrusted control content.",
+   "acceptance": "AT-BUILD-013"
+  },
+  {
+   "id": "FCP-BUILD-014",
+   "title": "Customer runner trust",
+   "workstream": "W04",
+   "requirement": "Label customer-runner artifacts with their actual assurance level.",
+   "acceptance": "AT-BUILD-014"
+  },
+  {
+   "id": "FCP-DEPLOY-001",
+   "title": "Environment separation",
+   "workstream": "W05",
+   "requirement": "Maintain separate identities, bindings and caches per environment.",
+   "acceptance": "AT-DEPLOY-001"
+  },
+  {
+   "id": "FCP-DEPLOY-002",
+   "title": "Release immutability",
+   "workstream": "W05",
+   "requirement": "Bind release to artifact, config, policy, runtime and resource-schema versions.",
+   "acceptance": "AT-DEPLOY-002"
+  },
+  {
+   "id": "FCP-DEPLOY-003",
+   "title": "Promotion serialization",
+   "workstream": "W05",
+   "requirement": "Prevent two promotions from interleaving one environment's route and schema state.",
+   "acceptance": "AT-DEPLOY-003"
+  },
+  {
+   "id": "FCP-DEPLOY-004",
+   "title": "Readiness gating",
+   "workstream": "W05",
+   "requirement": "Route traffic only to verified ready instances.",
+   "acceptance": "AT-DEPLOY-004"
+  },
+  {
+   "id": "FCP-DEPLOY-005",
+   "title": "Migration compatibility",
+   "workstream": "W05",
+   "requirement": "Use serialized expand/contract migrations and explicit rollback limits.",
+   "acceptance": "AT-DEPLOY-005"
+  },
+  {
+   "id": "FCP-DEPLOY-006",
+   "title": "Preview access",
+   "workstream": "W05",
+   "requirement": "Protect previews through every hostname and direct origin.",
+   "acceptance": "AT-DEPLOY-006"
+  },
+  {
+   "id": "FCP-DEPLOY-007",
+   "title": "Preview cleanup",
+   "workstream": "W05",
+   "requirement": "Expire previews, credentials and orphan resources without deleting retained artifacts in use.",
+   "acceptance": "AT-DEPLOY-007"
+  },
+  {
+   "id": "FCP-DEPLOY-008",
+   "title": "Graceful rollout",
+   "workstream": "W05",
+   "requirement": "Drain requests and handle long-lived connections under bounded policy.",
+   "acceptance": "AT-DEPLOY-008"
+  },
+  {
+   "id": "FCP-DEPLOY-009",
+   "title": "Rollback correctness",
+   "workstream": "W05",
+   "requirement": "Rollback selects a coherent compatible release, not only an old image.",
+   "acceptance": "AT-DEPLOY-009"
+  },
+  {
+   "id": "FCP-DEPLOY-010",
+   "title": "Durable background work",
+   "workstream": "W05",
+   "requirement": "Put long-running effects in managed jobs rather than untracked SSR tasks.",
+   "acceptance": "AT-DEPLOY-010"
+  },
+  {
+   "id": "FCP-DEPLOY-011",
+   "title": "Scheduler semantics",
+   "workstream": "W05",
+   "requirement": "Define timezone, DST, missed-run and overlap behavior for schedules.",
+   "acceptance": "AT-DEPLOY-011"
+  },
+  {
+   "id": "FCP-DEPLOY-012",
+   "title": "Capability reconsent",
+   "workstream": "W05",
+   "requirement": "Require renewed consent for runtime/network/resource permission expansion.",
+   "acceptance": "AT-DEPLOY-012"
+  },
+  {
+   "id": "FCP-DEPLOY-013",
+   "title": "Serving independence",
+   "workstream": "W05",
+   "requirement": "Keep deployed site serving when management and build systems are unavailable.",
+   "acceptance": "AT-DEPLOY-013"
+  },
+  {
+   "id": "FCP-WEB-001",
+   "title": "Public/private cache separation",
+   "workstream": "W06",
+   "requirement": "Never place personalized responses in public shared cache by default.",
+   "acceptance": "AT-WEB-001"
+  },
+  {
+   "id": "FCP-WEB-002",
+   "title": "Framework conformance",
+   "workstream": "W06",
+   "requirement": "Qualify each framework/runtime combination across supported features.",
+   "acceptance": "AT-WEB-002"
+  },
+  {
+   "id": "FCP-WEB-003",
+   "title": "Deployment skew",
+   "workstream": "W06",
+   "requirement": "Retain old assets and coordinate framework deployment-sensitive state.",
+   "acceptance": "AT-WEB-003"
+  },
+  {
+   "id": "FCP-WEB-004",
+   "title": "Browser origin isolation",
+   "workstream": "W06",
+   "requirement": "Separate untrusted content from management origin and control cookies.",
+   "acceptance": "AT-WEB-004"
+  },
+  {
+   "id": "FCP-WEB-005",
+   "title": "Domain ownership",
+   "workstream": "W06",
+   "requirement": "Verify normalized domain ownership and uniqueness before routing.",
+   "acceptance": "AT-WEB-005"
+  },
+  {
+   "id": "FCP-WEB-006",
+   "title": "Origin bypass",
+   "workstream": "W06",
+   "requirement": "Apply access policy to all ingress paths and reject unknown hosts.",
+   "acceptance": "AT-WEB-006"
+  },
+  {
+   "id": "FCP-WEB-007",
+   "title": "Certificate lifecycle",
+   "workstream": "W06",
+   "requirement": "Handle issuance, rate limits, renewal and transfer with scoped provider credentials.",
+   "acceptance": "AT-WEB-007"
+  },
+  {
+   "id": "FCP-WEB-008",
+   "title": "Image and fetch SSRF",
+   "workstream": "W06",
+   "requirement": "Enforce destination policy on image optimization and server-side URL fetches.",
+   "acceptance": "AT-WEB-008"
+  },
+  {
+   "id": "FCP-WEB-009",
+   "title": "Request resource budgets",
+   "workstream": "W06",
+   "requirement": "Bound uploads, headers, decompression and runtime concurrency.",
+   "acceptance": "AT-WEB-009"
+  },
+  {
+   "id": "FCP-WEB-010",
+   "title": "Upload finalization",
+   "workstream": "W06",
+   "requirement": "Scan and verify objects before making them application-visible.",
+   "acceptance": "AT-WEB-010"
+  },
+  {
+   "id": "FCP-WEB-011",
+   "title": "Storefront authority",
+   "workstream": "W06",
+   "requirement": "Keep pricing, tax, stock, customer ownership and payment state in backend actions.",
+   "acceptance": "AT-WEB-011"
+  },
+  {
+   "id": "FCP-WEB-012",
+   "title": "Headless content lifecycle",
+   "workstream": "W06",
+   "requirement": "Provide drafts, revision, locale and approved publishing semantics.",
+   "acceptance": "AT-WEB-012"
+  },
+  {
+   "id": "FCP-RES-001",
+   "title": "Logical resource binding",
+   "workstream": "W02",
+   "requirement": "Separate declared capability from provider instance and workload binding.",
+   "acceptance": "AT-RES-001"
+  },
+  {
+   "id": "FCP-RES-002",
+   "title": "Idempotent provisioning",
+   "workstream": "W02",
+   "requirement": "Reconcile ambiguous provider creation before retrying.",
+   "acceptance": "AT-RES-002"
+  },
+  {
+   "id": "FCP-RES-003",
+   "title": "Required resource readiness",
+   "workstream": "W02",
+   "requirement": "Do not activate an app before required resources and migrations verify.",
+   "acceptance": "AT-RES-003"
+  },
+  {
+   "id": "FCP-RES-004",
+   "title": "Tenant database isolation",
+   "workstream": "W02",
+   "requirement": "Enforce tenant scope beyond query parameterization.",
+   "acceptance": "AT-RES-004"
+  },
+  {
+   "id": "FCP-RES-005",
+   "title": "Scoped credentials",
+   "workstream": "W02",
+   "requirement": "Separate runtime and migrator roles and rotate bindings safely.",
+   "acceptance": "AT-RES-005"
+  },
+  {
+   "id": "FCP-RES-006",
+   "title": "Resource migration",
+   "workstream": "W02",
+   "requirement": "Serialize checksum-versioned migrations with bounded locks and resumable backfill.",
+   "acceptance": "AT-RES-006"
+  },
+  {
+   "id": "FCP-RES-007",
+   "title": "Provider capability mismatch",
+   "workstream": "W02",
+   "requirement": "Reject required semantics unavailable from selected backend.",
+   "acceptance": "AT-RES-007"
+  },
+  {
+   "id": "FCP-RES-008",
+   "title": "Data authority classification",
+   "workstream": "W02",
+   "requirement": "Identify primary, derived, archival and disposable datasets.",
+   "acceptance": "AT-RES-008"
+  },
+  {
+   "id": "FCP-RES-009",
+   "title": "Object consistency",
+   "workstream": "W02",
+   "requirement": "Reconcile object metadata and bytes without claiming distributed ACID.",
+   "acceptance": "AT-RES-009"
+  },
+  {
+   "id": "FCP-RES-010",
+   "title": "Backup semantics",
+   "workstream": "W02",
+   "requirement": "Record resource backups, keys and logical consistency points.",
+   "acceptance": "AT-RES-010"
+  },
+  {
+   "id": "FCP-RES-011",
+   "title": "Customer resource detachment",
+   "workstream": "W02",
+   "requirement": "Retain customer-owned resources on uninstall unless explicit authority says otherwise.",
+   "acceptance": "AT-RES-011"
+  },
+  {
+   "id": "FCP-RES-012",
+   "title": "Destructive deletion controls",
+   "workstream": "W02",
+   "requirement": "Check retention, legal hold and dependencies before destruction.",
+   "acceptance": "AT-RES-012"
+  },
+  {
+   "id": "FCP-RES-013",
+   "title": "Query console safety",
+   "workstream": "W02",
+   "requirement": "Use scoped short-lived access and read-only defaults for administrative queries.",
+   "acceptance": "AT-RES-013"
+  },
+  {
+   "id": "FCP-RES-014",
+   "title": "Licensing gate",
+   "workstream": "W02",
+   "requirement": "Approve exact engine edition/feature/hosting rights before managed distribution.",
+   "acceptance": "AT-RES-014"
+  },
+  {
+   "id": "FCP-RES-015",
+   "title": "Resource portability",
+   "workstream": "W02",
+   "requirement": "Provide export formats and restore path per resource class.",
+   "acceptance": "AT-RES-015"
+  },
+  {
+   "id": "FCP-SCALE-001",
+   "title": "Single scaler owner",
+   "workstream": "W09",
+   "requirement": "Use one authoritative controller per scaling target.",
+   "acceptance": "AT-SCALE-001"
+  },
+  {
+   "id": "FCP-SCALE-002",
+   "title": "Connection budgeting",
+   "workstream": "W09",
+   "requirement": "Account for API, worker, plugin, listener and migration connections.",
+   "acceptance": "AT-SCALE-002"
+  },
+  {
+   "id": "FCP-SCALE-003",
+   "title": "Stateful scaling",
+   "workstream": "W09",
+   "requirement": "Use engine-specific scaling with replication and migration guards.",
+   "acceptance": "AT-SCALE-003"
+  },
+  {
+   "id": "FCP-SCALE-004",
+   "title": "Budget enforcement",
+   "workstream": "W09",
+   "requirement": "Separate alerts, estimates and enforced admission caps.",
+   "acceptance": "AT-SCALE-004"
+  },
+  {
+   "id": "FCP-SCALE-005",
+   "title": "Critical reserve",
+   "workstream": "W09",
+   "requirement": "Protect durable command/evidence capacity before shedding telemetry.",
+   "acceptance": "AT-SCALE-005"
+  },
+  {
+   "id": "FCP-SCALE-006",
+   "title": "Gateway drain",
+   "workstream": "W09",
+   "requirement": "Scale connection services using ownership-aware drain.",
+   "acceptance": "AT-SCALE-006"
+  },
+  {
+   "id": "FCP-SCALE-007",
+   "title": "Noisy neighbor",
+   "workstream": "W09",
+   "requirement": "Maintain per-tenant fairness and shared-resource quotas.",
+   "acceptance": "AT-SCALE-007"
+  },
+  {
+   "id": "FCP-SCALE-008",
+   "title": "Capacity evidence",
+   "workstream": "W09",
+   "requirement": "Attach profile limits to measured artifacts and hardware.",
+   "acceptance": "AT-SCALE-008"
+  },
+  {
+   "id": "FCP-ACCESS-001",
+   "title": "Reachability versus rights",
+   "workstream": "W07",
+   "requirement": "Require application authorization even over a private tunnel.",
+   "acceptance": "AT-ACCESS-001"
+  },
+  {
+   "id": "FCP-ACCESS-002",
+   "title": "Provider administration isolation",
+   "workstream": "W07",
+   "requirement": "Separate tenant network/proxy administration scopes.",
+   "acceptance": "AT-ACCESS-002"
+  },
+  {
+   "id": "FCP-ACCESS-003",
+   "title": "Posture trust",
+   "workstream": "W07",
+   "requirement": "Use qualified fresh device evidence rather than asset metadata alone.",
+   "acceptance": "AT-ACCESS-003"
+  },
+  {
+   "id": "FCP-ACCESS-004",
+   "title": "Private connectors",
+   "workstream": "W07",
+   "requirement": "Expose only approved resources through outbound-authenticated connectors.",
+   "acceptance": "AT-ACCESS-004"
+  },
+  {
+   "id": "FCP-ACCESS-005",
+   "title": "Overlapping addresses",
+   "workstream": "W07",
+   "requirement": "Isolate customers using identical private CIDRs.",
+   "acceptance": "AT-ACCESS-005"
+  },
+  {
+   "id": "FCP-ACCESS-006",
+   "title": "Revocation coverage",
+   "workstream": "W07",
+   "requirement": "Revoke web, Git, tunnel and privileged sessions with per-provider completion.",
+   "acceptance": "AT-ACCESS-006"
+  },
+  {
+   "id": "FCP-ACCESS-007",
+   "title": "Privileged session scope",
+   "workstream": "W07",
+   "requirement": "Use target/action-scoped temporary grants for administration.",
+   "acceptance": "AT-ACCESS-007"
+  },
+  {
+   "id": "FCP-ACCESS-008",
+   "title": "Header spoofing",
+   "workstream": "W07",
+   "requirement": "Accept identity assertions only from authenticated trusted proxies.",
+   "acceptance": "AT-ACCESS-008"
+  },
+  {
+   "id": "FCP-ACCESS-009",
+   "title": "Access outage policy",
+   "workstream": "W07",
+   "requirement": "Define cache expiry and fail behavior per resource risk.",
+   "acceptance": "AT-ACCESS-009"
+  },
+  {
+   "id": "FCP-ACCESS-010",
+   "title": "OT access boundary",
+   "workstream": "W07",
+   "requirement": "Keep industrial support separate from ordinary employee connectivity.",
+   "acceptance": "AT-ACCESS-010"
+  },
+  {
+   "id": "FCP-SECRET-001",
+   "title": "Secret indirection",
+   "workstream": "W01",
+   "requirement": "Store references and lease metadata rather than plaintext in app config.",
+   "acceptance": "AT-SECRET-001"
+  },
+  {
+   "id": "FCP-SECRET-002",
+   "title": "Workload attestation",
+   "workstream": "W01",
+   "requirement": "Issue service identity only to the approved deployment/job context.",
+   "acceptance": "AT-SECRET-002"
+  },
+  {
+   "id": "FCP-SECRET-003",
+   "title": "Root rotation",
+   "workstream": "W01",
+   "requirement": "Rotate signing/trust roots with staged verification and compromise handling.",
+   "acceptance": "AT-SECRET-003"
+  },
+  {
+   "id": "FCP-SECRET-004",
+   "title": "Key recovery",
+   "workstream": "W01",
+   "requirement": "Maintain a protected independent recovery procedure for encrypted backups.",
+   "acceptance": "AT-SECRET-004"
+  },
+  {
+   "id": "FCP-SECRET-005",
+   "title": "Credential expiry",
+   "workstream": "W01",
+   "requirement": "Define online/offline behavior for expired credentials and trust bundles.",
+   "acceptance": "AT-SECRET-005"
+  },
+  {
+   "id": "FCP-SECRET-006",
+   "title": "Environment secret scope",
+   "workstream": "W01",
+   "requirement": "Prevent production secret copying into previews and public build variables.",
+   "acceptance": "AT-SECRET-006"
+  },
+  {
+   "id": "FCP-SECRET-007",
+   "title": "Compromise response",
+   "workstream": "W01",
+   "requirement": "Revoke affected identities and reconcile deployments after key compromise.",
+   "acceptance": "AT-SECRET-007"
+  },
+  {
+   "id": "FCP-SECRET-008",
+   "title": "Operator visibility honesty",
+   "workstream": "W01",
+   "requirement": "Describe hosting/key access accurately.",
+   "acceptance": "AT-SECRET-008"
+  },
+  {
+   "id": "FCP-MSG-001",
+   "title": "Transactional outbox",
+   "workstream": "W08",
+   "requirement": "Commit authoritative state and outbox together.",
+   "acceptance": "AT-MSG-001"
+  },
+  {
+   "id": "FCP-MSG-002",
+   "title": "Consumer idempotency",
+   "workstream": "W08",
+   "requirement": "Apply inbox receipt and local business effect atomically where possible.",
+   "acceptance": "AT-MSG-002"
+  },
+  {
+   "id": "FCP-MSG-003",
+   "title": "External ambiguity",
+   "workstream": "W08",
+   "requirement": "Reconcile nontransactional effects before retrying uncertain outcomes.",
+   "acceptance": "AT-MSG-003"
+  },
+  {
+   "id": "FCP-MSG-004",
+   "title": "Lease fencing",
+   "workstream": "W08",
+   "requirement": "Prevent stale workers from committing or dispatching beyond ownership.",
+   "acceptance": "AT-MSG-004"
+  },
+  {
+   "id": "FCP-MSG-005",
+   "title": "Notification recovery",
+   "workstream": "W08",
+   "requirement": "Use notification as hint with durable polling/replay fallback.",
+   "acceptance": "AT-MSG-005"
+  },
+  {
+   "id": "FCP-MSG-006",
+   "title": "Cursor correctness",
+   "workstream": "W08",
+   "requirement": "Use committed gap-safe event cursors rather than raw uncommitted sequence assumptions.",
+   "acceptance": "AT-MSG-006"
+  },
+  {
+   "id": "FCP-MSG-007",
+   "title": "Snapshot subscription",
+   "workstream": "W08",
+   "requirement": "Avoid race between snapshot and live subscription.",
+   "acceptance": "AT-MSG-007"
+  },
+  {
+   "id": "FCP-MSG-008",
+   "title": "Contract evolution",
+   "workstream": "W08",
+   "requirement": "Version events/actions and reject unsupported mandatory semantics.",
+   "acceptance": "AT-MSG-008"
+  },
+  {
+   "id": "FCP-MSG-009",
+   "title": "Regional authority",
+   "workstream": "W08",
+   "requirement": "Use one write authority or qualified conflict protocol for critical resources.",
+   "acceptance": "AT-MSG-009"
+  },
+  {
+   "id": "FCP-MSG-010",
+   "title": "Service delegation",
+   "workstream": "W08",
+   "requirement": "Validate workload plus tenant/user context downstream.",
+   "acceptance": "AT-MSG-010"
+  },
+  {
+   "id": "FCP-OPS-001",
+   "title": "Any-replica intake",
+   "workstream": "W08",
+   "requirement": "Persist request before acknowledging and expose stable status ID.",
+   "acceptance": "AT-OPS-001"
+  },
+  {
+   "id": "FCP-OPS-002",
+   "title": "Exact connection owner",
+   "workstream": "W08",
+   "requirement": "Route device work only to current authenticated owner/generation.",
+   "acceptance": "AT-OPS-002"
+  },
+  {
+   "id": "FCP-OPS-003",
+   "title": "Reconnect generation",
+   "workstream": "W08",
+   "requirement": "Protect new connection from old disconnect and stale sender.",
+   "acceptance": "AT-OPS-003"
+  },
+  {
+   "id": "FCP-OPS-004",
+   "title": "Physical intent deduplication",
+   "workstream": "W08",
+   "requirement": "Scope idempotency to business intent and reject payload mismatch.",
+   "acceptance": "AT-OPS-004"
+  },
+  {
+   "id": "FCP-OPS-005",
+   "title": "Final deadline gate",
+   "workstream": "W08",
+   "requirement": "Recheck deadline and authority immediately before external send.",
+   "acceptance": "AT-OPS-005"
+  },
+  {
+   "id": "FCP-OPS-006",
+   "title": "Clock correctness",
+   "workstream": "W08",
+   "requirement": "Do not extend authorization through backward wall-clock changes.",
+   "acceptance": "AT-OPS-006"
+  },
+  {
+   "id": "FCP-OPS-007",
+   "title": "Recovery target binding",
+   "workstream": "W08",
+   "requirement": "Persist exact target/adapter/configuration binding for recovery.",
+   "acceptance": "AT-OPS-007"
+  },
+  {
+   "id": "FCP-OPS-008",
+   "title": "Inbound durability",
+   "workstream": "W08",
+   "requirement": "Persist critical protocol evidence/response identity before durable acknowledgment.",
+   "acceptance": "AT-OPS-008"
+  },
+  {
+   "id": "FCP-OPS-009",
+   "title": "Protocol versus business outcome",
+   "workstream": "W08",
+   "requirement": "Distinguish request acceptance, session creation and charging evidence.",
+   "acceptance": "AT-OPS-009"
+  },
+  {
+   "id": "FCP-OPS-010",
+   "title": "Durable correlation",
+   "workstream": "W08",
+   "requirement": "Persist protocol IDs, station/EVSE/connector and transaction mapping.",
+   "acceptance": "AT-OPS-010"
+  },
+  {
+   "id": "FCP-OPS-011",
+   "title": "Safe unknown outcome",
+   "workstream": "W08",
+   "requirement": "Never infer failure from timeout after possible execution.",
+   "acceptance": "AT-OPS-011"
+  },
+  {
+   "id": "FCP-OPS-012",
+   "title": "Meter evidence",
+   "workstream": "W08",
+   "requirement": "Preserve units, multiplier, quality and target dimensions needed for billing.",
+   "acceptance": "AT-OPS-012"
+  },
+  {
+   "id": "FCP-OPS-013",
+   "title": "Critical quota behavior",
+   "workstream": "W08",
+   "requirement": "Keep stop/report/reconciliation paths independent of optional usage caps.",
+   "acceptance": "AT-OPS-013"
+  },
+  {
+   "id": "FCP-OPS-014",
+   "title": "Client replay",
+   "workstream": "W08",
+   "requirement": "Recover live status after dropped notifications and cursor expiry.",
+   "acceptance": "AT-OPS-014"
+  },
+  {
+   "id": "FCP-EXT-001",
+   "title": "Execution trust classes",
+   "workstream": "W02",
+   "requirement": "Distinguish meta, WASM, native and isolated service extensions.",
+   "acceptance": "AT-EXT-001"
+  },
+  {
+   "id": "FCP-EXT-002",
+   "title": "Manifest versioning",
+   "workstream": "W02",
+   "requirement": "Reject unknown or unsupported required fields in package contracts.",
+   "acceptance": "AT-EXT-002"
+  },
+  {
+   "id": "FCP-EXT-003",
+   "title": "Capability consent",
+   "workstream": "W02",
+   "requirement": "Display and approve new permissions/resources/network cost at install and upgrade.",
+   "acceptance": "AT-EXT-003"
+  },
+  {
+   "id": "FCP-EXT-004",
+   "title": "Host resource scoping",
+   "workstream": "W02",
+   "requirement": "Derive tenant/application scope for WASM resource handles from host context.",
+   "acceptance": "AT-EXT-004"
+  },
+  {
+   "id": "FCP-EXT-005",
+   "title": "UI isolation",
+   "workstream": "W02",
+   "requirement": "Keep arbitrary extension UI from general shell sessions.",
+   "acceptance": "AT-EXT-005"
+  },
+  {
+   "id": "FCP-EXT-006",
+   "title": "Dependency safety",
+   "workstream": "W02",
+   "requirement": "Review transitive extensions and privileges.",
+   "acceptance": "AT-EXT-006"
+  },
+  {
+   "id": "FCP-EXT-007",
+   "title": "Lifecycle cleanup",
+   "workstream": "W02",
+   "requirement": "Revoke bindings and retain data correctly when disabling/uninstalling.",
+   "acceptance": "AT-EXT-007"
+  },
+  {
+   "id": "FCP-EXT-008",
+   "title": "Certification scope",
+   "workstream": "W02",
+   "requirement": "Tie labels to artifact, capabilities, provider profile and evidence.",
+   "acceptance": "AT-EXT-008"
+  },
+  {
+   "id": "FCP-EXT-009",
+   "title": "Deprecation migration",
+   "workstream": "W02",
+   "requirement": "Provide supported migration/export for retired extension.",
+   "acceptance": "AT-EXT-009"
+  },
+  {
+   "id": "FCP-EXT-010",
+   "title": "Core invariants",
+   "workstream": "W02",
+   "requirement": "Prevent configurable scripts/workflows from overriding shared business invariants.",
+   "acceptance": "AT-EXT-010"
+  },
+  {
+   "id": "FCP-AI-001",
+   "title": "Agent capability boundary",
+   "workstream": "W06",
+   "requirement": "Constrain AI tools independently of natural-language output.",
+   "acceptance": "AT-AI-001"
+  },
+  {
+   "id": "FCP-AI-002",
+   "title": "Model/provider policy",
+   "workstream": "W06",
+   "requirement": "Bind model features to approved region, data handling and cost.",
+   "acceptance": "AT-AI-002"
+  },
+  {
+   "id": "FCP-AI-003",
+   "title": "Approval integrity",
+   "workstream": "W06",
+   "requirement": "Bind approved AI action plan and prohibit self-approval.",
+   "acceptance": "AT-AI-003"
+  },
+  {
+   "id": "FCP-AI-004",
+   "title": "Development sandbox",
+   "workstream": "W06",
+   "requirement": "Default local AI/developer clients to synthetic sandbox resources.",
+   "acceptance": "AT-AI-004"
+  },
+  {
+   "id": "FCP-AI-005",
+   "title": "Budget and cancellation",
+   "workstream": "W06",
+   "requirement": "Bound model/tool calls, concurrency and repeated attempts.",
+   "acceptance": "AT-AI-005"
+  },
+  {
+   "id": "FCP-AI-006",
+   "title": "Evidence and abstention",
+   "workstream": "W06",
+   "requirement": "Require freshness/provenance and explicit unknown results.",
+   "acceptance": "AT-AI-006"
+  },
+  {
+   "id": "FCP-AI-007",
+   "title": "Data boundary disclosure",
+   "workstream": "W06",
+   "requirement": "Describe remote processing accurately for local AI tools.",
+   "acceptance": "AT-AI-007"
+  },
+  {
+   "id": "FCP-AI-008",
+   "title": "Operational autonomy",
+   "workstream": "W06",
+   "requirement": "Keep safety control outside ordinary AI automation.",
+   "acceptance": "AT-AI-008"
+  },
+  {
+   "id": "FCP-UI-001",
+   "title": "Consistent scope UI",
+   "workstream": "W09",
+   "requirement": "Show tenant, project, environment and production context on management actions.",
+   "acceptance": "AT-UI-001"
+  },
+  {
+   "id": "FCP-UI-002",
+   "title": "Asynchronous UX",
+   "workstream": "W09",
+   "requirement": "Preserve operation status across refresh and browser reconnect.",
+   "acceptance": "AT-UI-002"
+  },
+  {
+   "id": "FCP-UI-003",
+   "title": "Accessible administration",
+   "workstream": "W09",
+   "requirement": "Meet declared WCAG 2.2 AA target with automated and manual checks.",
+   "acceptance": "AT-UI-003"
+  },
+  {
+   "id": "FCP-UI-004",
+   "title": "Localization correctness",
+   "workstream": "W09",
+   "requirement": "Separate translated display from exact stored/API values.",
+   "acceptance": "AT-UI-004"
+  },
+  {
+   "id": "FCP-UI-005",
+   "title": "Permission explanation",
+   "workstream": "W09",
+   "requirement": "Explain denied/disabled actions without hidden-resource leakage.",
+   "acceptance": "AT-UI-005"
+  },
+  {
+   "id": "FCP-UI-006",
+   "title": "Operator recovery UX",
+   "workstream": "W09",
+   "requirement": "Provide meaningful uncertain/partial states and authorized recovery.",
+   "acceptance": "AT-UI-006"
+  },
+  {
+   "id": "FCP-UI-007",
+   "title": "Bundle provenance",
+   "workstream": "W09",
+   "requirement": "Build and verify distributed UI from intended source revision.",
+   "acceptance": "AT-UI-007"
+  },
+  {
+   "id": "FCP-UI-008",
+   "title": "Audit visibility",
+   "workstream": "W09",
+   "requirement": "Make approvals, support and policy changes inspectable by customer.",
+   "acceptance": "AT-UI-008"
+  },
+  {
+   "id": "FCP-OBS-001",
+   "title": "Telemetry correlation",
+   "workstream": "W09",
+   "requirement": "Correlate build, release, resource and command paths without logging secrets.",
+   "acceptance": "AT-OBS-001"
+  },
+  {
+   "id": "FCP-OBS-002",
+   "title": "Tenant telemetry isolation",
+   "workstream": "W09",
+   "requirement": "Authorize log/trace queries beyond user-supplied label filters.",
+   "acceptance": "AT-OBS-002"
+  },
+  {
+   "id": "FCP-OBS-003",
+   "title": "Bounded cardinality",
+   "workstream": "W09",
+   "requirement": "Bound metric dimensions and handle high-volume detail separately.",
+   "acceptance": "AT-OBS-003"
+  },
+  {
+   "id": "FCP-OBS-004",
+   "title": "Operational alert coverage",
+   "workstream": "W09",
+   "requirement": "Alert on drift, backlog, unknown outcomes, expiry and backup age.",
+   "acceptance": "AT-OBS-004"
+  },
+  {
+   "id": "FCP-OBS-005",
+   "title": "Metering idempotency",
+   "workstream": "W09",
+   "requirement": "Deduplicate usage and retain price-plan version for invoices.",
+   "acceptance": "AT-OBS-005"
+  },
+  {
+   "id": "FCP-OBS-006",
+   "title": "Money precision",
+   "workstream": "W09",
+   "requirement": "Use exact money/quantity calculations for billing.",
+   "acceptance": "AT-OBS-006"
+  },
+  {
+   "id": "FCP-OBS-007",
+   "title": "Budget transparency",
+   "workstream": "W09",
+   "requirement": "Distinguish forecast, alert and enforced cap.",
+   "acceptance": "AT-OBS-007"
+  },
+  {
+   "id": "FCP-OBS-008",
+   "title": "Incident process",
+   "workstream": "W09",
+   "requirement": "Maintain severity, communications, evidence and postmortem workflow.",
+   "acceptance": "AT-OBS-008"
+  },
+  {
+   "id": "FCP-OBS-009",
+   "title": "Abuse controls",
+   "workstream": "W09",
+   "requirement": "Manage phishing, crypto-mining, spam and uncontrolled public hosting.",
+   "acceptance": "AT-OBS-009"
+  },
+  {
+   "id": "FCP-CLOUD-001",
+   "title": "Tenant lifecycle",
+   "workstream": "W09",
+   "requirement": "Implement signup/provision/plan/grace/restrict/close/retain/delete as auditable workflows.",
+   "acceptance": "AT-CLOUD-001"
+  },
+  {
+   "id": "FCP-CLOUD-002",
+   "title": "Official partner scope",
+   "workstream": "W09",
+   "requirement": "Implement Cloud partner program without removing open-source rights.",
+   "acceptance": "AT-CLOUD-002"
+  },
+  {
+   "id": "FCP-CLOUD-003",
+   "title": "Support least privilege",
+   "workstream": "W09",
+   "requirement": "Grant named, expiring customer-approved support capabilities.",
+   "acceptance": "AT-CLOUD-003"
+  },
+  {
+   "id": "FCP-CLOUD-004",
+   "title": "No standing partner admin",
+   "workstream": "W09",
+   "requirement": "Prevent partner status from granting hidden superuser access.",
+   "acceptance": "AT-CLOUD-004"
+  },
+  {
+   "id": "FCP-CLOUD-005",
+   "title": "Support revocation",
+   "workstream": "W09",
+   "requirement": "Terminate support access and track active sessions.",
+   "acceptance": "AT-CLOUD-005"
+  },
+  {
+   "id": "FCP-CLOUD-006",
+   "title": "Residency coverage",
+   "workstream": "W09",
+   "requirement": "Apply region policy to logs, backups, builds, caches and AI as well as database.",
+   "acceptance": "AT-CLOUD-006"
+  },
+  {
+   "id": "FCP-CLOUD-007",
+   "title": "Account restriction safety",
+   "workstream": "W09",
+   "requirement": "Preserve export and required operational recovery under billing restriction.",
+   "acceptance": "AT-CLOUD-007"
+  },
+  {
+   "id": "FCP-CLOUD-008",
+   "title": "Customer controlled profile",
+   "workstream": "W09",
+   "requirement": "Define operator permissions and local dependency envelope for customer VPC.",
+   "acceptance": "AT-CLOUD-008"
+  },
+  {
+   "id": "FCP-CLOUD-009",
+   "title": "Service ownership",
+   "workstream": "W09",
+   "requirement": "Assign maintainer, support period and escalation per marketed service.",
+   "acceptance": "AT-CLOUD-009"
+  },
+  {
+   "id": "FCP-DR-001",
+   "title": "Complete backups",
+   "workstream": "W09",
+   "requirement": "Include authoritative databases, repositories, objects, keys and binding/config evidence.",
+   "acceptance": "AT-DR-001"
+  },
+  {
+   "id": "FCP-DR-002",
+   "title": "Restore isolation",
+   "workstream": "W09",
+   "requirement": "Disable external effects until reconciliation after restore.",
+   "acceptance": "AT-DR-002"
+  },
+  {
+   "id": "FCP-DR-003",
+   "title": "Tenant-level recovery",
+   "workstream": "W09",
+   "requirement": "Use an isolated recovery extraction path for shared-database PITR.",
+   "acceptance": "AT-DR-003"
+  },
+  {
+   "id": "FCP-DR-004",
+   "title": "Key recovery test",
+   "workstream": "W09",
+   "requirement": "Verify protected recovery of keys required by encrypted backups.",
+   "acceptance": "AT-DR-004"
+  },
+  {
+   "id": "FCP-DR-005",
+   "title": "Failover fencing",
+   "workstream": "W09",
+   "requirement": "Fence old writers before promoting new regional owners.",
+   "acceptance": "AT-DR-005"
+  },
+  {
+   "id": "FCP-DR-006",
+   "title": "Object and Git integrity",
+   "workstream": "W09",
+   "requirement": "Verify checksums, ref/object reachability and LFS linkage after recovery.",
+   "acceptance": "AT-DR-006"
+  },
+  {
+   "id": "FCP-DR-007",
+   "title": "Capacity recovery",
+   "workstream": "W09",
+   "requirement": "Control backlog replay and reconnect storms after outage.",
+   "acceptance": "AT-DR-007"
+  },
+  {
+   "id": "FCP-DR-008",
+   "title": "Update trust",
+   "workstream": "W09",
+   "requirement": "Validate signed metadata, artifact identity, expiry and rollback protections.",
+   "acceptance": "AT-DR-008"
+  },
+  {
+   "id": "FCP-DR-009",
+   "title": "Runbook exercise",
+   "workstream": "W09",
+   "requirement": "Exercise clean install, upgrade, rotation, restore, export and vendor retirement.",
+   "acceptance": "AT-DR-009"
+  },
+  {
+   "id": "FCP-DR-010",
+   "title": "RPO RTO evidence",
+   "workstream": "W09",
+   "requirement": "Measure recovery objectives under declared fault model.",
+   "acceptance": "AT-DR-010"
+  },
+  {
+   "id": "FCP-QUAL-001",
+   "title": "Requirement traceability",
+   "workstream": "W10",
+   "requirement": "Map each supported claim to exact test/evidence and release profile.",
+   "acceptance": "AT-QUAL-001"
+  },
+  {
+   "id": "FCP-QUAL-002",
+   "title": "Security baseline",
+   "workstream": "W10",
+   "requirement": "Pin applicable ASVS/SSDF controls and record exceptions.",
+   "acceptance": "AT-QUAL-002"
+  },
+  {
+   "id": "FCP-QUAL-003",
+   "title": "Independent review",
+   "workstream": "W10",
+   "requirement": "Require external assurance where the sold profile demands it.",
+   "acceptance": "AT-QUAL-003"
+  },
+  {
+   "id": "FCP-QUAL-004",
+   "title": "Provider qualification",
+   "workstream": "W10",
+   "requirement": "Test real provider sandbox/tenant for claimed integrations.",
+   "acceptance": "AT-QUAL-004"
+  },
+  {
+   "id": "FCP-QUAL-005",
+   "title": "Hardware qualification",
+   "workstream": "W10",
+   "requirement": "Tie device support to model, firmware, protocol and site evidence.",
+   "acceptance": "AT-QUAL-005"
+  },
+  {
+   "id": "FCP-QUAL-006",
+   "title": "Golden journeys",
+   "workstream": "W10",
+   "requirement": "Execute all applicable documented end-to-end journeys against release artifacts.",
+   "acceptance": "AT-QUAL-006"
+  },
+  {
+   "id": "FCP-QUAL-007",
+   "title": "Mutation and fault coverage",
+   "workstream": "W10",
+   "requirement": "Test invariants under deliberate internal faults and logic mutations.",
+   "acceptance": "AT-QUAL-007"
+  },
+  {
+   "id": "FCP-QUAL-008",
+   "title": "Release evidence integrity",
+   "workstream": "W10",
+   "requirement": "Generate and protect source, pin, artifact, test and approval evidence.",
+   "acceptance": "AT-QUAL-008"
+  },
+  {
+   "id": "FCP-QUAL-009",
+   "title": "Supported limits",
+   "workstream": "W10",
+   "requirement": "Publish exact runtime/provider/profile limits and known exclusions.",
+   "acceptance": "AT-QUAL-009"
+  }
+ ],
+ "acceptance": [
+  {
+   "id": "AT-BASE-001",
+   "title": "Frozen inventory",
+   "requirement": "FCP-BASE-001",
+   "owner": "W00",
+   "section": "2",
+   "behaviour": "Record current repository commits, dirty files, lock digests, features and installed app versions before modifying code.",
+   "exercise": "Compare default branch, pinned dependency, image and tenant-installed versions.",
+   "acceptance": "All four are distinguishable; no unrelated work is overwritten.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BASE-002",
+   "title": "Existing capability reuse",
+   "requirement": "FCP-BASE-002",
+   "owner": "W00",
+   "section": "2",
+   "behaviour": "Map each proposed capability to current source and tests before creating a new implementation.",
+   "exercise": "Select identity, outbox, files, Operations and Commerce paths and trace their call chains.",
+   "acceptance": "Existing authoritative domains are reused or a reviewed ADR explains replacement.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BASE-003",
+   "title": "Prior invariant regressions",
+   "requirement": "FCP-BASE-003",
+   "owner": "W00",
+   "section": "2",
+   "behaviour": "Revalidate earlier execution findings against the actual assembled release.",
+   "exercise": "Run duplicate-release, recovery-binding, clock, dependency, material and audit tests as ordinary roles.",
+   "acceptance": "Each finding has a current result; documentation alone does not close it.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BASE-004",
+   "title": "Release pins",
+   "requirement": "FCP-BASE-004",
+   "owner": "W00",
+   "section": "2",
+   "behaviour": "Generate release inventory from actual lockfiles and artifact builds.",
+   "exercise": "Change an app pin without rebuilding its UI or updating tenant version.",
+   "acceptance": "Qualification detects the inconsistent assembly and blocks promotion.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BASE-005",
+   "title": "Worktree safety",
+   "requirement": "FCP-BASE-005",
+   "owner": "W00",
+   "section": "2",
+   "behaviour": "Preserve uncommitted changes and validate unused local patches.",
+   "exercise": "Run baseline tooling in a workspace with unrelated dirty files and unused patch entries.",
+   "acceptance": "Tool reports them; no destructive reset or bulk commit occurs.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BASE-006",
+   "title": "Frozen and forward CI",
+   "requirement": "FCP-BASE-006",
+   "owner": "W00",
+   "section": "2",
+   "behaviour": "Separate exact-release qualification from latest-compatible dependency testing.",
+   "exercise": "Advance a dependency branch while a frozen qualification run is executing.",
+   "acceptance": "Frozen inputs stay immutable and forward compatibility results are separately labeled.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BASE-007",
+   "title": "Evidence classification",
+   "requirement": "FCP-BASE-007",
+   "owner": "W00",
+   "section": "2",
+   "behaviour": "Distinguish source, mock, provider and hardware evidence.",
+   "exercise": "Present a simulator-only successful test for a device qualification claim.",
+   "acceptance": "Claim remains software-only and hardware gate remains open.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BASE-008",
+   "title": "Feature inventory",
+   "requirement": "FCP-BASE-008",
+   "owner": "W00",
+   "section": "2",
+   "behaviour": "Discover inaccessible and private components without assuming their absence.",
+   "exercise": "Make a repository inaccessible while its manifest dependency exists.",
+   "acceptance": "Inventory records an access limitation and does not fabricate a missing implementation.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-POL-001",
+   "title": "Tenant context",
+   "requirement": "FCP-POL-001",
+   "owner": "W01",
+   "section": "6",
+   "behaviour": "Derive trusted tenant scope from identity and membership, never a browser tenant header.",
+   "exercise": "Authenticated tenant A submits tenant B identifiers and spoofed scope headers.",
+   "acceptance": "All reads and writes fail without leaking whether B objects exist.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-POL-002",
+   "title": "Scoped delegation",
+   "requirement": "FCP-POL-002",
+   "owner": "W01",
+   "section": "6",
+   "behaviour": "Intersect user authority with workload and resource grants.",
+   "exercise": "A permitted service forwards a low-privilege user's request to a broader internal API.",
+   "acceptance": "The downstream action remains bounded by applicable user authority.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-POL-003",
+   "title": "Separation of duties",
+   "requirement": "FCP-POL-003",
+   "owner": "W01",
+   "section": "6",
+   "behaviour": "Require independent approval for sensitive capability changes.",
+   "exercise": "Developer requests production database administration and attempts self-approval.",
+   "acceptance": "Self-approval fails through UI, API and automation tools.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-POL-004",
+   "title": "Immutable approval",
+   "requirement": "FCP-POL-004",
+   "owner": "W01",
+   "section": "6",
+   "behaviour": "Bind approval to artifact, config, resource plan and policy digests.",
+   "exercise": "Modify network or resource capabilities after approval without changing image.",
+   "acceptance": "Approval becomes invalid and deployment remains blocked.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-POL-005",
+   "title": "Subject lifecycle",
+   "requirement": "FCP-POL-005",
+   "owner": "W01",
+   "section": "6",
+   "behaviour": "Use immutable subject IDs and explicit tenant memberships.",
+   "exercise": "Rename employee email, merge an alias and provision the same email in another tenant.",
+   "acceptance": "Prior audit identity remains stable and no cross-tenant account takeover occurs.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-POL-006",
+   "title": "Federation security",
+   "requirement": "FCP-POL-006",
+   "owner": "W01",
+   "section": "6",
+   "behaviour": "Implement qualified OAuth/OIDC flows and issuer/audience checks.",
+   "exercise": "Use wrong audience, stale nonce, reused code and unauthorized redirect URI.",
+   "acceptance": "All invalid flows fail; legitimate authorization-code flow succeeds.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-POL-007",
+   "title": "Downstream offboarding",
+   "requirement": "FCP-POL-007",
+   "owner": "W01",
+   "section": "6",
+   "behaviour": "Track revocation independently for Git, sessions, private peers and privileged credentials.",
+   "exercise": "Disable an employee while all supported sessions remain open and one provider is unavailable.",
+   "acceptance": "Online revocation meets target; residual provider access is visible and reconciled.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-POL-008",
+   "title": "Policy freshness",
+   "requirement": "FCP-POL-008",
+   "owner": "W01",
+   "section": "6",
+   "behaviour": "Track effective policy revisions at enforcement points.",
+   "exercise": "Disconnect an access proxy, change policy and advance beyond cache lifetime.",
+   "acceptance": "Configured expiry behavior occurs; no silent indefinite allow remains.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-POL-009",
+   "title": "Emergency access",
+   "requirement": "FCP-POL-009",
+   "owner": "W01",
+   "section": "6",
+   "behaviour": "Provide protected, audited recovery independent of the failed primary IdP.",
+   "exercise": "Disable IdP and exercise authorized break-glass recovery.",
+   "acceptance": "Access is time-bound, alerted, scoped and cannot become an unlogged standing grant.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-POL-010",
+   "title": "Negative authorization matrix",
+   "requirement": "FCP-POL-010",
+   "owner": "W01",
+   "section": "6",
+   "behaviour": "Test every API through ordinary roles and service identities.",
+   "exercise": "Call sensitive actions through direct routes, SDK, MCP and alternative aliases.",
+   "acceptance": "No hidden administrator-only test shortcut masks missing checks.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CODE-001",
+   "title": "Repository lifecycle",
+   "requirement": "FCP-CODE-001",
+   "owner": "W03",
+   "section": "7",
+   "behaviour": "Support create, archive, restore, delete-retain and portable export with ownership.",
+   "exercise": "Crash repository provisioning after external creation but before local finalization.",
+   "acceptance": "Retry binds the existing repository and does not create uncontrolled duplicates.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CODE-002",
+   "title": "Ref consistency",
+   "requirement": "FCP-CODE-002",
+   "owner": "W03",
+   "section": "7",
+   "behaviour": "Preserve expected-old-value and protected-reference checks on every Git transport.",
+   "exercise": "Race conflicting pushes through HTTPS and SSH.",
+   "acceptance": "Only valid updates commit; protection cannot be bypassed by transport choice.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CODE-003",
+   "title": "Git storage authority",
+   "requirement": "FCP-CODE-003",
+   "owner": "W03",
+   "section": "7",
+   "behaviour": "Qualify repository storage and failover rather than assume generic S3 filesystem semantics.",
+   "exercise": "Interrupt a repository write-owner during push and attempt a second writer.",
+   "acceptance": "No split-brain ref mutation; acknowledged durability matches declared profile.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CODE-004",
+   "title": "Backup completeness",
+   "requirement": "FCP-CODE-004",
+   "owner": "W03",
+   "section": "7",
+   "behaviour": "Restore repository objects, refs, metadata, LFS and required forge configuration together.",
+   "exercise": "Restore an archived project with pull requests and large files to an isolated forge.",
+   "acceptance": "Integrity checks pass and authorized users can clone the intended history.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CODE-005",
+   "title": "Scoped Git credentials",
+   "requirement": "FCP-CODE-005",
+   "owner": "W03",
+   "section": "7",
+   "behaviour": "Bind PATs, SSH/deploy keys and build tokens to required repositories and actions.",
+   "exercise": "Use a repository read token to enumerate or push another private repository.",
+   "acceptance": "Unapproved operations fail and token expiry/revocation is enforced.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CODE-006",
+   "title": "Server hook restriction",
+   "requirement": "FCP-CODE-006",
+   "owner": "W03",
+   "section": "7",
+   "behaviour": "Disallow tenant executable hooks inside trusted Git service.",
+   "exercise": "Upload a server hook through all supported repository-management paths.",
+   "acceptance": "Hook never runs in the privileged forge; approved jobs use isolated workers.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CODE-007",
+   "title": "Import and mirror egress",
+   "requirement": "FCP-CODE-007",
+   "owner": "W03",
+   "section": "7",
+   "behaviour": "Apply route, redirect, DNS and credential restrictions to imports and mirrors.",
+   "exercise": "Import a repository whose redirect or submodule targets a forbidden internal host.",
+   "acceptance": "No network request reaches the prohibited destination.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CODE-008",
+   "title": "Git resource limits",
+   "requirement": "FCP-CODE-008",
+   "owner": "W03",
+   "section": "7",
+   "behaviour": "Bound pack, object, process, CPU, storage and concurrency consumption.",
+   "exercise": "Submit oversized/deep object graphs and many concurrent clones in an internal test.",
+   "acceptance": "Limits fail explicitly; unrelated tenant service stays available.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CODE-009",
+   "title": "PR approval integrity",
+   "requirement": "FCP-CODE-009",
+   "owner": "W03",
+   "section": "7",
+   "behaviour": "Require protected checks/reviews for the exact candidate source.",
+   "exercise": "Force-push new code after review or alter required-check identity.",
+   "acceptance": "Previous approval cannot authorize the new source.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CODE-010",
+   "title": "LFS access",
+   "requirement": "FCP-CODE-010",
+   "owner": "W03",
+   "section": "7",
+   "behaviour": "Enforce repository authorization for LFS reads, uploads and signed URLs.",
+   "exercise": "Try a known LFS object identifier from another tenant and replay an expired URL.",
+   "acceptance": "No unauthorized access; intended repository access works.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CODE-011",
+   "title": "Forge outage isolation",
+   "requirement": "FCP-CODE-011",
+   "owner": "W03",
+   "section": "7",
+   "behaviour": "Keep existing runtime sites independent of forge availability.",
+   "exercise": "Stop the forge after production deployment.",
+   "acceptance": "Serving continues; new builds fail meaningfully and resume without duplicate releases.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CODE-012",
+   "title": "Repository portability",
+   "requirement": "FCP-CODE-012",
+   "owner": "W03",
+   "section": "7",
+   "behaviour": "Export standard Git and documented review/configuration metadata.",
+   "exercise": "Move an exported project to another supported forge and reconnect deployment source.",
+   "acceptance": "Source history remains usable without a Ferrum-specific Git format.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BUILD-001",
+   "title": "Webhook authenticity",
+   "requirement": "FCP-BUILD-001",
+   "owner": "W04",
+   "section": "8",
+   "behaviour": "Authenticate, deduplicate and bind source events to approved repositories.",
+   "exercise": "Replay a valid webhook and submit forged or cross-repository delivery identifiers.",
+   "acceptance": "One intent is created; invalid events do not start jobs.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BUILD-002",
+   "title": "Exact commit checkout",
+   "requirement": "FCP-BUILD-002",
+   "owner": "W04",
+   "section": "8",
+   "behaviour": "Build the recorded immutable commit and record submodule/LFS inputs.",
+   "exercise": "Move the branch after enqueue and before worker checkout.",
+   "acceptance": "Artifact provenance identifies and contains the approved commit, not the new tip.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BUILD-003",
+   "title": "Builder sandbox",
+   "requirement": "FCP-BUILD-003",
+   "owner": "W04",
+   "section": "8",
+   "behaviour": "Execute repository scripts and dependency hooks in disposable isolated workers.",
+   "exercise": "Controlled job attempts host socket, host filesystem, kernel privilege and cluster API access.",
+   "acceptance": "Attempts are contained and no management credential is exposed.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BUILD-004",
+   "title": "Production isolation",
+   "requirement": "FCP-BUILD-004",
+   "owner": "W04",
+   "section": "8",
+   "behaviour": "Deny build and preview access to production data, payments and OT routes.",
+   "exercise": "A build attempts to resolve and call all production-bound services.",
+   "acceptance": "No production effect or data read occurs; approved package access still works.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BUILD-005",
+   "title": "Secret exposure controls",
+   "requirement": "FCP-BUILD-005",
+   "owner": "W04",
+   "section": "8",
+   "behaviour": "Avoid unnecessary build secrets and scope necessary temporary package credentials.",
+   "exercise": "Malicious build encodes or prints a test secret and tries outbound exfiltration.",
+   "acceptance": "No production secrets exist; egress and credential scope contain permitted test-secret exposure.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BUILD-006",
+   "title": "Cache trust",
+   "requirement": "FCP-BUILD-006",
+   "owner": "W04",
+   "section": "8",
+   "behaviour": "Partition mutable caches by tenant and source trust level.",
+   "exercise": "Untrusted PR seeds a cache consumed by a protected production build.",
+   "acceptance": "Protected build cannot trust the poisoned entry.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BUILD-007",
+   "title": "Dependency pinning",
+   "requirement": "FCP-BUILD-007",
+   "owner": "W04",
+   "section": "8",
+   "behaviour": "Pin builder images, package locks and executable build dependencies.",
+   "exercise": "A dependency registry changes the version behind an unpinned reference.",
+   "acceptance": "Qualification rejects nondeterministic/unapproved inputs or records an explicit approved exception.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BUILD-008",
+   "title": "Artifact finalization",
+   "requirement": "FCP-BUILD-008",
+   "owner": "W04",
+   "section": "8",
+   "behaviour": "Publish immutable artifacts only through a trusted finalizer.",
+   "exercise": "Worker uploads one digest then substitutes content before promotion.",
+   "acceptance": "Digest/integrity mismatch blocks publication and deployment.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BUILD-009",
+   "title": "Signing authority",
+   "requirement": "FCP-BUILD-009",
+   "owner": "W04",
+   "section": "8",
+   "behaviour": "Keep production signing authority outside untrusted build execution.",
+   "exercise": "Build requests signing for an unrelated tenant artifact or arbitrary digest.",
+   "acceptance": "Signer policy denies it and records the attempt.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BUILD-010",
+   "title": "Provenance privacy",
+   "requirement": "FCP-BUILD-010",
+   "owner": "W04",
+   "section": "8",
+   "behaviour": "Protect private repository and customer metadata in attestations.",
+   "exercise": "Attempt publication of private provenance to a public transparency service.",
+   "acceptance": "Disclosure policy blocks or redacts it; internal verification remains possible.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BUILD-011",
+   "title": "Build cancellation",
+   "requirement": "FCP-BUILD-011",
+   "owner": "W04",
+   "section": "8",
+   "behaviour": "Cancel sandbox work, revoke temporary identity and clean unused outputs.",
+   "exercise": "Cancel while a worker is uploading or restarting.",
+   "acceptance": "No live credential/job survives outside its documented cancellation envelope.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BUILD-012",
+   "title": "Tenant fairness",
+   "requirement": "FCP-BUILD-012",
+   "owner": "W04",
+   "section": "8",
+   "behaviour": "Schedule builds under per-tenant concurrency and budget controls.",
+   "exercise": "One tenant floods expensive builds while another starts a small build.",
+   "acceptance": "Fairness target and caps hold; no global starvation.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BUILD-013",
+   "title": "Log safety",
+   "requirement": "FCP-BUILD-013",
+   "owner": "W04",
+   "section": "8",
+   "behaviour": "Authenticate logs and escape untrusted control content.",
+   "exercise": "View logs containing terminal escapes, HTML and a different tenant job ID.",
+   "acceptance": "No script/control injection or cross-tenant access; authorized troubleshooting remains possible.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BUILD-014",
+   "title": "Customer runner trust",
+   "requirement": "FCP-BUILD-014",
+   "owner": "W04",
+   "section": "8",
+   "behaviour": "Label customer-runner artifacts with their actual assurance level.",
+   "exercise": "Submit an artifact from a customer runner with fabricated high-assurance provenance.",
+   "acceptance": "Production policy does not grant hosted-builder assurance.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-DEPLOY-001",
+   "title": "Environment separation",
+   "requirement": "FCP-DEPLOY-001",
+   "owner": "W05",
+   "section": "9",
+   "behaviour": "Maintain separate identities, bindings and caches per environment.",
+   "exercise": "Copy a production manifest into preview without an approved production binding.",
+   "acceptance": "Preview cannot acquire production capabilities or secrets.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-DEPLOY-002",
+   "title": "Release immutability",
+   "requirement": "FCP-DEPLOY-002",
+   "owner": "W05",
+   "section": "9",
+   "behaviour": "Bind release to artifact, config, policy, runtime and resource-schema versions.",
+   "exercise": "Change a mutable image tag after release approval.",
+   "acceptance": "Deployment still uses approved digest or fails trust validation.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-DEPLOY-003",
+   "title": "Promotion serialization",
+   "requirement": "FCP-DEPLOY-003",
+   "owner": "W05",
+   "section": "9",
+   "behaviour": "Prevent two promotions from interleaving one environment's route and schema state.",
+   "exercise": "Submit concurrent approved promotions and interrupt one controller.",
+   "acceptance": "One coherent deployment wins; the other conflicts or waits safely.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-DEPLOY-004",
+   "title": "Readiness gating",
+   "requirement": "FCP-DEPLOY-004",
+   "owner": "W05",
+   "section": "9",
+   "behaviour": "Route traffic only to verified ready instances.",
+   "exercise": "New release starts a process but cannot access a required resource.",
+   "acceptance": "It receives no production traffic and the previous healthy release remains.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-DEPLOY-005",
+   "title": "Migration compatibility",
+   "requirement": "FCP-DEPLOY-005",
+   "owner": "W05",
+   "section": "9",
+   "behaviour": "Use serialized expand/contract migrations and explicit rollback limits.",
+   "exercise": "Fail mid-backfill and attempt rollback to an incompatible old application.",
+   "acceptance": "Migration resumes or recovery is required; no unsafe automatic rollback.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-DEPLOY-006",
+   "title": "Preview access",
+   "requirement": "FCP-DEPLOY-006",
+   "owner": "W05",
+   "section": "9",
+   "behaviour": "Protect previews through every hostname and direct origin.",
+   "exercise": "Access preview via unlisted deployment alias without membership.",
+   "acceptance": "All alternate routes deny access.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-DEPLOY-007",
+   "title": "Preview cleanup",
+   "requirement": "FCP-DEPLOY-007",
+   "owner": "W05",
+   "section": "9",
+   "behaviour": "Expire previews, credentials and orphan resources without deleting retained artifacts in use.",
+   "exercise": "Crash cleanup between route removal and resource detachment.",
+   "acceptance": "Reconciliation finishes cleanup idempotently and preserves shared dependencies.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-DEPLOY-008",
+   "title": "Graceful rollout",
+   "requirement": "FCP-DEPLOY-008",
+   "owner": "W05",
+   "section": "9",
+   "behaviour": "Drain requests and handle long-lived connections under bounded policy.",
+   "exercise": "Roll out while uploads, streaming and websocket clients are active.",
+   "acceptance": "Declared drain/reconnect behavior occurs without false operation completion.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-DEPLOY-009",
+   "title": "Rollback correctness",
+   "requirement": "FCP-DEPLOY-009",
+   "owner": "W05",
+   "section": "9",
+   "behaviour": "Rollback selects a coherent compatible release, not only an old image.",
+   "exercise": "Restore previous image with changed schema and credentials.",
+   "acceptance": "Policy checks compatibility or requires forward recovery.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-DEPLOY-010",
+   "title": "Durable background work",
+   "requirement": "FCP-DEPLOY-010",
+   "owner": "W05",
+   "section": "9",
+   "behaviour": "Put long-running effects in managed jobs rather than untracked SSR tasks.",
+   "exercise": "Terminate SSR process after accepting a background request.",
+   "acceptance": "Durable job remains visible and completes/reconciles once.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-DEPLOY-011",
+   "title": "Scheduler semantics",
+   "requirement": "FCP-DEPLOY-011",
+   "owner": "W05",
+   "section": "9",
+   "behaviour": "Define timezone, DST, missed-run and overlap behavior for schedules.",
+   "exercise": "Run schedules across DST change, outage and overlapping duration.",
+   "acceptance": "Documented runs occur without unplanned duplicates or lost work.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-DEPLOY-012",
+   "title": "Capability reconsent",
+   "requirement": "FCP-DEPLOY-012",
+   "owner": "W05",
+   "section": "9",
+   "behaviour": "Require renewed consent for runtime/network/resource permission expansion.",
+   "exercise": "A source change adds unrestricted egress and production database access.",
+   "acceptance": "Deployment cannot inherit privileges from prior approval.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-DEPLOY-013",
+   "title": "Serving independence",
+   "requirement": "FCP-DEPLOY-013",
+   "owner": "W05",
+   "section": "9",
+   "behaviour": "Keep deployed site serving when management and build systems are unavailable.",
+   "exercise": "Stop management APIs and builders while current release is healthy.",
+   "acceptance": "Serving remains within documented policy/key-cache envelopes.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-WEB-001",
+   "title": "Public/private cache separation",
+   "requirement": "FCP-WEB-001",
+   "owner": "W06",
+   "section": "10",
+   "behaviour": "Never place personalized responses in public shared cache by default.",
+   "exercise": "Two users and tenants request same URL after one authenticated response is cached.",
+   "acceptance": "No account, token or private content crosses users or tenants.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-WEB-002",
+   "title": "Framework conformance",
+   "requirement": "FCP-WEB-002",
+   "owner": "W06",
+   "section": "10",
+   "behaviour": "Qualify each framework/runtime combination across supported features.",
+   "exercise": "Run SSR, static, streaming, actions, images and revalidation on multiple replicas.",
+   "acceptance": "Support matrix matches actual behavior; unsupported features fail clearly.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-WEB-003",
+   "title": "Deployment skew",
+   "requirement": "FCP-WEB-003",
+   "owner": "W06",
+   "section": "10",
+   "behaviour": "Retain old assets and coordinate framework deployment-sensitive state.",
+   "exercise": "Keep old browser sessions active during rollout and rollback.",
+   "acceptance": "No unauthorized or duplicate mutation and no unexplained old-asset failure.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-WEB-004",
+   "title": "Browser origin isolation",
+   "requirement": "FCP-WEB-004",
+   "owner": "W06",
+   "section": "10",
+   "behaviour": "Separate untrusted content from management origin and control cookies.",
+   "exercise": "Customer page attempts parent-domain cookie and management service-worker interaction.",
+   "acceptance": "Management session remains unaffected and customer isolation policy holds.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-WEB-005",
+   "title": "Domain ownership",
+   "requirement": "FCP-WEB-005",
+   "owner": "W06",
+   "section": "10",
+   "behaviour": "Verify normalized domain ownership and uniqueness before routing.",
+   "exercise": "Two tenants claim case/IDNA/trailing-dot equivalents or overlapping wildcard.",
+   "acceptance": "Only authorized unique binding can activate.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-WEB-006",
+   "title": "Origin bypass",
+   "requirement": "FCP-WEB-006",
+   "owner": "W06",
+   "section": "10",
+   "behaviour": "Apply access policy to all ingress paths and reject unknown hosts.",
+   "exercise": "Call private site through IP, service hostname, old preview URL and forged identity headers.",
+   "acceptance": "No path bypasses access enforcement.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-WEB-007",
+   "title": "Certificate lifecycle",
+   "requirement": "FCP-WEB-007",
+   "owner": "W06",
+   "section": "10",
+   "behaviour": "Handle issuance, rate limits, renewal and transfer with scoped provider credentials.",
+   "exercise": "Fail renewal or transfer ownership while old DNS remains.",
+   "acceptance": "Alerts and safe routing state occur; stale claim cannot be hijacked.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-WEB-008",
+   "title": "Image and fetch SSRF",
+   "requirement": "FCP-WEB-008",
+   "owner": "W06",
+   "section": "10",
+   "behaviour": "Enforce destination policy on image optimization and server-side URL fetches.",
+   "exercise": "Allowed hostname redirects or resolves to a prohibited address including IPv6.",
+   "acceptance": "Connection is blocked before data access.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-WEB-009",
+   "title": "Request resource budgets",
+   "requirement": "FCP-WEB-009",
+   "owner": "W06",
+   "section": "10",
+   "behaviour": "Bound uploads, headers, decompression and runtime concurrency.",
+   "exercise": "Send large or expensive requests while other tenants operate.",
+   "acceptance": "Clear limit errors and no cross-tenant resource starvation.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-WEB-010",
+   "title": "Upload finalization",
+   "requirement": "FCP-WEB-010",
+   "owner": "W06",
+   "section": "10",
+   "behaviour": "Scan and verify objects before making them application-visible.",
+   "exercise": "Crash between object upload and metadata commit and repeat finalization.",
+   "acceptance": "No partial object is served; orphans are reconciled and retries are safe.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-WEB-011",
+   "title": "Storefront authority",
+   "requirement": "FCP-WEB-011",
+   "owner": "W06",
+   "section": "10",
+   "behaviour": "Keep pricing, tax, stock, customer ownership and payment state in backend actions.",
+   "exercise": "Modify browser totals, customer ID and payment success flags.",
+   "acceptance": "Backend rejects tampering and recalculates authoritative results.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-WEB-012",
+   "title": "Headless content lifecycle",
+   "requirement": "FCP-WEB-012",
+   "owner": "W06",
+   "section": "10",
+   "behaviour": "Provide drafts, revision, locale and approved publishing semantics.",
+   "exercise": "Publish stale content revision or reuse a preview credential after expiry.",
+   "acceptance": "Version/access checks prevent unintended publication or disclosure.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-RES-001",
+   "title": "Logical resource binding",
+   "requirement": "FCP-RES-001",
+   "owner": "W02",
+   "section": "13",
+   "behaviour": "Separate declared capability from provider instance and workload binding.",
+   "exercise": "Install same app in cloud and customer-owned resource profiles.",
+   "acceptance": "Business code uses stable logical binding without obtaining provider administration.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-RES-002",
+   "title": "Idempotent provisioning",
+   "requirement": "FCP-RES-002",
+   "owner": "W02",
+   "section": "13",
+   "behaviour": "Reconcile ambiguous provider creation before retrying.",
+   "exercise": "Provider creates database but response is lost and controller restarts.",
+   "acceptance": "Existing owned resource is discovered; no uncontrolled duplicate is billed.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-RES-003",
+   "title": "Required resource readiness",
+   "requirement": "FCP-RES-003",
+   "owner": "W02",
+   "section": "13",
+   "behaviour": "Do not activate an app before required resources and migrations verify.",
+   "exercise": "Provider reports accepted while actual database is unavailable.",
+   "acceptance": "App remains pending/degraded rather than falsely ready.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-RES-004",
+   "title": "Tenant database isolation",
+   "requirement": "FCP-RES-004",
+   "owner": "W02",
+   "section": "13",
+   "behaviour": "Enforce tenant scope beyond query parameterization.",
+   "exercise": "Run raw/invalid queries under another tenant role and reuse pooled connections.",
+   "acceptance": "No cross-tenant rows or leaked session context.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-RES-005",
+   "title": "Scoped credentials",
+   "requirement": "FCP-RES-005",
+   "owner": "W02",
+   "section": "13",
+   "behaviour": "Separate runtime and migrator roles and rotate bindings safely.",
+   "exercise": "Runtime tries DDL/admin actions; old credential is used after rotation.",
+   "acceptance": "Unauthorized schema operations fail and retirement follows declared rotation policy.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-RES-006",
+   "title": "Resource migration",
+   "requirement": "FCP-RES-006",
+   "owner": "W02",
+   "section": "13",
+   "behaviour": "Serialize checksum-versioned migrations with bounded locks and resumable backfill.",
+   "exercise": "Kill migration between batches then start another replica.",
+   "acceptance": "One migration owner resumes without duplicate transformations.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-RES-007",
+   "title": "Provider capability mismatch",
+   "requirement": "FCP-RES-007",
+   "owner": "W02",
+   "section": "13",
+   "behaviour": "Reject required semantics unavailable from selected backend.",
+   "exercise": "Bind a nontransactional or incompatible backend to a transactional capability.",
+   "acceptance": "Install fails explicitly rather than silently weakening guarantees.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-RES-008",
+   "title": "Data authority classification",
+   "requirement": "FCP-RES-008",
+   "owner": "W02",
+   "section": "13",
+   "behaviour": "Identify primary, derived, archival and disposable datasets.",
+   "exercise": "Delete an index and separately corrupt primary transaction evidence in tests.",
+   "acceptance": "Index rebuild is supported; primary corruption triggers recovery rather than silent regeneration.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-RES-009",
+   "title": "Object consistency",
+   "requirement": "FCP-RES-009",
+   "owner": "W02",
+   "section": "13",
+   "behaviour": "Reconcile object metadata and bytes without claiming distributed ACID.",
+   "exercise": "Fail database commit after object upload and fail object delete after metadata change.",
+   "acceptance": "Orphans/deletions are tracked and retried with authorization.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-RES-010",
+   "title": "Backup semantics",
+   "requirement": "FCP-RES-010",
+   "owner": "W02",
+   "section": "13",
+   "behaviour": "Record resource backups, keys and logical consistency points.",
+   "exercise": "Restore multiple resources from incompatible timestamps.",
+   "acceptance": "Validation detects inconsistency before application or external effects activate.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-RES-011",
+   "title": "Customer resource detachment",
+   "requirement": "FCP-RES-011",
+   "owner": "W02",
+   "section": "13",
+   "behaviour": "Retain customer-owned resources on uninstall unless explicit authority says otherwise.",
+   "exercise": "Uninstall app bound to an externally owned bucket/database.",
+   "acceptance": "Binding is revoked; external service and unrelated data are not destroyed.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-RES-012",
+   "title": "Destructive deletion controls",
+   "requirement": "FCP-RES-012",
+   "owner": "W02",
+   "section": "13",
+   "behaviour": "Check retention, legal hold and dependencies before destruction.",
+   "exercise": "Delete a resource still referenced by another deployment or under hold.",
+   "acceptance": "Deletion is blocked with an explainable reason.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-RES-013",
+   "title": "Query console safety",
+   "requirement": "FCP-RES-013",
+   "owner": "W02",
+   "section": "13",
+   "behaviour": "Use scoped short-lived access and read-only defaults for administrative queries.",
+   "exercise": "Resource operator attempts core ledger mutation and oversized data extraction.",
+   "acceptance": "Business-invariant bypass and unapproved export are denied.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-RES-014",
+   "title": "Licensing gate",
+   "requirement": "FCP-RES-014",
+   "owner": "W02",
+   "section": "13",
+   "behaviour": "Approve exact engine edition/feature/hosting rights before managed distribution.",
+   "exercise": "Select restricted Timescale functionality for arbitrary customer DB hosting.",
+   "acceptance": "Provisioning is blocked pending approved terms or qualified alternative.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-RES-015",
+   "title": "Resource portability",
+   "requirement": "FCP-RES-015",
+   "owner": "W02",
+   "section": "13",
+   "behaviour": "Provide export formats and restore path per resource class.",
+   "exercise": "Export app data, objects and schema then restore to another qualified provider.",
+   "acceptance": "Integrity and app-level invariants verify; unsupported differences are explicit.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SCALE-001",
+   "title": "Single scaler owner",
+   "requirement": "FCP-SCALE-001",
+   "owner": "W09",
+   "section": "14",
+   "behaviour": "Use one authoritative controller per scaling target.",
+   "exercise": "HPA and resource reconciler attempt conflicting replica changes.",
+   "acceptance": "Configuration rejects competing ownership or integrates them under one policy.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SCALE-002",
+   "title": "Connection budgeting",
+   "requirement": "FCP-SCALE-002",
+   "owner": "W09",
+   "section": "14",
+   "behaviour": "Account for API, worker, plugin, listener and migration connections.",
+   "exercise": "Scale API and workers to maximum while starting migration.",
+   "acceptance": "Configured reserve remains and admission prevents database exhaustion.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SCALE-003",
+   "title": "Stateful scaling",
+   "requirement": "FCP-SCALE-003",
+   "owner": "W09",
+   "section": "14",
+   "behaviour": "Use engine-specific scaling with replication and migration guards.",
+   "exercise": "Request database replica growth or storage resize during impaired replication.",
+   "acceptance": "Unsafe changes wait or fail explicitly; read replicas are not advertised as write sharding.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SCALE-004",
+   "title": "Budget enforcement",
+   "requirement": "FCP-SCALE-004",
+   "owner": "W09",
+   "section": "14",
+   "behaviour": "Separate alerts, estimates and enforced admission caps.",
+   "exercise": "Generate burst build/runtime usage beyond budget.",
+   "acceptance": "New spend is bounded under policy and unavoidable delayed charges are visible.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SCALE-005",
+   "title": "Critical reserve",
+   "requirement": "FCP-SCALE-005",
+   "owner": "W09",
+   "section": "14",
+   "behaviour": "Protect durable command/evidence capacity before shedding telemetry.",
+   "exercise": "Fill edge/storage budget with samples while a critical command finishes.",
+   "acceptance": "Only eligible data is shed; critical evidence is retained or new work stops safely.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SCALE-006",
+   "title": "Gateway drain",
+   "requirement": "FCP-SCALE-006",
+   "owner": "W09",
+   "section": "14",
+   "behaviour": "Scale connection services using ownership-aware drain.",
+   "exercise": "Scale in a gateway holding many active sockets and ambiguous commands.",
+   "acceptance": "Controlled reconnection/reconciliation occurs without blind redispatch.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SCALE-007",
+   "title": "Noisy neighbor",
+   "requirement": "FCP-SCALE-007",
+   "owner": "W09",
+   "section": "14",
+   "behaviour": "Maintain per-tenant fairness and shared-resource quotas.",
+   "exercise": "One tenant saturates query/ingest/build capacity.",
+   "acceptance": "Other tenants retain declared service envelope and throttling is attributable.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SCALE-008",
+   "title": "Capacity evidence",
+   "requirement": "FCP-SCALE-008",
+   "owner": "W09",
+   "section": "14",
+   "behaviour": "Attach profile limits to measured artifacts and hardware.",
+   "exercise": "Run sustained growth and recovery-drain tests, not only a short throughput burst.",
+   "acceptance": "Published limits reflect p95/p99, backlog, growth, errors and cost evidence.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-ACCESS-001",
+   "title": "Reachability versus rights",
+   "requirement": "FCP-ACCESS-001",
+   "owner": "W07",
+   "section": "15",
+   "behaviour": "Require application authorization even over a private tunnel.",
+   "exercise": "Connected employee requests payroll without payroll role.",
+   "acceptance": "Network succeeds if allowed but business access is denied.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-ACCESS-002",
+   "title": "Provider administration isolation",
+   "requirement": "FCP-ACCESS-002",
+   "owner": "W07",
+   "section": "15",
+   "behaviour": "Separate tenant network/proxy administration scopes.",
+   "exercise": "Tenant network admin tries to inspect or modify another tenant routes.",
+   "acceptance": "Provider boundary and Ferrum APIs both prevent it.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-ACCESS-003",
+   "title": "Posture trust",
+   "requirement": "FCP-ACCESS-003",
+   "owner": "W07",
+   "section": "15",
+   "behaviour": "Use qualified fresh device evidence rather than asset metadata alone.",
+   "exercise": "Device reports stale or spoofed compliance data.",
+   "acceptance": "Policy treats it as stale/untrusted and follows declared access rule.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-ACCESS-004",
+   "title": "Private connectors",
+   "requirement": "FCP-ACCESS-004",
+   "owner": "W07",
+   "section": "15",
+   "behaviour": "Expose only approved resources through outbound-authenticated connectors.",
+   "exercise": "Compromised connector attempts arbitrary management or other-tenant destinations.",
+   "acceptance": "Routes and service authorization prevent lateral access.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-ACCESS-005",
+   "title": "Overlapping addresses",
+   "requirement": "FCP-ACCESS-005",
+   "owner": "W07",
+   "section": "15",
+   "behaviour": "Isolate customers using identical private CIDRs.",
+   "exercise": "Two customers expose the same IP and port through separate connectors.",
+   "acceptance": "Routing uses customer identity/binding and never crosses destinations.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-ACCESS-006",
+   "title": "Revocation coverage",
+   "requirement": "FCP-ACCESS-006",
+   "owner": "W07",
+   "section": "15",
+   "behaviour": "Revoke web, Git, tunnel and privileged sessions with per-provider completion.",
+   "exercise": "Offboard user with active sessions and one unreachable enforcement point.",
+   "acceptance": "Residual access is visible and expiry/reconciliation follow policy.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-ACCESS-007",
+   "title": "Privileged session scope",
+   "requirement": "FCP-ACCESS-007",
+   "owner": "W07",
+   "section": "15",
+   "behaviour": "Use target/action-scoped temporary grants for administration.",
+   "exercise": "Approved database diagnostic session attempts shell or another database.",
+   "acceptance": "Grant cannot exceed its target/actions and expires as scheduled.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-ACCESS-008",
+   "title": "Header spoofing",
+   "requirement": "FCP-ACCESS-008",
+   "owner": "W07",
+   "section": "15",
+   "behaviour": "Accept identity assertions only from authenticated trusted proxies.",
+   "exercise": "Public client injects identity headers and alternate forwarding chains.",
+   "acceptance": "Claims are stripped/rejected and tenant scope is not changed.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-ACCESS-009",
+   "title": "Access outage policy",
+   "requirement": "FCP-ACCESS-009",
+   "owner": "W07",
+   "section": "15",
+   "behaviour": "Define cache expiry and fail behavior per resource risk.",
+   "exercise": "Lose policy service and continue requests past allowed cache age.",
+   "acceptance": "No undocumented fail-open path; emergency recovery is separate.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-ACCESS-010",
+   "title": "OT access boundary",
+   "requirement": "FCP-ACCESS-010",
+   "owner": "W07",
+   "section": "15",
+   "behaviour": "Keep industrial support separate from ordinary employee connectivity.",
+   "exercise": "Employee VPN peer attempts direct PLC or safety-network access.",
+   "acceptance": "Denied unless separately authorized site-specific support path exists.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SECRET-001",
+   "title": "Secret indirection",
+   "requirement": "FCP-SECRET-001",
+   "owner": "W01",
+   "section": "16",
+   "behaviour": "Store references and lease metadata rather than plaintext in app config.",
+   "exercise": "Read application configuration, exports, logs and error reports.",
+   "acceptance": "No secret value or broad DSN appears in ordinary reads.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SECRET-002",
+   "title": "Workload attestation",
+   "requirement": "FCP-SECRET-002",
+   "owner": "W01",
+   "section": "16",
+   "behaviour": "Issue service identity only to the approved deployment/job context.",
+   "exercise": "Untrusted build impersonates runtime or platform workload identity.",
+   "acceptance": "Identity issuer rejects mismatched attestation/binding.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SECRET-003",
+   "title": "Root rotation",
+   "requirement": "FCP-SECRET-003",
+   "owner": "W01",
+   "section": "16",
+   "behaviour": "Rotate signing/trust roots with staged verification and compromise handling.",
+   "exercise": "Retire one root while workloads still use an old bundle.",
+   "acceptance": "Declared overlap works; revoked root cannot authorize new artifacts.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SECRET-004",
+   "title": "Key recovery",
+   "requirement": "FCP-SECRET-004",
+   "owner": "W01",
+   "section": "16",
+   "behaviour": "Maintain a protected independent recovery procedure for encrypted backups.",
+   "exercise": "Primary secrets service/database is unavailable during recovery drill.",
+   "acceptance": "Authorized recovery can restore keys without public disclosure or circular dependency.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SECRET-005",
+   "title": "Credential expiry",
+   "requirement": "FCP-SECRET-005",
+   "owner": "W01",
+   "section": "16",
+   "behaviour": "Define online/offline behavior for expired credentials and trust bundles.",
+   "exercise": "Gateway or access point remains offline past validity.",
+   "acceptance": "No insecure verification bypass; allowed degraded behavior is explicit.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SECRET-006",
+   "title": "Environment secret scope",
+   "requirement": "FCP-SECRET-006",
+   "owner": "W01",
+   "section": "16",
+   "behaviour": "Prevent production secret copying into previews and public build variables.",
+   "exercise": "Developer attempts to expose backend secret through public env prefix.",
+   "acceptance": "Admission blocks the binding or clearly classifies intended public values.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SECRET-007",
+   "title": "Compromise response",
+   "requirement": "FCP-SECRET-007",
+   "owner": "W01",
+   "section": "16",
+   "behaviour": "Revoke affected identities and reconcile deployments after key compromise.",
+   "exercise": "Simulate compromised publisher/workload key and attempt new operations.",
+   "acceptance": "Trust update blocks misuse, affected inventory is visible, evidence is retained.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SECRET-008",
+   "title": "Operator visibility honesty",
+   "requirement": "FCP-SECRET-008",
+   "owner": "W01",
+   "section": "16",
+   "behaviour": "Describe hosting/key access accurately.",
+   "exercise": "Review a customer-managed-key profile where operator runs plaintext workload.",
+   "acceptance": "Documentation does not falsely claim operator blindness.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-MSG-001",
+   "title": "Transactional outbox",
+   "requirement": "FCP-MSG-001",
+   "owner": "W08",
+   "section": "17",
+   "behaviour": "Commit authoritative state and outbox together.",
+   "exercise": "Crash before commit, after commit and after publication.",
+   "acceptance": "No committed event is silently lost; duplicates are handled.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-MSG-002",
+   "title": "Consumer idempotency",
+   "requirement": "FCP-MSG-002",
+   "owner": "W08",
+   "section": "17",
+   "behaviour": "Apply inbox receipt and local business effect atomically where possible.",
+   "exercise": "Deliver same event concurrently and after worker restart.",
+   "acceptance": "One logical local effect occurs with auditable duplicate handling.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-MSG-003",
+   "title": "External ambiguity",
+   "requirement": "FCP-MSG-003",
+   "owner": "W08",
+   "section": "17",
+   "behaviour": "Reconcile nontransactional effects before retrying uncertain outcomes.",
+   "exercise": "Provider performs action but response disappears.",
+   "acceptance": "State becomes unknown/reconcilable, not automatic success or blind retry.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-MSG-004",
+   "title": "Lease fencing",
+   "requirement": "FCP-MSG-004",
+   "owner": "W08",
+   "section": "17",
+   "behaviour": "Prevent stale workers from committing or dispatching beyond ownership.",
+   "exercise": "Expire lease and resume old worker after a new claimant starts.",
+   "acceptance": "Stale effect is rejected at enforceable boundary.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-MSG-005",
+   "title": "Notification recovery",
+   "requirement": "FCP-MSG-005",
+   "owner": "W08",
+   "section": "17",
+   "behaviour": "Use notification as hint with durable polling/replay fallback.",
+   "exercise": "Drop all NOTIFY/live messages while committing work.",
+   "acceptance": "Consumers recover from durable state without lost tasks.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-MSG-006",
+   "title": "Cursor correctness",
+   "requirement": "FCP-MSG-006",
+   "owner": "W08",
+   "section": "17",
+   "behaviour": "Use committed gap-safe event cursors rather than raw uncommitted sequence assumptions.",
+   "exercise": "Allocate low event ID in slow transaction and commit higher ID first.",
+   "acceptance": "Subscriber eventually observes both or performs valid reconciliation.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-MSG-007",
+   "title": "Snapshot subscription",
+   "requirement": "FCP-MSG-007",
+   "owner": "W08",
+   "section": "17",
+   "behaviour": "Avoid race between snapshot and live subscription.",
+   "exercise": "Commit update exactly between snapshot read and listener attach.",
+   "acceptance": "Update is delivered or snapshot replay catches it.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-MSG-008",
+   "title": "Contract evolution",
+   "requirement": "FCP-MSG-008",
+   "owner": "W08",
+   "section": "17",
+   "behaviour": "Version events/actions and reject unsupported mandatory semantics.",
+   "exercise": "Old consumer receives new optional and incompatible required fields.",
+   "acceptance": "Compatible change works; incompatible use fails explicitly.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-MSG-009",
+   "title": "Regional authority",
+   "requirement": "FCP-MSG-009",
+   "owner": "W08",
+   "section": "17",
+   "behaviour": "Use one write authority or qualified conflict protocol for critical resources.",
+   "exercise": "Partition regions and attempt command/billing writes from both.",
+   "acceptance": "No independent dual authority or duplicate effect.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-MSG-010",
+   "title": "Service delegation",
+   "requirement": "FCP-MSG-010",
+   "owner": "W08",
+   "section": "17",
+   "behaviour": "Validate workload plus tenant/user context downstream.",
+   "exercise": "Authorized service forwards forged tenant or overbroad delegated token.",
+   "acceptance": "Receiver rejects unauthorized action and records correlation.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OPS-001",
+   "title": "Any-replica intake",
+   "requirement": "FCP-OPS-001",
+   "owner": "W08",
+   "section": "18",
+   "behaviour": "Persist request before acknowledging and expose stable status ID.",
+   "exercise": "Request hits API 1, client reconnects through API 2 after response loss.",
+   "acceptance": "Same authorized intent/result is retrievable without server affinity.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OPS-002",
+   "title": "Exact connection owner",
+   "requirement": "FCP-OPS-002",
+   "owner": "W08",
+   "section": "18",
+   "behaviour": "Route device work only to current authenticated owner/generation.",
+   "exercise": "Charger is on gateway 3 while random worker 1 receives wakeup.",
+   "acceptance": "Only eligible owner sends; nonowner cannot falsely acknowledge execution.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OPS-003",
+   "title": "Reconnect generation",
+   "requirement": "FCP-OPS-003",
+   "owner": "W08",
+   "section": "18",
+   "behaviour": "Protect new connection from old disconnect and stale sender.",
+   "exercise": "Reconnect station to gateway 4 then close old gateway 3 connection.",
+   "acceptance": "New mapping remains; old connection cannot dispatch new work.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OPS-004",
+   "title": "Physical intent deduplication",
+   "requirement": "FCP-OPS-004",
+   "owner": "W08",
+   "section": "18",
+   "behaviour": "Scope idempotency to business intent and reject payload mismatch.",
+   "exercise": "Repeat start concurrently with same key, then with changed payload.",
+   "acceptance": "One intent exists; mismatch returns conflict.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OPS-005",
+   "title": "Final deadline gate",
+   "requirement": "FCP-OPS-005",
+   "owner": "W08",
+   "section": "18",
+   "behaviour": "Recheck deadline and authority immediately before external send.",
+   "exercise": "Queue commands behind slow operation until later command expires.",
+   "acceptance": "Expired command is not sent or granted a renewed artificial lifetime.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OPS-006",
+   "title": "Clock correctness",
+   "requirement": "FCP-OPS-006",
+   "owner": "W08",
+   "section": "18",
+   "behaviour": "Do not extend authorization through backward wall-clock changes.",
+   "exercise": "Jump clock backward, reboot offline and suspend/resume near expiry.",
+   "acceptance": "Lease/command remains within declared trust envelope or dispatch stops for uncertainty.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OPS-007",
+   "title": "Recovery target binding",
+   "requirement": "FCP-OPS-007",
+   "owner": "W08",
+   "section": "18",
+   "behaviour": "Persist exact target/adapter/configuration binding for recovery.",
+   "exercise": "Two devices share operation; crash after dispatch to A.",
+   "acceptance": "Recovery queries A only and never treats B response as evidence about A.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OPS-008",
+   "title": "Inbound durability",
+   "requirement": "FCP-OPS-008",
+   "owner": "W08",
+   "section": "18",
+   "behaviour": "Persist critical protocol evidence/response identity before durable acknowledgment.",
+   "exercise": "Crash after receipt before journal commit and retry device frame.",
+   "acceptance": "No acknowledged billing event is silently lost within stated storage fault model.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OPS-009",
+   "title": "Protocol versus business outcome",
+   "requirement": "FCP-OPS-009",
+   "owner": "W08",
+   "section": "18",
+   "behaviour": "Distinguish request acceptance, session creation and charging evidence.",
+   "exercise": "Charger accepts start but never begins energy flow.",
+   "acceptance": "UI and billing do not report active charging or settlement without evidence.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OPS-010",
+   "title": "Durable correlation",
+   "requirement": "FCP-OPS-010",
+   "owner": "W08",
+   "section": "18",
+   "behaviour": "Persist protocol IDs, station/EVSE/connector and transaction mapping.",
+   "exercise": "Restart gateway and replay transaction frames across connections.",
+   "acceptance": "IDs and events remain correctly associated without process-counter collision.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OPS-011",
+   "title": "Safe unknown outcome",
+   "requirement": "FCP-OPS-011",
+   "owner": "W08",
+   "section": "18",
+   "behaviour": "Never infer failure from timeout after possible execution.",
+   "exercise": "Crash after socket send and before response recording.",
+   "acceptance": "Outcome remains unknown until equipment/operator evidence resolves it.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OPS-012",
+   "title": "Meter evidence",
+   "requirement": "FCP-OPS-012",
+   "owner": "W08",
+   "section": "18",
+   "behaviour": "Preserve units, multiplier, quality and target dimensions needed for billing.",
+   "exercise": "Send reset, late, missing, alternate-unit and unverified signed meter data.",
+   "acceptance": "Billing uses approved evidence policy; unsupported interpretation is flagged.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OPS-013",
+   "title": "Critical quota behavior",
+   "requirement": "FCP-OPS-013",
+   "owner": "W08",
+   "section": "18",
+   "behaviour": "Keep stop/report/reconciliation paths independent of optional usage caps.",
+   "exercise": "Exhaust telemetry or account quota during charging session.",
+   "acceptance": "Critical operational reporting and permitted stop requests continue.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OPS-014",
+   "title": "Client replay",
+   "requirement": "FCP-OPS-014",
+   "owner": "W08",
+   "section": "18",
+   "behaviour": "Recover live status after dropped notifications and cursor expiry.",
+   "exercise": "Disconnect browser through command completion then reconnect on another API.",
+   "acceptance": "Authoritative state/replay is correct; expired cursor requests resync.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-EXT-001",
+   "title": "Execution trust classes",
+   "requirement": "FCP-EXT-001",
+   "owner": "W02",
+   "section": "19",
+   "behaviour": "Distinguish meta, WASM, native and isolated service extensions.",
+   "exercise": "Install unreviewed native code through an ordinary customer package.",
+   "acceptance": "It cannot enter the trusted process or be mislabeled sandboxed.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-EXT-002",
+   "title": "Manifest versioning",
+   "requirement": "FCP-EXT-002",
+   "owner": "W02",
+   "section": "19",
+   "behaviour": "Reject unknown or unsupported required fields in package contracts.",
+   "exercise": "Submit new service/resource fields to an older runtime.",
+   "acceptance": "Clear compatibility error; no ignored security requirement.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-EXT-003",
+   "title": "Capability consent",
+   "requirement": "FCP-EXT-003",
+   "owner": "W02",
+   "section": "19",
+   "behaviour": "Display and approve new permissions/resources/network cost at install and upgrade.",
+   "exercise": "Upgrade changes scope without changing UI bundle.",
+   "acceptance": "Fresh consent is required before activation.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-EXT-004",
+   "title": "Host resource scoping",
+   "requirement": "FCP-EXT-004",
+   "owner": "W02",
+   "section": "19",
+   "behaviour": "Derive tenant/application scope for WASM resource handles from host context.",
+   "exercise": "Plugin supplies another tenant ID or reuses foreign resource handle.",
+   "acceptance": "Host denies cross-scope operation and retains audit evidence.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-EXT-005",
+   "title": "UI isolation",
+   "requirement": "FCP-EXT-005",
+   "owner": "W02",
+   "section": "19",
+   "behaviour": "Keep arbitrary extension UI from general shell sessions.",
+   "exercise": "Untrusted iframe sends forged cross-origin message or requests admin token.",
+   "acceptance": "Exact-origin/method/capability bridge rejects it.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-EXT-006",
+   "title": "Dependency safety",
+   "requirement": "FCP-EXT-006",
+   "owner": "W02",
+   "section": "19",
+   "behaviour": "Review transitive extensions and privileges.",
+   "exercise": "App update adds a privileged dependency through nested package reference.",
+   "acceptance": "Plan surfaces the new trust/cost boundary and requires authorization.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-EXT-007",
+   "title": "Lifecycle cleanup",
+   "requirement": "FCP-EXT-007",
+   "owner": "W02",
+   "section": "19",
+   "behaviour": "Revoke bindings and retain data correctly when disabling/uninstalling.",
+   "exercise": "Disable compromised extension while jobs and shared resources exist.",
+   "acceptance": "New access stops; critical workflows fail explicitly and retained data is preserved.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-EXT-008",
+   "title": "Certification scope",
+   "requirement": "FCP-EXT-008",
+   "owner": "W02",
+   "section": "19",
+   "behaviour": "Tie labels to artifact, capabilities, provider profile and evidence.",
+   "exercise": "Update certified connector binary without equivalent tests.",
+   "acceptance": "Old label does not automatically apply to new artifact.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-EXT-009",
+   "title": "Deprecation migration",
+   "requirement": "FCP-EXT-009",
+   "owner": "W02",
+   "section": "19",
+   "behaviour": "Provide supported migration/export for retired extension.",
+   "exercise": "Remove vendor support while customers depend on connector.",
+   "acceptance": "Users see limits and replacement path; marketplace does not imply indefinite support.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-EXT-010",
+   "title": "Core invariants",
+   "requirement": "FCP-EXT-010",
+   "owner": "W02",
+   "section": "19",
+   "behaviour": "Prevent configurable scripts/workflows from overriding shared business invariants.",
+   "exercise": "Custom workflow tries to bypass stock hold, ledger posting or permission checks.",
+   "acceptance": "Invariant holds regardless of extension logic.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-AI-001",
+   "title": "Agent capability boundary",
+   "requirement": "FCP-AI-001",
+   "owner": "W06",
+   "section": "20",
+   "behaviour": "Constrain AI tools independently of natural-language output.",
+   "exercise": "Prompt injection in repository/log requests credentials or infrastructure changes.",
+   "acceptance": "Tool authorization remains unchanged and denies privilege escalation.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-AI-002",
+   "title": "Model/provider policy",
+   "requirement": "FCP-AI-002",
+   "owner": "W06",
+   "section": "20",
+   "behaviour": "Bind model features to approved region, data handling and cost.",
+   "exercise": "User selects unapproved external model for sensitive source/logs.",
+   "acceptance": "Data transfer is blocked or requires explicit approved policy change.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-AI-003",
+   "title": "Approval integrity",
+   "requirement": "FCP-AI-003",
+   "owner": "W06",
+   "section": "20",
+   "behaviour": "Bind approved AI action plan and prohibit self-approval.",
+   "exercise": "Agent edits target/payload after human approval.",
+   "acceptance": "Changed action requires new authorization.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-AI-004",
+   "title": "Development sandbox",
+   "requirement": "FCP-AI-004",
+   "owner": "W06",
+   "section": "20",
+   "behaviour": "Default local AI/developer clients to synthetic sandbox resources.",
+   "exercise": "Starter attempts production token or real payment use.",
+   "acceptance": "No production effect is possible under default development binding.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-AI-005",
+   "title": "Budget and cancellation",
+   "requirement": "FCP-AI-005",
+   "owner": "W06",
+   "section": "20",
+   "behaviour": "Bound model/tool calls, concurrency and repeated attempts.",
+   "exercise": "Agent loops tools or retries an expensive inference failure.",
+   "acceptance": "Budgets stop new work and show actual/estimated cost.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-AI-006",
+   "title": "Evidence and abstention",
+   "requirement": "FCP-AI-006",
+   "owner": "W06",
+   "section": "20",
+   "behaviour": "Require freshness/provenance and explicit unknown results.",
+   "exercise": "Model invents resource IDs or relies on stale operational state.",
+   "acceptance": "Deterministic validation rejects action and surfaces uncertainty.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-AI-007",
+   "title": "Data boundary disclosure",
+   "requirement": "FCP-AI-007",
+   "owner": "W06",
+   "section": "20",
+   "behaviour": "Describe remote processing accurately for local AI tools.",
+   "exercise": "Review client that executes locally but calls hosted inference.",
+   "acceptance": "UI/docs do not claim all data stays on device.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-AI-008",
+   "title": "Operational autonomy",
+   "requirement": "FCP-AI-008",
+   "owner": "W06",
+   "section": "20",
+   "behaviour": "Keep safety control outside ordinary AI automation.",
+   "exercise": "AI requests raw PLC write or safety override.",
+   "acceptance": "No tool/capability path grants it; specialist boundary remains intact.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-UI-001",
+   "title": "Consistent scope UI",
+   "requirement": "FCP-UI-001",
+   "owner": "W09",
+   "section": "22",
+   "behaviour": "Show tenant, project, environment and production context on management actions.",
+   "exercise": "Switch customer/environment during an open action dialog.",
+   "acceptance": "Action remains bound to original verified scope or requires reconfirmation.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-UI-002",
+   "title": "Asynchronous UX",
+   "requirement": "FCP-UI-002",
+   "owner": "W09",
+   "section": "22",
+   "behaviour": "Preserve operation status across refresh and browser reconnect.",
+   "exercise": "Start resource provision, reload and reopen from another session.",
+   "acceptance": "Progress, failure and safe retry remain visible by operation ID.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-UI-003",
+   "title": "Accessible administration",
+   "requirement": "FCP-UI-003",
+   "owner": "W09",
+   "section": "22",
+   "behaviour": "Meet declared WCAG 2.2 AA target with automated and manual checks.",
+   "exercise": "Navigate main workflows by keyboard/screen reader and test focus/errors.",
+   "acceptance": "No critical action is inaccessible; evidence distinguishes automated/manual review.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-UI-004",
+   "title": "Localization correctness",
+   "requirement": "FCP-UI-004",
+   "owner": "W09",
+   "section": "22",
+   "behaviour": "Separate translated display from exact stored/API values.",
+   "exercise": "Use different locales, RTL, decimal formats and timezones.",
+   "acceptance": "Amounts, dates and action semantics remain correct.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-UI-005",
+   "title": "Permission explanation",
+   "requirement": "FCP-UI-005",
+   "owner": "W09",
+   "section": "22",
+   "behaviour": "Explain denied/disabled actions without hidden-resource leakage.",
+   "exercise": "User lacks one capability and opens deploy/resource screen.",
+   "acceptance": "Reason and remediation are clear without exposing other tenant objects.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-UI-006",
+   "title": "Operator recovery UX",
+   "requirement": "FCP-UI-006",
+   "owner": "W09",
+   "section": "22",
+   "behaviour": "Provide meaningful uncertain/partial states and authorized recovery.",
+   "exercise": "Simulate failed rollout, unknown command and provider drift.",
+   "acceptance": "UI does not collapse these to green success or generic retry.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-UI-007",
+   "title": "Bundle provenance",
+   "requirement": "FCP-UI-007",
+   "owner": "W09",
+   "section": "22",
+   "behaviour": "Build and verify distributed UI from intended source revision.",
+   "exercise": "Update shared frontend without rebuilding committed app dist.",
+   "acceptance": "Release evidence detects stale bundles.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-UI-008",
+   "title": "Audit visibility",
+   "requirement": "FCP-UI-008",
+   "owner": "W09",
+   "section": "22",
+   "behaviour": "Make approvals, support and policy changes inspectable by customer.",
+   "exercise": "Customer reviews a partner support session and deployment change.",
+   "acceptance": "Relevant actor, scope, reason, expiry and outcomes are visible.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OBS-001",
+   "title": "Telemetry correlation",
+   "requirement": "FCP-OBS-001",
+   "owner": "W09",
+   "section": "23",
+   "behaviour": "Correlate build, release, resource and command paths without logging secrets.",
+   "exercise": "Trace a failed cross-service operation end to end.",
+   "acceptance": "Operator can locate ownership/failure using safe IDs and timestamps.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OBS-002",
+   "title": "Tenant telemetry isolation",
+   "requirement": "FCP-OBS-002",
+   "owner": "W09",
+   "section": "23",
+   "behaviour": "Authorize log/trace queries beyond user-supplied label filters.",
+   "exercise": "Tenant A submits query for tenant B identifiers.",
+   "acceptance": "Backend denies cross-tenant observability data.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OBS-003",
+   "title": "Bounded cardinality",
+   "requirement": "FCP-OBS-003",
+   "owner": "W09",
+   "section": "23",
+   "behaviour": "Bound metric dimensions and handle high-volume detail separately.",
+   "exercise": "Generate many unique user/device values.",
+   "acceptance": "Monitoring remains stable without uncontrolled series growth.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OBS-004",
+   "title": "Operational alert coverage",
+   "requirement": "FCP-OBS-004",
+   "owner": "W09",
+   "section": "23",
+   "behaviour": "Alert on drift, backlog, unknown outcomes, expiry and backup age.",
+   "exercise": "Inject each critical condition.",
+   "acceptance": "Alerts reach owner with relevant runbook and avoid duplicate storm.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OBS-005",
+   "title": "Metering idempotency",
+   "requirement": "FCP-OBS-005",
+   "owner": "W09",
+   "section": "23",
+   "behaviour": "Deduplicate usage and retain price-plan version for invoices.",
+   "exercise": "Replay and reorder usage events, then correct a past quantity.",
+   "acceptance": "Billable totals remain explainable and corrections are auditable.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OBS-006",
+   "title": "Money precision",
+   "requirement": "FCP-OBS-006",
+   "owner": "W09",
+   "section": "23",
+   "behaviour": "Use exact money/quantity calculations for billing.",
+   "exercise": "Accumulate many fractional usage charges and refunds across currencies.",
+   "acceptance": "No floating-point drift; rounding and currency policy are explicit.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OBS-007",
+   "title": "Budget transparency",
+   "requirement": "FCP-OBS-007",
+   "owner": "W09",
+   "section": "23",
+   "behaviour": "Distinguish forecast, alert and enforced cap.",
+   "exercise": "Provider usage arrives late after an alert.",
+   "acceptance": "UI explains estimates/finalization and configured hard admission behavior.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OBS-008",
+   "title": "Incident process",
+   "requirement": "FCP-OBS-008",
+   "owner": "W09",
+   "section": "23",
+   "behaviour": "Maintain severity, communications, evidence and postmortem workflow.",
+   "exercise": "Run tenant leak/key compromise tabletop and controlled dependency outage.",
+   "acceptance": "Roles, escalation, containment and customer communication are exercised.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OBS-009",
+   "title": "Abuse controls",
+   "requirement": "FCP-OBS-009",
+   "owner": "W09",
+   "section": "23",
+   "behaviour": "Manage phishing, crypto-mining, spam and uncontrolled public hosting.",
+   "exercise": "Internal test tenant violates allowed-use resource/egress policy.",
+   "acceptance": "Detection, containment, appeal and evidence operate without harming unrelated tenants.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CLOUD-001",
+   "title": "Tenant lifecycle",
+   "requirement": "FCP-CLOUD-001",
+   "owner": "W09",
+   "section": "24",
+   "behaviour": "Implement signup/provision/plan/grace/restrict/close/retain/delete as auditable workflows.",
+   "exercise": "Interrupt provisioning and account closure at each external boundary.",
+   "acceptance": "State reconciles without duplicate resources or accidental data destruction.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CLOUD-002",
+   "title": "Official partner scope",
+   "requirement": "FCP-CLOUD-002",
+   "owner": "W09",
+   "section": "24",
+   "behaviour": "Implement Cloud partner program without removing open-source rights.",
+   "exercise": "Apply partner eligibility restriction to program features and review self-host export.",
+   "acceptance": "Commercial scope is clear; software/license rights are not misrepresented.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CLOUD-003",
+   "title": "Support least privilege",
+   "requirement": "FCP-CLOUD-003",
+   "owner": "W09",
+   "section": "24",
+   "behaviour": "Grant named, expiring customer-approved support capabilities.",
+   "exercise": "Partner attempts secret/business access with health-only grant.",
+   "acceptance": "Denied and audited through all API and alternate paths.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CLOUD-004",
+   "title": "No standing partner admin",
+   "requirement": "FCP-CLOUD-004",
+   "owner": "W09",
+   "section": "24",
+   "behaviour": "Prevent partner status from granting hidden superuser access.",
+   "exercise": "Add verified partner account without customer grant.",
+   "acceptance": "No customer data/network access is gained.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CLOUD-005",
+   "title": "Support revocation",
+   "requirement": "FCP-CLOUD-005",
+   "owner": "W09",
+   "section": "24",
+   "behaviour": "Terminate support access and track active sessions.",
+   "exercise": "Customer revokes grant during diagnostic operation.",
+   "acceptance": "New access stops within declared bound and surviving effects are visible.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CLOUD-006",
+   "title": "Residency coverage",
+   "requirement": "FCP-CLOUD-006",
+   "owner": "W09",
+   "section": "24",
+   "behaviour": "Apply region policy to logs, backups, builds, caches and AI as well as database.",
+   "exercise": "Request cross-region artifact copy or external diagnostics export.",
+   "acceptance": "Policy prevents unapproved transfer.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CLOUD-007",
+   "title": "Account restriction safety",
+   "requirement": "FCP-CLOUD-007",
+   "owner": "W09",
+   "section": "24",
+   "behaviour": "Preserve export and required operational recovery under billing restriction.",
+   "exercise": "Restrict tenant with retained files and active connected operation.",
+   "acceptance": "No data deletion or unsafe stop/report outage follows merely from billing state.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CLOUD-008",
+   "title": "Customer controlled profile",
+   "requirement": "FCP-CLOUD-008",
+   "owner": "W09",
+   "section": "24",
+   "behaviour": "Define operator permissions and local dependency envelope for customer VPC.",
+   "exercise": "Disconnect customer environment from management internet.",
+   "acceptance": "Promised functions continue or fail as documented; no hidden provider license dependency.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CLOUD-009",
+   "title": "Service ownership",
+   "requirement": "FCP-CLOUD-009",
+   "owner": "W09",
+   "section": "24",
+   "behaviour": "Assign maintainer, support period and escalation per marketed service.",
+   "exercise": "Provider deprecates an API used by a solution package.",
+   "acceptance": "Affected inventory and migration plan are generated and customers informed.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-DR-001",
+   "title": "Complete backups",
+   "requirement": "FCP-DR-001",
+   "owner": "W09",
+   "section": "25",
+   "behaviour": "Include authoritative databases, repositories, objects, keys and binding/config evidence.",
+   "exercise": "Restore a full customer profile to an isolated environment.",
+   "acceptance": "All required state is recoverable and linked objects/refs verify.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-DR-002",
+   "title": "Restore isolation",
+   "requirement": "FCP-DR-002",
+   "owner": "W09",
+   "section": "25",
+   "behaviour": "Disable external effects until reconciliation after restore.",
+   "exercise": "Restore snapshot containing old payment/charging/deployment jobs.",
+   "acceptance": "Nothing re-executes merely because old records reappear.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-DR-003",
+   "title": "Tenant-level recovery",
+   "requirement": "FCP-DR-003",
+   "owner": "W09",
+   "section": "25",
+   "behaviour": "Use an isolated recovery extraction path for shared-database PITR.",
+   "exercise": "Restore only one tenant with linked resources while others stay current.",
+   "acceptance": "No other tenant is rolled back and restored references remain consistent.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-DR-004",
+   "title": "Key recovery test",
+   "requirement": "FCP-DR-004",
+   "owner": "W09",
+   "section": "25",
+   "behaviour": "Verify protected recovery of keys required by encrypted backups.",
+   "exercise": "Remove access to primary KMS path during approved recovery drill.",
+   "acceptance": "Recovery works through authorized alternate process without plaintext leakage.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-DR-005",
+   "title": "Failover fencing",
+   "requirement": "FCP-DR-005",
+   "owner": "W09",
+   "section": "25",
+   "behaviour": "Fence old writers before promoting new regional owners.",
+   "exercise": "Network partition leaves old region alive while recovery starts.",
+   "acceptance": "Only one eligible write/dispatch authority exists or operations stop safely.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-DR-006",
+   "title": "Object and Git integrity",
+   "requirement": "FCP-DR-006",
+   "owner": "W09",
+   "section": "25",
+   "behaviour": "Verify checksums, ref/object reachability and LFS linkage after recovery.",
+   "exercise": "Corrupt backup object and omit an LFS file.",
+   "acceptance": "Restore validation fails before customer claims are made.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-DR-007",
+   "title": "Capacity recovery",
+   "requirement": "FCP-DR-007",
+   "owner": "W09",
+   "section": "25",
+   "behaviour": "Control backlog replay and reconnect storms after outage.",
+   "exercise": "Restore platform after large queued workload and device reconnect burst.",
+   "acceptance": "Rate limits preserve critical work and recovery completes within profile targets.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-DR-008",
+   "title": "Update trust",
+   "requirement": "FCP-DR-008",
+   "owner": "W09",
+   "section": "25",
+   "behaviour": "Validate signed metadata, artifact identity, expiry and rollback protections.",
+   "exercise": "Serve stale or mismatched signed release metadata in a controlled test.",
+   "acceptance": "Updater rejects invalid release path and preserves recoverable current version.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-DR-009",
+   "title": "Runbook exercise",
+   "requirement": "FCP-DR-009",
+   "owner": "W09",
+   "section": "25",
+   "behaviour": "Exercise clean install, upgrade, rotation, restore, export and vendor retirement.",
+   "exercise": "Operator follows documentation on clean host without developer shortcuts.",
+   "acceptance": "Runbook succeeds or records precise gaps; no undocumented credentials/steps.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-DR-010",
+   "title": "RPO RTO evidence",
+   "requirement": "FCP-DR-010",
+   "owner": "W09",
+   "section": "25",
+   "behaviour": "Measure recovery objectives under declared fault model.",
+   "exercise": "Run zone/database/provider outage with timestamped committed inputs.",
+   "acceptance": "Published recovery figures match measured loss/time and exclusions.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-QUAL-001",
+   "title": "Requirement traceability",
+   "requirement": "FCP-QUAL-001",
+   "owner": "W10",
+   "section": "26",
+   "behaviour": "Map each supported claim to exact test/evidence and release profile.",
+   "exercise": "Remove evidence from a claimed completed requirement.",
+   "acceptance": "Release gate fails or downgrades claim visibly.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-QUAL-002",
+   "title": "Security baseline",
+   "requirement": "FCP-QUAL-002",
+   "owner": "W10",
+   "section": "26",
+   "behaviour": "Pin applicable ASVS/SSDF controls and record exceptions.",
+   "exercise": "Review web/API/supply-chain controls for release.",
+   "acceptance": "No checklist-only certification claim; unresolved critical controls block profile.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-QUAL-003",
+   "title": "Independent review",
+   "requirement": "FCP-QUAL-003",
+   "owner": "W10",
+   "section": "26",
+   "behaviour": "Require external assurance where the sold profile demands it.",
+   "exercise": "Only internal AI-generated review exists for independent-review requirement.",
+   "acceptance": "Gate remains externally blocked, not auto-complete.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-QUAL-004",
+   "title": "Provider qualification",
+   "requirement": "FCP-QUAL-004",
+   "owner": "W10",
+   "section": "26",
+   "behaviour": "Test real provider sandbox/tenant for claimed integrations.",
+   "exercise": "Mock-only adapter is selected as production-qualified.",
+   "acceptance": "Label and admission reject unsupported claim.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-QUAL-005",
+   "title": "Hardware qualification",
+   "requirement": "FCP-QUAL-005",
+   "owner": "W10",
+   "section": "26",
+   "behaviour": "Tie device support to model, firmware, protocol and site evidence.",
+   "exercise": "Software simulator passes but physical device was never connected.",
+   "acceptance": "Device is not labeled hardware-qualified.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-QUAL-006",
+   "title": "Golden journeys",
+   "requirement": "FCP-QUAL-006",
+   "owner": "W10",
+   "section": "26",
+   "behaviour": "Execute all applicable documented end-to-end journeys against release artifacts.",
+   "exercise": "Run storefront, access, resources, routing, restore and partner journeys.",
+   "acceptance": "Failures/skips remain visible and mandatory failures block release.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-QUAL-007",
+   "title": "Mutation and fault coverage",
+   "requirement": "FCP-QUAL-007",
+   "owner": "W10",
+   "section": "26",
+   "behaviour": "Test invariants under deliberate internal faults and logic mutations.",
+   "exercise": "Disable a key check or crash at a persistence boundary.",
+   "acceptance": "Relevant test fails; surviving mutations trigger test improvement.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-QUAL-008",
+   "title": "Release evidence integrity",
+   "requirement": "FCP-QUAL-008",
+   "owner": "W10",
+   "section": "26",
+   "behaviour": "Generate and protect source, pin, artifact, test and approval evidence.",
+   "exercise": "Alter release manifest manually or swap artifact after approval.",
+   "acceptance": "Integrity mismatch blocks promotion.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-QUAL-009",
+   "title": "Supported limits",
+   "requirement": "FCP-QUAL-009",
+   "owner": "W10",
+   "section": "26",
+   "behaviour": "Publish exact runtime/provider/profile limits and known exclusions.",
+   "exercise": "Attempt unsupported framework feature or capacity above qualified envelope.",
+   "acceptance": "System fails clearly or applies declared limit, not silent wrong behavior.",
+   "result": "not_run"
+  }
+ ]
+}
