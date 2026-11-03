@@ -42,6 +42,16 @@ impl Trace {
         TRACE.scope(self, f).await
     }
 
+    /// `tokio::spawn`, keeping the trace: a spawned task starts without one, so what it writes would
+    /// name no request.
+    pub fn spawn<F>(work: F) -> tokio::task::JoinHandle<F::Output>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        tokio::spawn(TRACE.try_with(Trace::clone).unwrap_or_default().scope(work))
+    }
+
     /// The current trace, with what it sets off at `priority`.
     pub fn at_priority(priority: i16) -> Trace {
         Trace { priority: Some(priority), ..TRACE.try_with(Trace::clone).unwrap_or_default() }
@@ -247,5 +257,19 @@ where
             }
             other => return other,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_spawned_task_keeps_the_trace_it_was_spawned_under() {
+        let trace = Trace { correlation: "req-1".into(), ..Default::default() };
+        let seen = trace.clone().scope(async { Trace::spawn(async { TRACE.with(|t| t.correlation.clone()) }).await.unwrap() }).await;
+        assert_eq!(seen, "req-1");
+        let bare = trace.scope(async { tokio::spawn(async { TRACE.try_with(|t| t.correlation.clone()).is_ok() }).await.unwrap() }).await;
+        assert!(!bare, "which is why this exists");
     }
 }
