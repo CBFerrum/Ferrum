@@ -132,6 +132,16 @@ forge, and Cloud refuses new and restored ones, saying how much it keeps and wha
 past a 1 MB quota against the real forge: its push, a new repository and a restore were refused with the reason, another
 workspace pushed and was not held, a forge that did not answer changed nothing, and given room the hold lifted and the
 same push went through, while what a person had archived stayed archived. Six mutants break each of those.
+Cloud's forge is Forgejo from 3 November 2026 (Cloud #11, D-08), after reading Cloud against mature projects
+(`docs/references/cloud.md`) showed that the per-workspace quota Cloud had built by hand, measured every five minutes,
+is Forgejo's own: refused at push as it arrives and counting LFS, attachments, artifacts, packages and wikis. Gitea has
+none, and GitLab keeps it for its paid editions. `code_it` passed against Forgejo 17.0.1:
+- a workspace past its quota had its push refused ("Quota exceeded") and a new repository failed with the forge's reason;
+- another workspace pushed, and a person could not keep a repository of their own, even with every right;
+- given room, the workspace pushed again.
+Repository credentials became tokens of the workspace's own forge user, each limited to one repository: they read
+what they are for, nothing else, and do not write when they only read. The switch also found that Forgejo answers an
+import it refuses over plain HTTP with 500, which Cloud now takes as the refusal it is.
 The platform's database grows or shrinks through `deploy/scale-database.sh` (FCP-SCALE-003), which changes nothing while replication is impaired, says why, and refuses what is never safe. The cluster check fenced a standby and saw a change refused with the cluster unchanged, then went to two instances and back to three under writes.
 The cluster check now makes room on its runner first, after one run's database could not pull its image with 97 MB left.
 
