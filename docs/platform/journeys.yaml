@@ -1,0 +1,69 @@
+# The specification's golden journeys (section 28). `passes` means run whole, from one command, on one
+# revision. `passes_in_parts` means its steps are exercised somewhere, and `missing` says what is not.
+# None of these has been run against real providers, hardware, or by a real user.
+journeys:
+  - id: J01
+    title: Custom storefront to cash
+    state: passes_in_parts
+    tests: ["ferrum-app-cloud:tests/deploy_it.rs", "ferrum-app-cloud:tests/build_it.rs", "server/tests/journeys_it.rs"]
+    missing: "A real payment provider and domain. Commerce's cart-to-order is not driven from a deployed storefront"
+    blockers: [BLOCK-PAYMENT-KEYS, BLOCK-PRODUCTION-DOMAINS]
+  - id: J02
+    title: Employee portal and offboarding
+    state: passes_in_parts
+    tests: ["ferrum-app-cloud:tests/control_it.rs", "ferrum-app-cloud:tests/access_it.rs", "ferrum-app-cloud:tests/code_it.rs", "server/tests/sso_it.rs"]
+    missing: "A real IdP, MDM, tunnel or PAM. Nothing moves packets, so no open tunnel is ended"
+    blockers: [BLOCK-REAL-TENANTS]
+  - id: J03
+    title: Plugin with specialized resources
+    state: passes_in_parts
+    tests: ["ferrum-app-cloud:tests/resources_it.rs", "server/tests/app_resources_it.rs", "crates/plugins/tests/resources_it.rs"]
+    missing: "A compiled plugin driving it end to end. Scaling, quotas on a provider, and any cost figure"
+  - id: J04
+    title: Hostile PR/build
+    state: passes_in_parts
+    tests: ["ferrum-app-cloud:tests/build_it.rs"]
+    missing: "Run on Docker only. A qualified runtime class has not been tried"
+    blockers: [BLOCK-SANDBOX-QUALIFICATION]
+  - id: J05
+    title: SSR rolling release
+    state: passes_in_parts
+    tests: ["ferrum-app-cloud:tests/deploy_it.rs", "ferrum-app-cloud:serve/tests/serving_it.rs"]
+    missing: "A real framework, and a catalog invalidation. A shell loop stands in for a server"
+  - id: J06
+    title: Domain takeover resistance
+    state: passes_in_parts
+    tests: ["ferrum-app-cloud:tests/deploy_it.rs", "ferrum-app-cloud:contract/src/domain.rs"]
+    missing: "Real DNS and certificates"
+    blockers: [BLOCK-PRODUCTION-DOMAINS]
+  - id: J07
+    title: Server 1 to charger on server 3
+    state: passes_in_parts
+    tests: ["crates/ops/tests/ops_it.rs", "ferrum-app-edge:gateway/tests/ocpp_it.rs", "ferrum-app-edge:tests/charging_it.rs"]
+    missing: "The parts have not been run together on two gateways, and no charger was involved"
+    blockers: [BLOCK-EV-HARDWARE]
+  - id: J08
+    title: Restore and regional recovery
+    state: passes_in_parts
+    tests: ["crates/kernel/tests/recovery_it.rs", "ferrum-app-cloud:tests/resources_it.rs", "ferrum-app-cloud:tests/control_it.rs"]
+    missing: "One restore of everything at once: database, Git, objects and keys. Across real regions"
+  - id: J09
+    title: Partner least privilege
+    state: not_run
+    missing: "Support access exists and is tested. A partner across two customers has not been modelled"
+    blockers: [BLOCK-LEGAL-REVIEW]
+  - id: J10
+    title: Provider failure and portability
+    state: passes_in_parts
+    tests: ["ferrum-app-cloud:tests/deploy_it.rs", "ferrum-app-cloud:tests/code_it.rs", "ferrum-app-cloud:tests/resources_it.rs"]
+    missing: "DNS, network and AI providers. Each is tried alone, not in one run"
+  - id: J11
+    title: Warehouse/material integration regression
+    state: passes_in_parts
+    tests: ["server/tests/journeys_it.rs", "crates/ops/tests/ops_it.rs"]
+    missing: "Run against the assembled release, and hardware"
+    blockers: [BLOCK-INDUSTRIAL-HARDWARE]
+  - id: J12
+    title: Sustained corporate operation
+    state: not_run
+    missing: "No load or endurance run has been made. Limits in the documentation are not measured figures"
