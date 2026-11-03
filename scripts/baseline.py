@@ -139,11 +139,27 @@ def ci(offline: bool):
     return out
 
 
+# The images CI publishes (.github/workflows), asked for by name: the organization's list of packages comes back empty
+# to a token that can read each of them. Needs read:packages.
+IMAGES = ["ferrum", "ferrum-editors"]
+
+
 def images(offline: bool):
+    """What `latest` and each commit's tag point at, among each image's last hundred versions."""
     if offline:
         return {"unread": "offline"}
-    code, text, why = run("gh", "api", "orgs/CBFerrum/packages?package_type=container")
-    return json.loads(text) if code == 0 else {"unread": why[:200] or text[:200]}
+    out = {}
+    for name in IMAGES:
+        code, text, why = run("gh", "api", f"orgs/CBFerrum/packages/container/{name}/versions?per_page=100")
+        if code != 0:
+            return {"unread": why[:200] or text[:200]}
+        tags = {}
+        for version in json.loads(text):
+            for tag in version.get("metadata", {}).get("container", {}).get("tags", []):
+                if tag == "latest" or re.fullmatch(r"[0-9a-f]{40}", tag):
+                    tags[tag] = {"digest": version["name"], "at": version["updated_at"]}
+        out[f"ghcr.io/cbferrum/{name}"] = tags
+    return out
 
 
 def installed(offline: bool):
@@ -184,7 +200,14 @@ def markdown(b: dict) -> str:
     out += [f"- {repo}: {'a local patch' if r.get('local_patch') else 'no patch file'}" + (f", unused: {', '.join(r['unused_patches'])}" if r.get("unused_patches") else "") for repo, r in patched] or ["None."]
     out += ["", "## Artifacts", "", f"Frontend pinned by the Dockerfile: `{b['frontend_rev']}`.", ""]
     image = b["images"]
-    out.append(f"Container images: could not be listed ({image['unread'][:120]}). Their absence is not known." if isinstance(image, dict) and "unread" in image else f"Container images: {len(image)} packages.")
+    if isinstance(image, dict) and "unread" in image:
+        out.append(f"Container images: could not be read ({image['unread'][:120]}). Their absence is not known.")
+    else:
+        for name, tags in image.items():
+            latest = tags.get("latest", {})
+            commits = sorted((t for t in tags if t != "latest"), key=lambda t: tags[t]["at"], reverse=True)
+            out.append(f"- `{name}`: `latest` is `{latest.get('digest', 'not tagged')}` ({latest.get('at', '')}); {len(commits)} commits tagged among its last hundred versions"
+                       + (f", the newest `{commits[0][:7]}`" if commits else ""))
     out += ["", "## Installed", ""]
     i = b["installed"]
     if "rows" in i:
