@@ -92,6 +92,8 @@ compose exec -T ferrum ferrum task create_tenant slug:smoke name:"Smoke Co" emai
 compose exec -T ferrum ferrum task seed_demo tenant:smoke
 TOKEN=$(login "$API") || fail "signing in"
 auth=(-H "authorization: Bearer $TOKEN")
+FERRUM_URL=$API FERRUM_TENANT=smoke FERRUM_EMAIL=smoke@smoke.test FERRUM_PASSWORD=$PASSWORD python3 "$(dirname "$0")/../scripts/support_check.py" \
+  || fail "support access reaches more than it was given"
 company=$(curl -fsS "${auth[@]}" "$API/api/v1/Company?limit=1&fields=id" | json 'd["rows"][0]["id"]')
 customer=$(curl -fsS "${auth[@]}" "$API/api/v1/Customer?limit=1&fields=id" | json 'd["rows"][0]["id"]')
 item=$(curl -fsS "${auth[@]}" "$API/api/v1/Item?limit=1&fields=id&filters=%7B%22disabled%22%3Afalse%7D" | json 'd["rows"][0]["id"]')
