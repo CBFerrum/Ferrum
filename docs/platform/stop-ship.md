@@ -6,7 +6,7 @@ until that profile's real environment has been tested too.
 | Condition | What is known |
 |---|---|
 | Tenant escape | Row-level security on every table, two workspaces in every scenario, and a walk of every route. No independent test |
-| Untrusted build reaching platform credentials | A hostile build reached nothing, on Docker. **Open for shared hosts** until a runtime class is qualified |
+| Untrusted build reaching platform credentials | A hostile build reached nothing, on Docker and under gVisor (`FERRUM_CLOUD_CONTAINER_RUNTIME=runsc`, CI's `gvisor` job). **Open for shared hosts** until a runtime class is qualified on a real cluster with egress enforced |
 | Production and preview secret crossover | Tokens and capabilities are per environment, and both are tested |
 | Signature policy bypass | Releases, snapshots and artifacts are verified where they are used, and mutants cover it |
 | Unauthorized private routes | Every way in to a members-only site was tried on a real node |
