@@ -55,6 +55,7 @@ OPS = ("-p", "ferrum-ops", "--test", "ops_it")
 RECOVERY = ("-p", "ferrum-kernel", "--test", "recovery_it")
 # Needs OpenBao at FERRUM_KMS_TEST_TRANSIT (crates/kernel/tests/kms_it.rs).
 KMS = ("-p", "ferrum-kernel", "--test", "kms_it")
+SAGA = ("-p", "ferrum-kernel", "--test", "saga_it")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
@@ -218,6 +219,13 @@ MUTANTS = [
     # The secret key from a key-management service.
     ("kms-ciphertext-taken-for-a-key", "crates/kernel/src/kms.rs", "    if !is_wrapped(value) {\n        return SecretKey::from_base64(value);", "    if true {\n        return SecretKey::from_base64(value);", KMS),
     ("kms-any-service-will-do", "crates/kernel/src/kms.rs", 'let v = self.call(&client, &format!("{}/decrypt/{}", self.mount, self.key)', 'let v = self.call(&client, &format!("{}/decrypt/{}", self.mount, "ferrum")', KMS),
+    # Workflows that cross systems.
+    ("saga-forgets-what-it-did", "crates/kernel/src/saga.rs", "                        p.done.push(Done { step: step.name().to_string(), output });\n                        Saga::save(k, job, &p).await?;", "                        p.done.push(Done { step: step.name().to_string(), output });", SAGA),
+    ("saga-undoes-oldest-first", "crates/kernel/src/saga.rs", "for i in (0..p.done.len()).rev() {", "for i in 0..p.done.len() {", SAGA),
+    ("saga-never-turns-around", "crates/kernel/src/saga.rs", "Err(e) if final_error(&e) || job.attempts >= FORWARD_ATTEMPTS => {", "Err(e) if final_error(&e) => {", SAGA),
+    ("saga-deaf-to-a-cancel", "crates/kernel/src/saga.rs", "if job.cancel_requested(k).await? {", "if false {", SAGA),
+    ("saga-new-key-each-try", "crates/kernel/src/saga.rs", 'format!("ferrum-saga-{workflow}-{step}")', 'format!("ferrum-saga-{workflow}-{step}-{}", Uuid::now_v7())', SAGA),
+    ("saga-cancel-drops-the-queued", "crates/kernel/src/jobs.rs", "status = case when status = 'queued' and not undo_on_cancel then 'cancelled'", "status = case when status = 'queued' then 'cancelled'", SAGA),
     ("merged-id-still-listed", "crates/kernel/src/query.rs", "    if ent.def.mergeable {\n        qb.push(\" and not exists", "    if false {\n        qb.push(\" and not exists", MERGE),
     ("merge-misses-child-rows", "crates/kernel/src/merge.rs", 'out.push((info.table.clone(), f.name.clone(), c.storage_of(&f.name) == Some(Storage::Ext), false));', '', MERGE),
     ("merge-misses-custom-fields", "crates/kernel/src/merge.rs", 'format!("update {t} set ext = jsonb_set(ext, array[$4], to_jsonb($1::text)) where tenant_id = $2 and ext->>$4 = $3")', 'format!("update {t} set ext = ext where tenant_id = $2 and ext->>$4 = $3 and $1 = $1")', MERGE),

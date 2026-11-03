@@ -46,6 +46,7 @@ pub mod recovery;
 pub mod registry;
 pub mod resources;
 pub mod retention;
+pub mod saga;
 pub mod scan;
 pub mod scim;
 pub mod secret;
