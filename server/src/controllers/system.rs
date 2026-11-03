@@ -106,6 +106,7 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
         if let Some(seconds) = terms {
             apps.push_str(&format!("ferrum_cloud_terms_expire_seconds {seconds}\n"));
         }
+        apps.push_str(&format!("ferrum_cloud_held_by_rule {}\n", ferrum_app_cloud::views::held_by_rule(&st.kernel).await?));
     }
     let body = format!(
         "# HELP ferrum_up 1 when the process is serving.\n# TYPE ferrum_up gauge\nferrum_up 1\n{apps}\
