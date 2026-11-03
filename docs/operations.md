@@ -1222,6 +1222,31 @@ same for every address. Members never get one (they sign in with passwords, two-
 sign-on as the workspace requires). Without a mailer no code can be sent.
 
 
+**Single sign-on (SAML 2.0).** For providers that speak SAML (AD FS, Entra ID, Okta, OneLogin,
+PingFederate, Shibboleth, Keycloak…). Administration → Single sign-on shows the workspace's metadata
+address, `{PUBLIC_URL}/api/auth/saml/{workspace id}`, which is also its entity ID, and its assertion
+consumer service (`…/acs`, HTTP-POST): give the provider the metadata address, or those two. Have it
+sign its responses or assertions (RSA-SHA256 or better) and send the person's email address, in an
+attribute (`email`, `mail`, Entra's `…/claims/emailaddress`, the X.500 mail identifiers) or as the
+NameID. A persistent NameID links the person to their identity there; a transient one makes the
+address stand in for it. Then add the provider with its metadata, pasted or its https address
+(read again at each sign-in, so a new signing certificate is picked up), and the email domains it
+vouches for, which SAML needs listed. Requests are signed with the workspace's own key (made when
+first wanted, sealed by `FERRUM_SECRET_KEY`, its certificate in the metadata; providers that
+import the metadata, Keycloak among them, then check every request). It needs `PUBLIC_URL`. Not
+supported: single logout, encrypted assertions (turn the provider's encryption off; HTTPS protects
+them), and sign-ins the provider starts unasked.
+
+The release image is built with SAML (`--features saml`). Building it yourself needs libxml2,
+libxmlsec1 with its OpenSSL backend, pkg-config and libclang (Debian and Ubuntu:
+`libxml2-dev libxmlsec1-dev libclang-dev pkg-config`; running it: `libxml2 libxmlsec1
+libxmlsec1-openssl`). On macOS with Homebrew (`brew install libxmlsec1 libxslt`), one libxml2 must
+be linked, Homebrew's:
+`PKG_CONFIG_PATH=$(brew --prefix libxslt)/lib/pkgconfig:$(brew --prefix libxml2)/lib/pkgconfig:$(brew --prefix libxmlsec1)/lib/pkgconfig:$(brew --prefix openssl)/lib/pkgconfig`,
+`OPENSSL_DIR=$(brew --prefix openssl)`, `LIBXML2=$(brew --prefix libxml2)/lib/libxml2.dylib` and
+`LIBCLANG_PATH=/Library/Developer/CommandLineTools/usr/lib`. `ferrum task doctor` reports
+`identity.saml`: whether xmlsec1 signed and verified a response on this machine.
+
 **Signing out at the provider.** A provider that supports OpenID Connect Back-Channel Logout can end
 a person's sessions here when they sign out there or it disables them. Give it
 `{PUBLIC_URL}/api/auth/sso/{provider id}/backchannel-logout`. The logout token's signature, issuer,

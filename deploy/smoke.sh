@@ -108,6 +108,15 @@ wait_up "$API/_health" "the server"
 FERRUM_URL=$API FERRUM_TENANT=smoke FERRUM_EMAIL=smoke@smoke.test FERRUM_PASSWORD=$PASSWORD python3 ../scripts/support_check.py \
   || fail "support access reaches more than it was given"
 
+step "SAML's signatures checked on the image (xmlsec1 and its OpenSSL backend load)"
+# The report exits non-zero for blockers this stack has on purpose (plain http); only its SAML line counts here.
+report=$(compose exec -T ferrum ferrum task doctor format:json 2>/dev/null || true)
+python3 -c 'import json, sys
+saml = [f for f in json.loads(sys.argv[1][sys.argv[1].index("["):]) if f["check"] == "identity.saml"]
+sys.exit(not saml or saml[0]["level"] != "ok" or "signed and verified" not in saml[0]["detail"])' "$report" || fail "SAML on the image: $report"
+tenant_id=$(curl -fsS "${auth[@]}" "$API/api/auth/me" | json 'd["tenant"]')
+curl -fsS "$API/api/auth/saml/$tenant_id" | grep -q "AssertionConsumerService" || fail "the workspace's SAML metadata"
+
 step "checking headers"
 headers=$(curl -fsS -D - -o /dev/null "${auth[@]}" "$API/api/v1/Customer?limit=1")
 for h in "cache-control: no-store" "x-content-type-options: nosniff" "strict-transport-security" "content-security-policy"; do

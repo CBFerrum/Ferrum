@@ -24,6 +24,8 @@ OpenAPI 3.1 document is at `GET /api/openapi.json` (it includes every customizat
 | `GET /sso?tenant=` | → `{providers: [{id, label}]}`: the workspace's single sign-on buttons (none for an unknown workspace) |
 | `POST /sso/start` | `{tenant, provider, redirect_uri, binding}` → `{url}` to send the browser to. `redirect_uri` is the sign-in page (registered with the provider, which sends the browser nowhere else); `binding` is a random secret (16–200 characters) the browser keeps to finish |
 | `POST /sso/finish` | `{state, code, binding}` (what the provider sent the browser back with) → `{token, …}`. Each sign-in works once, within ten minutes, in the browser that started it. The provider's own two-factor rules apply instead of Ferrum's |
+| `GET /saml/{workspace id}` | The workspace's SAML 2.0 metadata (`application/samlmetadata+xml`), for identity providers to load: its entity ID (this address) and its assertion consumer service. 404 for a workspace that is not active |
+| `POST /saml/{workspace id}/acs` | Where a SAML provider posts its answer (`SAMLResponse`, `RelayState`; HTTP-POST binding). A good answer → `303` to the `redirect_uri` the sign-in started with, plus `state` and `code`, which finish it with `/sso/finish` as above; anything else → a page that says why. For SAML providers `redirect_uri` must be an address of this server's own (`PUBLIC_URL`, a host of the workspace, the accounts host) |
 | `POST /login/second-factor` | `{ticket, code}` (six digits from the authenticator app, or a recovery code) → `{token, …}`. Each app code is accepted once; wrong codes count toward the same lockout as wrong passwords |
 | `POST /code` | `{tenant, email}` → `{sent: true}`: emails a portal person a six-digit code to sign in with ([plan](plan/apps-ui.md) §9.1). The same answer, after the same time (600 ms at least), whether or not the address belongs to anyone, and nothing is sent to members (they sign in with passwords). A code works once, for ten minutes, takes five wrong tries, and only the newest one works; a person is sent at most five an hour. 503 when the server sends no email |
 | `POST /code/sign-in` | `{tenant, email, code, session?}` → as `/login` (with two-factor sign-in on, the second step follows) |
@@ -440,11 +442,15 @@ of its kind; `POST …/{host}/check` checks it now → `{host, answers}`. Public
 `GET /.well-known/ferrum-domain` answers the token of the custom domain the request reached, and
 `GET /_tls/ask?domain=` answers 200 when the edge may get a certificate for that host.
 
-Single sign-on: `/api/admin/sso` (GET → `{providers: [{id, label, issuer, client_id, has_secret,
-domains, auto_create, default_roles, enabled, linked_users}]}`; POST `{label, issuer, client_id,
-client_secret?, domains[], auto_create, default_roles[], enabled}` → `{id}`, the issuer's discovery
-document fetched to check it), `/api/admin/sso/{id}` (PUT the same — `client_secret` left out keeps
-the stored one, `""` clears it; DELETE unlinks the people linked through it).
+Single sign-on: `/api/admin/sso` (GET → `{providers: [{id, label, protocol, issuer, client_id, has_secret,
+saml_metadata, domains, auto_create, default_roles, enabled, linked_users}], saml}`, `saml` being
+`{entity_id, acs_url, metadata_url}` for SAML providers' administrators, or `null` when the server
+cannot do SAML; POST `{label, issuer, client_id, client_secret?, domains[], auto_create,
+default_roles[], enabled}` → `{id}`, the issuer's discovery document fetched to check it; or
+`{label, protocol: "saml", saml_metadata, domains[], …}` with the provider's metadata as XML or the
+https address it is published at, checked now and read again at each sign-in, `domains` required),
+`/api/admin/sso/{id}` (PUT the same — `client_secret` left out keeps the stored one, `""` clears it;
+a provider keeps its protocol; DELETE unlinks the people linked through it).
 
 `/api/admin/apps/{id}/screenshots/{n}?version=` (GET: an uploaded app's `screenshots[n]` from its
 bundle, for the install dialog; plans list them as `app.screenshots`, store apps' from the store, and

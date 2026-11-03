@@ -198,6 +198,7 @@ impl Hooks for App {
                 push_services: push_services(&settings.push_services),
                 push_contact: Some(settings.push_contact.trim().to_string()).filter(|c| c.starts_with("mailto:") || c.starts_with("https://")),
                 hold_on_timeline: std::env::var("FERRUM_HOLD_ON_TIMELINE").map_or(true, |v| v != "false"),
+                accounts_host: crate::shell::base_domain(&settings).map(|b| format!("{DIRECTORY}.{b}", DIRECTORY = ferrum_kernel::identity::DIRECTORY)),
                 ..Default::default()
             },
             mailer,

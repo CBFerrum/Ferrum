@@ -97,6 +97,15 @@ pub async fn report(st: &AppState, ctx: &AppContext) -> Result<Vec<Finding>, fer
         out.push(Finding::blocker("authority", "this region does not hold the right to write", "See docs/operations.md, Regions."));
     }
 
+    out.push(match tokio::task::spawn_blocking(ferrum_kernel::sso::saml_self_check).await.ok().flatten() {
+        None => Finding::ok("identity.saml", "built without SAML: single sign-on is OpenID Connect only"),
+        Some(Ok(())) => Finding::ok("identity.saml", "SAML signatures are checked here (xmlsec1 signed and verified one)"),
+        Some(Err(e)) => Finding::blocker(
+            "identity.saml",
+            format!("SAML cannot check signatures here: {e}"),
+            "Install libxmlsec1 with its OpenSSL backend (libxmlsec1-openssl) beside the server, the versions it was built with.",
+        ),
+    });
     out.push(match st.objects.probe().await {
         Ok(()) => Finding::ok("storage", "object storage takes a write, a read and a delete"),
         Err(e) => Finding::blocker("storage", format!("object storage refused a probe: {e}"), "Check FERRUM_S3_BUCKET, its region, endpoint and credentials."),

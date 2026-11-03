@@ -33,7 +33,8 @@ ACCEPTED = PERMISSIVE | WEAK_COPYLEFT | OURS
 
 
 def packages() -> list:
-    run = subprocess.run(["cargo", "metadata", "--format-version", "1", "--locked"], cwd=ROOT, capture_output=True, text=True, check=True)
+    # Every feature: the release image turns on some that a plain build leaves off (SAML's xmlsec1).
+    run = subprocess.run(["cargo", "metadata", "--format-version", "1", "--locked", "--all-features"], cwd=ROOT, capture_output=True, text=True, check=True)
     return json.loads(run.stdout)["packages"]
 
 

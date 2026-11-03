@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/calc", "crates/meta", "crates/kernel", "crates/domain",
+members = ["crates/calc", "crates/meta", "crates/kernel", "crates/domain", "crates/saml",
     "crates/plugins",
     "crates/apps",
     "crates/mcp",
