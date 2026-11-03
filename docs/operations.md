@@ -432,7 +432,17 @@ Logs are JSON. Clients may send an `x-request-id` header to correlate their call
 
 * API: the HPA scales 3–10 replicas on CPU (the connection budget above); replicas are interchangeable.
 * Database: scale vertically first; add a PgBouncer pooler (CloudNativePG `Pooler`, transaction
-  mode) when connections become the limit. The journal is partitioned by year (partitions for the
+  mode) when connections become the limit. Change the number of instances or the size of their
+  volumes with `deploy/scale-database.sh --instances N` or `--storage 200Gi` (`--wait 600` to wait for
+  replication to recover first). It changes nothing, says why, and exits 3 in these cases:
+  - an instance is not ready;
+  - a standby is not streaming, or is more than `MAX_LAG_BYTES` (16 MiB) behind;
+  - fewer instances than `minSyncReplicas + 1` would be left, so writes would have no synchronous standby;
+  - a volume would shrink, or the storage class cannot grow one.
+
+  More instances are more copies to read from (`ferrum-db-ro`) and to fail over to. Every write still
+  goes to the one primary (`ferrum-db-rw`): they are not more room for writes. `deploy/kind/smoke.sh`
+  fences a standby, sees the change refused, then goes to two instances and back to three under writes. The journal is partitioned by year (partitions for the
   next year are created automatically); stock and audit tables are append-only.
 * Very large tenants or many tenants: shard on `tenant_id` (Citus), which the schema already
   allows (every key starts with `tenant_id`).
