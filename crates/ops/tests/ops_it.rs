@@ -813,10 +813,15 @@ async fn a_charger_is_where_its_connection_is(k: &Arc<Kernel>) {
     g3.sync(&t, with(&g3, vec![], vec![g3_accepts])).await;
     assert_eq!(state(&t, first.id).await, "Accepted");
 
+    // Sent and never heard of again: a gateway can act on a command and die before it can say so.
+    let unconfirmed = issue(&t, &t.admin, NewCommand { payload: json!({"tote": "T-3", "to": "PACK-3"}), ..move_tote(cp) }).await.unwrap();
+    assert!(g3.sync(&t, with(&g3, vec![], vec![])).await.commands.iter().any(|c| c.id == unconfirmed.id));
+
     // It calls the other gateway. What the first had started may have happened.
     let moved = t0 + Duration::seconds(10);
     g4.sync(&t, with(&g4, vec![fact("connection.opened", cp, moved)], vec![])).await;
     assert_eq!(state(&t, first.id).await, "OutcomeUnknown");
+    assert_eq!(state(&t, unconfirmed.id).await, "OutcomeUnknown", "giving this to the next gateway could start it twice");
     let second = issue(&t, &t.admin, NewCommand { payload: json!({"tote": "T-2", "to": "PACK-2"}), ..move_tote(cp) }).await.unwrap();
 
     // The old gateway noticing its socket died says nothing about the new connection.
