@@ -95,6 +95,11 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
     for (state, count) in ferrum_app_cloud::views::operation_counts(&st.kernel).await? {
         apps.push_str(&format!("ferrum_cloud_operations{{state=\"{state}\"}} {count}\n"));
     }
+    #[cfg(feature = "cloud")]
+    {
+        let (pending, backup) = ferrum_app_cloud::views::ages(&st.kernel).await?;
+        apps.push_str(&format!("ferrum_cloud_oldest_pending_seconds {pending}\nferrum_cloud_oldest_backup_seconds {backup}\n"));
+    }
     let body = format!(
         "# HELP ferrum_up 1 when the process is serving.\n# TYPE ferrum_up gauge\nferrum_up 1\n{apps}\
          # TYPE ferrum_restore_held gauge\nferrum_restore_held {held}\n\
