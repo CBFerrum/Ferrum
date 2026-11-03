@@ -118,6 +118,12 @@ builds with the platform, and that the lane itself lacked a database, now fixed.
 under gVisor (`FERRUM_CLOUD_CONTAINER_RUNTIME=runsc`); CI's `gvisor` job installs it and runs the hostile builds, which
 reached nothing and saw gVisor's kernel.
 
+Cloud is no longer meant to be linked into this repository's server, which a public CI cannot do. A server can now be
+built elsewhere with an app this repository does not name (`ferrum_server::extensions`, `server/tests/extensions_it.rs`),
+and Cloud builds `ferrum-cloud` that way. Its CI starts it on PostgreSQL with this repository's configuration and
+packages, makes a workspace with Cloud, and calls Cloud's routes and metrics. The cluster check now makes room on its
+runner first, after one run's database could not pull its image with 97 MB left.
+
 ## Figures
 
 An Apple M1 Pro with 8 cores and 16 GB, PostgreSQL 17 with default settings, on one laptop, with the load generator on the same
