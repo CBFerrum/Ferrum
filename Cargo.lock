@@ -2291,7 +2291,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-cloud"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-cloud?branch=w10-hardening#a1fb1806d6d1f12076ecc13298440a12f3c8de26"
+source = "git+https://github.com/CBFerrum/ferrum-app-cloud?branch=w10-hardening#6653a22ae4757d9f9958d368695495f0debb6b07"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2714,7 +2714,7 @@ dependencies = [
 [[package]]
 name = "ferrum-cloud-contract"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-cloud?branch=w10-hardening#a1fb1806d6d1f12076ecc13298440a12f3c8de26"
+source = "git+https://github.com/CBFerrum/ferrum-app-cloud?branch=w10-hardening#6653a22ae4757d9f9958d368695495f0debb6b07"
 dependencies = [
  "base64 0.22.1",
  "chrono",
