@@ -75,7 +75,9 @@ pub(crate) async fn handle(kernel: &Arc<Kernel>, site: Arc<dyn Site>, req: SiteR
         return Ok(site.handle(kernel, req).await?);
     }
     let k = kernel.clone();
-    let done = ferrum_kernel::Trace::spawn(async move { site.handle(&k, req).await }).await.map_err(|e| ApiError(Error::internal(format!("the request stopped: {e}"))))?;
+    let done = ferrum_kernel::Trace::spawn(async move { site.handle(&k, req).await })
+        .await
+        .map_err(|e| ApiError(Error::internal(format!("the request stopped: {e}"))))?;
     Ok(done?)
 }
 
