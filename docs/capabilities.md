@@ -9,9 +9,9 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 130 |
+| Implemented, qualification incomplete | 133 |
 | Partially implemented | 53 |
-| Missing | 38 |
+| Missing | 35 |
 | Blocked by external dependency | 10 |
 | **All** | **231** |
 
@@ -83,7 +83,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 |---|---|---|---|---|
 | FERRUM-UX-001 | Launcher, bar search, notifications, account switching, administration | Implemented, qualification incomplete | read | Tested per feature in three browsers in earlier work; no standing end-to-end suite in CI |
 | FERRUM-UX-002 | Command palette | Implemented, qualification incomplete | read | Finds, opens and creates; it does not run actions on the record in front of you; Tried in one browser; no standing browser test |
-| FERRUM-UX-003 | Help center | Missing | probe |  |
+| FERRUM-UX-003 | Help center | Implemented, qualification incomplete | tested | Made from each record type's own definition (what it is for, its fields, actions and rules): as good as the descriptions apps write; no hand-written how-to guides beyond the apps' READMEs in the store; Search is by words, not meaning; Not tried in a browser on a running server when it was built |
 | FERRUM-UX-004 | Application completeness contract per app | Partially implemented | read | Every app has a hand-crafted interface, listed under FERRUM-UX-009; no written contract says what each must cover |
 | FERRUM-UX-005 | WCAG 2.2 AA qualification | Blocked by external dependency | read | No automated accessibility checks in CI yet |
 | FERRUM-UX-006 | Translation, right-to-left, locale formatting | Missing | probe | No translation infrastructure was found in the core; money and dates format per workspace |
@@ -121,7 +121,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-POS-002 | Offline sales: versioned price book, device journal, re-pricing on arrival | Implemented, qualification incomplete | read | Stock is not preallocated to a till: the spec's overselling policy is unmet |
 | FERRUM-POS-003 | Printers | Blocked by external dependency | probe | No device code found; receipts print through the browser |
 | FERRUM-COMMERCE-001 | Catalog, cart, coupons, checkout, shipping, refunds, abandoned carts | Implemented, qualification incomplete | probe |  |
-| FERRUM-COMMERCE-002 | Subscriptions | Missing | probe |  |
+| FERRUM-COMMERCE-002 | Subscriptions | Implemented, qualification incomplete | tested | Each renewal is a payment request the customer pays: no card kept on file to charge without them; No email of its own for a renewal: the request and the commerce.invoice_paid event are there for a mail or gateway plugin; Plans are not changed from the portal |
 | FERRUM-COMMS-001 | Mail, shared mailboxes, chat, calendar, meetings, CalDAV and CardDAV | Implemented, qualification incomplete | probe |  |
 | FERRUM-COMMS-002 | Captions, transcripts, recording, presence | Missing | probe |  |
 | FERRUM-ASSETS-001 | Assets, depreciation, movements, maintenance, disposal | Implemented, qualification incomplete | probe |  |
@@ -155,7 +155,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-ECOSYSTEM-006 | Website and CMS | Partially implemented | probe | Commerce's storefront pages only |
 | FERRUM-ECOSYSTEM-007 | Customer, supplier and partner portals | Partially implemented | probe | A portal shell with tickets and invoices; no supplier or partner portal |
 | FERRUM-ECOSYSTEM-008 | Contract lifecycle management | Missing | probe |  |
-| FERRUM-ECOSYSTEM-009 | Subscription and revenue operations | Partially implemented | probe | Finance's subscriptions; no dunning-to-entitlement loop |
+| FERRUM-ECOSYSTEM-009 | Subscription and revenue operations | Partially implemented | probe | Finance bills subscriptions and Commerce sells them (Store Subscriptions); an overdue renewal makes one Past Due, which ends what ferrum_app_commerce::entitled grants, and paying it restores it; No revenue recognition schedules, MRR or churn reports |
 | FERRUM-ECOSYSTEM-010 | Governed enterprise analytics | Missing | probe |  |
 | FERRUM-ECOSYSTEM-011 | Portfolio and objectives | Missing | probe |  |
 | FERRUM-ECOSYSTEM-012 | Digital asset management | Missing | probe |  |
