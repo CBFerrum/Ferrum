@@ -111,6 +111,7 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
          # HELP ferrum_connections_waiting Connections left alone because the provider said to wait.\n# TYPE ferrum_connections_waiting gauge\nferrum_connections_waiting {conn_waiting}\n\
          # HELP ferrum_connections_stale Connections with no success for a day.\n# TYPE ferrum_connections_stale gauge\nferrum_connections_stale {conn_stale}\n\
          # HELP ferrum_connection_drift_open Differences from a provider waiting for a person.\n# TYPE ferrum_connection_drift_open gauge\nferrum_connection_drift_open {drift_open}\n\
+         # HELP ferrum_tenant_refused_total Requests refused because their workspace already had its share running, on this replica.\n# TYPE ferrum_tenant_refused_total counter\nferrum_tenant_refused_total {}\n\
          # HELP ferrum_plugin_socket_dropped_total Snapshots dropped because a socket's queue was full, on this replica.\n# TYPE ferrum_plugin_socket_dropped_total counter\nferrum_plugin_socket_dropped_total {socket_dropped}\n\
          # HELP ferrum_plugin_socket_closed_slow_total Sockets closed for not keeping up, on this replica.\n# TYPE ferrum_plugin_socket_closed_slow_total counter\nferrum_plugin_socket_closed_slow_total {socket_closed_slow}\n\
          # HELP ferrum_plugin_socket_queued_bytes Bytes waiting for sockets on this replica.\n# TYPE ferrum_plugin_socket_queued_bytes gauge\nferrum_plugin_socket_queued_bytes {socket_queued}\n",
@@ -118,7 +119,8 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
         pool.size(),
         pool.num_idle(),
         oldest.unwrap_or(0.0),
-        job_wait.unwrap_or(0.0)
+        job_wait.unwrap_or(0.0),
+        st.shares.refused.load(std::sync::atomic::Ordering::Relaxed)
     );
     let mut resp = body.into_response();
     resp.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain; version=0.0.4"));

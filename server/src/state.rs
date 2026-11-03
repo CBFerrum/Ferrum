@@ -65,6 +65,10 @@ pub struct Settings {
     /// came through the proxy (`X-Forwarded-For`); 0: no limit.
     #[serde(default = "default_address_requests")]
     pub address_requests_per_minute: u32,
+    /// One workspace's requests that run at once on each replica. The rest wait their turn, and are
+    /// refused after five seconds. Unset: half of `db_max_connections`, at least 2. 0: no limit.
+    #[serde(default)]
+    pub tenant_requests: Option<u32>,
     /// Proxies in front that append to `X-Forwarded-For` (the gateway: 1; a CDN or load balancer
     /// before it: 2): whose entry is the client's address for rate limits.
     #[serde(default = "default_proxy_hops")]
@@ -200,6 +204,60 @@ impl Settings {
     }
 }
 
+/// How many of one workspace's requests run at once on this replica. The rest wait their turn, so a
+/// workspace that floods the server holds the database connections its share allows and no more, and
+/// everyone else has the others. One that waits past its turn is refused, said in the log with whose it
+/// was, and counted.
+pub struct Shares {
+    each: usize,
+    wait: Duration,
+    held: std::sync::Mutex<std::collections::HashMap<uuid::Uuid, Arc<tokio::sync::Semaphore>>>,
+    pub refused: std::sync::atomic::AtomicU64,
+}
+
+/// A request's turn among its workspace's: `Auth` takes it, and the server keeps it until the response is
+/// made, so a socket or a stream that goes on afterwards holds none. With it, how long it waited.
+#[derive(Clone, Default)]
+pub struct Place(Arc<std::sync::OnceLock<(tokio::sync::OwnedSemaphorePermit, Duration)>>);
+
+impl Place {
+    pub fn waited(&self) -> Option<Duration> {
+        self.0.get().map(|(_, waited)| *waited)
+    }
+}
+
+impl Shares {
+    pub fn new(each: u32, wait: Duration) -> Shares {
+        Shares { each: each as usize, wait, held: Default::default(), refused: Default::default() }
+    }
+
+    /// Waits for one of `tenant`'s turns and keeps it in `place`.
+    pub async fn take(&self, place: &Place, tenant: uuid::Uuid) -> Result<(), Error> {
+        if self.each == 0 || place.0.get().is_some() {
+            return Ok(());
+        }
+        let turns = {
+            let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+            if held.len() > 10_000 {
+                held.retain(|_, turns| turns.available_permits() < self.each);
+            }
+            held.entry(tenant).or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(self.each))).clone()
+        };
+        let asked = Instant::now();
+        match tokio::time::timeout(self.wait, turns.acquire_owned()).await {
+            Ok(Ok(turn)) => {
+                let _ = place.0.set((turn, asked.elapsed()));
+                Ok(())
+            }
+            _ => {
+                self.refused.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                tracing::warn!(%tenant, share = self.each, "a workspace's request waited past its turn and was refused");
+                Err(Error::TooManyRequests(format!("this workspace has {} requests running on this server already; try again in a moment", self.each)))
+            }
+        }
+    }
+}
+
 /// Fixed-window limiter keyed by e.g. client IP, its count shared by every replica on the
 /// database (`rate_window`). The replica's own count, bounded so a flood of keys cannot exhaust
 /// memory, turns a flood away before it reaches the database.
@@ -282,6 +340,7 @@ pub struct AppState {
     /// Requests per minute a user may make (on this replica), whatever the token.
     pub user_limiter: Arc<RateLimiter>,
     pub address_limiter: Arc<RateLimiter>,
+    pub shares: Arc<Shares>,
     pub apps: Arc<crate::appmgr::AppManager>,
     pub objects: Arc<crate::objects::Objects>,
     /// App pages, interface releases and browser sessions (docs/plan/apps-ui.md).
@@ -297,6 +356,42 @@ pub fn app_state(ctx: &AppContext) -> Result<AppState, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_workspace_waits_for_itself_and_nobody_waits_for_it() {
+        let shares = Shares::new(2, Duration::from_millis(200));
+        let (a, b) = (uuid::Uuid::now_v7(), uuid::Uuid::now_v7());
+        let mut held = vec![Place::default(), Place::default()];
+        for place in &held {
+            shares.take(place, a).await.unwrap();
+        }
+        let started = Instant::now();
+        assert!(matches!(shares.take(&Place::default(), a).await, Err(Error::TooManyRequests(_))), "a third waits, then is refused");
+        assert!(started.elapsed() >= Duration::from_millis(200));
+        assert_eq!(shares.refused.load(std::sync::atomic::Ordering::Relaxed), 1, "and counted");
+        let started = Instant::now();
+        shares.take(&Place::default(), b).await.expect("another workspace does not wait behind it");
+        assert!(started.elapsed() < Duration::from_millis(50));
+        let one = held.pop().unwrap();
+        let give_back = async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(one);
+        };
+        let next = Place::default();
+        let (taken, ()) = tokio::join!(shares.take(&next, a), give_back);
+        assert!(taken.is_ok(), "a turn given back lets the next one in");
+        assert!(next.waited().is_some_and(|w| w >= Duration::from_millis(40)), "and it says how long it waited: {:?}", next.waited());
+        let twice = Place::default();
+        shares.take(&twice, b).await.unwrap();
+        shares.take(&twice, b).await.unwrap();
+        let other = Place::default();
+        shares.take(&other, b).await.expect("a request takes one turn, however often it asks");
+        let off = Shares::new(0, Duration::from_millis(10));
+        let kept: Vec<Place> = (0..100).map(|_| Place::default()).collect();
+        for place in &kept {
+            off.take(place, a).await.expect("0 is no limit");
+        }
+    }
 
     #[test]
     fn a_users_budget_is_counted_per_window() {

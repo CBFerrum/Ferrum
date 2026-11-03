@@ -44,6 +44,7 @@ COLLAB = ("-p", "ferrum-kernel", "--test", "collab_it")
 HOST_UNIT = ("-p", "ferrum-plugins", "--lib", "host::tests")
 SOCKETS_UNIT = ("-p", "ferrum-plugins", "--lib", "sockets::tests")
 EGRESS = ("-p", "ferrum-server", "--test", "assistant_egress_it")
+SHARES_UNIT = ("-p", "ferrum-server", "--lib", "state::tests")
 SUPPORT = ("-p", "ferrum-kernel", "--test", "support_it")
 CONTRACT = ("-p", "ferrum-ops-contract", "--lib")
 OPS = ("-p", "ferrum-ops", "--test", "ops_it")
@@ -53,6 +54,10 @@ TIMEOUT = 600
 
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
+    # A workspace's share of a replica.
+    ("share-is-no-limit", "server/src/state.rs", "        if self.each == 0 || place.0.get().is_some() {\n            return Ok(());", "        if true {\n            return Ok(());", SHARES_UNIT),
+    ("share-is-everyones", "server/src/state.rs", "            held.entry(tenant).or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(self.each))).clone()", "            held.entry(uuid::Uuid::nil()).or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(self.each))).clone()", SHARES_UNIT),
+    ("share-hides-its-wait", "server/src/state.rs", "                let _ = place.0.set((turn, asked.elapsed()));", "                let _ = place.0.set((turn, Duration::ZERO));", SHARES_UNIT),
     ("extract-any-copy-will-do", "crates/kernel/src/recovery.rs", "        if !differ.is_empty() {\n", "        if false {\n", RECOVERY),
     ("extract-onto-itself", "crates/kernel/src/recovery.rs", "        if which(&source).await? == which(&self.db).await? {\n", "        if false {\n", RECOVERY),
     ("extract-without-looking", "crates/kernel/src/recovery.rs", "        if !apply {\n", "        if false {\n", RECOVERY),
