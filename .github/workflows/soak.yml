@@ -62,7 +62,8 @@ jobs:
         working-directory: deploy
         run: |
           docker compose up -d --no-build db ferrum
-          curl -fsS --retry 90 --retry-connrefused --retry-delay 2 -o /dev/null http://127.0.0.1:8080/api/ready
+          # Docker's port proxy answers before the server listens, then resets: every error is retried.
+          curl -fsS --retry 90 --retry-all-errors --retry-delay 2 -o /dev/null http://127.0.0.1:8080/api/ready
           for slug in heavy steady light; do
             docker compose exec -T ferrum ferrum task create_tenant slug:$slug name:"Soak $slug" email:soak@$slug.test \
               password:"$SOAK_PASSWORD" packages:core,accounting,inventory,selling,buying,manufacturing,india
