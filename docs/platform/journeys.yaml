@@ -29,7 +29,7 @@ journeys:
     title: SSR rolling release
     state: passes_in_parts
     tests: ["ferrum-app-cloud:tests/deploy_it.rs", "ferrum-app-cloud:serve/tests/serving_it.rs"]
-    missing: "A real framework, and a catalog invalidation. A shell loop stands in for a server"
+    missing: "A catalog invalidation across replicas: Next.js's on-demand revalidation reaches one replica only. Next.js was released on two replicas and replaced by the next release, but not rolled under load"
   - id: J06
     title: Domain takeover resistance
     state: passes_in_parts
