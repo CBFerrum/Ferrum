@@ -1249,6 +1249,36 @@ now. Files are not checked against the store, and a resource made since is no lo
 though it still exists at its provider. Look at `cloud_resource_instance` in the live database first if that
 matters.
 
+## Closing and deleting a workspace
+
+A workspace is closed by its operator, kept until a date, and deleted after that only when an operator says so. Nothing
+deletes one by itself.
+
+```bash
+ferrum task account_state slug:acme state:closed retain_until:2027-02-01 note:"the contract ended"
+```
+
+Closed is read-only for everyone, like `restricted`: everything can still be read and exported, and nothing new starts.
+Apps wind down what they run. Cloud closes each project, stops its sites and keeps what it held. Setting another state
+opens it again, as it was.
+
+After the date, an app that made things elsewhere lets go of them first. For Cloud that is
+`ferrum task cloud_retire slug:acme apply:yes`, which destroys the databases and repositories Cloud made by the same
+durable work a person's deletion plan starts, and never touches something it cannot prove it made. Then:
+
+```bash
+ferrum task delete_tenant slug:acme confirm:acme note:"kept until 2027-02-01, as agreed"
+ferrum task delete_tenant slug:acme confirm:acme note:"kept until 2027-02-01, as agreed" apply:yes
+```
+
+The first says what would go: rows by table, files, and anything an app still holds outside the database, which stops
+it. The second deletes the workspace's files, then its private app bundles, then every row that names it, in one
+transaction, and records in `tenant_deletion` that it happened. A file store failing part way leaves every row in place,
+so running it again finishes the job. Like extraction, it needs `GRANT SET ON PARAMETER session_replication_role TO
+ferrum` for as long as it runs.
+
+Backups taken before the deletion still hold the workspace until they expire. Say so to whoever asked for the deletion.
+
 ## Routine tasks
 
 ```bash

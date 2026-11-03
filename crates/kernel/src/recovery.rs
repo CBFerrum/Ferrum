@@ -118,6 +118,97 @@ async fn which(db: &Db) -> Result<(i64, sqlx::postgres::types::Oid)> {
 }
 
 impl Kernel {
+    /// Deletes a closed workspace whose time to be kept has passed: its files, then every row it has, and
+    /// last the workspace itself, leaving a record that it happened. Nothing goes while an app still holds
+    /// something of it outside the database ([`crate::account::Leaving`]), and `confirm` has to be its slug.
+    /// Without `apply` it says what would go and changes nothing.
+    ///
+    /// Files go first: one that cannot be deleted stops everything before any row goes, so running it again
+    /// finishes the job rather than leaving files nobody can find.
+    pub async fn delete_tenant(&self, slug: &str, confirm: &str, apply: bool, note: &str) -> Result<Value> {
+        if confirm != slug {
+            return Err(Error::field("confirm", "the workspace's slug, typed again"));
+        }
+        if note.trim().is_empty() {
+            return Err(Error::field("note", "say why, for whoever reads the record later"));
+        }
+        let mut tx = self.db.system_tx().await?;
+        let row: Option<(Uuid, String, Option<chrono::DateTime<chrono::Utc>>, Option<chrono::NaiveDate>)> =
+            sqlx::query_as("select id, account_state, closed_at, retain_until from tenant where slug = $1").bind(slug).fetch_optional(&mut *tx).await?;
+        let (tenant, state, closed_at, retain_until) = row.ok_or_else(|| Error::NotFound("workspace".into()))?;
+        let (Some(closed_at), Some(retain_until), "closed") = (closed_at, retain_until, state.as_str()) else {
+            return Err(Error::Conflict(format!("only a closed workspace is deleted, and {slug} is {state}")));
+        };
+        if retain_until >= chrono::Utc::now().date_naive() {
+            return Err(Error::Conflict(format!("{slug} is kept until {retain_until}")));
+        }
+        let mut outside = Vec::new();
+        for app in self.hooks.leaving() {
+            outside.extend(app.held_outside(&mut tx, tenant).await?);
+        }
+        let files: Vec<(Uuid, String)> =
+            sqlx::query_as("select id, storage_key from file_object where tenant_id = $1").bind(tenant).fetch_all(&mut *tx).await?;
+        // Every column that names a workspace: tenant_id everywhere, and any other that refers to one.
+        let mut columns: Vec<(String, String)> = shape(&self.db).await?.into_keys().map(|t| (t, "tenant_id".to_string())).collect();
+        let others: Vec<(String, String)> = sqlx::query_as(
+            "select c.conrelid::regclass::text, a.attname::text from pg_constraint c join pg_attribute a on a.attrelid = c.conrelid and a.attnum = c.conkey[1] \
+             where c.contype = 'f' and c.confrelid = 'tenant'::regclass and cardinality(c.conkey) = 1 and a.attname <> 'tenant_id'",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        columns.extend(others);
+        let mut rows = BTreeMap::new();
+        for (table, column) in &columns {
+            let n: i64 =
+                sqlx::query_scalar(AssertSqlSafe(format!("select count(*) from \"{table}\" where \"{column}\" = $1"))).bind(tenant).fetch_one(&mut *tx).await?;
+            if n > 0 {
+                *rows.entry(table.clone()).or_insert(0) += n;
+            }
+        }
+        tx.commit().await?;
+        let mut said = json!({"workspace": slug, "closed_at": closed_at, "retain_until": retain_until, "rows": rows, "files": files.len(), "held_outside": outside, "deleted": false});
+        if !apply {
+            return Ok(said);
+        }
+        if !outside.is_empty() {
+            return Err(Error::Conflict(format!("{slug} still has, outside this database: {}", outside.join("; "))));
+        }
+        may_copy(&self.db).await?;
+        let store = if files.is_empty() { None } else { Some(self.file_store()?) };
+        let mut failed = Vec::new();
+        for (id, key) in &files {
+            if let Some(store) = store
+                && let Err(e) = store.delete(key).await
+            {
+                failed.push(format!("{id}: {e}"));
+            }
+        }
+        if !failed.is_empty() {
+            return Err(Error::Unavailable(format!("{} files could not be deleted, so no row was: {}", failed.len(), failed.join("; "))));
+        }
+        let mut tx = self.db.system_tx().await?;
+        sqlx::query("set local session_replication_role = replica").execute(&mut *tx).await?;
+        for (table, column) in &columns {
+            sqlx::query(AssertSqlSafe(format!("delete from \"{table}\" where \"{column}\" = $1"))).bind(tenant).execute(&mut *tx).await?;
+        }
+        sqlx::query("delete from tenant where id = $1").bind(tenant).execute(&mut *tx).await?;
+        sqlx::query("insert into tenant_deletion (id, slug, closed_at, retained_until, rows, files, note) values ($1, $2, $3, $4, $5, $6, $7)")
+            .bind(tenant)
+            .bind(slug)
+            .bind(closed_at)
+            .bind(retain_until)
+            .bind(json!(rows))
+            .bind(files.len() as i32)
+            .bind(note)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        self.invalidate_tenant_users(tenant);
+        tracing::warn!(%tenant, slug, "a workspace was deleted");
+        said["deleted"] = json!(true);
+        Ok(said)
+    }
+
     /// What this database is now, against what it was. Safe on every replica at once.
     pub(crate) async fn notice_restore(&self) -> Result<()> {
         let (system, timeline, oid): (i64, i32, sqlx::postgres::types::Oid) = sqlx::query_as(

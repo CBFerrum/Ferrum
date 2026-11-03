@@ -489,6 +489,7 @@ impl Hooks for App {
         tasks.register(crate::tasks::ReleaseRestore);
         tasks.register(crate::tasks::AcceptAuthority);
         tasks.register(crate::tasks::ExtractTenant);
+        tasks.register(crate::tasks::DeleteTenant);
     }
 
     async fn truncate(_ctx: &AppContext) -> Result<()> {
