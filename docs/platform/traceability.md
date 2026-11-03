@@ -5,9 +5,9 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Partial | 21 |
+| Partial | 19 |
 | Implemented, unverified | 1 |
-| Verified in software | 170 |
+| Verified in software | 172 |
 | Blocked externally | 5 |
 | **All** | **197** |
 
@@ -88,7 +88,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-CODE-005 | Scoped Git credentials | Verified in software | AT-CODE-005 | 2 | Per-repository tokens, collected once, ended by revocation and by a person leaving |
 | FCP-CODE-006 | Server hook restriction | Verified in software | AT-CODE-006 | 1 | DISABLE_GIT_HOOKS is required configuration, and every management path was tried against it |
 | FCP-CODE-007 | Import and mirror egress | Verified in software | AT-CODE-007 | 2 | Refused before fetching and again by the forge when fetching. Submodules are not fetched |
-| FCP-CODE-008 | Git resource limits | Partial | AT-CODE-008 | 1 | An oversized push fails plainly. Concurrent-clone limits and per-tenant fairness at the forge are not exercised |
+| FCP-CODE-008 | Git resource limits | Partial | AT-CODE-008 | 2 | An oversized push fails plainly. Clones and pushes take turns per workspace at the gate in front of the forge, and one kept waiting is refused with 429: six of one workspace at two at a time took three packs' time while another's took one, and real git cloned and pushed through it. CPU, processes, storage and tree depth per workspace are not bounded at the forge |
 | FCP-CODE-009 | PR approval integrity | Verified in software | AT-CODE-009 | 1 | A force-push dismisses approvals and required checks are by name. Real Gitea |
 | FCP-CODE-010 | LFS access | Verified in software | AT-CODE-010 | 1 | A known object id from another repository gets nothing. Expiry of a signed URL is Gitea's |
 | FCP-CODE-011 | Forge outage isolation | Verified in software | AT-CODE-011 | 1 | What is live needs no forge. A build says why it waits, fails with that reason, and asking again afterwards builds once |
@@ -146,11 +146,11 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-WEB-009 | Request resource budgets | Verified in software | AT-WEB-009 | 1 | A limit per site on a node, and a body limit. Not measured under sustained load |
 | FCP-WEB-010 | Upload finalization | Verified in software | AT-WEB-010 | 2 | An intent first, bytes under a temporary name, one commit to make them visible, and a sweep for what was left |
 | FCP-WEB-011 | Storefront authority | Verified in software | AT-WEB-011 | 1 | Prices sent from a browser are ignored, totals are refused, another customer's order is not there, and only the gateway's user can mark a payment, for the right amount and currency. No payment provider, and no deployed storefront driving it |
-| FCP-WEB-012 | Headless content lifecycle | Partial | AT-WEB-012 | 1 | A release is bound to the route it was planned against, and a pass expires. There is no content model |
+| FCP-WEB-012 | Headless content lifecycle | Verified in software | AT-WEB-012 | 2 | Content entries are drafted, reviewed and published by someone other than the author; a changed version, a draft written from a revision since replaced, or a new entry over a live one is refused; a site's key reads only what is published, with locale fallback; a preview key stops at its expiry. A release is bound to the route it was planned against, and a pass expires. Content is a title and text, with no media or schema per type, and a preview key reads every draft in the workspace, not one |
 | FCP-AI-001 | Agent capability boundary | Verified in software | AT-AI-001 | 4 | A stand-in that does whatever a ticket tells it gets nothing its person could not do, changes wait for that person, and physical work can only be proposed. Nothing relies on a model's judgement, and no real model was tried. A client running elsewhere is bound by its token, not by this |
 | FCP-AI-002 | Model/provider policy | Verified in software | AT-AI-002 | 1 | A model the operator has not allowed is not used, and what a workspace forbids does not leave it, whichever model is asked. A model has no region here: the operator chooses the address it is reached at |
 | FCP-AI-003 | Approval integrity | Verified in software | AT-AI-003 | 3 | A change approved and then altered, or approved too long ago, does not run. A command has no way to change after approval, a plan's approval names the digest shown, and nobody approves their own, whatever roles they hold |
-| FCP-AI-004 | Development sandbox | Partial | AT-AI-004 | 1 | A token for a workstation exists for previews and not production, and reaches only that environment. Nothing makes it the default for any client, and nothing stops someone pasting in a production credential |
+| FCP-AI-004 | Development sandbox | Verified in software | AT-AI-004 | 3 | A development token exists for previews and not production, reaches only that environment, and says so in its scope. The server starter takes only such a token on a workstation and refuses a production one pasted in. The starter is the client made here: other clients are their makers'. Cloud does not check that what a preview is bound to is synthetic, and a raw provider credential is outside what a token can stop |
 | FCP-AI-005 | Budget and cancellation | Verified in software | AT-AI-005 | 1 | Past a workspace's allowance the provider is not called, a turn stops at 25 steps, a failing service is tried four times, and one turn runs per thread. Usage is shown in tokens, not money. Scripted models |
 | FCP-AI-006 | Evidence and abstention | Verified in software | AT-AI-006 | 1 | For physical work: a proposal says when what it rests on was read, and old evidence or a silent site is refused as unknown. An invented id is not found anywhere. The ERP's generic tools carry no freshness |
 | FCP-AI-007 | Data boundary disclosure | Verified in software | AT-AI-007 | 1 | The guide says a client you run sends what it reads to its model's provider, and the check fails a document that claims otherwise. Cloud cannot see or limit such a client |

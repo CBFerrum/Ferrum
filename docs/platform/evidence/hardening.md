@@ -96,6 +96,15 @@ take turns among its own, a response says how long it waited, and one that waits
 Edge's charger and MQTT ports let new connections in at a steady rate, so after an outage the ones already in are not held up
 behind everyone's handshake, and a charger's stalled handshake is closed after ten seconds instead of holding its place.
 
+A gate in front of the forge (`ferrum-serve gate`) gives each workspace turns for its clones and pushes: `serve/tests/gate_it.rs`
+runs the real process in front of a forge whose packs take a second, and `tests/code_it.rs` clones and pushes through it with real
+`git` and Gitea. Writing its manifest found that a serving node's admin listener defaulted to loopback while its manifest probed it
+on the pod's address, so no node could have become ready, and nothing scraped what the alerts read; both are fixed.
+
+On a workstation the server starter takes a development token and nothing else, and a development token says so in its scope.
+Content for sites is a record with a workflow (`tests/content_it.rs`): published only by someone other than its author, only as
+reviewed, only when written from what is live, read by a site's key that sees no draft, and previewed with a key that expires.
+
 ## Figures
 
 An Apple M1 Pro with 8 cores and 16 GB, PostgreSQL 17 with default settings, on one laptop, with the load generator on the same
