@@ -72,7 +72,7 @@ struct Consent {
 /// Runs an app change to its end even when the client goes away: a request timeout or a closed
 /// tab must not stop an installation half-way (it finishes, or takes itself back).
 async fn detached<T: Send + 'static>(work: impl Future<Output = T> + Send + 'static) -> Result<T, ApiError> {
-    tokio::spawn(work).await.map_err(|e| ApiError(Error::internal(format!("app change: {e}"))))
+    ferrum_kernel::Trace::spawn(work).await.map_err(|e| ApiError(Error::internal(format!("app change: {e}"))))
 }
 
 async fn apply(app: &AppContext, ctx: Ctx, id: String, body: Consent, upgrade: bool) -> ApiResult<Response> {
