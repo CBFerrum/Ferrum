@@ -5,9 +5,9 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Partial | 25 |
+| Partial | 23 |
 | Implemented, unverified | 1 |
-| Verified in software | 166 |
+| Verified in software | 168 |
 | Blocked externally | 5 |
 | **All** | **197** |
 
@@ -124,7 +124,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-DEPLOY-005 | Migration compatibility | Verified in software | AT-DEPLOY-005 | 2 | Resumes from its checkpoint, and rollback is refused when old code would not work |
 | FCP-DEPLOY-006 | Preview access | Verified in software | AT-DEPLOY-006 | 2 | Every name, the address and a forged header. TLS and anything in front of the node are not exercised |
 | FCP-DEPLOY-007 | Preview cleanup | Verified in software | AT-DEPLOY-007 | 1 | Two steps that each find their own work, stopped between them, and only what the preview holds |
-| FCP-DEPLOY-008 | Graceful rollout | Partial | AT-DEPLOY-008 | 1 | Requests in flight finish and replicas drain. WebSockets do not pass a node, so nothing to reconnect is exercised |
+| FCP-DEPLOY-008 | Graceful rollout | Verified in software | AT-DEPLOY-008 | 2 | A node stopped mid-request finishes it, and an open WebSocket ends with the node and the client is told, so it reconnects to what serves next. A socket stays on its replica until either side closes it. Uploads go to object storage, not through a node. On one machine |
 | FCP-DEPLOY-009 | Rollback correctness | Verified in software | AT-DEPLOY-009 | 2 | Refused across a contracting migration or an older schema. A rollback restarts what it ran |
 | FCP-DEPLOY-010 | Durable background work | Verified in software | AT-DEPLOY-010 | 2 | Written down before the caller hears anything, delivered at least once with a stable id |
 | FCP-DEPLOY-011 | Scheduler semantics | Verified in software | AT-DEPLOY-011 | 2 | DST, missed runs and overlap are decided from the database |
@@ -136,7 +136,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
 | FCP-WEB-001 | Public/private cache separation | Verified in software | AT-WEB-001 | 1 | Only what a node adds. A CDN in front is not exercised |
-| FCP-WEB-002 | Framework conformance | Partial | AT-WEB-002 | 2 | Node on two replicas, with an answer streamed through a node as it is made, and files beside it. The table in the docs says what is not supported. No framework has been qualified |
+| FCP-WEB-002 | Framework conformance | Partial | AT-WEB-002 | 2 | Node on two replicas, with an answer streamed through a node as it is made, WebSockets through a node, and files beside it. The table in the docs says what is not supported. No framework has been qualified |
 | FCP-WEB-003 | Deployment skew | Verified in software | AT-WEB-003 | 2 | Old assets stay for two releases. Mutations from old pages are the application's to version |
 | FCP-WEB-004 | Browser origin isolation | Verified in software | AT-WEB-004 | 1 | One host per deployment and cookie domains stripped. A browser was not used: a service-worker scope is decided by origin |
 | FCP-WEB-005 | Domain ownership | Verified in software | AT-WEB-005 | 3 | One spelling, unique across every workspace, wildcards overlap |
@@ -229,7 +229,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-OBS-007 | Budget transparency | Verified in software | AT-OBS-007 | 1 | A month in progress says it is an estimate, and late usage is counted on the statement. No page shows it yet |
 | FCP-OBS-008 | Incident process | Partial | AT-OBS-008 | 0 | Severity, roles, containment, communication and review are written. No drill has been run: that takes people |
 | FCP-OBS-009 | Abuse controls | Partial | AT-OBS-009 | 1 | Stopping one project and nothing else, an appeal, and the record, also on a real server. The only detection is build seconds in an hour: phishing, spam and egress are for people to report, so the requirement is met for one of the four things it names |
-| FCP-CLOUD-001 | Tenant lifecycle | Partial | AT-CLOUD-001 | 2 | A project closes by a plan, surviving a controller dying part way, deletes nothing, and can be opened again. No signup, plan or closure of a whole workspace |
+| FCP-CLOUD-001 | Tenant lifecycle | Verified in software | AT-CLOUD-001 | 3 | Provisioning a workspace is the operator's create_tenant; active, grace, restricted and closed are the operator's, each on record. Closing keeps everything and stops what runs; after its date Cloud destroys what it provably made, and the workspace is deleted only when nothing is held elsewhere, files first. Closing rounds and retirement run again start nothing twice, a resource waiting for a person waits for them, and a store failing part way leaves every row. Self-service signup and billing are not here |
 | FCP-CLOUD-002 | Official partner scope | Blocked externally | AT-CLOUD-002 | 0 | Partner terms are a legal and commercial decision |
 | FCP-CLOUD-003 | Support least privilege | Verified in software | AT-CLOUD-003 | 3 | A health-only key reaches its report and is refused on records, administration, reports, an app's routes, browser-session routes, two-factor setup and a live socket, each attempt on the customer's list as refused. Run against a real server, and by deploy/smoke.sh. Calendar and identity-provider keys are scoped apart |
 | FCP-CLOUD-004 | No standing partner admin | Verified in software | AT-CLOUD-004 | 2 | A partner's account in a workspace of its own reaches nothing of a customer's, and a grant does not renew itself. Software only |
@@ -261,5 +261,5 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-QUAL-006 | Golden journeys | Partial | AT-QUAL-006 | 0 | J07 runs whole on real gateway processes and J09 is exercised in parts; ten of twelve in parts, none whole against real providers or equipment, J12 not run. The check keeps that visible |
 | FCP-QUAL-007 | Mutation and fault coverage | Verified in software | AT-QUAL-007 | 2 | Every survivor led to a stronger test: seven at the last full Cloud run, and three since, one of which had been changing the wrong function. Every mutant added in this work is caught. CI checks each still finds its text; the full sets run weekly and by hand, and were not rerun after the last changes |
 | FCP-QUAL-008 | Release evidence integrity | Verified in software | AT-QUAL-008 | 3 | For a release: an artifact that is not what was built or signed is refused before it is promoted, and a node refuses bytes that are not what they are named. Ferrum's own image is attested, and that is checked at deployment only on a cluster |
-| FCP-QUAL-009 | Supported limits | Verified in software | AT-QUAL-009 | 2 | An upgrade request gets 501, an oversized body 413, more than 16 replicas is refused, and a hard budget refuses what would pass it. The documented figures were measured once, on a laptop, and no envelope is qualified |
+| FCP-QUAL-009 | Supported limits | Verified in software | AT-QUAL-009 | 2 | An upgrade other than a WebSocket gets 501, an oversized body 413, more than 16 replicas is refused, a site's sockets past its limit 429, and a hard budget refuses what would pass it. The documented figures were measured once, on a laptop, and no envelope is qualified |
 
