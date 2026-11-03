@@ -67,9 +67,9 @@ async fn scenario() {
             busy.push(db.pool.begin().await.unwrap());
         }
     }
-    let third = replica(1).await.err().expect("a replica past the budget");
+    let Err(third) = replica(1).await else { panic!("a replica past the budget got in") };
     assert_eq!(third.status(), 503, "busy, not broken: {third}");
-    let past = one.pool.begin().await.map_err(ferrum_kernel::Error::from).err().expect("a request past its pool");
+    let Err(past) = one.pool.begin().await.map_err(ferrum_kernel::Error::from) else { panic!("a request past its pool got in") };
     assert_eq!(past.status(), 503, "{past}");
     let migration = Db::connect(DbConfig { url: format!("{base}/{name}"), max_connections: 1, ..Default::default() }).await.expect("the reserve");
     sqlx::raw_sql("select 1").execute(&migration.pool).await.expect("and it works");
