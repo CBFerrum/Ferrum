@@ -5,9 +5,9 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Partial | 33 |
-| Implemented, unverified | 4 |
-| Verified in software | 155 |
+| Partial | 26 |
+| Implemented, unverified | 1 |
+| Verified in software | 165 |
 | Blocked externally | 5 |
 | **All** | **197** |
 
@@ -41,7 +41,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-SECRET-001 | Secret indirection | Verified in software | AT-SECRET-001 | 2 | Secrets are references sealed per environment, never returned. Leased delivery to a running workload arrives with W05 and W06 |
 | FCP-SECRET-002 | Workload attestation | Verified in software | AT-SECRET-002 | 2 | Short-lived signed tokens whose claims come from server records, for one audience, class and job. Attestation of the workload itself depends on the runtime W04 and W05 qualify |
 | FCP-SECRET-003 | Root rotation | Verified in software | AT-SECRET-003 | 2 | Signing keys rotate with overlap and enforcement points see the new bundle. The sealing key's rotation is the platform's own, and has no drill yet |
-| FCP-SECRET-004 | Key recovery | Partial | AT-SECRET-004 | 0 | Documented, not exercised |
+| FCP-SECRET-004 | Key recovery | Verified in software | AT-SECRET-004 | 1 | With the database gone, the key comes from where an operator keeps it: nothing to break in a circle, no key in the backup, and another key opens nothing. There is no KMS here |
 | FCP-SECRET-005 | Credential expiry | Verified in software | AT-SECRET-005 | 4 | A gateway past its lease stops starting work, and a node that has heard nothing for an hour refuses members with public sites going on. There is no setting to carry on regardless. Not tried on equipment. A connector past its token is refused by the same check, and no connector process exists to leave offline |
 | FCP-SECRET-006 | Environment secret scope | Verified in software | AT-SECRET-006 | 2 | Preview cannot read production's secrets and a public-prefixed name cannot hold one. Delivery into builds is W04's |
 | FCP-SECRET-007 | Compromise response | Verified in software | AT-SECRET-007 | 2 | A compromised key stops at once and its unexpired tokens are listed. Running workloads do not yet renew by themselves, so that recovery is unexercised |
@@ -188,7 +188,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-OPS-001 | Any-replica intake | Verified in software | AT-OPS-001 | 2 | Durable before it answers, and the same through any server, on real gateways. No charger made by anyone |
 | FCP-OPS-002 | Exact connection owner | Verified in software | AT-OPS-002 | 1 | Only the owner is given work, and only the gateway given a command can report on it. Through the sync endpoint, no charger involved. Pool members do not yet get each other's device links |
 | FCP-OPS-003 | Reconnect generation | Verified in software | AT-OPS-003 | 1 | A closing only ends its own connection, and a replayed journal cannot take a device back. Ordered by the gateway's clock |
-| FCP-OPS-004 | Physical intent deduplication | Verified in software | AT-OPS-004 | 2 | The same key for different work is a conflict, and a command sent to a gateway that dies is not sent again. No real charger |
+| FCP-OPS-004 | Physical intent deduplication | Verified in software | AT-OPS-004 | 2 | The same key for different work is a conflict, also at the same moment, and a command sent to a gateway that dies is not sent again. No real charger |
 | FCP-OPS-005 | Final deadline gate | Verified in software | AT-OPS-005 | 1 | Simulators only |
 | FCP-OPS-006 | Clock correctness | Verified in software | AT-OPS-006 | 2 | Simulators only |
 | FCP-OPS-007 | Recovery target binding | Verified in software | AT-OPS-007 | 1 | Simulators only |
@@ -209,17 +209,17 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-SCALE-003 | Stateful scaling | Partial | AT-SCALE-003 | 0 | CNPG replicas only |
 | FCP-SCALE-004 | Budget enforcement | Verified in software | AT-SCALE-004 | 2 | Builds, running hours and held resources are counted, once an hour however many look, and a hard budget stops new ones with what is up left up. Storage is not metered by size |
 | FCP-SCALE-005 | Critical reserve | Verified in software | AT-SCALE-005 | 2 | On a gateway: only plain samples count against the budget and go first, commands and evidence are outside it, and with almost no disk it takes no new work and says why. Not tried on a disk that really filled, and the platform's own database has no such reserve |
-| FCP-SCALE-006 | Gateway drain | Partial | AT-SCALE-006 | 1 | A device leaving makes in-flight work unknown, without redispatch. No drain of many sockets has been run |
+| FCP-SCALE-006 | Gateway drain | Verified in software | AT-SCALE-006 | 2 | A real gateway killed with a hundred chargers on it and work out on twenty: nothing in doubt is sent again, waiting work and new work get through. A kill, not a graceful scale-in, on one machine |
 | FCP-SCALE-007 | Noisy neighbor | Partial | AT-SCALE-007 | 2 | A workspace with twenty times the backlog does not make others wait behind it, measured once. A build cap per workspace and a request cap per site. Nothing bounds a tenant's share of a shared database |
 | FCP-SCALE-008 | Capacity evidence | Partial | AT-SCALE-008 | 1 | Percentiles, backlog and fairness measured for minutes on one laptop, so they describe that and not a deployment. Edge rates were measured the same way |
 | FCP-UI-001 | Consistent scope UI | Verified in software | AT-UI-001 | 2 | The digest on screen when the form opened goes with the decision, and the server refuses a stale one. No automated browser test |
-| FCP-UI-002 | Asynchronous UX | Implemented, unverified | AT-UI-002 | 1 | An operation has an address and all of it comes from the record, followed in a browser against real processes across a closure. Reopening it from another session has not been tried |
-| FCP-UI-003 | Accessible administration | Partial | AT-UI-003 | 0 | axe finds nothing of Cloud's on any page audited in a running browser, and it found real problems first. No manual WCAG review, and no one using assistive technology has tried it |
-| FCP-UI-004 | Localization correctness | Partial | AT-UI-004 | 0 | Locale formatting exists; this work's strings are new |
-| FCP-UI-005 | Permission explanation | Implemented, unverified | AT-UI-005 | 2 | The server says why and not who could, and the console offers a proof where one would cure it and not where it would not. Seen in a browser for a missing proof, not yet for a missing role |
+| FCP-UI-002 | Asynchronous UX | Verified in software | AT-UI-002 | 1 | In a browser against real processes: a resource asked for with the controller stopped, its provider refusing, and then back. The page followed each attempt and the reason, a reload and a second session showed the same, someone with no standing got nothing, and the retry finished. Relative times do not tick between updates |
+| FCP-UI-003 | Accessible administration | Partial | AT-UI-003 | 0 | axe finds nothing of Cloud's on any page at desktop or phone width, after it found a page that scrolled sideways, tables nothing could scroll from the keyboard and two regions with one name, all fixed. The main pages were worked by keyboard alone, with visible focus and refusals announced. No screen reader, and nobody who relies on assistive technology. The shell's landmarks and skip link are open findings |
+| FCP-UI-004 | Localization correctness | Partial | AT-UI-004 | 0 | Dates and amounts go through the browser's locale. Cloud's pages hold up right to left, and its tables no longer assume left to right. The shell does not: its menu makes the page scroll sideways. Strings are English only |
+| FCP-UI-005 | Permission explanation | Verified in software | AT-UI-005 | 2 | In a browser: a viewer pressing a button their role does not allow is told so beside it, and that a project administrator can change it, without being told who. A refusal is announced in a live region. Proof is offered where it would cure the refusal |
 | FCP-UI-006 | Operator recovery UX | Verified in software | AT-UI-006 | 1 | Unknown, failed, replaced and lost stay different words. Warehouse and Shop Floor have their own |
 | FCP-UI-007 | Bundle provenance | Verified in software | AT-UI-007 | 1 | dist/.source digests the sources and CI checks it. Not checked at install |
-| FCP-UI-008 | Audit visibility | Partial | AT-UI-008 | 1 | Who, what and detail per project in the console, and tested through the API. Support grants have an API and, until now, no page |
+| FCP-UI-008 | Audit visibility | Verified in software | AT-UI-008 | 3 | Support grants in the console: who, what they reach, why, given and ending, how often used, each request as refused or let in, and a way to end them, tried in a browser. Deployment and policy changes are in each project's record |
 | FCP-OBS-001 | Telemetry correlation | Verified in software | AT-OBS-001 | 1 | One id from a request through other processes, also confirmed on a real server. There is no tracing backend, and logs go where a deployment sends them |
 | FCP-OBS-002 | Tenant telemetry isolation | Verified in software | AT-OBS-002 | 1 | Row-level security refuses another workspace's operations and events, however the question is put. There is no customer log service to refuse |
 | FCP-OBS-003 | Bounded cardinality | Verified in software | AT-OBS-003 | 1 | No tenant or site in a label |
@@ -231,20 +231,20 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-OBS-009 | Abuse controls | Partial | AT-OBS-009 | 1 | Stopping one project and nothing else, an appeal, and the record, also on a real server. The only detection is build seconds in an hour: phishing, spam and egress are for people to report, so the requirement is met for one of the four things it names |
 | FCP-CLOUD-001 | Tenant lifecycle | Partial | AT-CLOUD-001 | 2 | A project closes by a plan, surviving a controller dying part way, deletes nothing, and can be opened again. No signup, plan or closure of a whole workspace |
 | FCP-CLOUD-002 | Official partner scope | Blocked externally | AT-CLOUD-002 | 0 | Partner terms are a legal and commercial decision |
-| FCP-CLOUD-003 | Support least privilege | Partial | AT-CLOUD-003 | 2 | Named, expiring and audited. A support account reaches nothing in Cloud. That a health-level key is stopped at the server is in the extractor, and no test sends one through a real server |
+| FCP-CLOUD-003 | Support least privilege | Verified in software | AT-CLOUD-003 | 3 | A health-only key reaches its report and is refused on records, administration, reports, an app's routes, browser-session routes, two-factor setup and a live socket, each attempt on the customer's list as refused. Run against a real server, and by deploy/smoke.sh. Calendar and identity-provider keys are scoped apart |
 | FCP-CLOUD-004 | No standing partner admin | Verified in software | AT-CLOUD-004 | 2 | A partner's account in a workspace of its own reaches nothing of a customer's, and a grant does not renew itself. Software only |
 | FCP-CLOUD-005 | Support revocation | Verified in software | AT-CLOUD-005 | 2 | A key stops at once, one customer's revocation leaves another's grant alone, and every use stays listed by request. A diagnostic already running is not interrupted. Sessions are tracked by key |
 | FCP-CLOUD-006 | Residency coverage | Verified in software | AT-CLOUD-006 | 2 | Resources, backups, exports and releases, by what a deployment says of itself: nothing can check that. An attached resource cannot say where it is, so one held to a region refuses them. Cloud calls no model. No real region |
-| FCP-CLOUD-007 | Account restriction safety | Implemented, unverified | AT-CLOUD-007 | 1 | Restricted keeps reading and export |
+| FCP-CLOUD-007 | Account restriction safety | Verified in software | AT-CLOUD-007 | 2 | A restricted account keeps its sites up and its work running, can read, export, restore, go back to an earlier release and close a project, and starts nothing new, by a person or a push. Also tried on a real server. An unpaid account is not ended or deleted by anything here |
 | FCP-CLOUD-008 | Customer controlled profile | Partial | AT-CLOUD-008 | 1 | What it depends on, what stops when cut off, and what an operator can do. Each row has its evidence, and they have not been run together: no customer network has |
 | FCP-CLOUD-009 | Service ownership | Partial | AT-CLOUD-009 | 1 | A provider going away tells each project what it has there and what moving it would take, once, and stops taking new work on the day. Names and support periods are the company's to fill in, and none are |
-| FCP-DR-001 | Complete backups | Partial | AT-DR-001 | 1 | Cloud's database comes back whole through real dump and restore, and held as it should be. Repositories, objects and keys have not been restored at the same time |
+| FCP-DR-001 | Complete backups | Verified in software | AT-DR-001 | 2 | Database, repositories, artifacts and the key come back together somewhere new and are checked before anything is claimed, on one machine. Customer databases come back through restore plans, tested apart. No real region or provider |
 | FCP-DR-002 | Restore isolation | Verified in software | AT-DR-002 | 3 | A real pg_dump and pg_restore: what was waiting does not run, and a person releases the rest. Noticed by database identity and timeline |
 | FCP-DR-003 | Tenant-level recovery | Verified in software | AT-DR-003 | 2 | Through real dump and restore, on the kernel's schema and Cloud's. The task itself has not been run, and a full ERP schema has not been taken back: circular references were read from a real one. Files are not checked against the store, and a resource made since is left at its provider |
-| FCP-DR-004 | Key recovery test | Partial | AT-DR-004 | 0 | Documented, not exercised |
+| FCP-DR-004 | Key recovery test | Partial | AT-DR-004 | 1 | Recovery without the primary database works through the operator's copy of the key, with no plaintext in the backup. There is no KMS path to remove, so that half of the scenario cannot be run here |
 | FCP-DR-005 | Failover fencing | Verified in software | AT-DR-005 | 1 | It stops before its time at the witness runs out, and does not take the right back. Gateways have their own fencing. One machine |
 | FCP-DR-006 | Object and Git integrity | Verified in software | AT-DR-006 | 2 | Real repositories with a damaged pack and a missing LFS object. It is run by hand after a restore, and has not been run on a restored Gitea |
-| FCP-DR-007 | Capacity recovery | Partial | AT-DR-007 | 1 | Fair dispatch; no reconnect storm test |
+| FCP-DR-007 | Capacity recovery | Partial | AT-DR-007 | 2 | A hundred chargers reconnecting at once were all back in 1.4 s on one machine, with waiting work through in 2.3 s. Nothing limits the rate of reconnection, and there is no profile target to meet |
 | FCP-DR-008 | Update trust | Verified in software | AT-DR-008 | 4 | A gateway refuses a release that is unsigned, expired, not newer or was rolled back here, and a bad file never replaces what runs. A node refuses a snapshot that is older or not signed by a key it holds. A bundle changed after signing is refused and an older revocation list is ignored. An app store's listing has no expiry of its own |
 | FCP-DR-009 | Runbook exercise | Partial | AT-DR-009 | 0 | Written. Nobody who did not write it has followed it |
 | FCP-DR-010 | RPO RTO evidence | Partial | AT-DR-010 | 1 | Dump, restore and start measured once, on one laptop and a small database. No zone, database or provider failed, so no objective is claimed |
@@ -258,8 +258,8 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-QUAL-003 | Independent review | Blocked externally | AT-QUAL-003 | 0 | Needs an independent assessor |
 | FCP-QUAL-004 | Provider qualification | Blocked externally | AT-QUAL-004 | 0 | Needs real provider tenants |
 | FCP-QUAL-005 | Hardware qualification | Blocked externally | AT-QUAL-005 | 0 | Needs equipment and a site |
-| FCP-QUAL-006 | Golden journeys | Partial | AT-QUAL-006 | 0 | Ten of twelve have their steps exercised in parts, none run whole, two not run. The check keeps that visible |
-| FCP-QUAL-007 | Mutation and fault coverage | Partial | AT-QUAL-007 | 0 | Mutants for what they cover; none for new platform work yet |
+| FCP-QUAL-006 | Golden journeys | Partial | AT-QUAL-006 | 0 | J07 runs whole on real gateway processes and J09 is exercised in parts; ten of twelve in parts, none whole against real providers or equipment, J12 not run. The check keeps that visible |
+| FCP-QUAL-007 | Mutation and fault coverage | Verified in software | AT-QUAL-007 | 2 | Every survivor led to a stronger test: seven at the last full Cloud run, and three since, one of which had been changing the wrong function. Every mutant added in this work is caught. CI checks each still finds its text; the full sets run weekly and by hand, and were not rerun after the last changes |
 | FCP-QUAL-008 | Release evidence integrity | Verified in software | AT-QUAL-008 | 3 | For a release: an artifact that is not what was built or signed is refused before it is promoted, and a node refuses bytes that are not what they are named. Ferrum's own image is attested, and that is checked at deployment only on a cluster |
-| FCP-QUAL-009 | Supported limits | Partial | AT-QUAL-009 | 2 | Upgrades get 501, oversized bodies 413, replicas past 16 are refused. A node's figures are measured once on a laptop, and no limit in the documentation is measured on anything else |
+| FCP-QUAL-009 | Supported limits | Verified in software | AT-QUAL-009 | 2 | An upgrade request gets 501, an oversized body 413, more than 16 replicas is refused, and a hard budget refuses what would pass it. The documented figures were measured once, on a laptop, and no envelope is qualified |
 
