@@ -149,6 +149,17 @@ JavaScript ran its server action on either replica, images were optimised and pa
 fault in the serving node: a previous release's files were answered before the site's server, so the old `index.html`
 stood in for Next.js's page. The server now answers first, and the old files only answer what it has not got. On-demand
 revalidation reaches only the replica that took it, which the support table says.
+Customers' own domains get their certificates from Caddy's on-demand TLS (Cloud #12, FCP-WEB-007). Caddy asks the
+serving node before it gets a certificate and again before it renews one, and the node answers from the signed
+snapshot it holds, so only a name it serves gets one, whether or not the management plane is up. Against Pebble with
+30-second certificates:
+- a served name was given a certificate and an unknown name none;
+- the certificate was renewed;
+- a name moved to another workspace served what that workspace released;
+- a name that stopped proving itself was answered with 404 at once and let go at its renewal;
+- with the CA stopped, the edge went on serving on the certificate it had.
+The blackbox exporter looks at every name the nodes serve, so a certificate that is not being renewed raises an alert;
+promtool shows those rules firing on their conditions. No public CA has issued one yet.
 The platform's database grows or shrinks through `deploy/scale-database.sh` (FCP-SCALE-003), which changes nothing while replication is impaired, says why, and refuses what is never safe. The cluster check fenced a standby and saw a change refused with the cluster unchanged, then went to two instances and back to three under writes.
 The cluster check now makes room on its runner first, after one run's database could not pull its image with 97 MB left.
 
