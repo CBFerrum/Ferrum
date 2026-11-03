@@ -9,9 +9,9 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 129 |
+| Implemented, qualification incomplete | 130 |
 | Partially implemented | 53 |
-| Missing | 39 |
+| Missing | 38 |
 | Blocked by external dependency | 10 |
 | **All** | **231** |
 
@@ -128,7 +128,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-ASSETS-002 | Finance books that keep their own values | Implemented, qualification incomplete | tested | Depreciation booked before a split is shared by the two assets: neither can then be cancelled; An asset a repair or a value adjustment changed is not split |
 | FERRUM-BOOKINGS-001 | Resources, buffers, capacity, waitlist, cancellation, guest pages | Implemented, qualification incomplete | probe |  |
 | FERRUM-BOOKINGS-002 | Recurring appointments | Implemented, qualification incomplete | tested | On local branch bookings/series, unpushed; A guest gets a confirmation per occurrence; Staff repeat a booking; guests cannot yet from the public page |
-| FERRUM-BOOKINGS-003 | Deposits and refunds | Missing | probe |  |
+| FERRUM-BOOKINGS-003 | Deposits and refunds | Implemented, qualification incomplete | tested | Only guests' bookings ask for a deposit; staff's bookings are paid as before; The rest is paid on the day: it is not asked for online beforehand; Refunds wait for a person's approval, as an order's do |
 | FERRUM-BOOKINGS-004 | External calendar synchronization | Partially implemented | probe | Signed feeds and add-to-calendar files go out; nothing is read back, so outside appointments do not block slots |
 | FERRUM-FIELD-001 | Work orders, dispatch, skills, contracts, checklists, signatures | Implemented, qualification incomplete | probe |  |
 | FERRUM-FIELD-002 | Preventive maintenance and an offline technician app | Partially implemented | read | Maintenance plans make work orders, once per visit; there is no offline technician app |
