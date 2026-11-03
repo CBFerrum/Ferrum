@@ -56,11 +56,12 @@ D-08 chose Gitea and called Forgejo "an equal alternative, not both". The quota 
 
 ## Order, and where each stands
 
-1. **Forgejo with its quota**, and Cloud's storage round removed: Cloud #11. Forgejo also runs from its own manifest,
-   checked in CI as it is configured.
+1. **Forgejo with its quota**, and Cloud's storage round removed: done (Cloud #11, D-08). Forgejo also runs from its
+   own manifest, checked in CI as it is configured.
 2. **Caddy's on-demand TLS** for customers' domains, tried against Pebble, and **Prometheus's blackbox exporter** for
    an alert when one is not being renewed: Cloud #12.
-3. **cargo-mutants** beside the hand-written mutants: tried on the contract crate first.
+3. **cargo-mutants** beside the hand-written mutants: on the contract crate first, where it found 82 changes no test
+   noticed, among them the address guard's ranges, token lifetimes and a refusal of IPv6 imports without a port.
 4. **Falco** for the egress and mining watch, with the Kubernetes runtime and not before. Today's runtime is Docker,
    for development and CI only (`ferrum-app-cloud:docs/operating-deploy.md`), and Falco watches the hosts that
    customers' workloads run on: wiring it to a runtime that will not run in production would prove nothing about the
