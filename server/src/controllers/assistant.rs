@@ -9,7 +9,7 @@ use crate::extract::{Auth, caller_on};
 use crate::shell::{self as sh, SHELL_BODY};
 use crate::state::{AppState, app_state};
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Redirect, Response};
 use ferrum_kernel::Error;
@@ -40,6 +40,17 @@ pub(crate) async fn page(st: &AppState, headers: &HeaderMap, uri: &Uri) -> ApiRe
 
 fn urlencoding(s: &str) -> String {
     s.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
+}
+
+/// `GET /api/assistant/suggestions?path=/erp/...`: what the app at that page suggests asking
+/// (`shell.assistant`), for a new conversation.
+async fn suggestions(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query<std::collections::HashMap<String, String>>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    let path = q.get("path").map(String::as_str).unwrap_or("/");
+    let route = path.strip_prefix('/').unwrap_or(path).split('/').next().unwrap_or_default();
+    let items = if route.is_empty() { vec![] } else { st.apps.assistant_domain(ctx.tenant, route).await? };
+    let domains: Vec<serde_json::Value> = items.iter().map(|i| json!({"title": i["title"], "suggestions": i["suggestions"]})).collect();
+    Ok(Json(json!({"domains": domains})).into_response())
 }
 
 /// `GET /api/assistant`: whether the person may use it, and their recent conversations.
@@ -144,6 +155,7 @@ pub fn routes() -> Routes {
     Routes::new()
         .add("/api/assistant", get(status))
         .add("/api/assistant/usage", get(usage))
+        .add("/api/assistant/suggestions", get(suggestions))
         .add("/api/assistant/threads", post(create))
         .add("/api/assistant/threads/{id}", get(read).delete(remove))
         .add("/api/assistant/threads/{id}/messages", post(send))

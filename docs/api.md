@@ -143,7 +143,7 @@ several workspaces in turn and is left as it is.
 
 ## Metadata — `/api/meta`
 
-* `GET /api/meta` → `{version, packages, modules: [{name, label, icon, order, items: ["EntityName" | "report:<name>"], package}], entities: [{name, label, label_plural, kind, module, icon, submittable, custom, permissions}], warnings}`
+* `GET /api/meta` → `{version, packages, modules: [{name, label, icon, order, items: ["EntityName" | "report:<name>"], package}], entities: [{name, label, label_plural, kind, module, icon, description, submittable, custom, permissions}], warnings}` (`description`: what the record type is for, which the help center at `/data/help/` searches)
 * `GET /api/meta/{Entity}` → full description used to render forms and lists:
   `{name, label, label_plural, kind (master|document|child|settings|ledger), module, title_field, submittable, mergeable, linked_from: [{entity, label, field, field_label}] (the lists the caller may read that link here; `field` is a filter path, so `items.item` for a child table's row), company_scoped, numbering, list: {columns, sort}, form: [{label, fields, columns (1-4), collapsible, tab?, visible_if?}], search_fields, rules, actions: [{name, label, docstatus[], permission, confirm?, condition?, read_only?, params?, group?}], workflow?: {initial_state, states: [{name, docstatus, edit_roles}], transitions: [{action, from, to, roles, condition?, not_creator}]}, fields: [Field], children: {tableField: {entity, label, fields: [Field]}}, permissions: {read|write|create|delete|submit|cancel|export|import: "none"|"own"|"all"}}`
 * `Field`: `{name, label, type, required?, unique?, read_only?, hidden?, in_list?, in_filter?, options?, to?, of?, precision?, currency?, min?, max?, max_length?, default?, default_expr?, computed?, visible_if?, required_if?, read_only_if?, fetch_from?, description?, link_filters?, storage: "column"|"ext", can_read, can_write}`.
@@ -630,6 +630,11 @@ its metadata for those who may read it: `{entity, id, title, kind, number, icon,
 records from before their workflow), else Draft/Submitted/Cancelled for submittable records;
 `fields` are up to six the list shows, not the title, a link as the linked record's title, masked
 as reads are. Cached by the browser for 30 seconds.
+
+The assistant (`/api/assistant`) adds to the context of each message what the app of the page it was
+written in says about its records (`shell.assistant: [{id, title, instructions, suggestions}]`), and
+`GET /api/assistant/suggestions?path=` gives that app's suggested questions for a new conversation.
+Under each answer the panel lists the records, lists and reports its reads looked at.
 
 An app may serve its entities' cards itself (`shell.card: [{entity, endpoint}]`): the bar then asks
 `GET {endpoint}?id=` and draws `{title, kind?, number?, icon?, state?, fields?: [{label, value,

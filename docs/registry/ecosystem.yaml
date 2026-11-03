@@ -11,7 +11,7 @@ requirements:
   - {id: FERRUM-ECOSYSTEM-006, title: Website and CMS, spec: "9", status: partial, files: ["ferrum-app-commerce:src/pages.rs"], limits: ["Commerce's storefront pages only"]}
   - {id: FERRUM-ECOSYSTEM-007, title: "Customer, supplier and partner portals", spec: "9", status: partial, files: [server/shell/portal.js, "ferrum-app-helpdesk:ui/src/Portal.tsx"], limits: ["A portal shell with tickets and invoices; no supplier or partner portal"]}
   - {id: FERRUM-ECOSYSTEM-008, title: Contract lifecycle management, spec: "9", deps: [FERRUM-SIGN-001]}
-  - {id: FERRUM-ECOSYSTEM-009, title: Subscription and revenue operations, spec: "9", status: partial, files: ["ferrum-app-erp:addons/finance/src/subscription.rs"], limits: ["Finance's subscriptions; no dunning-to-entitlement loop"]}
+  - {id: FERRUM-ECOSYSTEM-009, title: Subscription and revenue operations, spec: "9", status: partial, files: ["ferrum-app-erp:addons/finance/src/subscription.rs", "ferrum-app-commerce:src/subscriptions.rs"], limits: ["Finance bills subscriptions and Commerce sells them (Store Subscriptions); an overdue renewal makes one Past Due, which ends what ferrum_app_commerce::entitled grants, and paying it restores it", "No revenue recognition schedules, MRR or churn reports"]}
   - {id: FERRUM-ECOSYSTEM-010, title: Governed enterprise analytics, spec: "9", deps: [FERRUM-STUDIO-001]}
   - {id: FERRUM-ECOSYSTEM-011, title: Portfolio and objectives, spec: "9", deps: [FERRUM-PROJECTS-002]}
   - {id: FERRUM-ECOSYSTEM-012, title: Digital asset management, spec: "9", deps: [FERRUM-DRIVE-001]}
