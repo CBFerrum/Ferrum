@@ -195,6 +195,9 @@ deploy/kind/install.sh && deploy/kind/smoke.sh
 * Schema changes are forward-only migrations plus a metadata → DDL sync, both run at boot under
   advisory locks, so rolling several replicas at once is safe. Upgrades only add tables, columns
   and indexes; nothing is dropped automatically (orphaned columns are reported in the logs).
+* Indexes the sync adds to entity tables are built concurrently, so writes carry on, and a build that
+  failed is dropped and built again at the next start. The release that gave lists an index in their
+  default order adds one per entity: on large tables the first start after it takes a while.
 * Roll forward with the image tag (`kubectl -n ferrum set image deploy/ferrum ferrum=<image>`);
   `maxUnavailable: 0` keeps capacity during the rollout.
 * Rolling back the image is safe while the newer migrations are additive (the norm). If a release
