@@ -11,6 +11,8 @@
 #   * a workspace is created and seeded; someone signs in, submits a Sales Invoice, prints it as
 #     HTML and PDF and attaches a file, which every replica then serves from object storage;
 #   * the database primary is killed: writes resume on the new primary, nothing is lost;
+#   * with a standby fenced off, growing or shrinking the database is refused, saying why; back, it
+#     goes to two instances and three again under writes, and what is never safe is refused at once;
 #   * the API is restarted replica by replica under traffic without a failed request;
 #   * a backup is taken and restored into a new database cluster holding the latest writes;
 #   * with a base domain (shapes B and C): one person signs in once, at the accounts host, and
@@ -230,6 +232,31 @@ echo "    $now promoted after $promoted s; writes resumed $outage s after $old w
 [ "$outage" -le 90 ] || fail "writes were held up for $outage s"
 for _ in $(seq 1 20); do invoice "" -o /dev/null || fail "a write after the failover"; done
 [ "$(c -f "${auth[@]}" "$API/api/v1/SalesInvoice/$id" | json 'd["docstatus"]')" = 1 ] || fail "the invoice after the failover"
+
+step "growing or shrinking the database waits for its standbys (deploy/scale-database.sh)"
+# A standby fenced off: replication is impaired, so a change is refused, saying why, and nothing changes.
+standby=$(k get cluster ferrum-db -o json | json '[n for n in d["status"]["instanceNames"] if n != d["status"]["currentPrimary"]][0]')
+k annotate cluster ferrum-db cnpg.io/fencedInstances="[\"$standby\"]" --overwrite >/dev/null
+for _ in $(seq 1 120); do [ "$(k get cluster ferrum-db -o jsonpath='{.status.readyInstances}')" -lt 3 ] && break; sleep 1; done
+if out=$(../scale-database.sh --instances 2 2>&1); then fail "the database was changed while a standby was fenced: $out"; fi
+grep -q "not changed: replication is not healthy" <<<"$out" || fail "the refusal does not say why: $out"
+[ "$(k get cluster ferrum-db -o jsonpath='{.spec.instances}')" = 3 ] || fail "a refused change changed the database"
+# Back, it goes ahead: two instances (one synchronous standby), then three again, with writes throughout.
+k annotate cluster ferrum-db cnpg.io/fencedInstances- >/dev/null
+../scale-database.sh --instances 2 --wait 600 || fail "two instances once the standby was back"
+invoice "" -o /dev/null || fail "a write with two instances"
+../scale-database.sh --instances 3 --wait 600 || fail "three instances again"
+invoice "" -o /dev/null || fail "a write with three instances again"
+# What is never safe is refused at once.
+if out=$(../scale-database.sh --instances 1 2>&1); then fail "writes were left without a synchronous standby: $out"; fi
+grep -q "synchronous standby" <<<"$out" || fail "$out"
+if out=$(../scale-database.sh --storage 1Gi 2>&1); then fail "a volume shrank: $out"; fi
+grep -q "volumes only grow" <<<"$out" || fail "$out"
+class=$(kubectl get storageclass -o jsonpath='{.items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")].metadata.name}')
+if [ "$(kubectl get storageclass "$class" -o jsonpath='{.allowVolumeExpansion}')" != true ]; then
+  if out=$(../scale-database.sh --storage 200Gi 2>&1); then fail "a volume grew on a class that cannot grow one: $out"; fi
+  grep -q "cannot grow a volume" <<<"$out" || fail "$out"
+fi
 k wait cluster/ferrum-db --for=condition=Ready --timeout=10m
 
 step "restarting the API under traffic"
