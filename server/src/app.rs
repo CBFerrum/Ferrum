@@ -172,14 +172,12 @@ impl Hooks for App {
             .map_err(Error::Message)?;
         let mailer: Option<Arc<dyn Mailer>> = ctx.mailer.clone().map(|sender| Arc::new(LocoMailer { sender, from: None, smtp }) as Arc<dyn Mailer>);
         let jwt = ctx.config.auth.as_ref().and_then(|a| a.jwt.as_ref()).ok_or_else(|| Error::Message("auth.jwt is not configured".into()))?;
-        let secret_key = secret_key(&settings, &jwt.secret, &ctx.environment)?;
-        let retired = settings
-            .retired_secret_keys
-            .split(',')
-            .map(str::trim)
-            .filter(|k| !k.is_empty())
-            .map(|k| ferrum_kernel::secret::SecretKey::from_base64(k).map_err(|e| Error::Message(format!("settings.retired_secret_keys: {e}"))))
-            .collect::<Result<Vec<_>>>()?;
+        let transit = kms_transit(&settings)?;
+        let secret_key = secret_key(&settings, transit.as_ref(), &jwt.secret, &ctx.environment).await?;
+        let mut retired = Vec::new();
+        for k in settings.retired_secret_keys.split(',').map(str::trim).filter(|k| !k.is_empty()) {
+            retired.push(ferrum_kernel::kms::resolve(k, transit.as_ref()).await.map_err(|e| Error::Message(format!("settings.retired_secret_keys: {e}")))?);
+        }
         plugins.seal_with(secret_key.clone());
         plugins.open_also_with(retired.clone());
         let kernel = Kernel::boot(
@@ -475,6 +473,7 @@ impl Hooks for App {
     fn register_tasks(tasks: &mut Tasks) {
         tasks.register(crate::tasks::CreateTenant);
         tasks.register(crate::tasks::Doctor);
+        tasks.register(crate::tasks::KmsWrap);
         tasks.register(crate::tasks::AccountState);
         tasks.register(crate::tasks::ReapplyErasures);
         tasks.register(crate::tasks::SyncSchema);
@@ -648,14 +647,33 @@ fn push_services(listed: &str) -> Vec<String> {
     if listed.is_empty() { ferrum_kernel::webpush::PUSH_SERVICES.iter().map(|s| s.to_string()).collect() } else { listed }
 }
 
-/// The key sealing secret fields: configured (`FERRUM_SECRET_KEY`), required in production; in
-/// development derived from the JWT secret so secret fields work out of the box.
-fn secret_key(settings: &Settings, jwt_secret: &str, env: &Environment) -> Result<ferrum_kernel::secret::SecretKey> {
+/// The Transit key that unwraps keys configured as ciphertext (`FERRUM_KMS_TRANSIT`), signing in as
+/// the environment says (crates/kernel/src/kms.rs).
+pub fn kms_transit(settings: &Settings) -> Result<Option<ferrum_kernel::kms::Transit>> {
+    let url = settings.kms_transit.trim();
+    if url.is_empty() {
+        return Ok(None);
+    }
+    ferrum_kernel::kms::Transit::from_env(url, |name| std::env::var(name).ok()).map(Some).map_err(|e| Error::Message(e.to_string()))
+}
+
+/// The key sealing secret fields: printed by `FERRUM_SECRET_KEY_COMMAND`, or configured
+/// (`FERRUM_SECRET_KEY`, itself or as Transit ciphertext), required in production; in development
+/// derived from the JWT secret so secret fields work out of the box.
+async fn secret_key(
+    settings: &Settings,
+    transit: Option<&ferrum_kernel::kms::Transit>,
+    jwt_secret: &str,
+    env: &Environment,
+) -> Result<ferrum_kernel::secret::SecretKey> {
+    if !settings.secret_key_command.trim().is_empty() {
+        return ferrum_kernel::kms::from_command(&settings.secret_key_command).await.map_err(|e| Error::Message(e.to_string()));
+    }
     if !settings.secret_key.trim().is_empty() {
-        return ferrum_kernel::secret::SecretKey::from_base64(&settings.secret_key).map_err(|e| Error::Message(format!("settings.secret_key: {e}")));
+        return ferrum_kernel::kms::resolve(&settings.secret_key, transit).await.map_err(|e| Error::Message(format!("settings.secret_key: {e}")));
     }
     if *env == Environment::Production {
-        return Err(Error::Message("FERRUM_SECRET_KEY is required in production (openssl rand -base64 32)".into()));
+        return Err(Error::Message("FERRUM_SECRET_KEY (or FERRUM_SECRET_KEY_COMMAND) is required in production (openssl rand -base64 32)".into()));
     }
     use sha2::Digest;
     Ok(ferrum_kernel::secret::SecretKey::new(sha2::Sha256::digest(format!("ferrum-secret-fields:{jwt_secret}")).into()))
