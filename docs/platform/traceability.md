@@ -5,9 +5,9 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Partial | 23 |
+| Partial | 22 |
 | Implemented, unverified | 1 |
-| Verified in software | 168 |
+| Verified in software | 169 |
 | Blocked externally | 5 |
 | **All** | **197** |
 
@@ -223,7 +223,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-OBS-001 | Telemetry correlation | Verified in software | AT-OBS-001 | 1 | One id from a request through other processes, also confirmed on a real server. There is no tracing backend, and logs go where a deployment sends them |
 | FCP-OBS-002 | Tenant telemetry isolation | Verified in software | AT-OBS-002 | 1 | Row-level security refuses another workspace's operations and events, however the question is put. There is no customer log service to refuse |
 | FCP-OBS-003 | Bounded cardinality | Verified in software | AT-OBS-003 | 1 | No tenant or site in a label |
-| FCP-OBS-004 | Operational alert coverage | Partial | AT-OBS-004 | 1 | Each alert fires on its condition under promtool, and a busy system is not taken for a stuck one. Nothing routes them to anyone |
+| FCP-OBS-004 | Operational alert coverage | Verified in software | AT-OBS-004 | 2 | Each alert fires on its condition under promtool and not otherwise, routes to its owner and every critical one to on-call under amtool, and a real Alertmanager delivers a cause with its runbook and holds back what it explains. The receivers there are stand-ins: real paging needs the deployment's addresses and keys |
 | FCP-OBS-005 | Metering idempotency | Verified in software | AT-OBS-005 | 2 | Replays, late usage and corrections, explained line by line. Builds are the only meter recording itself |
 | FCP-OBS-006 | Money precision | Verified in software | AT-OBS-006 | 2 | Exact numbers in the database, rounded a line at a time, half up, with currencies of no minor unit handled. Refunds are corrections. No invoice |
 | FCP-OBS-007 | Budget transparency | Verified in software | AT-OBS-007 | 1 | A month in progress says it is an estimate, and late usage is counted on the statement. No page shows it yet |
