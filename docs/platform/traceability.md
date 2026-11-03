@@ -5,9 +5,9 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Partial | 26 |
+| Partial | 25 |
 | Implemented, unverified | 1 |
-| Verified in software | 165 |
+| Verified in software | 166 |
 | Blocked externally | 5 |
 | **All** | **197** |
 
@@ -205,7 +205,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
 | FCP-SCALE-001 | Single scaler owner | Verified in software | AT-SCALE-001 | 1 | One HPA, and CI refuses a second owner of the count. Not applied to a cluster |
-| FCP-SCALE-002 | Connection budgeting | Partial | AT-SCALE-002 | 2 | The budget adds up in CI, the role has a limit, and doctor warns without one. Nothing has been scaled to its maximum with a migration running |
+| FCP-SCALE-002 | Connection budgeting | Verified in software | AT-SCALE-002 | 2 | Against real PostgreSQL: replicas at their pools' maximum use the role's whole budget, one more is told the database is busy (503), so is a request past its pool, and the reserve lets a migration in. CI checks the manifests add up. Not run on a cluster at its maximum |
 | FCP-SCALE-003 | Stateful scaling | Partial | AT-SCALE-003 | 0 | CNPG replicas only |
 | FCP-SCALE-004 | Budget enforcement | Verified in software | AT-SCALE-004 | 2 | Builds, running hours and held resources are counted, once an hour however many look, and a hard budget stops new ones with what is up left up. Storage is not metered by size |
 | FCP-SCALE-005 | Critical reserve | Verified in software | AT-SCALE-005 | 2 | On a gateway: only plain samples count against the budget and go first, commands and evidence are outside it, and with almost no disk it takes no new work and says why. Not tried on a disk that really filled, and the platform's own database has no such reserve |

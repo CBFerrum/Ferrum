@@ -7,6 +7,7 @@ use ferrum_kernel::{Db, DbConfig, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::Catalog;
 use serde_json::json;
 use std::path::Path;
+use std::time::Duration;
 use uuid::Uuid;
 
 #[test]
@@ -44,6 +45,42 @@ async fn scenario() {
     let held = k.doctor(30).await.unwrap();
     sqlx::raw_sql("alter role ferrum connection limit -1").execute(&root.pool).await.unwrap();
     assert_eq!(level(&held, "database.reserve"), Some(Level::Ok), "{held:?}");
+
+    // AT-SCALE-002: every replica at its pool's maximum while a migration starts. The role's limit holds, what is past
+    // it is told the database is busy rather than that something broke, and the reserve is there for whoever must get in.
+    let name = url.rsplit('/').next().unwrap().split('?').next().unwrap().to_string();
+    let budget = format!(
+        "drop role if exists ferrum_budget; create role ferrum_budget login password 'budget' connection limit 4; grant connect on database {name} to ferrum_budget"
+    );
+    sqlx::raw_sql(sqlx::AssertSqlSafe(budget)).execute(&root.pool).await.unwrap();
+    let as_budget = format!("postgres://ferrum_budget:budget@{}", url.split_once('@').unwrap().1);
+    let replica = |pool: u32| {
+        let url = as_budget.clone();
+        async move {
+            Db::connect(DbConfig { url, max_connections: pool, min_connections: pool, acquire_timeout: Duration::from_millis(300), ..Default::default() }).await
+        }
+    };
+    let (one, two) = (replica(2).await.expect("a replica"), replica(2).await.expect("another"));
+    let mut busy = vec![];
+    for db in [&one, &two] {
+        for _ in 0..2 {
+            busy.push(db.pool.begin().await.unwrap());
+        }
+    }
+    let third = replica(1).await.err().expect("a replica past the budget");
+    assert_eq!(third.status(), 503, "busy, not broken: {third}");
+    let past = one.pool.begin().await.map_err(ferrum_kernel::Error::from).err().expect("a request past its pool");
+    assert_eq!(past.status(), 503, "{past}");
+    let migration = Db::connect(DbConfig { url: format!("{base}/{name}"), max_connections: 1, ..Default::default() }).await.expect("the reserve");
+    sqlx::raw_sql("select 1").execute(&migration.pool).await.expect("and it works");
+    drop(busy);
+    for db in [one, two, migration] {
+        db.pool.close().await;
+    }
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!("revoke connect on database {name} from ferrum_budget; drop role ferrum_budget")))
+        .execute(&root.pool)
+        .await
+        .unwrap();
     assert_eq!(level(&healthy, "isolation.row_security"), Some(Level::Ok), "every table the kernel creates enforces it");
 
     sqlx::raw_sql("create table leaky (tenant_id uuid not null, notes text)").execute(&k.db.pool).await.unwrap();
