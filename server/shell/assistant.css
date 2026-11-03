@@ -571,3 +571,15 @@ summary:focus-visible {
   font-size: 11.5px;
   text-align: center;
 }
+
+/* What an answer drew on. */
+.fa-sources {
+  margin: 6px 0 0;
+  color: var(--ferrum-muted);
+  font-size: 12px;
+}
+.fa-sources a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}

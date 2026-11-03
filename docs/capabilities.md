@@ -9,10 +9,10 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 129 |
+| Implemented, qualification incomplete | 133 |
 | Partially implemented | 53 |
-| Missing | 40 |
-| Blocked by external dependency | 9 |
+| Missing | 35 |
+| Blocked by external dependency | 10 |
 | **All** | **231** |
 
 ## Platform
@@ -83,7 +83,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 |---|---|---|---|---|
 | FERRUM-UX-001 | Launcher, bar search, notifications, account switching, administration | Implemented, qualification incomplete | read | Tested per feature in three browsers in earlier work; no standing end-to-end suite in CI |
 | FERRUM-UX-002 | Command palette | Implemented, qualification incomplete | read | Finds, opens and creates; it does not run actions on the record in front of you; Tried in one browser; no standing browser test |
-| FERRUM-UX-003 | Help center | Missing | probe |  |
+| FERRUM-UX-003 | Help center | Implemented, qualification incomplete | tested | Made from each record type's own definition (what it is for, its fields, actions and rules): as good as the descriptions apps write; no hand-written how-to guides beyond the apps' READMEs in the store; Search is by words, not meaning; Not tried in a browser on a running server when it was built |
 | FERRUM-UX-004 | Application completeness contract per app | Partially implemented | read | Every app has a hand-crafted interface, listed under FERRUM-UX-009; no written contract says what each must cover |
 | FERRUM-UX-005 | WCAG 2.2 AA qualification | Blocked by external dependency | read | No automated accessibility checks in CI yet |
 | FERRUM-UX-006 | Translation, right-to-left, locale formatting | Missing | probe | No translation infrastructure was found in the core; money and dates format per workspace |
@@ -121,14 +121,14 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-POS-002 | Offline sales: versioned price book, device journal, re-pricing on arrival | Implemented, qualification incomplete | read | Stock is not preallocated to a till: the spec's overselling policy is unmet |
 | FERRUM-POS-003 | Printers | Blocked by external dependency | probe | No device code found; receipts print through the browser |
 | FERRUM-COMMERCE-001 | Catalog, cart, coupons, checkout, shipping, refunds, abandoned carts | Implemented, qualification incomplete | probe |  |
-| FERRUM-COMMERCE-002 | Subscriptions | Missing | probe |  |
+| FERRUM-COMMERCE-002 | Subscriptions | Implemented, qualification incomplete | tested | Each renewal is a payment request the customer pays: no card kept on file to charge without them; No email of its own for a renewal: the request and the commerce.invoice_paid event are there for a mail or gateway plugin; Plans are not changed from the portal |
 | FERRUM-COMMS-001 | Mail, shared mailboxes, chat, calendar, meetings, CalDAV and CardDAV | Implemented, qualification incomplete | probe |  |
 | FERRUM-COMMS-002 | Captions, transcripts, recording, presence | Missing | probe |  |
 | FERRUM-ASSETS-001 | Assets, depreciation, movements, maintenance, disposal | Implemented, qualification incomplete | probe |  |
 | FERRUM-ASSETS-002 | Finance books that keep their own values | Implemented, qualification incomplete | tested | Depreciation booked before a split is shared by the two assets: neither can then be cancelled; An asset a repair or a value adjustment changed is not split |
 | FERRUM-BOOKINGS-001 | Resources, buffers, capacity, waitlist, cancellation, guest pages | Implemented, qualification incomplete | probe |  |
 | FERRUM-BOOKINGS-002 | Recurring appointments | Implemented, qualification incomplete | tested | On local branch bookings/series, unpushed; A guest gets a confirmation per occurrence; Staff repeat a booking; guests cannot yet from the public page |
-| FERRUM-BOOKINGS-003 | Deposits and refunds | Missing | probe |  |
+| FERRUM-BOOKINGS-003 | Deposits and refunds | Implemented, qualification incomplete | tested | Only guests' bookings ask for a deposit; staff's bookings are paid as before; The rest is paid on the day: it is not asked for online beforehand; Refunds wait for a person's approval, as an order's do |
 | FERRUM-BOOKINGS-004 | External calendar synchronization | Partially implemented | probe | Signed feeds and add-to-calendar files go out; nothing is read back, so outside appointments do not block slots |
 | FERRUM-FIELD-001 | Work orders, dispatch, skills, contracts, checklists, signatures | Implemented, qualification incomplete | probe |  |
 | FERRUM-FIELD-002 | Preventive maintenance and an offline technician app | Partially implemented | read | Maintenance plans make work orders, once per visit; there is no offline technician app |
@@ -155,7 +155,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-ECOSYSTEM-006 | Website and CMS | Partially implemented | probe | Commerce's storefront pages only |
 | FERRUM-ECOSYSTEM-007 | Customer, supplier and partner portals | Partially implemented | probe | A portal shell with tickets and invoices; no supplier or partner portal |
 | FERRUM-ECOSYSTEM-008 | Contract lifecycle management | Missing | probe |  |
-| FERRUM-ECOSYSTEM-009 | Subscription and revenue operations | Partially implemented | probe | Finance's subscriptions; no dunning-to-entitlement loop |
+| FERRUM-ECOSYSTEM-009 | Subscription and revenue operations | Partially implemented | probe | Finance bills subscriptions and Commerce sells them (Store Subscriptions); an overdue renewal makes one Past Due, which ends what ferrum_app_commerce::entitled grants, and paying it restores it; No revenue recognition schedules, MRR or churn reports |
 | FERRUM-ECOSYSTEM-010 | Governed enterprise analytics | Missing | probe |  |
 | FERRUM-ECOSYSTEM-011 | Portfolio and objectives | Missing | probe |  |
 | FERRUM-ECOSYSTEM-012 | Digital asset management | Missing | probe |  |
@@ -179,7 +179,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | Id | Requirement | Status | Basis | Known limitations |
 |---|---|---|---|---|
 | FERRUM-CONNECT-001 | Shared connector infrastructure: credentials, mapping, sync, reconciliation | Implemented, qualification incomplete | tested | Tested against stand-in providers only: no real provider uses it yet; Refresh tokens for a person-authorized OAuth app are not brokered: only client credentials are; Deletions do not go out to providers; A provider that says wait is left alone per connection; there is no budget shared across connections; Large media still goes through the plugin bridge; streaming by reference is not built; Egress is not restricted per connection |
-| FERRUM-CONNECT-002 | Connector catalog with what each provider's API really offers | Missing | read |  |
+| FERRUM-CONNECT-002 | Connector catalog with what each provider's API really offers | Blocked by external dependency | read | The machinery is built: each connector states what its provider's API offers (ConnectorInfo: streams, writes, webhooks, API version, capabilities) and GET /api/admin/connectors lists them; No provider's connector is finished: that takes its real API or approved sandbox, which only accounts at each provider give |
 | FERRUM-CONNECT-003 | Payment gateways | Blocked by external dependency | tested | Stripe, Razorpay and PayPal tested against stand-ins and, for Stripe and PayPal, their published API definitions; never against a live or sandbox account here; Money that cannot be booked becomes a Payment Exception a person decides; a gateway cannot approve one; None is certified |
 | FERRUM-CONNECT-004 | Tax and e-invoicing networks | Blocked by external dependency | read | Adapters written to published specifications; none has run against a live or sandbox provider here |
 | FERRUM-EXT-001 | Four extension classes with their security models | Partially implemented | read | Metadata, WASM and native exist; external services are not a declared class |
@@ -203,7 +203,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-AI-003 | Egress policy separate from read permission | Implemented, qualification incomplete | tested | Packages must mark entities `internal` and fields with perm_group: HR's are marked, others not yet reviewed; Fields free of any group go, whatever they hold |
 | FERRUM-AI-004 | Authorization-aware retrieval | Partially implemented | read | Tools run as the person, so reads are theirs; no retrieval index, so caches and embeddings do not arise yet |
 | FERRUM-AI-005 | Evaluation datasets and prompt-injection tests | Partially implemented | tested | An adversarial test with a model that obeys injected instructions; no evaluation against real models, no grounded-answer datasets, no recorded prompt versions |
-| FERRUM-AI-006 | Domain-specific assistants with sources shown | Missing | probe |  |
+| FERRUM-AI-006 | Domain-specific assistants with sources shown | Implemented, qualification incomplete | read | An app tells the assistant about its records through shell.assistant, added to the context of each message written in its pages; ERP's is written, other apps' not yet; Sources are the records, lists and reports the answer's reads looked at, shown under it; what the model took from each is not marked sentence by sentence; Not tried in a browser against a real model when it was built |
 
 ## Cloud
 

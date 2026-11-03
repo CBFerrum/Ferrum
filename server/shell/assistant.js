@@ -245,6 +245,9 @@ let thread = null; // {id, title, state, messages, pending, draft}
 let following = null; // the event stream being read
 let poll = 0;
 const tools = new Map(); // tool call id → its row
+const results = new Map(); // tool call id → the start of its result
+let sources = []; // what the answer being drawn drew on: reads since the person's last words
+let domains = null; // what the app the panel was opened from suggests asking there
 let draftNode = null;
 let pendingNode = null;
 let menuOpen = false;
@@ -343,17 +346,59 @@ function toolRow(item) {
   return row;
 }
 
+// What an answer drew on: the records, lists and reports its reads looked at.
+const READS = new Set(["get_record", "search_records", "run_report", "get_audit_trail"]);
+const NAMED = /"(?:number|title|full_name|customer_name|supplier_name|item_name|subject|name)"\s*:\s*"([^"]{1,80})"/;
+
+function sourceOf(item) {
+  const i = item.input ?? {};
+  const err = results.get(item.id)?.error;
+  if (err) return null;
+  if (i.entity && i.id && (item.name === "get_record" || item.name === "get_audit_trail")) {
+    const named = NAMED.exec(results.get(item.id)?.text ?? "")?.[1];
+    return { href: `/open/${encodeURIComponent(i.entity)}/${encodeURIComponent(i.id)}`, text: `${i.entity} ${named ?? String(i.id).slice(0, 8)}` };
+  }
+  if (item.name === "search_records" && i.entity) return { href: `/open/${encodeURIComponent(i.entity)}`, text: `${i.entity} (searched)` };
+  if (item.name === "run_report" && i.name) return { href: `/data/r/${encodeURIComponent(i.name)}`, text: `Report ${i.name}` };
+  return null;
+}
+
+function sourcesNode(items) {
+  const seen = new Set();
+  const links = items.map(sourceOf).filter((s) => s && !seen.has(s.href) && seen.add(s.href));
+  if (!links.length) return null;
+  return el(
+    "p",
+    { class: "fa-sources" },
+    el("span", { class: "fa-sources-label", text: "Sources: " }),
+    ...links.flatMap((s, n) => [n ? ", " : "", el("a", { href: s.href, "data-here": "", text: s.text })]),
+  );
+}
+
 function drawMessage(m) {
   if (m.role === "user") {
-    for (const it of m.items.filter((x) => x.kind === "result")) tools.get(it.id)?.finish(it.error, it.text);
+    for (const it of m.items.filter((x) => x.kind === "result")) {
+      results.set(it.id, it);
+      tools.get(it.id)?.finish(it.error, it.text);
+    }
     const words = m.items.find((x) => x.kind === "text");
+    if (words) sources = [];
     return words ? el("div", { class: "fa-msg fa-user", "data-seq": m.seq }, el("div", { class: "fa-bubble", text: words.text })) : null;
   }
   const node = el("div", { class: "fa-msg fa-bot", "data-seq": m.seq });
   for (const it of m.items) {
     if (it.kind === "text" && it.text) node.append(rich(it.text));
     else if (it.kind === "thinking") node.append(el("details", { class: "fa-thinking" }, el("summary", { text: "Reasoning" }), rich(it.text)));
-    else if (it.kind === "tool") node.append(toolRow(it));
+    else if (it.kind === "tool") {
+      node.append(toolRow(it));
+      if (READS.has(it.name)) sources.push(it);
+    }
+  }
+  // An answer with no more calls closes the turn: what it drew on goes under it.
+  if (m.items.some((x) => x.kind === "text" && x.text) && !m.items.some((x) => x.kind === "tool") && sources.length) {
+    const s = sourcesNode(sources);
+    if (s) node.append(s);
+    sources = [];
   }
   return node.childElementCount ? node : null;
 }
@@ -420,8 +465,32 @@ function drawPending() {
 
 const SUGGESTIONS = ["What needs my attention today?", "Which invoices are overdue?", "Summarize what changed this week", "Find a customer and their open orders"];
 
+/** The questions to offer: those of the app the panel was opened from, else the general ones. */
+function suggested() {
+  const own = (domains ?? []).flatMap((d) => d.suggestions ?? []);
+  return (own.length ? own : SUGGESTIONS).slice(0, 6);
+}
+
+/** What the app the panel was opened from suggests asking there (its `shell.assistant`). */
+async function loadDomains() {
+  if (!inPanel) return;
+  let path = "/";
+  try {
+    path = window.parent.location.pathname;
+  } catch {}
+  try {
+    const r = await api("GET", `/api/assistant/suggestions?path=${encodeURIComponent(path)}`);
+    domains = r.domains?.length ? r.domains : null;
+  } catch {
+    domains = null;
+  }
+  if (domains && !thread?.messages?.length) drawThread();
+}
+
 function drawThread() {
   tools.clear();
+  results.clear();
+  sources = [];
   draftNode = null;
   pendingNode = null;
   log.replaceChildren();
@@ -432,12 +501,12 @@ function drawThread() {
         "div",
         { class: "fa-empty" },
         el("span", { class: "fa-mark" }, icon("sparkles", 22)),
-        el("h2", { text: "How can I help?" }),
+        el("h2", { text: domains ? `How can I help with ${domains[0].title}?` : "How can I help?" }),
         el("p", { text: "Ask about your records, or ask me to do something. I work with your permissions, and I ask before changing anything." }),
         el(
           "div",
           { class: "fa-suggestions" },
-          ...SUGGESTIONS.map((s) => el("button", { type: "button", class: "fa-chip", text: s, onclick: () => ((input.value = s), send()) })),
+          ...suggested().map((s) => el("button", { type: "button", class: "fa-chip", text: s, onclick: () => ((input.value = s), send()) })),
         ),
       ),
     );
@@ -806,6 +875,7 @@ async function start() {
   const last = remembered() ?? status.threads?.find((t) => t.state !== "idle")?.id;
   if (last) await load(last);
   else drawThread();
+  loadDomains();
   shell()?.ready?.();
   if (!inPanel || !thread) input.focus({ preventScroll: true });
 }
