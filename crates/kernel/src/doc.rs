@@ -167,8 +167,8 @@ impl Kernel {
             let ts = crate::value::parse_datetime(&ts).map_err(Error::invalid)?;
             qb.push(format!(" and (a.{sort_field}, a.id) {} (", if desc { "<" } else { ">" })).push_bind(ts).push(", ").push_bind(id).push(")");
         }
-        let sort_expr = field_expr(&ent, &sort_field, "a").unwrap_or_else(|| "a.created_at".into());
-        qb.push(format!(" order by {sort_expr} {dir} nulls last, a.id {dir} limit ")).push_bind(limit + 1);
+        let order = query::order_by(&ent, &sort_field, desc, "a").unwrap_or_else(|| format!("a.created_at {dir}, a.id {dir}"));
+        qb.push(format!(" order by {order} limit ")).push_bind(limit + 1);
         if q.cursor.is_none() && offset > 0 {
             qb.push(" offset ").push_bind(offset as i64);
         }

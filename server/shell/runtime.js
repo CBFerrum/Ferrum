@@ -1265,7 +1265,8 @@ class FerrumBar extends HTMLElement {
     this.closePanels(false);
     if (!open) return;
     const person = boot?.person ?? {};
-    this.menu.replaceChildren(
+    // The DOM writes a null child as the text "null": only `el` leaves them out.
+    this.menu.replaceChildren(...[
       el(
         "div",
         { class: "who" },
@@ -1277,7 +1278,7 @@ class FerrumBar extends HTMLElement {
       boot?.api?.accounts ? el("a", { role: "menuitem", href: `${boot.api.accounts}/` }, icon("building-2", 16), el("span", { text: "Your workspaces" })) : null,
       el("hr"),
       el("button", { role: "menuitem", type: "button", onclick: () => guardedLeave(signOut) }, icon("log-out", 16), el("span", { text: "Sign out" })),
-    );
+    ].filter(Boolean));
     this.menu.hidden = false;
     this.meBtn.setAttribute("aria-expanded", "true");
     this.menu.querySelector("a, button")?.focus();
@@ -2263,9 +2264,11 @@ function fillTray() {
   });
   const finished = list.filter((u) => FINISHED.has(u.state));
   b.tray.replaceChildren(
-    el("h2", { text: "Uploads" }),
-    rows.length ? el("ul", {}, ...rows) : el("p", { class: "empty", text: "No uploads." }),
-    finished.length ? el("p", { class: "actions" }, el("button", { type: "button", text: "Clear finished", onclick: () => finished.forEach((u) => dismissUpload(u.id)) })) : null,
+    ...[
+      el("h2", { text: "Uploads" }),
+      rows.length ? el("ul", {}, ...rows) : el("p", { class: "empty", text: "No uploads." }),
+      finished.length ? el("p", { class: "actions" }, el("button", { type: "button", text: "Clear finished", onclick: () => finished.forEach((u) => dismissUpload(u.id)) })) : null,
+    ].filter(Boolean),
   );
 }
 
