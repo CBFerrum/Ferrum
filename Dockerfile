@@ -27,10 +27,11 @@ COPY third_party ./third_party
 COPY server ./server
 COPY packages ./packages
 ARG BUILD_SHA=dev
+ARG FEATURES=""
 ENV BUILD_SHA=${BUILD_SHA}
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p ferrum-server && cp target/release/ferrum /usr/local/bin/ferrum
+    cargo build --release --locked -p ferrum-server --features "${FEATURES}" && cp target/release/ferrum /usr/local/bin/ferrum
 
 FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 RUN apt-get update \
@@ -52,3 +53,25 @@ ENV LOCO_ENV=production \
 EXPOSE 5150
 ENTRYPOINT ["/usr/bin/tini", "--", "ferrum"]
 CMD ["start"]
+
+# The same server for running Cloud's controllers (--target cloud-controller --build-arg FEATURES=cloud), with
+# what they run: git for sources, PostgreSQL's tools for copies, and a container client for builds.
+FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3 AS cloud-controller
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl gnupg git tini \
+ && install -d /usr/share/postgresql-common/pgdg \
+ && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+ && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends postgresql-client-17 docker.io \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --system --uid 10001 --home-dir /app --shell /usr/sbin/nologin ferrum \
+ && mkdir -p /var/lib/cloud && chown -R 10001 /var/lib/cloud
+WORKDIR /app
+COPY --from=build /usr/local/bin/ferrum /usr/local/bin/ferrum
+COPY --from=build /src/server/config ./config
+COPY --from=build /src/packages ./packages
+USER 10001
+ENV LOCO_ENV=production
+ENTRYPOINT ["/usr/bin/tini", "--", "ferrum"]
+CMD ["task", "cloud_controller"]

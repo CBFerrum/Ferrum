@@ -103,7 +103,7 @@ ferrum-wms = { git = "https://github.com/CBFerrum/ferrum-app-erp", branch = "mai
 ferrum-mes = { git = "https://github.com/CBFerrum/ferrum-app-erp", branch = "main", optional = true }
 ferrum-ops = { path = "../crates/ops", optional = true }
 ferrum-app-edge = { git = "https://github.com/CBFerrum/ferrum-app-edge", branch = "main", optional = true }
-ferrum-app-cloud = { git = "https://github.com/CBFerrum/ferrum-app-cloud", branch = "w03-code-builds", optional = true }
+ferrum-app-cloud = { git = "https://github.com/CBFerrum/ferrum-app-cloud", branch = "w10-hardening", optional = true }
 ferrum-studio = { path = "../crates/studio", optional = true }
 ferrum-app-commerce = { git = "https://github.com/CBFerrum/ferrum-app-commerce", branch = "main", optional = true }
 ferrum-app-assets = { git = "https://github.com/CBFerrum/ferrum-app-assets", branch = "main", optional = true }

@@ -70,6 +70,100 @@ impl Task for CloudController {
     }
 }
 
+/// The workspace a task names by slug, and a context to act in it as the operator.
+#[cfg(feature = "cloud")]
+async fn acting_in(k: &ferrum_kernel::Kernel, slug: &str) -> Result<ferrum_kernel::Ctx> {
+    let mut tx = k.db.system_tx().await.map_err(|e| Error::Message(e.to_string()))?;
+    let tenant: Option<uuid::Uuid> =
+        sqlx::query_scalar("select id from tenant where slug = $1").bind(slug).fetch_optional(&mut *tx).await.map_err(|e| Error::Message(e.to_string()))?;
+    tx.commit().await.map_err(|e| Error::Message(e.to_string()))?;
+    let tenant = tenant.ok_or_else(|| Error::Message("no such workspace".into()))?;
+    let schema = k.registry.schema(tenant).await.map_err(|e| Error::Message(e.to_string()))?;
+    Ok(ferrum_kernel::Ctx::system(tenant, schema))
+}
+
+/// `cloud_restrict tenant:acme project:shop category:phishing scope:all detail:"..." [evidence:'{...}']`:
+/// stops a project being used for what it may not be, and nothing else.
+#[cfg(feature = "cloud")]
+pub struct CloudRestrict;
+
+#[cfg(feature = "cloud")]
+#[async_trait]
+impl Task for CloudRestrict {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "cloud_restrict".into(), detail: "Stops one project, and says why. Its people can still read, export and appeal".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let arg = |name: &str| vars.cli_arg(name).map_err(|e| Error::Message(e.to_string()));
+        let as_operator = acting_in(&k, arg("tenant")?).await?;
+        let mut tx = k.db.tenant_tx(as_operator.tenant).await.map_err(|e| Error::Message(e.to_string()))?;
+        let project: Option<uuid::Uuid> = sqlx::query_scalar("select id from cloud_project where tenant_id = $1 and slug = $2")
+            .bind(as_operator.tenant)
+            .bind(arg("project")?)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| Error::Message(e.to_string()))?;
+        tx.commit().await.map_err(|e| Error::Message(e.to_string()))?;
+        let project = project.ok_or_else(|| Error::Message("no such project".into()))?;
+        let evidence = match vars.cli_arg("evidence") {
+            Ok(text) => serde_json::from_str(text).map_err(|e| Error::Message(format!("evidence: {e}")))?,
+            Err(_) => serde_json::json!({}),
+        };
+        let stop = ferrum_app_cloud::abuse::Stop {
+            category: arg("category")?.to_string(),
+            scope: arg("scope")?.to_string(),
+            detail: arg("detail")?.to_string(),
+            evidence,
+        };
+        let id = ferrum_app_cloud::abuse::restrict(&k, &as_operator, project, stop).await.map_err(|e| Error::Message(e.to_string()))?;
+        println!("restricted: {id}");
+        Ok(())
+    }
+}
+
+/// `cloud_lift tenant:acme id:<restriction> note:"..."`: takes a restriction off.
+#[cfg(feature = "cloud")]
+pub struct CloudLift;
+
+#[cfg(feature = "cloud")]
+#[async_trait]
+impl Task for CloudLift {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "cloud_lift".into(), detail: "Takes a restriction off a project, and says why".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let arg = |name: &str| vars.cli_arg(name).map_err(|e| Error::Message(e.to_string()));
+        let as_operator = acting_in(&k, arg("tenant")?).await?;
+        let id = arg("id")?.parse().map_err(|_| Error::Message("id: not a restriction's id".into()))?;
+        ferrum_app_cloud::abuse::lift(&k, &as_operator, id, arg("note")?).await.map_err(|e| Error::Message(e.to_string()))?;
+        println!("lifted. What was running comes back with the next release");
+        Ok(())
+    }
+}
+
+/// `cloud_provider_notice provider:x ends:2027-06-30 [replacement:y] note:"..."`: says a provider is going away.
+#[cfg(feature = "cloud")]
+pub struct CloudProviderNotice;
+
+#[cfg(feature = "cloud")]
+#[async_trait]
+impl Task for CloudProviderNotice {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "cloud_provider_notice".into(), detail: "Says a provider is going away: each project using it is told what that means".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let arg = |name: &str| vars.cli_arg(name).map_err(|e| Error::Message(e.to_string()));
+        let ends = arg("ends")?.parse().map_err(|_| Error::Message("ends: a date, as 2027-06-30".into()))?;
+        let replacement = vars.cli_arg("replacement").ok();
+        let id = ferrum_app_cloud::notices::publish(&k, arg("provider")?, ends, replacement, arg("note")?).await.map_err(|e| Error::Message(e.to_string()))?;
+        println!("announced: {id}. The controller tells each project using it");
+        Ok(())
+    }
+}
+
 /// `release_restore note:"..."`: a person has looked at what came back from a backup.
 pub struct ReleaseRestore;
 
