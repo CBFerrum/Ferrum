@@ -212,6 +212,21 @@ pub struct Event {
     pub lease: chrono::DateTime<chrono::Utc>,
 }
 
+/// Whether this consumer should act on this event, asked in the transaction that does it. A repeat, even
+/// one arriving at the same moment, waits for the first to commit and is told no, and that it came stays
+/// on record. If the first rolls back, nothing happened, and the repeat is told yes.
+pub async fn first_time(tx: &mut Tx, tenant: Uuid, consumer: &str, event: i64) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "insert into event_receipt (tenant_id, consumer, event_id) values ($1, $2, $3) \
+         on conflict (tenant_id, consumer, event_id) do update set duplicates = event_receipt.duplicates + 1 returning duplicates = 0",
+    )
+    .bind(tenant)
+    .bind(consumer)
+    .bind(event)
+    .fetch_one(&mut **tx)
+    .await?)
+}
+
 /// How long a claimed batch is reserved for the worker handling it.
 const LEASE_SECS: f64 = 600.0;
 /// The same for webhooks: requests run side by side and time out after 10 seconds.
@@ -615,6 +630,11 @@ impl Kernel {
         let mut n =
             sqlx::query("delete from outbox where processed_at < now() - make_interval(days => $1)").bind(keep_days).execute(&mut *tx).await?.rows_affected();
         n += sqlx::query("delete from webhook_delivery where status = 'delivered' and updated_at < now() - make_interval(days => $1)")
+            .bind(keep_days)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        n += sqlx::query("delete from event_receipt where received_at < now() - make_interval(days => $1)")
             .bind(keep_days)
             .execute(&mut *tx)
             .await?

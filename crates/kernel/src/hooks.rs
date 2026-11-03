@@ -182,6 +182,7 @@ pub struct HookRegistry {
     job_handlers: HashMap<&'static str, Arc<dyn crate::jobs::JobHandler>>,
     connector_source: Option<Arc<dyn crate::connect::ConnectorSource>>,
     connectors: HashMap<String, Arc<dyn crate::connect::Connector>>,
+    resources: Option<Arc<dyn crate::resources::Resources>>,
     /// The packages owning what is being registered (see [`HookRegistry::scoped`]).
     scope: Option<Arc<[String]>>,
 }
@@ -367,6 +368,16 @@ impl HookRegistry {
     }
 
     /// Mounts `site` under the package's name; it answers only tenants that installed the package.
+    /// What provides declared resources on this server. There is at most one.
+    pub fn set_resources(&mut self, resources: Arc<dyn crate::resources::Resources>) -> &mut Self {
+        self.resources = Some(resources);
+        self
+    }
+
+    pub fn resources(&self) -> Option<&Arc<dyn crate::resources::Resources>> {
+        self.resources.as_ref()
+    }
+
     pub fn add_site(&mut self, package: &str, site: Arc<dyn Site>) -> &mut Self {
         self.sites.insert(package.to_string(), site);
         self

@@ -42,6 +42,7 @@ pub mod print;
 pub mod privacy;
 pub mod query;
 pub mod registry;
+pub mod resources;
 pub mod retention;
 pub mod scan;
 pub mod scim;
