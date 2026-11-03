@@ -32,7 +32,7 @@ async fn run(k: &Kernel, ctx: &Ctx, name: &str, args: &Value) -> Result<Value> {
             site::may(ctx, site::READ)?;
             let id = uuid(args, "id")?;
             site::command_site(k, ctx, id).await?;
-            commands::describe(k, ctx, id).await
+            commands::describe(k, ctx, id, None).await
         }
         _ => {
             site::may(ctx, site::DISPATCH)?;

@@ -422,9 +422,10 @@ struct Row {
     workflow_id: Option<String>,
     step_id: Option<String>,
     correlation_id: Option<String>,
+    taken_by: Option<Uuid>,
 }
 
-const ROW: &str = "state, site_id, domain, target_id, operation, issued_by, sent_at, conflict, workflow_id, step_id, correlation_id";
+const ROW: &str = "state, site_id, domain, target_id, operation, issued_by, sent_at, conflict, workflow_id, step_id, correlation_id, taken_by";
 
 impl Row {
     fn state(&self) -> Result<State> {
@@ -462,7 +463,7 @@ pub enum Applied {
 }
 
 /// Applies one report from the holder on `epoch`. Safe to repeat, and to deliver in any order.
-pub async fn apply(tx: &mut Tx, tenant: Uuid, r: &Report, epoch: i64) -> Result<Applied> {
+pub async fn apply(tx: &mut Tx, tenant: Uuid, r: &Report, epoch: i64, gateway: Uuid) -> Result<Applied> {
     let seen: Option<i32> = sqlx::query_scalar("select 1 from op_command_event where tenant_id = $1 and report_id = $2")
         .bind(tenant)
         .bind(r.report_id)
@@ -493,6 +494,24 @@ pub async fn apply(tx: &mut Tx, tenant: Uuid, r: &Report, epoch: i64) -> Result<
         )
         .await?;
         return Ok(Applied::Refused("this authority was replaced".into()));
+    }
+    // In a pooled domain, only the gateway that was given it knows anything about it.
+    if row.taken_by.is_some_and(|given| given != gateway) {
+        record(
+            tx,
+            tenant,
+            r.command_id,
+            Some(r.report_id),
+            r.state,
+            Step::Refuse,
+            Some(r.at_source),
+            None,
+            Some(r.epoch),
+            &json!({"refused": "from a gateway this was not given to", "detail": r.detail}),
+            r.evidence.as_ref(),
+        )
+        .await?;
+        return Ok(Applied::Refused("this command was given to another gateway".into()));
     }
     let reportable = matches!(
         r.state,
@@ -616,20 +635,33 @@ macro_rules! named {
     };
 }
 
-/// What a person sees of a command, with everything said about it.
-pub async fn describe(k: &Kernel, ctx: &Ctx, id: Uuid) -> Result<Value> {
+/// What a person sees of a command, with everything said about it, or everything since `after`. This
+/// is the whole story from any replica, so a client that was away for the ending reads it here, and one
+/// holding a position this history never reached (a backup was restored since) is told to start again.
+pub async fn describe(k: &Kernel, ctx: &Ctx, id: Uuid, after: Option<i64>) -> Result<Value> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let command: Option<Value> =
         sqlx::query_scalar(concat!("select ", named!(""), " where c.tenant_id = $1 and c.id = $2")).bind(ctx.tenant).bind(id).fetch_optional(&mut *tx).await?;
     let mut command = command.ok_or_else(|| Error::NotFound("command".into()))?;
-    let history: Vec<Value> =
-        sqlx::query_scalar("select to_jsonb(e) - 'tenant_id' - 'command_id' from op_command_event e where tenant_id = $1 and command_id = $2 order by seq")
-            .bind(ctx.tenant)
-            .bind(id)
-            .fetch_all(&mut *tx)
-            .await?;
+    let reached: Option<i64> = sqlx::query_scalar("select max(seq) from op_command_event where tenant_id = $1 and command_id = $2")
+        .bind(ctx.tenant)
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let history: Vec<Value> = sqlx::query_scalar(
+        "select to_jsonb(e) - 'tenant_id' - 'command_id' from op_command_event e where tenant_id = $1 and command_id = $2 and seq > $3 order by seq",
+    )
+    .bind(ctx.tenant)
+    .bind(id)
+    .bind(after.unwrap_or(0))
+    .fetch_all(&mut *tx)
+    .await?;
     tx.commit().await?;
     command["history"] = json!(history);
+    command["cursor"] = json!(reached);
+    if after.is_some_and(|a| a > reached.unwrap_or(0)) {
+        command["resync_required"] = json!(true);
+    }
     Ok(command)
 }
 
@@ -665,7 +697,7 @@ pub async fn settled(tx: &mut Tx, tenant: Uuid, domain: &str, ids: &[Uuid]) -> R
 }
 
 /// What the holder of `domains` is to receive: anything queued its journal has not confirmed.
-pub async fn take_for_site(tx: &mut Tx, tenant: Uuid, domain: &str, epoch: i64, want: i64) -> Result<Vec<Command>> {
+pub async fn take_for_site(tx: &mut Tx, tenant: Uuid, domain: &str, epoch: i64, want: i64, gateway: Uuid, pooled: bool) -> Result<Vec<Command>> {
     #[derive(sqlx::FromRow)]
     struct C {
         id: Uuid,
@@ -688,15 +720,21 @@ pub async fn take_for_site(tx: &mut Tx, tenant: Uuid, domain: &str, epoch: i64, 
         config_version: Option<String>,
     }
     let rows: Vec<C> = sqlx::query_as(
-        "update op_command set sent_at = coalesce(sent_at, now()) where (tenant_id, id) in ( \
-           select tenant_id, id from op_command where tenant_id = $1 and domain = $2 and state = 'Queued' and epoch = $3 and held_at is null \
-           and (sent_at is not null or expires_at > now()) order by issued_at limit $4 for update skip locked) \
+        "update op_command c set sent_at = coalesce(sent_at, now()), taken_by = $5, \
+           connection_generation = (select n.generation from op_connection n where n.tenant_id = c.tenant_id and n.device_id = c.target_id) \
+         where (tenant_id, id) in ( \
+           select o.tenant_id, o.id from op_command o where o.tenant_id = $1 and o.domain = $2 and o.state = 'Queued' and o.epoch = $3 and o.held_at is null \
+           and (o.sent_at is not null or o.expires_at > now()) \
+           and (not $6 or exists (select 1 from op_connection n where n.tenant_id = o.tenant_id and n.device_id = o.target_id and n.gateway_id = $5 and n.closed_at is null)) \
+           order by o.issued_at limit $4 for update skip locked) \
          returning id, site_id, domain, target_id, operation, schema_version, issued_by, approval_ref, epoch, expected_state, issued_at, expires_at, payload, payload_hash, workflow_id, step_id, correlation_id, config_version",
     )
     .bind(tenant)
     .bind(domain)
     .bind(epoch)
     .bind(want.clamp(0, 500))
+    .bind(gateway)
+    .bind(pooled)
     .fetch_all(&mut **tx)
     .await?;
     let mut out: Vec<Command> = rows
@@ -794,6 +832,28 @@ pub async fn mark_in_doubt(tx: &mut Tx, tenant: Uuid, domain: &str, epoch: i64, 
         .execute(&mut **tx)
         .await?;
     Ok(rows.len() as u64)
+}
+
+/// A device left the gateway that was given work for it. What that gateway's journal took may have
+/// started, so a person says what happened. What it never confirmed goes to whoever has the device now.
+pub async fn mark_moved(tx: &mut Tx, tenant: Uuid, device: Uuid, gateway: Uuid) -> Result<()> {
+    let rows: Vec<Uuid> = sqlx::query_scalar(
+        "select id from op_command where tenant_id = $1 and target_id = $2 and taken_by = $3 \
+         and (state in ('Accepted', 'Executing') or (state = 'Queued' and held_at is not null)) for update",
+    )
+    .bind(tenant)
+    .bind(device)
+    .bind(gateway)
+    .fetch_all(&mut **tx)
+    .await?;
+    for id in rows {
+        let row = load(tx, tenant, id).await?;
+        let detail = json!({"reason": "the device moved to another gateway while this may have been running"});
+        record(tx, tenant, id, None, State::OutcomeUnknown, Step::Move, None, None, None, &detail, None).await?;
+        set_state(tx, tenant, id, State::OutcomeUnknown, Some(&detail)).await?;
+        announce(tx, tenant, id, State::OutcomeUnknown, &row, &detail).await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
