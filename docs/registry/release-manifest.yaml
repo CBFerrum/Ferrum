@@ -11,12 +11,12 @@ components:
   - {repository: CBFerrum/ferrum-app-docs, pinned: 6766a8d90a391d63220a35cf7b5e83cd020024ce}
   - {repository: CBFerrum/ferrum-app-drive, pinned: ac48a9d4ee3b3b230a667d61b65e9f5f1b0c3e6c}
   - {repository: CBFerrum/ferrum-app-edge, pinned: 45ea51926e80e4e47372bd3a294bdd8ac51288bd}
-  - {repository: CBFerrum/ferrum-app-erp, pinned: 97569f5c17135e767e12aa21b80e2ba9f211b2c1}
+  - {repository: CBFerrum/ferrum-app-erp, pinned: 4eb4b8c2f4b8c380bc4b5c317cef932c53092ab8}
   - {repository: CBFerrum/ferrum-app-field-service, pinned: b6317a0fc470be2031eba2a3fd991e9178f0c655}
   - {repository: CBFerrum/ferrum-app-forms, pinned: c6da819cb31c57c0bcff0abc6dd28105b22bca31}
   - {repository: CBFerrum/ferrum-app-helpdesk, pinned: 11bfe134cabd7d4655ba64395f450d99c7b6195d}
   - {repository: CBFerrum/ferrum-app-hr, pinned: c9f7f78800dccff1ab9ed62cac6efbb41d64499a}
-  - {repository: CBFerrum/ferrum-app-lms, pinned: c125e96981678eb2382d2c82b65733c11b5040f9}
+  - {repository: CBFerrum/ferrum-app-lms, pinned: 4747a329767b4fd4ddbadf0cb3d23ee470c32721}
   - {repository: CBFerrum/ferrum-app-pos, pinned: 65ebe6944bd20cef8f0527462f9cd8bda1abeef3}
   - {repository: CBFerrum/ferrum-app-projects, pinned: 8b32fb57ae2bcdbd324238d9d784b66463122a87}
   - {repository: CBFerrum/ferrum-app-sign, pinned: 426401a9680ed15a9da309e0b0ec54dcf3c0a18c}
