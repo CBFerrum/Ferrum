@@ -5,9 +5,9 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Partial | 26 |
+| Partial | 25 |
 | Implemented, unverified | 1 |
-| Verified in software | 165 |
+| Verified in software | 166 |
 | Blocked externally | 5 |
 | **All** | **197** |
 
@@ -205,7 +205,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
 | FCP-SCALE-001 | Single scaler owner | Verified in software | AT-SCALE-001 | 1 | One HPA, and CI refuses a second owner of the count. Not applied to a cluster |
-| FCP-SCALE-002 | Connection budgeting | Partial | AT-SCALE-002 | 2 | The budget adds up in CI, the role has a limit, and doctor warns without one. Nothing has been scaled to its maximum with a migration running |
+| FCP-SCALE-002 | Connection budgeting | Verified in software | AT-SCALE-002 | 2 | Against real PostgreSQL: replicas at their pools' maximum use the role's whole budget, one more is told the database is busy (503), so is a request past its pool, and the reserve lets a migration in. CI checks the manifests add up. Not run on a cluster at its maximum |
 | FCP-SCALE-003 | Stateful scaling | Partial | AT-SCALE-003 | 0 | CNPG replicas only |
 | FCP-SCALE-004 | Budget enforcement | Verified in software | AT-SCALE-004 | 2 | Builds, running hours and held resources are counted, once an hour however many look, and a hard budget stops new ones with what is up left up. Storage is not metered by size |
 | FCP-SCALE-005 | Critical reserve | Verified in software | AT-SCALE-005 | 2 | On a gateway: only plain samples count against the budget and go first, commands and evidence are outside it, and with almost no disk it takes no new work and says why. Not tried on a disk that really filled, and the platform's own database has no such reserve |
@@ -214,8 +214,8 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-SCALE-008 | Capacity evidence | Partial | AT-SCALE-008 | 1 | Percentiles, backlog and fairness measured for minutes on one laptop, so they describe that and not a deployment. Edge rates were measured the same way |
 | FCP-UI-001 | Consistent scope UI | Verified in software | AT-UI-001 | 2 | The digest on screen when the form opened goes with the decision, and the server refuses a stale one. No automated browser test |
 | FCP-UI-002 | Asynchronous UX | Verified in software | AT-UI-002 | 1 | In a browser against real processes: a resource asked for with the controller stopped, its provider refusing, and then back. The page followed each attempt and the reason, a reload and a second session showed the same, someone with no standing got nothing, and the retry finished. Relative times do not tick between updates |
-| FCP-UI-003 | Accessible administration | Partial | AT-UI-003 | 0 | axe finds nothing of Cloud's on any page at desktop or phone width, after it found a page that scrolled sideways, tables nothing could scroll from the keyboard and two regions with one name, all fixed. The main pages were worked by keyboard alone, with visible focus and refusals announced. No screen reader, and nobody who relies on assistive technology. The shell's landmarks and skip link are open findings |
-| FCP-UI-004 | Localization correctness | Partial | AT-UI-004 | 0 | Dates and amounts go through the browser's locale. Cloud's pages hold up right to left, and its tables no longer assume left to right. The shell does not: its menu makes the page scroll sideways. Strings are English only |
+| FCP-UI-003 | Accessible administration | Partial | AT-UI-003 | 0 | axe finds nothing at desktop or phone width on Cloud's pages, inside the platform's bar, once the shell's own findings are fixed (Ferrum-Frontend#9, not merged, and the bar on this branch). It found real problems first. The main pages were worked by keyboard alone, with visible focus and refusals announced. No screen reader, and nobody who relies on assistive technology |
+| FCP-UI-004 | Localization correctness | Partial | AT-UI-004 | 0 | Dates and amounts go through the browser's locale. Right to left, Cloud's pages, the frame's drawer and the bar's skip link hold up at phone width with Ferrum-Frontend#9 (not merged). Strings are English only |
 | FCP-UI-005 | Permission explanation | Verified in software | AT-UI-005 | 2 | In a browser: a viewer pressing a button their role does not allow is told so beside it, and that a project administrator can change it, without being told who. A refusal is announced in a live region. Proof is offered where it would cure the refusal |
 | FCP-UI-006 | Operator recovery UX | Verified in software | AT-UI-006 | 1 | Unknown, failed, replaced and lost stay different words. Warehouse and Shop Floor have their own |
 | FCP-UI-007 | Bundle provenance | Verified in software | AT-UI-007 | 1 | dist/.source digests the sources and CI checks it. Not checked at install |
