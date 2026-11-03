@@ -1,0 +1,47 @@
+name: forward
+
+# ci.yml qualifies the exact lockfile and frontend a release is built from. This asks the other
+# question: does the platform still work with what its apps and frontend have moved to? Neither stands
+# in for the other, and nothing here changes a pin.
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - name: Follow every app's main
+        run: |
+          grep -A2 'name = "ferrum-app-' Cargo.lock | grep '^name' | cut -d'"' -f2 | sort -u | xargs -n1 cargo update -p
+      - run: cargo check --workspace
+      - run: cargo test -p ferrum-server --lib
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: CBFerrum/Ferrum-Frontend
+          path: web
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+        working-directory: web
+      - run: npm run build:apps
+        working-directory: web
