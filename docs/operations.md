@@ -49,6 +49,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_APP_UPLOADS` | no | Who may upload app bundles: `off`, `private` (production default: sandboxed apps without tables, visible only in the uploading workspace) or `cluster` (development default: available to every workspace) |
 | `FERRUM_USER_REQUESTS_PER_MINUTE` | no | Requests one user (with any of their sessions and API keys) may make per minute on each replica; beyond it they get `429` with `Retry-After`. Default 3000; `0` turns it off. It counts per replica, so the cluster-wide budget grows with the replica count |
 | `FERRUM_ADDRESS_REQUESTS_PER_MINUTE` | no | Requests one client address may make per minute on each replica, counted for requests that came through the proxy (`X-Forwarded-For`); default 6000, `0` turns it off. Health probes and in-cluster calls are not counted |
+| `FERRUM_TENANT_REQUESTS` | no | One workspace's API requests that run at once on each replica. The rest wait their turn, and one that waits five seconds is refused with `429`. A response that waited says how long in `X-Ferrum-Waited-Ms`. Default half of `FERRUM_DB_MAX_CONNECTIONS`, at least 2, so a workspace that floods the server holds at most half its database connections and everyone else has the others; `0` turns it off |
 | `FERRUM_PROXY_HOPS` | no | How many proxies in front append to `X-Forwarded-For`: 1 (the default) for the Kubernetes gateway alone or your own TLS proxy, 0 when browsers reach the server directly (Compose sets it; set 1 there behind your proxy), 2 with a CDN or an HTTP load balancer before the proxy. The client's address for sign-in and request limits is the entry that many from the right; set it wrong and everyone shares one address (too low) or clients choose their own (too high) |
 | `FERRUM_SSO_ALLOW_PRIVATE` | no | `true` lets single sign-on reach an identity provider on a private address or over plain http (one inside your own network, such as an in-cluster Keycloak); default `false` |
 | `FERRUM_APP_ALLOW_UNSIGNED` | no | `true` accepts uploads no trusted key signed (development default); production default `false` |
@@ -407,8 +408,10 @@ step. The report holds no secret or connection string, so it can be pasted into 
 connections, the outbox backlog (pending, dead, age of the oldest pending event), webhook
 deliveries (pending, dead), the job queue (queued, running, failed in the last day, longest wait),
 connections to outside systems (on, failing, waiting on a provider, with no success for a day) and
-differences from a provider waiting for a person, and the tenant count. Take request rates and
-latencies from the gateway controller's metrics. Suggested alerts:
+differences from a provider waiting for a person, the tenant count, and
+`ferrum_tenant_refused_total`, requests refused because their workspace already had its share running
+(`FERRUM_TENANT_REQUESTS`; the log line names the workspace). Take request rates and latencies from the
+gateway controller's metrics. Suggested alerts:
 
 | Alert | Condition |
 |---|---|
@@ -418,6 +421,7 @@ latencies from the gateway controller's metrics. Suggested alerts:
 | Outbox lag | oldest pending event older than 5 min |
 | Dead letters | any dead outbox events or webhook deliveries |
 | Failing jobs | `ferrum_jobs_failed_day` above 0 |
+| A workspace at its share | `ferrum_tenant_refused_total` rising: find the workspace in the log, and either it is misbehaving or it needs a larger share |
 | Outside systems | `ferrum_connections_stale` above 0, or `ferrum_connections_failing` above 0 for 30 min |
 | Database | CNPG: replication lag, failover events, storage above 80 %, connections above 85 % |
 
@@ -466,6 +470,21 @@ run several, or `ab`/`oha` against single endpoints as above. It signs in as one
 server's `FERRUM_USER_REQUESTS_PER_MINUTE` (or set it to `0`) for the run, or the per-user budget
 answers `429` long before the server is busy; through the gateway, raise
 `FERRUM_ADDRESS_REQUESTS_PER_MINUTE` too.
+
+### One workspace flooding the others
+
+`scripts/share_check.py` has one workspace send all it can from 64 threads while another's reads are timed.
+On 2026-11-03, a debug build on the same laptop with 10 database connections, 500 reads of 100 contacts:
+
+| | The other workspace alone, p50 / p95 | During the flood, p50 / p95 | The flood |
+|---|---|---|---|
+| Share on (5 of 10) | 8.8 / 13.2 ms | 12.6 / 24.8 ms | 3,366 requests in 8.6 s, each waiting a median 128 ms for its turn, none refused |
+| Share off (`FERRUM_TENANT_REQUESTS=0`) | 8.3 / 14.1 ms | 116 / 145 ms | 32,667 requests in 61.7 s |
+
+The share is counted on each replica, so with three replicas a workspace may hold half of each. It counts
+requests through the API, from when the workspace is known until the response is made: a WebSocket or a
+stream holds no turn once it has started. A single expensive query is bounded by the statement timeout, not
+by the share, and the database's CPU is not divided between workspaces.
 
 ## Incident playbooks
 

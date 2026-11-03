@@ -79,6 +79,32 @@ for requests. A workspace can be closed, kept until a date and deleted by an ope
 for the kernel, the end of `tests/resources_it.rs` for Cloud, and the tasks run against a throwaway server, where one was
 broken. The shell's findings are fixed in Ferrum-Frontend#9 (not merged) and `server/shell/runtime.js`.
 
+## The fourth round
+
+Alerts reach an owner (Cloud's `deploy/k8s/alertmanager.yaml`): every critical one goes to on call as well, and a held restore or
+a fenced region holds back the backlogs it causes. `scripts/check_alerts.py` fires each rule under promtool, routes each under
+amtool, and sends a cause and its consequences through a real Alertmanager to receivers of its own. Checking the rules against
+AT-OBS-004 found that nothing alerted on expiry: now a console, an old login, a repository credential or a preview still live ten
+minutes past its time pages, and approved terms a month from their end and a certificate cert-manager has not renewed warn.
+It also found every database-derived rule raised once per server replica, with the counts multiplied; they read the highest
+value now, and a test with two replicas holds them to it.
+
+Each workspace has a share of each replica (`FERRUM_TENANT_REQUESTS`, by default half the database connections): its requests
+take turns among its own, a response says how long it waited, and one that waits five seconds is refused and counted.
+`scripts/share_check.py` floods one workspace while another is timed (figures below, with the share off for comparison).
+
+Edge's charger and MQTT ports let new connections in at a steady rate, so after an outage the ones already in are not held up
+behind everyone's handshake, and a charger's stalled handshake is closed after ten seconds instead of holding its place.
+
+A gate in front of the forge (`ferrum-serve gate`) gives each workspace turns for its clones and pushes: `serve/tests/gate_it.rs`
+runs the real process in front of a forge whose packs take a second, and `tests/code_it.rs` clones and pushes through it with real
+`git` and Gitea. Writing its manifest found that a serving node's admin listener defaulted to loopback while its manifest probed it
+on the pod's address, so no node could have become ready, and nothing scraped what the alerts read; both are fixed.
+
+On a workstation the server starter takes a development token and nothing else, and a development token says so in its scope.
+Content for sites is a record with a workflow (`tests/content_it.rs`): published only by someone other than its author, only as
+reviewed, only when written from what is live, read by a site's key that sees no draft, and previewed with a key that expires.
+
 ## Figures
 
 An Apple M1 Pro with 8 cores and 16 GB, PostgreSQL 17 with default settings, on one laptop, with the load generator on the same
@@ -98,6 +124,16 @@ Back serving 105 ms after a restart, from its own disk.
 
 A gateway killed with a hundred chargers on it, which all call the next one at once: every charger answered in 125 ms, all
 known to the platform in 1.4 s, work asked for in the middle of it through in 2.3 s, and nothing sent twice.
+
+The same hundred chargers let in at 25 a second: all back in 3.3 s, known to the platform in 4.4 s, waiting work through in
+5.5 s, and a charger already in had its heartbeat answered in 0.2 ms while the rest came in.
+
+One workspace flooding from 64 threads, another reading 100 contacts 500 times, 10 database connections, debug build:
+
+| | The other alone, p50 / p95 | During the flood, p50 / p95 | The flood |
+|---|---|---|---|
+| Share on | 8.8 / 13.2 ms | 12.6 / 24.8 ms | 3,366 requests in 8.6 s, a median 128 ms waiting for a turn, none refused |
+| Share off | 8.3 / 14.1 ms | 116 / 145 ms | 32,667 requests in 61.7 s |
 
 The whole-profile drill: backed up in about half a second, back and checked in 4.5 s, with a tiny database and one repository.
 
@@ -119,8 +155,8 @@ network failed, and a dump of a real database takes as long as it takes.
 
 - Nothing has met a real provider, identity provider, DNS, certificate, KMS, charger or meter.
 - Sustained means minutes here. Nothing has run for days, so nothing is known about memory growth, or anything slower than that.
-- Alerts fire under `promtool` and nothing routes them anywhere.
+- Alerts route to stand-in receivers. No real pager or chat has received one.
+- A workspace's share is per replica, and the database's CPU is not divided between workspaces.
 - A person has not followed a runbook or run a tabletop. Nobody has used the console with a screen reader.
-- The shell's own findings: a skip link outside a landmark, a second banner on a phone, and a menu that makes the page scroll
-  sideways right to left.
+- The shell's own findings are fixed in Ferrum-Frontend#9, which has not been merged.
 - Nobody independent has reviewed any of this.
