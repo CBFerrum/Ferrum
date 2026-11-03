@@ -143,7 +143,10 @@ async fn scenario() {
     k.support_used(&ctx, id, "GET", "/api/support/report").await.unwrap();
     let listed = k.support_grants(&admin).await.unwrap();
     assert_eq!((listed[0]["uses"].as_i64(), listed[0]["active"].as_bool(), listed[0]["grantee"].as_str()), (Some(2), Some(true), Some("Partner Ltd")));
-    assert_eq!(k.support_activity(&admin, id).await.unwrap().len(), 2, "request by request");
+    k.support_tried(&ctx, id, "GET", "/api/v1/Invoice", true).await.unwrap();
+    let seen = k.support_activity(&admin, id).await.unwrap();
+    assert_eq!(seen.len(), 3, "request by request");
+    assert_eq!((&seen[0]["refused"], &seen[1]["refused"]), (&json!(true), &json!(false)), "and what was turned away says so");
     assert!(!json!(listed).to_string().contains("fk_"), "the key is shown once, and never again");
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();
     let told: Vec<String> = sqlx::query_scalar("select title from notification where tenant_id = $1 and user_id = $2 order by created_at")

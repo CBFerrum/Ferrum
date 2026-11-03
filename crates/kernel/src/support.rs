@@ -228,7 +228,7 @@ impl Kernel {
     pub async fn support_activity(&self, ctx: &Ctx, id: Uuid) -> Result<Vec<Value>> {
         admin_only(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let rows: Vec<Value> = sqlx::query_scalar("select jsonb_build_object('at', at, 'method', method, 'path', path) from support_access where tenant_id = $1 and grant_id = $2 order by seq desc limit 1000").bind(ctx.tenant).bind(id).fetch_all(&mut *tx).await?;
+        let rows: Vec<Value> = sqlx::query_scalar("select jsonb_build_object('at', at, 'method', method, 'path', path, 'refused', refused) from support_access where tenant_id = $1 and grant_id = $2 order by seq desc limit 1000").bind(ctx.tenant).bind(id).fetch_all(&mut *tx).await?;
         tx.commit().await?;
         Ok(rows)
     }
@@ -247,17 +247,23 @@ impl Kernel {
 
     /// Records a request made with a grant; the first tells the administrators.
     pub async fn support_used(&self, ctx: &Ctx, grant: Uuid, method: &str, path: &str) -> Result<()> {
+        self.support_tried(ctx, grant, method, path, false).await
+    }
+
+    /// Records a request made with a grant, `refused` when it was turned away before reaching anything.
+    pub async fn support_tried(&self, ctx: &Ctx, grant: Uuid, method: &str, path: &str, refused: bool) -> Result<()> {
         let mut tx = self.db.system_tenant_tx(ctx.tenant).await?;
         let first: bool = sqlx::query_scalar("select not exists (select 1 from support_access where tenant_id = $1 and grant_id = $2)")
             .bind(ctx.tenant)
             .bind(grant)
             .fetch_one(&mut *tx)
             .await?;
-        sqlx::query("insert into support_access (tenant_id, grant_id, method, path) values ($1, $2, $3, $4)")
+        sqlx::query("insert into support_access (tenant_id, grant_id, method, path, refused) values ($1, $2, $3, $4, $5)")
             .bind(ctx.tenant)
             .bind(grant)
             .bind(method)
             .bind(path.chars().take(500).collect::<String>())
+            .bind(refused)
             .execute(&mut *tx)
             .await?;
         if first {

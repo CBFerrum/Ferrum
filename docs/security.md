@@ -18,6 +18,16 @@ operator to know. Report a vulnerability privately to the maintainers rather tha
   fields hold given values, and per field group. The kernel enforces them on every path: the
   document API, lists and filters, reports and Studio, live updates, MCP and plugins.
 
+## Who can see what
+
+What an operator can do depends on who runs it, and there is no profile in which whoever runs a process cannot read what
+that process handles. Secrets are sealed with a key the deployment holds, so someone with only the database cannot read them.
+A customer's own key means that data is out of reach of anyone without it, and not of the process using it. Support reaches a
+workspace only by a grant from the customer, on the record: [support-access.md](support-access.md). In your own network that
+operator is you ([platform/customer-controlled.md](platform/customer-controlled.md)).
+
+[platform/asvs.md](platform/asvs.md) maps this to the controls it is held to, and says what is open.
+
 ## Controls
 
 **Sites and devices** ([threat model](registry/threat-model.md), [authority](operations-authority.md))

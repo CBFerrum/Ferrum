@@ -19,6 +19,7 @@ use ferrum_server::assistant::{self, Assistant, Config, Env, Input};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::path::Path as FsPath;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -68,6 +69,8 @@ const TOKEN: &str = "s3cret-api-token-value";
 struct Model {
     script: Arc<Mutex<VecDeque<(Vec<Value>, &'static str)>>>,
     seen: Arc<Mutex<Vec<String>>>,
+    /// How many requests to turn away, as an overloaded service does.
+    failing: Arc<AtomicUsize>,
 }
 
 fn sse(blocks: &[Value], stop: &str) -> String {
@@ -91,6 +94,9 @@ fn sse(blocks: &[Value], stop: &str) -> String {
 
 async fn messages(State(m): State<Model>, body: Bytes) -> Response {
     m.seen.lock().unwrap().push(String::from_utf8_lossy(&body).to_string());
+    if m.failing.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
+        return Response::builder().status(429).header("retry-after", "0").body(Body::from("{}")).unwrap();
+    }
     let (blocks, stop) = m.script.lock().unwrap().pop_front().unwrap_or((vec![json!({"type": "text", "text": "Done."})], "end_turn"));
     Response::builder().header("content-type", "text/event-stream").body(Body::from(sse(&blocks, stop))).unwrap()
 }
@@ -322,4 +328,26 @@ async fn scenario() {
     let events = turn(&mut rx).await;
     assert_eq!(model.seen.lock().unwrap().len(), calls, "past the allowance, the provider is not called");
     assert!(events.iter().any(|e| e["type"] == json!("error")), "{events:?}");
+
+    // ───────────── AT-AI-005: a model that will not stop, and a service that keeps failing ─────────────
+    k.update_tenant_settings(&admin, json!({"assistant_monthly_tokens": null}).as_object().unwrap()).await.unwrap();
+    env.assistant.setting_changed(tenant);
+    let thread = assistant::create_thread(&k, &admin).await.unwrap();
+    let calls = model.seen.lock().unwrap().len();
+    let again = (0..40).map(|i| (vec![call(&format!("l{i}"), "get_record", json!({"entity": "Ticket", "id": ticket["id"]}))], "tool_use"));
+    model.script.lock().unwrap().extend(again);
+    let mut rx = assistant::begin(&env, &admin, thread, ask("Keep looking"), "member").await.unwrap();
+    let events = turn(&mut rx).await;
+    assert_eq!(model.seen.lock().unwrap().len() - calls, 25, "it stops, whatever the model would like");
+    assert!(events.iter().any(|e| e["text"].as_str().is_some_and(|t| t.contains("stopped after 25"))), "{events:?}");
+    model.script.lock().unwrap().clear();
+
+    let thread = assistant::create_thread(&k, &admin).await.unwrap();
+    model.failing.store(100, Ordering::SeqCst);
+    let calls = model.seen.lock().unwrap().len();
+    let mut rx = assistant::begin(&env, &admin, thread, ask("Hi"), "member").await.unwrap();
+    let events = turn(&mut rx).await;
+    assert_eq!(model.seen.lock().unwrap().len() - calls, 4, "one try and three more, and then a person is told");
+    assert!(events.iter().any(|e| e["type"] == json!("error")), "{events:?}");
+    model.failing.store(0, Ordering::SeqCst);
 }

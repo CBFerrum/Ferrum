@@ -8,14 +8,16 @@
 //! | `active` | Everything works. |
 //! | `grace` | Everything works; administrators have been told. |
 //! | `restricted` | Read-only for everyone. Reading, reporting and exporting the workspace still work: export is a right, not a feature. |
+//! | `closed` | Read-only as restricted, and kept until a date. After it an operator may delete it ([`Kernel::delete_tenant`]); nothing does by itself. |
 //!
 //! Usage is counted from what is really there, once a day (`usage_day`), so a bill can be explained
 //! afterwards from the same numbers. Quotas are the operator's, per workspace (`tenant.quotas`).
 
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
-use crate::{Kernel, audit};
-use chrono::Utc;
+use crate::{Kernel, Tx, audit};
+use async_trait::async_trait;
+use chrono::{NaiveDate, Utc};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -24,6 +26,14 @@ const METERS: &str = "select 'storage_bytes', coalesce(sum(size_bytes), 0)::bigi
     union all select 'ai_tokens_month', coalesce(sum(coalesce((usage->'usage'->>'input_tokens')::bigint, 0) + coalesce((usage->'usage'->>'output_tokens')::bigint, 0)), 0)::bigint \
       from assistant_message where tenant_id = $1 and role = 'assistant' and created_at >= date_trunc('month', now()) \
     union all select 'jobs_month', count(*) from job where tenant_id = $1 and created_at >= date_trunc('month', now())";
+
+/// What an app still holds of a workspace outside the database: databases at a provider, repositories on a
+/// forge. A workspace is deleted only once every app says it holds nothing, so nothing is left running, or
+/// billed, with no record of whose it was.
+#[async_trait]
+pub trait Leaving: Send + Sync {
+    async fn held_outside(&self, tx: &mut Tx, tenant: Uuid) -> Result<Vec<String>>;
+}
 
 impl Kernel {
     /// What a workspace is using now, and its quotas, for its administrators.
@@ -71,10 +81,10 @@ impl Kernel {
     /// The operator moves a workspace between account states (`ferrum task account_state`).
     pub async fn set_account_state(&self, tenant: Uuid, state: &str, note: Option<&str>) -> Result<()> {
         if !matches!(state, "active" | "grace" | "restricted") {
-            return Err(Error::field("state", "active, grace or restricted"));
+            return Err(Error::field("state", "active, grace or restricted; a workspace is closed with close_account"));
         }
         let mut tx = self.db.system_tenant_tx(tenant).await?;
-        let n = sqlx::query("update tenant set account_state = $2, account_note = $3 where id = $1")
+        let n = sqlx::query("update tenant set account_state = $2, account_note = $3, closed_at = null, retain_until = null where id = $1")
             .bind(tenant)
             .bind(state)
             .bind(note)
@@ -86,6 +96,36 @@ impl Kernel {
         }
         let system = Ctx::system(tenant, self.registry.schema(tenant).await?);
         audit::record(&mut tx, &system, "Workspace", tenant, "account_state", None, json!({"state": state, "note": note})).await?;
+        crate::auth::notify_users(&mut tx, tenant, None).await?;
+        tx.commit().await?;
+        self.invalidate_tenant_users(tenant);
+        Ok(())
+    }
+
+    /// The operator closes a workspace: read-only for everyone, with export still open, and kept until `retain_until`.
+    /// Opening it again is setting another state. Apps see it closed and wind down what they run.
+    pub async fn close_account(&self, tenant: Uuid, retain_until: NaiveDate, note: &str) -> Result<()> {
+        if note.trim().is_empty() {
+            return Err(Error::field("note", "say why, for whoever reads this later"));
+        }
+        if retain_until <= Utc::now().date_naive() {
+            return Err(Error::field("retain_until", "a date after today: a closed workspace is kept for a while"));
+        }
+        let mut tx = self.db.system_tenant_tx(tenant).await?;
+        let n = sqlx::query(
+            "update tenant set account_state = 'closed', account_note = $2, closed_at = coalesce(closed_at, now()), retain_until = $3 where id = $1",
+        )
+        .bind(tenant)
+        .bind(note)
+        .bind(retain_until)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if n == 0 {
+            return Err(Error::NotFound("workspace".into()));
+        }
+        let system = Ctx::system(tenant, self.registry.schema(tenant).await?);
+        audit::record(&mut tx, &system, "Workspace", tenant, "account_closed", None, json!({"retain_until": retain_until, "note": note})).await?;
         crate::auth::notify_users(&mut tx, tenant, None).await?;
         tx.commit().await?;
         self.invalidate_tenant_users(tenant);

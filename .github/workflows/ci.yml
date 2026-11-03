@@ -93,7 +93,7 @@ jobs:
         run: cargo install cargo-audit --locked && cargo audit
       # Every accepted advisory has an owner, a reason and a review date (scripts/registry.py).
       - name: Requirements registry, accepted advisories and generated documents
-        run: python3 -m pip install --quiet pyyaml && python3 scripts/registry.py check && python3 scripts/test_registry.py && python3 scripts/test_baseline.py
+        run: python3 -m pip install --quiet pyyaml && python3 scripts/registry.py check && python3 scripts/test_registry.py && python3 scripts/test_manifests.py && python3 scripts/mutants.py --check && python3 scripts/test_baseline.py
       - name: Licenses of everything compiled in
         run: python3 scripts/licenses.py check
 

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """A claim needs what it claims. Each of these is a way of saying more than the evidence does."""
 
+import re
+
 import registry
 
 good = {
@@ -35,4 +37,8 @@ assert any("while blocked" in p for p in says(**qualified, reviewer="Claude", bl
 assert any("blocked, but on nothing named" in p for p in says(status="blocked_external"))
 assert any("unknown blocker" in p for p in says(blockers=["BLOCK-NOT-A-THING"]))
 assert any("says what it does not yet do" in p for p in says(limits=""))
+# AT-SECRET-008 and AT-AI-007: what a document may not claim.
+for said in ("Operators cannot read your files", "It is zero-knowledge", "Your data stays on your device"):
+    assert any(re.search(pattern, said) for _, pattern, _ in registry.DRIFT), said
+assert not any(re.search(p, "Nobody here can honestly claim that an operator of a machine cannot read what it processes") for _, p, _ in registry.DRIFT)
 print("ok")

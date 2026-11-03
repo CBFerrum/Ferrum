@@ -36,7 +36,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_PDF_URL` | no | A Gotenberg-compatible renderer (`gotenberg/gotenberg:8`, included in both deployments as `pdf` / `ferrum-pdf`) for PDFs of print formats; empty turns PDFs off. Run it with JavaScript off and an allow-list of `^(data:\|file:///tmp/).*` so templates cannot make it fetch anything; print formats then use inline (data:) images |
 | `FERRUM_REQUIRE_OBJECT_STORAGE` | no | Production default `true`: refuse to start without object storage, so no replica keeps files locally. `false` only for single-server installs |
 | `FERRUM_FILES_DIR` | no | Local attachment directory (default `/var/lib/ferrum/files`) |
-| `FERRUM_DB_MAX_CONNECTIONS` | no | Pool size per replica (default 30) |
+| `FERRUM_DB_MAX_CONNECTIONS` | no | Pool size per replica (default 30). Below 10, requests wait behind the replica's own job workers and event loops, which can hold seven at once; the server warns as it starts, and `ferrum task doctor` says so |
 | `FERRUM_RUN_BACKGROUND` | no | `false` turns a replica into API-only |
 | `PUBLIC_URL` | recommended | The address people open, scheme and port included (`https://erp.example.com`). Apps' screens name it in their Content Security Policy, which Safari needs when a proxy in front rewrites the host, and links mailed to people outside the workspace (Drive guests) are built on it |
 | `PORT`, `BINDING`, `LOG_LEVEL` | no | Usual meanings; logs are JSON on stdout |
@@ -49,6 +49,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_APP_UPLOADS` | no | Who may upload app bundles: `off`, `private` (production default: sandboxed apps without tables, visible only in the uploading workspace) or `cluster` (development default: available to every workspace) |
 | `FERRUM_USER_REQUESTS_PER_MINUTE` | no | Requests one user (with any of their sessions and API keys) may make per minute on each replica; beyond it they get `429` with `Retry-After`. Default 3000; `0` turns it off. It counts per replica, so the cluster-wide budget grows with the replica count |
 | `FERRUM_ADDRESS_REQUESTS_PER_MINUTE` | no | Requests one client address may make per minute on each replica, counted for requests that came through the proxy (`X-Forwarded-For`); default 6000, `0` turns it off. Health probes and in-cluster calls are not counted |
+| `FERRUM_TENANT_REQUESTS` | no | One workspace's API requests that run at once on each replica. The rest wait their turn, and one that waits five seconds is refused with `429`. A response that waited says how long in `X-Ferrum-Waited-Ms`. Default half of `FERRUM_DB_MAX_CONNECTIONS`, at least 2, so a workspace that floods the server holds at most half its database connections and everyone else has the others; `0` turns it off |
 | `FERRUM_PROXY_HOPS` | no | How many proxies in front append to `X-Forwarded-For`: 1 (the default) for the Kubernetes gateway alone or your own TLS proxy, 0 when browsers reach the server directly (Compose sets it; set 1 there behind your proxy), 2 with a CDN or an HTTP load balancer before the proxy. The client's address for sign-in and request limits is the entry that many from the right; set it wrong and everyone shares one address (too low) or clients choose their own (too high) |
 | `FERRUM_SSO_ALLOW_PRIVATE` | no | `true` lets single sign-on reach an identity provider on a private address or over plain http (one inside your own network, such as an in-cluster Keycloak); default `false` |
 | `FERRUM_APP_ALLOW_UNSIGNED` | no | `true` accepts uploads no trusted key signed (development default); production default `false` |
@@ -68,9 +69,20 @@ the Compose setup (`deploy/postgres-init`) are already set up this way. The role
 trusted extensions `btree_gist`, `citext` and `pg_trgm`, which a database owner can do.
 
 Each replica opens up to `FERRUM_DB_MAX_CONNECTIONS` connections plus 4 for short side writes
-(document numbering). Keep `replicas × (FERRUM_DB_MAX_CONNECTIONS + 4)` below the database's
-`max_connections` minus ~20 for administration and replication (the manifests use 400 and 30, so
-up to ~11 replicas without a pooler; raise both together).
+(document numbering). Give the role a connection limit at least 20 below the database's
+`max_connections`, so that however far things scale there are connections left for an administrator,
+replication and a migration: PostgreSQL enforces that one, and `ferrum task doctor` warns without it.
+
+| Who | Connections at the most, in the manifests |
+|---|---|
+| API, 10 replicas × (30 + 4) | 340 |
+| Cloud's controller, 2 replicas × (6 + 4), if deployed | 20 |
+| The role's limit | 370 |
+| Left for administration and replication | 30 |
+
+`python3 scripts/check_manifests.py` fails when those stop adding up, and when a workload sets `replicas`
+under an autoscaler: every apply would put the count back. A migration runs on a replica's own connections.
+Past the limit a request waits for its pool and answers 503; nothing queues without bound.
 
 ## First deployment (Kubernetes)
 
@@ -396,8 +408,10 @@ step. The report holds no secret or connection string, so it can be pasted into 
 connections, the outbox backlog (pending, dead, age of the oldest pending event), webhook
 deliveries (pending, dead), the job queue (queued, running, failed in the last day, longest wait),
 connections to outside systems (on, failing, waiting on a provider, with no success for a day) and
-differences from a provider waiting for a person, and the tenant count. Take request rates and
-latencies from the gateway controller's metrics. Suggested alerts:
+differences from a provider waiting for a person, the tenant count, and
+`ferrum_tenant_refused_total`, requests refused because their workspace already had its share running
+(`FERRUM_TENANT_REQUESTS`; the log line names the workspace). Take request rates and latencies from the
+gateway controller's metrics. Suggested alerts:
 
 | Alert | Condition |
 |---|---|
@@ -407,6 +421,7 @@ latencies from the gateway controller's metrics. Suggested alerts:
 | Outbox lag | oldest pending event older than 5 min |
 | Dead letters | any dead outbox events or webhook deliveries |
 | Failing jobs | `ferrum_jobs_failed_day` above 0 |
+| A workspace at its share | `ferrum_tenant_refused_total` rising: find the workspace in the log, and either it is misbehaving or it needs a larger share |
 | Outside systems | `ferrum_connections_stale` above 0, or `ferrum_connections_failing` above 0 for 30 min |
 | Database | CNPG: replication lag, failover events, storage above 80 %, connections above 85 % |
 
@@ -455,6 +470,21 @@ run several, or `ab`/`oha` against single endpoints as above. It signs in as one
 server's `FERRUM_USER_REQUESTS_PER_MINUTE` (or set it to `0`) for the run, or the per-user budget
 answers `429` long before the server is busy; through the gateway, raise
 `FERRUM_ADDRESS_REQUESTS_PER_MINUTE` too.
+
+### One workspace flooding the others
+
+`scripts/share_check.py` has one workspace send all it can from 64 threads while another's reads are timed.
+On 2026-11-03, a debug build on the same laptop with 10 database connections, 500 reads of 100 contacts:
+
+| | The other workspace alone, p50 / p95 | During the flood, p50 / p95 | The flood |
+|---|---|---|---|
+| Share on (5 of 10) | 8.8 / 13.2 ms | 12.6 / 24.8 ms | 3,366 requests in 8.6 s, each waiting a median 128 ms for its turn, none refused |
+| Share off (`FERRUM_TENANT_REQUESTS=0`) | 8.3 / 14.1 ms | 116 / 145 ms | 32,667 requests in 61.7 s |
+
+The share is counted on each replica, so with three replicas a workspace may hold half of each. It counts
+requests through the API, from when the workspace is known until the response is made: a WebSocket or a
+stream holds no turn once it has started. A single expensive query is bounded by the statement timeout, not
+by the share, and the database's CPU is not divided between workspaces.
 
 ## Incident playbooks
 
@@ -1195,12 +1225,86 @@ After restoring the platform from a backup, sites may be ahead of it: their repo
 harmlessly, and commands issued after the backup was taken are gone from the ledger though a site may
 have run them. Before enabling dispatch, compare each site's console with **Needs a person**.
 
+## Taking one workspace back
+
+Restoring a shared database takes everyone back, which is rarely what one workspace's accident calls for.
+Instead, restore a backup to a database of its own, at the version this deployment runs, and take that one
+workspace from it:
+
+```bash
+ferrum task extract_tenant from:"postgres://ferrum:...@restore-host/ferrum_copy" tenant:acme note:"deleted a ledger by mistake"
+```
+
+That compares and changes nothing: it shows, table by table, how many rows there are now and in the copy. Add
+`apply:yes` to do it, then run `ferrum task reapply_erasures`, because the copy brings back whatever was erased
+since it was taken.
+
+Tables here refer to each other in circles, so the rows go in with referential triggers off. That takes a grant,
+which is worth taking away again afterwards. As a superuser:
+
+```sql
+GRANT SET ON PARAMETER session_replication_role TO ferrum;
+-- and when it is done
+REVOKE SET ON PARAMETER session_replication_role FROM ferrum;
+```
+
+It happens in one transaction, with the workspace suspended first so that nobody is writing to it. Every
+reference the workspace's rows make is checked before it commits, and one that would point at nothing stops it.
+If it stops part way, nothing has changed and the workspace is still suspended: run it again. Other workspaces
+are not touched and do not wait, but a workspace of many rows holds its transaction open for as long as it takes.
+Numbers issued since, such as invoice numbers, may be issued again.
+
+| Going back does not undo | Because |
+|---|---|
+| The audit trail, support grants and what support did | They record what happened |
+| Each app's records of the same kind, such as Cloud's signing keys, revocations and usage | The same |
+| Passwords, second factors and deactivations, as they are now | Nobody gets in who could not before |
+| Passkeys removed since | The same |
+
+Everyone has to sign in again and **every API key has to be issued again**, because a revocation since the
+copy was taken would otherwise come undone. Roles and everything else are as they were in the copy, and what
+was waiting in the copy is set aside as it is after a restore. Workspace settings and quotas stay as they are
+now. Files are not checked against the store, and a resource made since is no longer known to the workspace
+though it still exists at its provider. Look at `cloud_resource_instance` in the live database first if that
+matters.
+
+## Closing and deleting a workspace
+
+A workspace is closed by its operator, kept until a date, and deleted after that only when an operator says so. Nothing
+deletes one by itself.
+
+```bash
+ferrum task account_state slug:acme state:closed retain_until:2027-02-01 note:"the contract ended"
+```
+
+Closed is read-only for everyone, like `restricted`: everything can still be read and exported, and nothing new starts.
+Apps wind down what they run. Cloud closes each project, stops its sites and keeps what it held. Setting another state
+opens it again, as it was.
+
+After the date, an app that made things elsewhere lets go of them first. For Cloud that is
+`ferrum task cloud_retire slug:acme apply:yes`, which destroys the databases and repositories Cloud made by the same
+durable work a person's deletion plan starts, and never touches something it cannot prove it made. Then:
+
+```bash
+ferrum task delete_tenant slug:acme confirm:acme note:"kept until 2027-02-01, as agreed"
+ferrum task delete_tenant slug:acme confirm:acme note:"kept until 2027-02-01, as agreed" apply:yes
+```
+
+The first says what would go: rows by table, files, and anything an app still holds outside the database, which stops
+it. The second deletes the workspace's files, then its private app bundles, then every row that names it, in one
+transaction, and records in `tenant_deletion` that it happened. A file store failing part way leaves every row in place,
+so running it again finishes the job. Like extraction, it needs `GRANT SET ON PARAMETER session_replication_role TO
+ferrum` for as long as it runs.
+
+Backups taken before the deletion still hold the workspace until they expire. Say so to whoever asked for the deletion.
+
 ## Routine tasks
 
 ```bash
 ferrum task run_maintenance          # anchor audit trails, purge expired events, ledger partitions, queue notification digests (also runs in-process, hourly)
 ferrum task sync_schema              # force the metadata → DDL sync (normally automatic at boot)
 ferrum task create_tenant slug:... name:... email:... password:... [packages:...]   # core only without packages:
+ferrum task extract_tenant from:<url> tenant:<slug> note:"..." [apply:yes]   # take one workspace back to what a restored copy holds
 ferrum task deps_report [schema:<file>]   # what ties packages together; schema: writes the canonical schema to compare across a package move
 ferrum task upgrade_back step:<name>      # before going back to the release before a one-time upgrade step
 ferrum task seed_demo tenant:<slug>  # demo data (never in production tenants)
