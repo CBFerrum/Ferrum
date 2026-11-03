@@ -1,6 +1,6 @@
 //! A build without SAML: the same calls, each saying so.
 
-use crate::{Person, Sp};
+use crate::{Person, Sp, SpKey};
 
 const OFF: &str = "this server was built without SAML (the saml feature)";
 
@@ -25,6 +25,10 @@ pub fn request_url(_sp: &Sp, _idp: &Idp, _request_id: &str, _relay_state: &str) 
 }
 
 pub fn verify(_sp: &Sp, _idp: &Idp, _response: &str, _request_id: &str) -> Result<Person, String> {
+    Err(OFF.into())
+}
+
+pub fn new_sp_key(_name: &str) -> Result<SpKey, String> {
     Err(OFF.into())
 }
 

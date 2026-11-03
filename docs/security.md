@@ -130,7 +130,9 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   one uses the sign-in up. The provider posts to the server, which sends the browser on with a
   one-time code, only to an address of this server's own, and the browser that started the sign-in
   finishes it. SAML never says whether an address was checked, so a SAML provider needs its email
-  domains listed. A server built with SAML checks at `doctor` that xmlsec1 signs and verifies.
+  domains listed. Each workspace signs its requests (RSA-SHA256) with a key of its own, made when
+  first wanted and sealed by the server key, whose certificate its metadata publishes. A server
+  built with SAML checks at `doctor` that xmlsec1 signs and verifies.
 * API keys: 256 random bits, stored as SHA-256; OAuth access tokens last an hour, refresh tokens
   rotate.
 
@@ -236,7 +238,9 @@ Known and accepted:
   private IRP's codes are checked only when the company enters that IRP's key.
 * Session tokens are readable by script on the app's origin; the Content Security Policy is what
   keeps foreign script out.
-* SAML: no single logout, requests are not signed, and encrypted assertions are refused (TLS
-  carries them); a provider whose policy needs any of these cannot be used.
+* SAML: no single logout, and encrypted assertions are refused in so many words (TLS carries
+  them; samael opens only some of XML Encryption's algorithms, in its own code rather than
+  xmlsec1's); a provider whose policy needs either cannot be used. A workspace's key does not
+  rotate by itself: it is good for ten years.
 * Workspace administrators author print templates (sandboxed as above), automations and roles:
   they are trusted with their workspace.

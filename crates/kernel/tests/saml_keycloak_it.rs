@@ -77,14 +77,17 @@ async fn admin_token(http: &reqwest::Client, kc: &str) -> String {
     t["access_token"].as_str().expect("an admin token").to_string()
 }
 
-/// Sets up the realm, Pat, and the workspace's SAML client (Keycloak signs its answers; Ferrum's
-/// requests are not signed; the email goes as an attribute, the NameID is the username).
-async fn keycloak(kc: &str, entity_id: &str, acs_url: &str) {
+/// Sets up the realm, Pat, and the workspace's SAML client, made from the workspace's own metadata
+/// the way a provider's administrator would (Keycloak then wants its requests signed, with the key
+/// that metadata publishes, and sends the persistent NameID it asks for) → the client's id. The
+/// email goes as an attribute.
+async fn keycloak(kc: &str, sp_metadata: &str) -> String {
     let http = reqwest::Client::new();
     let token = admin_token(&http, kc).await;
     let _ = http.delete(format!("{kc}/admin/realms/{REALM}")).bearer_auth(&token).send().await.unwrap();
     let ok = |r: reqwest::Response| {
         assert!(r.status().is_success(), "Keycloak: HTTP {}", r.status());
+        r
     };
     ok(http.post(format!("{kc}/admin/realms")).bearer_auth(&token).json(&json!({"realm": REALM, "enabled": true})).send().await.unwrap());
     ok(http
@@ -97,28 +100,55 @@ async fn keycloak(kc: &str, entity_id: &str, acs_url: &str) {
         .send()
         .await
         .unwrap());
-    ok(http
-        .post(format!("{kc}/admin/realms/{REALM}/clients"))
+    let converted = ok(http
+        .post(format!("{kc}/admin/realms/{REALM}/client-description-converter"))
         .bearer_auth(&token)
-        .json(&json!({
-            "clientId": entity_id, "protocol": "saml", "enabled": true, "redirectUris": [acs_url],
-            "attributes": {
-                "saml.client.signature": "false",
-                "saml.server.signature": "true",
-                "saml.assertion.signature": "true",
-                "saml.signature.algorithm": "RSA_SHA256",
-                "saml.authnstatement": "true",
-                "saml_assertion_consumer_url_post": acs_url,
-                "saml_name_id_format": "username",
-            },
-            "protocolMappers": [{
-                "name": "email", "protocol": "saml", "protocolMapper": "saml-user-property-mapper",
-                "config": {"user.attribute": "email", "attribute.name": "email", "friendly.name": "email", "attribute.nameformat": "Basic"},
-            }],
-        }))
+        .header("content-type", "application/xml")
+        .body(sp_metadata.to_string())
         .send()
         .await
         .unwrap());
+    let mut client: Value = converted.json().await.unwrap();
+    assert_ne!(client["attributes"]["saml.client.signature"], json!("false"), "Keycloak checks the requests' signatures");
+    client["attributes"]["saml.signature.algorithm"] = json!("RSA_SHA256");
+    client["protocolMappers"] = json!([{
+        "name": "email", "protocol": "saml", "protocolMapper": "saml-user-property-mapper",
+        "config": {"user.attribute": "email", "attribute.name": "email", "friendly.name": "email", "attribute.nameformat": "Basic"},
+    }]);
+    let made = ok(http.post(format!("{kc}/admin/realms/{REALM}/clients")).bearer_auth(&token).json(&client).send().await.unwrap());
+    let at = made.headers()["location"].to_str().unwrap().to_string();
+    at.rsplit('/').next().unwrap().to_string()
+}
+
+/// Has Keycloak encrypt its assertions, as an administrator could, to the certificate the
+/// workspace's metadata gave for signing (it offers none to encrypt to).
+async fn encrypt(kc: &str, client: &str) {
+    let http = reqwest::Client::new();
+    let token = admin_token(&http, kc).await;
+    let url = format!("{kc}/admin/realms/{REALM}/clients/{client}");
+    let mut c: Value = http.get(&url).bearer_auth(&token).send().await.unwrap().json().await.unwrap();
+    assert_ne!(c["attributes"]["saml.encrypt"], json!("true"), "the metadata asks for no encryption");
+    let signing = c["attributes"]["saml.signing.certificate"].clone();
+    assert!(signing.as_str().is_some_and(|s| !s.is_empty()), "the request signing certificate came from the metadata");
+    c["attributes"]["saml.encryption.certificate"] = signing;
+    c["attributes"]["saml.encrypt"] = json!("true");
+    assert!(http.put(&url).bearer_auth(&token).json(&c).send().await.unwrap().status().is_success());
+}
+
+/// Pat signs in on Keycloak's login page → what it posts back: the relay state and the response.
+async fn on_keycloak(k: &Kernel, provider: uuid::Uuid, acs_url: &str) -> (String, String) {
+    let browser = reqwest::Client::builder().cookie_store(true).build().unwrap();
+    let to_idp = k.sso_begin("samlco", provider, BACK, BINDING).await.unwrap();
+    let page = browser.get(&to_idp).send().await.unwrap();
+    assert!(page.status().is_success(), "Keycloak's login page: HTTP {}", page.status());
+    let page = page.text().await.unwrap();
+    let action = form_action(&page, "id=\"kc-form-login\"").unwrap_or_else(|| panic!("a login form in {page}"));
+    let posted = browser.post(&action).form(&[("username", "pat"), ("password", "pat-password-1"), ("credentialId", "")]).send().await.unwrap();
+    let posted = posted.text().await.unwrap();
+    let response = input_value(&posted, "SAMLResponse").unwrap_or_else(|| panic!("an answer to post in {posted}"));
+    let relay = input_value(&posted, "RelayState").expect("the relay state");
+    assert_eq!(form_action(&posted, "name=\"saml-post-binding\"").as_deref(), Some(acs_url), "posted to the workspace's assertion consumer service");
+    (relay, response)
 }
 
 #[tokio::test]
@@ -154,8 +184,8 @@ async fn a_sign_in_through_keycloak() {
     let pat = k.create_user(&admin, "pat@samlco.test", "Pat", Some("Correct-Horse-9"), &[], false).await.unwrap();
 
     let sp = k.saml_service_provider(tenant).unwrap();
-    let (entity_id, acs_url) = (sp["entity_id"].as_str().unwrap().to_string(), sp["acs_url"].as_str().unwrap().to_string());
-    keycloak(&kc, &entity_id, &acs_url).await;
+    let acs_url = sp["acs_url"].as_str().unwrap().to_string();
+    let client = keycloak(&kc, &k.saml_metadata(tenant).await.unwrap()).await;
     // Keycloak's metadata, read from where it publishes it.
     let input: SsoProviderInput = serde_json::from_value(json!({
         "label": "Keycloak", "protocol": "saml", "domains": ["samlco.test"],
@@ -164,28 +194,30 @@ async fn a_sign_in_through_keycloak() {
     .unwrap();
     let provider = k.save_sso_provider(&admin, None, input).await.expect("Keycloak's metadata is accepted");
 
-    // The browser: to Keycloak with the request, its login page, the person's password, and the page
-    // that posts the answer back.
-    let browser = reqwest::Client::builder().cookie_store(true).build().unwrap();
-    let to_idp = k.sso_begin("samlco", provider, BACK, BINDING).await.unwrap();
-    let page = browser.get(&to_idp).send().await.unwrap();
-    assert!(page.status().is_success(), "Keycloak's login page: HTTP {}", page.status());
-    let page = page.text().await.unwrap();
-    let action = form_action(&page, "id=\"kc-form-login\"").unwrap_or_else(|| panic!("a login form in {page}"));
-    let posted = browser.post(&action).form(&[("username", "pat"), ("password", "pat-password-1"), ("credentialId", "")]).send().await.unwrap();
-    let posted = posted.text().await.unwrap();
-    let response = input_value(&posted, "SAMLResponse").unwrap_or_else(|| panic!("an answer to post in {posted}"));
-    let relay = input_value(&posted, "RelayState").expect("the relay state");
-    assert_eq!(form_action(&posted, "name=\"saml-post-binding\"").as_deref(), Some(acs_url.as_str()), "posted to the workspace's assertion consumer service");
-
-    let next = k.saml_acs(tenant, &relay, &response).await.expect("Keycloak's answer is accepted");
-    let q: std::collections::HashMap<String, String> = reqwest::Url::parse(&next).unwrap().query_pairs().into_owned().collect();
-    let session = k.sso_finish(&q["state"], &q["code"], BINDING).await.unwrap();
+    let finish = |next: String| {
+        let q: std::collections::HashMap<String, String> = reqwest::Url::parse(&next).unwrap().query_pairs().into_owned().collect();
+        (q["state"].clone(), q["code"].clone())
+    };
+    let (relay, response) = on_keycloak(&k, provider, &acs_url).await;
+    let (state, code) = finish(k.saml_acs(tenant, &relay, &response).await.expect("Keycloak's answer is accepted"));
+    let session = k.sso_finish(&state, &code, BINDING).await.unwrap();
     assert_eq!(session.user, pat);
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();
     let linked: Option<String> =
         sqlx::query_scalar("select sso_subject from app_user where tenant_id = $1 and id = $2").bind(tenant).bind(pat).fetch_one(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
-    assert_eq!(linked, Some(format!("{provider}|pat")), "linked to Pat's username at Keycloak");
+    // The metadata asks for a persistent NameID first: Keycloak's is a pseudonym, not the username.
+    assert!(linked.as_deref().is_some_and(|l| l.starts_with(&format!("{provider}|G-"))), "linked to Pat's persistent NameID at Keycloak: {linked:?}");
     assert!(k.saml_acs(tenant, &relay, &response).await.is_err(), "the same answer, posted again");
+
+    // An encrypted assertion is refused, saying why.
+    encrypt(&kc, &client).await;
+    let (relay, response) = on_keycloak(&k, provider, &acs_url).await;
+    use base64::Engine as _;
+    let xml = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(&response).unwrap()).unwrap();
+    assert!(xml.contains("EncryptedAssertion") && !xml.contains("pat@samlco.test"), "Keycloak encrypted it");
+    match k.saml_acs(tenant, &relay, &response).await {
+        Err(ferrum_kernel::Error::Unauthorized(why)) => assert!(why.contains("encrypted"), "{why}"),
+        other => panic!("{other:?}"),
+    }
 }

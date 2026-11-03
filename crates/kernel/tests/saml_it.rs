@@ -48,7 +48,7 @@ struct Run {
 
 impl Run {
     fn sp(&self) -> Sp<'_> {
-        Sp { entity_id: &self.entity_id, acs_url: &self.acs_url }
+        Sp { entity_id: &self.entity_id, acs_url: &self.acs_url, key: None }
     }
 
     /// Starts a sign-in → the request's ID and the relay state.
@@ -162,6 +162,11 @@ async fn saml_single_sign_on() {
     tx.commit().await.unwrap();
     assert_eq!(linked, Some(format!("{provider}|persistent-pat")));
     assert!(matches!(run.sign_in(provider, &idp, "persistent-pat", &[], |_| {}).await, Err(Error::Forbidden(_))), "an address every time");
+
+    // Requests are signed with the key the workspace's metadata publishes.
+    let to_idp = k.sso_begin("samlco", provider, BACK, BINDING).await.unwrap();
+    assert!(TestIdp::signed_by_metadata(&to_idp, &k.saml_metadata(tenant).await.unwrap()), "{to_idp}");
+    assert!(!TestIdp::signed_by_metadata(&to_idp.replace("RelayState=", "RelayState=x"), &ours), "a changed request");
 
     // The return address carries the code, so it must be ours.
     for (back, ok) in [("https://evil.test/app/login", false), ("http://erp.samlco.test/app/login", false), (BACK, true)] {
