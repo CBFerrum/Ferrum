@@ -8,7 +8,7 @@ later still comes. Security, accessibility, documentation and tests belong to ev
 | W00 Baseline | | This directory | G0 |
 | W01 Identity, policy, control plane | W00 | `ferrum-app-cloud`: projects, environments, operations, canonical digests, the policy decision, approvals, a controller loop | G1 |
 | W02 Resources | W01 | Requests, instances, bindings; PostgreSQL and object providers against real servers | G2 |
-| W03 Code | W01, W02 | The Gitea provider against a real Gitea: repositories, keys, protection, webhooks, backup and restore | G3 |
+| W03 Code | W01, W02 | The forge provider against a real forge (Gitea, then Forgejo from 3 November 2026): repositories, keys, protection, webhooks, backup and restore | G3 |
 | W04 Build | W01 to W03 | Build intents, a Docker sandbox, a fair scheduler, a trusted publisher, provenance | G3 |
 | W05 Deploy | W04, W02 | Releases, approvals, `ferrum-serve`, previews, domain claims | G4 |
 | W06 SSR and workers | W05 | One Node profile, cache rules, rolling release | G5 |
