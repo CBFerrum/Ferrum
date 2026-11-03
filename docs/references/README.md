@@ -23,6 +23,7 @@ claim pointing at a file. Nothing here was run, so "does" means "the code does".
 | [assets.md](assets.md) | Snipe-IT |
 | [field-service.md](field-service.md) | OCA Field Service |
 | [erp.md](erp.md) | ERPNext |
+| [cloud.md](cloud.md) | Forgejo, Gitea, GitLab, Caddy, kamal-proxy, Pingora, Coolify, Railpack, BuildKit, Knative, Falco, k6, cargo-mutants: what Cloud built that they already do |
 
 The copies themselves live outside this repository, in `../referance/` beside the app checkouts, with
 how they were fetched, their commits and their licences. Ferrum's interfaces are written by hand:
