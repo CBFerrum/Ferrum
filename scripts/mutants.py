@@ -33,6 +33,7 @@ SCAN = ("-p", "ferrum-kernel", "--test", "scan_it")
 SCAN_UNIT = ("-p", "ferrum-kernel", "--lib", "scan::tests")
 CUSTOMIZE = ("-p", "ferrum-kernel", "--test", "customize_it")
 HOOKS_UNIT = ("-p", "ferrum-kernel", "--lib", "hooks::tests")
+CLOSURE = ("-p", "ferrum-kernel", "--test", "closure_it")
 SSO = ("-p", "ferrum-server", "--test", "sso_it")
 SSO_UNIT = ("-p", "ferrum-kernel", "--lib", "sso::tests")
 MERGE = ("-p", "ferrum-kernel", "--test", "merge_it")
@@ -63,6 +64,11 @@ MUTANTS = [
     ("extract-waiting-work-runs", "crates/kernel/src/recovery.rs", "        self.set_aside(&mut tx, Some(tenant)).await?;\n", "", RECOVERY),
     ("extract-sets-aside-everyone", "crates/kernel/src/recovery.rs", "        self.set_aside(&mut tx, Some(tenant)).await?;\n", "        self.set_aside(&mut tx, None).await?;\n", RECOVERY),
     ("extract-stays-suspended", "crates/kernel/src/recovery.rs", '        sqlx::query("update tenant set status = $2 where id = $1").bind(tenant).bind(&was).execute(&mut *tx).await?;\n', "", RECOVERY),
+    ("closure-deletes-before-its-date", "crates/kernel/src/recovery.rs", "        if retain_until >= chrono::Utc::now().date_naive() {\n", "        if false {\n", CLOSURE),
+    ("closure-deletes-what-is-held-elsewhere", "crates/kernel/src/recovery.rs", "        if !outside.is_empty() {\n", "        if false {\n", CLOSURE),
+    ("closure-rows-go-without-their-files", "crates/kernel/src/recovery.rs", "        if !failed.is_empty() {\n", "        if false {\n", CLOSURE),
+    ("closure-misses-other-references", "crates/kernel/src/recovery.rs", "        columns.extend(others);\n", "", CLOSURE),
+    ("closure-closed-is-writable", "crates/kernel/src/auth.rs", "t.account_state in ('restricted', 'closed')", "t.account_state in ('restricted')", CLOSURE),
     ("ops-a-moved-device-starts-twice", "crates/ops/src/commands.rs", "and taken_by = $3 \\\n         and (state in ('Accepted', 'Executing') or (state = 'Queued' and sent_at is not null)) for update", "and taken_by = $3 \\\n         and (state in ('Accepted', 'Executing') or (state = 'Queued' and held_at is not null)) for update", OPS),
     ("ops-a-new-holder-starts-it-twice", "crates/ops/src/commands.rs", "and domain = $2 and (state in ('Accepted', 'Executing') or (state = 'Queued' and sent_at is not null)) for update", "and domain = $2 and (state in ('Accepted', 'Executing') or (state = 'Queued' and held_at is not null)) for update", OPS),
     ("ops-a-key-for-different-work", "crates/ops/src/commands.rs", "    if different {\n", "    if false {\n", OPS),
