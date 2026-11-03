@@ -97,9 +97,18 @@ pub struct Settings {
     /// Refuse to start without object storage, so replicas never keep attachments on local disk.
     #[serde(default)]
     pub require_object_storage: bool,
-    /// Base64 of 32 random bytes sealing secret fields; required in production.
+    /// Base64 of 32 random bytes sealing secret fields, or Transit ciphertext of them
+    /// (`vault:v1:…`, unwrapped through `kms_transit`); required in production.
     #[serde(default)]
     pub secret_key: String,
+    /// A command printing the secret key, in place of `secret_key`: a KMS's own tool
+    /// (`FERRUM_SECRET_KEY_COMMAND`; crates/kernel/src/kms.rs).
+    #[serde(default)]
+    pub secret_key_command: String,
+    /// The OpenBao or Vault Transit key unwrapping `secret_key` and retired keys given as
+    /// ciphertext, `https://host:8200/<mount>/<key>` (`FERRUM_KMS_TRANSIT`).
+    #[serde(default)]
+    pub kms_transit: String,
     /// The ClamAV daemon uploads pass through, `host:port` (`FERRUM_CLAMAV_ADDR`); empty: none.
     #[serde(default)]
     pub clamav_addr: String,

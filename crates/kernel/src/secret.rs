@@ -41,6 +41,11 @@ impl SecretKey {
         SecretKey { key, id }
     }
 
+    /// The key as it is configured: base64 of its 32 bytes.
+    pub fn to_base64(&self) -> String {
+        B64.encode(self.key)
+    }
+
     /// From base64 (32 random bytes), as configured.
     pub fn from_base64(s: &str) -> Result<Self> {
         let bytes = B64.decode(s.trim()).map_err(|_| Error::invalid("the secret key must be base64"))?;

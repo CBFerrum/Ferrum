@@ -28,6 +28,7 @@ pub mod files;
 pub mod hooks;
 pub mod identity;
 pub mod jobs;
+pub mod kms;
 pub mod lifecycle;
 pub mod merge;
 pub mod notify;

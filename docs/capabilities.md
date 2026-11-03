@@ -9,9 +9,9 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 125 |
+| Implemented, qualification incomplete | 126 |
 | Partially implemented | 53 |
-| Missing | 44 |
+| Missing | 43 |
 | Blocked by external dependency | 9 |
 | **All** | **231** |
 
@@ -61,7 +61,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-IDENTITY-016 | Browser session architecture with CSRF defence | Implemented, qualification incomplete | read | Bearer tokens on pages remain readable by script; CSP is the defence |
 | FERRUM-IDENTITY-017 | Secrets sealed at rest with bound context | Implemented, qualification incomplete | tested |  |
 | FERRUM-IDENTITY-018 | Key rotation while old values exist | Implemented, qualification incomplete | tested | One key per server, not per tenant; apps' signing keys kept elsewhere are not covered |
-| FERRUM-IDENTITY-019 | Key-management service integration | Missing | probe |  |
+| FERRUM-IDENTITY-019 | Key-management service integration | Implemented, qualification incomplete | tested | OpenBao 2.7.1's Transit tried, in CI and with a server booting from a wrapped key; not HashiCorp Vault, AWS KMS, Google Cloud KMS or Azure Key Vault, which FERRUM_SECRET_KEY_COMMAND reaches through their own tools, untried; Kubernetes sign-in to OpenBao not tried: no cluster ran one; Keys apps and Cloud keep in their own databases are sealed by this key, not held by the service |
 | FERRUM-IDENTITY-020 | OWASP ASVS mapping and independent security testing | Blocked by external dependency | read | docs/security.md states the model; no independent test has been done |
 
 ## Privacy

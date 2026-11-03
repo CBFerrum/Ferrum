@@ -26,12 +26,16 @@ pub fn settings_findings(production: bool, jwt_secret: &str, st: &crate::state::
     } else {
         Finding::ok("secrets.jwt", "JWT_SECRET is set")
     });
-    out.push(if st.secret_key.trim().is_empty() {
+    out.push(if !st.secret_key_command.trim().is_empty() {
+        Finding::ok("secrets.seal", "the secret key comes from FERRUM_SECRET_KEY_COMMAND")
+    } else if st.secret_key.trim().is_empty() {
         blocker_in_production(
             "secrets.seal",
             "FERRUM_SECRET_KEY is not set",
             "Set it to `openssl rand -base64 32`, and keep it: secret fields cannot be read without it.",
         )
+    } else if ferrum_kernel::kms::is_wrapped(&st.secret_key) {
+        Finding::ok("secrets.seal", "FERRUM_SECRET_KEY is wrapped by the key-management service (FERRUM_KMS_TRANSIT)")
     } else {
         Finding::ok("secrets.seal", "FERRUM_SECRET_KEY is set")
     });
