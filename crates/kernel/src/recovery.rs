@@ -217,7 +217,9 @@ impl Kernel {
         if which(&source).await? == which(&self.db).await? {
             return Err(Error::Conflict("that is this database, not a copy of it".into()));
         }
-        let there: Option<Uuid> = sqlx::query_scalar("select id from tenant where id = $1").bind(tenant).fetch_optional(&source.pool).await?;
+        let mut tx = source.system_tx().await?;
+        let there: Option<Uuid> = sqlx::query_scalar("select id from tenant where id = $1").bind(tenant).fetch_optional(&mut *tx).await?;
+        tx.commit().await?;
         if there.is_none() {
             return Err(Error::Conflict("that copy does not hold this workspace".into()));
         }
