@@ -12,6 +12,47 @@ fn kernel(ctx: &AppContext) -> Result<std::sync::Arc<ferrum_kernel::Kernel>> {
     app_state(ctx).map(|s| s.kernel).map_err(|e| Error::Message(format!("{:?}", e.0)))
 }
 
+/// `kms_wrap`: the configured secret keys as ciphertext of the Transit key `FERRUM_KMS_TRANSIT`
+/// names, to configure in their place (crates/kernel/src/kms.rs). Keys given as ciphertext already
+/// are wrapped again by the Transit key's newest version, after it was rotated. It prints no key.
+pub struct KmsWrap;
+
+#[async_trait]
+impl Task for KmsWrap {
+    fn task(&self) -> TaskInfo {
+        TaskInfo {
+            name: "kms_wrap".into(),
+            detail: "Prints FERRUM_SECRET_KEY and FERRUM_RETIRED_SECRET_KEYS as ciphertext of the key-management service's Transit key".into(),
+        }
+    }
+    async fn run(&self, ctx: &AppContext, _vars: &Vars) -> Result<()> {
+        let st = app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?;
+        let Some(transit) = crate::app::kms_transit(&st.settings)? else {
+            return Err(Error::Message("set FERRUM_KMS_TRANSIT to the Transit key that is to wrap them (https://host:8200/<mount>/<key>)".into()));
+        };
+        let wrap = |value: String| {
+            let transit = transit.clone();
+            async move {
+                let key = ferrum_kernel::kms::resolve(&value, Some(&transit)).await?;
+                transit.wrap(&key.to_base64()).await
+            }
+        };
+        let main = st.settings.secret_key.trim().to_string();
+        if main.is_empty() {
+            return Err(Error::Message("FERRUM_SECRET_KEY is not set: there is nothing to wrap".into()));
+        }
+        println!("FERRUM_SECRET_KEY={}", wrap(main).await.map_err(|e| Error::Message(e.to_string()))?);
+        let mut retired = Vec::new();
+        for k in st.settings.retired_secret_keys.split(',').map(str::trim).filter(|k| !k.is_empty()) {
+            retired.push(wrap(k.to_string()).await.map_err(|e| Error::Message(e.to_string()))?);
+        }
+        if !retired.is_empty() {
+            println!("FERRUM_RETIRED_SECRET_KEYS={}", retired.join(","));
+        }
+        Ok(())
+    }
+}
+
 /// `account_state slug:acme state:restricted note:"..."`: where a workspace's account stands.
 pub struct AccountState;
 

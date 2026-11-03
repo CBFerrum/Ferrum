@@ -22,7 +22,9 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `DATABASE_URL` | yes | `postgres://user:pass@host:5432/db` |
 | `JWT_SECRET` | yes | Base64, ≥ 32 random bytes: `openssl rand -base64 48`. Rotating it signs everyone out |
 | `FERRUM_RETIRED_SECRET_KEYS` | no | Keys being rotated out, comma-separated: see *Rotating the secret key*. |
-| `FERRUM_SECRET_KEY` | yes | Base64 of exactly 32 random bytes: `openssl rand -base64 32`. Seals secret fields (mail passwords, API keys) and plugins' settings (payment gateways' keys among them) with AES-256-GCM; every replica needs the same key. Back it up: values sealed with a lost key must be entered again |
+| `FERRUM_SECRET_KEY` | yes | Base64 of exactly 32 random bytes: `openssl rand -base64 32`, or that key as a key-management service's ciphertext (`vault:v1:…`, [below](#the-secret-key-from-a-key-management-service)). Seals secret fields (mail passwords, API keys) and plugins' settings (payment gateways' keys among them) with AES-256-GCM; every replica needs the same key. Back it up: values sealed with a lost key must be entered again |
+| `FERRUM_KMS_TRANSIT` | no | The OpenBao or Vault Transit key that unwraps `FERRUM_SECRET_KEY` and retired keys given as ciphertext: `https://host:8200/<mount>/<key>`. Signs in with `FERRUM_KMS_TOKEN_FILE`, `BAO_TOKEN` or `VAULT_TOKEN`, or as the pod's service account (`FERRUM_KMS_KUBERNETES_ROLE`, `FERRUM_KMS_KUBERNETES_MOUNT`); `FERRUM_KMS_CA_FILE` and `FERRUM_KMS_NAMESPACE` when needed |
+| `FERRUM_SECRET_KEY_COMMAND` | no | In place of `FERRUM_SECRET_KEY`: a command (run with `sh -c`, 30 seconds at most) that prints the key, such as a KMS's own CLI |
 | `FERRUM_CLAMAV_ADDR` | recommended | A ClamAV daemon uploads pass through, `host:3310`. What it finds is refused and audited; with it set, a scanner that cannot answer refuses uploads too. See *Malware scanning*. |
 | `FERRUM_CLAMAV_MAX_MB` | with a scanner | The scanner's `StreamMaxLength` in MiB (default 25). Files past it are stored unscanned. |
 | `FERRUM_BOOTSTRAP_TOKEN` | no | Enables `POST /api/tenants` with header `X-Ferrum-Bootstrap-Token`; empty disables it |
@@ -336,6 +338,31 @@ because the old key may have been seen:
 5. Remove the old key from `FERRUM_RETIRED_SECRET_KEYS` and restart. Back up the new key.
 
 A backup taken before the rotation still needs the old key, so keep it as long as those backups.
+
+## The secret key from a key-management service
+
+The key need not sit in the configuration in the clear. Two ways, both read once at start-up, the
+key then living only in the server's memory:
+
+* **OpenBao or Vault Transit.** Make a Transit key (`bao secrets enable transit`,
+  `bao write -f transit/keys/ferrum`), give Ferrum a policy allowing `update` on
+  `transit/encrypt/ferrum` and `transit/decrypt/ferrum`, and set `FERRUM_KMS_TRANSIT` to
+  `https://bao.internal:8200/transit/ferrum`. With the key still configured in the clear,
+  `ferrum task kms_wrap` prints `FERRUM_SECRET_KEY=vault:v1:…` (and `FERRUM_RETIRED_SECRET_KEYS`, if
+  any): configure those in its place and restart. It never prints a key. When the service rotates its
+  Transit key, what it wrapped before still opens; run `kms_wrap` again to move to the newest version.
+  In Kubernetes, sign in as the pod (`FERRUM_KMS_KUBERNETES_ROLE`, the Kubernetes auth method) or
+  through a Vault Agent's token file (`FERRUM_KMS_TOKEN_FILE`).
+* **A command.** `FERRUM_SECRET_KEY_COMMAND` runs once at start and must print the key, as
+  PostgreSQL's `ssl_passphrase_command` does. Any KMS's own tool works, for example
+  `aws kms decrypt --ciphertext-blob fileb:///etc/ferrum/key.enc --query Plaintext --output text`
+  (the file holding `aws kms encrypt`'s output for the key's 32 bytes). What it prints on stderr is
+  not logged.
+
+A server that cannot get its key does not start, and says why (`ferrum task doctor` says where the
+key comes from). The service is then part of starting: run it, and back it up, accordingly. Keep a
+copy of the key itself where your recovery plan says: without the service and without that copy,
+what the key sealed is lost.
 
 **If a key is lost**, what it sealed cannot be recovered: nothing else holds those values. Secret
 fields answer that they were sealed with another key. People with an authenticator app cannot use

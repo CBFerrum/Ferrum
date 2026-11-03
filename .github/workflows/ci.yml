@@ -76,10 +76,21 @@ jobs:
           nohup moto_server -p 9000 > moto.log 2>&1 &
           for i in $(seq 1 30); do curl -fs http://localhost:9000/ > /dev/null && break; sleep 1; done
           AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test python3 -c "import boto3; boto3.client('s3', endpoint_url='http://localhost:9000', region_name='us-east-1').create_bucket(Bucket='ferrum-ci')"
+      # The secret key through a key-management service (crates/kernel/tests/kms_it.rs): OpenBao's
+      # Transit engine, from its release by digest.
+      - name: OpenBao
+        run: |
+          curl -fsSL -o openbao.tar.gz https://github.com/openbao/openbao/releases/download/v2.7.1/openbao_2.7.1_linux_amd64.tar.gz
+          echo "0e2f1ce10d124e03112b50dd2fbec6b78003783253bc3a91587938f39d1e2243  openbao.tar.gz" | sha256sum -c
+          tar -xzf openbao.tar.gz bao && sudo install -m 755 bao /usr/local/bin/bao
+          nohup bao server -dev -dev-root-token-id=ferrum-ci-root -dev-listen-address=127.0.0.1:8200 > openbao.log 2>&1 &
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:8200/v1/sys/health > /dev/null && exit 0; sleep 1; done; cat openbao.log; exit 1
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
         env:
+          FERRUM_KMS_TEST_TRANSIT: http://127.0.0.1:8200
+          FERRUM_KMS_TEST_TOKEN: ferrum-ci-root
           FERRUM_TEST_S3_ENDPOINT: http://localhost:9000
           FERRUM_TEST_S3_BUCKET: ferrum-ci
           AWS_ACCESS_KEY_ID: test
