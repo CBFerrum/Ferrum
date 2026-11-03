@@ -1,0 +1,93 @@
+name: soak
+
+# J12 in software (docs/platform/journeys.yaml): hours of three workspaces of different weight on the released image
+# in the Compose stack, while the database restarts, a backup is taken and read back and the server's container is
+# replaced (scripts/soak.py). Weekly for three hours, on demand for any image and length, and for twenty minutes on a
+# pull request that changes the soak itself. The report is the run's summary and its artifact.
+on:
+  schedule:
+    - cron: "0 2 * * 6"
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Image to soak
+        default: ghcr.io/cbferrum/ferrum:latest
+      hours:
+        description: How long
+        default: "3"
+  pull_request:
+    paths: [scripts/soak.py, .github/workflows/soak.yml]
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: soak-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      FERRUM_IMAGE: ${{ inputs.image || 'ghcr.io/cbferrum/ferrum:latest' }}
+      HOURS: ${{ inputs.hours || (github.event_name == 'pull_request' && '0.35') || '3' }}
+      COMPOSE_PROJECT_NAME: ferrum-soak
+      # One user drives each workspace: lift the per-user budget, as deploy/smoke.sh does. The per-workspace share
+      # stays at its default, which is what keeps the light workspace's turns.
+      FERRUM_USER_REQUESTS_PER_MINUTE: "0"
+    steps:
+      # Hours of submitted invoices grow the database: the runner's preinstalled toolchains are not used here.
+      - name: Room on the runner
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Secrets for this run
+        run: |
+          {
+            echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)"
+            echo "FERRUM_DB_PASSWORD=$(openssl rand -hex 16)"
+            echo "JWT_SECRET=$(openssl rand -base64 48 | tr -d '\n')"
+            echo "FERRUM_SECRET_KEY=$(openssl rand -base64 32 | tr -d '\n')"
+            echo "SOAK_PASSWORD=Soak-$(openssl rand -hex 8)"
+          } >> "$GITHUB_ENV"
+      - name: The stack, and three workspaces of different weight
+        working-directory: deploy
+        run: |
+          docker compose up -d --no-build db ferrum
+          # Docker's port proxy answers before the server listens, then resets: every error is retried.
+          curl -fsS --retry 90 --retry-all-errors --retry-delay 2 -o /dev/null http://127.0.0.1:8080/api/ready
+          for slug in heavy steady light; do
+            docker compose exec -T ferrum ferrum task create_tenant slug:$slug name:"Soak $slug" email:soak@$slug.test \
+              password:"$SOAK_PASSWORD" packages:core,accounting,inventory,selling,buying,manufacturing,india
+            docker compose exec -T ferrum ferrum task seed_demo tenant:$slug
+          done
+      - name: Hours of it
+        run: |
+          python3 -m pip install --quiet httpx
+          python3 scripts/soak.py --url http://127.0.0.1:8080 --password "$SOAK_PASSWORD" --hours "$HOURS" \
+            --image "$FERRUM_IMAGE" --compose "docker compose -f deploy/docker-compose.yml"
+      - if: always()
+        name: The report
+        run: |
+          if [ -f soak.md ]; then cat soak.md >> "$GITHUB_STEP_SUMMARY"; fi
+          docker compose -f deploy/docker-compose.yml logs --tail 100 ferrum db > soak-logs.txt 2>&1 || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak
+          path: |
+            soak.json
+            soak.md
+            soak-logs.txt
+          if-no-files-found: ignore
+      - if: always()
+        name: Remove the stack
+        run: docker compose -f deploy/docker-compose.yml down -v --remove-orphans || true
