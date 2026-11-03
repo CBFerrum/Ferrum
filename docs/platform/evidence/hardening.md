@@ -31,6 +31,11 @@ written to find them, and each would have reached production with every suite gr
 | Support grants had an API and no page | A customer could not see who had access without calling the API | Checking AT-UI-008 in a browser |
 | A refusal said why and not what to do | Someone without the role had no way forward | A viewer trying it in a browser |
 | On a phone, a plan was wider than the screen, and a history table could not be scrolled from the keyboard | Both pages unusable in part | axe and a keyboard walk at 375 pixels |
+| **Retiring a resource dropped a database and roles by name** | Where the provisioner had the rights, it could destroy what someone else had made under that name | Closing a whole workspace, which retired a resource whose name had been taken |
+| Settling an operation left its resource or repository where it was | A resource a person settled could never be retried, closed or deleted | The same, waiting for a resource nobody could vouch for |
+| The shell added a second banner and skip link under the platform's bar, and its closed drawer and the bar's skip link sat off the left edge | A second banner for screen readers; right to left, a page ten thousand pixels wide | axe with the frame rebuilt, and right to left at 375 pixels |
+| `delete_tenant` read the workspace through the pool | It found nothing behind row-level security, and stopped after every check had passed | Running the task against a throwaway server |
+| A mutant for a replica being down matched the WebSocket tunnel's line first once it existed | It stopped testing requests | The mutant surviving |
 
 ## Mutants
 
@@ -66,6 +71,13 @@ keyboard alone. A billing restriction applied with the operator's task refused n
 `tests/drill_it.rs` loses the database, the forge, the artifacts and their store at once and brings them back somewhere new
 with the key from where an operator keeps it. The runbook said a forge restored elsewhere refuses pushes until its hooks are
 rewritten; the drill pushed without that, so the runbook now calls it a precaution.
+
+## The third round
+
+WebSockets go through a serving node (`serve/tests/serving_it.rs`), with the pass, identity headers and a per-site limit as
+for requests. A workspace can be closed, kept until a date and deleted by an operator: `crates/kernel/tests/closure_it.rs`
+for the kernel, the end of `tests/resources_it.rs` for Cloud, and the tasks run against a throwaway server, where one was
+broken. The shell's findings are fixed in Ferrum-Frontend#9 (not merged) and `server/shell/runtime.js`.
 
 ## Figures
 
