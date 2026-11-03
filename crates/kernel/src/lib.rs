@@ -135,6 +135,9 @@ pub struct KernelSettings {
     /// Treat a new timeline as a restore, which it can be. Turn off only where failover is synchronous,
     /// so that promoting a replica loses nothing and a person need not look (docs/operations.md).
     pub hold_on_timeline: bool,
+    /// The accounts host (`accounts.{base}`), where sign-ins may come back to as well as to a
+    /// workspace's own hosts and the public address.
+    pub accounts_host: Option<String>,
 }
 
 impl Default for KernelSettings {
@@ -153,6 +156,7 @@ impl Default for KernelSettings {
             push_services: webpush::PUSH_SERVICES.iter().map(|s| s.to_string()).collect(),
             push_contact: None,
             hold_on_timeline: true,
+            accounts_host: None,
         }
     }
 }

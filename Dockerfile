@@ -6,7 +6,7 @@
 #   docker run -e DATABASE_URL=... -e JWT_SECRET=$(openssl rand -base64 48) -p 8080:5150 ferrum
 
 # The Ferrum-Frontend commit this server's pages are built from (bumped like an app's pin).
-ARG FRONTEND_REV=296a539a509f02f078f7680fc5b1dab7dabde31a
+ARG FRONTEND_REV=154d25e1784b3a831e6ff5ac63d2cf877fe25f87
 
 FROM scratch AS frontend
 ARG FRONTEND_REV
@@ -20,6 +20,10 @@ COPY --from=frontend . .
 RUN npm run build:apps
 
 FROM rust:1.95-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92ed2d47121282d4a1 AS build
+# SAML's signatures are checked by xmlsec1 (crates/saml): its headers, and libclang to bind them.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libxml2-dev libxmlsec1-dev libclang-dev pkg-config \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rustfmt.toml ./
 COPY crates ./crates
@@ -30,11 +34,11 @@ ARG BUILD_SHA=dev
 ENV BUILD_SHA=${BUILD_SHA}
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p ferrum-server && cp target/release/ferrum /usr/local/bin/ferrum
+    cargo build --release --locked -p ferrum-server --features saml && cp target/release/ferrum /usr/local/bin/ferrum
 
 FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates tini \
+ && apt-get install -y --no-install-recommends ca-certificates tini libxml2 libxmlsec1 libxmlsec1-openssl libssl3 \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --home-dir /app --shell /usr/sbin/nologin ferrum \
  && mkdir -p /var/lib/ferrum/files && chown -R 10001 /var/lib/ferrum
