@@ -5,8 +5,8 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Partial | 19 |
-| Verified in software | 173 |
+| Partial | 18 |
+| Verified in software | 174 |
 | Blocked externally | 5 |
 | **All** | **197** |
 
@@ -87,7 +87,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FCP-CODE-005 | Scoped Git credentials | Verified in software | AT-CODE-005 | 2 | Per-repository tokens, collected once, ended by revocation and by a person leaving |
 | FCP-CODE-006 | Server hook restriction | Verified in software | AT-CODE-006 | 1 | DISABLE_GIT_HOOKS is required configuration, and every management path was tried against it |
 | FCP-CODE-007 | Import and mirror egress | Verified in software | AT-CODE-007 | 2 | Refused before fetching and again by the forge when fetching. Submodules are not fetched |
-| FCP-CODE-008 | Git resource limits | Partial | AT-CODE-008 | 2 | An oversized push fails plainly, and so does a tree deeper than 2048, refused by the forge's own git as it arrives from a client that does not hold itself back. Clones and pushes take turns per workspace at the gate in front of the forge, which also bounds their processes and CPU, one each, and one kept waiting is refused with 429: six of one workspace at two at a time took three packs' time while another's took one. There is no storage quota per workspace, and the forge here has none of its own |
+| FCP-CODE-008 | Git resource limits | Verified in software | AT-CODE-008 | 3 | An oversized push fails plainly, and so does a tree deeper than 2048, refused by the forge's own git as it arrives from a client that does not hold itself back. Clones and pushes take turns per workspace at the gate in front of the forge, which also bounds their processes and CPU, one each, and one kept waiting is refused with 429: six of one workspace at two at a time took three packs' time while another's took one. What a workspace keeps at the forge is bounded: past its quota its repositories are held read-only, saying why, while another workspace pushes, and given room the hold lifts. The quota is looked at every five minutes, so a workspace can pass it by what it pushes meanwhile, each push bounded by the push size limit |
 | FCP-CODE-009 | PR approval integrity | Verified in software | AT-CODE-009 | 1 | A force-push dismisses approvals and required checks are by name. Real Gitea |
 | FCP-CODE-010 | LFS access | Verified in software | AT-CODE-010 | 1 | A known object id from another repository gets nothing. Expiry of a signed URL is Gitea's |
 | FCP-CODE-011 | Forge outage isolation | Verified in software | AT-CODE-011 | 1 | What is live needs no forge. A build says why it waits, fails with that reason, and asking again afterwards builds once |
