@@ -106,6 +106,13 @@ impl TestIdp {
         (xml, q.get("RelayState").cloned().unwrap_or_default())
     }
 
+    /// Whether a sign-in address is signed by the key a service's metadata publishes.
+    pub fn signed_by_metadata(url: &str, sp_metadata: &str) -> bool {
+        let Ok(cert) = samael::idp::sp_extractor::SPMetadataExtractor::try_from_xml(sp_metadata).and_then(|m| m.verification_cert()) else { return false };
+        let Ok(url) = url::Url::parse(url) else { return false };
+        samael::crypto::UrlVerifier::from_x509(&cert).and_then(|v| v.verify_signed_request_url(&url)).unwrap_or(false)
+    }
+
     /// The ID of the request a sign-in address carries.
     pub fn request_id(url: &str) -> String {
         let (xml, _) = TestIdp::request(url);

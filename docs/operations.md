@@ -1231,8 +1231,11 @@ attribute (`email`, `mail`, Entra's `…/claims/emailaddress`, the X.500 mail id
 NameID. A persistent NameID links the person to their identity there; a transient one makes the
 address stand in for it. Then add the provider with its metadata, pasted or its https address
 (read again at each sign-in, so a new signing certificate is picked up), and the email domains it
-vouches for, which SAML needs listed. It needs `PUBLIC_URL`. Not supported: single logout, signed
-requests, encrypted assertions, and sign-ins the provider starts unasked.
+vouches for, which SAML needs listed. Requests are signed with the workspace's own key (made when
+first wanted, sealed by `FERRUM_SECRET_KEY`, its certificate in the metadata; providers that
+import the metadata, Keycloak among them, then check every request). It needs `PUBLIC_URL`. Not
+supported: single logout, encrypted assertions (turn the provider's encryption off; HTTPS protects
+them), and sign-ins the provider starts unasked.
 
 The release image is built with SAML (`--features saml`). Building it yourself needs libxml2,
 libxmlsec1 with its OpenSSL backend, pkg-config and libclang (Debian and Ubuntu:

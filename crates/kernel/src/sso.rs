@@ -29,7 +29,7 @@ use crate::error::{Error, Result};
 use crate::oauth::{hash, random_secret};
 use crate::{Kernel, audit};
 use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use jsonwebtoken::jwk::Jwk;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
@@ -215,6 +215,10 @@ pub(crate) fn sealed_label(tenant: Uuid, id: Uuid) -> String {
     format!("sso|{tenant}|{id}")
 }
 
+pub(crate) fn saml_key_label(tenant: Uuid) -> String {
+    format!("saml-sp|{tenant}")
+}
+
 /// An email domain as listed: lower case, no `@`.
 fn clean_domain(d: &str) -> Result<String> {
     let d = d.trim().trim_start_matches('@').to_lowercase();
@@ -322,6 +326,43 @@ impl Kernel {
         Ok((entity_id.clone(), format!("{entity_id}/acs")))
     }
 
+    /// The workspace's own SAML key, made the first time it is wanted (by whichever replica gets
+    /// there first), its private half sealed by the server key.
+    async fn saml_key(&self, tenant: Uuid) -> Result<ferrum_saml::SpKey> {
+        let label = saml_key_label(tenant);
+        let read = || async {
+            let mut tx = self.db.system_tx().await?;
+            let row: Option<(String, String)> =
+                sqlx::query_as("select private_key, certificate from saml_sp_key where tenant_id = $1").bind(tenant).fetch_optional(&mut *tx).await?;
+            tx.commit().await?;
+            Ok::<_, Error>(row)
+        };
+        let row = match read().await? {
+            Some(row) => row,
+            None => {
+                let key =
+                    self.settings.secret_key.as_ref().ok_or_else(|| Error::Unavailable("SAML needs the server's secret key (FERRUM_SECRET_KEY)".into()))?;
+                let made = tokio::task::spawn_blocking(move || ferrum_saml::new_sp_key(&format!("Ferrum {tenant}")))
+                    .await
+                    .map_err(|e| Error::Unavailable(format!("making the workspace's SAML key stopped: {e}")))?
+                    .map_err(Error::Unavailable)?;
+                let sealed = key.seal(&label, &STANDARD.encode(&made.private_der))?;
+                let mut tx = self.db.system_tx().await?;
+                sqlx::query("insert into saml_sp_key (tenant_id, private_key, certificate) values ($1, $2, $3) on conflict (tenant_id) do nothing")
+                    .bind(tenant)
+                    .bind(sealed)
+                    .bind(STANDARD.encode(&made.certificate_der))
+                    .execute(&mut *tx)
+                    .await?;
+                tx.commit().await?;
+                read().await?.ok_or_else(|| Error::Retryable("the workspace's SAML key is being made".into()))?
+            }
+        };
+        let unreadable = |_| Error::Internal("the workspace's SAML key is not base64".into());
+        let private_der = STANDARD.decode(self.open_sealed(&label, &row.0)?).map_err(unreadable)?;
+        Ok(ferrum_saml::SpKey { private_der, certificate_der: STANDARD.decode(&row.1).map_err(unreadable)? })
+    }
+
     /// What a SAML identity provider's administrator needs about this workspace; `None` when this
     /// server cannot do SAML.
     pub fn saml_service_provider(&self, tenant: Uuid) -> Option<Value> {
@@ -340,7 +381,8 @@ impl Kernel {
             return Err(Error::NotFound("workspace".into()));
         }
         let (entity_id, acs_url) = self.saml_sp(tenant)?;
-        ferrum_saml::sp_metadata(&ferrum_saml::Sp { entity_id: &entity_id, acs_url: &acs_url }).map_err(Error::Unavailable)
+        let key = self.saml_key(tenant).await?;
+        ferrum_saml::sp_metadata(&ferrum_saml::Sp { entity_id: &entity_id, acs_url: &acs_url, key: Some(&key) }).map_err(Error::Unavailable)
     }
 
     /// Whether a sign-in may come back to `url`, which will carry its one-time code: the server's
@@ -646,7 +688,9 @@ impl Kernel {
             // An XML ID: a letter or `_` first.
             let (state, request) = (random_secret(""), format!("_{}", hex::encode(rand::random::<[u8; 16]>())));
             self.store_flow(&state, tenant, provider, &request, "", redirect_uri, binding).await?;
-            return ferrum_saml::request_url(&ferrum_saml::Sp { entity_id: &entity_id, acs_url: &acs_url }, &idp, &request, &state).map_err(Error::Unavailable);
+            let key = self.saml_key(tenant).await?;
+            let sp = ferrum_saml::Sp { entity_id: &entity_id, acs_url: &acs_url, key: Some(&key) };
+            return ferrum_saml::request_url(&sp, &idp, &request, &state).map_err(Error::Unavailable);
         }
         let d = self.discover(&p.issuer).await?;
         let mut url = reqwest::Url::parse(&d.authorization_endpoint).map_err(|_| Error::Unavailable("the provider's sign-in address is not a URL".into()))?;
@@ -742,12 +786,14 @@ impl Kernel {
     async fn saml_check(&self, tenant: Uuid, p: &Provider, response: &str, request: String) -> Result<ferrum_saml::Person> {
         let idp = self.saml_idp(p.saml_metadata.as_deref().unwrap_or_default()).await?;
         let (entity_id, acs_url) = self.saml_sp(tenant)?;
+        let key = self.saml_key(tenant).await?;
         let response = response.to_string();
         // xmlsec1 is synchronous work, kept off the request threads.
-        let checked =
-            tokio::task::spawn_blocking(move || ferrum_saml::verify(&ferrum_saml::Sp { entity_id: &entity_id, acs_url: &acs_url }, &idp, &response, &request))
-                .await
-                .map_err(|e| Error::Unavailable(format!("checking the answer stopped: {e}")))?;
+        let checked = tokio::task::spawn_blocking(move || {
+            ferrum_saml::verify(&ferrum_saml::Sp { entity_id: &entity_id, acs_url: &acs_url, key: Some(&key) }, &idp, &response, &request)
+        })
+        .await
+        .map_err(|e| Error::Unavailable(format!("checking the answer stopped: {e}")))?;
         checked.map_err(|why| Error::Unauthorized(format!("{}'s answer was refused: {why}; sign in again", p.label)))
     }
 

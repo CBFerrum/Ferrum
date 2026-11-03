@@ -3,10 +3,11 @@
 
 use super::*;
 use crate::testing::TestIdp;
+use samael::crypto::{CertificateDer, UrlVerifier};
 use samael::idp::sp_extractor::SPMetadataExtractor;
 use samael::signature::Signature;
 
-const SP: Sp = Sp { entity_id: "https://erp.example.test/api/auth/saml/p1", acs_url: "https://erp.example.test/api/auth/saml/p1/acs" };
+const SP: Sp = Sp { entity_id: "https://erp.example.test/api/auth/saml/p1", acs_url: "https://erp.example.test/api/auth/saml/p1/acs", key: None };
 const REQUEST: &str = "_4f1c2d9e8b7a6f5e4d3c2b1a0f9e8d7c";
 
 fn idp() -> TestIdp {
@@ -86,9 +87,9 @@ fn an_answer_to_another_request_or_service_is_refused() {
     let idp = metadata(&k);
     let ok = posted(&k.signed(&response(&k, |_| {})));
     assert!(verify(&SP, &idp, &ok, "_another").is_err(), "another request");
-    let elsewhere = Sp { entity_id: SP.entity_id, acs_url: "https://erp.example.test/api/auth/saml/p2/acs" };
+    let elsewhere = Sp { acs_url: "https://erp.example.test/api/auth/saml/p2/acs", ..SP };
     assert!(verify(&elsewhere, &idp, &ok, REQUEST).is_err(), "posted to another address");
-    let other = Sp { entity_id: "https://erp.example.test/api/auth/saml/p2", acs_url: SP.acs_url };
+    let other = Sp { entity_id: "https://erp.example.test/api/auth/saml/p2", ..SP };
     assert!(verify(&other, &idp, &ok, REQUEST).is_err(), "for another service");
 
     let no_audience = response(&k, |r| r.assertion.as_mut().unwrap().conditions = None);
@@ -103,6 +104,21 @@ fn an_answer_to_another_request_or_service_is_refused() {
     assert!(verify(&SP, &idp, &posted(&k.signed(&stale)), REQUEST).is_err(), "issued an hour ago");
     let impostor = response(&k, |r| r.assertion.as_mut().unwrap().issuer.value = Some("https://evil.example.test".into()));
     assert!(verify(&SP, &idp, &posted(&k.signed(&impostor)), REQUEST).is_err(), "from another issuer");
+}
+
+#[test]
+fn an_encrypted_assertion_is_refused_in_so_many_words() {
+    let k = idp();
+    let xml = k.signed(&response(&k, |_| {}));
+    let start = xml.find("<saml2:Assertion").expect("an assertion");
+    let end = xml.rfind("</saml2:Assertion>").map(|i| i + "</saml2:Assertion>".len()).expect("its end");
+    let encrypted = format!(
+        "{}<saml2:EncryptedAssertion><xenc:EncryptedData xmlns:xenc=\"http://www.w3.org/2001/04/xmlenc#\"/></saml2:EncryptedAssertion>{}",
+        &xml[..start],
+        &xml[end..]
+    );
+    let why = verify(&SP, &metadata(&k), &posted(&encrypted), REQUEST).unwrap_err();
+    assert!(why.contains("encrypted"), "{why}");
 }
 
 #[test]
@@ -150,4 +166,26 @@ fn the_request_and_our_metadata_say_where_answers_go() {
 #[test]
 fn xmlsec_works_here() {
     self_check().unwrap();
+}
+
+#[test]
+fn with_its_own_key_a_service_signs_its_requests() {
+    let (k, key, other) = (idp(), new_sp_key("ferrum test").unwrap(), new_sp_key("someone else").unwrap());
+    let sp = Sp { key: Some(&key), ..SP };
+    let url = url::Url::parse(&request_url(&sp, &metadata(&k), REQUEST, "relay-1").unwrap()).unwrap();
+    let checks =
+        |key: &SpKey| UrlVerifier::from_x509(&CertificateDer::from(key.certificate_der.clone())).unwrap().verify_signed_request_url(&url).unwrap_or(false);
+    assert!(checks(&key), "{url}");
+    assert!(!checks(&other));
+    let q: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+    assert_eq!(q["SigAlg"], "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256");
+    assert_eq!((TestIdp::request_id(url.as_str()).as_str(), q["RelayState"].as_str()), (REQUEST, "relay-1"));
+
+    let ours = sp_metadata(&sp).unwrap();
+    assert!(ours.contains("AuthnRequestsSigned=\"true\"") && ours.matches(&STANDARD.encode(&key.certificate_der)).count() == 1, "{ours}");
+    assert!(ours.contains("use=\"signing\"") && !ours.contains("use=\"encryption\""), "no key to encrypt to");
+    assert!(sp_metadata(&SP).unwrap().contains("AuthnRequestsSigned=\"false\""));
+    // Answers are read as before.
+    assert_eq!(verify(&sp, &metadata(&k), &posted(&k.signed(&response(&k, |_| {}))), REQUEST).unwrap().subject, "persistent-7");
+    assert_eq!(format!("{key:?}"), "SpKey(…)", "never printed");
 }

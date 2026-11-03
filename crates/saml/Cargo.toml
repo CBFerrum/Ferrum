@@ -8,7 +8,7 @@ license.workspace = true
 [features]
 # Off, nothing native is linked and every call says the server was built without SAML. On, building
 # needs libxml2, libxmlsec1 with its OpenSSL backend, pkg-config and libclang (docs/operations.md).
-xmlsec = ["dep:samael", "dep:base64", "dep:chrono", "dep:flate2", "dep:url"]
+xmlsec = ["dep:samael", "dep:base64", "dep:chrono", "dep:flate2", "dep:url", "dep:openssl"]
 # An identity provider for tests (testing.rs), where xmlsec is on too.
 testing = []
 
@@ -19,6 +19,8 @@ base64 = { version = "0.22", optional = true }
 chrono = { workspace = true, optional = true }
 flate2 = { version = "1", optional = true }
 url = { version = "2", optional = true }
+# The keys samael takes (its own dependency, the same version).
+openssl = { version = "0.10", optional = true }
 
 [lints]
 workspace = true

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "xmlsec")]
 mod checked;
 #[cfg(feature = "xmlsec")]
-pub use checked::{Idp, request_url, self_check, sp_metadata, verify};
+pub use checked::{Idp, new_sp_key, request_url, self_check, sp_metadata, verify};
 
 #[cfg(all(feature = "xmlsec", any(test, feature = "testing")))]
 pub mod testing;
@@ -20,7 +20,7 @@ pub mod testing;
 #[cfg(not(feature = "xmlsec"))]
 mod off;
 #[cfg(not(feature = "xmlsec"))]
-pub use off::{Idp, request_url, self_check, sp_metadata, verify};
+pub use off::{Idp, new_sp_key, request_url, self_check, sp_metadata, verify};
 
 /// Whether this build checks SAML at all.
 pub const AVAILABLE: bool = cfg!(feature = "xmlsec");
@@ -31,6 +31,23 @@ pub struct Sp<'a> {
     pub entity_id: &'a str,
     /// Where responses are posted (HTTP-POST binding).
     pub acs_url: &'a str,
+    /// Its own key: with one, requests are signed and assertions encrypted to it can be read.
+    pub key: Option<&'a SpKey>,
+}
+
+/// A service's own SAML key: RSA, with a self-signed certificate its metadata publishes, which
+/// providers check its requests with and encrypt assertions to.
+#[derive(Clone)]
+pub struct SpKey {
+    /// PKCS#8 or PKCS#1, DER.
+    pub private_der: Vec<u8>,
+    pub certificate_der: Vec<u8>,
+}
+
+impl std::fmt::Debug for SpKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SpKey(…)")
+    }
 }
 
 /// Who signed in, as the identity provider vouches for them.

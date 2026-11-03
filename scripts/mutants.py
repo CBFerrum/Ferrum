@@ -210,6 +210,8 @@ MUTANTS = [
     ("saml-returns-anywhere", "crates/kernel/src/sso.rs", "if !self.own_return(tenant, &back).await? {", "if false {", SAML),
     ("saml-refusal-keeps-the-sign-in", "crates/kernel/src/sso.rs", '                sqlx::query("delete from sso_flow where state_hash = $1").bind(hash(relay_state)).execute(&mut *tx).await?;\n', "", SAML),
     ("saml-any-code", "crates/kernel/src/sso.rs", "code_hash.as_deref() == Some(hash(code).as_str())", "code_hash.is_some()", SAML),
+    ("saml-unsigned-requests", "crates/saml/src/checked.rs", "Some(key) => request.signed_redirect(relay_state, &private_key(key)?),", "Some(_) => request.redirect(relay_state),", SAML_UNIT),
+    ("saml-encrypted-read-anyway", "crates/saml/src/checked.rs", 'if xml.contains("EncryptedAssertion") {', "if false {", SAML_UNIT),
     ("saml-any-domain", "crates/kernel/src/sso.rs", "                if domains.is_empty() {\n                    return Err(Error::field(\"domains\"", "                if false {\n                    return Err(Error::field(\"domains\"", SAML),
     ("merged-id-still-listed", "crates/kernel/src/query.rs", "    if ent.def.mergeable {\n        qb.push(\" and not exists", "    if false {\n        qb.push(\" and not exists", MERGE),
     ("merge-misses-child-rows", "crates/kernel/src/merge.rs", 'out.push((info.table.clone(), f.name.clone(), c.storage_of(&f.name) == Some(Storage::Ext), false));', '', MERGE),

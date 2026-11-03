@@ -348,6 +348,17 @@ impl Kernel {
                     .await?
                     .rows_affected();
             }
+            let saml: Vec<(Uuid, String)> = sqlx::query_as("select tenant_id, private_key from saml_sp_key").fetch_all(&mut *tx).await?;
+            for (tenant, sealed) in saml {
+                let Some(new) = self.moved(&crate::sso::saml_key_label(tenant), &sealed, &mut done.unopened)? else { continue };
+                done.moved += sqlx::query("update saml_sp_key set private_key = $2 where tenant_id = $1 and private_key = $3")
+                    .bind(tenant)
+                    .bind(new)
+                    .bind(&sealed)
+                    .execute(&mut *tx)
+                    .await?
+                    .rows_affected();
+            }
             let server: Vec<(String, String)> = sqlx::query_as("select name, sealed from server_key").fetch_all(&mut *tx).await?;
             for (name, sealed) in server {
                 let Some(new) = self.moved(crate::webpush::VAPID_LABEL, &sealed, &mut done.unopened)? else { continue };

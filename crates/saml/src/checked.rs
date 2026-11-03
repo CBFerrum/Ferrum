@@ -1,11 +1,13 @@
 //! The calls, with xmlsec1 checking signatures (through samael).
 
 use crate::people::person;
-use crate::{Person, Sp};
+use crate::{Person, Sp, SpKey};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use samael::crypto::AllowedSignatureAlgorithm;
-use samael::metadata::{EntityDescriptor, HTTP_POST_BINDING, HTTP_REDIRECT_BINDING, IndexedEndpoint, SpSsoDescriptor};
+use samael::crypto::{AllowedSignatureAlgorithm, CertificateDer};
+use samael::idp::{CertificateParams, IdentityProvider, KeyType, Rsa};
+use samael::key_info::{KeyInfo, X509Data};
+use samael::metadata::{EntityDescriptor, HTTP_POST_BINDING, HTTP_REDIRECT_BINDING, IndexedEndpoint, KeyDescriptor, SpSsoDescriptor};
 use samael::schema::Response;
 use samael::service_provider::ServiceProvider;
 use samael::traits::ToXml;
@@ -33,10 +35,15 @@ pub struct Idp {
     pub sso_url: String,
 }
 
-fn service_provider(sp: &Sp, metadata: &EntityDescriptor) -> ServiceProvider {
-    ServiceProvider {
+fn private_key(key: &SpKey) -> Result<openssl::pkey::PKey<openssl::pkey::Private>, String> {
+    openssl::pkey::PKey::private_key_from_der(&key.private_der).map_err(|e| format!("this service's SAML key cannot be read: {e}"))
+}
+
+fn service_provider(sp: &Sp, metadata: &EntityDescriptor) -> Result<ServiceProvider, String> {
+    Ok(ServiceProvider {
         entity_id: Some(sp.entity_id.to_string()),
         acs_url: Some(sp.acs_url.to_string()),
+        certificate: sp.key.map(|k| CertificateDer::from(k.certificate_der.clone())),
         metadata_url: None,
         slo_url: None,
         idp_metadata: metadata.clone(),
@@ -44,7 +51,18 @@ fn service_provider(sp: &Sp, metadata: &EntityDescriptor) -> ServiceProvider {
         max_clock_skew: chrono::Duration::seconds(120),
         allowed_signature_algorithms: Some(ALGORITHMS.to_vec()),
         ..ServiceProvider::default()
-    }
+    })
+}
+
+/// A new key for a service: RSA 2048 and a certificate for ten years, named `name` (at most 64
+/// characters; providers show it).
+pub fn new_sp_key(name: &str) -> Result<SpKey, String> {
+    let key = IdentityProvider::generate_new(KeyType::Rsa(Rsa::Rsa2048)).map_err(|e| format!("making a key: {e}"))?;
+    let name: String = name.chars().take(64).collect();
+    let cert = key
+        .create_certificate(&CertificateParams { common_name: &name, issuer_name: &name, days_until_expiration: 3650 })
+        .map_err(|e| format!("making a certificate: {e}"))?;
+    Ok(SpKey { private_der: key.export_private_key_der().map_err(|e| e.to_string())?, certificate_der: cert.der_data().to_vec() })
 }
 
 impl Idp {
@@ -65,7 +83,7 @@ impl Idp {
         {
             return Err(format!("the metadata expired on {}; download it from the provider again", until.format("%Y-%m-%d")));
         }
-        let sp = service_provider(&Sp { entity_id: "", acs_url: "" }, &metadata);
+        let sp = service_provider(&Sp { entity_id: "", acs_url: "", key: None }, &metadata)?;
         let sso_url = sp.sso_binding_location(HTTP_REDIRECT_BINDING).ok_or("the metadata offers no sign-in service by HTTP-Redirect")?;
         if !sso_url.starts_with("https://") && !sso_url.starts_with("http://") {
             return Err("the metadata's sign-in service is not a web address".into());
@@ -79,14 +97,25 @@ impl Idp {
     }
 }
 
-/// This service's metadata, for an identity provider's administrator to load: its entity ID and
-/// where responses go. It signs nothing and wants assertions signed.
+/// This service's metadata, for an identity provider's administrator to load: its entity ID, where
+/// responses go, and with a key the certificate its requests are signed with. It wants assertions
+/// signed, and offers no key to encrypt them to: encrypted assertions are refused (see `verify`).
 pub fn sp_metadata(sp: &Sp) -> Result<String, String> {
+    let keys: Vec<KeyDescriptor> = sp
+        .key
+        .map(|k| KeyDescriptor {
+            key_use: Some("signing".into()),
+            key_info: KeyInfo { id: None, x509_data: Some(X509Data { certificates: vec![STANDARD.encode(&k.certificate_der)] }) },
+            encryption_methods: None,
+        })
+        .into_iter()
+        .collect();
     let descriptor = EntityDescriptor {
         entity_id: Some(sp.entity_id.to_string()),
         sp_sso_descriptors: Some(vec![SpSsoDescriptor {
             protocol_support_enumeration: Some("urn:oasis:names:tc:SAML:2.0:protocol".into()),
-            authn_requests_signed: Some(false),
+            key_descriptors: Some(keys),
+            authn_requests_signed: Some(sp.key.is_some()),
             want_assertions_signed: Some(true),
             name_id_formats: Some(vec![
                 "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent".into(),
@@ -107,17 +136,22 @@ pub fn sp_metadata(sp: &Sp) -> Result<String, String> {
 }
 
 /// Where to send the browser to sign in: the provider's sign-in service with a request (`request_id`,
-/// an XML ID: a letter or `_` first) and `relay_state`, which the provider posts back unchanged.
+/// an XML ID: a letter or `_` first) and `relay_state`, which the provider posts back unchanged;
+/// signed (RSA-SHA256, the HTTP-Redirect binding's way) when this service has a key.
 pub fn request_url(sp: &Sp, idp: &Idp, request_id: &str, relay_state: &str) -> Result<String, String> {
-    let provider = service_provider(sp, &idp.metadata);
+    let provider = service_provider(sp, &idp.metadata)?;
     let mut request = provider.make_authentication_request(&idp.sso_url).map_err(|e| e.to_string())?;
     request.id = request_id.to_string();
     request.force_authn = None;
-    let url = request.redirect(relay_state).map_err(|e| e.to_string())?.ok_or("the request has no destination")?;
-    Ok(url.to_string())
+    let url = match sp.key {
+        Some(key) => request.signed_redirect(relay_state, &private_key(key)?),
+        None => request.redirect(relay_state),
+    };
+    Ok(url.map_err(|e| e.to_string())?.ok_or("the request has no destination")?.to_string())
 }
 
-/// Checks a response the provider posted (`SAMLResponse`, base64) to the request `request_id`: signed
+/// Checks a response the provider posted (`SAMLResponse`, base64) to the request `request_id`: not
+/// encrypted, signed
 /// by a certificate in the provider's metadata with an accepted algorithm, from the provider, for
 /// this service and its address, in answer to that request, in its time window, with a bearer
 /// confirmation. Anything outside what the signature covers is not read.
@@ -134,7 +168,12 @@ pub fn verify(sp: &Sp, idp: &Idp, response: &str, request_id: &str) -> Result<Pe
     {
         return Err(format!("the provider did not sign you in ({})", code.rsplit(':').next().unwrap_or(code)));
     }
-    let assertion = service_provider(sp, &idp.metadata).parse_xml_response(&xml, Some(&[request_id])).map_err(|e| e.to_string())?;
+    // samael opens only some of XML Encryption's algorithms, in its own code rather than xmlsec1's:
+    // none is offered, and an encrypted assertion is refused in so many words.
+    if xml.contains("EncryptedAssertion") {
+        return Err("the provider encrypted the assertion, which this server does not read; have it send assertions unencrypted (HTTPS protects them)".into());
+    }
+    let assertion = service_provider(sp, &idp.metadata)?.parse_xml_response(&xml, Some(&[request_id])).map_err(|e| e.to_string())?;
     // The profile requires an audience naming this service; samael checks one only when present.
     let addressed = assertion
         .conditions
