@@ -11,8 +11,8 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 |---|---|
 | Implemented, qualification incomplete | 129 |
 | Partially implemented | 53 |
-| Missing | 40 |
-| Blocked by external dependency | 9 |
+| Missing | 39 |
+| Blocked by external dependency | 10 |
 | **All** | **231** |
 
 ## Platform
@@ -179,7 +179,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | Id | Requirement | Status | Basis | Known limitations |
 |---|---|---|---|---|
 | FERRUM-CONNECT-001 | Shared connector infrastructure: credentials, mapping, sync, reconciliation | Implemented, qualification incomplete | tested | Tested against stand-in providers only: no real provider uses it yet; Refresh tokens for a person-authorized OAuth app are not brokered: only client credentials are; Deletions do not go out to providers; A provider that says wait is left alone per connection; there is no budget shared across connections; Large media still goes through the plugin bridge; streaming by reference is not built; Egress is not restricted per connection |
-| FERRUM-CONNECT-002 | Connector catalog with what each provider's API really offers | Missing | read |  |
+| FERRUM-CONNECT-002 | Connector catalog with what each provider's API really offers | Blocked by external dependency | read | The machinery is built: each connector states what its provider's API offers (ConnectorInfo: streams, writes, webhooks, API version, capabilities) and GET /api/admin/connectors lists them; No provider's connector is finished: that takes its real API or approved sandbox, which only accounts at each provider give |
 | FERRUM-CONNECT-003 | Payment gateways | Blocked by external dependency | tested | Stripe, Razorpay and PayPal tested against stand-ins and, for Stripe and PayPal, their published API definitions; never against a live or sandbox account here; Money that cannot be booked becomes a Payment Exception a person decides; a gateway cannot approve one; None is certified |
 | FERRUM-CONNECT-004 | Tax and e-invoicing networks | Blocked by external dependency | read | Adapters written to published specifications; none has run against a live or sandbox provider here |
 | FERRUM-EXT-001 | Four extension classes with their security models | Partially implemented | read | Metadata, WASM and native exist; external services are not a declared class |
