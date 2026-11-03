@@ -45,6 +45,7 @@ HOST_UNIT = ("-p", "ferrum-plugins", "--lib", "host::tests")
 SOCKETS_UNIT = ("-p", "ferrum-plugins", "--lib", "sockets::tests")
 EGRESS = ("-p", "ferrum-server", "--test", "assistant_egress_it")
 SHARES_UNIT = ("-p", "ferrum-server", "--lib", "state::tests")
+EXTENSIONS = ("-p", "ferrum-server", "--test", "extensions_it")
 SUPPORT = ("-p", "ferrum-kernel", "--test", "support_it")
 CONTRACT = ("-p", "ferrum-ops-contract", "--lib")
 OPS = ("-p", "ferrum-ops", "--test", "ops_it")
@@ -54,6 +55,9 @@ TIMEOUT = 600
 
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
+    # An app built in elsewhere.
+    ("extension-hooks-for-everyone", "server/src/packages.rs", "                hooks.scoped(&packages, |h| (app.register)(h));", "                (app.register)(hooks);", EXTENSIONS),
+    ("extension-tasks-left-out", "server/src/app.rs", "            (app.tasks)(tasks);", "            let _ = app;", EXTENSIONS),
     # A workspace's share of a replica.
     ("share-is-no-limit", "server/src/state.rs", "        if self.each == 0 || place.0.get().is_some() {\n            return Ok(());", "        if true {\n            return Ok(());", SHARES_UNIT),
     ("share-is-everyones", "server/src/state.rs", "            held.entry(tenant).or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(self.each))).clone()", "            held.entry(uuid::Uuid::nil()).or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(self.each))).clone()", SHARES_UNIT),
