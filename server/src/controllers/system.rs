@@ -99,6 +99,13 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
     {
         let (pending, backup) = ferrum_app_cloud::views::ages(&st.kernel).await?;
         apps.push_str(&format!("ferrum_cloud_oldest_pending_seconds {pending}\nferrum_cloud_oldest_backup_seconds {backup}\n"));
+        let (late, terms) = ferrum_app_cloud::views::expiry(&st.kernel).await?;
+        for (kind, count) in late {
+            apps.push_str(&format!("ferrum_cloud_expired_live{{kind=\"{kind}\"}} {count}\n"));
+        }
+        if let Some(seconds) = terms {
+            apps.push_str(&format!("ferrum_cloud_terms_expire_seconds {seconds}\n"));
+        }
     }
     let body = format!(
         "# HELP ferrum_up 1 when the process is serving.\n# TYPE ferrum_up gauge\nferrum_up 1\n{apps}\
