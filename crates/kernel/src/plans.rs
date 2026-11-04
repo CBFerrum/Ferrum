@@ -25,7 +25,7 @@ pub fn validate(plans: &Map<String, Value>) -> std::result::Result<(), String> {
             if !QUOTAS.contains(&k.as_str()) {
                 return Err(format!("plan {name}: {k} is not a quota ({})", QUOTAS.join(", ")));
             }
-            if !v.as_i64().is_some_and(|n| n >= 0) {
+            if v.as_i64().is_none_or(|n| n < 0) {
                 return Err(format!("plan {name}: {k} is a whole number"));
             }
         }
