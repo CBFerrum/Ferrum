@@ -95,7 +95,7 @@ this repository, 135 built and awaiting qualification.
 - `FERRUM-JOURNEY-008` Document to signature (Inside one app's suite, through its API, not through the interface; no independent reviewer)
 - `FERRUM-JOURNEY-009` Marketing to consent enforcement (Inside one app's suite, through its API, not through the interface; no independent reviewer)
 - `FERRUM-JOURNEY-011` Learning completion (Inside one app's suite, through its API, not through the interface; no independent reviewer)
-- `FERRUM-JOURNEY-012` Tenant lifecycle (Walked in the kernel: signing up with a code, a new account signed in, the plan's quotas holding, a larger plan, closing it, kept and read-only, then deleted after its date (closure_it); not over HTTP or in a browser)
+- `FERRUM-JOURNEY-012` Tenant lifecycle (Walked in the kernel: signing up with a code, a new account signed in, the plan's quotas holding, a larger plan, closing it, kept and read-only, then deleted after its date (closure_it))
 - `FERRUM-JOURNEY-013` Partner support (In parts, inside the kernel's suite: support access granted at a level, for some records, read-only or not, reaching only that and ending when it expires)
 
 ## Waiting
