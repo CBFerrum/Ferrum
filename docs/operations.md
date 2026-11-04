@@ -786,7 +786,7 @@ for any calendar event, and rooms people start from Meet. They run on a
 * Browsers connect to LiveKit directly: signalling over a WebSocket, sound and pictures over UDP
   (or TCP). Nothing of a call passes through Ferrum.
 * Ferrum decides who may join which meeting and signs a LiveKit access token for them, with an API
-  key and secret that you give both. It never calls LiveKit.
+  key and secret that you give both. It calls LiveKit only for recordings, when they are on.
 * Who may join: a channel's call, whoever may read the channel; an event's meeting, its organizer
   and guests (anyone for a public event); a room, anyone in the workspace with its link. The app's
   README ("Meetings") has the details.
@@ -795,6 +795,8 @@ for any calendar event, and rooms people start from Meet. They run on a
 |---|---|---|
 | `FERRUM_MEET_URL` | server | LiveKit as browsers reach it, `wss://meet.example.com` |
 | `FERRUM_MEET_KEY`, `FERRUM_MEET_SECRET` | server | an API key (a name) and its secret, at least 32 characters (`openssl rand -hex 32`); LiveKit gets the same pair |
+| `FERRUM_MEET_RECORDINGS` | server | `true` once [LiveKit Egress](https://docs.livekit.io/home/egress/overview/) (Apache-2.0) runs beside LiveKit with its storage: anyone in a meeting may then record it |
+| `FERRUM_MEET_API_URL` | server | LiveKit's server API as Ferrum reaches it, when that is not `FERRUM_MEET_URL` over http(s): an address inside your network |
 
 With the three set, Chat shows a call button, Calendar offers "Add video meeting" to organizers,
 and Meet appears under Communication. Only people with a Comms role can join.
@@ -822,7 +824,22 @@ WebSocket with TLS, and Redis when you run more than one LiveKit server. Then:
 * give it the key and secret, and put the three settings on Ferrum's Deployment from a secret
   (Comms' pages may then connect to LiveKit).
 
-The server's network policy needs no change: Ferrum never calls LiveKit.
+The server's network policy needs no change unless recordings are on: then Ferrum calls LiveKit's
+API (`FERRUM_MEET_API_URL`, or LiveKit's address) to start, stop and list them, and the policy must
+let it.
+
+**Captions, transcripts and recordings.**
+* Captions are each person's own. *Caption my voice* has their browser's speech recognition caption
+  what they say (Chrome, Edge and Safari have it). The button says that the browser may send the voice
+  to its maker to recognise it.
+* Captions go to the call on LiveKit's `lk.transcription` text stream. A LiveKit transcription agent
+  you run (LiveKit Agents, with the speech-to-text you choose) publishes on the same stream and shows
+  the same way, though Comms does not keep what it says.
+* What people caption is kept as the meeting's transcript, for whoever may join the meeting.
+* Recordings are LiveKit Egress's: run it with its storage (an S3 bucket, say), its own way. Ferrum
+  asks it to record a meeting's room to `ferrum/{workspace}/{room}/{recording}.mp4`, one recording at a
+  time. Everyone in the call sees that it is recording. Each meeting lists where its recordings went.
+  Who may open them is your storage's to decide.
 
 **Things to know**
 * **Capacity:** LiveKit forwards streams without mixing them, so its load grows with the streams
