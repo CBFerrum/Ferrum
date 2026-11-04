@@ -227,6 +227,8 @@ macro_rules! apps {
             out.push(("restaurant", ferrum_app_restaurant::UI));
             #[cfg(feature = "property")]
             out.push(("property", ferrum_app_property::UI));
+            #[cfg(feature = "construction")]
+            out.push(("construction", ferrum_app_construction::UI));
             #[cfg(feature = "field-service")]
             out.push(("field-service", ferrum_app_field_service::UI));
             #[cfg(feature = "lms")]
@@ -325,6 +327,7 @@ apps! {
         "education" => ferrum_app_education,
         "restaurant" => ferrum_app_restaurant,
         "property" => ferrum_app_property,
+        "construction" => ferrum_app_construction,
         "field-service" => ferrum_app_field_service,
         "forms" => ferrum_app_forms,
         "lms" => ferrum_app_lms,

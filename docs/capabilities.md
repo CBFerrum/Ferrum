@@ -9,9 +9,9 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 139 |
+| Implemented, qualification incomplete | 140 |
 | Partially implemented | 60 |
-| Missing | 22 |
+| Missing | 21 |
 | Blocked by external dependency | 10 |
 | **All** | **231** |
 
@@ -167,7 +167,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-INDUSTRY-004 | Education: admissions, students, fees, timetables, examinations | Implemented, qualification incomplete | tested | Admissions into students and enrollments, fees invoiced through ERP and paid once settled, groups of enrolled students, a timetable without room, instructor or group clashes, attendance and graded assessments; eleven mutants by hand; adapted from ERPNext 13's Education module; No online applications, parents' portal, report cards as documents, rule-made timetables or fee schedules for many students at once; Not tried in a browser |
 | FERRUM-INDUSTRY-005 | Healthcare administration: scheduling, consent, billing | Missing | probe |  |
 | FERRUM-INDUSTRY-006 | Manufacturing: planning, quality, traceability, shop floor | Partially implemented | probe | Shop-floor execution exists (FERRUM-IND-011) and has run on simulated equipment only |
-| FERRUM-INDUSTRY-007 | Construction and professional services: estimates, variations, site work | Missing | probe |  |
+| FERRUM-INDUSTRY-007 | Construction and professional services: estimates, variations, site work | Implemented, qualification incomplete | tested | Estimates with a markup spread to the cent into contracts, variations decided by a Contracts Manager joining the contract as lines, progress claims by line recomputed when certified and invoiced through ERP less retention and earlier claims, certified work not taken back, retention released on completion, site diaries one a day; 33 mutants by hand; its own design; No retention in halves or capped, materials on site, subcontractors' claims, measured quantities, cost against budget or a client's portal; Not tried in a browser |
 | FERRUM-INDUSTRY-008 | Property and facilities: leases, charges, inspections, portals | Partially implemented | tested | Units held by one lease's days at a time, terms kept once active, rent and charges invoiced each period once through ERP, leases ended at their end or early, urgent requests holding a unit until done, inspections with findings, and lessees' Your home on the portal (their leases, rent invoiced and repairs asked for, only in a unit they rent now); 27 mutants by hand; its own design; No owners' portal, and no paying rent on the portal beyond ERP's invoices page; No part-period rent, rent reviews, deposits through the books, late fees, notice periods or service-charge budgets; Not tried in a browser |
 | FERRUM-INDUSTRY-009 | Logistics and fleets: dispatch, routes, proof of delivery | Missing | probe |  |
 | FERRUM-INDUSTRY-010 | Government: cases, permits, citizen portals | Missing | probe |  |
