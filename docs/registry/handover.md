@@ -3,6 +3,36 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-04, evening: sign-up and plans, an industrial solution through to commissioning, meetings' captions and recordings, a hotel, and a browser on a running server
+
+**State:** each PR was green on its CI before it merged. No release was tagged.
+
+| Where | What |
+|---|---|
+| Ferrum PR 53 | Workspace sign-up at `accounts.{base}/signup`, the operator's plans (`FERRUM_PLANS`, `set_plan`), the people quota held by a trigger, the assistant held to the plan's tokens, and closing one's own workspace (FERRUM-CLOUD-002, JOURNEY-012 in parts) |
+| Ferrum PR 51 | An industrial solution in an app's bundle, imported into Operations on install as device profiles and acceptance procedures; commissioning waits for a passed run of each; the install plan lists the equipment (FERRUM-IND-018) |
+| Comms PR 5 | Comms 0.9.0: captions each person gives their own voice, kept as the meeting's transcript; recordings through LiveKit Egress (FERRUM-COMMS-002) |
+| Ferrum-Frontend PRs 13, 14 | The workspace's plan, usage and closing in Administration; the equipment in the install dialog |
+| New: ferrum-app-hospitality | Hospitality 0.1.0: properties, room types and rooms, rate plans by season, stays, folios and the night audit (FERRUM-INDUSTRY-001, JOURNEY-010 in parts), adapted from ERPNext 12's Hotels module |
+| Ferrum PR 54 | Comms 0.9.0 and Hospitality compiled in; the operations guide's recordings; entity files may start with a comment |
+
+**Evidence:**
+- Mutants were run and all caught: 11 for sign-up and plans, 8 for acceptance (one added after the browser run), 9 for Comms by hand, 10 for Hospitality by hand. Hospitality's one survivor was a check nothing could reach; it was removed and the guard that matters was tested instead.
+- Kernel, Operations, Comms and Hospitality tests ran on this machine. The server was checked with clippy with and without Operations.
+- **A browser on a running server, for the first time** (`docs/platform/evidence/browser-2026-11-04.md`): from sign-up to closing, and an industrial solution from upload to commissioning. It found a real bug that no test had: an installation that brings Operations imported with the request's stale schema. PR 51 fixes it, with a test and a mutant.
+
+**Not done:**
+- Real LiveKit Egress, real speech recognition, or a real call.
+- Equipment, and a channel manager for the hotel.
+- Personal-data erasure of meeting transcripts.
+- The other industry packs, the ecosystem apps, store monetization, the control plane, the fleet and the partner console. The registry lists them.
+
+**Lessons:**
+- A browser run finds what scenario tests miss. This one found a schema that went stale within one request, a panel that did not refresh, and a word in the singular.
+- An entity file that began with a comment was read as one entity (fixed in PR 54).
+- sqlx 0.9 refuses SQL built at runtime unless it is marked `AssertSqlSafe`.
+- A binary in `target/debug` is a hard link to `deps/`: delete both to free the space. Old test binaries in the shared target held 1.6 GB.
+
 ## 2026-11-04, later: help and assistants in the shell, payments for subscriptions, deposits and courses, and Learn's SCORM, xAPI and LTI
 
 **State**: on `main` of each repository; each PR was green on its CI before it merged. No release was tagged.

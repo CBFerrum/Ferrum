@@ -217,6 +217,8 @@ macro_rules! apps {
             out.push(("pos", ferrum_app_pos::UI));
             #[cfg(feature = "bookings")]
             out.push(("bookings", ferrum_app_bookings::UI));
+            #[cfg(feature = "hospitality")]
+            out.push(("hospitality", ferrum_app_hospitality::UI));
             #[cfg(feature = "field-service")]
             out.push(("field-service", ferrum_app_field_service::UI));
             #[cfg(feature = "lms")]
@@ -310,6 +312,7 @@ apps! {
         "studio" => ferrum_studio,
         "assets" => ferrum_app_assets,
         "bookings" => ferrum_app_bookings,
+        "hospitality" => ferrum_app_hospitality,
         "field-service" => ferrum_app_field_service,
         "forms" => ferrum_app_forms,
         "lms" => ferrum_app_lms,
