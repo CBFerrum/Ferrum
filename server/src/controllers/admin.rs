@@ -327,6 +327,17 @@ async fn usage(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Resp
     Ok(Json(app_state(&app)?.kernel.usage(&ctx).await?).into_response())
 }
 
+#[derive(Deserialize)]
+struct CloseReq {
+    confirm: String,
+}
+
+/// `POST /api/admin/close`: its administrator closes the workspace, its name typed to confirm.
+async fn close_workspace(Auth(ctx): Auth, State(app): State<AppContext>, Json(req): Json<CloseReq>) -> ApiResult<Response> {
+    let until = app_state(&app)?.kernel.close_own_workspace(&ctx, &req.confirm).await?;
+    Ok(Json(json!({"state": "closed", "retain_until": until})).into_response())
+}
+
 /// `GET /api/support/report`: what a support key sees of how the workspace is doing.
 async fn support_report(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
     let st = app_state(&app)?;
@@ -685,6 +696,7 @@ pub fn routes() -> Routes {
         .add("/admin/support/{id}", delete(revoke_support))
         .add("/admin/support/{id}/requests", get(support_activity))
         .add("/admin/usage", get(usage))
+        .add("/admin/close", post(close_workspace))
         .add("/support/report", get(support_report))
         .add("/admin/retention", get(list_retention).post(add_retention))
         .add("/admin/retention/{id}", put(save_retention).delete(delete_retention))

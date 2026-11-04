@@ -51,7 +51,14 @@ async fn newest_code(k: &Kernel, to: &str) -> String {
 }
 
 fn form(email: &str, code: &str, slug: &str) -> SignUp {
-    SignUp { email: email.into(), code: code.into(), slug: slug.into(), name: format!("{slug} Ltd"), password: PASSWORD.into(), full_name: Some("Ana Rao".into()) }
+    SignUp {
+        email: email.into(),
+        code: code.into(),
+        slug: slug.into(),
+        name: format!("{slug} Ltd"),
+        password: PASSWORD.into(),
+        full_name: Some("Ana Rao".into()),
+    }
 }
 
 #[test]
@@ -88,8 +95,16 @@ async fn scenario() {
     let weak = SignUp { password: "short".into(), ..form("ana@x.test", &code, "anaco") };
     assert!(matches!(k.sign_up(weak).await, Err(Error::Validation(_))), "a weak password is refused before the code is spent");
     assert!(matches!(k.sign_up(form("ana@x.test", &code, "accounts")).await, Err(Error::Validation(_))), "a name the cluster keeps");
-    let anaco = k.sign_up(form("ana@x.test", &code, "anaco")).await.unwrap();
+    let made = k.sign_up(form("ana@x.test", &code, "anaco")).await.unwrap();
+    let anaco = made.tenant;
     assert!(matches!(k.sign_up(form("ana@x.test", &code, "anaco-two")).await, Err(Error::Unauthorized(_))), "a code works once");
+
+    // Ana had no Ferrum account: she has one now, signed in, with the workspace in it.
+    let account = made.account.expect("her new Ferrum account");
+    let me = k.load_ctx(account.tenant, account.user, Some(account.token_version), "it".into()).await.unwrap();
+    assert_eq!(k.directory().await.unwrap(), Some(account.tenant));
+    let mine = k.identity_workspaces(&me).await.unwrap();
+    assert!(mine.iter().any(|w| w["slug"] == "anaco" && w["joined"] == true && w["admin"] == true), "{mine:?}");
 
     // She is its administrator, and it is on the sign-up plan.
     let s = k.login("anaco", "ana@x.test", PASSWORD).await.unwrap();
@@ -98,6 +113,7 @@ async fn scenario() {
     assert_eq!(k.plan_of(anaco).await.unwrap().as_deref(), Some("free"));
     let usage = k.usage(&ana).await.unwrap();
     assert_eq!(usage["quotas"], json!({"people": 2, "storage_bytes": 1000, "ai_tokens_month": 50000}));
+    assert_eq!((usage["slug"].as_str(), usage["plan"].as_str()), (Some("anaco"), Some("free")));
 
     // Two people fit the free plan; a third does not, until someone is turned off.
     let bo = k.create_user(&ana, "bo@x.test", "Bo", Some("Bo-Pass-12345"), &[], false).await.unwrap();
@@ -123,8 +139,30 @@ async fn scenario() {
     k.send_signup_code("ana@x.test").await.unwrap();
     let code = newest_code(&k, "ana@x.test").await;
     assert!(matches!(k.sign_up(form("ana@x.test", &code, "anaco")).await, Err(Error::Validation(_))));
-    k.sign_up(form("ana@x.test", &code, "anaco-two")).await.unwrap();
+    let second = k.sign_up(form("ana@x.test", &code, "anaco-two")).await.unwrap();
+    assert!(second.account.is_none(), "her account opens with its password, not with a code");
+    let mine = k.identity_workspaces(&me).await.unwrap();
+    assert!(mine.iter().any(|w| w["slug"] == "anaco-two" && w["joined"] == false), "waiting in her chooser: {mine:?}");
     k.send_signup_code("ana@x.test").await.unwrap();
     let code = newest_code(&k, "ana@x.test").await;
     assert!(matches!(k.sign_up(form("ana@x.test", &code, "anaco-three")).await, Err(Error::Forbidden(_))));
+
+    // She closes the second herself, typing its name: read-only and kept, for an operator to open again.
+    let s = k.login("anaco-two", "ana@x.test", PASSWORD).await.unwrap();
+    let ana_two = k.load_ctx(s.tenant, s.user, Some(s.token_version), "it".into()).await.unwrap();
+    assert!(matches!(k.close_own_workspace(&ana_two, "anaco").await, Err(Error::Validation(_))), "another name");
+    let s = k.login("anaco", "bo@x.test", "Bo-Pass-12345").await.unwrap();
+    let bo_ctx = k.load_ctx(s.tenant, s.user, Some(s.token_version), "it".into()).await.unwrap();
+    assert!(matches!(k.close_own_workspace(&bo_ctx, "anaco").await, Err(Error::Forbidden(_))), "not an administrator");
+    let until = k.close_own_workspace(&ana_two, " anaco-two ").await.unwrap();
+    assert_eq!(until, chrono::Utc::now().date_naive() + chrono::Days::new(ferrum_kernel::account::CLOSED_KEPT_DAYS));
+    let mut tx = k.db.system_tx().await.unwrap();
+    let (state, kept): (String, chrono::NaiveDate) =
+        sqlx::query_as("select account_state, retain_until from tenant where id = $1").bind(second.tenant).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!((state.as_str(), kept), ("closed", until));
+    let s = k.login("anaco-two", "ana@x.test", PASSWORD).await.unwrap();
+    let after = k.load_ctx(s.tenant, s.user, Some(s.token_version), "it".into()).await.unwrap();
+    assert!(after.read_only, "closed is read-only");
+    assert_eq!(k.usage(&ana).await.unwrap()["plan"], "free", "the first is untouched, on its plan");
 }

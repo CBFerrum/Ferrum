@@ -172,7 +172,7 @@ impl Kernel {
         Ok(id)
     }
 
-    async fn directory_id(&self) -> Result<Uuid> {
+    pub(crate) async fn directory_id(&self) -> Result<Uuid> {
         self.directory().await?.ok_or_else(|| Error::Unavailable("this cluster does not sign people in through accounts".into()))
     }
 
@@ -343,7 +343,7 @@ impl Kernel {
 
     /// Makes the identity of a proven membership: it takes the membership's password,
     /// authenticator app and unused recovery codes, and the membership joins it.
-    async fn identity_from(&self, tx: &mut Tx, m: &Session, verified: bool) -> Result<Session> {
+    pub(crate) async fn identity_from(&self, tx: &mut Tx, m: &Session, verified: bool) -> Result<Session> {
         let again = || Error::Unauthorized("sign in again".into());
         let dir = self.directory_id().await?;
         #[derive(sqlx::FromRow)]

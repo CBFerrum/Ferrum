@@ -38,6 +38,7 @@ pub fn platform_file(name: &str) -> Option<(&'static str, &'static [u8])> {
         "live-worker.js" => (js, include_bytes!("../shell/live-worker.js")),
         "kill-sw.js" => (js, include_bytes!("../shell/kill-sw.js")),
         "login.js" => (js, include_bytes!("../shell/login.js")),
+        "signup.js" => (js, include_bytes!("../shell/signup.js")),
         "portal.js" => (js, include_bytes!("../shell/portal.js")),
         "isolated.js" => (js, include_bytes!("../shell/isolated.js")),
         "pages.css" => ("text/css; charset=utf-8", include_bytes!("../shell/pages.css")),
@@ -1417,6 +1418,16 @@ pub fn login_html(boot: &Value, title: &str) -> Response {
     let html = format!(
         r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{t} · Ferrum</title><link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/_shell/theme/{h}.css"><link rel="stylesheet" href="/_shell/v1/pages.css"><script type="application/json" id="ferrum-login">{b}</script><script type="module" src="/_shell/v1/login.js"></script></head><body><main class="ferrum-login" id="main"><img class="ferrum-mark" src="/_shell/v1/icon.svg" alt="" width="40" height="40"><h1>{t}</h1><form id="ferrum-login-form" novalidate><div id="ferrum-login-fields"></div><p class="ferrum-error" role="alert" id="ferrum-login-error"></p><button class="ferrum-button" type="submit">Sign in</button></form><noscript><p>Signing in needs JavaScript.</p></noscript></main></body></html>"#,
         t = esc(title),
+        h = theme_hash(),
+        b = json_in_html(boot)
+    );
+    page_response(StatusCode::OK, html, &csp(None, &Value::Null))
+}
+
+/// The sign-up page (`signup.js`, with `boot`).
+pub fn signup_html(boot: &Value) -> Response {
+    let html = format!(
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Make a workspace · Ferrum</title><link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/_shell/theme/{h}.css"><link rel="stylesheet" href="/_shell/v1/pages.css"><script type="application/json" id="ferrum-signup">{b}</script><script type="module" src="/_shell/v1/signup.js"></script></head><body><main class="ferrum-login" id="main"><img class="ferrum-mark" src="/_shell/v1/icon.svg" alt="" width="40" height="40"><h1>Make your Ferrum workspace</h1><form id="ferrum-login-form" novalidate><div id="ferrum-login-fields"></div><p class="ferrum-error" role="alert" id="ferrum-login-error"></p><button class="ferrum-button" type="submit">Email me a code</button></form><noscript><p>Signing up needs JavaScript.</p></noscript></main></body></html>"#,
         h = theme_hash(),
         b = json_in_html(boot)
     );

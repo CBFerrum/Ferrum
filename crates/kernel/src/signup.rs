@@ -4,10 +4,11 @@
 //! a few workspaces at most, and the operator may take sign-ups from some domains only. Codes come
 //! from the accounts directory, so a cluster takes sign-ups only with a base domain.
 
+use crate::Kernel;
+use crate::auth::Session;
 use crate::error::{Error, Result};
 use crate::identity::normalized_email;
 use crate::tenant::NewTenant;
-use crate::Kernel;
 use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
@@ -46,6 +47,13 @@ pub struct SignUp {
     pub full_name: Option<String>,
 }
 
+/// A new workspace, and its maker's new Ferrum account, signed in, when they had none.
+#[derive(Debug)]
+pub struct SignedUp {
+    pub tenant: Uuid,
+    pub account: Option<Session>,
+}
+
 impl Kernel {
     /// The address, when this server takes a sign-up from it.
     fn signup_from(&self, email: &str) -> Result<String> {
@@ -68,7 +76,7 @@ impl Kernel {
     }
 
     /// Makes the workspace of someone whose code proves their address; they are its administrator.
-    pub async fn sign_up(&self, s: SignUp) -> Result<Uuid> {
+    pub async fn sign_up(&self, s: SignUp) -> Result<SignedUp> {
         let email = self.signup_from(&s.email)?;
         let new = NewTenant {
             slug: s.slug,
@@ -81,13 +89,12 @@ impl Kernel {
         };
         new.check()?;
         let mut tx = self.db.system_tx().await?;
-        let (made, taken): (i64, bool) = sqlx::query_as(
-            "select (select count(*) from tenant where settings->>'signed_up_by' = $1), exists(select 1 from tenant where slug = $2)",
-        )
-        .bind(&email)
-        .bind(&new.slug)
-        .fetch_one(&mut *tx)
-        .await?;
+        let (made, taken): (i64, bool) =
+            sqlx::query_as("select (select count(*) from tenant where settings->>'signed_up_by' = $1), exists(select 1 from tenant where slug = $2)")
+                .bind(&email)
+                .bind(&new.slug)
+                .fetch_one(&mut *tx)
+                .await?;
         if made >= self.settings.signup.per_address {
             tx.commit().await?;
             return Err(Error::Forbidden(format!("this address has made {made} workspaces, as many as this server allows")));
@@ -104,7 +111,23 @@ impl Kernel {
         if let Some(plan) = &self.settings.signup.plan {
             self.set_plan(tenant, plan).await?;
         }
+        // The code proved the address, so someone with no Ferrum account gets one, signed in. Someone
+        // with an account signs in to it as ever (its password and second step), and finds the new
+        // workspace in their chooser: a code alone never opens an account that has more.
+        let dir = self.directory_id().await?;
+        let mut tx = self.db.system_tx().await?;
+        let (user, token_version, has_account): (Uuid, i32, bool) = sqlx::query_as(
+            "select id, token_version, exists(select 1 from app_user where tenant_id = $3 and email = $2) from app_user where tenant_id = $1 and email = $2",
+        )
+        .bind(tenant)
+        .bind(&email)
+        .bind(dir)
+        .fetch_one(&mut *tx)
+        .await?;
+        let account = if has_account { None } else { Some(self.identity_from(&mut tx, &Session { tenant, user, token_version }, true).await?) };
+        tx.commit().await?;
+        self.invalidate_user(tenant, user);
         tracing::info!(%tenant, "workspace signed up");
-        Ok(tenant)
+        Ok(SignedUp { tenant, account })
     }
 }
