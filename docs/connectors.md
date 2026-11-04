@@ -75,4 +75,4 @@ writing an adapter does not establish it.
 
 Administrators only: `GET /api/admin/connectors` (what this server can connect to); `GET`/`POST
 /api/admin/connections`; `PUT`/`DELETE /api/admin/connections/{id}`; `POST .../{id}/test`, `GET .../{id}/schema`, `POST .../{id}/sync`
-`{from_start}`, `.../{id}/reconcile`; `GET .../{id}/drift`; `POST /api/admin/connection-drift/{id}/resolve`.
+`{from_start}`, `.../{id}/reconcile`; `GET .../{id}/drift`; `GET .../{id}/activity` (its latest reads, sends and comparisons with how each went, and the records each stream links); `POST /api/admin/connection-drift/{id}/resolve`. A failed run is tried again with `POST /api/jobs/{id}/retry`.

@@ -65,6 +65,10 @@ async fn reconcile(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Pat
     Ok((StatusCode::ACCEPTED, Json(json!({"job": job}))).into_response())
 }
 
+async fn activity(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
+    Ok(Json(app_state(&app)?.kernel.connection_activity(&ctx, id, 50).await?).into_response())
+}
+
 async fn drift(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
     Ok(Json(json!({"drift": app_state(&app)?.kernel.connection_drift(&ctx, id).await?})).into_response())
 }
@@ -95,6 +99,7 @@ pub fn routes() -> Routes {
         .add("/admin/connections/{id}/sync", post(sync))
         .add("/admin/connections/{id}/reconcile", post(reconcile))
         .add("/admin/connections/{id}/drift", get(drift))
+        .add("/admin/connections/{id}/activity", get(activity))
         .add("/admin/connection-drift/{id}/resolve", post(resolve))
         .add("/connect/{id}/webhook", post(webhook))
 }
