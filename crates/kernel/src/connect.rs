@@ -607,7 +607,11 @@ impl Kernel {
     pub async fn connection_activity(&self, ctx: &Ctx, id: Uuid, limit: i64) -> Result<Value> {
         admin_only(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let known: bool = sqlx::query_scalar("select exists (select 1 from connection where tenant_id = $1 and id = $2)").bind(ctx.tenant).bind(id).fetch_one(&mut *tx).await?;
+        let known: bool = sqlx::query_scalar("select exists (select 1 from connection where tenant_id = $1 and id = $2)")
+            .bind(ctx.tenant)
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
         if !known {
             return Err(Error::NotFound("connection".into()));
         }
