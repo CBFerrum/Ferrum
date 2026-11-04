@@ -2986,8 +2986,8 @@ dependencies = [
 
 [[package]]
 name = "ferrum-app-social"
-version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-social?branch=main#af3c5deaf89c465c789c1f9e2979210f24d31cc3"
+version = "0.2.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-social?branch=main#bceabb71ee1c2a72fbc43cede8158f55e93c88a2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2995,6 +2995,7 @@ dependencies = [
  "ferrum-kernel",
  "ferrum-meta",
  "hex",
+ "reqwest 0.12.28",
  "rust_decimal",
  "serde_json",
  "sha2 0.10.9",
