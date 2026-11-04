@@ -9,9 +9,9 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 134 |
+| Implemented, qualification incomplete | 135 |
 | Partially implemented | 58 |
-| Missing | 29 |
+| Missing | 28 |
 | Blocked by external dependency | 10 |
 | **All** | **231** |
 
@@ -210,8 +210,8 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | Id | Requirement | Status | Basis | Known limitations |
 |---|---|---|---|---|
 | FERRUM-CLOUD-001 | Control plane separate from customer workloads | Missing | probe |  |
-| FERRUM-CLOUD-002 | Tenant lifecycle: signup, provisioning, plans, closure | Partially implemented | read | Tenants are created by a task or API; no signup, plans or closure |
-| FERRUM-CLOUD-003 | Metering, billing, entitlements | Partially implemented | tested | Metering and account states exist; prices, invoices and payment do not; Storage is the only enforced quota; Connector and communication usage are not metered |
+| FERRUM-CLOUD-002 | Tenant lifecycle: signup, provisioning, plans, closure | Implemented, qualification incomplete | tested | Sign-up, plans and their quotas, and closing by the administrator or the operator are tested in the kernel, with mutants; the accounts host's sign-up page and calls have not been run in a browser against a running server; Sign-up needs a base domain and mail; A plan charges nothing: prices and payment are FERRUM-CLOUD-003's |
+| FERRUM-CLOUD-003 | Metering, billing, entitlements | Partially implemented | tested | Metering and account states exist; prices, invoices and payment do not; Storage, people and assistant tokens are enforced quotas, as Operations' devices and measurements are; jobs are only metered; Connector and communication usage are not metered |
 | FERRUM-CLOUD-004 | Fleet inventory, staged upgrades, customer-facing status | Missing | probe |  |
 | FERRUM-PARTNER-001 | Partner console | Missing | probe |  |
 | FERRUM-PARTNER-002 | Layered support access that expires and is visible to the customer | Implemented, qualification incomplete | tested | The request log is written by the HTTP layer, which the suite exercises directly rather than over HTTP; No partner console shows these: they are API routes |
@@ -297,7 +297,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-JOURNEY-009 | Marketing to consent enforcement | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
 | FERRUM-JOURNEY-010 | Hospitality stay | Missing | read |  |
 | FERRUM-JOURNEY-011 | Learning completion | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
-| FERRUM-JOURNEY-012 | Tenant lifecycle | Missing | read |  |
+| FERRUM-JOURNEY-012 | Tenant lifecycle | Partially implemented | tested | Walked in the kernel: signing up with a code, a new account signed in, the plan's quotas holding, a larger plan, closing it, kept and read-only, then deleted after its date (closure_it); not over HTTP or in a browser |
 | FERRUM-JOURNEY-013 | Partner support | Partially implemented | tested | In parts, inside the kernel's suite: support access granted at a level, for some records, read-only or not, reaching only that and ending when it expires; No partner console (FERRUM-PARTNER-001), partner terms or real partner |
 | FERRUM-JOURNEY-014 | AI-assisted operation | Partially implemented | tested | In parts, against a scripted model: the assistant reads at once, changes only what the person allows in the conversation, keeps to the workspace's egress policy and ignores instructions planted in records; No real model, no evaluation of answers, no person using it |
 
