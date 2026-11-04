@@ -3,7 +3,7 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
-## 2026-11-05, small hours: the control plane, social media, and paid apps in the store
+## 2026-11-04: the control plane, social media, and paid apps in the store
 
 **State:** this PR follows PR 56. It compiles the control plane and Social in, and gives the shell
 the icons they name (Ferrum-Frontend PR 16, merged, does the same for the launcher). The store's paid
@@ -29,7 +29,7 @@ apps are on the store's main branch. No release was tagged.
 - An app can send one record through one chosen connection by queueing the platform's own delivery (`jobs::enqueue` with `connect::DELIVER_KIND`) for a stream mapped without `push`: a pushed mapping sends every change of the entity through every connection that maps it.
 - Two checks can make a third redundant: an incident's latest update must say its status, and updates stay as posted, so a change of status without a new update can only come from reordering them, which is the one case the third check is for.
 
-## 2026-11-04, late night: objectives, digital assets and governed metrics
+## 2026-11-04: objectives, digital assets and governed metrics
 
 **State:** this PR follows PR 55 and compiles three more apps in. No release was tagged.
 
