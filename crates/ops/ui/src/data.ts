@@ -82,4 +82,45 @@ export const enrollment = (device: string) => api.post<{ code: string; expires_a
 export const setLifecycle = (device: string, to: string, reason: string) => api.post<{ lifecycle: string }>(`${base}/devices/${device}/lifecycle`, { to, reason });
 export const latest = (device: string) => api.get<{ metrics: { metric: string; value: number; at: string; age_secs: number }[] }>(`${base}/devices/${device}/latest`).then((r) => r.metrics);
 export const setPin = (site: string, email: string, pin: string) => api.post(`${base}/operators/pin`, { site, email, pin });
+
+/** An app's acceptance procedure that applies to a device, and whether the device passed it. */
+export interface ProcedureRow {
+  id: string;
+  name: string;
+  solution: string;
+  passed: boolean;
+}
+
+export interface RunRow {
+  id: string;
+  procedure: string;
+  status: "Running" | "Passed" | "Failed";
+  started_by: string | null;
+  finished_at: string | null;
+  created_at: string;
+}
+
+export interface StepResult {
+  id: string;
+  step_id: string;
+  kind: "Read" | "Command" | "Manual";
+  /** `{min, max}` or `{equals}` for a reading or a command's check; `{instruction}` for a person's look. */
+  expected: Record<string, unknown> | null;
+  observed: unknown;
+  outcome: "Pending" | "Passed" | "Failed";
+  recorded_by?: string | null;
+  note?: string | null;
+}
+
+export interface RunDoc {
+  id: string;
+  procedure: string;
+  status: RunRow["status"];
+  results: StepResult[];
+}
+
+export const acceptance = (device: string) => api.get<{ procedures: ProcedureRow[]; runs: RunRow[] }>(`${base}/devices/${device}/acceptance`);
+export const startRun = (device: string, procedure: string) => api.post<RunDoc>(`${base}/devices/${device}/acceptance`, { procedure });
+export const recordStep = (run: string, step: string, seen: { value?: unknown; passed?: boolean; note?: string }) =>
+  api.post<RunDoc>(`${base}/acceptance/${run}/steps/${encodeURIComponent(step)}`, seen);
 export const transfer = (domain: string, to: string, reason: string) => api.post<{ epoch: number }>(`${base}/authority/transfer`, { domain, to, reason });
