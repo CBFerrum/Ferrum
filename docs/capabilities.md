@@ -9,9 +9,9 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 137 |
+| Implemented, qualification incomplete | 138 |
 | Partially implemented | 59 |
-| Missing | 25 |
+| Missing | 24 |
 | Blocked by external dependency | 10 |
 | **All** | **231** |
 
@@ -164,7 +164,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-INDUSTRY-001 | Hospitality: properties, rates, stays, folios, night audit | Implemented, qualification incomplete | tested | Properties, room types, rooms, seasonal rate plans, stays held night by night, check-in and check-out, folios and the night audit, with ten mutants by hand; adapted from ERPNext 12's Hotels module; No channel manager or online booking (BLOCK-HOSPITALITY-CHANNELS), no groups, allotments or deposits at booking, no housekeeping tasks, and no point-of-sale charges posted to folios; Not tried in a browser |
 | FERRUM-INDUSTRY-002 | Restaurants: menus, tables, kitchen flow, delivery | Missing | probe |  |
 | FERRUM-INDUSTRY-003 | Retail and distribution: replenishment, omnichannel, franchise | Missing | probe |  |
-| FERRUM-INDUSTRY-004 | Education: admissions, students, fees, timetables, examinations | Missing | probe |  |
+| FERRUM-INDUSTRY-004 | Education: admissions, students, fees, timetables, examinations | Implemented, qualification incomplete | tested | Admissions into students and enrollments, fees invoiced through ERP and paid once settled, groups of enrolled students, a timetable without room, instructor or group clashes, attendance and graded assessments; eleven mutants by hand; adapted from ERPNext 13's Education module; No online applications, parents' portal, report cards as documents, rule-made timetables or fee schedules for many students at once; Not tried in a browser |
 | FERRUM-INDUSTRY-005 | Healthcare administration: scheduling, consent, billing | Missing | probe |  |
 | FERRUM-INDUSTRY-006 | Manufacturing: planning, quality, traceability, shop floor | Partially implemented | probe | Shop-floor execution exists (FERRUM-IND-011) and has run on simulated equipment only |
 | FERRUM-INDUSTRY-007 | Construction and professional services: estimates, variations, site work | Missing | probe |  |

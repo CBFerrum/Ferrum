@@ -2503,6 +2503,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrum-app-education"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-education?branch=main#017678d398b4d7bb7381a97b76073cb8a3c8348f"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "rust_decimal",
+ "serde_json",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
 name = "ferrum-app-erp"
 version = "0.1.0"
 source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#4eb4b8c2f4b8c380bc4b5c317cef932c53092ab8"
@@ -3227,6 +3243,7 @@ dependencies = [
  "ferrum-app-docs",
  "ferrum-app-drive",
  "ferrum-app-edge",
+ "ferrum-app-education",
  "ferrum-app-erp",
  "ferrum-app-field-service",
  "ferrum-app-forms",
