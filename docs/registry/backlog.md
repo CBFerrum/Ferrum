@@ -56,9 +56,9 @@ this repository, 145 built and awaiting qualification.
 - `FERRUM-ECOSYSTEM-006` Website and CMS (Commerce's storefront pages only)
 - `FERRUM-ECOSYSTEM-007` Customer, supplier and partner portals (A portal shell with tickets and invoices; no supplier or partner portal)
 - `FERRUM-ECOSYSTEM-009` Subscription and revenue operations (Finance bills subscriptions and Commerce sells them (Store Subscriptions); an overdue renewal makes one Past Due, which ends what ferrum_app_commerce::entitled grants, and paying it restores it)
-- `FERRUM-ECOSYSTEM-010` Governed enterprise analytics
-- `FERRUM-ECOSYSTEM-011` Portfolio and objectives
-- `FERRUM-ECOSYSTEM-012` Digital asset management
+- `FERRUM-ECOSYSTEM-010` Governed enterprise analytics (Metrics defined once as a Studio query of one measure and checked when saved, their lineage worked out from the query, certified by a Data Steward who does not own them, back in draft when the definition changes, read by everyone with their own rights to the records counted, kept as snapshots, deprecated pointing at a replacement, and a glossary; 29 mutants by hand)
+- `FERRUM-ECOSYSTEM-011` Portfolio and objectives (Objectives aligned to their parents within their periods, key results that increase, decrease or finish measured by check-ins, progress rolled up the tree, scores kept on closing, and the projects and portfolios behind them from Projects; 20 mutants by hand)
+- `FERRUM-ECOSYSTEM-012` Digital asset management (Assets kept as Drive files with their type, size and digest read from the file, rights with licensors, last days, credits and editorial-only flags, approval by a Brand Manager of the file's version then, back to review on a new version, expiry, collections, and usages only of the approved version within the rights; 19 mutants by hand)
 - `FERRUM-ECOSYSTEM-013` Developer Hub (A CLI and documentation; no hub)
 - `FERRUM-INDUSTRY-003` Retail and distribution: replenishment, omnichannel, franchise (Click and collect from the store an order ships from, ready once the store holds it, handed over against its code with the delivery note submitted; franchise royalties and marketing fees reported for periods within the agreement and invoiced once through ERP; 22 mutants by hand; its own design)
 - `FERRUM-INDUSTRY-006` Manufacturing: planning, quality, traceability, shop floor (Shop-floor execution exists (FERRUM-IND-011) and has run on simulated equipment only)

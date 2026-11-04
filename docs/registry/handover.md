@@ -3,6 +3,28 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-04, late night: objectives, digital assets and governed metrics
+
+**State:** this PR follows PR 55 and compiles three more apps in. No release was tagged.
+
+| Where | What |
+|---|---|
+| New: ferrum-app-objectives | Objectives 0.1.0: objectives aligned to their parents within their periods, key results measured by check-ins, progress rolled up the tree, and the projects and portfolios behind them from Projects (FERRUM-ECOSYSTEM-011, partial) |
+| New: ferrum-app-dam | Digital Assets 0.1.1: assets kept as Drive files with their rights, approved by version, back to review on a new version, expiring, and used only within their rights (FERRUM-ECOSYSTEM-012, partial). 0.1.1 renamed its roles Media Contributor and Media User: fixed assets already had an Asset User |
+| New: ferrum-app-metrics | Metrics 0.1.0: a metric as a Studio query of one measure, certified by a steward who does not own it, back in draft when its definition changes, read by everyone with their own rights, kept as snapshots, deprecated pointing at a replacement, and a glossary. Its interface is at `/kpis/`, since the core keeps `/metrics` (FERRUM-ECOSYSTEM-010, partial) |
+| This PR | The three compiled in; `ferrum-studio` patched to the workspace's crate, since Metrics is the first app to use it from git |
+
+**Evidence:**
+- Each app's scenario test passed against Postgres. Metrics' reads one definition as three numbers for two sales reps and their director, for a count and an average.
+- Mutants by hand, all caught after fixes: Objectives 20, Digital Assets 19, Metrics 29. Metrics' first run found that a pivoted definition and a decimal value were never tested.
+- The server checks with the three apps; CI's `rust` job runs `compiled_apps_fit_together`, which disk here does not allow.
+
+**Not done:** the apps in a browser; ECOSYSTEM-004, -005, EXT-009, CLOUD-001, -004, PARTNER-001, IND-021.
+
+**Lessons:**
+- Studio's result columns are named by `name`, not `key`; reading the wrong one read every metric as 0, which only a test against the database showed.
+- A route can be kept by the core (`/metrics` is Prometheus'): the manifest refuses it, so check the reserved routes before naming an interface.
+
 ## 2026-11-04, night: public services, retail, IT services, governance and risk, and contracts
 
 **State:** Ferrum PR 54 merged (eight industry apps compiled in) and Ferrum-Frontend PR 15 (the launcher's icons). This PR compiles five more apps in and moves FRONTEND_REV to PR 15's merge. No release was tagged.
