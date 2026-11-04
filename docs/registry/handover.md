@@ -15,6 +15,10 @@ What is true of each requirement is in the registry; this says what happened and
 | ERP PR 5 | ERP 0.7.1: ERP's assistant guidance and suggested questions |
 | Learn PRs 1, 2, 3 | Learn 0.3.0, Paid Courses (a connector with Commerce): bought, invoiced, enrolled on payment, refunded within 14 days. Learn 0.4.0: SCORM 1.2 and 2004 lessons through scorm-again 3.4.6 (MIT, vendored with its provenance), and xAPI lessons with an endpoint of their own. Learn 0.5.0: LTI 1.3 tools, launched by OIDC with an id_token signed with Learn's key, sending grades back by AGS (FERRUM-LMS-002) |
 | Ferrum PR 50 | Pins ERP 0.7.1 and Learn 0.5.0, and lists Paid Courses where Learn and Commerce are built in |
+| HR PR 1 | HR 0.5.1: a submitted separation makes the employee a leaver on its relieving date; that day HR's upkeep ends their sign-in through deprovisioning (FERRUM-JOURNEY-003, partial) |
+| Ferrum-Frontend PR 12 | The interface's language: words through `t` (Hindi and Arabic for the kit's), direction, and numbers and dates in a chosen locale (FERRUM-UX-006, partial) |
+| Comms PR 4 | Comms 0.8.1: who is about in Chat, from sessions active in the last ten minutes (part of FERRUM-COMMS-002) |
+| Ferrum PR 51 | The bootstrap's language from the person or the workspace; HR 0.5.1; three journeys recorded in parts (order to return, partner support, AI-assisted operation); the soak recorded |
 
 **Evidence**:
 - Every new test's figures were worked out by hand first.
@@ -23,6 +27,7 @@ What is true of each requirement is in the registry; this says what happened and
   - one SCORM survivor, the progress guard, was hidden behind permissions; the test now also tries as the administrator.
 - scorm-again's events, data shapes and resume were checked by running the vendored runtimes in Node with a simulated package.
 - LTI's id_token was verified against the JWKS Learn publishes. The client assertion was signed with a real tool key, and a second key was refused.
+- **The soak passed every check** (soak run 41719722922, `docs/platform/evidence/soak.md`): three hours on the image with PR 45's list order. 11 errors in 2.78 million requests of the heavy workspace, outside its outages, and none for the others. The pace held (p95 268 to 285 ms) while the database grew to 8.8 GB. J12 is passes-in-parts.
 
 **Not done:**
 - Nothing here has run in a browser on a running server: the server could not be built on this machine for lack of disk. Real SCORM, xAPI or LTI content has not been tried.
