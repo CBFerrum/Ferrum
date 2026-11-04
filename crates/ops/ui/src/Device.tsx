@@ -6,9 +6,9 @@ import { useId, useState } from "react";
 import { Link, useParams } from "react-router";
 import { api, docPath, formatDateTime, refusal, relativeTime } from "@ferrum/client";
 import { Alert, Badge, Button, confirmDialog, Dialog, EmptyState, ErrorState, Field, PageLoading, toast, useShellTitle } from "@ferrum/kit";
-import { enrollment, latest, setLifecycle } from "./data";
+import { acceptance, enrollment, latest, recordStep, setLifecycle, startRun, type RunDoc, type StepResult } from "./data";
 import { Tabs } from "./Tabs";
-import { canEnroll, canRetire, nextSteps, reading } from "./words";
+import { canEnroll, canRetire, expectation, nextSteps, reading, typed } from "./words";
 
 interface DeviceDoc {
   id: string;
@@ -69,6 +69,118 @@ function Why({ to, label, device, onClose }: { to: string; label: string; device
         <input id={`${id}-why`} className="input" value={reason} onChange={(e) => setReason(e.target.value)} />
       </Field>
     </Dialog>
+  );
+}
+
+const OUTCOME_TONE = { Pending: "neutral", Passed: "green", Failed: "red" } as const;
+
+/** One step of a running run, as the person on site records it. */
+function Record({ run, step }: { run: string; step: StepResult }) {
+  const id = useId();
+  const qc = useQueryClient();
+  const [value, setValue] = useState("");
+  const [note, setNote] = useState("");
+  const checks = step.kind !== "Manual" && step.expected && Object.keys(step.expected).length > 0;
+  const save = useMutation({
+    mutationFn: (seen: { value?: unknown; passed?: boolean }) => recordStep(run, step.step_id, { ...seen, note: note.trim() || undefined }),
+    onSuccess: (r) => {
+      qc.setQueryData(["ops", "run", run], r);
+      void qc.invalidateQueries({ queryKey: ["ops", "acceptance"] });
+    },
+    onError: (e) => toast(refusal(e), "error"),
+  });
+  return (
+    <div className="stack">
+      {checks ? (
+        <Field label={step.kind === "Read" ? "What it read" : "What the point reads after the command"} htmlFor={`${id}-v`} required>
+          <input id={`${id}-v`} className="input" value={value} onChange={(e) => setValue(e.target.value)} />
+        </Field>
+      ) : null}
+      <Field label="Note" htmlFor={`${id}-n`}>
+        <input id={`${id}-n`} className="input" value={note} onChange={(e) => setNote(e.target.value)} />
+      </Field>
+      <div className="ops-row-actions">
+        {checks ? (
+          <Button variant="primary" disabled={!value.trim()} loading={save.isPending} onClick={() => save.mutate({ value: typed(value) })}>
+            Record it
+          </Button>
+        ) : (
+          <>
+            <Button variant="primary" loading={save.isPending} onClick={() => save.mutate({ passed: true })}>
+              It holds
+            </Button>
+            <Button loading={save.isPending} onClick={() => save.mutate({ passed: false })}>
+              It does not
+            </Button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Run({ id }: { id: string }) {
+  const q = useQuery({ queryKey: ["ops", "run", id], queryFn: () => api.get<RunDoc>(docPath("AcceptanceRun", id)) });
+  if (q.isPending) return <PageLoading />;
+  if (q.isError) return <ErrorState error={q.error} onRetry={() => void q.refetch()} />;
+  const next = q.data.status === "Running" ? q.data.results.find((r) => r.outcome === "Pending") : undefined;
+  return (
+    <ol className="stack">
+      {q.data.results.map((r) => (
+        <li key={r.id}>
+          <div>
+            <strong>{r.step_id}</strong> <span className="faint">{r.kind}</span> <Badge tone={OUTCOME_TONE[r.outcome]}>{r.outcome}</Badge>
+          </div>
+          <div className="faint">
+            {expectation(r.expected)}
+            {r.observed !== null && r.observed !== undefined ? ` · seen ${JSON.stringify(r.observed)}` : ""}
+            {r.recorded_by ? ` · ${r.recorded_by}` : ""}
+            {r.note ? ` · ${r.note}` : ""}
+          </div>
+          {next?.id === r.id ? <Record run={id} step={r} /> : null}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/** The procedures an app's solution has for this device's profile: each passed on site before commissioning. */
+function Acceptance({ device }: { device: string }) {
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ["ops", "acceptance", device], queryFn: () => acceptance(device) });
+  const start = useMutation({
+    mutationFn: (procedure: string) => startRun(device, procedure),
+    onSuccess: (r) => {
+      qc.setQueryData(["ops", "run", r.id], r);
+      void qc.invalidateQueries({ queryKey: ["ops", "acceptance", device] });
+    },
+    onError: (e) => toast(refusal(e), "error"),
+  });
+  if (q.isPending || q.isError || q.data.procedures.length === 0) return null;
+  return (
+    <section className="card card-pad stack">
+      <h3>Acceptance on site</h3>
+      <p className="muted">Commissioning waits for a passed run of each. A pass records what was checked here, and certifies nothing beyond it.</p>
+      {q.data.procedures.map((p) => {
+        const running = q.data.runs.find((r) => r.procedure === p.id && r.status === "Running");
+        const last = q.data.runs.find((r) => r.procedure === p.id && r.status !== "Running");
+        return (
+          <div key={p.id} className="stack">
+            <div className="ops-row-actions">
+              <strong>{p.name}</strong>
+              <Badge tone={p.passed ? "green" : "amber"}>{p.passed ? "Passed" : "Not passed yet"}</Badge>
+              {last && last.status === "Failed" ? <span className="faint">Last run failed {relativeTime(last.finished_at ?? last.created_at)}</span> : null}
+              {running ? null : (
+                <Button loading={start.isPending && start.variables === p.id} onClick={() => start.mutate(p.id)}>
+                  {p.passed ? "Run it again" : "Start a run"}
+                </Button>
+              )}
+            </div>
+            {running ? <Run id={running.id} /> : null}
+          </div>
+        );
+      })}
+    </section>
   );
 }
 
@@ -141,6 +253,7 @@ export function DevicePage() {
           </ul>
         )}
       </section>
+      <Acceptance device={d.id} />
       {code ? <Code device={d.id} onClose={() => setCode(false)} /> : null}
       {asking ? <Why device={d.id} to={asking.to} label={asking.label} onClose={() => setAsking(null)} /> : null}
     </div>

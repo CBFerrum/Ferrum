@@ -131,6 +131,12 @@ fn kind(path: &str) -> Result<Kind, AppError> {
     {
         return Ok(Kind::Text);
     }
+    if [crate::industrial::PROFILES_DIR, crate::industrial::ACCEPTANCE_DIR]
+        .iter()
+        .any(|dir| path.strip_prefix(dir).is_some_and(|n| !n.contains('/') && n.len() > 5 && n.ends_with(".yaml")))
+    {
+        return Ok(Kind::Text);
+    }
     if path.starts_with("ui/") {
         let ext = path.rsplit('/').next().and_then(|n| n.rsplit_once('.')).filter(|(stem, _)| !stem.is_empty()).map_or("", |(_, e)| e);
         return UI_TEXT
@@ -148,7 +154,8 @@ fn kind(path: &str) -> Result<Kind, AppError> {
     }
     bad(format!(
         "unexpected file {path}: a bundle holds app.yaml, README.md, CHANGELOG.md, LICENSE, plugin.json, plugin.wasm, \
-         packages/<name>/ (package.yaml, README.md, entities/*.yaml, sql/*.sql, print/*.html), images under assets/ and screens under ui/"
+         packages/<name>/ (package.yaml, README.md, entities/*.yaml, sql/*.sql, print/*.html), images under assets/, screens under ui/ \
+         and an industrial solution's industrial/profiles/*.yaml and industrial/acceptance/*.yaml"
     ))
 }
 
@@ -423,6 +430,16 @@ impl Bundle {
         {
             return bad(format!("{sql}: meta apps carry no code and no SQL"));
         }
+        match &m.industrial {
+            Some(section) => {
+                crate::industrial::check(section, &self.files)?;
+            }
+            None => {
+                if let Some(p) = self.files.keys().find(|p| p.starts_with("industrial/")) {
+                    return bad(format!("{p}: app.yaml has no industrial section to name it"));
+                }
+            }
+        }
         let packages = self.packages()?;
         check_namespaces(m, &packages)?;
         if m.runtime == Runtime::Wasm {
@@ -488,6 +505,12 @@ impl Bundle {
     /// Every file path, sorted.
     pub fn paths(&self) -> impl Iterator<Item = &str> {
         self.files.keys().map(String::as_str)
+    }
+
+    /// The industrial solution the bundle carries (connectors, device profiles, acceptance
+    /// procedures), for the site runtime to import; none without an `industrial` section.
+    pub fn industrial(&self) -> Result<Option<crate::industrial::Solution>, AppError> {
+        self.manifest.industrial.as_ref().map(|s| crate::industrial::check(s, &self.files)).transpose()
     }
 
     /// The packages the manifest lists, parsed (in manifest order).

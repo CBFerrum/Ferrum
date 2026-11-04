@@ -57,6 +57,8 @@ RECOVERY = ("-p", "ferrum-kernel", "--test", "recovery_it")
 KMS = ("-p", "ferrum-kernel", "--test", "kms_it")
 SAGA = ("-p", "ferrum-kernel", "--test", "saga_it")
 SIGNUP = ("-p", "ferrum-kernel", "--test", "signup_it")
+ACCEPTANCE = ("-p", "ferrum-ops", "--test", "acceptance_it")
+INDUSTRIAL = ("-p", "ferrum-apps", "--lib", "industrial::tests")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
@@ -226,6 +228,11 @@ MUTANTS = [
     ("saga-never-turns-around", "crates/kernel/src/saga.rs", "Err(e) if final_error(&e) || job.attempts >= FORWARD_ATTEMPTS => {", "Err(e) if final_error(&e) => {", SAGA),
     ("saga-deaf-to-a-cancel", "crates/kernel/src/saga.rs", "if job.cancel_requested(k).await? {", "if false {", SAGA),
     ("saga-new-key-each-try", "crates/kernel/src/saga.rs", 'format!("ferrum-saga-{workflow}-{step}")', 'format!("ferrum-saga-{workflow}-{step}-{}", Uuid::now_v7())', SAGA),
+    ("solution-speaks-undeclared-schemes", "crates/apps/src/industrial.rs", "        if !schemes.contains(p.scheme.as_str()) {", "        if false && !schemes.contains(p.scheme.as_str()) {", INDUSTRIAL),
+    ("solution-writes-read-only-points", "crates/apps/src/industrial.rs", "                    Some(_) => at(format!(\"command {} writes {target}, which is read only\", c.name))?,", "                    Some(_) => {}", INDUSTRIAL),
+    ("solution-reads-unknown-points", "crates/apps/src/industrial.rs", "                    if s.point.as_deref().and_then(point).is_none() {", "                    if false {", INDUSTRIAL),
+    ("solution-keeps-strays", "crates/apps/src/industrial.rs", "        if let Some(stray) = shipped(dir).into_iter().find(|p| !listed.contains(p)) {", "        if let Some(stray) = shipped(dir).into_iter().find(|_| false) {", INDUSTRIAL),
+    ("solution-manual-says-nothing", "crates/apps/src/industrial.rs", "                if s.instruction.as_deref().is_none_or(|i| i.trim().is_empty()) {", "                if s.instruction.is_none() {", INDUSTRIAL),
     ("saga-cancel-drops-the-queued", "crates/kernel/src/jobs.rs", "status = case when status = 'queued' and not undo_on_cancel then 'cancelled'", "status = case when status = 'queued' then 'cancelled'", SAGA),
     ("merged-id-still-listed", "crates/kernel/src/query.rs", "    if ent.def.mergeable {\n        qb.push(\" and not exists", "    if false {\n        qb.push(\" and not exists", MERGE),
     ("merge-misses-child-rows", "crates/kernel/src/merge.rs", 'out.push((info.table.clone(), f.name.clone(), c.storage_of(&f.name) == Some(Storage::Ext), false));', '', MERGE),
@@ -279,6 +286,16 @@ MUTANTS = [
     ("plan-quotas-not-written", "crates/kernel/src/plans.rs", "            .bind(&quotas)", "            .bind(json!({}))", SIGNUP),
     ("people-quota-ignored", "crates/kernel/migrations/20261104000002_people_quota.sql", "  if used >= cap then", "  if false then", SIGNUP),
     ("people-quota-only-on-insert", "crates/kernel/migrations/20261104000002_people_quota.sql", "before insert or update of is_active, kind on app_user", "before insert on app_user", SIGNUP),
+    # An industrial solution's acceptance on site (FERRUM-IND-018).
+    ("commissioned-without-acceptance", "crates/ops/src/devices.rs", "        if !waiting.is_empty() {", "        if false {", ACCEPTANCE),
+    ("a-running-run-is-a-pass", "crates/ops/src/acceptance.rs", "r.procedure = p.id and r.status = 'Passed') \\", "r.procedure = p.id and r.status <> 'Failed') \\", ACCEPTANCE),
+    ("any-procedure-for-any-device", "crates/ops/src/acceptance.rs", "    if !applies {", "    if false {", ACCEPTANCE),
+    ("a-step-recorded-twice", "crates/ops/src/acceptance.rs", "    if outcome != \"Pending\" {", "    if false {", ACCEPTANCE),
+    ("a-failed-step-fails-nothing", "crates/ops/src/acceptance.rs", "    let finished = if failed > 0 {", "    let finished = if false {", ACCEPTANCE),
+    ("readings-above-the-maximum-pass", "crates/ops/src/acceptance.rs", ".is_none_or(|m| n <= m)", ".is_none_or(|_| true)", ACCEPTANCE),
+    ("import-with-the-callers-schema", "crates/ops/src/acceptance.rs", "    let mut system = Ctx::system(ctx.tenant, k.registry.schema(ctx.tenant).await?);", "    let mut system = Ctx::system(ctx.tenant, ctx.schema.clone());", ACCEPTANCE),
+    ("an-upgrade-adds-procedures", "crates/ops/src/acceptance.rs", "        match existing(&mut tx, ctx.tenant, \"e_acceptance_procedure\", &key).await? {", "        match None::<Uuid> {", ACCEPTANCE),
+
 ]
 
 
