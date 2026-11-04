@@ -1076,6 +1076,21 @@ pub fn bootstrap(ws: &WorkspaceInfo, host: &str, ctx: &Ctx, kind: &str, state: &
     })
 }
 
+/// Which way pages in a language read: right to left for the scripts that do.
+pub fn direction(tag: &str) -> &'static str {
+    const RTL: &[&str] = &["ar", "arc", "ckb", "dv", "fa", "he", "ks", "ps", "sd", "ug", "ur", "yi"];
+    let base = tag.split(['-', '_']).next().unwrap_or_default().to_ascii_lowercase();
+    if RTL.contains(&base.as_str()) { "rtl" } else { "ltr" }
+}
+
+/// The bootstrap's locale (FERRUM-UX-006): the language the person or the workspace chose
+/// (`chosen`), else English, its direction, and the workspace's time zone.
+pub fn locale(language: Option<&str>, timezone: &str) -> Value {
+    let chosen = language.filter(|l| !l.is_empty());
+    let tag = chosen.unwrap_or("en");
+    json!({"language": tag, "timezone": timezone, "dir": direction(tag), "chosen": chosen.is_some()})
+}
+
 /// The bootstrap of a public page (§7.3): no person, no live channel; the workspace by name.
 pub fn public_bootstrap(ws: &WorkspaceInfo, host: &str, timezone: &str, app: Value, page: &str) -> Value {
     json!({
@@ -1462,6 +1477,13 @@ pub fn file_response(bytes: Bytes, content_type: &str, immutable: bool) -> Respo
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn languages_read_their_way() {
+        assert_eq!([super::direction("ar"), super::direction("he-IL"), super::direction("hi"), super::direction("ur_PK")], ["rtl", "rtl", "ltr", "rtl"]);
+        assert_eq!(super::locale(Some("ar"), "Asia/Dubai"), json!({"language": "ar", "timezone": "Asia/Dubai", "dir": "rtl", "chosen": true}));
+        assert_eq!(super::locale(None, "UTC"), json!({"language": "en", "timezone": "UTC", "dir": "ltr", "chosen": false}));
+    }
+
     use super::*;
 
     #[test]

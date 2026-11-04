@@ -10,8 +10,8 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | Status | Requirements |
 |---|---|
 | Implemented, qualification incomplete | 134 |
-| Partially implemented | 53 |
-| Missing | 34 |
+| Partially implemented | 58 |
+| Missing | 29 |
 | Blocked by external dependency | 10 |
 | **All** | **231** |
 
@@ -86,7 +86,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-UX-003 | Help center | Implemented, qualification incomplete | tested | Made from each record type's own definition (what it is for, its fields, actions and rules): as good as the descriptions apps write; no hand-written how-to guides beyond the apps' READMEs in the store; Search is by words, not meaning; Not tried in a browser on a running server when it was built |
 | FERRUM-UX-004 | Application completeness contract per app | Partially implemented | read | Every app has a hand-crafted interface, listed under FERRUM-UX-009; no written contract says what each must cover |
 | FERRUM-UX-005 | WCAG 2.2 AA qualification | Blocked by external dependency | read | No automated accessibility checks in CI yet |
-| FERRUM-UX-006 | Translation, right-to-left, locale formatting | Missing | probe | No translation infrastructure was found in the core; money and dates format per workspace |
+| FERRUM-UX-006 | Translation, right-to-left, locale formatting | Partially implemented | tested | The language (a person's own, else the workspace's) sets the pages' lang and direction and, when chosen, how numbers and dates are written; without one they follow the browser; Translation is in place but most words are not translated: the kit's states and dialogs in Hindi and Arabic only; apps' interfaces, the bar and the server's own pages are English; Right-to-left follows the language; pages have not been checked one by one in it; Catalogs are code: there is no translation workflow or translators' tool |
 | FERRUM-UX-007 | Mobile and offline policy with leases | Partially implemented | read | POS and Docs work offline; no shared policy for what is cached, who sees it or when it expires |
 | FERRUM-UX-008 | The record frame: filters, side panel, import, merging, related records, shared views | Implemented, qualification incomplete | tested | Tried by hand in one browser; no standing browser test; A merge writes the chosen values, then merges: two steps, so a failed merge leaves those values on the record that stays; Related counts ask each linking list in turn, which for a much-used record is dozens of requests; only when the tab is opened; A shared view's columns are the view's; someone who did not share it saves a copy to change them |
 | FERRUM-UX-009 | A hand-crafted interface for every app, written against reference products | Implemented, qualification incomplete | tested | Each app's tests render its screens to markup; tried by hand in one browser as far as docs/references/README.md says, and no standing browser test exists; Each app lists what was left out in docs/references/README.md; No accessibility audit, translation or independent usability review |
@@ -288,16 +288,16 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-VERIFY-002 | Independent domain fixtures for finance and payroll | Missing | read |  |
 | FERRUM-JOURNEY-001 | Lead to cash | Partially implemented | tested | Runs through the kernel's API, not through the interface; no independent reviewer prepared the figures |
 | FERRUM-JOURNEY-002 | Procure to pay | Partially implemented | tested | Runs through the kernel's API, not through the interface; no independent reviewer prepared the figures |
-| FERRUM-JOURNEY-003 | Hire to retire | Missing | read |  |
+| FERRUM-JOURNEY-003 | Hire to retire | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer; Offer, employee and sign-in, onboarding, separation and the sign-in ended on the relieving date (Ferrum's deprovisioning); payroll and leave run in their own scenarios, not in this one; No full-and-final settlement on separation |
 | FERRUM-JOURNEY-004 | Support to resolution | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
 | FERRUM-JOURNEY-005 | Project to profit | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
-| FERRUM-JOURNEY-006 | Online order to return | Missing | read |  |
+| FERRUM-JOURNEY-006 | Online order to return | Partially implemented | tested | In parts, inside Commerce's suite (returns_and_refunds_end_to_end): an order paid, shipped and tracked from a link, a line and the delivery charge returned, refunded through the gateway with a credit note; a cancelled order and cash on delivery too; A test gateway, not a real provider; through the API, not a storefront in a browser |
 | FERRUM-JOURNEY-007 | Field work to invoice | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
 | FERRUM-JOURNEY-008 | Document to signature | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
 | FERRUM-JOURNEY-009 | Marketing to consent enforcement | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
 | FERRUM-JOURNEY-010 | Hospitality stay | Missing | read |  |
 | FERRUM-JOURNEY-011 | Learning completion | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
 | FERRUM-JOURNEY-012 | Tenant lifecycle | Missing | read |  |
-| FERRUM-JOURNEY-013 | Partner support | Missing | read |  |
-| FERRUM-JOURNEY-014 | AI-assisted operation | Missing | read |  |
+| FERRUM-JOURNEY-013 | Partner support | Partially implemented | tested | In parts, inside the kernel's suite: support access granted at a level, for some records, read-only or not, reaching only that and ending when it expires; No partner console (FERRUM-PARTNER-001), partner terms or real partner |
+| FERRUM-JOURNEY-014 | AI-assisted operation | Partially implemented | tested | In parts, against a scripted model: the assistant reads at once, changes only what the person allows in the conversation, keeps to the workspace's egress policy and ignores instructions planted in records; No real model, no evaluation of answers, no person using it |
 
