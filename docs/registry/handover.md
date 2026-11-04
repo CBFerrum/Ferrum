@@ -24,7 +24,7 @@ What is true of each requirement is in the registry; this says what happened and
 
 **Lessons:**
 - Look in ERP's add-ons before building: Procurement already replenishes stores, which Retail would have duplicated (and the name clashed with WMS').
-- `scratchpad/name_clash.py` lists entity and role names shared between packages; run it before publishing an app.
+- Before publishing an app, scan every app's entity and role names for clashes: the server's `compiled_apps_fit_together` test refuses a shared entity name, and a shared role name silently merges rights.
 
 ## 2026-11-04, evening: sign-up and plans, an industrial solution through to commissioning, meetings' captions and recordings, a hotel, and a browser on a running server
 
