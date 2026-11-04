@@ -87,6 +87,32 @@ impl Task for AccountState {
     }
 }
 
+/// `set_plan slug:acme plan:team`: puts a workspace on one of the operator's plans (`FERRUM_PLANS`).
+pub struct SetPlan;
+
+#[async_trait]
+impl Task for SetPlan {
+    fn task(&self) -> TaskInfo {
+        TaskInfo {
+            name: "set_plan".into(),
+            detail: "Puts a workspace on one of FERRUM_PLANS: its quotas become the plan's. Nothing here charges anyone".into(),
+        }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let slug = vars.cli_arg("slug").map_err(|e| Error::Message(e.to_string()))?;
+        let plan = vars.cli_arg("plan").map_err(|e| Error::Message(e.to_string()))?;
+        let mut tx = k.db.system_tx().await.map_err(|e| Error::Message(e.to_string()))?;
+        let tenant: Option<uuid::Uuid> =
+            sqlx::query_scalar("select id from tenant where slug = $1").bind(slug).fetch_optional(&mut *tx).await.map_err(|e| Error::Message(e.to_string()))?;
+        tx.commit().await.map_err(|e| Error::Message(e.to_string()))?;
+        let tenant = tenant.ok_or_else(|| Error::Message(format!("no workspace {slug}")))?;
+        k.set_plan(tenant, plan).await.map_err(|e| Error::Message(e.to_string()))?;
+        println!("{slug} is on the {plan} plan");
+        Ok(())
+    }
+}
+
 /// `delete_tenant slug:acme confirm:acme note:"..." [apply:yes]`: deletes a closed workspace whose time to be kept has passed.
 pub struct DeleteTenant;
 

@@ -92,3 +92,24 @@ export function nextSteps(lifecycle: string, gateway?: string | null): Lifecycle
 export const canEnroll = (lifecycle: string) => lifecycle === "Claimed" || lifecycle === "Quarantined";
 
 export const canRetire = (lifecycle: string) => lifecycle !== "Retired";
+
+/** What an acceptance step expects, in words: a range, a value, or what a person looks at. */
+export function expectation(e: Record<string, unknown> | null | undefined): string {
+  if (!e) return "";
+  if (typeof e.instruction === "string") return e.instruction;
+  if ("equals" in e) return `exactly ${JSON.stringify(e.equals)}`;
+  const min = typeof e.min === "number" ? e.min : null;
+  const max = typeof e.max === "number" ? e.max : null;
+  if (min !== null && max !== null) return `${min} to ${max}`;
+  if (min !== null) return `at least ${min}`;
+  if (max !== null) return `at most ${max}`;
+  return "";
+}
+
+/** What was typed for a reading, as the value it is: a number, true or false, or the text. */
+export function typed(s: string): unknown {
+  const t = s.trim();
+  if (t === "true") return true;
+  if (t === "false") return false;
+  return t !== "" && !Number.isNaN(Number(t)) ? Number(t) : t;
+}

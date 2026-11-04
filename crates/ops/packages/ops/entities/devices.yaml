@@ -23,8 +23,9 @@
     - {name: exclusions, type: text, label: Known Exclusions}
     - {name: maintainer, type: data, label: Maintainer}
     - {name: support_ends, type: date, label: Support Ends, in_list: true}
+    - {name: solution, type: data, read_only: true, label: From App, in_filter: true, description: "The app whose industrial solution brought this profile, and the profile's id in it, `{app}/{id}`. Its upgrades update what the profile reads and writes"}
   form:
-    - {label: Product, fields: [profile_name, vendor, model, firmware, protocol, tested_on]}
+    - {label: Product, fields: [profile_name, vendor, model, firmware, protocol, tested_on, solution]}
     - {label: Capabilities, fields: [reads, writes, authentication, licenses, max_load]}
     - {label: Behaviour, fields: [offline_behaviour, cancellation, recovery, exclusions]}
     - {label: Ownership, fields: [maintainer, support_ends]}

@@ -21,6 +21,9 @@ use chrono::{NaiveDate, Utc};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+/// Days a workspace its administrator closed is kept before an operator may delete it.
+pub const CLOSED_KEPT_DAYS: u64 = 30;
+
 const METERS: &str = "select 'storage_bytes', coalesce(sum(size_bytes), 0)::bigint from file_object where tenant_id = $1 \
     union all select 'people', count(*) from app_user where tenant_id = $1 and is_active and kind = 'member' \
     union all select 'ai_tokens_month', coalesce(sum(coalesce((usage->'usage'->>'input_tokens')::bigint, 0) + coalesce((usage->'usage'->>'output_tokens')::bigint, 0)), 0)::bigint \
@@ -43,8 +46,11 @@ impl Kernel {
         }
         let mut tx = self.db.system_tenant_tx(ctx.tenant).await?;
         let meters: Vec<(String, i64)> = sqlx::query_as(METERS).bind(ctx.tenant).fetch_all(&mut *tx).await?;
-        let (state, note, quotas): (String, Option<String>, Value) =
-            sqlx::query_as("select account_state, account_note, quotas from tenant where id = $1").bind(ctx.tenant).fetch_one(&mut *tx).await?;
+        let (slug, state, note, quotas, plan): (String, String, Option<String>, Value, Option<String>) =
+            sqlx::query_as("select slug, account_state, account_note, quotas, settings->>'plan' from tenant where id = $1")
+                .bind(ctx.tenant)
+                .fetch_one(&mut *tx)
+                .await?;
         let days: Vec<Value> = sqlx::query_scalar(
             "select jsonb_build_object('day', day, 'meter', meter, 'quantity', quantity) from usage_day where tenant_id = $1 and day > now() - interval '35 days' order by day desc, meter",
         )
@@ -53,7 +59,7 @@ impl Kernel {
         .await?;
         tx.commit().await?;
         Ok(
-            json!({"now": meters.into_iter().map(|(m, q)| (m, json!(q))).collect::<serde_json::Map<_, _>>(), "state": state, "note": note, "quotas": quotas, "days": days}),
+            json!({"now": meters.into_iter().map(|(m, q)| (m, json!(q))).collect::<serde_json::Map<_, _>>(), "slug": slug, "state": state, "note": note, "quotas": quotas, "plan": plan, "days": days}),
         )
     }
 
@@ -130,6 +136,24 @@ impl Kernel {
         tx.commit().await?;
         self.invalidate_tenant_users(tenant);
         Ok(())
+    }
+
+    /// Its administrator closes their own workspace (one made at sign-up, say), as the operator would:
+    /// read-only, export still open, kept [`CLOSED_KEPT_DAYS`] days; an operator can open it again.
+    /// `confirm` is the workspace's address name, typed, so that nobody closes one by a slip.
+    pub async fn close_own_workspace(&self, ctx: &Ctx, confirm: &str) -> Result<NaiveDate> {
+        if !ctx.is_admin {
+            return Err(Error::Forbidden("this is for administrators".into()));
+        }
+        let mut tx = self.db.system_tenant_tx(ctx.tenant).await?;
+        let slug: String = sqlx::query_scalar("select slug from tenant where id = $1").bind(ctx.tenant).fetch_one(&mut *tx).await?;
+        tx.commit().await?;
+        if confirm.trim() != slug {
+            return Err(Error::field("confirm", format!("type {slug} to close this workspace")));
+        }
+        let until = Utc::now().date_naive() + chrono::Days::new(CLOSED_KEPT_DAYS);
+        self.close_account(ctx.tenant, until, &format!("closed by its administrator, {}", ctx.user)).await?;
+        Ok(until)
     }
 
     /// Refuses what a storage quota does not allow: `size` more bytes.

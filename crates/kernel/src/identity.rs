@@ -114,7 +114,7 @@ fn six_digits(code: &str) -> Option<String> {
     (code.len() == 6 && code.bytes().all(|b| b.is_ascii_digit())).then_some(code)
 }
 
-fn normalized_email(email: &str) -> Result<String> {
+pub(crate) fn normalized_email(email: &str) -> Result<String> {
     let email = email.trim().to_lowercase();
     if email.len() > 254 || email.split('@').count() != 2 || email.starts_with('@') || email.ends_with('@') || email.contains(char::is_whitespace) {
         return Err(Error::field("email", "is not an email address"));
@@ -172,7 +172,7 @@ impl Kernel {
         Ok(id)
     }
 
-    async fn directory_id(&self) -> Result<Uuid> {
+    pub(crate) async fn directory_id(&self) -> Result<Uuid> {
         self.directory().await?.ok_or_else(|| Error::Unavailable("this cluster does not sign people in through accounts".into()))
     }
 
@@ -343,7 +343,7 @@ impl Kernel {
 
     /// Makes the identity of a proven membership: it takes the membership's password,
     /// authenticator app and unused recovery codes, and the membership joins it.
-    async fn identity_from(&self, tx: &mut Tx, m: &Session, verified: bool) -> Result<Session> {
+    pub(crate) async fn identity_from(&self, tx: &mut Tx, m: &Session, verified: bool) -> Result<Session> {
         let again = || Error::Unauthorized("sign in again".into());
         let dir = self.directory_id().await?;
         #[derive(sqlx::FromRow)]
@@ -434,6 +434,12 @@ impl Kernel {
     /// …"). The answer says nothing about the address: only one a member of this cluster has is
     /// sent a code, at most five an hour.
     pub async fn send_email_code(&self, email: &str, purpose: &str) -> Result<()> {
+        self.mail_code(email, purpose, true).await
+    }
+
+    /// [`Kernel::send_email_code`]; `known`: only to an address that is a member somewhere (a
+    /// sign-up sends to anyone its policy allows).
+    pub(crate) async fn mail_code(&self, email: &str, purpose: &str, known_only: bool) -> Result<()> {
         if self.mailer.is_none() {
             return Err(Error::Unavailable("this server sends no email, so it cannot send codes".into()));
         }
@@ -454,7 +460,7 @@ impl Kernel {
             .bind(&email)
             .fetch_one(&mut *tx)
             .await?;
-        if !known || lately >= CODES_PER_HOUR {
+        if (known_only && !known) || lately >= CODES_PER_HOUR {
             tx.commit().await?;
             return Ok(());
         }
@@ -482,7 +488,7 @@ impl Kernel {
 
     /// Takes the newest code sent to the address when `code` is it. A wrong one counts; five spend
     /// it. The caller commits `tx` either way, so the count stands.
-    async fn take_email_code(&self, tx: &mut Tx, email: &str, code: &str) -> Result<()> {
+    pub(crate) async fn take_email_code(&self, tx: &mut Tx, email: &str, code: &str) -> Result<()> {
         let denied = || Error::Unauthorized("that code is wrong or has expired; ask for a new one".into());
         let Some(code) = six_digits(code) else { return Err(denied()) };
         let live: Option<(Uuid, String, i32)> = sqlx::query_as(
