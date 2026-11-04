@@ -2434,6 +2434,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrum-app-contracts"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-contracts?branch=main#3c135943afda27cb63519e907944f3a1cc963b2c"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "rust_decimal",
+ "serde_json",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
 name = "ferrum-app-crm"
 version = "0.1.0"
 source = "git+https://github.com/CBFerrum/ferrum-app-crm?branch=main#94b306e353289e35bc267880bae3fd80d4c724f1"
@@ -2606,6 +2622,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrum-app-government"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-government?branch=main#0e3dbbe1ce34428ae7f14ba7d4f519a69e8a5d69"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "rust_decimal",
+ "serde_json",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
+name = "ferrum-app-grc"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-grc?branch=main#f521b49c7cf470429ef0b2798e29c9291749950f"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "rust_decimal",
+ "serde_json",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
 name = "ferrum-app-healthcare"
 version = "0.1.0"
 source = "git+https://github.com/CBFerrum/ferrum-app-healthcare?branch=main#7482be703fedd8000d3030b8643e944f430fa1df"
@@ -2672,6 +2721,22 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "ferrum-app-itsm"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-itsm?branch=main#319714fea512692ad0eba2dfd4a66a82baa757c9"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "rust_decimal",
+ "serde_json",
+ "sqlx",
  "uuid",
 ]
 
@@ -2795,6 +2860,22 @@ dependencies = [
 name = "ferrum-app-restaurant"
 version = "0.1.0"
 source = "git+https://github.com/CBFerrum/ferrum-app-restaurant?branch=main#a6668d4da9b7bcb89361c594cfa448eba069b568"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "rust_decimal",
+ "serde_json",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
+name = "ferrum-app-retail"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-retail?branch=main#195b62b07332cddc0420ace12f6f90ecaafb3c15"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3322,6 +3403,7 @@ dependencies = [
  "ferrum-app-commerce",
  "ferrum-app-comms",
  "ferrum-app-construction",
+ "ferrum-app-contracts",
  "ferrum-app-crm",
  "ferrum-app-docs",
  "ferrum-app-drive",
@@ -3330,10 +3412,13 @@ dependencies = [
  "ferrum-app-erp",
  "ferrum-app-field-service",
  "ferrum-app-forms",
+ "ferrum-app-government",
+ "ferrum-app-grc",
  "ferrum-app-healthcare",
  "ferrum-app-helpdesk",
  "ferrum-app-hospitality",
  "ferrum-app-hr",
+ "ferrum-app-itsm",
  "ferrum-app-lms",
  "ferrum-app-logistics",
  "ferrum-app-nonprofit",
@@ -3341,6 +3426,7 @@ dependencies = [
  "ferrum-app-projects",
  "ferrum-app-property",
  "ferrum-app-restaurant",
+ "ferrum-app-retail",
  "ferrum-app-sign",
  "ferrum-apps",
  "ferrum-ca",
