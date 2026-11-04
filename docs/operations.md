@@ -57,6 +57,9 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_APP_ALLOW_UNSIGNED` | no | `true` accepts uploads no trusted key signed (development default); production default `false` |
 | `FERRUM_SESSION_DAYS` | no | How long a browser stays signed in with the session cookie (default 14); each browser is a session of its own that people and administrators sign out one by one |
 | `FERRUM_BASE_DOMAIN` | no | Shapes B and C (below, [Many workspaces](#many-workspaces-subdomains-and-ferrum-accounts)): the domain under which each workspace is `{slug}.{base}`, people sign in at `accounts.{base}` and outside callers use `hooks.{base}`. Empty: one workspace (`FERRUM_DEFAULT_WORKSPACE`) or a shared host |
+| `FERRUM_PLANS` | no | The operator's plans, JSON: `{"free": {"people": 5, "storage_bytes": 1073741824}, "team": {"people": 50}}`. Each sets quotas a workspace on it keeps to; see [Plans and sign-up](#plans-and-sign-up) |
+| `FERRUM_SIGNUP` | no | `open` lets people make workspaces of their own at `accounts.{base}/signup`; default `closed`. Needs `FERRUM_BASE_DOMAIN` and mail |
+| `FERRUM_SIGNUP_DOMAINS`, `FERRUM_SIGNUP_PACKAGES`, `FERRUM_SIGNUP_PLAN`, `FERRUM_SIGNUP_PER_ADDRESS` | with sign-up | The address domains sign-ups come from (comma-separated; empty: any), what a new workspace installs besides the core, the plan it starts on (one of `FERRUM_PLANS`), and how many workspaces one address may make (default 3) |
 | `FERRUM_REGION`, `FERRUM_REGIONS` | no | This cluster's region (`eu`), and the other regions' accounts hosts, `name=https://accounts.example.eu,…`: the sign-in page offers them, and a workspace not found here is looked up there |
 | `FERRUM_DEFAULT_WORKSPACE` | no | The slug of the one workspace this server serves on every host (a single-workspace install): sign-in then asks for no workspace. Empty: a host registered for a workspace leads to it, and elsewhere the workspace is chosen at sign-in |
 | `FERRUM_UI_DIR` | no | Interfaces registered at start-up from a directory with one directory of built files per app id (`<dir>/<app>/index.html`), for apps whose crate carries none: an interface compiled into an app's crate is the one served, and a copy of it here is skipped with a warning. The image sets it to `/app/ui`, which holds the shell's and Studio's (built from Ferrum-Frontend at the commit the Dockerfile pins); point it elsewhere to run others |
@@ -1333,10 +1336,37 @@ now. Files are not checked against the store, and a resource made since is no lo
 though it still exists at its provider. Look at `cloud_resource_instance` in the live database first if that
 matters.
 
+## Plans and sign-up
+
+A plan is a name for a set of quotas. The operator defines plans in `FERRUM_PLANS` and puts a workspace on one; its
+quotas are then the plan's, and Administration's Workspace tab shows them beside what the workspace uses:
+
+```bash
+ferrum task set_plan slug:acme plan:team
+```
+
+| Quota | Held where |
+|---|---|
+| `people` | Turning someone into an active member, by any path (added, invited, SCIM, single sign-on, turned on again): a database trigger refuses one past the quota. Service accounts and people turned off do not count |
+| `storage_bytes` | Storing a file |
+| `ai_tokens_month` | Each step of the assistant; a workspace may set itself less (`assistant_monthly_tokens`), not more |
+| `devices`, `measurements_per_day` | Operations: adding a device, and recording measurements |
+
+A quota left out of a plan has no limit. Moving a workspace to a smaller plan takes nothing away: past a quota, nothing
+more of it is added until there is room. Nothing here charges anyone: prices and invoices are the operator's.
+
+With `FERRUM_SIGNUP=open` (and a base domain and mail), anyone with an address at one of `FERRUM_SIGNUP_DOMAINS` can make a
+workspace at `accounts.{base}/signup`: a code emailed to the address proves it, then they name the workspace and its address
+and choose a password. It installs `FERRUM_SIGNUP_PACKAGES`, starts on `FERRUM_SIGNUP_PLAN`, gets its subdomain, and its
+maker is its administrator. Someone with no Ferrum account gets one, signed in; someone with one signs in to it as usual
+(a code never opens an account that has a password or a second step of its own), and finds the workspace in their list.
+One address makes `FERRUM_SIGNUP_PER_ADDRESS` workspaces at most; the sign-in limits cover the calls.
+
 ## Closing and deleting a workspace
 
-A workspace is closed by its operator, kept until a date, and deleted after that only when an operator says so. Nothing
-deletes one by itself.
+A workspace is closed by its operator, or by its administrator (Administration, Workspace, *Close this workspace*, typing
+its name: kept 30 days), kept until a date, and deleted after that only when an operator says so. Nothing deletes one by
+itself.
 
 ```bash
 ferrum task account_state slug:acme state:closed retain_until:2027-02-01 note:"the contract ended"
@@ -1369,6 +1399,7 @@ Backups taken before the deletion still hold the workspace until they expire. Sa
 ferrum task run_maintenance          # anchor audit trails, purge expired events, ledger partitions, queue notification digests (also runs in-process, hourly)
 ferrum task sync_schema              # force the metadata → DDL sync (normally automatic at boot)
 ferrum task create_tenant slug:... name:... email:... password:... [packages:...]   # core only without packages:
+ferrum task set_plan slug:... plan:...   # put a workspace on one of FERRUM_PLANS (its quotas)
 ferrum task extract_tenant from:<url> tenant:<slug> note:"..." [apply:yes]   # take one workspace back to what a restored copy holds
 ferrum task deps_report [schema:<file>]   # what ties packages together; schema: writes the canonical schema to compare across a package move
 ferrum task upgrade_back step:<name>      # before going back to the release before a one-time upgrade step
