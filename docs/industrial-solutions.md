@@ -65,7 +65,36 @@ A bundle is refused when:
 Which schemes a site can open is the site runtime's to say: this checks their names only.
 `Bundle::industrial()` reads the solution for whoever imports it.
 
+## In a workspace
+
+Installing or upgrading the app, where the workspace has Operations, makes the solution the
+workspace's (`crates/ops/src/acceptance.rs`):
+
+- each device profile becomes a **Device Profile**, *From App* `{app}/{id}`. Its product and protocol
+  come from the profile, and its read and write capabilities list the points and commands. It starts
+  *tested on Simulator*. An upgrade updates what the app says and keeps what people recorded (how far
+  it was tried, firmware, exclusions);
+- each procedure becomes an **Acceptance Procedure** with its steps.
+
+A device whose profile one of the procedures names is commissioned only after a passed **Acceptance
+Run** of each. On the device's page in Operations, a Device Administrator starts a run and records each
+step as it is done on site. The site runtime can record them through the same calls:
+
+| Call | Body |
+|---|---|
+| `GET /api/app/ops/devices/{id}/acceptance` | The procedures for it, whether it passed each, its runs |
+| `POST /api/app/ops/devices/{id}/acceptance` | `{procedure}`: a run, one result to fill in per step |
+| `POST /api/app/ops/acceptance/{run}/steps/{step}` | `{value}` seen for a reading or a command's check; `{passed}` for a manual step; a `note` |
+
+A reading, or a command's check, passes only when the value seen meets the expectation. A manual step
+passes when the person says it holds. Each step is recorded once, by name and time, and audited. A
+failed step ends the run, and a new run starts from the beginning.
+
+The install dialog lists the equipment a solution describes and its procedures, as what the app
+describes, not as what anyone tried with it.
+
 **Not yet:**
-- Edge does not import the profiles into its device profiles.
-- Edge does not run the acceptance procedures at commissioning and record their results.
-- The store does not show what equipment a solution supports.
+- Edge's gateway does not run the steps itself. A person records them, or a site runtime through the
+  calls above.
+- A workspace that adds Operations after the app gets its profiles at the app's next upgrade.
+- Which schemes a site can open is checked by name only.

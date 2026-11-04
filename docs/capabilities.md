@@ -9,8 +9,8 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 135 |
-| Partially implemented | 59 |
+| Implemented, qualification incomplete | 136 |
+| Partially implemented | 58 |
 | Missing | 27 |
 | Blocked by external dependency | 10 |
 | **All** | **231** |
@@ -253,7 +253,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-IND-015 | A deterministic scheduler with an explained result | Implemented, qualification incomplete | tested | A bounded policy, not an optimizer |
 | FERRUM-IND-016 | Agents look and propose, and nothing else | Implemented, qualification incomplete | tested | Autonomy levels A0 to A2 only. Predictive maintenance, vision and the rest of the portfolio are not built |
 | FERRUM-IND-017 | Operations, warehouse and floor interfaces | Implemented, qualification incomplete | tested | Walked through by hand on a real server at phone width and in dark mode; no standing browser tests, no accessibility audit, English only |
-| FERRUM-IND-018 | An industrial solution package in .fapp | Partially implemented | tested | The format and its checks: a bundle names the schemes it needs and ships device profiles and acceptance procedures, refused when they do not hold together; Edge does not yet import the profiles or run the procedures at commissioning, and the store does not show them; Which schemes a site can open is checked by name only, not against a site |
+| FERRUM-IND-018 | An industrial solution package in .fapp | Implemented, qualification incomplete | tested | A bundle's solution is checked, imported into Operations on install (profiles and procedures, updated by upgrades) and gates commissioning on a passed run of each procedure; the install dialog lists its equipment; Steps are recorded by a person or a site runtime through Operations' calls: Edge's gateway does not run them itself; Nothing here has met equipment: a passed run records what someone saw; Which schemes a site can open is checked by name only, not against a site |
 | FERRUM-IND-019 | Signed site updates | Implemented, qualification incomplete | tested | Tested in pieces, and not through systemd on a real gateway; Ferrum publishes no signing keys or releases yet: a site makes its own |
 | FERRUM-IND-020 | Threat model, standards scope and safety boundaries | Partially implemented | read | No hazard interface work, no IEC 62443 assessment, no independent review |
 | FERRUM-IND-021 | Partner fleet health, support grants, certification tiers | Missing | tested | Nothing built. Support access exists for workspaces (docs/support-access.md) |
