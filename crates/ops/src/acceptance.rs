@@ -90,7 +90,10 @@ fn procedure_doc(app: &str, a: &AcceptancePackage) -> Doc {
 /// Makes an app's solution the workspace's: its profiles and procedures, added or brought up to date
 /// (an upgrade). What people recorded of a profile (how far it was tried, its firmware) stays theirs.
 pub async fn import(k: &Kernel, ctx: &Ctx, app: &str, s: &Solution) -> Result<()> {
-    let system = sys(ctx);
+    // The installation may have brought Operations in this same request: the caller's schema is
+    // from before it, so the workspace's is read again.
+    let mut system = Ctx::system(ctx.tenant, k.registry.schema(ctx.tenant).await?);
+    system.request_id = ctx.request_id.clone();
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     for p in &s.profiles {
         let key = format!("{app}/{}", p.id);

@@ -109,16 +109,19 @@ async fn a_solution_on_site() {
             admin_email: "admin@plant.test".into(),
             admin_password: "Correct-Horse-9".into(),
             admin_name: None,
-            packages: vec!["ops".into()],
+            packages: vec!["core".into()],
             settings: None,
         })
         .await
         .unwrap();
     let s = k.login("plant", "admin@plant.test", "Correct-Horse-9").await.unwrap();
-    let admin = k.load_ctx(tenant, s.user, Some(s.token_version), "it".into()).await.unwrap();
+    let before = k.load_ctx(tenant, s.user, Some(s.token_version), "it".into()).await.unwrap();
 
-    // Installing the app: its profile and procedure become the workspace's.
-    acceptance::import(&k, &admin, "meters", &solution(SAT)).await.unwrap();
+    // Installing the app brings Operations in the same request, so the import gets a context from
+    // before Operations was there: its profile and procedure still become the workspace's.
+    k.install_packages(tenant, &["ops".to_string()]).await.unwrap();
+    acceptance::import(&k, &before, "meters", &solution(SAT)).await.unwrap();
+    let admin = k.load_ctx(tenant, s.user, Some(s.token_version), "it".into()).await.unwrap();
     let profile = one(&k, tenant, "select to_jsonb(p) from e_device_profile p where tenant_id = $1 and solution = 'meters/line-meter'").await;
     assert_eq!((profile["vendor"].as_str(), profile["model"].as_str(), profile["protocol"].as_str()), (Some("Acme"), Some("PM-200"), Some("modbus+tcp")));
     assert_eq!(profile["tested_on"], "Simulator", "nothing claims it met equipment");

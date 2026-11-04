@@ -293,6 +293,7 @@ MUTANTS = [
     ("a-step-recorded-twice", "crates/ops/src/acceptance.rs", "    if outcome != \"Pending\" {", "    if false {", ACCEPTANCE),
     ("a-failed-step-fails-nothing", "crates/ops/src/acceptance.rs", "    let finished = if failed > 0 {", "    let finished = if false {", ACCEPTANCE),
     ("readings-above-the-maximum-pass", "crates/ops/src/acceptance.rs", ".is_none_or(|m| n <= m)", ".is_none_or(|_| true)", ACCEPTANCE),
+    ("import-with-the-callers-schema", "crates/ops/src/acceptance.rs", "    let mut system = Ctx::system(ctx.tenant, k.registry.schema(ctx.tenant).await?);", "    let mut system = Ctx::system(ctx.tenant, ctx.schema.clone());", ACCEPTANCE),
     ("an-upgrade-adds-procedures", "crates/ops/src/acceptance.rs", "        match existing(&mut tx, ctx.tenant, \"e_acceptance_procedure\", &key).await? {", "        match None::<Uuid> {", ACCEPTANCE),
 
 ]
