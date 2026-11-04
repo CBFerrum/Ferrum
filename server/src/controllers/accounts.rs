@@ -4,7 +4,8 @@
 //! to `/authorize`, which sends it back with a one-use code for a session of that host's own.
 //! A person already signed in sees no page. Here too: the account chooser, the account's own
 //! password, two-step sign-in, passkeys and devices, and adding a workspace to the account once
-//! the person proves it is theirs.
+//! the person proves it is theirs. Where the operator takes sign-ups, making a workspace of one's
+//! own (`/signup`, FERRUM-CLOUD-002).
 
 use crate::controllers::auth::{session_response, signed};
 use crate::controllers::shell::percent_decode;
@@ -20,6 +21,7 @@ use dashmap::DashMap;
 use ferrum_kernel::auth::Session;
 use ferrum_kernel::identity::{AccountSignIn, Entry, Proof};
 use ferrum_kernel::shell::{HostRoute, normalize_host};
+use ferrum_kernel::signup::SignUp;
 use ferrum_kernel::{Ctx, Error};
 use loco_rs::app::AppContext;
 use loco_rs::auth::jwt::JWT;
@@ -117,6 +119,7 @@ pub(crate) async fn home(st: &AppState, headers: &HeaderMap) -> ApiResult<Respon
 pub(crate) async fn page(st: &AppState, headers: &HeaderMap, uri: &Uri, first: &str, rest: Option<&str>, q: &[(String, String)]) -> ApiResult<Response> {
     match (first, rest) {
         ("login", None) => login(st, headers, q).await,
+        ("signup", None) => signup_page(st).await,
         ("authorize", None) => authorize(st, headers, uri, q).await,
         // Where single sign-on providers send people back (the address they have registered).
         ("app", Some("login")) => Ok(Redirect::to(&format!("/login{}", uri.query().map(|q| format!("?{q}")).unwrap_or_default())).into_response()),
@@ -187,7 +190,7 @@ pub(crate) async fn login(st: &AppState, headers: &HeaderMap, q: &[(String, Stri
     let boot = json!({
         "v": 1,
         "next": next,
-        "accounts": {"target": target, "regions": regions(st), "mail": st.kernel.mailer.is_some(), "sso_only": sso_only && target.is_some()},
+        "accounts": {"target": target, "regions": regions(st), "mail": st.kernel.mailer.is_some(), "sso_only": sso_only && target.is_some(), "signup": st.kernel.settings.signup.open},
     });
     let title =
         target.as_ref().and_then(|t| t["name"].as_str()).map_or_else(|| "Sign in to Ferrum".to_string(), |name| format!("Sign in to continue to {name}"));
@@ -309,6 +312,62 @@ async fn directory(State(app): State<AppContext>, Query(q): Query<Vec<(String, S
     let mut res = Json(json!({"region": st.shell.region})).into_response();
     res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=300"));
     Ok(res)
+}
+
+/// `/signup`: making a workspace of one's own, where the operator takes sign-ups.
+async fn signup_page(st: &AppState) -> ApiResult<Response> {
+    let policy = &st.kernel.settings.signup;
+    if !policy.open {
+        return Ok(status_page(
+            StatusCode::NOT_FOUND,
+            "No sign-ups here",
+            "This server does not take sign-ups. Its operator can make you a workspace.",
+            &[("Sign in", "/login")],
+            None,
+        ));
+    }
+    Ok(shell::signup_html(&json!({"v": 1, "base": st.shell.base(), "domains": policy.domains})))
+}
+
+#[derive(Deserialize)]
+struct SignupCodeReq {
+    email: String,
+}
+
+/// `POST /api/accounts/signup/code`: a code to the address, to make a workspace with.
+async fn signup_code(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<SignupCodeReq>) -> ApiResult<Response> {
+    let st = here(&app, &headers).await?;
+    st.login_limiter.check(&format!("{}|accounts|signup", client_ip(&headers))).await?;
+    st.kernel.send_signup_code(&req.email).await?;
+    Ok(Json(json!({"sent": true})).into_response())
+}
+
+/// `POST /api/accounts/signup`: makes the workspace with the code sent to the address, at its
+/// subdomain. A new Ferrum account is signed in; someone who had one signs in to it.
+async fn sign_up(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<SignUp>) -> ApiResult<Response> {
+    let st = here(&app, &headers).await?;
+    st.login_limiter.check(&format!("{}|accounts|{}", client_ip(&headers), req.email.trim().to_lowercase())).await?;
+    if req.code.len() > 32 || req.email.len() > 254 || req.password.len() > 1024 || req.full_name.as_ref().is_some_and(|n| n.len() > 200) {
+        return Err(ApiError(Error::invalid("that is longer than a sign-up takes")));
+    }
+    let slug = req.slug.clone();
+    let made = st.kernel.sign_up(req).await?;
+    let host = st.shell.base().map(|base| format!("{slug}.{base}"));
+    if let Some(host) = &host
+        && let Err(e) = st.kernel.add_subdomain(made.tenant, host).await
+    {
+        // The next start gives it one (ensure_subdomains).
+        tracing::error!(tenant = %made.tenant, %host, "a signed-up workspace's subdomain: {e}");
+    }
+    let workspace = json!({"slug": slug, "host": host});
+    match made.account {
+        Some(s) => {
+            let mut res = session_response(&st, &s, &headers, true).await?;
+            *res.body_mut() = axum::body::Body::from(json!({"cookie": true, "workspace": workspace}).to_string());
+            Ok(res)
+        }
+        None => Ok(Json(json!({"sign_in": true, "workspace": workspace})).into_response()),
+    }
 }
 
 // ───────────────────────── signing in ─────────────────────────
@@ -771,6 +830,8 @@ pub fn routes() -> Routes {
         .add("/api/accounts/sign-in/verify", post(verify))
         .add("/api/accounts/code", post(send_code))
         .add("/api/accounts/password", post(set_password))
+        .add("/api/accounts/signup/code", post(signup_code))
+        .add("/api/accounts/signup", post(sign_up))
         .add("/api/accounts/sso/finish", post(sso_finish))
         .add("/api/accounts/me", get(me))
         .add("/api/accounts/continue", post(proceed))

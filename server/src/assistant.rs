@@ -214,16 +214,18 @@ impl Assistant {
         }
         let read = async {
             let mut tx = k.db.tenant_tx(tenant).await?;
-            let s: Value = sqlx::query_scalar("select settings from tenant where id = $1").bind(tenant).fetch_one(&mut *tx).await?;
+            let s: (Value, Value) = sqlx::query_as("select settings, quotas from tenant where id = $1").bind(tenant).fetch_one(&mut *tx).await?;
             tx.commit().await?;
-            Ok::<Value, Error>(s)
+            Ok::<(Value, Value), Error>(s)
         }
         .await
-        .unwrap_or(Value::Null);
+        .unwrap_or((Value::Null, Value::Null));
+        let (read, quotas) = read;
         let policy = Policy {
             off: read.get("assistant").and_then(Value::as_bool) == Some(false),
             model: read.get("assistant_model").and_then(Value::as_str).map(str::to_string),
-            monthly_tokens: read.get("assistant_monthly_tokens").and_then(Value::as_i64),
+            // The workspace may set less than its plan allows, not more.
+            monthly_tokens: [read.get("assistant_monthly_tokens"), quotas.get("ai_tokens_month")].into_iter().flatten().filter_map(Value::as_i64).min(),
             egress: read.get("assistant_egress").cloned().and_then(|e| serde_json::from_value(e).ok()).unwrap_or_default(),
         };
         self.off.insert(tenant, (Instant::now(), policy.clone()));

@@ -38,6 +38,7 @@ pub mod outbound;
 pub mod outbox;
 pub mod passkey;
 mod pdf;
+pub mod plans;
 pub mod prefs;
 pub mod print;
 pub mod privacy;
@@ -51,6 +52,7 @@ pub mod scan;
 pub mod scim;
 pub mod secret;
 pub mod shell;
+pub mod signup;
 pub mod sso;
 pub mod store;
 pub mod support;
@@ -140,6 +142,10 @@ pub struct KernelSettings {
     /// The accounts host (`accounts.{base}`), where sign-ins may come back to as well as to a
     /// workspace's own hosts and the public address.
     pub accounts_host: Option<String>,
+    /// The operator's plans by name: each a set of quotas ([`plans`]).
+    pub plans: serde_json::Map<String, serde_json::Value>,
+    /// Who may make a workspace of their own ([`signup`]).
+    pub signup: signup::SignupPolicy,
 }
 
 impl Default for KernelSettings {
@@ -159,6 +165,8 @@ impl Default for KernelSettings {
             push_contact: None,
             hold_on_timeline: true,
             accounts_host: None,
+            plans: serde_json::Map::new(),
+            signup: signup::SignupPolicy::default(),
         }
     }
 }
