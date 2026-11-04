@@ -9,9 +9,9 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 136 |
-| Partially implemented | 58 |
-| Missing | 27 |
+| Implemented, qualification incomplete | 142 |
+| Partially implemented | 62 |
+| Missing | 17 |
 | Blocked by external dependency | 10 |
 | **All** | **231** |
 
@@ -123,7 +123,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-COMMERCE-001 | Catalog, cart, coupons, checkout, shipping, refunds, abandoned carts | Implemented, qualification incomplete | probe |  |
 | FERRUM-COMMERCE-002 | Subscriptions | Implemented, qualification incomplete | tested | Each renewal is a payment request the customer pays: no card kept on file to charge without them; No email of its own for a renewal: the request and the commerce.invoice_paid event are there for a mail or gateway plugin; Plans are not changed from the portal |
 | FERRUM-COMMS-001 | Mail, shared mailboxes, chat, calendar, meetings, CalDAV and CardDAV | Implemented, qualification incomplete | probe |  |
-| FERRUM-COMMS-002 | Captions, transcripts, recording, presence | Missing | probe |  |
+| FERRUM-COMMS-002 | Captions, transcripts, recording, presence | Implemented, qualification incomplete | tested | Captions are each person's own browser speech recognition (Chrome, Edge, Safari), which may send the voice to the browser's maker; no speech-to-text runs on the server, though an operator's LiveKit transcription agent shows on the same stream; Recording needs the operator's LiveKit Egress and storage; tried against a stand-in for Egress's API, not a real one; Guests' captions are not kept, and personal-data erasure does not reach transcripts yet; Not tried in a real call: presence, transcripts and recordings are tested in Comms' scenario, nine mutants by hand |
 | FERRUM-ASSETS-001 | Assets, depreciation, movements, maintenance, disposal | Implemented, qualification incomplete | probe |  |
 | FERRUM-ASSETS-002 | Finance books that keep their own values | Implemented, qualification incomplete | tested | Depreciation booked before a split is shared by the two assets: neither can then be cancelled; An asset a repair or a value adjustment changed is not split |
 | FERRUM-BOOKINGS-001 | Resources, buffers, capacity, waitlist, cancellation, guest pages | Implemented, qualification incomplete | probe |  |
@@ -161,17 +161,17 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-ECOSYSTEM-012 | Digital asset management | Missing | probe |  |
 | FERRUM-ECOSYSTEM-013 | Developer Hub | Partially implemented | probe | A CLI and documentation; no hub |
 | FERRUM-ECOSYSTEM-014 | Governance and risk | Missing | probe |  |
-| FERRUM-INDUSTRY-001 | Hospitality: properties, rates, stays, folios, night audit | Missing | probe |  |
-| FERRUM-INDUSTRY-002 | Restaurants: menus, tables, kitchen flow, delivery | Missing | probe |  |
+| FERRUM-INDUSTRY-001 | Hospitality: properties, rates, stays, folios, night audit | Implemented, qualification incomplete | tested | Properties, room types, rooms, seasonal rate plans, stays held night by night, check-in and check-out, folios and the night audit, with ten mutants by hand; adapted from ERPNext 12's Hotels module; No channel manager or online booking (BLOCK-HOSPITALITY-CHANNELS), no groups, allotments or deposits at booking, no housekeeping tasks, and no point-of-sale charges posted to folios; Not tried in a browser |
+| FERRUM-INDUSTRY-002 | Restaurants: menus, tables, kitchen flow, delivery | Implemented, qualification incomplete | tested | Orders priced from the menu, one open order to a table, kitchen tickets by station worked to served, sent lines voided rather than edited, bills through ERP, takeaway and delivery, reservations; eleven mutants by hand; adapted from ERPNext 12's Restaurant module; No modifiers, split bills, tips, payment at the table, recipe stock or delivery platforms; Not tried in a browser |
 | FERRUM-INDUSTRY-003 | Retail and distribution: replenishment, omnichannel, franchise | Missing | probe |  |
-| FERRUM-INDUSTRY-004 | Education: admissions, students, fees, timetables, examinations | Missing | probe |  |
-| FERRUM-INDUSTRY-005 | Healthcare administration: scheduling, consent, billing | Missing | probe |  |
+| FERRUM-INDUSTRY-004 | Education: admissions, students, fees, timetables, examinations | Implemented, qualification incomplete | tested | Admissions into students and enrollments, fees invoiced through ERP and paid once settled, groups of enrolled students, a timetable without room, instructor or group clashes, attendance and graded assessments; eleven mutants by hand; adapted from ERPNext 13's Education module; No online applications, parents' portal, report cards as documents, rule-made timetables or fee schedules for many students at once; Not tried in a browser |
+| FERRUM-INDUSTRY-005 | Healthcare administration: scheduling, consent, billing | Partially implemented | tested | Appointments within a practitioner's hours and clashing with neither the practitioner's nor the patient's other visits, check-in only with consent to the current version of a form, visits completed by their practitioner and billed through ERP to a customer made from the patient, follow-ups covered within the settings' days; 29 mutants by hand; adapted from ERPNext 12's Healthcare module; Administration only: no clinical records, inpatients, reminders, online booking, patients' portal or insurance; No health-data law is claimed to be met until a legal review (BLOCK-LEGAL-REVIEW); Not tried in a browser |
 | FERRUM-INDUSTRY-006 | Manufacturing: planning, quality, traceability, shop floor | Partially implemented | probe | Shop-floor execution exists (FERRUM-IND-011) and has run on simulated equipment only |
-| FERRUM-INDUSTRY-007 | Construction and professional services: estimates, variations, site work | Missing | probe |  |
-| FERRUM-INDUSTRY-008 | Property and facilities: leases, charges, inspections, portals | Missing | probe |  |
-| FERRUM-INDUSTRY-009 | Logistics and fleets: dispatch, routes, proof of delivery | Missing | probe |  |
+| FERRUM-INDUSTRY-007 | Construction and professional services: estimates, variations, site work | Implemented, qualification incomplete | tested | Estimates with a markup spread to the cent into contracts, variations decided by a Contracts Manager joining the contract as lines, progress claims by line recomputed when certified and invoiced through ERP less retention and earlier claims, certified work not taken back, retention released on completion, site diaries one a day; 33 mutants by hand; its own design; No retention in halves or capped, materials on site, subcontractors' claims, measured quantities, cost against budget or a client's portal; Not tried in a browser |
+| FERRUM-INDUSTRY-008 | Property and facilities: leases, charges, inspections, portals | Partially implemented | tested | Units held by one lease's days at a time, terms kept once active, rent and charges invoiced each period once through ERP, leases ended at their end or early, urgent repair requests holding a unit until done, inspections with findings, and lessees' Your home on the portal (their leases, rent invoiced and repairs asked for, only in a unit they rent now); 27 mutants by hand; its own design; No owners' portal, and no paying rent on the portal beyond ERP's invoices page; No part-period rent, rent reviews, deposits through the books, late fees, notice periods or service-charge budgets; Not tried in a browser |
+| FERRUM-INDUSTRY-009 | Logistics and fleets: dispatch, routes, proof of delivery | Partially implemented | tested | Trips from submitted delivery notes, a note on one open trip at a time, stops ordered nearest first with straight-line distances, dispatch checking the vehicle's state and load, the driver's licence on the day and that neither is out on another trip, proof of delivery only by the trip's driver, once a stop, with a signature or a photo, and a driver's own stops; 28 mutants by hand; its own design; No road distances, travel times, optimised routes, geocoding or live tracking: they need a maps provider (BLOCK-MAPS-KEY); No delivery windows, several trips a vehicle a day, returns, fuel or costs, or an offline driver's app; Not tried in a browser |
 | FERRUM-INDUSTRY-010 | Government: cases, permits, citizen portals | Missing | probe |  |
-| FERRUM-INDUSTRY-011 | Nonprofits: members, donations, grants, volunteers | Missing | probe |  |
+| FERRUM-INDUSTRY-011 | Nonprofits: members, donations, grants, volunteers | Implemented, qualification incomplete | tested | Memberships invoiced through ERP and counted once paid, donations posted to the books and reversed, grants paid by their funder once awarded, volunteers' approved hours; nine mutants by hand; adapted from ERPNext 13's Non Profit module; No recurring giving, tax receipts as documents, online giving pages or payment gateways; funds total their donations but the ledger carries one income account; Not tried in a browser |
 | FERRUM-INDUSTRY-012 | EV charging and IoT: devices, sessions, tariffs, settlement | Partially implemented | probe | Devices and telemetry are real (FERRUM-IND-004, FERRUM-IND-005); charging is an example plugin shaped like OCPP, with no OCPP conformance |
 
 ## Extensions
@@ -295,7 +295,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-JOURNEY-007 | Field work to invoice | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
 | FERRUM-JOURNEY-008 | Document to signature | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
 | FERRUM-JOURNEY-009 | Marketing to consent enforcement | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
-| FERRUM-JOURNEY-010 | Hospitality stay | Missing | read |  |
+| FERRUM-JOURNEY-010 | Hospitality stay | Partially implemented | tested | Walked in the app's scenario: reservation, check-in, a minibar charge and a deposit, two night audits with a no-show, check-out with its invoice through ERP, a cancellation; the invoice is a draft, and its payment is ERP's; Not over HTTP or in a browser |
 | FERRUM-JOURNEY-011 | Learning completion | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
 | FERRUM-JOURNEY-012 | Tenant lifecycle | Partially implemented | tested | Walked in the kernel: signing up with a code, a new account signed in, the plan's quotas holding, a larger plan, closing it, kept and read-only, then deleted after its date (closure_it); Walked once in a browser on a server built on one machine, from sign-up to closing; not on the image or a deployment, and deletion after the date only in the kernel |
 | FERRUM-JOURNEY-013 | Partner support | Partially implemented | tested | In parts, inside the kernel's suite: support access granted at a level, for some records, read-only or not, reaching only that and ending when it expires; No partner console (FERRUM-PARTNER-001), partner terms or real partner |

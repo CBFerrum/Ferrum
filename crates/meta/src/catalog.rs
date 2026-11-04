@@ -60,7 +60,9 @@ pub fn load_package_files(files: &BTreeMap<String, String>) -> Result<Package, M
     for (path, text) in files {
         if let Some(name) = path.strip_prefix("entities/").filter(|n| n.ends_with(".yaml") && !n.contains('/')) {
             let yaml_err = |e: serde_yaml::Error| MetaError::Yaml { path: format!("entities/{name}"), msg: e.to_string() };
-            if text.trim_start().starts_with('-') {
+            // A list of entities or one, whatever comes first (a comment, `---`); parsed again as
+            // what it is, so that errors keep their lines.
+            if serde_yaml::from_str::<serde_yaml::Value>(text).is_ok_and(|v| v.is_sequence()) {
                 let list: Vec<EntityDef> = serde_yaml::from_str(text).map_err(yaml_err)?;
                 entities.extend(list);
             } else {
@@ -844,6 +846,22 @@ pub(crate) fn validate_workflow(wf: &WorkflowDef, entities: &BTreeMap<String, (S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_entity_file_may_start_with_a_comment() {
+        let files: BTreeMap<String, String> = [
+            ("package.yaml", "package: inns\nversion: 0.1.0\ndepends: [core]\n"),
+            ("entities/both.yaml", "# Two of them.\n\n- {name: InnRoom, label: Room, kind: master, fields: [{name: number, type: data}]}\n- {name: InnGuest, label: Guest, kind: master, fields: [{name: name, type: data}]}\n"),
+            ("entities/one.yaml", "# Just one.\nname: InnStay\nlabel: Stay\nkind: master\nfields: [{name: guest, type: data}]\n"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let p = load_package_files(&files).expect("both files read");
+        let mut names: Vec<&str> = p.entities.iter().map(|e| e.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, ["InnGuest", "InnRoom", "InnStay"]);
+    }
 
     fn pkg(yaml_manifest: &str, entities: &str) -> Package {
         Package {

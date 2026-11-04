@@ -217,6 +217,22 @@ macro_rules! apps {
             out.push(("pos", ferrum_app_pos::UI));
             #[cfg(feature = "bookings")]
             out.push(("bookings", ferrum_app_bookings::UI));
+            #[cfg(feature = "hospitality")]
+            out.push(("hospitality", ferrum_app_hospitality::UI));
+            #[cfg(feature = "nonprofit")]
+            out.push(("nonprofit", ferrum_app_nonprofit::UI));
+            #[cfg(feature = "education")]
+            out.push(("education", ferrum_app_education::UI));
+            #[cfg(feature = "restaurant")]
+            out.push(("restaurant", ferrum_app_restaurant::UI));
+            #[cfg(feature = "property")]
+            out.push(("property", ferrum_app_property::UI));
+            #[cfg(feature = "construction")]
+            out.push(("construction", ferrum_app_construction::UI));
+            #[cfg(feature = "logistics")]
+            out.push(("logistics", ferrum_app_logistics::UI));
+            #[cfg(feature = "healthcare")]
+            out.push(("healthcare", ferrum_app_healthcare::UI));
             #[cfg(feature = "field-service")]
             out.push(("field-service", ferrum_app_field_service::UI));
             #[cfg(feature = "lms")]
@@ -310,6 +326,14 @@ apps! {
         "studio" => ferrum_studio,
         "assets" => ferrum_app_assets,
         "bookings" => ferrum_app_bookings,
+        "hospitality" => ferrum_app_hospitality,
+        "nonprofit" => ferrum_app_nonprofit,
+        "education" => ferrum_app_education,
+        "restaurant" => ferrum_app_restaurant,
+        "property" => ferrum_app_property,
+        "construction" => ferrum_app_construction,
+        "logistics" => ferrum_app_logistics,
+        "healthcare" => ferrum_app_healthcare,
         "field-service" => ferrum_app_field_service,
         "forms" => ferrum_app_forms,
         "lms" => ferrum_app_lms,

@@ -2384,7 +2384,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-comms"
 version = "0.7.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-comms?branch=main#1efc3e74d2b079345f9b03d0ca9ed1a1edbe3447"
+source = "git+https://github.com/CBFerrum/ferrum-app-comms?branch=main#e03425f4d5a0b26c8bc65c35883dda23627d2c56"
 dependencies = [
  "ammonia",
  "async-imap",
@@ -2415,6 +2415,22 @@ dependencies = [
  "tracing",
  "uuid",
  "webpki-roots",
+]
+
+[[package]]
+name = "ferrum-app-construction"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-construction?branch=main#94b57dfdb460084e1bf64fe9a5b513320cba2546"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "rust_decimal",
+ "serde_json",
+ "sqlx",
+ "uuid",
 ]
 
 [[package]]
@@ -2503,6 +2519,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrum-app-education"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-education?branch=main#017678d398b4d7bb7381a97b76073cb8a3c8348f"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "rust_decimal",
+ "serde_json",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
 name = "ferrum-app-erp"
 version = "0.1.0"
 source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#4eb4b8c2f4b8c380bc4b5c317cef932c53092ab8"
@@ -2574,6 +2606,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrum-app-healthcare"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-healthcare?branch=main#7482be703fedd8000d3030b8643e944f430fa1df"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "rust_decimal",
+ "serde_json",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
 name = "ferrum-app-helpdesk"
 version = "0.1.0"
 source = "git+https://github.com/CBFerrum/ferrum-app-helpdesk?branch=main#11bfe134cabd7d4655ba64395f450d99c7b6195d"
@@ -2588,6 +2636,22 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "ferrum-app-hospitality"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-hospitality?branch=main#2309cf0954b9dcb2556f6d52e5bfaa8256e81f1d"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "rust_decimal",
+ "serde_json",
+ "sqlx",
  "uuid",
 ]
 
@@ -2642,6 +2706,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrum-app-logistics"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-logistics?branch=main#ff9d9c1fd58dfca7ead425b562ad605ee0b3070a"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "rust_decimal",
+ "serde_json",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
+name = "ferrum-app-nonprofit"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-nonprofit?branch=main#be97e50cc6ecc4fd2286bb0f7326b33f832a9eeb"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "rust_decimal",
+ "serde_json",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
 name = "ferrum-app-pos"
 version = "0.1.0"
 source = "git+https://github.com/CBFerrum/ferrum-app-pos?branch=main#65ebe6944bd20cef8f0527462f9cd8bda1abeef3"
@@ -2676,6 +2772,38 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "ferrum-app-property"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-property?branch=main#24657df2952913d838b47211f247c28adb0afdf6"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "rust_decimal",
+ "serde_json",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
+name = "ferrum-app-restaurant"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-restaurant?branch=main#a6668d4da9b7bcb89361c594cfa448eba069b568"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "rust_decimal",
+ "serde_json",
+ "sqlx",
  "uuid",
 ]
 
@@ -3193,18 +3321,26 @@ dependencies = [
  "ferrum-app-campaigns",
  "ferrum-app-commerce",
  "ferrum-app-comms",
+ "ferrum-app-construction",
  "ferrum-app-crm",
  "ferrum-app-docs",
  "ferrum-app-drive",
  "ferrum-app-edge",
+ "ferrum-app-education",
  "ferrum-app-erp",
  "ferrum-app-field-service",
  "ferrum-app-forms",
+ "ferrum-app-healthcare",
  "ferrum-app-helpdesk",
+ "ferrum-app-hospitality",
  "ferrum-app-hr",
  "ferrum-app-lms",
+ "ferrum-app-logistics",
+ "ferrum-app-nonprofit",
  "ferrum-app-pos",
  "ferrum-app-projects",
+ "ferrum-app-property",
+ "ferrum-app-restaurant",
  "ferrum-app-sign",
  "ferrum-apps",
  "ferrum-ca",
