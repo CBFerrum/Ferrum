@@ -98,6 +98,11 @@ pub struct PlanApp {
     pub isolated: bool,
     /// What was established about this exact artifact. A new build has none until it earns them.
     pub labels: Vec<ferrum_kernel::apps::Label>,
+    /// An industrial solution's equipment (FERRUM-IND-018): the schemes it needs, the products its
+    /// device profiles describe and its acceptance procedures. Says what the app describes, not
+    /// what was tried with it.
+    #[serde(skip_serializing_if = "Value::is_null")]
+    pub equipment: Value,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -179,6 +184,8 @@ struct Recorded {
     app: AppManifest,
     permissions: Permissions,
     readme: Option<String>,
+    /// The equipment an industrial solution in it works with ([`equipment`]).
+    equipment: Value,
     /// Its interface runs isolated (docs/plan/apps-ui.md U8): a bundle this server does not trust,
     /// private to a workspace.
     isolated: bool,
@@ -189,7 +196,8 @@ fn recorded(r: &Release) -> Option<Recorded> {
     let permissions = serde_json::from_value(r.manifest.get("permissions")?.clone()).ok()?;
     let readme = r.manifest.get("readme").and_then(Value::as_str).map(String::from);
     let isolated = r.manifest.get("isolated").and_then(Value::as_bool).unwrap_or(false);
-    Some(Recorded { app, permissions, readme, isolated })
+    let equipment = r.manifest.get("equipment").cloned().unwrap_or(Value::Null);
+    Some(Recorded { app, permissions, readme, equipment, isolated })
 }
 
 /// What an interface that runs isolated may not contribute: points whose pages the platform opens
@@ -234,6 +242,7 @@ struct StepData {
     manifest: AppManifest,
     permissions: Permissions,
     readme: Option<String>,
+    equipment: Value,
     /// Countersigned by a trusted store key (native apps: reviewed platform code).
     verified: bool,
     /// Signed by any trusted key.
@@ -597,6 +606,19 @@ fn ignore_missing(r: Result<()>) -> Result<()> {
 
 fn bundle_key(id: &str, version: &Version, digest: &str) -> String {
     format!("apps/{id}/{version}-{}.fapp", &digest[..digest.len().min(16)])
+}
+
+/// What an industrial solution in the bundle works with, for the install dialog: the schemes the
+/// site runtime opens, each device profile's product, and the procedures a site runs.
+fn equipment(b: &Bundle) -> Value {
+    match b.industrial() {
+        Ok(Some(s)) => json!({
+            "connectors": s.connectors.iter().map(|c| c.scheme.clone()).collect::<Vec<_>>(),
+            "profiles": s.profiles.iter().map(|p| json!({"vendor": p.vendor, "model": p.model, "scheme": p.scheme})).collect::<Vec<_>>(),
+            "acceptance": s.acceptance.iter().map(|a| a.title.clone()).collect::<Vec<_>>(),
+        }),
+        _ => Value::Null,
+    }
 }
 
 fn readme(b: &Bundle) -> Option<String> {
@@ -972,6 +994,31 @@ impl AppManager {
         self.storage.upload(path, &bytes).await.map_err(|e| Error::Unavailable(format!("object storage: {e}")))
     }
 
+    /// An industrial solution in the app's bundle (FERRUM-IND-018) becomes Operations' device
+    /// profiles and acceptance procedures, where the workspace has Operations.
+    #[cfg_attr(not(feature = "ops"), allow(unused_variables))]
+    async fn import_solution(&self, ctx: &Ctx, id: &str, staged: Option<&Bundle>, release: Option<&Release>) -> Result<()> {
+        #[cfg(feature = "ops")]
+        {
+            if !self.kernel.registry.schema(ctx.tenant).await?.packages.iter().any(|p| p == "ops") {
+                return Ok(());
+            }
+            let loaded;
+            let bundle = match (staged, release) {
+                (Some(b), _) => b,
+                (None, Some(r)) if r.bundle_key.is_some() => {
+                    loaded = self.load_bundle(r).await?;
+                    &loaded
+                }
+                _ => return Ok(()),
+            };
+            if let Some(solution) = bundle.industrial().map_err(|e| Error::invalid(e.to_string()))? {
+                ferrum_ops::acceptance::import(&self.kernel, ctx, id, &solution).await?;
+            }
+        }
+        Ok(())
+    }
+
     async fn load_bundle(&self, r: &Release) -> Result<Bundle> {
         let key = r.bundle_key.as_deref().ok_or_else(|| Error::internal(format!("{} {} has no stored bundle", r.app_id, r.version)))?;
         let bytes: Vec<u8> = self.storage.download(Path::new(key)).await.map_err(|e| Error::Unavailable(format!("object storage ({key}): {e}")))?;
@@ -1071,6 +1118,7 @@ impl AppManager {
             "permissions": b.permissions().map_err(app_err)?,
             "plugin": plugin.as_ref().map(|(_, json)| json.clone()),
             "readme": readme(b),
+            "equipment": equipment(b),
             "isolated": isolated,
             "review": ferrum_apps::ui::review(b),
         });
@@ -1254,20 +1302,20 @@ impl AppManager {
         for r in order {
             let offer = pick(&offers, &r.id, &r.version).cloned().ok_or_else(|| Error::internal(format!("{} {} vanished from the plan", r.id, r.version)))?;
             let bundle = staged.remove(&(r.id.clone(), r.version.clone()));
-            let (manifest, permissions, readme_text, verified, trusted, source) = match &offer.origin {
+            let (manifest, permissions, readme_text, equipment_of, verified, trusted, source) = match &offer.origin {
                 Origin::Native => {
                     let m = self.native(&r.id).cloned().ok_or_else(|| Error::internal("native app vanished"))?;
                     let p = self.native_permissions(&m);
-                    (m, p, None, true, true, "native".to_string())
+                    (m, p, None, Value::Null, true, true, "native".to_string())
                 }
                 Origin::Local(rel) => {
                     let rec = recorded(rel).ok_or_else(|| Error::internal(format!("{} {}: unreadable release record", rel.app_id, rel.version)))?;
                     let source = if rel.private_tenant.is_some() { "private" } else { "cluster" };
-                    (rec.app, rec.permissions, rec.readme, self.signed(rel, Some(Role::Store)), self.signed(rel, None), source.to_string())
+                    (rec.app, rec.permissions, rec.readme, rec.equipment, self.signed(rel, Some(Role::Store)), self.signed(rel, None), source.to_string())
                 }
                 Origin::Store { url, .. } => {
                     let (b, _) = bundle.as_ref().ok_or_else(|| Error::internal("store bundle not staged"))?;
-                    (b.manifest.clone(), b.permissions().map_err(app_err)?, readme(b), true, true, format!("store:{url}"))
+                    (b.manifest.clone(), b.permissions().map_err(app_err)?, readme(b), equipment(b), true, true, format!("store:{url}"))
                 }
             };
             let action = match ws.apps.get(&r.id).map(|i| Version::parse(&i.version)) {
@@ -1283,6 +1331,7 @@ impl AppManager {
                 manifest,
                 permissions,
                 readme: readme_text,
+                equipment: equipment_of,
                 verified,
                 trusted,
                 staged: bundle,
@@ -1419,6 +1468,7 @@ impl AppManager {
                 screenshots,
                 isolated,
                 labels,
+                equipment: root.equipment.clone(),
             },
             steps: steps.iter().map(|s| Step { id: s.id.clone(), version: s.version.to_string(), action: s.action, source: s.source.clone() }).collect(),
             permissions,
@@ -1478,7 +1528,10 @@ impl AppManager {
                 recorded: false,
                 previous: ws.apps.get(&s.id).map(|i| (i.version.clone(), i.row)),
             };
-            let outcome = self.apply_step(ctx, s, releases.get(&s.id), &plan.digest, &mut undo).await;
+            let mut outcome = self.apply_step(ctx, s, releases.get(&s.id), &plan.digest, &mut undo).await;
+            if outcome.is_ok() {
+                outcome = self.import_solution(ctx, &s.id, s.staged.as_ref().map(|(b, _)| b), releases.get(&s.id)).await;
+            }
             done.push(undo);
             if let Err(e) = outcome {
                 tracing::warn!(tenant = %ctx.tenant, app = %s.id, "app installation failed, undoing it: {e}");

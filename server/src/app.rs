@@ -180,6 +180,10 @@ impl Hooks for App {
         }
         plugins.seal_with(secret_key.clone());
         plugins.open_also_with(retired.clone());
+        let (plans, signup) = signup_settings(|name| std::env::var(name).ok(), crate::shell::base_domain(&settings).is_some()).map_err(Error::Message)?;
+        if signup.open && mailer.is_none() {
+            return Err(Error::Message("FERRUM_SIGNUP=open needs mail (settings.mailer): sign-up proves addresses with emailed codes".into()));
+        }
         let kernel = Kernel::boot(
             db,
             catalog,
@@ -197,6 +201,8 @@ impl Hooks for App {
                 push_contact: Some(settings.push_contact.trim().to_string()).filter(|c| c.starts_with("mailto:") || c.starts_with("https://")),
                 hold_on_timeline: std::env::var("FERRUM_HOLD_ON_TIMELINE").map_or(true, |v| v != "false"),
                 accounts_host: crate::shell::base_domain(&settings).map(|b| format!("{DIRECTORY}.{b}", DIRECTORY = ferrum_kernel::identity::DIRECTORY)),
+                plans,
+                signup,
                 ..Default::default()
             },
             mailer,
@@ -204,6 +210,9 @@ impl Hooks for App {
         .await
         .map_err(|e| Error::Message(format!("kernel boot: {e}")))?;
         ferrum_app_erp::maintenance(&kernel).await.map_err(|e| Error::Message(format!("ERP's upkeep: {e}")))?;
+        if let Err(e) = kernel.registry.catalog().closure(&kernel.settings.signup.packages) {
+            return Err(Error::Message(format!("FERRUM_SIGNUP_PACKAGES: {e}")));
+        }
         // Plugins configured before their settings were sealed (gateways' keys among them) are sealed now.
         match plugins.seal_stored(&kernel.db).await {
             Ok(0) => {}
@@ -475,6 +484,7 @@ impl Hooks for App {
         tasks.register(crate::tasks::Doctor);
         tasks.register(crate::tasks::KmsWrap);
         tasks.register(crate::tasks::AccountState);
+        tasks.register(crate::tasks::SetPlan);
         tasks.register(crate::tasks::ReapplyErasures);
         tasks.register(crate::tasks::SyncSchema);
         tasks.register(crate::tasks::ImportErpnext);
@@ -642,6 +652,47 @@ async fn speculation_csp(req: axum::extract::Request, next: axum::middleware::Ne
 
 /// The push services notifications go to (`settings.push_services`): the browsers' own unless
 /// the operator lists others.
+/// The operator's plans (`FERRUM_PLANS`, JSON: `{"free": {"people": 5, "storage_bytes": 1073741824}}`)
+/// and who may make a workspace (`FERRUM_SIGNUP=open`, with `FERRUM_SIGNUP_DOMAINS`,
+/// `FERRUM_SIGNUP_PACKAGES`, `FERRUM_SIGNUP_PLAN` and `FERRUM_SIGNUP_PER_ADDRESS`). Sign-up needs
+/// a base domain: its codes come from the accounts host, and each workspace gets its subdomain.
+fn signup_settings(
+    env: impl Fn(&str) -> Option<String>,
+    has_base: bool,
+) -> std::result::Result<(serde_json::Map<String, serde_json::Value>, ferrum_kernel::signup::SignupPolicy), String> {
+    let list = |name: &str| -> Vec<String> { env(name).unwrap_or_default().split(',').map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect() };
+    let plans: serde_json::Map<String, serde_json::Value> = match env("FERRUM_PLANS").filter(|p| !p.trim().is_empty()) {
+        Some(p) => serde_json::from_str(&p).map_err(|e| format!("FERRUM_PLANS is not a JSON object of plans: {e}"))?,
+        None => serde_json::Map::new(),
+    };
+    ferrum_kernel::plans::validate(&plans).map_err(|e| format!("FERRUM_PLANS: {e}"))?;
+    let open = match env("FERRUM_SIGNUP").unwrap_or_default().trim() {
+        "" | "closed" => false,
+        "open" => true,
+        other => return Err(format!("FERRUM_SIGNUP is open or closed, not {other:?}")),
+    };
+    if open && !has_base {
+        return Err("FERRUM_SIGNUP=open needs FERRUM_BASE_DOMAIN: sign-up's codes come from the accounts host".into());
+    }
+    let plan = env("FERRUM_SIGNUP_PLAN").map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
+    if let Some(p) = &plan
+        && !plans.contains_key(p)
+    {
+        return Err(format!("FERRUM_SIGNUP_PLAN {p:?} is not one of FERRUM_PLANS"));
+    }
+    let mut policy = ferrum_kernel::signup::SignupPolicy {
+        open,
+        domains: list("FERRUM_SIGNUP_DOMAINS"),
+        packages: list("FERRUM_SIGNUP_PACKAGES"),
+        plan,
+        ..Default::default()
+    };
+    if let Some(n) = env("FERRUM_SIGNUP_PER_ADDRESS").filter(|n| !n.trim().is_empty()) {
+        policy.per_address = n.trim().parse().ok().filter(|n| *n > 0).ok_or("FERRUM_SIGNUP_PER_ADDRESS is a whole number above 0")?;
+    }
+    Ok((plans, policy))
+}
+
 fn push_services(listed: &str) -> Vec<String> {
     let listed: Vec<String> = listed.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect();
     if listed.is_empty() { ferrum_kernel::webpush::PUSH_SERVICES.iter().map(|s| s.to_string()).collect() } else { listed }
@@ -704,6 +755,37 @@ mod tests {
         assert_eq!(back, b"ferrum");
         storage.delete(&path).await.expect("delete");
         assert!(storage.download::<Vec<u8>>(&path).await.is_err(), "deleted");
+    }
+
+    #[test]
+    fn signup_and_plans_from_the_environment() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| move |name: &str| pairs.iter().find(|(k, _)| *k == name).map(|(_, v)| v.to_string());
+        let (plans, policy) = signup_settings(env(&[]), false).unwrap();
+        assert!(plans.is_empty() && !policy.open, "closed, with no plans, unless told");
+        let (plans, policy) = signup_settings(
+            env(&[
+                ("FERRUM_PLANS", r#"{"free": {"people": 3}, "team": {"people": 25, "storage_bytes": 10737418240}}"#),
+                ("FERRUM_SIGNUP", "open"),
+                ("FERRUM_SIGNUP_DOMAINS", "Example.com, x.test"),
+                ("FERRUM_SIGNUP_PACKAGES", "accounting,selling"),
+                ("FERRUM_SIGNUP_PLAN", "free"),
+                ("FERRUM_SIGNUP_PER_ADDRESS", "2"),
+            ]),
+            true,
+        )
+        .unwrap();
+        assert_eq!(plans.len(), 2);
+        assert!(policy.open);
+        assert_eq!(policy.domains, ["example.com", "x.test"]);
+        assert_eq!(policy.packages, ["accounting", "selling"]);
+        assert_eq!(policy.plan.as_deref(), Some("free"));
+        assert_eq!(policy.per_address, 2);
+        assert!(signup_settings(env(&[("FERRUM_SIGNUP", "open")]), false).is_err(), "no base domain");
+        assert!(signup_settings(env(&[("FERRUM_SIGNUP", "yes")]), true).is_err());
+        assert!(signup_settings(env(&[("FERRUM_SIGNUP_PLAN", "gold")]), true).is_err(), "not one of the plans");
+        assert!(signup_settings(env(&[("FERRUM_PLANS", r#"{"free": {"seats": 3}}"#)]), true).is_err(), "not a quota");
+        assert!(signup_settings(env(&[("FERRUM_PLANS", "[1]")]), true).is_err());
+        assert!(signup_settings(env(&[("FERRUM_SIGNUP_PER_ADDRESS", "0")]), true).is_err());
     }
 
     #[test]

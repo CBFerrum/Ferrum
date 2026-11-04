@@ -274,6 +274,13 @@ function drawAccounts() {
     if (accounts.target) singleSignOn(accounts.target.slug);
     passkeyButton();
   }
+  // Where the operator takes sign-ups: making a workspace of one's own.
+  if (accounts.signup && !document.getElementById("ferrum-signup-link")) {
+    const p = text("p", "New to Ferrum? ", "ferrum-hint");
+    p.id = "ferrum-signup-link";
+    p.append(Object.assign(document.createElement("a"), { href: "/signup", textContent: "Make a workspace" }));
+    document.getElementById("main").append(p);
+  }
   // A Ferrum account of another region signs in there, and comes back here trusted.
   if (accounts.regions?.length) {
     const p = text("p", "Your Ferrum account lives in another region? Sign in with it: ", "ferrum-hint ferrum-regions");

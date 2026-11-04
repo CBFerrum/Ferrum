@@ -18,6 +18,9 @@
 //! | `POST /devices/{id}/enrollment` | Device Administrator | a one-time code |
 //! | `POST /devices/{id}/lifecycle` | Device Administrator | `{to, reason}` |
 //! | `GET /devices/{id}/latest` | | each metric's newest value and its age |
+//! | `GET /devices/{id}/acceptance` | | the acceptance procedures for it, whether it passed each, its runs |
+//! | `POST /devices/{id}/acceptance` | Device Administrator | `{procedure}`: a run, a result per step |
+//! | `POST /acceptance/{run}/steps/{step}` | Device Administrator | `{value}` seen, or `{passed}`, and a `note` |
 //! | `GET /series?device=&metric=&from=&to=&bucket=` | | minute rollups |
 //! | `POST /operators/pin` | Device Administrator | `{site, email, pin}`: for the site's console, offline |
 //!
@@ -26,7 +29,7 @@
 
 use crate::commands::{self, NewCommand};
 use crate::identity::{self, Refused};
-use crate::{authority, connections, devices, sync, telemetry};
+use crate::{acceptance, authority, connections, devices, sync, telemetry};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use ferrum_kernel::{Ctx, Error, Kernel, Result, Site, SiteRequest, SiteResponse};
@@ -169,6 +172,11 @@ struct Transfer {
 }
 
 #[derive(Deserialize)]
+struct StartRun {
+    procedure: Uuid,
+}
+
+#[derive(Deserialize)]
 struct SetLifecycle {
     to: Lifecycle,
     #[serde(default)]
@@ -287,6 +295,32 @@ async fn signed_in(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<SiteRespo
             let s: SetLifecycle = body(req)?;
             let to = devices::set_lifecycle(k, ctx, id, s.to, &s.reason).await?;
             Ok(ok(json!({"lifecycle": to.as_str()})))
+        }
+        ("GET", ["devices", id, "acceptance"]) => {
+            may(ctx, READ)?;
+            let id = uuid(id)?;
+            device_site(k, ctx, id).await?;
+            Ok(ok(acceptance::for_device(k, ctx, id).await?))
+        }
+        ("POST", ["devices", id, "acceptance"]) => {
+            may(ctx, CONFIGURE)?;
+            let id = uuid(id)?;
+            device_site(k, ctx, id).await?;
+            let s: StartRun = body(req)?;
+            Ok(ok(Value::Object(acceptance::start(k, ctx, id, s.procedure).await?)))
+        }
+        ("POST", ["acceptance", run, "steps", step]) => {
+            may(ctx, CONFIGURE)?;
+            let run = uuid(run)?;
+            let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+            let device: Option<Uuid> = sqlx::query_scalar("select device from e_acceptance_run where tenant_id = $1 and id = $2")
+                .bind(ctx.tenant)
+                .bind(run)
+                .fetch_optional(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            device_site(k, ctx, device.ok_or_else(|| Error::NotFound("acceptance run".into()))?).await?;
+            Ok(ok(Value::Object(acceptance::record(k, ctx, run, step, body(req)?).await?)))
         }
         ("GET", ["devices", id, "latest"]) => {
             may(ctx, READ)?;

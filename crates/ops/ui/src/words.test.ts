@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canEnroll, canRetire, issuer, nextSteps, reading, said, silence, state, STATES } from "./words";
+import { canEnroll, canRetire, expectation, issuer, nextSteps, reading, said, silence, state, STATES, typed } from "./words";
 
 describe("what a command says", () => {
   it("names the person who asked, or what kind of thing did", () => {
@@ -74,5 +74,22 @@ describe("a device's next steps", () => {
   it("ends at retired", () => {
     expect(nextSteps("Retired")).toEqual([]);
     expect(canRetire("Retired")).toBe(false);
+  });
+});
+
+describe("acceptance on site", () => {
+  it("says what a step expects", () => {
+    expect(expectation({ min: 207, max: 253 })).toBe("207 to 253");
+    expect(expectation({ min: 0 })).toBe("at least 0");
+    expect(expectation({ equals: false })).toBe("exactly false");
+    expect(expectation({ instruction: "The seal is intact" })).toBe("The seal is intact");
+    expect(expectation(null)).toBe("");
+  });
+
+  it("takes a typed reading as the value it is", () => {
+    expect(typed(" 231.4 ")).toBe(231.4);
+    expect(typed("false")).toBe(false);
+    expect(typed("OK")).toBe("OK");
+    expect(typed("")).toBe("");
   });
 });

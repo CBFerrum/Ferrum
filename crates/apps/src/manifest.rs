@@ -303,6 +303,10 @@ pub struct AppManifest {
     /// Set by its publisher when it is being retired.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deprecation: Option<Deprecation>,
+    /// An industrial solution: the site runtime's connectors it needs, the device profiles and
+    /// acceptance procedures it ships (FERRUM-IND-018, [`crate::industrial`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub industrial: Option<crate::industrial::IndustrialSection>,
     #[serde(default)]
     pub uninstall: Uninstall,
 }
