@@ -3,6 +3,38 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-04, later: help and assistants in the shell, payments for subscriptions, deposits and courses, and Learn's SCORM, xAPI and LTI
+
+**State**: on `main` of each repository; each PR was green on its CI before it merged. No release was tagged.
+
+| Where | What |
+|---|---|
+| Ferrum PR 49 | Help in the account menu, opening the help center Ferrum-Frontend PR 11 added at `/data/help` (FERRUM-UX-003). Per-app assistants (FERRUM-AI-006): an app's `shell.assistant` guidance joins the context on its pages, `/api/assistant/suggestions` lists its questions, and the panel shows the records an answer read. The connector catalog is `blocked_external` on providers' sandboxes (FERRUM-CONNECT-002) |
+| Commerce PRs 1, 2 | Commerce 0.6.0: subscriptions sold in the store (FERRUM-COMMERCE-002). Commerce 0.7.0: part of an invoice asked for, and part of a payment refunded, for other apps |
+| Bookings PR 1 | Bookings 0.3.0: Booking Deposits, a connector with Commerce (FERRUM-BOOKINGS-003) |
+| ERP PR 5 | ERP 0.7.1: ERP's assistant guidance and suggested questions |
+| Learn PRs 1, 2, 3 | Learn 0.3.0, Paid Courses (a connector with Commerce): bought, invoiced, enrolled on payment, refunded within 14 days. Learn 0.4.0: SCORM 1.2 and 2004 lessons through scorm-again 3.4.6 (MIT, vendored with its provenance), and xAPI lessons with an endpoint of their own. Learn 0.5.0: LTI 1.3 tools, launched by OIDC with an id_token signed with Learn's key, sending grades back by AGS (FERRUM-LMS-002) |
+| Ferrum PR 50 | Pins ERP 0.7.1 and Learn 0.5.0, and lists Paid Courses where Learn and Commerce are built in |
+
+**Evidence**:
+- Every new test's figures were worked out by hand first.
+- Mutants, run by hand from the scratchpad and all caught:
+  - 10 for Paid Courses, 8 for SCORM, 8 for xAPI, 8 for LTI;
+  - one SCORM survivor, the progress guard, was hidden behind permissions; the test now also tries as the administrator.
+- scorm-again's events, data shapes and resume were checked by running the vendored runtimes in Node with a simulated package.
+- LTI's id_token was verified against the JWKS Learn publishes. The client assertion was signed with a real tool key, and a second key was refused.
+
+**Not done:**
+- Nothing here has run in a browser on a running server: the server could not be built on this machine for lack of disk. Real SCORM, xAPI or LTI content has not been tried.
+- SCORM and xAPI packages run on the workspace's origin, so Learn Settings must allow them.
+- LTI has no Deep Linking and no Names and Role Provisioning.
+- The registry lists the rest.
+
+**Lessons:**
+- Ferrum strips `Authorization` from requests to app endpoints. A tool's bearer token reaches Learn only because it is a Ferrum API key of the tool's own service user, which the server checks itself.
+- Objects built in another `node:vm` realm fail scorm-again's `constructor === Object` checks. Build test inputs inside the context.
+- xAPI says an LRS should not refuse a voiding statement whose target is missing or already voided. The first test asserted the opposite.
+
 ## 2026-11-04: single sign-on by SAML, keys from a KMS, workflows that undo, and a group's books
 
 **State**: on `main` of each repository, every PR green on its CI before merging. No release was tagged.
