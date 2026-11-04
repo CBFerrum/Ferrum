@@ -56,6 +56,7 @@ RECOVERY = ("-p", "ferrum-kernel", "--test", "recovery_it")
 # Needs OpenBao at FERRUM_KMS_TEST_TRANSIT (crates/kernel/tests/kms_it.rs).
 KMS = ("-p", "ferrum-kernel", "--test", "kms_it")
 SAGA = ("-p", "ferrum-kernel", "--test", "saga_it")
+SIGNUP = ("-p", "ferrum-kernel", "--test", "signup_it")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
@@ -266,6 +267,18 @@ MUTANTS = [
     ("restricted-account-still-writes", "crates/kernel/src/ctx.rs", "if self.read_only && !matches!(action, Action::Read | Action::Export) {", "if false {", SUPPORT),
     ("restricted-account-loses-its-export", "crates/kernel/src/ctx.rs", "if self.read_only && !matches!(action, Action::Read | Action::Export) {", "if self.read_only {", SUPPORT),
     ("quota-ignored", "crates/kernel/src/files.rs", "self.check_storage_quota(ctx.tenant, data.len() as u64).await?;", "", SUPPORT),
+    # Sign-up and plans (FERRUM-CLOUD-002).
+    ("signup-on-a-closed-server", "crates/kernel/src/signup.rs", "        if !policy.open {", "        if false {", SIGNUP),
+    ("signup-from-any-domain", "crates/kernel/src/signup.rs", "        if !policy.domains.is_empty() && !policy.domains.iter().any(|d| d.eq_ignore_ascii_case(domain)) {", "        if false {", SIGNUP),
+    ("signup-without-limit", "crates/kernel/src/signup.rs", "        if made >= self.settings.signup.per_address {", "        if false {", SIGNUP),
+    ("signup-without-the-code", "crates/kernel/src/signup.rs", "        proof?;", "        let _ = proof;", SIGNUP),
+    ("signup-spends-the-code-on-a-bad-form", "crates/kernel/src/signup.rs", "        new.check()?;", "", SIGNUP),
+    ("signup-opens-an-existing-account", "crates/kernel/src/signup.rs", "let account = if has_account { None }", "let account = if false { None }", SIGNUP),
+    ("closing-without-the-name", "crates/kernel/src/account.rs", "        if confirm.trim() != slug {", "        if false {", SIGNUP),
+    ("closing-by-anyone", "crates/kernel/src/account.rs", "    pub async fn close_own_workspace(&self, ctx: &Ctx, confirm: &str) -> Result<NaiveDate> {\n        if !ctx.is_admin {", "    pub async fn close_own_workspace(&self, ctx: &Ctx, confirm: &str) -> Result<NaiveDate> {\n        if false {", SIGNUP),
+    ("plan-quotas-not-written", "crates/kernel/src/plans.rs", "            .bind(&quotas)", "            .bind(json!({}))", SIGNUP),
+    ("people-quota-ignored", "crates/kernel/migrations/20261104000002_people_quota.sql", "  if used >= cap then", "  if false then", SIGNUP),
+    ("people-quota-only-on-insert", "crates/kernel/migrations/20261104000002_people_quota.sql", "before insert or update of is_active, kind on app_user", "before insert on app_user", SIGNUP),
 ]
 
 
