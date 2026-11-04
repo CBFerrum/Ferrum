@@ -233,6 +233,16 @@ macro_rules! apps {
             out.push(("logistics", ferrum_app_logistics::UI));
             #[cfg(feature = "healthcare")]
             out.push(("healthcare", ferrum_app_healthcare::UI));
+            #[cfg(feature = "government")]
+            out.push(("government", ferrum_app_government::UI));
+            #[cfg(feature = "retail")]
+            out.push(("retail", ferrum_app_retail::UI));
+            #[cfg(feature = "itsm")]
+            out.push(("itsm", ferrum_app_itsm::UI));
+            #[cfg(feature = "grc")]
+            out.push(("grc", ferrum_app_grc::UI));
+            #[cfg(feature = "contracts")]
+            out.push(("contracts", ferrum_app_contracts::UI));
             #[cfg(feature = "field-service")]
             out.push(("field-service", ferrum_app_field_service::UI));
             #[cfg(feature = "lms")]
@@ -334,6 +344,11 @@ apps! {
         "construction" => ferrum_app_construction,
         "logistics" => ferrum_app_logistics,
         "healthcare" => ferrum_app_healthcare,
+        "government" => ferrum_app_government,
+        "retail" => ferrum_app_retail,
+        "itsm" => ferrum_app_itsm,
+        "grc" => ferrum_app_grc,
+        "contracts" => ferrum_app_contracts,
         "field-service" => ferrum_app_field_service,
         "forms" => ferrum_app_forms,
         "lms" => ferrum_app_lms,

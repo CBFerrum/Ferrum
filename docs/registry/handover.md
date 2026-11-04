@@ -3,6 +3,29 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-04, night: public services, retail, IT services, governance and risk, and contracts
+
+**State:** Ferrum PR 54 merged (eight industry apps compiled in) and Ferrum-Frontend PR 15 (the launcher's icons). This PR compiles five more apps in and moves FRONTEND_REV to PR 15's merge. No release was tagged.
+
+| Where | What |
+|---|---|
+| New: ferrum-app-government | Government 0.1.0: permits applied for on the portal with their documents uploaded, fees invoiced through ERP and paid before approval, rejections saying why, permits issued, expiring or revoked; cases with deadlines (FERRUM-INDUSTRY-010, partial: no legal review) |
+| New: ferrum-app-retail | Retail 0.1.0: click and collect against a pickup code with the delivery note submitted at hand-over; franchise royalties invoiced through ERP. Replenishment is ERP Procurement's auto-reorder, not reimplemented (FERRUM-INDUSTRY-003, partial) |
+| New: ferrum-app-itsm | IT Services 0.1.0: configuration items whose dependencies never loop, a catalog with approvals by someone else, incidents by the priority matrix with breaches, problems, and changes with freezes, conflicts and impact (FERRUM-ECOSYSTEM-002; -003 partial) |
+| New: ferrum-app-grc | Governance and Risk 0.1.0: a risk register on a five-by-five matrix, acceptances by an approver who does not own the risk, controls tested with evidence, policies by revision, findings (FERRUM-ECOSYSTEM-014), adapted from CISO Assistant (AGPL-3.0) |
+| New: ferrum-app-contracts | Contracts 0.1.0: drafts from approved clauses, approval above a threshold, signature through Sign, renewal with notice, obligations (FERRUM-ECOSYSTEM-008) |
+| Ferrum PR 55 | The five compiled in; FRONTEND_REV at Ferrum-Frontend PR 15's merge |
+
+**Evidence:**
+- Each app's scenario test passed against Postgres with Ferrum 808cd94; Contracts' with Sign installed, sending through Sign's real action.
+- Mutants by hand, all caught after fixes: Government 24, Retail 22, IT Services 36 (all on the first run), Governance and Risk 27, Contracts 29. The first runs found eight checks the scenarios never reached; each is tested now.
+
+**Not done:** the apps in a browser; ECOSYSTEM-004, -005, -010, -011, -012, EXT-009, CLOUD-001, -004, PARTNER-001, IND-021.
+
+**Lessons:**
+- Look in ERP's add-ons before building: Procurement already replenishes stores, which Retail would have duplicated (and the name clashed with WMS').
+- `scratchpad/name_clash.py` lists entity and role names shared between packages; run it before publishing an app.
+
 ## 2026-11-04, evening: sign-up and plans, an industrial solution through to commissioning, meetings' captions and recordings, a hotel, and a browser on a running server
 
 **State:** each PR was green on its CI before it merged. No release was tagged.
