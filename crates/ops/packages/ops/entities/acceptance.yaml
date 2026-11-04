@@ -1,0 +1,61 @@
+- name: AcceptanceProcedure
+  label: Acceptance Procedure
+  label_plural: Acceptance Procedures
+  kind: master
+  module: ops
+  title_field: procedure_name
+  description: What a device of a profile passes on site before it is commissioned, as the app that brought it says (an industrial solution, FERRUM-IND-018). A passed run records what was checked; it certifies nothing beyond it.
+  fields:
+    - {name: procedure_name, type: data, required: true, read_only: true, in_list: true}
+    - {name: solution, type: data, required: true, unique: true, read_only: true, label: From App, in_list: true, description: "The app and the procedure's id in it, `{app}/{id}`. The app's upgrades update it"}
+    - {name: app, type: data, required: true, read_only: true, in_filter: true}
+    - {name: description, type: text, read_only: true}
+    - {name: steps, type: table, of: AcceptanceStepDef, read_only: true}
+  form:
+    - {label: Procedure, fields: [procedure_name, solution, app, description]}
+    - {label: Steps, fields: [steps]}
+  list: {columns: [procedure_name, solution], sort: procedure_name asc}
+
+- name: AcceptanceStepDef
+  label: Step
+  kind: child
+  fields:
+    - {name: step_id, type: data, required: true, in_list: true}
+    - {name: kind, type: select, options: [Read, Command, Manual], required: true, in_list: true}
+    - {name: profile, type: data, in_list: true, description: "The profile's id in the app"}
+    - {name: point, type: data, in_list: true}
+    - {name: command, type: data, in_list: true}
+    - {name: expect, type: json, in_list: true, description: "min, max or equals"}
+    - {name: instruction, type: text}
+
+- name: AcceptanceRun
+  label: Acceptance Run
+  label_plural: Acceptance Runs
+  kind: master
+  module: ops
+  title_field: procedure
+  description: One device going through one acceptance procedure on site, step by step, with who saw what. Commissioning waits for a passed run of every procedure its profile has.
+  fields:
+    - {name: device, type: link, to: Device, required: true, read_only: true, in_list: true, in_filter: true}
+    - {name: procedure, type: link, to: AcceptanceProcedure, required: true, read_only: true, in_list: true, in_filter: true}
+    - {name: status, type: select, options: [Running, Passed, Failed], default: Running, read_only: true, in_list: true, in_filter: true}
+    - {name: started_by, type: data, read_only: true}
+    - {name: finished_at, type: datetime, read_only: true, in_list: true}
+    - {name: results, type: table, of: AcceptanceResult, read_only: true}
+  form:
+    - {label: Run, fields: [device, procedure, status, started_by, finished_at]}
+    - {label: Steps, fields: [results]}
+  list: {columns: [device, procedure, status, finished_at], sort: created_at desc}
+
+- name: AcceptanceResult
+  label: Result
+  kind: child
+  fields:
+    - {name: step_id, type: data, required: true, in_list: true}
+    - {name: kind, type: select, options: [Read, Command, Manual], in_list: true}
+    - {name: expected, type: json, in_list: true}
+    - {name: observed, type: json, in_list: true}
+    - {name: outcome, type: select, options: [Pending, Passed, Failed], default: Pending, in_list: true}
+    - {name: recorded_by, type: data, in_list: true}
+    - {name: recorded_at, type: datetime}
+    - {name: note, type: text}
