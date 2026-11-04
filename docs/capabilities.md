@@ -9,9 +9,9 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 136 |
+| Implemented, qualification incomplete | 137 |
 | Partially implemented | 59 |
-| Missing | 26 |
+| Missing | 25 |
 | Blocked by external dependency | 10 |
 | **All** | **231** |
 
@@ -171,7 +171,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-INDUSTRY-008 | Property and facilities: leases, charges, inspections, portals | Missing | probe |  |
 | FERRUM-INDUSTRY-009 | Logistics and fleets: dispatch, routes, proof of delivery | Missing | probe |  |
 | FERRUM-INDUSTRY-010 | Government: cases, permits, citizen portals | Missing | probe |  |
-| FERRUM-INDUSTRY-011 | Nonprofits: members, donations, grants, volunteers | Missing | probe |  |
+| FERRUM-INDUSTRY-011 | Nonprofits: members, donations, grants, volunteers | Implemented, qualification incomplete | tested | Memberships invoiced through ERP and counted once paid, donations posted to the books and reversed, grants paid by their funder once awarded, volunteers' approved hours; nine mutants by hand; adapted from ERPNext 13's Non Profit module; No recurring giving, tax receipts as documents, online giving pages or payment gateways; funds total their donations but the ledger carries one income account; Not tried in a browser |
 | FERRUM-INDUSTRY-012 | EV charging and IoT: devices, sessions, tariffs, settlement | Partially implemented | probe | Devices and telemetry are real (FERRUM-IND-004, FERRUM-IND-005); charging is an example plugin shaped like OCPP, with no OCPP conformance |
 
 ## Extensions

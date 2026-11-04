@@ -14,7 +14,7 @@ path = "src/bin/main.rs"
 # Native apps compiled into this server (all official ones by default; docs/plan/apps.md). Most live
 # in their own repositories; a workspace whose installed app is not in a build keeps its data and
 # loses the app until it is back.
-default = ["india", "eu", "de", "be", "es", "fr", "it", "pl", "pt", "ro", "gb", "ca", "us", "sg", "my", "id", "th", "ph", "vn", "sa", "ae", "au", "nz", "jp", "mx", "cn", "crm", "projects", "helpdesk", "pos", "hr", "comms", "commerce", "procurement", "stock-ops", "finance", "mfg-ops", "quality", "wms", "mes", "ops", "edge", "studio", "assets", "bookings", "hospitality", "field-service", "forms", "lms", "drive", "docs", "campaigns", "sign"]
+default = ["india", "eu", "de", "be", "es", "fr", "it", "pl", "pt", "ro", "gb", "ca", "us", "sg", "my", "id", "th", "ph", "vn", "sa", "ae", "au", "nz", "jp", "mx", "cn", "crm", "projects", "helpdesk", "pos", "hr", "comms", "commerce", "procurement", "stock-ops", "finance", "mfg-ops", "quality", "wms", "mes", "ops", "edge", "studio", "assets", "bookings", "hospitality", "nonprofit", "field-service", "forms", "lms", "drive", "docs", "campaigns", "sign"]
 # SAML single sign-on, checked by xmlsec1: needs libxml2, libxmlsec1 and libclang to build (the
 # release image has it; docs/operations.md).
 saml = ["ferrum-kernel/saml"]
@@ -64,6 +64,7 @@ studio = ["dep:ferrum-studio"]
 assets = ["dep:ferrum-app-assets"]
 bookings = ["dep:ferrum-app-bookings"]
 hospitality = ["dep:ferrum-app-hospitality"]
+nonprofit = ["dep:ferrum-app-nonprofit"]
 field-service = ["dep:ferrum-app-field-service"]
 forms = ["dep:ferrum-app-forms"]
 lms = ["dep:ferrum-app-lms"]
@@ -111,6 +112,7 @@ ferrum-app-commerce = { git = "https://github.com/CBFerrum/ferrum-app-commerce",
 ferrum-app-assets = { git = "https://github.com/CBFerrum/ferrum-app-assets", branch = "main", optional = true }
 ferrum-app-bookings = { git = "https://github.com/CBFerrum/ferrum-app-bookings", branch = "main", optional = true }
 ferrum-app-hospitality = { git = "https://github.com/CBFerrum/ferrum-app-hospitality", branch = "main", optional = true }
+ferrum-app-nonprofit = { git = "https://github.com/CBFerrum/ferrum-app-nonprofit", branch = "main", optional = true }
 ferrum-app-field-service = { git = "https://github.com/CBFerrum/ferrum-app-field-service", branch = "main", optional = true }
 ferrum-app-forms = { git = "https://github.com/CBFerrum/ferrum-app-forms", branch = "main", optional = true }
 ferrum-app-lms = { git = "https://github.com/CBFerrum/ferrum-app-lms", branch = "main", optional = true }
