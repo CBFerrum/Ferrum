@@ -57,6 +57,7 @@ RECOVERY = ("-p", "ferrum-kernel", "--test", "recovery_it")
 KMS = ("-p", "ferrum-kernel", "--test", "kms_it")
 SAGA = ("-p", "ferrum-kernel", "--test", "saga_it")
 SIGNUP = ("-p", "ferrum-kernel", "--test", "signup_it")
+ACCEPTANCE = ("-p", "ferrum-ops", "--test", "acceptance_it")
 INDUSTRIAL = ("-p", "ferrum-apps", "--lib", "industrial::tests")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
@@ -285,6 +286,15 @@ MUTANTS = [
     ("plan-quotas-not-written", "crates/kernel/src/plans.rs", "            .bind(&quotas)", "            .bind(json!({}))", SIGNUP),
     ("people-quota-ignored", "crates/kernel/migrations/20261104000002_people_quota.sql", "  if used >= cap then", "  if false then", SIGNUP),
     ("people-quota-only-on-insert", "crates/kernel/migrations/20261104000002_people_quota.sql", "before insert or update of is_active, kind on app_user", "before insert on app_user", SIGNUP),
+    # An industrial solution's acceptance on site (FERRUM-IND-018).
+    ("commissioned-without-acceptance", "crates/ops/src/devices.rs", "        if !waiting.is_empty() {", "        if false {", ACCEPTANCE),
+    ("a-running-run-is-a-pass", "crates/ops/src/acceptance.rs", "r.procedure = p.id and r.status = 'Passed') \\", "r.procedure = p.id and r.status <> 'Failed') \\", ACCEPTANCE),
+    ("any-procedure-for-any-device", "crates/ops/src/acceptance.rs", "    if !applies {", "    if false {", ACCEPTANCE),
+    ("a-step-recorded-twice", "crates/ops/src/acceptance.rs", "    if outcome != \"Pending\" {", "    if false {", ACCEPTANCE),
+    ("a-failed-step-fails-nothing", "crates/ops/src/acceptance.rs", "    let finished = if failed > 0 {", "    let finished = if false {", ACCEPTANCE),
+    ("readings-above-the-maximum-pass", "crates/ops/src/acceptance.rs", ".is_none_or(|m| n <= m)", ".is_none_or(|_| true)", ACCEPTANCE),
+    ("an-upgrade-adds-procedures", "crates/ops/src/acceptance.rs", "        match existing(&mut tx, ctx.tenant, \"e_acceptance_procedure\", &key).await? {", "        match None::<Uuid> {", ACCEPTANCE),
+
 ]
 
 

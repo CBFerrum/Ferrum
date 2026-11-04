@@ -100,6 +100,10 @@ pub async fn set_lifecycle_tx(k: &Kernel, ctx: &Ctx, tx: &mut Tx, id: Uuid, to: 
         if ops == 0 && kind != "Gateway" && kind != "Sensor" && kind != "Meter" {
             return Err(Error::invalid("list what this device may be asked to do before commissioning it"));
         }
+        let waiting = crate::acceptance::waiting(tx, ctx.tenant, id).await?;
+        if !waiting.is_empty() {
+            return Err(Error::invalid(format!("pass its acceptance on site first: {}", waiting.join(", "))));
+        }
     }
     let mut values = Doc::new();
     values.insert("lifecycle".into(), json!(to.as_str()));

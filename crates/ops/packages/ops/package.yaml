@@ -9,7 +9,7 @@ modules:
     label: Operations
     icon: factory
     order: 60
-    items: [Site, SiteArea, Device, DeviceProfile, AutomationEnvelope]
+    items: [Site, SiteArea, Device, DeviceProfile, AcceptanceProcedure, AcceptanceRun, AutomationEnvelope]
 
 roles:
   - name: Ops Viewer
@@ -19,6 +19,8 @@ roles:
       - {entity: SiteArea, read: true}
       - {entity: Device, read: true}
       - {entity: DeviceProfile, read: true}
+      - {entity: AcceptanceProcedure, read: true}
+      - {entity: AcceptanceRun, read: true}
       - {entity: AutomationEnvelope, read: true}
   - name: Ops Dispatcher
     description: Sends work to equipment and asks for it to be stopped. Cannot change devices or settle unknown outcomes.
@@ -27,6 +29,8 @@ roles:
       - {entity: SiteArea, read: true}
       - {entity: Device, read: true}
       - {entity: DeviceProfile, read: true}
+      - {entity: AcceptanceProcedure, read: true}
+      - {entity: AcceptanceRun, read: true}
       - {entity: AutomationEnvelope, read: true}
   - name: Ops Recovery
     description: Settles commands whose outcome is unknown, after looking at the equipment.
@@ -35,6 +39,8 @@ roles:
       - {entity: SiteArea, read: true}
       - {entity: Device, read: true}
       - {entity: DeviceProfile, read: true}
+      - {entity: AcceptanceProcedure, read: true}
+      - {entity: AcceptanceRun, read: true}
   - name: Device Administrator
     description: Sets up sites and devices, enrolls and revokes their keys, moves them through their lifecycle and transfers authority between gateways. Sends no work.
     permissions:
@@ -43,6 +49,8 @@ roles:
       - {entity: SiteArea, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: Device, read: true, write: true, create: true, export: true, import: true}
       - {entity: DeviceProfile, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: AcceptanceProcedure, read: true, export: true}
+      - {entity: AcceptanceRun, read: true, export: true}
       - {entity: AutomationEnvelope, read: true}
   - name: Ops Manager
     description: Everything above, and approves what needs a second person, including automation's limits.
@@ -52,4 +60,6 @@ roles:
       - {entity: SiteArea, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: Device, read: true, write: true, create: true, export: true, import: true}
       - {entity: DeviceProfile, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: AcceptanceProcedure, read: true, export: true}
+      - {entity: AcceptanceRun, read: true, export: true}
       - {entity: AutomationEnvelope, read: true, write: true, create: true, delete: true}
