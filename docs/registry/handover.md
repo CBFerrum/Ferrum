@@ -19,7 +19,7 @@ apps are on the store's main branch. No release was tagged.
 | ferrum-store 049459d | Stripe as the payment provider: a card saved on Stripe's page and told by its signed webhook, off-session charges keyed for Stripe's idempotency and retried with the key, a payment not taken at once cancelled, a refused renewal tried again with a new key, refunds (FERRUM-EXT-009; tested against a stand-in of Stripe's API) |
 | ferrum-app-hr 0.6.0 | Income tax slabs take a rebate and cesses and surcharges; India's new regime for FY 2025-26, as the Income Tax Department's page prints it, is a fixture the engine is checked against (FERRUM-VERIFY-002, now partial) |
 | The walk's fixes | Ferrum-Frontend PRs 18 to 20 (labels name their fields, linked titles show their titles, Connections refresh while work waits, "1 record", the native line in words); Control 0.1.1, Government 0.1.1, Property 0.1.1, Social 0.2.1 and 0.2.2, Contracts 0.1.1, Objectives 0.1.1 |
-| Every app rebuilt | The 36 apps with interfaces rebuilt against Ferrum-Frontend 80ff179 as patch releases, since each bundles its own record pages; this PR's lock takes them |
+| Every app rebuilt | The 36 apps with interfaces rebuilt against Ferrum-Frontend 80ff179 as patch releases, since each bundles its own record pages; this PR's lock takes them. FRONTEND_REV at PR 20's merge (16b5c57) |
 
 **Evidence:**
 - Control's scenario test runs the control plane in one workspace and a customer's in another, reached over HTTP with the key its administrator granted (`grant_support`), answered as the server answers one, each request on the customer's log. A rollout goes through two windows, halts when a cell falls ill while soaking and when one misses its window, and another finishes.
