@@ -3,6 +3,32 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-05, small hours: the control plane, social media, and paid apps in the store
+
+**State:** this PR follows PR 56. It compiles the control plane and Social in, and gives the shell
+the icons they name (Ferrum-Frontend PR 16, merged, does the same for the launcher). The store's paid
+apps are on the store's main branch. No release was tagged.
+
+| Where | What |
+|---|---|
+| New: ferrum-app-control | Control Plane 0.1.0, run in a workspace of its own. Cells report how they are; workspaces are placed by room and their health read with the customer's health-only support key; releases by digest, qualified by a second Release Manager, rolled out a wave at a time in maintenance windows, soaking and halting; incidents told in updates; a public status naming no customer; recovery requests decided by a second operator; partners' portfolios, setup templates, cases and statements (FERRUM-CLOUD-001, -004, FERRUM-PARTNER-001, FERRUM-IND-021, each partial) |
+| New: ferrum-app-social | Social 0.1.0: brands' accounts each reached through a platform connection; posts that fit each network, approved by someone other than their author and again after a change, sent at their time one publication per account through that account's own connection by the platform's delivery; what posts did read back; the inbox routed by handle and answered through the right connection (FERRUM-ECOSYSTEM-005, partial: no real network's connector) |
+| ferrum-store | Paid apps: plans by verified publishers who say who supports the app, purchases with the buyer's country's tax, licences the store signs, renewals with a week of grace, refunds within 14 days, disputes decided by an administrator, payouts net of tax and a 15% commission (FERRUM-EXT-009, partial: no real payment provider) |
+| This PR | Control and Social compiled in; the shell draws server, share-2 and plug; FRONTEND_REV at Ferrum-Frontend PR 16's merge; the Integration Hub's history, `GET /api/admin/connections/{id}/activity`, which Ferrum-Frontend PR 17 shows on each connection (FERRUM-ECOSYSTEM-004, partial) |
+
+**Evidence:**
+- Control's scenario test runs the control plane in one workspace and a customer's in another, reached over HTTP with the key its administrator granted (`grant_support`), answered as the server answers one, each request on the customer's log. A rollout goes through two windows, halts when a cell falls ill while soaking and when one misses its window, and another finishes.
+- Mutants by hand, all caught after fixes: Control Plane 96 (the first run caught 94 of 97: lowercasing an e-mail the kernel already lowercases was removed, and two mutants that did not compile were rewritten), the store's paid apps 35 (three gaps the first run found are tested now), Social 40 (three gaps tested, two mutants rewritten).
+- The Integration Hub's history is tested in `crates/kernel/tests/connect_it.rs`; it has no mutants of its own.
+- The store's `paid_apps` test walks plans, purchases, licences, renewals, trials, a refused renewal through its grace, refunds, a dispute, and payouts, with a refund after a payout coming off the next.
+
+**Not done:** none of today's apps in a browser; Ferrum-Frontend PR 17 to merge and pin; a real payment provider (BLOCK-PAYMENT-KEYS); a real network's connector; the App Manager asking for a licence before installing a paid app.
+
+**Lessons:**
+- Rows written straight to the database in a test go through row-level security too: an update outside a tenant's transaction matches nothing and says nothing. Assert the rows affected.
+- An app can send one record through one chosen connection by queueing the platform's own delivery (`jobs::enqueue` with `connect::DELIVER_KIND`) for a stream mapped without `push`: a pushed mapping sends every change of the entity through every connection that maps it.
+- Two checks can make a third redundant: an incident's latest update must say its status, and updates stay as posted, so a change of status without a new update can only come from reordering them, which is the one case the third check is for.
+
 ## 2026-11-04, late night: objectives, digital assets and governed metrics
 
 **State:** this PR follows PR 55 and compiles three more apps in. No release was tagged.

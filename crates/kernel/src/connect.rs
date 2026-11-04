@@ -601,6 +601,38 @@ impl Kernel {
         Ok(id)
     }
 
+    /// What a connection did lately, newest first (its reads, sends and comparisons, each with how
+    /// it went, so a failed one can be tried again with `retry_job`), and how many records each of
+    /// its streams links.
+    pub async fn connection_activity(&self, ctx: &Ctx, id: Uuid, limit: i64) -> Result<Value> {
+        admin_only(ctx)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let known: bool = sqlx::query_scalar("select exists (select 1 from connection where tenant_id = $1 and id = $2)").bind(ctx.tenant).bind(id).fetch_one(&mut *tx).await?;
+        if !known {
+            return Err(Error::NotFound("connection".into()));
+        }
+        let runs: Vec<Value> = sqlx::query_scalar(
+            "select jsonb_build_object('id', id, 'kind', kind, 'status', status, 'attempts', attempts, 'max_attempts', max_attempts, 'last_error', last_error, \
+             'result', result, 'stream', payload->>'stream', 'record', payload->>'record', 'created_at', created_at, 'finished_at', finished_at) \
+             from job where tenant_id = $1 and kind like 'platform.connector.%' and payload->>'connection' = $2::text order by created_at desc, id desc limit $3",
+        )
+        .bind(ctx.tenant)
+        .bind(id)
+        .bind(limit.clamp(1, 200))
+        .fetch_all(&mut *tx)
+        .await?;
+        let streams: Vec<Value> = sqlx::query_scalar(
+            "select jsonb_build_object('stream', stream, 'entity', min(entity), 'records', count(*), 'last_synced', max(synced_at)) \
+             from connection_link where tenant_id = $1 and connection_id = $2 group by stream order by stream",
+        )
+        .bind(ctx.tenant)
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(json!({"runs": runs, "streams": streams}))
+    }
+
     /// What reconciliation or a conflict left for a person.
     pub async fn connection_drift(&self, ctx: &Ctx, id: Uuid) -> Result<Vec<Value>> {
         admin_only(ctx)?;
