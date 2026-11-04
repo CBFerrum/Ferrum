@@ -15,10 +15,11 @@ What is true of each requirement is in the registry; this says what happened and
 | Ferrum-Frontend PRs 13, 14 | The workspace's plan, usage and closing in Administration; the equipment in the install dialog |
 | New: ferrum-app-hospitality | Hospitality 0.1.0: properties, room types and rooms, rate plans by season, stays, folios and the night audit (FERRUM-INDUSTRY-001, JOURNEY-010 in parts), adapted from ERPNext 12's Hotels module |
 | New: ferrum-app-nonprofit | Nonprofit 0.1.0: memberships invoiced through ERP and counted once paid, donations posted to the books, funds, grants and volunteers (FERRUM-INDUSTRY-011), adapted from ERPNext 13's Non Profit module |
-| Ferrum PR 54 | Comms 0.9.0, Hospitality and Nonprofit compiled in; the operations guide's recordings; entity files may start with a comment |
+| New: ferrum-app-education | Education 0.1.0: admissions into students and enrollments, fees through ERP, a timetable without clashes, assessments and attendance (FERRUM-INDUSTRY-004), adapted from ERPNext 13's Education module |
+| Ferrum PR 54 | Comms 0.9.0, Hospitality, Nonprofit and Education compiled in; the operations guide's recordings; entity files may start with a comment |
 
 **Evidence:**
-- Mutants were run and all caught: 11 for sign-up and plans, 8 for acceptance (one added after the browser run), 9 for Comms by hand, 10 for Hospitality by hand, 9 for Nonprofit by hand. Hospitality's one survivor was a check nothing could reach; it was removed and the guard that matters was tested instead.
+- Mutants were run and all caught: 11 for sign-up and plans, 8 for acceptance (one added after the browser run), 9 for Comms by hand, 10 for Hospitality by hand, 9 for Nonprofit and 11 for Education by hand. Hospitality's one survivor was a check nothing could reach; it was removed and the guard that matters was tested instead.
 - Kernel, Operations, Comms and Hospitality tests ran on this machine. The server was checked with clippy with and without Operations.
 - **A browser on a running server, for the first time** (`docs/platform/evidence/browser-2026-11-04.md`): from sign-up to closing, and an industrial solution from upload to commissioning. It found a real bug that no test had: an installation that brings Operations imported with the request's stale schema. PR 51 fixes it, with a test and a mutant.
 
