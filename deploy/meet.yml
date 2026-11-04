@@ -35,3 +35,6 @@ services:
       FERRUM_MEET_URL: ${FERRUM_MEET_URL:?set FERRUM_MEET_URL in deploy/.env (LiveKit as browsers reach it)}
       FERRUM_MEET_KEY: ${FERRUM_MEET_KEY}
       FERRUM_MEET_SECRET: ${FERRUM_MEET_SECRET}
+      # Recordings, once LiveKit Egress runs beside LiveKit with its storage (docs/operations.md).
+      FERRUM_MEET_RECORDINGS: ${FERRUM_MEET_RECORDINGS:-false}
+      FERRUM_MEET_API_URL: ${FERRUM_MEET_API_URL:-}

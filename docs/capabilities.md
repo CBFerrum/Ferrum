@@ -9,9 +9,9 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 134 |
-| Partially implemented | 58 |
-| Missing | 29 |
+| Implemented, qualification incomplete | 136 |
+| Partially implemented | 59 |
+| Missing | 26 |
 | Blocked by external dependency | 10 |
 | **All** | **231** |
 
@@ -123,7 +123,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-COMMERCE-001 | Catalog, cart, coupons, checkout, shipping, refunds, abandoned carts | Implemented, qualification incomplete | probe |  |
 | FERRUM-COMMERCE-002 | Subscriptions | Implemented, qualification incomplete | tested | Each renewal is a payment request the customer pays: no card kept on file to charge without them; No email of its own for a renewal: the request and the commerce.invoice_paid event are there for a mail or gateway plugin; Plans are not changed from the portal |
 | FERRUM-COMMS-001 | Mail, shared mailboxes, chat, calendar, meetings, CalDAV and CardDAV | Implemented, qualification incomplete | probe |  |
-| FERRUM-COMMS-002 | Captions, transcripts, recording, presence | Missing | probe |  |
+| FERRUM-COMMS-002 | Captions, transcripts, recording, presence | Implemented, qualification incomplete | tested | Captions are each person's own browser speech recognition (Chrome, Edge, Safari), which may send the voice to the browser's maker; no speech-to-text runs on the server, though an operator's LiveKit transcription agent shows on the same stream; Recording needs the operator's LiveKit Egress and storage; tried against a stand-in for Egress's API, not a real one; Guests' captions are not kept, and personal-data erasure does not reach transcripts yet; Not tried in a real call: presence, transcripts and recordings are tested in Comms' scenario, nine mutants by hand |
 | FERRUM-ASSETS-001 | Assets, depreciation, movements, maintenance, disposal | Implemented, qualification incomplete | probe |  |
 | FERRUM-ASSETS-002 | Finance books that keep their own values | Implemented, qualification incomplete | tested | Depreciation booked before a split is shared by the two assets: neither can then be cancelled; An asset a repair or a value adjustment changed is not split |
 | FERRUM-BOOKINGS-001 | Resources, buffers, capacity, waitlist, cancellation, guest pages | Implemented, qualification incomplete | probe |  |
@@ -161,7 +161,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-ECOSYSTEM-012 | Digital asset management | Missing | probe |  |
 | FERRUM-ECOSYSTEM-013 | Developer Hub | Partially implemented | probe | A CLI and documentation; no hub |
 | FERRUM-ECOSYSTEM-014 | Governance and risk | Missing | probe |  |
-| FERRUM-INDUSTRY-001 | Hospitality: properties, rates, stays, folios, night audit | Missing | probe |  |
+| FERRUM-INDUSTRY-001 | Hospitality: properties, rates, stays, folios, night audit | Implemented, qualification incomplete | tested | Properties, room types, rooms, seasonal rate plans, stays held night by night, check-in and check-out, folios and the night audit, with ten mutants by hand; adapted from ERPNext 12's Hotels module; No channel manager or online booking (BLOCK-HOSPITALITY-CHANNELS), no groups, allotments or deposits at booking, no housekeeping tasks, and no point-of-sale charges posted to folios; Not tried in a browser |
 | FERRUM-INDUSTRY-002 | Restaurants: menus, tables, kitchen flow, delivery | Missing | probe |  |
 | FERRUM-INDUSTRY-003 | Retail and distribution: replenishment, omnichannel, franchise | Missing | probe |  |
 | FERRUM-INDUSTRY-004 | Education: admissions, students, fees, timetables, examinations | Missing | probe |  |
@@ -295,7 +295,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-JOURNEY-007 | Field work to invoice | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
 | FERRUM-JOURNEY-008 | Document to signature | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
 | FERRUM-JOURNEY-009 | Marketing to consent enforcement | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
-| FERRUM-JOURNEY-010 | Hospitality stay | Missing | read |  |
+| FERRUM-JOURNEY-010 | Hospitality stay | Partially implemented | tested | Walked in the app's scenario: reservation, check-in, a minibar charge and a deposit, two night audits with a no-show, check-out with its invoice through ERP, a cancellation; the invoice is a draft, and its payment is ERP's; Not over HTTP or in a browser |
 | FERRUM-JOURNEY-011 | Learning completion | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
 | FERRUM-JOURNEY-012 | Tenant lifecycle | Missing | read |  |
 | FERRUM-JOURNEY-013 | Partner support | Partially implemented | tested | In parts, inside the kernel's suite: support access granted at a level, for some records, read-only or not, reaching only that and ending when it expires; No partner console (FERRUM-PARTNER-001), partner terms or real partner |

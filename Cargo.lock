@@ -2384,7 +2384,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-comms"
 version = "0.7.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-comms?branch=main#1efc3e74d2b079345f9b03d0ca9ed1a1edbe3447"
+source = "git+https://github.com/CBFerrum/ferrum-app-comms?branch=main#e03425f4d5a0b26c8bc65c35883dda23627d2c56"
 dependencies = [
  "ammonia",
  "async-imap",
@@ -2588,6 +2588,22 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "ferrum-app-hospitality"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-hospitality?branch=main#2309cf0954b9dcb2556f6d52e5bfaa8256e81f1d"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "rust_decimal",
+ "serde_json",
+ "sqlx",
  "uuid",
 ]
 
@@ -3199,6 +3215,7 @@ dependencies = [
  "ferrum-app-field-service",
  "ferrum-app-forms",
  "ferrum-app-helpdesk",
+ "ferrum-app-hospitality",
  "ferrum-app-hr",
  "ferrum-app-lms",
  "ferrum-app-pos",
