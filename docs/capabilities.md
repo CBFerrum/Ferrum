@@ -10,8 +10,8 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | Status | Requirements |
 |---|---|
 | Implemented, qualification incomplete | 134 |
-| Partially implemented | 55 |
-| Missing | 32 |
+| Partially implemented | 58 |
+| Missing | 29 |
 | Blocked by external dependency | 10 |
 | **All** | **231** |
 
@@ -291,13 +291,13 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-JOURNEY-003 | Hire to retire | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer; Offer, employee and sign-in, onboarding, separation and the sign-in ended on the relieving date (Ferrum's deprovisioning); payroll and leave run in their own scenarios, not in this one; No full-and-final settlement on separation |
 | FERRUM-JOURNEY-004 | Support to resolution | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
 | FERRUM-JOURNEY-005 | Project to profit | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
-| FERRUM-JOURNEY-006 | Online order to return | Missing | read |  |
+| FERRUM-JOURNEY-006 | Online order to return | Partially implemented | tested | In parts, inside Commerce's suite (returns_and_refunds_end_to_end): an order paid, shipped and tracked from a link, a line and the delivery charge returned, refunded through the gateway with a credit note; a cancelled order and cash on delivery too; A test gateway, not a real provider; through the API, not a storefront in a browser |
 | FERRUM-JOURNEY-007 | Field work to invoice | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
 | FERRUM-JOURNEY-008 | Document to signature | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
 | FERRUM-JOURNEY-009 | Marketing to consent enforcement | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
 | FERRUM-JOURNEY-010 | Hospitality stay | Missing | read |  |
 | FERRUM-JOURNEY-011 | Learning completion | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
 | FERRUM-JOURNEY-012 | Tenant lifecycle | Missing | read |  |
-| FERRUM-JOURNEY-013 | Partner support | Missing | read |  |
-| FERRUM-JOURNEY-014 | AI-assisted operation | Missing | read |  |
+| FERRUM-JOURNEY-013 | Partner support | Partially implemented | tested | In parts, inside the kernel's suite: support access granted at a level, for some records, read-only or not, reaching only that and ending when it expires; No partner console (FERRUM-PARTNER-001), partner terms or real partner |
+| FERRUM-JOURNEY-014 | AI-assisted operation | Partially implemented | tested | In parts, against a scripted model: the assistant reads at once, changes only what the person allows in the conversation, keeps to the workspace's egress policy and ignores instructions planted in records; No real model, no evaluation of answers, no person using it |
 
