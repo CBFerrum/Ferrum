@@ -25,6 +25,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path as FsPath;
 use std::sync::{Arc, Mutex};
+use uuid::Uuid;
 
 // ───────────────────────── fixtures ─────────────────────────
 
@@ -223,6 +224,11 @@ struct FakeStore {
     releases: Arc<Mutex<BTreeMap<String, Vec<Value>>>>,
     bundles: Arc<Mutex<HashMap<String, Vec<u8>>>>,
     revocations: Arc<Mutex<Value>>,
+    /// The plans an app is sold by, and the store's signed licences by their id.
+    plans: Arc<Mutex<HashMap<String, Value>>>,
+    licences: Arc<Mutex<HashMap<String, Value>>>,
+    /// The plans cannot be read: the store is half down.
+    plans_down: Arc<Mutex<bool>>,
 }
 
 impl FakeStore {
@@ -267,6 +273,17 @@ async fn revocations(State(s): State<FakeStore>) -> Json<Value> {
     Json(s.revocations.lock().unwrap().clone())
 }
 
+async fn plans(State(s): State<FakeStore>, Path(id): Path<String>) -> Result<Json<Value>, StatusCode> {
+    if *s.plans_down.lock().unwrap() {
+        return Err(StatusCode::BAD_GATEWAY);
+    }
+    Ok(Json(json!({"plans": s.plans.lock().unwrap().get(&id).cloned().unwrap_or(json!([]))})))
+}
+
+async fn licence(State(s): State<FakeStore>, Path(id): Path<String>) -> Result<Json<Value>, StatusCode> {
+    s.licences.lock().unwrap().get(&id).cloned().map(Json).ok_or(StatusCode::NOT_FOUND)
+}
+
 async fn serve(store: FakeStore) -> String {
     let app = axum::Router::new()
         .route("/v1/apps", get(search))
@@ -274,11 +291,22 @@ async fn serve(store: FakeStore) -> String {
         .route("/v1/apps/{id}/releases", get(releases))
         .route("/v1/apps/{id}/releases/{version}/bundle", get(download))
         .route("/v1/revocations", get(revocations))
+        .route("/v1/apps/{id}/plans", get(plans))
+        .route("/v1/licenses/{license}", get(licence))
         .with_state(store);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     format!("http://{addr}")
+}
+
+/// What an installation was refused with.
+fn refused_with<T>(r: Result<T, Refusal>) -> String {
+    match r {
+        Err(Refusal::Failed(e)) => e.to_string(),
+        Err(Refusal::Stale(_)) => "stale: the plan changed".into(),
+        Ok(_) => "installed".into(),
+    }
 }
 
 /// `{"payload", "signatures"}` signed by `key`.
@@ -837,4 +865,50 @@ async fn scenario() {
     dev.set_enabled(&admin, "board", false).await.unwrap();
     assert!(dev.contributions(&admin, "ui.page").await.unwrap().is_empty(), "disabled apps contribute nothing");
     assert!(dev.screen_scope(tenant, "board").await.unwrap().is_none());
+
+    // ── an app the store sells installs only with a live licence for this workspace ──
+    fake.publish(&bundle(plugin_only("paidping"), &store_sig));
+    fake.plans.lock().unwrap().insert("paidping".into(), json!([{"id": "p1", "name": "Monthly", "price": 1000, "currency": "EUR", "every": "month"}]));
+    let plan = dev.plan(&admin, "paidping", None).await.unwrap();
+    let err = refused_with(dev.install(&admin, "paidping", None, &plan.digest, false).await);
+    assert!(err.contains("paidping is sold in the store: give its licence first"), "{err}");
+    k.add_subdomain(tenant, "acme.ferrum.test").await.unwrap();
+    let licence = |workspace: &str, live: bool, key: &Ed25519KeyPair, key_id: &str| {
+        sign_payload(key, key_id, json!({"app": "paidping", "workspace": workspace, "live": live, "period_end": "2027-01-01T00:00:00Z"}))
+    };
+    let (theirs, forged, lapsed, ours) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    {
+        let mut l = fake.licences.lock().unwrap();
+        l.insert(theirs.to_string(), licence("other.ferrum.test", true, &keys.store_pair, &keys.store.key_id()));
+        l.insert(forged.to_string(), licence("acme.ferrum.test", true, &keys.publisher_pair, &keys.publisher.key_id()));
+        l.insert(lapsed.to_string(), licence("acme.ferrum.test", false, &keys.store_pair, &keys.store.key_id()));
+        l.insert(ours.to_string(), licence("acme.ferrum.test", true, &keys.store_pair, &keys.store.key_id()));
+    }
+    let said = |r: Result<Value, Error>| r.unwrap_err().to_string();
+    assert!(said(dev.set_licence(&admin, "paidping", theirs).await).contains("other.ferrum.test, which is not this workspace"));
+    assert!(said(dev.set_licence(&admin, "paidping", forged).await).contains("no trusted store key signed the licence"));
+    assert!(said(dev.set_licence(&admin, "paidping", lapsed).await).contains("has lapsed"));
+    assert!(said(dev.set_licence(&admin, "helper", ours).await).contains("is for paidping, not helper"));
+    assert!(said(dev.set_licence(&admin, "paidping", Uuid::new_v4()).await).contains("404"), "a licence no store knows");
+    assert!(matches!(dev.set_licence(&clerk, "paidping", ours).await, Err(Error::Forbidden(_))));
+    dev.set_licence(&admin, "paidping", ours).await.expect("kept");
+    dev.install(&admin, "paidping", None, &plan.digest, false).await.expect("installed with its licence");
+    assert!(installed(&dev.overview(&admin).await.unwrap(), "paidping").is_some());
+    // The store says it lapsed: the next round shows it.
+    fake.licences.lock().unwrap().insert(ours.to_string(), licence("acme.ferrum.test", false, &keys.store_pair, &keys.store.key_id()));
+    assert_eq!(dev.refresh_licences().await.unwrap(), 1);
+    let kept = dev.licences(&admin).await.unwrap();
+    assert_eq!((kept.len(), kept[0]["app"].as_str(), kept[0]["live"].as_bool()), (1, Some("paidping"), Some(false)));
+    // Another workspace has no licence of its own.
+    let theirs_admin = k.login("other", "admin@other.test", "Correct-Horse-9").await.unwrap();
+    let theirs_admin = k.load_ctx(other, theirs_admin.user, None, "it".into()).await.unwrap();
+    let plan = dev.plan(&theirs_admin, "paidping", None).await.unwrap();
+    assert!(refused_with(dev.install(&theirs_admin, "paidping", None, &plan.digest, false).await).contains("give its licence first"));
+    // A store that cannot say whether it sells the app is not taken to sell nothing.
+    *fake.plans_down.lock().unwrap() = true;
+    let err = refused_with(dev.install(&theirs_admin, "paidping", None, &plan.digest, false).await);
+    assert!(err.contains("could not say whether it sells paidping: HTTP 502"), "{err}");
+    *fake.plans_down.lock().unwrap() = false;
+    dev.forget_licence(&admin, "paidping").await.unwrap();
+    assert!(dev.licences(&admin).await.unwrap().is_empty());
 }
