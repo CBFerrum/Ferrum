@@ -1,6 +1,7 @@
 //! Operations (docs/plan/industrial.md): what connects Ferrum to physical work.
 //!
 //! * [`commands`]: the ledger of what was asked of equipment and what became of it;
+//! * [`acceptance`]: an app's device profiles and the procedures a device passes before commissioning;
 //! * [`authority`]: who may dispatch for a domain, and fencing the old holder;
 //! * [`identity`]: a device's key, enrolled once, and signed requests;
 //! * [`devices`]: what a device may do, and its lifecycle;
@@ -12,6 +13,7 @@
 //! Ferrum coordinates equipment. It does not control it: motion, sequencing and safety functions
 //! stay with their own controllers.
 
+pub mod acceptance;
 pub mod authority;
 pub mod commands;
 pub mod connections;
