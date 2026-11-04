@@ -2740,7 +2740,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-hr"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-hr?branch=main#0c0dac83ef4bb38488d30b99b5eede0078e021c3"
+source = "git+https://github.com/CBFerrum/ferrum-app-hr?branch=main#973c24f9f78d0710a6631f96c8caa073df7de5bb"
 dependencies = [
  "async-trait",
  "cel",
