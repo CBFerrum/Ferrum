@@ -148,6 +148,8 @@ pub(crate) async fn page_bootstrap(
     };
     let host = shell::request_host(headers).unwrap_or_default();
     let mut boot = shell::bootstrap(&ws, host, ctx, &kind, &state, app, kind_of_page);
+    let language = st.kernel.language_of(ctx.tenant, Some(ctx.user)).await.map_err(err)?;
+    boot["locale"] = shell::locale(language.as_deref(), &ctx.schema.timezone);
     // Where outside callers reach the workspace's endpoints (`/api/public/{workspace}/…`): the
     // hooks host in shapes B and C, else the server's public address.
     boot["api"]["hooks"] = json!(st.shell.hooks_origin(headers).or_else(|| st.kernel.settings.public_url.clone()));
@@ -585,7 +587,8 @@ async fn public_page(st: &AppState, headers: &HeaderMap, uri: &Uri, app_id: &str
         "compact": true,
     });
     let timezone = st.kernel.registry.schema(tenant).await?.timezone.clone();
-    let boot = shell::public_bootstrap(&ws, shell::request_host(headers).unwrap_or_default(), &timezone, app_json, page);
+    let mut boot = shell::public_bootstrap(&ws, shell::request_host(headers).unwrap_or_default(), &timezone, app_json, page);
+    boot["locale"] = shell::locale(st.kernel.language_of(tenant, None).await?.as_deref(), &timezone);
     Ok(not_modified(headers, shell::public_entry_page(&entry, &boot, &shell::csp(Some(app.manifest.as_ref()), &Value::Null))))
 }
 

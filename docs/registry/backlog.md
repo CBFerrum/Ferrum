@@ -31,7 +31,7 @@ this repository, 134 built and awaiting qualification.
 ## Ready: 5. Existing application completion
 
 - `FERRUM-UX-004` Application completeness contract per app (Every app has a hand-crafted interface, listed under FERRUM-UX-009; no written contract says what each must cover)
-- `FERRUM-UX-006` Translation, right-to-left, locale formatting (No translation infrastructure was found in the core; money and dates format per workspace)
+- `FERRUM-UX-006` Translation, right-to-left, locale formatting (The language (a person's own, else the workspace's) sets the pages' lang and direction and, when chosen, how numbers and dates are written; without one they follow the browser)
 - `FERRUM-UX-007` Mobile and offline policy with leases (POS and Docs work offline; no shared policy for what is cached, who sees it or when it expires)
 - `FERRUM-ERP-005` Intercompany transactions, consolidation, eliminations (Every account is translated at one closing rate, as ERPNext does: no rates of the day for income and expense, no translation reserve (IAS 21))
 - `FERRUM-ERP-006` Accruals, deferred revenue, expense allocation (Recurring rules exist; deferred revenue and accruals as such were not found)
@@ -89,7 +89,7 @@ this repository, 134 built and awaiting qualification.
 - `FERRUM-RELEASE-005` Published support and compatibility policy (A draft: support windows are the owner's commitment to make, and none is in force)
 - `FERRUM-JOURNEY-001` Lead to cash (Runs through the kernel's API, not through the interface; no independent reviewer prepared the figures)
 - `FERRUM-JOURNEY-002` Procure to pay (Runs through the kernel's API, not through the interface; no independent reviewer prepared the figures)
-- `FERRUM-JOURNEY-003` Hire to retire
+- `FERRUM-JOURNEY-003` Hire to retire (Inside one app's suite, through its API, not through the interface; no independent reviewer)
 - `FERRUM-JOURNEY-004` Support to resolution (Inside one app's suite, through its API, not through the interface; no independent reviewer)
 - `FERRUM-JOURNEY-005` Project to profit (Inside one app's suite, through its API, not through the interface; no independent reviewer)
 - `FERRUM-JOURNEY-006` Online order to return

@@ -214,8 +214,37 @@ impl Kernel {
     }
 }
 
+/// A language tag the interface takes (BCP 47's shape: `hi`, `pt-BR`, `zh-Hant-TW`).
+pub fn valid_language(tag: &str) -> bool {
+    let mut parts = tag.split('-');
+    let first = parts.next().unwrap_or_default();
+    tag.len() <= 35
+        && (2..=3).contains(&first.len())
+        && first.chars().all(|c| c.is_ascii_alphabetic())
+        && parts.all(|p| (1..=8).contains(&p.len()) && p.chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
 impl Kernel {
-    /// The workspace's settings administrators may change: `timezone` (IANA name),
+    /// The interface language a person reads: their own (`locale` preference), else the
+    /// workspace's (`language` setting); none means English. Without a person, the workspace's.
+    pub async fn language_of(&self, tenant: Uuid, user: Option<Uuid>) -> Result<Option<String>> {
+        let mut tx = self.db.tenant_tx(tenant).await?;
+        let mine: Option<String> = match user.filter(|u| !u.is_nil()) {
+            Some(u) => sqlx::query_scalar("select value->>'language' from ui_pref where tenant_id = $1 and user_id = $2 and scope = 'locale'")
+                .bind(tenant)
+                .bind(u)
+                .fetch_optional(&mut *tx)
+                .await?
+                .flatten(),
+            None => None,
+        };
+        let workspace: Option<String> = sqlx::query_scalar("select settings->>'language' from tenant where id = $1").bind(tenant).fetch_one(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(mine.filter(|l| valid_language(l)).or(workspace.filter(|l| valid_language(l))))
+    }
+
+    /// The workspace's settings administrators may change: `timezone` (IANA name), `language` (the
+    /// interface's, for everyone who chose none),
     /// `fiscal_year_start_month` (1-12), `require_two_factor` (everyone signs in with an
     /// authenticator app; it applies from each person's next sign-in), `require_sso` (everyone
     /// but administrators signs in through a single sign-on provider), `shell_v2` (the shell
@@ -227,6 +256,7 @@ impl Kernel {
         tx.commit().await?;
         Ok(serde_json::json!({
             "timezone": settings.get("timezone").cloned().unwrap_or_else(|| serde_json::json!("UTC")),
+            "language": settings.get("language").cloned().unwrap_or(Value::Null),
             "fiscal_year_start_month": settings.get("fiscal_year_start_month").cloned().unwrap_or_else(|| serde_json::json!(1)),
             "require_two_factor": settings.get("require_two_factor").and_then(Value::as_bool).unwrap_or(false),
             "require_sso": settings.get("require_sso").and_then(Value::as_bool).unwrap_or(false),
@@ -253,6 +283,12 @@ impl Kernel {
                         .filter(|t| t.parse::<chrono_tz::Tz>().is_ok())
                         .ok_or_else(|| Error::field("timezone", "not a known time zone (e.g. Asia/Kolkata)"))?;
                     clean.insert(k.clone(), serde_json::json!(tz));
+                }
+                "language" => {
+                    if !v.is_null() && v.as_str().is_none_or(|l| !valid_language(l)) {
+                        return Err(Error::field("language", "must be a language tag (e.g. hi, ar, pt-BR), or empty for English"));
+                    }
+                    clean.insert(k.clone(), v.clone());
                 }
                 "fiscal_year_start_month" => {
                     let m = v.as_u64().filter(|m| (1..=12).contains(m)).ok_or_else(|| Error::field("fiscal_year_start_month", "must be 1 to 12"))?;
@@ -300,5 +336,18 @@ impl Kernel {
         tx.commit().await?;
         self.registry.invalidate(ctx.tenant);
         self.tenant_settings(ctx).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn language_tags() {
+        for ok in ["hi", "ar", "pt-BR", "zh-Hant-TW", "ckb"] {
+            assert!(super::valid_language(ok), "{ok}");
+        }
+        for bad in ["", "e", "english", "hi_IN", "pt-", "zh-Hant-TW-extra-x-toolongpart", "../x", "ar<"] {
+            assert!(!super::valid_language(bad), "{bad}");
+        }
     }
 }
