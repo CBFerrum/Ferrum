@@ -17,10 +17,12 @@ What is true of each requirement is in the registry; this says what happened and
 | New: ferrum-app-nonprofit | Nonprofit 0.1.0: memberships invoiced through ERP and counted once paid, donations posted to the books, funds, grants and volunteers (FERRUM-INDUSTRY-011), adapted from ERPNext 13's Non Profit module |
 | New: ferrum-app-education | Education 0.1.0: admissions into students and enrollments, fees through ERP, a timetable without clashes, assessments and attendance (FERRUM-INDUSTRY-004), adapted from ERPNext 13's Education module |
 | New: ferrum-app-restaurant | Restaurant 0.1.0: orders priced from the menu, kitchen tickets by station, sent lines voided not edited, bills through ERP, takeaway, delivery and reservations (FERRUM-INDUSTRY-002), adapted from ERPNext 12's Restaurant module |
-| Ferrum PR 54 | Comms 0.9.0, Hospitality, Nonprofit, Education and Restaurant compiled in; the operations guide's recordings; entity files may start with a comment |
+| New: ferrum-app-property | Property 0.1.0: units held by one lease's days at a time, rent and charges invoiced each period once through ERP, leases ended at their end or early, urgent requests holding a unit, inspections, and lessees' "Your home" on the portal (FERRUM-INDUSTRY-008, partial: no owners' portal) |
+| Ferrum-Frontend PR 15 | The launcher draws the new apps' icons (bed, hand and heart, hard hat, utensils, truck, stethoscope, cloud) |
+| Ferrum PR 54 | Comms 0.9.0, Hospitality, Nonprofit, Education, Restaurant and Property compiled in; the shell bar draws their icons; the operations guide's recordings; entity files may start with a comment |
 
 **Evidence:**
-- Mutants were run and all caught: 11 for sign-up and plans, 8 for acceptance (one added after the browser run), 9 for Comms by hand, 10 for Hospitality by hand, 9 for Nonprofit, 11 for Education and 11 for Restaurant by hand. Restaurant's two survivors were a test that never changed a price after ordering and a mutant undone by operator precedence; both are caught now. Hospitality's one survivor was a check nothing could reach; it was removed and the guard that matters was tested instead.
+- Mutants were run and all caught: 11 for sign-up and plans, 8 for acceptance (one added after the browser run), 9 for Comms by hand, 10 for Hospitality by hand, 9 for Nonprofit, 11 for Education and 11 for Restaurant by hand. Restaurant's two survivors were a test that never changed a price after ordering and a mutant undone by operator precedence; both are caught now. Property's 27 by hand: two survived at first (a lease starting the day after another ended early, and a period invoiced twice once its next date was wound back by hand); both are tested now. Hospitality's one survivor was a check nothing could reach; it was removed and the guard that matters was tested instead.
 - Kernel, Operations, Comms and Hospitality tests ran on this machine. The server was checked with clippy with and without Operations.
 - **A browser on a running server, for the first time** (`docs/platform/evidence/browser-2026-11-04.md`): from sign-up to closing, and an industrial solution from upload to commissioning. It found a real bug that no test had: an installation that brings Operations imported with the request's stale schema. PR 51 fixes it, with a test and a mutant.
 
@@ -31,6 +33,9 @@ What is true of each requirement is in the registry; this says what happened and
 - The other industry packs, the ecosystem apps, store monetization, the control plane, the fleet and the partner console. The registry lists them.
 
 **Lessons:**
+- The server's test that every launcher icon can be drawn failed PR 54's first run: three new apps named icons the shell bar did not have. Check `server/shell/runtime.js`'s set when an app picks an icon.
+- A list's rows (`find_tx`) come without their child rows: read a record whole with `get_tx` before reading its lines.
+- A row built in `before_validate` needs its `id`: the kernel assigns ids to the rows it is given, before hooks run.
 - A browser run finds what scenario tests miss. This one found a schema that went stale within one request, a panel that did not refresh, and a word in the singular.
 - An entity file that began with a comment was read as one entity (fixed in PR 54).
 - sqlx 0.9 refuses SQL built at runtime unless it is marked `AssertSqlSafe`.

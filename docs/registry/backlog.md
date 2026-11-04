@@ -66,7 +66,7 @@ this repository, 139 built and awaiting qualification.
 - `FERRUM-INDUSTRY-003` Retail and distribution: replenishment, omnichannel, franchise
 - `FERRUM-INDUSTRY-006` Manufacturing: planning, quality, traceability, shop floor (Shop-floor execution exists (FERRUM-IND-011) and has run on simulated equipment only)
 - `FERRUM-INDUSTRY-007` Construction and professional services: estimates, variations, site work
-- `FERRUM-INDUSTRY-008` Property and facilities: leases, charges, inspections, portals
+- `FERRUM-INDUSTRY-008` Property and facilities: leases, charges, inspections, portals (Units held by one lease's days at a time, terms kept once active, rent and charges invoiced each period once through ERP, leases ended at their end or early, urgent requests holding a unit until done, inspections with findings, and lessees' Your home on the portal (their leases, rent invoiced and repairs asked for, only in a unit they rent now); 27 mutants by hand; its own design)
 - `FERRUM-AI-002` Shared AI gateway: providers, allowlists, regions, spending limits (One provider protocol (Anthropic's, or a proxy that speaks it); no regional routing)
 - `FERRUM-AI-004` Authorization-aware retrieval (Tools run as the person, so reads are theirs; no retrieval index, so caches and embeddings do not arise yet)
 - `FERRUM-AI-005` Evaluation datasets and prompt-injection tests (An adversarial test with a model that obeys injected instructions; no evaluation against real models, no grounded-answer datasets, no recorded prompt versions)

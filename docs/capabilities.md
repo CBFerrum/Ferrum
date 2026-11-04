@@ -10,8 +10,8 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | Status | Requirements |
 |---|---|
 | Implemented, qualification incomplete | 139 |
-| Partially implemented | 59 |
-| Missing | 23 |
+| Partially implemented | 60 |
+| Missing | 22 |
 | Blocked by external dependency | 10 |
 | **All** | **231** |
 
@@ -168,7 +168,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-INDUSTRY-005 | Healthcare administration: scheduling, consent, billing | Missing | probe |  |
 | FERRUM-INDUSTRY-006 | Manufacturing: planning, quality, traceability, shop floor | Partially implemented | probe | Shop-floor execution exists (FERRUM-IND-011) and has run on simulated equipment only |
 | FERRUM-INDUSTRY-007 | Construction and professional services: estimates, variations, site work | Missing | probe |  |
-| FERRUM-INDUSTRY-008 | Property and facilities: leases, charges, inspections, portals | Missing | probe |  |
+| FERRUM-INDUSTRY-008 | Property and facilities: leases, charges, inspections, portals | Partially implemented | tested | Units held by one lease's days at a time, terms kept once active, rent and charges invoiced each period once through ERP, leases ended at their end or early, urgent requests holding a unit until done, inspections with findings, and lessees' Your home on the portal (their leases, rent invoiced and repairs asked for, only in a unit they rent now); 27 mutants by hand; its own design; No owners' portal, and no paying rent on the portal beyond ERP's invoices page; No part-period rent, rent reviews, deposits through the books, late fees, notice periods or service-charge budgets; Not tried in a browser |
 | FERRUM-INDUSTRY-009 | Logistics and fleets: dispatch, routes, proof of delivery | Missing | probe |  |
 | FERRUM-INDUSTRY-010 | Government: cases, permits, citizen portals | Missing | probe |  |
 | FERRUM-INDUSTRY-011 | Nonprofits: members, donations, grants, volunteers | Implemented, qualification incomplete | tested | Memberships invoiced through ERP and counted once paid, donations posted to the books and reversed, grants paid by their funder once awarded, volunteers' approved hours; nine mutants by hand; adapted from ERPNext 13's Non Profit module; No recurring giving, tax receipts as documents, online giving pages or payment gateways; funds total their donations but the ledger carries one income account; Not tried in a browser |

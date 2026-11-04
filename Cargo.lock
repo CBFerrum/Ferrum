@@ -2728,6 +2728,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrum-app-property"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-property?branch=main#159d81d640ef80cca9177ddc19c467ad0d4c62b4"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "rust_decimal",
+ "serde_json",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
 name = "ferrum-app-restaurant"
 version = "0.1.0"
 source = "git+https://github.com/CBFerrum/ferrum-app-restaurant?branch=main#a6668d4da9b7bcb89361c594cfa448eba069b568"
@@ -3270,6 +3286,7 @@ dependencies = [
  "ferrum-app-nonprofit",
  "ferrum-app-pos",
  "ferrum-app-projects",
+ "ferrum-app-property",
  "ferrum-app-restaurant",
  "ferrum-app-sign",
  "ferrum-apps",
