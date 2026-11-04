@@ -22,4 +22,5 @@ components:
   - {repository: CBFerrum/ferrum-app-nonprofit, pinned: be97e50cc6ecc4fd2286bb0f7326b33f832a9eeb}
   - {repository: CBFerrum/ferrum-app-pos, pinned: 65ebe6944bd20cef8f0527462f9cd8bda1abeef3}
   - {repository: CBFerrum/ferrum-app-projects, pinned: 8b32fb57ae2bcdbd324238d9d784b66463122a87}
+  - {repository: CBFerrum/ferrum-app-restaurant, pinned: a6668d4da9b7bcb89361c594cfa448eba069b568}
   - {repository: CBFerrum/ferrum-app-sign, pinned: 426401a9680ed15a9da309e0b0ec54dcf3c0a18c}
