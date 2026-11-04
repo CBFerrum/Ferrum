@@ -66,5 +66,6 @@ journeys:
     blockers: [BLOCK-INDUSTRIAL-HARDWARE]
   - id: J12
     title: Sustained corporate operation
-    state: not_run
-    missing: "No endurance run has been made. Serving, durable work and recovery were each measured for minutes on one laptop"
+    state: passes_in_parts
+    tests: [".github/workflows/soak.yml", "scripts/soak.py", "docs/platform/evidence/soak.md"]
+    missing: "Three hours once, on one CI runner with a load generator, every check passing (docs/platform/evidence/soak.md): not days, not a deployment, not people's real work"
