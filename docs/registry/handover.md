@@ -18,7 +18,8 @@ What is true of each requirement is in the registry; this says what happened and
 | HR PR 1 | HR 0.5.1: a submitted separation makes the employee a leaver on its relieving date; that day HR's upkeep ends their sign-in through deprovisioning (FERRUM-JOURNEY-003, partial) |
 | Ferrum-Frontend PR 12 | The interface's language: words through `t` (Hindi and Arabic for the kit's), direction, and numbers and dates in a chosen locale (FERRUM-UX-006, partial) |
 | Comms PR 4 | Comms 0.8.1: who is about in Chat, from sessions active in the last ten minutes (part of FERRUM-COMMS-002) |
-| Ferrum PR 51 | The bootstrap's language from the person or the workspace; HR 0.5.1; three journeys recorded in parts (order to return, partner support, AI-assisted operation); the soak recorded |
+| Ferrum PR 51 | An industrial solution in an app's bundle: the schemes it needs, device profiles and acceptance procedures, checked (FERRUM-IND-018, partial) |
+| Ferrum PR 52 | The bootstrap's language from the person or the workspace; HR 0.5.1; three journeys recorded in parts (order to return, partner support, AI-assisted operation); the soak recorded |
 
 **Evidence**:
 - Every new test's figures were worked out by hand first.
