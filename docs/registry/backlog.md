@@ -73,7 +73,7 @@ this repository, 135 built and awaiting qualification.
 - `FERRUM-AI-002` Shared AI gateway: providers, allowlists, regions, spending limits (One provider protocol (Anthropic's, or a proxy that speaks it); no regional routing)
 - `FERRUM-AI-004` Authorization-aware retrieval (Tools run as the person, so reads are theirs; no retrieval index, so caches and embeddings do not arise yet)
 - `FERRUM-AI-005` Evaluation datasets and prompt-injection tests (An adversarial test with a model that obeys injected instructions; no evaluation against real models, no grounded-answer datasets, no recorded prompt versions)
-- `FERRUM-IND-018` An industrial solution package in .fapp (Apps declare dependencies and permissions today, not connector capabilities, device profiles or acceptance packages)
+- `FERRUM-IND-018` An industrial solution package in .fapp (The format and its checks: a bundle names the schemes it needs and ships device profiles and acceptance procedures, refused when they do not hold together)
 - `FERRUM-IND-021` Partner fleet health, support grants, certification tiers (Nothing built. Support access exists for workspaces (docs/support-access.md))
 
 ## Ready: 9. Ferrum Cloud and partner operations
