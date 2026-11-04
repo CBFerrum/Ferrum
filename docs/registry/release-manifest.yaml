@@ -18,6 +18,7 @@ components:
   - {repository: CBFerrum/ferrum-app-hospitality, pinned: 2309cf0954b9dcb2556f6d52e5bfaa8256e81f1d}
   - {repository: CBFerrum/ferrum-app-hr, pinned: 0c0dac83ef4bb38488d30b99b5eede0078e021c3}
   - {repository: CBFerrum/ferrum-app-lms, pinned: 4747a329767b4fd4ddbadf0cb3d23ee470c32721}
+  - {repository: CBFerrum/ferrum-app-nonprofit, pinned: be97e50cc6ecc4fd2286bb0f7326b33f832a9eeb}
   - {repository: CBFerrum/ferrum-app-pos, pinned: 65ebe6944bd20cef8f0527462f9cd8bda1abeef3}
   - {repository: CBFerrum/ferrum-app-projects, pinned: 8b32fb57ae2bcdbd324238d9d784b66463122a87}
   - {repository: CBFerrum/ferrum-app-sign, pinned: 426401a9680ed15a9da309e0b0ec54dcf3c0a18c}
