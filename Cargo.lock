@@ -2506,7 +2506,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-developers"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-developers?branch=main#f6120bf17210b9fef2d2b26503eb75c8a4925ca3"
+source = "git+https://github.com/CBFerrum/ferrum-app-developers?branch=main#ca57f51e1f9ceb798fc0f2c03dc29043cd6e66a0"
 dependencies = [
  "ferrum-domain",
  "ferrum-kernel",
