@@ -9,6 +9,7 @@ use axum::http::{HeaderMap, HeaderValue};
 use ferrum_kernel::{Ctx, Error};
 use loco_rs::app::AppContext;
 use loco_rs::auth::jwt::JWT;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -44,6 +45,9 @@ struct TokenSession {
     /// An app token's app (`app`, docs/plan/apps-ui.md §12.3): it works only through [`Auth`],
     /// narrowed to that app.
     app: Option<String>,
+    /// A records key's grants (`records:…`): it works only through [`Auth`], on records and their
+    /// metadata, narrowed to them.
+    records: Option<BTreeMap<String, BTreeSet<String>>>,
 }
 
 impl TokenSession {
@@ -60,13 +64,14 @@ async fn session_of(st: &crate::state::AppState, token: &str) -> Result<TokenSes
     if token.starts_with("fk_") {
         let (s, scope) = st.kernel.verify_api_key(token).await?;
         // Support keys go through like anyone's: the role behind them decides what they reach.
-        if scope.as_deref().is_some_and(|s| s != "support") {
-            return Err(ApiError(Error::Unauthorized(
-                "this key has a single purpose (calendar and contacts apps, or an identity provider) and works only there".into(),
-            )));
-        }
+        let records = match scope.as_deref() {
+            None | Some("support") => None,
+            Some(named) => Some(ferrum_kernel::auth::records_scope(named).ok_or_else(|| {
+                ApiError(Error::Unauthorized("this key has a single purpose (calendar and contacts apps, or an identity provider) and works only there".into()))
+            })?),
+        };
         st.user_limiter.check_local(&format!("{}|{}", s.tenant, s.user))?;
-        return Ok(TokenSession { session: s, setup_only: false, sid: None, bound: None, app: None });
+        return Ok(TokenSession { session: s, setup_only: false, sid: None, bound: None, app: None, records });
     }
     let data =
         JWT::new(&st.jwt_secret).validate(token).map_err(|_| ApiError(Error::Unauthorized("session expired or invalid; please sign in again".into())))?;
@@ -94,11 +99,15 @@ async fn session_of(st: &crate::state::AppState, token: &str) -> Result<TokenSes
         None => None,
         Some(v) => Some(v.as_str().filter(|a| crate::appmgr::valid_id(a)).ok_or_else(|| ApiError(Error::Unauthorized("invalid session".into())))?.to_string()),
     };
-    Ok(TokenSession { session: ferrum_kernel::auth::Session { tenant, user, token_version: tv }, setup_only, sid, bound, app })
+    Ok(TokenSession { session: ferrum_kernel::auth::Session { tenant, user, token_version: tv }, setup_only, sid, bound, app, records: None })
 }
 
-/// App tokens work only for their app's calls to the API ([`Auth`]); everything else refuses them.
+/// App tokens work only for their app's calls to the API ([`Auth`]), and records keys only for
+/// records; everything else refuses them.
 fn no_app_token(t: &TokenSession) -> Result<(), ApiError> {
+    if t.records.is_some() {
+        return Err(ApiError(Error::Unauthorized(RECORDS_ONLY.into())));
+    }
     match t.app {
         Some(_) => Err(ApiError(Error::Unauthorized("an app token works only for its app's calls to the API".into()))),
         None => Ok(()),
@@ -146,15 +155,22 @@ async fn caller(st: &crate::state::AppState, parts: &Parts) -> Result<(Ctx, Opti
 /// See [`caller`]; for handlers that read the request themselves. `.1` is the browser session
 /// behind the credential (the cookie's, or the one a page's bearer token is bound to).
 pub async fn caller_on(st: &crate::state::AppState, method: &axum::http::Method, headers: &HeaderMap) -> Result<(Ctx, Option<Uuid>), ApiError> {
-    let (ctx, device, app) = caller_with_app(st, method, headers, None).await?;
+    let (ctx, device, app, records) = caller_with_app(st, method, headers, None).await?;
     if app.is_some() {
         return Err(ApiError(Error::Unauthorized("an app token works only for its app's calls to the API".into())));
+    }
+    if records.is_some() {
+        return Err(ApiError(Error::Unauthorized(RECORDS_ONLY.into())));
     }
     only_through_the_api(st, &ctx, method.as_str()).await?;
     Ok((ctx, device))
 }
 
-/// [`caller_on`], where an app token is welcome: `.2` names its app (the caller narrows to it).
+/// What a records key may not reach.
+const RECORDS_ONLY: &str = "this key reaches records and their metadata only, through the records API";
+
+/// [`caller_on`], where an app token is welcome: `.2` names its app and `.3` holds a records key's
+/// grants (the caller narrows to them).
 /// With a `place`, the request also waits for its turn among its workspace's, before anything of the
 /// workspace's is read.
 async fn caller_with_app(
@@ -162,7 +178,7 @@ async fn caller_with_app(
     method: &axum::http::Method,
     headers: &HeaderMap,
     place: Option<&crate::state::Place>,
-) -> Result<(Ctx, Option<Uuid>, Option<String>), ApiError> {
+) -> Result<(Ctx, Option<Uuid>, Option<String>, Option<BTreeMap<String, BTreeSet<String>>>), ApiError> {
     let rid = request_id(headers);
     let (token, from_cookie) = match bearer(headers) {
         Some(t) => (t, false),
@@ -193,7 +209,7 @@ async fn caller_with_app(
         st.shell.check_directory(headers, t.session.tenant).await?;
     }
     let ctx = st.kernel.load_ctx(t.session.tenant, t.session.user, Some(t.session.token_version), rid).await?;
-    Ok((ctx, t.device(), t.app))
+    Ok((ctx, t.device(), t.app, t.records))
 }
 
 /// The caller and the browser session behind its credential (`None` for tokens of API clients
@@ -239,7 +255,15 @@ impl FromRequestParts<AppContext> for Auth {
     async fn from_request_parts(parts: &mut Parts, state: &AppContext) -> Result<Self, Self::Rejection> {
         let st = app_state(state)?;
         let place = parts.extensions.get::<crate::state::Place>().cloned();
-        let (ctx, _, token_app) = caller_with_app(&st, &parts.method, &parts.headers, place.as_ref()).await?;
+        let (mut ctx, _, token_app, records) = caller_with_app(&st, &parts.method, &parts.headers, place.as_ref()).await?;
+        // A records key: its owner's rights narrowed to what it names, on records and metadata only.
+        if let Some(grants) = records {
+            if !records_may_call(parts.uri.path()) {
+                return Err(ApiError(Error::Forbidden(RECORDS_ONLY.into())));
+            }
+            ctx.perms = Arc::new(ctx.perms.limited_to(&grants, &BTreeSet::new()));
+            ctx.is_admin = false;
+        }
         // Support access is seen by the customer, request by request (crates/kernel/src/support.rs).
         if ctx.email.ends_with(ferrum_kernel::support::SUPPORT_DOMAIN) {
             let (grant, level) = st.kernel.support_level(&ctx).await?.ok_or_else(|| ApiError(Error::Unauthorized("this support access has ended".into())))?;
@@ -308,6 +332,11 @@ impl FromRequestParts<AppContext> for SetupAuth {
     }
 }
 
+/// Where a records key may send requests: records and their metadata.
+pub(crate) fn records_may_call(path: &str) -> bool {
+    path.starts_with("/api/v1/") || path.starts_with("/api/meta/")
+}
+
 /// Where an app's screens may send requests: records, metadata and the app's own endpoints.
 pub(crate) fn screen_may_call(app: &str, path: &str) -> bool {
     path.starts_with("/api/v1/")
@@ -362,6 +391,14 @@ mod tests {
         assert_eq!((client_ip_behind(&cdn, 1), client_ip_behind(&cdn, 2)), ("192.0.2.10".into(), "203.0.113.7".into()));
         assert_eq!(client_ip_behind(&headers(&["203.0.113.7"]), 2), "203.0.113.7", "fewer proxies than configured");
         assert_eq!(client_ip_behind(&headers(&[" , "]), 1), "local");
+    }
+
+    #[test]
+    fn records_keys_call_records_and_metadata() {
+        assert!(records_may_call("/api/v1/Customer") && records_may_call("/api/meta/Customer"));
+        for path in ["/api/admin/users", "/api/auth/api_keys", "/api/ext/board/cards", "/api/reports/receivables", "/api/v1", "/api/apps"] {
+            assert!(!records_may_call(path), "{path}");
+        }
     }
 
     #[test]

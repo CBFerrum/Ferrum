@@ -26,7 +26,7 @@ impl Kernel {
             ctx,
             "select u.email, u.full_name as name, u.kind, u.is_active as active, u.is_admin as administrator, \
              u.totp_enabled_at is not null as two_factor, u.last_login_at as last_sign_in, u.created_at as since, \
-             (select coalesce(jsonb_agg(r.role order by r.role), '[]') from user_role r where r.tenant_id = u.tenant_id and r.user_id = u.id) as roles \
+             (select coalesce(jsonb_agg(r.role order by r.role), '[]') from user_role r where r.tenant_id = u.tenant_id and r.user_id = u.id and (r.expires_at is null or r.expires_at > now())) as roles \
              from app_user u where u.tenant_id = $1 order by u.email"
         );
         let keys = rows!(

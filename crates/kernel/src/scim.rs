@@ -227,7 +227,8 @@ const GROUP: &str = "select g.id, g.display_name, g.external_id, g.created_at, g
      from scim_group g where g.tenant_id = ";
 
 /// Brings a person's roles in line with their groups: grants made through a group they left go, and
-/// the roles of the groups they are in arrive. A role given by hand is left alone.
+/// the roles of the groups they are in arrive. A role given by hand for good is left alone; one given
+/// by hand until a moment becomes the group's, held as long as the group gives it.
 async fn sync_roles(tx: &mut Tx, tenant: Uuid, user: Uuid) -> Result<()> {
     let wanted = "select distinct unnest(g.roles) as role from scim_group_member m join scim_group g on g.tenant_id = m.tenant_id and g.id = m.group_id \
                   where m.tenant_id = $1 and m.user_id = $2";
@@ -238,7 +239,8 @@ async fn sync_roles(tx: &mut Tx, tenant: Uuid, user: Uuid) -> Result<()> {
         .await?;
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "insert into user_role (tenant_id, user_id, role, via_scim) select $1, $2, w.role, true from ({wanted}) w \
-         join role r on r.tenant_id = $1 and r.name = w.role on conflict do nothing"
+         join role r on r.tenant_id = $1 and r.name = w.role \
+         on conflict (tenant_id, user_id, role) do update set via_scim = true, expires_at = null where user_role.expires_at is not null"
     )))
     .bind(tenant)
     .bind(user)

@@ -1,6 +1,7 @@
 //! AT-EXT-010: what no automation can talk its way past, against a real PostgreSQL
-//! (`FERRUM_TEST_DATABASE_URL`; the database is reset first). An automation runs as the system, so
-//! each rule here is one that holds for the system too, or the automation would be a way around it.
+//! (`FERRUM_TEST_DATABASE_URL`; the database is reset first). An automation runs as the
+//! administrator who saved it, so each rule here is one that holds for an administrator (and the
+//! system) too, or the automation would be a way around it; and it stops when they are not one.
 
 use async_trait::async_trait;
 use ferrum_kernel::automation;
@@ -149,4 +150,35 @@ async fn scenario() {
     assert_eq!(stock.posted.lock().unwrap().as_slice(), ["C"], "the one real submission, posted");
     assert_eq!(k.get(&admin, "Hold", id(&second), false).await.unwrap()["qty"], json!(7));
     assert_eq!(outcome(&k, &admin, "rewrite").await, 0);
+
+    // It runs as the administrator who saved it, read when it runs: once they are not one, it does
+    // not run and says why, until an administrator saves it again (FERRUM-IDENTITY-015).
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("update automation set is_active = false").execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let boss_id = k.create_user(&admin, "boss@acme.test", "Boss", Some("Correct-Horse-9"), &[], true).await.unwrap();
+    let boss = k.load_ctx(tenant, boss_id, None, "it".into()).await.unwrap();
+    let signed = obj(json!({"name": "signed", "entity": "Hold", "event": "created", "actions": [{"type": "set_fields", "values": {"note": "user.email"}}]}));
+    let signed_id = automation::save(&k, &boss, &signed).await.unwrap();
+    let third = k.insert(&clerk, "Hold", obj(json!({"reference": "D", "qty": 1}))).await.unwrap();
+    drain(&k).await;
+    assert_eq!(k.get(&admin, "Hold", id(&third), false).await.unwrap()["note"], json!("boss@acme.test"), "as its saver");
+    k.set_user_active(&admin, boss_id, false).await.unwrap();
+    let fourth = k.insert(&clerk, "Hold", obj(json!({"reference": "E", "qty": 1}))).await.unwrap();
+    drain(&k).await;
+    assert_eq!(k.get(&admin, "Hold", id(&fourth), false).await.unwrap()["note"], Value::Null, "not run for one who has left");
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let why: String = sqlx::query_scalar("select error from automation_run where automation_id = $1 and status = 'failed'")
+        .bind(signed_id)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(why.contains("an administrator saves it again"), "{why}");
+    let mut again = signed.clone();
+    again.insert("id".into(), json!(signed_id.to_string()));
+    automation::save(&k, &admin, &again).await.unwrap();
+    let fifth = k.insert(&clerk, "Hold", obj(json!({"reference": "F", "qty": 1}))).await.unwrap();
+    drain(&k).await;
+    assert_eq!(k.get(&admin, "Hold", id(&fifth), false).await.unwrap()["note"], json!("admin@acme.test"), "saved again, as its new saver");
 }
