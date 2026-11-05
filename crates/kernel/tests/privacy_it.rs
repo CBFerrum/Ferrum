@@ -46,6 +46,12 @@ const PEOPLE: &str = r#"
     - {name: email, type: email}
     - {name: phone, type: phone}
     - {name: notes, type: text}
+    - {name: companions, type: table, of: Companion}
+- name: Companion
+  label: Companion
+  kind: child
+  fields:
+    - {name: email, type: email}
 - name: Receipt
   label: Receipt
   kind: master
@@ -129,6 +135,7 @@ async fn scenario() {
         ("  - {entity: Visitor, match: email, phone: notes, erase: [email]}\n", "a phone that is no phone field"),
         ("  - {entity: Diner, match: phone, erase: [phone]}\n", "a match on a phone field it does not name as the phone"),
         ("  - {entity: Visit, match: visitor, erase: [notes]}\n", "a link to records no declaration finds"),
+        ("  - {entity: Companion, match: email, erase: [email]}\n", "a child table's rows"),
         ("  - {entity: Visitor, match: email, name: nickname, erase: [email]}\n", "a name that is no field"),
     ] {
         let dir = temp("bad");

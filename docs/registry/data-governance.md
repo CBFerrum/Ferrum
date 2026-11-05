@@ -94,8 +94,9 @@ are named in every answer as `not_searched` (ERP's customers and suppliers are t
 
 ## What it does not reach
 
-Comments' text, which stays under an anonymized author, and the records of the packages that declare
-nothing. Submitted financial documents keep the names they carry, by design.
+Comments' text, which stays under an anonymized author; addresses held only in a child table's rows
+(Edge's customer people and report recipients), which a declaration cannot name, since the rows are
+not records of their own; and the records of the packages that declare nothing. Submitted financial documents keep the names they carry, by design.
 
 Some things hold nothing to reach: search keeps no words (it runs live over records, and the request
 log and traces carry paths without their query strings), and Studio keeps no results (every query
