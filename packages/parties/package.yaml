@@ -19,9 +19,9 @@ overlays:
 # customer's name, contact details and addresses; for companies and suppliers, whose names the
 # books keep, only the contact details.
 personal_data:
-  - {entity: Customer, match: email, where: {customer_type: Individual}, erase: [customer_name, email, phone, tax_id, billing_address, shipping_address]}
-  - {entity: Customer, match: email, where: {customer_type: Company}, erase: [email, phone]}
-  - {entity: Supplier, match: email, erase: [email, phone]}
+  - {entity: Customer, match: email, phone: phone, name: customer_name, where: {customer_type: Individual}, erase: [customer_name, email, phone, tax_id, billing_address, shipping_address]}
+  - {entity: Customer, match: email, phone: phone, where: {customer_type: Company}, erase: [email, phone]}
+  - {entity: Supplier, match: email, phone: phone, erase: [email, phone]}
 
 seed:
   - entity: CustomerGroup

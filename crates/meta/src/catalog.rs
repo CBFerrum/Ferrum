@@ -228,6 +228,12 @@ impl Catalog {
                 if let Some(c) = pd.condition.keys().find(|c| field(c).is_none()) {
                     return invalid(format!("{name}: personal data of {}: {c} is not a field", pd.entity));
                 }
+                if pd.phone.as_deref().is_some_and(|f| field(f).is_none_or(|x| !matches!(x.ftype, FieldType::Phone | FieldType::Data))) {
+                    return invalid(format!("{name}: personal data of {}: phone must be a phone (or data) field", pd.entity));
+                }
+                if pd.name.as_deref().is_some_and(|f| field(f).is_none_or(|x| x.ftype != FieldType::Data)) {
+                    return invalid(format!("{name}: personal data of {}: name must be a data field", pd.entity));
+                }
             }
             for m in &p.manifest.merge_links {
                 if !is_ident(&m.table) || !is_ident(&m.column) || !self.entities.get(&m.to).is_some_and(|(_, e)| e.mergeable) {
