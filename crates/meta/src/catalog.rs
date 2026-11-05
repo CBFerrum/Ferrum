@@ -222,6 +222,9 @@ impl Catalog {
                 let Some((_, e)) = self.entities.get(&pd.entity) else {
                     return invalid(format!("{name}: personal data of unknown entity {}", pd.entity));
                 };
+                if e.kind == EntityKind::Child {
+                    return invalid(format!("{name}: personal data of {}: a child table's rows are not records of their own", pd.entity));
+                }
                 let field = |f: &str| e.fields.iter().find(|x| x.name == f);
                 // Records that hold no address are matched by the phone field they name, or by a link
                 // to a record another declaration finds by address or number.
