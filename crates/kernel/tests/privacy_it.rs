@@ -209,11 +209,17 @@ async fn scenario() {
     let walk_in = k.insert(&admin, "Visitor", obj(json!({"full_name": "Pat Lee", "phone": "+1 (555) 0100"}))).await.unwrap();
     let namesake = k.insert(&admin, "Visitor", obj(json!({"full_name": "pat   LEE", "email": "p.lee@else.test"}))).await.unwrap();
     k.insert(&admin, "Visitor", obj(json!({"full_name": "Sam Roe", "phone": "+1 555 0199"}))).await.unwrap();
+    // One recorded without the country code is only possibly theirs.
+    let local = k.insert(&admin, "Visitor", obj(json!({"full_name": "P. Lee", "phone": "555-0100"}))).await.unwrap();
     let person = |phone: &str, name: &str| Person { email: "pat@old.test".into(), phone: Some(phone.into()), name: Some(name.into()) };
     let wider = k.personal_data_of(&admin, &person("+1-555-0100", "Pat Lee")).await.unwrap();
     assert_eq!(wider["records"].as_array().unwrap().len(), 5, "the walk-in as well: {wider}");
     assert!(ids(&wider["records"]).contains(&walk_in["id"].as_str().unwrap().to_string()));
-    assert_eq!(ids(&wider["possibly"]), vec![namesake["id"].as_str().unwrap().to_string()], "the namesake, apart from what is theirs");
+    assert_eq!(
+        ids(&wider["possibly"]),
+        vec![namesake["id"].as_str().unwrap().to_string(), local["id"].as_str().unwrap().to_string()],
+        "the namesake and the number without its country code, apart from what is theirs"
+    );
     assert_eq!(wider["phone"], json!("15550100"));
     assert!(matches!(k.personal_data_of(&admin, &person("55", "")).await, Err(Error::Validation(_))), "too few digits to name anyone");
 
@@ -230,6 +236,11 @@ async fn scenario() {
 
     let record_hold = k.place_legal_hold(&admin, None, Some(("Visitor", late_id)), "Matter 8").await.unwrap();
     assert!(matches!(k.delete(&admin, "Visitor", late_id, None).await, Err(Error::Conflict(_))), "nor deleted");
+    // Nor by an app's own SQL: the database refuses that too.
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let direct = sqlx::query("delete from e_visitor where tenant_id = $1 and id = $2").bind(tenant).bind(late_id).execute(&mut *tx).await;
+    assert!(direct.as_ref().is_err_and(|e| e.to_string().contains("under a legal hold")), "{direct:?}");
+    tx.rollback().await.unwrap();
     assert_eq!(k.legal_holds(&admin).await.unwrap().len(), 2, "released ones stay on the record");
     assert!(k.legal_holds(&outsider).await.unwrap().is_empty());
 
@@ -268,6 +279,7 @@ async fn scenario() {
     assert_eq!(done["files_deleted"], json!(1));
     assert_eq!(done["exports_deleted"], json!(1), "no copy outlives an erasure");
     assert!(matches!(k.export_part(&admin, export, part).await, Err(Error::NotFound(_))));
+    assert_eq!(k.job(&admin, export).await.unwrap()["result"]["deleted"], json!("erasure"), "the export says what took it");
     assert_eq!(done["account_erased"], json!(true));
     assert!(done["not_searched"].as_array().unwrap().contains(&json!("silent")));
 

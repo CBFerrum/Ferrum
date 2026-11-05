@@ -150,6 +150,36 @@ async fn reached(ctx: &Ctx, tx: &mut Tx, emails: &[String], phone: Option<&str>)
     Ok(out)
 }
 
+/// Records whose number is the one asked for with or without a country code (the digits of one end
+/// with the other's, seven at least), apart from those already reached: possibly the person's,
+/// never erased for it.
+async fn numbered(ctx: &Ctx, tx: &mut Tx, digits: &str, reached: &[(PersonalDataDef, Vec<Uuid>)]) -> Result<Vec<Value>> {
+    let mut out = Vec::new();
+    if digits.len() < 7 {
+        return Ok(out);
+    }
+    for def in ctx.schema.personal_data.iter().filter(|d| d.phone.is_some()) {
+        let Some(ent) = ctx.schema.entity(&def.entity) else { continue };
+        let Some(expr) = def.phone.as_deref().and_then(|f| field_expr(ent, f, "a")) else { continue };
+        let held = format!("regexp_replace(({expr})::text, '[^0-9]', '', 'g')");
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(format!("select a.id, ({expr})::text from {} a where a.tenant_id = ", q(&ent.table)));
+        qb.push_bind(ctx.tenant).push(format!(" and length({held}) >= 7 and {held} <> ")).push_bind(digits.to_string());
+        qb.push(format!(" and ({held} like '%' || "))
+            .push_bind(digits.to_string())
+            .push(" or ")
+            .push_bind(digits.to_string())
+            .push(format!(" like '%' || {held})"));
+        qb.push(entity_predicate(ent, "a")).push(" order by a.id limit 50");
+        let found: Vec<(Uuid, String)> = qb.build_query_as().fetch_all(&mut **tx).await?;
+        let known = reached.iter().filter(|r| r.0.entity == def.entity).flat_map(|r| r.1.iter()).collect::<Vec<_>>();
+        let label = ent.def.label.clone();
+        out.extend(
+            found.into_iter().filter(|(id, _)| !known.contains(&id)).map(|(id, held)| json!({"entity": def.entity, "label": label, "id": id, "phone": held})),
+        );
+    }
+    Ok(out)
+}
+
 /// Records whose declared name field holds `name` (case and spacing aside), apart from those already
 /// reached: possibly the person's, never erased for it.
 async fn named(ctx: &Ctx, tx: &mut Tx, name: &str, reached: &[(PersonalDataDef, Vec<Uuid>)]) -> Result<Vec<Value>> {
@@ -359,10 +389,17 @@ impl Kernel {
         let emails = addresses(&mut tx, ctx.tenant, &email).await?;
         let mut records = Vec::new();
         let reached = reached(ctx, &mut tx, &emails, phone.as_deref()).await?;
-        let possibly = match person.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        let mut possibly = match person.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
             Some(name) => named(ctx, &mut tx, name, &reached).await?,
             None => vec![],
         };
+        if let Some(digits) = phone.as_deref() {
+            for found in numbered(ctx, &mut tx, digits, &reached).await? {
+                if !possibly.iter().any(|p| p["entity"] == found["entity"] && p["id"] == found["id"]) {
+                    possibly.push(found);
+                }
+            }
+        }
         for (def, ids) in reached {
             let label = ctx.schema.entity(&def.entity).map(|e| e.def.label.clone()).unwrap_or_else(|| def.entity.clone());
             for id in ids {
