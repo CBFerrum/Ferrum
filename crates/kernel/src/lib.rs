@@ -10,6 +10,7 @@ pub mod apps;
 pub mod audit;
 pub mod auth;
 pub mod automation;
+pub mod backfill;
 pub mod bulk;
 pub mod coedit;
 pub mod collab;
@@ -311,6 +312,9 @@ impl Kernel {
         }
         if let Err(e) = self.expire_roles().await {
             tracing::warn!("removing ended role grants: {e}");
+        }
+        if let Err(e) = self.start_backfills().await {
+            tracing::warn!("starting backfills: {e}");
         }
         let purged = self.purge_old_events(self.settings.event_retention_days).await?
             + self.oauth_purge().await?

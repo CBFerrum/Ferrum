@@ -9,8 +9,8 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 159 |
-| Partially implemented | 62 |
+| Implemented, qualification incomplete | 160 |
+| Partially implemented | 61 |
 | Blocked by external dependency | 10 |
 | **All** | **231** |
 
@@ -27,7 +27,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-PLATFORM-007 | Strong types at consequential boundaries | Partially implemented | read | Money and tax go through ferrum-calc with decimals; documents stay JSON-shaped maps |
 | FERRUM-PLATFORM-008 | Explicit document state machine with per-state field rules | Implemented, qualification incomplete | tested | Draft, submitted and cancelled are general, with amendment; an app's or a workspace's workflow adds its states (approved and the like); A workflow state may name the only fields a person changes while a document is in it and the fields it needs, held on every save in it and on entering it, and shown in the form; the server's own updates are not held to them; No general archived state |
 | FERRUM-PLATFORM-009 | Custom fields and entities with conflict detection | Implemented, qualification incomplete | tested | Customizations made before this have no record of what they replaced, and are not compared; Compares property changes and added fields; rules, workflows and print templates are not compared |
-| FERRUM-PLATFORM-010 | Schema evolution: expand, migrate, contract, resumable backfills | Partially implemented | read | Upgrade steps exist; resumable backfills and validation reports do not |
+| FERRUM-PLATFORM-010 | Schema evolution: expand, migrate, contract, resumable backfills | Implemented, qualification incomplete | tested | Expand is the metadata sync, which only adds; orphaned columns are reported, never dropped; Packages declare backfills (a table or entity, the rows that need it, what it sets): run per workspace in batches by the hourly upkeep, resumed after a failure from the last row a batch reached, each row visited once; the report gives rows changed, rows it could not change and rows needing it now, and an administrator runs a finished one again; Contract is by hand, once every workspace reports none remaining; no package declares a backfill yet |
 | FERRUM-PLATFORM-011 | Equivalent integrity on every mutation path | Partially implemented | read | Not audited path by path; app maintenance jobs that write SQL directly need a review |
 | FERRUM-PLATFORM-012 | Transactional outbox with idempotent consumers | Implemented, qualification incomplete | tested |  |
 | FERRUM-PLATFORM-013 | Event envelope: origin, correlation, causation, trace context, versions | Implemented, qualification incomplete | tested | Tasks an event handler spawns start without a trace |
