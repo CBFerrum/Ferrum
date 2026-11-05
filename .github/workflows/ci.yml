@@ -154,6 +154,9 @@ jobs:
         run: python3 -m pip install --quiet pyyaml && python3 scripts/registry.py check && python3 scripts/test_registry.py && python3 scripts/test_manifests.py && python3 scripts/mutants.py --check && python3 scripts/test_baseline.py
       - name: Licenses of everything compiled in
         run: python3 scripts/licenses.py check
+      # What every app gives that a program can see (docs/app-contract.md), in the apps the lock takes.
+      - name: Every app compiled in meets the app contract
+        run: python3 scripts/check_apps.py
 
   # The editor server for Drive's browser editors (deploy/editors, docs/plan/browser-editors.md):
   # built from the pinned editor builds, exercised in Chromium, Firefox and WebKit as the cluster

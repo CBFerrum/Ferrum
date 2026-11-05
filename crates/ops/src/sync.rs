@@ -264,7 +264,7 @@ pub async fn exchange(k: &Kernel, tenant: Uuid, device: Uuid, req: SyncRequest) 
 /// only for as long as they are active: the list is replaced at each change.
 async fn operators_for(tx: &mut Tx, tenant: Uuid, site: Uuid) -> Result<(Vec<Operator>, String)> {
     let rows: Vec<(Uuid, String, String, Vec<String>)> = sqlx::query_as(
-        "select u.id, coalesce(u.full_name, u.email), p.pin_hash, array(select r.role from user_role r where r.tenant_id = u.tenant_id and r.user_id = u.id and r.role like 'Ops %') \
+        "select u.id, coalesce(u.full_name, u.email), p.pin_hash, array(select r.role from user_role r where r.tenant_id = u.tenant_id and r.user_id = u.id and r.role like 'Ops %' and (r.expires_at is null or r.expires_at > now())) \
          from op_operator_pin p join app_user u on u.tenant_id = p.tenant_id and u.id = p.user_id \
          where p.tenant_id = $1 and p.site_id = $2 and u.is_active order by u.id",
     )

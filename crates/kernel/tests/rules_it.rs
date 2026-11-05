@@ -7,7 +7,7 @@ use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Action, Ctx, Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings, ListQuery};
 use ferrum_meta::{Catalog, OverlayOp, PermissionDef};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -306,4 +306,69 @@ async fn scenario() {
     assert_eq!(inactive["allowed"], json!(false), "{inactive}");
     let stranger = k.explain_access(&admin, Uuid::now_v7(), "Claim", Action::Read, None, None).await.unwrap();
     assert_eq!(stranger["allowed"], json!(false));
+
+    // ───────────── a role given until a moment ─────────────
+    // Held until then and not after, though the context was cached a moment before; never ending
+    // before it starts, nor set on a role not given; and removed by the upkeep once it has ended.
+    let stand_in = k.create_user(&admin, "stand-in@acme.test", "Stand-in", None, &[], false).await.unwrap();
+    let viewer = vec!["Viewer".to_string()];
+    let soon = chrono::Utc::now() + chrono::Duration::milliseconds(1500);
+    let ended = BTreeMap::from([("Viewer".to_string(), chrono::Utc::now() - chrono::Duration::minutes(1))]);
+    assert!(matches!(k.set_user_roles_until(&admin, stand_in, &viewer, &ended).await, Err(Error::Validation(_))), "an end already past");
+    let stray = BTreeMap::from([("Clerk".to_string(), soon)]);
+    assert!(matches!(k.set_user_roles_until(&admin, stand_in, &viewer, &stray).await, Err(Error::Validation(_))), "an end on a role not given");
+    assert!(matches!(k.set_user_roles_until(&ctx, stand_in, &viewer, &BTreeMap::new()).await, Err(Error::Forbidden(_))), "administrators only");
+    k.set_user_roles_until(&admin, stand_in, &viewer, &BTreeMap::from([("Viewer".to_string(), soon)])).await.unwrap();
+    let held = k.load_ctx(tenant, stand_in, None, "it".into()).await.unwrap();
+    assert_eq!(held.roles, viewer);
+    assert!(k.get(&held, "Claim", over, false).await.is_ok(), "held until its end");
+    tokio::time::sleep((soon - chrono::Utc::now()).to_std().unwrap_or_default() + std::time::Duration::from_millis(200)).await;
+    let after = k.load_ctx(tenant, stand_in, None, "it".into()).await.unwrap();
+    assert!(after.roles.is_empty(), "the cached context lapsed at the end, well inside its {:?}", k.settings.ctx_ttl);
+    assert!(k.get(&after, "Claim", over, false).await.is_err(), "and with it the access");
+    let grants = || async {
+        let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+        let n: i64 = sqlx::query_scalar("select count(*) from user_role where tenant_id = $1 and user_id = $2")
+            .bind(tenant)
+            .bind(stand_in)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        n
+    };
+    assert_eq!(grants().await, 1, "the ended grant waits for the upkeep");
+    k.maintenance().await.unwrap();
+    assert_eq!(grants().await, 0, "and the upkeep removes it");
+    // A role for good beside one until a moment: only the second ends.
+    let later = chrono::Utc::now() + chrono::Duration::days(30);
+    let both = vec!["Clerk".to_string(), "Viewer".to_string()];
+    k.set_user_roles_until(&admin, stand_in, &both, &BTreeMap::from([("Viewer".to_string(), later)])).await.unwrap();
+    let ctx = k.load_ctx(tenant, stand_in, None, "it".into()).await.unwrap();
+    assert_eq!(ctx.roles, both);
+    k.maintenance().await.unwrap();
+    assert_eq!(grants().await, 2, "nothing ended yet");
+
+    // ───────────── a person limited to a branch ─────────────
+    // A department or a branch is an entity like any other, and a scope on it limits someone to the
+    // records that name theirs, or name none, on both paths.
+    let north = k.insert(&admin, "Agent", obj(json!({"name": "North"}))).await.unwrap();
+    let south = k.insert(&admin, "Agent", obj(json!({"name": "South"}))).await.unwrap();
+    let north_claim = k.insert(&admin, "Claim", obj(json!({"title": "north's", "agent": north["id"]}))).await.unwrap();
+    let south_claim = k.insert(&admin, "Claim", obj(json!({"title": "south's", "agent": south["id"]}))).await.unwrap();
+    let id = |d: &Doc| d["id"].as_str().unwrap().parse::<Uuid>().unwrap();
+    k.set_user_scopes(&admin, stand_in, "Agent", &[id(&north)], None).await.unwrap();
+    let ctx = k.load_ctx(tenant, stand_in, None, "it".into()).await.unwrap();
+    let seen: BTreeSet<String> = k
+        .list(&ctx, "Claim", &ListQuery { limit: Some(500), ..Default::default() })
+        .await
+        .unwrap()
+        .rows
+        .iter()
+        .map(|r| r["title"].as_str().unwrap().to_string())
+        .collect();
+    assert!(seen.contains("north's") && !seen.contains("south's"), "{seen:?}");
+    assert!(seen.contains("blank"), "a claim that names no agent is not limited by one: {seen:?}");
+    assert!(k.get(&ctx, "Claim", id(&north_claim), false).await.is_ok());
+    assert!(matches!(k.get(&ctx, "Claim", id(&south_claim), false).await, Err(Error::NotFound(_) | Error::Forbidden(_))), "nor opened directly");
 }

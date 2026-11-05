@@ -6,6 +6,7 @@ use crate::db::Tx;
 use crate::error::{Error, Result};
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use chrono::{DateTime, Utc};
 use ferrum_meta::PermissionDef;
 use rand::Rng;
 use sha2::{Digest, Sha256};
@@ -116,6 +117,8 @@ pub struct CtxCore {
     pub default_company: Option<Uuid>,
     pub fy_start_month: u32,
     pub perms: Arc<PermSet>,
+    /// When the first of the roles given until a moment ends: a cached context lapses then.
+    pub until: Option<DateTime<Utc>>,
 }
 
 /// A records key's scope (`records:Customer=read+write;SalesInvoice=read`): the entities it may
@@ -513,15 +516,19 @@ impl Kernel {
         // which answer for them by who they are: whatever roles they were given count for nothing.
         let outside = matches!(kind.as_str(), "portal" | "guest");
         let is_admin = is_admin && !outside;
-        let roles: Vec<String> = if outside {
+        let roles: Vec<(String, Option<DateTime<Utc>>)> = if outside {
             vec![]
         } else {
-            sqlx::query_scalar("select role from user_role where tenant_id = $1 and user_id = $2 order by role")
-                .bind(tenant)
-                .bind(user)
-                .fetch_all(&mut *tx)
-                .await?
+            sqlx::query_as(
+                "select role, expires_at from user_role where tenant_id = $1 and user_id = $2 and (expires_at is null or expires_at > now()) order by role",
+            )
+            .bind(tenant)
+            .bind(user)
+            .fetch_all(&mut *tx)
+            .await?
         };
+        let until = roles.iter().filter_map(|r| r.1).min();
+        let roles: Vec<String> = roles.into_iter().map(|r| r.0).collect();
         let scope_rows: Vec<(String, Uuid, bool)> = sqlx::query_as("select entity, value, is_default from user_scope where tenant_id = $1 and user_id = $2")
             .bind(tenant)
             .bind(user)
@@ -545,14 +552,14 @@ impl Kernel {
         let perms = PermSet::load(&mut tx, tenant, &roles, is_admin).await?;
         tx.commit().await?;
         let fy_start_month = settings.get("fiscal_year_start_month").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 12) as u32;
-        Ok(CtxCore { read_only, email, full_name, roles, is_admin, token_version, scopes, default_company, fy_start_month, perms: Arc::new(perms) })
+        Ok(CtxCore { read_only, email, full_name, roles, is_admin, token_version, scopes, default_company, fy_start_month, perms: Arc::new(perms), until })
     }
 
     /// Builds the request context; `token_version` (from a session token) must match the user's
     /// current version, which is bumped on logout-all / password change / deactivation.
     pub async fn load_ctx(&self, tenant: Uuid, user: Uuid, token_version: Option<i32>, request_id: String) -> Result<Ctx> {
         let key = (tenant, user);
-        let cached = self.users.get(&key).filter(|c| c.1.elapsed() < self.settings.ctx_ttl).map(|c| c.0.clone());
+        let cached = self.users.get(&key).filter(|c| c.1.elapsed() < self.settings.ctx_ttl && c.0.until.is_none_or(|u| Utc::now() < u)).map(|c| c.0.clone());
         let core = match cached {
             Some(c) => c,
             None => {
@@ -634,6 +641,19 @@ impl Kernel {
         })
     }
 
+    /// Hourly: grants whose end has passed go, so whatever reads who holds a role (apps' notices
+    /// among them) stops finding the person. Their access ended at that moment ([`Self::load_ctx`]).
+    pub(crate) async fn expire_roles(&self) -> Result<u64> {
+        let mut tx = self.db.system_tx().await?;
+        let ended: Vec<(Uuid, Uuid)> =
+            sqlx::query_as("delete from user_role where expires_at <= now() returning tenant_id, user_id").fetch_all(&mut *tx).await?;
+        for (tenant, user) in &ended {
+            notify_users(&mut tx, *tenant, Some(*user)).await?;
+        }
+        tx.commit().await?;
+        Ok(ended.len() as u64)
+    }
+
     pub fn invalidate_user(&self, tenant: Uuid, user: Uuid) {
         self.users.remove(&(tenant, user));
     }
@@ -684,14 +704,28 @@ impl Kernel {
     }
 
     pub async fn set_user_roles(&self, ctx: &Ctx, user: Uuid, roles: &[String]) -> Result<()> {
+        self.set_user_roles_until(ctx, user, roles, &BTreeMap::new()).await
+    }
+
+    /// Sets someone's roles, each held for good or, when `until` names it, until that moment.
+    pub async fn set_user_roles_until(&self, ctx: &Ctx, user: Uuid, roles: &[String], until: &BTreeMap<String, DateTime<Utc>>) -> Result<()> {
         Self::require_admin(ctx)?;
+        for (role, end) in until {
+            if !roles.contains(role) {
+                return Err(Error::field("until", format!("{role} is not among the roles given")));
+            }
+            if *end <= Utc::now() {
+                return Err(Error::field("until", format!("{role} would end before it starts: give a moment still to come")));
+            }
+        }
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         sqlx::query("delete from user_role where tenant_id = $1 and user_id = $2").bind(ctx.tenant).bind(user).execute(&mut *tx).await?;
         for r in roles {
-            sqlx::query("insert into user_role (tenant_id, user_id, role) values ($1, $2, $3)")
+            sqlx::query("insert into user_role (tenant_id, user_id, role, expires_at) values ($1, $2, $3, $4)")
                 .bind(ctx.tenant)
                 .bind(user)
                 .bind(r)
+                .bind(until.get(r))
                 .execute(&mut *tx)
                 .await
                 .map_err(|_| Error::field("roles", format!("unknown role {r}")))?;
