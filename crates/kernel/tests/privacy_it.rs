@@ -439,6 +439,7 @@ async fn scenario() {
     let hers = asked["records"].as_array().unwrap().iter().find(|r| r["id"] == host["id"]).expect("the host's visit, for her row").clone();
     let rows = hers["data"]["companions"].as_array().unwrap();
     assert_eq!((rows.len(), &rows[0]["email"], &hers["data"]["email"]), (1, &json!("pat@old.test"), &Value::Null), "her row alone: {hers}");
+    assert_eq!((&hers["table"], &hers["rows"]), (&json!("companions"), &json!(1)), "and says which table, how many rows");
     let again = k.erase_personal_data(&admin, "pat@old.test", "Request 5").await.unwrap();
     assert!(again["erased"].as_array().unwrap().iter().any(|r| r["id"] == host["id"] && r["rows"] == json!(1)), "{again}");
     let after = k.get(&admin, "Visitor", host_id, false).await.unwrap();
