@@ -364,7 +364,10 @@ impl AppManager {
         for (id, inst) in ws.apps.iter().filter(|(_, i)| i.enabled) {
             let version = inst.version.clone();
             if let Some(m) = self.native(id) {
-                out.push(Enabled { id: id.clone(), version, manifest: Arc::new(m.clone()), bundled: None, isolated: false });
+                // Compiled in, it runs this build's code and manifest whatever version was recorded
+                // when it was installed, so the shell serves this build's interface too: an
+                // interface older than its code would offer pages it cannot draw.
+                out.push(Enabled { id: id.clone(), version: m.version.to_string(), manifest: Arc::new(m.clone()), bundled: None, isolated: false });
             } else if let Some(r) = self.release_of(tenant, id, &inst.version).await?.filter(|r| r.status != "revoked")
                 && let Some(rec) = recorded(&r)
             {
@@ -1328,7 +1331,9 @@ impl AppManager {
             let (manifest, permissions, readme_text, equipment_of, verified, trusted, source) = match &offer.origin {
                 Origin::Native => {
                     let m = self.native(&r.id).cloned().ok_or_else(|| Error::internal("native app vanished"))?;
-                    let p = self.native_permissions(&m);
+                    let mut p = self.native_permissions(&m);
+                    // An update brings only the entities the workspace does not have yet.
+                    p.new_entities.retain(|e| ctx.schema.entity(e).is_none());
                     (m, p, None, Value::Null, true, true, "native".to_string())
                 }
                 Origin::Local(rel) => {
