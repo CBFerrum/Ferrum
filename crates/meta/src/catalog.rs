@@ -268,6 +268,21 @@ impl Catalog {
                     return invalid(format!("{name}: merge_links: {}.{} must point at a mergeable entity, not {}", m.table, m.column, m.to));
                 }
             }
+            let mut backfills = HashSet::new();
+            for b in &p.manifest.backfills {
+                let ident = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+                if !ident(&b.name) || !backfills.insert(b.name.as_str()) {
+                    return invalid(format!("{name}: backfill {:?} needs a name of its own, in lowercase letters, digits and _", b.name));
+                }
+                match (&b.table, &b.entity) {
+                    (Some(t), None) if ident(t) => {}
+                    (None, Some(e)) if self.entities.contains_key(e) => {}
+                    _ => return invalid(format!("{name}: backfill {}: name one table, or one entity this catalog has", b.name)),
+                }
+                if b.needs.trim().is_empty() || b.set.trim().is_empty() || b.batch.is_some_and(|n| !(1..=10_000).contains(&n)) {
+                    return invalid(format!("{name}: backfill {}: say which rows need it, what it sets, and at most 10000 rows a batch", b.name));
+                }
+            }
             for t in &p.manifest.export_tables {
                 if t.is_empty() || !t.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
                     return invalid(format!("{name}: export_tables: {t:?} is not a table name"));

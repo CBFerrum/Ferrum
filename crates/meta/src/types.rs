@@ -42,6 +42,29 @@ pub struct PackageManifest {
     /// append-only history: that keeps the id it was posted under (`ferrum_kernel::merge::merged_ids`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub merge_links: Vec<MergeLinkDef>,
+    /// Data a release moves once its schema has grown: in batches, per workspace, resumed where it
+    /// stopped (`ferrum_kernel::backfill`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub backfills: Vec<BackfillDef>,
+}
+
+/// Rows of an engine table (`table`) or of an entity's (`entity`) that a release changes in
+/// batches: those that still `need` it (an SQL condition over the row as `t`) get what it `set`s
+/// (SQL assignments, their values over `t`). A set should leave a row no longer needing it; the
+/// rows that still do when it is done are counted in its report.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct BackfillDef {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity: Option<String>,
+    pub needs: String,
+    pub set: String,
+    /// Rows a batch changes, each batch in its own transaction (1000 when unset).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch: Option<u32>,
 }
 
 /// A column of an engine table that holds a record's id.

@@ -489,6 +489,10 @@ Why someone may or may not do something: `GET
 write, create, delete, submit, cancel, export or import; `record` asks about one record; `roles`
 (comma-separated) answers for those roles instead of the person's own. Nothing changes by asking.
 
+Backfills (data a release moves in batches, [operations](operations.md#upgrades)): `GET /api/admin/backfills` →
+`{backfills: [{package, name, state (waiting|running|done), changed, remaining, started_at, finished_at, needing_now}]}`;
+`POST /api/admin/backfills/{package}/{name}/rerun` runs a finished one again at the next upkeep (409 while it runs).
+
 Roles one person may not hold together (segregation of duties): `GET /api/admin/role-conflicts` →
 `{conflicts: [{role_a, role_b, reason, created_at, holders: [{id, email, full_name}]}]}`, where
 `holders` are those who held both before the pair was declared; `PUT` `{role_a, role_b, reason}`
