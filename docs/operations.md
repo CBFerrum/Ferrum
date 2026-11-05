@@ -443,8 +443,12 @@ deliveries (pending, dead), the job queue (queued, running, failed in the last d
 connections to outside systems (on, failing, waiting on a provider, with no success for a day) and
 differences from a provider waiting for a person, the tenant count, and
 `ferrum_tenant_refused_total`, requests refused because their workspace already had its share running
-(`FERRUM_TENANT_REQUESTS`; the log line names the workspace). Take request rates and latencies from the
-gateway controller's metrics. Suggested alerts:
+(`FERRUM_TENANT_REQUESTS`; the log line names the workspace), and
+`ferrum_operation_failures_total{package, entity, operation, kind}`: submits, cancels, actions and
+workflow steps on records that did not go through since the process started, `refused` by their own
+rules (an invoice with no account to post to, a stale version) or a `fault` (logged with its cause).
+Who may not do something, and records that are not there, are not counted. Take request rates and
+latencies from the gateway controller's metrics. Suggested alerts:
 
 | Alert | Condition |
 |---|---|
@@ -454,6 +458,7 @@ gateway controller's metrics. Suggested alerts:
 | Outbox lag | oldest pending event older than 5 min |
 | Dead letters | any dead outbox events or webhook deliveries |
 | Failing jobs | `ferrum_jobs_failed_day` above 0 |
+| Failing postings | `ferrum_operation_failures_total{kind="fault"}` rising; `kind="refused"` rising for one entity and operation is usually a setting people lack (a default account) |
 | A workspace at its share | `ferrum_tenant_refused_total` rising: find the workspace in the log, and either it is misbehaving or it needs a larger share |
 | Outside systems | `ferrum_connections_stale` above 0, or `ferrum_connections_failing` above 0 for 30 min |
 | Database | CNPG: replication lag, failover events, storage above 80 %, connections above 85 % |

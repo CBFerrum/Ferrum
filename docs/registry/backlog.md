@@ -22,7 +22,7 @@ this repository, 154 built and awaiting qualification.
 ## Ready: 4. Jobs, files, search, notifications, governance
 
 - `FERRUM-PRIVACY-002` Relationship-aware discovery: identities, attachments, messages (Found by email under every address held, with attached files, and by phone number where a declaration names a phone field (the platform's contacts, customers and suppliers do; no app's declaration does yet); a name only lists records as possibly the person's, never erased for it)
-- `FERRUM-PRIVACY-007` Immutable evidence without duplicated personal data (Audit diffs of records are redacted on erasure, keeping hashes; other audit payloads are not reviewed)
+- `FERRUM-PRIVACY-007` Immutable evidence without duplicated personal data (Audit diffs of records are redacted on erasure, keeping hashes, and so are the names of the passkeys a person added)
 
 ## Ready: 5. Existing application completion
 
@@ -65,7 +65,7 @@ this repository, 154 built and awaiting qualification.
 - `FERRUM-OPS-003` Dedicated, on-premises and disconnected profiles (No registry mirroring or offline install procedure)
 - `FERRUM-OPS-005` Reference workloads and measured capacity (A short load test; no published reference workload or targets)
 - `FERRUM-OPS-006` Safe large files: resumable uploads, limits (Direct uploads to S3 up to 2 GiB; apps read files into memory)
-- `FERRUM-OPS-009` Structured logs and basic metrics (No OpenTelemetry traces; job, outbox and connection health are metrics, but not per-app business failures such as a posting that failed)
+- `FERRUM-OPS-009` Structured logs and basic metrics (No OpenTelemetry traces)
 - `FERRUM-RELEASE-005` Published support and compatibility policy (A draft: support windows are the owner's commitment to make, and none is in force)
 - `FERRUM-JOURNEY-001` Lead to cash (Runs through the kernel's API, not through the interface; no independent reviewer prepared the figures)
 - `FERRUM-JOURNEY-002` Procure to pay (Runs through the kernel's API, not through the interface; no independent reviewer prepared the figures)
