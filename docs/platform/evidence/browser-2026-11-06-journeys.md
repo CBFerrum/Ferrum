@@ -1,4 +1,4 @@
-# A browser on a running server, 6 November 2026: three journeys through the pages
+# A browser on a running server, 6 November 2026: five journeys through the pages
 
 Until now these journeys ran through the API, in the kernel's and the apps' suites. This walk took
 them through the interface, as the people in them would. The server was built in debug on one
@@ -30,21 +30,36 @@ The workspace's time zone is UTC; the browser's was India's.
 | | The order waits for a customer | The workspace had CRM and ERP but not their connector, so the quotation offered no order; "CRM and ERP" installed from the App Manager's store. Then Create Sales Order refused: "quotation QTN-2026-00002 is for lead Maya Rao; convert the lead to a customer before creating a sales order" |
 | | Customer, order, delivery, invoice, payment | Convert to Customer gave CUST-00005; Create Sales Order gave SO-2026-00001, submitted ("To Deliver and Bill"); its delivery note DN-2026-00001 submitted ("To Bill"); its invoice SINV-2026-00005 submitted and its payment recorded |
 | | Where it ended | Lead Converted, opportunity Won, quotation Ordered, the order Completed (delivered and billed in full), the invoice Paid; Stock Balance 3 grinders at 80 (240.00); Trial Balance "Balanced: Yes" with cost of goods sold 160.00 |
+| Procure to pay (FERRUM-JOURNEY-002) | A request | Grind Co as a supplier; material requests come with Procurement, installed from the App Manager (its dialog listed the 13 entities it adds); MAT-REQ-2026-00001 for 10 grinders into Stores by 15 November, submitted |
+| | An order | Create Purchase Order refused: "no usable approved supplier for Coffee grinder: choose a supplier for them", with nowhere to choose one (below). Grind Co named the grinder's approved supplier; then PO-2026-00002, 10 at 70, 700.00, submitted ("To Receive and Bill") |
+| | Received and billed | PR-2026-00001 submitted ("To Bill"); its purchase invoice's Supplier Invoice No came filled with "PENDING-PR-2026-00001", the typed number was added to it, and PINV-2026-00002 went in as "PENDING-PR-2026-00001GC-2026-501" (below). Cancelled ("reverses its postings"), amended with GC-2026-501 and submitted as PINV-2026-00003 |
+| | Booked once, and paid | Another bill from Grind Co numbered GC-2026-501 refused: "this supplier invoice number was already entered". PAY-2026-00004 paid 700.00 (reference TRF-GC-501); the request Received (ordered in full), the order Completed (received and billed in full), the bill Paid |
+| Project to profit (FERRUM-JOURNEY-005) | A project and its work | PROJ-0001 "Harbour Cafe fit-out" for Harbour Cafe, Time and Materials; an activity type, Fit-out work, billing 80 and costing 40 an hour; TASK-00001 "Install the counter" on its board |
+| | Time | TS-2026-00001: three hours on the task, costing 120.00 but billing 0.00 (below); the row's billing hours and rate set in its fields, 240.00; submitted |
+| | Invoiced | The project's Create Sales Invoice ("Invoice the project's unbilled time") refused: "set the service item of activity type Fit-out work to invoice its time"; with the Field labour item set, a draft of 3 hours at 80.00, 240.00, submitted |
+| | The margin | Project Profitability: billed revenue 240.00, timesheet cost 120.00, margin 120.00 (50%), no time unbilled |
 
 ## What it found, and what changed
 
 | Found | Fixed in |
 |---|---|
 | Lena, a portal person, read every person's name and address from `GET /api/users` (other customers, a citizen, a partner, a supplier's contact), and Helpdesk offered portal people as a ticket's assignee | Ferrum PR 74: the directory lists members alone, and only members read it |
-| Times typed into a date-and-time box are read in the browser's zone while the pages show the workspace's: 02:38 typed showed as 21:08; a job's Reported At, shown by the form, read 6 Nov 01:04 beside the timeline's Thu 5 Nov 19:34 | Not yet (FERRUM-UX-006) |
-| Time added by hand that ends in the future was accepted (finishing at 21:15 at 21:09) | Not yet |
+| Field Service's time box read the browser's zone while the job shows the workspace's: 02:38 typed showed as 21:08 | Field Service 0.3.1: the box reads the workspace's clock, as the page shows it |
+| Other pages show times in the browser's zone (a job's Reported At, shown by the form, read 6 Nov 01:04 beside the timeline's Thu 5 Nov 19:34) | Not yet: one zone for every page is a rule across the apps (FERRUM-UX-006) |
+| Time added by hand that ends in the future was accepted (finishing at 21:15 at 21:09) | Field Service 0.3.1: refused by the page and the server, five minutes' slack |
 | With CRM and ERP installed but not their connector, a submitted quotation shows no way to an order, and nothing says why | Not yet |
-| After signing in with a password at the accounts host, it asks "Continue to Walk" once more | Not yet |
-| A record with no name of its own (Field Service Settings, a draft stock entry) is headed by the end of its id | Not yet |
+| After signing in with a password at the accounts host, it asks "Continue to Walk" once more | This PR: signing in there is choosing the account |
+| Field Service Settings, which has no name of its own, was headed by the end of its id | Ferrum-Frontend PR 34: settings take their entity's label |
+| A material request's Create Purchase Order asked for no supplier, then wanted one; seven actions read parameters they did not declare, and a request for quotation's Create Supplier Quotation and a bank line's Create Payment Entry could never work from a page | ERP 0.14.2 (Procurement 0.1.3, Finance 0.3.2): the actions declare them |
+| A purchase invoice made from a receipt holds "PENDING-<receipt>" as the supplier's number, and could be submitted with it | ERP 0.14.2: refused at submit |
+| A timesheet row entered on its page billed 0.00: the preview's zeros for billing hours and rate went back as if chosen | Projects 0.6.4: zero takes the default |
+| Opening an entity of an add-on that is not installed (a material request before Procurement) says "entity MaterialRequest not found" | Not yet |
 
 ## What it does not show
 
 - Nobody independent prepared the figures or checked the outcome.
 - The order had no tax and no discount past an approval limit; the kernel's lead-to-cash test has
-  both. No parts left a van's stock; Field Service's suite has that.
+  both. No parts left a van's stock; Field Service's suite has that. Procure to pay had no request
+  for quotation and no bank statement matched (Finance was not installed); the kernel's
+  procure-to-pay test has both.
 - One server on one machine, a debug build, not the released image or a deployment.
