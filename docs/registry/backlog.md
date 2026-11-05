@@ -48,7 +48,7 @@ this repository, 167 built and awaiting qualification.
 
 - `FERRUM-OPS-003` Dedicated, on-premises and disconnected profiles (No registry mirroring or offline install procedure)
 - `FERRUM-OPS-005` Reference workloads and measured capacity (A short load test; no published reference workload or targets)
-- `FERRUM-OPS-006` Safe large files: resumable uploads, limits (Direct uploads to S3 up to 2 GiB; apps read files into memory)
+- `FERRUM-OPS-006` Safe large files: resumable uploads, limits (Direct uploads to S3 up to 2 GiB; uploads through the server stay at the request limit)
 - `FERRUM-RELEASE-005` Published support and compatibility policy (A draft: support windows are the owner's commitment to make, and none is in force)
 - `FERRUM-JOURNEY-001` Lead to cash (Runs through the kernel's API, not through the interface; no independent reviewer prepared the figures)
 - `FERRUM-JOURNEY-002` Procure to pay (Runs through the kernel's API, not through the interface; no independent reviewer prepared the figures)

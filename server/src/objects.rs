@@ -48,6 +48,11 @@ impl Objects {
         Ok(Objects { op: Operator::new(s3).map_err(|e| e.to_string())?, presigns: true })
     }
 
+    /// A store on a local directory (tests, a single host).
+    pub fn local(dir: &str) -> std::result::Result<Objects, String> {
+        Ok(Objects { op: Operator::new(Fs::default().root(dir)).map_err(|e| e.to_string())?, presigns: false })
+    }
+
     /// Whether the browser can upload straight to the store (S3 and compatibles; not a local disk).
     /// The keys under `prefix` (for journals; not for anything a request waits on).
     pub async fn list(&self, prefix: &str) -> Result<Vec<String>> {
