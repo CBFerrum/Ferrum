@@ -591,6 +591,12 @@ async fn scenario() {
     assert!(notes.permissions.native && notes.permissions.new_entities.contains("FieldNote"));
     dev.install(&admin, "notes", None, &notes.digest, false).await.unwrap();
     assert!(ctx().await.schema.entity("FieldNote").is_some());
+    // Recorded at an older version, a compiled-in app still runs this build's code and manifest, and
+    // so the shell serves this build's interface: an older one could not draw what it offers.
+    k.record_installation(&admin, "notes", "0.1.0", None, None).await.unwrap();
+    dev.set_enabled(&admin, "notes", true).await.unwrap();
+    let shown = dev.shell_apps(tenant).await.unwrap();
+    assert_eq!(shown.iter().find(|a| a.id == "notes").map(|a| a.version.as_str()), Some("0.2.0"));
 
     // ── dependencies hold: kit cannot go while gw needs it ──
     let err = dev.uninstall(&admin, "kit", false).await.unwrap_err();
