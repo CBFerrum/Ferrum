@@ -146,6 +146,15 @@ impl Catalog {
         Ok(cat)
     }
 
+    /// Whether a package declares an entity's records as people's by an address or a number, not
+    /// by a link: what a declaration that links to it reaches through.
+    fn found_directly(&self, entity: &str) -> bool {
+        self.packages.values().flat_map(|p| &p.manifest.personal_data).any(|d| {
+            d.entity == entity
+                && self.entities.get(entity).and_then(|(_, e)| e.fields.iter().find(|f| f.name == d.match_field)).is_some_and(|f| f.ftype != FieldType::Link)
+        })
+    }
+
     fn validate_packages(&self) -> Result<(), MetaError> {
         // Fields added to an entity, and by whom: two packages adding the same one would break
         // every workspace that installs both.
@@ -214,11 +223,22 @@ impl Catalog {
                     return invalid(format!("{name}: personal data of unknown entity {}", pd.entity));
                 };
                 let field = |f: &str| e.fields.iter().find(|x| x.name == f);
-                // Records that hold no address are matched by the phone field they name.
+                // Records that hold no address are matched by the phone field they name, or by a link
+                // to a record another declaration finds by address or number.
                 let by_phone = pd.phone.as_deref() == Some(pd.match_field.as_str());
-                if field(&pd.match_field).is_none_or(|f| !(matches!(f.ftype, FieldType::Email | FieldType::Data) || by_phone && f.ftype == FieldType::Phone)) {
+                if let Some(to) = field(&pd.match_field).filter(|f| f.ftype == FieldType::Link).and_then(|f| f.to.as_deref()) {
+                    if !self.found_directly(to) {
+                        return invalid(format!(
+                            "{name}: personal data of {}: match links to {to}, which no declaration finds by address or number",
+                            pd.entity
+                        ));
+                    }
+                } else if field(&pd.match_field)
+                    .is_none_or(|f| !(matches!(f.ftype, FieldType::Email | FieldType::Data) || by_phone && f.ftype == FieldType::Phone))
+                {
                     return invalid(format!(
-                        "{name}: personal data of {}: match must be an email (or data) field holding the address, or the phone field where there is none",
+                        "{name}: personal data of {}: match must be an email (or data) field holding the address, the phone field where there is none, \
+                         or a link to a record that is declared",
                         pd.entity
                     ));
                 }

@@ -84,7 +84,8 @@ packages that declare nothing are named in every answer as `not_searched`.
 
 A declaration finds a person by the address in its first field, under every address they have had,
 and by the digits of a phone field where it names one; records that hold no address are matched by
-their phone field alone. A name field only lists records as possibly
+their phone field alone, or through a link to a record found by address or number (a patient's
+appointments through the patient). A name field only lists records as possibly
 theirs, for someone to judge: nothing is erased for a name. Of the 36 apps compiled in at these
 revisions, Construction, Contracts, Control, DAM, Docs, Edge, ERP, Government, GRC, Healthcare,
 ITSM, Logistics, Metrics, Objectives, Property, Restaurant, Retail and Social declare nothing, and

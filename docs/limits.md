@@ -36,7 +36,8 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   never re-values the ones after it (there is no reposting).
 - **Personal data** requests reach what packages declare (`personal_data`), matched by an email field
   under every address the person has had, or by the digits of a phone field (records holding no
-  address by that alone), with the files attached to those records. A name only lists records as
+  address by that alone, or through a link to a record found so), with the files attached to those
+  records. A name only lists records as
   possibly theirs and erases nothing; comments they wrote keep their text under an anonymized name;
   and packages that declare nothing are not searched (each answer names them). Records a package
   keeps for a stated reason, and submitted documents' copies of names, stay. An erasure deletes the
