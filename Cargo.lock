@@ -2454,7 +2454,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-control"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-control?branch=main#c76f6c48373d94938e16dab616cf05870ba12243"
+source = "git+https://github.com/CBFerrum/ferrum-app-control?branch=main#c11d39dfccaad55d5e23f58fc47f6c096a55331c"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2617,7 +2617,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-field-service"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-field-service?branch=main#292f422283f58fd0473c9d5f80ee95d7ff170b30"
+source = "git+https://github.com/CBFerrum/ferrum-app-field-service?branch=main#5d838d4e91ca80d8a2420fc71d931e02466a37ae"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2752,7 +2752,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-hr"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-hr?branch=main#549fb238724c56bbecee14c059b0f9e6ac759f18"
+source = "git+https://github.com/CBFerrum/ferrum-app-hr?branch=main#fbc39e54d350915c5e3716b3147237cd5eaa52f6"
 dependencies = [
  "async-trait",
  "cel",
@@ -2788,7 +2788,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-lms"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-lms?branch=main#b709090f37514d818ab2dcd245fe4db4bd05cde6"
+source = "git+https://github.com/CBFerrum/ferrum-app-lms?branch=main#8351bb5f8b0284c591f4b384199967911c042803"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
