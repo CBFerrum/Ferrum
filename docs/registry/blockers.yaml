@@ -6,6 +6,7 @@ blockers:
   - {id: BLOCK-INDUSTRIAL-SAFETY, needs: "A functional-safety specialist and a site's hazard analysis", owner: Chinmoy Bhuyan, blocks: "Any statement about what may be started remotely; gate G7. Ferrum makes no safety claim"}
   - {id: BLOCK-INDUSTRIAL-SECURITY, needs: "An independent review against IEC 62443 on a customer's network", owner: Chinmoy Bhuyan, blocks: "Gate G1 and any claim of secure connectivity"}
   - {id: BLOCK-PAYMENT-KEYS, needs: "Stripe, Razorpay and PayPal test keys", owner: Chinmoy Bhuyan, blocks: "Gateways against real sandboxes; deposits; cloud billing"}
+  - {id: BLOCK-NPM-PUBLISH, needs: "The owner's npm organisation to publish @ferrum packages under", owner: Chinmoy Bhuyan, blocks: "Apps' interfaces built from published packages rather than a checkout of Ferrum-Frontend"}
   - {id: BLOCK-MODEL-KEY, needs: "A model provider's API key and a budget for evaluation runs", owner: Chinmoy Bhuyan, blocks: "Running the assistant's evaluations against a real model; any claim about its answers' quality"}
   - {id: BLOCK-NIC-SANDBOX, needs: NIC e-invoice sandbox credentials, owner: Chinmoy Bhuyan, blocks: India's IRP connection against the sandbox}
   - {id: BLOCK-EINVOICE-PROVIDERS, needs: "Accounts with Peppol access points, HMRC, Avalara, ANAF and the rest", owner: Chinmoy Bhuyan, blocks: Each country's live connection}
