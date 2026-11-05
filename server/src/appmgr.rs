@@ -364,7 +364,10 @@ impl AppManager {
         for (id, inst) in ws.apps.iter().filter(|(_, i)| i.enabled) {
             let version = inst.version.clone();
             if let Some(m) = self.native(id) {
-                out.push(Enabled { id: id.clone(), version, manifest: Arc::new(m.clone()), bundled: None, isolated: false });
+                // Compiled in, it runs this build's code and manifest whatever version was recorded
+                // when it was installed, so the shell serves this build's interface too: an
+                // interface older than its code would offer pages it cannot draw.
+                out.push(Enabled { id: id.clone(), version: m.version.to_string(), manifest: Arc::new(m.clone()), bundled: None, isolated: false });
             } else if let Some(r) = self.release_of(tenant, id, &inst.version).await?.filter(|r| r.status != "revoked")
                 && let Some(rec) = recorded(&r)
             {
