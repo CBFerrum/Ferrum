@@ -420,6 +420,30 @@ async fn release_legal_hold(Auth(ctx): Auth, State(app): State<AppContext>, Path
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+// ── segregation of duties ──
+
+async fn list_role_conflicts(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    Ok(Json(json!({"conflicts": app_state(&app)?.kernel.role_conflicts(&ctx).await?})).into_response())
+}
+
+#[derive(Deserialize)]
+struct RoleConflict {
+    role_a: String,
+    role_b: String,
+    #[serde(default)]
+    reason: String,
+}
+
+async fn set_role_conflict(Auth(ctx): Auth, State(app): State<AppContext>, Json(c): Json<RoleConflict>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.set_role_conflict(&ctx, &c.role_a, &c.role_b, &c.reason).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn delete_role_conflict(Auth(ctx): Auth, State(app): State<AppContext>, Query(c): Query<RoleConflict>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.delete_role_conflict(&ctx, &c.role_a, &c.role_b).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 // ── why someone may or may not do something ──
 
 #[derive(Deserialize)]
@@ -680,6 +704,7 @@ pub fn routes() -> Routes {
         .add("/admin/legal-holds", get(legal_holds).post(place_legal_hold))
         .add("/admin/legal-holds/{id}/release", post(release_legal_hold))
         .add("/admin/access/explain", get(explain_access))
+        .add("/admin/role-conflicts", get(list_role_conflicts).put(set_role_conflict).delete(delete_role_conflict))
         .add("/admin/users/{id}/deprovision", post(deprovision_user))
         .add("/admin/users/{id}/hand-over", post(hand_over_work))
         .add("/admin/scim/groups", get(scim_groups))

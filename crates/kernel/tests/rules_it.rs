@@ -371,4 +371,38 @@ async fn scenario() {
     assert!(seen.contains("blank"), "a claim that names no agent is not limited by one: {seen:?}");
     assert!(k.get(&ctx, "Claim", id(&north_claim), false).await.is_ok());
     assert!(matches!(k.get(&ctx, "Claim", id(&south_claim), false).await, Err(Error::NotFound(_) | Error::Forbidden(_))), "nor opened directly");
+
+    // ───────────── roles one person may not hold together ─────────────
+    // Declared by an administrator with a reason, refused from then on whichever way a grant comes,
+    // saying why; whoever held both before is named beside the pair until one goes.
+    let invalid = |r: ferrum_kernel::Result<()>| matches!(r, Err(Error::Validation(_)));
+    assert!(invalid(k.set_role_conflict(&admin, "Clerk", "Clerk", "the same").await), "not with itself");
+    assert!(invalid(k.set_role_conflict(&admin, "Clerk", "Nobody", "no such role").await), "both must exist");
+    assert!(invalid(k.set_role_conflict(&admin, "Viewer", "Clerk", " ").await), "a reason");
+    assert!(matches!(k.set_role_conflict(&ctx, "Viewer", "Clerk", "x").await, Err(Error::Forbidden(_))), "administrators only");
+    k.set_role_conflict(&admin, "Viewer", "Clerk", "whoever files claims does not review them").await.unwrap();
+    let pairs = k.role_conflicts(&admin).await.unwrap();
+    assert_eq!(pairs.len(), 1, "{pairs:?}");
+    assert_eq!((pairs[0]["role_a"].as_str(), pairs[0]["role_b"].as_str()), (Some("Clerk"), Some("Viewer")), "kept in order");
+    assert_eq!(pairs[0]["holders"], json!([{"id": stand_in, "email": "stand-in@acme.test", "full_name": "Stand-in"}]), "held both before: named");
+    let pack = k.evidence_pack(&admin).await.unwrap();
+    assert_eq!(pack["access"]["role_conflicts"][0]["holders"][0]["email"], json!("stand-in@acme.test"), "and in the evidence for a review");
+    let refused = k.set_user_roles(&admin, stand_in, &both).await;
+    assert!(
+        matches!(&refused, Err(Error::Validation(e)) if e[0].field == "roles" && e[0].message == "Clerk and Viewer are not held by one person: whoever files claims does not review them"),
+        "{refused:?}"
+    );
+    k.invalidate_user(tenant, stand_in);
+    assert_eq!(k.load_ctx(tenant, stand_in, None, "it".into()).await.unwrap().roles, both, "a refused change changes nothing");
+    assert!(invalid(k.create_user(&admin, "both@acme.test", "Both", None, &both, false).await.map(|_| ())), "nor for someone new");
+    // Any path a grant takes, an identity provider's groups and apps included, meets the same refusal.
+    k.set_user_roles(&admin, stand_in, &viewer).await.unwrap();
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let direct = sqlx::query("insert into user_role (tenant_id, user_id, role) values ($1, $2, 'Clerk')").bind(tenant).bind(stand_in).execute(&mut *tx).await;
+    assert!(direct.is_err_and(|e| e.to_string().contains("are not held by one person")));
+    drop(tx);
+    assert_eq!(k.role_conflicts(&admin).await.unwrap()[0]["holders"], json!([]), "no one holds both now");
+    k.delete_role_conflict(&admin, "Viewer", "Clerk").await.unwrap();
+    assert!(matches!(k.delete_role_conflict(&admin, "Viewer", "Clerk").await, Err(Error::NotFound(_))));
+    k.set_user_roles(&admin, stand_in, &both).await.expect("the pair is no longer declared");
 }
