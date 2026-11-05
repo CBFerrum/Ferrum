@@ -3,6 +3,24 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-05, night: the apps take up phone lookups, kept-back exports, attribution and product rules
+
+**State:** this PR follows PR 62. Its lock takes eight apps at their follow-ups to PRs 60 and 61, CRM through 0.5.1. No release was tagged.
+
+| Where | What |
+|---|---|
+| Bookings 0.4.2, Commerce 0.7.3, Field Service 0.2.3, Hospitality 0.1.3, Nonprofit 0.1.3, Education 0.1.3 | Their personal-data declarations name their phone fields (bookings' guests, carts, service requests and work orders, technicians, stays, members and volunteers) and their people's names (FERRUM-PRIVACY-002) |
+| HR 0.7.3 | Employees and job applicants are found by phone and listed by name; employees' bank account numbers, IBANs, tax, national ID and passport numbers are left out of every list export (FERRUM-IDENTITY-012) |
+| CRM 0.4.3, 0.5.0, 0.5.1 | Leads by phone and name; a Campaign Attribution report (linear, first or last touch over a won deal's lead, opportunity and submitted quotations); Product Rules (requires, excludes, so many per unit) that hold a quotation back until they are kept, and an action that adds what they need, priced like any line (FERRUM-CRM-002) |
+
+**Evidence:**
+- Each app's own scenario passed against the Ferrum of PRs 60 to 62 before it was pushed, and its CI passed on Ferrum main.
+- `ferrum-app-crm:src/reports.rs`: linear, first and last touch over repeated touches, the parts adding up. `ferrum-app-crm:tests/crm_it.rs`: Expo's deal and a webinar's lead taken on by Expo give Expo 2150, 2000 and 2300 and the webinar 150, 300 and nothing; a sales user's report counts only his deals; a quotation of three widgets lists the installation it needs and the six kits short, is refused at submit, gets Mounting Kit × 6 and Installation × 1 added by the action, each priced, lists the self-fit guide that cannot go with installation, and goes out once kept.
+- Walked on a server built with CRM 0.5.0 (ferrum_walk, CRM installed from Administration, Packages): a product rule "Rent comes with cleaning" made on its form; a quotation for Cyril Citizen with only Rent saved as a draft listing "Rent comes with cleaning (Rent needs Common area cleaning)", its submission refused with that reason at the lines, then with the cleaning line saved with nothing broken and submitted (QTN-2026-00001). The Campaign Attribution report's page took its parameters and ran (no won deals in that workspace).
+- `scripts/check_apps.py` over this lock: all apps and add-ons pass.
+
+**Not done:** product rules set no prices of their own and leave a choice between excluded items to a person; the Campaigns app's sends are not attribution touches; packages other than HR mark no field `no_export`.
+
 ## 2026-11-05, night: failed postings as metrics, and passkey names erased with their owner
 
 **State:** this PR follows PR 61. No release was tagged.
