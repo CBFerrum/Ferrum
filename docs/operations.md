@@ -1446,6 +1446,11 @@ ferrum` for as long as it runs.
 
 Backups taken before the deletion still hold the workspace until they expire. Say so to whoever asked for the deletion.
 
+## Working offline
+
+What devices may keep for people to work without a connection (a till's price book; work done
+offline until it is sent) follows one policy, set per workspace: [offline.md](offline.md).
+
 ## Routine tasks
 
 ```bash

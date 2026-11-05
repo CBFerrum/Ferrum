@@ -273,6 +273,7 @@ impl Kernel {
             "assistant_model": settings.get("assistant_model").cloned().unwrap_or(Value::Null),
             "assistant_monthly_tokens": settings.get("assistant_monthly_tokens").cloned().unwrap_or(Value::Null),
             "assistant_egress": settings.get("assistant_egress").cloned().unwrap_or_else(|| serde_json::json!({})),
+            "offline": settings.get("offline").cloned().unwrap_or_else(|| serde_json::json!({"allowed": true, "hours": 72})),
         }))
     }
 
@@ -324,6 +325,17 @@ impl Kernel {
                 // What may leave for the AI provider, beyond what always may (crate::ctx::Egress).
                 "assistant_egress" => {
                     serde_json::from_value::<crate::ctx::Egress>(v.clone()).map_err(|e| Error::field(k.clone(), e.to_string()))?;
+                    clean.insert(k.clone(), v.clone());
+                }
+                // What devices may keep for offline use (docs/offline.md): `allowed`, and for how many hours.
+                "offline" => {
+                    let o = v.as_object().ok_or_else(|| Error::field("offline", "must be {\"allowed\": true or false, \"hours\": 1 to 720}"))?;
+                    let fits = o.keys().all(|k| k == "allowed" || k == "hours")
+                        && o.get("allowed").is_none_or(Value::is_boolean)
+                        && o.get("hours").is_none_or(|h| h.as_i64().is_some_and(|h| (1..=720).contains(&h)));
+                    if !fits {
+                        return Err(Error::field("offline", "must be {\"allowed\": true or false, \"hours\": 1 to 720}"));
+                    }
                     clean.insert(k.clone(), v.clone());
                 }
                 other => return Err(Error::field(other, "unknown setting")),
