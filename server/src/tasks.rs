@@ -348,6 +348,52 @@ impl Task for AssistantCheck {
     }
 }
 
+/// `assistant_eval slug:<workspace> email:<person> scratch:yes [file:<dataset.yaml>]`: the grounded-answer
+/// cases (`server/assistant-evals/grounded.yaml` unless `file:` names others) against the configured
+/// model, as that person, adding each case's records to that workspace (one set aside for it, as
+/// `scratch:yes` says). Prints each outcome with its prompt version; fails when one fails.
+pub struct AssistantEval;
+
+#[async_trait]
+impl Task for AssistantEval {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "assistant_eval".into(), detail: "Run the assistant's grounded-answer cases against its model in a workspace set aside for it".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let msg = |e: ferrum_kernel::Error| Error::Message(e.to_string());
+        let arg = |name: &str| vars.cli_arg(name).map_err(|e| Error::Message(e.to_string()));
+        if !vars.cli_arg("scratch").is_ok_and(|v| v == "yes") {
+            return Err(Error::Message("the cases add records to the workspace: name one set aside for it, and say scratch:yes".into()));
+        }
+        let st = app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?;
+        let (slug, email) = (arg("slug")?, arg("email")?);
+        let cases = match vars.cli_arg("file") {
+            Ok(path) => std::fs::read_to_string(path).map_err(|e| Error::Message(format!("{path}: {e}")))?,
+            Err(_) => include_str!("../assistant-evals/grounded.yaml").to_string(),
+        };
+        let cases = crate::assistant_eval::parse(&cases).map_err(msg)?;
+        let mut tx = st.kernel.db.system_tx().await.map_err(msg)?;
+        let person: Option<(uuid::Uuid, uuid::Uuid)> =
+            sqlx::query_as("select u.tenant_id, u.id from app_user u join tenant t on t.id = u.tenant_id where t.slug = $1 and u.email = $2 and u.is_active")
+                .bind(slug)
+                .bind(email)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| Error::Message(e.to_string()))?;
+        tx.commit().await.map_err(|e| Error::Message(e.to_string()))?;
+        let (tenant, user) = person.ok_or_else(|| Error::Message(format!("no active {email} in {slug}")))?;
+        let person = st.kernel.load_ctx(tenant, user, None, "assistant-eval".into()).await.map_err(msg)?;
+        let outcomes = crate::assistant_eval::run(&crate::assistant::Env::of(&st), &person, &cases).await.map_err(msg)?;
+        println!("{}", serde_json::to_string_pretty(&outcomes).unwrap_or_default());
+        let failed = outcomes.iter().filter(|o| !o.passed).count();
+        if failed > 0 {
+            return Err(Error::Message(format!("{failed} of {} cases failed", outcomes.len())));
+        }
+        println!("all {} cases passed", outcomes.len());
+        Ok(())
+    }
+}
+
 /// `import_erpnext src:../upstream/erpnext/erpnext out:packages/erpnext-import package:erpnext-import`
 pub struct ImportErpnext;
 

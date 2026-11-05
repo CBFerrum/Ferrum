@@ -485,6 +485,51 @@ pub async fn usage(k: &Kernel, ctx: &Ctx) -> Result<Value> {
     Ok(json!({"month": rows}))
 }
 
+/// The version of what the model is told (its instructions, its tools, the model asked), which
+/// each answer records as `usage.prompt`.
+pub fn prompt_version(system: &str, tools: &[Value], model: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"ferrum-assistant-prompt-v1\n");
+    h.update(format!("{model}\n{system}\n").as_bytes());
+    h.update(serde_json::to_vec(tools).unwrap_or_default());
+    hex::encode(&h.finalize()[..8])
+}
+
+/// Keeps a version's text the first time a turn uses it.
+async fn record_prompt(k: &Kernel, ctx: &Ctx, digest: &str, model: &str, system: &str, tools: &[Value]) -> Result<()> {
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    sqlx::query("insert into assistant_prompt (tenant_id, digest, model, system, tools) values ($1, $2, $3, $4, $5) on conflict do nothing")
+        .bind(ctx.tenant)
+        .bind(digest)
+        .bind(model)
+        .bind(system)
+        .bind(Value::from(tools.to_vec()))
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// What the model was told under a version, for administrators.
+pub async fn prompt(k: &Kernel, ctx: &Ctx, digest: &str) -> Result<Value> {
+    if !ctx.is_admin {
+        return Err(Error::Forbidden("this is for administrators".into()));
+    }
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let row: Option<Value> = sqlx::query_scalar(
+        "select jsonb_build_object('digest', digest, 'model', model, 'system', system, 'tools', tools, 'first_used', first_used, \
+         'answers', (select count(*) from assistant_message m where m.tenant_id = p.tenant_id and m.usage->>'prompt' = p.digest)) \
+         from assistant_prompt p where tenant_id = $1 and digest = $2",
+    )
+    .bind(ctx.tenant)
+    .bind(digest)
+    .fetch_optional(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    row.ok_or_else(|| Error::NotFound(format!("prompt version {digest}")))
+}
+
 /// A record's version as a proposed change finds it.
 async fn version_of(k: &Kernel, ctx: &Ctx, input: &Value) -> Option<i64> {
     let (entity, id) = (input["entity"].as_str()?, input["id"].as_str()?.parse().ok()?);
@@ -1082,6 +1127,8 @@ async fn run(env: &Env, ctx: &Ctx, thread: Uuid, live: &Live, t: Thread, input: 
     }
 
     let system = if tools.instructions.is_empty() { SYSTEM.to_string() } else { format!("{SYSTEM}\n\nAbout the tools: {}", tools.instructions) };
+    let prompt = prompt_version(&system, &tools.api, &model);
+    record_prompt(k, ctx, &prompt, &model, &system, &tools.api).await?;
     let stopped = || -> Result<&'static str> {
         live.send(json!({"type": "note", "text": "Stopped."}));
         Ok("idle")
@@ -1147,7 +1194,7 @@ async fn run(env: &Env, ctx: &Ctx, thread: Uuid, live: &Live, t: Thread, input: 
         let called: Vec<&str> = reply.content.iter().filter(|b| b["type"] == "tool_use").filter_map(|b| b["name"].as_str()).collect();
         tracing::info!(tenant = %ctx.tenant, user = %ctx.user, model = %reply.model, input_tokens = %reply.usage["input_tokens"], output_tokens = %reply.usage["output_tokens"], tools = ?called, "assistant call");
         let content = json!(reply.content);
-        let usage = json!({"model": reply.model, "usage": reply.usage, "stop_reason": reply.stop_reason});
+        let usage = json!({"model": reply.model, "usage": reply.usage, "stop_reason": reply.stop_reason, "prompt": prompt});
         let seq = append(k, ctx, thread, "assistant", &content, Some(&usage)).await?;
         live.send(json!({"type": "message", "message": display(seq, "assistant", &content)}));
         let calls: Vec<Value> = reply.content.iter().filter(|b| b["type"] == "tool_use").cloned().collect();

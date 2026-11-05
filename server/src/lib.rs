@@ -3,6 +3,7 @@ pub mod app;
 pub mod appmgr;
 pub mod appmgr_mcp;
 pub mod assistant;
+pub mod assistant_eval;
 pub mod assistant_openai;
 pub mod coedit;
 pub mod controllers;
