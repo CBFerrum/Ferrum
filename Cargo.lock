@@ -2304,7 +2304,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-bookings"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-bookings?branch=main#b1e52d31834356df23135564e52c88d6ed7cf905"
+source = "git+https://github.com/CBFerrum/ferrum-app-bookings?branch=main#1b8fcff1c61ee8c57edc33c587dc9b2eaf449265"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2317,7 +2317,9 @@ dependencies = [
  "ferrum-meta",
  "hex",
  "hmac 0.12.1",
+ "icalendar",
  "rand 0.9.5",
+ "reqwest 0.12.28",
  "rust_decimal",
  "serde",
  "serde_json",
@@ -2586,7 +2588,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-erp"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7e71b38d16a4c39e1ff506b19e19932741f3c7b9"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#39d4b57e335bacb5eccd0b9f1da212a99db5510a"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3025,7 +3027,7 @@ dependencies = [
 [[package]]
 name = "ferrum-ca"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7e71b38d16a4c39e1ff506b19e19932741f3c7b9"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#39d4b57e335bacb5eccd0b9f1da212a99db5510a"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3055,7 +3057,7 @@ dependencies = [
 [[package]]
 name = "ferrum-countries"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7e71b38d16a4c39e1ff506b19e19932741f3c7b9"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#39d4b57e335bacb5eccd0b9f1da212a99db5510a"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3077,7 +3079,7 @@ dependencies = [
 [[package]]
 name = "ferrum-de"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7e71b38d16a4c39e1ff506b19e19932741f3c7b9"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#39d4b57e335bacb5eccd0b9f1da212a99db5510a"
 dependencies = [
  "async-trait",
  "ferrum-app-erp",
@@ -3127,7 +3129,7 @@ dependencies = [
 [[package]]
 name = "ferrum-eu"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7e71b38d16a4c39e1ff506b19e19932741f3c7b9"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#39d4b57e335bacb5eccd0b9f1da212a99db5510a"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3147,7 +3149,7 @@ dependencies = [
 [[package]]
 name = "ferrum-eu-members"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7e71b38d16a4c39e1ff506b19e19932741f3c7b9"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#39d4b57e335bacb5eccd0b9f1da212a99db5510a"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3171,7 +3173,7 @@ dependencies = [
 [[package]]
 name = "ferrum-finance"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7e71b38d16a4c39e1ff506b19e19932741f3c7b9"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#39d4b57e335bacb5eccd0b9f1da212a99db5510a"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3193,7 +3195,7 @@ dependencies = [
 [[package]]
 name = "ferrum-gb"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7e71b38d16a4c39e1ff506b19e19932741f3c7b9"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#39d4b57e335bacb5eccd0b9f1da212a99db5510a"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3214,7 +3216,7 @@ dependencies = [
 [[package]]
 name = "ferrum-india"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7e71b38d16a4c39e1ff506b19e19932741f3c7b9"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#39d4b57e335bacb5eccd0b9f1da212a99db5510a"
 dependencies = [
  "aes",
  "async-trait",
@@ -3296,7 +3298,7 @@ dependencies = [
 [[package]]
 name = "ferrum-mes"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7e71b38d16a4c39e1ff506b19e19932741f3c7b9"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#39d4b57e335bacb5eccd0b9f1da212a99db5510a"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3333,7 +3335,7 @@ dependencies = [
 [[package]]
 name = "ferrum-mfg-ops"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7e71b38d16a4c39e1ff506b19e19932741f3c7b9"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#39d4b57e335bacb5eccd0b9f1da212a99db5510a"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3422,7 +3424,7 @@ dependencies = [
 [[package]]
 name = "ferrum-procurement"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7e71b38d16a4c39e1ff506b19e19932741f3c7b9"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#39d4b57e335bacb5eccd0b9f1da212a99db5510a"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3446,7 +3448,7 @@ dependencies = [
 [[package]]
 name = "ferrum-quality"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7e71b38d16a4c39e1ff506b19e19932741f3c7b9"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#39d4b57e335bacb5eccd0b9f1da212a99db5510a"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3573,7 +3575,7 @@ dependencies = [
 [[package]]
 name = "ferrum-stock-ops"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7e71b38d16a4c39e1ff506b19e19932741f3c7b9"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#39d4b57e335bacb5eccd0b9f1da212a99db5510a"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3617,7 +3619,7 @@ dependencies = [
 [[package]]
 name = "ferrum-us"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7e71b38d16a4c39e1ff506b19e19932741f3c7b9"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#39d4b57e335bacb5eccd0b9f1da212a99db5510a"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3635,7 +3637,7 @@ dependencies = [
 [[package]]
 name = "ferrum-wms"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7e71b38d16a4c39e1ff506b19e19932741f3c7b9"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#39d4b57e335bacb5eccd0b9f1da212a99db5510a"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4302,6 +4304,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "icalendar"
+version = "0.17.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2fe2f2ca4a82ec12ebd129ca664030add9b80d17a2b79ce885884fefb1c650e6"
+dependencies = [
+ "chrono",
+ "chrono-tz 0.10.4",
+ "iso8601",
+ "nom 8.0.0",
+ "nom-language",
+ "rrule",
+ "thiserror 2.0.21",
+ "uuid",
+]
+
+[[package]]
 name = "icu_collections"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4517,6 +4535,15 @@ name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
+
+[[package]]
+name = "iso8601"
+version = "0.6.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ffd3254cf2b0fc53e38414bdba99719f3e269db8a6519731b68a3a90040c41b"
+dependencies = [
+ "nom 8.0.0",
+]
 
 [[package]]
 name = "itertools"
@@ -5270,6 +5297,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df9761775871bdef83bee530e60050f7e54b1105350d6884eb0fb4f46c2f9405"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "nom-language"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2de2bc5b451bfedaef92c90b8939a8fff5770bdcc1fafd6239d086aab8fa6b29"
+dependencies = [
+ "nom 8.0.0",
 ]
 
 [[package]]
@@ -6772,6 +6808,19 @@ dependencies = [
  "serde_yaml",
  "tera 1.20.1",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "rrule"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "720acfb4980b9d8a6a430f6d7a11933e701ebbeba5eee39cc9d8c5f932aaff74"
+dependencies = [
+ "chrono",
+ "chrono-tz 0.10.4",
+ "log",
+ "regex",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
