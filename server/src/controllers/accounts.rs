@@ -239,7 +239,7 @@ async fn authorize(st: &AppState, headers: &HeaderMap, uri: &Uri, q: &[(String, 
         return Ok(status_page(StatusCode::NOT_FOUND, "No workspace here", "This address does not lead to a workspace.", &[("Your workspaces", "/")], None));
     };
     let Some((ctx, _)) = signed_in(st, headers).await else {
-        return Ok(Redirect::to(&format!("/login?next={}", enc(&format!("/authorize?{}", uri.query().unwrap_or_default())))).into_response());
+        return Ok(Redirect::to(&sign_in_first(uri.query().unwrap_or_default())).into_response());
     };
     let entry = st.kernel.enter(&ctx, tenant).await?;
     if let Entry::Ready(m) = &entry
@@ -256,6 +256,13 @@ async fn authorize(st: &AppState, headers: &HeaderMap, uri: &Uri, q: &[(String, 
     request["state"] = json!(state);
     request["workspace"] = json!({"name": ws.name, "slug": ws.slug, "url": workspace_url(st, headers, &bare)});
     interface(st, &ctx, request).await
+}
+
+/// Where `/authorize` sends someone signed in to no account here: to sign in, then back. Signing in
+/// is choosing the account, so the way back does not ask which one again.
+fn sign_in_first(query: &str) -> String {
+    let query = query.replace("prompt=select_account", "prompt=none");
+    format!("/login?next={}", enc(&format!("/authorize?{query}")))
 }
 
 /// Regions this cluster's directory knows: a host that is not here may be another region's.
@@ -857,5 +864,12 @@ mod tests {
         assert_eq!(state_param("abc-DEF_12"), Some("abc-DEF_12"));
         assert_eq!(state_param("a b"), None);
         assert_eq!(state_param(""), None);
+    }
+
+    #[test]
+    fn signing_in_is_choosing_the_account() {
+        let back = |q: &str| format!("/login?next={}", enc(&format!("/authorize?{q}")));
+        assert_eq!(sign_in_first("host=a.localhost%3A5160&state=s1&prompt=select_account"), back("host=a.localhost%3A5160&state=s1&prompt=none"));
+        assert_eq!(sign_in_first("host=a.localhost%3A5160&state=s1&prompt=none"), back("host=a.localhost%3A5160&state=s1&prompt=none"));
     }
 }
