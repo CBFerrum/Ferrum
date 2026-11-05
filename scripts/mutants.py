@@ -61,11 +61,15 @@ ACCEPTANCE = ("-p", "ferrum-ops", "--test", "acceptance_it")
 INDUSTRIAL = ("-p", "ferrum-apps", "--lib", "industrial::tests")
 MANIFEST_UNIT = ("-p", "ferrum-apps", "--lib", "manifest::tests")
 SERVICES = ("-p", "ferrum-server", "--test", "service_apps_it")
+SHELL = ("-p", "ferrum-kernel", "--test", "shell_it")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
+    # The directory of people is the members'.
+    ("directory-read-by-anyone", "crates/kernel/src/collab.rs", "if !ctx.is_system && self.user_kind(ctx.tenant, ctx.user).await? != \"member\" {", "if false {", SHELL),
+    ("directory-lists-everyone", "crates/kernel/src/collab.rs", "where tenant_id = $1 and is_active and kind = 'member' \\", "where tenant_id = $1 and is_active \\", SHELL),
     # Large files: an app's whole read has a ceiling.
     ("files-read-whole-past-the-cap", "crates/kernel/src/files.rs", "        if f.size > MAX_READ_WHOLE {\n", "        if false {\n", COLLAB),
     # Services on their publisher's servers.
