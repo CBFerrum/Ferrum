@@ -429,6 +429,7 @@ impl Kernel {
         self.fetch_links(ctx, tx, &ent, &mut doc, None).await?;
         self.hook_before_validate(ctx, tx, &ent, &mut doc).await?;
         self.compute(ctx, &ent, &mut doc)?;
+        check_state_needs(&ent, &doc, None)?;
         self.validate(ctx, tx, &ent, &doc, None, RuleOn::Save).await?;
         self.hook_validate(ctx, tx, &ent, &doc, None).await?;
         let scope = row_scope(ctx, &ent, Action::Create)?;
@@ -481,10 +482,12 @@ impl Kernel {
         if !errors.is_empty() {
             return Err(Error::Validation(errors));
         }
+        check_state_edit(ctx, &ent, &old, &doc, &patch)?;
         self.fill_new_row_defaults(ctx, &ent, &mut doc, &old)?;
         self.fetch_links(ctx, tx, &ent, &mut doc, Some(&old)).await?;
         self.hook_before_validate(ctx, tx, &ent, &mut doc).await?;
         self.compute(ctx, &ent, &mut doc)?;
+        check_state_needs(&ent, &doc, None)?;
         self.validate(ctx, tx, &ent, &doc, Some(&old), RuleOn::Save).await?;
         self.hook_validate(ctx, tx, &ent, &doc, Some(&old)).await?;
         if !scope.matches(&doc) {
@@ -814,6 +817,7 @@ impl Kernel {
             }
         }
         let target = wf.def.states.iter().find(|s| s.name == t.to).ok_or_else(|| Error::internal("workflow target state missing"))?;
+        check_state_needs(&ent, &doc, Some((target, action)))?;
         let from_status = docstatus_of(&doc) as i16;
         let version = version_of(&doc);
         match (from_status, target.docstatus) {
@@ -1405,6 +1409,41 @@ async fn fetch_for(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: &mu
     }
     let _ = k;
     Ok(())
+}
+
+/// The workflow state a document is in.
+fn state_of<'a>(ent: &'a EffEntity, doc: &Doc) -> Option<&'a ferrum_meta::WorkflowState> {
+    let wf = ent.workflow.as_ref()?;
+    let name = doc.get("workflow_state").and_then(Value::as_str).unwrap_or(&wf.def.initial_state);
+    wf.def.states.iter().find(|s| s.name == name)
+}
+
+/// A person's edit of a document whose state names what may change in it: the rest stays as it
+/// is (the server's own updates are not held to it).
+fn check_state_edit(ctx: &Ctx, ent: &EffEntity, old: &Doc, doc: &Doc, patch: &Doc) -> Result<()> {
+    let Some(s) = state_of(ent, old).filter(|s| !s.editable.is_empty() && !ctx.is_system) else { return Ok(()) };
+    let errors: Vec<FieldError> = patch
+        .keys()
+        .filter(|k| !SYSTEM_KEYS.contains(&k.as_str()) && !k.starts_with('_') && !s.editable.contains(*k) && doc.get(*k) != old.get(*k))
+        .map(|k| FieldError::new(k, format!("stays as it is while the document is {}", s.name)))
+        .collect();
+    if errors.is_empty() { Ok(()) } else { Err(Error::Validation(errors)) }
+}
+
+/// What a state needs of a document: the one it is saved in, or (`to`) the one an action moves it
+/// into.
+fn check_state_needs(ent: &EffEntity, doc: &Doc, to: Option<(&ferrum_meta::WorkflowState, &str)>) -> Result<()> {
+    let Some(s) = to.map(|t| t.0).or_else(|| state_of(ent, doc)) else { return Ok(()) };
+    let errors: Vec<FieldError> = s
+        .required
+        .iter()
+        .filter(|f| is_empty(doc.get(*f).unwrap_or(&Value::Null)))
+        .map(|f| match to {
+            Some((_, action)) => FieldError::new(f, format!("is needed to {action}")),
+            None => FieldError::new(f, format!("is needed while the document is {}", s.name)),
+        })
+        .collect();
+    if errors.is_empty() { Ok(()) } else { Err(Error::Validation(errors)) }
 }
 
 /// A copy of a document suitable for creating a new record (amend/duplicate).
