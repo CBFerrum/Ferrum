@@ -12,7 +12,7 @@ components:
   - {repository: CBFerrum/ferrum-app-control, pinned: c76f6c48373d94938e16dab616cf05870ba12243}
   - {repository: CBFerrum/ferrum-app-crm, pinned: cae26b4f3026d24fc89b8e9d796b9a0c7eab5416}
   - {repository: CBFerrum/ferrum-app-dam, pinned: dc6b1c695e0d9caaa88cfde0503f7012a3539b0b}
-  - {repository: CBFerrum/ferrum-app-developers, pinned: f6120bf17210b9fef2d2b26503eb75c8a4925ca3}
+  - {repository: CBFerrum/ferrum-app-developers, pinned: ca57f51e1f9ceb798fc0f2c03dc29043cd6e66a0}
   - {repository: CBFerrum/ferrum-app-docs, pinned: 9f835758c43dd7f7bd2d0565daa2f58019ecf34b}
   - {repository: CBFerrum/ferrum-app-drive, pinned: 9d8ec5b80915f48b383a41708498245b2b7c3bdc}
   - {repository: CBFerrum/ferrum-app-edge, pinned: 67ce241cbb9636d64413936125aeec17900ebd82}
