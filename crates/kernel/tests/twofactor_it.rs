@@ -99,6 +99,13 @@ async fn two_factor_sign_in() {
     let pat = k.load_ctx(tenant, pat_id, Some(s.token_version), "it".into()).await.unwrap();
     assert_eq!(k.two_factor_status(&pat).await.unwrap()["recovery_codes_left"], json!(0));
 
+    // The offline policy (docs/offline.md) is a workspace setting like this one: allowed, and hours.
+    k.update_tenant_settings(&admin, json!({"offline": {"allowed": false, "hours": 8}}).as_object().unwrap()).await.unwrap();
+    assert_eq!(k.tenant_settings(&admin).await.unwrap()["offline"], json!({"allowed": false, "hours": 8}));
+    for bad in [json!({"hours": 0}), json!({"hours": 721}), json!({"allowed": "no"}), json!({"keep": true}), json!(true)] {
+        assert!(k.update_tenant_settings(&admin, json!({"offline": bad}).as_object().unwrap()).await.is_err(), "{bad}");
+    }
+
     // A workspace that requires it: those without it may only set it up.
     assert!(k.update_tenant_settings(&pat, json!({"require_two_factor": true}).as_object().unwrap()).await.is_err());
     k.update_tenant_settings(&admin, json!({"require_two_factor": true}).as_object().unwrap()).await.unwrap();
