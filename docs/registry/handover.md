@@ -3,6 +3,32 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-06, later: learning completion walked, a site without internet, a job finished offline, a leaver settled
+
+**State:** this PR follows PRs 76 and 77. Its lock takes Learn 0.6.1, Field Service 0.4.0, the Control
+Plane 0.1.7 and HR 0.8.0. No release was tagged.
+
+| Where | What |
+|---|---|
+| Journeys | Learning completion walked through the pages ([the walk](../platform/evidence/browser-2026-11-06-journeys.md)): a course built, a member enrolled, the quiz failed once and passed, the certificate issued and checked on its public page; FERRUM-JOURNEY-011 is implemented, waiting on an independent reviewer |
+| Learn 0.6.1 | A lesson's New quiz and New assignment make one in the lesson and pick it; they left for a blank form and the lesson lost its kind (found in the walk) |
+| PR 76 | A site without internet takes a release in a bundle, loaded into one host or a site registry: FERRUM-OPS-003 is implemented |
+| Field Service 0.4.0 | A technician finishes a job without a connection, the steps held and sent in order with their own times: FERRUM-FIELD-002 is implemented |
+| Control Plane 0.1.7 | The public status has a page anyone opens; FERRUM-CLOUD-004 stays partial (signatures and provenance, certificate renewal, running restores) |
+| HR 0.8.0 | A leaver's full and final statement: open claims and advances gathered, gratuity or a recovery added, one journal entry settling all of it; FERRUM-JOURNEY-003 waits only on its walk through the pages |
+| This PR | Each sign-in at the accounts host keeps a cookie of its own, so tabs that set off together (every open tab, when someone signs out) no longer undo each other ("Signing in did not finish", seen in the walks) |
+
+**Evidence:** the walk; `ferrum-app-lms:ui/src/screens.test.tsx` (New quiz, failing with the change
+reverted), `ferrum-app-hr:tests/hr_it.rs` (`hire_to_retire`, the statement to its entry and back),
+`deploy/offline/test_offline.py`, `ferrum-app-field-service:tests/field_service_it.rs` and its
+`ui/src/held.test.ts`, `server/src/shell.rs` (`each_sign_in_keeps_its_own_cookie`).
+
+**Next:** hire to retire through the pages, on a server with HR 0.8.0; marketing to consent, the stay,
+and the tenant's life on the image. Pages show times in the browser's zone while Field Service shows the
+workspace's (FERRUM-UX-006); CRM says nothing of the connector its orders need; an add-on's entity
+opened before it is installed says "not found"; Sign shows a small file as "0.00 MB" until Sign 0.2.4
+is pinned.
+
 ## 2026-11-06, morning: three more journeys through the pages, and what the walks found
 
 **State:** this PR follows PR 75. Its lock takes ERP 0.14.2 (Procurement 0.1.3, Finance 0.3.2), Field
