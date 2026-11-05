@@ -1,4 +1,4 @@
-# A browser on a running server, 6 November 2026: five journeys through the pages
+# A browser on a running server, 6 November 2026: six journeys through the pages
 
 Until now these journeys ran through the API, in the kernel's and the apps' suites. This walk took
 them through the interface, as the people in them would. The server was built in debug on one
@@ -38,6 +38,9 @@ The workspace's time zone is UTC; the browser's was India's.
 | | Time | TS-2026-00001: three hours on the task, costing 120.00 but billing 0.00 (below); the row's billing hours and rate set in its fields, 240.00; submitted |
 | | Invoiced | The project's Create Sales Invoice ("Invoice the project's unbilled time") refused: "set the service item of activity type Fit-out work to invoice its time"; with the Field labour item set, a draft of 3 hours at 80.00, 240.00, submitted |
 | | The margin | Project Profitability: billed revenue 240.00, timesheet cost 120.00, margin 120.00 (50%), no time unbilled |
+| Document to signature (FERRUM-JOURNEY-008) | A request | In Sign, a one-page service agreement for Harbour Cafe uploaded; signers one after another: Maya Rao (Customer), then the administrator (Walk Properties); her signature and the date signed placed under "Signed for Harbour Cafe:", theirs below; the review gave the document's fingerprint and said what kind of signature it is (an audit trail, not a qualified one); sent as SIGN-2026-00003 |
+| | Signed in turn | Maya's page, from the link e-mailed to her, showed the document with its SHA-256 and the last day; signing without the consent refused ("Tick the box to agree to sign electronically"); with it, a drawn signature recorded. Only then did the administrator's link go out; a typed signature completed it ("Everyone has signed") |
+| | Sealed and checked | The request Completed with the signed copy's fingerprint and seven steps (sent, opened, signed drawn and typed, sealed); Check integrity: the original and the signed copy unchanged, and each step tied to the one before |
 
 ## What it found, and what changed
 
@@ -54,6 +57,7 @@ The workspace's time zone is UTC; the browser's was India's.
 | A purchase invoice made from a receipt holds "PENDING-<receipt>" as the supplier's number, and could be submitted with it | ERP 0.14.2: refused at submit |
 | A timesheet row entered on its page billed 0.00: the preview's zeros for billing hours and rate went back as if chosen | Projects 0.6.4: zero takes the default |
 | Opening an entity of an add-on that is not installed (a material request before Procurement) says "entity MaterialRequest not found" | Not yet |
+| Sign shows a 776-byte PDF as "0.00 MB" | Not yet |
 
 ## What it does not show
 

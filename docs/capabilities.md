@@ -9,8 +9,8 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 173 |
-| Partially implemented | 39 |
+| Implemented, qualification incomplete | 174 |
+| Partially implemented | 38 |
 | Blocked by external dependency | 19 |
 | **All** | **231** |
 
@@ -292,7 +292,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-JOURNEY-005 | Project to profit | Implemented, qualification incomplete | tested | Walked in a browser on a server built on one machine: a project, a task, three hours of time, the project's invoice for it and its profitability, 50% margin (evidence/browser-2026-11-06-journeys.md); Milestones, expenses and a fixed price run in the app's suite, through its API; No independent reviewer |
 | FERRUM-JOURNEY-006 | Online order to return | Partially implemented | tested | In parts, inside Commerce's suite (returns_and_refunds_end_to_end): an order paid, shipped and tracked from a link, a line and the delivery charge returned, refunded through the gateway with a credit note; a cancelled order and cash on delivery too; A test gateway, not a real provider; through the API, not a storefront in a browser |
 | FERRUM-JOURNEY-007 | Field work to invoice | Implemented, qualification incomplete | tested | Walked in a browser on a server built on one machine: a technician arrived, recorded time and the customer's signature and completed the job; its invoice refused until the labour item was set, then made from the time, issued and paid in ERP (evidence/browser-2026-11-06-journeys.md); Parts from a van's stock run in the app's suite, through its API; No independent reviewer |
-| FERRUM-JOURNEY-008 | Document to signature | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
+| FERRUM-JOURNEY-008 | Document to signature | Implemented, qualification incomplete | tested | Walked in a browser on a server built on one machine: a PDF to two signers in turn by their e-mailed links, the consent required, drawn and typed signatures, sealed, its integrity checked (evidence/browser-2026-11-06-journeys.md); a contract's PDF to both parties' signatures, from Contracts, was walked on 5 November (evidence/browser-2026-11-04-flows.md); Signatures are an audit trail, not certificate-based: a qualified signature needs a trust service provider (BLOCK-SIGNING-PROVIDER); No independent reviewer |
 | FERRUM-JOURNEY-009 | Marketing to consent enforcement | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
 | FERRUM-JOURNEY-010 | Hospitality stay | Partially implemented | tested | Walked in the app's scenario: reservation, check-in, a minibar charge and a deposit, two night audits with a no-show, check-out with its invoice through ERP, a cancellation; the invoice is a draft, and its payment is ERP's; Not over HTTP or in a browser |
 | FERRUM-JOURNEY-011 | Learning completion | Partially implemented | tested | Inside one app's suite, through its API, not through the interface; no independent reviewer |
