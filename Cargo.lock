@@ -2770,6 +2770,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrum-app-intranet"
+version = "0.1.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-intranet?branch=main#20059552c62f2a0c86cab0704d787f133855eb67"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrum-domain",
+ "ferrum-kernel",
+ "ferrum-meta",
+ "serde_json",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
 name = "ferrum-app-itsm"
 version = "0.1.0"
 source = "git+https://github.com/CBFerrum/ferrum-app-itsm?branch=main#74bae9c48f2642ea432580b916342a9049fe88ce"
@@ -3520,6 +3535,7 @@ dependencies = [
  "ferrum-app-helpdesk",
  "ferrum-app-hospitality",
  "ferrum-app-hr",
+ "ferrum-app-intranet",
  "ferrum-app-itsm",
  "ferrum-app-lms",
  "ferrum-app-logistics",
