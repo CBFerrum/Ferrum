@@ -129,7 +129,7 @@ impl Company {
 
     pub fn require(&self, key: &str, what: &str) -> Result<Uuid> {
         self.account(key)
-            .ok_or_else(|| Error::invalid(format!("set the company's {what} (Company → Default Accounts → {key}) or create the standard chart of accounts")))
+            .ok_or_else(|| Error::invalid(format!("set the company's {what} (the company's Default Accounts), or run Create Standard Chart of Accounts on the company to add the standard accounts it lacks")))
     }
 
     pub fn name(&self) -> &str {
