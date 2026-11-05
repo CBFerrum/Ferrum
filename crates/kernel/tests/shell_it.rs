@@ -219,6 +219,11 @@ async fn sessions_hosts_kinds_and_releases() {
     assert!(matches!(k.sign_in_with_code("acme", "pia@customer.test", &code).await, Err(Error::Unauthorized(_))), "a code works once");
     let pia = k.load_ctx(acme, pia_id, Some(signed.token_version), "it".into()).await.unwrap();
     assert!(!pia.is_admin && pia.roles.is_empty(), "a portal person holds no rights, whatever she was given");
+    // The directory of people is the members': a portal person neither reads it nor is in it.
+    assert!(matches!(k.user_directory(&pia).await, Err(Error::Forbidden(_))), "a portal person does not read the directory");
+    let listed: Vec<String> = k.user_directory(&admin).await.unwrap().iter().map(|p| p["email"].as_str().unwrap_or_default().to_string()).collect();
+    assert!(listed.iter().any(|e| e == "admin@acme.test"), "{listed:?}");
+    assert!(!listed.iter().any(|e| e == "pia@customer.test" || e == "ana@acme.test"), "portal people are not listed: {listed:?}");
     // Five wrong tries end a code.
     k.send_sign_in_code("acme", "pia@customer.test").await.unwrap();
     let code = codes_for(&k, "pia@customer.test").await[0].clone();

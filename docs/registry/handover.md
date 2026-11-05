@@ -3,6 +3,24 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-06: the directory of people is the members'
+
+**State:** found walking support to resolution in a browser: a portal person (a lessee, signed in with an
+e-mailed code) read every person's name and address from `GET /api/users`, other customers, a citizen,
+a partner and a supplier's contact among them, and Helpdesk offered portal people as a ticket's
+assignee. No release was tagged.
+
+| Where | What |
+|---|---|
+| This PR | The directory lists the workspace's active members alone (no portal people, guests, service or support accounts), and only a member reads it; anyone else is refused |
+
+**Evidence:** `crates/kernel/tests/shell_it.rs`: a portal person is refused the directory, and the
+administrator's directory holds the members, not the portal people; mutants `directory-read-by-anyone`
+and `directory-lists-everyone`.
+
+**Not done:** Drive's share box finds people by the directory, so it now calls a portal person's address
+outside the workspace, which it is.
+
 ## 2026-11-05, night: addresses out of the history's payloads, and Edge's people
 
 **State:** this PR follows PR 66. Its lock takes IoT Edge 0.4.4 and FRONTEND_REV takes Frontend PR 30. No release was tagged.
