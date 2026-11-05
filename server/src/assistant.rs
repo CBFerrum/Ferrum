@@ -626,8 +626,9 @@ struct Tools {
 }
 
 async fn tools(env: &Env, ctx: &Ctx) -> Tools {
-    let providers = env.providers();
-    let extra: Vec<&dyn ferrum_mcp::ToolProvider> = providers.iter().map(|p| p as &dyn ferrum_mcp::ToolProvider).collect();
+    let (providers, search) = (env.providers(), crate::search::SearchTool(env.kernel.clone()));
+    let mut extra: Vec<&dyn ferrum_mcp::ToolProvider> = providers.iter().map(|p| p as &dyn ferrum_mcp::ToolProvider).collect();
+    extra.push(&search);
     let list = ferrum_mcp::handle_with(&env.kernel, ctx, json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}), &extra).await;
     let init = ferrum_mcp::handle(
         &env.kernel,
@@ -690,8 +691,9 @@ fn check_input(schema: &Value, input: &Value) -> std::result::Result<(), String>
 
 /// Runs one call as the person; failures come back as results the model reads.
 async fn run_tool(env: &Env, ctx: &Ctx, name: &str, input: &Value) -> (bool, String) {
-    let providers = env.providers();
-    let extra: Vec<&dyn ferrum_mcp::ToolProvider> = providers.iter().map(|p| p as &dyn ferrum_mcp::ToolProvider).collect();
+    let (providers, search) = (env.providers(), crate::search::SearchTool(env.kernel.clone()));
+    let mut extra: Vec<&dyn ferrum_mcp::ToolProvider> = providers.iter().map(|p| p as &dyn ferrum_mcp::ToolProvider).collect();
+    extra.push(&search);
     let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": input}});
     let reply = ferrum_mcp::handle_with(&env.kernel, ctx, msg, &extra).await.unwrap_or(Value::Null);
     let (error, mut text) = if let Some(err) = reply.get("error") {
