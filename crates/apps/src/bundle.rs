@@ -243,8 +243,11 @@ fn package_error<T>(pkg: &Package, message: String) -> Result<T, AppError> {
 fn check_namespaces(m: &AppManifest, packages: &[Package]) -> Result<(), AppError> {
     for pkg in packages {
         for role in &pkg.manifest.roles {
-            if role.name.starts_with("plugin:") {
-                return package_error(pkg, format!("role '{}': names starting with 'plugin:' are reserved for plugins' service users", role.name));
+            if role.name.starts_with("plugin:") || role.name.starts_with("service:") {
+                return package_error(
+                    pkg,
+                    format!("role '{}': names starting with 'plugin:' or 'service:' are reserved for the accounts plugins and services act as", role.name),
+                );
             }
         }
     }
@@ -425,10 +428,10 @@ impl Bundle {
                 return Err(AppError::Package { package: p.clone(), message: format!("listed in app.yaml, but packages/{p}/package.yaml is missing") });
             }
         }
-        if m.runtime == Runtime::Meta
+        if matches!(m.runtime, Runtime::Meta | Runtime::Service)
             && let Some(sql) = self.files.keys().find(|p| p.starts_with("packages/") && p.contains("/sql/"))
         {
-            return bad(format!("{sql}: meta apps carry no code and no SQL"));
+            return bad(format!("{sql}: {} apps carry no code and no SQL", m.runtime));
         }
         match &m.industrial {
             Some(section) => {

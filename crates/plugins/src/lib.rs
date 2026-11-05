@@ -691,20 +691,10 @@ impl PluginHost {
         // the declared permissions.
         let role = format!("plugin:{}", p.name);
         let email = format!("{}@plugins.ferrum.invalid", p.name);
+        let user = k.ensure_service_account(ctx, &email, &format!("Plugin: {}", p.name), &role).await?;
         let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-        sqlx::query("insert into role (tenant_id, name) values ($1, $2) on conflict do nothing").bind(ctx.tenant).bind(&role).execute(&mut *tx).await?;
         sqlx::query("delete from role_permission where tenant_id = $1 and role = $2").bind(ctx.tenant).bind(&role).execute(&mut *tx).await?;
-        let existing: Option<Uuid> =
-            sqlx::query_scalar("select id from app_user where tenant_id = $1 and email = $2").bind(ctx.tenant).bind(&email).fetch_optional(&mut *tx).await?;
         tx.commit().await?;
-        let user = match existing {
-            Some(u) => {
-                k.set_user_active(ctx, u, true).await?;
-                k.set_user_roles(ctx, u, std::slice::from_ref(&role)).await?;
-                u
-            }
-            None => k.create_user(ctx, &email, &format!("Plugin: {}", p.name), None, std::slice::from_ref(&role), false).await?,
-        };
         for perm in &m.permissions {
             k.set_role_permission(ctx, &role, perm).await?;
         }

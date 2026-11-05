@@ -371,6 +371,47 @@ contributes:
   tokens) is what Ferrum's own apps use, and any app may bring its own look and framework instead.
 * An app without packages may consist of an interface alone.
 
+## Services on their own servers
+
+An app's code may run on its publisher's servers instead (`runtime: service`). The four classes,
+and what each may do:
+
+| Runtime | Where its code runs | What it reaches |
+|---|---|---|
+| `native` | compiled into the server | everything; only in builds of Ferrum, never from a bundle |
+| `wasm` | the sandbox above | what `plugin.json` asks for, consented to at install |
+| `meta` | nowhere: metadata only | its packages' records, and its pages the person's records within `access` |
+| `service` | the publisher's servers | as an account of its own, the records `access` names, over the API |
+
+```yaml
+runtime: service
+access:
+  - {entity: Customer, read: true}
+service:
+  url: https://svc.example.com/ferrum
+  events: [Customer.*, SalesInvoice.submitted]
+```
+
+* **Consent**: the install dialog names the service's host, the records it reaches and what it
+  hears of; a new host or more records ask again on an upgrade.
+* **Installing** gives it an account of its own (a service account: no seat, not among the
+  workspace's people) whose role carries exactly `access`, and an API key for it. The server
+  posts `{url}/install` with `{"event": "installed", "app", "version", "workspace", "api", "key",
+  "secret"}`: the key for `api`, and the secret its events are signed with. A service that does
+  not answer 2xx is not installed, and nothing it was given works.
+* **Events** go to `{url}/events` as webhooks do (`X-Ferrum-Event`, `X-Ferrum-Delivery`,
+  `X-Ferrum-Signature: t=<ts>,v1=<HMAC-SHA256 of '<ts>.<body>'>`, retried), each naming the
+  record (`entity`, `id`, `event`, `actor`) without its contents: the service reads it with its
+  key, through the same permissions, field groups and egress policy as anyone's request. It hears
+  only of records its `access` reads.
+* **Turning it off** stops its key and its deliveries; turning it on starts both again.
+  **Removing it** revokes the key and posts `{url}/uninstall`, signed with its secret. Its
+  webhook is the app's: it cannot be deleted by hand, only with the app.
+* Calls go to its host alone, over HTTPS (plain HTTP only where the server allows private
+  addresses, for development), resolved once and pinned, without redirects.
+* A service cannot veto or change a document as it is saved (that is a hook, and hooks run in
+  the sandbox); it learns of what happened, and acts through the API like any other caller.
+
 ## Limits and guarantees
 
 * No ambient access: no WASI, no files, no network except declared hosts, no clock except `time.now`.

@@ -169,6 +169,10 @@ pub struct Permissions {
     /// Runs native code inside the server: everything the platform can do (reviewed code only).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub native: bool,
+    /// Runs on its publisher's servers, at these hosts, as an account of its own: the records it
+    /// reaches are `entities`, and what it hears of `subscriptions`.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub services: BTreeSet<String>,
     /// Records its code may access (its plugin's service role, and the most it may do for a
     /// user): entity, or `*` for every entity → `read`, `write`, `create`, `delete`, `submit`,
     /// `cancel`, `export`, `import` (suffixed ` (own records)` when limited to them) and
@@ -286,6 +290,7 @@ impl Permissions {
         if self.native && !previous.native {
             out.push("runs native code inside the server, with full access".to_string());
         }
+        added_items(&mut out, "runs outside Ferrum, as an account of its own, at", &self.services, &previous.services);
         added_pairs(&mut out, &self.entities, &previous.entities, |e, a| format!("records: {a} {}", records(e)));
         added_pairs(&mut out, &self.hooks, &previous.hooks, |e, s| format!("runs during: {} {s}", records(e)));
         added_items(&mut out, "calls host", &self.hosts, &previous.hosts);
@@ -379,6 +384,11 @@ impl Bundle {
             out.subscriptions.extend(plugin.subscriptions.iter().cloned());
             out.new_entities.extend(plugin.entities.iter().map(|e| e.name.clone()));
         }
+        if let Some(s) = &self.manifest.service {
+            out.services.insert(s.host().to_string());
+            out.hosts.insert(s.host().to_string());
+            out.subscriptions.extend(s.events.iter().cloned());
+        }
         Ok(out)
     }
 }
@@ -403,6 +413,24 @@ mod tests {
     fn plugin_refused(edit: impl Fn(&mut Value), needle: &str) {
         let err = with_plugin(edit).expect_err(needle).to_string();
         assert!(err.contains(needle), "expected '{needle}' in: {err}");
+    }
+
+    #[test]
+    fn summary_of_a_service_app() {
+        let mut files = meta_app();
+        let yaml = String::from_utf8(files["app.yaml"].clone()).unwrap().replace("runtime: meta", "runtime: service")
+            + "access:\n  - {entity: Customer, read: true}\nservice:\n  url: https://svc.example.com/ferrum\n  events: [Customer.*]\n";
+        files.insert("app.yaml".into(), yaml.into_bytes());
+        let p = Bundle::from_files(files.clone()).unwrap().permissions().unwrap();
+        assert_eq!(p.services, set(&["svc.example.com"]));
+        assert_eq!((p.hosts.clone(), p.subscriptions.clone()), (set(&["svc.example.com"]), set(&["Customer.*"])));
+        assert_eq!(p.entities["Customer"], set(&["read"]));
+        let lines = p.increases(&Permissions::default());
+        assert!(lines.contains(&"runs outside Ferrum, as an account of its own, at: svc.example.com".to_string()), "{lines:?}");
+        let moved = Permissions { services: set(&["other.example.com"]), ..p.clone() };
+        assert_eq!(moved.increases(&p), ["runs outside Ferrum, as an account of its own, at: other.example.com"], "a new host asks again");
+        files.insert("packages/kit/sql/001.sql".into(), b"select 1;".to_vec());
+        assert!(Bundle::from_files(files).unwrap_err().to_string().contains("service apps carry no code and no SQL"));
     }
 
     #[test]
