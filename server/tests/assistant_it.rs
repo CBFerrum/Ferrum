@@ -4,6 +4,8 @@
 //! a change that waits for the person and runs when allowed; one refused, which does not run; the
 //! conversation sent back exactly as stored; a workspace that turned it off, and a guest.
 
+mod common;
+
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::State;
@@ -149,7 +151,7 @@ fn the_assistant_reads_at_once_and_changes_only_when_allowed() {
 async fn scenario() {
     let url = std::env::var("FERRUM_ASSISTANT_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_assistant_test".into());
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    common::reset(&db.pool).await;
     let dir = FsPath::new(env!("CARGO_MANIFEST_DIR")).join("../packages");
     let packages = ["core", "contacts", "parties"].map(|p| ferrum_meta::catalog::load_package_dir(&dir.join(p)).expect(p));
     let k = Kernel::boot(db, Catalog::from_packages(packages.to_vec()).unwrap(), HookRegistry::default(), KernelSettings::default(), None).await.expect("boot");

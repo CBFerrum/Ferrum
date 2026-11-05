@@ -4,6 +4,8 @@
 //! Expected figures are worked out by hand in the comments beside them, not by the code under test.
 //! Each journey also goes the wrong way: what must be refused is, and what is undone comes back.
 
+mod common;
+
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings, ListQuery};
 use rust_decimal::Decimal;
@@ -73,7 +75,7 @@ impl As {
 async fn kernel() -> Arc<Kernel> {
     let url = std::env::var("FERRUM_JOURNEYS_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_journeys_test".into());
     let db = Db::connect(DbConfig { url, max_connections: 20, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    common::reset(&db.pool).await;
     let catalog = ferrum_server::packages::base_catalog(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/no-extra-packages")).expect("catalog");
     let mut hooks = HookRegistry::default();
     ferrum_domain::register(&mut hooks);
