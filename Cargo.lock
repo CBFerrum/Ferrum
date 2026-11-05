@@ -2436,7 +2436,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-contracts"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-contracts?branch=main#4fc7335bf0daae5f45fabda6b6db8e02305e7c0a"
+source = "git+https://github.com/CBFerrum/ferrum-app-contracts?branch=main#057a191ea097c930c9a7ff75e1887cc3adbdc4fc"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2452,7 +2452,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-control"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-control?branch=main#bce78f515f95fdb8593f9536279942101e2791f9"
+source = "git+https://github.com/CBFerrum/ferrum-app-control?branch=main#f58bb76d277d8fdcfb48ce4dd74a7bb5bfee2bf1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2657,7 +2657,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-government"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-government?branch=main#7600a0ae165afddb0a887183d7ffbad92914165c"
+source = "git+https://github.com/CBFerrum/ferrum-app-government?branch=main#9fcd29227c8fd07f712d5409333113102ff24958"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
