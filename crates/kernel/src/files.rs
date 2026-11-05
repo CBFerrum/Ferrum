@@ -17,6 +17,20 @@ pub trait FileStore: Send + Sync {
     async fn delete(&self, key: &str) -> Result<()>;
 }
 
+/// The most an app reads of a file at once (FERRUM-OPS-006), the size of the largest an app works on
+/// whole (Learn's SCORM packages): larger ones are streamed to whoever downloads them
+/// ([`crate::SiteResponse::file`]) rather than read into a replica's memory.
+pub const MAX_READ_WHOLE: i64 = 256 << 20;
+
+/// What [`Kernel::file_info`] says of a stored file.
+#[derive(Debug, Clone)]
+pub struct FileInfo {
+    pub name: String,
+    pub content_type: String,
+    pub size: i64,
+    key: String,
+}
+
 /// Content types never served inline as-is (they could run script in the app's origin).
 const ACTIVE_TYPES: &[&str] = &["text/html", "application/xhtml+xml", "image/svg+xml", "application/javascript", "text/javascript"];
 
@@ -82,22 +96,37 @@ impl Kernel {
         Ok(json!({"id": id, "url": format!("/files/{id}"), "file_name": name, "size": data.len(), "sha256": sha}))
     }
 
-    /// A stored file's name, content type and bytes, if the caller may read the record it is
-    /// attached to.
-    pub async fn read_file(&self, ctx: &Ctx, id: Uuid) -> Result<(String, String, Vec<u8>)> {
+    /// A stored file's name, content type and size, if the caller may read the record it is
+    /// attached to: what an app needs to answer with the file ([`crate::SiteResponse::file`])
+    /// without reading it.
+    pub async fn file_info(&self, ctx: &Ctx, id: Uuid) -> Result<FileInfo> {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let row: Option<(String, String, String, Option<String>, Option<Uuid>)> =
-            sqlx::query_as("select file_name, content_type, storage_key, entity, record_id from file_object where tenant_id = $1 and id = $2")
+        let row: Option<(String, String, String, Option<String>, Option<Uuid>, i64)> =
+            sqlx::query_as("select file_name, content_type, storage_key, entity, record_id, size_bytes from file_object where tenant_id = $1 and id = $2")
                 .bind(ctx.tenant)
                 .bind(id)
                 .fetch_optional(&mut *tx)
                 .await?;
         tx.commit().await?;
-        let (name, ctype, key, entity, record) = row.ok_or_else(|| Error::NotFound("file".into()))?;
+        let (name, content_type, key, entity, record, size) = row.ok_or_else(|| Error::NotFound("file".into()))?;
         if let (Some(e), Some(r)) = (entity, record) {
             self.get(ctx, &e, r, false).await?;
         }
-        Ok((name, ctype, self.file_store()?.get(&key).await?))
+        Ok(FileInfo { name, content_type, size, key })
+    }
+
+    /// A stored file's name, content type and bytes, if the caller may read the record it is
+    /// attached to; refused for one larger than [`MAX_READ_WHOLE`], which is streamed instead.
+    pub async fn read_file(&self, ctx: &Ctx, id: Uuid) -> Result<(String, String, Vec<u8>)> {
+        let f = self.file_info(ctx, id).await?;
+        if f.size > MAX_READ_WHOLE {
+            return Err(Error::invalid(format!(
+                "{} is larger than {} MB, more than is read whole: it is downloaded as a stream",
+                f.name,
+                MAX_READ_WHOLE >> 20
+            )));
+        }
+        Ok((f.name, f.content_type, self.file_store()?.get(&f.key).await?))
     }
 
     /// Deletes a stored file — its record and its bytes — if the caller may: its uploader, or
