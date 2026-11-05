@@ -754,7 +754,7 @@ async fn scenario() {
     let maya_ctx = k.load_ctx(tenant, maya, None, "it".into()).await.unwrap();
     let workflow: ferrum_meta::WorkflowDef = serde_json::from_value(json!({
         "name": "Customer vetting", "entity": "Customer", "initial_state": "Draft",
-        "states": [{"name": "Draft"}, {"name": "Pending"}, {"name": "Approved"}],
+        "states": [{"name": "Draft"}, {"name": "Pending", "editable": ["email"]}, {"name": "Approved", "required": ["email"]}],
         "transitions": [
             {"action": "Send for approval", "from": "Draft", "to": "Pending"},
             {"action": "Approve", "from": "Pending", "to": "Approved", "roles": ["Sales Manager"], "not_creator": true,
@@ -781,8 +781,22 @@ async fn scenario() {
     assert_eq!((waiting[0]["state"].clone(), waiting[0]["actions"].clone()), (json!("Pending"), json!(["Approve"])));
     assert!(k.my_approvals(&bea_ctx, 50).await.unwrap().is_empty(), "Bea cannot approve");
     assert!(k.my_approvals(&admin, 50).await.unwrap().is_empty(), "an administrator may approve, but it is not their duty");
+    // While it waits, only its address may change, and it needs one to be approved.
+    let frozen = k.update(&bea_ctx, "Customer", vetted, obj(json!({"customer_name": "Vetted Co", "email": "vet@collab.test"})), None).await;
+    assert!(
+        matches!(&frozen, Err(Error::Validation(e)) if e.len() == 1 && e[0].field == "customer_name" && e[0].message.contains("while the document is Pending")),
+        "{frozen:?}"
+    );
+    let unaddressed = k.transition(&maya_ctx, "Customer", vetted, "Approve", None).await;
+    assert!(matches!(&unaddressed, Err(Error::Validation(e)) if e[0].field == "email" && e[0].message.contains("needed to Approve")), "{unaddressed:?}");
+    k.update(&bea_ctx, "Customer", vetted, obj(json!({"email": "vet@collab.test"})), None).await.expect("its address may change");
     k.transition(&maya_ctx, "Customer", vetted, "Approve", None).await.unwrap();
     assert!(k.my_approvals(&maya_ctx, 50).await.unwrap().is_empty(), "decided");
+    let cleared = k.update(&bea_ctx, "Customer", vetted, obj(json!({"email": null})), None).await;
+    assert!(
+        matches!(&cleared, Err(Error::Validation(e)) if e[0].message.contains("while the document is Approved")),
+        "an approved customer keeps it: {cleared:?}"
+    );
     // What an automation makes, its saver made: they do not approve it either, a second person does.
     ferrum_kernel::automation::save(
         &k,
@@ -806,6 +820,7 @@ async fn scenario() {
     k.transition(&saver, "Customer", made, "Send for approval", None).await.unwrap();
     let own = k.transition(&saver, "Customer", made, "Approve", None).await;
     assert!(matches!(&own, Err(Error::Forbidden(m)) if m.contains("creator")), "its automation's saver: {own:?}");
+    k.update(&admin, "Customer", made, obj(json!({"email": "first@export.test"})), None).await.unwrap();
     k.transition(&maya_ctx, "Customer", made, "Approve", None).await.expect("a second person");
     // A step its own rules refuse is counted for the metrics; one refused for who asks is not.
     let blocked = k
@@ -815,7 +830,7 @@ async fn scenario() {
     let blocked = blocked.rows[0]["id"].as_str().unwrap().parse::<Uuid>().unwrap();
     assert!(matches!(k.transition(&maya_ctx, "Customer", blocked, "Approve", None).await, Err(Error::Invalid(_))), "its condition fails");
     let counted = |kind: &str| k.failures().into_iter().find(|f| f.1 == "Customer" && f.2 == "Approve" && f.3 == kind).map(|f| f.4);
-    assert_eq!(counted("refused"), Some(1), "the condition's refusal; the creator's, earlier, was about who asked: {:?}", k.failures());
+    assert_eq!(counted("refused"), Some(2), "the missing address and the condition; the creator's, earlier, was about who asked: {:?}", k.failures());
     assert_eq!(counted("fault"), None);
 
     // ── cards: what a preview of a record shows, for those who may read it ──

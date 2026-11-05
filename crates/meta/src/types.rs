@@ -773,6 +773,13 @@ pub struct WorkflowState {
     /// Roles allowed to edit the document while in this state.
     #[serde(default)]
     pub edit_roles: Vec<String>,
+    /// The only fields a person may change while the document is in this state (the server's own
+    /// updates are not held to it). Empty: whatever the entity allows.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub editable: Vec<String>,
+    /// Fields a document needs to enter this state, and to be saved while in it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

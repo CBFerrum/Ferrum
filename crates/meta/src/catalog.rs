@@ -863,6 +863,9 @@ pub(crate) fn validate_workflow(wf: &WorkflowDef, entities: &BTreeMap<String, (S
         if !(0..=2).contains(&s.docstatus) || (s.docstatus != 0 && !e.submittable) {
             return Err(format!("state {}: invalid docstatus for this entity", s.name));
         }
+        if let Some(f) = s.editable.iter().chain(&s.required).find(|f| !e.fields.iter().any(|x| &x.name == *f)) {
+            return Err(format!("state {}: {f} is not a field", s.name));
+        }
     }
     let mut seen = HashSet::new();
     for t in &wf.transitions {
