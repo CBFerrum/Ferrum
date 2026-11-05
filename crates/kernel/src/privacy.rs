@@ -42,6 +42,31 @@ pub const JOURNAL_PREFIX: &str = "privacy-journal/";
 /// Records of one person a declaration may reach (more means the email is not one person's).
 const MAX_RECORDS: i64 = 1000;
 
+/// Who a personal-data request is about: their email, and what else names them on records that
+/// hold no address.
+#[derive(Debug, Default, Clone, serde::Deserialize)]
+pub struct Person {
+    pub email: String,
+    /// Their phone number, however it is written: the records whose declared phone field has the
+    /// same digits are theirs too.
+    #[serde(default)]
+    pub phone: Option<String>,
+    /// Their name: the records whose declared name field holds it are listed as possibly theirs,
+    /// for a person to judge. Finding someone by name alone is never enough to erase a record.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// A phone number's digits, or nothing when none was given; too few to name anyone is refused.
+fn phone_digits(phone: Option<&str>) -> Result<Option<String>> {
+    let Some(p) = phone.map(str::trim).filter(|p| !p.is_empty()) else { return Ok(None) };
+    let digits: String = p.chars().filter(char::is_ascii_digit).collect();
+    if digits.len() < 6 || digits.len() > 20 {
+        return Err(Error::field("phone", "give the phone number as it was recorded, its digits at least"));
+    }
+    Ok(Some(digits))
+}
+
 fn admin_only(ctx: &Ctx) -> Result<()> {
     if ctx.is_admin { Ok(()) } else { Err(Error::Forbidden("personal-data requests are for administrators".into())) }
 }
@@ -74,13 +99,17 @@ pub(crate) async fn addresses(tx: &mut Tx, tenant: Uuid, email: &str) -> Result<
 }
 
 /// The ids of the records each declaration reaches for these addresses.
-async fn reached(ctx: &Ctx, tx: &mut Tx, emails: &[String]) -> Result<Vec<(PersonalDataDef, Vec<Uuid>)>> {
+async fn reached(ctx: &Ctx, tx: &mut Tx, emails: &[String], phone: Option<&str>) -> Result<Vec<(PersonalDataDef, Vec<Uuid>)>> {
     let mut out = Vec::new();
     for def in &ctx.schema.personal_data {
         let Some(ent) = ctx.schema.entity(&def.entity) else { continue };
         let Some(expr) = field_expr(ent, &def.match_field, "a") else { continue };
         let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(format!("select a.id from {} a where a.tenant_id = ", q(&ent.table)));
-        qb.push_bind(ctx.tenant).push(format!(" and lower(({expr})::text) = any(")).push_bind(emails.to_vec()).push(")");
+        qb.push_bind(ctx.tenant).push(format!(" and (lower(({expr})::text) = any(")).push_bind(emails.to_vec()).push(")");
+        if let Some((e, digits)) = def.phone.as_deref().and_then(|f| field_expr(ent, f, "a")).zip(phone) {
+            qb.push(format!(" or regexp_replace(({e})::text, '[^0-9]', '', 'g') = ")).push_bind(digits.to_string());
+        }
+        qb.push(")");
         for (field, v) in &def.condition {
             let Some(e) = field_expr(ent, field, "a") else { continue };
             let text = match v {
@@ -97,6 +126,29 @@ async fn reached(ctx: &Ctx, tx: &mut Tx, emails: &[String]) -> Result<Vec<(Perso
         if !ids.is_empty() {
             out.push((def.clone(), ids));
         }
+    }
+    Ok(out)
+}
+
+/// Records whose declared name field holds `name` (case and spacing aside), apart from those already
+/// reached: possibly the person's, never erased for it.
+async fn named(ctx: &Ctx, tx: &mut Tx, name: &str, reached: &[(PersonalDataDef, Vec<Uuid>)]) -> Result<Vec<Value>> {
+    let mut out = Vec::new();
+    for def in ctx.schema.personal_data.iter().filter(|d| d.name.is_some()) {
+        let Some(ent) = ctx.schema.entity(&def.entity) else { continue };
+        let Some(expr) = def.name.as_deref().and_then(|f| field_expr(ent, f, "a")) else { continue };
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(format!("select a.id, ({expr})::text from {} a where a.tenant_id = ", q(&ent.table)));
+        qb.push_bind(ctx.tenant)
+            .push(format!(" and regexp_replace(lower(btrim(({expr})::text)), '\\s+', ' ', 'g') = regexp_replace(lower(btrim("))
+            .push_bind(name.to_string())
+            .push(")), '\\s+', ' ', 'g')");
+        qb.push(entity_predicate(ent, "a")).push(" order by a.id limit 50");
+        let found: Vec<(Uuid, String)> = qb.build_query_as().fetch_all(&mut **tx).await?;
+        let known = reached.iter().filter(|r| r.0.entity == def.entity).flat_map(|r| r.1.iter()).collect::<Vec<_>>();
+        let label = ent.def.label.clone();
+        out.extend(
+            found.into_iter().filter(|(id, _)| !known.contains(&id)).map(|(id, held)| json!({"entity": def.entity, "label": label, "id": id, "name": held})),
+        );
     }
     Ok(out)
 }
@@ -263,12 +315,24 @@ impl Kernel {
     /// Everything the installed packages keep about the person with this email, under any address
     /// they have had, and their login account (administrators only).
     pub async fn personal_data(&self, ctx: &Ctx, email: &str) -> Result<Value> {
+        self.personal_data_of(ctx, &Person { email: email.into(), ..Default::default() }).await
+    }
+
+    /// [`Self::personal_data`], also by phone number, with the records holding their name listed
+    /// apart (`possibly`) for a person to judge.
+    pub async fn personal_data_of(&self, ctx: &Ctx, person: &Person) -> Result<Value> {
         admin_only(ctx)?;
-        let email = checked_email(email)?;
+        let email = checked_email(&person.email)?;
+        let phone = phone_digits(person.phone.as_deref())?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let emails = addresses(&mut tx, ctx.tenant, &email).await?;
         let mut records = Vec::new();
-        for (def, ids) in reached(ctx, &mut tx, &emails).await? {
+        let reached = reached(ctx, &mut tx, &emails, phone.as_deref()).await?;
+        let possibly = match person.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+            Some(name) => named(ctx, &mut tx, name, &reached).await?,
+            None => vec![],
+        };
+        for (def, ids) in reached {
             let label = ctx.schema.entity(&def.entity).map(|e| e.def.label.clone()).unwrap_or_else(|| def.entity.clone());
             for id in ids {
                 let data = self.get_tx(ctx, &mut tx, &def.entity, id, false).await?;
@@ -289,17 +353,25 @@ impl Kernel {
         .await?;
         let held = person_held(&mut tx, ctx.tenant, &emails).await?;
         tx.rollback().await?;
-        Ok(
-            json!({"email": email, "addresses": emails, "records": records, "account": account, "held": held, "not_searched": ctx.schema.undeclared_personal_data}),
-        )
+        Ok(json!({
+            "email": email, "addresses": emails, "phone": phone, "records": records, "possibly": possibly, "account": account, "held": held,
+            "not_searched": ctx.schema.undeclared_personal_data,
+        }))
     }
 
     /// Erases the person's data (administrators only; `reason` names the request): see the module
     /// documentation. An administrator account is refused, as is the caller's own, and anyone under
     /// a legal hold. A record under one is left and listed.
     pub async fn erase_personal_data(&self, ctx: &Ctx, email: &str, reason: &str) -> Result<Value> {
+        self.erase_personal_data_of(ctx, &Person { email: email.into(), ..Default::default() }, reason).await
+    }
+
+    /// [`Self::erase_personal_data`], also of the records their phone number reaches. A name reaches
+    /// nothing here: records found by it alone are for a person to judge.
+    pub async fn erase_personal_data_of(&self, ctx: &Ctx, person: &Person, reason: &str) -> Result<Value> {
         admin_only(ctx)?;
-        let email = checked_email(email)?;
+        let email = checked_email(&person.email)?;
+        let phone = phone_digits(person.phone.as_deref())?;
         let reason = reason.trim();
         if reason.is_empty() || reason.chars().count() > 500 {
             return Err(Error::field("reason", "say why (the request's reference, say), at most 500 characters"));
@@ -325,7 +397,7 @@ impl Kernel {
             }
         }
         let (mut erased, mut retained, mut held, mut journal, mut events, mut files) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), 0u64, 0u64);
-        for (def, ids) in reached(ctx, &mut tx, &emails).await? {
+        for (def, ids) in reached(ctx, &mut tx, &emails, phone.as_deref()).await? {
             let ent = self.entity(ctx, &def.entity)?;
             for id in ids {
                 if let Some(why) = &def.retain {
@@ -354,7 +426,7 @@ impl Kernel {
             self.invalidate_user(ctx.tenant, id);
         }
         Ok(json!({
-            "email": email, "addresses": emails, "erased": erased, "retained": retained, "held": held, "account_erased": account.is_some(),
+            "email": email, "addresses": emails, "phone": phone, "erased": erased, "retained": retained, "held": held, "account_erased": account.is_some(),
             "audit_events_redacted": events, "files_deleted": files, "not_searched": ctx.schema.undeclared_personal_data,
         }))
     }
