@@ -76,6 +76,12 @@ async fn usable(st: &crate::state::AppState, ctx: &ferrum_kernel::Ctx) -> Result
     if st.assistant.available(&st.kernel, ctx, &kind).await { Ok(()) } else { Err(ApiError(Error::Forbidden("the assistant is not available here".into()))) }
 }
 
+/// What the model was told under a version an answer records (administrators).
+async fn prompt(Auth(ctx): Auth, State(app): State<AppContext>, Path(digest): Path<String>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    Ok(Json(assistant::prompt(&st.kernel, &ctx, &digest).await?).into_response())
+}
+
 async fn create(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
     let st = app_state(&app)?;
     usable(&st, &ctx).await?;
@@ -155,6 +161,7 @@ pub fn routes() -> Routes {
     Routes::new()
         .add("/api/assistant", get(status))
         .add("/api/assistant/usage", get(usage))
+        .add("/api/assistant/prompts/{digest}", get(prompt))
         .add("/api/assistant/suggestions", get(suggestions))
         .add("/api/assistant/threads", post(create))
         .add("/api/assistant/threads/{id}", get(read).delete(remove))

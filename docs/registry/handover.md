@@ -617,3 +617,13 @@ now: they had been made as members, taking a seat (the migration moves existing 
 - Tested: `server/tests/service_apps_it.rs` against a stand-in service; three mutants.
 - Frontend PR 31 labels service apps and shows an app's webhook as the app's.
 - Not done: no store has reviewed a service; the store accepts the runtime once its Ferrum pin moves.
+
+## 5 November: the assistant's prompt versions and grounded-answer cases (FERRUM-AI-005)
+
+Each turn hashes what the model is told (instructions, tools, model) into a prompt version, keeps
+its text in `assistant_prompt` (per workspace), and records the version with each answer
+(`usage.prompt`); `GET /api/assistant/prompts/{version}` reads it back. `server/src/assistant_eval.rs`
+grades cases (records, a question, what the answer says, must not say, and reads first);
+`ferrum task assistant_eval` runs `server/assistant-evals/grounded.yaml` in a workspace set aside
+for it. Tested with a scripted model (`server/tests/assistant_eval_it.rs`): a grounded answer
+passes, a guess fails on all three counts. Never run against a real model: BLOCK-MODEL-KEY.

@@ -170,6 +170,7 @@ chrono = { workspace = true }
 sqlx = { workspace = true }
 dashmap = { workspace = true }
 sha2 = { workspace = true }
+serde_yaml = { workspace = true }
 hex = { workspace = true }
 bytes = "1"
 # App Manager: store client (already built for the kernel), semantic versions, revocation-list signatures.
