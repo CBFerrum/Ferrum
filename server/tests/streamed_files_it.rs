@@ -2,7 +2,9 @@
 //! PostgreSQL (`FERRUM_APPS_TEST_DATABASE_URL`, reset first) and files on a local directory: the
 //! server streams that file from storage as the body, the header that named it goes, and a file of
 //! another workspace is not found. Then an upload in parts: resumed from where it stands after a
-//! part's answer is lost, joined in order when complete, and swept with its parts when left.
+//! part's answer is lost, joined in order when complete, and swept with its parts when left; with
+//! `FERRUM_TEST_S3_ENDPOINT` (CI's S3 emulator), the same in parts joined by a multipart upload, and
+//! a direct upload sent to its presigned URL and completed.
 
 mod common;
 
@@ -13,6 +15,7 @@ use ferrum_kernel::{Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings, R
 use ferrum_meta::Catalog;
 use ferrum_server::controllers::sites::named_file;
 use ferrum_server::objects::{self as up, NewUpload, Objects, PART_BYTES};
+use ferrum_server::state::Settings;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -136,5 +139,39 @@ async fn scenario() {
     tx.commit().await.unwrap();
     assert_eq!(up::sweep(&k, &objects).await.unwrap(), 1);
     assert!(parts_left(&dir), "swept with its parts");
+
+    // ───────────── through S3 ─────────────
+    if let Ok(endpoint) = std::env::var("FERRUM_TEST_S3_ENDPOINT") {
+        let bucket = std::env::var("FERRUM_TEST_S3_BUCKET").unwrap_or_else(|_| "ferrum-ci".into());
+        let settings: Settings = serde_json::from_value(json!({"s3_bucket": bucket, "s3_region": "us-east-1", "s3_endpoint": endpoint})).unwrap();
+        let s3 = Objects::new(&settings).unwrap();
+        let sha = json!(hex::encode(Sha256::digest(&big)));
+        // In parts, joined by a multipart upload of 8 MiB chunks.
+        let started = up::start(&k, &s3, &admin, 3 * PART_BYTES, new(true)).await.unwrap();
+        let id: uuid::Uuid = started["upload_id"].as_str().unwrap().parse().unwrap();
+        for (from, to) in [(0, p), (p, 2 * p), (2 * p, big.len())] {
+            up::append(&k, &s3, &admin, id, from as u64, part(from, to)).await.unwrap();
+        }
+        assert_eq!(up::complete(&k, &s3, &admin, id).await.unwrap()["sha256"], sha);
+        let (size, body) = s3.stream(&format!("tenants/{}/{id}", tenants[0])).await.unwrap();
+        assert_eq!(size, big.len() as u64);
+        assert!(axum::body::to_bytes(body, usize::MAX).await.unwrap().as_ref() == big.as_slice(), "joined in order on S3");
+        // Straight to the bucket with the presigned request, then completed.
+        let direct = up::start(&k, &s3, &admin, 3 * PART_BYTES, new(false)).await.unwrap();
+        let id: uuid::Uuid = direct["upload_id"].as_str().unwrap().parse().unwrap();
+        let mut put = reqwest::Client::new()
+            .request(reqwest::Method::from_bytes(direct["method"].as_str().unwrap().as_bytes()).unwrap(), direct["url"].as_str().unwrap());
+        for (name, value) in direct["headers"].as_object().unwrap() {
+            put = put.header(name.as_str(), value.as_str().unwrap());
+        }
+        let sent = put.body(big.clone()).send().await.unwrap();
+        assert!(sent.status().is_success(), "the presigned PUT: {}", sent.status());
+        assert_eq!(up::complete(&k, &s3, &admin, id).await.unwrap()["sha256"], sha);
+        let (size, body) = s3.stream(&format!("tenants/{}/{id}", tenants[0])).await.unwrap();
+        assert_eq!(size, big.len() as u64);
+        assert!(axum::body::to_bytes(body, usize::MAX).await.unwrap().as_ref() == big.as_slice(), "copied to the file's key");
+    } else {
+        eprintln!("S3: skipped, FERRUM_TEST_S3_ENDPOINT is not set");
+    }
     std::fs::remove_dir_all(&root).ok();
 }
