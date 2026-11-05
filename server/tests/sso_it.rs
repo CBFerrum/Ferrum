@@ -4,6 +4,8 @@
 //! client authentication, single use and the browser binding, every ID token check, linking and
 //! unlinking, account creation, email rules, and requiring single sign-on.
 
+mod common;
+
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
@@ -179,7 +181,7 @@ fn input(issuer: &str) -> SsoProviderInput {
 async fn single_sign_on() {
     let url = std::env::var("FERRUM_SSO_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_sso_test".into());
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    common::reset(&db.pool).await;
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages")).expect("catalog");
     let settings = KernelSettings { secret_key: Some(SecretKey::new([9u8; 32])), sso_allow_private: true, ..Default::default() };
     let k = Kernel::boot(db, catalog, HookRegistry::default(), settings, None).await.expect("boot");

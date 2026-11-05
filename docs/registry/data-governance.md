@@ -29,6 +29,10 @@ packages that declare nothing are named in every answer as `not_searched`.
 | comms | ChatMessage | `sender` | sender, body |
 | comms | EmailGroupMember | `email` | email, member_name |
 | comms | CalendarFeed | `person` | person |
+| contracts | Contract | `counterparty_email`; `counterparty_name` (name) | Retained: Contracts, and the drafts that led to them, kept as contract law and audit require |
+| control | HostedWorkspace | `contact_email` | contact_email |
+| control | SupportCase | `raised_by` | raised_by |
+| control | RecoveryRequest | `requested_by` | Retained: Who asked for a workspace to be restored, kept as evidence of the request |
 | crm | Lead | `email`; `phone` (phone); `lead_name` (name) | first_name, last_name, lead_name, job_title, email, phone, mobile |
 | drive | DriveSpace | `owner` | Retained: A space needs an owner: hand it over, then ask again |
 | drive | DriveFolder | `owner` | Retained: A folder needs an owner: hand it over, then ask again |
@@ -45,6 +49,19 @@ packages that declare nothing are named in every answer as `not_searched`.
 | field_service | ServiceWorkOrder | `contact_email`; `contact_phone` (phone) | contact_name, contact_email, contact_phone |
 | field_service | Technician | `user_email`; `phone` (phone); `technician_name` (name) | user_email, phone |
 | forms | FormResponse | `respondent_email` | respondent_email, respondent_name, respondent_user, answers, quiz_detail, ip_hash |
+| government | PermitApplication | `applicant_email`; `applicant_name` (name); where status is Draft | applicant_name, applicant_email, details, documents |
+| government | PermitApplication | `applicant_email`; `applicant_name` (name); where status is Withdrawn | applicant_name, applicant_email, details, documents |
+| government | PermitApplication | `applicant_email`; `applicant_name` (name); where status is Submitted | Retained: An application put to the office, and its decision, are public records |
+| government | PermitApplication | `applicant_email`; `applicant_name` (name); where status is Under Review | Retained: An application put to the office, and its decision, are public records |
+| government | PermitApplication | `applicant_email`; `applicant_name` (name); where status is Approved | Retained: An application put to the office, and its decision, are public records |
+| government | PermitApplication | `applicant_email`; `applicant_name` (name); where status is Rejected | Retained: An application put to the office, and its decision, are public records |
+| government | PermitApplication | `applicant_email`; `applicant_name` (name); where status is Issued | Retained: An application put to the office, and its decision, are public records |
+| government | Permit | `holder_email`; `holder_name` (name) | Retained: Permits issued are public records |
+| government | PublicCase | `citizen_email`; `citizen_name` (name) | Retained: Case records, kept as public records law requires |
+| healthcare | Patient | `email`; `mobile` (phone); `patient_name` (name) | Retained: Medical records, kept as long as health law requires |
+| healthcare | Appointment | `patient` | Retained: Medical records, kept as long as health law requires |
+| healthcare | PatientConsent | `patient` | Retained: Evidence of the consent given or withdrawn |
+| healthcare | FeeValidity | `patient` | Retained: Billing records |
 | helpdesk | Ticket | `contact_email` | contact_name, contact_email |
 | hospitality | Stay | `guest_email`; `guest_phone` (phone); `guest_name` (name) | guest_name, guest_email, guest_phone, notes |
 | hospitality | Folio | `guest_email`; `guest_name` (name) | guest_name, guest_email |
@@ -72,6 +89,7 @@ packages that declare nothing are named in every answer as `not_searched`.
 | lms | LmsAssignmentSubmission | `learner` | learner, learner_name, answer, feedback |
 | lms | LmsCertificate | `learner` | learner, learner_name |
 | lms_payments | LmsCoursePurchase | `learner` | learner, learner_name |
+| logistics | Driver | `email`; `phone` (phone); `full_name` (name) | full_name, email, phone, licence_number, licence_expires_on |
 | nonprofit | Member | `email`; `phone` (phone); `member_name` (name) | member_name, email, phone, notes |
 | nonprofit | Donor | `email`; `donor_name` (name) | donor_name, email, tax_id |
 | nonprofit | Volunteer | `email`; `phone` (phone); `volunteer_name` (name) | volunteer_name, email, phone |
@@ -79,6 +97,9 @@ packages that declare nothing are named in every answer as `not_searched`.
 | pos | PosClosingEntry | `user` | Retained: Cash records of the session they ran |
 | projects | Timesheet | `user` | Retained: Billing records |
 | projects | ActivityCost | `user` | Retained: Costing records |
+| property | RepairRequest | `reported_by` | reported_by |
+| restaurant | TableReservation | `phone`; `phone` (phone); `guest_name` (name) | guest_name, phone |
+| restaurant | RestaurantOrder | `phone`; `phone` (phone); `customer_name` (name) | customer_name, phone, delivery_address |
 | sign | SignEvent | `signer_email` | Retained: Evidence of the signature: erasing it would undo what was signed |
 | sign | SignRequest | `sender_email` | Retained: Evidence of the signature: erasing it would undo what was signed |
 
@@ -87,10 +108,11 @@ and by the digits of a phone field where it names one; records that hold no addr
 their phone field alone, or through a link to a record found by address or number (a patient's
 appointments through the patient). A name field only lists records as possibly
 theirs, for someone to judge: nothing is erased for a name. Of the 36 apps compiled in at these
-revisions, Construction, Contracts, Control, DAM, Docs, Edge, ERP, Government, GRC, Healthcare,
-ITSM, Logistics, Metrics, Objectives, Property, Restaurant, Retail and Social declare nothing, and
-are named in every answer as `not_searched` (ERP's customers and suppliers are the platform's
-`parties`).
+revisions, 25 declare their people's records. Construction, DAM, Docs, Edge, ERP, GRC, ITSM,
+Metrics, Objectives, Retail and Social declare nothing and are named in every answer as
+`not_searched`: what they hold of people is the addresses of staff on work done (owners,
+approvers, assignees, authors), which work records keep; Edge's customer people and report
+recipients sit in child rows; ERP's customers and suppliers are the platform's `parties`.
 
 ## What it does not reach
 

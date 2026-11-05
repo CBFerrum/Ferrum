@@ -3,8 +3,8 @@
 //!
 //! An export holds everything a workspace can read back without Ferrum: every record as JSON lines
 //! with its child rows, the engine tables packages declare (`export_tables`: journals, stock moves),
-//! every attached file, the audit trail, and the configuration (roles, permissions, customizations,
-//! automations, people). It never holds passwords, secret values or sealed settings, and its
+//! every attached file (one the storage has lost is named in the manifest instead), the audit
+//! trail, and the configuration (roles, permissions, customizations, automations, people). It never holds passwords, secret values or sealed settings, and its
 //! manifest names every workspace table it left out, so what it lacks is never a surprise. Large
 //! exports go into several zip files of about [`PART_BYTES`], readable only by administrators
 //! ([`Kernel::export_part`], never `/files/{id}`), and are deleted after [`EXPORT_DAYS`] days, or
@@ -47,7 +47,19 @@ pub(crate) async fn drop_exports(tx: &mut Tx, tenant: Uuid, job: Option<Uuid>) -
     .await?;
     let keys: Vec<String> = parts.iter().map(|p| p.1.clone()).collect();
     release_objects(tx, tenant, &keys).await?;
-    Ok(parts.iter().map(|p| p.0).collect::<std::collections::BTreeSet<_>>().len())
+    let jobs: Vec<Uuid> = parts.iter().map(|p| p.0).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    // What an erasure took says so on the export, so nobody is offered parts that are gone.
+    if job.is_none() {
+        sqlx::query(
+            "update job set result = coalesce(result, '{}'::jsonb) || '{\"deleted\": \"erasure\"}'::jsonb where tenant_id = $1 and kind = $2 and id = any($3)",
+        )
+        .bind(tenant)
+        .bind(EXPORT_KIND)
+        .bind(&jobs)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(jobs.len())
 }
 
 /// A part of an export closes at about this much before compression (a larger file gets a part to
@@ -356,10 +368,17 @@ impl JobHandler for ExportJob {
         .await?;
         tx.commit().await?;
         let store = k.file_store()?.clone();
-        let mut index = Vec::with_capacity(files.len());
+        let (mut index, mut missing) = (Vec::with_capacity(files.len()), Vec::new());
         for (i, (id, name, ctype, key, entity, record)) in files.iter().enumerate() {
-            parts.add(&format!("files/{id}"), &store.get(key).await?).await?;
-            index.push(json!({"id": id, "file_name": name, "content_type": ctype, "entity": entity, "record_id": record}));
+            // A file storage has lost is named, not a reason to give the customer nothing.
+            match store.get(key).await {
+                Ok(bytes) => {
+                    parts.add(&format!("files/{id}"), &bytes).await?;
+                    index.push(json!({"id": id, "file_name": name, "content_type": ctype, "entity": entity, "record_id": record}));
+                }
+                Err(Error::NotFound(_)) => missing.push(json!({"id": id, "file_name": name, "entity": entity, "record_id": record})),
+                Err(e) => return Err(e),
+            }
             if i % 100 == 99 {
                 job.progress(k, json!({"step": "files", "done": i + 1, "total": files.len()})).await?;
             }
@@ -371,9 +390,10 @@ impl JobHandler for ExportJob {
             "exported_at": chrono::Utc::now().to_rfc3339(),
             "packages": ctx.schema.packages,
             "entities": entities,
-            "files": files.len(),
+            "files": index.len(),
             "not_included": ["passwords and sign-in factors", "secret field values", "sealed settings", "API keys", "sessions"],
             "tables_left_out": left_out,
+            "files_missing": missing,
         });
         parts.add("manifest.json", &serde_json::to_vec_pretty(&manifest).map_err(Error::internal)?).await?;
         parts.close().await?;
@@ -385,7 +405,7 @@ impl JobHandler for ExportJob {
             tx.commit().await?;
             return Err(Error::Wait("a personal-data erasure landed while this export was made; it is made again".into(), 0));
         }
-        Ok(json!({"parts": parts.stored, "entities": entities, "files": files.len(), "expires_in_days": EXPORT_DAYS}))
+        Ok(json!({"parts": parts.stored, "entities": entities, "files": index.len(), "files_missing": missing.len(), "expires_in_days": EXPORT_DAYS}))
     }
 }
 

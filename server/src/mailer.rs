@@ -84,7 +84,11 @@ impl ferrum_kernel::files::FileStore for StorageFiles {
         self.0.upload(std::path::Path::new(key), &bytes::Bytes::copy_from_slice(data)).await.map_err(|e| Error::Unavailable(format!("storage: {e}")))
     }
     async fn get(&self, key: &str) -> Result<Vec<u8>> {
-        self.0.download(std::path::Path::new(key)).await.map_err(|e| Error::Unavailable(format!("storage: {e}")))
+        // An object storage does not have is gone, which is not the storage being down.
+        self.0.download(std::path::Path::new(key)).await.map_err(|e| match &e {
+            loco_rs::storage::StorageError::Store(o) if o.kind() == opendal::ErrorKind::NotFound => Error::NotFound(format!("stored object {key}")),
+            _ => Error::Unavailable(format!("storage: {e}")),
+        })
     }
     async fn delete(&self, key: &str) -> Result<()> {
         self.0.delete(std::path::Path::new(key)).await.map_err(|e| Error::Unavailable(format!("storage: {e}")))

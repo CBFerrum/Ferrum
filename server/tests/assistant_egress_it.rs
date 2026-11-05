@@ -6,6 +6,8 @@
 //! assistant to export payroll, change permissions, send secrets, or execute an unrelated payment.
 //! Whether a real model would obey is beside the point: nothing here relies on its judgement.
 
+mod common;
+
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::State;
@@ -143,7 +145,7 @@ fn a_ticket_cannot_talk_the_assistant_into_anything() {
 async fn scenario() {
     let url = std::env::var("FERRUM_ASSISTANT_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_assistant_test".into());
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    common::reset(&db.pool).await;
     let dir = std::env::temp_dir().join(format!("ferrum-egress-it-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("cases/entities")).unwrap();

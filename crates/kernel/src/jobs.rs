@@ -202,7 +202,10 @@ const VIEW: &str = "select jsonb_build_object('id', id, 'kind', kind, 'status', 
 
 impl Kernel {
     fn job_handler(&self, kind: &str) -> Option<Arc<dyn JobHandler>> {
-        crate::export::handler(kind).or_else(|| crate::connect::handler(kind)).or_else(|| self.hooks.job_handler(kind).cloned())
+        crate::export::handler(kind)
+            .or_else(|| crate::connect::handler(kind))
+            .or_else(|| crate::backfill::handler(kind))
+            .or_else(|| self.hooks.job_handler(kind).cloned())
     }
 
     /// Settles jobs nobody will come back for, then claims up to `slots`, fairly: see the module

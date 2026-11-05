@@ -2,6 +2,8 @@
 //! (`FERRUM_APP_RESOURCES_TEST_DATABASE_URL`), with what provides resources stood in for. The real
 //! provider is exercised in CBFerrum/ferrum-app-cloud; here it is what the platform asks of one.
 
+mod common;
+
 use async_trait::async_trait;
 use ferrum_apps::AppManifest;
 use ferrum_kernel::resources::Resources;
@@ -74,7 +76,7 @@ async fn stage(hooks: HookRegistry) -> (Arc<Kernel>, AppManager, Ctx) {
     let url =
         std::env::var("FERRUM_APP_RESOURCES_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_app_resources_test".into());
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    common::reset(&db.pool).await;
     let dir = FsPath::new(env!("CARGO_MANIFEST_DIR")).join("../packages");
     let core = ferrum_meta::catalog::load_package_dir(&dir.join("core")).expect("core");
     let k = Kernel::boot(db, Catalog::from_packages(vec![core, package()]).unwrap(), hooks, KernelSettings::default(), None).await.expect("boot");

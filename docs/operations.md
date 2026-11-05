@@ -234,6 +234,16 @@ deploy/kind/install.sh && deploy/kind/smoke.sh
   To go back to a release before such a step, run `ferrum task upgrade_back step:<name>`
   (`core-split`) with every replica of the newer release stopped, then start the older image. The
   task takes out the packages the step installed and keeps the data.
+* Data a release moves after its schema has grown is a package's backfill (`backfills` in its
+  manifest: a table or an entity, which rows still `need` it, what it `set`s, how many a batch).
+  The hourly upkeep starts each one in every workspace that has the package, as a job of its own:
+  a batch at a time, each in its own transaction with the last row it reached, so a restart, a
+  crash or another replica carries on from there, and the workspace keeps working meanwhile. An
+  unfinished one is queued again at each upkeep. When done it counts the rows that still need it:
+  `GET /api/admin/backfills` reports, per backfill, its state, the rows it changed, those it could
+  not, and those that need it now; `POST /api/admin/backfills/{package}/{name}/rerun` runs a finished
+  one again (after the rows it could not change were put right). Contract (drop what the backfill
+  replaced) only once every workspace reports none remaining.
 
 ## Backups and restore
 
@@ -393,12 +403,14 @@ takes its turn.
 Jobs run at least once: a handler must be safe to repeat. Bulk jobs resume after the last 500 records
 they recorded, so a lost worker repeats no more than those. Finished jobs are deleted after 30 days.
 
-**Workspace exports.** `POST /api/admin/export` gives an administrator a copy of everything: records
-with their child rows, what packages list in `export_tables` (journals, stock moves), attached files,
-the audit trail, people, roles, permissions, customizations and automations, in zip parts of about
-128 MB of JSON lines and files, deleted after 7 days. Passwords, sign-in factors, secret fields,
-sealed settings, API keys and sessions stay out. `manifest.json` names every workspace table it did
-not carry (`tables_left_out`): read it before relying on an export as a way out.
+**Workspace exports.** The Workspace tab of Administration (or `POST /api/admin/export`) gives an
+administrator a copy of everything: records with their child rows, what packages list in
+`export_tables` (journals, stock moves), attached files, the audit trail, people, roles, permissions,
+customizations and automations, in zip parts of about 128 MB of JSON lines and files, deleted after 7
+days or by a personal-data erasure, whichever comes first (the export then says so). Passwords,
+sign-in factors, secret fields, sealed settings, API keys and sessions stay out. `manifest.json` names
+every workspace table it did not carry (`tables_left_out`) and every file the storage no longer had
+(`files_missing`), which it goes on without: read it before relying on an export as a way out.
 
 ## Malware scanning
 

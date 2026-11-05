@@ -3,6 +3,34 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-05, late: state field rules, backfills, a subscription's revenue over its days, and the people seven apps hold
+
+**State:** this PR follows PR 64. Its lock takes ERP 0.14.1, the personal-data declarations of seven apps, and every app's interface rebuilt with Ferrum-Frontend 00dea07; FRONTEND_REV takes Frontend PRs 27 to 29. No release was tagged.
+
+| Where | What |
+|---|---|
+| This PR: state field rules | A workflow state may name the only fields a person changes while a document is in it (`editable`) and the fields it needs (`required`): an edit of another field is refused with its reason, and a document is neither saved in the state nor moved into it without what it needs; the form shows the rest read-only and those fields required (FERRUM-PLATFORM-008) |
+| This PR: backfills | Packages declare backfills (a table or entity, the rows that still need it, what it sets, the batch). The upkeep runs each per workspace as a job, a batch per transaction with the last row it reached, so a failure or restart carries on from there and visits no row twice; done, it counts the rows that still need it. `GET /api/admin/backfills`, `POST .../rerun`, and the Packages tab show and rerun them (FERRUM-PLATFORM-010) |
+| This PR: numbers | A number that differs from the one asked for only by a country code lists its records as possibly the person's, beside namesakes, never erased for it (FERRUM-PRIVACY-002) |
+| This PR: holds | The database refuses deleting a record under a legal hold by any path, an app's own SQL among them (Drive's permanent deletes, say): every entity table gets a guard, which a workspace's own deletion passes (FERRUM-PRIVACY-004) |
+| This PR: exports | An export goes on without a file the storage no longer has, naming it in the manifest (`files_missing`) instead of failing; the server tells a missing object (not found) from storage being down. An erasure marks the exports it deleted, so none offers files that are gone |
+| ERP 0.14.0 | Subscription invoice lines carry the days they bill, so a plan whose item defers its revenue bills (it could not) and is earned day by day; a refund's credit note gives back over the days it credits, recognised negative; a line takes its item's deferral when added with its period; MRR reads plans as they stood, with expansion, contraction and net revenue retention (FERRUM-ECOSYSTEM-009, FERRUM-ERP-006) |
+| Healthcare 0.1.3, Government 0.1.5, Contracts 0.1.5, Control Plane 0.1.5, Logistics 0.1.3, Property 0.1.4, Restaurant 0.1.3 | Personal-data declarations: patients (and their appointments, consents and fee validities through them, kept as medical records), applicants, permit holders and citizens (drafts erased, the rest kept as public records), counterparties, hosted customers' contacts, drivers, repair reporters, and guests known by phone alone (FERRUM-PRIVACY-002) |
+| Every app's interface | Rebuilt with Ferrum-Frontend 00dea07 (PR 28), a patch release each: Assets, Bookings, Campaigns, Cloud, Commerce, Comms, Construction, Contracts, Control Plane, CRM, DAM, Docs, Drive, Edge, Education, ERP 0.14.1, Field Service, Forms, Government, GRC, Healthcare, Helpdesk, Hospitality, HR, ITSM, LMS, Logistics, Metrics, Nonprofit, Objectives, POS, Projects, Property, Restaurant, Retail, Sign and Social: record forms show a workflow state's kept fields read-only and its needed ones required |
+| Frontend PRs 27 to 29 | The erasure's confirmation and result name the stored exports it deletes; fields a workflow state keeps are read-only and what it needs is required; the backfills' report on the Packages tab; the workspace export made, followed and downloaded from the Workspace tab (it had no place in the interface), saying when it was deleted, expired or left files out |
+
+**Evidence:**
+- `crates/kernel/tests/collab_it.rs`: while a customer waits for approval only its address changes (its name is refused, saying it stays as it is while Pending); approving it without an address is refused, then done once it has one; an approved customer keeps its address. The refusals count for the metrics.
+- `crates/kernel/tests/jobs_it.rs`: a file whose object was lost is named in the export's manifest and result and left out of its files, and the export finishes. `crates/kernel/tests/privacy_it.rs`: the export an erasure deleted says so.
+- `crates/kernel/tests/backfill_it.rs`: 620 notes in batches of 250; the second batch fails the first time it reaches note 400, as a crash would; the job carries on from note 250 and every note is set once (`touched` is 1 for all); the report says done, 620 changed, none remaining; a note its set cannot change is counted after a rerun; the upkeep never reruns a finished one by itself; clerks are refused, and a rerun while running is a conflict. Bad declarations (a name in capitals, a table and an entity, an unknown entity, no rows, an empty batch, a name twice) are refused.
+- `ferrum-app-erp:addons/finance/tests/finance_it.rs`: a year of support (3650) billed through a subscription from 1 April waits as deferred revenue; 910 is earned through 30 June; cancelled then, its credit note of 2740 gives back over the 274 unused days, so sales stay at 910 through 30 September and nothing waits. MRR from 1 February to 31 March: 410 at the start (Pro alone then), 62 of expansion, 372 churned, 100 at the end; revenue churn 90.73%, net revenue retention 24.39%. The whole ERP workspace's 49 test binaries pass.
+- Each app's scenario: Healthcare finds Asha by address and number with her appointments, keeps them, erases the customer her bills went to; Government erases Ria's unsent draft and keeps what she put to the office; Restaurant finds Bo's delivery and booking by her number written two ways and blanks them.
+
+- `crates/kernel/tests/privacy_it.rs`: a visitor under a hold is refused to a direct SQL delete as well as to the platform's.
+- `crates/kernel/tests/privacy_it.rs`: asked with +1-555-0100, a visitor recorded as 555-0100 is listed as possibly Pat's beside the namesake, and is not erased with the request by number.
+
+**Not done:** no package declares a backfill yet, and contracting a schema is by hand; no general archived state; plans are flat prices per interval (no usage-based or tiered plans); Edge's people sit in child rows a declaration cannot name; staff addresses on work records (owners, approvers, assignees) are not declared.
+
 ## 2026-11-05, night, later: traces, exports an erasure reaches, non-controlling interests, a group's cash flow, intercompany invoices, email clicks as touches
 
 **State:** this PR follows PR 63. Its lock takes ERP 0.13.0, CRM 0.6.0 and Campaigns 0.3.0. No release was tagged.

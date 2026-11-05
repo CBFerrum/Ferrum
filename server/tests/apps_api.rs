@@ -5,6 +5,8 @@
 //! installation from the store, the role rule, uploads under both policies, private apps,
 //! enable/disable, upgrades, removal with and without data, and revocation.
 
+mod common;
+
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -437,7 +439,7 @@ async fn scenario() {
     // ── a cluster: core plus the native app `notes`, two workspaces ──
     let url = std::env::var("FERRUM_APPS_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_apps_api_test".into());
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    common::reset(&db.pool).await;
     let dir = FsPath::new(env!("CARGO_MANIFEST_DIR")).join("../packages");
     let [core, contacts, parties] = ["core", "contacts", "parties"].map(|p| ferrum_meta::catalog::load_package_dir(&dir.join(p)).expect(p));
     let k = Kernel::boot(

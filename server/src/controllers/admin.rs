@@ -441,6 +441,17 @@ async fn delete_role_conflict(Auth(ctx): Auth, State(app): State<AppContext>, Qu
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+// ── backfills: data a release moves in batches ──
+
+async fn list_backfills(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    Ok(Json(json!({"backfills": app_state(&app)?.kernel.backfills(&ctx).await?})).into_response())
+}
+
+async fn rerun_backfill(Auth(ctx): Auth, State(app): State<AppContext>, Path((package, name)): Path<(String, String)>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.rerun_backfill(&ctx, &package, &name).await?;
+    Ok(StatusCode::ACCEPTED.into_response())
+}
+
 // ── why someone may or may not do something ──
 
 #[derive(Deserialize)]
@@ -702,6 +713,8 @@ pub fn routes() -> Routes {
         .add("/admin/legal-holds/{id}/release", post(release_legal_hold))
         .add("/admin/access/explain", get(explain_access))
         .add("/admin/role-conflicts", get(list_role_conflicts).put(set_role_conflict).delete(delete_role_conflict))
+        .add("/admin/backfills", get(list_backfills))
+        .add("/admin/backfills/{package}/{name}/rerun", post(rerun_backfill))
         .add("/admin/users/{id}/deprovision", post(deprovision_user))
         .add("/admin/users/{id}/hand-over", post(hand_over_work))
         .add("/admin/scim/groups", get(scim_groups))

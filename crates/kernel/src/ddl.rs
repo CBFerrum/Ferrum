@@ -60,7 +60,7 @@ fn short_hash(s: &str) -> String {
 
 /// What this file makes of a catalog, beside the catalog itself: a new version syncs every database
 /// once, though no package changed. 2: indexes in lists' default order.
-const DDL_VERSION: u32 = 2;
+const DDL_VERSION: u32 = 3;
 
 /// Constraint/index name that fits Postgres' 63-byte limit and is stable.
 fn obj_name(kind: &str, table: &str, cols: &[&str]) -> String {
@@ -407,6 +407,13 @@ async fn sync_locked(conn: &mut PgConnection, catalog: &Catalog, force: bool) ->
         }
         ddl.search_indexes(&t, ent).await?;
         ddl.rls(&t).await?;
+        // A held record is not deleted, whoever's SQL asks (migration 20261105000006).
+        ddl.exec(format!(
+            "create or replace trigger ferrum_held before delete on {} for each row execute function ferrum_held_guard('{}')",
+            q(&t),
+            ent.def.name.replace('\'', "''")
+        ))
+        .await?;
         for child in ent.children.values() {
             if let Some(cent) = schema.entity(&child.entity) {
                 ddl.links(&child.table, cent, &schema).await?;
