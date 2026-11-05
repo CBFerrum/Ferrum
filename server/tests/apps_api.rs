@@ -870,6 +870,11 @@ async fn scenario() {
     fake.publish(&bundle(plugin_only("paidping"), &store_sig));
     fake.plans.lock().unwrap().insert("paidping".into(), json!([{"id": "p1", "name": "Monthly", "price": 1000, "currency": "EUR", "every": "month"}]));
     let plan = dev.plan(&admin, "paidping", None).await.unwrap();
+    assert_eq!(
+        plan.licences.iter().map(|l| (l.app.as_str(), l.given, l.live)).collect::<Vec<_>>(),
+        [("paidping", false, false)],
+        "the plan says the store sells it and no licence was given"
+    );
     let err = refused_with(dev.install(&admin, "paidping", None, &plan.digest, false).await);
     assert!(err.contains("paidping is sold in the store: give its licence first"), "{err}");
     k.add_subdomain(tenant, "acme.ferrum.test").await.unwrap();
@@ -892,6 +897,9 @@ async fn scenario() {
     assert!(said(dev.set_licence(&admin, "paidping", Uuid::new_v4()).await).contains("404"), "a licence no store knows");
     assert!(matches!(dev.set_licence(&clerk, "paidping", ours).await, Err(Error::Forbidden(_))));
     dev.set_licence(&admin, "paidping", ours).await.expect("kept");
+    let held = dev.plan(&admin, "paidping", None).await.unwrap();
+    assert_eq!(held.licences.iter().map(|l| (l.given, l.live)).collect::<Vec<_>>(), [(true, true)], "given and live");
+    assert_eq!(held.digest, plan.digest, "a licence does not change what is consented to");
     dev.install(&admin, "paidping", None, &plan.digest, false).await.expect("installed with its licence");
     assert!(installed(&dev.overview(&admin).await.unwrap(), "paidping").is_some());
     // The store says it lapsed: the next round shows it.
