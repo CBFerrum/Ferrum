@@ -84,7 +84,8 @@ pub struct MergeLinkDef {
 pub struct PersonalDataDef {
     pub entity: String,
     /// The field holding the person's address, their phone field (`phone` as well) where the records
-    /// hold no address, or a link to a record another declaration finds by address or number.
+    /// hold no address, a link to a record another declaration finds by address or number, or
+    /// `table.field` for people held in a child table's rows (only those rows are theirs).
     #[serde(rename = "match")]
     pub match_field: String,
     /// The fields an erasure blanks. Empty with `retain`.

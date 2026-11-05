@@ -108,20 +108,33 @@ async fn reached(ctx: &Ctx, tx: &mut Tx, emails: &[String], phone: Option<&str>)
     for linked in [false, true] {
         for def in &ctx.schema.personal_data {
             let Some(ent) = ctx.schema.entity(&def.entity) else { continue };
-            let Some(expr) = field_expr(ent, &def.match_field, "a") else { continue };
             let to = ent.field(&def.match_field).filter(|f| f.ftype == FieldType::Link).and_then(|f| f.to.clone());
             if to.is_some() != linked {
                 continue;
             }
             let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(format!("select a.id from {} a where a.tenant_id = ", q(&ent.table)));
             qb.push_bind(ctx.tenant);
-            if let Some(to) = to {
+            if let Some((table, at)) = def.match_field.split_once('.') {
+                // A record with a row of `table` holding their address.
+                let Some((rows, expr)) = ent.children.get(table).and_then(|c| Some((c.table.clone(), field_expr(ctx.schema.entity(&c.entity)?, at, "c")?)))
+                else {
+                    continue;
+                };
+                qb.push(format!(
+                    " and exists (select 1 from {} c where c.tenant_id = a.tenant_id and c.parent_id = a.id and lower(({expr})::text) = any(",
+                    q(&rows)
+                ))
+                .push_bind(emails.to_vec())
+                .push("))");
+            } else if let Some(to) = to {
                 let ids: Vec<Uuid> = out.iter().filter(|(d, _)| d.entity == to).flat_map(|(_, ids)| ids.iter().copied()).collect();
+                let Some(expr) = field_expr(ent, &def.match_field, "a") else { continue };
                 if ids.is_empty() {
                     continue;
                 }
                 qb.push(format!(" and ({expr}) = any(")).push_bind(ids).push(")");
             } else {
+                let Some(expr) = field_expr(ent, &def.match_field, "a") else { continue };
                 qb.push(format!(" and (lower(({expr})::text) = any(")).push_bind(emails.to_vec()).push(")");
                 if let Some((e, digits)) = def.phone.as_deref().and_then(|f| field_expr(ent, f, "a")).zip(phone) {
                     qb.push(format!(" or regexp_replace(({e})::text, '[^0-9]', '', 'g') = ")).push_bind(digits.to_string());
@@ -148,6 +161,55 @@ async fn reached(ctx: &Ctx, tx: &mut Tx, emails: &[String], phone: Option<&str>)
         }
     }
     Ok(out)
+}
+
+/// The rows of a record's table that hold one of these addresses, for a declaration that matches
+/// rows (`table.field`); `None` for one that matches the record.
+async fn rows_of(ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, def: &PersonalDataDef, id: Uuid, emails: &[String]) -> Result<Option<(String, Vec<Uuid>)>> {
+    let Some((table, at)) = def.match_field.split_once('.') else { return Ok(None) };
+    let Some((rows, expr)) = ent.children.get(table).and_then(|c| Some((c.table.clone(), field_expr(ctx.schema.entity(&c.entity)?, at, "c")?))) else {
+        return Ok(Some((table.to_string(), vec![])));
+    };
+    let ids: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "select c.id from {} c where c.tenant_id = $1 and c.parent_id = $2 and lower(({expr})::text) = any($3) order by c.id",
+        q(&rows)
+    )))
+    .bind(ctx.tenant)
+    .bind(id)
+    .bind(emails)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(Some((table.to_string(), ids)))
+}
+
+/// Erases a person's rows of a record's table: the table in `erase` removes them, `table.field`
+/// blanks that field in them. The record's own fields, its other rows and its files are not theirs
+/// and stay; a table's changes are in the history by row id only, so there is nothing of them to
+/// redact there.
+async fn erase_rows(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, id: Uuid, table: &str, rows: &[Uuid], erase: &[String], reason: &str) -> Result<()> {
+    let entity = &ent.def.name;
+    let engine = Ctx::system(ctx.tenant, ctx.schema.clone());
+    let Some((stored, cent)) = ent.children.get(table).and_then(|c| Some((c.table.clone(), ctx.schema.entity(&c.entity)?))) else { return Ok(()) };
+    if erase.iter().any(|f| f == table) {
+        sqlx::query(sqlx::AssertSqlSafe(format!("delete from {} where tenant_id = $1 and parent_id = $2 and id = any($3)", q(&stored))))
+            .bind(ctx.tenant)
+            .bind(id)
+            .bind(rows)
+            .execute(&mut **tx)
+            .await?;
+    } else {
+        for row in rows {
+            let mut values = Doc::new();
+            for f in erase.iter().filter_map(|f| f.strip_prefix(table).and_then(|r| r.strip_prefix('.'))) {
+                if let Some(fd) = cent.field(f) {
+                    values.insert(f.to_string(), blank(fd, *row));
+                }
+            }
+            k.set_child_values_tx(&engine, tx, entity, table, *row, values).await?;
+        }
+    }
+    audit::record(tx, ctx, entity, id, "erase_personal_data", None, json!({"table": table, "rows": rows.len(), "fields": erase, "reason": reason})).await?;
+    Ok(())
 }
 
 /// Records whose number is the one asked for with or without a country code (the digits of one end
@@ -402,8 +464,27 @@ impl Kernel {
         }
         for (def, ids) in reached {
             let label = ctx.schema.entity(&def.entity).map(|e| e.def.label.clone()).unwrap_or_else(|| def.entity.clone());
+            let ent = self.entity(ctx, &def.entity)?;
             for id in ids {
-                let data = self.get_tx(ctx, &mut tx, &def.entity, id, false).await?;
+                let mut data = self.get_tx(ctx, &mut tx, &def.entity, id, false).await?;
+                // Matched by its rows: those rows are theirs, not the record or anyone else's rows.
+                if let Some((table, rows)) = rows_of(ctx, &mut tx, &ent, &def, id, &emails).await? {
+                    let theirs: Vec<Value> = data
+                        .get(&table)
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter(|r| r.get("id").and_then(Value::as_str).and_then(|i| i.parse::<Uuid>().ok()).is_some_and(|i| rows.contains(&i)))
+                        .cloned()
+                        .collect();
+                    let title = ent.def.title_field.as_deref().and_then(|t| data.get(t).cloned());
+                    data = Doc::from_iter([("id".to_string(), json!(id)), (table.clone(), Value::Array(theirs))]);
+                    if let (Some(t), Some(v)) = (ent.def.title_field.as_deref(), title) {
+                        data.insert(t.to_string(), v);
+                    }
+                    records.push(json!({"entity": def.entity, "label": label, "id": id, "number": null, "erases": def.erase, "retained_because": def.retain, "files": [], "data": data}));
+                    continue;
+                }
                 let files: Vec<Value> =
                     attached(&mut tx, ctx.tenant, &def.entity, id).await?.into_iter().map(|(id, name, _)| json!({"id": id, "file_name": name})).collect();
                 records.push(json!({"entity": def.entity, "label": label, "id": id, "number": data.get("number"), "erases": def.erase, "retained_because": def.retain, "files": files, "data": data}));
@@ -476,6 +557,13 @@ impl Kernel {
                 }
                 if record_held(&mut tx, ctx.tenant, &def.entity, id).await? {
                     held.push(json!({"entity": def.entity, "id": id}));
+                    continue;
+                }
+                if let Some((table, rows)) = rows_of(ctx, &mut tx, &ent, &def, id, &emails).await? {
+                    erase_rows(self, ctx, &mut tx, &ent, id, &table, &rows, &def.erase, reason).await?;
+                    erased.push(json!({"entity": def.entity, "id": id, "table": table, "rows": rows.len()}));
+                    // By row id: the journal holds no address.
+                    journal.push(json!({"entity": def.entity, "id": id, "fields": def.erase, "table": table, "rows": rows}));
                     continue;
                 }
                 let (e, f) = erase_record(self, ctx, &mut tx, &ent, id, &def.erase, reason).await?;
@@ -552,7 +640,15 @@ impl Kernel {
                 continue;
             }
             let fields: Vec<String> = r["fields"].as_array().into_iter().flatten().filter_map(|f| f.as_str().map(str::to_string)).collect();
-            erase_record(self, &ctx, &mut tx, &ent, id, &fields, reason).await?;
+            match r["table"].as_str() {
+                Some(table) => {
+                    let rows: Vec<Uuid> = r["rows"].as_array().into_iter().flatten().filter_map(|i| i.as_str().and_then(|i| i.parse().ok())).collect();
+                    erase_rows(self, &ctx, &mut tx, &ent, id, table, &rows, &fields, reason).await?;
+                }
+                None => {
+                    erase_record(self, &ctx, &mut tx, &ent, id, &fields, reason).await?;
+                }
+            }
             done += 1;
         }
         let account = erasure["account"].as_str().and_then(|i| i.parse::<Uuid>().ok());
