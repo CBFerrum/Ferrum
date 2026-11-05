@@ -214,8 +214,13 @@ impl Catalog {
                     return invalid(format!("{name}: personal data of unknown entity {}", pd.entity));
                 };
                 let field = |f: &str| e.fields.iter().find(|x| x.name == f);
-                if field(&pd.match_field).is_none_or(|f| !matches!(f.ftype, FieldType::Email | FieldType::Data)) {
-                    return invalid(format!("{name}: personal data of {}: match must be an email (or data) field holding the address", pd.entity));
+                // Records that hold no address are matched by the phone field they name.
+                let by_phone = pd.phone.as_deref() == Some(pd.match_field.as_str());
+                if field(&pd.match_field).is_none_or(|f| !(matches!(f.ftype, FieldType::Email | FieldType::Data) || by_phone && f.ftype == FieldType::Phone)) {
+                    return invalid(format!(
+                        "{name}: personal data of {}: match must be an email (or data) field holding the address, or the phone field where there is none",
+                        pd.entity
+                    ));
                 }
                 if pd.erase.is_empty() == pd.retain.is_none() {
                     return invalid(format!("{name}: personal data of {}: list the fields to erase, or say in `retain` why the records stay", pd.entity));

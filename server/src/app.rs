@@ -119,6 +119,11 @@ impl Hooks for App {
         "ferrum"
     }
 
+    /// Loco's log, with traces to an OpenTelemetry collector when one is configured (telemetry.rs).
+    fn init_logger(ctx: &AppContext) -> Result<bool> {
+        crate::telemetry::init(&ctx.config.logger)
+    }
+
     fn app_version() -> String {
         format!("{} ({})", env!("CARGO_PKG_VERSION"), option_env!("BUILD_SHA").or(option_env!("GITHUB_SHA")).unwrap_or("dev"))
     }
@@ -424,6 +429,7 @@ impl Hooks for App {
             }
             state.kernel.db.pool.close().await;
             state.kernel.db.side.close().await;
+            crate::telemetry::shutdown();
             tracing::info!("shutdown complete");
         }
     }

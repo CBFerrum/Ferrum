@@ -52,6 +52,13 @@ const PEOPLE: &str = r#"
   fields:
     - {name: payer, type: email}
     - {name: amount, type: decimal}
+- name: Diner
+  label: Diner
+  kind: master
+  title_field: guest_name
+  fields:
+    - {name: guest_name, type: data}
+    - {name: phone, type: phone}
 "#;
 
 fn write_catalog(dir: &Path, personal: &str) {
@@ -75,7 +82,8 @@ fn catalog() -> Catalog {
     let dir = temp("ok");
     write_catalog(
         &dir,
-        "  - {entity: Visitor, match: email, phone: phone, name: full_name, erase: [full_name, email, phone, notes]}\n  - {entity: Receipt, match: payer, retain: \"Accounting records\"}\n",
+        "  - {entity: Visitor, match: email, phone: phone, name: full_name, erase: [full_name, email, phone, notes]}\n  - {entity: Receipt, match: payer, retain: \"Accounting records\"}\n  \
+         - {entity: Diner, match: phone, phone: phone, name: guest_name, erase: [guest_name, phone]}\n",
     );
     let c = Catalog::load_dir(&dir).expect("catalog");
     let _ = std::fs::remove_dir_all(&dir);
@@ -112,6 +120,7 @@ async fn scenario() {
         ("  - {entity: Receipt, match: payer}\n", "neither erase nor retain"),
         ("  - {entity: Receipt, match: payer, erase: [payer], retain: \"Both\"}\n", "both erase and retain"),
         ("  - {entity: Visitor, match: email, phone: notes, erase: [email]}\n", "a phone that is no phone field"),
+        ("  - {entity: Diner, match: phone, erase: [phone]}\n", "a match on a phone field it does not name as the phone"),
         ("  - {entity: Visitor, match: email, name: nickname, erase: [email]}\n", "a name that is no field"),
     ] {
         let dir = temp("bad");
@@ -214,6 +223,14 @@ async fn scenario() {
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();
     ferrum_kernel::audit::record(&mut tx, &pat_ctx, "Passkey", passkey, "add", None, json!({"name": "Pat's phone", "rp_id": "acme.test"})).await.unwrap();
     tx.commit().await.unwrap();
+    // The workspace's export from before is a copy of what is about to go.
+    let export = k.export_workspace(&admin).await.unwrap();
+    k.run_jobs_once(1).await.unwrap();
+    let exported = k.job(&admin, export).await.unwrap();
+    let part: Uuid = exported["result"]["parts"][0]["id"].as_str().unwrap_or_else(|| panic!("{exported}")).parse().unwrap();
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let part_key: String = sqlx::query_scalar("select storage_key from file_object where id = $1").bind(part).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
     let done = k.erase_personal_data(&admin, "pat@old.test", "Request 1").await.unwrap();
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();
     let history: Value = sqlx::query_scalar("select diff from audit_event where tenant_id = $1 and entity = 'Passkey' and record_id = $2")
@@ -228,6 +245,8 @@ async fn scenario() {
     assert_eq!(ids(&done["held"]), vec![late["id"].as_str().unwrap().to_string()], "what a hold covers stays, and says so");
     assert_eq!(done["retained"][0]["because"], json!("Accounting records"), "what is kept says why");
     assert_eq!(done["files_deleted"], json!(1));
+    assert_eq!(done["exports_deleted"], json!(1), "no copy outlives an erasure");
+    assert!(matches!(k.export_part(&admin, export, part).await, Err(Error::NotFound(_))));
     assert_eq!(done["account_erased"], json!(true));
     assert!(done["not_searched"].as_array().unwrap().contains(&json!("silent")));
 
@@ -264,6 +283,7 @@ async fn scenario() {
     assert!(store.0.lock().unwrap().contains_key(&scan_key), "not before the commit's events run");
     while k.dispatch_outbox_once().await.unwrap() > 0 {}
     assert!(!store.0.lock().unwrap().contains_key(&scan_key), "the object is gone");
+    assert!(!store.0.lock().unwrap().contains_key(&part_key), "and so is the export's");
     let journal: Vec<String> = store.0.lock().unwrap().keys().filter(|k| k.starts_with(JOURNAL_PREFIX)).cloned().collect();
     assert_eq!(journal.len(), 1, "{journal:?}");
     let entry = String::from_utf8(store.0.lock().unwrap()[&journal[0]].clone()).unwrap();
@@ -335,9 +355,34 @@ async fn scenario() {
     tx.commit().await.unwrap();
     assert_eq!(taken, 1, "and taking one is itself in the history");
 
-    // An erasure asked with their phone number reaches the walk-in; a name alone erases nothing.
+    // An erasure asked with their phone number reaches the walk-in, and a table booked under it, which
+    // holds no address; a name alone erases nothing.
+    let diner = k.insert(&admin, "Diner", obj(json!({"guest_name": "Pat", "phone": "1-555-0100"}))).await.unwrap();
     let by_phone = k.erase_personal_data_of(&admin, &person("+1 555 0100", "Pat Lee"), "Request 2").await.unwrap();
-    assert_eq!(ids(&by_phone["erased"]), vec![walk_in["id"].as_str().unwrap().to_string()], "{by_phone}");
+    let mut erased = ids(&by_phone["erased"]);
+    erased.sort();
+    let mut expected = vec![walk_in["id"].as_str().unwrap().to_string(), diner["id"].as_str().unwrap().to_string()];
+    expected.sort();
+    assert_eq!(erased, expected, "{by_phone}");
+    let booked = k.get(&admin, "Diner", diner["id"].as_str().unwrap().parse().unwrap(), false).await.unwrap();
+    assert!(booked["phone"].is_null() && booked["guest_name"].is_null(), "{booked:?}");
+
+    // Years of records kept for a reason are still one person's: only what an erasure would blank
+    // is held to a thousand, an address shared by many.
+    for amount in 0..1001 {
+        k.insert(&admin, "Receipt", obj(json!({"payer": "pat@old.test", "amount": amount}))).await.unwrap();
+    }
+    let years = k.personal_data(&admin, "pat@old.test").await.unwrap();
+    assert_eq!(years["records"].as_array().unwrap().len(), 1002, "every receipt");
+    let again = k.erase_personal_data(&admin, "pat@old.test", "Request 3").await.unwrap();
+    assert_eq!((again["retained"].as_array().unwrap().len(), again["erased"].as_array().unwrap().len()), (1002, 0));
+    for i in 0..1001 {
+        k.insert(&admin, "Visitor", obj(json!({"full_name": format!("Guest {i}"), "email": "front-desk@acme.test"}))).await.unwrap();
+    }
+    assert!(
+        matches!(k.erase_personal_data(&admin, "front-desk@acme.test", "Request 4").await, Err(Error::Validation(_) | Error::Invalid(_))),
+        "a desk is not a person"
+    );
     let kept = k.get(&admin, "Visitor", namesake["id"].as_str().unwrap().parse().unwrap(), false).await.unwrap();
     assert_eq!(kept["email"], json!("p.lee@else.test"), "the namesake is untouched");
 }

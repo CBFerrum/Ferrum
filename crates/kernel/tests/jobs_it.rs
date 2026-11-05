@@ -583,6 +583,29 @@ async fn scenario() {
     let v = w.view(next).await;
     assert_eq!(v["result"]["files"], json!(1), "exports are not files of the workspace: {v}");
 
+    // An erasure lands while an export is made (here, as its part is stored): it may hold what was
+    // erased, so it goes and is made again, at no cost to its attempts.
+    w.sql(
+        "create function erase_meanwhile() returns trigger language plpgsql as $$ begin \
+         insert into outbox (tenant_id, topic, payload) values (new.tenant_id, 'ferrum.privacy.erased', '{}'); return new; end $$",
+    )
+    .await;
+    w.sql("create trigger erase_meanwhile after insert on file_object for each row when (new.entity = 'ferrum.export') execute function erase_meanwhile()")
+        .await;
+    let again = k.export_workspace(&admin).await.unwrap();
+    k.run_jobs_once(1).await.unwrap();
+    let v = w.view(again).await;
+    assert_eq!((&v["status"], &v["attempts"]), (&json!("queued"), &json!(0)), "{v}");
+    assert!(v["last_error"].as_str().unwrap().contains("erasure"), "{v}");
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let stored: i64 = sqlx::query_scalar("select count(*) from file_object where record_id = $1").bind(again).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(stored, 0, "what it had stored went");
+    w.sql("drop trigger erase_meanwhile on file_object").await;
+    k.run_jobs_once(1).await.unwrap();
+    let v = w.view(again).await;
+    assert_eq!((&v["status"], v["result"]["parts"].as_array().map(Vec::len)), (&json!("done"), Some(1)), "{v}");
+
     // ───────────── nothing stays for ever ─────────────
     let key: String = {
         let mut tx = k.db.tenant_tx(tenant).await.unwrap();

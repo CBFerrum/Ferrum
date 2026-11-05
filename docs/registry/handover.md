@@ -3,6 +3,27 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-05, night, later: traces, exports an erasure reaches, non-controlling interests, a group's cash flow, intercompany invoices, email clicks as touches
+
+**State:** this PR follows PR 63. Its lock takes ERP 0.13.0, CRM 0.6.0 and Campaigns 0.3.0. No release was tagged.
+
+| Where | What |
+|---|---|
+| This PR: traces | OpenTelemetry traces over OTLP/HTTP when the deployment names a collector (`OTEL_EXPORTER_OTLP_ENDPOINT`): each request is a span with its method and path, a caller's W3C `traceparent` its parent, flushed at shutdown; without an endpoint the log is Loco's as before (FERRUM-OPS-009) |
+| This PR: erasure and exports | An erasure that reaches anything deletes the workspace's stored exports, copies from before, and an export it lands on while being made starts again, at no cost to its attempts; a declaration matches records that hold no address by their phone field (a restaurant's bookings); records kept for a reason are no longer held to the thousand that guards erasure against a shared address, so years of an employee's attendance no longer refuse their request; the data-governance catalog lists every declaration at this lock (69, from 18 of the 36 apps compiled in) and what holds nothing to reach (FERRUM-PRIVACY-002) |
+| ERP 0.12.0 | Non-controlling interests (IFRS 10): a company says how much of it its parent holds, and the consolidated balance sheet and profit and loss split equity and profit between the owners of the parent and the non-controlling interests, from each company's own net assets and profit. A group's cash flow (IAS 7): every flow at the rate of its day, the effect of exchange rates on cash, what was eliminated only in part a line of its own (FERRUM-ERP-005) |
+| ERP 0.13.0 | A sale to one of the group's companies makes that company's purchase invoice: from the supplier that represents the seller, numbered and dated as the sale, at its net prices, once; the sale is not cancelled while it stands (FERRUM-ERP-005) |
+| CRM 0.6.0, Campaigns 0.3.0 | With the Campaigns app's CRM link (`campaigns_crm`), an email campaign belongs to a CRM campaign, and a click on it from a won deal's lead's or contact's address, before the deal was won, is a touch in Campaign Attribution (FERRUM-CRM-002) |
+
+**Evidence:**
+- `server/src/telemetry.rs`: a request span reaches a stand-in collector as an OTLP/HTTP protobuf POST to `/v1/traces` carrying its name, path and service; a caller's `traceparent` is read. Beside a running server (ferrum_walk) a stand-in collector received the span of a request sent with a `traceparent`, in that trace.
+- `crates/kernel/tests/privacy_it.rs`: an export made before Pat's erasure is deleted by it (`exports_deleted: 1`), its download refused and its object gone from storage; a table booked under Pat's number, holding no address, is erased by a request with that number written another way; 1002 receipts kept for accounting are exported and left, while 1001 visitors under one front-desk address are refused as no one person. `crates/kernel/tests/jobs_it.rs`: an erasure landing as an export's part is stored sends the export back to the queue with no attempt counted and nothing of it stored; it is then made. With the check taken out, the export finishes with what it read before the erasure, and the test fails.
+- `ferrum-app-erp:addons/finance/tests/books_it.rs`: India holding 80% of Europe, non-controlling interests of 310 in equity and 270.20 of profit; Group Co holding 90% of India as well, 784 and 228.28; the group's cash flow 4,725 from operating, 275 the effect of exchange rates, from 0 to 5,000, reconciled.
+- `ferrum-app-erp:addons/finance/tests/books_it.rs`: Group Co bills Group India for 250 units; India's purchase invoice is from the supplier that is Group Co, numbered and dated as the sale, at its net total; a second is refused; submitted, it keeps the sale from being cancelled; the books balance.
+- `ferrum-app-campaigns:tests/campaigns_it.rs`: Chen clicked the spring email tied to CRM's Spring 2026; a deal won from a lead at that address is that campaign's under every model.
+
+**Not done:** a purchase mirrored into the seller's books, and credit notes mirrored; goodwill (the investment is not set against the subsidiary's equity); database queries and jobs as spans of their own; personal-data declarations for the 18 apps that make none (Healthcare's patients, Government's citizens and Contracts' counterparties among them).
+
 ## 2026-11-05, night: the apps take up phone lookups, kept-back exports, attribution and product rules
 
 **State:** this PR follows PR 62. Its lock takes eight apps at their follow-ups to PRs 60 and 61, CRM through 0.5.1. No release was tagged.
