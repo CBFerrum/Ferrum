@@ -946,6 +946,16 @@ narrowed view allows, and can propose. `server/tests/assistant_egress_it.rs` run
 `assistant_monthly_tokens`, which cannot exceed the operator's. Past it, the provider is not called.
 `GET /api/assistant/usage` shows this month's tokens by person and model. The log records each call's
 model, tokens and tool names, and never what was said.
+
+**What it was told.** Each answer records the version of its instructions, tools and model
+(`prompt` in its usage); `GET /api/assistant/prompts/{version}` gives an administrator that
+version's text and how many answers it gave.
+
+**How well it answers.** `ferrum task assistant_eval slug:<workspace> email:<person> scratch:yes`
+asks the model the grounded-answer cases in `server/assistant-evals/grounded.yaml` (or `file:` a
+dataset of your own) as that person, and passes a case when the answer says what the records say,
+read them first, and says nothing a record planted for it to say. Each case adds its records to
+the workspace, so give it one set aside for this. Every run costs tokens.
 ## Live documents
 
 Drive's documents (New → Document) are edited by everyone who has them open at once, with each

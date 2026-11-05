@@ -503,6 +503,7 @@ impl Hooks for App {
         tasks.register(crate::tasks::AppRevoke);
         tasks.register(crate::tasks::AppReleases);
         tasks.register(crate::tasks::AssistantCheck);
+        tasks.register(crate::tasks::AssistantEval);
         tasks.register(crate::tasks::ReleaseRestore);
         tasks.register(crate::tasks::AcceptAuthority);
         tasks.register(crate::tasks::ExtractTenant);
