@@ -136,6 +136,29 @@ pub struct Plan {
     pub increases: Vec<String>,
     pub warnings: Vec<String>,
     pub uninstall: Uninstall,
+    /// The apps it brings that a store sells: each installs only with a live licence for this
+    /// workspace, which an administrator gives (`PUT /api/admin/apps/{id}/licence`).
+    pub licences: Vec<LicenceNeed>,
+}
+
+/// An app a store sells, and the licence this workspace gave for it, as its store last said.
+#[derive(Debug, Clone, Serialize)]
+pub struct LicenceNeed {
+    pub app: String,
+    pub store: String,
+    pub given: bool,
+    pub live: bool,
+    pub period_end: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_error: Option<String>,
+}
+
+/// The store a step's app comes from: now, or earlier to the cluster.
+fn store_of(origin: &Origin) -> Option<&str> {
+    match origin {
+        Origin::Store { url, .. } => Some(url.as_str()),
+        Origin::Local(r) => r.source.strip_prefix("store:"),
+        Origin::Native => None,
+    }
 }
 
 impl Plan {
@@ -1458,6 +1481,23 @@ impl AppManager {
             Origin::Local(rel) => self.kernel.labels_of(id, &rel.digest).await?,
             _ => Vec::new(),
         };
+        let mut licences = Vec::new();
+        for s in steps.iter().filter(|s| s.action != StepAction::Already) {
+            let Some(url) = store_of(&s.origin) else { continue };
+            if !self.sold(url, &s.id).await? {
+                continue;
+            }
+            let mut tx = self.kernel.db.tenant_tx(ctx.tenant).await?;
+            let given: Option<(bool, Option<chrono::DateTime<chrono::Utc>>, Option<String>)> =
+                sqlx::query_as("select live, period_end, last_error from app_licence where tenant_id = $1 and app_id = $2")
+                    .bind(ctx.tenant)
+                    .bind(&s.id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+            tx.commit().await?;
+            let (live, period_end, last_error) = given.clone().unwrap_or((false, None, None));
+            licences.push(LicenceNeed { app: s.id.clone(), store: url.to_string(), given: given.is_some(), live, period_end, last_error });
+        }
         let plan = Plan {
             app: PlanApp {
                 summary: summary(m, &origin, root.verified, root.source == "private", icon_url),
@@ -1476,6 +1516,7 @@ impl AppManager {
             increases,
             warnings,
             uninstall: m.uninstall,
+            licences,
         };
         Ok((plan, steps, ws))
     }
@@ -1509,12 +1550,7 @@ impl AppManager {
         // whether it comes from the store now or from the cluster, where another workspace's
         // installation left it.
         for s in steps.iter().filter(|s| s.action != StepAction::Already) {
-            let store = match &s.origin {
-                Origin::Store { url, .. } => Some(url.as_str()),
-                Origin::Local(r) => r.source.strip_prefix("store:"),
-                Origin::Native => None,
-            };
-            if let Some(url) = store {
+            if let Some(url) = store_of(&s.origin) {
                 self.licensed(ctx.tenant, url, &s.id).await?;
             }
         }
