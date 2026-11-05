@@ -97,6 +97,14 @@ bar; the statement refused a second time in the new words, and Pat's page read "
 given: ask them for a new health key"; a second contract, CTR-2026-00003, went to its signature and
 Dana opened its signed PDF (application/pdf, two pages: the signed page and the certificate).
 
+On 5 November, with ERP 0.10.2, HR 0.7.1 and this PR's fixes, the server was rebuilt and the
+accounting walked again: the App Manager's update of ERP (recorded 0.7.1) listed no new entities and
+recorded 0.10.2; Walk Properties' Create Standard Chart of Accounts had added Deferred Revenue,
+Prepaid Expenses, Accrued Income and Accrued Expenses with their numbers and linked both deferred
+defaults; and Recognise Deferred Revenue and Expense, through yesterday, said "1 deferred line
+recognised through 2026-11-04" (3,080.00 recognised in all, 308 days at 10) where it had said only
+"done".
+
 The onboarding refusal looked swallowed at first; it was a toast that had faded before the page was
 read, and shows ("no shared cell in eu has room").
 
