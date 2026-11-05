@@ -27,12 +27,17 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   document) sends one HTML message to one address through the server's SMTP settings: no cc,
   threading or bounce handling (the Mail app has those). Attachments need an SMTP server (not
   the development stub), up to 10 files and 20 MB per message.
-- **Large files**: browsers upload up to 2 GiB straight to S3-compatible storage; local-disk
-  installs stay at the 25 MB request limit. Downloads stream from storage, the platform's and an
-  app's that answers with the stored file (`SiteResponse::file`); an app that reads a file's bytes
-  (`read_file`) loads them into memory, which is refused past 256 MB (the largest an app works on
-  whole, Learn's SCORM packages). Completing a direct upload reads the object once to record its
-  SHA-256.
+- **Large files**: files past the 25 MB request limit go up to 2 GiB in 8 MiB parts through the
+  server, on any store, and an upload goes on from what has arrived after a dropped connection,
+  or when the same file is chosen again for the same record after the page went (the device keeps
+  which upload it was, under the person's offline name; without a lease, only while the page
+  lives). An upload left waiting is swept a day after its last part. The shell's uploads that
+  outlive the page (`shell().uploads`, Drive's) still send each file whole, to an app's own
+  address and within its limit. S3 deployments also take direct uploads with a presigned URL, which
+  do not resume. Downloads stream from storage, the platform's and an app's that answers with the
+  stored file (`SiteResponse::file`); an app that reads a file's bytes (`read_file`) loads them into
+  memory, which is refused past 256 MB (the largest an app works on whole, Learn's SCORM packages).
+  Completing an upload reads the object once to record its SHA-256.
 - **Stock revaluation** is a stock reconciliation counting the same quantity at the new rate. Like
   every stock posting (and landed costs), it is valued when it is posted: a backdated document
   never re-values the ones after it (there is no reposting).

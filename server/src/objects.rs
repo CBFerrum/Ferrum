@@ -1,14 +1,16 @@
 //! Direct access to the object store behind Loco's storage (the same bucket or directory, the same
 //! keys): downloads stream instead of loading whole files into memory, and with S3 the browser
 //! uploads large files straight into the bucket through presigned URLs, so no API replica holds
-//! them. Completing an upload checks the object and records it like any other file.
+//! them. A file larger than one request may also come through the server in parts, on any store:
+//! after a dropped connection the upload goes on from what has arrived (FERRUM-OPS-006).
+//! Completing an upload checks the object and records it like any other file.
 
 use crate::state::Settings;
 use axum::body::Body;
 use ferrum_kernel::{Ctx, Error, Kernel, Result};
 use futures_util::StreamExt;
-use opendal::Operator;
 use opendal::services::{Fs, S3};
+use opendal::{Operator, Writer};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
@@ -16,6 +18,12 @@ use uuid::Uuid;
 
 /// How long a presigned upload URL (and its pending upload) stays valid.
 pub const UPLOAD_TTL: Duration = Duration::from_secs(3600);
+
+/// The largest part of an upload sent in parts (`PUT /api/files/uploads/{id}/parts/{offset}`).
+pub const PART_BYTES: u64 = 8 << 20;
+
+/// How long an upload sent in parts waits for its next part before it is swept.
+pub const PARTS_TTL: Duration = Duration::from_secs(24 * 3600);
 
 pub struct Objects {
     op: Operator,
@@ -117,6 +125,14 @@ impl Objects {
             tracing::warn!(%key, "could not delete an upload's object: {e}");
         }
     }
+
+    /// Deletes the parts of an upload sent in parts, once it is recorded or forgotten.
+    async fn drop_parts(&self, tenant: Uuid, id: Uuid) {
+        let dir = format!("{}/", parts_dir(tenant, id));
+        if let Err(e) = self.op.delete_with(&dir).recursive(true).await {
+            tracing::warn!(%dir, "could not delete an upload's parts: {e}");
+        }
+    }
 }
 
 /// Content types never stored as declared (they could run script in the app's origin).
@@ -127,13 +143,16 @@ pub struct NewUpload {
     pub content_type: String,
     pub size: u64,
     pub attach_to: Option<(String, Uuid)>,
+    /// Sent through the server in parts (any store) rather than straight to object storage.
+    pub parts: bool,
 }
 
-/// Starts a direct upload: records it as pending and returns the presigned request to send the
-/// bytes with — `{upload_id, method, url, headers, expires_at}`.
+/// Starts an upload: records it as pending and returns the presigned request to send the bytes
+/// with — `{upload_id, method, url, headers, expires_at}` — or, for one sent in parts, where to
+/// start — `{upload_id, parts: true, part_bytes, size, offset: 0, expires_at}`.
 pub async fn start(k: &Kernel, objects: &Objects, ctx: &Ctx, max_bytes: u64, up: NewUpload) -> Result<Value> {
-    if !objects.direct_uploads() {
-        return Err(Error::Conflict("direct uploads need S3-compatible object storage; upload through POST /api/files instead".into()));
+    if !up.parts && !objects.direct_uploads() {
+        return Err(Error::Conflict("direct uploads need S3-compatible object storage; upload through POST /api/files, or in parts (`parts: true`)".into()));
     }
     if ctx.user.is_nil() {
         return Err(Error::Forbidden("direct uploads need a signed-in user".into()));
@@ -148,14 +167,22 @@ pub async fn start(k: &Kernel, objects: &Objects, ctx: &Ctx, max_bytes: u64, up:
     let name = if name.trim().is_empty() { "upload.bin".to_string() } else { name };
     let ctype = up.content_type.trim().to_lowercase();
     let ctype = if ctype.is_empty() || ctype.len() > 200 || ACTIVE_TYPES.contains(&ctype.as_str()) { "application/octet-stream".to_string() } else { ctype };
+    // An upload in parts is refused now, not after its last part, when the workspace has no room.
+    if up.parts {
+        k.check_storage_quota(ctx.tenant, up.size).await?;
+    }
     let id = Uuid::now_v7();
     let key = format!("tenants/{}/{}", ctx.tenant, id);
-    let signed = objects.op.presign_write_with(&staging_key(ctx.tenant, id), UPLOAD_TTL).content_type(&ctype).await.map_err(storage_err)?;
-    let expires_at = chrono::Utc::now() + chrono::Duration::from_std(UPLOAD_TTL).unwrap_or_default();
+    let signed = if up.parts {
+        None
+    } else {
+        Some(objects.op.presign_write_with(&staging_key(ctx.tenant, id), UPLOAD_TTL).content_type(&ctype).await.map_err(storage_err)?)
+    };
+    let expires_at = chrono::Utc::now() + chrono::Duration::from_std(if up.parts { PARTS_TTL } else { UPLOAD_TTL }).unwrap_or_default();
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     sqlx::query(
-        "insert into file_upload (tenant_id, id, entity, record_id, file_name, content_type, size_bytes, storage_key, created_by, expires_at) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        "insert into file_upload (tenant_id, id, entity, record_id, file_name, content_type, size_bytes, storage_key, created_by, expires_at, parts) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(ctx.tenant)
     .bind(id)
@@ -167,9 +194,13 @@ pub async fn start(k: &Kernel, objects: &Objects, ctx: &Ctx, max_bytes: u64, up:
     .bind(&key)
     .bind(ctx.user)
     .bind(expires_at)
+    .bind(up.parts)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    let Some(signed) = signed else {
+        return Ok(json!({"upload_id": id, "parts": true, "part_bytes": PART_BYTES, "size": up.size, "offset": 0, "expires_at": expires_at}));
+    };
     let headers: serde_json::Map<String, Value> =
         signed.header().iter().filter_map(|(k, v)| Some((k.as_str().to_string(), Value::String(v.to_str().ok()?.to_string())))).collect();
     Ok(json!({"upload_id": id, "method": signed.method().as_str(), "url": signed.uri().to_string(), "headers": headers, "expires_at": expires_at}))
@@ -181,13 +212,113 @@ fn staging_key(tenant: Uuid, id: Uuid) -> String {
     format!("uploads/{tenant}/{id}")
 }
 
-/// Completes a direct upload of the caller's: copies the uploaded object to the file's key, checks
-/// its size, then records it as a file — the same `{id, url, file_name, size, sha256}` an upload
-/// returns.
+/// Where the parts of an upload sent in parts wait, each under its first byte's offset (padded, so
+/// they list in order).
+fn parts_dir(tenant: Uuid, id: Uuid) -> String {
+    format!("uploads/{tenant}/{id}.parts")
+}
+
+fn part_key(tenant: Uuid, id: Uuid, offset: u64) -> String {
+    format!("{}/{offset:020}", parts_dir(tenant, id))
+}
+
+/// Where an upload of the caller's stands — `{upload_id, parts, size, offset, part_bytes,
+/// expires_at}`: after a dropped connection, the next part goes from `offset`.
+pub async fn status(k: &Kernel, ctx: &Ctx, id: Uuid) -> Result<Value> {
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let row: Option<(i64, i64, bool, chrono::DateTime<chrono::Utc>)> =
+        sqlx::query_as("select size_bytes, received_bytes, parts, expires_at from file_upload where tenant_id = $1 and id = $2 and created_by = $3")
+            .bind(ctx.tenant)
+            .bind(id)
+            .bind(ctx.user)
+            .fetch_optional(&mut *tx)
+            .await?;
+    tx.commit().await?;
+    let (size, received, parts, expires_at) = row.ok_or_else(|| Error::NotFound("upload".into()))?;
+    Ok(json!({"upload_id": id, "parts": parts, "size": size, "offset": received, "part_bytes": PART_BYTES, "expires_at": expires_at}))
+}
+
+/// Stores the part of an upload of the caller's that starts at `offset`, which must be where the
+/// upload stands: a part sent again after its answer was lost is refused, and the caller reads
+/// where it stands. Each part keeps the upload for another day. Returns `{upload_id, size, offset}`.
+pub async fn append(k: &Kernel, objects: &Objects, ctx: &Ctx, id: Uuid, offset: u64, part: bytes::Bytes) -> Result<Value> {
+    if part.is_empty() || part.len() as u64 > PART_BYTES {
+        return Err(Error::field("part", format!("must be between 1 and {PART_BYTES} bytes")));
+    }
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    // Locked while the part is stored: two parts for one offset never both land.
+    let row: Option<(i64, i64, bool, bool)> = sqlx::query_as(
+        "select size_bytes, received_bytes, parts, expires_at < now() from file_upload where tenant_id = $1 and id = $2 and created_by = $3 for update",
+    )
+    .bind(ctx.tenant)
+    .bind(id)
+    .bind(ctx.user)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (size, received, parts, expired) = row.ok_or_else(|| Error::NotFound("upload".into()))?;
+    if !parts {
+        return Err(Error::Conflict("this upload goes straight to object storage, not in parts".into()));
+    }
+    if expired {
+        return Err(Error::Conflict("this upload expired; start a new one".into()));
+    }
+    let (size, received) = (size as u64, received as u64);
+    if offset != received {
+        return Err(Error::Conflict(format!("{received} of {size} bytes have arrived: send the part that starts there")));
+    }
+    let end = offset + part.len() as u64;
+    if end > size {
+        return Err(Error::field("part", format!("goes past the {size} bytes announced")));
+    }
+    objects.op.write(&part_key(ctx.tenant, id, offset), part).await.map_err(storage_err)?;
+    let expires_at = chrono::Utc::now() + chrono::Duration::from_std(PARTS_TTL).unwrap_or_default();
+    sqlx::query("update file_upload set received_bytes = $3, expires_at = $4 where tenant_id = $1 and id = $2")
+        .bind(ctx.tenant)
+        .bind(id)
+        .bind(end as i64)
+        .bind(expires_at)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(json!({"upload_id": id, "size": size, "offset": end}))
+}
+
+/// Joins an upload's parts, in order, into the object at `key`.
+async fn join_parts(objects: &Objects, tenant: Uuid, id: Uuid, size: u64, key: &str) -> Result<()> {
+    let mut w = objects.op.writer_with(key).chunk(PART_BYTES as usize).await.map_err(storage_err)?;
+    match write_parts(objects, &mut w, tenant, id, size).await {
+        Ok(()) => {
+            w.close().await.map_err(storage_err)?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = w.abort().await;
+            Err(e)
+        }
+    }
+}
+
+async fn write_parts(objects: &Objects, w: &mut Writer, tenant: Uuid, id: Uuid, size: u64) -> Result<()> {
+    let mut offset = 0u64;
+    while offset < size {
+        let part = objects.op.read(&part_key(tenant, id, offset)).await.map_err(storage_err)?;
+        if part.is_empty() {
+            return Err(Error::Unavailable(format!("storage: the part of this upload at byte {offset} is empty")));
+        }
+        offset += part.len() as u64;
+        w.write(part).await.map_err(storage_err)?;
+    }
+    Ok(())
+}
+
+/// Completes an upload of the caller's: copies the uploaded object (or joins the parts) to the
+/// file's key, checks its size, then records it as a file — the same `{id, url, file_name, size,
+/// sha256}` an upload returns.
 pub async fn complete(k: &Kernel, objects: &Objects, ctx: &Ctx, id: Uuid) -> Result<Value> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let row: Option<(Option<String>, Option<Uuid>, String, String, i64, String, bool)> = sqlx::query_as(
-        "select entity, record_id, file_name, content_type, size_bytes, storage_key, expires_at < now() from file_upload \
+    #[allow(clippy::type_complexity)]
+    let row: Option<(Option<String>, Option<Uuid>, String, String, i64, String, bool, bool, i64)> = sqlx::query_as(
+        "select entity, record_id, file_name, content_type, size_bytes, storage_key, expires_at < now(), parts, received_bytes from file_upload \
          where tenant_id = $1 and id = $2 and created_by = $3",
     )
     .bind(ctx.tenant)
@@ -196,30 +327,38 @@ pub async fn complete(k: &Kernel, objects: &Objects, ctx: &Ctx, id: Uuid) -> Res
     .fetch_optional(&mut *tx)
     .await?;
     tx.commit().await?;
-    let (entity, record, name, ctype, size, key, expired) = row.ok_or_else(|| Error::NotFound("upload".into()))?;
+    let (entity, record, name, ctype, size, key, expired, parts, received) = row.ok_or_else(|| Error::NotFound("upload".into()))?;
     if expired {
         return Err(Error::Conflict("this upload expired; start a new one".into()));
     }
     if let (Some(e), Some(r)) = (&entity, record) {
         k.get(ctx, e, r, false).await?;
     }
-    let staged = staging_key(ctx.tenant, id);
-    if !objects.exists(&staged).await? {
-        return Err(Error::Conflict("nothing has been uploaded yet: send the file to the upload URL first".into()));
+    if parts {
+        if received != size {
+            return Err(Error::Conflict(format!("{received} of {size} bytes have arrived: send the rest first")));
+        }
+        // The parts stay until the file is recorded: completing again joins them again.
+        join_parts(objects, ctx.tenant, id, size as u64, &key).await?;
+    } else {
+        let staged = staging_key(ctx.tenant, id);
+        if !objects.exists(&staged).await? {
+            return Err(Error::Conflict("nothing has been uploaded yet: send the file to the upload URL first".into()));
+        }
+        objects.op.copy(&staged, &key).await.map_err(storage_err)?;
+        objects.delete(&staged).await;
     }
-    objects.op.copy(&staged, &key).await.map_err(storage_err)?;
-    objects.delete(&staged).await;
     let Some((stored, sha)) = objects.digest(&key).await? else {
         return Err(Error::Unavailable("storage: the uploaded file vanished while it was being recorded".into()));
     };
     if stored != size as u64 {
         objects.delete(&key).await;
-        forget(k, ctx.tenant, id).await?;
+        forget(k, objects, ctx.tenant, id).await?;
         return Err(Error::field("size", format!("{stored} bytes arrived, {size} were announced; start a new upload")));
     }
     if let Err(e) = k.check_storage_quota(ctx.tenant, stored).await {
         objects.delete(&key).await;
-        forget(k, ctx.tenant, id).await?;
+        forget(k, objects, ctx.tenant, id).await?;
         return Err(e);
     }
     let bytes = objects.op.reader(&key).await.map_err(storage_err)?.into_bytes_stream(..).await.map_err(storage_err)?;
@@ -229,7 +368,7 @@ pub async fn complete(k: &Kernel, objects: &Objects, ctx: &Ctx, id: Uuid) -> Res
         // them, unrecorded, for another try at completing.
         Err(Error::Invalid(why)) => {
             objects.delete(&key).await;
-            forget(k, ctx.tenant, id).await?;
+            forget(k, objects, ctx.tenant, id).await?;
             return Err(Error::Invalid(why));
         }
         Err(e) => return Err(e),
@@ -258,30 +397,38 @@ pub async fn complete(k: &Kernel, objects: &Objects, ctx: &Ctx, id: Uuid) -> Res
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    if parts {
+        objects.drop_parts(ctx.tenant, id).await;
+    }
     Ok(json!({"id": id, "url": format!("/files/{id}"), "file_name": name, "size": size, "sha256": sha, "public": false}))
 }
 
-async fn forget(k: &Kernel, tenant: Uuid, id: Uuid) -> Result<()> {
+async fn forget(k: &Kernel, objects: &Objects, tenant: Uuid, id: Uuid) -> Result<()> {
     let mut tx = k.db.tenant_tx(tenant).await?;
     sqlx::query("delete from file_upload where tenant_id = $1 and id = $2").bind(tenant).bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
+    objects.drop_parts(tenant, id).await;
     Ok(())
 }
 
 /// Deletes uploads that expired without completing, and whatever bytes they left in the store.
 pub async fn sweep(k: &Kernel, objects: &Objects) -> Result<usize> {
     let mut tx = k.db.system_tx().await?;
-    let gone: Vec<(Uuid, Uuid)> = sqlx::query_as(
+    let gone: Vec<(Uuid, Uuid, bool)> = sqlx::query_as(
         // Replicas sweep at the same time: each takes rows nobody else holds.
         "delete from file_upload where (tenant_id, id) in (select tenant_id, id from file_upload \
            where expires_at < now() - interval '5 minutes' order by expires_at limit 500 for update skip locked) \
-         returning tenant_id, id",
+         returning tenant_id, id, parts",
     )
     .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;
-    for (tenant, id) in &gone {
-        objects.delete(&staging_key(*tenant, *id)).await;
+    for (tenant, id, parts) in &gone {
+        if *parts {
+            objects.drop_parts(*tenant, *id).await;
+        } else {
+            objects.delete(&staging_key(*tenant, *id)).await;
+        }
     }
     Ok(gone.len())
 }
