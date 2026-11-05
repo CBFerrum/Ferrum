@@ -482,7 +482,10 @@ impl Kernel {
                     if let (Some(t), Some(v)) = (ent.def.title_field.as_deref(), title) {
                         data.insert(t.to_string(), v);
                     }
-                    records.push(json!({"entity": def.entity, "label": label, "id": id, "number": null, "erases": def.erase, "retained_because": def.retain, "files": [], "data": data}));
+                    records.push(
+                        json!({"entity": def.entity, "label": label, "id": id, "number": null, "erases": def.erase, "retained_because": def.retain, "files": [],
+                        "table": table, "rows": rows.len(), "data": data}),
+                    );
                     continue;
                 }
                 let files: Vec<Value> =
