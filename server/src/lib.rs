@@ -21,6 +21,7 @@ pub mod search;
 pub mod shell;
 pub mod state;
 pub mod tasks;
+pub mod telemetry;
 pub mod upgrade;
 
 /// Document postings run deep chains of async hooks; generous stacks keep unoptimized builds
