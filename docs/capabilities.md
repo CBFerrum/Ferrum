@@ -9,8 +9,8 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 163 |
-| Partially implemented | 58 |
+| Implemented, qualification incomplete | 164 |
+| Partially implemented | 57 |
 | Blocked by external dependency | 10 |
 | **All** | **231** |
 
@@ -181,7 +181,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-CONNECT-002 | Connector catalog with what each provider's API really offers | Blocked by external dependency | read | The machinery is built: each connector states what its provider's API offers (ConnectorInfo: streams, writes, webhooks, API version, capabilities) and GET /api/admin/connectors lists them; No provider's connector is proven against its real API: that takes an account or approved sandbox at each provider. The connectors that exist were tested against stand-ins speaking their APIs: Mastodon's in ferrum-app-social (tests/mastodon_it.rs) |
 | FERRUM-CONNECT-003 | Payment gateways | Blocked by external dependency | tested | Stripe, Razorpay and PayPal tested against stand-ins and, for Stripe and PayPal, their published API definitions; never against a live or sandbox account here; Money that cannot be booked becomes a Payment Exception a person decides; a gateway cannot approve one; None is certified |
 | FERRUM-CONNECT-004 | Tax and e-invoicing networks | Blocked by external dependency | read | Adapters written to published specifications; none has run against a live or sandbox provider here |
-| FERRUM-EXT-001 | Four extension classes with their security models | Partially implemented | read | Metadata, WASM and native exist; external services are not a declared class |
+| FERRUM-EXT-001 | Four extension classes with their security models | Implemented, qualification incomplete | tested | Native (built in), WASM (sandboxed), metadata, and services on their publisher's servers, each with its consent; A service acts as an account of its own with the records its manifest names, hears of events as the record's name without its contents, and cannot veto a document as it is saved; No service has been certified by the store's review: the class is tested against a stand-in service |
 | FERRUM-EXT-002 | Plugin resource limits | Implemented, qualification incomplete | tested |  |
 | FERRUM-EXT-003 | Cancellation that stops consequential work | Implemented, qualification incomplete | tested |  |
 | FERRUM-EXT-004 | Bounded compilation and module cache | Implemented, qualification incomplete | read | The bound itself is not exercised by a test |

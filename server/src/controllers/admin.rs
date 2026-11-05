@@ -536,7 +536,7 @@ async fn list_webhooks(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiRes
     let rows = query_json(
         &app,
         &ctx,
-        "select jsonb_build_object('id', w.id, 'name', w.name, 'url', w.url, 'topics', w.topics, 'is_active', w.is_active, 'created_at', w.created_at, \
+        "select jsonb_build_object('id', w.id, 'name', w.name, 'url', w.url, 'topics', w.topics, 'is_active', w.is_active, 'created_at', w.created_at, 'app', w.app, \
          'pending', (select count(*) from webhook_delivery d where d.tenant_id = w.tenant_id and d.webhook_id = w.id and d.status = 'pending'), \
          'dead', (select count(*) from webhook_delivery d where d.tenant_id = w.tenant_id and d.webhook_id = w.id and d.status = 'dead')) \
          from webhook w where w.tenant_id = $1 order by w.created_at",
@@ -585,6 +585,15 @@ async fn delete_webhook(Auth(ctx): Auth, State(app): State<AppContext>, Path(id)
     admin(&ctx)?;
     let st = app_state(&app)?;
     let mut tx = st.kernel.db.tenant_tx(ctx.tenant).await?;
+    let app: Option<Option<String>> = sqlx::query_scalar("select app from webhook where tenant_id = $1 and id = $2")
+        .bind(ctx.tenant)
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(Error::from)?;
+    if let Some(Some(app)) = app {
+        return Err(ApiError(Error::invalid(format!("this webhook is how the {app} app hears of events; turn the app off or remove it instead"))));
+    }
     sqlx::query("delete from webhook where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).execute(&mut *tx).await.map_err(Error::from)?;
     tx.commit().await.map_err(Error::from)?;
     Ok(StatusCode::NO_CONTENT.into_response())
