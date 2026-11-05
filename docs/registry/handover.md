@@ -3,6 +3,24 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-05, evening: roles one person may not hold together, and fields kept out of exports
+
+**State:** this PR follows PR 59; FRONTEND_REV is at Ferrum-Frontend PR 25's merge. No release was tagged.
+
+| Where | What |
+|---|---|
+| This PR | Segregation of duties (FERRUM-IDENTITY-014): an administrator declares pairs of roles one person may not hold together, with why (`/api/admin/role-conflicts`). A trigger on `user_role` refuses any grant that would join a pair, so the users API, SCIM groups and apps all meet it, and the refusal names the pair and the reason; one person's grants are checked one at a time. Whoever held both before the pair was declared keeps both, named beside the pair and in the evidence for a review. What an automation makes counts as its saver's, so an approval step that bars a document's creator bars them too |
+| This PR: exports | A field marked `no_export` is left out of every list export (CSV, spreadsheet), whoever exports it and even when asked for by name (FERRUM-IDENTITY-012): read on the record, not taken away in bulk. No package marks one yet; HR's bank and identity numbers are the first candidates, once this is on main |
+| Ferrum-Frontend PR 25 | The Roles tab lists the pairs with whoever holds both, declares them and allows a pair together again; a refused grant says why where it was made |
+
+**Evidence:**
+- `crates/kernel/tests/rules_it.rs`: a pair refused with itself, with a role that does not exist, without a reason and by a non-administrator; declared, kept in order, with the stand-in who held both named, also in the evidence pack; giving both again refused with the reason and changing nothing; refused for someone new; refused for a grant written straight into the table (the path SCIM and apps take); allowed together again, both given.
+- `server/src/controllers/docs.rs`: with Customer's tax ID marked `no_export`, an export's columns leave it out, also when asked for by name.
+- `crates/kernel/tests/collab_it.rs`: an automation saved by the administrator makes a customer; the administrator cannot approve it (its creator, through their automation), and a second person does.
+- Walked on this branch's server (ferrum_walk): Social Author and Social Approver declared with a reason and Dana, who held both, named; saving her roles refused with that reason; without Social Approver accepted, and the pair held by no one; allowed together again. Dana's roles were put back afterwards.
+
+**Not done:** rules over three roles at once, or across documents (whoever raised an order paying it); a pair that limits administrators; HR marking its bank and identity numbers `no_export` (it needs this on main first).
+
 ## 2026-11-05, later: records keys, roles given until a moment, automations that run as their saver, a group's books under IAS 21, the app contract, and every app rebuilt
 
 **State:** this PR follows PR 58. Its lock takes ERP's main through PR 13 and the 35 apps it compiles in at their rebuild against Ferrum-Frontend PR 22 (patch releases on their main branches; Cloud, deployed apart, was rebuilt too), with the five apps the contract check found short at their fixes; FRONTEND_REV is at Ferrum-Frontend PR 24's merge. No release was tagged.

@@ -783,6 +783,30 @@ async fn scenario() {
     assert!(k.my_approvals(&admin, 50).await.unwrap().is_empty(), "an administrator may approve, but it is not their duty");
     k.transition(&maya_ctx, "Customer", vetted, "Approve", None).await.unwrap();
     assert!(k.my_approvals(&maya_ctx, 50).await.unwrap().is_empty(), "decided");
+    // What an automation makes, its saver made: they do not approve it either, a second person does.
+    ferrum_kernel::automation::save(
+        &k,
+        &admin,
+        json!({"name": "a first customer for each group", "entity": "CustomerGroup", "event": "created",
+               "actions": [{"type": "create_document", "entity": "Customer", "values": {"customer_name": "'First of ' + doc.group_name"}}]})
+        .as_object()
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    k.insert(&admin, "CustomerGroup", obj(json!({"group_name": "Export Trade"}))).await.unwrap();
+    drain(&k).await;
+    let made = k
+        .list(&admin, "Customer", &ListQuery { filters: parse_filters(&json!({"customer_name": "First of Export Trade"})).unwrap(), ..Default::default() })
+        .await
+        .unwrap();
+    let made = made.rows[0]["id"].as_str().unwrap().parse::<Uuid>().unwrap();
+    // A context loaded now, so that it knows the workflow.
+    let saver = k.load_ctx(tenant, admin.user, None, "it".into()).await.unwrap();
+    k.transition(&saver, "Customer", made, "Send for approval", None).await.unwrap();
+    let own = k.transition(&saver, "Customer", made, "Approve", None).await;
+    assert!(matches!(&own, Err(Error::Forbidden(m)) if m.contains("creator")), "its automation's saver: {own:?}");
+    k.transition(&maya_ctx, "Customer", made, "Approve", None).await.expect("a second person");
 
     // ── cards: what a preview of a record shows, for those who may read it ──
     let group = id_of(&k.insert(&admin, "CustomerGroup", obj(json!({"group_name": "Wholesale"}))).await.unwrap());

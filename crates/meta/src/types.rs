@@ -468,6 +468,10 @@ pub struct FieldDef {
     /// Not copied on amend/duplicate.
     #[serde(default)]
     pub no_copy: bool,
+    /// Never in a list's export (CSV, spreadsheet), whoever exports: read on the record, not taken
+    /// away in bulk (a bank account or identity number).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_export: bool,
     #[serde(default)]
     pub default: Option<Value>,
     #[serde(default)]

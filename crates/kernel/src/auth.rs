@@ -69,6 +69,15 @@ pub(crate) async fn end_sessions(tx: &mut Tx, tenant: Uuid, user: Uuid) -> Resul
     notify_users(tx, tenant, Some(user)).await
 }
 
+/// Why a role could not be given: one it may not be held with (the database's segregation of
+/// duties, FERRUM-IDENTITY-014), or no such role.
+fn refused_role(e: sqlx::Error, role: &str) -> Error {
+    match &e {
+        sqlx::Error::Database(db) if db.code().as_deref() == Some("P0001") => Error::field("roles", db.message().trim_start_matches("ferrum: ")),
+        _ => Error::field("roles", format!("unknown role {role}")),
+    }
+}
+
 pub(crate) async fn notify_users(tx: &mut Tx, tenant: Uuid, user: Option<Uuid>) -> Result<()> {
     let payload = match user {
         Some(u) => format!("{tenant}:{u}"),
@@ -641,6 +650,78 @@ impl Kernel {
         })
     }
 
+    /// The pairs of roles one person may not hold together (FERRUM-IDENTITY-014), each with whoever
+    /// holds both, having held them before the pair was declared.
+    pub async fn role_conflicts(&self, ctx: &Ctx) -> Result<Vec<serde_json::Value>> {
+        Self::require_admin(ctx)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let holds = |role: &str| {
+            format!(
+                "exists (select 1 from user_role r where r.tenant_id = u.tenant_id and r.user_id = u.id and r.role = c.{role} \
+                 and (r.expires_at is null or r.expires_at > now()))"
+            )
+        };
+        let rows = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "select jsonb_build_object('role_a', c.role_a, 'role_b', c.role_b, 'reason', c.reason, 'created_at', c.created_at, \
+             'holders', coalesce((select jsonb_agg(jsonb_build_object('id', u.id, 'email', u.email, 'full_name', u.full_name) order by u.email) \
+                                  from app_user u where u.tenant_id = c.tenant_id and {} and {}), '[]'::jsonb)) \
+             from role_conflict c where c.tenant_id = $1 order by c.role_a, c.role_b",
+            holds("role_a"),
+            holds("role_b")
+        )))
+        .bind(ctx.tenant)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(rows)
+    }
+
+    /// Declares that one person may not hold both roles, and why. Grants already joining them stay,
+    /// listed beside the pair ([`Self::role_conflicts`]); from now the database refuses any new one.
+    pub async fn set_role_conflict(&self, ctx: &Ctx, a: &str, b: &str, reason: &str) -> Result<()> {
+        Self::require_admin(ctx)?;
+        let (a, b, reason) = (a.trim(), b.trim(), reason.trim());
+        if a == b {
+            return Err(Error::field("role_b", "a role is never in conflict with itself"));
+        }
+        if reason.is_empty() || reason.chars().count() > 500 {
+            return Err(Error::field("reason", "say why one person may not hold both (up to 500 characters)"));
+        }
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        // The database orders the pair, as its check does.
+        sqlx::query(
+            "insert into role_conflict (tenant_id, role_a, role_b, reason, created_by) values ($1, least($2::text, $3::text), greatest($2::text, $3::text), $4, $5) \
+             on conflict (tenant_id, role_a, role_b) do update set reason = excluded.reason",
+        )
+        .bind(ctx.tenant)
+        .bind(a)
+        .bind(b)
+        .bind(reason)
+        .bind(ctx.user)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(db) if db.code().as_deref() == Some("23503") => Error::field("role_a", "both roles must exist"),
+            _ => Error::from(e),
+        })?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn delete_role_conflict(&self, ctx: &Ctx, a: &str, b: &str) -> Result<()> {
+        Self::require_admin(ctx)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let n = sqlx::query("delete from role_conflict where tenant_id = $1 and role_a = least($2::text, $3::text) and role_b = greatest($2::text, $3::text)")
+            .bind(ctx.tenant)
+            .bind(a.trim())
+            .bind(b.trim())
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        tx.commit().await?;
+        if n == 0 { Err(Error::NotFound("role conflict".into())) } else { Ok(()) }
+    }
+
     /// Hourly: grants whose end has passed go, so whatever reads who holds a role (apps' notices
     /// among them) stops finding the person. Their access ended at that moment ([`Self::load_ctx`]).
     pub(crate) async fn expire_roles(&self) -> Result<u64> {
@@ -697,7 +778,7 @@ impl Kernel {
                 .bind(r)
                 .execute(&mut *tx)
                 .await
-                .map_err(|_| Error::field("roles", format!("unknown role {r}")))?;
+                .map_err(|e| refused_role(e, r))?;
         }
         tx.commit().await?;
         Ok(id)
@@ -728,7 +809,7 @@ impl Kernel {
                 .bind(until.get(r))
                 .execute(&mut *tx)
                 .await
-                .map_err(|_| Error::field("roles", format!("unknown role {r}")))?;
+                .map_err(|e| refused_role(e, r))?;
         }
         notify_users(&mut tx, ctx.tenant, Some(user)).await?;
         tx.commit().await?;

@@ -9,8 +9,8 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 153 |
-| Partially implemented | 68 |
+| Implemented, qualification incomplete | 154 |
+| Partially implemented | 67 |
 | Blocked by external dependency | 10 |
 | **All** | **231** |
 
@@ -53,9 +53,9 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-IDENTITY-009 | One policy system across tenant | Implemented, qualification incomplete | tested | A role may be given until a moment (the Users page sets the day it is held through); access ends at that moment, but apps that look up who holds a role read the grants themselves, so their notices may still reach the person until the hourly upkeep removes the ended grant; A department or branch limits people as a scope on that entity: a record that names none is not limited by it; Scopes and row rules have no end of their own; only roles do |
 | FERRUM-IDENTITY-010 | Row rules beyond equality | Implemented, qualification incomplete | tested | Ranges and days from today; no expressions across fields |
 | FERRUM-IDENTITY-011 | Explicit reference-disclosure policy for linked titles | Implemented, qualification incomplete | tested | The default stays open; no package has marked its sensitive entities yet; Covers titles on records; counts, suggestions and search snippets are not audited against it |
-| FERRUM-IDENTITY-012 | Field masking and export restrictions | Partially implemented | tested | Masks are declared for employees' bank and identity numbers (HR 0.7.1): those outside the groups see the last four; other packages declare none yet; Export restrictions are per entity (can_export), not per field |
+| FERRUM-IDENTITY-012 | Field masking and export restrictions | Partially implemented | tested | Masks are declared for employees' bank and identity numbers (HR 0.7.1): those outside the groups see the last four. A company's bank account shows its stored masked number (Finance); donors' tax numbers are read only by the roles that record them (Nonprofit); A field marked no_export is left out of every list export, whoever exports; no package marks one yet |
 | FERRUM-IDENTITY-013 | Policy explanation and simulation | Implemented, qualification incomplete | tested | Simulates other roles, not other rules; The Roles tab asks for one person, action and entity (or record) at a time; walked in a browser on 5 November |
-| FERRUM-IDENTITY-014 | Segregation of duties and maker-checker | Partially implemented | read | Approvers can be barred from their own documents; no rule across roles or automations |
+| FERRUM-IDENTITY-014 | Segregation of duties and maker-checker | Implemented, qualification incomplete | tested | Pairs of roles an administrator declares, which the database keeps apart on every path a grant takes; no rule over three roles at once, nor across documents (whoever raised an order paying it); Administrators may do anything, so no pair limits them; Whoever held both before a pair was declared keeps both until one is taken away: they are named beside the pair and in the evidence for a review; An approval step may bar a document's creator, and what an automation makes counts as its saver's |
 | FERRUM-IDENTITY-015 | Authorization rechecked when delayed work runs | Implemented, qualification incomplete | tested | Mail, push, jobs and automations recheck when they run: an automation runs as the administrator who saved it, with their rights then, and once they are no longer an active administrator it does not run and says why until an administrator saves it again; Automations an app saves (with no one as their saver) run as the system |
 | FERRUM-IDENTITY-016 | Browser session architecture with CSRF defence | Implemented, qualification incomplete | read | Bearer tokens on pages remain readable by script; CSP is the defence |
 | FERRUM-IDENTITY-017 | Secrets sealed at rest with bound context | Implemented, qualification incomplete | tested |  |
