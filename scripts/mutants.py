@@ -67,7 +67,7 @@ TIMEOUT = 600
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
     # Large files: an app's whole read has a ceiling.
-    ("files-read-whole-past-the-cap", "crates/kernel/src/files.rs", "        if size > MAX_READ_WHOLE {\n", "        if false {\n", COLLAB),
+    ("files-read-whole-past-the-cap", "crates/kernel/src/files.rs", "        if f.size > MAX_READ_WHOLE {\n", "        if false {\n", COLLAB),
     # Services on their publisher's servers.
     ("service-hears-the-record", "crates/kernel/src/outbox.rs", "case when w.app is null then $4 else $4 - 'doc' end", "$4", SERVICES),
     ("service-hears-what-it-cannot-read", "crates/apps/src/manifest.rs", "            if !reads(entity) {\n", "            if false {\n", MANIFEST_UNIT),
