@@ -10,8 +10,8 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | Status | Requirements |
 |---|---|
 | Implemented, qualification incomplete | 164 |
-| Partially implemented | 57 |
-| Blocked by external dependency | 10 |
+| Partially implemented | 56 |
+| Blocked by external dependency | 11 |
 | **All** | **231** |
 
 ## Platform
@@ -201,7 +201,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-AI-002 | Shared AI gateway: providers, allowlists, regions, spending limits | Implemented, qualification incomplete | tested | Two provider protocols: Anthropic's Messages API (or a proxy that speaks it) and an OpenAI-compatible chat API, which carries text, tools and usage and leaves Anthropic's reasoning, citations and fallbacks out; Regions are by deployment: each calls the endpoint its operator sets (a provider's regional one); one deployment does not route workspaces to different regions; Budgets are in tokens: no prices are invented; Usage is metered per workspace, person and model |
 | FERRUM-AI-003 | Egress policy separate from read permission | Implemented, qualification incomplete | tested | Packages must mark entities `internal` and fields with perm_group: HR's are marked, others not yet reviewed; Fields free of any group go, whatever they hold |
 | FERRUM-AI-004 | Authorization-aware retrieval | Partially implemented | read | Tools run as the person, so reads are theirs; no retrieval index, so caches and embeddings do not arise yet |
-| FERRUM-AI-005 | Evaluation datasets and prompt-injection tests | Partially implemented | tested | An adversarial test with a model that obeys injected instructions; no evaluation against real models, no grounded-answer datasets, no recorded prompt versions |
+| FERRUM-AI-005 | Evaluation datasets and prompt-injection tests | Blocked by external dependency | tested | Grounded-answer cases (server/assistant-evals) graded by `ferrum task assistant_eval`: what the answer says, what it read before answering, and what a record planted for it to say; Each answer records the prompt version it was answered under (instructions, tools, model), whose text each workspace keeps; An adversarial test with a model that obeys injected instructions; Never yet run against a real model: that needs a provider's key and a budget for the runs |
 | FERRUM-AI-006 | Domain-specific assistants with sources shown | Implemented, qualification incomplete | read | An app tells the assistant about its records through shell.assistant, added to the context of each message written in its pages; ERP's is written, other apps' not yet; Sources are the records, lists and reports the answer's reads looked at, shown under it; what the model took from each is not marked sentence by sentence; Not tried in a browser against a real model when it was built |
 
 ## Cloud
