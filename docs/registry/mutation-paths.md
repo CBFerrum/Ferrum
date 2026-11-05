@@ -38,9 +38,20 @@ and one each in Bookings, Field Service, Forms and LMS.
 - Campaigns' suppression list keeps who asked not to be mailed and when as rows; a suppression is
   lifted only by that person confirming a subscription, whose consent is recorded on their contact.
 - No statement bypasses workspace isolation or legal holds: the database enforces both.
-- Not checked statement by statement: whether each public endpoint validates what it writes beyond
-  its token, and whether each engine update keeps the record's `version` moving (a person's later
-  edit carries only the fields they changed, so it does not undo one).
+- **Versions, checked statement by statement on 6 November.** Of the 79 statements that `update`
+  an entity table, 14 move the record's `version` and 65 do not. Neither is a fault: the kernel's
+  own engine write (`set_values_tx`) leaves the version as it is too, since a derived value (a
+  status, a count, an outstanding amount) is not a person's edit. The version is what a person's
+  edit is checked against (`If-Match`), and that edit carries only the fields they changed, which
+  are never these; no read answers `If-None-Match` from it, so nothing can be served stale.
+- **Public links, read one by one on 6 November.** Each of the 10 checks a token the workspace
+  signed (HMAC with its own key) or a link's hashed token, scoped to one record, before it writes:
+  Campaigns' opens and clicks count against the recipient the token names, and a click redirects
+  only to a link of that email's own content; an unsubscribe shows a page on GET (link scanners only
+  GET) and acts on POST, as Comms' does after verifying its signed address; a subscription counts
+  after the form's own checks, and confirming needs a signed, expiring token; Drive's links refuse
+  revoked or expired ones, cap a password's body, lock after 10 wrong passwords for 15 minutes, and
+  claim each download under the link's row lock so `max_downloads` holds.
 
 ## The statements
 

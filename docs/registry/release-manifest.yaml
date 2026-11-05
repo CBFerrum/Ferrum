@@ -1,12 +1,12 @@
 # What this commit builds: generated from Cargo.lock and the Dockerfile by scripts/release_evidence.py,
 # and checked by scripts/registry.py. A build's own evidence is release-evidence.json, on its CI run.
 components:
-  - {repository: CBFerrum/Ferrum-Frontend, pinned: 79bb278aa1987afe1a8a2c637408724f8d072785}
+  - {repository: CBFerrum/Ferrum-Frontend, pinned: 01b8ff0c0981f2d23b7bf09c668732ede827dd00}
   - {repository: CBFerrum/ferrum-app-assets, pinned: 1822c48ac440d1fc3ee1fd530c692ef49324e241}
   - {repository: CBFerrum/ferrum-app-bookings, pinned: fba75c1b4e1fb9af9fef8deaef42f29f5399ee7b}
   - {repository: CBFerrum/ferrum-app-campaigns, pinned: 4b83cae7d7b5969759046993d48752373804dd05}
   - {repository: CBFerrum/ferrum-app-commerce, pinned: be8927d872ff8d2b1d170c504e07eefe12f2ff52}
-  - {repository: CBFerrum/ferrum-app-comms, pinned: baa1a04bf2930e70901de269885726f2b9b2d032}
+  - {repository: CBFerrum/ferrum-app-comms, pinned: 4c096543a2158caf1ccd887b8f3481f8a38d9a1a}
   - {repository: CBFerrum/ferrum-app-construction, pinned: 5a65ff79baf340657ca3ac9fbd777ad1f7bad740}
   - {repository: CBFerrum/ferrum-app-contracts, pinned: 3da884811d55145ef05e3252bc7b82d445be02d5}
   - {repository: CBFerrum/ferrum-app-control, pinned: c76f6c48373d94938e16dab616cf05870ba12243}
@@ -14,7 +14,7 @@ components:
   - {repository: CBFerrum/ferrum-app-dam, pinned: dc6b1c695e0d9caaa88cfde0503f7012a3539b0b}
   - {repository: CBFerrum/ferrum-app-developers, pinned: ca57f51e1f9ceb798fc0f2c03dc29043cd6e66a0}
   - {repository: CBFerrum/ferrum-app-docs, pinned: 9f835758c43dd7f7bd2d0565daa2f58019ecf34b}
-  - {repository: CBFerrum/ferrum-app-drive, pinned: 9d8ec5b80915f48b383a41708498245b2b7c3bdc}
+  - {repository: CBFerrum/ferrum-app-drive, pinned: ee4bb7696b450145662a8c1f6497e9370bf79e61}
   - {repository: CBFerrum/ferrum-app-edge, pinned: 67ce241cbb9636d64413936125aeec17900ebd82}
   - {repository: CBFerrum/ferrum-app-education, pinned: b11ab3772819eff6092d25f6d08d8b932fd96094}
   - {repository: CBFerrum/ferrum-app-erp, pinned: 1fb3583b185d3ed201bab0d25a69a10217c4902d}
@@ -23,11 +23,11 @@ components:
   - {repository: CBFerrum/ferrum-app-government, pinned: 01f429174b71e4f36e43e6cfaa65dba570a10919}
   - {repository: CBFerrum/ferrum-app-grc, pinned: a5ae8cc6486d997dec86c9eced22188224837d38}
   - {repository: CBFerrum/ferrum-app-healthcare, pinned: 917eb9af781c1473057a932e3b59822fe0f80513}
-  - {repository: CBFerrum/ferrum-app-helpdesk, pinned: 6f726239c8a3e90d3eda538e2ba6c41b911b7773}
+  - {repository: CBFerrum/ferrum-app-helpdesk, pinned: 1f6f41459c60409e9240d18f87a39f76e075f1fb}
   - {repository: CBFerrum/ferrum-app-hospitality, pinned: 0cc1cec3542237ce1f974f41d655698760af2cfc}
   - {repository: CBFerrum/ferrum-app-hr, pinned: 549fb238724c56bbecee14c059b0f9e6ac759f18}
   - {repository: CBFerrum/ferrum-app-itsm, pinned: 74bae9c48f2642ea432580b916342a9049fe88ce}
-  - {repository: CBFerrum/ferrum-app-lms, pinned: 3f84fd0c223c9ecf2298c5857f07430597fa1059}
+  - {repository: CBFerrum/ferrum-app-lms, pinned: b709090f37514d818ab2dcd245fe4db4bd05cde6}
   - {repository: CBFerrum/ferrum-app-logistics, pinned: f37430116986040d6b2351367eec6d86c575c50f}
   - {repository: CBFerrum/ferrum-app-metrics, pinned: 291c95ac8a227a4b22482a4f11b315fcd371892c}
   - {repository: CBFerrum/ferrum-app-nonprofit, pinned: 083dd3f954b4b04f2fc408ce207b8a1b3b309b43}
