@@ -489,6 +489,13 @@ Why someone may or may not do something: `GET
 write, create, delete, submit, cancel, export or import; `record` asks about one record; `roles`
 (comma-separated) answers for those roles instead of the person's own. Nothing changes by asking.
 
+Roles one person may not hold together (segregation of duties): `GET /api/admin/role-conflicts` →
+`{conflicts: [{role_a, role_b, reason, created_at, holders: [{id, email, full_name}]}]}`, where
+`holders` are those who held both before the pair was declared; `PUT` `{role_a, role_b, reason}`
+declares a pair (or rewords its reason) and `DELETE ?role_a=&role_b=` allows the two together again.
+From the moment a pair is declared the database refuses any grant that would join it, whichever way
+the grant comes (the users API, SCIM groups, apps), with `422` on `roles` saying why.
+
 Personal data, beyond the entry above: answers also carry `addresses` (every address the person has
 had), `held`, `not_searched` (installed packages that declare nothing) and, per record,
 `retained_because` and `files`. Erasure answers `{erased, retained: [{entity, id, because}], held,

@@ -16,7 +16,11 @@ operator to know. Report a vulnerability privately to the maintainers rather tha
 * **What they may do**: roles grant read, write, create, delete, submit, cancel, export and import
   per entity, narrowed to the user's own records, to record scopes (companies) or to records whose
   fields hold given values, and per field group. The kernel enforces them on every path: the
-  document API, lists and filters, reports and Studio, live updates, MCP and plugins.
+  document API, lists and filters, reports and Studio, live updates, MCP and plugins. A role may be
+  given until a moment, and pairs of roles an administrator declares are never held by one person
+  (the database refuses the grant). A field in a group may show those outside it a mask (the last
+  four characters) rather than nothing, and a field marked `no_export` is left out of every list
+  export, whoever exports it.
 
 ## Who can see what
 
