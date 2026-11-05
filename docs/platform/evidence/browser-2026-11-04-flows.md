@@ -44,6 +44,7 @@ connector uses), and eu-1's tooling was a loop posting its readings: neither is 
 | Control Plane | A partner's statement | With a 20% share, October's statement read 450 paid and 90 the partner's; November refused ("a statement is for a month that has ended") and October a second time refused; Pat read it under Statements |
 | | A recovery request | A restore of northwind-retail to 06:00 with its reason; approving it as who asked refused ("a recovery is approved by someone other than who asked for it"); Dana approved it and marked it done; Cass read "Restore … Done" on Your service |
 | Contracts and Sign | A contract to its signature (5 November) | Contract Settings named the signatory; a contract of 18,000 drafted with its PDF and submitted; approving it as its owner refused; Dana approved it and sent it; the counterparty signed on Sign's page from the link e-mailed to them (a typed signature, the consent ticked), then the signatory from theirs; the contract became active, signed on 5 November. The sealed PDF holds both signatures and a certificate of completion, whose hashes check: the original's SHA-256, and the signed part's (`head -c 1223 file.pdf`) |
+| Store and App Manager | A paid app bought, installed, disputed and refunded (5 November) | A store on this machine (its own database, the test payment provider) sold the SDK's board example, published by a verified publisher and approved by a moderator in the store's pages, at EUR 9.00 a month. The workspace's administrator bought it for walk.localhost on the app's page (EUR 10.71 with Germany's 19%), read its licence on Your purchases and gave it in Ferrum's install dialog, which held Install until then and refused a malformed licence before sending it; Board installed. Cancelled at the end of the period; its charge moved back 20 days in the store's database to pass the refund window; a dispute opened, answered by the publisher in their console, refused by the store's administrator without a note (refused: "a dispute refused says why") and then refunded; the buyer read the refund and "Your dispute was refunded."; at Ferrum's next reading of the licences (06:23 UTC) Board's card under Installed said "Licence lapsed", the app still installed |
 | Phone width and dark mode | The citizens' portal and the Control Plane's console at 375 px, dark | Both fit the width; the portal bar showed two of its five pages and not the one shown |
 | Digital Assets | An image from Drive to its use | Uploaded to Drive, made an asset (its kind, type, size and digest read from the file), submitted and approved; used in advertising refused for its editorial-only licence ("an editorial-only asset is not used to sell"), used on the web recorded |
 
@@ -68,6 +69,9 @@ connector uses), and eu-1's tooling was a loop posting its readings: neither is 
 | A second statement for a month refused as "Northwind Partners's statement for October 2026 has been issued" | Control 0.1.3: "Northwind Partners already has its statement for October 2026" |
 | The signed contract linked Sign's sealed PDF, kept with Sign's audit: Dana, who approved the contract, was refused it ("not permitted to read signevent") | ferrum-app-contracts 0.1.3: the contract keeps a copy of its own |
 | IoT Edge's CI failed twice on its rebuild with "deadlock detected" at boot: two tests of one binary reset the database at once | ferrum-app-edge 858f1ca: the tests of a binary take turns |
+| A paid app could be bought, refunded and disputed only through the store's API, and its licence given only through Ferrum's | ferrum-store c252993: buying on the app's page, Your purchases, publishers' answers and administrators' decisions in the pages; this PR: the install plan lists the sold apps and their licences; Ferrum-Frontend PR 21: the install dialog asks for the licence, and an installed app whose licence lapsed says so |
+| The licence's end read "2026-12-05T06:09:46Z" | Ferrum-Frontend PR 21: "5 Dec 2026" |
+| A refunded purchase still read "Ends 2026-12-05" | ferrum-store f9655ac |
 
 After the fixes, the server was rebuilt with the new pins and the walk repeated each: the rollout headed
 "0.5.0" and the console named it so; the partner page's eleven fields were named; Cyril read "1 month"
@@ -92,7 +96,9 @@ read, and shows ("no shared cell in eu has room").
   All 36 apps with interfaces were rebuilt against Ferrum-Frontend 80ff179 as patch releases and this
   PR's lock takes them; after the rebuild, Governance and Risk's acceptance read "Single cell for the
   EU region" under its number.
-- A paid app's payment and dispute: the store has no pages for them (its README's known limits), so
-  they were tested through its API, with a stand-in for Stripe, and not in a browser.
+- Stripe: the walk paid through the store's test provider. Stripe itself was not reached; the store's
+  tests run it against a stand-in, the card's round trip from the pages included.
+- The store's CI: GitHub would not start its jobs ("recent account payments have failed or your
+  spending limit needs to be increased", a private repository); its 18 tests passed on this machine.
 - A screen reader: accessible names were read from the browser's accessibility tree, not heard.
 - The stand-ins: Mastodon and the cell's tooling were small programs on this machine, not the real ones.
