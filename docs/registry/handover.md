@@ -3,14 +3,14 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
-## 2026-11-06, morning: two more journeys through the pages, and what the walks found
+## 2026-11-06, morning: three more journeys through the pages, and what the walks found
 
 **State:** this PR follows PR 75. Its lock takes ERP 0.14.2 (Procurement 0.1.3, Finance 0.3.2), Field
 Service 0.3.1 and Projects 0.6.4, and FRONTEND_REV takes Frontend PR 34. No release was tagged.
 
 | Where | What |
 |---|---|
-| Journeys | Procure to pay and project to profit walked through the pages ([the walk](../platform/evidence/browser-2026-11-06-journeys.md)); FERRUM-JOURNEY-002 and 005 are implemented, waiting on an independent reviewer |
+| Journeys | Procure to pay, project to profit and document to signature walked through the pages ([the walk](../platform/evidence/browser-2026-11-06-journeys.md)); FERRUM-JOURNEY-002, 005 and 008 are implemented, waiting on an independent reviewer |
 | This PR | Signing in at the accounts host is choosing the account: the way back no longer asks "Continue" again |
 | ERP 0.14.2 | Seven actions declare the parameters they read, so their record pages ask for them (a supplier quotation's supplier and a bank line's payment party could never be given before); a purchase invoice is not submitted with its draft's placeholder number |
 | Field Service 0.3.1 | Time added by hand is read on the workspace's clock, as the job shows it, and none that ends in the future is taken |
@@ -27,7 +27,7 @@ placeholder refused), `ferrum-app-field-service:tests/field_service_it.rs` (time
 **Next:** pages show times in the browser's zone while Field Service shows the workspace's (one rule
 for every page, FERRUM-UX-006); CRM says nothing of the connector its orders need; an add-on's entity
 opened before it is installed says "not found". The other journeys through the pages: hire to retire,
-document to signature, marketing to consent, the stay, learning completion.
+marketing to consent, the stay, learning completion.
 
 ## 2026-11-06, early: three journeys through the pages, files streamed by four apps, axe in the Frontend's tests
 
