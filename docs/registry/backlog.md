@@ -21,7 +21,7 @@ this repository, 154 built and awaiting qualification.
 
 ## Ready: 4. Jobs, files, search, notifications, governance
 
-- `FERRUM-PRIVACY-002` Relationship-aware discovery: identities, attachments, messages (Found by email, under every address held, with attached files; not by name or phone)
+- `FERRUM-PRIVACY-002` Relationship-aware discovery: identities, attachments, messages (Found by email under every address held, with attached files, and by phone number where a declaration names a phone field (the platform's contacts, customers and suppliers do; no app's declaration does yet); a name only lists records as possibly the person's, never erased for it)
 - `FERRUM-PRIVACY-007` Immutable evidence without duplicated personal data (Audit diffs of records are redacted on erasure, keeping hashes; other audit payloads are not reviewed)
 
 ## Ready: 5. Existing application completion

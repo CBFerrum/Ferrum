@@ -207,24 +207,21 @@ async fn set_permission(Auth(ctx): Auth, State(app): State<AppContext>, Path(rol
 
 // ── personal data ──
 
-#[derive(Deserialize)]
-struct PersonQuery {
-    email: String,
-}
-
-/// Everything kept about a person (their email): records and login account.
-async fn personal_data(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query<PersonQuery>) -> ApiResult<Response> {
-    Ok(Json(app_state(&app)?.kernel.personal_data(&ctx, &q.email).await?).into_response())
+/// Everything kept about a person (their email, and their phone number and name when given):
+/// records and login account.
+async fn personal_data(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query<ferrum_kernel::privacy::Person>) -> ApiResult<Response> {
+    Ok(Json(app_state(&app)?.kernel.personal_data_of(&ctx, &q).await?).into_response())
 }
 
 #[derive(Deserialize)]
 struct EraseReq {
-    email: String,
+    #[serde(flatten)]
+    person: ferrum_kernel::privacy::Person,
     reason: String,
 }
 
 async fn erase_personal_data(Auth(ctx): Auth, State(app): State<AppContext>, Json(req): Json<EraseReq>) -> ApiResult<Response> {
-    Ok(Json(app_state(&app)?.kernel.erase_personal_data(&ctx, &req.email, &req.reason).await?).into_response())
+    Ok(Json(app_state(&app)?.kernel.erase_personal_data_of(&ctx, &req.person, &req.reason).await?).into_response())
 }
 
 // ── packages ──

@@ -3,6 +3,22 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-05, night: a person found by phone number, or possibly by name
+
+**State:** this PR follows PR 60; FRONTEND_REV is at Ferrum-Frontend PR 26's merge. No release was tagged.
+
+| Where | What |
+|---|---|
+| Ferrum-Frontend PR 26 | The Personal data page asks for a phone number and a name; records sharing the name are listed apart, left out of the person's copy and never erased for it |
+| This PR | A personal-data request may give a phone number and a name besides the email (FERRUM-PRIVACY-002). A declaration names its `phone` field, and the records whose number has the same digits, however either was written, are the person's like an email match: exported, and erased with them. A declaration naming its `name` field lists the records holding that name (case and spacing aside) apart, under `possibly`, for an administrator to judge; a name alone never erases anything. The platform's contacts, addresses, customers and suppliers declare their phone fields, and contacts and individual customers their names; a declaration's phone and name fields are checked when the catalog loads |
+
+**Evidence:**
+- `crates/kernel/tests/privacy_it.rs`: a walk-in recorded with only "+1 (555) 0100" is found when asked with "+1-555-0100", beside the three records the email reaches; a namesake "pat   LEE" with another address is listed as possibly theirs, the records already theirs not repeated; too few digits are refused; an erasure asked with the number reaches the walk-in and leaves the namesake; declarations naming a phone field that is not one, or a name field that does not exist, do not load.
+- `crates/kernel/tests/kernel_it.rs` and `collab_it.rs` boot the platform's packages with their new declarations.
+- Walked on this branch's server (ferrum_walk) with Ferrum-Frontend PR 26: asked for citizen@walk.test with "+91-9876543210" and "Cyril Citizen", the Personal data page listed the customer the email reaches, a walk-in customer recorded as "+91 98765 43210" with no address, and the login account, and listed a namesake with another address apart as possibly theirs.
+
+**Not done:** apps' declarations name no phone or name field yet; a number asked for without the country code it was recorded with is not found.
+
 ## 2026-11-05, evening: roles one person may not hold together, and fields kept out of exports
 
 **State:** this PR follows PR 59; FRONTEND_REV is at Ferrum-Frontend PR 25's merge. No release was tagged.

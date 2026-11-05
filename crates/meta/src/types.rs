@@ -71,6 +71,14 @@ pub struct PersonalDataDef {
     pub retain: Option<String>,
     #[serde(default, rename = "where", skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub condition: std::collections::BTreeMap<String, Value>,
+    /// A field holding the person's phone number: asked with a number, records whose number has the
+    /// same digits (however it was written) are theirs as well.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phone: Option<String>,
+    /// A field holding their name: asked with a name, records holding it are listed as possibly
+    /// theirs, for a person to judge, and never erased for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// Work a person is named on, which moves to whoever takes over when they leave: an email field of
