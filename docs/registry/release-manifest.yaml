@@ -40,3 +40,4 @@ components:
   - {repository: CBFerrum/ferrum-app-retail, pinned: 2c9d2727f2344d102ef47ab5580ed654344ee15c}
   - {repository: CBFerrum/ferrum-app-sign, pinned: 94a0313c822093f44c1bfbf40c04cc6fef5218a1}
   - {repository: CBFerrum/ferrum-app-social, pinned: 59c40b93cbc625d3fc9b67f4db0992e904848912}
+  - {repository: CBFerrum/ferrum-app-website, pinned: 742dbc7110fc5febae94607e053827148f457632}
