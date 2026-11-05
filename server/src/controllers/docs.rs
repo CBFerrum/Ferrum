@@ -290,10 +290,7 @@ async fn export(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Pa
     q.offset = None;
     q.sort = Some("created_at desc".into());
     q.with_count = false;
-    let columns: Vec<String> = match &q.fields {
-        Some(f) => f.clone(),
-        None => std::iter::once("number".to_string()).chain(ent.value_fields().filter(|f| !f.hidden).map(|f| f.name.clone())).collect(),
-    };
+    let columns = export_columns(&ent, q.fields.as_deref());
     let xlsx = match p.format.as_deref() {
         None | Some("csv") => false,
         Some("xlsx") => true,
@@ -327,6 +324,16 @@ async fn export(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Pa
         h.insert(header::CONTENT_DISPOSITION, v);
     }
     Ok(resp)
+}
+
+/// The columns an export writes: those asked for, else the number and every field shown, never a
+/// field kept out of exports (`no_export`), even when asked for.
+fn export_columns(ent: &ferrum_meta::EffEntity, asked: Option<&[String]>) -> Vec<String> {
+    let kept = |name: &str| ent.field(name).is_none_or(|f| !f.no_export);
+    match asked {
+        Some(f) => f.iter().filter(|c| kept(c)).cloned().collect(),
+        None => std::iter::once("number".to_string()).chain(ent.value_fields().filter(|f| !f.hidden && !f.no_export).map(|f| f.name.clone())).collect(),
+    }
 }
 
 /// One worksheet: a bold header of field labels, numbers as numbers (Excel's own precision),
@@ -477,6 +484,21 @@ mod tests {
         assert_eq!(csv_cell(&json!("=SUM(A1)")), "'=SUM(A1)");
         assert_eq!(csv_cell(&json!("-12.5")), "-12.5");
         assert_eq!(csv_cell(&json!("say \"hi\"")), "\"say \"\"hi\"\"\"");
+    }
+
+    #[test]
+    fn exports_leave_out_what_is_kept_out_of_them() {
+        let mut packages = ferrum_domain::packages().unwrap();
+        for f in packages.iter_mut().flat_map(|p| p.entities.iter_mut()).filter(|e| e.name == "Customer").flat_map(|e| e.fields.iter_mut()) {
+            f.no_export |= f.name == "tax_id";
+        }
+        let catalog = ferrum_meta::Catalog::from_packages(packages).unwrap();
+        let schema = ferrum_meta::effective::build(&catalog, &["parties".into()], &[], 1).unwrap();
+        let ent = schema.entity("Customer").unwrap();
+        let all = export_columns(ent, None);
+        assert!(all.contains(&"customer_name".to_string()) && !all.contains(&"tax_id".to_string()), "{all:?}");
+        let asked = export_columns(ent, Some(&["customer_name".to_string(), "tax_id".to_string()]));
+        assert_eq!(asked, vec!["customer_name".to_string()], "not even when asked for");
     }
 
     #[test]

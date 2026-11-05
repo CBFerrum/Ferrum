@@ -20,6 +20,7 @@ impl Kernel {
         if !ctx.is_admin {
             return Err(Error::Forbidden("the evidence pack is for administrators".into()));
         }
+        let role_conflicts = self.role_conflicts(ctx).await?;
         let mut tx = self.db.tenant_tx_with_timeout(ctx.tenant, self.db.config.report_timeout_ms).await?;
         let people = rows!(
             tx,
@@ -61,7 +62,7 @@ impl Kernel {
             "generated_at": chrono::Utc::now(),
             "platform": env!("CARGO_PKG_VERSION"),
             "note": "Facts read from the system when asked. Not a claim of compliance with any standard.",
-            "access": {"people": people, "api_keys": keys, "support_grants": support, "single_sign_on": sign_in},
+            "access": {"people": people, "role_conflicts": role_conflicts, "api_keys": keys, "support_grants": support, "single_sign_on": sign_in},
             "outside_parties": {"connections": connections, "plugins": plugins},
             "personal_data": {
                 "declared": ctx.schema.personal_data,
