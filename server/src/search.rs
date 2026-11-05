@@ -162,6 +162,38 @@ pub async fn search(k: &Arc<Kernel>, ctx: &Ctx, q: &str, limit: usize) -> Result
     }))
 }
 
+/// The search as a tool for AI agents and the assistant (`search_workspace`, FERRUM-AI-004): what
+/// the bar finds, on the same indexes, with the caller's rights and, for the assistant, its
+/// narrowed view of them (internal records and grouped fields are not searched).
+pub struct SearchTool(pub Arc<Kernel>);
+
+#[async_trait::async_trait]
+impl ferrum_mcp::ToolProvider for SearchTool {
+    fn tools(&self, _ctx: &Ctx) -> Vec<Value> {
+        vec![ferrum_mcp::tool_definition(
+            "search_workspace",
+            "Search the workspace",
+            "Finds records of every kind the person may read by their title, number and search fields, as the bar's search does, best matches first: \
+             each hit's entity, id and title. Use it when the kind of record is not known; search_records searches one entity with filters.",
+            json!({"q": {"type": "string", "description": "What to look for: a name, a number, part of a title (2 to 100 characters)"},
+                   "limit": {"type": "integer", "description": "At most this many hits (default 10, at most 50)"}}),
+            &["q"],
+            true,
+            false,
+            true,
+        )]
+    }
+
+    async fn call(&self, _k: &Kernel, ctx: &Ctx, name: &str, args: &Value) -> Option<Result<Value>> {
+        if name != "search_workspace" {
+            return None;
+        }
+        let q = args["q"].as_str().unwrap_or_default();
+        let limit = args["limit"].as_u64().unwrap_or(10).clamp(1, 50) as usize;
+        Some(search(&self.0, ctx, q, limit).await.map(|r| json!({"results": r["results"], "partial": r["partial"]})))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

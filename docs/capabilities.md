@@ -9,8 +9,8 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 167 |
-| Partially implemented | 53 |
+| Implemented, qualification incomplete | 168 |
+| Partially implemented | 52 |
 | Blocked by external dependency | 11 |
 | **All** | **231** |
 
@@ -200,7 +200,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-AI-001 | Assistant acts as the person with writes approved in the conversation | Implemented, qualification incomplete | tested | Approval is bound to the stored call, the record's version and 30 minutes; estimated financial impact is not shown |
 | FERRUM-AI-002 | Shared AI gateway: providers, allowlists, regions, spending limits | Implemented, qualification incomplete | tested | Two provider protocols: Anthropic's Messages API (or a proxy that speaks it) and an OpenAI-compatible chat API, which carries text, tools and usage and leaves Anthropic's reasoning, citations and fallbacks out; Regions are by deployment: each calls the endpoint its operator sets (a provider's regional one); one deployment does not route workspaces to different regions; Budgets are in tokens: no prices are invented; Usage is metered per workspace, person and model |
 | FERRUM-AI-003 | Egress policy separate from read permission | Implemented, qualification incomplete | tested | Packages must mark entities `internal` and fields with perm_group: HR's are marked, others not yet reviewed; Fields free of any group go, whatever they hold |
-| FERRUM-AI-004 | Authorization-aware retrieval | Partially implemented | read | Tools run as the person, so reads are theirs; no retrieval index, so caches and embeddings do not arise yet |
+| FERRUM-AI-004 | Authorization-aware retrieval | Implemented, qualification incomplete | tested | The assistant and AI agents retrieve through the workspace's search (search_workspace) and the records tools: on its own indexes (trigram, per workspace under row-level security), filtered when asked by the person's rights and, for the assistant, its narrowed view (internal records and grouped fields are not searched); No embeddings or semantic index: nothing is cached for anyone beyond the request, and retrieval matches words, not meaning |
 | FERRUM-AI-005 | Evaluation datasets and prompt-injection tests | Blocked by external dependency | tested | Grounded-answer cases (server/assistant-evals) graded by `ferrum task assistant_eval`: what the answer says, what it read before answering, and what a record planted for it to say; Each answer records the prompt version it was answered under (instructions, tools, model), whose text each workspace keeps; An adversarial test with a model that obeys injected instructions; Never yet run against a real model: that needs a provider's key and a budget for the runs |
 | FERRUM-AI-006 | Domain-specific assistants with sources shown | Implemented, qualification incomplete | read | An app tells the assistant about its records through shell.assistant, added to the context of each message written in its pages; ERP's is written, other apps' not yet; Sources are the records, lists and reports the answer's reads looked at, shown under it; what the model took from each is not marked sentence by sentence; Not tried in a browser against a real model when it was built |
 
