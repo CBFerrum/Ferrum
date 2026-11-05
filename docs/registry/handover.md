@@ -651,3 +651,9 @@ passes, a guess fails on all three counts. Never run against a real model: BLOCK
   the server answers again it is sent (the job En Route, nothing waiting). Not walked: a page
   opening offline from an app's worker, since the walking browser refuses service workers (POS's
   existing one fails to register the same way), nor POS and Docs with the network cut.
+## 6 November: large files streamed from an app's answer (FERRUM-OPS-006)
+
+`SiteResponse::file(status, type, headers, file)` names a stored file; the server streams it from
+storage as the body (`controllers/sites.rs::named_file`, the workspace's own file only) and drops the
+naming header. `read_file` refuses files past `MAX_READ_WHOLE` (256 MB, Learn's SCORM ceiling).
+Next: Drive's content route answers with the stored file, then its pin moves here.

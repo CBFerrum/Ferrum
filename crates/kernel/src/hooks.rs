@@ -117,7 +117,19 @@ pub struct SiteResponse {
     pub body: Vec<u8>,
 }
 
+/// The header a [`SiteResponse::file`] names its file in. The server streams that file as the body
+/// and sends the header on to nobody.
+pub const STREAM_FILE_HEADER: &str = "x-ferrum-stream-file";
+
 impl SiteResponse {
+    /// A stored file as the body (FERRUM-OPS-006): the server streams it from storage, so a
+    /// download of any size never sits whole in memory. The app has decided who may read it; the
+    /// server sends it only when it is this workspace's.
+    pub fn file(status: u16, content_type: &str, mut headers: Vec<(String, String)>, file: uuid::Uuid) -> Self {
+        headers.push((STREAM_FILE_HEADER.into(), file.to_string()));
+        Self { status, content_type: content_type.into(), headers, body: Vec::new() }
+    }
+
     pub fn json(status: u16, value: &Value) -> Self {
         Self { status, content_type: "application/json".into(), headers: vec![], body: value.to_string().into_bytes() }
     }

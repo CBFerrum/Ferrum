@@ -314,6 +314,20 @@ async fn scenario() {
         "active content is never served as such"
     );
     assert!(k.read_file(&otto_ctx, fid).await.is_err());
+    // A file larger than an app reads whole is refused here: it is streamed to whoever downloads it.
+    let big = k.store_file(&admin, Some(("Customer", cid)), "scan.bin", "application/octet-stream", b"0123").await.unwrap();
+    let big: Uuid = big["id"].as_str().unwrap().parse().unwrap();
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update file_object set size_bytes = $2 where id = $1")
+        .bind(big)
+        .bind(ferrum_kernel::files::MAX_READ_WHOLE + 1)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let refused = k.read_file(&bea_ctx, big).await;
+    assert!(matches!(refused, Err(ferrum_kernel::Error::Invalid(ref m)) if m.contains("downloaded as a stream")), "{refused:?}");
+    k.remove_file(&admin, big).await.unwrap();
     assert_eq!(k.attachments(&bea_ctx, "Customer", cid).await.unwrap().len(), 1);
     assert!(k.store_file(&otto_ctx, Some(("Customer", cid)), "x.txt", "text/plain", b"x").await.is_err(), "attaching needs read access");
     assert!(k.copy_file(&otto_ctx, fid, None).await.is_err(), "copying needs read access to the source");
