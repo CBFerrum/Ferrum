@@ -19,7 +19,7 @@ this repository, 149 built and awaiting qualification.
 
 - `FERRUM-IDENTITY-008` Guests, portal people, service accounts, scoped keys (API key scopes are dav and scim; there are no per-entity key scopes)
 - `FERRUM-IDENTITY-009` One policy system across tenant (Department, branch and time-limited grants are not modelled)
-- `FERRUM-IDENTITY-012` Field masking and export restrictions (Masks exist; no field declares one yet in the shipped packages)
+- `FERRUM-IDENTITY-012` Field masking and export restrictions (Masks are declared for employees' bank and identity numbers (HR 0.7.1): those outside the groups see the last four; other packages declare none yet)
 - `FERRUM-IDENTITY-014` Segregation of duties and maker-checker (Approvers can be barred from their own documents; no rule across roles or automations)
 - `FERRUM-IDENTITY-015` Authorization rechecked when delayed work runs (Mail, push and jobs recheck when they run; automations still run as the system)
 
