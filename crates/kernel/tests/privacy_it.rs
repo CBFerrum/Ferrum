@@ -236,6 +236,11 @@ async fn scenario() {
 
     let record_hold = k.place_legal_hold(&admin, None, Some(("Visitor", late_id)), "Matter 8").await.unwrap();
     assert!(matches!(k.delete(&admin, "Visitor", late_id, None).await, Err(Error::Conflict(_))), "nor deleted");
+    // Nor by an app's own SQL: the database refuses that too.
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let direct = sqlx::query("delete from e_visitor where tenant_id = $1 and id = $2").bind(tenant).bind(late_id).execute(&mut *tx).await;
+    assert!(direct.as_ref().is_err_and(|e| e.to_string().contains("under a legal hold")), "{direct:?}");
+    tx.rollback().await.unwrap();
     assert_eq!(k.legal_holds(&admin).await.unwrap().len(), 2, "released ones stay on the record");
     assert!(k.legal_holds(&outsider).await.unwrap().is_empty());
 
