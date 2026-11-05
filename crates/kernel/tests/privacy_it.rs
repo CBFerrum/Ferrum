@@ -254,6 +254,9 @@ async fn scenario() {
     let passkey = Uuid::now_v7();
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();
     ferrum_kernel::audit::record(&mut tx, &pat_ctx, "Passkey", passkey, "add", None, json!({"name": "Pat's phone", "rp_id": "acme.test"})).await.unwrap();
+    // An app names who did something by their address, as some do.
+    let claimed = Uuid::now_v7();
+    ferrum_kernel::audit::record(&mut tx, &admin, "Device", claimed, "edge.claimed", None, json!({"by": "Pat@Old.test", "site": "Depot"})).await.unwrap();
     tx.commit().await.unwrap();
     // The workspace's export from before is a copy of what is about to go.
     let export = k.export_workspace(&admin).await.unwrap();
@@ -273,6 +276,15 @@ async fn scenario() {
         .unwrap();
     tx.commit().await.unwrap();
     assert_eq!((&history["name"], &history["rp_id"]), (&json!(["[erased]", "[erased]"]), &json!("acme.test")), "the passkey's name leaves its history");
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let payload: Value = sqlx::query_scalar("select diff from audit_event where tenant_id = $1 and entity = 'Device' and record_id = $2")
+        .bind(tenant)
+        .bind(claimed)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(payload, json!({"by": "[erased]", "site": "Depot"}), "an app's payload loses the address, and keeps the rest");
     assert_eq!(
         ids(&done["erased"]),
         vec![early["id"].as_str().unwrap().to_string(), visit["id"].as_str().unwrap().to_string()],
@@ -345,6 +357,10 @@ async fn scenario() {
         .await
         .unwrap();
     tx.commit().await.unwrap();
+    // The history the backup had: the app's event naming Pat, as it was then.
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    ferrum_kernel::audit::record(&mut tx, &admin, "Device", claimed, "edge.claimed", None, json!({"by": "pat@old.test", "site": "Depot"})).await.unwrap();
+    tx.commit().await.unwrap();
     k.invalidate_user(tenant, pat);
     assert_eq!(k.get(&admin, "Visitor", early_id, false).await.unwrap()["email"], json!("pat@old.test"), "as a backup from before would have it");
     assert!(k.load_ctx(tenant, pat, None, "it".into()).await.is_ok(), "and the account is back");
@@ -353,6 +369,15 @@ async fn scenario() {
     let erased = k.get(&admin, "Visitor", early_id, false).await.unwrap();
     assert!(erased["full_name"].as_str().unwrap().starts_with("Erased ") && erased["email"].is_null() && erased["notes"].is_null(), "{erased:?}");
     assert!(k.load_ctx(tenant, pat, None, "it".into()).await.is_err(), "and the account is gone again");
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let payloads: Vec<Value> = sqlx::query_scalar("select diff from audit_event where tenant_id = $1 and entity = 'Device' and record_id = $2 order by id")
+        .bind(tenant)
+        .bind(claimed)
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(payloads.len() == 2 && payloads.iter().all(|p| p["by"] == json!("[erased]")), "and the address leaves the payload again: {payloads:?}");
     assert!(k.personal_data(&admin, "pat@old.test").await.unwrap()["account"].is_null());
     let first = serde_json::to_string(&erased).unwrap();
     assert_eq!(k.reapply_erasure(&journal[0]).await.unwrap(), 2, "the records again, the account already done");
