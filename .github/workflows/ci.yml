@@ -152,6 +152,9 @@ jobs:
       # Every accepted advisory has an owner, a reason and a review date (scripts/registry.py).
       - name: Requirements registry, accepted advisories and generated documents
         run: python3 -m pip install --quiet pyyaml && python3 scripts/registry.py check && python3 scripts/test_registry.py && python3 scripts/test_manifests.py && python3 scripts/mutants.py --check && python3 scripts/test_baseline.py
+      # The tools that carry a release to a site without internet (docs/operations.md), against stand-ins.
+      - name: Offline bundles
+        run: python3 deploy/offline/test_offline.py
       - name: Licenses of everything compiled in
         run: python3 scripts/licenses.py check
       # What every app gives that a program can see (docs/app-contract.md), in the apps the lock takes.
