@@ -96,7 +96,8 @@ fn catalog() -> Catalog {
         &dir,
         "  - {entity: Visitor, match: email, phone: phone, name: full_name, erase: [full_name, email, phone, notes]}\n  - {entity: Receipt, match: payer, retain: \"Accounting records\"}\n  \
          - {entity: Diner, match: phone, phone: phone, name: guest_name, erase: [guest_name, phone]}\n  \
-         - {entity: Visit, match: visitor, erase: [notes]}\n",
+         - {entity: Visit, match: visitor, erase: [notes]}\n  \
+         - {entity: Visitor, match: companions.email, erase: [companions]}\n",
     );
     let c = Catalog::load_dir(&dir).expect("catalog");
     let _ = std::fs::remove_dir_all(&dir);
@@ -136,6 +137,9 @@ async fn scenario() {
         ("  - {entity: Diner, match: phone, erase: [phone]}\n", "a match on a phone field it does not name as the phone"),
         ("  - {entity: Visit, match: visitor, erase: [notes]}\n", "a link to records no declaration finds"),
         ("  - {entity: Companion, match: email, erase: [email]}\n", "a child table's rows"),
+        ("  - {entity: Visitor, match: companions.email, phone: phone, erase: [companions]}\n", "rows matched in a table, with a phone"),
+        ("  - {entity: Visitor, match: companions.email, erase: [notes]}\n", "rows matched in a table, erasing the record's own field"),
+        ("  - {entity: Visitor, match: nope.email, erase: [nope]}\n", "a table it does not have"),
         ("  - {entity: Visitor, match: email, name: nickname, erase: [email]}\n", "a name that is no field"),
     ] {
         let dir = temp("bad");
@@ -419,6 +423,47 @@ async fn scenario() {
         matches!(k.erase_personal_data(&admin, "front-desk@acme.test", "Request 4").await, Err(Error::Validation(_) | Error::Invalid(_))),
         "a desk is not a person"
     );
+
+    // A host's visit lists who came with them: Pat's row of it is hers; the host's record and the
+    // other companion are not.
+    let host = k
+        .insert(
+            &admin,
+            "Visitor",
+            obj(json!({"full_name": "Henry Host", "email": "henry@host.test", "companions": [{"email": "pat@old.test"}, {"email": "kim@else.test"}]})),
+        )
+        .await
+        .unwrap();
+    let host_id: Uuid = host["id"].as_str().unwrap().parse().unwrap();
+    let asked = k.personal_data(&admin, "pat@old.test").await.unwrap();
+    let hers = asked["records"].as_array().unwrap().iter().find(|r| r["id"] == host["id"]).expect("the host's visit, for her row").clone();
+    let rows = hers["data"]["companions"].as_array().unwrap();
+    assert_eq!((rows.len(), &rows[0]["email"], &hers["data"]["email"]), (1, &json!("pat@old.test"), &Value::Null), "her row alone: {hers}");
+    let again = k.erase_personal_data(&admin, "pat@old.test", "Request 5").await.unwrap();
+    assert!(again["erased"].as_array().unwrap().iter().any(|r| r["id"] == host["id"] && r["rows"] == json!(1)), "{again}");
+    let after = k.get(&admin, "Visitor", host_id, false).await.unwrap();
+    let left: Vec<&Value> = after["companions"].as_array().unwrap().iter().map(|r| &r["email"]).collect();
+    assert_eq!((left, &after["email"], &after["full_name"]), (vec![&json!("kim@else.test")], &json!("henry@host.test"), &json!("Henry Host")));
+    // Journalled by row id, it comes off a restored database too.
+    while k.dispatch_outbox_once().await.unwrap() > 0 {}
+    let entries: Vec<(String, Vec<u8>)> =
+        store.0.lock().unwrap().iter().filter(|(k, _)| k.starts_with(JOURNAL_PREFIX)).map(|(k, v)| (k.clone(), v.clone())).collect();
+    let (key, entry) = entries.iter().find(|(_, v)| String::from_utf8_lossy(v).contains("\"rows\"")).expect("the row's erasure, journalled");
+    let entry: Value = serde_json::from_slice(entry).unwrap();
+    assert!(!entry.to_string().contains("pat@"), "by row id, not by address: {entry}");
+    let row = entry["erasure"]["records"].as_array().unwrap().iter().find(|r| r["table"] == "companions").unwrap()["rows"][0].as_str().unwrap().to_string();
+    let mut tx = k.db.system_tenant_tx(tenant).await.unwrap();
+    sqlx::query("insert into e_visitor__companions (tenant_id, id, parent_id, idx, email) values ($1, $2::uuid, $3, 0, 'pat@old.test')")
+        .bind(tenant)
+        .bind(&row)
+        .bind(host_id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(k.reapply_erasure(key).await.unwrap() >= 1);
+    let restored = k.get(&admin, "Visitor", host_id, false).await.unwrap();
+    assert_eq!(restored["companions"].as_array().unwrap().len(), 1, "her row went again: {restored:?}");
     let kept = k.get(&admin, "Visitor", namesake["id"].as_str().unwrap().parse().unwrap(), false).await.unwrap();
     assert_eq!(kept["email"], json!("p.lee@else.test"), "the namesake is untouched");
 }
