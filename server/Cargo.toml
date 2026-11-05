@@ -182,6 +182,12 @@ rust_xlsxwriter = "0.102"
 ring = "0.17"
 # Loco builds OpenDAL without an HTTP client; S3 storage needs one installed.
 opendal = { version = "0.58", default-features = false, features = ["http-transport-reqwest"] }
+# Traces over OTLP (HTTP, protobuf) when an endpoint is configured (telemetry.rs).
+opentelemetry = "0.33"
+tracing-opentelemetry = "0.34"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace"] }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client", "reqwest-rustls"] }
 
 [dev-dependencies]
 rust_decimal.workspace = true

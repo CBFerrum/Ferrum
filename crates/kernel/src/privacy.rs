@@ -10,7 +10,8 @@
 //! deletes the files attached to them, takes the same fields' past values out of the records' audit
 //! history (each event keeps its hash and place in the chain and records the redaction), and
 //! anonymizes and deactivates the person's login account, with what hangs off it: sessions, keys,
-//! notifications, preferences, devices. Records a package keeps for a stated reason (`retain`) are
+//! notifications, preferences, devices, and the workspace's stored exports, copies from before.
+//! Records a package keeps for a stated reason (`retain`) are
 //! exported and left, and the answer lists them, so nobody takes them for erased. Submitted
 //! documents keep the copies of names they carry, as bookkeeping law requires; erasure reaches the
 //! records the packages declare.
@@ -39,8 +40,10 @@ pub const ERASED_TOPIC: &str = "ferrum.privacy.erased";
 /// Where erasures are journalled in object storage, one object each.
 pub const JOURNAL_PREFIX: &str = "privacy-journal/";
 
-/// Records of one person a declaration may reach (more means the email is not one person's).
+/// Records of one person a declaration that erases may reach (more means the email is not one
+/// person's), and one that retains them: a working life of attendance is still one person's.
 const MAX_RECORDS: i64 = 1000;
+const MAX_RETAINED: i64 = 20_000;
 
 /// Who a personal-data request is about: their email, and what else names them on records that
 /// hold no address.
@@ -98,33 +101,50 @@ pub(crate) async fn addresses(tx: &mut Tx, tenant: Uuid, email: &str) -> Result<
     Ok(all)
 }
 
-/// The ids of the records each declaration reaches for these addresses.
+/// The ids of the records each declaration reaches for these addresses: those found by an address
+/// or a number first, then those that link to them.
 async fn reached(ctx: &Ctx, tx: &mut Tx, emails: &[String], phone: Option<&str>) -> Result<Vec<(PersonalDataDef, Vec<Uuid>)>> {
-    let mut out = Vec::new();
-    for def in &ctx.schema.personal_data {
-        let Some(ent) = ctx.schema.entity(&def.entity) else { continue };
-        let Some(expr) = field_expr(ent, &def.match_field, "a") else { continue };
-        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(format!("select a.id from {} a where a.tenant_id = ", q(&ent.table)));
-        qb.push_bind(ctx.tenant).push(format!(" and (lower(({expr})::text) = any(")).push_bind(emails.to_vec()).push(")");
-        if let Some((e, digits)) = def.phone.as_deref().and_then(|f| field_expr(ent, f, "a")).zip(phone) {
-            qb.push(format!(" or regexp_replace(({e})::text, '[^0-9]', '', 'g') = ")).push_bind(digits.to_string());
-        }
-        qb.push(")");
-        for (field, v) in &def.condition {
-            let Some(e) = field_expr(ent, field, "a") else { continue };
-            let text = match v {
-                Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
-            qb.push(format!(" and ({e})::text = ")).push_bind(text);
-        }
-        qb.push(entity_predicate(ent, "a")).push(" order by a.id limit ").push_bind(MAX_RECORDS + 1);
-        let ids: Vec<Uuid> = qb.build_query_scalar().fetch_all(&mut **tx).await?;
-        if ids.len() as i64 > MAX_RECORDS {
-            return Err(Error::invalid(format!("more than {MAX_RECORDS} {} records use this email; it does not name one person", ent.def.label)));
-        }
-        if !ids.is_empty() {
-            out.push((def.clone(), ids));
+    let mut out: Vec<(PersonalDataDef, Vec<Uuid>)> = Vec::new();
+    for linked in [false, true] {
+        for def in &ctx.schema.personal_data {
+            let Some(ent) = ctx.schema.entity(&def.entity) else { continue };
+            let Some(expr) = field_expr(ent, &def.match_field, "a") else { continue };
+            let to = ent.field(&def.match_field).filter(|f| f.ftype == FieldType::Link).and_then(|f| f.to.clone());
+            if to.is_some() != linked {
+                continue;
+            }
+            let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(format!("select a.id from {} a where a.tenant_id = ", q(&ent.table)));
+            qb.push_bind(ctx.tenant);
+            if let Some(to) = to {
+                let ids: Vec<Uuid> = out.iter().filter(|(d, _)| d.entity == to).flat_map(|(_, ids)| ids.iter().copied()).collect();
+                if ids.is_empty() {
+                    continue;
+                }
+                qb.push(format!(" and ({expr}) = any(")).push_bind(ids).push(")");
+            } else {
+                qb.push(format!(" and (lower(({expr})::text) = any(")).push_bind(emails.to_vec()).push(")");
+                if let Some((e, digits)) = def.phone.as_deref().and_then(|f| field_expr(ent, f, "a")).zip(phone) {
+                    qb.push(format!(" or regexp_replace(({e})::text, '[^0-9]', '', 'g') = ")).push_bind(digits.to_string());
+                }
+                qb.push(")");
+            }
+            for (field, v) in &def.condition {
+                let Some(e) = field_expr(ent, field, "a") else { continue };
+                let text = match v {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                qb.push(format!(" and ({e})::text = ")).push_bind(text);
+            }
+            let max = if def.retain.is_some() { MAX_RETAINED } else { MAX_RECORDS };
+            qb.push(entity_predicate(ent, "a")).push(" order by a.id limit ").push_bind(max + 1);
+            let ids: Vec<Uuid> = qb.build_query_scalar().fetch_all(&mut **tx).await?;
+            if ids.len() as i64 > max {
+                return Err(Error::invalid(format!("more than {max} {} records use this email; it does not name one person", ent.def.label)));
+            }
+            if !ids.is_empty() {
+                out.push((def.clone(), ids));
+            }
         }
     }
     Ok(out)
@@ -389,6 +409,8 @@ impl Kernel {
         }
         // OAuth's tables are the server's, outside any workspace; every statement names the tenant.
         let mut tx = self.db.system_tenant_tx(ctx.tenant).await?;
+        // One erasure at a time in a workspace, and none while an export reads where they stand.
+        sqlx::query("select pg_advisory_xact_lock(hashtextextended('ferrum.erasure ' || $1::text, 0))").bind(ctx.tenant).execute(&mut *tx).await?;
         let emails = addresses(&mut tx, ctx.tenant, &email).await?;
         if person_held(&mut tx, ctx.tenant, &emails).await? {
             return Err(Error::Conflict("a legal hold covers this person; release it first".into()));
@@ -430,6 +452,8 @@ impl Kernel {
         if let Some(id) = account {
             erase_account(&mut tx, ctx, id, reason).await?;
         }
+        // A stored export of the workspace is a copy from before: it goes too.
+        let exports = if erased.is_empty() && account.is_none() { 0 } else { crate::export::drop_exports(&mut tx, ctx.tenant, None).await? };
         // By id and field name only: it outlives the data, and must not hold what it erased.
         outbox::enqueue(&mut tx, ctx.tenant, ERASED_TOPIC, None, None, json!({"account": account, "records": journal, "reason": reason})).await?;
         tx.commit().await?;
@@ -438,8 +462,19 @@ impl Kernel {
         }
         Ok(json!({
             "email": email, "addresses": emails, "phone": phone, "erased": erased, "retained": retained, "held": held, "account_erased": account.is_some(),
-            "audit_events_redacted": events, "files_deleted": files, "not_searched": ctx.schema.undeclared_personal_data,
+            "audit_events_redacted": events, "files_deleted": files, "exports_deleted": exports, "not_searched": ctx.schema.undeclared_personal_data,
         }))
+    }
+
+    /// The newest erasure in a workspace, read once any under way has committed: an export that sees
+    /// it change while it runs may hold what was erased.
+    pub(crate) async fn last_erasure(&self, tenant: Uuid) -> Result<Option<i64>> {
+        let mut tx = self.db.tenant_tx(tenant).await?;
+        sqlx::query("select pg_advisory_xact_lock_shared(hashtextextended('ferrum.erasure ' || $1::text, 0))").bind(tenant).execute(&mut *tx).await?;
+        let last =
+            sqlx::query_scalar("select max(id) from outbox where tenant_id = $1 and topic = $2").bind(tenant).bind(ERASED_TOPIC).fetch_one(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(last)
     }
 
     /// Writes an erasure's journal entry to object storage ([`ERASED_TOPIC`]'s handler). Named by the
@@ -492,6 +527,8 @@ impl Kernel {
                 done += 1;
             }
         }
+        // The backup's stored exports are from before the erasure; their objects went with it.
+        crate::export::drop_exports(&mut tx, tenant, None).await?;
         tx.commit().await?;
         if let Some(id) = account {
             self.invalidate_user(tenant, id);
