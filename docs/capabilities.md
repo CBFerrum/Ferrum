@@ -9,8 +9,8 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 164 |
-| Partially implemented | 56 |
+| Implemented, qualification incomplete | 165 |
+| Partially implemented | 55 |
 | Blocked by external dependency | 11 |
 | **All** | **231** |
 
@@ -21,7 +21,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | FERRUM-PLATFORM-001 | Modular monolith with a Rust kernel and apps as crates | Implemented, qualification incomplete | read |  |
 | FERRUM-PLATFORM-002 | Authoritative ownership of each shared concept | Partially implemented | read | Person, party, product and project are shared packages; employee, payment and consent are not yet one owned model across apps |
 | FERRUM-PLATFORM-003 | Controlled merging of duplicate customers with aliases | Implemented, qualification incomplete | tested | Customer and Supplier opt in; apps with their own people or companies have not; Duplicates are found by equal fields, not fuzzy matching; A merge is not undone; ERP's statements read merged ids only once it asks ferrum_kernel::merge::merged_ids; External identifiers wait for the connector platform |
-| FERRUM-PLATFORM-004 | Typed cross-application contracts with stated idempotency and failure behaviour | Partially implemented | read | Apps call ERP's engine as a crate, without a published contract for each operation |
+| FERRUM-PLATFORM-004 | Typed cross-application contracts with stated idempotency and failure behaviour | Implemented, qualification incomplete | tested | ERP's engine publishes its contract with the apps that call it (docs/contracts.md): each operation in the caller's transaction, append-only, what it refuses and whether calling it twice does it twice; contract_it holds each guarantee; The contract is Rust signatures checked when an app builds against an ERP revision, not a versioned wire protocol; other apps reach ERP through its documents; ERP is 0.x: a minor version may change an operation, and says so in its changelog |
 | FERRUM-PLATFORM-005 | Hook dependencies and ordering checked at startup | Implemented, qualification incomplete | tested | The mechanism exists; apps' hooks have not declared names or fills yet, so they run in registration order |
 | FERRUM-PLATFORM-006 | Isolation profiles: shared cells, dedicated, on-premises, disconnected | Partially implemented | read | Single-server and Kubernetes deployments exist; cells and a disconnected profile do not |
 | FERRUM-PLATFORM-007 | Strong types at consequential boundaries | Partially implemented | read | Money and tax go through ferrum-calc with decimals; documents stay JSON-shaped maps |
