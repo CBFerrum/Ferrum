@@ -101,34 +101,50 @@ pub(crate) async fn addresses(tx: &mut Tx, tenant: Uuid, email: &str) -> Result<
     Ok(all)
 }
 
-/// The ids of the records each declaration reaches for these addresses.
+/// The ids of the records each declaration reaches for these addresses: those found by an address
+/// or a number first, then those that link to them.
 async fn reached(ctx: &Ctx, tx: &mut Tx, emails: &[String], phone: Option<&str>) -> Result<Vec<(PersonalDataDef, Vec<Uuid>)>> {
-    let mut out = Vec::new();
-    for def in &ctx.schema.personal_data {
-        let Some(ent) = ctx.schema.entity(&def.entity) else { continue };
-        let Some(expr) = field_expr(ent, &def.match_field, "a") else { continue };
-        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(format!("select a.id from {} a where a.tenant_id = ", q(&ent.table)));
-        qb.push_bind(ctx.tenant).push(format!(" and (lower(({expr})::text) = any(")).push_bind(emails.to_vec()).push(")");
-        if let Some((e, digits)) = def.phone.as_deref().and_then(|f| field_expr(ent, f, "a")).zip(phone) {
-            qb.push(format!(" or regexp_replace(({e})::text, '[^0-9]', '', 'g') = ")).push_bind(digits.to_string());
-        }
-        qb.push(")");
-        for (field, v) in &def.condition {
-            let Some(e) = field_expr(ent, field, "a") else { continue };
-            let text = match v {
-                Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
-            qb.push(format!(" and ({e})::text = ")).push_bind(text);
-        }
-        let max = if def.retain.is_some() { MAX_RETAINED } else { MAX_RECORDS };
-        qb.push(entity_predicate(ent, "a")).push(" order by a.id limit ").push_bind(max + 1);
-        let ids: Vec<Uuid> = qb.build_query_scalar().fetch_all(&mut **tx).await?;
-        if ids.len() as i64 > max {
-            return Err(Error::invalid(format!("more than {max} {} records use this email; it does not name one person", ent.def.label)));
-        }
-        if !ids.is_empty() {
-            out.push((def.clone(), ids));
+    let mut out: Vec<(PersonalDataDef, Vec<Uuid>)> = Vec::new();
+    for linked in [false, true] {
+        for def in &ctx.schema.personal_data {
+            let Some(ent) = ctx.schema.entity(&def.entity) else { continue };
+            let Some(expr) = field_expr(ent, &def.match_field, "a") else { continue };
+            let to = ent.field(&def.match_field).filter(|f| f.ftype == FieldType::Link).and_then(|f| f.to.clone());
+            if to.is_some() != linked {
+                continue;
+            }
+            let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(format!("select a.id from {} a where a.tenant_id = ", q(&ent.table)));
+            qb.push_bind(ctx.tenant);
+            if let Some(to) = to {
+                let ids: Vec<Uuid> = out.iter().filter(|(d, _)| d.entity == to).flat_map(|(_, ids)| ids.iter().copied()).collect();
+                if ids.is_empty() {
+                    continue;
+                }
+                qb.push(format!(" and ({expr}) = any(")).push_bind(ids).push(")");
+            } else {
+                qb.push(format!(" and (lower(({expr})::text) = any(")).push_bind(emails.to_vec()).push(")");
+                if let Some((e, digits)) = def.phone.as_deref().and_then(|f| field_expr(ent, f, "a")).zip(phone) {
+                    qb.push(format!(" or regexp_replace(({e})::text, '[^0-9]', '', 'g') = ")).push_bind(digits.to_string());
+                }
+                qb.push(")");
+            }
+            for (field, v) in &def.condition {
+                let Some(e) = field_expr(ent, field, "a") else { continue };
+                let text = match v {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                qb.push(format!(" and ({e})::text = ")).push_bind(text);
+            }
+            let max = if def.retain.is_some() { MAX_RETAINED } else { MAX_RECORDS };
+            qb.push(entity_predicate(ent, "a")).push(" order by a.id limit ").push_bind(max + 1);
+            let ids: Vec<Uuid> = qb.build_query_scalar().fetch_all(&mut **tx).await?;
+            if ids.len() as i64 > max {
+                return Err(Error::invalid(format!("more than {max} {} records use this email; it does not name one person", ent.def.label)));
+            }
+            if !ids.is_empty() {
+                out.push((def.clone(), ids));
+            }
         }
     }
     Ok(out)

@@ -52,6 +52,12 @@ const PEOPLE: &str = r#"
   fields:
     - {name: payer, type: email}
     - {name: amount, type: decimal}
+- name: Visit
+  label: Visit
+  kind: master
+  fields:
+    - {name: visitor, type: link, to: Visitor}
+    - {name: notes, type: text}
 - name: Diner
   label: Diner
   kind: master
@@ -83,7 +89,8 @@ fn catalog() -> Catalog {
     write_catalog(
         &dir,
         "  - {entity: Visitor, match: email, phone: phone, name: full_name, erase: [full_name, email, phone, notes]}\n  - {entity: Receipt, match: payer, retain: \"Accounting records\"}\n  \
-         - {entity: Diner, match: phone, phone: phone, name: guest_name, erase: [guest_name, phone]}\n",
+         - {entity: Diner, match: phone, phone: phone, name: guest_name, erase: [guest_name, phone]}\n  \
+         - {entity: Visit, match: visitor, erase: [notes]}\n",
     );
     let c = Catalog::load_dir(&dir).expect("catalog");
     let _ = std::fs::remove_dir_all(&dir);
@@ -121,6 +128,7 @@ async fn scenario() {
         ("  - {entity: Receipt, match: payer, erase: [payer], retain: \"Both\"}\n", "both erase and retain"),
         ("  - {entity: Visitor, match: email, phone: notes, erase: [email]}\n", "a phone that is no phone field"),
         ("  - {entity: Diner, match: phone, erase: [phone]}\n", "a match on a phone field it does not name as the phone"),
+        ("  - {entity: Visit, match: visitor, erase: [notes]}\n", "a link to records no declaration finds"),
         ("  - {entity: Visitor, match: email, name: nickname, erase: [email]}\n", "a name that is no field"),
     ] {
         let dir = temp("bad");
@@ -165,12 +173,14 @@ async fn scenario() {
     k.scim_patch_user(&admin, pat, &json!({"Operations": [{"op": "replace", "path": "userName", "value": "pat@new.test"}]})).await.expect("a new address");
     let late = k.insert(&admin, "Visitor", obj(json!({"full_name": "Pat Lee", "email": "pat@new.test"}))).await.unwrap();
     let late_id: Uuid = late["id"].as_str().unwrap().parse().unwrap();
+    // A visit holds no address: it is theirs through the visitor it links to.
+    let visit = k.insert(&admin, "Visit", obj(json!({"visitor": early_id.to_string(), "notes": "Asked for nut-free meals"}))).await.unwrap();
 
     // ───────────── a request finds them under any address they have had ─────────────
     for asked in ["pat@old.test", "PAT@new.test"] {
         let found = k.personal_data(&admin, asked).await.unwrap();
         assert_eq!(found["addresses"], json!(["pat@new.test", "pat@old.test"]), "{asked}");
-        assert_eq!(found["records"].as_array().unwrap().len(), 3, "both visitors and the receipt: {found}");
+        assert_eq!(found["records"].as_array().unwrap().len(), 4, "both visitors, the receipt and the visit: {found}");
         assert_eq!(found["account"]["id"], json!(pat), "their account, under either address");
     }
     let found = k.personal_data(&admin, "pat@old.test").await.unwrap();
@@ -194,7 +204,7 @@ async fn scenario() {
     k.insert(&admin, "Visitor", obj(json!({"full_name": "Sam Roe", "phone": "+1 555 0199"}))).await.unwrap();
     let person = |phone: &str, name: &str| Person { email: "pat@old.test".into(), phone: Some(phone.into()), name: Some(name.into()) };
     let wider = k.personal_data_of(&admin, &person("+1-555-0100", "Pat Lee")).await.unwrap();
-    assert_eq!(wider["records"].as_array().unwrap().len(), 4, "the walk-in as well: {wider}");
+    assert_eq!(wider["records"].as_array().unwrap().len(), 5, "the walk-in as well: {wider}");
     assert!(ids(&wider["records"]).contains(&walk_in["id"].as_str().unwrap().to_string()));
     assert_eq!(ids(&wider["possibly"]), vec![namesake["id"].as_str().unwrap().to_string()], "the namesake, apart from what is theirs");
     assert_eq!(wider["phone"], json!("15550100"));
@@ -241,7 +251,11 @@ async fn scenario() {
         .unwrap();
     tx.commit().await.unwrap();
     assert_eq!((&history["name"], &history["rp_id"]), (&json!(["[erased]", "[erased]"]), &json!("acme.test")), "the passkey's name leaves its history");
-    assert_eq!(ids(&done["erased"]), vec![early["id"].as_str().unwrap().to_string()], "{done}");
+    assert_eq!(
+        ids(&done["erased"]),
+        vec![early["id"].as_str().unwrap().to_string(), visit["id"].as_str().unwrap().to_string()],
+        "and what links to it: {done}"
+    );
     assert_eq!(ids(&done["held"]), vec![late["id"].as_str().unwrap().to_string()], "what a hold covers stays, and says so");
     assert_eq!(done["retained"][0]["because"], json!("Accounting records"), "what is kept says why");
     assert_eq!(done["files_deleted"], json!(1));
@@ -254,6 +268,8 @@ async fn scenario() {
     assert!(erased["full_name"].as_str().unwrap().starts_with("Erased ") && erased["email"].is_null() && erased["notes"].is_null(), "{erased:?}");
     let kept = k.get(&admin, "Receipt", receipt["id"].as_str().unwrap().parse().unwrap(), false).await.unwrap();
     assert_eq!(kept["payer"], json!("pat@old.test"), "retained means untouched");
+    let visited = k.get(&admin, "Visit", visit["id"].as_str().unwrap().parse().unwrap(), false).await.unwrap();
+    assert!(visited["notes"].is_null() && visited["visitor"] == json!(early_id.to_string()), "{visited:?}");
     assert_eq!(k.get(&admin, "Visitor", late_id, false).await.unwrap()["email"], json!("pat@new.test"));
 
     // Everything that hung off the account has gone, and every replica has heard.
@@ -310,18 +326,19 @@ async fn scenario() {
     assert_eq!(k.get(&admin, "Visitor", early_id, false).await.unwrap()["email"], json!("pat@old.test"), "as a backup from before would have it");
     assert!(k.load_ctx(tenant, pat, None, "it".into()).await.is_ok(), "and the account is back");
 
-    assert_eq!(k.reapply_erasure(&journal[0]).await.unwrap(), 2, "the record and the account");
+    assert_eq!(k.reapply_erasure(&journal[0]).await.unwrap(), 3, "the visitor, the visit and the account");
     let erased = k.get(&admin, "Visitor", early_id, false).await.unwrap();
     assert!(erased["full_name"].as_str().unwrap().starts_with("Erased ") && erased["email"].is_null() && erased["notes"].is_null(), "{erased:?}");
     assert!(k.load_ctx(tenant, pat, None, "it".into()).await.is_err(), "and the account is gone again");
     assert!(k.personal_data(&admin, "pat@old.test").await.unwrap()["account"].is_null());
     let first = serde_json::to_string(&erased).unwrap();
-    assert_eq!(k.reapply_erasure(&journal[0]).await.unwrap(), 1, "the record again, the account already done");
+    assert_eq!(k.reapply_erasure(&journal[0]).await.unwrap(), 2, "the records again, the account already done");
     let twice = k.get(&admin, "Visitor", early_id, false).await.unwrap();
     assert_eq!(twice["full_name"], erased["full_name"], "the same placeholder: {first}");
 
     // A record the backup does not have is skipped; so is a workspace it does not have.
     let mut tx = k.db.system_tenant_tx(tenant).await.unwrap();
+    sqlx::query("delete from e_visit where tenant_id = $1").bind(tenant).execute(&mut *tx).await.unwrap();
     sqlx::query("delete from e_visitor where tenant_id = $1 and id = $2").bind(tenant).bind(early_id).execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
     assert_eq!(k.reapply_erasure(&journal[0]).await.unwrap(), 0);
