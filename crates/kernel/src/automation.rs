@@ -227,7 +227,11 @@ async fn execute(
             let users: Vec<Uuid> = if to == "owner" {
                 doc.get("created_by").and_then(Value::as_str).and_then(|s| s.parse().ok()).into_iter().collect()
             } else if let Some(role) = to.strip_prefix("role:") {
-                sqlx::query_scalar("select user_id from user_role where tenant_id = $1 and role = $2").bind(ctx.tenant).bind(role).fetch_all(&mut **tx).await?
+                sqlx::query_scalar("select user_id from user_role where tenant_id = $1 and role = $2 and (expires_at is null or expires_at > now())")
+                    .bind(ctx.tenant)
+                    .bind(role)
+                    .fetch_all(&mut **tx)
+                    .await?
             } else if let Some(u) = to.strip_prefix("user:") {
                 vec![u.parse().map_err(|_| Error::invalid("notify: bad user id"))?]
             } else if let Some(field) = to.strip_prefix("field:") {
