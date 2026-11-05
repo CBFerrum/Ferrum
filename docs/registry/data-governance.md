@@ -43,6 +43,8 @@ packages that declare nothing are named in every answer as `not_searched`.
 | drive | DriveComment | `author` | author |
 | drive | DriveActivity | `actor` | actor |
 | drive | DriveStar | `email` | email |
+| edge | EdgeCustomer | `people.user_email` | their rows of people |
+| edge | EdgeReportSchedule | `recipients.email` | their rows of recipients |
 | education | StudentApplicant | `email`; `applicant_name` (name) | applicant_name, email, date_of_birth, guardian_name, guardian_email, guardian_phone, notes |
 | education | Student | `email`; `student_name` (name) | student_name, email, date_of_birth |
 | field_service | ServiceRequest | `contact_email`; `contact_phone` (phone) | contact_name, contact_email, contact_phone |
@@ -108,12 +110,11 @@ and by the digits of a phone field where it names one; records that hold no addr
 their phone field alone, or through a link to a record found by address or number (a patient's
 appointments through the patient). A name field only lists records as possibly
 theirs, for someone to judge: nothing is erased for a name. Of the 36 apps compiled in at these
-revisions, 25 declare their people's records. Construction, DAM, Docs, Edge, ERP, GRC, ITSM,
-Metrics, Objectives, Retail and Social declare nothing and are named in every answer as
-`not_searched`: what they hold of people is the addresses of staff on work done (owners,
-approvers, assignees, authors), which work records keep; Edge's customer people and report
-recipients sit in child rows, which a declaration reaches now and Edge has yet to declare; ERP's
-customers and suppliers are the platform's `parties`.
+revisions, 26 declare their people's records, Edge its customers' people and report recipients
+in the rows that hold them. Construction, DAM, Docs, ERP, GRC, ITSM, Metrics, Objectives, Retail
+and Social declare nothing and are named in every answer as `not_searched`: what they hold of
+people is the addresses of staff on work done (owners, approvers, assignees, authors), which work
+records keep; ERP's customers and suppliers are the platform's `parties`.
 
 ## What it does not reach
 

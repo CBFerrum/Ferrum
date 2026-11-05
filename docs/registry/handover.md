@@ -3,6 +3,22 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-05, night: addresses out of the history's payloads, and Edge's people
+
+**State:** this PR follows PR 66. Its lock takes IoT Edge 0.4.4 and FRONTEND_REV takes Frontend PR 30. No release was tagged.
+
+| Where | What |
+|---|---|
+| This PR: payloads | An erasure redacts the person's addresses wherever they sit in the workspace's audit payloads (apps that name who acted by address, Edge's and ERP's shop floor among them), each event keeping its hash and recording the redaction; replaying the journal after a restore does it again, from the addresses the restored account and records hold (FERRUM-PRIVACY-007) |
+| This PR: rows | A record matched by its rows says which table and how many of its rows are the person's; the Personal data page says "their row of Recipients, removed" (Frontend PR 30) |
+| IoT Edge 0.4.4 | Its customers' people and report recipients are found in the rows that hold them, and erasure removes those rows alone (FERRUM-PRIVACY-002) |
+
+**Evidence:**
+- `crates/kernel/tests/privacy_it.rs`: an app's event naming Pat by address (`by`) reads `[erased]` after her erasure, the rest of the payload kept; the same event as a backup had it reads `[erased]` again once the journal is replayed.
+- `ferrum-app-edge:tests/portal_it.rs`: the boss's request finds their row of the weekly schedule alone; erasing it leaves the schedule going to ops.
+
+**Not done:** free-text notes in payloads stay as written.
+
 ## 2026-11-05, evening: people in a child table's rows, and the direct writes reviewed
 
 **State:** this PR follows PR 65. No release was tagged.
