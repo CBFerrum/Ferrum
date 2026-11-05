@@ -646,4 +646,8 @@ passes, a guess fails on all three counts. Never run against a real model: BLOCK
 - **ERP's contract (FERRUM-PLATFORM-004).** `ferrum-app-erp:docs/contracts.md` and
   `tests/contract_it.rs` (ERP PR 17).
 - Walked in the browser: the Working offline setting saves and the lease follows it (8 hours, off,
-  back to 72). Not walked: POS, Docs and Field Service offline in a browser with the network cut.
+  back to 72). Field Service's day with the server stopped under the loaded page: the kept day
+  shows ("No connection: your day as it was at 19:35"), Start travel is held as waiting, and once
+  the server answers again it is sent (the job En Route, nothing waiting). Not walked: a page
+  opening offline from an app's worker, since the walking browser refuses service workers (POS's
+  existing one fails to register the same way), nor POS and Docs with the network cut.
