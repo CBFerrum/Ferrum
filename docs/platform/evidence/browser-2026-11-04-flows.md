@@ -40,6 +40,11 @@ connector uses), and eu-1's tooling was a loop posting its readings: neither is 
 | Lessee portal (Lena) | Your home | Her lease, the rent invoiced, a repair asked for (MR-2026-00001, open); the invoice opened on Your invoices once issued |
 | Metrics | A metric of open IT incidents | Certifying it as its owner refused; Dana, a data steward, certified it; recorded, it read 1 with its lineage |
 | Contracts | A contract to its signature | Submitted for approval above the threshold; Dana approved it; its signature is below |
+| Government | A permit's fee, paid through ERP (Cyril, 4 November) | A Market Stall's application (fee 40) said its invoice was not issued yet; approving it before payment refused ("the fee is not paid yet"); in ERP its invoice SINV-2026-00002 issued and its payment PAY-2026-00001 recorded; approved and issued; Cyril saw PRM-2026-00002 valid until 4 February 2027 and opened the invoice from his application (EUR 40.00, Paid) |
+| Control Plane | A partner's statement | With a 20% share, October's statement read 450 paid and 90 the partner's; November refused ("a statement is for a month that has ended") and October a second time refused; Pat read it under Statements |
+| | A recovery request | A restore of northwind-retail to 06:00 with its reason; approving it as who asked refused ("a recovery is approved by someone other than who asked for it"); Dana approved it and marked it done; Cass read "Restore … Done" on Your service |
+| Contracts and Sign | A contract to its signature (5 November) | Contract Settings named the signatory; a contract of 18,000 drafted with its PDF and submitted; approving it as its owner refused; Dana approved it and sent it; the counterparty signed on Sign's page from the link e-mailed to them (a typed signature, the consent ticked), then the signatory from theirs; the contract became active, signed on 5 November. The sealed PDF holds both signatures and a certificate of completion, whose hashes check: the original's SHA-256, and the signed part's (`head -c 1223 file.pdf`) |
+| Phone width and dark mode | The citizens' portal and the Control Plane's console at 375 px, dark | Both fit the width; the portal bar showed two of its five pages and not the one shown |
 | Digital Assets | An image from Drive to its use | Uploaded to Drive, made an asset (its kind, type, size and digest read from the file), submitted and approved; used in advertising refused for its editorial-only licence ("an editorial-only asset is not used to sell"), used on the web recorded |
 
 ## What it found, and what changed
@@ -57,12 +62,26 @@ connector uses), and eu-1's tooling was a loop posting its readings: neither is 
 | Send for Signature was offered for an approved contract without its PDF, then asked to attach it, which an approved contract refuses | ferrum-app-contracts 0.1.1: offered only with the PDF, which the field says to attach before submitting |
 | A connection's tiles waited after "Sync now"; "1 records"; an install plan printed "Native: true" | Ferrum-Frontend PRs 19 and 20: the list looks again every 3 seconds while work waits; "1 record"; "Built into the server: it runs in the server itself, not in a sandbox" |
 | An objective's owner was left empty and the save refused | ferrum-app-objectives 0.1.1: whoever records it, unless they name someone |
+| A submitted application linked its draft fee invoice, which Your invoices does not open ("invoice not found") | ferrum-app-government 0.1.3: linked once issued; until then the application says the invoice is not issued yet |
+| At phone width the portal bar showed two of its five pages, the one shown hidden, with nothing saying the rest could be scrolled to | This PR's `server/shell/portal.js`: on a phone the pages open below a button naming the one shown; Escape or a tap elsewhere closes them |
+| "Support access ends not given" on the customer's page, "support access ends not given: ask them for a new health key" on the partner's | ferrum-app-control 0.1.3: "Support access is not given", or "has ended" |
+| A second statement for a month refused as "Northwind Partners's statement for October 2026 has been issued" | Control 0.1.3: "Northwind Partners already has its statement for October 2026" |
+| The signed contract linked Sign's sealed PDF, kept with Sign's audit: Dana, who approved the contract, was refused it ("not permitted to read signevent") | ferrum-app-contracts 0.1.3: the contract keeps a copy of its own |
+| IoT Edge's CI failed twice on its rebuild with "deadlock detected" at boot: two tests of one binary reset the database at once | ferrum-app-edge 858f1ca: the tests of a binary take turns |
 
 After the fixes, the server was rebuilt with the new pins and the walk repeated each: the rollout headed
 "0.5.0" and the console named it so; the partner page's eleven fields were named; Cyril read "1 month"
 and, on the partner page, that it is for a partner's members; Lena's invoice opened (SINV-2026-00001,
 EUR 950.00 due); a new direct message from Kim was answered with Reply, whose box was empty, and went out
 as a direct status naming @kim; the approved contract without its PDF no longer offered signature.
+
+With Government 0.1.3, Control 0.1.3, Contracts 0.1.3 and the bar, the server was rebuilt and each
+walked again: the fee's application said its invoice was not issued yet, and linked it once issued; at
+375 px the bar read "Walk · Your services ▾ · Sign out", the button listed all five pages with the one
+shown marked and closed on Escape and on a tap elsewhere, and on a wide screen the pages stayed in the
+bar; the statement refused a second time in the new words, and Pat's page read "support access is not
+given: ask them for a new health key"; a second contract, CTR-2026-00003, went to its signature and
+Dana opened its signed PDF (application/pdf, two pages: the signed page and the certificate).
 
 The onboarding refusal looked swallowed at first; it was a toast that had faded before the page was
 read, and shows ("no shared cell in eu has room").
@@ -73,6 +92,7 @@ read, and shows ("no shared cell in eu has room").
   All 36 apps with interfaces were rebuilt against Ferrum-Frontend 80ff179 as patch releases and this
   PR's lock takes them; after the rebuild, Governance and Risk's acceptance read "Single cell for the
   EU region" under its number.
-- Payment, a fee invoiced for a permit, a contract's signature through Sign, a recovery request, a
-  statement, a dispute, phone widths, dark mode, and a screen reader: not walked.
+- A paid app's payment and dispute: the store has no pages for them (its README's known limits), so
+  they were tested through its API, with a stand-in for Stripe, and not in a browser.
+- A screen reader: accessible names were read from the browser's accessibility tree, not heard.
 - The stand-ins: Mastodon and the cell's tooling were small programs on this machine, not the real ones.
