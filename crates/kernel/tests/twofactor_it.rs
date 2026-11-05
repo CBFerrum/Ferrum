@@ -6,7 +6,7 @@ use ferrum_kernel::auth::SignIn;
 use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::twofactor::code;
-use ferrum_kernel::{Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings};
+use ferrum_kernel::{Access, Action, Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::Catalog;
 use serde_json::json;
 use std::path::Path;
@@ -128,6 +128,19 @@ async fn two_factor_sign_in() {
     assert!(matches!(k.create_api_key(&pat, admin.user, "Theirs", None, Some("dav")).await, Err(Error::Forbidden(_))), "keys are for oneself");
     k.revoke_api_key(&pat, dav_id).await.unwrap();
     assert!(matches!(k.verify_api_key(&dav).await, Err(Error::Unauthorized(_))));
+    // A records key names the entities it reaches and what it may do there, and is kept in order;
+    // in use, its owner's rights are narrowed to that, never to an administrator's.
+    for bad in ["records:Nope=read", "records:Currency=fly", "records:Currency"] {
+        assert!(matches!(k.create_api_key(&admin, admin.user, "Bad", None, Some(bad)).await, Err(Error::Validation(_))), "{bad}");
+    }
+    let (_, reader) = k.create_api_key(&admin, admin.user, "Rates", None, Some("records:Currency=read;ExchangeRate=write+read")).await.unwrap();
+    let (_, scope) = k.verify_api_key(&reader).await.unwrap();
+    assert_eq!(scope.as_deref(), Some("records:Currency=read;ExchangeRate=read+write"));
+    let grants = ferrum_kernel::auth::records_scope(scope.as_deref().unwrap()).unwrap();
+    let narrowed = admin.perms.limited_to(&grants, &Default::default());
+    assert!(!narrowed.admin);
+    assert_eq!((narrowed.access("Currency", Action::Read), narrowed.access("Currency", Action::Write)), (Access::All, Access::None));
+    assert_eq!((narrowed.access("ExchangeRate", Action::Write), narrowed.access("Company", Action::Read)), (Access::All, Access::None));
     // A key one character off (never the same character: random keys end in x now and then).
     let tampered = format!("{}{}", &full[..full.len() - 1], if full.ends_with('x') { 'y' } else { 'x' });
     assert!(matches!(k.verify_api_key(&tampered).await, Err(Error::Unauthorized(_))));
