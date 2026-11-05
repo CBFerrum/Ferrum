@@ -898,10 +898,11 @@ It is off unless you set a key:
 
 | Setting | Value |
 |---|---|
-| `FERRUM_ASSISTANT_API_KEY` | an Anthropic API key; without it there is no assistant |
+| `FERRUM_ASSISTANT_API_KEY` | the model service's API key; without it there is no assistant |
+| `FERRUM_ASSISTANT_PROTOCOL` | `anthropic` (default): Anthropic's Messages API, or a proxy that speaks it; `openai`: an OpenAI-compatible chat API (`/v1/chat/completions`: OpenAI's, Azure's, or a model served on the operator's own machines), with text, tools and usage; reasoning, citations and fallbacks are Anthropic's and are not sent |
 | `FERRUM_ASSISTANT_MODEL` | default `claude-opus-5-5` |
 | `FERRUM_ASSISTANT_EFFORT` | `low`, `medium` (default), `high`, `xhigh` or `max`: how hard the model thinks, and so its speed and cost |
-| `FERRUM_ASSISTANT_URL` | default `https://api.anthropic.com`; a proxy or gateway that speaks the same API |
+| `FERRUM_ASSISTANT_URL` | default `https://api.anthropic.com`; a proxy or gateway that speaks the same API, or the provider's regional endpoint: a deployment is one region, and calls the one its operator sets |
 | `FERRUM_ASSISTANT_FALLBACKS` | `on`/`off`; on by default for Anthropic's API with a model that has them: a request the model's safety checks decline is answered by Anthropic's recommended other model in the same call |
 | `FERRUM_ASSISTANT_MODELS` | other models a workspace may choose, comma-separated |
 | `FERRUM_ASSISTANT_MONTHLY_TOKENS` | the most one workspace may use in a calendar month; it can set less |

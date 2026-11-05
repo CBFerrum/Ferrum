@@ -15,7 +15,7 @@ use axum::routing::post;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::Catalog;
-use ferrum_server::assistant::{self, Assistant, Config, Env, Input};
+use ferrum_server::assistant::{self, Assistant, Config, Env, Input, Protocol};
 use serde_json::{Value, json};
 use std::path::Path as FsPath;
 use std::sync::{Arc, Mutex};
@@ -173,6 +173,7 @@ async fn scenario() {
     let model = Model::default();
     let base_url = serve(model.clone()).await;
     let config = Config {
+        protocol: Protocol::Anthropic,
         api_key: "test-key".into(),
         model: "claude-opus-5-5".into(),
         base_url,

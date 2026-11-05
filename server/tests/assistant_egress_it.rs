@@ -17,7 +17,7 @@ use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::{Catalog, Package};
-use ferrum_server::assistant::{self, Assistant, Config, Env, Input};
+use ferrum_server::assistant::{self, Assistant, Config, Env, Input, Protocol};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::path::Path as FsPath;
@@ -186,6 +186,7 @@ async fn scenario() {
     let model = Model::default();
     let base_url = serve(model.clone()).await;
     let config = Config {
+        protocol: Protocol::Anthropic,
         api_key: "test-key".into(),
         model: "claude-opus-5-5".into(),
         base_url,

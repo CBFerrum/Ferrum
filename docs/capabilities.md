@@ -9,8 +9,8 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 
 | Status | Requirements |
 |---|---|
-| Implemented, qualification incomplete | 162 |
-| Partially implemented | 59 |
+| Implemented, qualification incomplete | 163 |
+| Partially implemented | 58 |
 | Blocked by external dependency | 10 |
 | **All** | **231** |
 
@@ -198,7 +198,7 @@ reviewed it. An entry resting on a keyword probe is a lead, not a finding.
 | Id | Requirement | Status | Basis | Known limitations |
 |---|---|---|---|---|
 | FERRUM-AI-001 | Assistant acts as the person with writes approved in the conversation | Implemented, qualification incomplete | tested | Approval is bound to the stored call, the record's version and 30 minutes; estimated financial impact is not shown |
-| FERRUM-AI-002 | Shared AI gateway: providers, allowlists, regions, spending limits | Partially implemented | tested | One provider protocol (Anthropic's, or a proxy that speaks it); no regional routing; Budgets are in tokens: no prices are invented; Usage is metered per workspace, person and model |
+| FERRUM-AI-002 | Shared AI gateway: providers, allowlists, regions, spending limits | Implemented, qualification incomplete | tested | Two provider protocols: Anthropic's Messages API (or a proxy that speaks it) and an OpenAI-compatible chat API, which carries text, tools and usage and leaves Anthropic's reasoning, citations and fallbacks out; Regions are by deployment: each calls the endpoint its operator sets (a provider's regional one); one deployment does not route workspaces to different regions; Budgets are in tokens: no prices are invented; Usage is metered per workspace, person and model |
 | FERRUM-AI-003 | Egress policy separate from read permission | Implemented, qualification incomplete | tested | Packages must mark entities `internal` and fields with perm_group: HR's are marked, others not yet reviewed; Fields free of any group go, whatever they hold |
 | FERRUM-AI-004 | Authorization-aware retrieval | Partially implemented | read | Tools run as the person, so reads are theirs; no retrieval index, so caches and embeddings do not arise yet |
 | FERRUM-AI-005 | Evaluation datasets and prompt-injection tests | Partially implemented | tested | An adversarial test with a model that obeys injected instructions; no evaluation against real models, no grounded-answer datasets, no recorded prompt versions |
