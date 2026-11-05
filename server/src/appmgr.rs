@@ -136,6 +136,29 @@ pub struct Plan {
     pub increases: Vec<String>,
     pub warnings: Vec<String>,
     pub uninstall: Uninstall,
+    /// The apps it brings that a store sells: each installs only with a live licence for this
+    /// workspace, which an administrator gives (`PUT /api/admin/apps/{id}/licence`).
+    pub licences: Vec<LicenceNeed>,
+}
+
+/// An app a store sells, and the licence this workspace gave for it, as its store last said.
+#[derive(Debug, Clone, Serialize)]
+pub struct LicenceNeed {
+    pub app: String,
+    pub store: String,
+    pub given: bool,
+    pub live: bool,
+    pub period_end: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_error: Option<String>,
+}
+
+/// The store a step's app comes from: now, or earlier to the cluster.
+fn store_of(origin: &Origin) -> Option<&str> {
+    match origin {
+        Origin::Store { url, .. } => Some(url.as_str()),
+        Origin::Local(r) => r.source.strip_prefix("store:"),
+        Origin::Native => None,
+    }
 }
 
 impl Plan {
@@ -1458,6 +1481,23 @@ impl AppManager {
             Origin::Local(rel) => self.kernel.labels_of(id, &rel.digest).await?,
             _ => Vec::new(),
         };
+        let mut licences = Vec::new();
+        for s in steps.iter().filter(|s| s.action != StepAction::Already) {
+            let Some(url) = store_of(&s.origin) else { continue };
+            if !self.sold(url, &s.id).await? {
+                continue;
+            }
+            let mut tx = self.kernel.db.tenant_tx(ctx.tenant).await?;
+            let given: Option<(bool, Option<chrono::DateTime<chrono::Utc>>, Option<String>)> =
+                sqlx::query_as("select live, period_end, last_error from app_licence where tenant_id = $1 and app_id = $2")
+                    .bind(ctx.tenant)
+                    .bind(&s.id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+            tx.commit().await?;
+            let (live, period_end, last_error) = given.clone().unwrap_or((false, None, None));
+            licences.push(LicenceNeed { app: s.id.clone(), store: url.to_string(), given: given.is_some(), live, period_end, last_error });
+        }
         let plan = Plan {
             app: PlanApp {
                 summary: summary(m, &origin, root.verified, root.source == "private", icon_url),
@@ -1476,6 +1516,7 @@ impl AppManager {
             increases,
             warnings,
             uninstall: m.uninstall,
+            licences,
         };
         Ok((plan, steps, ws))
     }
@@ -1504,6 +1545,14 @@ impl AppManager {
         }
         if consent.trim() != plan.digest {
             return Err(Refusal::Stale(Box::new(plan)));
+        }
+        // An app a store sells installs or upgrades only with a live licence for this workspace,
+        // whether it comes from the store now or from the cluster, where another workspace's
+        // installation left it.
+        for s in steps.iter().filter(|s| s.action != StepAction::Already) {
+            if let Some(url) = store_of(&s.origin) {
+                self.licensed(ctx.tenant, url, &s.id).await?;
+            }
         }
         let mut releases: BTreeMap<String, Release> = BTreeMap::new();
         for s in steps.iter().filter(|s| s.action != StepAction::Already) {
@@ -2122,6 +2171,163 @@ impl AppManager {
         Ok(())
     }
 
+    // ───────────────────────── licences of sold apps ─────────────────────────
+
+    /// Whether `store` sells `id`: it lists plans for it. A store that does not know the app (or
+    /// plans) sells nothing; one that cannot be asked is not taken to sell nothing.
+    /// Asked afresh each time, not from the cache.
+    async fn sold(&self, store: &str, id: &str) -> Result<bool> {
+        let unsure = |e: String| Error::Unavailable(format!("{store} could not say whether it sells {id}: {e}"));
+        match self.fetch(&format!("{store}/v1/apps/{id}/plans"), MAX_JSON, JSON_TIMEOUT).await {
+            Ok(body) => {
+                let v: Value = serde_json::from_slice(&body).map_err(|e| unsure(e.to_string()))?;
+                Ok(v.get("plans").and_then(Value::as_array).is_some_and(|p| !p.is_empty()))
+            }
+            Err(e) if e == "HTTP 404" => Ok(false),
+            Err(e) => Err(unsure(e)),
+        }
+    }
+
+    /// What `store` says of `licence` for `id`: signed by a trusted store key, for that app, and for
+    /// one of this workspace's own host names.
+    async fn read_licence(&self, tenant: Uuid, store: &str, id: &str, licence: Uuid) -> std::result::Result<store::Licence, String> {
+        let body = self.fetch(&format!("{store}/v1/licenses/{licence}"), MAX_JSON, JSON_TIMEOUT).await?;
+        let v: Value = serde_json::from_slice(&body).map_err(|e| format!("not JSON: {e}"))?;
+        let l = store::licence(&v, &self.trusted)?;
+        if l.app != id {
+            return Err(format!("that licence is for {}, not {id}", l.app));
+        }
+        let ours = async {
+            let mut tx = self.kernel.db.system_tx().await?;
+            let ours: bool = sqlx::query_scalar(
+                "select exists (select 1 from tenant_host where tenant_id = $1 and host = $2 and verified_at is not null and released_at is null)",
+            )
+            .bind(tenant)
+            .bind(&l.workspace)
+            .fetch_one(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            Ok::<bool, Error>(ours)
+        };
+        if !ours.await.map_err(|e| e.to_string())? {
+            return Err(format!("that licence is for {}, which is not this workspace", l.workspace));
+        }
+        Ok(l)
+    }
+
+    /// What was last heard of a workspace's licence for `id`.
+    async fn note_licence(&self, tenant: Uuid, id: &str, live: bool, period_end: Option<chrono::DateTime<chrono::Utc>>, error: Option<&str>) -> Result<()> {
+        let mut tx = self.kernel.db.tenant_tx(tenant).await?;
+        sqlx::query(
+            "update app_licence set live = $3, period_end = coalesce($4, period_end), last_error = $5, checked_at = now() where tenant_id = $1 and app_id = $2",
+        )
+        .bind(tenant)
+        .bind(id)
+        .bind(live)
+        .bind(period_end)
+        .bind(error)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Keeps the licence a workspace's administrator gives for a sold app, once a store this
+    /// server uses vouches that it is live and this workspace's.
+    pub async fn set_licence(&self, ctx: &Ctx, id: &str, licence: Uuid) -> Result<Value> {
+        admin(ctx)?;
+        let mut why = String::from("no store this server uses knows that licence");
+        for url in &self.stores {
+            match self.read_licence(ctx.tenant, url, id, licence).await {
+                Ok(l) if l.live => {
+                    let mut tx = self.kernel.db.tenant_tx(ctx.tenant).await?;
+                    sqlx::query(
+                        "insert into app_licence (tenant_id, app_id, store, licence, live, period_end) values ($1, $2, $3, $4, true, $5) \
+                         on conflict (tenant_id, app_id) do update set store = excluded.store, licence = excluded.licence, live = true, \
+                         period_end = excluded.period_end, checked_at = now(), last_error = null",
+                    )
+                    .bind(ctx.tenant)
+                    .bind(id)
+                    .bind(url)
+                    .bind(licence)
+                    .bind(l.period_end)
+                    .execute(&mut *tx)
+                    .await?;
+                    tx.commit().await?;
+                    return Ok(json!({"app": id, "store": url, "live": true, "period_end": l.period_end}));
+                }
+                Ok(_) => return Err(Error::invalid(format!("that licence for {id} has lapsed: renew it in the store"))),
+                Err(e) => why = e,
+            }
+        }
+        Err(Error::invalid(why))
+    }
+
+    /// Forgets a workspace's licence for `id`. What is installed stays; it is not upgraded again.
+    pub async fn forget_licence(&self, ctx: &Ctx, id: &str) -> Result<()> {
+        admin(ctx)?;
+        let mut tx = self.kernel.db.tenant_tx(ctx.tenant).await?;
+        sqlx::query("delete from app_licence where tenant_id = $1 and app_id = $2").bind(ctx.tenant).bind(id).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The licences this workspace gave, and what their stores last said of them.
+    pub async fn licences(&self, ctx: &Ctx) -> Result<Vec<Value>> {
+        admin(ctx)?;
+        let mut tx = self.kernel.db.tenant_tx(ctx.tenant).await?;
+        let rows: Vec<Value> = sqlx::query_scalar(
+            "select jsonb_build_object('app', app_id, 'store', store, 'live', live, 'period_end', period_end, 'checked_at', checked_at, 'last_error', last_error) \
+             from app_licence where tenant_id = $1 order by app_id",
+        )
+        .bind(ctx.tenant)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(rows)
+    }
+
+    /// A sold app installs or upgrades only with a live licence for this workspace, asked of its
+    /// store at that moment.
+    async fn licensed(&self, tenant: Uuid, store: &str, id: &str) -> Result<()> {
+        if !self.sold(store, id).await? {
+            return Ok(());
+        }
+        let mut tx = self.kernel.db.tenant_tx(tenant).await?;
+        let held: Option<Uuid> =
+            sqlx::query_scalar("select licence from app_licence where tenant_id = $1 and app_id = $2").bind(tenant).bind(id).fetch_optional(&mut *tx).await?;
+        tx.commit().await?;
+        let licence = held.ok_or_else(|| Error::Forbidden(format!("{id} is sold in the store: give its licence first (PUT /api/admin/apps/{id}/licence)")))?;
+        match self.read_licence(tenant, store, id, licence).await {
+            Ok(l) => {
+                self.note_licence(tenant, id, l.live, l.period_end, None).await?;
+                if l.live { Ok(()) } else { Err(Error::Forbidden(format!("{id}'s licence has lapsed: renew it in the store"))) }
+            }
+            Err(e) => {
+                self.note_licence(tenant, id, false, None, Some(&e)).await?;
+                Err(Error::Forbidden(format!("{id}'s licence could not be checked: {e}")))
+            }
+        }
+    }
+
+    /// Asks the stores about every licence kept, so a lapse shows. Answers how many are not live.
+    pub async fn refresh_licences(&self) -> Result<usize> {
+        let mut tx = self.kernel.db.system_tx().await?;
+        let rows: Vec<(Uuid, String, String, Uuid)> =
+            sqlx::query_as("select tenant_id, app_id, store, licence from app_licence order by checked_at limit 1000").fetch_all(&mut *tx).await?;
+        tx.commit().await?;
+        let mut lapsed = 0;
+        for (tenant, id, store, licence) in rows {
+            let (live, end, error) = match self.read_licence(tenant, &store, &id, licence).await {
+                Ok(l) => (l.live, l.period_end, None),
+                Err(e) => (false, None, Some(e)),
+            };
+            lapsed += usize::from(!live);
+            self.note_licence(tenant, &id, live, end, error.as_deref()).await?;
+        }
+        Ok(lapsed)
+    }
+
     async fn revocation_round(&self) -> Result<usize> {
         let mut conn = self.kernel.db.pool.acquire().await?;
         let got: bool = sqlx::query_scalar("select pg_try_advisory_lock($1)").bind(REVOCATIONS_LOCK).fetch_one(&mut *conn).await?;
@@ -2129,6 +2335,11 @@ impl AppManager {
             return Ok(0);
         }
         let out = self.sync_revocations().await;
+        match self.refresh_licences().await {
+            Ok(0) => {}
+            Ok(n) => tracing::warn!(lapsed = n, "licences of sold apps not live"),
+            Err(e) => tracing::warn!("licences: {e}"),
+        }
         let _ = sqlx::query("select pg_advisory_unlock($1)").bind(REVOCATIONS_LOCK).execute(&mut *conn).await;
         out
     }
@@ -2320,23 +2531,50 @@ pub mod store {
         pub entries: Vec<Revocation>,
     }
 
-    /// [`revocations`] with the payload's generation time, so older lists can be refused.
-    pub fn revocation_list(v: &Value, trusted: &[TrustedKey]) -> Result<RevocationList, String> {
-        let payload = v.get("payload").and_then(Value::as_str).ok_or("the list has no payload")?;
+    /// The payload of a document a store signed (`{"payload", "signatures"}`), parsed: every
+    /// signature by a trusted store key must match its exact bytes, and there must be one.
+    pub fn signed_payload(v: &Value, trusted: &[TrustedKey], what: &str) -> Result<Value, String> {
+        let payload = v.get("payload").and_then(Value::as_str).ok_or(format!("the {what} has no payload"))?;
         let mut signed = false;
         for s in v.get("signatures").and_then(Value::as_array).into_iter().flatten() {
             let (Some(key_id), Some(sig)) = (s.get("key_id").and_then(Value::as_str), s.get("sig").and_then(Value::as_str)) else { continue };
             for key in trusted.iter().filter(|k| k.role == Role::Store && k.key_id == key_id) {
                 if !ed25519(&key.public_key, payload.as_bytes(), sig) {
-                    return Err(format!("the signature by trusted store key {key_id} does not match the list"));
+                    return Err(format!("the signature by trusted store key {key_id} does not match the {what}"));
                 }
                 signed = true;
             }
         }
         if !signed {
-            return Err("no trusted store key signed the list".into());
+            return Err(format!("no trusted store key signed the {what}"));
         }
-        let list: Value = serde_json::from_str(payload).map_err(|e| format!("the signed payload is not JSON: {e}"))?;
+        serde_json::from_str(payload).map_err(|e| format!("the signed payload is not JSON: {e}"))
+    }
+
+    /// What a store says of a licence for a sold app (`GET /v1/licenses/{license}`).
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct Licence {
+        pub app: String,
+        /// The host name of the workspace it is for.
+        pub workspace: String,
+        pub live: bool,
+        pub period_end: Option<chrono::DateTime<chrono::Utc>>,
+    }
+
+    /// A licence document, once a trusted store key is found to have signed it.
+    pub fn licence(v: &Value, trusted: &[TrustedKey]) -> Result<Licence, String> {
+        let doc = signed_payload(v, trusted, "licence")?;
+        Ok(Licence {
+            app: text(&doc, &["app"]).ok_or("the licence names no app")?.into(),
+            workspace: text(&doc, &["workspace"]).ok_or("the licence names no workspace")?.to_lowercase(),
+            live: doc.get("live").and_then(Value::as_bool).unwrap_or(false),
+            period_end: text(&doc, &["period_end"]).and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).map(|t| t.to_utc()),
+        })
+    }
+
+    /// [`revocations`] with the payload's generation time, so older lists can be refused.
+    pub fn revocation_list(v: &Value, trusted: &[TrustedKey]) -> Result<RevocationList, String> {
+        let list = signed_payload(v, trusted, "list")?;
         let generated_at = match text(&list, &["generated_at"]) {
             Some(t) => Some(chrono::DateTime::parse_from_rfc3339(t).map_err(|e| format!("generated_at is not RFC 3339: {e}"))?.to_utc()),
             None => None,

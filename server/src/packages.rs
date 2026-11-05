@@ -249,6 +249,10 @@ macro_rules! apps {
             out.push(("dam", ferrum_app_dam::UI));
             #[cfg(feature = "metrics")]
             out.push(("metrics", ferrum_app_metrics::UI));
+            #[cfg(feature = "control")]
+            out.push(("control", ferrum_app_control::UI));
+            #[cfg(feature = "social")]
+            out.push(("social", ferrum_app_social::UI));
             #[cfg(feature = "field-service")]
             out.push(("field-service", ferrum_app_field_service::UI));
             #[cfg(feature = "lms")]
@@ -358,6 +362,8 @@ apps! {
         "objectives" => ferrum_app_objectives,
         "dam" => ferrum_app_dam,
         "metrics" => ferrum_app_metrics,
+        "control" => ferrum_app_control,
+        "social" => ferrum_app_social,
         "field-service" => ferrum_app_field_service,
         "forms" => ferrum_app_forms,
         "lms" => ferrum_app_lms,

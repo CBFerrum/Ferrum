@@ -394,6 +394,15 @@ async fn scenario() {
     jobs(k.clone()).await;
     let dead = k.connections(&admin).await.unwrap()[0]["dead_letters"].as_i64().unwrap();
     assert_eq!(dead, 1, "a dead letter");
+    let activity = k.connection_activity(&admin, id, 50).await.unwrap();
+    let given_up = activity["runs"].as_array().unwrap().iter().find(|r| r["status"] == json!("failed")).expect("the hub shows what failed");
+    assert_eq!((given_up["kind"].as_str(), given_up["stream"].as_str()), (Some("platform.connector.deliver"), Some("people")));
+    assert!(given_up["last_error"].as_str().is_some_and(|e| e.contains("down")), "{given_up}");
+    assert!(activity["runs"].as_array().unwrap().iter().any(|r| r["kind"] == json!("platform.connector.sync") && r["status"] == json!("done")));
+    assert_eq!((activity["streams"][0]["stream"].as_str(), activity["streams"][0]["entity"].as_str()), (Some("people"), Some("Contact")));
+    assert!(activity["streams"][0]["records"].as_i64().is_some_and(|n| n > 0));
+    assert!(matches!(k.connection_activity(&clerk, id, 50).await, Err(Error::Forbidden(_))));
+    assert!(matches!(k.connection_activity(&admin, Uuid::new_v4(), 50).await, Err(Error::NotFound(_))));
     let failed = k
         .jobs(&admin, 50)
         .await

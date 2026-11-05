@@ -3,7 +3,47 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
-## 2026-11-04, late night: objectives, digital assets and governed metrics
+## 2026-11-04: the control plane, social media, and paid apps in the store
+
+**State:** this PR follows PR 56. It compiles the control plane and Social in, and gives the shell
+the icons they name (Ferrum-Frontend PR 16, merged, does the same for the launcher). The store's paid
+apps are on the store's main branch. No release was tagged.
+
+| Where | What |
+|---|---|
+| New: ferrum-app-control | Control Plane 0.1.0, run in a workspace of its own. Cells report how they are; workspaces are placed by room and their health read with the customer's health-only support key; releases by digest, qualified by a second Release Manager, rolled out a wave at a time in maintenance windows, soaking and halting; incidents told in updates; a public status naming no customer; recovery requests decided by a second operator; partners' portfolios, setup templates, cases and statements (FERRUM-CLOUD-001, -004, FERRUM-PARTNER-001, FERRUM-IND-021, each partial) |
+| New: ferrum-app-social | Social 0.1.0: brands' accounts each reached through a platform connection; posts that fit each network, approved by someone other than their author and again after a change, sent at their time one publication per account through that account's own connection by the platform's delivery; what posts did read back; the inbox routed by handle and answered through the right connection. 0.2.0 brings a connector for Mastodon (FERRUM-ECOSYSTEM-005, partial: not run against a real server) |
+| ferrum-store | Paid apps: plans by verified publishers who say who supports the app, purchases with the buyer's country's tax, licences the store signs, renewals with a week of grace, refunds within 14 days, disputes decided by an administrator, payouts net of tax and a 15% commission (FERRUM-EXT-009, partial: no real payment provider) |
+| This PR | Control and Social compiled in; the shell draws server, share-2 and plug; FRONTEND_REV at Ferrum-Frontend PR 17's merge; the Integration Hub's history, `GET /api/admin/connections/{id}/activity`, which Ferrum-Frontend PR 17 shows on each connection (FERRUM-ECOSYSTEM-004, partial) |
+| This PR: licences | The App Manager installs or upgrades an app a store sells only with a live licence for the workspace: `PUT /api/admin/apps/{id}/licence` keeps one once the store's signature, the app and one of the workspace's own hosts check out; each installation asks the store again, whether the app comes from the store or from the cluster where another workspace installed it; a store that cannot say whether it sells the app refuses the installation rather than letting it through; every licence is read again with the revocation list (FERRUM-EXT-009) |
+| ferrum-store 049459d | Stripe as the payment provider: a card saved on Stripe's page and told by its signed webhook, off-session charges keyed for Stripe's idempotency and retried with the key, a payment not taken at once cancelled, a refused renewal tried again with a new key, refunds (FERRUM-EXT-009; tested against a stand-in of Stripe's API) |
+| ferrum-app-hr 0.6.0 | Income tax slabs take a rebate and cesses and surcharges; India's new regime for FY 2025-26, as the Income Tax Department's page prints it, is a fixture the engine is checked against (FERRUM-VERIFY-002, now partial) |
+| The walk's fixes | Ferrum-Frontend PRs 18 to 20 (labels name their fields, linked titles show their titles, Connections refresh while work waits, "1 record", the native line in words); Control 0.1.1, Government 0.1.1, Property 0.1.1, Social 0.2.1 and 0.2.2, Contracts 0.1.1, Objectives 0.1.1 |
+| Every app rebuilt | The 36 apps with interfaces rebuilt against Ferrum-Frontend 80ff179 as patch releases, since each bundles its own record pages; this PR's lock takes them. FRONTEND_REV at PR 20's merge (16b5c57) |
+
+**Evidence:**
+- Control's scenario test runs the control plane in one workspace and a customer's in another, reached over HTTP with the key its administrator granted (`grant_support`), answered as the server answers one, each request on the customer's log. A rollout goes through two windows, halts when a cell falls ill while soaking and when one misses its window, and another finishes.
+- Mutants by hand, all caught after fixes: Control Plane 96 (the first run caught 94 of 97: lowercasing an e-mail the kernel already lowercases was removed, and two mutants that did not compile were rewritten), the store's paid apps 35 (three gaps the first run found are tested now), Social 40 (three gaps tested, two mutants rewritten).
+- The Integration Hub's history is tested in `crates/kernel/tests/connect_it.rs`; it has no mutants of its own.
+- A browser on a server built from this branch (evidence/browser-2026-11-04-apps.md): every new app's tile and home page, the Control Plane's cell form, a cell's report, the public status and a workspace's placement. It found Governance and Risk's and Property's home pages filtering with `neq`, which the platform does not take (both now use `!=`, and the lock here takes the fixes), and three home pages with nothing to say when empty (now they say so).
+- The store's `paid_apps` test walks plans, purchases, licences, renewals, trials, a refused renewal through its grace, refunds, a dispute, and payouts, with a refund after a payout coming off the next.
+- `server/tests/apps_api.rs` installs a sold app: refused without a licence; licences for another workspace, signed by a publisher's key instead of the store's, lapsed, or for another app refused; installed with its own; a lapse read on the next round; another workspace refused though the app is in the cluster; a store that cannot list its plans refusing the installation.
+- A browser walk of the apps' flows and portal pages (evidence/browser-2026-11-04-flows.md): six people signed in through the pages, four of them portal people with e-mailed codes; the Control Plane's release, rollout (through its soak to done), incident and public status, the partner's and customer's pages, Social on a Mastodon stand-in, a citizen's permit, a risk acceptance, an objective's check-in, an IT incident, ERP's company and an invoice, Property installed with a lessee's Your home, a certified metric, a contract approved and Digital Assets. It found nine faults, fixed and walked again, among them a public reply to a Mastodon direct message and a lessee's link to a draft invoice.
+- The store's `stripe_payments` test runs the Stripe provider against a stand-in, a lost answer included; 31 mutants, all caught. HR's tax change: 9 mutants, all caught.
+- Social's Mastodon connector runs in `tests/mastodon_it.rs` against a stand-in speaking the parts of Mastodon's API it uses, over HTTP: a wrong token refused, a post sent once though its first answer was lost (the same `Idempotency-Key` twice), engagements read back without boosts, nothing sent again once out after the server forgot its key, a comment, a mention and a direct message routed, a reply answering the comment. 27 mutants of the connector, all caught.
+
+**Not done:** Stripe and Mastodon against the real services (the operator's account and keys, BLOCK-PAYMENT-KEYS, and an account's token); connectors for the other networks; an accountant's review and payroll cases from someone who knows each jurisdiction (FERRUM-VERIFY-002); Stripe in the walk (it paid through the store's test provider); the store's CI, which GitHub does not start for the account's billing; and a screen reader.
+
+**Lessons:**
+- Each app bundles its own record pages and the kit from `../../ferrum/web`, another session's checkout on an older branch: a Frontend fix reaches the apps only when they are built against a Frontend that has it (the walk built them in a scratch layout linking a checkout of main), and every app needs its rebuild.
+- Read toasts at once: a refusal shown as a toast fades in nine seconds, and reading the page's main area misses it.
+- An action's parameter named like a field of the record is filled with that field's value.
+- A page's own queries are not run by an app's scenario test: walk each home page in a browser, or scan the interfaces for filter operators the platform does not take (it takes `=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not in`, `like`, `between`, `is` and their word forms `eq`, `ne`, `lt`, `lte`, `gt`, `gte`).
+- Rows written straight to the database in a test go through row-level security too: an update outside a tenant's transaction matches nothing and says nothing. Assert the rows affected.
+- An app can send one record through one chosen connection by queueing the platform's own delivery (`jobs::enqueue` with `connect::DELIVER_KIND`) for a stream mapped without `push`: a pushed mapping sends every change of the entity through every connection that maps it.
+- Two checks can make a third redundant: an incident's latest update must say its status, and updates stay as posted, so a change of status without a new update can only come from reordering them, which is the one case the third check is for.
+
+## 2026-11-04: objectives, digital assets and governed metrics
 
 **State:** this PR follows PR 55 and compiles three more apps in. No release was tagged.
 

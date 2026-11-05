@@ -16,7 +16,7 @@ const CSS = `
 :host { all: initial; color-scheme: inherit; display: block; position: sticky; top: 0; z-index: 2147483000; height: var(--ferrum-bar-height, 48px);
   font: 14px/1.4 var(--ferrum-font, system-ui, sans-serif); color: var(--ferrum-text, #17191d); -webkit-font-smoothing: antialiased; }
 * { box-sizing: border-box; }
-.bar { display: flex; align-items: center; gap: 4px; height: 100%; padding: 0 10px; background: var(--ferrum-surface, #fff);
+.bar { position: relative; display: flex; align-items: center; gap: 4px; height: 100%; padding: 0 10px; background: var(--ferrum-surface, #fff);
   border-bottom: 1px solid var(--ferrum-border, #d9dee5); }
 a, button { display: inline-flex; align-items: center; height: 34px; padding: 0 10px; border: 1px solid transparent; border-radius: 8px;
   background: transparent; color: inherit; font: inherit; text-decoration: none; white-space: nowrap; cursor: pointer; }
@@ -28,7 +28,17 @@ nav a { color: var(--ferrum-muted, #5b6472); }
 nav a[aria-current="page"] { color: var(--ferrum-primary, #2f5bea); background: var(--ferrum-primary-soft, #e7edfd); }
 .spacer { flex: 1; }
 .who { color: var(--ferrum-muted, #5b6472); padding: 0 6px; max-width: 14em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-@media (max-width: 640px) { .who { display: none; } .home { max-width: 9em; } }
+.pages { display: none; }
+.pages::after { content: ""; margin-left: 6px; border: 4px solid transparent; border-top-color: currentColor; transform: translateY(2px); }
+/* On a phone the pages do not fit beside each other: they open below a button naming the one shown. */
+@media (max-width: 640px) {
+  .who { display: none; } .home { max-width: 9em; }
+  .pages { display: inline-flex; min-width: 0; }
+  nav { display: none; position: absolute; top: calc(100% + 4px); left: 8px; right: 8px; flex-direction: column; padding: 6px; overflow: visible;
+    background: var(--ferrum-surface, #fff); border: 1px solid var(--ferrum-border, #d9dee5); border-radius: 10px; box-shadow: 0 10px 30px rgb(0 0 0 / .2); }
+  nav.open { display: flex; }
+  nav a { height: 40px; }
+}
 `;
 
 function el(tag, attrs = {}, text = "") {
@@ -59,17 +69,36 @@ class PortalBar extends HTMLElement {
     const portal = boot?.portal ?? { home: "/portal/", pages: [] };
     const bar = el("header", { class: "bar" });
     bar.append(el("a", { class: "home", href: portal.home ?? "/portal/" }, boot?.workspace?.name ?? "Portal"));
-    const nav = el("nav", { "aria-label": "Your pages" });
+    const nav = el("nav", { "aria-label": "Your pages", id: "pages" });
+    let current = null;
     for (const p of portal.pages ?? []) {
       // Only this site's own addresses.
       if (typeof p.url !== "string" || !p.url.startsWith("/") || p.url.startsWith("//")) continue;
       const a = el("a", { href: p.url }, p.title ?? p.id ?? "");
-      if (location.pathname.startsWith(p.url)) a.setAttribute("aria-current", "page");
+      if (location.pathname.startsWith(p.url)) {
+        a.setAttribute("aria-current", "page");
+        current = a.textContent;
+      }
       nav.append(a);
     }
+    const pages = el("button", { type: "button", class: "pages", "aria-controls": "pages", "aria-expanded": "false" }, current ?? "Pages");
+    const show = (open) => {
+      pages.setAttribute("aria-expanded", String(open));
+      nav.classList.toggle("open", open);
+    };
+    pages.addEventListener("click", () => show(pages.getAttribute("aria-expanded") !== "true"));
+    bar.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        show(false);
+        pages.focus();
+      }
+    });
+    document.addEventListener("click", (e) => {
+      if (!e.composedPath().includes(this)) show(false);
+    });
     const out = el("button", { type: "button" }, "Sign out");
     out.addEventListener("click", signOut);
-    bar.append(nav, el("span", { class: "spacer" }), el("span", { class: "who", title: boot?.person?.email ?? "" }, boot?.person?.name ?? ""), out);
+    bar.append(pages, nav, el("span", { class: "spacer" }), el("span", { class: "who", title: boot?.person?.email ?? "" }, boot?.person?.name ?? ""), out);
     root.append(style, bar);
   }
 }
