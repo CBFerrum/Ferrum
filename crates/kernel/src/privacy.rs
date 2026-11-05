@@ -292,6 +292,57 @@ fn blank(f: &FieldDef, id: Uuid) -> Value {
 }
 
 /// Takes `fields` out of a record's audit history; returns how many events held them.
+/// The person's addresses wherever they sit in the workspace's history, an app's payload naming who
+/// did something (`by`), say: the event's actor already says who, so the address goes, and each
+/// event keeps its hash and records the redaction.
+async fn redact_addresses(tx: &mut Tx, ctx: &Ctx, emails: &[String], reason: &str) -> Result<u64> {
+    fn scrub(v: &mut Value, emails: &[String]) -> bool {
+        match v {
+            Value::String(s) if emails.iter().any(|e| s.eq_ignore_ascii_case(e)) => {
+                *v = json!("[erased]");
+                true
+            }
+            // Every one of them, not only the first.
+            Value::Array(a) => {
+                let mut hit = false;
+                for x in a {
+                    hit |= scrub(x, emails);
+                }
+                hit
+            }
+            Value::Object(o) => {
+                let mut hit = false;
+                for x in o.values_mut() {
+                    hit |= scrub(x, emails);
+                }
+                hit
+            }
+            _ => false,
+        }
+    }
+    let like: Vec<String> = emails.iter().map(|e| format!("%\"{}\"%", e.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"))).collect();
+    let found: Vec<(i64, Value)> = sqlx::query_as("select id, diff from audit_event where tenant_id = $1 and diff::text ilike any($2)")
+        .bind(ctx.tenant)
+        .bind(&like)
+        .fetch_all(&mut **tx)
+        .await?;
+    let note = json!([{"addresses": emails.len(), "by": ctx.user, "at": chrono::Utc::now().to_rfc3339(), "reason": reason}]);
+    let mut done = 0;
+    for (id, mut diff) in found {
+        if scrub(&mut diff, emails) {
+            sqlx::query("update audit_event set diff = $3, redacted = coalesce(redacted, '[]'::jsonb) || $4::jsonb where tenant_id = $1 and id = $2")
+                .bind(ctx.tenant)
+                .bind(id)
+                .bind(&diff)
+                .bind(&note)
+                .execute(&mut **tx)
+                .await?;
+            done += 1;
+        }
+    }
+    Ok(done)
+}
+
 async fn redact(tx: &mut Tx, ctx: &Ctx, entity: &str, record: Uuid, fields: &[String], reason: &str) -> Result<u64> {
     let note = json!([{"fields": fields, "by": ctx.user, "at": chrono::Utc::now().to_rfc3339(), "reason": reason}]);
     let done = sqlx::query(
@@ -580,6 +631,10 @@ impl Kernel {
         if let Some(id) = account {
             erase_account(&mut tx, ctx, id, reason).await?;
         }
+        // Their addresses in the history's payloads (who did what, as apps write it) go as well.
+        if !erased.is_empty() || account.is_some() {
+            events += redact_addresses(&mut tx, ctx, &emails, reason).await?;
+        }
         // A stored export of the workspace is a copy from before: it goes too.
         let exports = if erased.is_empty() && account.is_none() { 0 } else { crate::export::drop_exports(&mut tx, ctx.tenant, None).await? };
         // By id and field name only: it outlives the data, and must not hold what it erased.
@@ -636,11 +691,19 @@ impl Kernel {
         let reason = erasure["reason"].as_str().unwrap_or("erased before this restore");
         let mut tx = self.db.system_tenant_tx(tenant).await?;
         let mut done = 0;
+        // The journal holds no address; what came back holds them again, and says which to take out
+        // of the history's payloads once more.
+        let mut addresses: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for r in erasure["records"].as_array().into_iter().flatten() {
             let (Some(entity), Some(id)) = (r["entity"].as_str(), r["id"].as_str().and_then(|i| i.parse::<Uuid>().ok())) else { continue };
             let Ok(ent) = self.entity(&ctx, entity) else { continue };
-            if self.get_tx(&ctx, &mut tx, entity, id, false).await.is_err() {
+            let Ok(doc) = self.get_tx(&ctx, &mut tx, entity, id, false).await else {
                 continue;
+            };
+            for def in ctx.schema.personal_data.iter().filter(|d| d.entity == entity && !d.match_field.contains('.')) {
+                if let Some(a) = doc.get(&def.match_field).and_then(Value::as_str).filter(|a| a.contains('@')) {
+                    addresses.insert(a.to_lowercase());
+                }
             }
             let fields: Vec<String> = r["fields"].as_array().into_iter().flatten().filter_map(|f| f.as_str().map(str::to_string)).collect();
             match r["table"].as_str() {
@@ -658,10 +721,15 @@ impl Kernel {
         if let Some(id) = account {
             let present: Option<String> =
                 sqlx::query_scalar("select email::text from app_user where tenant_id = $1 and id = $2").bind(tenant).bind(id).fetch_optional(&mut *tx).await?;
-            if present.is_some_and(|e| !e.ends_with("@erased.invalid")) {
+            if let Some(email) = present.filter(|e| !e.ends_with("@erased.invalid")) {
+                addresses.extend(self::addresses(&mut tx, tenant, &email.to_lowercase()).await?);
                 erase_account(&mut tx, &ctx, id, reason).await?;
                 done += 1;
             }
+        }
+        let addresses: Vec<String> = addresses.into_iter().collect();
+        if !addresses.is_empty() {
+            redact_addresses(&mut tx, &ctx, &addresses, reason).await?;
         }
         // The backup's stored exports are from before the erasure; their objects went with it.
         crate::export::drop_exports(&mut tx, tenant, None).await?;
