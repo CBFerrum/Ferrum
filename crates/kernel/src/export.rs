@@ -7,10 +7,13 @@
 //! automations, people). It never holds passwords, secret values or sealed settings, and its
 //! manifest names every workspace table it left out, so what it lacks is never a surprise. Large
 //! exports go into several zip files of about [`PART_BYTES`], readable only by administrators
-//! ([`Kernel::export_part`], never `/files/{id}`), and are deleted after [`EXPORT_DAYS`] days.
+//! ([`Kernel::export_part`], never `/files/{id}`), and are deleted after [`EXPORT_DAYS`] days, or
+//! sooner by a personal-data erasure, which no copy outlives: an export that one lands on while it
+//! is being made starts again.
 
 use crate::bulk::{BulkOp, BulkTarget, MAX_BULK};
 use crate::ctx::Ctx;
+use crate::db::Tx;
 use crate::ddl::q;
 use crate::error::{Error, Result};
 use crate::jobs::{Job, JobHandler, NewJob, enqueue};
@@ -31,6 +34,22 @@ use zip::write::SimpleFileOptions;
 
 pub const BULK_KIND: &str = "platform.bulk";
 pub const EXPORT_KIND: &str = "platform.export";
+/// Deletes one export's stored parts, or every export's in a workspace, their objects once `tx`
+/// commits. Says how many exports lost theirs.
+pub(crate) async fn drop_exports(tx: &mut Tx, tenant: Uuid, job: Option<Uuid>) -> Result<usize> {
+    let parts: Vec<(Uuid, String)> = sqlx::query_as(
+        "delete from file_object where tenant_id = $1 and entity = $2 and ($3::uuid is null or record_id = $3) returning record_id, storage_key",
+    )
+    .bind(tenant)
+    .bind(EXPORT_ENTITY)
+    .bind(job)
+    .fetch_all(&mut **tx)
+    .await?;
+    let keys: Vec<String> = parts.iter().map(|p| p.1.clone()).collect();
+    release_objects(tx, tenant, &keys).await?;
+    Ok(parts.iter().map(|p| p.0).collect::<std::collections::BTreeSet<_>>().len())
+}
+
 /// A part of an export closes at about this much before compression (a larger file gets a part to
 /// itself, held in memory while it is written).
 const PART_BYTES: usize = 128 << 20;
@@ -228,6 +247,7 @@ impl JobHandler for ExportJob {
         }
         // All of it, whatever record scopes the administrator happens to have.
         let all = Ctx::system(ctx.tenant, ctx.schema.clone());
+        let erasures = k.last_erasure(ctx.tenant).await?;
         let mut parts = Parts::new(k, &ctx, job.id);
         let mut entities = Vec::new();
         let total = all.schema.entities.len();
@@ -357,6 +377,14 @@ impl JobHandler for ExportJob {
         });
         parts.add("manifest.json", &serde_json::to_vec_pretty(&manifest).map_err(Error::internal)?).await?;
         parts.close().await?;
+        // An erasure meanwhile deleted what was stored of this, but not what it had read and not yet
+        // stored: it starts again, reading what the erasure left.
+        if k.last_erasure(ctx.tenant).await? != erasures {
+            let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+            drop_exports(&mut tx, ctx.tenant, Some(job.id)).await?;
+            tx.commit().await?;
+            return Err(Error::Wait("a personal-data erasure landed while this export was made; it is made again".into(), 0));
+        }
         Ok(json!({"parts": parts.stored, "entities": entities, "files": files.len(), "expires_in_days": EXPORT_DAYS}))
     }
 }

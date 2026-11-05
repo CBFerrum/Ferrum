@@ -44,7 +44,7 @@ impl MiddlewareLayer for RequestLog {
             .layer(TraceLayer::new_for_http().make_span_with(move |request: &Request<_>| {
                 let request_id = request.extensions().get::<LocoRequestId>().map_or("req-id-none", LocoRequestId::get);
                 let user_agent = request.headers().get(header::USER_AGENT).and_then(|h| h.to_str().ok()).unwrap_or("");
-                tracing::error_span!(
+                let span = tracing::error_span!(
                     "http-request",
                     "http.method" = %request.method(),
                     "http.uri" = %request.uri().path(),
@@ -52,7 +52,9 @@ impl MiddlewareLayer for RequestLog {
                     "http.user_agent" = %user_agent,
                     "environment" = %environment,
                     request_id = %request_id,
-                )
+                );
+                crate::telemetry::adopt(&span, request.headers());
+                span
             }))
             .layer(AddExtensionLayer::new(self.environment.clone())))
     }

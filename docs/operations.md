@@ -463,6 +463,14 @@ latencies from the gateway controller's metrics. Suggested alerts:
 | Outside systems | `ferrum_connections_stale` above 0, or `ferrum_connections_failing` above 0 for 30 min |
 | Database | CNPG: replication lag, failover events, storage above 80 %, connections above 85 % |
 
+Traces go to an OpenTelemetry collector when the deployment names one: set
+`OTEL_EXPORTER_OTLP_ENDPOINT` (for example `http://otel-collector:4318`; the server adds `/v1/traces`)
+or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, and the SDK's other settings apply (`OTEL_EXPORTER_OTLP_HEADERS`
+for a token, `OTEL_TRACES_SAMPLER`, `OTEL_BSP_SCHEDULE_DELAY`; `OTEL_SDK_DISABLED=true` turns them off).
+They travel over OTLP/HTTP as protobuf, as `OTEL_SERVICE_NAME` (`ferrum` unless set). Each request is a
+span with its method and path (never its query), and a caller's W3C `traceparent` makes it part of the
+caller's trace. Without an endpoint nothing is sent and the log is as before.
+
 Logs are JSON. Clients may send an `x-request-id` header to correlate their calls with the logs;
 5xx bodies carry an `error_id` that appears in the log line with the full cause.
 

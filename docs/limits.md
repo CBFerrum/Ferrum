@@ -35,12 +35,15 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   every stock posting (and landed costs), it is valued when it is posted: a backdated document
   never re-values the ones after it (there is no reposting).
 - **Personal data** requests reach what packages declare (`personal_data`), matched by an email field
-  under every address the person has had, with the files attached to those records. Data known only
-  by name or phone is not found; comments they wrote keep their text under an anonymized name; and
-  packages that declare nothing are not searched (each answer names them). Records a package keeps
-  for a stated reason, and submitted documents' copies of names, stay. Backups taken before an
-  erasure still hold the data until they expire; after a restore, `ferrum task reapply_erasures`
-  erases it again. Restriction of processing is not built.
+  under every address the person has had, or by the digits of a phone field (records holding no
+  address by that alone), with the files attached to those records. A name only lists records as
+  possibly theirs and erases nothing; comments they wrote keep their text under an anonymized name;
+  and packages that declare nothing are not searched (each answer names them). Records a package
+  keeps for a stated reason, and submitted documents' copies of names, stay. An erasure deletes the
+  workspace's stored exports; backups taken before it still hold the data until they expire, and
+  after a restore `ferrum task reapply_erasures` erases it again. A restriction of processing stops
+  mail queued to any of the person's addresses; apps that deliver on their own ask
+  `Kernel::may_contact`.
 - **Rate limits** (sign-ins, documents emailed, 300 requests a minute per address on public
   endpoints) are counted in the database, so they hold across replicas; apps use the same
   (`Kernel::rate_limit`). They are per address: Campaigns' tracking pixels and links opened

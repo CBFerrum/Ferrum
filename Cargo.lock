@@ -2332,7 +2332,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-campaigns"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-campaigns?branch=main#46218ec5445206773e32cc96f4b6d168b0a21c72"
+source = "git+https://github.com/CBFerrum/ferrum-app-campaigns?branch=main#b7b7791dae60916d2b6b6e8c847a13e0271441ea"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2471,7 +2471,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-crm"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-crm?branch=main#442cd84e2799479a9b656b9e39f422888781d57d"
+source = "git+https://github.com/CBFerrum/ferrum-app-crm?branch=main#7c8458df31d48d11a12804a6af8dac23476f1b04"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2588,7 +2588,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-erp"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#2c5d98ab6ffb50883b88c98e0fba39864960e66f"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#ab73848d43d5545b421c12a4f09cfc752d5ee215"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3027,7 +3027,7 @@ dependencies = [
 [[package]]
 name = "ferrum-ca"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#2c5d98ab6ffb50883b88c98e0fba39864960e66f"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#ab73848d43d5545b421c12a4f09cfc752d5ee215"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3057,7 +3057,7 @@ dependencies = [
 [[package]]
 name = "ferrum-countries"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#2c5d98ab6ffb50883b88c98e0fba39864960e66f"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#ab73848d43d5545b421c12a4f09cfc752d5ee215"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3079,7 +3079,7 @@ dependencies = [
 [[package]]
 name = "ferrum-de"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#2c5d98ab6ffb50883b88c98e0fba39864960e66f"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#ab73848d43d5545b421c12a4f09cfc752d5ee215"
 dependencies = [
  "async-trait",
  "ferrum-app-erp",
@@ -3129,7 +3129,7 @@ dependencies = [
 [[package]]
 name = "ferrum-eu"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#2c5d98ab6ffb50883b88c98e0fba39864960e66f"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#ab73848d43d5545b421c12a4f09cfc752d5ee215"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3149,7 +3149,7 @@ dependencies = [
 [[package]]
 name = "ferrum-eu-members"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#2c5d98ab6ffb50883b88c98e0fba39864960e66f"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#ab73848d43d5545b421c12a4f09cfc752d5ee215"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3173,7 +3173,7 @@ dependencies = [
 [[package]]
 name = "ferrum-finance"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#2c5d98ab6ffb50883b88c98e0fba39864960e66f"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#ab73848d43d5545b421c12a4f09cfc752d5ee215"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3195,7 +3195,7 @@ dependencies = [
 [[package]]
 name = "ferrum-gb"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#2c5d98ab6ffb50883b88c98e0fba39864960e66f"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#ab73848d43d5545b421c12a4f09cfc752d5ee215"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3216,7 +3216,7 @@ dependencies = [
 [[package]]
 name = "ferrum-india"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#2c5d98ab6ffb50883b88c98e0fba39864960e66f"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#ab73848d43d5545b421c12a4f09cfc752d5ee215"
 dependencies = [
  "aes",
  "async-trait",
@@ -3298,7 +3298,7 @@ dependencies = [
 [[package]]
 name = "ferrum-mes"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#2c5d98ab6ffb50883b88c98e0fba39864960e66f"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#ab73848d43d5545b421c12a4f09cfc752d5ee215"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3335,7 +3335,7 @@ dependencies = [
 [[package]]
 name = "ferrum-mfg-ops"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#2c5d98ab6ffb50883b88c98e0fba39864960e66f"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#ab73848d43d5545b421c12a4f09cfc752d5ee215"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3424,7 +3424,7 @@ dependencies = [
 [[package]]
 name = "ferrum-procurement"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#2c5d98ab6ffb50883b88c98e0fba39864960e66f"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#ab73848d43d5545b421c12a4f09cfc752d5ee215"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3448,7 +3448,7 @@ dependencies = [
 [[package]]
 name = "ferrum-quality"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#2c5d98ab6ffb50883b88c98e0fba39864960e66f"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#ab73848d43d5545b421c12a4f09cfc752d5ee215"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3552,6 +3552,9 @@ dependencies = [
  "lettre",
  "loco-rs",
  "opendal",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
  "reqwest 0.12.28",
  "ring",
  "rust_decimal",
@@ -3567,6 +3570,8 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
  "uuid",
  "wat",
  "yrs",
@@ -3575,7 +3580,7 @@ dependencies = [
 [[package]]
 name = "ferrum-stock-ops"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#2c5d98ab6ffb50883b88c98e0fba39864960e66f"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#ab73848d43d5545b421c12a4f09cfc752d5ee215"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3619,7 +3624,7 @@ dependencies = [
 [[package]]
 name = "ferrum-us"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#2c5d98ab6ffb50883b88c98e0fba39864960e66f"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#ab73848d43d5545b421c12a4f09cfc752d5ee215"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3637,7 +3642,7 @@ dependencies = [
 [[package]]
 name = "ferrum-wms"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#2c5d98ab6ffb50883b88c98e0fba39864960e66f"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#ab73848d43d5545b421c12a4f09cfc752d5ee215"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5634,6 +5639,77 @@ dependencies = [
 ]
 
 [[package]]
+name = "opentelemetry"
+version = "0.33.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c1f1a6ac9c875a4941e4c7c085b61e8f4daa326de03b4701768c3491a6ad9ee"
+dependencies = [
+ "futures-core",
+ "futures-sink",
+ "js-sys",
+ "pin-project-lite",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
+name = "opentelemetry-http"
+version = "0.33.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "302249bd8ee804789faaa7b5b2cbf79bc61cb864714079c644e3828af5b7e811"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "http",
+ "opentelemetry",
+ "reqwest 0.13.5",
+]
+
+[[package]]
+name = "opentelemetry-otlp"
+version = "0.33.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0756af24841e367128ef31c831999937b8b5c5197d47914590d8f4e2e88c2e1a"
+dependencies = [
+ "http",
+ "httpdate",
+ "opentelemetry",
+ "opentelemetry-http",
+ "opentelemetry-proto",
+ "opentelemetry_sdk",
+ "prost",
+ "reqwest 0.13.5",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "opentelemetry-proto"
+version = "0.33.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d576f5dddc3299341bcd85a04be17b2564844c0c9563214f02d85f2524d1afae"
+dependencies = [
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "prost",
+]
+
+[[package]]
+name = "opentelemetry_sdk"
+version = "0.33.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "372a912db2974d1990207006fd0e3aa0ef3fd4ad3be43c65cfaadf2206866061"
+dependencies = [
+ "futures-channel",
+ "futures-executor",
+ "futures-util",
+ "opentelemetry",
+ "percent-encoding",
+ "portable-atomic",
+ "rand 0.9.5",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "ordered-float"
 version = "4.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6232,6 +6308,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "prost"
+version = "0.14.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "528ac67416ff8646872a3c02cad9cc4ee5dc9f9540c9b10771855c95cb2e5ae1"
+dependencies = [
+ "bytes",
+ "prost-derive",
+]
+
+[[package]]
+name = "prost-derive"
+version = "0.14.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
+dependencies = [
+ "anyhow",
+ "itertools 0.14.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "psl-types"
 version = "2.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6722,6 +6821,7 @@ checksum = "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029"
 dependencies = [
  "base64 0.23.1",
  "bytes",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "http",
@@ -8605,6 +8705,33 @@ checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
  "valuable",
+]
+
+[[package]]
+name = "tracing-log"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3"
+dependencies = [
+ "log",
+ "once_cell",
+ "tracing-core",
+]
+
+[[package]]
+name = "tracing-opentelemetry"
+version = "0.34.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a904802a1b902f43638b677ff2a650847e3b4404101b6c586d648e8c1e3e8fe"
+dependencies = [
+ "js-sys",
+ "opentelemetry",
+ "smallvec",
+ "tracing",
+ "tracing-core",
+ "tracing-log",
+ "tracing-subscriber",
+ "web-time",
 ]
 
 [[package]]
