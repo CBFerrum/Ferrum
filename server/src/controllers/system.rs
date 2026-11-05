@@ -51,6 +51,25 @@ pub(crate) fn same_secret(given: &str, expected: &str) -> bool {
     given.len() == expected.len() && given.bytes().zip(expected.bytes()).fold(0u8, |a, (x, y)| a | (x ^ y)) == 0
 }
 
+/// The operations on records that did not go through, per package, entity and operation.
+fn failures_text(failures: &[(String, String, String, &'static str, u64)]) -> String {
+    let mut out = String::from(
+        "# HELP ferrum_operation_failures_total Submits, cancels, actions and workflow steps that did not go through since the process \
+         started: refused by their own rules (a posting with no account to post to), or a fault.\n# TYPE ferrum_operation_failures_total counter\n",
+    );
+    // A workspace names its own workflow steps: quoted as the exposition format says.
+    let label = |v: &str| v.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+    for (package, entity, operation, kind, n) in failures {
+        out.push_str(&format!(
+            "ferrum_operation_failures_total{{package=\"{}\",entity=\"{}\",operation=\"{}\",kind=\"{kind}\"}} {n}\n",
+            label(package),
+            label(entity),
+            label(operation)
+        ));
+    }
+    out
+}
+
 async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let expected = st.settings.metrics_token.as_str();
@@ -93,6 +112,7 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
     for app in crate::extensions::all() {
         apps.push_str(&(app.metrics)(&st).await?);
     }
+    apps.push_str(&failures_text(&st.kernel.failures()));
     let body = format!(
         "# HELP ferrum_up 1 when the process is serving.\n# TYPE ferrum_up gauge\nferrum_up 1\n{apps}\
          # TYPE ferrum_restore_held gauge\nferrum_restore_held {held}\n\
@@ -340,4 +360,20 @@ pub fn routes() -> Routes {
         .add("/api/files/uploads/{id}/complete", post(complete_upload))
         .add("/files/{id}", get(download))
         .add("/files/public/{id}", get(download_public))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failures_are_counters_with_quoted_labels() {
+        let text = failures_text(&[
+            ("accounting".into(), "SalesInvoice".into(), "submit".into(), "refused", 3),
+            ("tenant".into(), "Claim".into(), "Say \"yes\"\n".into(), "fault", 1),
+        ]);
+        assert!(text.contains("# TYPE ferrum_operation_failures_total counter\n"));
+        assert!(text.contains("ferrum_operation_failures_total{package=\"accounting\",entity=\"SalesInvoice\",operation=\"submit\",kind=\"refused\"} 3\n"));
+        assert!(text.contains(r#"operation="Say \"yes\"\n",kind="fault"} 1"#), "a workspace's own step name stays inside its quotes: {text}");
+    }
 }

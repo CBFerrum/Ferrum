@@ -387,6 +387,15 @@ async fn scenario() {
     assert_eq!(pairs[0]["holders"], json!([{"id": stand_in, "email": "stand-in@acme.test", "full_name": "Stand-in"}]), "held both before: named");
     let pack = k.evidence_pack(&admin).await.unwrap();
     assert_eq!(pack["access"]["role_conflicts"][0]["holders"][0]["email"], json!("stand-in@acme.test"), "and in the evidence for a review");
+    // An identity provider re-syncing what they already hold grants nothing new: not refused.
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("insert into user_role (tenant_id, user_id, role, via_scim) values ($1, $2, 'Clerk', true) on conflict (tenant_id, user_id, role) do update set via_scim = true")
+        .bind(tenant)
+        .bind(stand_in)
+        .execute(&mut *tx)
+        .await
+        .expect("a role they hold, synced again");
+    tx.rollback().await.unwrap();
     let refused = k.set_user_roles(&admin, stand_in, &both).await;
     assert!(
         matches!(&refused, Err(Error::Validation(e)) if e[0].field == "roles" && e[0].message == "Clerk and Viewer are not held by one person: whoever files claims does not review them"),

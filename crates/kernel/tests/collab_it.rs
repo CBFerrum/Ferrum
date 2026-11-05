@@ -807,6 +807,16 @@ async fn scenario() {
     let own = k.transition(&saver, "Customer", made, "Approve", None).await;
     assert!(matches!(&own, Err(Error::Forbidden(m)) if m.contains("creator")), "its automation's saver: {own:?}");
     k.transition(&maya_ctx, "Customer", made, "Approve", None).await.expect("a second person");
+    // A step its own rules refuse is counted for the metrics; one refused for who asks is not.
+    let blocked = k
+        .list(&admin, "Customer", &ListQuery { filters: parse_filters(&json!({"customer_name": "Blocked Ltd"})).unwrap(), ..Default::default() })
+        .await
+        .unwrap();
+    let blocked = blocked.rows[0]["id"].as_str().unwrap().parse::<Uuid>().unwrap();
+    assert!(matches!(k.transition(&maya_ctx, "Customer", blocked, "Approve", None).await, Err(Error::Invalid(_))), "its condition fails");
+    let counted = |kind: &str| k.failures().into_iter().find(|f| f.1 == "Customer" && f.2 == "Approve" && f.3 == kind).map(|f| f.4);
+    assert_eq!(counted("refused"), Some(1), "the condition's refusal; the creator's, earlier, was about who asked: {:?}", k.failures());
+    assert_eq!(counted("fault"), None);
 
     // ── cards: what a preview of a record shows, for those who may read it ──
     let group = id_of(&k.insert(&admin, "CustomerGroup", obj(json!({"group_name": "Wholesale"}))).await.unwrap());

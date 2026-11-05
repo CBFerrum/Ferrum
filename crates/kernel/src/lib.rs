@@ -187,9 +187,35 @@ pub struct Kernel {
     pub(crate) directory: std::sync::OnceLock<Uuid>,
     /// The server's VAPID key, once read (webpush.rs).
     pub(crate) vapid: tokio::sync::OnceCell<Arc<webpush::Vapid>>,
+    /// Submits, cancels, actions and workflow steps that did not go through, since the process
+    /// started: (package, entity, operation, kind) → how many ([`Kernel::failures`]).
+    pub(crate) failures: std::sync::Mutex<std::collections::BTreeMap<(String, String, String, &'static str), u64>>,
 }
 
 impl Kernel {
+    /// Counts an operation on a record that did not go through: `refused` when its own rules said
+    /// no (a posting with no account to post to, a stale version), `fault` when something broke.
+    /// Who may not do it, or a record that is not there, is not the operation failing.
+    pub(crate) fn tally(&self, ctx: &Ctx, entity: &str, operation: &str, e: &Error) {
+        let kind = match e {
+            Error::NotFound(_) | Error::Forbidden(_) | Error::Unauthorized(_) | Error::TooManyRequests(_) | Error::Wait(..) => return,
+            Error::Validation(_) | Error::Invalid(_) | Error::Conflict(_) | Error::Retryable(_) => "refused",
+            _ => "fault",
+        };
+        let package = ctx.schema.entity(entity).map(|e| e.package.clone()).unwrap_or_default();
+        if kind == "fault" {
+            tracing::warn!(%package, %entity, %operation, "an operation failed: {e}");
+        }
+        if let Ok(mut f) = self.failures.lock() {
+            *f.entry((package, entity.to_string(), operation.to_string(), kind)).or_default() += 1;
+        }
+    }
+
+    /// The failures [`Self::tally`] counted, in order: (package, entity, operation, kind, count).
+    pub fn failures(&self) -> Vec<(String, String, String, &'static str, u64)> {
+        self.failures.lock().map(|f| f.iter().map(|((p, e, o, k), n)| (p.clone(), e.clone(), o.clone(), *k, *n)).collect()).unwrap_or_default()
+    }
+
     /// Counts a request for `key` against `max` per fixed `window`, across every replica, and
     /// refuses it past the limit (`message` says why). For apps' public endpoints; keys should
     /// name the app, e.g. `bookings|{tenant}|{ip}`.
@@ -237,6 +263,7 @@ impl Kernel {
             files: std::sync::OnceLock::new(),
             directory: std::sync::OnceLock::new(),
             vapid: tokio::sync::OnceCell::new(),
+            failures: Default::default(),
         });
         kernel.notice_restore().await?;
         Ok(kernel)

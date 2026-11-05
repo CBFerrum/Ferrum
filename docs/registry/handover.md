@@ -3,6 +3,24 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-05, night: failed postings as metrics, and passkey names erased with their owner
+
+**State:** this PR follows PR 61. No release was tagged.
+
+| Where | What |
+|---|---|
+| This PR | `/metrics` counts the submits, cancels, actions and workflow steps that did not go through, per package, entity and operation (FERRUM-OPS-009): `refused` by their own rules (a posting with no account to post to, a stale version) or a `fault`, which is also logged with its cause. Who may not do something, or a record that is not there, is not the operation failing and is not counted. Workspaces name their own workflow steps, so label values are quoted as the exposition format says |
+| This PR: role pairs | A grant already held is no new grant: an identity provider re-syncing someone who held both roles of a pair before it was declared is no longer refused (migration `20261105000004_role_conflicts_held.sql`); granting either afresh still is |
+| This PR: history | The platform's audit payloads other than record diffs were read (FERRUM-PRIVACY-007): ids, flags, settings, hosts and reasons, except a passkey's name, written when its owner added it. Erasing a person now takes their passkeys' names out of that history, also of passkeys removed since, keeping each event's hash. A support grant keeps its grantee's name, an outside party's |
+
+**Evidence:**
+- `crates/kernel/tests/collab_it.rs`: an approval whose condition fails is counted once as refused for Customer's Approve; the creator's refused approval (who asked, not the step) is not counted, and nothing is a fault.
+- `server/src/controllers/system.rs`: the metric is a counter, and a step name holding quotes and a line break stays inside its quotes.
+- `crates/kernel/tests/rules_it.rs`: a role the stand-in already holds, synced again as SCIM writes it, is not refused although they hold both of a pair.
+- `crates/kernel/tests/privacy_it.rs`: a passkey Pat added and has removed is named in its history; erasing Pat leaves its relying party and erases its name.
+
+**Not done:** OpenTelemetry traces; counts per workspace (a label per workspace would grow without bound).
+
 ## 2026-11-05, night: a person found by phone number, or possibly by name
 
 **State:** this PR follows PR 60; FRONTEND_REV is at Ferrum-Frontend PR 26's merge. No release was tagged.

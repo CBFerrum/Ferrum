@@ -586,6 +586,7 @@ impl Kernel {
             Ok(doc)
         })
         .await
+        .inspect_err(|e| self.tally(ctx, entity, "submit", e))
     }
 
     pub async fn submit_tx(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, expected_version: Option<i64>) -> Result<Doc> {
@@ -650,6 +651,7 @@ impl Kernel {
             Ok(doc)
         })
         .await
+        .inspect_err(|e| self.tally(ctx, entity, "cancel", e))
     }
 
     pub async fn cancel_tx(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, expected_version: Option<i64>) -> Result<Doc> {
@@ -729,6 +731,7 @@ impl Kernel {
             Ok(out)
         })
         .await
+        .inspect_err(|e| self.tally(ctx, entity, action, e))
     }
 
     pub async fn run_action_tx(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, action: &str, params: &Value) -> Result<Value> {
@@ -778,6 +781,7 @@ impl Kernel {
             Ok(doc)
         })
         .await
+        .inspect_err(|e| self.tally(ctx, entity, action, e))
     }
 
     pub async fn transition_tx(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, action: &str, expected_version: Option<i64>) -> Result<Doc> {
