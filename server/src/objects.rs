@@ -41,6 +41,8 @@ impl Objects {
             let op = Operator::new(Fs::default().root(&settings.files_dir)).map_err(|e| e.to_string())?;
             return Ok(Objects { op, presigns: false });
         }
+        // OpenDAL talks HTTP through a process-wide transport that must be installed first (safe to repeat).
+        opendal::install_default();
         let region = if settings.s3_region.is_empty() { "auto" } else { settings.s3_region.as_str() };
         let mut s3 = S3::default().bucket(&settings.s3_bucket).region(region);
         if !settings.s3_endpoint.is_empty() {
