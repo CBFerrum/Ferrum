@@ -53,8 +53,9 @@ fn nowhere() -> Response {
 }
 
 /// Shapes B and C: members sign in once, at the accounts host. On there with a fresh `state`,
-/// which this host keeps in a cookie with where to come back to; after someone signed out here,
-/// the accounts host asks which account rather than going straight back in.
+/// which this host keeps in a cookie of that sign-in's own with where to come back to (an address
+/// too long for a cookie comes back home); after someone signed out here, the accounts host asks
+/// which account rather than going straight back in.
 fn to_accounts(st: &AppState, headers: &HeaderMap, accounts: &str, next: &str) -> Response {
     use base64::Engine;
     let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -63,8 +64,10 @@ fn to_accounts(st: &AppState, headers: &HeaderMap, accounts: &str, next: &str) -
     let host = shell::request_host(headers).unwrap_or_default();
     let prompt = if shell::cookie(headers, shell::signed_out_cookie_name(secure)).is_some() { "select_account" } else { "none" };
     let mut res = Redirect::to(&format!("{accounts}/authorize?host={}&state={state}&prompt={prompt}", seg(host))).into_response();
-    let kept = format!("{state}.{}", b64.encode(next));
-    res.headers_mut().append(header::SET_COOKIE, shell::host_cookie(secure, shell::auth_cookie_name(secure), &kept, std::time::Duration::from_secs(600)));
+    let kept = format!("{state}.{}", b64.encode(if next.len() > 512 { "/" } else { next }));
+    if let Some(name) = shell::auth_cookie_for(secure, &state) {
+        res.headers_mut().append(header::SET_COOKIE, shell::host_cookie(secure, &name, &kept, std::time::Duration::from_secs(600)));
+    }
     res
 }
 
@@ -73,18 +76,21 @@ fn to_accounts(st: &AppState, headers: &HeaderMap, accounts: &str, next: &str) -
 async fn auth_callback(st: &AppState, headers: &HeaderMap, q: &[(String, String)]) -> ApiResult<Response> {
     use base64::Engine;
     let secure = st.shell.secure;
+    let name = query(q, "state").and_then(|state| shell::auth_cookie_for(secure, state));
     let failed = |message: &str| {
         let mut res = status_page(StatusCode::BAD_REQUEST, "Signing in did not finish", message, &[("Sign in again", "/login")], None);
-        res.headers_mut().append(header::SET_COOKIE, shell::host_cookie(secure, shell::auth_cookie_name(secure), "", std::time::Duration::ZERO));
+        if let Some(name) = &name {
+            res.headers_mut().append(header::SET_COOKIE, shell::host_cookie(secure, name, "", std::time::Duration::ZERO));
+        }
         res
     };
     let Place::Workspace(tenant) = st.shell.place(headers).await? else { return Ok(nowhere()) };
     let (Some(code), Some(state)) = (query(q, "code"), query(q, "state")) else { return Ok(failed("The link is incomplete.")) };
-    let kept = shell::cookie(headers, shell::auth_cookie_name(secure)).unwrap_or_default();
+    let kept = name.as_deref().and_then(|n| shell::cookie(headers, n)).unwrap_or_default();
     let (kept_state, next) = kept.split_once('.').unwrap_or_default();
     // Only the browser that set off from here comes back: no one else's sign-in lands in it.
     if kept_state.is_empty() || !super::system::same_secret(kept_state, state) {
-        return Ok(failed("It was started in another tab, or took too long. Sign in again."));
+        return Ok(failed("It took too long, or was started in another browser. Sign in again."));
     }
     let next = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(next).ok().and_then(|b| String::from_utf8(b).ok()).unwrap_or_else(|| "/".into());
     let s = match st.kernel.redeem_host_code(code, shell::request_host(headers).unwrap_or_default()).await {
@@ -97,7 +103,9 @@ async fn auth_callback(st: &AppState, headers: &HeaderMap, q: &[(String, String)
     let mut res = Redirect::to(&shell::safe_next(&next)).into_response();
     let h = res.headers_mut();
     h.append(header::SET_COOKIE, shell::set_cookie(secure, &super::auth::device_token(st, &s, ttl.as_secs(), "sid", sid)?, ttl));
-    h.append(header::SET_COOKIE, shell::host_cookie(secure, shell::auth_cookie_name(secure), "", std::time::Duration::ZERO));
+    if let Some(name) = &name {
+        h.append(header::SET_COOKIE, shell::host_cookie(secure, name, "", std::time::Duration::ZERO));
+    }
     h.append(header::SET_COOKIE, shell::host_cookie(secure, shell::signed_out_cookie_name(secure), "", std::time::Duration::ZERO));
     h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
