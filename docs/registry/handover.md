@@ -627,3 +627,27 @@ grades cases (records, a question, what the answer says, must not say, and reads
 `ferrum task assistant_eval` runs `server/assistant-evals/grounded.yaml` in a workspace set aside
 for it. Tested with a scripted model (`server/tests/assistant_eval_it.rs`): a grounded answer
 passes, a guess fails on all three counts. Never run against a real model: BLOCK-MODEL-KEY.
+
+## 6 November: one offline policy, a technician's day offline, the Developer Hub, ERP's contract
+
+- **Offline leases (FERRUM-UX-007).** Each page's bootstrap carries `offline` (allowed, until, hours,
+  key, person) under the workspace's `offline` setting (Administration → Workspace → Working offline);
+  `GET /api/shell/offline` renews it. `@ferrum/client`'s offline module (Ferrum-Frontend PR 32) names
+  cached reads (`cacheName`, under the lease and the person's sign-in key) and work not sent yet
+  (`pendingName`, the person's), and `sweep()` forgets cached reads the lease no longer covers.
+  POS 0.4.0, Docs 0.7.0 and Field Service 0.3.0 follow it. docs/offline.md is the policy.
+- **Field Service 0.3.0 (FERRUM-FIELD-002).** My day is kept under the lease and shown offline;
+  setting off and arriving taken offline are sent in order when the connection is back. The day's
+  route is outside `RequireAuth` (it asks the server) and its page is kept by the app's own worker.
+  Finishing a job still needs the connection.
+- **Developer Hub (FERRUM-ECOSYSTEM-013).** New repository `CBFerrum/ferrum-app-developers`, compiled
+  in (feature `developers`): an overview, the API reference from `/api/openapi.json` with reads to
+  try, the events each record gives, and the person's keys.
+- **ERP's contract (FERRUM-PLATFORM-004).** `ferrum-app-erp:docs/contracts.md` and
+  `tests/contract_it.rs` (ERP PR 17).
+- Walked in the browser: the Working offline setting saves and the lease follows it (8 hours, off,
+  back to 72). Field Service's day with the server stopped under the loaded page: the kept day
+  shows ("No connection: your day as it was at 19:35"), Start travel is held as waiting, and once
+  the server answers again it is sent (the job En Route, nothing waiting). Not walked: a page
+  opening offline from an app's worker, since the walking browser refuses service workers (POS's
+  existing one fails to register the same way), nor POS and Docs with the network cut.
