@@ -265,6 +265,17 @@ async fn erase_account(tx: &mut Tx, ctx: &Ctx, id: Uuid, reason: &str) -> Result
     .bind(format!("Erased user {}", tag(id)))
     .execute(&mut **tx)
     .await?;
+    // A passkey's name ("Pat's phone") went into its history when they added it, also for one
+    // removed since; it goes from there too.
+    let passkeys: Vec<Uuid> =
+        sqlx::query_scalar("select distinct record_id from audit_event where tenant_id = $1 and entity = 'Passkey' and action = 'add' and actor = $2")
+            .bind(tenant)
+            .bind(id)
+            .fetch_all(&mut **tx)
+            .await?;
+    for passkey in passkeys {
+        redact(tx, ctx, "Passkey", passkey, &["name".to_string()], reason).await?;
+    }
     // After the update: the trigger has just filed the old address.
     for table in [
         "user_role",

@@ -209,7 +209,21 @@ async fn scenario() {
 
     // ───────────── erasure ─────────────
     assert!(matches!(k.erase_personal_data(&pat_ctx, "pat@new.test", "Mine").await, Err(Error::Forbidden(_))));
+    // A passkey Pat added, and has since removed, is named in its history.
+    let passkey = Uuid::now_v7();
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    ferrum_kernel::audit::record(&mut tx, &pat_ctx, "Passkey", passkey, "add", None, json!({"name": "Pat's phone", "rp_id": "acme.test"})).await.unwrap();
+    tx.commit().await.unwrap();
     let done = k.erase_personal_data(&admin, "pat@old.test", "Request 1").await.unwrap();
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let history: Value = sqlx::query_scalar("select diff from audit_event where tenant_id = $1 and entity = 'Passkey' and record_id = $2")
+        .bind(tenant)
+        .bind(passkey)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!((&history["name"], &history["rp_id"]), (&json!(["[erased]", "[erased]"]), &json!("acme.test")), "the passkey's name leaves its history");
     assert_eq!(ids(&done["erased"]), vec![early["id"].as_str().unwrap().to_string()], "{done}");
     assert_eq!(ids(&done["held"]), vec![late["id"].as_str().unwrap().to_string()], "what a hold covers stays, and says so");
     assert_eq!(done["retained"][0]["because"], json!("Accounting records"), "what is kept says why");
