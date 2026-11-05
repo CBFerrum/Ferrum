@@ -16,6 +16,7 @@ use loco_rs::app::AppContext;
 use loco_rs::controller::Routes;
 use serde::Deserialize;
 use serde_json::json;
+use uuid::Uuid;
 
 async fn list(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
     Ok(Json(app_state(&app)?.apps.overview(&ctx).await?).into_response())
@@ -55,6 +56,26 @@ async fn screenshot(Auth(ctx): Auth, State(app): State<AppContext>, Path((id, n)
     // An SVG is a document: it runs nothing.
     h.insert("content-security-policy", axum::http::HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'; sandbox"));
     Ok(res)
+}
+
+#[derive(Deserialize)]
+struct LicenceBody {
+    licence: Uuid,
+}
+
+/// `PUT /api/admin/apps/{id}/licence {licence}`: the licence of an app a store sells, kept once
+/// the store vouches that it is live and this workspace's.
+async fn set_licence(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<String>, Json(b): Json<LicenceBody>) -> ApiResult<Response> {
+    Ok(Json(app_state(&app)?.apps.set_licence(&ctx, &id, b.licence).await?).into_response())
+}
+
+async fn forget_licence(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<String>) -> ApiResult<Response> {
+    app_state(&app)?.apps.forget_licence(&ctx, &id).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn licences(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    Ok(Json(json!({"licences": app_state(&app)?.apps.licences(&ctx).await?})).into_response())
 }
 
 async fn plan(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<String>, Query(w): Query<Wanted>) -> ApiResult<Response> {
@@ -185,6 +206,8 @@ pub fn routes() -> Routes {
         .add("/{id}/enable", post(enable))
         .add("/{id}/disable", post(disable))
         .add("/{id}/dev-ui", get(dev_ui).put(set_dev_ui).delete(clear_dev_ui))
+        .add("/licences", get(licences))
+        .add("/{id}/licence", axum::routing::put(set_licence).delete(forget_licence))
 }
 
 // ── development: an app's pages from its developer's Vite server (`ferrum-app dev --ui`) ──
