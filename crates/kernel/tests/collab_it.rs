@@ -325,6 +325,9 @@ async fn scenario() {
         .await
         .unwrap();
     tx.commit().await.unwrap();
+    let info = k.file_info(&bea_ctx, big).await.unwrap();
+    assert_eq!((info.name.as_str(), info.size), ("scan.bin", ferrum_kernel::files::MAX_READ_WHOLE + 1), "what it is, without reading it");
+    assert!(k.file_info(&otto_ctx, big).await.is_err(), "and only for those who may read its record");
     let refused = k.read_file(&bea_ctx, big).await;
     assert!(matches!(refused, Err(ferrum_kernel::Error::Invalid(ref m)) if m.contains("downloaded as a stream")), "{refused:?}");
     k.remove_file(&admin, big).await.unwrap();
