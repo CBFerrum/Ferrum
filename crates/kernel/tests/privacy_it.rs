@@ -268,6 +268,7 @@ async fn scenario() {
     assert_eq!(done["files_deleted"], json!(1));
     assert_eq!(done["exports_deleted"], json!(1), "no copy outlives an erasure");
     assert!(matches!(k.export_part(&admin, export, part).await, Err(Error::NotFound(_))));
+    assert_eq!(k.job(&admin, export).await.unwrap()["result"]["deleted"], json!("erasure"), "the export says what took it");
     assert_eq!(done["account_erased"], json!(true));
     assert!(done["not_searched"].as_array().unwrap().contains(&json!("silent")));
 

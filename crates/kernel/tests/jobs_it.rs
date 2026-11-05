@@ -509,6 +509,16 @@ async fn scenario() {
     assert!(matches!(k.export_workspace(&clerk).await, Err(Error::Forbidden(_))), "administrators only");
     let attached = k.store_file(&admin, Some(("Case", cases[0])), "note.txt", "text/plain", b"a file of the case").await.unwrap();
     let attached = attached["id"].as_str().unwrap().to_string();
+    // A file whose object storage has lost is named in the export, which goes on without it.
+    let lost = k.store_file(&admin, Some(("Case", cases[1])), "lost.txt", "text/plain", b"gone from storage").await.unwrap();
+    let lost_id = lost["id"].as_str().unwrap().to_string();
+    let lost_key: String = {
+        let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+        let key = sqlx::query_scalar("select storage_key from file_object where id = $1::uuid").bind(&lost_id).fetch_one(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        key
+    };
+    files.0.lock().unwrap().remove(&lost_key);
     let mut tx = k.db.system_tenant_tx(tenant).await.unwrap();
     sqlx::query("insert into case_log (tenant_id, what) values ($1, 'first posting'), ($1, 'second posting')").bind(tenant).execute(&mut *tx).await.unwrap();
     sqlx::query("insert into case_keys (tenant_id, api_key) values ($1, 'engine-held-secret')").bind(tenant).execute(&mut *tx).await.unwrap();
@@ -546,6 +556,11 @@ async fn scenario() {
     assert!(manifest["entities"].as_array().unwrap().contains(&json!({"entity": "Case", "records": 620})), "{manifest}");
     assert!(manifest["entities"].as_array().unwrap().contains(&json!({"table": "case_log", "records": 2})), "{manifest}");
     assert!(manifest["tables_left_out"].as_array().unwrap().contains(&json!("case_keys")), "a table nobody declared is named, not silently lost: {manifest}");
+    assert_eq!(
+        (manifest["files"].clone(), manifest["files_missing"][0]["file_name"].clone(), result["files_missing"].clone()),
+        (json!(1), json!("lost.txt"), json!(1))
+    );
+    assert!(!contents.contains_key(&format!("files/{lost_id}")) && !text("files/index.jsonl").contains("lost.txt"));
     let records: String = contents.keys().filter(|n| n.starts_with("records/Case/")).map(|n| text(n)).collect();
     assert_eq!(records.lines().count(), 620);
     assert!(records.contains("case-0619") && records.contains("row of 619"), "whole records, child rows too");

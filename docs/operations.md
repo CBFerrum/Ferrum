@@ -403,12 +403,14 @@ takes its turn.
 Jobs run at least once: a handler must be safe to repeat. Bulk jobs resume after the last 500 records
 they recorded, so a lost worker repeats no more than those. Finished jobs are deleted after 30 days.
 
-**Workspace exports.** `POST /api/admin/export` gives an administrator a copy of everything: records
-with their child rows, what packages list in `export_tables` (journals, stock moves), attached files,
-the audit trail, people, roles, permissions, customizations and automations, in zip parts of about
-128 MB of JSON lines and files, deleted after 7 days. Passwords, sign-in factors, secret fields,
-sealed settings, API keys and sessions stay out. `manifest.json` names every workspace table it did
-not carry (`tables_left_out`): read it before relying on an export as a way out.
+**Workspace exports.** The Workspace tab of Administration (or `POST /api/admin/export`) gives an
+administrator a copy of everything: records with their child rows, what packages list in
+`export_tables` (journals, stock moves), attached files, the audit trail, people, roles, permissions,
+customizations and automations, in zip parts of about 128 MB of JSON lines and files, deleted after 7
+days or by a personal-data erasure, whichever comes first (the export then says so). Passwords,
+sign-in factors, secret fields, sealed settings, API keys and sessions stay out. `manifest.json` names
+every workspace table it did not carry (`tables_left_out`) and every file the storage no longer had
+(`files_missing`), which it goes on without: read it before relying on an export as a way out.
 
 ## Malware scanning
 
