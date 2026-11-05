@@ -104,6 +104,9 @@ pub enum Runtime {
     Wasm,
     /// Metadata only, no code.
     Meta,
+    /// Code on its publisher's servers, reached over HTTPS ([`ServiceDef`]): it acts as an account
+    /// of its own with the records its `access` names, and hears of the events it names.
+    Service,
 }
 
 impl fmt::Display for Runtime {
@@ -112,7 +115,29 @@ impl fmt::Display for Runtime {
             Runtime::Native => "native",
             Runtime::Wasm => "wasm",
             Runtime::Meta => "meta",
+            Runtime::Service => "service",
         })
+    }
+}
+
+/// Where a service app runs and what it hears of (`runtime: service`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceDef {
+    /// Its address: the server calls `{url}/install`, `{url}/events` and `{url}/uninstall`.
+    pub url: String,
+    /// Topics it hears of, as a plugin subscribes (`SalesInvoice.submitted`, `Customer.*`), each
+    /// about records its `access` reads. A delivery names the record, without its contents.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<String>,
+}
+
+impl ServiceDef {
+    /// The host its URL names (without a port), once the URL is valid.
+    pub fn host(&self) -> &str {
+        let rest = self.url.split_once("://").map_or("", |(_, r)| r);
+        let authority = rest.split('/').next().unwrap_or_default();
+        authority.rsplit_once(':').filter(|(_, port)| port.bytes().all(|b| b.is_ascii_digit())).map_or(authority, |(h, _)| h)
     }
 }
 
@@ -277,6 +302,9 @@ pub struct AppManifest {
     /// wasm apps only: `plugin.json` (the module is `plugin.wasm`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugin: Option<String>,
+    /// service apps only: where the service is and what it hears of.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<ServiceDef>,
     /// PascalCase namespace of a third-party app's entities (reserved per publisher in the store).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefix: Option<String>,
@@ -580,6 +608,12 @@ impl AppManifest {
             (rt, Some(_)) => return bad(format!("only wasm apps have a plugin (this app's runtime is {rt})")),
             (_, None) => {}
         }
+        match (self.runtime, &self.service) {
+            (Runtime::Service, None) => return bad("service apps must say where the service is (service.url)"),
+            (Runtime::Service, Some(s)) => self.validate_service(s)?,
+            (rt, Some(_)) => return bad(format!("only service apps have a service section (this app's runtime is {rt})")),
+            (_, None) => {}
+        }
 
         if let Some(p) = &self.prefix {
             if !is_prefix(p) {
@@ -622,11 +656,46 @@ impl AppManifest {
         self.validate_extensions()
     }
 
+    /// A service's address is a plain http(s) URL (the server takes plain http only where it
+    /// allows private addresses, for development), and it hears only of records it reads.
+    fn validate_service(&self, s: &ServiceDef) -> Result<(), AppError> {
+        let host = s.host();
+        if !is_web_url(&s.url)
+            || s.url.len() > 200
+            || s.url.contains(['?', '#', '@'])
+            || host.is_empty()
+            || !host.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+        {
+            return bad(format!("service.url must be an http(s) URL of at most 200 characters, without a query, fragment or user, not '{}'", s.url));
+        }
+        if s.events.len() > 50 {
+            return bad("service.events: at most 50 topics");
+        }
+        let reads = |entity: &str| self.access.iter().any(|a| a.read && (a.entity == "*" || a.entity == entity));
+        let mut seen = BTreeSet::new();
+        for t in &s.events {
+            if t.is_empty() || t.len() > 120 || !t.chars().all(|c| c.is_ascii_alphanumeric() || "._-*".contains(c)) {
+                return bad(format!("service.events: '{t}': use topics like SalesInvoice.submitted, SalesInvoice.* or *"));
+            }
+            if !seen.insert(t) {
+                return bad(format!("service.events: '{t}' is listed twice"));
+            }
+            let entity = t.split('.').next().unwrap_or_default();
+            if !reads(entity) {
+                return bad(format!("service.events: '{t}' is about {entity}, which its access does not read"));
+            }
+        }
+        Ok(())
+    }
+
     /// `parent`, `extension_points` and `contributes`. Contributions to another app's point are
     /// checked against its contract when a plan brings the two together.
     fn validate_resources(&self) -> Result<(), AppError> {
         if self.runtime == Runtime::Meta && !self.resources.is_empty() {
             return bad("resources: an app with no code has nothing to use them with");
+        }
+        if self.runtime == Runtime::Service && !self.resources.is_empty() {
+            return bad("resources: a service's code runs on its own servers, where the platform's resources do not reach");
         }
         let mut seen = BTreeSet::new();
         for r in &self.resources {
@@ -994,6 +1063,37 @@ contributes:
         rejected("runtime: wasm", "runtime: meta", "only wasm apps have a plugin");
         rejected("runtime: wasm", "runtime: native", "only wasm apps have a plugin");
         assert!(AppManifest::parse(&VALID.replace("runtime: wasm", "runtime: native").replace("plugin: plugin.json\n", "")).is_ok());
+    }
+
+    #[test]
+    fn service_rules() {
+        let service = |section: &str| {
+            VALID.replace("runtime: wasm", "runtime: service").replace("plugin: plugin.json\n", section).replace(
+                "uninstall: keep\n",
+                "access:\n  - {entity: Customer, read: true}\n  - {entity: SalesInvoice, read: true, write: true}\nuninstall: keep\n",
+            )
+        };
+        let ok = service("service:\n  url: https://svc.example.com:8443/ferrum\n  events: [Customer.created, SalesInvoice.*]\n");
+        let m = AppManifest::parse(&ok).unwrap();
+        let s = m.service.as_ref().unwrap();
+        assert_eq!((m.runtime, s.host(), s.events.len()), (Runtime::Service, "svc.example.com", 2));
+        let refused = |section: &str, needle: &str| {
+            let err = AppManifest::parse(&service(section)).expect_err(section).to_string();
+            assert!(err.contains(needle), "{section}: {err}");
+        };
+        refused("", "must say where the service is");
+        refused("service:\n  url: ftp://svc.example.com\n", "service.url");
+        refused("service:\n  url: https://svc.example.com/?key=1\n", "without a query");
+        refused("service:\n  url: https://me@svc.example.com/\n", "without a query");
+        refused("service:\n  url: https://svc.example.com\n  events: [Employee.created]\n", "which its access does not read");
+        refused("service:\n  url: https://svc.example.com\n  events: ['*']\n", "which its access does not read");
+        refused("service:\n  url: https://svc.example.com\n  events: [Customer.created, Customer.created]\n", "listed twice");
+        refused("service:\n  url: https://svc.example.com\n  events: [\"Customer created\"]\n", "use topics like");
+        rejected("uninstall: keep\n", "service:\n  url: https://svc.example.com\nuninstall: keep\n", "only service apps have a service section");
+        let meta = ok.replace("runtime: service", "runtime: meta");
+        assert!(AppManifest::parse(&meta).unwrap_err().to_string().contains("only service apps have a service section"));
+        let resources = ok.replace("uninstall: keep\n", RESOURCE);
+        assert!(AppManifest::parse(&resources).unwrap_err().to_string().contains("where the platform's resources do not reach"));
     }
 
     #[test]

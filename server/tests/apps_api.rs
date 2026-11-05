@@ -572,6 +572,7 @@ async fn scenario() {
     assert!(c.schema.entity("GwDevice").is_some() && c.schema.entity("KtThing").is_some());
     assert!(c.schema.entity("Customer").unwrap().field("kt_level").is_some());
     let p = plugin(&host, &k, &c, "gw").await.expect("plugin installed");
+    assert_eq!(count(&k, "select count(*) from app_user where email = 'gw@plugins.ferrum.invalid' and kind = 'service'").await, 1, "its account takes no seat");
     assert_eq!((p["enabled"].as_bool(), p["version"].as_str(), p["config_keys"].clone()), (Some(true), Some("2.1.0"), json!(["greeting"])));
     let o = dev.overview(&c).await.unwrap();
     let g = installed(&o, "gw").unwrap();

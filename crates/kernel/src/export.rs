@@ -226,7 +226,7 @@ const TABLES: &[(&str, &str, &str)] = &[
     (
         "config/webhooks",
         "webhook",
-        "select jsonb_build_object('id', id, 'name', name, 'url', url, 'topics', topics, 'is_active', is_active, 'created_at', created_at) \
+        "select jsonb_build_object('id', id, 'name', name, 'url', url, 'topics', topics, 'is_active', is_active, 'created_at', created_at, 'app', app) \
          from webhook where tenant_id = $1 order by id",
     ),
     ("collaboration/comments", "record_comment", "select to_jsonb(t) - 'tenant_id' from record_comment t where tenant_id = $1"),
