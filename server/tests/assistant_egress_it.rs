@@ -211,6 +211,7 @@ async fn scenario() {
                 call("t4", "search_records", json!({"entity": "Person", "filters": [["salary", "like", "SALARY%"]]})),
                 call("t5", "search_records", json!({"entity": "Person", "sort": "salary desc"})),
                 call("t6", "get_audit_trail", json!({"entity": "Person", "id": person_id})),
+                call("t9", "search_workspace", json!({"q": "Pat"})),
             ],
             "tool_use",
         ),
@@ -236,6 +237,7 @@ async fn scenario() {
     assert!(sent.contains("you cannot filter on 'salary'"), "no working it out by filter");
     assert!(sent.contains("you cannot sort by 'salary'"), "or by order");
     assert!(sent.contains("hidden"), "the trail shows that it changed, never to what");
+    assert!(sent.contains("/open/Person/") && !sent.contains("/open/Payslip/"), "the workspace's search finds Pat, and not Pat's payslip");
 
     // And nothing changed without the person.
     let t = assistant::thread(&env, &admin, thread).await.unwrap();
