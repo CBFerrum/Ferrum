@@ -209,11 +209,17 @@ async fn scenario() {
     let walk_in = k.insert(&admin, "Visitor", obj(json!({"full_name": "Pat Lee", "phone": "+1 (555) 0100"}))).await.unwrap();
     let namesake = k.insert(&admin, "Visitor", obj(json!({"full_name": "pat   LEE", "email": "p.lee@else.test"}))).await.unwrap();
     k.insert(&admin, "Visitor", obj(json!({"full_name": "Sam Roe", "phone": "+1 555 0199"}))).await.unwrap();
+    // One recorded without the country code is only possibly theirs.
+    let local = k.insert(&admin, "Visitor", obj(json!({"full_name": "P. Lee", "phone": "555-0100"}))).await.unwrap();
     let person = |phone: &str, name: &str| Person { email: "pat@old.test".into(), phone: Some(phone.into()), name: Some(name.into()) };
     let wider = k.personal_data_of(&admin, &person("+1-555-0100", "Pat Lee")).await.unwrap();
     assert_eq!(wider["records"].as_array().unwrap().len(), 5, "the walk-in as well: {wider}");
     assert!(ids(&wider["records"]).contains(&walk_in["id"].as_str().unwrap().to_string()));
-    assert_eq!(ids(&wider["possibly"]), vec![namesake["id"].as_str().unwrap().to_string()], "the namesake, apart from what is theirs");
+    assert_eq!(
+        ids(&wider["possibly"]),
+        vec![namesake["id"].as_str().unwrap().to_string(), local["id"].as_str().unwrap().to_string()],
+        "the namesake and the number without its country code, apart from what is theirs"
+    );
     assert_eq!(wider["phone"], json!("15550100"));
     assert!(matches!(k.personal_data_of(&admin, &person("55", "")).await, Err(Error::Validation(_))), "too few digits to name anyone");
 
