@@ -597,6 +597,10 @@ async fn scenario() {
     dev.set_enabled(&admin, "notes", true).await.unwrap();
     let shown = dev.shell_apps(tenant).await.unwrap();
     assert_eq!(shown.iter().find(|a| a.id == "notes").map(|a| a.version.as_str()), Some("0.2.0"));
+    // Its update lists only the entities the workspace does not have yet: none.
+    let update = dev.plan(&ctx().await, "notes", None).await.unwrap();
+    assert_eq!(update.steps.iter().map(|s| s.action).collect::<Vec<_>>(), [StepAction::Upgrade]);
+    assert!(update.permissions.new_entities.is_empty(), "{:?}", update.permissions.new_entities);
 
     // ── dependencies hold: kit cannot go while gw needs it ──
     let err = dev.uninstall(&admin, "kit", false).await.unwrap_err();

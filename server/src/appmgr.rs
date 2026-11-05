@@ -1331,7 +1331,9 @@ impl AppManager {
             let (manifest, permissions, readme_text, equipment_of, verified, trusted, source) = match &offer.origin {
                 Origin::Native => {
                     let m = self.native(&r.id).cloned().ok_or_else(|| Error::internal("native app vanished"))?;
-                    let p = self.native_permissions(&m);
+                    let mut p = self.native_permissions(&m);
+                    // An update brings only the entities the workspace does not have yet.
+                    p.new_entities.retain(|e| ctx.schema.entity(e).is_none());
                     (m, p, None, Value::Null, true, true, "native".to_string())
                 }
                 Origin::Local(rel) => {
