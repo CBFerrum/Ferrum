@@ -253,6 +253,8 @@ macro_rules! apps {
             out.push(("control", ferrum_app_control::UI));
             #[cfg(feature = "social")]
             out.push(("social", ferrum_app_social::UI));
+            #[cfg(feature = "developers")]
+            out.push(("developers", ferrum_app_developers::UI));
             #[cfg(feature = "field-service")]
             out.push(("field-service", ferrum_app_field_service::UI));
             #[cfg(feature = "lms")]
@@ -371,6 +373,7 @@ apps! {
         "docs" => ferrum_app_docs,
         "campaigns" => ferrum_app_campaigns,
         "sign" => ferrum_app_sign,
+        "developers" => ferrum_app_developers,
     }
     legacy {
     }

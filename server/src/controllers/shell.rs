@@ -160,11 +160,32 @@ pub(crate) async fn page_bootstrap(
     boot["host"]["bound"] = json!(matches!(st.shell.place(headers).await, Ok(Place::Workspace(_) | Place::Portal(_))));
     // Web Push (§12.5): the key a device subscribes with, and whether this one has. None for
     // callers without a browser session, or a server without a secret key.
+    boot["offline"] = offline(st, ctx, &kind).await.map_err(err)?;
     boot["push"] = match (device, st.kernel.vapid().await.map_err(err)?) {
         (Some(d), Some(v)) => json!({"key": v.public, "on": st.kernel.push_status(ctx, Some(d)).await.map_err(err)?.here}),
         _ => Value::Null,
     };
     Ok((boot, kind))
+}
+
+/// The person's offline lease (`shell::offline_lease`) under the workspace's policy.
+async fn offline(st: &AppState, ctx: &Ctx, kind: &str) -> ferrum_kernel::Result<Value> {
+    let mut tx = st.kernel.db.tenant_tx(ctx.tenant).await?;
+    let (policy, token_version): (Option<Value>, i32) =
+        sqlx::query_as("select t.settings->'offline', u.token_version from tenant t join app_user u on u.tenant_id = t.id where t.id = $1 and u.id = $2")
+            .bind(ctx.tenant)
+            .bind(ctx.user)
+            .fetch_one(&mut *tx)
+            .await?;
+    tx.commit().await?;
+    Ok(shell::offline_lease(policy.as_ref(), ctx.tenant, ctx.user, token_version, kind, chrono::Utc::now()))
+}
+
+/// `GET /api/shell/offline`: the lease again, for a page that stays open for days (a till).
+async fn offline_lease(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    let kind = st.shell.kind(ctx.tenant, ctx.user).await?;
+    Ok(Json(offline(&st, &ctx, &kind).await?).into_response())
 }
 
 /// `GET /`: the shell's Home; someone signed out signs in first.
@@ -1227,5 +1248,6 @@ pub fn routes() -> Routes {
         .add("/{*path}", get(page))
         .add("/api/shell", get(shell_info))
         .add("/api/shell/version", get(version))
+        .add("/api/shell/offline", get(offline_lease))
         .add("/api/shell/app-token", axum::routing::post(app_token))
 }

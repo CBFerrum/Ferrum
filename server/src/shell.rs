@@ -1077,6 +1077,19 @@ pub fn bootstrap(ws: &WorkspaceInfo, host: &str, ctx: &Ctx, kind: &str, state: &
     })
 }
 
+/// What a device may keep of the workspace for when it is offline (FERRUM-UX-007, docs/offline.md):
+/// for members, unless the workspace turns it off (`offline: {"allowed": false}`), for `hours` from
+/// now (72 unless the workspace says 1 to 720). `key` stands for the person and their sign-in, so a
+/// device forgets what it kept for them when either changes: another person signs in there, or
+/// they are signed out everywhere, turned off, or their password changes.
+pub fn offline_lease(policy: Option<&Value>, tenant: Uuid, user: Uuid, token_version: i32, kind: &str, now: chrono::DateTime<chrono::Utc>) -> Value {
+    let allowed = kind == "member" && policy.and_then(|p| p.get("allowed")).and_then(Value::as_bool) != Some(false);
+    let hours = policy.and_then(|p| p.get("hours")).and_then(Value::as_i64).filter(|h| (1..=720).contains(h)).unwrap_or(72);
+    let key = hex::encode(&Sha256::digest(format!("ferrum-offline-v1\n{tenant}\n{user}\n{token_version}"))[..8]);
+    let until = allowed.then(|| (now + chrono::Duration::hours(hours)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+    json!({"allowed": allowed, "until": until, "hours": hours, "key": key, "person": user})
+}
+
 /// Which way pages in a language read: right to left for the scripts that do.
 pub fn direction(tag: &str) -> &'static str {
     const RTL: &[&str] = &["ar", "arc", "ckb", "dv", "fa", "he", "ks", "ps", "sd", "ug", "ur", "yi"];
@@ -1766,6 +1779,23 @@ mod tests {
             "{html}"
         );
         assert!(!html.contains("allow-top-navigation"), "{html}");
+    }
+
+    #[test]
+    fn an_offline_lease_follows_the_policy_and_the_sign_in() {
+        let (t, u) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-06T10:00:00Z").unwrap().with_timezone(&chrono::Utc);
+        let lease = offline_lease(None, t, u, 3, "member", now);
+        assert_eq!((&lease["allowed"], &lease["until"], &lease["hours"]), (&json!(true), &json!("2026-11-09T10:00:00Z"), &json!(72)));
+        let short = offline_lease(Some(&json!({"hours": 8})), t, u, 3, "member", now);
+        assert_eq!(short["until"], "2026-11-06T18:00:00Z");
+        assert_eq!(short["key"], lease["key"], "the same person and sign-in, the same key");
+        assert_ne!(offline_lease(None, t, u, 4, "member", now)["key"], lease["key"], "signed out everywhere: a new key");
+        assert_ne!(offline_lease(None, t, Uuid::from_u128(9), 3, "member", now)["key"], lease["key"], "another person: another key");
+        for (policy, kind) in [(Some(json!({"allowed": false})), "member"), (None, "guest"), (None, "portal")] {
+            let none = offline_lease(policy.as_ref(), t, u, 3, kind, now);
+            assert_eq!((&none["allowed"], &none["until"]), (&json!(false), &Value::Null), "{kind}");
+        }
     }
 
     #[test]
