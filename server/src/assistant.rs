@@ -93,9 +93,20 @@ struct Policy {
     egress: Egress,
 }
 
+/// How the model's service is spoken to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Protocol {
+    /// Anthropic's Messages API, or a proxy that speaks it.
+    Anthropic,
+    /// An OpenAI-compatible chat API (OpenAI's, Azure's, or a model served locally): text, tools
+    /// and usage carry over (`assistant_openai`).
+    OpenAi,
+}
+
 /// The operator's settings, from the environment.
 #[derive(Clone, Debug)]
 pub struct Config {
+    pub protocol: Protocol,
     pub api_key: String,
     pub model: String,
     /// The API's address (a proxy or a test server instead of Anthropic's).
@@ -112,25 +123,27 @@ pub struct Config {
 }
 
 impl Config {
-    /// `FERRUM_ASSISTANT_API_KEY` (required), `_MODEL`, `_URL`, `_EFFORT`, `_FALLBACKS` (`on`/`off`),
-    /// `_CALLS_PER_HOUR`.
+    /// `FERRUM_ASSISTANT_API_KEY` (required), `_PROTOCOL` (`anthropic` or `openai`), `_MODEL`,
+    /// `_URL`, `_EFFORT`, `_FALLBACKS` (`on`/`off`), `_CALLS_PER_HOUR`.
     pub fn from_env() -> Option<Config> {
         let env = |k: &str| std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
         let api_key = env("FERRUM_ASSISTANT_API_KEY")?;
+        let protocol = if env("FERRUM_ASSISTANT_PROTOCOL").as_deref() == Some("openai") { Protocol::OpenAi } else { Protocol::Anthropic };
         let model = env("FERRUM_ASSISTANT_MODEL").unwrap_or_else(|| "claude-opus-5-5".into());
         let base_url = env("FERRUM_ASSISTANT_URL").unwrap_or_else(|| "https://api.anthropic.com".into()).trim_end_matches('/').to_string();
         let effort =
             env("FERRUM_ASSISTANT_EFFORT").filter(|e| ["low", "medium", "high", "xhigh", "max"].contains(&e.as_str())).unwrap_or_else(|| "medium".into());
         // Anthropic's API takes them for the models that have them; a proxy may not.
-        let fallbacks = match env("FERRUM_ASSISTANT_FALLBACKS").as_deref() {
-            Some("off") => false,
-            Some(_) => true,
-            None => base_url == "https://api.anthropic.com" && FALLBACK_MODELS.contains(&model.as_str()),
-        };
+        let fallbacks = protocol == Protocol::Anthropic
+            && match env("FERRUM_ASSISTANT_FALLBACKS").as_deref() {
+                Some("off") => false,
+                Some(_) => true,
+                None => base_url == "https://api.anthropic.com" && FALLBACK_MODELS.contains(&model.as_str()),
+            };
         let calls_per_hour = env("FERRUM_ASSISTANT_CALLS_PER_HOUR").and_then(|v| v.parse().ok()).filter(|n| *n > 0).unwrap_or(120);
         let models = env("FERRUM_ASSISTANT_MODELS").map(|m| m.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
         let monthly_tokens = env("FERRUM_ASSISTANT_MONTHLY_TOKENS").and_then(|v| v.parse().ok());
-        Some(Config { api_key, model, base_url, effort, fallbacks, calls_per_hour, models, monthly_tokens })
+        Some(Config { protocol, api_key, model, base_url, effort, fallbacks, calls_per_hour, models, monthly_tokens })
     }
 }
 
@@ -830,17 +843,26 @@ impl Assistant {
         if config.fallbacks {
             betas.push("server-side-fallback-2026-07-01");
         }
-        let mut res = self
-            .http
-            .post(format!("{}/v1/messages", config.base_url))
-            .header("x-api-key", &config.api_key)
-            .header("anthropic-version", API_VERSION)
-            .header("anthropic-beta", betas.join(","))
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(body.to_string())
-            .send()
-            .await
-            .map_err(|e| CallError { message: format!("the model's service could not be reached: {e}"), retryable: true, retry_after: None, stopped: false })?;
+        let openai = config.protocol == Protocol::OpenAi;
+        let request = if openai {
+            self.http
+                .post(format!("{}/v1/chat/completions", config.base_url))
+                .bearer_auth(&config.api_key)
+                .body(crate::assistant_openai::request(body).to_string())
+        } else {
+            self.http
+                .post(format!("{}/v1/messages", config.base_url))
+                .header("x-api-key", &config.api_key)
+                .header("anthropic-version", API_VERSION)
+                .header("anthropic-beta", betas.join(","))
+                .body(body.to_string())
+        };
+        let mut res = request.header(header::CONTENT_TYPE, "application/json").send().await.map_err(|e| CallError {
+            message: format!("the model's service could not be reached: {e}"),
+            retryable: true,
+            retry_after: None,
+            stopped: false,
+        })?;
         let status = res.status();
         if !status.is_success() {
             let retry_after = res.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok()).map(Duration::from_secs);
@@ -856,6 +878,7 @@ impl Assistant {
         }
         let mut reader = SseReader::default();
         let mut asm = Assembler::default();
+        let mut chat = crate::assistant_openai::Stream::default();
         let mut tail = Vec::new();
         loop {
             if stop.load(Ordering::SeqCst) {
@@ -875,8 +898,17 @@ impl Assistant {
             let text = String::from_utf8_lossy(&tail[..valid]).into_owned();
             tail.drain(..valid);
             for ev in reader.push(&text) {
-                asm.apply(&ev, on)?;
+                if openai {
+                    for e in chat.events(&ev) {
+                        asm.apply(&e, on)?;
+                    }
+                } else {
+                    asm.apply(&ev, on)?;
+                }
             }
+        }
+        for e in chat.end() {
+            asm.apply(&e, on)?;
         }
         asm.finish()
     }
