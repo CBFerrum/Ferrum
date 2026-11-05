@@ -102,6 +102,11 @@ fn action_index(a: Action) -> usize {
     }
 }
 
+/// The verbs consents, declarations and records keys name actions by.
+pub fn action_verbs() -> impl Iterator<Item = &'static str> {
+    ACTIONS.iter().map(|(_, verb)| *verb)
+}
+
 /// Every action, with the verb consents and declarations use for it.
 const ACTIONS: [(Action, &str); 8] = [
     (Action::Read, "read"),

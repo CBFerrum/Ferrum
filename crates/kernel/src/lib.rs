@@ -282,6 +282,9 @@ impl Kernel {
         if let Err(e) = self.expire_support().await {
             tracing::warn!("closing expired support access: {e}");
         }
+        if let Err(e) = self.expire_roles().await {
+            tracing::warn!("removing ended role grants: {e}");
+        }
         let purged = self.purge_old_events(self.settings.event_retention_days).await?
             + self.oauth_purge().await?
             + self.purge_sessions().await?

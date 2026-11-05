@@ -41,7 +41,10 @@ async fn list_users(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult
         "select jsonb_build_object('id', u.id, 'email', u.email, 'full_name', u.full_name, 'is_active', u.is_active, \
          'is_admin', u.is_admin, 'last_login_at', u.last_login_at, 'locked', coalesce(u.locked_until > now(), false), \
          'two_factor', u.totp_enabled_at is not null, 'sso', u.sso_subject is not null, 'kind', u.kind, \
-         'roles', coalesce((select jsonb_agg(r.role order by r.role) from user_role r where r.tenant_id = u.tenant_id and r.user_id = u.id), '[]'::jsonb), \
+         'roles', coalesce((select jsonb_agg(r.role order by r.role) from user_role r where r.tenant_id = u.tenant_id and r.user_id = u.id \
+                   and (r.expires_at is null or r.expires_at > now())), '[]'::jsonb), \
+         'role_until', coalesce((select jsonb_object_agg(r.role, r.expires_at) from user_role r where r.tenant_id = u.tenant_id and r.user_id = u.id \
+                   and r.expires_at > now()), '{}'::jsonb), \
          'scopes', coalesce((select jsonb_agg(jsonb_build_object('entity', s.entity, 'value', s.value, 'is_default', s.is_default)) \
                     from user_scope s where s.tenant_id = u.tenant_id and s.user_id = u.id), '[]'::jsonb)) \
          from app_user u where u.tenant_id = $1 order by u.email",
@@ -96,10 +99,13 @@ async fn set_kind(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path
 #[derive(Deserialize)]
 struct Roles {
     roles: Vec<String>,
+    /// The roles held only until a moment, and that moment; the others are held for good.
+    #[serde(default)]
+    until: std::collections::BTreeMap<String, chrono::DateTime<chrono::Utc>>,
 }
 
 async fn set_roles(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>, Json(r): Json<Roles>) -> ApiResult<Response> {
-    app_state(&app)?.kernel.set_user_roles(&ctx, id, &r.roles).await?;
+    app_state(&app)?.kernel.set_user_roles_until(&ctx, id, &r.roles, &r.until).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 

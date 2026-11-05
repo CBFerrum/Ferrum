@@ -1,5 +1,8 @@
 //! No-code automations: `event → condition (CEL) → actions`, run after commit from the outbox.
 //! Each (automation, event) runs at most once: the run record commits with the action's effects.
+//! An automation runs as the administrator who saved it, with their rights as they are when it runs:
+//! once they are no longer an active administrator it does not run, and its runs say why, until an
+//! administrator saves it again. One saved by no one (an app's) runs as the system.
 
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
@@ -77,6 +80,27 @@ struct Automation {
     id: Uuid,
     condition: Option<String>,
     actions: Value,
+    created_by: Option<Uuid>,
+}
+
+/// Whom an automation runs as: the administrator who saved it, read now; or why it may not run.
+async fn runner(
+    k: &Kernel,
+    tenant: Uuid,
+    schema: &std::sync::Arc<ferrum_meta::Schema>,
+    made_by: Option<Uuid>,
+    request_id: String,
+) -> std::result::Result<Ctx, String> {
+    let Some(user) = made_by else {
+        let mut ctx = Ctx::system(tenant, schema.clone());
+        ctx.request_id = request_id;
+        return Ok(ctx);
+    };
+    match k.load_ctx(tenant, user, None, request_id).await {
+        Ok(ctx) if ctx.is_admin => Ok(ctx),
+        Ok(ctx) => Err(format!("{}, who saved it, is no longer an administrator: an administrator saves it again", ctx.email)),
+        Err(_) => Err("whoever saved it can no longer sign in here: an administrator saves it again".into()),
+    }
 }
 
 pub async fn run_for_event(k: &Kernel, ev: &Event) -> Result<()> {
@@ -86,13 +110,14 @@ pub async fn run_for_event(k: &Kernel, ev: &Event) -> Result<()> {
         return Ok(());
     }
     let mut tx = k.db.tenant_tx(ev.tenant_id).await?;
-    let autos: Vec<Automation> =
-        sqlx::query_as("select id, condition, actions from automation where tenant_id = $1 and entity = $2 and event = $3 and is_active order by created_at")
-            .bind(ev.tenant_id)
-            .bind(entity)
-            .bind(event)
-            .fetch_all(&mut *tx)
-            .await?;
+    let autos: Vec<Automation> = sqlx::query_as(
+        "select id, condition, actions, created_by from automation where tenant_id = $1 and entity = $2 and event = $3 and is_active order by created_at",
+    )
+    .bind(ev.tenant_id)
+    .bind(entity)
+    .bind(event)
+    .fetch_all(&mut *tx)
+    .await?;
     tx.commit().await?;
     if autos.is_empty() {
         return Ok(());
@@ -103,9 +128,26 @@ pub async fn run_for_event(k: &Kernel, ev: &Event) -> Result<()> {
     let cel_doc = ent.cel_view(&doc, &schema);
     let mut first_error = None;
     for a in autos {
-        let mut ctx = Ctx::system(ev.tenant_id, schema.clone());
+        let mut ctx = match runner(k, ev.tenant_id, &schema, a.created_by, format!("automation-{}-{}", a.id, ev.id)).await {
+            Ok(ctx) => ctx,
+            Err(why) => {
+                // Recorded, so it is not tried again for this event, and an administrator can see why.
+                let mut tx = k.db.tenant_tx(ev.tenant_id).await?;
+                sqlx::query(
+                    "insert into automation_run (tenant_id, automation_id, outbox_id, status, error) values ($1, $2, $3, 'failed', $4) on conflict do nothing",
+                )
+                .bind(ev.tenant_id)
+                .bind(a.id)
+                .bind(ev.id)
+                .bind(&why)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+                tracing::warn!(automation = %a.id, event = ev.id, "automation not run: {why}");
+                continue;
+            }
+        };
         ctx.depth = depth + 1;
-        ctx.request_id = format!("automation-{}-{}", a.id, ev.id);
         let user = ctx.user_value();
         let res: Result<&str> = async {
             let mut tx = k.db.tenant_tx(ev.tenant_id).await?;
@@ -185,7 +227,11 @@ async fn execute(
             let users: Vec<Uuid> = if to == "owner" {
                 doc.get("created_by").and_then(Value::as_str).and_then(|s| s.parse().ok()).into_iter().collect()
             } else if let Some(role) = to.strip_prefix("role:") {
-                sqlx::query_scalar("select user_id from user_role where tenant_id = $1 and role = $2").bind(ctx.tenant).bind(role).fetch_all(&mut **tx).await?
+                sqlx::query_scalar("select user_id from user_role where tenant_id = $1 and role = $2 and (expires_at is null or expires_at > now())")
+                    .bind(ctx.tenant)
+                    .bind(role)
+                    .fetch_all(&mut **tx)
+                    .await?
             } else if let Some(u) = to.strip_prefix("user:") {
                 vec![u.parse().map_err(|_| Error::invalid("notify: bad user id"))?]
             } else if let Some(field) = to.strip_prefix("field:") {
@@ -219,7 +265,7 @@ async fn execute(
 
 /// Validates and stores an automation definition.
 pub async fn save(k: &Kernel, ctx: &Ctx, input: &Map<String, Value>) -> Result<Uuid> {
-    // What it says runs as the system, so saying it takes an administrator.
+    // What it says runs with an administrator's rights (its saver's), so saying it takes one.
     if !ctx.is_admin {
         return Err(Error::Forbidden("administrator access required".into()));
     }
@@ -246,7 +292,7 @@ pub async fn save(k: &Kernel, ctx: &Ctx, input: &Map<String, Value>) -> Result<U
         "insert into automation (tenant_id, id, name, entity, event, condition, actions, is_active, created_by) \
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9) on conflict (tenant_id, id) do update set name = excluded.name, \
          entity = excluded.entity, event = excluded.event, condition = excluded.condition, actions = excluded.actions, \
-         is_active = excluded.is_active, updated_at = now()",
+         is_active = excluded.is_active, created_by = excluded.created_by, updated_at = now()",
     )
     .bind(ctx.tenant)
     .bind(id)
