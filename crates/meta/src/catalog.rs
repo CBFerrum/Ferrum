@@ -226,6 +226,39 @@ impl Catalog {
                     return invalid(format!("{name}: personal data of {}: a child table's rows are not records of their own", pd.entity));
                 }
                 let field = |f: &str| e.fields.iter().find(|x| x.name == f);
+                if pd.erase.is_empty() == pd.retain.is_none() {
+                    return invalid(format!("{name}: personal data of {}: list the fields to erase, or say in `retain` why the records stay", pd.entity));
+                }
+                if let Some(c) = pd.condition.keys().find(|c| field(c).is_none()) {
+                    return invalid(format!("{name}: personal data of {}: {c} is not a field", pd.entity));
+                }
+                // People held in a child table's rows: `table.field` names the table and the field
+                // with their address. Only those rows are the person's: erasure removes them (the
+                // table in `erase`) or blanks their fields (`table.field`), and leaves the record.
+                if let Some((table, at)) = pd.match_field.split_once('.') {
+                    let rows = field(table).filter(|f| f.ftype == FieldType::Table).and_then(|f| f.of.as_deref()).and_then(|c| self.entities.get(c));
+                    let Some((_, rows)) = rows else {
+                        return invalid(format!("{name}: personal data of {}: {table} is not a table of it", pd.entity));
+                    };
+                    let row_field = |f: &str| rows.fields.iter().find(|x| x.name == f);
+                    if row_field(at).is_none_or(|f| !matches!(f.ftype, FieldType::Email | FieldType::Data)) {
+                        return invalid(format!("{name}: personal data of {}: {at} is not an email (or data) field of {table}'s rows", pd.entity));
+                    }
+                    if pd.phone.is_some() || pd.name.is_some() {
+                        return invalid(format!("{name}: personal data of {}: rows matched in a table take no phone or name", pd.entity));
+                    }
+                    let erasable = |f: &String| {
+                        f == table
+                            || f.strip_prefix(table)
+                                .and_then(|r| r.strip_prefix('.'))
+                                .and_then(row_field)
+                                .is_some_and(|x| crate::types::ERASABLE_TYPES.contains(&x.ftype) && x.ftype != FieldType::Table)
+                    };
+                    if let Some(f) = pd.erase.iter().find(|f| !erasable(f)) {
+                        return invalid(format!("{name}: personal data of {}: erase {f}: name {table} (its rows go) or {table}.<field> (blanked)", pd.entity));
+                    }
+                    continue;
+                }
                 // Records that hold no address are matched by the phone field they name, or by a link
                 // to a record another declaration finds by address or number.
                 let by_phone = pd.phone.as_deref() == Some(pd.match_field.as_str());
@@ -245,16 +278,10 @@ impl Catalog {
                         pd.entity
                     ));
                 }
-                if pd.erase.is_empty() == pd.retain.is_none() {
-                    return invalid(format!("{name}: personal data of {}: list the fields to erase, or say in `retain` why the records stay", pd.entity));
-                }
                 for f in &pd.erase {
                     if field(f).is_none_or(|x| !crate::types::ERASABLE_TYPES.contains(&x.ftype)) {
                         return invalid(format!("{name}: personal data of {}: {f} is not a text, contact, date, JSON or table field", pd.entity));
                     }
-                }
-                if let Some(c) = pd.condition.keys().find(|c| field(c).is_none()) {
-                    return invalid(format!("{name}: personal data of {}: {c} is not a field", pd.entity));
                 }
                 if pd.phone.as_deref().is_some_and(|f| field(f).is_none_or(|x| !matches!(x.ftype, FieldType::Phone | FieldType::Data))) {
                     return invalid(format!("{name}: personal data of {}: phone must be a phone (or data) field", pd.entity));

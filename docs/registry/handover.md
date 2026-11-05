@@ -3,6 +3,20 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-05, evening: people in a child table's rows, and the direct writes reviewed
+
+**State:** this PR follows PR 65. No release was tagged.
+
+| Where | What |
+|---|---|
+| This PR: rows | A personal-data declaration may match people held in a child table's rows (`match: table.field`): a request copies those rows alone, erasure removes them (the table in `erase`) or blanks their fields (`table.field`) and leaves the record, its other rows and its files, and the journal names the rows by id so a restore loses them again (FERRUM-PRIVACY-002) |
+| This PR: direct writes | The 96 statements in 13 apps that write entity tables outside the document pipeline, reviewed and listed by kind (`docs/registry/mutation-paths.md`): workspace isolation and legal holds hold on all of them in the database, actions are audited before their handlers write, and the sharing, approval and consent paths record what they do (FERRUM-PLATFORM-011) |
+
+**Evidence:**
+- `crates/kernel/tests/privacy_it.rs`: a host's visit lists Pat and Kim as companions; Pat's request copies her row alone (not the host's address); erasing her removes her row and leaves Kim's, the host's name and address; the journal holds the row's id and no address, and replayed after the row is put back, it removes it again. Declarations matching rows with a phone, erasing the record's own field, or naming a table the entity has not are refused.
+
+**Not done:** Edge declares its customer people and report recipients once this is on main; the review's open points (public endpoints' validation, engine updates and versions) are listed in it.
+
 ## 2026-11-05, late: state field rules, backfills, a subscription's revenue over its days, and the people seven apps hold
 
 **State:** this PR follows PR 64. Its lock takes ERP 0.14.1, the personal-data declarations of seven apps, and every app's interface rebuilt with Ferrum-Frontend 00dea07; FRONTEND_REV takes Frontend PRs 27 to 29. No release was tagged.

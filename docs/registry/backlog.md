@@ -11,7 +11,7 @@ this repository, 161 built and awaiting qualification.
 - `FERRUM-PLATFORM-002` Authoritative ownership of each shared concept (Person, party, product and project are shared packages; employee, payment and consent are not yet one owned model across apps)
 - `FERRUM-PLATFORM-004` Typed cross-application contracts with stated idempotency and failure behaviour (Apps call ERP's engine as a crate, without a published contract for each operation)
 - `FERRUM-PLATFORM-007` Strong types at consequential boundaries (Money and tax go through ferrum-calc with decimals; documents stay JSON-shaped maps)
-- `FERRUM-PLATFORM-011` Equivalent integrity on every mutation path (Not audited path by path; app maintenance jobs that write SQL directly need a review)
+- `FERRUM-PLATFORM-011` Equivalent integrity on every mutation path (Reviewed on 5 November: the 96 statements in 13 apps that write entity tables outside the document pipeline, by kind (docs/registry/mutation-paths.md): engine work, consequences of audited operations, a person's action on a public link, and those that log their own activity)
 
 ## Ready: 4. Jobs, files, search, notifications, governance
 

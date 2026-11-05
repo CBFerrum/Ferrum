@@ -112,13 +112,15 @@ revisions, 25 declare their people's records. Construction, DAM, Docs, Edge, ERP
 Metrics, Objectives, Retail and Social declare nothing and are named in every answer as
 `not_searched`: what they hold of people is the addresses of staff on work done (owners,
 approvers, assignees, authors), which work records keep; Edge's customer people and report
-recipients sit in child rows; ERP's customers and suppliers are the platform's `parties`.
+recipients sit in child rows, which a declaration reaches now and Edge has yet to declare; ERP's
+customers and suppliers are the platform's `parties`.
 
 ## What it does not reach
 
-Comments' text, which stays under an anonymized author; addresses held only in a child table's rows
-(Edge's customer people and report recipients), which a declaration cannot name, since the rows are
-not records of their own; and the records of the packages that declare nothing. Submitted financial documents keep the names they carry, by design.
+Comments' text, which stays under an anonymized author, and the records of the packages that declare
+nothing. People held in a child table's rows are declared by the table and field (`table.field`):
+their copy holds those rows alone, and erasure removes or blanks them and leaves the record, its
+other rows and its files. Submitted financial documents keep the names they carry, by design.
 
 Some things hold nothing to reach: search keeps no words (it runs live over records, and the request
 log and traces carry paths without their query strings), and Studio keeps no results (every query
