@@ -4,7 +4,7 @@
 //! restored from before an erasure can be erased again from the journal.
 
 use ferrum_kernel::files::FileStore;
-use ferrum_kernel::privacy::JOURNAL_PREFIX;
+use ferrum_kernel::privacy::{JOURNAL_PREFIX, Person};
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::Catalog;
@@ -75,7 +75,7 @@ fn catalog() -> Catalog {
     let dir = temp("ok");
     write_catalog(
         &dir,
-        "  - {entity: Visitor, match: email, erase: [full_name, email, phone, notes]}\n  - {entity: Receipt, match: payer, retain: \"Accounting records\"}\n",
+        "  - {entity: Visitor, match: email, phone: phone, name: full_name, erase: [full_name, email, phone, notes]}\n  - {entity: Receipt, match: payer, retain: \"Accounting records\"}\n",
     );
     let c = Catalog::load_dir(&dir).expect("catalog");
     let _ = std::fs::remove_dir_all(&dir);
@@ -111,6 +111,8 @@ async fn scenario() {
     for (personal, why) in [
         ("  - {entity: Receipt, match: payer}\n", "neither erase nor retain"),
         ("  - {entity: Receipt, match: payer, erase: [payer], retain: \"Both\"}\n", "both erase and retain"),
+        ("  - {entity: Visitor, match: email, phone: notes, erase: [email]}\n", "a phone that is no phone field"),
+        ("  - {entity: Visitor, match: email, name: nickname, erase: [email]}\n", "a name that is no field"),
     ] {
         let dir = temp("bad");
         write_catalog(&dir, personal);
@@ -174,6 +176,20 @@ async fn scenario() {
     assert!(stranger["records"].as_array().unwrap().is_empty() && stranger["account"].is_null());
     assert_eq!(stranger["addresses"], json!(["nobody@else.test"]));
     assert!(k.personal_data(&outsider, "pat@old.test").await.unwrap()["account"].is_null(), "another workspace finds nothing");
+
+    // ───────────── and by phone number, or name ─────────────
+    // A walk-in recorded with only a phone number is theirs when asked with that number, however
+    // either was written; a namesake is only possibly theirs, listed for a person to judge.
+    let walk_in = k.insert(&admin, "Visitor", obj(json!({"full_name": "Pat Lee", "phone": "+1 (555) 0100"}))).await.unwrap();
+    let namesake = k.insert(&admin, "Visitor", obj(json!({"full_name": "pat   LEE", "email": "p.lee@else.test"}))).await.unwrap();
+    k.insert(&admin, "Visitor", obj(json!({"full_name": "Sam Roe", "phone": "+1 555 0199"}))).await.unwrap();
+    let person = |phone: &str, name: &str| Person { email: "pat@old.test".into(), phone: Some(phone.into()), name: Some(name.into()) };
+    let wider = k.personal_data_of(&admin, &person("+1-555-0100", "Pat Lee")).await.unwrap();
+    assert_eq!(wider["records"].as_array().unwrap().len(), 4, "the walk-in as well: {wider}");
+    assert!(ids(&wider["records"]).contains(&walk_in["id"].as_str().unwrap().to_string()));
+    assert_eq!(ids(&wider["possibly"]), vec![namesake["id"].as_str().unwrap().to_string()], "the namesake, apart from what is theirs");
+    assert_eq!(wider["phone"], json!("15550100"));
+    assert!(matches!(k.personal_data_of(&admin, &person("55", "")).await, Err(Error::Validation(_))), "too few digits to name anyone");
 
     // ───────────── legal holds come before erasure ─────────────
     assert!(k.place_legal_hold(&admin, None, None, "Matter 7").await.is_err(), "of something");
@@ -304,4 +320,10 @@ async fn scenario() {
         .unwrap();
     tx.commit().await.unwrap();
     assert_eq!(taken, 1, "and taking one is itself in the history");
+
+    // An erasure asked with their phone number reaches the walk-in; a name alone erases nothing.
+    let by_phone = k.erase_personal_data_of(&admin, &person("+1 555 0100", "Pat Lee"), "Request 2").await.unwrap();
+    assert_eq!(ids(&by_phone["erased"]), vec![walk_in["id"].as_str().unwrap().to_string()], "{by_phone}");
+    let kept = k.get(&admin, "Visitor", namesake["id"].as_str().unwrap().parse().unwrap(), false).await.unwrap();
+    assert_eq!(kept["email"], json!("p.lee@else.test"), "the namesake is untouched");
 }
