@@ -59,11 +59,17 @@ SAGA = ("-p", "ferrum-kernel", "--test", "saga_it")
 SIGNUP = ("-p", "ferrum-kernel", "--test", "signup_it")
 ACCEPTANCE = ("-p", "ferrum-ops", "--test", "acceptance_it")
 INDUSTRIAL = ("-p", "ferrum-apps", "--lib", "industrial::tests")
+MANIFEST_UNIT = ("-p", "ferrum-apps", "--lib", "manifest::tests")
+SERVICES = ("-p", "ferrum-server", "--test", "service_apps_it")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
+    # Services on their publisher's servers.
+    ("service-hears-the-record", "crates/kernel/src/outbox.rs", "case when w.app is null then $4 else $4 - 'doc' end", "$4", SERVICES),
+    ("service-hears-what-it-cannot-read", "crates/apps/src/manifest.rs", "            if !reads(entity) {\n", "            if false {\n", MANIFEST_UNIT),
+    ("service-off-still-hears", "crates/kernel/src/service.rs", "update webhook set is_active = $3 where tenant_id = $1 and app = $2", "update webhook set is_active = $3 or true where tenant_id = $1 and app = $2", SERVICES),
     # An app built in elsewhere.
     ("extension-hooks-for-everyone", "server/src/packages.rs", "                hooks.scoped(&packages, |h| (app.register)(h));", "                (app.register)(hooks);", EXTENSIONS),
     ("extension-tasks-left-out", "server/src/app.rs", "            (app.tasks)(tasks);", "            let _ = app;", EXTENSIONS),

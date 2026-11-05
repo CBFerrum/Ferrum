@@ -602,3 +602,18 @@ The generated [backlog](backlog.md) is the full list. The most valuable next ste
 
 Most of the specification remains: see [capabilities.md](../capabilities.md). Nothing is
 `verified_complete`, because no release has been qualified and no person has reviewed anything.
+
+## 5 November: services on their publisher's servers (FERRUM-EXT-001)
+
+The fourth extension class: `runtime: service` with a `service: {url, events}` section. Installing
+makes the app an account of its own (kind `service`, role `service:<app>` carrying exactly its
+`access`), an API key for it, and a webhook (`webhook.app`) to `{url}/events`; the service is told
+at `{url}/install` with the key and the webhook's secret, and refuses by not answering 2xx, which
+undoes everything. Deliveries to an app's webhook leave the record's contents out (`payload -
+'doc'`): the service reads the record with its key. Off stops the key and the deliveries, removal
+revokes the key and posts a signed `{url}/uninstall`. Plugins' accounts are service accounts too
+now: they had been made as members, taking a seat (the migration moves existing ones).
+
+- Tested: `server/tests/service_apps_it.rs` against a stand-in service; three mutants.
+- Frontend PR 31 labels service apps and shows an app's webhook as the app's.
+- Not done: no store has reviewed a service; the store accepts the runtime once its Ferrum pin moves.

@@ -52,6 +52,7 @@ pub mod saga;
 pub mod scan;
 pub mod scim;
 pub mod secret;
+pub mod service;
 pub mod shell;
 pub mod signup;
 pub mod sso;

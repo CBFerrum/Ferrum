@@ -445,9 +445,11 @@ impl Kernel {
         }
         let mut tx = self.db.tenant_tx(ev.tenant_id).await?;
         let entity_wildcard = format!("{}.*", ev.topic.split('.').next().unwrap_or_default());
+        // An app's webhook hears which record, never what it holds: its service reads that with
+        // its own key, as far as its rights go.
         sqlx::query(
             "insert into webhook_delivery (tenant_id, id, webhook_id, outbox_id, topic, payload) \
-             select w.tenant_id, gen_random_uuid(), w.id, $2, $3, $4 from webhook w \
+             select w.tenant_id, gen_random_uuid(), w.id, $2, $3, case when w.app is null then $4 else $4 - 'doc' end from webhook w \
              where w.tenant_id = $1 and w.is_active and ($3 = any(w.topics) or '*' = any(w.topics) or $5 = any(w.topics)) \
              on conflict (tenant_id, webhook_id, outbox_id) do nothing",
         )
@@ -591,17 +593,13 @@ impl Kernel {
             .user_agent("Ferrum-Webhooks/1")
             .build()
             .map_err(|e| (None, e.to_string()))?;
-        let ts = chrono::Utc::now().timestamp();
-        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).map_err(|e| (None, e.to_string()))?;
-        mac.update(format!("{ts}.").as_bytes());
-        mac.update(&body);
-        let sig = hex::encode(mac.finalize().into_bytes());
+        let sig = signature(secret, chrono::Utc::now().timestamp(), &body).map_err(|e| (None, e.to_string()))?;
         let resp = client
             .post(parsed)
             .header("content-type", "application/json")
             .header("x-ferrum-event", topic)
             .header("x-ferrum-delivery", delivery.to_string())
-            .header("x-ferrum-signature", format!("t={ts},v1={sig}"))
+            .header("x-ferrum-signature", sig)
             .body(body)
             .send()
             .await
@@ -670,6 +668,14 @@ pub fn is_private(ip: IpAddr) -> bool {
                 || v6.to_ipv4_mapped().is_some_and(|v4| is_private(IpAddr::V4(v4)))
         }
     }
+}
+
+/// `t=<ts>,v1=<hex HMAC-SHA256 of '<ts>.<body>'>`: what `X-Ferrum-Signature` carries.
+pub fn signature(secret: &str, ts: i64, body: &[u8]) -> Result<String> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).map_err(Error::internal)?;
+    mac.update(format!("{ts}.").as_bytes());
+    mac.update(body);
+    Ok(format!("t={ts},v1={}", hex::encode(mac.finalize().into_bytes())))
 }
 
 pub fn ensure_webhook_url(url: &str) -> Result<()> {

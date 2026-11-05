@@ -283,6 +283,8 @@ struct Undo {
     recorded: bool,
     /// The installed version, and whether it had a `tenant_app` row.
     previous: Option<(String, bool)>,
+    /// A service set up afresh, at this address: told it was removed.
+    service: Option<String>,
 }
 
 enum Trust {
@@ -697,8 +699,24 @@ fn merge(into: &mut Permissions, p: &Permissions) {
         }
     }
     // Destructured so that a new kind of permission cannot be forgotten here.
-    let Permissions { native, entities, hooks, hosts, public_routes, sockets, schedules, subscriptions, new_entities, resources, overlays, roles, sql } = p;
+    let Permissions {
+        native,
+        services,
+        entities,
+        hooks,
+        hosts,
+        public_routes,
+        sockets,
+        schedules,
+        subscriptions,
+        new_entities,
+        resources,
+        overlays,
+        roles,
+        sql,
+    } = p;
     into.native |= native;
+    into.services.extend(services.iter().cloned());
     sets(&mut into.entities, entities);
     sets(&mut into.hooks, hooks);
     sets(&mut into.overlays, overlays);
@@ -1581,6 +1599,7 @@ impl AppManager {
                 plugin: None,
                 recorded: false,
                 previous: ws.apps.get(&s.id).map(|i| (i.version.clone(), i.row)),
+                service: None,
             };
             let mut outcome = self.apply_step(ctx, s, releases.get(&s.id), &plan.digest, &mut undo).await;
             if outcome.is_ok() {
@@ -1684,6 +1703,14 @@ impl AppManager {
             }
             plugin_id = Some(pid);
         }
+        if let Some(service) = s.manifest.service.as_ref().filter(|_| s.manifest.runtime == Runtime::Service) {
+            let access: Vec<_> = s.manifest.access.iter().map(|a| a.permission()).collect();
+            let new =
+                ferrum_kernel::service::NewService { app: &s.id, version: &s.version.to_string(), url: &service.url, events: &service.events, access: &access };
+            if self.kernel.install_service(&self.fresh(ctx).await?, new).await? {
+                undo.service = Some(service.url.clone());
+            }
+        }
         self.kernel.record_installation(ctx, &s.id, &s.version.to_string(), Some(digest), plugin_id).await?;
         undo.recorded = true;
         Ok(())
@@ -1695,6 +1722,9 @@ impl AppManager {
             let outcome: Result<()> = async {
                 if let Some(p) = u.plugin {
                     ignore_missing(self.plugins.remove(&self.kernel, ctx, p).await)?;
+                }
+                if let Some(url) = &u.service {
+                    self.kernel.remove_service(ctx, &u.id, Some(url)).await?;
                 }
                 if !u.packages.is_empty() {
                     self.kernel.uninstall_packages(&self.fresh(ctx).await?, &u.packages, false).await?;
@@ -1762,6 +1792,9 @@ impl AppManager {
             if let Some(p) = inst.plugin_id {
                 ignore_missing(self.plugins.set_enabled(&self.kernel, ctx, p, true).await)?;
             }
+            if manifest.as_ref().is_some_and(|m| m.runtime == Runtime::Service) {
+                self.kernel.set_service_enabled(ctx, id, true).await?;
+            }
         } else {
             let users = self.dependents(ctx.tenant, &ws, id, true).await?;
             if !users.is_empty() {
@@ -1774,6 +1807,9 @@ impl AppManager {
             }
             if let Some(p) = inst.plugin_id {
                 ignore_missing(self.plugins.set_enabled(&self.kernel, ctx, p, false).await)?;
+            }
+            if manifest.as_ref().is_some_and(|m| m.runtime == Runtime::Service) {
+                self.kernel.set_service_enabled(ctx, id, false).await?;
             }
             if !inst.row {
                 self.kernel.record_installation(ctx, id, &inst.version, None, None).await?;
@@ -1850,6 +1886,9 @@ impl AppManager {
         }
         if let Some(p) = inst.plugin_id {
             ignore_missing(self.plugins.remove(&self.kernel, ctx, p).await)?;
+        }
+        if let Some(m) = manifest.as_ref().filter(|m| m.runtime == Runtime::Service) {
+            self.kernel.remove_service(ctx, id, m.service.as_ref().map(|s| s.url.as_str())).await?;
         }
         if let (Some(m), Some(r)) = (&manifest, self.kernel.hooks.resources())
             && !m.resources.is_empty()
@@ -2468,7 +2507,9 @@ pub mod store {
     pub fn app(v: &Value, store: &str) -> Option<App> {
         let v = v.get("app").filter(|a| a.is_object()).unwrap_or(v);
         let id = text(v, &["id", "app_id"]).filter(|id| valid_id(id))?;
-        let runtime = text(v, &["runtime", "latest.runtime", "latest_release.runtime"]).filter(|r| matches!(*r, "native" | "wasm" | "meta")).unwrap_or("wasm");
+        let runtime = text(v, &["runtime", "latest.runtime", "latest_release.runtime"])
+            .filter(|r| matches!(*r, "native" | "wasm" | "meta" | "service"))
+            .unwrap_or("wasm");
         let flag = |paths: &[&str]| paths.iter().any(|p| at(v, p).and_then(Value::as_bool) == Some(true));
         Some(App {
             id: id.into(),
