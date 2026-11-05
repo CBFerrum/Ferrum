@@ -77,14 +77,18 @@ impl Kernel {
         }
     }
 
-    /// Active people in the workspace (for mentions and assignments); service users excluded.
+    /// The workspace's active members (for mentions and assignments), read by its members: portal
+    /// people, guests, service and support accounts are neither in it nor read it.
     pub async fn user_directory(&self, ctx: &Ctx) -> Result<Vec<Value>> {
         if ctx.user.is_nil() && !ctx.is_system {
             return Err(Error::Forbidden("the directory needs a signed-in user".into()));
         }
+        if !ctx.is_system && self.user_kind(ctx.tenant, ctx.user).await? != "member" {
+            return Err(Error::Forbidden("the directory of people is for the workspace's members".into()));
+        }
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
-            "select id, full_name, email from app_user where tenant_id = $1 and is_active and email not like '%@plugins.ferrum.invalid' \
+            "select id, full_name, email from app_user where tenant_id = $1 and is_active and kind = 'member' \
              order by lower(full_name), email limit 2000",
         )
         .bind(ctx.tenant)
