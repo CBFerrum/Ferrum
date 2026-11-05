@@ -3,6 +3,28 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-06, early: three journeys through the pages, files streamed by four apps, axe in the Frontend's tests
+
+**State:** this PR follows PR 74. Its lock takes Drive 0.13.0, Comms 0.10.0, Helpdesk 0.7.0 and Learn
+0.6.0, and FRONTEND_REV takes Frontend PR 33. No release was tagged.
+
+| Where | What |
+|---|---|
+| Journeys | Support to resolution, field work to invoice and lead to cash walked through the pages on a running server ([the walk](../platform/evidence/browser-2026-11-06-journeys.md)); FERRUM-JOURNEY-001, 004 and 007 are implemented, waiting only on an independent reviewer |
+| Drive, Comms, Helpdesk, Learn | Downloads and attachments answer with the stored file, streamed by the server (PR 72); FERRUM-OPS-006 waits on resumable uploads |
+| Frontend PR 33 | axe-core over every screen the render tests draw; FERRUM-UX-005 stays blocked on the manual audit |
+| SDK PR 3 | Examples of a service app and of an industry pack in metadata; FERRUM-EXT-006 is blocked on publishing to npm (new BLOCK-NPM-PUBLISH) |
+| Mutation paths | Versions and public links read one by one; FERRUM-PLATFORM-011 is blocked on the independent review |
+
+**Evidence:** `docs/platform/evidence/browser-2026-11-06-journeys.md`; each app's suite for its streamed
+files.
+
+**Next:** the walk's other findings: date-and-time boxes read in the browser's zone while pages show
+the workspace's, time by hand that ends in the future, no word that CRM's orders need the connector
+with ERP, the accounts host asking twice, records headed by their id. The other journeys through the
+pages: procure to pay, hire to retire, project to profit, document to signature, marketing to consent,
+the stay, learning completion.
+
 ## 2026-11-06: the directory of people is the members'
 
 **State:** found walking support to resolution in a browser: a portal person (a lessee, signed in with an
