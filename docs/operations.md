@@ -195,6 +195,79 @@ kind load docker-image ferrum:ci ferrum-editors:ci
 deploy/kind/install.sh && deploy/kind/smoke.sh
 ```
 
+## A site without internet
+
+Dedicated and on-premises installations run the same images as any other; a site that cannot reach
+the internet gets them, and everything they run beside, in a bundle made on a connected machine and
+carried across. `deploy/offline/` makes and loads it (needs python3; skopeo, which keeps every
+image's digest, or docker on one host).
+
+**On a connected machine**, from a checkout at the release's commit (the images' tag, *Images*
+above), signed in to `ghcr.io` with a token that may read packages while they are private:
+
+```bash
+python3 -m pip install pyyaml
+deploy/offline/bundle.py <commit> --with editors,mail,clamav            # one host (Compose)
+deploy/offline/bundle.py <commit> --kubernetes --with editors,clamav    # Kubernetes
+tar -cf ferrum-offline-<commit>.tar ferrum-offline-<commit>/
+```
+
+The bundle holds every image (the server's at that commit, the database's, the PDF renderer's, and
+what `--with` adds: `editors`, `mail`, `meet`, `office`, `clamav`); with `--kubernetes`, the operators'
+manifests at the versions `deploy/kind/install.sh` names and every image they name, including the ones
+named only in their settings or in a Secret, and the Envoy proxy Envoy Gateway starts, which only its
+code names; this checkout's `deploy/` with these tools, `deploy/k8s` already naming the release;
+`bundle.json` (each image with its digest, each manifest with where it came from) and `SHA256SUMS`.
+Images named by a moving tag are copied as they are that day: pin them (`COLLABORA_TAG`,
+`STALWART_TAG`, `CLAMAV_TAG`) to know what was carried. Images pinned by digest are copied whole, every
+platform, so the digest still answers.
+
+**At the site**, unpack it and check it first; anything changed, missing or added refuses it:
+
+```bash
+ferrum-offline-<commit>/deploy/offline/load.py --check
+```
+
+* *One host*: `deploy/offline/load.py` puts the images into Docker under their own names and writes
+  `release.env`; fill in `deploy/.env` (*Configuration*) and start it with
+  `docker compose -f deploy/docker-compose.yml --env-file deploy/.env --env-file release.env up -d`.
+* *Kubernetes*: put the images in the site's registry (any OCI registry: Harbor, Zot, CNCF
+  Distribution) with `deploy/offline/load.py --registry registry.site:5000` (`--insecure` for plain
+  http or a certificate the nodes do not trust). Each image goes to
+  `<registry>/<the registry it came from>/<its path>`, so nothing is renamed: `containerd/certs.d/`
+  in the bundle holds a `hosts.toml` for each registry they came from, which sends that registry's
+  pulls to the site's; copy it to `/etc/containerd/certs.d/` on every node (containerd reads it with
+  `config_path = "/etc/containerd/certs.d"` in its CRI registry settings). Then, with the site's
+  certificate authority in the secret `site-ca` (`kubectl create namespace cert-manager`, then
+  `kubectl -n cert-manager create secret tls site-ca --cert=ca.crt --key=ca.key`),
+  `deploy/offline/install.sh` installs the operators from the bundle (`--kubelet-insecure-tls` when the
+  kubelets' certificates are self-signed), and the Gateway's certificate is issued by the site's
+  authority, which browsers must trust. Go on from step 2 of *First deployment*, with buckets on
+  the site's own S3-compatible storage.
+
+What needs the internet, and what a site without it does instead:
+
+| | Without the internet |
+|---|---|
+| Apps from a store | `FERRUM_APP_STORES` empty: apps compiled in, and bundles signed by a key in `FERRUM_APP_TRUSTED_KEYS` made available with `ferrum task app_make_available` |
+| Certificates | The site's own authority (above), not ACME |
+| Mail | The site's relay, or hosted mail (`deploy/mail.yml`) inside the site |
+| Malware signatures | ClamAV's `freshclam` downloads them: mirror the database on a connected machine with `cvdupdate`, carry it, and point `freshclam` at it (`PrivateMirror`), or scanning goes on with the signatures it has |
+| The assistant | A model served inside the site: `FERRUM_ASSISTANT_PROTOCOL=openai` and `FERRUM_ASSISTANT_URL` at an OpenAI-compatible server (*The assistant*) |
+| Notifications on devices | Browsers' push services are on the internet: notifications stay in the apps |
+| Webhooks, connectors, e-invoice and tax portals, payment providers, maps, single sign-on with a provider outside | Not reached; what the site runs inside works (`FERRUM_SSO_ALLOW_PRIVATE=true` for its own identity provider) |
+| Other regions and Ferrum accounts across them | One region |
+| Time | The site's own NTP: sessions, codes and certificates depend on clocks |
+
+**Upgrades** come the same way: a bundle of the next release, loaded as above, then *Upgrades* below
+(the database's migrations run as the new server starts). Keep the bundle of the release that runs
+until the next one has proved itself, to go back to. **Backups** go to the site's own object
+storage (*Backups and restore*); copies leave it by whatever route the site's policy allows.
+
+`deploy/offline/test_offline.py` checks what a bundle carries and what loading does against
+stand-ins for skopeo, docker and kubectl; CI runs it. No bundle has yet been carried into a site, and
+the operators' install from one has not run on a cluster without internet.
+
 ## Upgrades
 
 * Schema changes are forward-only migrations plus a metadata → DDL sync, both run at boot under
