@@ -32,7 +32,7 @@ components:
   - {repository: CBFerrum/ferrum-app-logistics, pinned: 697d24d2c229f289f3491cdd2fb756699ea07d7d}
   - {repository: CBFerrum/ferrum-app-metrics, pinned: 0dcaecb84af5219faaac7176a0870882dc7b19b7}
   - {repository: CBFerrum/ferrum-app-nonprofit, pinned: 07d86761efb4b6724f9899e95e3f0be78b53e619}
-  - {repository: CBFerrum/ferrum-app-objectives, pinned: 4983e8bdec5acf0614f54b6e78ca52b58737a129}
+  - {repository: CBFerrum/ferrum-app-objectives, pinned: 87ca273ed34d4f6db423998feb817ea618f0fc84}
   - {repository: CBFerrum/ferrum-app-pos, pinned: 6e1fba63870d45cc5975a79f36e6b6945a93ad3d}
   - {repository: CBFerrum/ferrum-app-projects, pinned: dec954a4914f263ebf4f6ba564548b6e9db4f266}
   - {repository: CBFerrum/ferrum-app-property, pinned: 1789943598b03cb0f5f0fd0bab3cb4cd1c36d761}
