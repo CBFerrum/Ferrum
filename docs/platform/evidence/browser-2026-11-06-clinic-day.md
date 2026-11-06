@@ -29,6 +29,19 @@ One person, the workspace's administrator, worked as the clinic's manager and at
 | A completed visit's patient, practitioner, type, date and time looked editable. The server refused the change on save ("a visit under way or over keeps its patient, practitioner and time"). Its minutes past midnight, an internal check, were shown | Healthcare 0.1.7: read-only on the page once the visit is checked in, completed, cancelled or missed; the minutes are hidden. A new appointment is for today unless another day is chosen |
 | The follow-up's "Covered By" read as the patient's id, because a Fee Validity is headed by its patient, which is a link. Every record headed by a link (29 entities across the apps, such as Lease by its unit and Check-In by its key result) was named by an id where something linked to it, in notifications and in search | Ferrum (this branch): a record headed by a link is named, and found by search, by the linked record's title, at most two steps on, when that entity is open (`store::title_text`). Lists and reads of such entities always carry `_titles`. The kernel's `rules_it` asserts it, including a restricted entity, which is not named through a link |
 
+## The fixes, checked on their build
+
+On a debug build of this PR, with Healthcare 0.1.7 and the shell from Ferrum-Frontend a76295e, on
+the same walk server and data, from 09:22 to 09:35 UTC:
+
+| Check | What it showed |
+|---|---|
+| The follow-up's page | "Covered By" reads Sofia Lind, not an id. Patient, practitioner, type, date and time are read-only on the completed visit; minutes and notes stay open. The minutes past midnight are not shown |
+| A new appointment | Its date is today, 6 November, and every field it needs is open |
+| The day's page | Two requests, practitioners and the day's appointments with their link titles, where there had been a third for up to 500 patients. Both visits named Sofia Lind. The next day said "Nothing booked." under Dr Okafor. With her made inactive for the check, the page said "No practitioners yet" with its hint and link; she was made active again |
+| Search | The bar's search for "sofia" found both appointments, titled Sofia Lind with their numbers, and the fee validity, titled Sofia Lind. Before, an appointment could not be found by its patient's name |
+| A person's own clock | The Account page's Time zone, set to America/New York, was saved and given back by `/api/auth/me` as `display_timezone`, the workspace's staying UTC. The consent given at 08:50 UTC then read "6 Nov 2026, 03:50 EST" in its list. A zone that does not exist was refused ("zone must be a time zone's IANA name"). The clock was set back to the workspace's |
+
 ## What it did not cover
 
 - Practitioners as users: the walk ran as the administrator, so a practitioner seeing only their own patients was not walked. The suite tests it.
