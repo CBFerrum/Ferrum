@@ -36,7 +36,9 @@ patch each. No release was tagged.
 | Nonprofit 0.1.8 | The home's figures over every record: it asked for 1,000 rows and the server pages at 500; the workspace's year; members not yet paid; the books named first; records dated today |
 | Point of Sale 0.4.4, Objectives 0.5.2 | The same cap: a loyalty balance at the till and the review's progress came from one page of 500 entries; both now read every page by cursor |
 | Construction 0.1.7 | Amounts written as money; estimates waiting for an answer listed; the books named before the first claim |
-| How it was checked | From here each app's CI (fmt, clippy, its scenario test on a scratch database, its interface's checks and build) runs on this machine before a merge, not on GitHub: `local_ci_app.sh` in the session's scratchpad. A scenario test too large for the disk builds without debug info in a target of its own, deleted afterwards |
+| IT Services 0.2.4 | The desk's rules walked ([the walk](../platform/evidence/browser-2026-11-06-it-desk.md), FERRUM-ECOSYSTEM-003): the desk names what a request asks for, who asked and when it is due, and when a change starts |
+| This PR | The help center opens from a record's Help link: `/data/help/{entity}` was read as an app's records and sent back to `/data/` (`shell::DATA_PAGES`, FERRUM-UX-003) |
+| How it was checked | From Point of Sale 0.4.4 on, each app's CI (fmt, clippy, its scenario tests on scratch databases, its interface's checks and build) ran on this machine before it merged, not on GitHub: `scripts/app_ci.sh`. On a disk short of room, `NO_DEBUG=1` builds the tests without debug info in a target of their own |
 
 **Evidence:** the walks; `crates/kernel/tests/rules_it.rs` (a record headed by a link, through an open
 and a restricted entity, and its search); `crates/kernel/tests/collab_it.rs` (the `timezone`
