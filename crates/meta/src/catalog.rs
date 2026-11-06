@@ -798,6 +798,11 @@ fn validate_field(e: &EntityDef, f: &FieldDef, all: &HashMap<&str, &EntityDef>) 
     if f.to.is_some() && f.ftype != FieldType::Link {
         return Err(format!("field '{fname}': 'to' is only for links"));
     }
+    if let Some(w) = f.widget.as_deref()
+        && !(w == "studio_query" && f.ftype == FieldType::Json)
+    {
+        return Err(format!("field '{fname}': widget '{w}' is not one forms know (studio_query, on a json field)"));
+    }
     if f.of.is_some() && f.ftype != FieldType::Table {
         return Err(format!("field '{fname}': 'of' is only for tables"));
     }
@@ -1003,6 +1008,22 @@ mod tests {
         assert!(Catalog::from_packages(vec![pkg("{package: core, version: '1'}", &bad_rule)]).is_err());
         let cyc = vec![pkg("{package: a, version: '1', depends: [b]}", "[]"), pkg("{package: b, version: '1', depends: [a]}", "[]")];
         assert!(Catalog::from_packages(cyc).is_err());
+    }
+
+    #[test]
+    fn a_studio_query_is_built_only_in_a_json_field() {
+        let with = |field: &str| {
+            CORE.replace(
+                "    - {name: customer_name, type: data, required: true}",
+                &format!("    - {{name: customer_name, type: data, required: true}}\n    - {field}"),
+            )
+        };
+        let core = |s: &str| Catalog::from_packages(vec![pkg("{package: core, version: '1'}", s)]);
+        let cat = core(&with("{name: spec, type: json, widget: studio_query}")).unwrap();
+        assert_eq!(cat.entity("Customer").unwrap().fields.iter().find(|f| f.name == "spec").unwrap().widget.as_deref(), Some("studio_query"));
+        let err = core(&with("{name: spec, type: data, widget: studio_query}")).unwrap_err();
+        assert!(err.to_string().contains("widget 'studio_query' is not one forms know"), "{err}");
+        assert!(core(&with("{name: spec, type: json, widget: chart}")).is_err());
     }
 
     #[test]
