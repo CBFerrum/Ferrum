@@ -34,7 +34,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_S3_ENDPOINT` | no | Any S3-compatible store: MinIO, Cloudflare R2, Wasabi, Backblaze B2, DigitalOcean Spaces, GCS interoperability |
 | `FERRUM_DRIVE_MAX_FILE_MB` | no | Largest file in one request to Drive: an upload, a new version or an editor save. Default 32, at most 1024. A replica holds each such file in memory while storing it, so allow `uploads at once × this` of memory per replica. Workspaces set their own limit within it. Raise any proxy's body limit in front with it |
 | `FERRUM_REQUEST_TIMEOUT_MS` | no | How long one request may take, receiving its body included; default 120000 (2 minutes). Large files over slow links need more: allow the largest file divided by the slowest client's upload rate (200 MB at 10 Mbit/s is about 3 minutes). Keep the gateway's request timeout (600 s in `gateway.yaml`) above it |
-| `FERRUM_DIRECT_UPLOAD_MAX_BYTES` | no | Largest file browsers upload straight to the bucket (default 2 GiB). Needs the bucket CORS rule below |
+| `FERRUM_DIRECT_UPLOAD_MAX_BYTES` | no | Largest file browsers upload straight to the bucket, or in parts through the server (default 2 GiB). Straight to the bucket needs the bucket CORS rule below |
 | `FERRUM_PDF_URL` | no | A Gotenberg-compatible renderer (`gotenberg/gotenberg:8`, included in both deployments as `pdf` / `ferrum-pdf`) for PDFs of print formats; empty turns PDFs off. Run it with JavaScript off and an allow-list of `^(data:\|file:///tmp/).*` so templates cannot make it fetch anything; print formats then use inline (data:) images |
 | `FERRUM_REQUIRE_OBJECT_STORAGE` | no | Production default `true`: refuse to start without object storage, so no replica keeps files locally. `false` only for single-server installs |
 | `FERRUM_FILES_DIR` | no | Local attachment directory (default `/var/lib/ferrum/files`) |
@@ -496,7 +496,7 @@ to the bucket. What it finds is refused, is not stored, and goes on the audit tr
 | What happens | What it means |
 |---|---|
 | Nothing set | Files are stored unscanned, and `ferrum task doctor` says so. |
-| The scanner is down | Uploads fail with `503` until it is back: an outage must not be a way in. A direct upload can be completed again; its bytes wait. |
+| The scanner is down | Uploads fail with `503` until it is back: an outage must not be a way in. A direct upload, or one in parts, can be completed again; its bytes wait. |
 | A file past its limit | Stored, marked `unscanned`, and logged. `FERRUM_CLAMAV_MAX_MB` (default 25) must match ClamAV's `StreamMaxLength`: raise both to `FERRUM_DIRECT_UPLOAD_MAX_BYTES` if every file must be scanned. Set above the scanner's real limit, a file between the two fails as if the scanner were down. |
 
 `file_object.scan_status` says which files were scanned. Files stored before a scanner was configured
