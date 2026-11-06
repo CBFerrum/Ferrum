@@ -130,6 +130,28 @@ macro_rules! apps {
             let _ = k;
         }
 
+        /// Every compiled app's reports by name, with the app that gives each.
+        #[cfg(test)]
+        fn report_names() -> Vec<(String, &'static str)> {
+            let names = |app: &'static str, sources: Vec<std::sync::Arc<dyn ferrum_domain::reports::ReportSource>>| {
+                sources.iter().flat_map(|s| s.catalog()).filter_map(|e| e.get("name").and_then(serde_json::Value::as_str).map(|n| (n.to_string(), app))).collect::<Vec<_>>()
+            };
+            #[allow(unused_mut)]
+            let mut out = names("erp", ferrum_app_erp::reports());
+            $(
+                #[cfg(feature = $nfeature)]
+                out.extend(names($nfeature, $nkrate::reports()));
+            )*
+            $(
+                #[cfg(feature = $lfeature)]
+                out.extend(names($lfeature, $lkrate::reports()));
+            )*
+            for app in crate::extensions::all() {
+                out.extend(names(app.id, (app.reports)()));
+            }
+            out
+        }
+
         /// Packages embedded in the compiled native apps, ERP's first.
         pub fn native_packages() -> Result<Vec<Package>, String> {
             #[allow(unused_mut)]
@@ -499,6 +521,14 @@ mod tests {
             })
             .collect();
         assert!(unmet.is_empty(), "{unmet:#?}");
+        // No two compiled apps give a report one name: /api/reports/{name} runs the first source
+        // registered (CRM's Campaign Performance answered for Campaigns').
+        let mut reports = std::collections::BTreeMap::new();
+        for (name, app) in super::report_names() {
+            if let Some(other) = reports.insert(name.clone(), app) {
+                panic!("both {other} and {app} give the report {name}");
+            }
+        }
         // No two compiled apps share an address.
         let mut routes = std::collections::BTreeMap::new();
         for m in &natives {
