@@ -14,13 +14,14 @@ Property 0.7.3 and 0.7.4, Retail 0.3.3 and 0.3.4, Government 0.2.3 and 0.2.4, He
 | Where | What |
 |---|---|
 | Journeys | Definitions built with Studio's builder, on this PR's build ([the walk](../platform/evidence/browser-2026-11-07-definition-builder.md)): a dataset grouped across a link and a metric of one measure, a second measure refused; Studio's endpoints serve only a workspace that has Studio |
-| Journeys | The other session's walks of 6 and 7 November ([the walk](../platform/evidence/browser-2026-11-07-fork.md)): Property's service charges, rent indexing and an owner's statement, billed and seen by its owner on the portal; Retail's ship from store (an order naming no warehouse among them), a return at another store, transfers between stores, click and collect brought from another store, and a franchisee reporting on the portal; Government's stages, renewals, public register, a renewal by its holder on the citizens' portal and a case raised there; Logistics' day, with the server stopped while the driver's page was open; IT Services' discovery and a change approved by a second person; Healthcare's withdrawn consent, cancelled and missed visits and a practitioner signed in; the Control Plane's cells and public status page |
+| Journeys | The other session's walks of 6 and 7 November ([the walk](../platform/evidence/browser-2026-11-07-fork.md)): Property's service charges, rent indexing and an owner's statement, billed and seen by its owner on the portal; Retail's ship from store (an order naming no warehouse among them), a return at another store, transfers between stores, click and collect brought from another store, and a franchisee reporting on the portal; Government's stages, renewals, public register, a renewal by its holder on the citizens' portal and a case raised there; Logistics' day, with the server stopped while the driver's page was open, and on this PR's build a signature kept on the phone and sent once the server answered; IT Services' discovery and a change approved by a second person; Healthcare's withdrawn consent, cancelled and missed visits and a practitioner signed in; the Control Plane's cells and public status page |
 | Property 0.7.3 | The portals show a lease's rent in effect today, not its starting rent (from the 7 November walk) |
 | Retail 0.3.3 | The franchise portal shows sales and fees as money (from the 7 November walk) |
 | Government 0.2.3 | The portal shows a permit type's fee as money, or "no fee" (from the 7 November walk) |
 | Healthcare 0.1.10 | A visit is marked missed only once it has begun: Did Not Come was accepted hours before (from the 7 November walk) |
 | Logistics 0.3.1 | Return notes offered only where they belong; a proof sent at once says "Proof saved." (from the 7 November walk) |
 | Logistics 0.3.2 | A signature drawn on the driver's page, kept offline with the proof; the home links Fleet Costs and shows costs formatted (from the 7 November walk) |
+| Logistics 0.3.3 | Rebuilt with Ferrum-Frontend a64416a; the 0.3.2 signature pad walked offline on this PR's build: drawn with no photo, saved while the server was stopped, sent by itself once it answered |
 | Ferrum PR 90, Control Plane 0.5.0, IoT Edge 0.5.0 | Installed apps' own health in the support report; IoT Edge's gateways counted there and in a customer's health for partners (FERRUM-IND-021) |
 | Control Plane 0.5.1 | A new incident's Public box shows ticked, as it is saved (from the 7 November walk) |
 | Control Plane 0.4.1 | Its public status page walked: cells reporting without sign-in, a public incident and its update, the page turning "All systems operational" by itself once resolved, the JSON cached publicly for 30 seconds and naming no customer (FERRUM-CLOUD-004) |
@@ -34,7 +35,7 @@ Property 0.7.3 and 0.7.4, Retail 0.3.3 and 0.3.4, Government 0.2.3 and 0.2.4, He
 `ferrum-app-control:tests/control_it.rs`; `ferrum-app-healthcare:tests/healthcare_it.rs` (a visit
 missed only once begun); Ferrum-Frontend `src/app/prefill.test.ts` and `src/app/queryinput.test.tsx`.
 
-**Next:** Logistics 0.3.3's signature, drawn and saved while the server was stopped, sent once it answered (the other session, on this build). Then the limits the registry still names that need no outside party: words translated past the kit's states and dialogs, pages checked one by one right to left, a page where a buyer confirms a charge their bank asks about, and renditions of a video's frame or a PDF's first page.
+**Next:** the limits the registry still names that need no outside party: words translated past the kit's states and dialogs, pages checked one by one right to left, a page where a buyer confirms a charge their bank asks about, and renditions of a video's frame or a PDF's first page.
 
 ## 2026-11-06, evening: a clinic's day; records headed by a link; a person's own clock; every app rebuilt
 
