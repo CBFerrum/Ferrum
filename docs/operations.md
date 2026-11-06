@@ -1286,7 +1286,9 @@ site (`site:{app}`), at most 20 per workspace.
   answers its token, which the server gives to whoever asks on that host; it stops working after seven
   failed checks in a row (a week of daily checks). Administrators can check one at once. The check
   refuses private addresses and follows no redirect; with `settings.webhooks_allow_private` (development)
-  it uses plain http.
+  it uses plain http. On a developer's machine, whose base domain is `localhost`, a name under it
+  (`shop.localhost`) is accepted and works at once, since it can only reach that machine, and is not
+  checked again.
 * **Certificates**: the edge in front of Ferrum gets one per domain. With Caddy's on-demand TLS:
 
   ```caddyfile
