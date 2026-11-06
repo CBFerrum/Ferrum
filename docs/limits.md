@@ -35,7 +35,8 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   outlive the page (`shell().uploads`, Drive's) still send each file whole, to an app's own
   address and within its limit. S3 deployments also take direct uploads with a presigned URL, which
   do not resume. Downloads stream from storage, the platform's and an app's that answers with the
-  stored file (`SiteResponse::file`); an app that reads a file's bytes (`read_file`) loads them into
+  stored file (`SiteResponse::file`), and answer one byte range when asked (`Range: bytes=…`, 206),
+  so a video seeks and plays in every browser; several ranges get the whole file. An app that reads a file's bytes (`read_file`) loads them into
   memory, which is refused past 256 MB (the largest an app works on whole, Learn's SCORM packages).
   Completing an upload reads the object once to record its SHA-256.
 - **Stock revaluation** is a stock reconciliation counting the same quantity at the new rate. Like

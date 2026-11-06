@@ -735,7 +735,7 @@ async fn site_page(st: &AppState, tenant: Uuid, app_id: &str, headers: &HeaderMa
     req.headers.insert("x-ferrum-site-api".into(), json!(format!("/api/site/{}/{package}", ws.slug)));
     req.headers.insert("x-ferrum-site-origin".into(), json!(format!("{scheme}://{host}")));
     let mut res = match super::sites::handle(&st.kernel, site, req).await {
-        Ok(r) => super::sites::respond(st, tenant, r).await?,
+        Ok(r) => super::sites::respond(st, tenant, r, super::sites::range(headers)).await?,
         Err(ApiError(Error::NotFound(_))) => return Ok(unavailable(StatusCode::NOT_FOUND, "Page not found", "There is nothing at this address.")),
         Err(e) => {
             tracing::warn!(app = app_id, path, "a site's page failed: {}", e.0);

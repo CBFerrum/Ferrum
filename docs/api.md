@@ -729,7 +729,7 @@ the app is gone or the person may no longer use it.
 
 ## Files
 
-`POST /api/files` (multipart: `file`, optional `entity`, `record_id`, `public`; ≤25 MB) → `{id, url: "/files/<id>", file_name, size, sha256}`; `GET /files/{id}` (authenticated download, streamed).
+`POST /api/files` (multipart: `file`, optional `entity`, `record_id`, `public`; ≤25 MB) → `{id, url: "/files/<id>", file_name, size, sha256}`; `GET /files/{id}` (authenticated download, streamed; one `Range: bytes=…` answered with 206).
 
 Larger files (up to 2 GB by default, S3-compatible storage only) go straight from the client to the bucket:
 

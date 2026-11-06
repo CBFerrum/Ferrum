@@ -4,7 +4,7 @@
 //! as that person. The password never reaches the package. `/.well-known/caldav` and
 //! `/.well-known/carddav` lead to Comms, which serves calendars and address books.
 
-use super::sites::{read_body, request, respond};
+use super::sites::{range, read_body, request, respond};
 use crate::error::ApiResult;
 use crate::extract::{client_ip, request_id};
 use crate::state::{AppState, app_state};
@@ -75,7 +75,7 @@ async fn dav(
     let body = read_body(&headers, body, site.max_body_for(method.as_str(), &path)).await?;
     let tenant = ctx.tenant;
     let req = request(tenant, Some(ctx), method, &uri, path, query, &headers, body)?;
-    respond(&st, tenant, super::sites::handle(&st.kernel, site, req).await?).await
+    respond(&st, tenant, super::sites::handle(&st.kernel, site, req).await?, range(&headers)).await
 }
 
 /// Where apps look first (RFC 6764).
