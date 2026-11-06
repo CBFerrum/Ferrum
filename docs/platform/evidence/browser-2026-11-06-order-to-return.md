@@ -28,13 +28,13 @@ shopper with no account, on the store's own host in a browser with no session th
 |---|---|
 | The shopper's page said "Delivered" the moment the parcel left: an order shipped and invoiced at once is Completed in ERP, and nothing tells the store a parcel arrived | Commerce 0.7.8: it reads "Shipped" |
 | "Tell the shopper" told nobody: Commerce sent only events (`commerce.order_placed`, `_shipped`, `_refunded`) "for a mailer or webhook", and nothing in a workspace sends them; no mail to the shopper was queued for the order, its shipping or its refund | Commerce 0.7.8: the shopper is e-mailed through the server's mailer: the order with its link and how to pay, the shipping when the desk says to tell them, money sent back when the refund says so (`returns_and_refunds_end_to_end` asserts each, and the refund not to be told) |
-| The store's own host could not be given on this machine: a name under the server's base is refused, and the check fetches port 80 | The next pins PR: on a server whose base domain is `localhost`, a `*.localhost` name is accepted and works at once |
+| The store's own host could not be given on this machine: a name under the server's base is refused, and the check fetches port 80 | Ferrum PR 88: on a server whose base domain is `localhost`, a `*.localhost` name is accepted and works at once |
 | Admin, Domains offered 26 apps' "public sites", some under another app's title ("PDF's public site" for Drive) | Ferrum PR 85 and Ferrum-Frontend PR 41: only an app whose site handler serves pages (`Site::serves_pages`) is offered or accepted; Website 0.1.3 and Commerce 0.7.8 say theirs do |
 
 ## What it does not show
 
 - Paid and refunded by hand (bank transfer): no payment provider (BLOCK-PAYMENT-KEYS).
-- The store's host stood in for DNS by a row made in the database, which the next pins PR makes
+- The store's host stood in for DNS by a row made in the database, which Ferrum PR 88 makes
   unnecessary on a developer's machine.
 - The shop's master data (price, stock, delivery, settings) was made through the API, not their
   pages.
