@@ -2478,7 +2478,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-control"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-control?branch=main#c11d39dfccaad55d5e23f58fc47f6c096a55331c"
+source = "git+https://github.com/CBFerrum/ferrum-app-control?branch=main#6219cd9e54e4fedfe2ce5f62c4a40605778adb7e"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2912,7 +2912,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-objectives"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-objectives?branch=main#76bcc09876d7223c7be39515ac1c1437aede6c62"
+source = "git+https://github.com/CBFerrum/ferrum-app-objectives?branch=main#8db7af45c1f28efafe9c4dab1af4b651d4666ab2"
 dependencies = [
  "async-trait",
  "chrono",
