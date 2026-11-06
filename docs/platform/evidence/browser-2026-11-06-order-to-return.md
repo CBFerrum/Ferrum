@@ -31,6 +31,21 @@ shopper with no account, on the store's own host in a browser with no session th
 | The store's own host could not be given on this machine: a name under the server's base is refused, and the check fetches port 80 | Ferrum PR 88: on a server whose base domain is `localhost`, a `*.localhost` name is accepted and works at once |
 | Admin, Domains offered 26 apps' "public sites", some under another app's title ("PDF's public site" for Drive) | Ferrum PR 85 and Ferrum-Frontend PR 41: only an app whose site handler serves pages (`Site::serves_pages`) is offered or accepted; Website 0.1.3 and Commerce 0.7.8 say theirs do |
 
+## The fixes, checked on their build
+
+On the walk server built from Ferrum PR 88 (Commerce 0.7.8, Website 0.1.3, the shell at
+Ferrum-Frontend 3d36821), from 08:16 to 08:21 UTC:
+
+| Check | What it showed |
+|---|---|
+| Domains | "Serves" offered This workspace, The portal and "Commerce's public site", the only app here whose handler serves pages (it offered 26 before); `walk-shop2.localhost` added in the form for it read "Working" at once, with no row made by hand |
+| A second order | On `walk-shop2.localhost`, one mug, a guest's checkout as Jonas Berg, SO-2026-00003. Queued and sent at once: "Your order SO-2026-00003 at Walk Shop", with the amount, the bank transfer's instructions and the order's link |
+| Shipped | Marked paid, then shipped with DHL and a parcel number, telling the shopper and invoicing at once: "Your order SO-2026-00003 has shipped" ("DHL has it, parcel JJD0007654321", and the link); the shopper's page read "Shipped", not "Delivered" |
+| Refunded | The mug sent back (changed their mind, back on the shelf) and refunded by hand: "EUR 12.00 refunded for order SO-2026-00003" |
+
+Left: after a `*.localhost` domain is added, the form's message still says it "starts working once
+checked", though it already works.
+
 ## What it does not show
 
 - Paid and refunded by hand (bank transfer): no payment provider (BLOCK-PAYMENT-KEYS).
@@ -38,4 +53,3 @@ shopper with no account, on the store's own host in a browser with no session th
   unnecessary on a developer's machine.
 - The shop's master data (price, stock, delivery, settings) was made through the API, not their
   pages.
-- The fixes above were checked in their suites, not yet on a build in a browser.
