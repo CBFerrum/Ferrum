@@ -3,6 +3,30 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-06, afternoon: an online order through the storefront; shoppers told; apps that serve sites
+
+**State:** this PR follows PR 85. Its lock takes Commerce 0.7.8 and Website 0.1.3 (their handlers serve
+pages), Digital Assets 0.5.0, Property 0.6.0, the Control Plane 0.4.0, Objectives 0.4.0 and Social
+0.6.0. FRONTEND_REV takes Ferrum-Frontend PR 41 (3d36821). No release was tagged.
+
+| Where | What |
+|---|---|
+| Journeys | Online order to return walked through the pages ([the walk](../platform/evidence/browser-2026-11-06-order-to-return.md)): a storefront on its own host, a guest's order by bank transfer, marked paid, shipped with tracking and invoiced, followed from the shopper's link, a mug returned as damaged and refunded with a credit note |
+| Commerce 0.7.8 | The shopper is e-mailed through the server's mailer: the order, its shipping when the desk says so, money sent back; before, only events went out and nothing sent them. A shipped order reads Shipped, not Delivered. Its storefront says it serves pages |
+| Website 0.1.3 | Its handler says it serves pages, so Domains offers its site |
+| Frontend PR 41 | Domains lists the apps the server says serve a site (PR 85's `sites`), not every app |
+| This PR | On a developer's machine (base domain `localhost`) a `*.localhost` name is a custom domain that works at once, so a site's own host can be walked locally (it needed a row made in the database) |
+| Digital Assets 0.4.0, 0.5.0 | XMP and IPTC from any file; each asset seen whole (video, sound, PDF, picture) for whoever sees it; office documents' first pages as their renditions (FERRUM-ECOSYSTEM-012) |
+| Property 0.3.0 to 0.6.0 | Owners on the portal; days given back when a lease ends sooner; rent indexed each year; service charge budgets reconciled once the year is over (FERRUM-INDUSTRY-008) |
+| Control Plane 0.3.0, 0.4.0 | Hosting invoiced monthly through ERP by the control-erp connector, with people and storage beyond a workspace's terms charged at the month's peak (FERRUM-CLOUD-003) |
+| Objectives 0.4.0 | A review page: each active objective, those at risk first, its key results' progress since a chosen day (FERRUM-ECOSYSTEM-011) |
+| Social 0.6.0 | Best times to post, by weekday and hour on the workspace's clock (FERRUM-ECOSYSTEM-005) |
+
+**Evidence:** the walk; `ferrum-app-commerce:tests/commerce_it.rs` (`returns_and_refunds_end_to_end`:
+the shopper's mails for the order, its shipping and a refund, and none for a refund not to be told).
+
+**Next:** the walk's fixes on a build in a browser; a person's own time zone.
+
 ## 2026-11-06, morning: the tenant's life on the image; one clock for every member's page
 
 **State:** this PR follows PR 84. Its lock takes every app at its main of 6 November's morning, each
