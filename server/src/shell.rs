@@ -103,9 +103,12 @@ pub fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
 }
 
 /// Shapes B and C: the cookie a workspace's host keeps while the browser signs in at the accounts
-/// host: the `state` it sent there and where to go back to (ten minutes).
-pub fn auth_cookie_name(secure: bool) -> &'static str {
-    if secure { "__Host-ferrum-auth" } else { "ferrum_auth" }
+/// host: the `state` it sent there and where to go back to (ten minutes). One for each sign-in,
+/// named by the start of its state, so tabs that set off together (every open tab, when someone
+/// signs out) do not overwrite each other's; `None` for a state this host did not make.
+pub fn auth_cookie_for(secure: bool, state: &str) -> Option<String> {
+    let tag = state.get(..12).filter(|t| t.bytes().all(|b| b.is_ascii_hexdigit()))?;
+    Some(format!("{}-{tag}", if secure { "__Host-ferrum-auth" } else { "ferrum_auth" }))
 }
 
 /// Shapes B and C: set when someone signs out of a workspace's host, so the next sign-in there
@@ -1509,6 +1512,18 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn each_sign_in_keeps_its_own_cookie() {
+        let (a, b) = ("0123456789abcdef0123456789abcdef", "0123456789abffff0123456789abcdef");
+        assert_eq!(auth_cookie_for(false, a).as_deref(), Some("ferrum_auth-0123456789ab"));
+        assert_eq!(auth_cookie_for(true, a).as_deref(), Some("__Host-ferrum-auth-0123456789ab"));
+        assert_ne!(auth_cookie_for(false, a), auth_cookie_for(false, "fedcba9876543210fedcba9876543210"));
+        assert_eq!(auth_cookie_for(false, a), auth_cookie_for(false, b), "named by the start; the whole state is checked inside");
+        for odd in ["", "0123", "0123456789a;=x", "é123456789abcdef", "0123456789aZ"] {
+            assert_eq!(auth_cookie_for(false, odd), None, "{odd}");
+        }
+    }
 
     #[test]
     fn pages_link_the_manifest_they_install_as() {
