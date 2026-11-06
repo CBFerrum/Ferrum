@@ -8,7 +8,8 @@ What is true of each requirement is in the registry; this says what happened and
 **State:** this PR follows PRs 79 and 81. Its lock takes Campaigns 0.3.3, CRM 0.6.4, HR 0.8.1,
 Hospitality 0.2.0, Projects 0.6.5, Sign 0.2.5, Bookings 0.4.4, Education 0.1.5, Field Service 0.4.1, Learn 0.6.2, Drive 0.14.0,
 Objectives 0.2.1, Digital Assets 0.2.0, ITSM 0.2.0 (with its connector to Assets), Property 0.2.0,
-Retail 0.2.0 and the Control Plane 0.2.0. FRONTEND_REV is unchanged. No release was tagged.
+Retail 0.2.0 and the Control Plane 0.2.0. FRONTEND_REV takes Frontend PRs 36 to 39 (bb60115). No release was
+tagged.
 
 | Where | What |
 |---|---|
@@ -17,7 +18,7 @@ Retail 0.2.0 and the Control Plane 0.2.0. FRONTEND_REV is unchanged. No release 
 | HR 0.8.1, Hospitality 0.2.0, Bookings 0.4.4, Education 0.1.5, Field Service 0.4.1, Learn 0.6.2, CRM 0.6.3, Projects 0.6.5, Sign 0.2.5 | Actions declare the parameters they read, so record pages ask for them; those that need a time (Bookings' Reschedule, Field Service's Schedule) are left to the screens that offer one. Hospitality's desk payments become draft payment entries in ERP at check-out |
 | Campaigns 0.3.2, 0.3.3 | It installs beside Mail 0.10 again; the review links to the settings that fix it; a signup form gives HTML to paste; its campaign report is Email Campaign Performance, apart from CRM's, whose report of the same name answered for it |
 | CRM 0.6.4 | Dates are the workspace's, not UTC's: between the two midnights a deal won that day fell outside the day's report (Campaigns' CI failed so for its New York workspace) |
-| Frontend PRs 36 to 39 | A page reads empty numbers as the server does; an account chosen at the accounts host is chosen; settings open as their one record; the install dialog names what it brings. Each app takes them when its interface is next built |
+| Frontend PRs 36 to 39 | A page reads empty numbers as the server does; an account chosen at the accounts host is chosen; settings open as their one record; the install dialog names what it brings. The shell takes them with FRONTEND_REV; each app when its interface is next built |
 | Control Plane 0.2.0 | A workspace is made on its cell from its setup, by a fleet operator or when a partner onboards a customer: FERRUM-PARTNER-001 and CLOUD-001 say so |
 | Registry | OPS-006 (uploads in parts, Drive adopting them) and ECOSYSTEM-001 and 006 (Intranet, Website) are implemented; OPS-007, ECOSYSTEM-003, 011 and 012, INDUSTRY-003 and 008 say what their apps added (texts from the session that built them) |
 
@@ -27,7 +28,7 @@ suites (CRM's now runs in a zone whose date is not UTC's).
 
 **Next:** Commerce 0.7.5 declares what a payment request's page could not send, and the Frontend PR 39
 image job was running: pin them when merged. Rebuild the
-apps' interfaces with Ferrum-Frontend main and move FRONTEND_REV, so their pages take PRs 36 to 39.
+apps' interfaces with Ferrum-Frontend main, so their pages take PRs 36 to 39.
 A draft journal entry is still headed by the end of its id; an add-on's entity opened before it is
 installed says "not found"; pages show times in the browser's zone (FERRUM-UX-006). The tenant's life on
 the image is still to walk.
