@@ -24,7 +24,7 @@ use uuid::Uuid;
 /// Days a workspace its administrator closed is kept before an operator may delete it.
 pub const CLOSED_KEPT_DAYS: u64 = 30;
 
-const METERS: &str = "select 'storage_bytes', coalesce(sum(size_bytes), 0)::bigint from file_object where tenant_id = $1 \
+pub(crate) const METERS: &str = "select 'storage_bytes', coalesce(sum(size_bytes), 0)::bigint from file_object where tenant_id = $1 \
     union all select 'people', count(*) from app_user where tenant_id = $1 and is_active and kind = 'member' \
     union all select 'ai_tokens_month', coalesce(sum(coalesce((usage->'usage'->>'input_tokens')::bigint, 0) + coalesce((usage->'usage'->>'output_tokens')::bigint, 0)), 0)::bigint \
       from assistant_message where tenant_id = $1 and role = 'assistant' and created_at >= date_trunc('month', now()) \

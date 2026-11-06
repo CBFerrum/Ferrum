@@ -137,6 +137,10 @@ async fn scenario() {
     let report = k.support_report(&ctx, "health").await.unwrap();
     assert!(report["packages"].as_array().unwrap().contains(&json!("cases")));
     assert_eq!(report["failed_jobs"], json!([]), "health shows no failures' text");
+    // What it uses, as counts: its active people and the bytes its files take.
+    let usage = report["usage"].as_object().expect("usage counts");
+    assert!(usage["people"].as_i64().is_some_and(|n| n >= 1) && usage["storage_bytes"].as_i64().is_some_and(|n| n >= 0), "{usage:?}");
+    assert_eq!(usage.len(), 2, "counts only, nothing about who or what");
 
     // ───────────── seen by the customer ─────────────
     k.support_used(&ctx, id, "GET", "/api/support/report").await.unwrap();

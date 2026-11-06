@@ -287,6 +287,10 @@ impl Kernel {
         .bind(ctx.tenant)
         .fetch_one(&mut *tx)
         .await?;
+        // What it uses, as counts and nothing else: its active people and the bytes its files take
+        // (what an operator charges for beyond a plan).
+        let meters: Vec<(String, i64)> = sqlx::query_as(crate::account::METERS).bind(ctx.tenant).fetch_all(&mut *tx).await?;
+        let meter = |m: &str| meters.iter().find(|(name, _)| name == m).map_or(0, |(_, q)| *q);
         let (mut failures, mut events): (Vec<Value>, Vec<Value>) = (Vec::new(), Vec::new());
         if level != "health" {
             failures = sqlx::query_scalar("select jsonb_build_object('kind', kind, 'attempts', attempts, 'error', last_error, 'at', finished_at) from job where tenant_id = $1 and status = 'failed' order by finished_at desc limit 50").bind(ctx.tenant).fetch_all(&mut *tx).await?;
@@ -297,6 +301,7 @@ impl Kernel {
         Ok(json!({
             "version": env!("CARGO_PKG_VERSION"), "packages": ctx.schema.packages,
             "events": {"pending": pending, "dead": dead}, "jobs": {"active": queued, "failed": failed},
+            "usage": {"people": meter("people"), "storage_bytes": meter("storage_bytes")},
             "customization_warnings": if level == "health" { json!(warnings.len()) } else { json!(warnings) },
             "failed_jobs": failures, "dead_events": events,
         }))
