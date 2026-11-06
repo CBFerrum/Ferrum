@@ -333,7 +333,9 @@ restored=$(invoice restored) || fail "invoicing after the restore"
 echo "    $(json 'd["number"]' <<<"$restored") after the restore"
 
 # On the restored stack.
+# The reference workload and its targets (docs/operations.md): a regression past them fails the build.
 step "load test"
-python3 ../tools/loadtest.py --url "$API" --tenant smoke --email smoke@smoke.test --password "$PASSWORD" --levels 10,50 --seconds "${SMOKE_LOAD_SECONDS:-20}"
+python3 ../tools/loadtest.py --url "$API" --tenant smoke --email smoke@smoke.test --password "$PASSWORD" --levels 10,50 --seconds "${SMOKE_LOAD_SECONDS:-20}" \
+  --p95-ms "${SMOKE_LOAD_P95_MS:-10:300,50:2000}" --min-rps "${SMOKE_LOAD_MIN_RPS:-10:120,50:100}"
 
 step "the deployment works"
