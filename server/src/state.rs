@@ -78,8 +78,8 @@ pub struct Settings {
     pub run_background: bool,
     #[serde(default = "default_upload_max")]
     pub upload_max_bytes: usize,
-    /// Largest file the browser may upload straight to S3 (`POST /api/files/uploads`). Completing
-    /// one reads it back once to record its hash.
+    /// Largest file the browser may upload straight to S3, or in parts through the server
+    /// (`POST /api/files/uploads`). Completing one reads it back once to record its hash.
     #[serde(default = "default_direct_upload_max")]
     pub direct_upload_max_bytes: u64,
     /// Local directory for uploaded files when no S3 bucket is configured.
