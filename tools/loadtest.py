@@ -9,11 +9,16 @@ latency percentiles per call.
 
 Run it against a staging copy, never production: it creates draft Sales Invoices (deleted at the
 end unless --keep). The workspace needs a company, a customer and two priced items; the script
-picks them. Exit status 1 when any level has more than 1% errors.
+picks them. Exit status 1 when any level has more than 1% errors, or misses a target it was given:
+`--p95-ms 10:300,50:2000` (the most a level's p95 may take) and `--min-rps 10:120,50:100` (the
+fewest requests a second it must serve). This mix, at those levels, is the reference workload
+(docs/operations.md, "Reference workload and targets"); every image build runs it (deploy/smoke.sh).
+`--summary` writes each level's figures as JSON.
 """
 
 import argparse
 import asyncio
+import json
 import os
 import random
 import statistics
@@ -139,7 +144,31 @@ async def level(client, mix, concurrency, seconds):
                   f"{percentile(v, 0.95):>7.0f}{percentile(v, 0.99):>7.0f}")
         for s in samples[name]:
             print(f"    e.g. {s}")
-    return failed / max(total, 1)
+    return {"concurrency": concurrency, "requests": total, "seconds": round(elapsed, 1), "rps": round(total / elapsed, 1),
+            "error_rate": round(failed / max(total, 1), 4), "p50_ms": round(percentile(every, 0.5), 1),
+            "p95_ms": round(percentile(every, 0.95), 1), "p99_ms": round(percentile(every, 0.99), 1)}
+
+
+def targets(spec):
+    """`10:300,50:2000` -> {10: 300.0, 50: 2000.0}."""
+    out = {}
+    for part in (spec or "").split(","):
+        if part.strip():
+            level, value = part.split(":")
+            out[int(level)] = float(value)
+    return out
+
+
+def missed(result, p95_max, rps_min):
+    """What a level missed of its targets, as sentences."""
+    n, out = result["concurrency"], []
+    if result["error_rate"] > 0.01:
+        out.append(f"{n} clients: {100 * result['error_rate']:.2f}% of requests failed, more than 1%")
+    if n in p95_max and result["p95_ms"] > p95_max[n]:
+        out.append(f"{n} clients: p95 {result['p95_ms']:.0f} ms, more than {p95_max[n]:.0f}")
+    if n in rps_min and result["rps"] < rps_min[n]:
+        out.append(f"{n} clients: {result['rps']:.0f} requests a second, fewer than {rps_min[n]:.0f}")
+    return out
 
 
 async def main():
@@ -151,7 +180,11 @@ async def main():
     p.add_argument("--levels", default="10,50,100", help="concurrency levels, comma-separated")
     p.add_argument("--seconds", type=int, default=30, help="duration of each level")
     p.add_argument("--keep", action="store_true", help="keep the draft invoices it creates")
+    p.add_argument("--p95-ms", default="", help="targets: the most each level's p95 may take, e.g. 10:300,50:2000")
+    p.add_argument("--min-rps", default="", help="targets: the fewest requests a second each level must serve, e.g. 10:120,50:100")
+    p.add_argument("--summary", help="write each level's figures here, as JSON")
     args = p.parse_args()
+    p95_max, rps_min = targets(args.p95_ms), targets(args.min_rps)
     if not (args.tenant and args.email and args.password):
         sys.exit("set FERRUM_TENANT, FERRUM_EMAIL and FERRUM_PASSWORD (or --tenant/--email/--password)")
     limits = httpx.Limits(max_connections=1000, max_keepalive_connections=1000)
@@ -160,16 +193,23 @@ async def main():
         company, customer, items = await fixtures(client)
         created = []
         mix = calls(company, customer, items, created)
-        worst = 0.0
+        results, misses = [], []
         for n in [int(x) for x in args.levels.split(",") if x.strip()]:
-            worst = max(worst, await level(client, mix, n, args.seconds))
+            result = await level(client, mix, n, args.seconds)
+            results.append(result)
+            misses.extend(missed(result, p95_max, rps_min))
         if created and not args.keep:
             gone = 0
             for i in range(0, len(created), 50):
                 results = await asyncio.gather(*(client.delete(f"/api/v1/SalesInvoice/{d}") for d in created[i:i + 50]), return_exceptions=True)
                 gone += sum(1 for r in results if not isinstance(r, Exception) and r.status_code == 204)
             print(f"\ndeleted {gone} of {len(created)} draft invoices")
-    sys.exit(1 if worst > 0.01 else 0)
+    if args.summary:
+        with open(args.summary, "w") as f:
+            json.dump({"levels": results, "targets": {"p95_ms": p95_max, "min_rps": rps_min}, "missed": misses}, f, indent=2)
+    for m in misses:
+        print(f"MISSED {m}")
+    sys.exit(1 if misses else 0)
 
 
 if __name__ == "__main__":

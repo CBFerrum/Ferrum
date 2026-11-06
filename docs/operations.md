@@ -597,6 +597,37 @@ dispatchers on every replica share the outbox. The test found that a NOTIFY sent
 transaction serialized their commits (creates fell to 330/s at 100 clients); dispatchers now poll
 instead, which adds up to 250 ms before an event is handled.
 
+### Reference workload and targets
+
+The reference workload is `tools/loadtest.py`'s mix, signed in as one person of one workspace, each
+client sending its next request when the last is answered:
+
+| Call | Share |
+|---|---|
+| List 20 customers | 30% |
+| List 20 sales invoices, newest first, with titles | 20% |
+| Read an item | 20% |
+| An entity's metadata | 10% |
+| Live totals of an invoice (`_calc`) | 10% |
+| Create a draft Sales Invoice (1 to 3 lines) | 10% |
+
+Every image build runs it for 20 seconds at 10 and then 50 clients, against the image deployed
+with the Compose stack on CI's runner (`deploy/smoke.sh`, the `image` job): the server, PostgreSQL,
+the editors' server and LiveKit share one GitHub-hosted machine with the load generator. The build
+fails when a level misses a target:
+
+| Clients | Errors | p95 at most | Requests a second, at least |
+|---|---|---|---|
+| 10 | 1% | 300 ms | 120 |
+| 50 | 1% | 2,000 ms | 100 |
+
+The targets leave room for a shared runner's variance. On 2026-11-06 (run 42135552923, `b1e8843`),
+10 clients got 349 requests a second at p95 72 ms (p99 113 ms), and 50 clients 272 a second at
+p95 518 ms (p99 764 ms), with no errors. The targets catch a release that got slower than that by
+several times. They are not a sizing guide: a production replica has its own cores and database.
+To hold a deployment to its own targets, run the same mix against a staging copy with
+`--p95-ms` and `--min-rps` set for that hardware, and `--summary` to keep each level's figures.
+
 Rerun it against a staging copy after changes that touch the write path:
 
 ```bash
