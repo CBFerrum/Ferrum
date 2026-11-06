@@ -117,12 +117,22 @@ The server was rebuilt on the pins branch (691ecb1): every app at its 7 November
 | Government's apply list | Fran → Your services | "Street Food Stall · no fee · 1 month". |
 | The owners' portal's rent | Olive signed in with a code → Properties you own | A2, let to Ivan Index, "1,030 monthly", the indexed rent; A1 1,200. |
 
+## Control Plane 0.5.2: a release rolled out to the status page (pins build)
+
+| What | Where | Seen |
+|---|---|---|
+| A release recorded | Releases → New: 0.10.0 with its sha256 digest, by the administrator | Candidate, recorded by admin@walk-intranet.test. Qualify It by the administrator: 403 "a release is qualified by someone other than who recorded it". |
+| Qualified by a second person | Mira given Release Manager and signed in → 0.10.0 → Qualify It | Qualified, by member@walk-intranet.test at 04:18. A rollout made by Mira: 403 "not permitted to create rollout" (a Fleet Operator's). |
+| A rollout | The administrator: Rollouts → New, release 0.10.0, waves eu-central-1 then in-west-1, soak 24 hours → Start It | Running, both waves Pending. |
+| Coming maintenance | `/control/status/walk-intranet` | "Ferrum 0.10.0 on eu-central-1 in Europe, in its window 2026-11-08 02:00 UTC to 2026-11-08 04:00 UTC", and the same for in-west-1 (the cells' Sunday windows). Both cells read Outage: their tooling had not reported since 02:47, past the fifteen minutes a cell may stay silent. |
+| Halted and resumed | Halt It ("Both cells are silent; wait until their tooling reports again."), then Resume It | Halted with its reason, and the status JSON listed no coming maintenance; resumed, Running again with both windows back. |
+
 ## Not walked, and why
 
 - **A page opened offline.** This desktop browser pane cannot register service workers at all: Logistics' `/logistics/sw.js` and the platform's own `/sw.js` both fail with "an unknown error occurred when fetching the script". The server serves both correctly (200, `text/javascript`, `Service-Worker-Allowed: /logistics/`, with or without cookies). The page left open while the server was down was walked instead, with a photo on 0.3.0 and with a signature on 0.3.3 (above).
-- **A case going overdue.** It needs its days to pass.
+- **A case going overdue.** It needs its day to pass: CASE-2026-00002 (category Same day, 0 days) opened and due on 7 November, for upkeep to mark overdue after midnight IST. Moving the workspace's clock to see it sooner was refused as a change to a shared resource.
 - **A stop's weight from its goods.** A stop's weight is typed in (TRP-2026-00002's, made over the API, read 0 kg): ERP's items and delivery notes carry no weight to take it from.
-- **Control's releases, rollouts and partners**: not this walk.
+- **Control's partners' portfolio**: not walked here; it was walked before (FERRUM-PARTNER-001's evidence: the portfolio, a case raised, onboarding refused while the region's cell was full).
 
 ## Found and fixed
 
