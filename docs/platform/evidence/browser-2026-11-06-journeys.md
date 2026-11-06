@@ -1,15 +1,19 @@
-# A browser on a running server, 6 November 2026: seven journeys through the pages
+# A browser on a running server, 6 November 2026: ten journeys through the pages
 
 Until now these journeys ran through the API, in the kernel's and the apps' suites. This walk took
 them through the interface, as the people in them would. The server was built in debug on one
 machine from Ferrum as of PR 71 (offline leases), with the apps pinned in its lock, against its own database
 (`ferrum_walk`, never `ferrum_dev`), as in [the walks of 4 November](browser-2026-11-04-flows.md):
 `FERRUM_BASE_DOMAIN=localhost`, the development mailer (sign-in codes read from the outbox), and the
-shell's interface built from Ferrum-Frontend main.
+shell's interface built from Ferrum-Frontend main. The later walks (hire to retire, the hotel stay
+again and marketing to consent) ran on builds of the branches that fixed what the earlier ones
+found: Ferrum PR 78, then the branch platform/pins-stay.
 
-Three people took part, each signed in through the pages: the workspace's administrator and Dana, a
-member, at the accounts host with passwords, and Lena, a lessee and ERP customer, on the portal with
-e-mailed codes.
+Four people signed in through the pages: the workspace's administrator and Dana, a member, at the
+accounts host with passwords; Lena, a lessee and ERP customer, on the portal with e-mailed codes; and
+Ravi, a new employee, at the accounts host with a password and, the first time, an e-mailed code.
+Three marketing contacts (Lena Park, Zoe Brandt and Meera Iyer) only opened the links of the e-mails
+sent to them, in a tab with no session.
 The workspace's time zone is UTC; the browser's was India's.
 
 ## What was walked
@@ -47,6 +51,28 @@ The workspace's time zone is UTC; the browser's was India's.
 | | Failed, then passed | The quiz with one wrong answer: 50%, "Not passed this time", the right answers kept back until her last attempt; again, 100%: "You completed Kitchen hygiene basics", with notices of her enrolment and completion |
 | | A certificate | None at first: the course's Certificate on Completion is off unless chosen. Ticked by the administrator, Learn's upkeep issued CERT-2026-000001 to the finished enrolment within the minute and told her; My learning showed it with View certificate and Copy link to check it |
 | | Checked by anyone | Its public page said "This certificate is valid", to Dana Reviewer for Kitchen hygiene basics, issued 5 Nov 2026 by Walk, and opened the printed certificate; asked without a session, the check answered for its code and said "certificate not found" for a code one letter off |
+| Hire to retire (FERRUM-JOURNEY-003) | An offer | A designation, Barista; job opening HR-OPN-2026-0001; applicant Ravi Kumar; offer HR-OFF-2026-00001 (joining 5 Nov, a cost to company of 360000) submitted and accepted |
+| | An employee with a sign-in | Create Employee made HR-EMP-00001, stayed on the offer and could not name his sign-in (below); his user set on the employee's form; onboarding HR-ONB-2026-0001 Completed when its two activities were done |
+| | His own page | Ravi signed in at the accounts host (his password, then the e-mailed code); My space read "Ravi Kumar · Barista" with check-in, requests and payslips; he claimed 450 for travel (HR-EXP-2026-00001), which the administrator approved |
+| | An advance | HR-EAD-2026-00001, 1000, submitted; its page offered no Make Payment Entry (below), so it was paid through the API: JV-2026-00002 in ERP, the advance Paid |
+| | Leaving | Separation HR-SEP-2026-0001, relieving 5 Nov, submitted: Ravi Left. Create Full and Final Statement opened HR-FNF-2026-0001, "made with the 2 amounts open": the claim's 450 to pay him, the advance's 1000 to recover; a gratuity of 2000 added by hand: 2450 to pay, 1000 to recover, 1450 net |
+| | Settled in one entry | Make Payment Entry: a draft journal entry in ERP, Employee Payables Dr 450, Salaries Dr 2000, Employee Advances Cr 1000, Primary Bank Cr 1450; submitted as JV-2026-00003, the statement Paid, the claim Paid and the advance Returned |
+| | The sign-in ended | HR's upkeep made Ravi's user inactive on his relieving date; signing in as him was refused |
+| Hotel stay (FERRUM-JOURNEY-010) | A hotel | Harbour View Hotel with its room night item; Deluxe King at 120, rooms 101 and 102; Set the Business Date asked for a date with nowhere to give it (below) |
+| | A stay | STAY-2026-00001, Arjun Mehta, 5 to 7 November in 101: 240, Reserved; checked in, folio FOL-2026-00001; a minibar charge of 15 and a deposit of 100 by card |
+| | Night audits | 5 November closed: 2 rooms, 1 occupied (50%), an average rate of 120, revenue per room 60, a no-show (STAY-2026-00002), the night's room charge posted; 6 November likewise |
+| | Check-out | Checked out: a draft sales invoice for 255 (the minibar, two nights at 120, each line dated), room 101 Dirty; the 100 deposit was on the folio only (below) |
+| | Again, on Hospitality 0.2.0 | A second hotel's business date set in a dialog ("The business date is 2026-11-06"); STAY-2026-00003 checked in through a Room dialog ("Checked in to room 102; folio FOL-2026-00002 is open"); a deposit of 50 in cash; the night audit "The night of 2026-11-07 is closed: 1 of 2 rooms occupied, 1 room charge posted, 0 no-shows"; check-out "the folio is invoiced as a draft, 120.00; 50.00 paid at the desk waits in ERP as draft payments to apply to it" |
+| | Paid in ERP | SINV-2026-00007 submitted; the deposit's draft payment (Arjun Mehta, 50, reference DEP-102), Get Outstanding Invoices allocating it, submitted as PAY-2026-00005: the invoice Partly Paid, 70 outstanding |
+| | A cancellation | STAY-2026-00004, Meera Iyer: Cancel the Reservation asked for a reason, required; "Guest changed travel plans": Cancelled, "its nights are free again", the reason kept on the stay |
+| Marketing to consent (FERRUM-JOURNEY-009) | Installed | Campaigns 0.3.1 could not be installed (below); 0.3.2 came with Mail, Chat and Calendar (the dialog named it "comms", below), whose pages were blank (below) |
+| | Contacts with consent | Three people imported from pasted rows, the city kept as an attribute and how they agreed kept on each ("Signed up at the front desk, 6 Nov 2026"); a segment, Guests in Pune (city is Pune), counting 2 of the 3 as its rule was typed |
+| | A campaign | "Winter offer, Pune", its subject greeting by first name; the review stopped it until Mail's Public URL was set (it named the page with no way to it, below) and warned of the missing postal address, set in Campaign Settings (a list of one, below); sent to 2 as "Lena, a winter night on us", with the postal address and an unsubscribe link at the bottom |
+| | Opened, clicked, unsubscribed | Lena Park's open and click were counted; her unsubscribe link asked first (opening it changed nothing), then "lena@guests.test will not receive our marketing emails any more": Unsubscribed, with the link and campaign as the source and a keyed hash of her address, and on the suppression list |
+| | Enforced | Setting her back to Subscribed on her page was refused: "a contact who is unsubscribed can only opt back in themselves, by confirming a subscription form"; a copy of the campaign counted "1 person will get this email" with her as Unsubscribed, and reached only Zoe Brandt |
+| | Results | The campaign's Results tab said "No results yet", with both e-mails sent and one opened and clicked (below) |
+| | Double opt-in | A subscription form, Hotel newsletter (the city allowed), posted from a page of the hotel's site: Meera Iyer was told "Almost done" and was Pending; her e-mailed link asked "Subscribe meera@guests.test to Hotel newsletter?", then she was Subscribed, by "double opt-in: Hotel newsletter" |
+| | Her own opt-in | Lena Park signed up on the same form and stayed Unsubscribed until she confirmed her own e-mailed link; then Subscribed, her suppression lifted; the form counted 2 submissions, 2 confirmed |
 
 ## What it found, and what changed
 
@@ -56,16 +82,32 @@ The workspace's time zone is UTC; the browser's was India's.
 | Field Service's time box read the browser's zone while the job shows the workspace's: 02:38 typed showed as 21:08 | Field Service 0.3.1: the box reads the workspace's clock, as the page shows it |
 | Other pages show times in the browser's zone (a job's Reported At, shown by the form, read 6 Nov 01:04 beside the timeline's Thu 5 Nov 19:34) | Not yet: one zone for every page is a rule across the apps (FERRUM-UX-006) |
 | Time added by hand that ends in the future was accepted (finishing at 21:15 at 21:09) | Field Service 0.3.1: refused by the page and the server, five minutes' slack |
-| With CRM and ERP installed but not their connector, a submitted quotation shows no way to an order, and nothing says why | Not yet |
+| With CRM and ERP installed but not their connector, a submitted quotation shows no way to an order, and nothing says why | CRM 0.6.2: its status says how it becomes an order, with ERP and the CRM and ERP connector |
 | After signing in with a password at the accounts host, it asks "Continue to Walk" once more | This PR: signing in there is choosing the account |
 | Field Service Settings, which has no name of its own, was headed by the end of its id | Ferrum-Frontend PR 34: settings take their entity's label |
 | A material request's Create Purchase Order asked for no supplier, then wanted one; seven actions read parameters they did not declare, and a request for quotation's Create Supplier Quotation and a bank line's Create Payment Entry could never work from a page | ERP 0.14.2 (Procurement 0.1.3, Finance 0.3.2): the actions declare them |
 | A purchase invoice made from a receipt holds "PENDING-<receipt>" as the supplier's number, and could be submitted with it | ERP 0.14.2: refused at submit |
 | A timesheet row entered on its page billed 0.00: the preview's zeros for billing hours and rate went back as if chosen | Projects 0.6.4: zero takes the default |
 | Opening an entity of an add-on that is not installed (a material request before Procurement) says "entity MaterialRequest not found" | Not yet |
-| Sign shows a 776-byte PDF as "0.00 MB" | Not yet |
+| Sign shows a 776-byte PDF as "0.00 MB" | Sign 0.2.4: "776 bytes", or "48 KB" |
 | In Learn's course builder, New quiz left for a blank quiz form before the lesson's kind could save (a quiz lesson saves only with its quiz): the lesson came back a reading lesson and the new quiz unpicked | Learn 0.6.1: New quiz and New assignment make one in the lesson, named after it, and pick it |
-| Once, choosing another account at the accounts host ended in "Signing in did not finish": another open tab of the workspace, told of the sign-out, likely began a sign-in of its own over the first one's | Not yet |
+| Once, choosing another account at the accounts host ended in "Signing in did not finish": another open tab of the workspace, told of the sign-out, likely began a sign-in of its own over the first one's | Ferrum PR 78: each sign-in keeps its own cookie |
+| Create Employee made the employee but stayed on the offer, and could not name their sign-in (it read a user it did not declare) | HR 0.8.1: it asks for the sign-in and opens the employee; the actions of claims, advances, attendance and leave declare what they read |
+| An advance's Make Payment Entry did not show on its page: its paid amount was empty, which the server's condition reads as 0 and the page's did not | HR 0.8.1 stores 0; Ferrum-Frontend PR 36: a page reads empty numbers and checks as the server does |
+| Nothing settled a leaver's open claims and unsettled advances together | HR 0.8.0: the full and final statement, settled by one journal entry |
+| After "Use another account" at the accounts host and signing in, "Continue to Walk" asked again | Ferrum-Frontend PR 37: an account chosen there is chosen |
+| A draft journal entry (numbered on submit) is headed by the end of its id | Not yet |
+| Set the Business Date, Check In and Cancel the Reservation read a date, a room and a reason they did not declare, so their pages could not give them | Hospitality 0.2.0: they ask for them |
+| A deposit taken at the desk stayed on the folio: ERP had no payment for it, so the invoice said the guest owed it all | Hospitality 0.2.0: at check-out the folio's payments become draft payment entries in ERP, to apply to the invoice |
+| Check In, the night audit and the cancellation said only "done" | Hospitality 0.2.0: each says what it did |
+| Campaigns 0.3.1 asked for Mail 0.7 beside the server's Mail 0.10, so it could not be installed | Campaigns 0.3.2; Ferrum (platform/pins-stay): a compiled app whose requirement a compiled app does not meet fails the build's tests |
+| The install dialog listed what it also installs by id ("comms 0.10.0") | Ferrum (platform/pins-stay) and Ferrum-Frontend PR 39: by name |
+| Mail's pages were blank: the server trusted its database's record of the interface, whose files were in the storage of a server that ran elsewhere | Ferrum (platform/pins-stay): a release's files are looked for, and stored again when missing |
+| The review named the settings pages that fix it, with no way to them | Campaigns 0.3.3: Fix links to them |
+| Campaign Settings and Communication Settings opened as lists of one record | Ferrum (platform/pins-stay): a settings link opens its record; Ferrum-Frontend PR 38: the list screen does too |
+| A sent campaign's Results said "No results yet": CRM's report of the same name answered for it | Campaigns 0.3.3: Email Campaign Performance; Ferrum (platform/pins-stay): two compiled apps cannot give one report name |
+| A subscription form gave only its endpoint's path, and no form to paste into a website | Campaigns 0.3.3: HTML for Your Website |
+| CRM dated what it stamps by UTC while reports use the workspace's date: in the hours between the two midnights a deal won that day fell outside the day's report (seen in Campaigns' CI) | CRM 0.6.4: the workspace's date throughout |
 
 ## What it does not show
 
@@ -76,4 +118,11 @@ The workspace's time zone is UTC; the browser's was India's.
   procure-to-pay test has both.
 - Learning completion had no cohort, live session, graded assignment, paid course or packaged lesson;
   Learn's suite has them.
+- Hire to retire paid no salary and took no leave (their own scenarios, in HR's suite), and the
+  gratuity was added by hand: nothing works it out. The advance was paid through the API.
+- The hotel's invoice and payments are drafts that ERP's people submit.
+- Marketing e-mails went through the development mailer: nothing reached a real inbox, and no
+  bounce or complaint came back (the signed webhook is in Campaigns' suite). The hotel's signup page
+  was written into a tab with the form's fields, as a site would paste them, since 0.3.2 gave no
+  HTML to paste. No A/B test or journey was walked; Campaigns' suite has them.
 - One server on one machine, a debug build, not the released image or a deployment.

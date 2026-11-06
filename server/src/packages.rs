@@ -130,6 +130,28 @@ macro_rules! apps {
             let _ = k;
         }
 
+        /// Every compiled app's reports by name, with the app that gives each.
+        #[cfg(test)]
+        fn report_names() -> Vec<(String, &'static str)> {
+            let names = |app: &'static str, sources: Vec<std::sync::Arc<dyn ferrum_domain::reports::ReportSource>>| {
+                sources.iter().flat_map(|s| s.catalog()).filter_map(|e| e.get("name").and_then(serde_json::Value::as_str).map(|n| (n.to_string(), app))).collect::<Vec<_>>()
+            };
+            #[allow(unused_mut)]
+            let mut out = names("erp", ferrum_app_erp::reports());
+            $(
+                #[cfg(feature = $nfeature)]
+                out.extend(names($nfeature, $nkrate::reports()));
+            )*
+            $(
+                #[cfg(feature = $lfeature)]
+                out.extend(names($lfeature, $lkrate::reports()));
+            )*
+            for app in crate::extensions::all() {
+                out.extend(names(app.id, (app.reports)()));
+            }
+            out
+        }
+
         /// Packages embedded in the compiled native apps, ERP's first.
         pub fn native_packages() -> Result<Vec<Package>, String> {
             #[allow(unused_mut)]
@@ -173,6 +195,8 @@ macro_rules! apps {
             out.push(ferrum_app_bookings::CONNECTOR_MANIFEST);
             #[cfg(all(feature = "lms", feature = "commerce"))]
             out.push(ferrum_app_lms::CONNECTOR_MANIFEST);
+            #[cfg(all(feature = "itsm", feature = "assets"))]
+            out.push(ferrum_app_itsm::CONNECTOR_MANIFEST);
             // ERP, compiled into every build (docs/plan/erp-repo.md).
             out.push(ERP_MANIFEST);
             // Suites, where this build has their members.
@@ -485,6 +509,26 @@ mod tests {
                 if let Some(icon) = item.get("icon").and_then(serde_json::Value::as_str) {
                     assert!(crate::shell::lucide(icon).is_some(), "{}: the shell has no icon {icon}", m.id);
                 }
+            }
+        }
+        // What a compiled app requires of another compiled app, the release compiled with it meets:
+        // a range left behind would leave the app impossible to install (Campaigns asked for Comms
+        // 0.7 beside Comms 0.10).
+        let versions: std::collections::BTreeMap<_, _> = natives.iter().map(|m| (m.id.as_str(), &m.version)).collect();
+        let unmet: Vec<String> = natives
+            .iter()
+            .flat_map(|m| m.requires.iter().map(move |(dep, req)| (m, dep, req)))
+            .filter_map(|(m, dep, req)| {
+                versions.get(dep.as_str()).filter(|v| !req.matches(v)).map(|v| format!("{} requires {dep} {req}, compiled with {dep} {v}", m.id))
+            })
+            .collect();
+        assert!(unmet.is_empty(), "{unmet:#?}");
+        // No two compiled apps give a report one name: /api/reports/{name} runs the first source
+        // registered (CRM's Campaign Performance answered for Campaigns').
+        let mut reports = std::collections::BTreeMap::new();
+        for (name, app) in super::report_names() {
+            if let Some(other) = reports.insert(name.clone(), app) {
+                panic!("both {other} and {app} give the report {name}");
             }
         }
         // No two compiled apps share an address.

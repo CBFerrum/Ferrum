@@ -954,10 +954,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "bytemuck"
+version = "1.25.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95832e849adfb21180ccb6826a99da14e5d266ae5c2e668e1602cf234f153797"
+
+[[package]]
 name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
+
+[[package]]
+name = "byteorder-lite"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f1fe948ff07f4bd06c30984e69f5b4899c516a3ef74f34df92a2df2ab535495"
 
 [[package]]
 name = "bytes"
@@ -1221,6 +1233,12 @@ checksum = "0fa961b519f0b462e3a3b4a34b64d119eeaca1d59af726fe450bbba07a9fc0a1"
 dependencies = [
  "thiserror 2.0.21",
 ]
+
+[[package]]
+name = "color_quant"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b"
 
 [[package]]
 name = "colorchoice"
@@ -2272,6 +2290,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fax"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "caf1079563223d5d59d83c85886a56e586cfd5c1a26292e971a0fa266531ac5a"
+
+[[package]]
 name = "fdeflate"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2304,7 +2328,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-bookings"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-bookings?branch=main#fba75c1b4e1fb9af9fef8deaef42f29f5399ee7b"
+source = "git+https://github.com/CBFerrum/ferrum-app-bookings?branch=main#99b862f5edf4e50562bbf4ae7e585e4f4d73c7c2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2332,7 +2356,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-campaigns"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-campaigns?branch=main#4b83cae7d7b5969759046993d48752373804dd05"
+source = "git+https://github.com/CBFerrum/ferrum-app-campaigns?branch=main#02ee24b753716368ce195ab6ebb2da4e60f5f457"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2454,7 +2478,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-control"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-control?branch=main#c11d39dfccaad55d5e23f58fc47f6c096a55331c"
+source = "git+https://github.com/CBFerrum/ferrum-app-control?branch=main#6219cd9e54e4fedfe2ce5f62c4a40605778adb7e"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2471,7 +2495,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-crm"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-crm?branch=main#cae26b4f3026d24fc89b8e9d796b9a0c7eab5416"
+source = "git+https://github.com/CBFerrum/ferrum-app-crm?branch=main#c4504cb4c4ee066a346f1b964efe259e2d3f0fff"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2490,16 +2514,19 @@ dependencies = [
 [[package]]
 name = "ferrum-app-dam"
 version = "0.1.1"
-source = "git+https://github.com/CBFerrum/ferrum-app-dam?branch=main#dc6b1c695e0d9caaa88cfde0503f7012a3539b0b"
+source = "git+https://github.com/CBFerrum/ferrum-app-dam?branch=main#ae778e8c1db5de8ae92de77df28e82bee2e07b3b"
 dependencies = [
  "async-trait",
  "chrono",
  "ferrum-domain",
  "ferrum-kernel",
  "ferrum-meta",
+ "image",
+ "kamadak-exif",
  "rust_decimal",
  "serde_json",
  "sqlx",
+ "tokio",
  "uuid",
 ]
 
@@ -2530,7 +2557,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-drive"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-drive?branch=main#ee4bb7696b450145662a8c1f6497e9370bf79e61"
+source = "git+https://github.com/CBFerrum/ferrum-app-drive?branch=main#1b89ca22e6d540b8d20cf8fe44ca84b782ff0d72"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2582,7 +2609,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-education"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-education?branch=main#b11ab3772819eff6092d25f6d08d8b932fd96094"
+source = "git+https://github.com/CBFerrum/ferrum-app-education?branch=main#bad17ecb5dfecb2cb9bbc4c2d0d0a241ecf06a10"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2617,7 +2644,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-field-service"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-field-service?branch=main#5d838d4e91ca80d8a2420fc71d931e02466a37ae"
+source = "git+https://github.com/CBFerrum/ferrum-app-field-service?branch=main#02b780dfb363dadb1913808794efac4a5aabcf7c"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2736,7 +2763,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-hospitality"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-hospitality?branch=main#0cc1cec3542237ce1f974f41d655698760af2cfc"
+source = "git+https://github.com/CBFerrum/ferrum-app-hospitality?branch=main#0cb61e8c47b892a0b9b55026973c69fbc17c8443"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2752,7 +2779,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-hr"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-hr?branch=main#fbc39e54d350915c5e3716b3147237cd5eaa52f6"
+source = "git+https://github.com/CBFerrum/ferrum-app-hr?branch=main#bdcb1556a0e1b9ababdedfc98397003c6eb31a18"
 dependencies = [
  "async-trait",
  "cel",
@@ -2787,7 +2814,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-itsm"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-itsm?branch=main#74bae9c48f2642ea432580b916342a9049fe88ce"
+source = "git+https://github.com/CBFerrum/ferrum-app-itsm?branch=main#237da2c3cd4ce7570a86ec490c94f559868a61bf"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2795,6 +2822,7 @@ dependencies = [
  "ferrum-kernel",
  "ferrum-meta",
  "rust_decimal",
+ "serde",
  "serde_json",
  "sqlx",
  "uuid",
@@ -2803,7 +2831,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-lms"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-lms?branch=main#8351bb5f8b0284c591f4b384199967911c042803"
+source = "git+https://github.com/CBFerrum/ferrum-app-lms?branch=main#638259a2a64d70201f2e328dacf4346093c21e88"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2884,13 +2912,14 @@ dependencies = [
 [[package]]
 name = "ferrum-app-objectives"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-objectives?branch=main#78a06d0b95baa9b96d26575d9f1e6ac662eb6ece"
+source = "git+https://github.com/CBFerrum/ferrum-app-objectives?branch=main#8db7af45c1f28efafe9c4dab1af4b651d4666ab2"
 dependencies = [
  "async-trait",
  "chrono",
  "ferrum-domain",
  "ferrum-kernel",
  "ferrum-meta",
+ "ferrum-studio",
  "rust_decimal",
  "serde_json",
  "sqlx",
@@ -2920,7 +2949,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-projects"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-projects?branch=main#951fb9de016fd6fddfb80399c642535bba6a3a57"
+source = "git+https://github.com/CBFerrum/ferrum-app-projects?branch=main#491ed33928c9a4e9698a8235ae13bfe01b7fe331"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2938,7 +2967,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-property"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-property?branch=main#b8515ebe53b3abd037959002cf106f57f8a347a0"
+source = "git+https://github.com/CBFerrum/ferrum-app-property?branch=main#d73a2e7aca85b8b72df7c4dc60c601b0ce2d7ca2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2970,7 +2999,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-retail"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-retail?branch=main#2c9d2727f2344d102ef47ab5580ed654344ee15c"
+source = "git+https://github.com/CBFerrum/ferrum-app-retail?branch=main#7671d85b4b29bb14601f3c8216b2b9d610a61b6a"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2986,7 +3015,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-sign"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-sign?branch=main#94a0313c822093f44c1bfbf40c04cc6fef5218a1"
+source = "git+https://github.com/CBFerrum/ferrum-app-sign?branch=main#de7847df87af1b02ef083241872b16a35943c977"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3989,6 +4018,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gif"
+version = "0.14.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee8cfcc411d9adbbaba82fb72661cc1bcca13e8bba98b364e62b2dba8f960159"
+dependencies = [
+ "color_quant",
+ "weezl 0.1.12",
+]
+
+[[package]]
 name = "gimli"
 version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4496,6 +4535,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "image"
+version = "0.25.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
+dependencies = [
+ "bytemuck",
+ "byteorder-lite",
+ "color_quant",
+ "gif",
+ "image-webp",
+ "moxcms",
+ "num-traits",
+ "png",
+ "tiff",
+ "zune-core",
+ "zune-jpeg",
+]
+
+[[package]]
+name = "image-webp"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
+dependencies = [
+ "byteorder-lite",
+ "quick-error 2.0.1",
+]
+
+[[package]]
 name = "imap-proto"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4765,6 +4833,15 @@ dependencies = [
  "sha2 0.10.9",
  "signature",
  "zeroize",
+]
+
+[[package]]
+name = "kamadak-exif"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8772c92c0f41c4a672cbdee6728253e5ae8fcc1c5eb5c6c676579565684bbf68"
+dependencies = [
+ "mutate_once",
 ]
 
 [[package]]
@@ -5070,7 +5147,7 @@ dependencies = [
  "sha2 0.11.1",
  "stringprep",
  "thiserror 2.0.21",
- "weezl",
+ "weezl 0.2.1",
 ]
 
 [[package]]
@@ -5280,6 +5357,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "moxcms"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
+dependencies = [
+ "num-traits",
+ "pxfm",
+]
+
+[[package]]
 name = "multer"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5310,6 +5397,12 @@ checksum = "a198f9589efc03f544388dfc4a19fe8af4323662b62f598b8dcfdac62c14771c"
 dependencies = [
  "byteorder",
 ]
+
+[[package]]
+name = "mutate_once"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13d2233c9842d08cfe13f9eac96e207ca6a2ea10b80259ebe8ad0268be27d2af"
 
 [[package]]
 name = "new_debug_unreachable"
@@ -6442,6 +6535,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "pxfm"
+version = "0.1.30"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
+
+[[package]]
 name = "qrcode"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6452,6 +6551,12 @@ name = "quick-error"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
+
+[[package]]
+name = "quick-error"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a993555f31e5a609f617c12db6250dedcac1b0a85076912c436e6fc9b2c8e6a3"
 
 [[package]]
 name = "quick-xml"
@@ -7174,7 +7279,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc6bf79ff24e648f6da1f8d1f011e9cac26491b619e6b9280f2b47f1774e6ee2"
 dependencies = [
  "fnv",
- "quick-error",
+ "quick-error 1.2.3",
  "tempfile",
  "wait-timeout",
 ]
@@ -8414,6 +8519,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tiff"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b63feaf3343d35b6ca4d50483f94843803b0f51634937cc2ec519fc32232bc52"
+dependencies = [
+ "fax",
+ "flate2",
+ "half",
+ "quick-error 2.0.1",
+ "weezl 0.1.12",
+ "zune-jpeg",
+]
+
+[[package]]
 name = "time"
 version = "0.3.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9464,6 +9583,12 @@ dependencies = [
 
 [[package]]
 name = "weezl"
+version = "0.1.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
+
+[[package]]
+name = "weezl"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4ca08e5ef825b65b056d9efbd95c8750683f0a6d0466d02e96dc2e4e360f3d2"
@@ -9870,4 +9995,19 @@ checksum = "481ada9c543b2323cbb7bbdbb5249177fbf0188ed959ed2c15e4b22421c84ed3"
 dependencies = [
  "cc",
  "pkg-config",
+]
+
+[[package]]
+name = "zune-core"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d56377fd46368984a170bc5aac5567e52ca5da874caa60bea39fcbca78fb658b"
+
+[[package]]
+name = "zune-jpeg"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
+dependencies = [
+ "zune-core",
 ]
