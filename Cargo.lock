@@ -2814,7 +2814,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-itsm"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-itsm?branch=main#74bae9c48f2642ea432580b916342a9049fe88ce"
+source = "git+https://github.com/CBFerrum/ferrum-app-itsm?branch=main#237da2c3cd4ce7570a86ec490c94f559868a61bf"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2822,6 +2822,7 @@ dependencies = [
  "ferrum-kernel",
  "ferrum-meta",
  "rust_decimal",
+ "serde",
  "serde_json",
  "sqlx",
  "uuid",
