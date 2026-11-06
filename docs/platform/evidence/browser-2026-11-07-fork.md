@@ -101,10 +101,27 @@ invoice with.
 | A visit missed | APT-2026-00003 (Asha with Raj at 11:00) → Did Not Come | No Show, nothing billed. It was accepted at 03:35, before the visit's time (see Found and fixed). |
 | A practitioner's own view | Mira given Practitioner and signed in; reception had checked Asha in for 10:00 (Mira) and 12:00 (Raj) | Her menu: Home, Appointments, Patients, Patient Consents, Practitioners, Appointment Types. Her own visit: Complete the Visit made it Completed, its invoice drafted. Raj's visit: refused, "the visit's practitioner completes it" (the toast on the page, 403 by the API). Booking a visit herself: 403 "not permitted to create appointment". |
 
+## On the pins build (Ferrum 691ecb1, 7 November, from 03:58)
+
+The server was rebuilt on the pins branch (691ecb1): every app at its 7 November main, the shell on Ferrum-Frontend a64416a. In walk-intranet's App Manager, Logistics went 0.3.0 → 0.3.3, Control Plane 0.4.1 → 0.5.2, Government 0.2.1 → 0.2.4, Healthcare 0.1.7 → 0.1.10, Property 0.7.2 → 0.7.4 and Retail 0.3.2 → 0.3.4, each in place.
+
+| What | Where | Seen |
+|---|---|---|
+| A signature on the driver's page | TRP-2026-00002 (DN for Ivan, dispatched to Walk Admin) → `/logistics/drive` → Delivered | The dialog read "Photo of the goods or the signature" and "Or they sign here", with a pad and "Clear the signature". Received by Ivan Index, a signature drawn in three strokes, no photo. |
+| Saved with no connection | The server restarted without a rebuild (down 04:06:02, back 04:06:40); the page saved the proof the moment the server stopped answering | "No connection: your trips as of 04:05 GMT+5:30.", "1 proof is kept on this phone, to send.", the stop "Kept, to send". On the phone (IndexedDB): Delivered, Ivan Index, photo none, signature image/png of 11,356 bytes. |
+| Sent by itself | The server back | At 04:07:20 the page sent it with nobody touching it: the stop Delivered, the waiting line gone. On the server: the proof's signature `/files/01a1b302…` (200, image/png, 11,356 bytes), photo none, happened at 22:36:02Z (04:06:02), stored at 22:37:20Z, the stop not late. |
+| Logistics' home | `/logistics/` | "Fleet costs" linking `/logistics/r/logistics_fleet_costs`; TRP-2026-00001 "Cost 223.20". |
+| Control's new incident | Incidents → New | Public ticked, as it is saved. |
+| A missed visit before its time | APT-2026-00006 (Bina, 10:30 on 8 November) → Did Not Come | Refused: "the visit has not begun yet: it is at 10:30 on 2026-11-08". |
+| Retail's franchise page | Fran signed in with a code → Your franchise | "ROY-2026-00001 · 2026-10-01 to 2026-10-31 · sales 100,000.00 · fees 7,000.00", Invoiced. |
+| Government's apply list | Fran → Your services | "Street Food Stall · no fee · 1 month". |
+| The owners' portal's rent | Olive signed in with a code → Properties you own | A2, let to Ivan Index, "1,030 monthly", the indexed rent; A1 1,200. |
+
 ## Not walked, and why
 
-- **A page opened offline.** This desktop browser pane cannot register service workers at all: Logistics' `/logistics/sw.js` and the platform's own `/sw.js` both fail with "an unknown error occurred when fetching the script". The server serves both correctly (200, `text/javascript`, `Service-Worker-Allowed: /logistics/`, with or without cookies). The page left open while the server was down was walked instead (above).
+- **A page opened offline.** This desktop browser pane cannot register service workers at all: Logistics' `/logistics/sw.js` and the platform's own `/sw.js` both fail with "an unknown error occurred when fetching the script". The server serves both correctly (200, `text/javascript`, `Service-Worker-Allowed: /logistics/`, with or without cookies). The page left open while the server was down was walked instead, with a photo on 0.3.0 and with a signature on 0.3.3 (above).
 - **A case going overdue.** It needs its days to pass.
+- **A stop's weight from its goods.** A stop's weight is typed in (TRP-2026-00002's, made over the API, read 0 kg): ERP's items and delivery notes carry no weight to take it from.
 - **Control's releases, rollouts and partners**: not this walk.
 
 ## Found and fixed
@@ -115,11 +132,11 @@ invoice with.
 | Property: Reconcile's "Charged" came from the budget's share worked out once (504.11), while the invoices bore 504.10. | Property 0.7.2 (803b5fa) reconciles against what the invoices bore. |
 | Property: the index review said "104 over 100" without the 3% cap that set the figure. | Property 0.7.2: "held to its cap of 3%". |
 | Property: Owner Payout Item showed under "Additional fields". | Property 0.7.2: its own heading, Owners. |
-| Property: the owners' portal showed A2 at "1,000 monthly" after its rent was indexed to 1,030; "Your home" read the starting rent too. | Property 0.7.3 (ferrum-app-property PR 9): both portals show the rent in effect on the workspace's day, its reviews counted. |
+| Property: the owners' portal showed A2 at "1,000 monthly" after its rent was indexed to 1,030; "Your home" read the starting rent too. | Property 0.7.3 (415009f, PR 9): both portals show the rent in effect on the workspace's day, its reviews counted. Seen on the pins build (above). |
 | An action with a confirmation and parameters (Reconcile) asked twice. | Ferrum-Frontend PR 44: it asks once. |
 | Logistics: a stop's Return Note offered every delivery note, not only draft returns; a proof sent at once still toasted "A proof kept on this phone was sent." | Logistics 0.3.1 (61d3573). |
-| Logistics: the home never linked Fleet Costs (reachable only by its address) and showed "Cost 223.2". | Logistics 0.3.2 (ferrum-app-logistics PR 5): a Fleet costs link, and costs, days and readings formatted; with it, a signature drawn on the driver's page, kept offline with the proof. |
-| Retail: Your franchise read "sales 100000 · fees 7000". | Retail 0.3.3 (ferrum-app-retail PR 4): sales and fees as money. |
-| Government: "Apply for a permit" read "fee 0" for a type with none. | Government 0.2.3 (ferrum-app-government PR 3): its fee as money, or "no fee". |
-| Healthcare: Did Not Come was accepted hours before the visit's time. | Healthcare's next patch (after the 7 November rebuild sweep): refused before the visit begins on the workspace's clock. |
-| A new form showed a checkbox whose default is `1` unticked, yet saved it ticked: Control's new incident looked private and was saved public. | The Frontend's prefill ticks a box on `true`, 1 or "1" (the Frontend PR of 7 November); Control Plane 0.5.1 (ferrum-app-control PR 7) and Social's next rebuild default to `true`. |
+| Logistics: the home never linked Fleet Costs (reachable only by its address) and showed "Cost 223.2". | Logistics 0.3.2 (8525dd6, PR 5): a Fleet costs link, and costs, days and readings formatted; with it, a signature drawn on the driver's page, kept offline with the proof. Both walked on the pins build (above). |
+| Retail: Your franchise read "sales 100000 · fees 7000". | Retail 0.3.3 (5afe493, PR 4): sales and fees as money. Seen on the pins build. |
+| Government: "Apply for a permit" read "fee 0" for a type with none. | Government 0.2.3 (ea3b7d5, PR 3): its fee as money, or "no fee". Seen on the pins build. |
+| Healthcare: Did Not Come was accepted hours before the visit's time. | Healthcare 0.1.10 (7a4c0d3, PR 3): refused before the visit begins on the workspace's clock. Seen on the pins build. |
+| A new form showed a checkbox whose default is `1` unticked, yet saved it ticked: Control's new incident looked private and was saved public. | The Frontend's prefill ticks a box on `true`, 1 or "1" (the Frontend PR of 7 November); Control Plane 0.5.1 (78c44dc, PR 7) and Social 0.6.2 default to `true`. Control's new incident seen ticked on the pins build. |
