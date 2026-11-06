@@ -508,7 +508,7 @@ impl Kernel {
         let mut tx = self.db.system_tx().await?;
         let rows = sqlx::query_scalar(
             "select host from tenant_host where kind = 'custom' and released_at is null and (checked_at is null or (verified_at is null and checked_at < now() - interval '5 minutes') \
-             or checked_at < now() - interval '1 day') order by checked_at nulls first limit $1",
+             or checked_at < now() - interval '1 day') and not (verified_at is not null and host like '%.localhost') order by checked_at nulls first limit $1",
         )
         .bind(limit)
         .fetch_all(&mut *tx)

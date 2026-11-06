@@ -105,13 +105,17 @@ fn shell_target() -> String {
 
 async fn add(Auth(ctx): Auth, State(app): State<AppContext>, Json(d): Json<NewDomain>) -> ApiResult<Response> {
     let st = app_state(&app)?;
+    let host = d.host.trim().trim_end_matches('.').to_ascii_lowercase();
+    // On a developer's machine (the base domain is `localhost`) a name under it reaches only this
+    // machine, so it is a custom domain verified at once: a site's own host can be tried there.
+    let local = st.shell.base() == Some("localhost") && host.ends_with(".localhost");
     // The cluster's own domain names its workspaces and its own hosts (shape B): none of them is
     // anyone's custom domain.
-    if let Some(base) = st.shell.base() {
-        let host = d.host.trim().trim_end_matches('.').to_ascii_lowercase();
-        if host == base || host.ends_with(&format!(".{base}")) {
-            return Err(Error::field("host", format!("is under {base}, this service's own domain")).into());
-        }
+    if let Some(base) = st.shell.base()
+        && !local
+        && (host == base || host.ends_with(&format!(".{base}")))
+    {
+        return Err(Error::field("host", format!("is under {base}, this service's own domain")).into());
     }
     // A site is an app's: one this workspace has, that renders pages.
     if let Some(app_id) = d.target.strip_prefix("site:")
@@ -119,7 +123,11 @@ async fn add(Auth(ctx): Auth, State(app): State<AppContext>, Json(d): Json<NewDo
     {
         return Err(Error::field("target", "names no app of this workspace with a public site").into());
     }
-    let host = st.kernel.add_host(&ctx, &d.host, &d.target).await?;
+    let mut host = st.kernel.add_host(&ctx, &d.host, &d.target).await?;
+    if local {
+        st.kernel.host_checked(&host.host, true).await?;
+        host = st.kernel.list_hosts(&ctx).await?.into_iter().find(|h| h.host == host.host).unwrap_or(host);
+    }
     Ok((StatusCode::CREATED, Json(host)).into_response())
 }
 

@@ -2478,7 +2478,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-control"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-control?branch=main#56b6ba7c05026e0ee44317ee13db7b7ed933f484"
+source = "git+https://github.com/CBFerrum/ferrum-app-control?branch=main#4feeea7fe2ad1f44b11ddc30490050dca620fcea"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2514,7 +2514,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-dam"
 version = "0.1.1"
-source = "git+https://github.com/CBFerrum/ferrum-app-dam?branch=main#3c88f7de812e75a75eacbf01a31e7878435b2617"
+source = "git+https://github.com/CBFerrum/ferrum-app-dam?branch=main#c81b5e3be0c46da0220fa494c5a4f5a904d35a92"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2530,6 +2530,7 @@ dependencies = [
  "sqlx",
  "tokio",
  "uuid",
+ "zip",
 ]
 
 [[package]]
@@ -2914,7 +2915,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-objectives"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-objectives?branch=main#979687524bccbfc2098bb7fee34e35d4ec7b70c4"
+source = "git+https://github.com/CBFerrum/ferrum-app-objectives?branch=main#4983e8bdec5acf0614f54b6e78ca52b58737a129"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2969,7 +2970,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-property"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-property?branch=main#99a1666c2b6542141fcbd344f70626159a97197d"
+source = "git+https://github.com/CBFerrum/ferrum-app-property?branch=main#1789943598b03cb0f5f0fd0bab3cb4cd1c36d761"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3045,7 +3046,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-social"
 version = "0.2.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-social?branch=main#495db8ed48bbffcc289fd2fb4c5f5479ddced2d7"
+source = "git+https://github.com/CBFerrum/ferrum-app-social?branch=main#3d662977d994a2c9ffcb98cb7a13f0a0c0bb76d0"
 dependencies = [
  "async-trait",
  "chrono",
