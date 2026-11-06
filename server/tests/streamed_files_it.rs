@@ -158,7 +158,7 @@ async fn scenario() {
             up::append(&k, &s3, &admin, id, from as u64, part(from, to)).await.unwrap();
         }
         assert_eq!(up::complete(&k, &s3, &admin, id).await.unwrap()["sha256"], sha);
-        let (size, body) = s3.stream(&format!("tenants/{}/{id}", tenants[0])).await.unwrap();
+        let (size, _, body) = s3.stream(&format!("tenants/{}/{id}", tenants[0]), None).await.unwrap();
         assert_eq!(size, big.len() as u64);
         assert!(axum::body::to_bytes(body, usize::MAX).await.unwrap().as_ref() == big.as_slice(), "joined in order on S3");
         // Straight to the bucket with the presigned request, then completed.
@@ -172,7 +172,7 @@ async fn scenario() {
         let sent = put.body(big.clone()).send().await.unwrap();
         assert!(sent.status().is_success(), "the presigned PUT: {}", sent.status());
         assert_eq!(up::complete(&k, &s3, &admin, id).await.unwrap()["sha256"], sha);
-        let (size, body) = s3.stream(&format!("tenants/{}/{id}", tenants[0])).await.unwrap();
+        let (size, _, body) = s3.stream(&format!("tenants/{}/{id}", tenants[0]), None).await.unwrap();
         assert_eq!(size, big.len() as u64);
         assert!(axum::body::to_bytes(body, usize::MAX).await.unwrap().as_ref() == big.as_slice(), "copied to the file's key");
     } else {
