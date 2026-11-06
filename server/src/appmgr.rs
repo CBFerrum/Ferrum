@@ -117,6 +117,8 @@ pub enum StepAction {
 #[derive(Debug, Clone, Serialize)]
 pub struct Step {
     pub id: String,
+    /// The app's name, for people.
+    pub name: String,
     pub version: String,
     pub action: StepAction,
     /// `native`, `cluster` (already available here), `private`, or `store:<url>`.
@@ -1533,7 +1535,10 @@ impl AppManager {
                 labels,
                 equipment: root.equipment.clone(),
             },
-            steps: steps.iter().map(|s| Step { id: s.id.clone(), version: s.version.to_string(), action: s.action, source: s.source.clone() }).collect(),
+            steps: steps
+                .iter()
+                .map(|s| Step { id: s.id.clone(), name: s.manifest.name.clone(), version: s.version.to_string(), action: s.action, source: s.source.clone() })
+                .collect(),
             permissions,
             digest: plan_digest(&steps),
             increases,
