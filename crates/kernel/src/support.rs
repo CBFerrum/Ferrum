@@ -15,6 +15,7 @@
 //! with the database's credentials can do, which [docs/support-access.md] states plainly.
 
 use crate::ctx::Ctx;
+use crate::db::Tx;
 use crate::error::{Error, Result};
 use crate::{Kernel, audit, notify};
 use chrono::Utc;
@@ -22,6 +23,25 @@ use ferrum_meta::EntityKind;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
+
+/// How an app's own part of a workspace is doing, for the support report: counts, and problems in
+/// words (`{"problems": ["…"], …counts}`), never a record, since a `health` key reads it. Registered
+/// for a package ([`crate::HookRegistry::add_health`]) and asked only of workspaces that installed
+/// it, in a transaction of their own.
+#[async_trait::async_trait]
+pub trait Health: Send + Sync {
+    async fn health(&self, kernel: &Kernel, tx: &mut Tx, tenant: Uuid) -> Result<Value>;
+}
+
+/// An app's health as the report gives it: its counts, and its problems in words (20 at most, each
+/// cut at 200 characters). Nothing else passes, so a health key never reads a record through it.
+fn counts_and_problems(v: &Value) -> Value {
+    let mut out: serde_json::Map<String, Value> =
+        v.as_object().into_iter().flatten().filter(|(_, x)| x.is_number()).map(|(k, x)| (k.clone(), x.clone())).collect();
+    let problems = v.get("problems").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str);
+    out.insert("problems".into(), problems.take(20).map(|p| json!(p.chars().take(200).collect::<String>())).collect());
+    Value::Object(out)
+}
 
 /// The longest each level may last, in hours.
 fn longest(level: &str) -> Option<i64> {
@@ -297,13 +317,48 @@ impl Kernel {
             events = sqlx::query_scalar("select jsonb_build_object('topic', topic, 'attempts', attempts, 'error', last_error, 'at', created_at) from outbox where tenant_id = $1 and dead order by id desc limit 50").bind(ctx.tenant).fetch_all(&mut *tx).await?;
         }
         tx.commit().await?;
+        // Each installed app's own health, one transaction each, so one that fails spoils no other.
+        let mut apps = serde_json::Map::new();
+        for (package, source) in self.hooks.health().iter().filter(|(p, _)| ctx.schema.packages.contains(p)) {
+            let mut tx = self.db.system_tenant_tx(ctx.tenant).await?;
+            let found = match source.health(self, &mut tx, ctx.tenant).await {
+                Ok(v) => {
+                    tx.commit().await?;
+                    counts_and_problems(&v)
+                }
+                Err(e) => {
+                    tracing::warn!(package = %package, error = %e, "an app's health could not be read");
+                    let _ = tx.rollback().await;
+                    json!({"problems": ["its health could not be read"]})
+                }
+            };
+            apps.insert(package.clone(), found);
+        }
         let warnings: Vec<String> = ctx.schema.warnings.iter().map(|w| format!("{}: {}", w.entity, w.message)).collect();
         Ok(json!({
             "version": env!("CARGO_PKG_VERSION"), "packages": ctx.schema.packages,
             "events": {"pending": pending, "dead": dead}, "jobs": {"active": queued, "failed": failed},
-            "usage": {"people": meter("people"), "storage_bytes": meter("storage_bytes")},
+            "usage": {"people": meter("people"), "storage_bytes": meter("storage_bytes")}, "apps": apps,
             "customization_warnings": if level == "health" { json!(warnings.len()) } else { json!(warnings) },
             "failed_jobs": failures, "dead_events": events,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::counts_and_problems;
+    use serde_json::json;
+
+    #[test]
+    fn an_app_says_counts_and_problems_and_nothing_else() {
+        let said = json!({"gateways": 5, "silent": 1, "name": "Press hall", "list": [1], "problems": ["1 gateway silent", 7, "x".repeat(300)]});
+        let kept = counts_and_problems(&said);
+        assert_eq!(kept["gateways"], json!(5));
+        assert_eq!((kept.get("name"), kept.get("list")), (None, None), "no words but problems, no lists");
+        assert_eq!(kept["problems"].as_array().unwrap().len(), 2);
+        assert_eq!(kept["problems"][1].as_str().unwrap().len(), 200);
+        assert_eq!(counts_and_problems(&json!("anything")), json!({"problems": []}));
+        assert_eq!(counts_and_problems(&json!({"problems": vec!["p"; 30]}))["problems"].as_array().unwrap().len(), 20);
     }
 }
