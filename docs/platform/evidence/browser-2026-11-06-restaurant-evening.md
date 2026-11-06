@@ -38,6 +38,16 @@ Restaurant 0.2.0 (ferrum-app-restaurant PR 2) fixes each of these:
 | On the order's page a sent line's dish and quantity looked editable, the server refusing the change on save, and a dine-in order showed the delivery fields | A sent line is read-only there; a table's fields show for dine-in, a delivery's for deliveries |
 | "is after it starts", said of a reservation's end | "must be after it starts" |
 
+## The fixes, checked on their build
+
+On Ferrum PR 89 at 66e3097, with Restaurant 0.2.0, at 21:00 UTC: an order for Table 2 of
+"lemonade" in lower case and a tiramisu was written "Lemonade" as the menu writes it, and sent with
+"Sent to Bar and Pastry, for Table 2". The lemonades voided, the bar's ticket was Voided and left
+the kitchen's page, the pastry's stayed "Table 2 · 1 × Tiramisu". Setting the tiramisu to Served by
+hand was refused ("Tiramisu is sent: the kitchen moves it on, and Void takes it off"). Billing said
+"Billed 6.5: a draft invoice in ERP; the table is free". The walk's own ticket from before the
+fix, "Table Table 1", still shows its two voided pizzas: it was made before the fix.
+
 ## What it did not cover
 
 - Separate people as server and kitchen: the walk ran as the administrator. The suite tests who may do what.
