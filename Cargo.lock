@@ -2644,7 +2644,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-field-service"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-field-service?branch=main#5d838d4e91ca80d8a2420fc71d931e02466a37ae"
+source = "git+https://github.com/CBFerrum/ferrum-app-field-service?branch=main#02b780dfb363dadb1913808794efac4a5aabcf7c"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2831,7 +2831,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-lms"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-lms?branch=main#8351bb5f8b0284c591f4b384199967911c042803"
+source = "git+https://github.com/CBFerrum/ferrum-app-lms?branch=main#638259a2a64d70201f2e328dacf4346093c21e88"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
