@@ -5,18 +5,21 @@ What is true of each requirement is in the registry; this says what happened and
 
 ## 2026-11-06, night, later: the walks' fixes checked on their build; Commerce, Metrics and Social pinned
 
-**State:** this PR follows PR 82. Its lock takes Commerce 0.7.5, Metrics 0.2.0 and Social 0.3.0. No
-release was tagged.
+**State:** this PR follows PR 82. Its lock takes every app at its main of 6 November's night: Commerce
+0.7.5, Metrics 0.2.0, Social 0.4.0, Digital Assets 0.3.0, and 38 apps' interfaces rebuilt with
+Ferrum-Frontend bb60115 (ERP 0.14.3, Campaigns 0.3.4, HR 0.8.2 and the rest a patch each). No release
+was tagged.
 
 | Where | What |
 |---|---|
 | Evidence | On PR 82's build, a sent campaign's results, a signup form's HTML pasted into a page, settings opening as their record and an install dialog naming what it brings ([the walk](../platform/evidence/browser-2026-11-06-journeys.md), "The fixes, checked on their build") |
 | Commerce 0.7.5 | A payment request's page asks Mark Paid for the amount and currency received, filled from the request: from that page it always failed |
 | Metrics 0.2.0 | Certified metrics delivered to who follows them on the workspace's day (FERRUM-ECOSYSTEM-010) |
-| Social 0.3.0 | A Bluesky connector beside Mastodon's (FERRUM-ECOSYSTEM-005) |
+| Social 0.3.0, 0.4.0 | A Bluesky connector beside Mastodon's, and a picture with alt text on a post (FERRUM-ECOSYSTEM-005) |
+| Digital Assets 0.3.0 | An approved asset shared outside the workspace by a link for one recipient (FERRUM-ECOSYSTEM-012) |
+| Interfaces | Every app's interface rebuilt with Ferrum-Frontend bb60115, so record pages read empty numbers as the server does and settings open as their one record |
 
-**Next:** rebuild the apps' interfaces with Ferrum-Frontend main, so their pages take PRs 36 to 39;
-the tenant's life on the image is still to walk.
+**Next:** the tenant's life on the image is still to walk.
 
 ## 2026-11-06, night: hire to retire, a hotel stay and marketing to consent walked; actions that pages could not run
 
