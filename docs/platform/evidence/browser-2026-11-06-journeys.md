@@ -109,6 +109,17 @@ The workspace's time zone is UTC; the browser's was India's.
 | A subscription form gave only its endpoint's path, and no form to paste into a website | Campaigns 0.3.3: HTML for Your Website |
 | CRM dated what it stamps by UTC while reports use the workspace's date: in the hours between the two midnights a deal won that day fell outside the day's report (seen in Campaigns' CI) | CRM 0.6.4: the workspace's date throughout |
 
+## The fixes, checked on their build
+
+On the build of Ferrum PR 82 (its pins, with the shell built from Ferrum-Frontend bb60115), Campaigns
+was updated to 0.3.3 in the App Manager. The first campaign's Results then showed it: 2 sent and
+delivered, 1 opened, 1 clicked (the offer link, 2 clicks in all, one of them a script reading its
+redirect), 1 unsubscribed, no bounces or complaints. The Hotel newsletter form, saved with "city,
+interests", gave its HTML for a website: a form posting to the form's full address with those fields
+and the hidden one; pasted into a page, it signed up noor@guests.test, Pending, with her city and
+interests. Communication Settings' list opened its one record, and Warehouse Management's install
+dialog said "Also installs: Operations 0.2.0, Stock Operations 0.1.1, Quality 0.1.0".
+
 ## What it does not show
 
 - Nobody independent prepared the figures or checked the outcome.
