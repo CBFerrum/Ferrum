@@ -30,6 +30,16 @@ export CARGO_INCREMENTAL=0
 fail=0
 step() { echo "== $1"; }
 quiet() { grep -v "patch.*was not used\|Check that the patched\|^warning: Patch"; }
+# A test run's outcome: its results when it passed, and its whole tail when it did not.
+tests() {
+  local log
+  log=$(mktemp "${TMPDIR:-/tmp}/app-ci-test.XXXXXX")
+  "$@" > "$log" 2>&1
+  local code=$?
+  if [ $code = 0 ]; then grep -E "^test result" "$log"; else quiet < "$log" | grep -v "^ *Compiling\|^ *Checking" | tail -60; fi
+  rm -f "$log"
+  return $code
+}
 
 cd "$APP_DIR" || exit 2
 if [ ! -f .cargo/config.toml ]; then
@@ -45,25 +55,28 @@ git check-ignore -q .cargo/config.toml || { echo ".cargo/config.toml is not igno
 step fmt
 cargo fmt -- --check || fail=1
 
-step clippy
-CARGO_TARGET_DIR=$TARGET cargo clippy -q --all-targets -- -D warnings 2>&1 | quiet
-[ "${PIPESTATUS[0]}" = 0 ] || fail=1
+clippy() {
+  step clippy
+  CARGO_TARGET_DIR=$TARGET cargo clippy -q --all-targets -- -D warnings 2>&1 | quiet
+  [ "${PIPESTATUS[0]}" = 0 ] || fail=1
+}
+# Short of disk, the tests build first, in their own target, so clippy's outputs cannot crowd them.
+[ "${NO_DEBUG:-}" = 1 ] || clippy
 
 step "test (${DBS[*]##*/})"
 for kv in "${DBS[@]}"; do db=${kv##*/}; psql "$PG/postgres" -q -c "drop database if exists $db" -c "create database $db owner ferrum" || fail=1; done
 if [ "${NO_DEBUG:-}" = 1 ]; then
   T=$(mktemp -d "${TMPDIR:-/tmp}/app-ci-target.XXXXXX")
-  env "${DBS[@]}" CARGO_TARGET_DIR="$T" CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo test -q --no-fail-fast 2>&1 | quiet | grep -E "^test result|FAILED|panicked|error(\[|:)|failures:"
-  [ "${PIPESTATUS[0]}" = 0 ] || fail=1
+  tests env "${DBS[@]}" CARGO_TARGET_DIR="$T" CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo test --no-fail-fast || fail=1
   rm -rf "${T:?}"
 else
-  env "${DBS[@]}" CARGO_TARGET_DIR="$TARGET" cargo test -q --no-fail-fast 2>&1 | quiet | grep -E "^test result|FAILED|panicked|error(\[|:)|failures:"
-  [ "${PIPESTATUS[0]}" = 0 ] || fail=1
+  tests env "${DBS[@]}" CARGO_TARGET_DIR="$TARGET" cargo test --no-fail-fast || fail=1
   crate=$(grep -m1 '^name' Cargo.toml | sed 's/.*"\(.*\)".*/\1/' | tr '-' '_')
   for t in tests/*.rs; do rm -f "$TARGET/debug/deps/$(basename "$t" .rs)"-[0-9a-f]*; done
   find "$TARGET/debug/deps" -maxdepth 1 -name "${crate}-[0-9a-f]*" -type f -perm -u+x -delete 2>/dev/null
 fi
 for kv in "${DBS[@]}"; do psql "$PG/postgres" -q -c "drop database if exists ${kv##*/}"; done
+[ "${NO_DEBUG:-}" = 1 ] && clippy
 
 step ui
 # The interface builds the kit from ../../ferrum/web, so it is built in a layout that has one.
