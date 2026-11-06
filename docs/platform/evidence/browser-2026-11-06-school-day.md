@@ -32,6 +32,14 @@ One person, the workspace's administrator, worked as the office, the admissions 
 | A score's limit read "is between 0 and the assessment's maximum, 50.000000000" | "must be between 0 and the assessment's maximum, 50" |
 | Approve and Admit said only "done" | Ferrum PR 89: an action that says nothing is described from its answer, its new status and what it made |
 
+## The fixes, checked on their build
+
+On Ferrum PR 89 at 66e3097, with Education 0.2.0, at 20:59 UTC: a second applicant approved and
+admitted on their page said "Now Approved", then "Now Admitted; made STU-2026-00003", where it had
+said "done". The 09:00 class's roll call, opened at /school/class/{class}, was headed "09:00 to
+10:00 · Mathematics · 6A · Room 101 · Mr Daniel Weiss" and listed Lea Novak present. Marked Late and
+saved, her attendance for the class was Late.
+
 ## What it did not cover
 
 - Separate people as admissions officer, office and teacher: the walk ran as the administrator. The suite tests who may do what.
