@@ -202,6 +202,7 @@ pub struct HookRegistry {
     resources: Option<Arc<dyn crate::resources::Resources>>,
     restored: Vec<Arc<dyn crate::recovery::Restored>>,
     leaving: Vec<Arc<dyn crate::account::Leaving>>,
+    health: Vec<(String, Arc<dyn crate::support::Health>)>,
     /// The packages owning what is being registered (see [`HookRegistry::scoped`]).
     scope: Option<Arc<[String]>>,
 }
@@ -403,6 +404,17 @@ impl HookRegistry {
 
     pub fn leaving(&self) -> &[Arc<dyn crate::account::Leaving>] {
         &self.leaving
+    }
+
+    /// Adds how `package`'s part of a workspace is doing to the support report (see
+    /// [`crate::support::Health`]); asked only of workspaces that installed the package.
+    pub fn add_health(&mut self, package: &str, source: Arc<dyn crate::support::Health>) -> &mut Self {
+        self.health.push((package.to_string(), source));
+        self
+    }
+
+    pub fn health(&self) -> &[(String, Arc<dyn crate::support::Health>)] {
+        &self.health
     }
 
     pub fn set_resources(&mut self, resources: Arc<dyn crate::resources::Resources>) -> &mut Self {

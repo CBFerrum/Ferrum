@@ -5,7 +5,7 @@ standing way in through the product.
 
 | Level | Reaches | Longest |
 |---|---|---|
-| `health` | Versions, packages, queue sizes, and counts of active people and stored bytes | 30 days |
+| `health` | Versions, packages, queue sizes, counts of active people and stored bytes, and how installed apps are doing | 30 days |
 | `diagnostics` | That, and what failed: job and event errors, without their payloads | 7 days |
 | `assistance` | Named entities, read-only unless the customer allows writing | 3 days |
 | `incident` | Named entities, or all of them, read and write if allowed. Needs a confirmed sign-in | 1 day |
@@ -23,6 +23,13 @@ one, reads included. Administrators are told when a grant is made and when it is
 counts what the workspace uses: its active people and the bytes its files take (`usage`). An operator
 charges for usage beyond a plan from these. They are counts only, never who the people are or what the
 files hold.
+
+The report also says how each installed app's own part is doing (`apps`), where the app tells:
+IoT Edge, for instance, how many of its gateways have gone silent. An app registers that with
+`HookRegistry::add_health(package, …)` (`ferrum_kernel::support::Health`); it is asked only of
+workspaces that installed its package, in a transaction of its own. Only its counts and its problems
+in words pass, 20 at most and each cut at 200 characters, so a health key reads no record through it.
+One that cannot be read says so and spoils nothing else.
 
 ## What this does not say
 
