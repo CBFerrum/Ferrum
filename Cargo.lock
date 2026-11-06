@@ -2864,10 +2864,11 @@ dependencies = [
 [[package]]
 name = "ferrum-app-logistics"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-logistics?branch=main#697d24d2c229f289f3491cdd2fb756699ea07d7d"
+source = "git+https://github.com/CBFerrum/ferrum-app-logistics?branch=main#8b1d3c3194f8ec1acfe16531ed11bd8e415f86cc"
 dependencies = [
  "async-trait",
  "chrono",
+ "chrono-tz 0.10.4",
  "ferrum-domain",
  "ferrum-kernel",
  "ferrum-meta",
@@ -2986,7 +2987,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-restaurant"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-restaurant?branch=main#def47aa022c9fe0effb69caa70a1f1efdd9ba971"
+source = "git+https://github.com/CBFerrum/ferrum-app-restaurant?branch=main#3ebbd2a695fb79be3aa0647c784238feee755ba1"
 dependencies = [
  "async-trait",
  "chrono",

@@ -8,8 +8,8 @@ What is true of each requirement is in the registry; this says what happened and
 **State:** this PR follows PR 88. Its lock takes every app at its main of 6 November's evening, each
 app's interface built with Ferrum-Frontend a76295e (PRs 42 and 43), which FRONTEND_REV now names:
 Healthcare 0.1.7, Government 0.2.1, Retail 0.3.1, Digital Assets 0.6.1, Property 0.7.1, Metrics 0.3.1,
-Objectives 0.5.1, Commerce 0.7.9, the Control Plane 0.4.1, and the rest a patch each. Logistics keeps
-its pin while it is worked on. No release was tagged.
+Objectives 0.5.1, Commerce 0.7.9, the Control Plane 0.4.1, Restaurant 0.2.0, Logistics 0.3.0, and the rest a
+patch each. No release was tagged.
 
 | Where | What |
 |---|---|
@@ -25,10 +25,17 @@ its pin while it is worked on. No release was tagged.
 | Digital Assets 0.6.0 | The place and people a file shows and its licence's terms, read from XMP and IPTC; approval waits for releases when people are named (FERRUM-ECOSYSTEM-012) |
 | Government 0.2.0 | Review stages with site inspections, conditions, renewals, notices to applicants and holders, a public register, and the workspace's day (FERRUM-INDUSTRY-010) |
 | Metrics 0.3.0, Objectives 0.5.0 | As their registry entries say (FERRUM-ECOSYSTEM-010, 011) |
+| Journeys | A restaurant's evening walked through the pages ([the walk](../platform/evidence/browser-2026-11-06-restaurant-evening.md)): an outlet, a menu and tables set up, a table's order through the kitchen, a sent line voided, the bill in ERP, a delivery, reservations (FERRUM-INDUSTRY-002) |
+| Restaurant 0.2.0 | What the walk found: a voided dish is struck off its kitchen ticket, which the kitchen would otherwise still make; a line's state only the kitchen moves on; a delivery goes out once made; the floor starts an order for its table, a takeaway or a delivery; dishes named as the menu writes them; actions say what they did |
+| This PR | An action whose answer has no `message` gets one from what it says, the record's new status and what it made ("Now Admitted; made STU-2026-00001"): the walks met "done" after most apps' actions |
+| Logistics 0.2.0 | Collections with return notes, delivery windows and late stops, a vehicle out again the same day, fuel logs, services due, trip costs and Fleet Costs (FERRUM-INDUSTRY-009) |
+| Logistics 0.3.0 | A driver's page that works offline: the day's trips kept under the lease, proofs kept with when they happened and sent when the connection is back (FERRUM-INDUSTRY-009) |
+| Registry | Hospitality's entry names the hotel walk (FERRUM-INDUSTRY-001) |
 
-**Evidence:** the walk; `crates/kernel/tests/rules_it.rs` (a record headed by a link, through an open
+**Evidence:** the walks; `crates/kernel/tests/rules_it.rs` (a record headed by a link, through an open
 and a restricted entity, and its search); `crates/kernel/tests/collab_it.rs` (the `timezone`
-preference); `ferrum-app-healthcare:ui/src/day.test.ts`.
+preference); `ferrum-app-healthcare:ui/src/day.test.ts`; `ferrum-app-restaurant:tests/restaurant_it.rs` (the
+voided ticket, a state set by hand, the delivery held until made); `server/src/controllers/docs.rs` (an action described from its answer).
 
 **Next:** the walk's fixes and a person's own clock checked on this PR's build in a browser.
 
