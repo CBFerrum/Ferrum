@@ -89,7 +89,8 @@ alone. Each host keeps a session of its own.
 
 **The way in.** A workspace's host without a session sends `/login` on to
 `https://accounts.{base}/authorize?host={its host}&state={random}&prompt=none` and keeps `state`, with
-where to go back to, in the cookie `__Host-ferrum-auth` (ten minutes). Signed in there, with nothing to
+where to go back to, in a cookie of that sign-in's own, `__Host-ferrum-auth-{the state's first 12
+characters}` (ten minutes), so tabs that set off together do not undo each other. Signed in there, with nothing to
 ask, the accounts host sends the browser straight back to `https://{host}/_auth/callback?code=…&state=…`:
 the code works once, within a minute, on that host only, for a member who is still active (and still
 joined); the host checks `state` against its cookie, opens its own session and goes on. Otherwise the

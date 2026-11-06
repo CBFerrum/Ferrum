@@ -1,4 +1,4 @@
-# A browser on a running server, 6 November 2026: six journeys through the pages
+# A browser on a running server, 6 November 2026: seven journeys through the pages
 
 Until now these journeys ran through the API, in the kernel's and the apps' suites. This walk took
 them through the interface, as the people in them would. The server was built in debug on one
@@ -7,8 +7,9 @@ machine from Ferrum as of PR 71 (offline leases), with the apps pinned in its lo
 `FERRUM_BASE_DOMAIN=localhost`, the development mailer (sign-in codes read from the outbox), and the
 shell's interface built from Ferrum-Frontend main.
 
-Two people took part, each signed in through the pages: the workspace's administrator, at the
-accounts host with a password, and Lena, a lessee and ERP customer, on the portal with e-mailed codes.
+Three people took part, each signed in through the pages: the workspace's administrator and Dana, a
+member, at the accounts host with passwords, and Lena, a lessee and ERP customer, on the portal with
+e-mailed codes.
 The workspace's time zone is UTC; the browser's was India's.
 
 ## What was walked
@@ -41,6 +42,11 @@ The workspace's time zone is UTC; the browser's was India's.
 | Document to signature (FERRUM-JOURNEY-008) | A request | In Sign, a one-page service agreement for Harbour Cafe uploaded; signers one after another: Maya Rao (Customer), then the administrator (Walk Properties); her signature and the date signed placed under "Signed for Harbour Cafe:", theirs below; the review gave the document's fingerprint and said what kind of signature it is (an audit trail, not a qualified one); sent as SIGN-2026-00003 |
 | | Signed in turn | Maya's page, from the link e-mailed to her, showed the document with its SHA-256 and the last day; signing without the consent refused ("Tick the box to agree to sign electronically"); with it, a drawn signature recorded. Only then did the administrator's link go out; a typed signature completed it ("Everyone has signed") |
 | | Sealed and checked | The request Completed with the signed copy's fingerprint and seven steps (sent, opened, signed drawn and typed, sealed); Check integrity: the original and the signed copy unchanged, and each step tied to the one before |
+| Learning completion (FERRUM-JOURNEY-011) | A course | In Learn, "Kitchen hygiene basics" built in the course builder: a chapter, a reading lesson written in Markdown and saved as typed, and a quiz lesson ("Quiz is required" until it had one); two questions in the question bank and a quiz of both with a pass mark of 70% (New quiz lost the lesson's kind, below); published |
+| | A learner | Dana, a member without Learn's roles, read "You do not have access to Learn"; given the Learner role, she enrolled from the catalog, read the lesson and marked it done (1 of 2) |
+| | Failed, then passed | The quiz with one wrong answer: 50%, "Not passed this time", the right answers kept back until her last attempt; again, 100%: "You completed Kitchen hygiene basics", with notices of her enrolment and completion |
+| | A certificate | None at first: the course's Certificate on Completion is off unless chosen. Ticked by the administrator, Learn's upkeep issued CERT-2026-000001 to the finished enrolment within the minute and told her; My learning showed it with View certificate and Copy link to check it |
+| | Checked by anyone | Its public page said "This certificate is valid", to Dana Reviewer for Kitchen hygiene basics, issued 5 Nov 2026 by Walk, and opened the printed certificate; asked without a session, the check answered for its code and said "certificate not found" for a code one letter off |
 
 ## What it found, and what changed
 
@@ -58,6 +64,8 @@ The workspace's time zone is UTC; the browser's was India's.
 | A timesheet row entered on its page billed 0.00: the preview's zeros for billing hours and rate went back as if chosen | Projects 0.6.4: zero takes the default |
 | Opening an entity of an add-on that is not installed (a material request before Procurement) says "entity MaterialRequest not found" | Not yet |
 | Sign shows a 776-byte PDF as "0.00 MB" | Not yet |
+| In Learn's course builder, New quiz left for a blank quiz form before the lesson's kind could save (a quiz lesson saves only with its quiz): the lesson came back a reading lesson and the new quiz unpicked | Learn 0.6.1: New quiz and New assignment make one in the lesson, named after it, and pick it |
+| Once, choosing another account at the accounts host ended in "Signing in did not finish": another open tab of the workspace, told of the sign-out, likely began a sign-in of its own over the first one's | Not yet |
 
 ## What it does not show
 
@@ -66,4 +74,6 @@ The workspace's time zone is UTC; the browser's was India's.
   both. No parts left a van's stock; Field Service's suite has that. Procure to pay had no request
   for quotation and no bank statement matched (Finance was not installed); the kernel's
   procure-to-pay test has both.
+- Learning completion had no cohort, live session, graded assignment, paid course or packaged lesson;
+  Learn's suite has them.
 - One server on one machine, a debug build, not the released image or a deployment.

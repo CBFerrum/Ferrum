@@ -1,7 +1,8 @@
 //! Uploads and the malware scanner, against a real PostgreSQL (`FERRUM_TEST_DATABASE_URL`; the
 //! database is reset first) and a stand-in for ClamAV's daemon speaking its protocol on a local
 //! port: what it finds is not stored, a scanner that cannot answer stops uploads, and a file past
-//! its limit is stored and marked.
+//! its limit is stored and marked. With `FERRUM_TEST_CLAMD` (CI's ClamAV), the same against the
+//! real daemon: a clean file is stored as clean, and the EICAR test file is refused.
 
 use ferrum_kernel::files::FileStore;
 use ferrum_kernel::tenant::NewTenant;
@@ -170,4 +171,26 @@ async fn scenario() {
     let plain = k3.store_file(&admin3, None, "note.txt", "text/plain", b"fine").await.expect("stored");
     assert_eq!(status(id(plain)).await, "unscanned");
     assert!(k3.scanner_ok().await.is_none());
+
+    // ClamAV itself, when there is one to ask.
+    let Ok(real) = std::env::var("FERRUM_TEST_CLAMD") else {
+        eprintln!("ClamAV: skipped, FERRUM_TEST_CLAMD is not set");
+        return;
+    };
+    let db = connect().await;
+    let settings = KernelSettings { clamd: Some(real), clamd_max_bytes: 1 << 20, ..Default::default() };
+    let k4 = Kernel::boot(db, catalog(), HookRegistry::default(), settings, None).await.expect("boot");
+    k4.set_file_store(files.clone());
+    let admin4 = k4.load_ctx(tenant, admin.user, None, "it".into()).await.unwrap();
+    // It loads its signatures for a minute or two after it starts.
+    let mut waited = 0;
+    while k4.scanner_ok().await.expect("configured").is_err() {
+        assert!(waited < 180, "ClamAV did not answer within three minutes");
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        waited += 2;
+    }
+    let clean = k4.store_file(&admin4, None, "note.txt", "text/plain", b"nothing wrong here").await.expect("stored");
+    assert_eq!(status(id(clean)).await, "clean");
+    let found = k4.store_file(&admin4, None, "eicar.com", "application/octet-stream", EICAR).await;
+    assert!(matches!(&found, Err(Error::Invalid(m)) if m.to_lowercase().contains("eicar")), "{found:?}");
 }

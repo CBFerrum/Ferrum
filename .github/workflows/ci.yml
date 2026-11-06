@@ -99,7 +99,8 @@ jobs:
 
   # SAML, whose signatures xmlsec1 checks (crates/saml), is a feature the job above does not build:
   # its own tests, the sign-in round trip through the kernel, and a sign-in on Keycloak's login page,
-  # a real identity provider signing with another implementation (Apache Santuario).
+  # a real identity provider signing with another implementation (Apache Santuario). The real
+  # software the kernel's tests otherwise stand in for runs here too: ClamAV for the upload scanner.
   saml:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -117,6 +118,8 @@ jobs:
       CARGO_TERM_COLOR: always
       FERRUM_SAML_TEST_DATABASE_URL: postgres://ferrum:ferrum@localhost:5432/ferrum_saml_test
       FERRUM_SAML_KEYCLOAK: http://localhost:8180
+      FERRUM_TEST_DATABASE_URL: postgres://ferrum:ferrum@localhost:5432/ferrum_test
+      FERRUM_TEST_CLAMD: localhost:3310
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.95.0
@@ -131,17 +134,21 @@ jobs:
         run: |
           docker run -d --name keycloak -p 8180:8080 -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
             quay.io/keycloak/keycloak:26.8.1 start-dev
+      # With its signatures in the image; it loads them while the tests build.
+      - name: ClamAV
+        run: docker run -d --name clamav -p 3310:3310 -e CLAMAV_NO_FRESHCLAMD=true -e CLAMAV_NO_MILTERD=true clamav/clamav:1.4.3
       - name: The application role and test database
         run: |
           psql postgres://postgres:postgres@localhost:5432/postgres -v ON_ERROR_STOP=1 <<'SQL'
           create role ferrum login password 'ferrum';
           create database ferrum_saml_test owner ferrum;
+          create database ferrum_test owner ferrum;
           SQL
       - run: cargo clippy -p ferrum-saml -p ferrum-kernel --features ferrum-saml/xmlsec,ferrum-kernel/saml --all-targets --locked -- -D warnings
       - run: cargo test -p ferrum-saml --features xmlsec --locked
       - name: Keycloak is up
         run: for i in $(seq 1 90); do curl -fs http://localhost:8180/realms/master > /dev/null && exit 0; sleep 2; done; docker logs keycloak; exit 1
-      - run: cargo test -p ferrum-kernel --features saml --locked --test saml_it --test saml_keycloak_it
+      - run: cargo test -p ferrum-kernel --features saml --locked --test saml_it --test saml_keycloak_it --test scan_it
 
   audit:
     runs-on: ubuntu-latest
