@@ -40,6 +40,25 @@ const ENTITIES: &str = r#"
     - {name: status, type: select, options: [Open, Closed]}
     - {name: payee, type: link, to: Payee}
     - {name: agent, type: link, to: Agent}
+- name: Visit
+  label: Visit
+  kind: master
+  title_field: agent
+  fields:
+    - {name: agent, type: link, to: Agent, required: true}
+- name: Hold
+  label: Hold
+  kind: master
+  title_field: payee
+  fields:
+    - {name: payee, type: link, to: Payee, required: true}
+- name: Followup
+  label: Follow-up
+  kind: master
+  title_field: visit
+  fields:
+    - {name: visit, type: link, to: Visit, required: true}
+    - {name: hold, type: link, to: Hold}
 "#;
 
 fn obj(v: Value) -> Doc {
@@ -263,6 +282,18 @@ async fn scenario() {
     assert_eq!(titles(&k.get(&ctx, "Claim", a, true).await.unwrap(), "payee").as_deref(), Some("Secret Payee EU"));
     assert_eq!(titles(&k.get(&ctx, "Claim", b, true).await.unwrap(), "payee"), None, "row by row, not entity by entity");
     assert_eq!(titles(&k.get(&admin, "Claim", b, true).await.unwrap(), "payee").as_deref(), Some("Secret Payee US"), "administrators see all");
+
+    // A record headed by a link is named, and found, by what it links to.
+    let visit = k.insert(&admin, "Visit", obj(json!({"agent": agent["id"]}))).await.unwrap();
+    let hold = k.insert(&admin, "Hold", obj(json!({"payee": eu["id"]}))).await.unwrap();
+    let follow = k.insert(&admin, "Followup", obj(json!({"visit": visit["id"], "hold": hold["id"]}))).await.unwrap();
+    let seen = k.get(&admin, "Followup", follow["id"].as_str().unwrap().parse().unwrap(), true).await.unwrap();
+    assert_eq!(titles(&seen, "visit").as_deref(), Some("Open Agent"), "a visit headed by its agent");
+    assert_eq!(titles(&seen, "hold").as_deref(), hold["id"].as_str(), "not through a restricted entity, even to administrators");
+    let found = k.list(&admin, "Followup", &ListQuery { search: Some("open agent".into()), ..Default::default() }).await.unwrap();
+    assert_eq!(found.rows.len(), 1, "two steps on");
+    let found = k.list(&admin, "Hold", &ListQuery { search: Some("secret payee".into()), ..Default::default() }).await.unwrap();
+    assert!(found.rows.is_empty(), "a restricted name is not searched through a link");
 
     // A workspace can restrict an entity its packages left open.
     let restrict: OverlayOp = serde_json::from_value(json!({"op": "set_entity_property", "property": "reference", "value": "restricted"})).unwrap();

@@ -250,7 +250,7 @@ impl Kernel {
                     Err(_) => continue,
                 },
             };
-            let title = tent.def.title_field.as_deref().and_then(|f| field_expr(tent, f, "a")).map(|e| format!("{e}::text")).unwrap_or_else(|| "null".into());
+            let title = tent.def.title_field.as_deref().and_then(|f| store::title_text(&schema, tent, f, "a")).unwrap_or_else(|| "null".into());
             let ids: Vec<Uuid> = ids.into_iter().collect();
             let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(format!(
                 "select a.id, coalesce(nullif({title}, ''), a.number, a.id::text) from {} a where a.tenant_id = ",
