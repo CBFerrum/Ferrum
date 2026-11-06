@@ -8,6 +8,17 @@ use loco_rs::task::{Task, TaskInfo, Vars};
 use loco_rs::{Error, Result};
 use std::path::Path;
 
+/// A task's refusal as the operator reads it: a validation's reasons, field by field, not only
+/// "validation failed".
+fn refused<E: std::fmt::Display + 'static>(e: E) -> Error {
+    match (&e as &dyn std::any::Any).downcast_ref::<ferrum_kernel::Error>() {
+        Some(ferrum_kernel::Error::Validation(fields)) => {
+            Error::Message(fields.iter().map(|f| format!("{}: {}", f.field, f.message)).collect::<Vec<_>>().join("; "))
+        }
+        _ => Error::Message(e.to_string()),
+    }
+}
+
 fn kernel(ctx: &AppContext) -> Result<std::sync::Arc<ferrum_kernel::Kernel>> {
     app_state(ctx).map(|s| s.kernel).map_err(|e| Error::Message(format!("{:?}", e.0)))
 }
@@ -41,10 +52,10 @@ impl Task for KmsWrap {
         if main.is_empty() {
             return Err(Error::Message("FERRUM_SECRET_KEY is not set: there is nothing to wrap".into()));
         }
-        println!("FERRUM_SECRET_KEY={}", wrap(main).await.map_err(|e| Error::Message(e.to_string()))?);
+        println!("FERRUM_SECRET_KEY={}", wrap(main).await.map_err(refused)?);
         let mut retired = Vec::new();
         for k in st.settings.retired_secret_keys.split(',').map(str::trim).filter(|k| !k.is_empty()) {
-            retired.push(wrap(k.to_string()).await.map_err(|e| Error::Message(e.to_string()))?);
+            retired.push(wrap(k.to_string()).await.map_err(refused)?);
         }
         if !retired.is_empty() {
             println!("FERRUM_RETIRED_SECRET_KEYS={}", retired.join(","));
@@ -66,22 +77,22 @@ impl Task for AccountState {
     }
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
         let k = kernel(ctx)?;
-        let slug = vars.cli_arg("slug").map_err(|e| Error::Message(e.to_string()))?;
-        let state = vars.cli_arg("state").map_err(|e| Error::Message(e.to_string()))?;
-        let mut tx = k.db.system_tx().await.map_err(|e| Error::Message(e.to_string()))?;
+        let slug = vars.cli_arg("slug").map_err(refused)?;
+        let state = vars.cli_arg("state").map_err(refused)?;
+        let mut tx = k.db.system_tx().await.map_err(refused)?;
         let tenant: Option<uuid::Uuid> =
-            sqlx::query_scalar("select id from tenant where slug = $1").bind(slug).fetch_optional(&mut *tx).await.map_err(|e| Error::Message(e.to_string()))?;
-        tx.commit().await.map_err(|e| Error::Message(e.to_string()))?;
+            sqlx::query_scalar("select id from tenant where slug = $1").bind(slug).fetch_optional(&mut *tx).await.map_err(refused)?;
+        tx.commit().await.map_err(refused)?;
         let tenant = tenant.ok_or_else(|| Error::Message(format!("no workspace {slug}")))?;
         if state == "closed" {
             let until = vars.cli_arg("retain_until").map_err(|_| Error::Message("a closed workspace is kept: retain_until:YYYY-MM-DD".into()))?;
             let until = chrono::NaiveDate::parse_from_str(until, "%Y-%m-%d").map_err(|_| Error::Message("retain_until is a date: YYYY-MM-DD".into()))?;
             let note = vars.cli_arg("note").map_err(|_| Error::Message("say why: note:\"...\"".into()))?;
-            k.close_account(tenant, until, note).await.map_err(|e| Error::Message(e.to_string()))?;
+            k.close_account(tenant, until, note).await.map_err(refused)?;
             println!("{slug} is closed, and kept until {until}");
             return Ok(());
         }
-        k.set_account_state(tenant, state, vars.cli_arg("note").ok()).await.map_err(|e| Error::Message(e.to_string()))?;
+        k.set_account_state(tenant, state, vars.cli_arg("note").ok()).await.map_err(refused)?;
         println!("{slug} is {state}");
         Ok(())
     }
@@ -100,14 +111,14 @@ impl Task for SetPlan {
     }
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
         let k = kernel(ctx)?;
-        let slug = vars.cli_arg("slug").map_err(|e| Error::Message(e.to_string()))?;
-        let plan = vars.cli_arg("plan").map_err(|e| Error::Message(e.to_string()))?;
-        let mut tx = k.db.system_tx().await.map_err(|e| Error::Message(e.to_string()))?;
+        let slug = vars.cli_arg("slug").map_err(refused)?;
+        let plan = vars.cli_arg("plan").map_err(refused)?;
+        let mut tx = k.db.system_tx().await.map_err(refused)?;
         let tenant: Option<uuid::Uuid> =
-            sqlx::query_scalar("select id from tenant where slug = $1").bind(slug).fetch_optional(&mut *tx).await.map_err(|e| Error::Message(e.to_string()))?;
-        tx.commit().await.map_err(|e| Error::Message(e.to_string()))?;
+            sqlx::query_scalar("select id from tenant where slug = $1").bind(slug).fetch_optional(&mut *tx).await.map_err(refused)?;
+        tx.commit().await.map_err(refused)?;
         let tenant = tenant.ok_or_else(|| Error::Message(format!("no workspace {slug}")))?;
-        k.set_plan(tenant, plan).await.map_err(|e| Error::Message(e.to_string()))?;
+        k.set_plan(tenant, plan).await.map_err(refused)?;
         println!("{slug} is on the {plan} plan");
         Ok(())
     }
@@ -123,19 +134,18 @@ impl Task for DeleteTenant {
     }
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
         let st = app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?;
-        let arg = |name: &str| vars.cli_arg(name).map_err(|e| Error::Message(e.to_string()));
+        let arg = |name: &str| vars.cli_arg(name).map_err(refused);
         let (slug, confirm, note) = (arg("slug")?, arg("confirm")?, arg("note")?);
         let apply = vars.cli_arg("apply").is_ok_and(|v| v == "yes");
         // Everything that could stop it is asked first, so nothing goes from storage for a deletion that will not happen.
-        let said = st.kernel.delete_tenant(slug, confirm, false, note).await.map_err(|e| Error::Message(e.to_string()))?;
+        let said = st.kernel.delete_tenant(slug, confirm, false, note).await.map_err(refused)?;
         if apply && said["held_outside"].as_array().is_some_and(|a| a.is_empty()) {
             // Through a system transaction: row-level security hides workspaces from the pool itself.
-            let mut tx = st.kernel.db.system_tx().await.map_err(|e| Error::Message(e.to_string()))?;
-            let tenant: uuid::Uuid =
-                sqlx::query_scalar("select id from tenant where slug = $1").bind(slug).fetch_one(&mut *tx).await.map_err(|e| Error::Message(e.to_string()))?;
-            tx.commit().await.map_err(|e| Error::Message(e.to_string()))?;
-            let gone = st.apps.forget_private(tenant).await.map_err(|e| Error::Message(e.to_string()))?;
-            let done = st.kernel.delete_tenant(slug, confirm, true, note).await.map_err(|e| Error::Message(e.to_string()))?;
+            let mut tx = st.kernel.db.system_tx().await.map_err(refused)?;
+            let tenant: uuid::Uuid = sqlx::query_scalar("select id from tenant where slug = $1").bind(slug).fetch_one(&mut *tx).await.map_err(refused)?;
+            tx.commit().await.map_err(refused)?;
+            let gone = st.apps.forget_private(tenant).await.map_err(refused)?;
+            let done = st.kernel.delete_tenant(slug, confirm, true, note).await.map_err(refused)?;
             println!("{}", serde_json::to_string_pretty(&done).unwrap_or_default());
             println!("deleted, with {} private app bundles", gone.len());
             return Ok(());
@@ -151,12 +161,11 @@ impl Task for DeleteTenant {
 /// A system identity, for what an operator does from a shell. Any workspace's will do: what these do is
 /// the whole server's, and is on record against the first.
 async fn operator(k: &ferrum_kernel::Kernel) -> Result<ferrum_kernel::Ctx> {
-    let mut tx = k.db.system_tx().await.map_err(|e| Error::Message(e.to_string()))?;
-    let tenant: Option<uuid::Uuid> =
-        sqlx::query_scalar("select id from tenant order by created_at limit 1").fetch_optional(&mut *tx).await.map_err(|e| Error::Message(e.to_string()))?;
-    tx.commit().await.map_err(|e| Error::Message(e.to_string()))?;
+    let mut tx = k.db.system_tx().await.map_err(refused)?;
+    let tenant: Option<uuid::Uuid> = sqlx::query_scalar("select id from tenant order by created_at limit 1").fetch_optional(&mut *tx).await.map_err(refused)?;
+    tx.commit().await.map_err(refused)?;
     let tenant = tenant.ok_or_else(|| Error::Message("this server has no workspaces".into()))?;
-    let schema = k.registry.schema(tenant).await.map_err(|e| Error::Message(e.to_string()))?;
+    let schema = k.registry.schema(tenant).await.map_err(refused)?;
     Ok(ferrum_kernel::Ctx::system(tenant, schema))
 }
 
@@ -170,8 +179,8 @@ impl Task for ReleaseRestore {
     }
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
         let k = kernel(ctx)?;
-        let note = vars.cli_arg("note").map_err(|e| Error::Message(e.to_string()))?;
-        k.release_hold(&operator(&k).await?, note).await.map_err(|e| Error::Message(e.to_string()))?;
+        let note = vars.cli_arg("note").map_err(refused)?;
+        k.release_hold(&operator(&k).await?, note).await.map_err(refused)?;
         println!("released. What was set aside stays set aside: replay what should still happen");
         Ok(())
     }
@@ -188,21 +197,15 @@ impl Task for ExtractTenant {
     }
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
         let k = kernel(ctx)?;
-        let arg = |name: &str| vars.cli_arg(name).map_err(|e| Error::Message(e.to_string()));
-        let mut tx = k.db.system_tx().await.map_err(|e| Error::Message(e.to_string()))?;
-        let tenant: Option<uuid::Uuid> = sqlx::query_scalar("select id from tenant where slug = $1")
-            .bind(arg("tenant")?)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|e| Error::Message(e.to_string()))?;
-        tx.commit().await.map_err(|e| Error::Message(e.to_string()))?;
+        let arg = |name: &str| vars.cli_arg(name).map_err(refused);
+        let mut tx = k.db.system_tx().await.map_err(refused)?;
+        let tenant: Option<uuid::Uuid> =
+            sqlx::query_scalar("select id from tenant where slug = $1").bind(arg("tenant")?).fetch_optional(&mut *tx).await.map_err(refused)?;
+        tx.commit().await.map_err(refused)?;
         let tenant = tenant.ok_or_else(|| Error::Message("no such workspace".into()))?;
-        let schema = k.registry.schema(tenant).await.map_err(|e| Error::Message(e.to_string()))?;
+        let schema = k.registry.schema(tenant).await.map_err(refused)?;
         let apply = vars.cli_arg("apply").is_ok_and(|v| v == "yes");
-        let done = k
-            .extract_tenant(&ferrum_kernel::Ctx::system(tenant, schema), arg("from")?, apply, arg("note")?)
-            .await
-            .map_err(|e| Error::Message(e.to_string()))?;
+        let done = k.extract_tenant(&ferrum_kernel::Ctx::system(tenant, schema), arg("from")?, apply, arg("note")?).await.map_err(refused)?;
         println!("{}", serde_json::to_string_pretty(&done).unwrap_or_default());
         if apply {
             println!("done. Every session and API key of this workspace has stopped working, and what was waiting is set aside");
@@ -224,8 +227,8 @@ impl Task for AcceptAuthority {
     }
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
         let k = kernel(ctx)?;
-        let note = vars.cli_arg("note").map_err(|e| Error::Message(e.to_string()))?;
-        k.accept_authority(&operator(&k).await?, note).await.map_err(|e| Error::Message(e.to_string()))?;
+        let note = vars.cli_arg("note").map_err(refused)?;
+        k.accept_authority(&operator(&k).await?, note).await.map_err(refused)?;
         println!("accepted. This region writes once the witness gives it the authority");
         Ok(())
     }
@@ -242,9 +245,9 @@ impl Task for Doctor {
     }
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
         let st = app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?;
-        let findings = crate::doctor::report(&st, ctx).await.map_err(|e| Error::Message(e.to_string()))?;
+        let findings = crate::doctor::report(&st, ctx).await.map_err(refused)?;
         if vars.cli_arg("format").is_ok_and(|f| f == "json") {
-            println!("{}", serde_json::to_string_pretty(&findings).map_err(|e| Error::Message(e.to_string()))?);
+            println!("{}", serde_json::to_string_pretty(&findings).map_err(refused)?);
         } else {
             print!("{}", crate::doctor::render(&findings));
         }
@@ -264,7 +267,7 @@ impl Task for ReapplyErasures {
     async fn run(&self, ctx: &AppContext, _vars: &Vars) -> Result<()> {
         let k = kernel(ctx)?;
         let st = app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?;
-        let keys = st.objects.list(ferrum_kernel::privacy::JOURNAL_PREFIX).await.map_err(|e| Error::Message(e.to_string()))?;
+        let keys = st.objects.list(ferrum_kernel::privacy::JOURNAL_PREFIX).await.map_err(refused)?;
         let mut records = 0;
         for key in &keys {
             records += k.reapply_erasure(key).await.map_err(|e| Error::Message(format!("{key}: {e}")))?;
@@ -296,10 +299,10 @@ impl Task for CreateTenant {
                 settings: vars.cli_arg("fy_start_month").ok().and_then(|m| m.parse::<u32>().ok()).map(|m| serde_json::json!({"fiscal_year_start_month": m})),
             })
             .await
-            .map_err(|e| Error::Message(e.to_string()))?;
+            .map_err(refused)?;
         // Shapes B and C: its subdomain at once.
         if let Some(base) = crate::shell::base_domain(&crate::state::Settings::from_ctx(ctx)?) {
-            k.add_subdomain(id, &format!("{}.{base}", vars.cli_arg("slug")?)).await.map_err(|e| Error::Message(e.to_string()))?;
+            k.add_subdomain(id, &format!("{}.{base}", vars.cli_arg("slug")?)).await.map_err(refused)?;
         }
         println!("tenant created: {id}");
         Ok(())
@@ -316,7 +319,7 @@ impl Task for SyncSchema {
     }
     async fn run(&self, ctx: &AppContext, _vars: &Vars) -> Result<()> {
         let k = kernel(ctx)?;
-        let report = ferrum_kernel::ddl::sync(&k.db, &k.registry.catalog(), true).await.map_err(|e| Error::Message(e.to_string()))?;
+        let report = ferrum_kernel::ddl::sync(&k.db, &k.registry.catalog(), true).await.map_err(refused)?;
         println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
         Ok(())
     }
@@ -361,7 +364,7 @@ impl Task for AssistantEval {
     }
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
         let msg = |e: ferrum_kernel::Error| Error::Message(e.to_string());
-        let arg = |name: &str| vars.cli_arg(name).map_err(|e| Error::Message(e.to_string()));
+        let arg = |name: &str| vars.cli_arg(name).map_err(refused);
         if !vars.cli_arg("scratch").is_ok_and(|v| v == "yes") {
             return Err(Error::Message("the cases add records to the workspace: name one set aside for it, and say scratch:yes".into()));
         }
@@ -379,8 +382,8 @@ impl Task for AssistantEval {
                 .bind(email)
                 .fetch_optional(&mut *tx)
                 .await
-                .map_err(|e| Error::Message(e.to_string()))?;
-        tx.commit().await.map_err(|e| Error::Message(e.to_string()))?;
+                .map_err(refused)?;
+        tx.commit().await.map_err(refused)?;
         let (tenant, user) = person.ok_or_else(|| Error::Message(format!("no active {email} in {slug}")))?;
         let person = st.kernel.load_ctx(tenant, user, None, "assistant-eval".into()).await.map_err(msg)?;
         let outcomes = crate::assistant_eval::run(&crate::assistant::Env::of(&st), &person, &cases).await.map_err(msg)?;
@@ -422,8 +425,8 @@ impl Task for RunMaintenance {
     }
     async fn run(&self, ctx: &AppContext, _vars: &Vars) -> Result<()> {
         let k = kernel(ctx)?;
-        k.maintenance().await.map_err(|e| Error::Message(e.to_string()))?;
-        ferrum_app_erp::maintenance(&k).await.map_err(|e| Error::Message(e.to_string()))?;
+        k.maintenance().await.map_err(refused)?;
+        ferrum_app_erp::maintenance(&k).await.map_err(refused)?;
         println!("maintenance done");
         Ok(())
     }
@@ -466,8 +469,8 @@ impl Task for DepsReport {
         }
         if let Ok(path) = vars.cli_arg("schema") {
             let all: Vec<String> = catalog.packages().map(|p| p.name().to_string()).collect();
-            let schema = ferrum_meta::effective::build(&catalog, &all, &[], 0).map_err(|e| Error::Message(e.to_string()))?;
-            let text = serde_json::to_vec_pretty(&schema.canonical()).map_err(|e| Error::Message(e.to_string()))?;
+            let schema = ferrum_meta::effective::build(&catalog, &all, &[], 0).map_err(refused)?;
+            let text = serde_json::to_vec_pretty(&schema.canonical()).map_err(refused)?;
             std::fs::write(path, text).map_err(|e| Error::Message(format!("{path}: {e}")))?;
             println!("\nThe canonical schema is in {path}");
         }
@@ -487,7 +490,7 @@ impl Task for UpgradeBack {
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
         let k = kernel(ctx)?;
         let step = vars.cli_arg("step")?;
-        let n = crate::upgrade::back(&k, step).await.map_err(|e| Error::Message(e.to_string()))?;
+        let n = crate::upgrade::back(&k, step).await.map_err(refused)?;
         println!("{step}: undone in {n} workspaces; stop every replica of this release before it starts again, or it runs the step again");
         Ok(())
     }
@@ -503,7 +506,7 @@ impl Task for SeedDemo {
     }
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
         let k = kernel(ctx)?;
-        let (tenant, _) = k.tenant_by_slug(vars.cli_arg("tenant")?).await.map_err(|e| Error::Message(e.to_string()))?;
+        let (tenant, _) = k.tenant_by_slug(vars.cli_arg("tenant")?).await.map_err(refused)?;
         let msg = crate::demo::seed(&k, tenant).await.map_err(|e| Error::Message(format!("{e:?}")))?;
         println!("{msg}");
         Ok(())
@@ -530,7 +533,7 @@ impl Task for AppMakeAvailable {
         }
         let bytes = std::fs::read(file).map_err(|e| Error::Message(format!("{file}: {e}")))?;
         let allow_unsigned = vars.cli_arg("allow_unsigned").is_ok_and(|v| v == "true");
-        let r = apps(ctx)?.make_available_file(bytes.into(), allow_unsigned).await.map_err(|e| Error::Message(e.to_string()))?;
+        let r = apps(ctx)?.make_available_file(bytes.into(), allow_unsigned).await.map_err(refused)?;
         println!("{} {} available on the cluster (digest {})", r.app_id, r.version, r.digest);
         Ok(())
     }
@@ -545,7 +548,7 @@ impl Task for AppUpgrade {
         TaskInfo { name: "app_upgrade".into(), detail: "Make the newest compatible store releases available on the cluster".into() }
     }
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
-        let lines = apps(ctx)?.upgrade_from_stores(vars.cli_arg("app").ok()).await.map_err(|e| Error::Message(e.to_string()))?;
+        let lines = apps(ctx)?.upgrade_from_stores(vars.cli_arg("app").ok()).await.map_err(refused)?;
         for l in lines {
             println!("{l}");
         }
@@ -564,7 +567,7 @@ impl Task for AppRevoke {
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
         let app = vars.cli_arg("app")?;
         let reason = vars.cli_arg("reason")?;
-        let n = apps(ctx)?.revoke(app, vars.cli_arg("version").ok(), reason).await.map_err(|e| Error::Message(e.to_string()))?;
+        let n = apps(ctx)?.revoke(app, vars.cli_arg("version").ok(), reason).await.map_err(refused)?;
         println!("{n} release(s) of {app} revoked");
         Ok(())
     }
@@ -579,9 +582,20 @@ impl Task for AppReleases {
         TaskInfo { name: "app_releases".into(), detail: "List the app releases recorded on the cluster".into() }
     }
     async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
-        for l in apps(ctx)?.release_lines(vars.cli_arg("app").ok()).await.map_err(|e| Error::Message(e.to_string()))? {
+        for l in apps(ctx)?.release_lines(vars.cli_arg("app").ok()).await.map_err(refused)? {
             println!("{l}");
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refusal_gives_each_fields_reason() {
+        assert_eq!(refused(ferrum_kernel::Error::field("retain_until", "a date after today")).to_string(), "retain_until: a date after today");
+        assert_eq!(refused(ferrum_kernel::Error::Invalid("no workspace acme".into())).to_string(), "no workspace acme");
     }
 }

@@ -152,7 +152,7 @@ impl Kernel {
             return Err(Error::field("confirm", format!("type {slug} to close this workspace")));
         }
         let until = Utc::now().date_naive() + chrono::Days::new(CLOSED_KEPT_DAYS);
-        self.close_account(ctx.tenant, until, &format!("closed by its administrator, {}", ctx.user)).await?;
+        self.close_account(ctx.tenant, until, &format!("closed by its administrator, {}", ctx.email)).await?;
         Ok(until)
     }
 
