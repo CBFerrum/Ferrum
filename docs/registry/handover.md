@@ -31,6 +31,12 @@ patch each. No release was tagged.
 | Logistics 0.2.0 | Collections with return notes, delivery windows and late stops, a vehicle out again the same day, fuel logs, services due, trip costs and Fleet Costs (FERRUM-INDUSTRY-009) |
 | Logistics 0.3.0 | A driver's page that works offline: the day's trips kept under the lease, proofs kept with when they happened and sent when the connection is back (FERRUM-INDUSTRY-009) |
 | Registry | Hospitality's entry names the hotel walk (FERRUM-INDUSTRY-001) |
+| Journeys | A school's day, a nonprofit's year of giving and a building contract walked through the pages ([school](../platform/evidence/browser-2026-11-06-school-day.md), [giving](../platform/evidence/browser-2026-11-06-year-of-giving.md), [contract](../platform/evidence/browser-2026-11-06-contract.md)): every rule held, each refusal saying why (FERRUM-INDUSTRY-004, 011, 007) |
+| Education 0.2.0 | Each class's roll call, saving a group's attendance at once; today's classes named and on the workspace's day; counts past 200; an empty office says where to start; a score's limit written plainly |
+| Nonprofit 0.1.8 | The home's figures over every record: it asked for 1,000 rows and the server pages at 500; the workspace's year; members not yet paid; the books named first; records dated today |
+| Point of Sale 0.4.4, Objectives 0.5.2 | The same cap: a loyalty balance at the till and the review's progress came from one page of 500 entries; both now read every page by cursor |
+| Construction 0.1.7 | Amounts written as money; estimates waiting for an answer listed; the books named before the first claim |
+| How it was checked | From here each app's CI (fmt, clippy, its scenario test on a scratch database, its interface's checks and build) runs on this machine before a merge, not on GitHub: `local_ci_app.sh` in the session's scratchpad. A scenario test too large for the disk builds without debug info in a target of its own, deleted afterwards |
 
 **Evidence:** the walks; `crates/kernel/tests/rules_it.rs` (a record headed by a link, through an open
 and a restricted entity, and its search); `crates/kernel/tests/collab_it.rs` (the `timezone`

@@ -3,8 +3,8 @@
 Restaurants (FERRUM-INDUSTRY-002) had run only inside Restaurant's suite, through the API. This walk
 took an evening through the pages, on the walk server: a debug build of Ferrum PR 89 on one
 machine, with its own database (`ferrum_walk`), the shell from Ferrum-Frontend a76295e and Restaurant
-0.1.7 as pinned. The workspace's clock is UTC and the browser's was India's. It ran from 09:45 to
-10:25 UTC.
+0.1.7 as pinned. The workspace's clock is UTC and the browser's was India's. It ran from 09:25 to
+09:50 UTC.
 
 One person, the workspace's administrator, worked as the manager, a server and the kitchen.
 

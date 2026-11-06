@@ -200,6 +200,9 @@ pub struct WorkspaceInfo {
 pub const SHELL_APP: &str = "shell";
 /// The core's names the shell app answers (§6).
 pub const SHELL_ROUTES: &[&str] = &["store", "admin", "account", "data"];
+/// The core's own pages under `/data/`: records and reports of any entity, Customize and the help
+/// center. Any other first segment names an app whose records are shown there (`/data/{app}/…`).
+pub const DATA_PAGES: &[&str] = &["", "e", "r", "customize", "help"];
 
 pub struct Shell {
     kernel: Arc<Kernel>,
@@ -1530,6 +1533,16 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn the_help_center_is_a_page_of_the_records_not_an_app() {
+        // Every record's Help link opens /data/help/{entity}: read as an app called "help", it
+        // was sent back to /data/.
+        for page in ["", "e", "r", "customize", "help"] {
+            assert!(DATA_PAGES.contains(&page), "{page}");
+        }
+        assert!(!DATA_PAGES.contains(&"hr"), "an app's records keep /data/{{app}}/");
+    }
 
     #[test]
     fn each_sign_in_keeps_its_own_cookie() {

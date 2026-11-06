@@ -290,7 +290,7 @@ async fn shell_core(st: &AppState, headers: &HeaderMap, uri: &Uri, first: &str, 
     // `/data/{app}/…`: the records of an app without an interface of its own (beside the
     // records of any entity, `e/` and `r/`, and Customize).
     let (app_id, tail) = rest.split_once('/').unwrap_or((rest, ""));
-    if first == "data" && !matches!(app_id, "" | "e" | "r" | "customize") {
+    if first == "data" && !shell::DATA_PAGES.contains(&app_id) {
         let apps = st.apps.shell_apps(ctx.tenant).await?;
         let q = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
         let Some((app, packages)) = shell::records_app(&apps, app_id) else {
