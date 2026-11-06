@@ -152,6 +152,11 @@ pub trait Site: Send + Sync {
         let _ = (method, path);
         self.max_body()
     }
+    /// Whether it serves pages at the root of a `site:{app}` host (`/_site/…`), as a website or a
+    /// storefront does. Only such apps are offered as a domain's target.
+    fn serves_pages(&self) -> bool {
+        false
+    }
 }
 
 /// What a person may do with a co-edited document.

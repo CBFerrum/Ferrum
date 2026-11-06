@@ -3,6 +3,35 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-06, morning: the tenant's life on the image; one clock for every member's page
+
+**State:** this PR follows PR 84. Its lock takes every app at its main of 6 November's morning, each
+app's interface built with Ferrum-Frontend 24c3951 (PR 40), which FRONTEND_REV now names: the
+Control Plane 0.3.1, Property 0.5.0, Objectives 0.3.1, Social 0.5.1, Digital Assets 0.4.0, Intranet
+0.1.3, Website 0.1.2, the thirteen apps below and the rest a patch each. No release was tagged.
+
+| Where | What |
+|---|---|
+| The image | The tenant's life walked through the pages on the released image (main at 5a6c4b7): sign-up with its e-mailed code, the free plan's people limit refusing a fourth, a larger plan, closing, read-only, deletion after the keep date ([the walk](../platform/evidence/image-2026-11-06-lifecycle.md)); FERRUM-JOURNEY-012 is implemented, waiting on a reviewer |
+| This PR | What the walk found: a closed workspace names who closed it by their e-mail, not an id; its refusal says the account is closed or restricted, not "until it is settled"; an operator's task gives each field's reason, not only "validation failed". Admin → Domains offers a public site only for the apps that serve one, and a `site:{app}` domain is refused for any other (found walking Intranet and Website) |
+| Frontend PR 40 | Every member's page shows the workspace's clock, naming its zone when the browser's is another, and date-and-time boxes read it; an app's pages take the clock from the page; `formatMoment` for screens with their own shapes. A draft numbered on submit is headed as a draft; an add-on's record says its app is not installed |
+| Thirteen apps | Their own screens on the workspace's clock: Helpdesk 0.7.2 (with the conversation's days), CRM 0.6.6, Projects 0.6.7, Commerce 0.7.7, Bookings 0.4.6, Campaigns 0.3.5 (its schedule box too), Docs 0.7.2, Drive 0.14.2, Forms 0.2.5, HR 0.8.3, Point of Sale 0.4.2, Sign 0.2.7, IoT Edge 0.4.6 (a chart's axis on its whole hours). Public pages, outsiders' portals and Comms' calendar and chat keep the reader's own |
+| Control Plane 0.3.0 | Hosted workspaces invoiced monthly through ERP by the connector control-erp (FERRUM-CLOUD-003); statements count what was invoiced |
+| Property 0.3.0 to 0.5.0 | Owners' Properties you own on the portal; a lease ended early gives back what was invoiced past its last day as a draft ERP credit note; rent indexed each year within its cap and floor |
+| Objectives 0.3.0 | A key result can name a certified metric (the connector objectives-metrics) |
+| Social 0.5.0 | Engagement kept day by day, and the report Social Engagement by Day |
+| Digital Assets 0.4.0 | XMP from any file and a JPEG's IPTC give an asset its title, caption, keywords, creator and copyright; keywords become its tags (FERRUM-ECOSYSTEM-012) |
+| Intranet, Website | Walked in a browser on the walk server by the session that built them (FERRUM-ECOSYSTEM-001, 006); their fixes are Intranet 0.1.2 and 0.1.3 and Website 0.1.2 |
+
+**Evidence:** the two walks; `server/src/tasks.rs` (`a_refusal_gives_each_fields_reason`), the
+Frontend's `format.test.ts` and `client.test.ts`, the apps' suites (Helpdesk's days and IoT Edge's
+ticks in a zone that is not the browser's), `server/src/packages.rs` (the two connectors fit).
+
+**Next:** Website and Commerce say their handlers serve pages (`Site::serves_pages`, new here) in
+their next releases; until those are pinned, Domains offers no app's public site. A person cannot
+choose a time zone of their own. A site's own host is not walked: a domain
+under the server's base is refused, so it needs a real name.
+
 ## 2026-11-06, night, later: the walks' fixes checked on their build; Commerce, Metrics and Social pinned
 
 **State:** this PR follows PR 82. Its lock takes every app at its main of 6 November's night: Commerce

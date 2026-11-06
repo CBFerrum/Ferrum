@@ -80,7 +80,7 @@ The workspace's time zone is UTC; the browser's was India's.
 |---|---|
 | Lena, a portal person, read every person's name and address from `GET /api/users` (other customers, a citizen, a partner, a supplier's contact), and Helpdesk offered portal people as a ticket's assignee | Ferrum PR 74: the directory lists members alone, and only members read it |
 | Field Service's time box read the browser's zone while the job shows the workspace's: 02:38 typed showed as 21:08 | Field Service 0.3.1: the box reads the workspace's clock, as the page shows it |
-| Other pages show times in the browser's zone (a job's Reported At, shown by the form, read 6 Nov 01:04 beside the timeline's Thu 5 Nov 19:34) | Not yet: one zone for every page is a rule across the apps (FERRUM-UX-006) |
+| Other pages show times in the browser's zone (a job's Reported At, shown by the form, read 6 Nov 01:04 beside the timeline's Thu 5 Nov 19:34) | Ferrum-Frontend PR 40: every member's page shows the workspace's clock, its zone named when the browser's is another, and date-and-time boxes read it; thirteen apps' own screens moved to it (Helpdesk 0.7.2, CRM 0.6.6 and the rest) and every app's interface was rebuilt with it (FERRUM-UX-006) |
 | Time added by hand that ends in the future was accepted (finishing at 21:15 at 21:09) | Field Service 0.3.1: refused by the page and the server, five minutes' slack |
 | With CRM and ERP installed but not their connector, a submitted quotation shows no way to an order, and nothing says why | CRM 0.6.2: its status says how it becomes an order, with ERP and the CRM and ERP connector |
 | After signing in with a password at the accounts host, it asks "Continue to Walk" once more | This PR: signing in there is choosing the account |
@@ -88,7 +88,7 @@ The workspace's time zone is UTC; the browser's was India's.
 | A material request's Create Purchase Order asked for no supplier, then wanted one; seven actions read parameters they did not declare, and a request for quotation's Create Supplier Quotation and a bank line's Create Payment Entry could never work from a page | ERP 0.14.2 (Procurement 0.1.3, Finance 0.3.2): the actions declare them |
 | A purchase invoice made from a receipt holds "PENDING-<receipt>" as the supplier's number, and could be submitted with it | ERP 0.14.2: refused at submit |
 | A timesheet row entered on its page billed 0.00: the preview's zeros for billing hours and rate went back as if chosen | Projects 0.6.4: zero takes the default |
-| Opening an entity of an add-on that is not installed (a material request before Procurement) says "entity MaterialRequest not found" | Not yet |
+| Opening an entity of an add-on that is not installed (a material request before Procurement) says "entity MaterialRequest not found" | Ferrum-Frontend PR 40: the page says the app that has it is not installed here, and to ask an administrator |
 | Sign shows a 776-byte PDF as "0.00 MB" | Sign 0.2.4: "776 bytes", or "48 KB" |
 | In Learn's course builder, New quiz left for a blank quiz form before the lesson's kind could save (a quiz lesson saves only with its quiz): the lesson came back a reading lesson and the new quiz unpicked | Learn 0.6.1: New quiz and New assignment make one in the lesson, named after it, and pick it |
 | Once, choosing another account at the accounts host ended in "Signing in did not finish": another open tab of the workspace, told of the sign-out, likely began a sign-in of its own over the first one's | Ferrum PR 78: each sign-in keeps its own cookie |
@@ -96,7 +96,7 @@ The workspace's time zone is UTC; the browser's was India's.
 | An advance's Make Payment Entry did not show on its page: its paid amount was empty, which the server's condition reads as 0 and the page's did not | HR 0.8.1 stores 0; Ferrum-Frontend PR 36: a page reads empty numbers and checks as the server does |
 | Nothing settled a leaver's open claims and unsettled advances together | HR 0.8.0: the full and final statement, settled by one journal entry |
 | After "Use another account" at the accounts host and signing in, "Continue to Walk" asked again | Ferrum-Frontend PR 37: an account chosen there is chosen |
-| A draft journal entry (numbered on submit) is headed by the end of its id | Not yet |
+| A draft journal entry (numbered on submit) is headed by the end of its id | Ferrum-Frontend PR 40: a draft numbered on submit is headed "Draft Journal Entry" |
 | Set the Business Date, Check In and Cancel the Reservation read a date, a room and a reason they did not declare, so their pages could not give them | Hospitality 0.2.0: they ask for them |
 | A deposit taken at the desk stayed on the folio: ERP had no payment for it, so the invoice said the guest owed it all | Hospitality 0.2.0: at check-out the folio's payments become draft payment entries in ERP, to apply to the invoice |
 | Check In, the night audit and the cancellation said only "done" | Hospitality 0.2.0: each says what it did |
