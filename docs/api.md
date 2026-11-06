@@ -173,7 +173,7 @@ several workspaces in turn and is left as it is.
 | `PATCH /api/v1/{E}/{id}` | partial update; child tables are replaced by the given rows (rows with a known `id` are patched, rows without `id` are added, missing rows are removed) |
 | `DELETE /api/v1/{E}/{id}` | drafts/cancelled/masters → `204` |
 | `POST /api/v1/{E}/{id}/submit` · `/cancel` · `/amend` | lifecycle; amend returns the new draft |
-| `POST /api/v1/{E}/{id}/actions/{action}` | custom actions from metadata (e.g. `make_delivery_note`); body = params; returns action JSON (often `{entity, id}` of a created record). A `read_only` action runs without locking or auditing, in a read-only transaction |
+| `POST /api/v1/{E}/{id}/actions/{action}` | custom actions from metadata (e.g. `make_delivery_note`); body = params; returns action JSON (often `{entity, id}` of a created record). An answer without a `message` gets one from what it says: the record's new `status` and the records it made ("Now Admitted; made STU-2026-00001"). A `read_only` action runs without locking or auditing, in a read-only transaction |
 | `POST /api/v1/{E}/{id}/workflow/{action}` | workflow transition |
 | `POST /api/v1/{E}/_calc` | preview: runs defaults, fetches and calculation hooks on an unsaved body (include `id` to start from a saved record) → computed document, nothing written. Use for live totals |
 | `GET /api/v1/{E}/{id}/print` | HTML print format; `?format=pdf` → the same as a PDF (`application/pdf`; `503` when the server has no PDF renderer, see `GET /api/version` → `pdf`) |
