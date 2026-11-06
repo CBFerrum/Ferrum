@@ -154,7 +154,7 @@ async fn interface(st: &AppState, ctx: &Ctx, request: Value) -> ApiResult<Respon
         "app": {"id": shell::SHELL_APP, "version": shell::SHELL_VERSION, "release": release.digest, "routes": {"": "/", "accounts": "/"}, "entry": "accounts", "title": "Your Ferrum account", "compact": false, "scope": null},
         "host": {"kind": "accounts", "shell": shell::SHELL_VERSION},
         "api": {"base": "/api/", "live": null, "auth": "cookie"},
-        "locale": {"language": "en", "timezone": "UTC", "dir": "ltr"},
+        "locale": {"language": "en", "timezone": "UTC", "display_timezone": "UTC", "dir": "ltr"},
         "theme": {"appearance": "system", "hash": shell::theme_hash()},
         "company": null,
         "flags": {},

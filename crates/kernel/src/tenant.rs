@@ -250,6 +250,23 @@ impl Kernel {
         Ok(mine.filter(|l| valid_language(l)).or(workspace.filter(|l| valid_language(l))))
     }
 
+    /// The zone a person chose to see times in (their `timezone` preference, `{"zone": "Asia/Kolkata"}`),
+    /// when it is one; `None` for the workspace's clock. Business days (`today`) stay the workspace's.
+    pub async fn time_zone_of(&self, tenant: Uuid, user: Uuid) -> Result<Option<String>> {
+        if user.is_nil() {
+            return Ok(None);
+        }
+        let mut tx = self.db.tenant_tx(tenant).await?;
+        let zone: Option<String> = sqlx::query_scalar("select value->>'zone' from ui_pref where tenant_id = $1 and user_id = $2 and scope = 'timezone'")
+            .bind(tenant)
+            .bind(user)
+            .fetch_optional(&mut *tx)
+            .await?
+            .flatten();
+        tx.commit().await?;
+        Ok(zone.filter(|z| z.parse::<chrono_tz::Tz>().is_ok()))
+    }
+
     /// The workspace's settings administrators may change: `timezone` (IANA name), `language` (the
     /// interface's, for everyone who chose none),
     /// `fiscal_year_start_month` (1-12), `require_two_factor` (everyone signs in with an

@@ -46,6 +46,10 @@ impl Kernel {
         if value.to_string().len() > MAX_BYTES {
             return Err(Error::field("value", format!("is larger than {} KB", MAX_BYTES / 1024)));
         }
+        // The zone a person sees times in (Kernel::time_zone_of): one the server knows.
+        if scope == "timezone" && !value["zone"].as_str().is_some_and(|z| z.parse::<chrono_tz::Tz>().is_ok()) {
+            return Err(Error::field("value", "zone must be a time zone's IANA name, such as Asia/Kolkata"));
+        }
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let (count, exists): (i64, bool) =
             sqlx::query_as("select count(*), coalesce(bool_or(scope = $3), false) from ui_pref where tenant_id = $1 and user_id = $2")
