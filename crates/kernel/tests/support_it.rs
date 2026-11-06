@@ -1,9 +1,10 @@
 //! Support access and account states, against a real PostgreSQL (`FERRUM_TEST_DATABASE_URL`; the
 //! database is reset first): a grant reaches what it names and no more, ends when it should, and is
-//! seen by the customer; a restricted account reads and exports, and changes nothing.
+//! seen by the customer; the health report carries installed apps' own health, as counts and
+//! problems only; a restricted account reads and exports, and changes nothing.
 
 use ferrum_kernel::files::FileStore;
-use ferrum_kernel::support::GrantInput;
+use ferrum_kernel::support::{GrantInput, Health};
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings, ListQuery};
 use ferrum_meta::Catalog;
@@ -11,6 +12,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use uuid::Uuid;
 
 const ENTITIES: &str = r#"
 - name: Ticket
@@ -47,6 +49,28 @@ impl FileStore for MemFiles {
 
 fn obj(v: Value) -> Doc {
     v.as_object().cloned().unwrap()
+}
+
+/// The cases package's health: how many tickets wait, and a word it should not pass on.
+struct Tickets;
+
+#[async_trait::async_trait]
+impl Health for Tickets {
+    async fn health(&self, _k: &Kernel, tx: &mut ferrum_kernel::Tx, tenant: Uuid) -> ferrum_kernel::Result<Value> {
+        let open: i64 = sqlx::query_scalar("select count(*) from e_ticket where tenant_id = $1").bind(tenant).fetch_one(&mut **tx).await?;
+        Ok(json!({"open_tickets": open, "subject": "Printer", "problems": [format!("{open} tickets wait")]}))
+    }
+}
+
+/// A health that fails, and one for a package nobody installed.
+struct Broken;
+
+#[async_trait::async_trait]
+impl Health for Broken {
+    async fn health(&self, _k: &Kernel, tx: &mut ferrum_kernel::Tx, _tenant: Uuid) -> ferrum_kernel::Result<Value> {
+        sqlx::query("select * from no_such_table").execute(&mut **tx).await?;
+        Ok(json!({}))
+    }
 }
 
 fn catalog() -> Catalog {
@@ -87,7 +111,9 @@ async fn scenario() {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
-    let k = Kernel::boot(db, catalog(), HookRegistry::default(), KernelSettings::default(), None).await.expect("boot");
+    let mut hooks = HookRegistry::default();
+    hooks.add_health("core", Arc::new(Broken)).add_health("cases", Arc::new(Tickets)).add_health("absent", Arc::new(Tickets));
+    let k = Kernel::boot(db, catalog(), hooks, KernelSettings::default(), None).await.expect("boot");
     k.set_file_store(Arc::new(MemFiles::default()));
     let workspace = |slug: &str| NewTenant {
         slug: slug.into(),
@@ -141,6 +167,11 @@ async fn scenario() {
     let usage = report["usage"].as_object().expect("usage counts");
     assert!(usage["people"].as_i64().is_some_and(|n| n >= 1) && usage["storage_bytes"].as_i64().is_some_and(|n| n >= 0), "{usage:?}");
     assert_eq!(usage.len(), 2, "counts only, nothing about who or what");
+    // Installed apps' own health: counts and problems in words, one failing spoiling no other.
+    let apps = report["apps"].as_object().expect("apps' health");
+    assert_eq!(apps["cases"], json!({"open_tickets": 1, "problems": ["1 tickets wait"]}), "not the subject");
+    assert_eq!(apps["core"], json!({"problems": ["its health could not be read"]}));
+    assert!(!apps.contains_key("absent"), "only installed packages are asked");
 
     // ───────────── seen by the customer ─────────────
     k.support_used(&ctx, id, "GET", "/api/support/report").await.unwrap();
