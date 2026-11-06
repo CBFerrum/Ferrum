@@ -332,6 +332,7 @@ async fn me(SetupAuth(ctx, setup_only): SetupAuth, State(app): State<AppContext>
         "scopes": ctx.scopes,
         "fiscal_year_start_month": ctx.fy_start_month,
         "timezone": ctx.schema.timezone,
+        "display_timezone": st.kernel.time_zone_of(ctx.tenant, ctx.user).await?.unwrap_or_else(|| ctx.schema.timezone.clone()),
         "today": ctx.today(),
         "packages": ctx.schema.packages,
         "two_factor_setup": setup_only.is_some(),
