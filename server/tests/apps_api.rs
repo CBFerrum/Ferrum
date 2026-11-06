@@ -699,6 +699,15 @@ async fn scenario() {
     dev.upload(&admin, bundle(interface_app("clui", "clui"), &[]).write().unwrap().into()).await.unwrap();
     let release = k.ui_release_for("clui", "1.0.0").await.unwrap().expect("stored");
     assert!(release.files.get("app.js").is_some() && release.entry["head"].as_str().unwrap().contains("<head>"));
+    // A database restored beside other storage records files that are not in it: storing the
+    // release again, as each boot does for compiled-in apps, puts them back.
+    let key = format!("ui/clui/{}/app.js", release.digest);
+    storage.delete(FsPath::new(&key)).await.unwrap();
+    let dist = interface_app("clui", "clui").into_iter().filter_map(|(p, b)| p.strip_prefix("ui/dist/").map(|p| (p.to_string(), b))).collect();
+    let ui = ferrum_apps::ui::prepare("clui", dist).unwrap();
+    assert_eq!(ui.digest, release.digest);
+    ferrum_server::shell::store_release(&k, &storage, "clui", "1.0.0", &ui).await.unwrap();
+    assert!(storage.exists(FsPath::new(&key)).await.unwrap(), "its files are stored again");
     let err = dev.upload(&admin, bundle(interface_app("clui-two", "clui"), &[]).write().unwrap().into()).await.unwrap_err();
     assert!(matches!(&err, Error::Conflict(m) if m.contains("/clui/")), "a route another app owns: {err}");
 

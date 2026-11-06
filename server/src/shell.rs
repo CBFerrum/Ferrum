@@ -546,11 +546,18 @@ impl Shell {
 
 /// See [`Shell::store_release`]; also used where no shell exists yet (boot, the App Manager).
 pub async fn store_release(kernel: &Kernel, storage: &Storage, app: &str, version: &str, ui: &PreparedUi) -> Result<()> {
-    // Stored already (an earlier version with the same interface): only record this version.
-    let stored = kernel.ui_release(app, &ui.digest).await?.is_some();
+    // Stored already (an earlier version with the same interface): only record this version. The
+    // record is not proof: a database restored or shared beside other storage records files this
+    // storage never had, so one of them is looked for (its pages would be blank).
+    let key = |path: &str| format!("ui/{app}/{}/{path}", ui.digest);
+    let stored = kernel.ui_release(app, &ui.digest).await?.is_some()
+        && match ui.files.keys().next() {
+            Some(path) => storage.exists(Path::new(&key(path))).await.unwrap_or(false),
+            None => true,
+        };
     let mut files = serde_json::Map::new();
     for (path, (bytes, ctype)) in &ui.files {
-        let key = format!("ui/{app}/{}/{path}", ui.digest);
+        let key = key(path);
         let p = Path::new(&key);
         if !stored && !storage.exists(p).await.unwrap_or(false) {
             storage.upload(p, &Bytes::copy_from_slice(bytes)).await.map_err(|e| Error::Unavailable(format!("object storage ({key}): {e}")))?;
@@ -691,8 +698,11 @@ pub async fn pull_releases(kernel: &Kernel, storage: &Storage, apps: &crate::app
             }
         };
         let (Some(digest), Some(files)) = (rel.get("digest").and_then(Value::as_str), rel.get("files").and_then(Value::as_array)) else { continue };
-        // Had already: this version runs it.
-        if let Some(r) = kernel.ui_release(app, digest).await? {
+        // Had already, with its files in this storage: this version runs it.
+        if let Some(r) = kernel.ui_release(app, digest).await?
+            && let Some(path) = r.files.as_object().and_then(|f| f.keys().next())
+            && storage.exists(Path::new(&format!("ui/{app}/{digest}/{path}"))).await.unwrap_or(false)
+        {
             kernel.register_ui_release(app, digest, &version, &r.files, &r.entry).await?;
             continue;
         }
