@@ -7,14 +7,50 @@
 
 use crate::state::Settings;
 use axum::body::Body;
+use axum::http::{HeaderValue, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use ferrum_kernel::{Ctx, Error, Kernel, Result};
 use futures_util::StreamExt;
 use opendal::services::{Fs, S3};
 use opendal::{Operator, Writer};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::ops::Range;
 use std::time::Duration;
 use uuid::Uuid;
+
+/// The one range of bytes a `Range` header's value asks of an object `size` bytes long
+/// (`bytes=a-b`, `bytes=a-`, or its last n with `bytes=-n`), cut to the object, when the object
+/// holds any of it. Anything else (several ranges, other units, nothing of the object) is answered
+/// with the whole object, as HTTP allows: a player seeking in a video asks one range at a time.
+pub fn byte_range(header: Option<&str>, size: u64) -> Option<Range<u64>> {
+    let (from, to) = header?.trim().strip_prefix("bytes=")?.split_once('-')?;
+    let (from, to) = (from.trim(), to.trim());
+    let range = if from.is_empty() {
+        size.saturating_sub(to.parse().ok()?)..size
+    } else {
+        let end = if to.is_empty() { size } else { to.parse::<u64>().ok()?.saturating_add(1).min(size) };
+        from.parse().ok()?..end
+    };
+    (range.start < range.end).then_some(range)
+}
+
+/// A streamed object ([`Objects::stream`]) as a response with `status`, or as the range it holds
+/// (206, with its `Content-Range`). Either way it says ranges may be asked for.
+pub fn streamed_response(status: StatusCode, (size, part, body): (u64, Option<Range<u64>>, Body)) -> Response {
+    let (status, length) = match &part {
+        Some(r) => (StatusCode::PARTIAL_CONTENT, r.end - r.start),
+        None => (status, size),
+    };
+    let mut resp = (status, body).into_response();
+    let h = resp.headers_mut();
+    h.insert(header::CONTENT_LENGTH, HeaderValue::from(length));
+    h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    if let Some(Ok(v)) = part.map(|r| HeaderValue::from_str(&format!("bytes {}-{}/{size}", r.start, r.end - 1))) {
+        h.insert(header::CONTENT_RANGE, v);
+    }
+    resp
+}
 
 /// How long a presigned upload URL (and its pending upload) stays valid.
 pub const UPLOAD_TTL: Duration = Duration::from_secs(3600);
@@ -77,11 +113,18 @@ impl Objects {
         self.presigns
     }
 
-    /// An object's bytes as a response body, and its length.
-    pub async fn stream(&self, key: &str) -> Result<(u64, Body)> {
+    /// An object's bytes as a response body, and its length: only the range a `Range` header's
+    /// value asks for when it asks one the object holds ([`byte_range`]), and that range.
+    pub async fn stream(&self, key: &str, range: Option<&str>) -> Result<(u64, Option<Range<u64>>, Body)> {
         let size = self.op.stat(key).await.map_err(storage_err)?.content_length();
-        let stream = self.op.reader(key).await.map_err(storage_err)?.into_bytes_stream(..).await.map_err(storage_err)?;
-        Ok((size, Body::from_stream(stream)))
+        let part = byte_range(range, size);
+        let reader = self.op.reader(key).await.map_err(storage_err)?;
+        let stream = match part.clone() {
+            Some(r) => reader.into_bytes_stream(r).await,
+            None => reader.into_bytes_stream(..).await,
+        }
+        .map_err(storage_err)?;
+        Ok((size, part, Body::from_stream(stream)))
     }
 
     /// Size and SHA-256 of an object, read once as a stream; `None` when nothing is stored there.
@@ -433,4 +476,35 @@ pub async fn sweep(k: &Kernel, objects: &Objects) -> Result<usize> {
         }
     }
     Ok(gone.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_range_of_what_is_there() {
+        let r = |h: &str| byte_range(Some(h), 1000);
+        assert_eq!(r("bytes=0-99"), Some(0..100));
+        assert_eq!(r("bytes=900-"), Some(900..1000));
+        assert_eq!(r("bytes=-100"), Some(900..1000));
+        assert_eq!(r("bytes=990-2000"), Some(990..1000), "cut to the object");
+        assert_eq!(r("bytes=-5000"), Some(0..1000));
+        for whole in ["bytes=1000-", "bytes=5-2", "bytes=0-1,5-9", "items=0-9", "bytes=-0", "bytes=x-9", ""] {
+            assert_eq!(r(whole), None, "{whole}");
+        }
+        assert_eq!(byte_range(None, 1000), None);
+        assert_eq!(byte_range(Some("bytes=0-"), 0), None, "nothing in an empty object");
+    }
+
+    #[test]
+    fn a_range_is_answered_in_part() {
+        let part = streamed_response(StatusCode::OK, (1000, Some(900..1000), Body::empty()));
+        let h = |name| part.headers().get(name).and_then(|v| v.to_str().ok());
+        assert_eq!(part.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!((h(header::CONTENT_LENGTH), h(header::CONTENT_RANGE), h(header::ACCEPT_RANGES)), (Some("100"), Some("bytes 900-999/1000"), Some("bytes")));
+        let whole = streamed_response(StatusCode::OK, (1000, None, Body::empty()));
+        assert_eq!((whole.status(), whole.headers().get(header::CONTENT_RANGE)), (StatusCode::OK, None));
+        assert_eq!(whole.headers().get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()), Some("1000"));
+    }
 }
