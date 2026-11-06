@@ -541,6 +541,10 @@ pub struct FieldDef {
     pub fetch_from: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
+    /// How forms edit the field where its type alone does not say: `studio_query` for a json field
+    /// holding a Studio query, which forms build with Studio's report builder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub widget: Option<String>,
     /// Field-level permission group; roles grant read/write per group.
     #[serde(default)]
     pub perm_group: Option<String>,
