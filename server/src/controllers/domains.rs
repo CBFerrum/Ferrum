@@ -80,13 +80,14 @@ async fn list(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Respo
     Ok(Json(json!({"domains": domains, "point_to": edge(&app), "sites": site_apps(&st, ctx.tenant).await?})).into_response())
 }
 
-/// The apps of this workspace with a public site: one of their packages here renders its pages.
+/// The apps of this workspace with a public site: one of their packages here serves pages at a
+/// site host's root.
 async fn site_apps(st: &AppState, tenant: uuid::Uuid) -> ApiResult<Vec<Value>> {
     let schema = st.kernel.registry.schema(tenant).await?;
     let apps = st.apps.shell_apps(tenant).await?;
     Ok(apps
         .iter()
-        .filter(|a| a.manifest.packages.iter().any(|p| schema.packages.contains(p) && st.kernel.hooks.site(p).is_some()))
+        .filter(|a| a.manifest.packages.iter().any(|p| schema.packages.contains(p) && st.kernel.hooks.site(p).is_some_and(|s| s.serves_pages())))
         .map(|a| json!({"app": a.id, "title": a.manifest.name}))
         .collect())
 }
