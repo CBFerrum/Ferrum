@@ -3,6 +3,39 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-07: Logistics offline with the server stopped; partners see apps' own health; definitions built, not typed; every app rebuilt
+
+**State:** this PR follows PRs 89 to 91. Its lock takes every app at its main of 7 November, each
+app's interface built with Ferrum-Frontend a64416a (PR 45), which FRONTEND_REV now names. With
+them: Logistics 0.3.1 to 0.3.3, the Control Plane 0.5.0 to 0.5.2, IoT Edge 0.5.0 and 0.5.1,
+Property 0.7.3 and 0.7.4, Retail 0.3.3 and 0.3.4, Government 0.2.3 and 0.2.4, Healthcare 0.1.9 and
+0.1.10, Social 0.6.2, Metrics 0.3.2, and every other app a patch. No release was tagged.
+
+| Where | What |
+|---|---|
+| Journeys | Definitions built with Studio's builder, on this PR's build ([the walk](../platform/evidence/browser-2026-11-07-definition-builder.md)): a dataset grouped across a link and a metric of one measure, a second measure refused; Studio's endpoints serve only a workspace that has Studio |
+| Journeys | The other session's walks of 6 and 7 November ([the walk](../platform/evidence/browser-2026-11-07-fork.md)): Property's service charges, rent indexing and an owner's statement, billed and seen by its owner on the portal; Retail's ship from store (an order naming no warehouse among them), a return at another store, transfers between stores, click and collect brought from another store, and a franchisee reporting on the portal; Government's stages, renewals, public register, a renewal by its holder on the citizens' portal and a case raised there; Logistics' day, with the server stopped while the driver's page was open; IT Services' discovery and a change approved by a second person; Healthcare's withdrawn consent, cancelled and missed visits and a practitioner signed in; the Control Plane's cells and public status page |
+| Property 0.7.3 | The portals show a lease's rent in effect today, not its starting rent (from the 7 November walk) |
+| Retail 0.3.3 | The franchise portal shows sales and fees as money (from the 7 November walk) |
+| Government 0.2.3 | The portal shows a permit type's fee as money, or "no fee" (from the 7 November walk) |
+| Healthcare 0.1.10 | A visit is marked missed only once it has begun: Did Not Come was accepted hours before (from the 7 November walk) |
+| Logistics 0.3.1 | Return notes offered only where they belong; a proof sent at once says "Proof saved." (from the 7 November walk) |
+| Logistics 0.3.2 | A signature drawn on the driver's page, kept offline with the proof; the home links Fleet Costs and shows costs formatted (from the 7 November walk) |
+| Ferrum PR 90, Control Plane 0.5.0, IoT Edge 0.5.0 | Installed apps' own health in the support report; IoT Edge's gateways counted there and in a customer's health for partners (FERRUM-IND-021) |
+| Control Plane 0.5.1 | A new incident's Public box shows ticked, as it is saved (from the 7 November walk) |
+| Control Plane 0.4.1 | Its public status page walked: cells reporting without sign-in, a public incident and its update, the page turning "All systems operational" by itself once resolved, the JSON cached publicly for 30 seconds and naming no customer (FERRUM-CLOUD-004) |
+| Ferrum PR 91, Frontend PR 45, Metrics 0.3.2 | A field may say how forms edit it (`widget`). `studio_query` on a json field shows Studio's report builder in place, with the first rows the query gives beside it, or the JSON for those who prefer it, and in a workspace without Studio. Metrics' metric and dataset definitions are built so, not typed (FERRUM-ECOSYSTEM-010) |
+| Frontend PR 45 | A new record's box whose default is 1 shows ticked, as the server saves it: `default: 1` showed unticked and saved ticked, so an incident meant to stay internal was published. Control's and Social's defaults are now `true` too |
+| Every app | Rebuilt on a64416a, a patch each: PR 45's ticked default, and for those not yet on 922fcfb, PR 44's action dialog (every refusal said, one dialog for parameters and a confirmation) |
+| How it was checked | Each app PR above passed its CI on this machine before it merged, at the head that was checked (`scripts/app_ci.sh`, `gh pr merge --match-head-commit`). Its interface check is the kit's own `check` against the sources' digest, as GitHub's ui job runs it: a rebuilt bundle's CSS differs between machines (Tailwind's classes), its JavaScript does not. It tests `--workspace` when the workflow does, finds the test databases a suite reads by its own default, and patches every platform crate. IoT Edge's suites ran one test binary at a time, the two failpoint suites with their feature, and `cargo audit` inside the repository. Its brokers (NATS, RabbitMQ, Kafka, InfluxDB, ClickHouse, S3) were not run here: those tests return early without their service. Cloud's interface was checked in the sweep; its Rust has not changed since its last passing GitHub run (4 November) |
+
+**Evidence:** the walks; `crates/meta/src/catalog.rs` (a widget only on a json field);
+`ferrum-app-edge:tests/edge_it.rs` (gateways heard from, quiet and with problems);
+`ferrum-app-control:tests/control_it.rs`; `ferrum-app-healthcare:tests/healthcare_it.rs` (a visit
+missed only once begun); Ferrum-Frontend `src/app/prefill.test.ts` and `src/app/queryinput.test.tsx`.
+
+**Next:** Logistics 0.3.3's signature, drawn and saved while the server was stopped, sent once it answered (the other session, on this build). Then the limits the registry still names that need no outside party: words translated past the kit's states and dialogs, pages checked one by one right to left, a page where a buyer confirms a charge their bank asks about, and renditions of a video's frame or a PDF's first page.
+
 ## 2026-11-06, evening: a clinic's day; records headed by a link; a person's own clock; every app rebuilt
 
 **State:** this PR follows PR 88. Its lock takes every app at its main of 6 November's evening, each
