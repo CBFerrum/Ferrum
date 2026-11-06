@@ -3,6 +3,34 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-06, night: hire to retire, a hotel stay and marketing to consent walked; actions that pages could not run
+
+**State:** this PR follows PRs 79 and 81. Its lock takes Campaigns 0.3.3, CRM 0.6.4, HR 0.8.1,
+Hospitality 0.2.0, Projects 0.6.5, Sign 0.2.5, Bookings 0.4.4, Education 0.1.5, Drive 0.14.0,
+Objectives 0.2.0, Digital Assets 0.2.0, ITSM 0.2.0 (with its connector to Assets), Property 0.2.0 and
+Retail 0.2.0. FRONTEND_REV is unchanged. No release was tagged.
+
+| Where | What |
+|---|---|
+| Journeys | Hire to retire, the hotel stay again and marketing to consent walked through the pages ([the walk](../platform/evidence/browser-2026-11-06-journeys.md)); FERRUM-JOURNEY-003, 009 and 010 are implemented, waiting on an independent reviewer |
+| This PR | An app's interface is stored again when its files are missing (the walk server's database recorded Mail's from a server that ran elsewhere, and its pages were blank); a settings link opens its one record; an install plan names the apps it brings; two compiled apps cannot give one report name, and an app whose requirement a compiled app does not meet fails the build's tests |
+| HR 0.8.1, Hospitality 0.2.0, Bookings 0.4.4, Education 0.1.5, CRM 0.6.3, Projects 0.6.5, Sign 0.2.5 | Actions declare the parameters they read, so record pages ask for them; those that need a time (Bookings' Reschedule, Field Service's Schedule) are left to the screens that offer one. Hospitality's desk payments become draft payment entries in ERP at check-out |
+| Campaigns 0.3.2, 0.3.3 | It installs beside Mail 0.10 again; the review links to the settings that fix it; a signup form gives HTML to paste; its campaign report is Email Campaign Performance, apart from CRM's, whose report of the same name answered for it |
+| CRM 0.6.4 | Dates are the workspace's, not UTC's: between the two midnights a deal won that day fell outside the day's report (Campaigns' CI failed so for its New York workspace) |
+| Frontend PRs 36 to 39 | A page reads empty numbers as the server does; an account chosen at the accounts host is chosen; settings open as their one record; the install dialog names what it brings. Each app takes them when its interface is next built |
+| Registry | OPS-006 (uploads in parts, Drive adopting them) and ECOSYSTEM-001 and 006 (Intranet, Website) are implemented; OPS-007, ECOSYSTEM-003, 011 and 012, INDUSTRY-003 and 008 say what their apps added (texts from the session that built them) |
+
+**Evidence:** the walk; `server/tests/apps_api.rs` (a release's missing file stored again),
+`server/src/packages.rs` (`compiled_apps_fit_together`: requirements and report names), the apps'
+suites (CRM's now runs in a zone whose date is not UTC's).
+
+**Next:** Field Service 0.4.1 (PR 5), Learn 0.6.2 (PR 6) and Commerce 0.7.5 declare what their record
+pages could not send, and the Frontend PR 39 image job was running: pin them when merged. Rebuild the
+apps' interfaces with Ferrum-Frontend main and move FRONTEND_REV, so their pages take PRs 36 to 39.
+A draft journal entry is still headed by the end of its id; an add-on's entity opened before it is
+installed says "not found"; pages show times in the browser's zone (FERRUM-UX-006). The tenant's life on
+the image is still to walk.
+
 ## 2026-11-06, later: learning completion walked, a site without internet, a job finished offline, a leaver settled
 
 **State:** this PR follows PRs 76 and 77. Its lock takes Learn 0.6.1, Field Service 0.4.0, the Control
