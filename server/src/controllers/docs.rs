@@ -81,7 +81,10 @@ pub fn doc_response(doc: Doc, status: StatusCode) -> Response {
 
 async fn list(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Path<String>, Query(p): Query<ListParams>) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    Ok(Json(st.kernel.list(&ctx, &entity, &p.to_query()?).await?).into_response())
+    let mut q = p.to_query()?;
+    // A record headed by a link is named by it, so its rows always say what it links to.
+    q.with_titles |= ctx.schema.entity(&entity).is_some_and(|e| e.headed_by_link());
+    Ok(Json(st.kernel.list(&ctx, &entity, &q).await?).into_response())
 }
 
 #[derive(Deserialize, Default)]
@@ -119,7 +122,8 @@ async fn create(
 
 async fn read(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity, id)): Path<(String, Uuid)>, Query(p): Query<ReadParams>) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    Ok(doc_response(st.kernel.get(&ctx, &entity, id, p.titles.unwrap_or(true)).await?, StatusCode::OK))
+    let titles = p.titles.unwrap_or(true) || ctx.schema.entity(&entity).is_some_and(|e| e.headed_by_link());
+    Ok(doc_response(st.kernel.get(&ctx, &entity, id, titles).await?, StatusCode::OK))
 }
 
 async fn update(

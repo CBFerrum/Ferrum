@@ -10,7 +10,7 @@ use crate::ddl::q;
 use crate::error::Result;
 use crate::value::{decimal_value, parse_datetime, parse_decimal};
 use chrono::SecondsFormat;
-use ferrum_meta::{EffEntity, FieldType, Schema, Storage};
+use ferrum_meta::{EffEntity, EntityKind, FieldType, Reference, Schema, Storage};
 use serde_json::{Map, Value};
 use sqlx::AssertSqlSafe;
 use std::collections::HashMap;
@@ -78,6 +78,30 @@ pub fn field_expr(ent: &EffEntity, name: &str, alias: &str) -> Option<String> {
             }
         }
     })
+}
+
+/// A title field as text. A record headed by a link (an appointment by its patient) is named by
+/// the linked record's own title, a step or two on, when that entity names itself to anyone
+/// (`reference: open`); otherwise it has no title here, and callers fall back to its number.
+pub fn title_text(schema: &Schema, ent: &EffEntity, name: &str, alias: &str) -> Option<String> {
+    title_at(schema, ent, name, alias, 2)
+}
+
+fn title_at(schema: &Schema, ent: &EffEntity, name: &str, alias: &str, depth: u8) -> Option<String> {
+    let e = field_expr(ent, name, alias)?;
+    let Some(to) = ent.field(name).filter(|f| f.ftype == FieldType::Link).and_then(|f| schema.entity(f.to.as_deref()?)) else {
+        return Some(format!("{e}::text"));
+    };
+    if depth == 0 || to.table.is_empty() || to.def.kind == EntityKind::Ledger || to.def.reference != Reference::Open {
+        return None;
+    }
+    let b = format!("{alias}_t");
+    let own = to.def.title_field.as_deref().and_then(|t| title_at(schema, to, t, &b, depth - 1)).map(|t| format!("nullif({t}, ''), ")).unwrap_or_default();
+    Some(format!(
+        "(select coalesce({own}{b}.number, {b}.id::text) from {} {b} where {b}.tenant_id = {alias}.tenant_id and {b}.id = {e}{})",
+        q(&to.table),
+        entity_predicate(to, &b)
+    ))
 }
 
 fn normalize_out(ent: &EffEntity, schema: &Schema, m: &mut Map<String, Value>) {

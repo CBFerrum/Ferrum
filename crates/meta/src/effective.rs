@@ -73,6 +73,11 @@ impl EffEntity {
         self.def.fields.iter().find(|f| f.name == name)
     }
 
+    /// Headed by a link (an appointment by its patient): its title is the linked record's.
+    pub fn headed_by_link(&self) -> bool {
+        self.def.title_field.as_deref().and_then(|t| self.field(t)).is_some_and(|f| f.ftype == FieldType::Link)
+    }
+
     pub fn storage_of(&self, field: &str) -> Option<Storage> {
         self.storage.get(field).copied()
     }
