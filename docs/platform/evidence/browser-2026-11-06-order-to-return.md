@@ -46,10 +46,28 @@ Ferrum-Frontend 3d36821), from 08:16 to 08:21 UTC:
 Left: after a `*.localhost` domain is added, the form's message still says it "starts working once
 checked", though it already works.
 
+## The store set up through its pages
+
+The first product's price, stock, delivery and the store's settings had been made through the API.
+A second product was set up through the pages alone, from 08:31 to 08:38 UTC:
+
+| Page | What it showed |
+|---|---|
+| Item | Walk tote (TOTE-01), Products, unit Nos, a stock item kept in Finished Goods: "Item created" |
+| Item Price | €18.50 on Standard Selling, valid from today as it defaulted: "Item Price created", its page headed by the end of its id |
+| Stock Entry | A Material Receipt with the company, today and the time on the workspace's clock filled in; one line of 15 totes at €6 into Finished Goods, €90.00; saved as "Draft Stock Entry", submitted as STE-2026-00003 |
+| Website Item | The tote picked, its title and address filled from the item, published with a short description: the store's catalog listed it at €18.50, in stock |
+| Shipping Rule | Express (1-2 days), €9.90 fixed, after the standard one |
+| Store Settings | Its one record opened from the menu; a second payment method, Cash on Delivery ("Pay the courier"), added in its table and saved |
+| Checkout | For a tote: Standard delivery €4.90 and Express €9.90; Bank transfer with its instructions and Pay the courier |
+
+| Finding | Now |
+|---|---|
+| An Item Price's page was headed by the end of its id | The pins after PR 88: it is headed by its item's name |
+| A receipt's line did not take the item's warehouse (Finished Goods) as its target; it was chosen by hand | Left as it is: which warehouse a line takes depends on the entry's purpose |
+
 ## What it does not show
 
 - Paid and refunded by hand (bank transfer): no payment provider (BLOCK-PAYMENT-KEYS).
 - The store's host stood in for DNS by a row made in the database, which Ferrum PR 88 makes
   unnecessary on a developer's machine.
-- The shop's master data (price, stock, delivery, settings) was made through the API, not their
-  pages.

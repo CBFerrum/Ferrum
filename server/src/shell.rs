@@ -200,6 +200,9 @@ pub struct WorkspaceInfo {
 pub const SHELL_APP: &str = "shell";
 /// The core's names the shell app answers (§6).
 pub const SHELL_ROUTES: &[&str] = &["store", "admin", "account", "data"];
+/// The core's own pages under `/data/`: records and reports of any entity, Customize and the help
+/// center. Any other first segment names an app whose records are shown there (`/data/{app}/…`).
+pub const DATA_PAGES: &[&str] = &["", "e", "r", "customize", "help"];
 
 pub struct Shell {
     kernel: Arc<Kernel>,
@@ -1083,7 +1086,7 @@ pub fn bootstrap(ws: &WorkspaceInfo, host: &str, ctx: &Ctx, kind: &str, state: &
         "app": app,
         "host": {"kind": page, "shell": SHELL_VERSION},
         "api": {"base": "/api/", "live": "/ws/live", "auth": "cookie"},
-        "locale": {"language": "en", "timezone": ctx.schema.timezone, "dir": "ltr"},
+        "locale": {"language": "en", "timezone": ctx.schema.timezone, "display_timezone": ctx.schema.timezone, "dir": "ltr"},
         "theme": {"appearance": "system", "hash": theme_hash()},
         "company": ctx.default_company,
         "flags": {},
@@ -1111,11 +1114,12 @@ pub fn direction(tag: &str) -> &'static str {
 }
 
 /// The bootstrap's locale (FERRUM-UX-006): the language the person or the workspace chose
-/// (`chosen`), else English, its direction, and the workspace's time zone.
-pub fn locale(language: Option<&str>, timezone: &str) -> Value {
+/// (`chosen`), else English, its direction, the workspace's time zone (its business day) and the
+/// one times are shown in (`display_timezone`: the person's own, else the workspace's).
+pub fn locale(language: Option<&str>, timezone: &str, own_zone: Option<&str>) -> Value {
     let chosen = language.filter(|l| !l.is_empty());
     let tag = chosen.unwrap_or("en");
-    json!({"language": tag, "timezone": timezone, "dir": direction(tag), "chosen": chosen.is_some()})
+    json!({"language": tag, "timezone": timezone, "display_timezone": own_zone.unwrap_or(timezone), "dir": direction(tag), "chosen": chosen.is_some()})
 }
 
 /// The bootstrap of a public page (§7.3): no person, no live channel; the workspace by name.
@@ -1127,7 +1131,7 @@ pub fn public_bootstrap(ws: &WorkspaceInfo, host: &str, timezone: &str, app: Val
         "app": app,
         "host": {"kind": "public", "shell": SHELL_VERSION},
         "api": {"base": "/api/", "live": null, "auth": "none"},
-        "locale": {"language": "en", "timezone": timezone, "dir": "ltr"},
+        "locale": {"language": "en", "timezone": timezone, "display_timezone": timezone, "dir": "ltr"},
         "theme": {"appearance": "system", "hash": theme_hash()},
         "company": null,
         "flags": {},
@@ -1517,11 +1521,28 @@ mod tests {
     #[test]
     fn languages_read_their_way() {
         assert_eq!([super::direction("ar"), super::direction("he-IL"), super::direction("hi"), super::direction("ur_PK")], ["rtl", "rtl", "ltr", "rtl"]);
-        assert_eq!(super::locale(Some("ar"), "Asia/Dubai"), json!({"language": "ar", "timezone": "Asia/Dubai", "dir": "rtl", "chosen": true}));
-        assert_eq!(super::locale(None, "UTC"), json!({"language": "en", "timezone": "UTC", "dir": "ltr", "chosen": false}));
+        assert_eq!(
+            super::locale(Some("ar"), "Asia/Dubai", None),
+            json!({"language": "ar", "timezone": "Asia/Dubai", "display_timezone": "Asia/Dubai", "dir": "rtl", "chosen": true})
+        );
+        assert_eq!(
+            super::locale(None, "UTC", Some("Asia/Kolkata")),
+            json!({"language": "en", "timezone": "UTC", "display_timezone": "Asia/Kolkata", "dir": "ltr", "chosen": false}),
+            "times on the person's own clock, the business day on the workspace's"
+        );
     }
 
     use super::*;
+
+    #[test]
+    fn the_help_center_is_a_page_of_the_records_not_an_app() {
+        // Every record's Help link opens /data/help/{entity}: read as an app called "help", it
+        // was sent back to /data/.
+        for page in ["", "e", "r", "customize", "help"] {
+            assert!(DATA_PAGES.contains(&page), "{page}");
+        }
+        assert!(!DATA_PAGES.contains(&"hr"), "an app's records keep /data/{{app}}/");
+    }
 
     #[test]
     fn each_sign_in_keeps_its_own_cookie() {

@@ -56,6 +56,8 @@
   label: Item Price
   kind: master
   module: masters
+  # A price is headed by its item's name (the link's title), not by the end of its id.
+  title_field: item
   fields:
     - {name: item, type: link, to: Item, required: true, in_list: true, in_filter: true}
     - {name: price_list, type: link, to: PriceList, required: true, in_list: true, in_filter: true}

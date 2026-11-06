@@ -105,7 +105,9 @@ pub async fn search(k: &Arc<Kernel>, ctx: &Ctx, q: &str, limit: usize) -> Result
             let ent = ctx.schema.entity(&name)?.clone();
             let mut fields = vec!["id".to_string(), "number".into(), "updated_at".into()];
             fields.extend(ent.def.title_field.clone());
-            let query = ListQuery { search: Some(q.clone()), fields: Some(fields), sort: Some("updated_at desc".into()), limit: Some(PER_ENTITY_ROWS), ..Default::default() };
+            // A record headed by a link (an appointment by its patient) is shown by what it links to.
+            let linked = ent.headed_by_link();
+            let query = ListQuery { search: Some(q.clone()), fields: Some(fields), sort: Some("updated_at desc".into()), limit: Some(PER_ENTITY_ROWS), with_titles: linked, ..Default::default() };
             let page = match tokio::time::timeout(PER_ENTITY, k.list(&ctx, &name, &query)).await {
                 Ok(Ok(page)) => page,
                 // Refused or failed (a field the person may not read, a broken custom entity): left out.
@@ -125,7 +127,7 @@ pub async fn search(k: &Arc<Kernel>, ctx: &Ctx, q: &str, limit: usize) -> Result
                         .def
                         .title_field
                         .as_ref()
-                        .and_then(|f| row.get(f))
+                        .and_then(|f| if linked { row.get("_titles").and_then(|t| t.get(f)) } else { row.get(f) })
                         .and_then(Value::as_str)
                         .filter(|t| !t.trim().is_empty())
                         .map(String::from)

@@ -3,6 +3,51 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-06, evening: a clinic's day; records headed by a link; a person's own clock; every app rebuilt
+
+**State:** this PR follows PR 88. Its lock takes every app at its main of 6 November's evening, each
+app's interface built with Ferrum-Frontend a76295e (PRs 42 and 43), which FRONTEND_REV now names:
+Healthcare 0.1.7, Government 0.2.1, Retail 0.3.1, Digital Assets 0.6.1, Property 0.7.1, Metrics 0.3.1,
+Objectives 0.5.2, Commerce 0.7.9, the Control Plane 0.4.1, Restaurant 0.2.0, Logistics 0.3.0, Retail 0.3.2,
+Property 0.7.2, and the rest a patch each. No release was tagged.
+
+| Where | What |
+|---|---|
+| Journeys | A clinic's day walked through the pages ([the walk](../platform/evidence/browser-2026-11-06-clinic-day.md)): set up, a consultation booked, check-in refused until the patient consented to the form's current version, the visit completed into a draft invoice, hours and clashes refused, a follow-up covered by the paid visit with no second invoice (FERRUM-INDUSTRY-005) |
+| This PR | A record headed by a link (29 entities, an appointment by its patient, a lease by its unit) is named and searched by the linked record's title, at most two steps on and only through open entities: in link titles, list search, global search and notifications. Lists and reads of such entities always carry `_titles` (FERRUM-IDENTITY-011) |
+| This PR, Frontend PR 43 | A person may choose a time zone of their own on the Account page (the `timezone` preference, checked against the zone database): times show and are entered on it, while today, due dates and defaults stay on the workspace's day. The bootstrap and `/api/auth/me` give `display_timezone` (FERRUM-UX-006) |
+| This PR | An Item Price is headed by its item's name; the store set up through its pages (evidence in the order walk) |
+| Frontend PR 42 | A local domain added in Domains says it works at once |
+| Healthcare 0.1.7 | What the walk found: the home page's day was UTC's; patients' names came from a list of at most 500; an empty clinic said nothing; a visit under way looked editable, the server refusing the change on save; new appointments now default to today |
+| Every app | Rebuilt on a76295e: times on a person's own clock. Commerce, the Control Plane, Digital Assets, Property and Retail took today from UTC's calendar on some screens, now the workspace's day (`todayIso`); Logistics has the same, told to the session working on it |
+| Retail 0.3.0 | Ship from store, returns to any store, Stock by Store and goods a collection lacks brought from another store; transfers taken in parts, what never arrived written off (FERRUM-INDUSTRY-003) |
+| Property 0.7.0 | Owners' statements: rent collected less the management fee and the expenses charged, billed as the owner's share and seen on the portal (FERRUM-INDUSTRY-008) |
+| Digital Assets 0.6.0 | The place and people a file shows and its licence's terms, read from XMP and IPTC; approval waits for releases when people are named (FERRUM-ECOSYSTEM-012) |
+| Government 0.2.0 | Review stages with site inspections, conditions, renewals, notices to applicants and holders, a public register, and the workspace's day (FERRUM-INDUSTRY-010) |
+| Metrics 0.3.0, Objectives 0.5.0 | As their registry entries say (FERRUM-ECOSYSTEM-010, 011) |
+| Journeys | A restaurant's evening walked through the pages ([the walk](../platform/evidence/browser-2026-11-06-restaurant-evening.md)): an outlet, a menu and tables set up, a table's order through the kitchen, a sent line voided, the bill in ERP, a delivery, reservations (FERRUM-INDUSTRY-002) |
+| Restaurant 0.2.0 | What the walk found: a voided dish is struck off its kitchen ticket, which the kitchen would otherwise still make; a line's state only the kitchen moves on; a delivery goes out once made; the floor starts an order for its table, a takeaway or a delivery; dishes named as the menu writes them; actions say what they did |
+| This PR | An action whose answer has no `message` gets one from what it says, the record's new status and what it made ("Now Admitted; made STU-2026-00001"): the walks met "done" after most apps' actions |
+| Logistics 0.2.0 | Collections with return notes, delivery windows and late stops, a vehicle out again the same day, fuel logs, services due, trip costs and Fleet Costs (FERRUM-INDUSTRY-009) |
+| Logistics 0.3.0 | A driver's page that works offline: the day's trips kept under the lease, proofs kept with when they happened and sent when the connection is back (FERRUM-INDUSTRY-009) |
+| Registry | Hospitality's entry names the hotel walk (FERRUM-INDUSTRY-001) |
+| Journeys | A school's day, a nonprofit's year of giving and a building contract walked through the pages ([school](../platform/evidence/browser-2026-11-06-school-day.md), [giving](../platform/evidence/browser-2026-11-06-year-of-giving.md), [contract](../platform/evidence/browser-2026-11-06-contract.md)): every rule held, each refusal saying why (FERRUM-INDUSTRY-004, 011, 007) |
+| Education 0.2.0 | Each class's roll call, saving a group's attendance at once; today's classes named and on the workspace's day; counts past 200; an empty office says where to start; a score's limit written plainly |
+| Nonprofit 0.1.8 | The home's figures over every record: it asked for 1,000 rows and the server pages at 500; the workspace's year; members not yet paid; the books named first; records dated today |
+| Point of Sale 0.4.4, Objectives 0.5.2 | The same cap: a loyalty balance at the till and the review's progress came from one page of 500 entries; both now read every page by cursor |
+| Construction 0.1.7 | Amounts written as money; estimates waiting for an answer listed; the books named before the first claim |
+| Retail 0.3.2, Property 0.7.2 | From the walks of the session that built them: ship from store for an order naming no warehouse (the delivery note made from the store itself); reconciled service charges from what the lease's invoices bore; index reviews saying what held the rent; the owner payout item under its own heading |
+| IT Services 0.2.4 | The desk's rules walked ([the walk](../platform/evidence/browser-2026-11-06-it-desk.md), FERRUM-ECOSYSTEM-003): the desk names what a request asks for, who asked and when it is due, and when a change starts |
+| This PR | The help center opens from a record's Help link: `/data/help/{entity}` was read as an app's records and sent back to `/data/` (`shell::DATA_PAGES`, FERRUM-UX-003) |
+| How it was checked | From Point of Sale 0.4.4 on, each app's CI (fmt, clippy, its scenario tests on scratch databases, its interface's checks and build) ran on this machine before it merged, not on GitHub: `scripts/app_ci.sh`. On a disk short of room, `NO_DEBUG=1` builds the tests without debug info in a target of their own |
+
+**Evidence:** the walks; `crates/kernel/tests/rules_it.rs` (a record headed by a link, through an open
+and a restricted entity, and its search); `crates/kernel/tests/collab_it.rs` (the `timezone`
+preference); `ferrum-app-healthcare:ui/src/day.test.ts`; `ferrum-app-restaurant:tests/restaurant_it.rs` (the
+voided ticket, a state set by hand, the delivery held until made); `server/src/controllers/docs.rs` (an action described from its answer).
+
+**Next:** the walk's fixes and a person's own clock checked on this PR's build in a browser.
+
 ## 2026-11-06, afternoon: an online order through the storefront; shoppers told; apps that serve sites
 
 **State:** this PR follows PR 85. Its lock takes Commerce 0.7.8 and Website 0.1.3 (their handlers serve
