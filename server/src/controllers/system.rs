@@ -263,7 +263,7 @@ async fn upload(Auth(ctx): Auth, State(app): State<AppContext>, mut mp: Multipar
 const PUBLIC_TYPES: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/gif", "image/avif", "application/pdf"];
 
 /// A public file, without signing in. Content never changes for an id, so it caches forever.
-async fn download_public(State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
+async fn download_public(State(app): State<AppContext>, Path(id): Path<Uuid>, headers: HeaderMap) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let mut tx = st.kernel.db.system_tx().await?;
     let row: Option<(String, String, String)> = sqlx::query_as(
@@ -276,7 +276,7 @@ async fn download_public(State(app): State<AppContext>, Path(id): Path<Uuid>) ->
     .map_err(Error::from)?;
     tx.commit().await.map_err(Error::from)?;
     let (name, ctype, key) = row.ok_or_else(|| ApiError(Error::NotFound("file".into())))?;
-    let mut resp = streamed(&st, &key).await?;
+    let mut resp = streamed(&st, &key, &headers).await?;
     let h = resp.headers_mut();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_str(&ctype).unwrap_or(HeaderValue::from_static("application/octet-stream")));
     h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
@@ -288,12 +288,10 @@ async fn download_public(State(app): State<AppContext>, Path(id): Path<Uuid>) ->
     Ok(resp)
 }
 
-/// A stored object as a streamed response, so a large file never sits whole in memory.
-async fn streamed(st: &crate::state::AppState, key: &str) -> ApiResult<Response> {
-    let (size, body) = st.objects.stream(key).await?;
-    let mut resp = body.into_response();
-    resp.headers_mut().insert(header::CONTENT_LENGTH, HeaderValue::from(size));
-    Ok(resp)
+/// A stored object as a streamed response, so a large file never sits whole in memory: the range
+/// of it the request asks for, when it asks one (a player seeking in a video).
+async fn streamed(st: &crate::state::AppState, key: &str, headers: &HeaderMap) -> ApiResult<Response> {
+    Ok(crate::objects::streamed_response(StatusCode::OK, st.objects.stream(key, super::sites::range(headers)).await?))
 }
 
 #[derive(serde::Deserialize)]
@@ -340,7 +338,7 @@ async fn complete_upload(Auth(ctx): Auth, State(app): State<AppContext>, Path(id
     Ok((StatusCode::CREATED, Json(crate::objects::complete(&st.kernel, &st.objects, &ctx, id).await?)).into_response())
 }
 
-async fn download(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
+async fn download(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>, headers: HeaderMap) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let mut tx = st.kernel.db.tenant_tx(ctx.tenant).await?;
     let row: Option<(String, String, String, Option<String>, Option<Uuid>)> =
@@ -355,7 +353,7 @@ async fn download(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path
     if let (Some(e), Some(r)) = (entity, record) {
         st.kernel.get(&ctx, &e, r, false).await?;
     }
-    let mut resp = streamed(&st, &key).await?;
+    let mut resp = streamed(&st, &key, &headers).await?;
     let h = resp.headers_mut();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_str(&ctype).unwrap_or(HeaderValue::from_static("application/octet-stream")));
     h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));

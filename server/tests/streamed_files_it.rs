@@ -1,7 +1,7 @@
 //! A site's answer that names a stored file (`SiteResponse::file`, FERRUM-OPS-006), against a real
 //! PostgreSQL (`FERRUM_APPS_TEST_DATABASE_URL`, reset first) and files on a local directory: the
-//! server streams that file from storage as the body, the header that named it goes, and a file of
-//! another workspace is not found. Then an upload in parts: resumed from where it stands after a
+//! server streams that file from storage as the body, or the range of it a request asks for, the
+//! header that named it goes, and a file of another workspace is not found. Then an upload in parts: resumed from where it stands after a
 //! part's answer is lost, joined in order when complete, and swept with its parts when left; with
 //! `FERRUM_TEST_S3_ENDPOINT` (CI's S3 emulator), the same in parts joined by a multipart upload, and
 //! a direct upload sent to its presigned URL and completed.
@@ -80,19 +80,24 @@ async fn scenario() {
 
     // Its workspace's file: streamed, with its length, and the header that named it gone.
     let mut r = SiteResponse::file(200, "application/octet-stream", vec![("content-disposition".into(), "attachment".into())], id);
-    let (size, body) = named_file(&k, &objects, tenants[0], &mut r).await.unwrap().expect("a file was named");
-    assert_eq!(size, data.len() as u64);
+    let (size, part, body) = named_file(&k, &objects, tenants[0], &mut r, None).await.unwrap().expect("a file was named");
+    assert_eq!((size, part), (data.len() as u64, None));
     assert_eq!(axum::body::to_bytes(body, usize::MAX).await.unwrap().as_ref(), data.as_slice());
     assert_eq!(r.headers, vec![("content-disposition".to_string(), "attachment".to_string())]);
     assert!(r.body.is_empty(), "nothing read whole");
+    // The range a player asks for when seeking, and only that, read from storage.
+    let mut r = SiteResponse::file(200, "video/mp4", vec![], id);
+    let (size, part, body) = named_file(&k, &objects, tenants[0], &mut r, Some("bytes=400000-400099")).await.unwrap().expect("a file was named");
+    assert_eq!((size, part), (data.len() as u64, Some(400_000..400_100)));
+    assert_eq!(axum::body::to_bytes(body, usize::MAX).await.unwrap().as_ref(), &data[400_000..400_100]);
 
     // Another workspace's answer naming it finds nothing.
     let mut theirs = SiteResponse::file(200, "application/octet-stream", vec![], id);
-    assert!(matches!(named_file(&k, &objects, tenants[1], &mut theirs).await, Err(Error::NotFound(_))));
+    assert!(matches!(named_file(&k, &objects, tenants[1], &mut theirs, None).await, Err(Error::NotFound(_))));
 
     // An answer that names no file is sent as it is.
     let mut plain = SiteResponse::json(200, &json!({"ok": true}));
-    assert!(named_file(&k, &objects, tenants[0], &mut plain).await.unwrap().is_none());
+    assert!(named_file(&k, &objects, tenants[0], &mut plain, None).await.unwrap().is_none());
 
     // ───────────── an upload in parts ─────────────
     let p = PART_BYTES as usize;
@@ -153,7 +158,7 @@ async fn scenario() {
             up::append(&k, &s3, &admin, id, from as u64, part(from, to)).await.unwrap();
         }
         assert_eq!(up::complete(&k, &s3, &admin, id).await.unwrap()["sha256"], sha);
-        let (size, body) = s3.stream(&format!("tenants/{}/{id}", tenants[0])).await.unwrap();
+        let (size, _, body) = s3.stream(&format!("tenants/{}/{id}", tenants[0]), None).await.unwrap();
         assert_eq!(size, big.len() as u64);
         assert!(axum::body::to_bytes(body, usize::MAX).await.unwrap().as_ref() == big.as_slice(), "joined in order on S3");
         // Straight to the bucket with the presigned request, then completed.
@@ -167,7 +172,7 @@ async fn scenario() {
         let sent = put.body(big.clone()).send().await.unwrap();
         assert!(sent.status().is_success(), "the presigned PUT: {}", sent.status());
         assert_eq!(up::complete(&k, &s3, &admin, id).await.unwrap()["sha256"], sha);
-        let (size, body) = s3.stream(&format!("tenants/{}/{id}", tenants[0])).await.unwrap();
+        let (size, _, body) = s3.stream(&format!("tenants/{}/{id}", tenants[0]), None).await.unwrap();
         assert_eq!(size, big.len() as u64);
         assert!(axum::body::to_bytes(body, usize::MAX).await.unwrap().as_ref() == big.as_slice(), "copied to the file's key");
     } else {
