@@ -27,7 +27,9 @@ Control Plane 0.3.1, Property 0.5.0, Objectives 0.3.1, Social 0.5.1, Digital Ass
 Frontend's `format.test.ts` and `client.test.ts`, the apps' suites (Helpdesk's days and IoT Edge's
 ticks in a zone that is not the browser's), `server/src/packages.rs` (the two connectors fit).
 
-**Next:** a person cannot choose a time zone of their own. A site's own host is not walked: a domain
+**Next:** Website and Commerce say their handlers serve pages (`Site::serves_pages`, new here) in
+their next releases; until those are pinned, Domains offers no app's public site. A person cannot
+choose a time zone of their own. A site's own host is not walked: a domain
 under the server's base is refused, so it needs a real name.
 
 ## 2026-11-06, night, later: the walks' fixes checked on their build; Commerce, Metrics and Social pinned

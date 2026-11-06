@@ -346,7 +346,8 @@ Pages, for browsers, with the session cookie:
 * Hosts by their target (§7.2): a `portal` host has the portal, sign-in, `/open` and the platform's
   files; everything else there leads to `/portal/`. On a `site:{app}` host every page is the app's
   public site: `GET /{path}` goes to the app's site handler as `GET /_site/{path}` (the package named
-  like the app first), with `x-ferrum-site-api: /api/site/{workspace}/{package}` and
+  like the app first; a handler says it serves such pages with `Site::serves_pages`, and only those
+  apps may be a domain's target), with `x-ferrum-site-api: /api/site/{workspace}/{package}` and
   `x-ferrum-site-origin: {scheme}://{host}` set by the server; without a session; rate-limited per
   address; with `X-Content-Type-Options`, `Referrer-Policy` and a strict
   `Content-Security-Policy` unless the app sets its own. The API's paths (`/api/…`, `/files/…`)
