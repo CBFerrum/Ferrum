@@ -1,7 +1,10 @@
 //! A site's answer that names a stored file (`SiteResponse::file`, FERRUM-OPS-006), against a real
 //! PostgreSQL (`FERRUM_APPS_TEST_DATABASE_URL`, reset first) and files on a local directory: the
 //! server streams that file from storage as the body, the header that named it goes, and a file of
-//! another workspace is not found.
+//! another workspace is not found. Then an upload in parts: resumed from where it stands after a
+//! part's answer is lost, joined in order when complete, and swept with its parts when left; with
+//! `FERRUM_TEST_S3_ENDPOINT` (CI's S3 emulator), the same in parts joined by a multipart upload, and
+//! a direct upload sent to its presigned URL and completed.
 
 mod common;
 
@@ -11,8 +14,10 @@ use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings, Result, SiteResponse};
 use ferrum_meta::Catalog;
 use ferrum_server::controllers::sites::named_file;
-use ferrum_server::objects::Objects;
+use ferrum_server::objects::{self as up, NewUpload, Objects, PART_BYTES};
+use ferrum_server::state::Settings;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -88,5 +93,85 @@ async fn scenario() {
     // An answer that names no file is sent as it is.
     let mut plain = SiteResponse::json(200, &json!({"ok": true}));
     assert!(named_file(&k, &objects, tenants[0], &mut plain).await.unwrap().is_none());
+
+    // ───────────── an upload in parts ─────────────
+    let p = PART_BYTES as usize;
+    let big: Vec<u8> = (0..2 * p + 123).map(|i| (i % 251) as u8).collect();
+    let part = |from: usize, to: usize| bytes::Bytes::copy_from_slice(&big[from..to]);
+    let new =
+        |parts| NewUpload { file_name: "big.bin".into(), content_type: "application/octet-stream".into(), size: big.len() as u64, attach_to: None, parts };
+    let parts_left = |dir: &Path| !dir.exists() || std::fs::read_dir(dir).is_ok_and(|mut e| e.next().is_none());
+    // Straight to object storage needs S3; in parts goes on any store.
+    assert!(matches!(up::start(&k, &objects, &admin, 3 * PART_BYTES, new(false)).await, Err(Error::Conflict(_))));
+    let started = up::start(&k, &objects, &admin, 3 * PART_BYTES, new(true)).await.unwrap();
+    assert_eq!((started["parts"].clone(), started["offset"].clone(), started["part_bytes"].clone()), (json!(true), json!(0), json!(PART_BYTES)));
+    let upload: uuid::Uuid = started["upload_id"].as_str().unwrap().parse().unwrap();
+    assert_eq!(up::append(&k, &objects, &admin, upload, 0, part(0, p)).await.unwrap()["offset"], json!(PART_BYTES));
+    // The first part again (its answer was lost): refused, and the upload says where it stands.
+    assert!(matches!(up::append(&k, &objects, &admin, upload, 0, part(0, p)).await, Err(Error::Conflict(_))));
+    assert_eq!(up::status(&k, &admin, upload).await.unwrap()["offset"], json!(PART_BYTES));
+    assert!(matches!(up::complete(&k, &objects, &admin, upload).await, Err(Error::Conflict(_))), "not every byte has arrived");
+    let oversized = up::append(&k, &objects, &admin, upload, PART_BYTES, bytes::Bytes::from(vec![0u8; p + 1])).await;
+    assert!(matches!(oversized, Err(Error::Validation(_))), "a part is at most PART_BYTES: {oversized:?}");
+    up::append(&k, &objects, &admin, upload, PART_BYTES, part(p, 2 * p)).await.unwrap();
+    let past = up::append(&k, &objects, &admin, upload, 2 * PART_BYTES, bytes::Bytes::from(vec![0u8; 124])).await;
+    assert!(matches!(past, Err(Error::Validation(_))), "past the size announced: {past:?}");
+    // Another workspace's admin does not find it.
+    let theirs = k.login("other", "admin@other.test", "Correct-Horse-9").await.unwrap();
+    let other = k.load_ctx(tenants[1], theirs.user, None, "it".into()).await.unwrap();
+    assert!(matches!(up::status(&k, &other, upload).await, Err(Error::NotFound(_))));
+    assert!(matches!(up::append(&k, &objects, &other, upload, 2 * PART_BYTES, part(2 * p, big.len())).await, Err(Error::NotFound(_))));
+    assert_eq!(up::append(&k, &objects, &admin, upload, 2 * PART_BYTES, part(2 * p, big.len())).await.unwrap()["offset"], json!(big.len()));
+    let file = up::complete(&k, &objects, &admin, upload).await.unwrap();
+    assert_eq!((file["size"].clone(), file["sha256"].clone()), (json!(big.len()), json!(hex::encode(Sha256::digest(&big)))));
+    assert!(std::fs::read(root.join(format!("tenants/{}/{upload}", tenants[0]))).unwrap() == big, "the parts joined in order");
+    assert!(parts_left(&root.join(format!("uploads/{}/{upload}.parts", tenants[0]))), "the parts go once the file is recorded");
+    assert!(matches!(up::complete(&k, &objects, &admin, upload).await, Err(Error::NotFound(_))), "recorded once");
+
+    // One left half-sent is swept with its parts once it expires.
+    let left = up::start(&k, &objects, &admin, 3 * PART_BYTES, new(true)).await.unwrap();
+    let left: uuid::Uuid = left["upload_id"].as_str().unwrap().parse().unwrap();
+    up::append(&k, &objects, &admin, left, 0, part(0, p)).await.unwrap();
+    let dir = root.join(format!("uploads/{}/{left}.parts", tenants[0]));
+    assert!(!parts_left(&dir), "a part waits");
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update file_upload set expires_at = now() - interval '1 hour' where id = $1").bind(left).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(up::sweep(&k, &objects).await.unwrap(), 1);
+    assert!(parts_left(&dir), "swept with its parts");
+
+    // ───────────── through S3 ─────────────
+    if let Ok(endpoint) = std::env::var("FERRUM_TEST_S3_ENDPOINT") {
+        let bucket = std::env::var("FERRUM_TEST_S3_BUCKET").unwrap_or_else(|_| "ferrum-ci".into());
+        let settings: Settings = serde_json::from_value(json!({"s3_bucket": bucket, "s3_region": "us-east-1", "s3_endpoint": endpoint})).unwrap();
+        let s3 = Objects::new(&settings).unwrap();
+        let sha = json!(hex::encode(Sha256::digest(&big)));
+        // In parts, joined by a multipart upload of 8 MiB chunks.
+        let started = up::start(&k, &s3, &admin, 3 * PART_BYTES, new(true)).await.unwrap();
+        let id: uuid::Uuid = started["upload_id"].as_str().unwrap().parse().unwrap();
+        for (from, to) in [(0, p), (p, 2 * p), (2 * p, big.len())] {
+            up::append(&k, &s3, &admin, id, from as u64, part(from, to)).await.unwrap();
+        }
+        assert_eq!(up::complete(&k, &s3, &admin, id).await.unwrap()["sha256"], sha);
+        let (size, body) = s3.stream(&format!("tenants/{}/{id}", tenants[0])).await.unwrap();
+        assert_eq!(size, big.len() as u64);
+        assert!(axum::body::to_bytes(body, usize::MAX).await.unwrap().as_ref() == big.as_slice(), "joined in order on S3");
+        // Straight to the bucket with the presigned request, then completed.
+        let direct = up::start(&k, &s3, &admin, 3 * PART_BYTES, new(false)).await.unwrap();
+        let id: uuid::Uuid = direct["upload_id"].as_str().unwrap().parse().unwrap();
+        let mut put = reqwest::Client::new()
+            .request(reqwest::Method::from_bytes(direct["method"].as_str().unwrap().as_bytes()).unwrap(), direct["url"].as_str().unwrap());
+        for (name, value) in direct["headers"].as_object().unwrap() {
+            put = put.header(name.as_str(), value.as_str().unwrap());
+        }
+        let sent = put.body(big.clone()).send().await.unwrap();
+        assert!(sent.status().is_success(), "the presigned PUT: {}", sent.status());
+        assert_eq!(up::complete(&k, &s3, &admin, id).await.unwrap()["sha256"], sha);
+        let (size, body) = s3.stream(&format!("tenants/{}/{id}", tenants[0])).await.unwrap();
+        assert_eq!(size, big.len() as u64);
+        assert!(axum::body::to_bytes(body, usize::MAX).await.unwrap().as_ref() == big.as_slice(), "copied to the file's key");
+    } else {
+        eprintln!("S3: skipped, FERRUM_TEST_S3_ENDPOINT is not set");
+    }
     std::fs::remove_dir_all(&root).ok();
 }

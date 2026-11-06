@@ -732,7 +732,14 @@ Larger files (up to 2 GB by default, S3-compatible storage only) go straight fro
 2. Send the bytes with that method, URL and headers (valid for an hour).
 3. `POST /api/files/uploads/{upload_id}/complete` → `201` and the same body as `POST /api/files`. The server copies the object to the file's own key (later requests to the upload URL cannot change it), checks its size against `size` (a mismatch discards it) and records its SHA-256. `409` if nothing has arrived yet or the upload expired.
 
-Uploads never completed are deleted with their bytes after they expire. `GET /api/version` → `uploads: {max_bytes, direct, direct_max_bytes}` tells clients which way a file goes.
+Or, on any store, through the server in parts that survive a dropped connection (up to the same 2 GB):
+
+1. `POST /api/files/uploads` `{file_name, content_type, size, entity?, record_id?, parts: true}` → `201 {upload_id, parts: true, part_bytes, size, offset: 0, expires_at}`. Refused at once when the workspace has no room for `size`.
+2. `PUT /api/files/uploads/{upload_id}/parts/{offset}` with the next bytes as the body (1 to `part_bytes`, 8 MiB) → `{upload_id, size, offset}`, the offset the next part starts at. A part must start where the upload stands: `409` otherwise (one sent again after its answer was lost, say). Each part keeps the upload for another 24 hours.
+3. After a dropped connection, `GET /api/files/uploads/{upload_id}` → `{upload_id, parts, size, offset, part_bytes, expires_at}` says where to go on from.
+4. `POST /api/files/uploads/{upload_id}/complete` once every byte has arrived (`409` before) joins the parts and records the file as above. The parts stay until it is recorded, so a completion that failed (the scanner down) can be asked for again.
+
+Uploads never completed are deleted with their bytes after they expire. `GET /api/version` → `uploads: {max_bytes, direct, direct_max_bytes, parts, parts_max_bytes, part_bytes}` tells clients which way a file goes.
 Public files (`public=true`; images and PDFs only — logos, product photos, brochures) are served without signing in at `GET /files/public/{id}` with an immutable cache and a sandboxing CSP. Files live in S3-compatible storage in production.
 
 ## System

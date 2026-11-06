@@ -4,7 +4,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::extract::Auth;
 use crate::state::app_state;
 use axum::Json;
-use axum::extract::{Multipart, Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use ferrum_kernel::tenant::NewTenant;
@@ -33,6 +33,10 @@ async fn version(State(app): State<AppContext>) -> ApiResult<Response> {
         "max_bytes": st.settings.upload_max_bytes,
         "direct": st.objects.direct_uploads(),
         "direct_max_bytes": st.objects.direct_uploads().then_some(st.settings.direct_upload_max_bytes),
+        // In parts through the server, on any store, resuming after a dropped connection.
+        "parts": true,
+        "parts_max_bytes": st.settings.direct_upload_max_bytes,
+        "part_bytes": crate::objects::PART_BYTES,
     });
     Ok(Json(json!({
         "version": env!("CARGO_PKG_VERSION"),
@@ -300,9 +304,13 @@ struct NewUploadBody {
     size: u64,
     entity: Option<String>,
     record_id: Option<Uuid>,
+    /// Through the server in parts (any store), resuming after a dropped connection.
+    #[serde(default)]
+    parts: bool,
 }
 
-/// Starts an upload straight to object storage, for files larger than `POST /api/files` takes.
+/// Starts an upload straight to object storage, or in parts through the server, for files larger
+/// than `POST /api/files` takes.
 async fn start_upload(Auth(ctx): Auth, State(app): State<AppContext>, Json(b): Json<NewUploadBody>) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let attach_to = match (b.entity, b.record_id) {
@@ -310,9 +318,21 @@ async fn start_upload(Auth(ctx): Auth, State(app): State<AppContext>, Json(b): J
         (None, None) => None,
         _ => return Err(ApiError(Error::field("record_id", "entity and record_id go together"))),
     };
-    let up = crate::objects::NewUpload { file_name: b.file_name, content_type: b.content_type, size: b.size, attach_to };
+    let up = crate::objects::NewUpload { file_name: b.file_name, content_type: b.content_type, size: b.size, attach_to, parts: b.parts };
     let v = crate::objects::start(&st.kernel, &st.objects, &ctx, st.settings.direct_upload_max_bytes, up).await?;
     Ok((StatusCode::CREATED, Json(v)).into_response())
+}
+
+/// Where an upload stands: the offset its next part starts at.
+async fn upload_status(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    Ok(Json(crate::objects::status(&st.kernel, &ctx, id).await?).into_response())
+}
+
+/// A part of an upload sent in parts, as the raw request body, starting at byte `offset`.
+async fn upload_part(Auth(ctx): Auth, State(app): State<AppContext>, Path((id, offset)): Path<(Uuid, u64)>, part: bytes::Bytes) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    Ok(Json(crate::objects::append(&st.kernel, &st.objects, &ctx, id, offset, part).await?).into_response())
 }
 
 async fn complete_upload(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
@@ -346,7 +366,7 @@ async fn download(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path
 }
 
 pub fn routes() -> Routes {
-    use axum::routing::{get, post};
+    use axum::routing::{get, post, put};
     Routes::new()
         .add("/api/ready", get(ready))
         .add("/api/version", get(version))
@@ -357,6 +377,8 @@ pub fn routes() -> Routes {
         .add("/api/openapi.json", get(openapi))
         .add("/api/files", post(upload))
         .add("/api/files/uploads", post(start_upload))
+        .add("/api/files/uploads/{id}", get(upload_status))
+        .add("/api/files/uploads/{id}/parts/{offset}", put(upload_part).layer(DefaultBodyLimit::max(crate::objects::PART_BYTES as usize + (64 << 10))))
         .add("/api/files/uploads/{id}/complete", post(complete_upload))
         .add("/files/{id}", get(download))
         .add("/files/public/{id}", get(download_public))
