@@ -5,7 +5,7 @@ standing way in through the product.
 
 | Level | Reaches | Longest |
 |---|---|---|
-| `health` | Versions, packages, queue sizes | 30 days |
+| `health` | Versions, packages, queue sizes, and counts of active people and stored bytes | 30 days |
 | `diagnostics` | That, and what failed: job and event errors, without their payloads | 7 days |
 | `assistance` | Named entities, read-only unless the customer allows writing | 3 days |
 | `incident` | Named entities, or all of them, read and write if allowed. Needs a confirmed sign-in | 1 day |
@@ -19,7 +19,10 @@ A grant ends when it expires, and `DELETE /api/admin/support/{id}` ends it at on
 lists every grant, past and present, and `GET /api/admin/support/{id}/requests` every request made with
 one, reads included. Administrators are told when a grant is made and when it is first used.
 
-`GET /api/support/report` is what `health` and `diagnostics` keys reach.
+`GET /api/support/report` is what `health` and `diagnostics` keys reach. At every level the report also
+counts what the workspace uses: its active people and the bytes its files take (`usage`). An operator
+charges for usage beyond a plan from these. They are counts only, never who the people are or what the
+files hold.
 
 ## What this does not say
 
