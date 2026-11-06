@@ -315,7 +315,8 @@ Pages, for browsers, with the session cookie:
   person may use (`?via={app}` first, then `priority`, then install order), else the shell's
   records page if the person may read the entity: the records of the app it belongs to when that
   app has no interface of its own (`/data/{app}/e/…`), else `/data/e/…` (today's web app for a
-  workspace not on the shell); else 403 (404 for an entity the workspace does not have). `GET /open/{entity}` → the same for the list (an app's `shell.open` `list`). The rest of the
+  workspace not on the shell); else 403 (404 for an entity the workspace does not have). `GET /open/{entity}` → the same for the list (an app's `shell.open` `list`), except for a
+  settings entity that is not per company: its one record once it exists. The rest of the
   query goes along.
 * `GET /{public path}/{workspace}/…` (an app's `shell.public`, such as `/drive/s/acme/{link}` and
   `/meet/guest/acme/{link}`) → the app's page for people outside the workspace: no session, no bar,
