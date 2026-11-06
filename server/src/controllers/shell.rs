@@ -157,7 +157,8 @@ pub(crate) async fn page_bootstrap(
     let host = shell::request_host(headers).unwrap_or_default();
     let mut boot = shell::bootstrap(&ws, host, ctx, &kind, &state, app, kind_of_page);
     let language = st.kernel.language_of(ctx.tenant, Some(ctx.user)).await.map_err(err)?;
-    boot["locale"] = shell::locale(language.as_deref(), &ctx.schema.timezone);
+    let own_zone = st.kernel.time_zone_of(ctx.tenant, ctx.user).await.map_err(err)?;
+    boot["locale"] = shell::locale(language.as_deref(), &ctx.schema.timezone, own_zone.as_deref());
     // Where outside callers reach the workspace's endpoints (`/api/public/{workspace}/…`): the
     // hooks host in shapes B and C, else the server's public address.
     boot["api"]["hooks"] = json!(st.shell.hooks_origin(headers).or_else(|| st.kernel.settings.public_url.clone()));
@@ -289,7 +290,7 @@ async fn shell_core(st: &AppState, headers: &HeaderMap, uri: &Uri, first: &str, 
     // `/data/{app}/…`: the records of an app without an interface of its own (beside the
     // records of any entity, `e/` and `r/`, and Customize).
     let (app_id, tail) = rest.split_once('/').unwrap_or((rest, ""));
-    if first == "data" && !matches!(app_id, "" | "e" | "r" | "customize") {
+    if first == "data" && !shell::DATA_PAGES.contains(&app_id) {
         let apps = st.apps.shell_apps(ctx.tenant).await?;
         let q = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
         let Some((app, packages)) = shell::records_app(&apps, app_id) else {
@@ -617,7 +618,7 @@ async fn public_page(st: &AppState, headers: &HeaderMap, uri: &Uri, app_id: &str
     });
     let timezone = st.kernel.registry.schema(tenant).await?.timezone.clone();
     let mut boot = shell::public_bootstrap(&ws, shell::request_host(headers).unwrap_or_default(), &timezone, app_json, page);
-    boot["locale"] = shell::locale(st.kernel.language_of(tenant, None).await?.as_deref(), &timezone);
+    boot["locale"] = shell::locale(st.kernel.language_of(tenant, None).await?.as_deref(), &timezone, None);
     Ok(not_modified(headers, shell::public_entry_page(&entry, &boot, &shell::csp(Some(app.manifest.as_ref()), &Value::Null))))
 }
 

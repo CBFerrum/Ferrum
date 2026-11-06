@@ -22,11 +22,17 @@ pub fn normalize_tag(raw: &str) -> Option<String> {
 
 /// What a record is called in notifications and to-do lists.
 pub fn record_title(ctx: &Ctx, entity: &str, doc: &Doc) -> String {
-    let field = ctx.schema.entity(entity).and_then(|e| e.def.title_field.clone());
+    let ent = ctx.schema.entity(entity);
+    let field = ent.and_then(|e| e.def.title_field.clone());
     let text = |k: &str| doc.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string);
+    // A record headed by a link is named by what it links to, never by that record's id.
+    let linked = ent.is_some_and(|e| e.headed_by_link());
+    let titled = |k: &str| {
+        if linked { doc.get("_titles").and_then(|t| t.get(k)).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string) } else { text(k) }
+    };
     field
         .as_deref()
-        .and_then(text)
+        .and_then(titled)
         .or_else(|| text("number"))
         .unwrap_or_else(|| doc.get("id").and_then(Value::as_str).unwrap_or_default().chars().take(8).collect())
 }

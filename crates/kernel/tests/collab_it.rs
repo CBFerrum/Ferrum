@@ -374,6 +374,13 @@ async fn scenario() {
     assert_eq!(k.prefs(&otto_ctx).await.unwrap(), json!({}), "each user sees only their own");
     k.delete_pref(&bea_ctx, "list:Customer").await.unwrap();
     assert_eq!(k.prefs(&bea_ctx).await.unwrap(), json!({}));
+    // A person's own clock: an IANA zone, read back for them alone; none is the workspace's.
+    assert!(k.set_pref(&bea_ctx, "timezone", &json!({"zone": "Mars/Olympus"}), None).await.is_err(), "a zone the server does not know");
+    k.set_pref(&bea_ctx, "timezone", &json!({"zone": "Asia/Kolkata"}), None).await.unwrap();
+    assert_eq!(k.time_zone_of(tenant, bea_ctx.user).await.unwrap().as_deref(), Some("Asia/Kolkata"));
+    assert_eq!(k.time_zone_of(tenant, otto_ctx.user).await.unwrap(), None, "only hers");
+    k.delete_pref(&bea_ctx, "timezone").await.unwrap();
+    assert_eq!(k.time_zone_of(tenant, bea_ctx.user).await.unwrap(), None);
 
     // ── shared views: whoever can read the list finds them, only their author changes them ──
     let cal = k.create_user(&admin, "cal@collab.test", "Cal Sales", Some("Correct-Horse-9"), &["Sales".into()], false).await.unwrap();

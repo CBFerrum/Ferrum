@@ -7,7 +7,7 @@
 use crate::ctx::{Action, Ctx, RowScope, row_scope};
 use crate::ddl::q;
 use crate::error::{Error, Result};
-use crate::store::{SYSTEM_KEYS, entity_predicate, field_expr};
+use crate::store::{SYSTEM_KEYS, entity_predicate, field_expr, title_text};
 use crate::value::{normalize, parse_datetime};
 use base64::Engine as _;
 use ferrum_meta::{EffEntity, FieldDef, FieldType, Schema};
@@ -487,8 +487,8 @@ fn push_from_where_impl(
             if ctx.is_some_and(|c| !readable(c, ent, name)) {
                 continue;
             }
-            if let Some(e) = field_expr(ent, name, "a") {
-                cols.push(format!("{e}::text"));
+            if let Some(e) = title_text(schema, ent, name, "a") {
+                cols.push(e);
             }
         }
         cols.dedup();

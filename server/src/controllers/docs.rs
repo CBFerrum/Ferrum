@@ -81,7 +81,10 @@ pub fn doc_response(doc: Doc, status: StatusCode) -> Response {
 
 async fn list(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Path<String>, Query(p): Query<ListParams>) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    Ok(Json(st.kernel.list(&ctx, &entity, &p.to_query()?).await?).into_response())
+    let mut q = p.to_query()?;
+    // A record headed by a link is named by it, so its rows always say what it links to.
+    q.with_titles |= ctx.schema.entity(&entity).is_some_and(|e| e.headed_by_link());
+    Ok(Json(st.kernel.list(&ctx, &entity, &q).await?).into_response())
 }
 
 #[derive(Deserialize, Default)]
@@ -119,7 +122,8 @@ async fn create(
 
 async fn read(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity, id)): Path<(String, Uuid)>, Query(p): Query<ReadParams>) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    Ok(doc_response(st.kernel.get(&ctx, &entity, id, p.titles.unwrap_or(true)).await?, StatusCode::OK))
+    let titles = p.titles.unwrap_or(true) || ctx.schema.entity(&entity).is_some_and(|e| e.headed_by_link());
+    Ok(doc_response(st.kernel.get(&ctx, &entity, id, titles).await?, StatusCode::OK))
 }
 
 async fn update(
@@ -163,7 +167,52 @@ async fn action(
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let params = body.map(|Json(v)| v).unwrap_or_else(|| json!({}));
-    Ok(Json(st.kernel.run_action(&ctx, &entity, id, &action, params).await?).into_response())
+    let mut done = st.kernel.run_action(&ctx, &entity, id, &action, params).await?;
+    said(&mut done, |e, n| ctx.schema.entity(e).map(|x| if n > 1 { x.def.plural_label() } else { x.def.label.clone() }).unwrap_or_else(|| e.to_string()));
+    Ok(Json(done).into_response())
+}
+
+/// An action that does not say what it did is described from its answer: the record's new status
+/// and the records it made ("Now Admitted; made STU-2026-00001", "Made 2 Kitchen Tickets"), so a
+/// page never only says "done". `label(entity, how_many)` names a kind of record.
+fn said(done: &mut Value, label: impl Fn(&str, usize) -> String) {
+    let Value::Object(m) = done else { return };
+    if m.get("message").and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty()) {
+        return;
+    }
+    let (mut numbered, mut unnumbered): (Vec<String>, Vec<(String, usize)>) = (Vec::new(), Vec::new());
+    for v in m.values() {
+        let one = std::slice::from_ref(v);
+        for c in v.as_array().map(Vec::as_slice).unwrap_or(one).iter().filter_map(Value::as_object) {
+            let (Some(entity), Some(_)) = (c.get("entity").and_then(Value::as_str), c.get("id").and_then(Value::as_str)) else { continue };
+            match c.get("number").and_then(Value::as_str).filter(|n| !n.is_empty()) {
+                Some(n) => numbered.push(n.to_string()),
+                None => match unnumbered.iter_mut().find(|(e, _)| e == entity) {
+                    Some((_, n)) => *n += 1,
+                    None => unnumbered.push((entity.to_string(), 1)),
+                },
+            }
+        }
+    }
+    let one = |e: &str| {
+        let l = label(e, 1);
+        let an = l.starts_with(['A', 'E', 'I', 'O', 'U', 'a', 'e', 'i', 'o', 'u']);
+        format!("{} {l}", if an { "an" } else { "a" })
+    };
+    let made: Vec<String> =
+        numbered.into_iter().chain(unnumbered.into_iter().map(|(e, n)| if n == 1 { one(&e) } else { format!("{n} {}", label(&e, n)) })).collect();
+    let mut parts = Vec::new();
+    if let Some(s) = m.get("status").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+        parts.push(format!("now {s}"));
+    }
+    if !made.is_empty() {
+        parts.push(format!("made {}", made.join(", ")));
+    }
+    let text = parts.join("; ");
+    let mut chars = text.chars();
+    if let Some(first) = chars.next() {
+        m.insert("message".into(), Value::String(first.to_uppercase().chain(chars).collect()));
+    }
 }
 
 async fn transition(
@@ -477,6 +526,26 @@ pub fn routes() -> Routes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_silent_action_is_described_from_its_answer() {
+        let label = |e: &str, n: usize| if n > 1 { format!("{e}s") } else { e.to_string() };
+        let mut admitted = json!({"status": "Admitted", "student": {"entity": "Student", "id": "s1", "number": "STU-2026-00001"}});
+        said(&mut admitted, label);
+        assert_eq!(admitted["message"], "Now Admitted; made STU-2026-00001");
+        let mut sent = json!({"tickets": [{"entity": "Ticket", "id": "a", "number": null}, {"entity": "Ticket", "id": "b", "number": null}]});
+        said(&mut sent, label);
+        assert_eq!(sent["message"], "Made 2 Tickets");
+        let mut billed = json!({"status": "Billed", "sales_invoice": {"entity": "Invoice", "id": "i", "number": null}});
+        said(&mut billed, label);
+        assert_eq!(billed["message"], "Now Billed; made an Invoice");
+        let mut own = json!({"status": "Ready", "message": "Ready for Table 1"});
+        said(&mut own, label);
+        assert_eq!(own["message"], "Ready for Table 1", "an action's own words stand");
+        let mut nothing = json!({"ok": true});
+        said(&mut nothing, label);
+        assert!(nothing.get("message").is_none(), "nothing to say: the page says done");
+    }
 
     #[test]
     fn csv_cells_are_safe() {
