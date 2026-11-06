@@ -35,7 +35,7 @@ this repository, 183 built and awaiting qualification.
 
 ## Ready: 11. Full-system qualification
 
-- `FERRUM-OPS-005` Reference workloads and measured capacity (A short load test; no published reference workload or targets)
+- `FERRUM-OPS-005` Reference workloads and measured capacity (A reference workload (tools/loadtest.py's mix, described in docs/operations.md under Reference workload and targets) whose targets every image build must meet on CI's runner, or the build fails: errors at most 1%, p95 at most 300 ms with 10 clients and 2 s with 50, and at least 120 and 100 requests a second. Measured: 349 req/s at p95 72 ms with 10 clients, 272 req/s at p95 518 ms with 50 (run 42135552923))
 - `FERRUM-JOURNEY-012` Tenant lifecycle (Walked in the kernel: signing up with a code, a new account signed in, the plan's quotas holding, a larger plan, closing it, kept and read-only, then deleted after its date (closure_it))
 
 ## Waiting
