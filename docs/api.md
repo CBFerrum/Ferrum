@@ -438,7 +438,8 @@ administrators and needs an enabled single sign-on provider).
 Domains ([operations](operations.md#custom-domains)): `GET /api/admin/domains` → `{domains: [{host,
 kind (subdomain or custom), target (shell, portal, site:{app}), is_primary, verify_token, status
 (verified, pending, failing, released), verified_at, checked_at, failures, released_at,
-created_at}], point_to}`; `POST {host, target}` adds a custom domain (201); `DELETE
+created_at}], point_to, sites: [{app, title}]}`, `sites` being the apps here with a public site;
+`POST {host, target}` adds a custom domain (201), a `site:{app}` only for one of those; `DELETE
 /api/admin/domains/{host}` removes one; `PUT …/{host}/primary` makes a working one the main address
 of its kind; `POST …/{host}/check` checks it now → `{host, answers}`. Public:
 `GET /.well-known/ferrum-domain` answers the token of the custom domain the request reached, and

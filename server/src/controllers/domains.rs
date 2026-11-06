@@ -6,7 +6,7 @@
 use crate::error::ApiResult;
 use crate::extract::Auth;
 use crate::shell::request_host;
-use crate::state::app_state;
+use crate::state::{AppState, app_state};
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -77,7 +77,18 @@ async fn list(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Respo
             v
         })
         .collect();
-    Ok(Json(json!({"domains": domains, "point_to": edge(&app)})).into_response())
+    Ok(Json(json!({"domains": domains, "point_to": edge(&app), "sites": site_apps(&st, ctx.tenant).await?})).into_response())
+}
+
+/// The apps of this workspace with a public site: one of their packages here renders its pages.
+async fn site_apps(st: &AppState, tenant: uuid::Uuid) -> ApiResult<Vec<Value>> {
+    let schema = st.kernel.registry.schema(tenant).await?;
+    let apps = st.apps.shell_apps(tenant).await?;
+    Ok(apps
+        .iter()
+        .filter(|a| a.manifest.packages.iter().any(|p| schema.packages.contains(p) && st.kernel.hooks.site(p).is_some()))
+        .map(|a| json!({"app": a.id, "title": a.manifest.name}))
+        .collect())
 }
 
 #[derive(Deserialize)]
@@ -101,11 +112,11 @@ async fn add(Auth(ctx): Auth, State(app): State<AppContext>, Json(d): Json<NewDo
             return Err(Error::field("host", format!("is under {base}, this service's own domain")).into());
         }
     }
-    // A site is an app's: one this workspace has.
+    // A site is an app's: one this workspace has, that renders pages.
     if let Some(app_id) = d.target.strip_prefix("site:")
-        && !st.apps.shell_apps(ctx.tenant).await?.iter().any(|a| a.id == app_id)
+        && !site_apps(&st, ctx.tenant).await?.iter().any(|a| a["app"] == app_id)
     {
-        return Err(Error::field("target", "names an app this workspace does not have").into());
+        return Err(Error::field("target", "names no app of this workspace with a public site").into());
     }
     let host = st.kernel.add_host(&ctx, &d.host, &d.target).await?;
     Ok((StatusCode::CREATED, Json(host)).into_response())
