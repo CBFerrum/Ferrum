@@ -2612,7 +2612,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-education"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-education?branch=main#91ac8637cb72434209d1a82145e2e659a7789b09"
+source = "git+https://github.com/CBFerrum/ferrum-app-education?branch=main#2dd207dccbbcbcb701a63c00f2e623819446cddc"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2900,7 +2900,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-nonprofit"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-nonprofit?branch=main#7c66f9e029dbbc41ca3c27fadc530c83242a38ba"
+source = "git+https://github.com/CBFerrum/ferrum-app-nonprofit?branch=main#aaa3f9ed82ebbfa240b50275719e345cb783311a"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2933,7 +2933,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-pos"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-pos?branch=main#d705681befa44f7281fd8f52660950d458491742"
+source = "git+https://github.com/CBFerrum/ferrum-app-pos?branch=main#bcdb0e457bf973b0d4bd5bb3bd7dfae04e8d646f"
 dependencies = [
  "async-trait",
  "chrono",
