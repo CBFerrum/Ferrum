@@ -16,7 +16,7 @@ components:
   - {repository: CBFerrum/ferrum-app-docs, pinned: 99e4ea21281a5d6397cd6c52354ccb027971032d}
   - {repository: CBFerrum/ferrum-app-drive, pinned: 33d2c27341d1b4382eb11a4b131cc7e93d7e13c6}
   - {repository: CBFerrum/ferrum-app-edge, pinned: adcdc8ba7f434b0b06c668232536ebdb235cd96a}
-  - {repository: CBFerrum/ferrum-app-education, pinned: 91ac8637cb72434209d1a82145e2e659a7789b09}
+  - {repository: CBFerrum/ferrum-app-education, pinned: 2dd207dccbbcbcb701a63c00f2e623819446cddc}
   - {repository: CBFerrum/ferrum-app-erp, pinned: a8b260e541746277530a425c9d662a4dc3aeefd4}
   - {repository: CBFerrum/ferrum-app-field-service, pinned: f5702750f8295f1577e777d3fe53acffbcc943e1}
   - {repository: CBFerrum/ferrum-app-forms, pinned: c834ca9874bda00b06be3df3ea2f1e47740b81d4}
@@ -31,9 +31,9 @@ components:
   - {repository: CBFerrum/ferrum-app-lms, pinned: 84fae1d94fa6c263ee5e52320a76213bea35a6a4}
   - {repository: CBFerrum/ferrum-app-logistics, pinned: 8b1d3c3194f8ec1acfe16531ed11bd8e415f86cc}
   - {repository: CBFerrum/ferrum-app-metrics, pinned: 608a8bc72ef732394c90e094c751ad15bba402c9}
-  - {repository: CBFerrum/ferrum-app-nonprofit, pinned: 7c66f9e029dbbc41ca3c27fadc530c83242a38ba}
+  - {repository: CBFerrum/ferrum-app-nonprofit, pinned: aaa3f9ed82ebbfa240b50275719e345cb783311a}
   - {repository: CBFerrum/ferrum-app-objectives, pinned: f8a45eee362c2ff3338e5feb02134c45009426cc}
-  - {repository: CBFerrum/ferrum-app-pos, pinned: d705681befa44f7281fd8f52660950d458491742}
+  - {repository: CBFerrum/ferrum-app-pos, pinned: bcdb0e457bf973b0d4bd5bb3bd7dfae04e8d646f}
   - {repository: CBFerrum/ferrum-app-projects, pinned: 1647f7dfd8a262e816480e2dceb8b66c02f78841}
   - {repository: CBFerrum/ferrum-app-property, pinned: b02ee446ce1ab844ed63d635367d57f0d730beb0}
   - {repository: CBFerrum/ferrum-app-restaurant, pinned: 3ebbd2a695fb79be3aa0647c784238feee755ba1}
