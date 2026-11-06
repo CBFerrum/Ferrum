@@ -417,7 +417,9 @@ impl Ctx {
 
     pub fn require(&self, entity: &str, action: Action) -> Result<Access> {
         if self.read_only && !matches!(action, Action::Read | Action::Export) {
-            return Err(Error::Forbidden("this workspace is read-only until its account is settled; you can still read and export everything".into()));
+            return Err(Error::Forbidden(
+                "this workspace is read-only now that its account is closed or restricted; you can still read and export everything".into(),
+            ));
         }
         match self.perms.access(entity, action) {
             Access::None => Err(Error::Forbidden(format!("not permitted to {action:?} {entity}").to_lowercase())),
