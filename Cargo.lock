@@ -2880,7 +2880,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-metrics"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-metrics?branch=main#2889b762331c18187a72fcbc71e5df126aaa0a9d"
+source = "git+https://github.com/CBFerrum/ferrum-app-metrics?branch=main#0dcaecb84af5219faaac7176a0870882dc7b19b7"
 dependencies = [
  "async-trait",
  "chrono",
