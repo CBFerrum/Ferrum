@@ -315,7 +315,8 @@ Pages, for browsers, with the session cookie:
   person may use (`?via={app}` first, then `priority`, then install order), else the shell's
   records page if the person may read the entity: the records of the app it belongs to when that
   app has no interface of its own (`/data/{app}/e/…`), else `/data/e/…` (today's web app for a
-  workspace not on the shell); else 403 (404 for an entity the workspace does not have). `GET /open/{entity}` → the same for the list (an app's `shell.open` `list`). The rest of the
+  workspace not on the shell); else 403 (404 for an entity the workspace does not have). `GET /open/{entity}` → the same for the list (an app's `shell.open` `list`), except for a
+  settings entity that is not per company: its one record once it exists. The rest of the
   query goes along.
 * `GET /{public path}/{workspace}/…` (an app's `shell.public`, such as `/drive/s/acme/{link}` and
   `/meet/guest/acme/{link}`) → the app's page for people outside the workspace: no session, no bar,
@@ -533,7 +534,7 @@ of this API answers with 422 is 400 here, with a `scimType`.
 * `GET /api/admin/apps` → `{installed: [AppSummary + {enabled, installed_at, update: {version}|null}], available: [AppSummary], uploads: off|private|cluster, platform, stores: [{url, ok, error}]}`.
   `installed` also lists native apps whose packages the workspace already has (installed when it was created); `available` holds this build's native apps, releases available on the cluster and the workspace's private uploads. `update` is a newer compatible release on the cluster (from the stores too when `uploads` is `cluster`), or this build's version of a native app.
 * `GET /api/admin/apps/store?q=&category=` → `{apps: [AppSummary]}`: matching apps available here first, then the stores' results (cached one minute; a store that does not answer is skipped).
-* `GET /api/admin/apps/{id}/plan?version=` → `{app: AppSummary + {description, license, homepage}, steps: [{id, version, action: install|upgrade|already, source: native|cluster|private|store:<url>}], permissions, digest, increases[], warnings[], uninstall: keep|ask}`.
+* `GET /api/admin/apps/{id}/plan?version=` → `{app: AppSummary + {description, license, homepage}, steps: [{id, name, version, action: install|upgrade|already, source: native|cluster|private|store:<url>}], permissions, digest, increases[], warnings[], uninstall: keep|ask}`.
   `description` is the opening prose of the app's description file (its README) as plain text, about 600 characters at most, without its HTML, pictures, badges, headings, tables or code (`ferrum_apps::description::excerpt`).
   Steps are in installation order (dependencies first). `permissions` covers everything the plan installs or upgrades (the shape of `ferrum_apps::Permissions`); `increases` lists what upgrades ask for beyond the installed versions; `digest` = SHA-256 over the ordered steps' `(id, version, permissions digest)`. Store bundles are downloaded and verified while planning.
 * `POST /api/admin/apps/{id}/install` and `/upgrade` `{version, consent}` (`consent` = the plan's `digest`) → the plan carried out. The plan is computed again: a different digest answers `409 {"error": "conflict", "message", "plan": <fresh plan>}`. Store releases are made available on the cluster (verified: a trusted store countersignature, the listed digest, the role rule), then each app's packages, plugin and record are installed; a failure takes back what the call did in the workspace. `upgrade` needs the app installed; `install` on an installed app applies its plan as well (as after uploading a newer version).

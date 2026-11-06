@@ -1021,6 +1021,16 @@ async fn open(st: &AppState, headers: &HeaderMap, uri: &Uri, rest: &str, q: &[(S
         Ok(p) => p,
         Err(r) => return Ok(r),
     };
+    // A workspace's settings are one record (per company when company-scoped, so not those): the
+    // link opens it once it exists, not a list of one.
+    let id = match id {
+        None if ctx.schema.entity(entity).is_some_and(|e| e.def.kind == ferrum_meta::EntityKind::Settings && !e.def.company_scoped) => {
+            let q = ferrum_kernel::query::ListQuery { limit: Some(1), ..Default::default() };
+            let page = st.kernel.list(&ctx, entity, &q).await.ok();
+            page.and_then(|p| p.rows.into_iter().next()).and_then(|d| d.get("id").and_then(Value::as_str).map(str::to_string))
+        }
+        id => id,
+    };
     let kind = st.shell.kind(ctx.tenant, ctx.user).await?;
     let apps = st.apps.shell_apps(ctx.tenant).await?;
     // A portal person opens records in the portal, on the page that shows them.
