@@ -3,6 +3,21 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-06, night, later: the walks' fixes checked on their build; Commerce, Metrics and Social pinned
+
+**State:** this PR follows PR 82. Its lock takes Commerce 0.7.5, Metrics 0.2.0 and Social 0.3.0. No
+release was tagged.
+
+| Where | What |
+|---|---|
+| Evidence | On PR 82's build, a sent campaign's results, a signup form's HTML pasted into a page, settings opening as their record and an install dialog naming what it brings ([the walk](../platform/evidence/browser-2026-11-06-journeys.md), "The fixes, checked on their build") |
+| Commerce 0.7.5 | A payment request's page asks Mark Paid for the amount and currency received, filled from the request: from that page it always failed |
+| Metrics 0.2.0 | Certified metrics delivered to who follows them on the workspace's day (FERRUM-ECOSYSTEM-010) |
+| Social 0.3.0 | A Bluesky connector beside Mastodon's (FERRUM-ECOSYSTEM-005) |
+
+**Next:** rebuild the apps' interfaces with Ferrum-Frontend main, so their pages take PRs 36 to 39;
+the tenant's life on the image is still to walk.
+
 ## 2026-11-06, night: hire to retire, a hotel stay and marketing to consent walked; actions that pages could not run
 
 **State:** this PR follows PRs 79 and 81. Its lock takes Campaigns 0.3.3, CRM 0.6.4, HR 0.8.1,
