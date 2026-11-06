@@ -2332,7 +2332,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-campaigns"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-campaigns?branch=main#4b83cae7d7b5969759046993d48752373804dd05"
+source = "git+https://github.com/CBFerrum/ferrum-app-campaigns?branch=main#5c3fb434dbbf0ac0d41f88ef2956a588a199654b"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2471,7 +2471,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-crm"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-crm?branch=main#cae26b4f3026d24fc89b8e9d796b9a0c7eab5416"
+source = "git+https://github.com/CBFerrum/ferrum-app-crm?branch=main#1a16650467e9a347e1b842d8918387783755f611"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2736,7 +2736,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-hospitality"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-hospitality?branch=main#0cc1cec3542237ce1f974f41d655698760af2cfc"
+source = "git+https://github.com/CBFerrum/ferrum-app-hospitality?branch=main#0cb61e8c47b892a0b9b55026973c69fbc17c8443"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2752,7 +2752,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-hr"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-hr?branch=main#fbc39e54d350915c5e3716b3147237cd5eaa52f6"
+source = "git+https://github.com/CBFerrum/ferrum-app-hr?branch=main#bdcb1556a0e1b9ababdedfc98397003c6eb31a18"
 dependencies = [
  "async-trait",
  "cel",
@@ -2971,7 +2971,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-sign"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-sign?branch=main#94a0313c822093f44c1bfbf40c04cc6fef5218a1"
+source = "git+https://github.com/CBFerrum/ferrum-app-sign?branch=main#6b25d69a15eb48bc739627e20aecf3ba820234df"
 dependencies = [
  "async-trait",
  "base64 0.22.1",

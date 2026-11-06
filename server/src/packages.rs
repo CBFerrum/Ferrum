@@ -481,6 +481,18 @@ mod tests {
                 }
             }
         }
+        // What a compiled app requires of another compiled app, the release compiled with it meets:
+        // a range left behind would leave the app impossible to install (Campaigns asked for Comms
+        // 0.7 beside Comms 0.10).
+        let versions: std::collections::BTreeMap<_, _> = natives.iter().map(|m| (m.id.as_str(), &m.version)).collect();
+        let unmet: Vec<String> = natives
+            .iter()
+            .flat_map(|m| m.requires.iter().map(move |(dep, req)| (m, dep, req)))
+            .filter_map(|(m, dep, req)| {
+                versions.get(dep.as_str()).filter(|v| !req.matches(v)).map(|v| format!("{} requires {dep} {req}, compiled with {dep} {v}", m.id))
+            })
+            .collect();
+        assert!(unmet.is_empty(), "{unmet:#?}");
         // No two compiled apps share an address.
         let mut routes = std::collections::BTreeMap::new();
         for m in &natives {
