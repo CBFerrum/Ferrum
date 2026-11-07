@@ -381,6 +381,18 @@ async fn scenario() {
     assert_eq!(k.time_zone_of(tenant, otto_ctx.user).await.unwrap(), None, "only hers");
     k.delete_pref(&bea_ctx, "timezone").await.unwrap();
     assert_eq!(k.time_zone_of(tenant, bea_ctx.user).await.unwrap(), None);
+    // The workspace's own words for its interface: a base language's, a regional one's over them.
+    for (language, english, words) in [("pt", "Save", "Guardar"), ("pt", "Cancel", "Cancelar"), ("pt-BR", "Save", "Salvar")] {
+        k.insert(&admin, "InterfaceWord", obj(json!({"language": language, "english": english, "words": words}))).await.unwrap();
+    }
+    let br = k.interface_words(tenant, "pt-BR").await.unwrap();
+    assert_eq!((br["Save"].as_str(), br["Cancel"].as_str()), (Some("Salvar"), Some("Cancelar")), "{br:?}");
+    assert_eq!(k.interface_words(tenant, "pt").await.unwrap()["Save"], "Guardar");
+    assert!(k.interface_words(tenant, "ar").await.unwrap().is_empty());
+    let twice = k.insert(&admin, "InterfaceWord", obj(json!({"language": "pt", "english": "Save", "words": "Gravar"}))).await;
+    assert!(matches!(&twice, Err(Error::Conflict(m)) if m == "another Interface Word already has this Language and English"), "{twice:?}");
+    let named = k.insert(&admin, "InterfaceWord", obj(json!({"language": "Portuguese", "english": "Close", "words": "Fechar"}))).await;
+    assert!(matches!(&named, Err(Error::Validation(e)) if e[0].field == "language_tag"), "a tag: {named:?}");
 
     // ── shared views: whoever can read the list finds them, only their author changes them ──
     let cal = k.create_user(&admin, "cal@collab.test", "Cal Sales", Some("Correct-Horse-9"), &["Sales".into()], false).await.unwrap();
