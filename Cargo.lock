@@ -2389,7 +2389,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-bookings"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-bookings?branch=main#8eef4a5b239993a08dcab67dc44b676c9754127a"
+source = "git+https://github.com/CBFerrum/ferrum-app-bookings?branch=main#0bbb57a30ef2d5a9ca83f4f2e3b9f0ef61fec78a"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
