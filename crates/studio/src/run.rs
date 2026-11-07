@@ -231,7 +231,12 @@ fn label_of(v: &Value, d: &Dim, titles: &HashMap<Uuid, String>) -> String {
 
 async fn pivot(tx: &mut Tx, ctx: &Ctx, plan: &Plan, timer: &mut Timer, meta: &mut Map<String, Value>) -> Result<Shaped> {
     let p = plan.pivot.as_ref().ok_or_else(|| ferrum_kernel::Error::internal("not a pivot"))?;
-    let mut cols = timer.fetch(tx, plan.pivot_columns()?).await?;
+    let mut cols = if plan.pivot_values.is_empty() {
+        timer.fetch(tx, plan.pivot_columns()?).await?
+    } else {
+        // Named: those columns, in that order, whatever the records hold.
+        plan.pivot_values.iter().map(|(v, t)| Map::from_iter([("p".to_string(), v.clone()), ("_p".to_string(), json!(t))])).collect()
+    };
     let cap = plan.pivot_cap as usize;
     meta.insert("pivot_truncated".into(), json!(cols.len() > cap));
     cols.truncate(cap);
