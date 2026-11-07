@@ -14,7 +14,7 @@ No release was tagged.
 | Where | What |
 |---|---|
 | Journeys | The records pages walked right to left, in Arabic ([the walk](../platform/evidence/browser-2026-11-07-right-to-left.md)): a list, a record and the account page, before and after the fixes they found (FERRUM-UX-006) |
-| Journeys | A PDF uploaded to Drive and made an asset, on this PR's build ([the walk](../platform/evidence/browser-2026-11-08-pdf-renditions.md)): its first page drawn as its thumbnail and preview, text in a standard font included (FERRUM-ECOSYSTEM-012) |
+| Journeys | A PDF uploaded to Drive and made an asset, on this PR's build ([the walk](../platform/evidence/browser-2026-11-07-pdf-renditions.md)): its first page drawn as its thumbnail and preview, text in a standard font included (FERRUM-ECOSYSTEM-012) |
 | Frontend PR 46 | Right to left, icons that point along the line point the other way; margins, paddings, borders, insets, alignment and corners go by the line's start and end; tab strips' and column resize handles' arrow keys step along it. The records pages' words (the list's count, views, toolbar and search, the form's tabs, actions and toasts, child tables, link fields, the account page, the query builder) are in Arabic and Hindi, and a test keeps every word the interface asks for in both catalogs |
 | Digital Assets 0.7.0 | A PDF's first page drawn as its renditions, with hayro in pure Rust (FERRUM-ECOSYSTEM-012) |
 | Logistics 0.3.4 | A stop's weight, when not typed, from its note's lines and each item's weight (FERRUM-INDUSTRY-009) |

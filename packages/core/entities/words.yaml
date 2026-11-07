@@ -1,0 +1,18 @@
+# The workspace's own words for its interface, in a language (FERRUM-UX-006): they stand over the
+# interface's own catalogs, and give the words those lack. Administrators keep them on Admin's
+# Interface words page; each page reads those of its person's language as it loads.
+- name: InterfaceWord
+  label: Interface Word
+  label_plural: Interface Words
+  kind: master
+  module: setup
+  title_field: english
+  search_fields: [english, words]
+  fields:
+    - {name: language, type: data, required: true, max_length: 35, in_list: true, in_filter: true, description: "The language's tag, as the Account page offers it: ar, hi, pt-BR"}
+    - {name: english, type: text, required: true, in_list: true, description: "The interface's words in English, as it asks for them, with {name} where it fills something in"}
+    - {name: words, type: text, required: true, in_list: true, description: "The same in the language, each {name} kept as it is"}
+  unique: [[language, english]]
+  rules:
+    - {name: language_tag, check: "doc.language.matches('^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$')", message: "a language is its tag: ar, hi, pt-BR"}
+  list: {columns: [language, english, words], sort: english asc}
