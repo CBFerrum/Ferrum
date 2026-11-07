@@ -99,6 +99,10 @@ pub struct Pivot {
     pub bucket: Option<Bucket>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_columns: Option<u32>,
+    /// The columns themselves, in this order, whatever the records hold: text (a linked record by
+    /// its id), whole numbers, or true and false. Not with a bucket or `max_columns`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -19,7 +19,10 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<(String, PathBuf)>) {
 }
 
 fn main() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("packages");
+    // Read when it runs, not when it was built: a target directory shared between checkouts keeps
+    // this script's binary from one that may since be gone.
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR");
+    let root = Path::new(&manifest).join("packages");
     // Relative to the crate, like the paths below: checkouts at other paths can share a target
     // directory (Cargo hashes path crates relative to their workspace) without mixing up files.
     println!("cargo:rerun-if-changed=packages");
@@ -45,7 +48,7 @@ fn main() {
     println!("cargo:rerun-if-changed=ui/dist");
     let mut code = String::from("/// This app's own interface: its built files (path under ui/dist, content).\npub static UI: &[(&str, &[u8])] = &[\n");
     let mut files = Vec::new();
-    walk(&Path::new(env!("CARGO_MANIFEST_DIR")).join("ui").join("dist"), "", &mut files);
+    walk(&Path::new(&manifest).join("ui").join("dist"), "", &mut files);
     for (rel, _) in files.into_iter().filter(|(rel, _)| !rel.split('/').any(|s| s.starts_with('.'))) {
         let file = format!("/ui/dist/{rel}");
         writeln!(code, "    ({rel:?}, include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), {file:?}))),").expect("write");

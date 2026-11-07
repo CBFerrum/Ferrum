@@ -427,6 +427,27 @@ async fn scenario() {
     assert_eq!((&capped["columns"][0]["pivot_label"], &capped["columns"][1]["pivot_label"]), (&json!("Alpha Traders"), &json!("Gamma Home")));
     assert_eq!((&rows(&capped)[0]["sum(grand_total)@0"], &rows(&capped)[0]["sum(grand_total)@1"]), (&json!("710.3"), &json!("550")));
 
+    // Named values: those columns, in their order, whatever the rows hold; the totals count them all.
+    let by_status = t
+        .q(
+            &manager,
+            json!({"entity": "SalesInvoice", "filters": base, "date_range": aug_sep, "group_by": [{"field": "status"}], "measures": [{"fn": "count"}]}),
+        )
+        .await;
+    let first = rows(&by_status)[0]["status"].clone();
+    let named = t
+        .q(
+            &manager,
+            json!({"entity": "SalesInvoice", "filters": base, "date_range": aug_sep, "pivot": {"field": "status", "values": [first, "Nothing Like It"]}, "measures": [{"fn": "count"}]}),
+        )
+        .await;
+    let names: Vec<&str> = named["columns"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["count@0", "count@1", "count"], "{named}");
+    assert_eq!((&named["columns"][0]["pivot_value"], &named["columns"][1]["pivot_value"]), (&first, &json!("Nothing Like It")));
+    let all: i64 = rows(&by_status).iter().map(|r| r["count"].as_i64().unwrap()).sum();
+    let r0 = &rows(&named)[0];
+    assert_eq!((&r0["count@0"], &r0["count@1"], &r0["count"]), (&rows(&by_status)[0]["count"], &json!(0), &json!(all)), "{named}");
+
     // ───────────── time series and previous periods ─────────────
     let series = t
         .q(

@@ -22,7 +22,10 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<(String, PathBuf)>) {
 }
 
 fn main() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages");
+    // Read when it runs, not when it was built: a target directory shared between checkouts keeps
+    // this script's binary from one that may since be gone.
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR");
+    let root = Path::new(&manifest).join("../../packages");
     let mut code = String::from("// (package, path inside the package, content)\npub static EMBEDDED: &[(&str, &str, &str)] = &[\n");
     for pkg in PACKAGES {
         let dir = root.join(pkg);
