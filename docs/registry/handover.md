@@ -3,6 +3,36 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-07, evening: a workspace's own interface words; duplicates named; watermarks; key results graded; datasets that pivot
+
+**State:** this PR follows PRs 94 and 95. Its lock takes every app at its main of the evening of 7
+November, each app's interface built with Ferrum-Frontend d5d98f2 (PRs 47 and 48), which
+FRONTEND_REV now names. With them: Digital Assets 0.8.0 and 0.8.1, Objectives 0.6.0 and 0.6.1,
+Metrics 0.4.0 and 0.4.1, Government 0.2.7 and 0.2.8, and every other app a patch. No release was
+tagged.
+
+| Where | What |
+|---|---|
+| Journeys | Walked on this PR's build ([the walk](../platform/evidence/browser-2026-11-07-words-and-watermarks.md)): a workspace's own Arabic word for Save on a CRM record; a duplicate Permit Type named by its field; a PDF asset's renditions as pictures; a shared link's watermark; Letters and key results graded on closing; a dataset pivoting over named values, built in Studio's builder; CRM, Drive and Field Service's board right to left |
+| Ferrum PR 94 | InterfaceWord: a workspace's own words for its interface in a language, which every page reads as it loads. A unique index's refusal now names its fields ("another Permit Type already has this Type Name"), and an exclusion's words survive a restart (FERRUM-UX-006) |
+| Ferrum PR 95 | A Studio pivot may name its values: those are its columns, in that order, whatever the records hold. Build scripts read their crate's directory when they run, so a target shared between checkouts no longer stops on one since deleted (FERRUM-STUDIO-001, FERRUM-ECOSYSTEM-010) |
+| Frontend PR 47 | Admin, Interface words; pictures in attachment fields; the account page in Arabic and Hindi; a duplicate told from a version clash (`isStale`), in the form, a record's peek and Studio's builders |
+| Frontend PR 48 | The report builder names a pivot's values: a field's options, yes and no, or typed |
+| Digital Assets 0.8.0 | A shared link's watermark drawn across the pictures it hands out (FERRUM-ECOSYSTEM-012) |
+| Objectives 0.6.0 | Scores on 1 to 5 or as letters, and key results graded with their objective (FERRUM-ECOSYSTEM-011) |
+| Metrics 0.4.0 | A dataset pivots over the values it names, and compares a period with the one before (FERRUM-ECOSYSTEM-010) |
+| Government 0.2.7 | Pass This Stage's Stage comes empty (the other session's fix) |
+| Every app | Rebuilt on d5d98f2, a patch each. Apps' own screens go by the line's start and end, except what they place by coordinates (boards, timelines, charts, canvases, handles). The conversion is `rtl_convert.py`, run before each build; 239 lines across 20 apps |
+| How it was checked | Each PR above passed its CI on this machine before it merged, at the head that was checked: `scripts/app_ci.sh` for the apps; clippy and the kernel's and Studio's suites for Ferrum; typecheck, the tests, the build and the audit for the Frontend. Digital Assets 0.8.0 failed there once, on a unit test's threshold, and once for disk, before it passed |
+
+**Evidence:** the walk; Ferrum `crates/kernel/tests/collab_it.rs` (the words, a base and a
+regional language, the duplicate's words, the tag rule) and `crates/studio/tests/studio_it.rs`
+(named pivot values); `ferrum-app-dam:tests/dam_it.rs` (a watermarked share);
+`ferrum-app-objectives:tests` (key results graded on close); `ferrum-app-metrics:tests/datasets_it.rs`
+(a certified pivot dataset loaded as CSV).
+
+**Next:** Ferrum-Frontend's fixes the walk found: an action's once-shown link, code or token shown in a dialog to copy; untranslated English isolated on right-to-left pages; the pivot values' checkbox names. Then apps' own words through the kit's t(), listed for each app on Interface words. And Government's case going overdue once the workspace's day has turned.
+
 ## 2026-11-07, night: pages right to left; the records pages in Arabic and Hindi; PDFs' first pages; stages side by side
 
 **State:** this PR follows PR 92. Its lock takes every app at its main of the night of 7 November,
