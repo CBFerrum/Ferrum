@@ -15,6 +15,14 @@ function readBootstrap() {
 }
 
 const boot = readBootstrap();
+
+// The page's words in the person's language: the workspace's own (Admin, Interface words) over the
+// server's catalog of the shell's words (server/shell/locales), English where neither has one.
+const WORDS = { ...(boot?.locale?.shell ?? {}), ...(boot?.locale?.words ?? {}) };
+function tr(english, vars) {
+  const text = WORDS[english] ?? english;
+  return vars ? text.replace(/\{(\w+)\}/g, (whole, key) => (key in vars ? String(vars[key]) : whole)) : text;
+}
 const params = new URLSearchParams(location.search);
 
 // This origin's workspace (§7.2): a host of one workspace's that ever answers for another than
@@ -120,7 +128,7 @@ sessionChannel?.addEventListener("message", (e) => {
 
 async function signOut() {
   const pending = [...uploads.values()].filter((u) => mine(u) && !FINISHED.has(u.state));
-  if (pending.length && !confirm(`${pending.length === 1 ? "An upload has" : `${pending.length} uploads have`} not finished. Sign out and stop ${pending.length === 1 ? "it" : "them"}?`)) return;
+  if (pending.length && !confirm(pending.length === 1 ? tr("An upload has not finished. Sign out and stop it?") : tr("{n} uploads have not finished. Sign out and stop them?", { n: pending.length }))) return;
   await forgetUploads();
   await pushOff().catch(() => {});
   await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
@@ -179,10 +187,10 @@ button[aria-pressed="true"], button[aria-expanded="true"] { background: var(--fe
 .app { display: inline-flex; align-items: center; gap: 8px; min-width: 0; text-decoration: none; color: inherit; border-radius: 8px; padding: 3px 6px 3px 3px; }
 .app:hover { background: var(--ferrum-surface-2, #eef1f5); }
 .title { font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; letter-spacing: -.005em; }
-.crumbs { color: var(--ferrum-muted, #5b6472); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; padding-left: 4px; }
+.crumbs { color: var(--ferrum-muted, #5b6472); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; padding-inline-start: 4px; }
 .spacer { flex: 1; }
 .me { width: 32px; min-width: 32px; height: 32px; padding: 0; border-radius: 50%; background: var(--ferrum-primary-soft, #e7edfd);
-  color: var(--ferrum-primary, #2f5bea); font-weight: 650; font-size: 12px; margin-left: 4px; }
+  color: var(--ferrum-primary, #2f5bea); font-weight: 650; font-size: 12px; margin-inline-start: 4px; }
 .me:hover { filter: brightness(.97); background: var(--ferrum-primary-soft, #e7edfd); }
 .tools, .indicators { display: inline-flex; align-items: center; gap: 2px; }
 .indicator { height: 28px; padding: 0 10px; border-radius: 999px; background: var(--ferrum-warning-soft, #fff3d6); font-size: 12px; font-weight: 500; }
@@ -191,11 +199,11 @@ button[aria-pressed="true"], button[aria-expanded="true"] { background: var(--fe
   padding: 8px; max-height: calc(100vh - 72px); overflow: auto; animation: pop .12s ease-out; }
 @keyframes pop { from { opacity: 0; transform: translateY(-4px) scale(.99); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .panel { animation: none; } button, a.btn { transition: none; } }
-.launcher { left: 8px; width: min(440px, calc(100vw - 16px)); padding: 12px; }
-.menu { right: 8px; min-width: 248px; }
+.launcher { inset-inline-start: 8px; width: min(440px, calc(100vw - 16px)); padding: 12px; }
+.menu { inset-inline-end: 8px; min-width: 248px; }
 .find { position: relative; margin-bottom: 10px; }
-.find svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--ferrum-muted, #5b6472); pointer-events: none; }
-.find input { width: 100%; height: 36px; padding: 0 10px 0 34px; border: 1px solid var(--ferrum-border, #d9dee5); border-radius: 8px;
+.find svg { position: absolute; inset-inline-start: 10px; top: 50%; transform: translateY(-50%); color: var(--ferrum-muted, #5b6472); pointer-events: none; }
+.find input { width: 100%; height: 36px; padding-block: 0; padding-inline: 34px 10px; border: 1px solid var(--ferrum-border, #d9dee5); border-radius: 8px;
   background: var(--ferrum-surface, #fff); color: inherit; font: inherit; }
 .apps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px; }
 .tile-link { display: grid; justify-items: center; gap: 6px; padding: 10px 4px 8px; border-radius: 10px; color: inherit; text-decoration: none;
@@ -234,11 +242,11 @@ button[aria-pressed="true"], button[aria-expanded="true"] { background: var(--fe
 .banner { position: absolute; top: var(--ferrum-bar-height, 48px); left: 0; right: 0; padding: 4px 12px; text-align: center; font-size: 12px;
   background: var(--ferrum-warning-soft, #fff3d6); }
 .group-title { font-weight: 600; }
-.create { right: 8px; min-width: 220px; }
+.create { inset-inline-end: 8px; min-width: 220px; }
 .search { flex: 0 1 340px; justify-content: flex-start; gap: 8px; height: 34px; padding: 0 8px 0 10px; margin: 0 10px; border: 1px solid var(--ferrum-border, #d9dee5);
   border-radius: 9px; background: var(--ferrum-surface-2, #eef1f5); color: var(--ferrum-muted, #5b6472); font-size: 13.5px; min-width: 0; }
 .search:hover { background: var(--ferrum-surface, #fff); border-color: color-mix(in srgb, var(--ferrum-primary, #2f5bea) 35%, var(--ferrum-border, #d9dee5)); }
-.search kbd { margin-left: auto; padding: 1px 6px; border: 1px solid var(--ferrum-border, #d9dee5); border-radius: 5px; background: var(--ferrum-surface, #fff);
+.search kbd { margin-inline-start: auto; padding: 1px 6px; border: 1px solid var(--ferrum-border, #d9dee5); border-radius: 5px; background: var(--ferrum-surface, #fff);
   font: 11px/1.5 var(--ferrum-font, system-ui, sans-serif); color: var(--ferrum-muted, #5b6472); }
 .searchbox { left: 50%; transform: translateX(-50%); width: min(640px, calc(100vw - 16px)); padding: 10px; }
 .results { max-height: min(60vh, 520px); overflow: auto; display: grid; gap: 1px; }
@@ -255,7 +263,7 @@ button[aria-pressed="true"], button[aria-expanded="true"] { background: var(--fe
 .rgroup svg { animation: spin .9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .rhint { padding: 16px 8px; color: var(--ferrum-muted, #5b6472); text-align: center; }
-.tray { right: 8px; width: min(380px, calc(100vw - 16px)); }
+.tray { inset-inline-end: 8px; width: min(380px, calc(100vw - 16px)); }
 .tray h2 { margin: 2px 6px 10px; font-size: 13px; font-weight: 650; }
 .tray ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 .tray li { display: grid; gap: 4px; padding: 8px 6px; border-radius: 8px; }
@@ -273,19 +281,19 @@ button[aria-pressed="true"], button[aria-expanded="true"] { background: var(--fe
 .tray progress::-moz-progress-bar { background: var(--ferrum-primary, #2f5bea); }
 .tray .actions { display: flex; justify-content: flex-end; margin-top: 6px; }
 .bell { position: relative; color: var(--ferrum-muted, #5b6472); }
-.bell .badge { position: absolute; top: 2px; right: 1px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; display: grid; place-items: center;
+.bell .badge { position: absolute; top: 2px; inset-inline-end: 1px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; display: grid; place-items: center;
   background: var(--ferrum-danger, #d92d20); color: #fff; font: 600 10px/1 var(--ferrum-font, system-ui, sans-serif); box-shadow: 0 0 0 2px var(--ferrum-surface, #fff); }
-.inbox { right: 8px; width: min(400px, calc(100vw - 16px)); padding: 6px; }
+.inbox { inset-inline-end: 8px; width: min(400px, calc(100vw - 16px)); padding: 6px; }
 .ihead { display: flex; align-items: center; gap: 2px; padding: 2px 2px 6px 8px; }
 .ihead h2 { flex: 1; margin: 0; font-size: 14px; font-weight: 650; }
 .ihead .ghost { width: 32px; min-width: 32px; height: 32px; padding: 0; color: var(--ferrum-muted, #5b6472); }
-.ihead .ghost:first-child { margin-left: -6px; }
+.ihead .ghost:first-child { margin-inline-start: -6px; }
 .ihead .ghost[disabled] { opacity: .45; cursor: default; background: transparent; }
 .istatus { margin: 0 8px; color: var(--ferrum-danger, #c62828); font-size: 12.5px; }
 .istatus:empty { display: none; }
 .ilist { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; max-height: min(70vh, 560px); overflow: auto; }
 .note { display: flex; width: 100%; align-items: flex-start; justify-content: flex-start; gap: 10px; height: auto; padding: 9px 10px 9px 8px; border-radius: 8px;
-  color: inherit; text-decoration: none; text-align: left; font-weight: 400; }
+  color: inherit; text-decoration: none; text-align: start; font-weight: 400; }
 .note:hover { background: var(--ferrum-surface-2, #eef1f5); }
 .note .dot { flex: none; width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; }
 .note.unread .dot { background: var(--ferrum-primary, #2f5bea); }
@@ -478,8 +486,8 @@ function openFinder(b) {
   b.searchBtn.setAttribute("aria-expanded", "true");
   const input = el("input", {
     type: "search",
-    placeholder: "Search apps, records and more",
-    "aria-label": "Search",
+    placeholder: tr("Search apps, records and more"),
+    "aria-label": tr("Search"),
     role: "combobox",
     "aria-expanded": "true",
     "aria-controls": "ferrum-results",
@@ -487,7 +495,7 @@ function openFinder(b) {
     autocomplete: "off",
     spellcheck: "false",
   });
-  const list = el("div", { class: "results", id: "ferrum-results", role: "listbox", "aria-label": "Results" });
+  const list = el("div", { class: "results", id: "ferrum-results", role: "listbox", "aria-label": tr("Results") });
   b.searchPanel.replaceChildren(el("div", { class: "find" }, icon("search", 16), input), list);
   Object.assign(finder, { input, list });
   input.value = finder.q;
@@ -540,7 +548,7 @@ function createsMatching(q) {
   return (shellData?.create ?? [])
     .filter((c) => !t || String(c.label ?? "").toLowerCase().includes(t))
     .slice(0, q.trim() ? 4 : 5)
-    .map((c) => ({ title: `New ${String(c.label ?? "").toLowerCase()}`, subtitle: appTitle_(c.app), url: sitePath(c.url), icon: "plus", fresh: true }))
+    .map((c) => ({ title: tr("New {label}", { label: String(c.label ?? "").toLowerCase() }), subtitle: appTitle_(c.app), url: sitePath(c.url), icon: "plus", fresh: true }))
     .filter((c) => c.url);
 }
 
@@ -558,9 +566,9 @@ const LOCAL = new Set(["recent", "apps", "create"]);
 /** The groups known without asking the server, so they appear as the person types. */
 function localGroups(q) {
   return [
-    ...(q.trim() ? [] : [{ key: "recent", title: "Recent", items: recentItems() }]),
-    { key: "apps", title: "Apps", items: appsMatching(q) },
-    { key: "create", title: "Create", items: createsMatching(q) },
+    ...(q.trim() ? [] : [{ key: "recent", title: tr("Recent"), items: recentItems() }]),
+    { key: "apps", title: tr("Apps"), items: appsMatching(q) },
+    { key: "create", title: tr("Create"), items: createsMatching(q) },
   ];
 }
 
@@ -573,7 +581,7 @@ function runFinder() {
   finder.groups = localGroups(q);
   if (q.length >= 2) {
     const sources = [
-      { key: "records", title: "Records", url: `/api/search?q=${encodeURIComponent(q)}&limit=12` },
+      { key: "records", title: tr("Records"), url: `/api/search?q=${encodeURIComponent(q)}&limit=12` },
       ...(shellData?.search ?? [])
         .filter((p) => typeof p.endpoint === "string" && p.endpoint.startsWith("/api/"))
         .map((p) => ({ key: `${p.app}.${p.id}`, title: p.title ?? appTitle_(p.app), url: `${p.endpoint}?q=${encodeURIComponent(q)}&limit=8` })),
@@ -594,7 +602,7 @@ function runFinder() {
           group.items = items(body?.results);
           // The lists the person may open, by name: "Go to", before the records.
           const pages = s.key === "records" ? items(body?.pages).map((p) => ({ ...p, icon: p.icon && ICONS[p.icon] ? p.icon : "list" })) : [];
-          if (pages.length && finder.ctl === ctl) finder.groups.splice(finder.groups.indexOf(group), 0, { key: "pages", title: "Go to", items: pages, loading: false });
+          if (pages.length && finder.ctl === ctl) finder.groups.splice(finder.groups.indexOf(group), 0, { key: "pages", title: tr("Go to"), items: pages, loading: false });
         })
         .catch(() => {})
         .finally(() => {
@@ -658,7 +666,7 @@ function drawFinder() {
   }
   if (!rows.length) {
     const busy = finder.groups.some((g) => g.loading);
-    rows.push(el("p", { class: "rhint", text: q.length < 2 ? "Type to search apps, records, conversations and files, or to create something new." : busy ? "Searching…" : `Nothing found for “${q}”.` }));
+    rows.push(el("p", { class: "rhint", text: q.length < 2 ? tr("Type to search apps, records, conversations and files, or to create something new.") : busy ? tr("Searching…") : tr("Nothing found for “{q}”.", { q }) }));
   }
   finder.list.replaceChildren(...rows);
   finder.input?.setAttribute("aria-activedescendant", n ? `ferrum-result-${finder.active}` : "");
@@ -693,7 +701,7 @@ window.addEventListener(
 // other what the person read; each hears new ones on the live channel itself.
 const inbox = { unread: 0, items: null, failed: false, types: null, view: "list", status: "" };
 const inboxTabs = "BroadcastChannel" in window ? new BroadcastChannel("ferrum-inbox") : null;
-const CHANNEL_LABELS = { inapp: "In Ferrum", email: "Email at once", digest: "Daily email digest", push: "On my devices", off: "Off" };
+const CHANNEL_LABELS = { inapp: tr("In Ferrum"), email: tr("Email at once"), digest: tr("Daily email digest"), push: tr("On my devices"), off: tr("Off") };
 
 inboxTabs?.addEventListener("message", (e) => {
   setUnread(e.data?.unread, false);
@@ -752,7 +760,7 @@ async function pushOn(make) {
   if (!sub && !make) return false;
   sub ??= await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: pushKey() });
   const r = await fetch("/api/push", { method: "PUT", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(sub.toJSON()) });
-  if (!r.ok) throw new Error((await r.json().catch(() => null))?.error ?? `The server answered ${r.status}.`);
+  if (!r.ok) throw new Error((await r.json().catch(() => null))?.error ?? tr("The server answered {status}.", { status: r.status }));
   try {
     localStorage.setItem(PUSH_PERSON, String(boot?.person?.id ?? ""));
   } catch {}
@@ -797,12 +805,12 @@ function togglePush() {
   drawInbox();
   asked
     .then((p) => {
-      if (p !== "granted") throw new Error(p === "denied" ? "Notifications are blocked for this site in your browser's settings." : "Notifications stay off on this device.");
+      if (p !== "granted") throw new Error(p === "denied" ? tr("Notifications are blocked for this site in your browser's settings.") : tr("Notifications stay off on this device."));
       return turnOn ? pushOn(true) : pushOff();
     })
     .catch((e) => {
       push.on = !turnOn && push.on;
-      inbox.status = e?.message ?? "Could not change that. Try again.";
+      inbox.status = e?.message ?? tr("Could not change that. Try again.");
     })
     .finally(() => {
       push.busy = false;
@@ -825,12 +833,12 @@ function deviceRow() {
   const row = (text, action) =>
     el("div", { class: "kind device" }, el("span", { class: "what" }, el("span", { class: "dlabel", text }), action?.hint ? el("small", { text: action.hint }) : null), action?.button ?? null);
   if (!canPush())
-    return row("Notifications on this device", {
-      hint: isApple() ? "Add Ferrum to your Home Screen (Share, then Add to Home Screen), open it from there, and turn them on." : "This browser cannot show notifications from Ferrum.",
+    return row(tr("Notifications on this device"), {
+      hint: isApple() ? tr("Add Ferrum to your Home Screen (Share, then Add to Home Screen), open it from there, and turn them on.") : tr("This browser cannot show notifications from Ferrum."),
     });
-  if (Notification.permission === "denied") return row("Notifications on this device", { hint: "Blocked for this site in your browser's settings." });
-  const button = el("button", { type: "button", class: push.on ? "ghost" : "primary", disabled: push.busy, onclick: () => togglePush() }, push.busy ? "Working…" : push.on ? "Turn off" : "Turn on");
-  return row("Notifications on this device", { hint: push.on ? "On: kinds set to On my devices pop up here." : "Off: nothing pops up on this device.", button });
+  if (Notification.permission === "denied") return row(tr("Notifications on this device"), { hint: tr("Blocked for this site in your browser's settings.") });
+  const button = el("button", { type: "button", class: push.on ? "ghost" : "primary", disabled: push.busy, onclick: () => togglePush() }, push.busy ? tr("Working…") : push.on ? tr("Turn off") : tr("Turn on"));
+  return row(tr("Notifications on this device"), { hint: push.on ? tr("On: kinds set to On my devices pop up here.") : tr("Off: nothing pops up on this device."), button });
 }
 
 const answer = (r) => (r?.ok ? r.json() : (r?.status === 401 && toLogin(), null));
@@ -858,7 +866,7 @@ function ago(iso) {
   const a = Math.abs(s);
   const lang = boot?.locale?.language ?? "en";
   const rtf = new Intl.RelativeTimeFormat(lang, { numeric: "auto", style: "short" });
-  if (a < 60) return "just now";
+  if (a < 60) return tr("just now");
   if (a < 3600) return rtf.format(Math.round(s / 60), "minute");
   if (a < 86400) return rtf.format(Math.round(s / 3600), "hour");
   if (a < 7 * 86400) return rtf.format(Math.round(s / 86400), "day");
@@ -885,7 +893,7 @@ function openNote(n) {
 async function readAll() {
   const r = await fetch("/api/notifications/read-all", { method: "POST", credentials: "same-origin" }).catch(() => null);
   if (!r?.ok) {
-    inbox.status = "Could not mark them read. Try again.";
+    inbox.status = tr("Could not mark them read. Try again.");
     return drawInbox();
   }
   for (const n of inbox.items ?? []) n.read_at ??= new Date().toISOString();
@@ -909,7 +917,7 @@ async function chooseChannel(kind, select) {
   const body = JSON.stringify({ kind: kind.kind, channel: kind.channel === kind.default ? null : kind.channel });
   const r = await fetch("/api/notifications/preferences", { method: "PUT", credentials: "same-origin", headers: { "content-type": "application/json" }, body }).catch(() => null);
   select.disabled = false;
-  inbox.status = r?.ok ? (kind.channel === "push" && !push.on ? "Turn on notifications on this device to get these here." : "") : "Could not save that. Try again.";
+  inbox.status = r?.ok ? (kind.channel === "push" && !push.on ? tr("Turn on notifications on this device to get these here.") : "") : tr("Could not save that. Try again.");
   if (!r?.ok) {
     kind.channel = before;
     select.value = before;
@@ -925,15 +933,15 @@ function drawInbox() {
   if (inbox.view === "settings") {
     const t = inbox.types;
     const kinds = el("div", { class: "kinds" });
-    if (!t) kinds.append(el("p", { class: "rhint", text: "Loading…" }));
-    else if (t.failed) kinds.append(el("p", { class: "rhint", text: "Could not load your choices." }));
+    if (!t) kinds.append(el("p", { class: "rhint", text: tr("Loading…") }));
+    else if (t.failed) kinds.append(el("p", { class: "rhint", text: tr("Could not load your choices.") }));
     else {
-      if (!t.email) kinds.append(el("p", { class: "inote", text: "This server sends no email, so notifications stay in Ferrum." }));
+      if (!t.email) kinds.append(el("p", { class: "inote", text: tr("This server sends no email, so notifications stay in Ferrum.") }));
       const device = t.push ? deviceRow() : null;
       if (device) kinds.append(device);
       let group;
       for (const k of t.types ?? []) {
-        if ((k.app ?? "") !== group) kinds.append(el("p", { class: "rgroup", text: k.app ?? "All apps" }));
+        if ((k.app ?? "") !== group) kinds.append(el("p", { class: "rgroup", text: k.app ?? tr("All apps") }));
         group = k.app ?? "";
         const id = `ferrum-kind-${String(k.kind).replace(/[^a-z0-9_-]/gi, "-")}`;
         const select = el("select", { id, "aria-describedby": `${id}-hint` });
@@ -943,26 +951,26 @@ function drawInbox() {
         }
         select.value = k.channel;
         const hint = el("small", { id: `${id}-hint` });
-        const showDefault = () => (hint.textContent = k.channel === k.default ? "" : `Default: ${CHANNEL_LABELS[k.default] ?? k.default}`);
+        const showDefault = () => (hint.textContent = k.channel === k.default ? "" : tr("Default: {channel}", { channel: CHANNEL_LABELS[k.default] ?? k.default }));
         showDefault();
         select.addEventListener("change", () => chooseChannel(k, select).then(showDefault));
         kinds.append(el("div", { class: "kind" }, el("span", { class: "what" }, el("label", { for: id, text: k.label }), hint), select));
       }
     }
-    const back = el("button", { type: "button", class: "ghost", "aria-label": "Back to notifications", title: "Back", onclick: () => ((inbox.view = "list"), (inbox.status = ""), loadInbox()) }, icon("chevron-left", 16));
-    p.replaceChildren(el("div", { class: "ihead" }, back, el("h2", { text: "How notifications reach you" })), status, kinds);
+    const back = el("button", { type: "button", class: "ghost", "aria-label": tr("Back to notifications"), title: tr("Back"), onclick: () => ((inbox.view = "list"), (inbox.status = ""), loadInbox()) }, icon("chevron-left", 16));
+    p.replaceChildren(el("div", { class: "ihead" }, back, el("h2", { text: tr("How notifications reach you") })), status, kinds);
     if (focused) back.focus();
     return;
   }
-  const allRead = el("button", { type: "button", class: "ghost", title: "Mark all as read", "aria-label": "Mark all as read", disabled: !inbox.unread, onclick: () => readAll() }, icon("check-check", 16));
-  const settings = el("button", { type: "button", class: "ghost", title: "Notification settings", "aria-label": "Notification settings", onclick: () => ((inbox.view = "settings"), (inbox.status = ""), loadKinds()) }, icon("settings", 16));
-  const list = el("ul", { class: "ilist", "aria-label": "Notifications" });
+  const allRead = el("button", { type: "button", class: "ghost", title: tr("Mark all as read"), "aria-label": tr("Mark all as read"), disabled: !inbox.unread, onclick: () => readAll() }, icon("check-check", 16));
+  const settings = el("button", { type: "button", class: "ghost", title: tr("Notification settings"), "aria-label": tr("Notification settings"), onclick: () => ((inbox.view = "settings"), (inbox.status = ""), loadKinds()) }, icon("settings", 16));
+  const list = el("ul", { class: "ilist", "aria-label": tr("Notifications") });
   if (!inbox.items)
     list.append(
-      el("li", { class: "rhint" }, inbox.failed ? el("span", {}, "Could not load your notifications. ", el("button", { type: "button", class: "link", text: "Try again", onclick: () => loadInbox() })) : "Loading…"),
+      el("li", { class: "rhint" }, inbox.failed ? el("span", {}, tr("Could not load your notifications. "), el("button", { type: "button", class: "link", text: tr("Try again"), onclick: () => loadInbox() })) : tr("Loading…")),
     );
   else if (!inbox.items.length)
-    list.append(el("li", { class: "caught" }, icon("circle-check", 28), el("strong", { text: "You're all caught up" }), el("small", { text: "Mentions, assignments and changes to what you follow show up here." })));
+    list.append(el("li", { class: "caught" }, icon("circle-check", 28), el("strong", { text: tr("You're all caught up") }), el("small", { text: tr("Mentions, assignments and changes to what you follow show up here.") })));
   for (const n of inbox.items ?? []) {
     const url = noteUrl(n);
     list.append(
@@ -984,7 +992,7 @@ function drawInbox() {
       ),
     );
   }
-  p.replaceChildren(el("div", { class: "ihead" }, el("h2", { text: "Notifications" }), allRead, settings), status, list);
+  p.replaceChildren(el("div", { class: "ihead" }, el("h2", { text: tr("Notifications") }), allRead, settings), status, list);
   if (focused) (p.querySelector(".note") ?? settings).focus();
 }
 
@@ -1005,11 +1013,11 @@ class FerrumBar extends HTMLElement {
     this.crumbsEl = el("span", { class: "crumbs" });
     this.indicators = el("span", { class: "indicators" });
     this.tileEl = el("span");
-    this.launchBtn = el("button", { class: "launch", type: "button", "aria-label": "Apps", title: "Apps", "aria-haspopup": "dialog", "aria-expanded": "false", onclick: () => this.toggleLauncher() }, icon("layout-grid", 19));
+    this.launchBtn = el("button", { class: "launch", type: "button", "aria-label": tr("Apps"), title: tr("Apps"), "aria-haspopup": "dialog", "aria-expanded": "false", onclick: () => this.toggleLauncher() }, icon("layout-grid", 19));
     this.meBtn = el("button", {
       class: "me",
       type: "button",
-      "aria-label": `Account: ${person.name ?? ""}`,
+      "aria-label": tr("Account: {name}", { name: person.name ?? "" }),
       title: person.name ?? "",
       "aria-haspopup": "menu",
       "aria-expanded": "false",
@@ -1019,23 +1027,23 @@ class FerrumBar extends HTMLElement {
     const mac = /Mac|iPhone|iPad/.test(navigator.platform ?? "");
     this.searchBtn = el(
       "button",
-      { class: "search", type: "button", "aria-label": "Search", title: `Search (${mac ? "⌘K" : "Ctrl+K"})`, "aria-haspopup": "dialog", "aria-expanded": "false", onclick: () => this.toggleSearch() },
+      { class: "search", type: "button", "aria-label": tr("Search"), title: tr("Search ({keys})", { keys: mac ? "⌘K" : "Ctrl+K" }), "aria-haspopup": "dialog", "aria-expanded": "false", onclick: () => this.toggleSearch() },
       icon("search", 16),
-      el("span", { class: "search-label", text: "Search" }),
-      el("kbd", { text: mac ? "⌘K" : "Ctrl K" }),
+      el("span", { class: "search-label", text: tr("Search") }),
+      el("kbd", { text: mac ? "⌘K" : tr("Ctrl K") }),
     );
     // The bell, for people signed in (not on a public page).
     this.bellBtn =
       person.id && hostKind !== "public"
-        ? el("button", { class: "bell", type: "button", "aria-label": "Notifications", title: "Notifications", "aria-haspopup": "dialog", "aria-expanded": "false", onclick: () => this.toggleInbox() }, icon("bell", 18))
+        ? el("button", { class: "bell", type: "button", "aria-label": tr("Notifications"), title: tr("Notifications"), "aria-haspopup": "dialog", "aria-expanded": "false", onclick: () => this.toggleInbox() }, icon("bell", 18))
         : null;
     const appRoute = boot?.app?.routes?.[boot?.app?.entry] ?? "/";
     const bar = el(
       "div",
       { class: "bar", role: "banner" },
-      el("a", { class: "skip", href: "#main", text: "Skip to content", onclick: (e) => this.skip(e) }),
+      el("a", { class: "skip", href: "#main", text: tr("Skip to content"), onclick: (e) => this.skip(e) }),
       this.launchBtn,
-      el("a", { class: "home", href: "/", title: "Home", text: boot?.workspace?.name ?? "Home" }),
+      el("a", { class: "home", href: "/", title: tr("Home"), text: boot?.workspace?.name ?? tr("Home") }),
       // A page of no app (a status page) shows the workspace alone.
       boot?.app ? el("span", { class: "sep", "aria-hidden": "true", text: "/" }) : null,
       (this.appLink = el("a", { class: "app", href: appRoute, hidden: !boot?.app }, this.tileEl, this.titleEl)),
@@ -1048,16 +1056,16 @@ class FerrumBar extends HTMLElement {
       this.bellBtn,
       this.meBtn,
     );
-    this.launcher = el("div", { class: "panel launcher", role: "dialog", "aria-label": "Apps", hidden: true });
-    this.menu = el("div", { class: "panel menu", role: "menu", "aria-label": "Account", hidden: true });
-    this.createMenu = el("div", { class: "panel menu create", role: "menu", "aria-label": "Create", hidden: true });
-    this.tray = el("div", { class: "panel tray", role: "dialog", "aria-label": "Uploads", hidden: true });
-    this.searchPanel = el("div", { class: "panel searchbox", role: "dialog", "aria-label": "Search", hidden: true });
-    this.inboxPanel = el("div", { class: "panel inbox", role: "dialog", "aria-label": "Notifications", hidden: true });
-    this.side = el("aside", { class: "side", "aria-label": "Side panel", hidden: true });
+    this.launcher = el("div", { class: "panel launcher", role: "dialog", "aria-label": tr("Apps"), hidden: true });
+    this.menu = el("div", { class: "panel menu", role: "menu", "aria-label": tr("Account"), hidden: true });
+    this.createMenu = el("div", { class: "panel menu create", role: "menu", "aria-label": tr("Create"), hidden: true });
+    this.tray = el("div", { class: "panel tray", role: "dialog", "aria-label": tr("Uploads"), hidden: true });
+    this.searchPanel = el("div", { class: "panel searchbox", role: "dialog", "aria-label": tr("Search"), hidden: true });
+    this.inboxPanel = el("div", { class: "panel inbox", role: "dialog", "aria-label": tr("Notifications"), hidden: true });
+    this.side = el("aside", { class: "side", "aria-label": tr("Side panel"), hidden: true });
     this.noticeEl = el("div", { class: "notice", role: "status", hidden: true });
     root.append(style, bar, this.launcher, this.menu, this.createMenu, this.tray, this.searchPanel, this.inboxPanel, this.side, this.noticeEl);
-    if (person.actor) root.append(el("div", { class: "banner", role: "note", text: `You are acting as ${person.name}. Everything you do is recorded with both names.` }));
+    if (person.actor) root.append(el("div", { class: "banner", role: "note", text: tr("You are acting as {name}. Everything you do is recorded with both names.", { name: person.name }) }));
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") this.closePanels(true);
     });
@@ -1084,7 +1092,7 @@ class FerrumBar extends HTMLElement {
           const n = d.notification ?? {};
           if (["mention", "assignment"].includes(n.kind) && this.inboxPanel.hidden) {
             const url = noteUrl(n);
-            this.notice(String(n.title ?? "New notification"), url ? [["Open", () => (this.hideNotice(), openNote(n))]] : []);
+            this.notice(String(n.title ?? tr("New notification")), url ? [[tr("Open"), () => (this.hideNotice(), openNote(n))]] : []);
             this.noticeFrom = "inbox";
             clearTimeout(this.noticeTimer);
             this.noticeTimer = setTimeout(() => this.hideNotice(), 8000);
@@ -1144,7 +1152,7 @@ class FerrumBar extends HTMLElement {
     const apps = shellData?.apps ?? [];
     const panelEntry = (p) => apps.find((a) => a.app === p.app && a.id === p.id) ?? apps.find((a) => a.app === p.app);
     this.createBtn = create.length
-      ? el("button", { type: "button", "aria-label": "Create", "aria-haspopup": "menu", "aria-expanded": "false", title: "Create", onclick: () => this.toggleCreate() }, icon("plus", 19))
+      ? el("button", { type: "button", "aria-label": tr("Create"), "aria-haspopup": "menu", "aria-expanded": "false", title: tr("Create"), onclick: () => this.toggleCreate() }, icon("plus", 19))
       : null;
     const open = sidepanelOpen();
     this.tools.replaceChildren(
@@ -1186,7 +1194,7 @@ class FerrumBar extends HTMLElement {
     const n = inbox.unread;
     this.bellBtn.querySelector(".badge")?.remove();
     if (n) this.bellBtn.append(el("span", { class: "badge", "aria-hidden": "true", text: n > 99 ? "99+" : String(n) }));
-    const label = n ? `Notifications, ${n} unread` : "Notifications";
+    const label = n ? tr("Notifications, {n} unread", { n }) : tr("Notifications");
     this.bellBtn.setAttribute("aria-label", label);
     this.bellBtn.title = label;
   }
@@ -1224,7 +1232,7 @@ class FerrumBar extends HTMLElement {
   }
 
   drawLauncher() {
-    const search = el("input", { type: "search", placeholder: "Find an app", "aria-label": "Find an app" });
+    const search = el("input", { type: "search", placeholder: tr("Find an app"), "aria-label": tr("Find an app") });
     const grid = el("div", { class: "apps", role: "list" });
     const draw = () => {
       const q = search.value.trim().toLowerCase();
@@ -1255,7 +1263,7 @@ class FerrumBar extends HTMLElement {
           return link;
         }),
       );
-      if (!found.length) grid.append(el("p", { class: "empty", text: shellData ? (q ? "No app matches." : "No apps yet.") : "Loading…" }));
+      if (!found.length) grid.append(el("p", { class: "empty", text: shellData ? (q ? tr("No app matches.") : tr("No apps yet.")) : tr("Loading…") }));
     };
     search.addEventListener("input", draw);
     search.addEventListener("keydown", (e) => {
@@ -1265,8 +1273,8 @@ class FerrumBar extends HTMLElement {
     const foot = el(
       "div",
       { class: "foot" },
-      el("a", { href: "/" }, icon("layout-dashboard", 15), el("span", { text: "Home" })),
-      boot?.person?.admin ? el("a", { href: "/store/" }, icon("shopping-bag", 15), el("span", { text: "Get apps" })) : null,
+      el("a", { href: "/" }, icon("layout-dashboard", 15), el("span", { text: tr("Home") })),
+      boot?.person?.admin ? el("a", { href: "/store/" }, icon("shopping-bag", 15), el("span", { text: tr("Get apps") })) : null,
     );
     this.launcher.replaceChildren(el("div", { class: "find" }, icon("search", 16), search), grid, foot);
   }
@@ -1284,13 +1292,13 @@ class FerrumBar extends HTMLElement {
         el("span", { class: "me", "aria-hidden": "true", text: initials(person.name) }),
         el("div", {}, el("strong", { text: person.name ?? "" }), el("small", { text: person.email ?? "" }), el("small", { text: boot?.workspace?.name ?? "" })),
       ),
-      el("a", { role: "menuitem", href: "/account/" }, icon("user", 16), el("span", { text: "Account and devices" })),
+      el("a", { role: "menuitem", href: "/account/" }, icon("user", 16), el("span", { text: tr("Account and devices") })),
       // The help center: what each kind of record is for, in this workspace (the shell's, under /data/).
-      el("a", { role: "menuitem", href: "/data/help" }, icon("circle-help", 16), el("span", { text: "Help" })),
+      el("a", { role: "menuitem", href: "/data/help" }, icon("circle-help", 16), el("span", { text: tr("Help") })),
       // Shapes B and C: the person's other workspaces, at the accounts host (each on a host of its own).
-      boot?.api?.accounts ? el("a", { role: "menuitem", href: `${boot.api.accounts}/` }, icon("building-2", 16), el("span", { text: "Your workspaces" })) : null,
+      boot?.api?.accounts ? el("a", { role: "menuitem", href: `${boot.api.accounts}/` }, icon("building-2", 16), el("span", { text: tr("Your workspaces") })) : null,
       el("hr"),
-      el("button", { role: "menuitem", type: "button", onclick: () => guardedLeave(signOut) }, icon("log-out", 16), el("span", { text: "Sign out" })),
+      el("button", { role: "menuitem", type: "button", onclick: () => guardedLeave(signOut) }, icon("log-out", 16), el("span", { text: tr("Sign out") })),
     ].filter(Boolean));
     this.menu.hidden = false;
     this.meBtn.setAttribute("aria-expanded", "true");
@@ -1382,7 +1390,7 @@ async function cardFor(entity, id, signal) {
 function shown(f) {
   const v = f?.value;
   const lang = boot?.locale?.language ?? undefined;
-  if (v === true || v === false) return v ? "Yes" : "No";
+  if (v === true || v === false) return v ? tr("Yes") : tr("No");
   if (typeof v === "number" || (typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v) && ["decimal", "currency", "int", "percent"].includes(f.type))) {
     const n = Number(v);
     const text = new Intl.NumberFormat(lang, { maximumFractionDigits: f.type === "int" ? 0 : 2, minimumFractionDigits: f.type === "currency" ? 2 : 0 }).format(n);
@@ -1423,13 +1431,13 @@ function drawCard(link, card) {
   const root = cardRoot();
   root.querySelector(".card")?.remove();
   const box = el("div", { class: "card" });
-  if (!card) box.append(el("span", { class: "busy", text: "Loading…" }));
+  if (!card) box.append(el("span", { class: "busy", text: tr("Loading…") }));
   else {
     const meta = el("div", { class: "meta" }, el("span", { text: [card.kind, card.number].filter((x) => typeof x === "string" && x).join(" · ") }), typeof card.state === "string" && card.state ? el("span", { class: "state", text: card.state }) : null);
     box.append(el("div", { class: "head" }, el("span", { class: "glyph" }, icon(card.icon, 17) ?? icon("file-text", 17)), el("div", { class: "who" }, el("span", { class: "title", text: card.title }), meta)));
     const fields = (Array.isArray(card.fields) ? card.fields : []).filter((f) => f && typeof f.label === "string" && shown(f) !== "").slice(0, 8);
     if (fields.length) box.append(el("dl", {}, ...fields.flatMap((f) => [el("dt", { text: f.label, title: f.label }), el("dd", { text: shown(f), title: shown(f) })])));
-    if (typeof card.updated_at === "string" && ago(card.updated_at)) box.append(el("div", { class: "foot", text: `Changed ${ago(card.updated_at)}` }));
+    if (typeof card.updated_at === "string" && ago(card.updated_at)) box.append(el("div", { class: "foot", text: tr("Changed {when}", { when: ago(card.updated_at) }) }));
   }
   root.append(box);
   placeCard(link, box);
@@ -1528,7 +1536,7 @@ function watchLeaving() {
 }
 
 function guardedLeave(go) {
-  if (dirty() && !confirm("Leave this page? Changes you made may not be saved.")) return false;
+  if (dirty() && !confirm(tr("Leave this page? Changes you made may not be saved."))) return false;
   guards.clear();
   watchLeaving();
   go();
@@ -1605,7 +1613,7 @@ function choose(action, type, handlers) {
         "button",
         {
           type: "button",
-          style: "display:flex;align-items:center;gap:10px;width:100%;text-align:left;margin:6px 0;padding:8px 10px;border:1px solid var(--ferrum-border,#d9dee5);border-radius:8px;background:transparent;color:inherit;font:inherit;cursor:pointer",
+          style: "display:flex;align-items:center;gap:10px;width:100%;text-align:start;margin:6px 0;padding:8px 10px;border:1px solid var(--ferrum-border,#d9dee5);border-radius:8px;background:transparent;color:inherit;font:inherit;cursor:pointer",
           onclick: () => {
             picked = h;
             dialog.close();
@@ -1616,9 +1624,9 @@ function choose(action, type, handlers) {
       ),
     );
     dialog.append(
-      el("h2", { id: "ferrum-choose-title", style: "margin:0 0 8px;font-size:15px", text: "Which app should do this?" }),
+      el("h2", { id: "ferrum-choose-title", style: "margin:0 0 8px;font-size:15px", text: tr("Which app should do this?") }),
       ...buttons,
-      el("label", { style: "display:flex;gap:6px;align-items:center;margin-top:10px" }, always, el("span", { text: "Always use this app" })),
+      el("label", { style: "display:flex;gap:6px;align-items:center;margin-top:10px" }, always, el("span", { text: tr("Always use this app") })),
     );
     dialog.addEventListener("close", () => {
       if (picked && always.checked) memory.set(localStorage, `ferrum.intent.${action}.${type}`, picked.app);
@@ -1751,7 +1759,7 @@ if (companionKind) {
     if (!kind) return;
     if (type === "alive") companionsSeen.set(kind, Date.now());
     if (type === "gone") companionsSeen.delete(kind);
-    bar()?.setIndicator(`companion-${kind}`, companionsSeen.has(kind) ? `${title || kind} · Return` : "", () => companions?.postMessage({ type: "focus", kind }), "external-link");
+    bar()?.setIndicator(`companion-${kind}`, companionsSeen.has(kind) ? tr("{title} · Return", { title: title || kind }) : "", () => companions?.postMessage({ type: "focus", kind }), "external-link");
   });
   setInterval(() => {
     for (const [kind, at] of companionsSeen) {
@@ -1834,9 +1842,9 @@ function drawSidepanel(p, src) {
   const b = bar();
   panelFrame = el("iframe", { title: p.title, src });
   const entry = (shellData?.apps ?? []).find((a) => a.app === p.app);
-  const open = el("button", { type: "button", "aria-label": `Open ${p.title}`, title: `Open ${p.title}`, onclick: () => navigate(entry?.url ?? p.url) }, icon("external-link", 16));
-  const close = el("button", { type: "button", "aria-label": `Close ${p.title}`, title: "Close", onclick: () => closeSidepanel() }, icon("x", 16));
-  const grip = el("div", { class: "grip", role: "separator", "aria-orientation": "vertical", "aria-label": "Resize the side panel", tabindex: "0" });
+  const open = el("button", { type: "button", "aria-label": tr("Open {title}", { title: p.title }), title: tr("Open {title}", { title: p.title }), onclick: () => navigate(entry?.url ?? p.url) }, icon("external-link", 16));
+  const close = el("button", { type: "button", "aria-label": tr("Close {title}", { title: p.title }), title: tr("Close"), onclick: () => closeSidepanel() }, icon("x", 16));
+  const grip = el("div", { class: "grip", role: "separator", "aria-orientation": "vertical", "aria-label": tr("Resize the side panel"), tabindex: "0" });
   const resize = (w) => {
     const width = Math.round(Math.min(PANEL_MAX, Math.max(PANEL_MIN, w)));
     memory.set(localStorage, "ferrum.sidepanel.width", width);
@@ -2003,7 +2011,7 @@ function changed(item, local = true) {
     if (w) {
       uploadWaiters.delete(item.id);
       if (item.state === "done") w.resolve(item.result);
-      else w.reject(Object.assign(new Error(item.error ?? "The upload did not finish."), { code: item.state }));
+      else w.reject(Object.assign(new Error(item.error ?? tr("The upload did not finish.")), { code: item.state }));
     }
   } else {
     events.dispatchEvent(new CustomEvent("upload-progress", { detail: item }));
@@ -2024,7 +2032,7 @@ function failure(status, text) {
   try {
     body = JSON.parse(text);
   } catch {}
-  const message = body?.message ?? (status ? `The server refused the file (${status}).` : "Cannot reach the server.");
+  const message = body?.message ?? (status ? tr("The server refused the file ({status}).", { status }) : tr("Cannot reach the server."));
   return Object.assign(new Error(message), { status, retry: status === 0 || status === 408 || status === 429 || status >= 500, signedOut: status === 401 });
 }
 
@@ -2075,7 +2083,7 @@ async function runUpload(id) {
   if (!item || FINISHED.has(item.state) || !mine(item)) return;
   const file = item.file;
   if (Date.now() - item.created > UPLOAD_EXPIRY || !file) {
-    await save(brief(item), { state: "failed", error: file ? "This upload waited too long and was dropped." : "The file is not here any more: upload it again." });
+    await save(brief(item), { state: "failed", error: file ? tr("This upload waited too long and was dropped.") : tr("The file is not here any more: upload it again.") });
     return;
   }
   item = await save(brief(item), { state: "uploading", attempts: (item.attempts ?? 0) + 1, loaded: 0, error: null });
@@ -2089,7 +2097,7 @@ async function runUpload(id) {
       return;
     }
     if (e.signedOut) {
-      await save(item, { state: "queued", error: "Waiting for you to sign in again." });
+      await save(item, { state: "queued", error: tr("Waiting for you to sign in again.") });
       return;
     }
     if (e.retry && item.attempts < UPLOAD_TRIES) {
@@ -2224,7 +2232,7 @@ uploadsChannel?.addEventListener("message", (e) => {
   }
 });
 
-const sizeText = (n) => (n >= 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(1)} GB` : n >= 1024 ** 2 ? `${(n / 1024 ** 2).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+const sizeText = (n) => (n >= 1024 ** 3 ? tr("{v1} GB", { v1: (n / 1024 ** 3).toFixed(1) }) : n >= 1024 ** 2 ? tr("{v1} MB", { v1: (n / 1024 ** 2).toFixed(1) }) : tr("{v1} KB", { v1: Math.max(1, Math.round(n / 1024)) }));
 
 /** The bar's upload indicator and its tray. */
 function drawUploads() {
@@ -2237,9 +2245,9 @@ function drawUploads() {
   if (active.length) {
     const total = active.reduce((n, u) => n + u.size, 0) || 1;
     const sent = active.reduce((n, u) => n + (u.loaded ?? 0), 0);
-    text = `${active.length === 1 ? "Uploading 1 file" : `Uploading ${active.length} files`} · ${Math.floor((sent / total) * 100)}%`;
-  } else if (failed.length) text = failed.length === 1 ? "1 upload failed" : `${failed.length} uploads failed`;
-  else if (list.some((u) => u.state === "done")) text = "Uploads done";
+    text = `${active.length === 1 ? tr("Uploading 1 file") : tr("Uploading {length} files", { length: active.length })} · ${Math.floor((sent / total) * 100)}%`;
+  } else if (failed.length) text = failed.length === 1 ? tr("1 upload failed") : tr("{length} uploads failed", { length: failed.length });
+  else if (list.some((u) => u.state === "done")) text = tr("Uploads done");
   b.setIndicator("uploads", text, () => toggleTray(), active.length ? "upload" : failed.length ? "circle-alert" : "check");
   if (!b.tray.hidden) fillTray();
 }
@@ -2259,28 +2267,28 @@ function fillTray() {
   const list = [...uploads.values()].filter(mine).sort((x, y) => x.created - y.created);
   const rows = list.map((u) => {
     const state =
-      u.state === "done" ? "Done" : u.state === "failed" ? "Failed" : u.state === "cancelled" ? "Stopped" : u.state === "queued" ? (u.error ?? "Waiting") : `${sizeText(u.loaded ?? 0)} of ${sizeText(u.size)}`;
+      u.state === "done" ? tr("Done") : u.state === "failed" ? tr("Failed") : u.state === "cancelled" ? tr("Stopped") : u.state === "queued" ? (u.error ?? tr("Waiting")) : tr("{v1} of {v2}", { v1: sizeText(u.loaded ?? 0), v2: sizeText(u.size) });
     const actions = FINISHED.has(u.state)
       ? [
-          u.state === "failed" && u.kept !== false ? el("button", { type: "button", text: "Retry", onclick: () => retryUpload(u.id) }) : null,
-          el("button", { type: "button", "aria-label": `Dismiss ${u.label}`, text: "Dismiss", onclick: () => dismissUpload(u.id) }),
+          u.state === "failed" && u.kept !== false ? el("button", { type: "button", text: tr("Retry"), onclick: () => retryUpload(u.id) }) : null,
+          el("button", { type: "button", "aria-label": tr("Dismiss {label}", { label: u.label }), text: tr("Dismiss"), onclick: () => dismissUpload(u.id) }),
         ]
-      : [el("button", { type: "button", "aria-label": `Stop uploading ${u.label}`, text: "Stop", onclick: () => cancelUpload(u.id) })];
+      : [el("button", { type: "button", "aria-label": tr("Stop uploading {label}", { label: u.label }), text: tr("Stop"), onclick: () => cancelUpload(u.id) })];
     const mark = u.state === "done" ? ["check", "ok"] : u.state === "failed" ? ["circle-alert", "err"] : u.state === "cancelled" ? ["x", null] : ["upload", null];
     return el(
       "li",
       {},
       el("div", { class: "row" }, el("span", { class: mark[1] ?? "mark" }, icon(mark[0], 15)), el("span", { class: "name", title: u.label, text: u.label }), ...actions.filter(Boolean)),
-      FINISHED.has(u.state) ? null : el("progress", { max: String(u.size || 1), value: String(u.loaded ?? 0), "aria-label": `${u.label} sent` }),
+      FINISHED.has(u.state) ? null : el("progress", { max: String(u.size || 1), value: String(u.loaded ?? 0), "aria-label": tr("{label} sent", { label: u.label }) }),
       el("small", { class: u.state === "failed" ? "err" : null, text: u.state === "failed" && u.error ? `${state}: ${u.error}` : state }),
     );
   });
   const finished = list.filter((u) => FINISHED.has(u.state));
   b.tray.replaceChildren(
     ...[
-      el("h2", { text: "Uploads" }),
-      rows.length ? el("ul", {}, ...rows) : el("p", { class: "empty", text: "No uploads." }),
-      finished.length ? el("p", { class: "actions" }, el("button", { type: "button", text: "Clear finished", onclick: () => finished.forEach((u) => dismissUpload(u.id)) })) : null,
+      el("h2", { text: tr("Uploads") }),
+      rows.length ? el("ul", {}, ...rows) : el("p", { class: "empty", text: tr("No uploads.") }),
+      finished.length ? el("p", { class: "actions" }, el("button", { type: "button", text: tr("Clear finished"), onclick: () => finished.forEach((u) => dismissUpload(u.id)) })) : null,
     ].filter(Boolean),
   );
 }
@@ -2417,7 +2425,7 @@ const startTimer =
           location.reload();
           return;
         }
-        bar()?.notice(`${appTitle} did not start.`, [["Reload", () => location.reload()]]);
+        bar()?.notice(tr("{appTitle} did not start.", { appTitle }), [[tr("Reload"), () => location.reload()]]);
       }, START_TIMEOUT)
     : null;
 
@@ -2439,7 +2447,7 @@ async function checkVersion() {
   if (v?.release && v.release !== boot.app.release) {
     outdated = true;
     events.dispatchEvent(new CustomEvent("outdated", { detail: v }));
-    bar()?.notice(`A new version of ${appTitle} is available.`, [["Reload", () => guardedLeave(() => location.reload())]]);
+    bar()?.notice(tr("A new version of {appTitle} is available.", { appTitle }), [[tr("Reload"), () => guardedLeave(() => location.reload())]]);
   }
 }
 
@@ -2462,7 +2470,7 @@ document.addEventListener("visibilitychange", () => {
 // A view transition between pages (theme.css) that the browser skips rejects its `ready`; nothing waits on it.
 for (const type of ["pageswap", "pagereveal"]) window.addEventListener(type, (e) => e.viewTransition?.ready.catch(() => {}));
 
-window.addEventListener("offline", () => bar()?.setIndicator("offline", "Offline", () => {}));
+window.addEventListener("offline", () => bar()?.setIndicator("offline", tr("Offline"), () => {}));
 window.addEventListener("online", () => bar()?.setIndicator("offline", ""));
 
 // ───────────────────────── the API ─────────────────────────

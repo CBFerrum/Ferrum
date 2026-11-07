@@ -21,6 +21,7 @@ pub mod packages;
 pub mod request_log;
 pub mod search;
 pub mod shell;
+pub mod shell_words;
 pub mod state;
 pub mod tasks;
 pub mod telemetry;

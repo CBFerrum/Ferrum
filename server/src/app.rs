@@ -446,6 +446,8 @@ impl Hooks for App {
             .layer(axum::middleware::from_fn(screen_paths))
             .layer(axum::middleware::from_fn(isolated_cors))
             .layer(axum::middleware::from_fn(traced))
+            // A signed-out page goes by the browser's language (sign-in, a status page).
+            .layer(axum::middleware::from_fn(crate::shell_words::browser))
             .layer(axum::middleware::from_fn(move |req, next| app_origins(apps_base.clone(), req, next))))
     }
 

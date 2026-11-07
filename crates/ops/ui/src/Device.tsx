@@ -4,11 +4,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { Link, useParams } from "react-router";
-import { api, docPath, formatDateTime, refusal, relativeTime } from "@ferrum/client";
+import { api, docPath, formatDateTime, refusal, relativeTime, t, isolate } from "@ferrum/client";
 import { Alert, Badge, Button, confirmDialog, Dialog, EmptyState, ErrorState, Field, PageLoading, toast, useShellTitle } from "@ferrum/kit";
 import { acceptance, enrollment, latest, recordStep, setLifecycle, startRun, type RunDoc, type StepResult } from "./data";
 import { Tabs } from "./Tabs";
-import { canEnroll, canRetire, expectation, nextSteps, reading, typed } from "./words";
+import { canEnroll, canRetire, expectation, named, nextSteps, reading, typed } from "./words";
 
 interface DeviceDoc {
   id: string;
@@ -23,15 +23,15 @@ interface DeviceDoc {
 function Code({ device, onClose }: { device: string; onClose: () => void }) {
   const q = useQuery({ queryKey: ["ops", "code", device], queryFn: () => enrollment(device), staleTime: Infinity, gcTime: 0 });
   return (
-    <Dialog open title="Enrollment code" onClose={onClose} footer={<Button onClick={onClose}>Done</Button>}>
+    <Dialog open title={t("Enrollment code")} onClose={onClose} footer={<Button onClick={onClose}>{t("Done")}</Button>}>
       {q.isPending ? (
         <PageLoading />
       ) : q.isError ? (
         <ErrorState error={q.error} />
       ) : (
         <div className="stack">
-          <p className="muted">Give this to the site once. It is shown only now, and works once, until {formatDateTime(q.data.expires_at)}.</p>
-          <pre className="ops-json">ferrum-site enroll --code {q.data.code}</pre>
+          <p className="muted">{t("Give this to the site once. It is shown only now, and works once, until {value}.", { value: formatDateTime(q.data.expires_at) })}</p>
+          <pre className="ops-json" dir="ltr">ferrum-site enroll --code {q.data.code}</pre>
         </div>
       )}
     </Dialog>
@@ -45,7 +45,7 @@ function Why({ to, label, device, onClose }: { to: string; label: string; device
   const move = useMutation({
     mutationFn: () => setLifecycle(device, to, reason),
     onSuccess: () => {
-      toast("Done");
+      toast(t("Done"));
       void qc.invalidateQueries({ queryKey: ["ops"] });
       onClose();
     },
@@ -58,14 +58,14 @@ function Why({ to, label, device, onClose }: { to: string; label: string; device
       onClose={onClose}
       footer={
         <>
-          <Button onClick={onClose}>Keep it as it is</Button>
+          <Button onClick={onClose}>{t("Keep it as it is")}</Button>
           <Button variant="primary" disabled={!reason.trim()} loading={move.isPending} onClick={() => move.mutate()}>
-            {label}
+            {isolate(label)}
           </Button>
         </>
       }
     >
-      <Field label="Why" htmlFor={`${id}-why`} required>
+      <Field label={t("Why")} htmlFor={`${id}-why`} required>
         <input id={`${id}-why`} className="input" value={reason} onChange={(e) => setReason(e.target.value)} />
       </Field>
     </Dialog>
@@ -92,25 +92,25 @@ function Record({ run, step }: { run: string; step: StepResult }) {
   return (
     <div className="stack">
       {checks ? (
-        <Field label={step.kind === "Read" ? "What it read" : "What the point reads after the command"} htmlFor={`${id}-v`} required>
+        <Field label={step.kind === "Read" ? t("What it read") : t("What the point reads after the command")} htmlFor={`${id}-v`} required>
           <input id={`${id}-v`} className="input" value={value} onChange={(e) => setValue(e.target.value)} />
         </Field>
       ) : null}
-      <Field label="Note" htmlFor={`${id}-n`}>
+      <Field label={t("Note")} htmlFor={`${id}-n`}>
         <input id={`${id}-n`} className="input" value={note} onChange={(e) => setNote(e.target.value)} />
       </Field>
       <div className="ops-row-actions">
         {checks ? (
           <Button variant="primary" disabled={!value.trim()} loading={save.isPending} onClick={() => save.mutate({ value: typed(value) })}>
-            Record it
+            {t("Record it")}
           </Button>
         ) : (
           <>
             <Button variant="primary" loading={save.isPending} onClick={() => save.mutate({ passed: true })}>
-              It holds
+              {t("It holds")}
             </Button>
             <Button loading={save.isPending} onClick={() => save.mutate({ passed: false })}>
-              It does not
+              {t("It does not")}
             </Button>
           </>
         )}
@@ -129,11 +129,11 @@ function Run({ id }: { id: string }) {
       {q.data.results.map((r) => (
         <li key={r.id}>
           <div>
-            <strong>{r.step_id}</strong> <span className="faint">{r.kind}</span> <Badge tone={OUTCOME_TONE[r.outcome]}>{r.outcome}</Badge>
+            <strong>{isolate(r.step_id)}</strong> <span className="faint">{named(r.kind)}</span> <Badge tone={OUTCOME_TONE[r.outcome]}>{named(r.outcome)}</Badge>
           </div>
           <div className="faint">
-            {expectation(r.expected)}
-            {r.observed !== null && r.observed !== undefined ? ` · seen ${JSON.stringify(r.observed)}` : ""}
+            {isolate(expectation(r.expected))}
+            {r.observed !== null && r.observed !== undefined ? t(" · seen {value}", { value: JSON.stringify(r.observed) }) : ""}
             {r.recorded_by ? ` · ${r.recorded_by}` : ""}
             {r.note ? ` · ${r.note}` : ""}
           </div>
@@ -159,20 +159,20 @@ function Acceptance({ device }: { device: string }) {
   if (q.isPending || q.isError || q.data.procedures.length === 0) return null;
   return (
     <section className="card card-pad stack">
-      <h3>Acceptance on site</h3>
-      <p className="muted">Commissioning waits for a passed run of each. A pass records what was checked here, and certifies nothing beyond it.</p>
+      <h3>{t("Acceptance on site")}</h3>
+      <p className="muted">{t("Commissioning waits for a passed run of each. A pass records what was checked here, and certifies nothing beyond it.")}</p>
       {q.data.procedures.map((p) => {
         const running = q.data.runs.find((r) => r.procedure === p.id && r.status === "Running");
         const last = q.data.runs.find((r) => r.procedure === p.id && r.status !== "Running");
         return (
           <div key={p.id} className="stack">
             <div className="ops-row-actions">
-              <strong>{p.name}</strong>
-              <Badge tone={p.passed ? "green" : "amber"}>{p.passed ? "Passed" : "Not passed yet"}</Badge>
-              {last && last.status === "Failed" ? <span className="faint">Last run failed {relativeTime(last.finished_at ?? last.created_at)}</span> : null}
+              <strong>{isolate(p.name)}</strong>
+              <Badge tone={p.passed ? "green" : "amber"}>{p.passed ? t("Passed") : t("Not passed yet")}</Badge>
+              {last && last.status === "Failed" ? <span className="faint">{t("Last run failed {value}", { value: relativeTime(last.finished_at ?? last.created_at) })}</span> : null}
               {running ? null : (
                 <Button loading={start.isPending && start.variables === p.id} onClick={() => start.mutate(p.id)}>
-                  {p.passed ? "Run it again" : "Start a run"}
+                  {p.passed ? t("Run it again") : t("Start a run")}
                 </Button>
               )}
             </div>
@@ -190,7 +190,7 @@ export function DevicePage() {
   const metrics = useQuery({ queryKey: ["ops", "latest", id], queryFn: () => latest(id), refetchInterval: 15_000 });
   const [asking, setAsking] = useState<{ to: string; label: string } | null>(null);
   const [code, setCode] = useState(false);
-  useShellTitle(q.data?.device_name ?? "Device");
+  useShellTitle(q.data?.device_name ?? t("Device"));
   if (q.isPending) return <PageLoading />;
   if (q.isError) return <ErrorState error={q.error} onRetry={() => void q.refetch()} />;
   const d = q.data;
@@ -199,55 +199,55 @@ export function DevicePage() {
       <Tabs />
       <header className="ops-site-head">
         <div>
-          <h2>{d.device_name}</h2>
+          <h2>{isolate(d.device_name)}</h2>
           <div className="faint">
-            {d.kind} · {d.device_code}
+            {isolate(d.kind)} · {isolate(d.device_code)}
           </div>
         </div>
-        <Link to={`/e/Device/${d.id}`}>Open the record</Link>
+        <Link to={`/e/Device/${d.id}`}>{t("Open the record")}</Link>
       </header>
       <section className="card card-pad stack">
         <div>
-          <h3>Where it is in its life</h3>
-          <Badge tone={d.lifecycle === "Active" ? "green" : d.lifecycle === "Quarantined" ? "red" : "neutral"}>{d.lifecycle}</Badge>
+          <h3>{t("Where it is in its life")}</h3>
+          <Badge tone={d.lifecycle === "Active" ? "green" : d.lifecycle === "Quarantined" ? "red" : "neutral"}>{named(d.lifecycle)}</Badge>
         </div>
-        {d.lifecycle === "Quarantined" ? <Alert tone="warning">It may still report, and it gets no work. It comes back only by enrolling a new key.</Alert> : null}
+        {d.lifecycle === "Quarantined" ? <Alert tone="warning">{t("It may still report, and it gets no work. It comes back only by enrolling a new key.")}</Alert> : null}
         <div className="ops-row-actions">
           {canEnroll(d.lifecycle) ? (
             <Button variant="primary" onClick={() => setCode(true)}>
-              Enroll a key
+              {t("Enroll a key")}
             </Button>
           ) : null}
           {nextSteps(d.lifecycle, d.gateway).map((s) => (
             <Button key={s.to} variant={s.serious ? "default" : "primary"} onClick={() => setAsking(s)}>
-              {s.label}
+              {isolate(s.label)}
             </Button>
           ))}
           {canRetire(d.lifecycle) ? (
             <Button
               onClick={async () => {
-                const ok = await confirmDialog({ title: "Retire this device?", message: "Its keys stop working, for good. The asset it belonged to keeps its history.", confirmLabel: "Retire it", danger: true });
-                if (ok) setAsking({ to: "Retired", label: "Retire it" });
+                const ok = await confirmDialog({ title: t("Retire this device?"), message: t("Its keys stop working, for good. The asset it belonged to keeps its history."), confirmLabel: t("Retire it"), danger: true });
+                if (ok) setAsking({ to: "Retired", label: t("Retire it") });
               }}
             >
-              Retire
+              {t("Retire")}
             </Button>
           ) : null}
         </div>
       </section>
       <section className="card card-pad">
-        <h3>What it last said</h3>
+        <h3>{t("What it last said")}</h3>
         {metrics.isPending ? (
           <PageLoading />
         ) : metrics.isError ? (
           <ErrorState error={metrics.error} onRetry={() => void metrics.refetch()} />
         ) : metrics.data.length === 0 ? (
-          <EmptyState title="Nothing yet" icon="chart" />
+          <EmptyState title={t("Nothing yet")} icon="chart" />
         ) : (
           <ul className="ops-facts ops-metrics">
             {metrics.data.map((m) => (
               <li key={m.metric}>
-                <strong>{m.metric}</strong> {reading(m.value)} <span className={m.age_secs > 600 ? "ops-stale" : "faint"}>{relativeTime(m.at)}</span>
+                <strong>{isolate(m.metric)}</strong> {isolate(reading(m.value))} <span className={m.age_secs > 600 ? "ops-stale" : "faint"}>{isolate(relativeTime(m.at))}</span>
               </li>
             ))}
           </ul>
