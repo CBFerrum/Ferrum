@@ -32,8 +32,10 @@ pub(crate) async fn page(st: &AppState, headers: &HeaderMap, uri: &Uri) -> ApiRe
         Err(res) => return Ok(res),
     };
     let html = format!(
-        r#"<!doctype html><html lang="en"><head>{}<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Assistant · Ferrum</title><link rel="stylesheet" href="/_shell/v1/assistant.css"><script type="module" src="/_shell/v1/assistant.js"></script></head><body>{SHELL_BODY}<main id="main" class="fa" aria-label="Assistant"></main></body></html>"#,
-        sh::shell_head(&bootstrap)
+        r#"<!doctype html>{}<head>{}<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{} · Ferrum</title><link rel="stylesheet" href="/_shell/v1/assistant.css"><script type="module" src="/_shell/v1/assistant.js"></script></head><body>{SHELL_BODY}<main id="main" class="fa" aria-label="Assistant"></main></body></html>"#,
+        sh::html_open(&crate::shell_words::page_language(Some(&bootstrap))),
+        sh::shell_head(&bootstrap),
+        sh::esc(&crate::shell_words::tr(&crate::shell_words::page_language(Some(&bootstrap)), "Assistant"))
     );
     Ok(sh::page_response(StatusCode::OK, html, &sh::csp(None, &Value::Null)))
 }

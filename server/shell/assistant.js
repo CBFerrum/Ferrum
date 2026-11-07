@@ -24,6 +24,22 @@ const ICONS = {
   history: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>',
 };
 
+// The page's bootstrap, as the bar reads it: the person's language and its words.
+const BOOT = (() => {
+  try {
+    return JSON.parse(document.getElementById("ferrum-bootstrap")?.textContent ?? "null");
+  } catch {
+    return null;
+  }
+})();
+// The page's words in the person's language: the workspace's own (Admin, Interface words) over the
+// server's catalog of the shell's words (server/shell/locales), English where neither has one.
+const WORDS = { ...(BOOT?.locale?.shell ?? {}), ...(BOOT?.locale?.words ?? {}) };
+function tr(english, vars) {
+  const text = WORDS[english] ?? english;
+  return vars ? text.replace(/\{(\w+)\}/g, (whole, key) => (key in vars ? String(vars[key]) : whole)) : text;
+}
+
 const SVG_NS = "http://www.w3.org/2000/svg";
 function icon(name, size = 16) {
   const svg = document.createElementNS(SVG_NS, "svg");
@@ -175,7 +191,7 @@ document.addEventListener("click", (e) => {
 // ───────────────────────── talking to the server ─────────────────────────
 
 async function failure(res) {
-  let message = `The server answered ${res.status}.`;
+  let message = tr("The server answered {status}.", { status: res.status });
   try {
     const body = await res.json();
     message = body.message ?? body.error ?? message;
@@ -194,7 +210,7 @@ async function api(method, path, body) {
   });
   if (res.status === 401) {
     location.assign(`/login?next=${encodeURIComponent(location.pathname)}`);
-    throw new Error("Signed out.");
+    throw new Error(tr("Signed out."));
   }
   if (!res.ok) throw await failure(res);
   return res.status === 204 ? null : res.json();
@@ -253,17 +269,17 @@ let pendingNode = null;
 let menuOpen = false;
 
 const log = el("div", { class: "fa-log", role: "log", "aria-live": "polite", "aria-relevant": "additions" });
-const input = el("textarea", { class: "fa-input", rows: "1", placeholder: "Ask about your work…", "aria-label": "Message the assistant", maxlength: "20000" });
-const sendBtn = el("button", { type: "submit", class: "fa-send", "aria-label": "Send", title: "Send" }, icon("arrow-up", 18));
-const titleEl = el("h1", { class: "fa-title", text: "Assistant" });
-const menu = el("div", { class: "fa-menu", role: "dialog", "aria-label": "Conversations", hidden: true });
-const historyBtn = el("button", { type: "button", class: "fa-icon-btn", "aria-label": "Conversations", title: "Conversations", "aria-expanded": "false", onclick: () => toggleMenu() }, icon("history", 17));
-const newBtn = el("button", { type: "button", class: "fa-icon-btn", "aria-label": "New conversation", title: "New conversation", onclick: () => fresh() }, icon("plus", 18));
+const input = el("textarea", { class: "fa-input", rows: "1", placeholder: tr("Ask about your work…"), "aria-label": tr("Message the assistant"), maxlength: "20000" });
+const sendBtn = el("button", { type: "submit", class: "fa-send", "aria-label": tr("Send"), title: tr("Send") }, icon("arrow-up", 18));
+const titleEl = el("h1", { class: "fa-title", text: tr("Assistant") });
+const menu = el("div", { class: "fa-menu", role: "dialog", "aria-label": tr("Conversations"), hidden: true });
+const historyBtn = el("button", { type: "button", class: "fa-icon-btn", "aria-label": tr("Conversations"), title: tr("Conversations"), "aria-expanded": "false", onclick: () => toggleMenu() }, icon("history", 17));
+const newBtn = el("button", { type: "button", class: "fa-icon-btn", "aria-label": tr("New conversation"), title: tr("New conversation"), onclick: () => fresh() }, icon("plus", 18));
 const form = el(
   "form",
   { class: "fa-compose", onsubmit: (e) => (e.preventDefault(), running() ? stop() : send()) },
   el("div", { class: "fa-field" }, input, sendBtn),
-  el("p", { class: "fa-hint", text: "The assistant can make mistakes. You approve every change it makes." }),
+  el("p", { class: "fa-hint", text: tr("The assistant can make mistakes. You approve every change it makes.") }),
 );
 
 const running = () => thread?.state === "running";
@@ -271,37 +287,37 @@ const running = () => thread?.state === "running";
 function setBusy() {
   const busy = running();
   sendBtn.replaceChildren(icon(busy ? "square" : "arrow-up", busy ? 14 : 18));
-  sendBtn.setAttribute("aria-label", busy ? "Stop" : "Send");
-  sendBtn.title = busy ? "Stop" : "Send";
+  sendBtn.setAttribute("aria-label", busy ? tr("Stop") : tr("Send"));
+  sendBtn.title = busy ? tr("Stop") : tr("Send");
   sendBtn.classList.toggle("fa-stop", busy);
   input.disabled = thread?.state === "waiting";
-  input.placeholder = thread?.state === "waiting" ? "Allow or refuse the change above first…" : "Ask about your work…";
+  input.placeholder = thread?.state === "waiting" ? tr("Allow or refuse the change above first…") : tr("Ask about your work…");
 }
 
 // ───────────────────────── drawing ─────────────────────────
 
 const TOOL_WORDS = {
-  ferrum_overview: "Looked at the workspace",
-  describe_entity: "Read how records are kept",
-  search_records: "Searched records",
-  get_record: "Opened a record",
-  preview_record: "Previewed a record",
-  run_report: "Ran a report",
-  get_audit_trail: "Read a record's history",
-  get_collaboration: "Read comments and activity",
-  my_assignments: "Looked at your assignments",
-  create_record: "Create a record",
-  update_record: "Change a record",
-  delete_record: "Delete a record",
-  submit_record: "Submit a record",
-  cancel_record: "Cancel a record",
-  amend_record: "Amend a record",
-  run_action: "Run an action",
-  add_comment: "Comment",
-  assign_record: "Assign a record",
-  set_tags: "Tag a record",
-  workflow_transition: "Move a record on",
-  customize_entity: "Customize records",
+  ferrum_overview: tr("Looked at the workspace"),
+  describe_entity: tr("Read how records are kept"),
+  search_records: tr("Searched records"),
+  get_record: tr("Opened a record"),
+  preview_record: tr("Previewed a record"),
+  run_report: tr("Ran a report"),
+  get_audit_trail: tr("Read a record's history"),
+  get_collaboration: tr("Read comments and activity"),
+  my_assignments: tr("Looked at your assignments"),
+  create_record: tr("Create a record"),
+  update_record: tr("Change a record"),
+  delete_record: tr("Delete a record"),
+  submit_record: tr("Submit a record"),
+  cancel_record: tr("Cancel a record"),
+  amend_record: tr("Amend a record"),
+  run_action: tr("Run an action"),
+  add_comment: tr("Comment"),
+  assign_record: tr("Assign a record"),
+  set_tags: tr("Tag a record"),
+  workflow_transition: tr("Move a record on"),
+  customize_entity: tr("Customize records"),
 };
 
 function toolLabel(item) {
@@ -358,8 +374,8 @@ function sourceOf(item) {
     const named = NAMED.exec(results.get(item.id)?.text ?? "")?.[1];
     return { href: `/open/${encodeURIComponent(i.entity)}/${encodeURIComponent(i.id)}`, text: `${i.entity} ${named ?? String(i.id).slice(0, 8)}` };
   }
-  if (item.name === "search_records" && i.entity) return { href: `/open/${encodeURIComponent(i.entity)}`, text: `${i.entity} (searched)` };
-  if (item.name === "run_report" && i.name) return { href: `/data/r/${encodeURIComponent(i.name)}`, text: `Report ${i.name}` };
+  if (item.name === "search_records" && i.entity) return { href: `/open/${encodeURIComponent(i.entity)}`, text: tr("{entity} (searched)", { entity: i.entity }) };
+  if (item.name === "run_report" && i.name) return { href: `/data/r/${encodeURIComponent(i.name)}`, text: tr("Report {name}", { name: i.name }) };
   return null;
 }
 
@@ -388,7 +404,7 @@ function drawMessage(m) {
   const node = el("div", { class: "fa-msg fa-bot", "data-seq": m.seq });
   for (const it of m.items) {
     if (it.kind === "text" && it.text) node.append(rich(it.text));
-    else if (it.kind === "thinking") node.append(el("details", { class: "fa-thinking" }, el("summary", { text: "Reasoning" }), rich(it.text)));
+    else if (it.kind === "thinking") node.append(el("details", { class: "fa-thinking" }, el("summary", { text: tr("Reasoning") }), rich(it.text)));
     else if (it.kind === "tool") {
       node.append(toolRow(it));
       if (READS.has(it.name)) sources.push(it);
@@ -432,13 +448,13 @@ function drawPending() {
   for (const c of calls) tools.get(c.id)?.wait();
   const decide = (allow) => (e) => {
     for (const b of pendingNode.querySelectorAll("button")) b.disabled = true;
-    e.currentTarget.textContent = allow ? "Allowing…" : "Refusing…";
+    e.currentTarget.textContent = allow ? tr("Allowing…") : tr("Refusing…");
     follow(`/api/assistant/threads/${thread.id}/decide`, { allow });
   };
   pendingNode = el(
     "section",
-    { class: "fa-confirm", "aria-label": "Changes to approve" },
-    el("p", { class: "fa-confirm-title" }, icon("shield-check", 16), el("span", { text: calls.length === 1 ? "The assistant wants to make this change:" : `The assistant wants to make ${calls.length} changes:` })),
+    { class: "fa-confirm", "aria-label": tr("Changes to approve") },
+    el("p", { class: "fa-confirm-title" }, icon("shield-check", 16), el("span", { text: calls.length === 1 ? tr("The assistant wants to make this change:") : tr("The assistant wants to make {length} changes:", { length: calls.length }) })),
     el(
       "ul",
       {},
@@ -454,8 +470,8 @@ function drawPending() {
     el(
       "div",
       { class: "fa-confirm-actions" },
-      el("button", { type: "button", class: "fa-btn", onclick: decide(false), text: "Don't allow" }),
-      el("button", { type: "button", class: "fa-btn fa-primary", onclick: decide(true), text: calls.length === 1 ? "Allow" : "Allow all" }),
+      el("button", { type: "button", class: "fa-btn", onclick: decide(false), text: tr("Don't allow") }),
+      el("button", { type: "button", class: "fa-btn fa-primary", onclick: decide(true), text: calls.length === 1 ? tr("Allow") : tr("Allow all") }),
     ),
   );
   log.append(pendingNode);
@@ -463,7 +479,7 @@ function drawPending() {
   pendingNode.querySelector(".fa-primary")?.focus({ preventScroll: true });
 }
 
-const SUGGESTIONS = ["What needs my attention today?", "Which invoices are overdue?", "Summarize what changed this week", "Find a customer and their open orders"];
+const SUGGESTIONS = [tr("What needs my attention today?"), tr("Which invoices are overdue?"), tr("Summarize what changed this week"), tr("Find a customer and their open orders")];
 
 /** The questions to offer: those of the app the panel was opened from, else the general ones. */
 function suggested() {
@@ -494,15 +510,15 @@ function drawThread() {
   draftNode = null;
   pendingNode = null;
   log.replaceChildren();
-  titleEl.textContent = thread?.title || "Assistant";
+  titleEl.textContent = thread?.title || tr("Assistant");
   if (!thread?.messages?.length) {
     log.append(
       el(
         "div",
         { class: "fa-empty" },
         el("span", { class: "fa-mark" }, icon("sparkles", 22)),
-        el("h2", { text: domains ? `How can I help with ${domains[0].title}?` : "How can I help?" }),
-        el("p", { text: "Ask about your records, or ask me to do something. I work with your permissions, and I ask before changing anything." }),
+        el("h2", { text: domains ? tr("How can I help with {title}?", { title: domains[0].title }) : tr("How can I help?") }),
+        el("p", { text: tr("Ask about your records, or ask me to do something. I work with your permissions, and I ask before changing anything.") }),
         el(
           "div",
           { class: "fa-suggestions" },
@@ -574,7 +590,7 @@ function onEvent(ev) {
       thread.draft = {};
       drawDraft();
       thread.state = "idle";
-      note(ev.message ?? "The assistant could not answer.", "error");
+      note(ev.message ?? tr("The assistant could not answer."), "error");
       setBusy();
       refreshList();
       break;
@@ -753,7 +769,7 @@ function drawMenu() {
     }
   };
   menu.replaceChildren(
-    el("p", { class: "fa-menu-title", text: "Conversations" }),
+    el("p", { class: "fa-menu-title", text: tr("Conversations") }),
     list.length
       ? el(
           "ul",
@@ -765,18 +781,18 @@ function drawMenu() {
               el(
                 "button",
                 { type: "button", class: "fa-thread", onclick: () => (closeMenu(), load(t.id)) },
-                el("span", { class: "fa-thread-title", text: t.title || "New conversation" }),
-                el("small", { text: t.state === "running" ? "Answering…" : t.state === "waiting" ? "Waiting for you" : when(t.updated_at) }),
+                el("span", { class: "fa-thread-title", text: t.title || tr("New conversation") }),
+                el("small", { text: t.state === "running" ? tr("Answering…") : t.state === "waiting" ? tr("Waiting for you") : when(t.updated_at) }),
               ),
               el(
                 "button",
                 {
                   type: "button",
                   class: "fa-icon-btn",
-                  "aria-label": `Delete “${t.title || "New conversation"}”`,
-                  title: "Delete",
+                  "aria-label": tr("Delete “{title}”", { title: t.title || tr("New conversation") }),
+                  title: tr("Delete"),
                   onclick: async () => {
-                    if (!confirm("Delete this conversation? It cannot be brought back.")) return;
+                    if (!confirm(tr("Delete this conversation? It cannot be brought back."))) return;
                     try {
                       await api("DELETE", `/api/assistant/threads/${t.id}`);
                       if (thread?.id === t.id) fresh();
@@ -791,13 +807,13 @@ function drawMenu() {
             ),
           ),
         )
-      : el("p", { class: "fa-muted", text: "No conversations yet." }),
-    status?.admin ? el("button", { type: "button", class: "fa-link", text: "Turn the assistant off for this workspace", onclick: () => setWorkspace(false) }) : null,
+      : el("p", { class: "fa-muted", text: tr("No conversations yet.") }),
+    status?.admin ? el("button", { type: "button", class: "fa-link", text: tr("Turn the assistant off for this workspace"), onclick: () => setWorkspace(false) }) : null,
   );
 }
 
 async function setWorkspace(on) {
-  if (!on && !confirm("Turn the assistant off for everyone in this workspace? You can turn it on again here.")) return;
+  if (!on && !confirm(tr("Turn the assistant off for everyone in this workspace? You can turn it on again here."))) return;
   try {
     await api("PUT", "/api/admin/settings", { assistant: on });
     closeMenu();
@@ -859,9 +875,9 @@ async function start() {
         "div",
         { class: "fa-off" },
         el("span", { class: "fa-mark" }, icon("sparkles", 22)),
-        el("h2", { text: "The assistant is not available" }),
+        el("h2", { text: tr("The assistant is not available") }),
         el("p", { text: status.reason ?? "" }),
-        status.admin && /turned the assistant off/.test(status.reason ?? "") ? el("button", { type: "button", class: "fa-btn fa-primary", text: "Turn it on", onclick: () => setWorkspace(true) }) : null,
+        status.admin && /turned the assistant off/.test(status.reason ?? "") ? el("button", { type: "button", class: "fa-btn fa-primary", text: tr("Turn it on"), onclick: () => setWorkspace(true) }) : null,
       ),
     );
     return shell()?.ready?.();
@@ -871,7 +887,7 @@ async function start() {
     log,
     form,
   );
-  if (!inPanel) shell()?.title?.("Assistant");
+  if (!inPanel) shell()?.title?.(tr("Assistant"));
   const last = remembered() ?? status.threads?.find((t) => t.state !== "idle")?.id;
   if (last) await load(last);
   else drawThread();

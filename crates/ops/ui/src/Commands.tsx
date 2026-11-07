@@ -2,14 +2,14 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router";
-import { formatDateTime } from "@ferrum/client";
+import { formatDateTime, t, isolate } from "@ferrum/client";
 import { Badge, EmptyState, ErrorState, PageLoading, useShellTitle } from "@ferrum/kit";
 import { commands } from "./data";
 import { Tabs } from "./Tabs";
 import { state, STATES } from "./words";
 
 export function Commands() {
-  useShellTitle("Commands");
+  useShellTitle(t("Commands"));
   const [params, setParams] = useSearchParams();
   const only = params.get("state") ?? "";
   const q = useQuery({ queryKey: ["ops", "commands", only], queryFn: () => commands(only ? { state: only, limit: 200 } : { limit: 200 }), refetchInterval: 15_000 });
@@ -17,12 +17,12 @@ export function Commands() {
     <div className="ops-page">
       <Tabs />
       <label className="ops-filter">
-        Show{" "}
+        {t("Show")}{isolate(" ")}
         <select className="select" value={only} onChange={(e) => setParams(e.target.value ? { state: e.target.value } : {})}>
-          <option value="">Everything</option>
+          <option value="">{t("Everything")}</option>
           {Object.entries(STATES).map(([s, w]) => (
             <option key={s} value={s}>
-              {w.label}
+              {isolate(w.label)}
             </option>
           ))}
         </select>
@@ -32,19 +32,19 @@ export function Commands() {
       ) : q.isError ? (
         <ErrorState error={q.error} onRetry={() => void q.refetch()} />
       ) : q.data.length === 0 ? (
-        <EmptyState title={only ? "None like that" : "No commands yet"} icon="list" />
+        <EmptyState title={only ? t("None like that") : t("No commands yet")} icon="list" />
       ) : (
         <ul className="ops-list card">
           {q.data.map((c) => (
             <li key={c.id} className="ops-row">
               <div className="ops-row-body">
                 <Link to={`/c/${c.id}`}>
-                  {c.operation}
+                  {isolate(c.operation)}
                   {c.target_code ? ` · ${c.target_code}` : ""}
-                </Link>{" "}
-                <Badge tone={state(c.state).tone}>{state(c.state).label}</Badge>
+                </Link>{isolate(" ")}
+                <Badge tone={state(c.state).tone}>{isolate(state(c.state).label)}</Badge>
                 <div className="faint">
-                  {formatDateTime(c.issued_at)} · {c.domain}
+                  {isolate(formatDateTime(c.issued_at))} · {isolate(c.domain)}
                 </div>
               </div>
             </li>
