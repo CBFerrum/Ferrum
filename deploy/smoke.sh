@@ -7,7 +7,8 @@
 # the API and live updates on the one origin; a Sales Invoice is created, submitted and printed as
 # HTML and PDF; the server recovers from a database restart; the
 # database and the attachments are backed up, the stack is deleted with its volumes and restored
-# from the backups, data, sessions and numbering intact; a short load test runs without errors.
+# from the backups, data, sessions and numbering intact, and a person erased after the database's
+# backup is erased again by `ferrum task reapply_erasures`; a short load test runs without errors.
 # Everything is removed afterwards. CI runs it on every image it builds. With FERRUM_EDITORS_IMAGE,
 # the browser editors' server (editors.yml) runs beside the stack and is checked too; with
 # SMOKE_MEET=1, the meeting server (meet.yml), which must accept the passes Ferrum signs, and
@@ -308,7 +309,15 @@ attachment=$(curl -fsS "${auth[@]}" -F entity=SalesInvoice -F record_id="$id" -F
   fail "attaching a file"
 file_id=$(json 'd["id"]' <<<"$attachment")
 file_sha=$(json 'd["sha256"]' <<<"$attachment")
+# A customer erased after the database's backup and before the files' (docs/operations.md, "a
+# database restored from a backup"): the restore brings their details back, and the erasure journal
+# kept with the files, which outlive that backup, takes them away again.
+erasee=$(curl -fsS "${auth[@]}" -H 'content-type: application/json' "$API/api/v1/Customer" \
+  -d '{"customer_name": "Erase Rehearsal", "customer_type": "Individual", "email": "erase-rehearsal@smoke.test"}' | json 'd["id"]') ||
+  fail "a customer to erase"
 compose exec -T db pg_dump -U postgres -Fc ferrum > "$work/ferrum.dump" || fail "the database backup"
+curl -fsS "${auth[@]}" -H 'content-type: application/json' "$API/api/admin/personal-data/erase" \
+  -d '{"email": "erase-rehearsal@smoke.test", "reason": "smoke: erased after the backup"}' > /dev/null || fail "the erasure"
 compose exec -T ferrum tar -C /var/lib/ferrum/files -czf - . > "$work/files.tgz" || fail "the attachments backup"
 compose down -v --remove-orphans
 compose up -d db
@@ -331,6 +340,11 @@ curl -fsSL "${auth[@]}" "$API/files/$file_id" -o "$work/restored.pdf" || fail "t
 restored=$(invoice restored) || fail "invoicing after the restore"
 [ "$(json 'd["docstatus"]' <<<"$restored")" = "1" ] || fail "the invoice after the restore was not submitted: $restored"
 echo "    $(json 'd["number"]' <<<"$restored") after the restore"
+[ "$(curl -fsS "${auth[@]}" "$API/api/v1/Customer/$erasee" | json 'd["email"]')" = "erase-rehearsal@smoke.test" ] ||
+  fail "the restored database should hold the customer erased after its backup"
+compose exec -T ferrum ferrum task reapply_erasures || fail "reapplying the erasures"
+[ "$(curl -fsS "${auth[@]}" "$API/api/v1/Customer/$erasee" | json 'd["email"]')" = "None" ] || fail "the erasure, reapplied after the restore"
+echo "    the customer erased after the backup was erased again"
 
 # On the restored stack.
 # The reference workload and its targets (docs/operations.md): a regression past them fails the build.

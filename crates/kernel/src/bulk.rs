@@ -1,6 +1,7 @@
 //! One operation over many records of an entity (a list selection or everything a filter
-//! matches). Each record runs in its own transaction with the caller's permissions, so one
-//! failure never undoes the others, and every record reports its own outcome.
+//! matches), and an import of many new ones. Each record runs in its own transaction with the
+//! caller's permissions, so one failure never undoes the others, and every record reports its own
+//! outcome. What they set off waits behind everyone's single edits (bulk priority, docs/events.md).
 
 use crate::db::Trace;
 use crate::error::{Error, Result};
@@ -13,6 +14,9 @@ use uuid::Uuid;
 
 /// Most records one bulk request may touch.
 pub const MAX_BULK: usize = 500;
+
+/// Most rows one import request may hold.
+pub const MAX_IMPORT: usize = 5_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
@@ -125,6 +129,37 @@ impl Kernel {
                 self.set_tags(ctx, entity, id, &current).await.map(drop)
             }
         }
+    }
+}
+
+impl Kernel {
+    /// `rows` made new records of `entity`, as the caller, each in its own transaction and at bulk
+    /// priority: the ids made, and each row that was not, by its index in `rows`.
+    pub async fn import_rows(&self, ctx: &Ctx, entity: &str, rows: &[Value]) -> Result<(Vec<Value>, Vec<Value>)> {
+        ctx.require(entity, crate::Action::Import)?;
+        if rows.len() > MAX_IMPORT {
+            return Err(Error::invalid(format!("at most {MAX_IMPORT} rows per request")));
+        }
+        Trace::at_priority(PRIORITY_BULK)
+            .scope(async {
+                let (mut made, mut failed) = (Vec::new(), Vec::new());
+                for (i, row) in rows.iter().enumerate() {
+                    let Some(doc) = row.as_object().cloned() else {
+                        failed.push(json!({"row": i, "error": "invalid", "message": "not an object"}));
+                        continue;
+                    };
+                    match self.insert(ctx, entity, doc).await {
+                        Ok(d) => made.push(d.get("id").cloned().unwrap_or(Value::Null)),
+                        Err(e) => {
+                            let mut v = row_error(&e);
+                            v["row"] = json!(i);
+                            failed.push(v);
+                        }
+                    }
+                }
+                Ok((made, failed))
+            })
+            .await
     }
 }
 
