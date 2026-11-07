@@ -4,6 +4,14 @@
 // who had one signs in to it, and finds the new workspace there.
 
 const boot = JSON.parse(document.getElementById("ferrum-signup").textContent);
+
+// The page's words in the person's language: the workspace's own (Admin, Interface words) over the
+// server's catalog of the shell's words (server/shell/locales), English where neither has one.
+const WORDS = { ...(boot?.locale?.shell ?? {}), ...(boot?.locale?.words ?? {}) };
+function tr(english, vars) {
+  const text = WORDS[english] ?? english;
+  return vars ? text.replace(/\{(\w+)\}/g, (whole, key) => (key in vars ? String(vars[key]) : whole)) : text;
+}
 const form = document.getElementById("ferrum-login-form");
 const fields = document.getElementById("ferrum-login-fields");
 const error = document.getElementById("ferrum-login-error");
@@ -41,7 +49,7 @@ async function post(path, body) {
     body: JSON.stringify(body),
   });
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data?.fields?.[0] ? `${data.fields[0].field}: ${data.fields[0].message}` : (data?.error?.message ?? data?.message ?? `That did not work (${r.status})`));
+  if (!r.ok) throw new Error(data?.fields?.[0] ? `${data.fields[0].field}: ${data.fields[0].message}` : (data?.error?.message ?? data?.message ?? tr("That did not work ({status})", { status: r.status })));
   return data;
 }
 
@@ -57,19 +65,19 @@ function slugOf(name) {
 }
 
 function first() {
-  heading.textContent = "Make your Ferrum workspace";
+  heading.textContent = tr("Make your Ferrum workspace");
   fields.replaceChildren();
-  if (boot.domains?.length) fields.append(text("p", `With an address at ${boot.domains.join(", ")}.`, "ferrum-hint"));
-  field("email", "Your work email", "email", email ?? "", { autocomplete: "email" }).focus();
-  submit.textContent = "Email me a code";
+  if (boot.domains?.length) fields.append(text("p", tr("With an address at {domains}.", { domains: boot.domains.join(", ") }), "ferrum-hint"));
+  field("email", tr("Your work email"), "email", email ?? "", { autocomplete: "email" }).focus();
+  submit.textContent = tr("Email me a code");
 }
 
 function second() {
-  heading.textContent = "Name your workspace";
-  fields.replaceChildren(text("p", `We emailed a code to ${email}. It works for 15 minutes.`, "ferrum-hint"));
-  field("code", "Code from the email", "text", "", { autocomplete: "one-time-code", inputMode: "numeric", maxLength: 9 }).focus();
-  const name = field("name", "Workspace name", "text", "", { autocomplete: "organization", maxLength: 200 });
-  const slug = field("slug", "Its address", "text", "", { pattern: "[a-z0-9][a-z0-9-]{1,62}", maxLength: 63, spellcheck: false, autocapitalize: "off" });
+  heading.textContent = tr("Name your workspace");
+  fields.replaceChildren(text("p", tr("We emailed a code to {email}. It works for 15 minutes.", { email }), "ferrum-hint"));
+  field("code", tr("Code from the email"), "text", "", { autocomplete: "one-time-code", inputMode: "numeric", maxLength: 9 }).focus();
+  const name = field("name", tr("Workspace name"), "text", "", { autocomplete: "organization", maxLength: 200 });
+  const slug = field("slug", tr("Its address"), "text", "", { pattern: "[a-z0-9][a-z0-9-]{1,62}", maxLength: 63, spellcheck: false, autocapitalize: "off" });
   const where = text("p", "", "ferrum-hint");
   slug.closest("label").after(where);
   const show = () => (where.textContent = slug.value && boot.base ? `${slug.value}.${boot.base}` : "");
@@ -81,16 +89,16 @@ function second() {
     slugTouched = true;
     show();
   });
-  field("full_name", "Your name", "text", "", { autocomplete: "name", maxLength: 200 });
-  field("password", "Password", "password", "", { autocomplete: "new-password", minLength: 8 });
-  fields.append(text("p", "You will be its administrator. You can add people and apps once you are in.", "ferrum-hint"));
-  const back = Object.assign(document.createElement("button"), { type: "button", className: "ferrum-switch", textContent: "Use another address, or send the code again" });
+  field("full_name", tr("Your name"), "text", "", { autocomplete: "name", maxLength: 200 });
+  field("password", tr("Password"), "password", "", { autocomplete: "new-password", minLength: 8 });
+  fields.append(text("p", tr("You will be its administrator. You can add people and apps once you are in."), "ferrum-hint"));
+  const back = Object.assign(document.createElement("button"), { type: "button", className: "ferrum-switch", textContent: tr("Use another address, or send the code again") });
   back.addEventListener("click", () => {
     say("");
     first();
   });
   fields.append(back);
-  submit.textContent = "Make the workspace";
+  submit.textContent = tr("Make the workspace");
 }
 
 function made(data) {
@@ -98,9 +106,9 @@ function made(data) {
     location.assign("/");
     return;
   }
-  heading.textContent = "Your workspace is ready";
-  const p = text("p", "You already have a Ferrum account with this address: sign in with it, and the new workspace is in your list.");
-  const a = Object.assign(document.createElement("a"), { className: "ferrum-button", href: "/login", textContent: "Sign in" });
+  heading.textContent = tr("Your workspace is ready");
+  const p = text("p", tr("You already have a Ferrum account with this address: sign in with it, and the new workspace is in your list."));
+  const a = Object.assign(document.createElement("a"), { className: "ferrum-button", href: "/login", textContent: tr("Sign in") });
   form.replaceWith(p, a);
 }
 

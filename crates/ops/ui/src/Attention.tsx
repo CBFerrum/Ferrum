@@ -4,16 +4,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { Link } from "react-router";
-import { formatDateTime, refusal } from "@ferrum/client";
+import { formatDateTime, refusal, t, isolate } from "@ferrum/client";
 import { Badge, Button, Dialog, EmptyState, ErrorState, Field, PageLoading, toast, useShellTitle } from "@ferrum/kit";
 import { act, type CommandRow, commands } from "./data";
 import { Tabs } from "./Tabs";
 import { state } from "./words";
 
 const ENDINGS = [
-  { to: "Completed", label: "It finished" },
-  { to: "Failed", label: "It did not finish" },
-  { to: "Aborted", label: "It was stopped" },
+  { to: "Completed", get label() { return t("It finished"); } },
+  { to: "Failed", get label() { return t("It did not finish"); } },
+  { to: "Aborted", get label() { return t("It was stopped"); } },
 ];
 
 function Settle({ c, onClose }: { c: CommandRow; onClose: () => void }) {
@@ -24,7 +24,7 @@ function Settle({ c, onClose }: { c: CommandRow; onClose: () => void }) {
   const settle = useMutation({
     mutationFn: () => act(c.id, "reconcile", { to, evidence }),
     onSuccess: () => {
-      toast("Recorded");
+      toast(t("Recorded"));
       void qc.invalidateQueries({ queryKey: ["ops"] });
       onClose();
     },
@@ -33,28 +33,28 @@ function Settle({ c, onClose }: { c: CommandRow; onClose: () => void }) {
   return (
     <Dialog
       open
-      title="What did you find?"
+      title={t("What did you find?")}
       onClose={onClose}
       footer={
         <>
-          <Button onClick={onClose}>Not yet</Button>
+          <Button onClick={onClose}>{t("Not yet")}</Button>
           <Button variant="primary" disabled={!to || !evidence.trim()} loading={settle.isPending} onClick={() => settle.mutate()}>
-            Record it
+            {t("Record it")}
           </Button>
         </>
       }
     >
       <div className="stack">
-        <p className="muted">Look at the equipment first. If it needs doing again, that is a new command: this only says what happened.</p>
+        <p className="muted">{t("Look at the equipment first. If it needs doing again, that is a new command: this only says what happened.")}</p>
         <fieldset className="ops-choices">
-          <legend>How it ended</legend>
+          <legend>{t("How it ended")}</legend>
           {ENDINGS.map((e) => (
             <label key={e.to}>
-              <input type="radio" name={`${id}-to`} checked={to === e.to} onChange={() => setTo(e.to)} /> {e.label}
+              <input type="radio" name={`${id}-to`} checked={to === e.to} onChange={() => setTo(e.to)} /> {isolate(e.label)}
             </label>
           ))}
         </fieldset>
-        <Field label="What you found" htmlFor={`${id}-ev`} required>
+        <Field label={t("What you found")} htmlFor={`${id}-ev`} required>
           <textarea id={`${id}-ev`} className="textarea" rows={3} value={evidence} onChange={(e) => setEvidence(e.target.value)} />
         </Field>
       </div>
@@ -72,28 +72,28 @@ function Row({ c }: { c: CommandRow }) {
   return (
     <li className="ops-row">
       <div className="ops-row-body">
-        <Link to={`/c/${c.id}`}>{c.operation}</Link> <Badge tone={c.conflict ? "red" : word.tone}>{c.conflict ? "Two endings" : word.label}</Badge>
-        {c.issued_kind === "ai" ? <Badge tone="purple">Proposed by AI</Badge> : null}
+        <Link to={`/c/${c.id}`}>{isolate(c.operation)}</Link> <Badge tone={c.conflict ? "red" : word.tone}>{c.conflict ? t("Two endings") : word.label}</Badge>
+        {c.issued_kind === "ai" ? <Badge tone="purple">{t("Proposed by AI")}</Badge> : null}
         <div className="faint">
           {c.target_code ? `${c.target_code} · ` : ""}
-          {formatDateTime(c.issued_at)} · {c.domain}
+          {isolate(formatDateTime(c.issued_at))} · {isolate(c.domain)}
         </div>
-        <p className="muted">{c.conflict ? "It reported two different endings. The first stands until someone looks." : word.says}</p>
-        {c.correlation_id ? <p className="muted">{c.correlation_id}</p> : null}
+        <p className="muted">{c.conflict ? t("It reported two different endings. The first stands until someone looks.") : word.says}</p>
+        {c.correlation_id ? <p className="muted">{isolate(c.correlation_id)}</p> : null}
       </div>
       <div className="ops-row-actions">
         {c.state === "Proposed" ? (
           <>
             <Button variant="primary" loading={approve.isPending} onClick={() => approve.mutate()}>
-              Approve
+              {t("Approve")}
             </Button>
             <Button loading={refuse.isPending} onClick={() => refuse.mutate()}>
-              Refuse
+              {t("Refuse")}
             </Button>
           </>
         ) : (
           <Button variant="primary" onClick={() => setSettling(true)}>
-            Say what happened
+            {t("Say what happened")}
           </Button>
         )}
       </div>
@@ -103,7 +103,7 @@ function Row({ c }: { c: CommandRow }) {
 }
 
 export function Attention() {
-  useShellTitle("Needs a person");
+  useShellTitle(t("Needs a person"));
   const q = useQuery({ queryKey: ["ops", "attention"], queryFn: () => commands({ needs_person: 1, limit: 200 }), refetchInterval: 15_000 });
   return (
     <div className="ops-page">
@@ -113,8 +113,8 @@ export function Attention() {
       ) : q.isError ? (
         <ErrorState error={q.error} onRetry={() => void q.refetch()} />
       ) : q.data.length === 0 ? (
-        <EmptyState title="Nothing needs you" icon="check">
-          Everything on the floor is accounted for.
+        <EmptyState title={t("Nothing needs you")} icon="check">
+          {t("Everything on the floor is accounted for.")}
         </EmptyState>
       ) : (
         <ul className="ops-list card">

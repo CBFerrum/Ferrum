@@ -1119,7 +1119,18 @@ pub fn direction(tag: &str) -> &'static str {
 pub fn locale(language: Option<&str>, timezone: &str, own_zone: Option<&str>) -> Value {
     let chosen = language.filter(|l| !l.is_empty());
     let tag = chosen.unwrap_or("en");
-    json!({"language": tag, "timezone": timezone, "display_timezone": own_zone.unwrap_or(timezone), "dir": direction(tag), "chosen": chosen.is_some()})
+    let mut locale =
+        json!({"language": tag, "timezone": timezone, "display_timezone": own_zone.unwrap_or(timezone), "dir": direction(tag), "chosen": chosen.is_some()});
+    // The bar's words in that language (server/shell/locales), under the workspace's own.
+    if let Some(words) = crate::shell_words::words(tag) {
+        locale["shell"] = Value::Object(words.clone());
+    }
+    locale
+}
+
+/// A page's `<html>`, in its language and direction.
+pub fn html_open(language: &str) -> String {
+    format!(r#"<html lang="{}" dir="{}">"#, esc(language), direction(language))
 }
 
 /// The bootstrap of a public page (§7.3): no person, no live channel; the workspace by name.
@@ -1263,7 +1274,8 @@ pub fn isolated_dev_page(bootstrap: &Value, title: &str, dev_origin: &str, path:
 
 fn isolated_frame(bootstrap: &Value, title: &str, src: &str, sandbox: &str, frame_src: &str, target: &str) -> Response {
     let html = format!(
-        r#"<!doctype html><html lang="en"><head>{head}<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{t}</title><link rel="stylesheet" href="/_shell/v1/pages.css"><script type="module" src="/_shell/v1/isolated.js"></script></head><body class="ferrum-isolated">{SHELL_BODY}<iframe id="ferrum-app" title="{t}" src="{src}" sandbox="{sandbox}" data-origin="{target}" referrerpolicy="no-referrer" allow="clipboard-write; fullscreen"></iframe></body></html>"#,
+        r#"<!doctype html>{html}<head>{head}<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{t}</title><link rel="stylesheet" href="/_shell/v1/pages.css"><script type="module" src="/_shell/v1/isolated.js"></script></head><body class="ferrum-isolated">{SHELL_BODY}<iframe id="ferrum-app" title="{t}" src="{src}" sandbox="{sandbox}" data-origin="{target}" referrerpolicy="no-referrer" allow="clipboard-write; fullscreen"></iframe></body></html>"#,
+        html = html_open(&crate::shell_words::page_language(Some(bootstrap))),
         head = shell_head(bootstrap),
         t = esc(title),
         src = esc(src),
@@ -1392,7 +1404,10 @@ pub fn portal_entry_page(entry: &EntryTemplate, bootstrap: &Value, csp: &str) ->
 
 /// The portal's home: what the workspace's apps have for this person.
 pub fn portal_home(bootstrap: &Value, pages: &[PortalPage]) -> Response {
-    let workspace = bootstrap["workspace"]["name"].as_str().unwrap_or("Portal");
+    use crate::shell_words::{page_language, tr, tr_with};
+    let lang = page_language(Some(bootstrap));
+    let portal = tr(&lang, "Portal");
+    let workspace = bootstrap["workspace"]["name"].as_str().unwrap_or(&portal);
     let person = bootstrap["person"]["name"].as_str().unwrap_or_default();
     let list: String = pages
         .iter()
@@ -1402,23 +1417,27 @@ pub fn portal_home(bootstrap: &Value, pages: &[PortalPage]) -> Response {
         })
         .collect();
     let body = if pages.is_empty() {
-        "<p>Nothing has been shared with you here yet. Links you are sent open the right page.</p>".to_string()
+        format!("<p>{}</p>", esc(&tr(&lang, "Nothing has been shared with you here yet. Links you are sent open the right page.")))
     } else {
         format!(r#"<ul class="ferrum-portal-cards">{list}</ul>"#)
     };
     let html = format!(
-        r#"<!doctype html><html lang="en"><head>{head}<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{w}</title><link rel="stylesheet" href="/_shell/v1/pages.css"></head><body>{PORTAL_BODY}<main class="ferrum-portal" id="main"><h1>Hello{comma}{p}</h1>{body}</main></body></html>"#,
+        r#"<!doctype html>{html}<head>{head}<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{w}</title><link rel="stylesheet" href="/_shell/v1/pages.css"></head><body>{PORTAL_BODY}<main class="ferrum-portal" id="main"><h1>{hello}</h1>{body}</main></body></html>"#,
+        html = html_open(&lang),
         head = portal_head(bootstrap),
         w = esc(workspace),
-        comma = if person.is_empty() { "" } else { ", " },
-        p = esc(person),
+        hello = if person.is_empty() { esc(&tr(&lang, "Hello")) } else { tr_with(&lang, "Hello, {name}", &[("name", &esc(person))], true) },
     );
     page_response(StatusCode::OK, html, &csp(None, &Value::Null))
 }
 
 /// A page of the shell's own: a message with the bar above it (not installed, no access…).
 pub fn status_page(status: StatusCode, title: &str, message: &str, actions: &[(&str, &str)], bootstrap: Option<&Value>) -> Response {
-    let actions: String = actions.iter().map(|(label, href)| format!(r#"<a class="ferrum-button" href="{}">{}</a>"#, esc(href), esc(label))).collect();
+    use crate::shell_words::{page_language, tr};
+    let lang = page_language(bootstrap);
+    let (title, message) = (tr(&lang, title), tr(&lang, message));
+    let actions: String =
+        actions.iter().map(|(label, href)| format!(r#"<a class="ferrum-button" href="{}">{}</a>"#, esc(href), esc(&tr(&lang, label)))).collect();
     let (head, bar) = match bootstrap {
         Some(b) => (shell_head(b), SHELL_BODY),
         None => (
@@ -1427,10 +1446,11 @@ pub fn status_page(status: StatusCode, title: &str, message: &str, actions: &[(&
         ),
     };
     let html = format!(
-        r#"<!doctype html><html lang="en"><head>{head}<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{} · Ferrum</title><link rel="stylesheet" href="/_shell/v1/pages.css"></head><body>{bar}<main class="ferrum-status" id="main"><h1>{}</h1><p>{}</p><p class="ferrum-actions">{actions}</p></main></body></html>"#,
-        esc(title),
-        esc(title),
-        esc(message)
+        r#"<!doctype html>{html}<head>{head}<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{} · Ferrum</title><link rel="stylesheet" href="/_shell/v1/pages.css"></head><body>{bar}<main class="ferrum-status" id="main"><h1>{}</h1><p>{}</p><p class="ferrum-actions">{actions}</p></main></body></html>"#,
+        esc(&title),
+        esc(&title),
+        esc(&message),
+        html = html_open(&lang),
     );
     page_response(status, html, &csp(None, &Value::Null))
 }
@@ -1443,23 +1463,52 @@ pub fn login_page(fixed_workspace: Option<&WorkspaceInfo>, next: &str, codes: bo
     login_html(&boot, &title)
 }
 
-/// The sign-in page with what `login.js` needs (`boot`) and a heading.
+/// The sign-in page with what `login.js` needs (`boot`) and a heading (in English: it is put in the
+/// page's language).
 pub fn login_html(boot: &Value, title: &str) -> Response {
+    let (lang, boot) = with_page_locale(boot);
+    let tr = |s| crate::shell_words::tr(&lang, s);
+    let title = &tr(title);
     let html = format!(
-        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{t} · Ferrum</title><link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/_shell/theme/{h}.css"><link rel="stylesheet" href="/_shell/v1/pages.css"><script type="application/json" id="ferrum-login">{b}</script><script type="module" src="/_shell/v1/login.js"></script></head><body><main class="ferrum-login" id="main"><img class="ferrum-mark" src="/_shell/v1/icon.svg" alt="" width="40" height="40"><h1>{t}</h1><form id="ferrum-login-form" novalidate><div id="ferrum-login-fields"></div><p class="ferrum-error" role="alert" id="ferrum-login-error"></p><button class="ferrum-button" type="submit">Sign in</button></form><noscript><p>Signing in needs JavaScript.</p></noscript></main></body></html>"#,
+        r#"<!doctype html>{html}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{t} · Ferrum</title><link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/_shell/theme/{h}.css"><link rel="stylesheet" href="/_shell/v1/pages.css"><script type="application/json" id="ferrum-login">{b}</script><script type="module" src="/_shell/v1/login.js"></script></head><body><main class="ferrum-login" id="main"><img class="ferrum-mark" src="/_shell/v1/icon.svg" alt="" width="40" height="40"><h1>{t}</h1><form id="ferrum-login-form" novalidate><div id="ferrum-login-fields"></div><p class="ferrum-error" role="alert" id="ferrum-login-error"></p><button class="ferrum-button" type="submit">{sign_in}</button></form><noscript><p>{needs}</p></noscript></main></body></html>"#,
+        html = html_open(&lang),
         t = esc(title),
         h = theme_hash(),
-        b = json_in_html(boot)
+        b = json_in_html(&boot),
+        sign_in = esc(&tr("Sign in")),
+        needs = esc(&tr("Signing in needs JavaScript.")),
     );
     page_response(StatusCode::OK, html, &csp(None, &Value::Null))
 }
 
+/// A signed-out page's language (the browser's) and its boot with the locale its script reads
+/// (`locale.language`, `dir`, `shell`: the shell's words in it).
+fn with_page_locale(boot: &Value) -> (String, Value) {
+    let lang = crate::shell_words::page_language(None);
+    let mut boot = boot.clone();
+    if boot.is_object() && boot.get("locale").is_none() {
+        let mut locale = json!({"language": lang, "dir": direction(&lang)});
+        if let Some(words) = crate::shell_words::words(&lang) {
+            locale["shell"] = Value::Object(words.clone());
+        }
+        boot["locale"] = locale;
+    }
+    (lang, boot)
+}
+
 /// The sign-up page (`signup.js`, with `boot`).
 pub fn signup_html(boot: &Value) -> Response {
+    let (lang, boot) = with_page_locale(boot);
+    let tr = |s| esc(&crate::shell_words::tr(&lang, s));
     let html = format!(
-        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Make a workspace · Ferrum</title><link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/_shell/theme/{h}.css"><link rel="stylesheet" href="/_shell/v1/pages.css"><script type="application/json" id="ferrum-signup">{b}</script><script type="module" src="/_shell/v1/signup.js"></script></head><body><main class="ferrum-login" id="main"><img class="ferrum-mark" src="/_shell/v1/icon.svg" alt="" width="40" height="40"><h1>Make your Ferrum workspace</h1><form id="ferrum-login-form" novalidate><div id="ferrum-login-fields"></div><p class="ferrum-error" role="alert" id="ferrum-login-error"></p><button class="ferrum-button" type="submit">Email me a code</button></form><noscript><p>Signing up needs JavaScript.</p></noscript></main></body></html>"#,
+        r#"<!doctype html>{html}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{make} · Ferrum</title><link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/_shell/theme/{h}.css"><link rel="stylesheet" href="/_shell/v1/pages.css"><script type="application/json" id="ferrum-signup">{b}</script><script type="module" src="/_shell/v1/signup.js"></script></head><body><main class="ferrum-login" id="main"><img class="ferrum-mark" src="/_shell/v1/icon.svg" alt="" width="40" height="40"><h1>{heading}</h1><form id="ferrum-login-form" novalidate><div id="ferrum-login-fields"></div><p class="ferrum-error" role="alert" id="ferrum-login-error"></p><button class="ferrum-button" type="submit">{send}</button></form><noscript><p>{needs}</p></noscript></main></body></html>"#,
+        html = html_open(&lang),
         h = theme_hash(),
-        b = json_in_html(boot)
+        b = json_in_html(&boot),
+        make = tr("Make a workspace"),
+        heading = tr("Make your Ferrum workspace"),
+        send = tr("Email me a code"),
+        needs = tr("Signing up needs JavaScript."),
     );
     page_response(StatusCode::OK, html, &csp(None, &Value::Null))
 }
@@ -1521,10 +1570,11 @@ mod tests {
     #[test]
     fn languages_read_their_way() {
         assert_eq!([super::direction("ar"), super::direction("he-IL"), super::direction("hi"), super::direction("ur_PK")], ["rtl", "rtl", "ltr", "rtl"]);
-        assert_eq!(
-            super::locale(Some("ar"), "Asia/Dubai", None),
-            json!({"language": "ar", "timezone": "Asia/Dubai", "display_timezone": "Asia/Dubai", "dir": "rtl", "chosen": true})
-        );
+        let mut ar = super::locale(Some("ar"), "Asia/Dubai", None);
+        // The bar's words in Arabic come along (server/shell/locales/ar.json).
+        let shell = ar.as_object_mut().unwrap().remove("shell").expect("the shell's words in Arabic");
+        assert_eq!(shell["Sign out"], json!("تسجيل الخروج"));
+        assert_eq!(ar, json!({"language": "ar", "timezone": "Asia/Dubai", "display_timezone": "Asia/Dubai", "dir": "rtl", "chosen": true}));
         assert_eq!(
             super::locale(None, "UTC", Some("Asia/Kolkata")),
             json!({"language": "en", "timezone": "UTC", "display_timezone": "Asia/Kolkata", "dir": "ltr", "chosen": false}),

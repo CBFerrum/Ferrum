@@ -19,6 +19,14 @@ function readBootstrap() {
 }
 
 const boot = readBootstrap();
+
+// The page's words in the person's language: the workspace's own (Admin, Interface words) over the
+// server's catalog of the shell's words (server/shell/locales), English where neither has one.
+const WORDS = { ...(boot?.locale?.shell ?? {}), ...(boot?.locale?.words ?? {}) };
+function tr(english, vars) {
+  const text = WORDS[english] ?? english;
+  return vars ? text.replace(/\{(\w+)\}/g, (whole, key) => (key in vars ? String(vars[key]) : whole)) : text;
+}
 const app = boot?.app ?? {};
 const frame = document.getElementById("ferrum-app");
 // The route the page answers at, as `/board`.
@@ -120,7 +128,7 @@ function confirmDialog({ title, message, confirmLabel, danger }) {
     const no = document.createElement("button");
     no.type = "button";
     no.className = "ferrum-button ferrum-button-quiet";
-    no.textContent = "Cancel";
+    no.textContent = tr("Cancel");
     const yes = document.createElement("button");
     yes.type = "button";
     yes.className = danger ? "ferrum-button ferrum-button-danger" : "ferrum-button";
@@ -197,7 +205,7 @@ async function handle(method, p) {
     }
     case "confirm":
       return confirmDialog({
-        title: text(p.title, 120) || "Are you sure?",
+        title: text(p.title, 120) || tr("Are you sure?"),
         message: text(p.message, 600) || undefined,
         confirmLabel: text(p.confirmLabel, 40) || undefined,
         danger: p.danger === true,
