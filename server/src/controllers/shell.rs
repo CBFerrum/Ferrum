@@ -1253,6 +1253,30 @@ struct VersionQuery {
 
 /// `GET /api/shell/version?app=`: the interface release the caller's workspace runs for an app,
 /// so an open tab can tell it is outdated (§12.12).
+/// `GET /api/shell/words`: the words each of the workspace's apps gives its interface's t() (its
+/// release's words.json, which the kit's build writes), for its administrators to put in their
+/// language (Admin, Interface words). Apps whose release has none are left out.
+async fn app_words(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    if !ctx.is_admin {
+        return Err(ApiError(Error::Forbidden("administrator access required".into())));
+    }
+    let st = app_state(&app)?;
+    let mut out = Vec::new();
+    for a in st.apps.shell_apps(ctx.tenant).await? {
+        let mut release = st.shell.release_for(ctx.tenant, &a.id, &a.version).await?;
+        if release.is_none() && a.bundled && st.apps.ensure_ui_release(ctx.tenant, &a.id, &a.version).await? {
+            release = st.shell.release_for(ctx.tenant, &a.id, &a.version).await?;
+        }
+        let Some(release) = release else { continue };
+        let Some((bytes, _)) = st.shell.file(&a.id, &release.digest, "words.json").await? else { continue };
+        let words: Vec<String> = serde_json::from_slice(&bytes).unwrap_or_default();
+        if !words.is_empty() {
+            out.push(json!({"app": a.id, "title": a.manifest.name, "words": words}));
+        }
+    }
+    Ok(Json(json!({"apps": out})).into_response())
+}
+
 async fn version(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query<VersionQuery>) -> ApiResult<Response> {
     let st = app_state(&app)?;
     // The shell is no installed app, and its pages are the ones left open the longest.
@@ -1277,6 +1301,7 @@ pub fn routes() -> Routes {
         .add("/{*path}", get(page))
         .add("/api/shell", get(shell_info))
         .add("/api/shell/version", get(version))
+        .add("/api/shell/words", get(app_words))
         .add("/api/shell/offline", get(offline_lease))
         .add("/api/shell/app-token", axum::routing::post(app_token))
 }
