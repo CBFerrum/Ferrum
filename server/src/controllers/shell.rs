@@ -1263,18 +1263,26 @@ async fn app_words(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<
     let st = app_state(&app)?;
     let mut out = Vec::new();
     for a in st.apps.shell_apps(ctx.tenant).await? {
-        let mut release = st.shell.release_for(ctx.tenant, &a.id, &a.version).await?;
-        if release.is_none() && a.bundled && st.apps.ensure_ui_release(ctx.tenant, &a.id, &a.version).await? {
-            release = st.shell.release_for(ctx.tenant, &a.id, &a.version).await?;
-        }
-        let Some(release) = release else { continue };
-        let Some((bytes, _)) = st.shell.file(&a.id, &release.digest, "words.json").await? else { continue };
-        let words: Vec<String> = serde_json::from_slice(&bytes).unwrap_or_default();
-        if !words.is_empty() {
-            out.push(json!({"app": a.id, "title": a.manifest.name, "words": words}));
+        // An app whose interface cannot be read (its bundle gone from storage, say) is left out,
+        // rather than the list.
+        match words_of(&st, ctx.tenant, &a).await {
+            Ok(words) if !words.is_empty() => out.push(json!({"app": a.id, "title": a.manifest.name, "words": words})),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(app = %a.id, "its interface's words could not be read: {}", e.0),
         }
     }
     Ok(Json(json!({"apps": out})).into_response())
+}
+
+/// The words in `a`'s interface release (its words.json), none without one.
+async fn words_of(st: &AppState, tenant: Uuid, a: &ShellApp) -> ApiResult<Vec<String>> {
+    let mut release = st.shell.release_for(tenant, &a.id, &a.version).await?;
+    if release.is_none() && a.bundled && st.apps.ensure_ui_release(tenant, &a.id, &a.version).await? {
+        release = st.shell.release_for(tenant, &a.id, &a.version).await?;
+    }
+    let Some(release) = release else { return Ok(Vec::new()) };
+    let Some((bytes, _)) = st.shell.file(&a.id, &release.digest, "words.json").await? else { return Ok(Vec::new()) };
+    Ok(serde_json::from_slice(&bytes).unwrap_or_default())
 }
 
 async fn version(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query<VersionQuery>) -> ApiResult<Response> {
