@@ -505,24 +505,6 @@ async fn scenario() {
     assert_eq!(mailed(tenant).await, 0, "someone is waiting for this");
     assert_eq!(Trace::at_priority(ferrum_kernel::outbox::PRIORITY_BULK).scope(mailed(tenant)).await, 2, "nobody is waiting for this");
 
-    // ───────────── an import: each row its own record, at bulk priority ─────────────
-    let rows = [json!({"title": "imported-a"}), json!({"status": "Open"}), json!("not a record")];
-    assert!(matches!(k.import_rows(&clerk, "Case", &rows).await, Err(Error::Forbidden(_))), "importing is a permission of its own");
-    assert!(matches!(k.import_rows(&admin, "Case", &vec![json!({}); ferrum_kernel::bulk::MAX_IMPORT + 1]).await, Err(Error::Invalid(_))));
-    let (made, failed) = k.import_rows(&admin, "Case", &rows).await.unwrap();
-    assert_eq!(made.len(), 1);
-    assert_eq!((&failed[0]["row"], &failed[0]["error"]), (&json!(1), &json!("validation_failed")), "a title is required: {failed:?}");
-    assert!(failed[0]["fields"].as_array().is_some_and(|f| !f.is_empty()));
-    assert_eq!((&failed[1]["row"], &failed[1]["message"]), (&json!(2), &json!("not an object")));
-    let id: Uuid = made[0].as_str().unwrap().parse().unwrap();
-    let mut tx = k.db.system_tx().await.unwrap();
-    let priorities: Vec<i16> = sqlx::query_scalar("select priority from outbox where record_id = $1").bind(id).fetch_all(&mut *tx).await.unwrap();
-    tx.commit().await.unwrap();
-    assert!(
-        !priorities.is_empty() && priorities.iter().all(|p| *p == ferrum_kernel::outbox::PRIORITY_BULK),
-        "what an import sets off waits behind people's single edits: {priorities:?}"
-    );
-
     // ───────────── the workspace's export ─────────────
     assert!(matches!(k.export_workspace(&clerk).await, Err(Error::Forbidden(_))), "administrators only");
     let attached = k.store_file(&admin, Some(("Case", cases[0])), "note.txt", "text/plain", b"a file of the case").await.unwrap();
@@ -659,5 +641,23 @@ async fn scenario() {
     assert!(!files.0.lock().unwrap().contains_key(&key), "the object goes with its row");
     assert!(matches!(k.export_part(&admin, job, part).await, Err(Error::NotFound(_))));
     assert!(matches!(k.job(&admin, mine).await, Err(Error::NotFound(_))), "old jobs are forgotten");
+    // ───────────── an import: each row its own record, at bulk priority (after the export, which counts the cases) ─────────────
+    let rows = [json!({"title": "imported-a"}), json!({"status": "Open"}), json!("not a record")];
+    assert!(matches!(k.import_rows(&clerk, "Case", &rows).await, Err(Error::Forbidden(_))), "importing is a permission of its own");
+    assert!(matches!(k.import_rows(&admin, "Case", &vec![json!({}); ferrum_kernel::bulk::MAX_IMPORT + 1]).await, Err(Error::Invalid(_))));
+    let (made, failed) = k.import_rows(&admin, "Case", &rows).await.unwrap();
+    assert_eq!(made.len(), 1);
+    assert_eq!((&failed[0]["row"], &failed[0]["error"]), (&json!(1), &json!("validation_failed")), "a title is required: {failed:?}");
+    assert!(failed[0]["fields"].as_array().is_some_and(|f| !f.is_empty()));
+    assert_eq!((&failed[1]["row"], &failed[1]["message"]), (&json!(2), &json!("not an object")));
+    let id: Uuid = made[0].as_str().unwrap().parse().unwrap();
+    let mut tx = k.db.system_tx().await.unwrap();
+    let priorities: Vec<i16> = sqlx::query_scalar("select priority from outbox where record_id = $1").bind(id).fetch_all(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert!(
+        !priorities.is_empty() && priorities.iter().all(|p| *p == ferrum_kernel::outbox::PRIORITY_BULK),
+        "what an import sets off waits behind people's single edits: {priorities:?}"
+    );
+
     drop(quiet);
 }
