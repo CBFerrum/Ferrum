@@ -3,6 +3,28 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-08: every app's own words in Arabic and Hindi; the server's pages and the bar too; assistant notes and field groups; a guest's series; an erasure through a restore
+
+**State:** Ferrum PRs 99 and 100 are merged (main 6d65c1f), on Ferrum-Frontend PRs 51 to 53 (main
+5b22e7b, which FRONTEND_REV names). Every app was released twice: first with its own words in Arabic
+and Hindi, then with its note for the assistant. Bookings was released a third time with guests'
+series. This PR is documents only: the walk, the registry, and the restore procedure, fixed. No
+release was tagged.
+
+| Where | What |
+|---|---|
+| Journeys | Walked on PR 100's build ([the walk](../platform/evidence/browser-2026-11-08-languages.md)): the shell, Drive, CRM, Operations, Learn and the server's own pages in Arabic; the shell and Drive in Hindi; a SCORM 1.2 package through to a passed lesson; a guest booking every week three times; an erased customer brought back by a restore and erased again |
+| Frontend PRs 51 to 53 | The catalogs fetched for the page's language only (+2,057 words each). An app's build leaves out the kit's modules nothing is imported from (Drive's entry 212.6 KB to 178.7 KB, CRM's 203.8 KB to 172.7 KB: both had been over the 200 KB budget). No top-level await: an interface draws once `wordsReady()` settles. 35 mistranslated words corrected, and a test keeps every word's `{places}` |
+| Ferrum PR 99 | The server's own pages and the bar in the person's language (`server/shell/locales`, 324 words); Operations' words through `t()` with its own catalogs |
+| Ferrum PR 100 | Every app pinned at its main. `Kernel::import_rows` (imports at bulk priority, tested). `deploy/smoke.sh` erases a customer between the database's backup and the files', and checks the restore and `reapply_erasures`. Registry: FERRUM-AI-003, AI-006, PLATFORM-014, BOOKINGS-002, UX-009 |
+| Every app | Its own words in Arabic and Hindi (`ui/src/locales`, 7,949 words in all), drawn once they are in. Its note for the assistant (`contributes.shell.assistant`). HR, Healthcare, Education, Nonprofit and Logistics: personal, clinical, identity and pay fields in field groups, granted to every role that read them. HR's reports keep to the egress policy. Bookings 0.4.15: guests book a series |
+| How it was checked | Frontend: typecheck, 465 tests, the build and the audit, per PR. Ferrum: fmt, clippy, and the whole suite one target at a time against fresh databases, 79 targets passed, for PR 99 at 5cd5b27 and for PR 100 at fe759d1. Every app: its interface's typecheck, tests, build and check. Apps with package or code changes (HR, Healthcare, Education, Nonprofit, Logistics, Bookings): the whole `app_ci.sh`. Every manifest: `ferrum_apps::AppManifest::parse` |
+| Translations | Made by the model, batch by batch, against the words each page asks for. Not yet reviewed by native speakers |
+
+**Evidence:** the walk; Ferrum-Frontend `packages/build/vite.test.ts` and `src/lib/i18n.test.ts`; Ferrum `crates/kernel/tests/jobs_it.rs` (imports); ferrum-app-hr `tests/hr_it.rs` (reports for a provider); ferrum-app-bookings `tests/bookings_it.rs` and `ui/src/guest/booking.test.ts` (guests' series).
+
+**Next:** the sentences apps build with template strings in their own code (about 440 in 23 apps), which read English in Arabic and Hindi; the server's 404 page's «the App Manager» and home's «Cards»; a guest series' later dates recorded as Internal. Entity, field and report names from apps' models stay English unless a workspace translates them. Outside this machine's reach: Cloud's billing, the payment and maps keys, legal and tax reviews, EV hardware, connector sandboxes, real identity-provider tenants, S3 itself, and a qualified release.
+
 ## 2026-11-07, late: apps' own words for a workspace to translate; once-shown links kept; English isolated right to left
 
 **State:** this PR follows PRs 96 and 97. Its lock takes every app at its main of the late evening

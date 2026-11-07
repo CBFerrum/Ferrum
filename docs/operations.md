@@ -351,7 +351,20 @@ the operators' install from one has not run on a cluster without internet.
   docker compose up -d
   ```
 
-  Restoring in place, `docker compose stop ferrum` first.
+  Restoring in place, stop the server and restore into an empty database, as on a new host:
+  `pg_restore --clean` over the old one cannot drop a partitioned table's partitions one by one
+  (the journals and measurements are partitioned), and stops partway with the database half
+  dropped.
+
+  ```bash
+  docker compose stop ferrum
+  docker compose exec -T db dropdb -U postgres --force ferrum
+  docker compose exec -T db createdb -U postgres -O ferrum ferrum
+  docker compose exec -T db pg_restore -U postgres -d ferrum --exit-on-error < ferrum.dump
+  docker compose up -d ferrum
+  ```
+
+  Then run `ferrum task reapply_erasures` (After restoring a backup, below) before anyone uses it.
 * Test a restore at least quarterly. After restoring, run the audit verification below.
 
 ## Regions
