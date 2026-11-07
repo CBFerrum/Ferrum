@@ -3,6 +3,33 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-07, night: pages right to left; the records pages in Arabic and Hindi; PDFs' first pages; stages side by side
+
+**State:** this PR follows PR 92. Its lock takes every app at its main of the night of 7 November,
+each app's interface built with Ferrum-Frontend 63280d3 (PR 46), which FRONTEND_REV now names:
+Digital Assets 0.7.0, Logistics 0.3.4 and 0.3.5, Property 0.7.5 and 0.7.6, Government 0.2.5 and
+0.2.6, and every other app a patch.
+No release was tagged.
+
+| Where | What |
+|---|---|
+| Journeys | The records pages walked right to left, in Arabic ([the walk](../platform/evidence/browser-2026-11-07-right-to-left.md)): a list, a record and the account page, before and after the fixes they found (FERRUM-UX-006) |
+| Journeys | A PDF uploaded to Drive and made an asset, on this PR's build ([the walk](../platform/evidence/browser-2026-11-08-pdf-renditions.md)): its first page drawn as its thumbnail and preview, text in a standard font included (FERRUM-ECOSYSTEM-012) |
+| Frontend PR 46 | Right to left, icons that point along the line point the other way; margins, paddings, borders, insets, alignment and corners go by the line's start and end; tab strips' and column resize handles' arrow keys step along it. The records pages' words (the list's count, views, toolbar and search, the form's tabs, actions and toasts, child tables, link fields, the account page, the query builder) are in Arabic and Hindi, and a test keeps every word the interface asks for in both catalogs |
+| Digital Assets 0.7.0 | A PDF's first page drawn as its renditions, with hayro in pure Rust (FERRUM-ECOSYSTEM-012) |
+| Logistics 0.3.4 | A stop's weight, when not typed, from its note's lines and each item's weight (FERRUM-INDUSTRY-009) |
+| Property 0.7.5 | A period across two budget years bears each year's days at that year's rate (FERRUM-INDUSTRY-008) |
+| Government 0.2.5 | Review stages side by side (FERRUM-INDUSTRY-010) |
+| The Control Plane 0.5.2 | A release rolled out to the status page walked: qualified by a second person, rolled out in waves by a Fleet Operator, its coming maintenance shown in each cell's window, gone while halted and back when resumed (FERRUM-CLOUD-004) |
+| Every app | Rebuilt on 63280d3, a patch each: its pages mirror right to left, and the records pages' words in Arabic and Hindi |
+| How it was checked | Each app PR above passed its CI on this machine before it merged, at the head that was checked (`scripts/app_ci.sh`); Government PR 4 failed twice there first (a test that did not compile, then a role the test had not declared) and was fixed on its branch |
+
+**Evidence:** the walks; Ferrum-Frontend `src/lib/i18n.test.ts` (both catalogs hold every word the
+interface asks for; the arrow keys along the line); `ferrum-app-dam:src/renditions.rs` and
+`tests/dam_it.rs` (a PDF's first page drawn, one with no pages saying so).
+
+**Next:** the other session's walks, on this build, of Logistics 0.3.4's weights, Property 0.7.5's budget years and Government 0.2.5's stages side by side; Government's case going overdue once the workspace's day has turned; an attachment field showing the image it holds (an asset's renditions show as download links); apps' own screens right to left, one by one.
+
 ## 2026-11-07: Logistics offline with the server stopped; partners see apps' own health; definitions built, not typed; every app rebuilt
 
 **State:** this PR follows PRs 89 to 91. Its lock takes every app at its main of 7 November, each
