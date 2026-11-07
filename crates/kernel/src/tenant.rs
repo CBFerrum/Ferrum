@@ -232,6 +232,29 @@ pub fn valid_language(tag: &str) -> bool {
 }
 
 impl Kernel {
+    /// The workspace's own words for the interface in `language` (its `InterfaceWord` records),
+    /// by their English: a base language's (`pt`) first, a regional one's (`pt-BR`) over them.
+    /// None where the workspace has no such records.
+    pub async fn interface_words(&self, tenant: Uuid, language: &str) -> Result<serde_json::Map<String, Value>> {
+        let schema = self.registry.schema(tenant).await?;
+        let Some(ent) = schema.entity("InterfaceWord") else { return Ok(Default::default()) };
+        let tag = language.to_ascii_lowercase();
+        let base = tag.split(['-', '_']).next().unwrap_or_default().to_string();
+        let mut tx = self.db.tenant_tx(tenant).await?;
+        // The table is the catalog's, quoted; the rest is bound.
+        let rows: Vec<(String, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select english, words from {} where tenant_id = $1 and lower(language) in ($2, $3) order by lower(language) = $3, english limit 5000",
+            crate::ddl::q(&ent.table)
+        )))
+        .bind(tenant)
+        .bind(&base)
+        .bind(&tag)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(rows.into_iter().map(|(english, words)| (english, Value::String(words))).collect())
+    }
+
     /// The interface language a person reads: their own (`locale` preference), else the
     /// workspace's (`language` setting); none means English. Without a person, the workspace's.
     pub async fn language_of(&self, tenant: Uuid, user: Option<Uuid>) -> Result<Option<String>> {

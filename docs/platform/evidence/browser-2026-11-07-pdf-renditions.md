@@ -1,9 +1,9 @@
-# A browser on a running server, 8 November 2026: a PDF's first page as its renditions
+# A browser on a running server, 7 November 2026: a PDF's first page as its renditions
 
 Digital Assets made no renditions of a PDF (FERRUM-ECOSYSTEM-012: "the server carries no decoders
 for them"). Digital Assets 0.7.0 draws a PDF's first page with hayro, in pure Rust. This walk took
 that on the walk server, this PR's build (platform/pins-rtl at 7bc6f32, the shell from
-Ferrum-Frontend 63280d3), in workspace walk, signed in as its administrator, at 00:20–00:26 UTC.
+Ferrum-Frontend 63280d3), in workspace walk, signed in as its administrator, at 00:20–00:26 UTC on 7 November.
 Digital Assets was installed there earlier and followed the server to 0.7.0, as a built-in app does.
 
 ## What was walked

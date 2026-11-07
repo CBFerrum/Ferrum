@@ -68,6 +68,36 @@ fn obj_name(kind: &str, table: &str, cols: &[&str]) -> String {
     if raw.len() <= 63 { raw } else { format!("{kind}_{}_{}", &table[..table.len().min(40)], short_hash(&raw)) }
 }
 
+/// What people read when an entity's unique index or exclusion refuses a write, in place of the
+/// constraint's name: "another Permit Type already has this Type Name". Set on every sync, skipped
+/// or not, as the words are kept in this process alone.
+fn constraint_messages(schema: &Schema) {
+    let managed = schema.entities.values().filter(|e| !e.custom && e.def.kind != EntityKind::Child && e.def.kind != EntityKind::Ledger);
+    for ent in managed {
+        let (t, kind) = (&ent.table, if ent.def.submittable { "uqv" } else { "uq" });
+        let taken = |labels: Vec<String>| {
+            let words = match labels.split_last() {
+                Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+                _ => labels.concat(),
+            };
+            format!("another {} already has this {words}", ent.def.label)
+        };
+        for f in ent.value_fields().filter(|f| f.unique && ent.storage_of(&f.name) == Some(Storage::Column)) {
+            crate::error::set_constraint_message(&obj_name(kind, t, &[&f.name]), &taken(vec![f.label()]));
+        }
+        for group in &ent.def.unique {
+            let cols: Vec<&str> = group.iter().map(String::as_str).collect();
+            let labels = cols.iter().map(|c| ent.field(c).map_or_else(|| ferrum_meta::humanize(c), FieldDef::label)).collect();
+            crate::error::set_constraint_message(&obj_name(kind, t, &cols), &taken(labels));
+        }
+        for (i, x) in ent.def.exclusion.iter().enumerate() {
+            if let Some(m) = &x.message {
+                crate::error::set_constraint_message(&obj_name("ex", t, &[&i.to_string()]), m);
+            }
+        }
+    }
+}
+
 struct Ddl<'a> {
     conn: &'a mut PgConnection,
     report: SyncReport,
@@ -301,10 +331,11 @@ pub async fn sync(db: &Db, catalog: &Catalog, force: bool) -> Result<SyncReport>
 async fn sync_locked(conn: &mut PgConnection, catalog: &Catalog, force: bool) -> Result<SyncReport> {
     let current: Option<String> = sqlx::query_scalar("select value from cluster_state where key = 'catalog_fingerprint'").fetch_optional(&mut *conn).await?;
     let fingerprint = format!("{}:{DDL_VERSION}", catalog.fingerprint());
+    let schema = cluster_schema(catalog)?;
+    constraint_messages(&schema);
     if !force && current.as_deref() == Some(fingerprint.as_str()) {
         return Ok(SyncReport { skipped: true, ..Default::default() });
     }
-    let schema = cluster_schema(catalog)?;
     let mut ddl = Ddl { conn, report: SyncReport::default(), constraints: HashSet::new(), policies: HashSet::new(), columns: HashMap::new() };
     ddl.load_state().await?;
 
@@ -378,9 +409,6 @@ async fn sync_locked(conn: &mut PgConnection, catalog: &Catalog, force: bool) ->
         }
         for (i, x) in ent.def.exclusion.iter().enumerate() {
             let name = obj_name("ex", &t, &[&i.to_string()]);
-            if let Some(m) = &x.message {
-                crate::error::set_constraint_message(&name, m);
-            }
             if ddl.constraints.contains(&name) {
                 continue;
             }
