@@ -7,10 +7,9 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
-use ferrum_kernel::outbox::PRIORITY_BULK;
 use ferrum_kernel::query::parse_filters;
 use ferrum_kernel::value::canonical_json;
-use ferrum_kernel::{Action, Doc, Error, ListQuery, Trace};
+use ferrum_kernel::{Action, Doc, Error, ListQuery};
 use loco_rs::app::AppContext;
 use loco_rs::controller::Routes;
 use serde::Deserialize;
@@ -19,7 +18,6 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 const EXPORT_MAX_ROWS: usize = 100_000;
-const IMPORT_MAX_ROWS: usize = 5_000;
 
 #[derive(Debug, Default, Deserialize)]
 pub struct ListParams {
@@ -431,23 +429,7 @@ async fn import(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Pa
     let st = app_state(&app)?;
     ctx.require(&entity, Action::Import)?;
     let rows = body.as_array().ok_or_else(|| ApiError(Error::invalid("expected a JSON array of records")))?;
-    if rows.len() > IMPORT_MAX_ROWS {
-        return Err(ApiError(Error::invalid(format!("at most {IMPORT_MAX_ROWS} rows per request"))));
-    }
-    let mut created = Vec::new();
-    let mut errors = Vec::new();
-    for (i, r) in rows.iter().enumerate() {
-        let Some(doc) = r.as_object().cloned() else {
-            errors.push(json!({"row": i, "error": "not an object"}));
-            continue;
-        };
-        // What it sets off waits behind everyone's single edits.
-        match Trace::at_priority(PRIORITY_BULK).scope(st.kernel.insert(&ctx, &entity, doc)).await {
-            Ok(d) => created.push(d.get("id").cloned().unwrap_or(Value::Null)),
-            Err(Error::Validation(f)) => errors.push(json!({"row": i, "error": "validation_failed", "fields": f})),
-            Err(e) => errors.push(json!({"row": i, "error": e.code(), "message": e.to_string()})),
-        }
-    }
+    let (created, errors) = st.kernel.import_rows(&ctx, &entity, rows).await?;
     let status = if errors.is_empty() { StatusCode::CREATED } else { StatusCode::MULTI_STATUS };
     Ok((status, Json(json!({"created": created.len(), "ids": created, "errors": errors}))).into_response())
 }
