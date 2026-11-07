@@ -3,6 +3,27 @@
 Where the work stands, kept here rather than in anyone's memory (specification §19.5). Newest first.
 What is true of each requirement is in the registry; this says what happened and what comes next.
 
+## 2026-11-07, late: apps' own words for a workspace to translate; once-shown links kept; English isolated right to left
+
+**State:** this PR follows PRs 96 and 97. Its lock takes every app at its main of the late evening
+of 7 November, each app's interface built with Ferrum-Frontend 6537d65 (PR 49), which FRONTEND_REV
+now names: every app a patch, its own words through the kit's `t()`. It carries one Rust change: `GET
+/api/shell/words` leaves out an app whose words cannot be read, rather than failing. No release was
+tagged.
+
+| Where | What |
+|---|---|
+| Journeys | Walked on this PR's build ([the walk](../platform/evidence/browser-2026-11-07-apps-words.md)): Drive's own "Upload" in the workspace's Arabic; Field Service's English sentences keeping their full stops right to left; Share It Outside's link shown in a dialog to copy; Government's case gone overdue at midnight in Kolkata |
+| Ferrum PR 97 | `GET /api/shell/words`: each of the workspace's apps' own words, from its interface release's `words.json`, for administrators |
+| Frontend PR 49 | The app build writes `dist/words.json`; Interface words lists any app's words under "Words of"; an action's once-shown link, code, token or secret opens a dialog with a copy button; `t()` isolates untranslated text on right-to-left pages; the pivot values' checkboxes named; "Save 1 word" |
+| Every app | Rebuilt on 6537d65, a patch each, its own words through `t()`: 5,325 places in 40 apps, made by a codemod that, with TypeScript's type checker, turns text and the plain values in it into one sentence (`t("Organized by {by}", { by })`). Each app's typecheck and tests passed before its release |
+| How it was checked | Ferrum PR 97: fmt and clippy for the server. Frontend PR 49: typecheck, 458 tests, the build and the audit. Every app: its interface's typecheck and tests in the sweep |
+| The machine | It restarted at 17:45 UTC, and the scratch folder went with it: helper scripts (recovered from the session's record), the walk server's secret key (made anew: secrets sealed before no longer open) and the walk passwords |
+
+**Evidence:** the walk; Ferrum-Frontend `packages/build/words.test.ts`, `src/app/actionToast.test.ts` (`shownOnce`) and `src/lib/i18n.test.ts` (isolation).
+
+**Next:** built-in translations of apps' own words (none yet: a workspace writes its own); sizes and counts that apps build in their own code, which still reorder right to left; the bar and the server's own pages, which are English.
+
 ## 2026-11-07, evening: a workspace's own interface words; duplicates named; watermarks; key results graded; datasets that pivot
 
 **State:** this PR follows PRs 94 and 95. Its lock takes every app at its main of the evening of 7
