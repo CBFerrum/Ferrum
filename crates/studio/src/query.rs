@@ -497,6 +497,9 @@ pub struct Plan {
     pub(crate) dims: Vec<Dim>,
     pub(crate) pivot: Option<Dim>,
     pub(crate) pivot_cap: u32,
+    /// Values the pivot names, with their text as the database writes it: its columns, whatever
+    /// the rows hold.
+    pub(crate) pivot_values: Vec<(Value, String)>,
     pub(crate) measures: Vec<Meas>,
     pub(crate) raw: Vec<Dim>,
     hidden: Vec<String>,
@@ -817,7 +820,12 @@ pub fn compile(ctx: &Ctx, spec: &Spec) -> Result<Plan> {
         }
         None => None,
     };
+    let pivot_values = match (&spec.pivot, &pivot) {
+        (Some(p), Some(d)) if !p.values.is_empty() => declared_values(p, d)?,
+        _ => Vec::new(),
+    };
     let pivot_cap = match spec.pivot.as_ref().and_then(|p| p.max_columns) {
+        _ if !pivot_values.is_empty() => pivot_values.len() as u32,
         None => crate::spec::DEFAULT_PIVOT_COLUMNS,
         Some(n) if (1..=MAX_PIVOT_COLUMNS).contains(&n) => n,
         Some(_) => return Err(bad("pivot.max_columns", format!("must be between 1 and {MAX_PIVOT_COLUMNS}"))),
@@ -972,6 +980,7 @@ pub fn compile(ctx: &Ctx, spec: &Spec) -> Result<Plan> {
         dims,
         pivot,
         pivot_cap,
+        pivot_values,
         measures,
         raw,
         hidden,
@@ -990,6 +999,35 @@ pub fn compile(ctx: &Ctx, spec: &Spec) -> Result<Plan> {
 
 /// Compiles the calculated columns: references are the result's columns (and earlier formulas)
 /// by name or label.
+/// A pivot's named values, each with its text as `s.p::text` writes it: text (a record's id where the
+/// field links), whole numbers, or true and false, as its field holds them, each once.
+fn declared_values(p: &crate::spec::Pivot, d: &Dim) -> Result<Vec<(Value, String)>> {
+    if p.bucket.is_some() || p.max_columns.is_some() {
+        return Err(bad("pivot.values", "names the columns themselves: not with a bucket or max_columns"));
+    }
+    if p.values.len() > MAX_PIVOT_COLUMNS as usize {
+        return Err(bad("pivot.values", format!("names at most {MAX_PIVOT_COLUMNS} values")));
+    }
+    let ids = d.titled().is_some();
+    let mut out: Vec<(Value, String)> = Vec::new();
+    for v in &p.values {
+        let text = match (v, d.ty()) {
+            (Value::Bool(b), Ty::Field(FieldType::Check)) => b.to_string(),
+            (Value::Number(n), t) if t.is_int() && (n.is_i64() || n.is_u64()) => n.to_string(),
+            (Value::String(s), _) if ids => {
+                s.parse::<uuid::Uuid>().map(|u| u.to_string()).map_err(|_| bad("pivot.values", format!("'{s}' is not a record's id")))?
+            }
+            (Value::String(s), t) if !t.is_int() && t != Ty::Field(FieldType::Check) => s.clone(),
+            _ => return Err(bad("pivot.values", format!("{v} is not a value '{}' holds", d.label))),
+        };
+        if out.iter().any(|(_, t)| *t == text) {
+            return Err(bad("pivot.values", format!("'{text}' is named twice")));
+        }
+        out.push((if ids { json!(text) } else { v.clone() }, text));
+    }
+    Ok(out)
+}
+
 fn formulas(spec: &Spec, mode: Mode, dims: &[Dim], raw: &[Dim], measures: &[Meas], pivot: bool) -> Result<Vec<(String, String, Formula)>> {
     if spec.formulas.is_empty() {
         return Ok(vec![]);
@@ -1533,6 +1571,23 @@ pub(crate) mod tests {
         assert!(matches!(&e, Error::Validation(f) if f[0].field == "group_by[0]" && f[0].message.contains("bucket")), "{e:?}");
         let e = err(&ctx, json!({"entity": "SalesInvoice", "group_by": [{"field": "customer_name", "bucket": "month"}], "measures": [{"fn": "count"}]}));
         assert!(matches!(&e, Error::Validation(f) if f[0].message.contains("date and date-time")), "{e:?}");
+    }
+
+    #[test]
+    fn named_pivot_values_are_the_columns() {
+        let ctx = sales(schema());
+        let named = compile(&ctx, &spec(json!({"entity": "SalesInvoice", "group_by": [{"field": "customer"}], "pivot": {"field": "status", "values": ["Paid", "Overdue"]}, "measures": [{"fn": "count"}]}))).unwrap();
+        assert_eq!((named.pivot_cap, named.pivot_values.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>()), (2, vec!["Paid", "Overdue"]));
+        for (pivot, why) in [
+            (json!({"field": "status", "values": ["Paid", "Paid"]}), "named twice"),
+            (json!({"field": "status", "values": ["Paid"], "max_columns": 3}), "not with a bucket"),
+            (json!({"field": "posting_date", "bucket": "month", "values": ["2026-01-01"]}), "not with a bucket"),
+            (json!({"field": "status", "values": [true]}), "is not a value"),
+            (json!({"field": "customer", "values": ["Acme"]}), "is not a record's id"),
+        ] {
+            let e = err(&ctx, json!({"entity": "SalesInvoice", "pivot": pivot, "measures": [{"fn": "count"}]}));
+            assert!(matches!(&e, Error::Validation(f) if f[0].field == "pivot.values" && f[0].message.contains(why)), "{why}: {e:?}");
+        }
     }
 
     #[test]
