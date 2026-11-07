@@ -94,7 +94,7 @@ summary:focus-visible {
 .fa-menu {
   position: absolute;
   top: calc(100% + 4px);
-  right: 8px;
+  inset-inline-end: 8px;
   z-index: 5;
   width: min(320px, calc(100vw - 16px));
   max-height: 60vh;
@@ -139,7 +139,7 @@ summary:focus-visible {
   padding: 7px 8px;
   border: 0;
   background: none;
-  text-align: left;
+  text-align: start;
   cursor: pointer;
 }
 .fa-thread-title {
@@ -166,7 +166,7 @@ summary:focus-visible {
   background: none;
   color: var(--ferrum-muted);
   font-size: 12.5px;
-  text-align: left;
+  text-align: start;
   cursor: pointer;
 }
 .fa-link:hover {
@@ -227,7 +227,7 @@ summary:focus-visible {
 }
 .fa-md ul,
 .fa-md ol {
-  padding-left: 20px;
+  padding-inline-start: 20px;
 }
 .fa-md li + li {
   margin-top: 2px;
@@ -261,8 +261,8 @@ summary:focus-visible {
   background: none;
 }
 .fa-md blockquote {
-  padding-left: 10px;
-  border-left: 3px solid var(--ferrum-border);
+  padding-inline-start: 10px;
+  border-inline-start: 3px solid var(--ferrum-border);
   color: var(--ferrum-muted);
 }
 .fa-table {
@@ -279,7 +279,7 @@ summary:focus-visible {
 .fa-table th,
 .fa-table td {
   padding: 6px 10px;
-  text-align: left;
+  text-align: start;
   border-bottom: 1px solid var(--ferrum-border);
   white-space: nowrap;
 }
@@ -299,7 +299,7 @@ summary:focus-visible {
 .fa-thinking summary {
   width: fit-content;
   padding: 2px 6px;
-  margin-left: -6px;
+  margin-inline-start: -6px;
   border-radius: 6px;
   cursor: pointer;
   user-select: none;
@@ -309,8 +309,8 @@ summary:focus-visible {
 }
 .fa-thinking .fa-md {
   margin-top: 4px;
-  padding-left: 10px;
-  border-left: 2px solid var(--ferrum-border);
+  padding-inline-start: 10px;
+  border-inline-start: 2px solid var(--ferrum-border);
 }
 .fa-tool {
   border: 1px solid var(--ferrum-border);
@@ -327,7 +327,7 @@ summary:focus-visible {
   border: 0;
   background: none;
   color: var(--ferrum-muted);
-  text-align: left;
+  text-align: start;
   cursor: pointer;
 }
 .fa-tool-name {

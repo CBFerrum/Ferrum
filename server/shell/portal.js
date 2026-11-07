@@ -12,6 +12,14 @@ function readBootstrap() {
 
 const boot = readBootstrap();
 
+// The page's words in the person's language: the workspace's own (Admin, Interface words) over the
+// server's catalog of the shell's words (server/shell/locales), English where neither has one.
+const WORDS = { ...(boot?.locale?.shell ?? {}), ...(boot?.locale?.words ?? {}) };
+function tr(english, vars) {
+  const text = WORDS[english] ?? english;
+  return vars ? text.replace(/\{(\w+)\}/g, (whole, key) => (key in vars ? String(vars[key]) : whole)) : text;
+}
+
 const CSS = `
 :host { all: initial; color-scheme: inherit; display: block; position: sticky; top: 0; z-index: 2147483000; height: var(--ferrum-bar-height, 48px);
   font: 14px/1.4 var(--ferrum-font, system-ui, sans-serif); color: var(--ferrum-text, #17191d); -webkit-font-smoothing: antialiased; }
@@ -29,7 +37,7 @@ nav a[aria-current="page"] { color: var(--ferrum-primary, #2f5bea); background: 
 .spacer { flex: 1; }
 .who { color: var(--ferrum-muted, #5b6472); padding: 0 6px; max-width: 14em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pages { display: none; }
-.pages::after { content: ""; margin-left: 6px; border: 4px solid transparent; border-top-color: currentColor; transform: translateY(2px); }
+.pages::after { content: ""; margin-inline-start: 6px; border: 4px solid transparent; border-top-color: currentColor; transform: translateY(2px); }
 /* On a phone the pages do not fit beside each other: they open below a button naming the one shown. */
 @media (max-width: 640px) {
   .who { display: none; } .home { max-width: 9em; }
@@ -68,8 +76,8 @@ class PortalBar extends HTMLElement {
     style.textContent = CSS;
     const portal = boot?.portal ?? { home: "/portal/", pages: [] };
     const bar = el("header", { class: "bar" });
-    bar.append(el("a", { class: "home", href: portal.home ?? "/portal/" }, boot?.workspace?.name ?? "Portal"));
-    const nav = el("nav", { "aria-label": "Your pages", id: "pages" });
+    bar.append(el("a", { class: "home", href: portal.home ?? "/portal/" }, boot?.workspace?.name ?? tr("Portal")));
+    const nav = el("nav", { "aria-label": tr("Your pages"), id: "pages" });
     let current = null;
     for (const p of portal.pages ?? []) {
       // Only this site's own addresses.
@@ -81,7 +89,7 @@ class PortalBar extends HTMLElement {
       }
       nav.append(a);
     }
-    const pages = el("button", { type: "button", class: "pages", "aria-controls": "pages", "aria-expanded": "false" }, current ?? "Pages");
+    const pages = el("button", { type: "button", class: "pages", "aria-controls": "pages", "aria-expanded": "false" }, current ?? tr("Pages"));
     const show = (open) => {
       pages.setAttribute("aria-expanded", String(open));
       nav.classList.toggle("open", open);
@@ -96,7 +104,7 @@ class PortalBar extends HTMLElement {
     document.addEventListener("click", (e) => {
       if (!e.composedPath().includes(this)) show(false);
     });
-    const out = el("button", { type: "button" }, "Sign out");
+    const out = el("button", { type: "button" }, tr("Sign out"));
     out.addEventListener("click", signOut);
     bar.append(pages, nav, el("span", { class: "spacer" }), el("span", { class: "who", title: boot?.person?.email ?? "" }, boot?.person?.name ?? ""), out);
     root.append(style, bar);

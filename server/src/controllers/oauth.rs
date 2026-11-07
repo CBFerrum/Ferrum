@@ -250,10 +250,12 @@ async fn app_client(st: &crate::state::AppState, ctx: &ferrum_kernel::Ctx, heade
 }
 
 /// The consent page: the theme and the sign-in page's look, no scripts, never in a frame.
-fn consent_page(status: StatusCode, body: &str) -> Response {
+fn consent_page(status: StatusCode, body: &str, lang: &str) -> Response {
     use crate::shell::{page_response, theme_hash};
     let html = format!(
-        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Allow access · Ferrum</title><link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/_shell/theme/{}.css"><link rel="stylesheet" href="/_shell/v1/pages.css"></head><body><main class="ferrum-login" id="main"><img class="ferrum-mark" src="/_shell/v1/icon.svg" alt="" width="40" height="40"><h1>Allow access to Ferrum?</h1>{body}</main></body></html>"#,
+        r#"<!doctype html>{}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{} · Ferrum</title><link rel="icon" href="/_shell/v1/icon.svg" type="image/svg+xml"><link rel="stylesheet" href="/_shell/theme/{}.css"><link rel="stylesheet" href="/_shell/v1/pages.css"></head><body><main class="ferrum-login" id="main"><img class="ferrum-mark" src="/_shell/v1/icon.svg" alt="" width="40" height="40"><h1>Allow access to Ferrum?</h1>{body}</main></body></html>"#,
+        crate::shell::html_open(lang),
+        crate::shell::esc(&crate::shell_words::tr(lang, "Allow access")),
         theme_hash()
     );
     // No form-action: after the answer the browser goes on to the client's own address.
@@ -262,7 +264,12 @@ fn consent_page(status: StatusCode, body: &str) -> Response {
 }
 
 fn refused(problem: &str) -> Response {
-    consent_page(StatusCode::BAD_REQUEST, &format!(r#"<p class="ferrum-error" role="alert">{}</p>"#, crate::shell::esc(problem)))
+    let lang = crate::shell_words::page_language(None);
+    consent_page(
+        StatusCode::BAD_REQUEST,
+        &format!(r#"<p class="ferrum-error" role="alert">{}</p>"#, crate::shell::esc(&crate::shell_words::tr(&lang, problem))),
+        &lang,
+    )
 }
 
 /// The person signed in with the browser's session cookie; `None` sends them to sign in first.
@@ -306,19 +313,39 @@ async fn consent(State(app): State<AppContext>, headers: HeaderMap, uri: Uri, Qu
     .map(|(k, v)| format!(r#"<input type="hidden" name="{k}" value="{}">"#, esc(v)))
     .collect();
     // An installed app's own page asks for no more than the workspace allowed it.
-    let reach = if req.client_id.starts_with("app:") {
-        "<li>It can do what this workspace allowed when it installed the app, within your permissions.</li><li>Everything it does is recorded in the audit trail under your name.</li><li>It stays signed in while you use it; signing out everywhere ends it.</li>"
+    // The person's language: the page's words in it.
+    let lang = st.kernel.language_of(ctx.tenant, Some(ctx.user)).await?.unwrap_or_else(|| "en".to_string());
+    let tr = |s: &str| esc(&crate::shell_words::tr(&lang, s));
+    let reach: String = if req.client_id.starts_with("app:") {
+        [
+            "It can do what this workspace allowed when it installed the app, within your permissions.",
+            "Everything it does is recorded in the audit trail under your name.",
+            "It stays signed in while you use it; signing out everywhere ends it.",
+        ]
     } else {
-        "<li>It can read and change everything you can, with your permissions.</li><li>Everything it does is recorded in the audit trail under your name.</li><li>Access lasts until you revoke it or sign out everywhere.</li>"
-    };
+        [
+            "It can read and change everything you can, with your permissions.",
+            "Everything it does is recorded in the audit trail under your name.",
+            "Access lasts until you revoke it or sign out everywhere.",
+        ]
+    }
+    .iter()
+    .map(|s| format!("<li>{}</li>", tr(s)))
+    .collect();
+    let strong = |v: &str| format!("<strong>{}</strong>", esc(v));
     let body = format!(
-        r#"<p><strong>{}</strong> wants to use Ferrum as <strong>{}</strong> in the <strong>{}</strong> workspace.</p><ul>{reach}</ul><p class="ferrum-hint">It will return to {}.</p><form method="post" action="/oauth/authorize" class="ferrum-consent">{hidden}<button class="ferrum-button ferrum-button-quiet" type="submit" name="decision" value="deny">Deny</button><button class="ferrum-button" type="submit" name="decision" value="allow">Allow</button></form>"#,
-        esc(&client.name),
-        esc(&ctx.email),
-        esc(&workspace.name),
-        esc(host)
+        r#"<p>{}</p><ul>{reach}</ul><p class="ferrum-hint">{}</p><form method="post" action="/oauth/authorize" class="ferrum-consent">{hidden}<button class="ferrum-button ferrum-button-quiet" type="submit" name="decision" value="deny">{}</button><button class="ferrum-button" type="submit" name="decision" value="allow">{}</button></form>"#,
+        crate::shell_words::tr_with(
+            &lang,
+            "{app} wants to use Ferrum as {person} in the {workspace} workspace.",
+            &[("app", &strong(&client.name)), ("person", &strong(&ctx.email)), ("workspace", &strong(&workspace.name))],
+            true
+        ),
+        crate::shell_words::tr_with(&lang, "It will return to {host}.", &[("host", &esc(host))], true),
+        tr("Deny"),
+        tr("Allow"),
     );
-    Ok(consent_page(StatusCode::OK, &body))
+    Ok(consent_page(StatusCode::OK, &body, &lang))
 }
 
 /// The consent page's answer: back to the client with a one-time code, or with `access_denied`.
