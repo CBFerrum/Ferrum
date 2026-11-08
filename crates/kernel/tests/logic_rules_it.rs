@@ -179,14 +179,14 @@ async fn scenario() {
 
     // Checking keeps nothing; the builder sees every fault with a pointer.
     let bad = solution("0.9.0", json!([{"id": "peek", "entity": "Order", "phase": "validate", "check": "doc.cost > dec(\"0\")", "message": "m"}]));
-    let faults = k.compile_solution(&admin, &bad).unwrap_err();
+    let faults = k.compile_solution(&admin, &bad).await.unwrap().unwrap_err();
     assert!(faults.iter().any(|d| d.message.contains("restricted") && d.pointer == "/rules/4/check"), "a rule may not read a restricted field: {faults:?}");
     let mailing = serde_json::from_str::<Value>(&solution("0.9.0", json!([]))).map(|mut v| {
         v["rules"][2]["capability"] = json!({"id": "ferrum.mail", "version": "1.0.0"});
         v.to_string()
     });
-    assert!(k.compile_solution(&admin, &mailing.unwrap()).is_err(), "a rule cannot name an effect (FLC-COMP-008)");
-    if let Err(d) = k.compile_solution(&clerk, &solution("1.0.0", json!([]))) {
+    assert!(k.compile_solution(&admin, &mailing.unwrap()).await.unwrap().is_err(), "a rule cannot name an effect (FLC-COMP-008)");
+    if let Err(d) = k.compile_solution(&clerk, &solution("1.0.0", json!([]))).await.unwrap() {
         panic!("checking is for anyone; keeping is not: {d:?}");
     }
     assert_eq!(code(&k.save_release(&clerk, &solution("1.0.0", json!([]))).await.unwrap_err()), "forbidden");
