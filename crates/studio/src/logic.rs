@@ -10,16 +10,21 @@
 //! | `DELETE /solutions/drafts/{id}` | `If-Match: "{version}"` |
 //! | `POST /solutions/drafts/{id}/release` | `If-Match: "{version}"` → the kept release |
 //! | `POST /solutions/import/automations` | each automation as a draft Solution (administrators) |
+//! | `POST /solutions/import/pack` | `{pack}` → `{draft, check, to_map}`: a pack from another workspace, as a draft |
 //! | `POST /solutions/compile` | `{source}` → `{ok, release?, diagnostics}`; keeps nothing |
 //! | `POST /solutions/simulate` | `{source \| release, scenario}` → the timeline; reaches nothing |
+//! | `POST /solutions/shadow` | `{source \| release, last?}` → recent cases replayed against it and what runs now; reaches nothing |
 //! | `GET /solutions/releases/{id}` | → the release, what runs now, reviews, and the semantic diff |
+//! | `GET /solutions/releases/{id}/pack` | → the release as a pack: source, digests, needs, review evidence; no secret |
 //! | `POST /solutions/releases/{id}/review` | `{digest, privileges, approve, reason}` |
-//! | `POST /solutions/releases/{id}/activate` | `{expected_generation}` → `{generation}` |
+//! | `POST /solutions/releases/{id}/activate` | `{expected_generation}` → `{generation, replaced, handed_over, open_elsewhere, kept}` |
 //! | `POST /solutions/{solution}/deactivate` | `{expected_generation}` |
 //! | `GET /solutions/refusals` | evidence of saves the rules refused |
 //! | `GET /runs` | `?cursor=` → `{runs, cursor, resync}`: the runs, or those that changed since the cursor |
 //! | `GET /runs/{id}` | → the run with its tasks |
 //! | `POST /runs/{id}/cancel` | `{reason}` |
+//! | `POST /runs/{id}/migrate/plan` | `{release, map}` → `{digest, moved}`: a move onto what runs now, checked (administrators) |
+//! | `POST /runs/{id}/migrate` | `{digest, reason}`: another administrator approves the planned move |
 //! | `GET /runs/about/{entity}/{record}` | → the processes about a record its reader may see |
 //! | `GET /tasks` | → the open tasks the caller may decide (administrators: what needs recovering too) |
 //! | `GET /tasks/{id}` | → the task and what it is about |
@@ -124,8 +129,18 @@ async fn route(k: &Kernel, ctx: &Ctx, req: &SiteRequest, m: &str, path: &[&str])
             let source = b.get("source").and_then(Value::as_str);
             ok(k.simulate_solution(ctx, source, release, b.get("scenario").cloned().unwrap_or(Value::Null)).await?)
         }
+        // A candidate beside what runs now, replayed on what happened; nothing runs (FLC-MIG-002).
+        ("POST", ["solutions", "shadow"]) => {
+            let b = body(req)?;
+            let release = b.get("release").and_then(Value::as_str).map(|s| id(s, "release")).transpose()?;
+            let last = b.get("last").and_then(Value::as_i64).unwrap_or(20);
+            ok(k.shadow_solution(ctx, b.get("source").and_then(Value::as_str), release, last).await?)
+        }
         ("GET", ["solutions", "refusals"]) => ok(json!(k.logic_refusals(ctx, 200).await?)),
         ("GET", ["solutions", "releases", r]) => ok(k.logic_release_review(ctx, id(r, "release")?).await?),
+        // A release as a pack for another workspace, and a pack taken in as a draft there (FLC-OPS-008).
+        ("GET", ["solutions", "releases", r, "pack"]) => ok(k.solution_pack(ctx, id(r, "release")?).await?),
+        ("POST", ["solutions", "import", "pack"]) => ok(k.import_solution_pack(ctx, body(req)?.get("pack").unwrap_or(&Value::Null)).await?),
         ("POST", ["solutions", "releases", r, "review"]) => {
             let b = body(req)?;
             let privileges: Vec<String> =
@@ -134,10 +149,8 @@ async fn route(k: &Kernel, ctx: &Ctx, req: &SiteRequest, m: &str, path: &[&str])
             k.review_release_consenting(ctx, id(r, "release")?, text(&b, "digest"), &privileges, approve, text(&b, "reason")).await?;
             ok(json!({}))
         }
-        ("POST", ["solutions", "releases", r, "activate"]) => {
-            let generation = k.activate_release(ctx, id(r, "release")?, generation(&body(req)?)).await?;
-            ok(json!({"generation": generation}))
-        }
+        // Going back to an earlier release is activating it again: a new generation, and what stays is said.
+        ("POST", ["solutions", "releases", r, "activate"]) => ok(k.activate_release_explained(ctx, id(r, "release")?, generation(&body(req)?)).await?),
         ("POST", ["solutions", solution, "deactivate"]) => {
             let g = generation(&body(req)?).ok_or_else(|| Error::field("expected_generation", "the generation you saw running"))?;
             k.deactivate_solution(ctx, solution, g).await?;
@@ -149,6 +162,19 @@ async fn route(k: &Kernel, ctx: &Ctx, req: &SiteRequest, m: &str, path: &[&str])
         }
         ("GET", ["runs", "about", entity, record]) => ok(json!(k.logic_runs_about(ctx, entity, id(record, "record")?).await?)),
         ("GET", ["runs", r]) => ok(k.logic_run(ctx, id(r, "run")?).await?),
+        // Moving a waiting run onto the release that runs now: planned by one administrator, approved by another
+        // (FLC-MIG-004).
+        ("POST", ["runs", r, "migrate", "plan"]) => {
+            let b = body(req)?;
+            let release = id(text(&b, "release"), "release")?;
+            let map: std::collections::BTreeMap<String, String> = serde_json::from_value(b.get("map").cloned().unwrap_or(json!({})))
+                .map_err(|e| Error::field("map", format!("names each step's counterpart: {e}")))?;
+            ok(k.plan_logic_migration(ctx, id(r, "run")?, release, &map).await?)
+        }
+        ("POST", ["runs", r, "migrate"]) => {
+            let b = body(req)?;
+            ok(k.approve_logic_migration(ctx, id(r, "run")?, text(&b, "digest"), text(&b, "reason")).await?)
+        }
         ("POST", ["runs", r, "cancel"]) => {
             k.cancel_logic_run(ctx, id(r, "run")?, text(&body(req)?, "reason")).await?;
             ok(json!({}))

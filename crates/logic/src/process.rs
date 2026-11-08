@@ -189,6 +189,14 @@ pub enum Event {
         reason: String,
         resume: bool,
     },
+    /// A move onto another release of its solution, planned by one administrator and approved by another
+    /// (FLC-MIG-004). Its runtime carries it out ([`Machine::migrate`], checked again where the business records
+    /// are); the run's own state machine has nothing to do with it.
+    Migrated {
+        release: String,
+        map: BTreeMap<String, String>,
+        by: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -398,6 +406,28 @@ pub struct Run {
     waiting: BTreeMap<String, Waiting>,
 }
 
+/// What a move onto another release did: each waiting step's place, and the activations that changed name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Moved {
+    pub moved: Vec<String>,
+    /// The activations the run waited at before the move.
+    pub waiting: Vec<String>,
+    /// Waiting activations renamed with their step (old, new).
+    pub renamed: Vec<(String, String)>,
+}
+
+/// What a step that waits waits as, by its kind.
+fn waits_as(n: &Node) -> &'static str {
+    match n {
+        Node::HumanTask { .. } => "task",
+        Node::WaitEvent { .. } => "wait",
+        Node::Delay { .. } => "delay",
+        Node::Suspend { .. } => "stop",
+        Node::Case { .. } => "case",
+        _ => "step that does not wait",
+    }
+}
+
 /// The activation of `node` in `frame`.
 pub fn activation(frame: &str, node: &str) -> String {
     if frame.is_empty() { node.to_string() } else { format!("{frame}/{node}") }
@@ -469,6 +499,7 @@ impl<'r> Machine<'r> {
             return out;
         }
         match event {
+            Event::Migrated { .. } => return out,
             Event::CancelRequested { by, reason } => {
                 self.cancel(run, &by, &reason, &mut out);
                 return out;
@@ -596,6 +627,91 @@ impl<'r> Machine<'r> {
             return;
         }
         run.status = if run.waiting.values().any(|w| matches!(w, Waiting::Suspended { .. })) { Status::NeedsAttention } else { Status::Running };
+    }
+
+    /// Moves `run` onto this release (FLC-MIG-004): only as `map` says, only what can move faithfully, and all
+    /// of it or nothing. Each step the run waits at moves to the step `map` names for it, or to the one with its
+    /// id, which must wait the same way: a task stays a task (its decisions so far and its deadline with it), a
+    /// wait a wait, a delay a delay, a stop a stop. An approval given stands only for a task of this release that
+    /// `map` names for it (`approval:<task>`), or that has its id. Finished steps' outputs follow their steps.
+    /// A run inside a block (a loop, branches or a subprocess), with an effect in hand, or finished or stopping
+    /// does not move. Nothing is dropped: what cannot move is said, and the run stays as it was.
+    pub fn migrate(&self, run: &mut Run, map: &BTreeMap<String, String>) -> Result<Moved, Vec<String>> {
+        let to = |id: &str| map.get(id).cloned().unwrap_or_else(|| id.to_string());
+        let process = map.get("process").cloned().unwrap_or_else(|| run.process.clone());
+        let Some(top) = self.nodes_of(&process, &[]) else {
+            return Err(vec![format!("{process} is not a process of {} {}", self.release.solution, self.release.version)]);
+        };
+        let find = |id: &str| top.iter().find(|n| n.id() == id);
+        let mut refused = vec![];
+        if matches!(run.status, Status::Finished { .. } | Status::Cancelling) {
+            refused.push("a run that has finished or is stopping does not move".to_string());
+        }
+        if run.frames.iter().any(|(name, f)| !name.is_empty() || !f.block.is_empty()) {
+            refused.push("it is inside a block (a loop, branches or a subprocess), and a run there does not move".to_string());
+        }
+        let mut moved = Moved { moved: vec![], waiting: run.waiting.keys().cloned().collect(), renamed: vec![] };
+        for (act, w) in &run.waiting {
+            let (kind, node) = match w {
+                Waiting::Task { node, .. } => ("task", node),
+                Waiting::Wait { node, .. } => ("wait", node),
+                Waiting::Sleep { node, .. } => ("delay", node),
+                Waiting::Suspended { node, .. } => ("stop", node),
+                Waiting::Case { node, .. } => ("case", node),
+                Waiting::Invoke { .. } => {
+                    refused.push(format!("{act} has an effect in hand: it moves once that has settled"));
+                    continue;
+                }
+                _ => {
+                    refused.push(format!("{act} waits in a way that does not move"));
+                    continue;
+                }
+            };
+            let target = to(node);
+            match find(&target) {
+                None => refused.push(format!("{node} has no counterpart in {}: map it to a step that waits the same way", self.release.version)),
+                Some(n) if waits_as(n) != kind => refused.push(format!("{node} waits as a {kind}, and {target} is a {}", waits_as(n))),
+                Some(_) if *node == target => moved.moved.push(format!("{act} stays at {node}")),
+                Some(_) => {
+                    moved.moved.push(format!("{act} moves to {target}"));
+                    moved.renamed.push((act.clone(), target));
+                }
+            }
+        }
+        for task in run.approvals.keys() {
+            let target = map.get(&format!("approval:{task}")).cloned().unwrap_or_else(|| to(task));
+            if !matches!(find(&target), Some(Node::HumanTask { .. })) {
+                refused.push(format!("the approval given at {task} has nothing to stand for in {}: map it to a task (approval:{task})", self.release.version));
+            }
+        }
+        if !refused.is_empty() {
+            return Err(refused);
+        }
+        // All of it, at once.
+        for f in run.frames.values_mut() {
+            f.process = process.clone();
+            f.at = to(&f.at);
+        }
+        let waiting = std::mem::take(&mut run.waiting);
+        for (act, mut w) in waiting {
+            if let Waiting::Task { node, .. }
+            | Waiting::Wait { node, .. }
+            | Waiting::Sleep { node, .. }
+            | Waiting::Suspended { node, .. }
+            | Waiting::Case { node, .. } = &mut w
+            {
+                *node = to(node);
+            }
+            let act = moved.renamed.iter().find(|(old, _)| *old == act).map(|(_, new)| new.clone()).unwrap_or(act);
+            run.waiting.insert(act, w);
+        }
+        run.outputs = std::mem::take(&mut run.outputs).into_iter().map(|(act, v)| (if act.contains('/') { act } else { to(&act) }, v)).collect();
+        run.approvals = std::mem::take(&mut run.approvals)
+            .into_iter()
+            .map(|(task, a)| (map.get(&format!("approval:{task}")).cloned().unwrap_or_else(|| to(&task)), a))
+            .collect();
+        run.process = process;
+        Ok(moved)
     }
 
     fn nodes_of(&self, process: &str, block: &[String]) -> Option<&'r [Node]> {

@@ -8,7 +8,9 @@
 //! when the runtime next asks.
 //!
 //! * **Starts**: an event an active release's process listens for is accepted once per business key, on the
-//!   release active at that moment, and its start is queued with it (FLC-PROC-001).
+//!   release active as it is accepted, with the generation of that activation, and its start is queued with it
+//!   (FLC-PROC-001, FLC-MIG-003). Once a solution imported from an automation runs, each of the automation's
+//!   events is claimed once, by the solution or by the automation's runner, never run by both.
 //! * **Effects**: each invocation goes through the capability gate under the effect key `{run}/{activation}`,
 //!   with the requester's rights as they are when it runs (FLC-PROC-006); an effect that relies on an approval
 //!   is refused if what was approved has changed since (FLC-HUMAN-002).
@@ -27,11 +29,12 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use ferrum_logic::calendar::{self, Calendar, Deadline, Wait};
 use ferrum_logic::capability::snake;
-use ferrum_logic::compile::{Release, parameter_type};
+use ferrum_logic::compile::{Release, event_type, parameter_type};
 use ferrum_logic::expr::{self, Env, Facts, Ty, Val};
 use ferrum_logic::process::{Event, Invoked, Run};
 use ferrum_logic::refusal::{Code, Refusal};
 use ferrum_logic::solution::Node;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, LazyLock};
@@ -72,6 +75,8 @@ struct Listening {
     triggers: BTreeMap<String, Vec<Listener>>,
     /// Events some process waits for: one that comes before its wait is kept.
     waits: BTreeSet<String>,
+    /// Each active solution's release and the generation of its activation, as this was read.
+    generations: BTreeMap<String, (Uuid, i64)>,
 }
 
 static LISTENING: LazyLock<DashMap<Uuid, (i64, Arc<Listening>)>> = LazyLock::new(DashMap::new);
@@ -105,11 +110,26 @@ async fn listening(k: &Kernel, tenant: Uuid) -> Result<Arc<Listening>> {
     {
         return Ok(found.1.clone());
     }
-    let mut l = Listening::default();
     let mut tx = k.db.tenant_tx(tenant).await?;
-    let releases = crate::logic::active_releases(&mut tx, tenant, None).await?;
+    let l = Arc::new(build_listening(&mut tx, tenant).await?);
     tx.commit().await?;
-    for (origin, release) in releases {
+    if LISTENING.get(&tenant).is_none_or(|e| e.0 <= version) {
+        LISTENING.insert(tenant, (version, l.clone()));
+    }
+    Ok(l)
+}
+
+/// Each active solution's release and the generation of its activation.
+async fn generations(tx: &mut Tx, tenant: Uuid) -> Result<BTreeMap<String, (Uuid, i64)>> {
+    let rows: Vec<(String, Uuid, i64)> =
+        sqlx::query_as("select solution, release_id, generation from logic_activation where tenant_id = $1").bind(tenant).fetch_all(&mut **tx).await?;
+    Ok(rows.into_iter().map(|(solution, release, generation)| (solution, (release, generation))).collect())
+}
+
+/// What the workspace's active releases start on and wait for, as `tx` sees them.
+async fn build_listening(tx: &mut Tx, tenant: Uuid) -> Result<Listening> {
+    let mut l = Listening { generations: generations(tx, tenant).await?, ..Default::default() };
+    for (origin, release) in crate::logic::active_releases(tx, tenant, None).await? {
         let id: Uuid = origin.release.parse().map_err(Error::internal)?;
         for p in &release.ir.processes {
             waits_in(&p.nodes, &mut l.waits);
@@ -124,16 +144,81 @@ async fn listening(k: &Kernel, tenant: Uuid) -> Result<Arc<Listening>> {
             });
         }
     }
-    let l = Arc::new(l);
-    if LISTENING.get(&tenant).is_none_or(|e| e.0 <= version) {
-        LISTENING.insert(tenant, (version, l.clone()));
-    }
     Ok(l)
+}
+
+/// Accepts the run `s` starts for an event, once per business key, under the release and generation of its
+/// solution's activation as this transaction read it, and queues its start.
+async fn start_run(tx: &mut Tx, tenant: Uuid, s: &Listener, generation: i64, ev: &OutboxEvent, event: &str, payload: &Value) -> Result<Option<Uuid>> {
+    let env = Env::default().with("trigger", s.trigger.clone()).with("parameters", s.params.0.clone()).with("event", event_type());
+    let facts = Facts::default()
+        .with("trigger", Val::from_json(payload, &s.trigger))
+        .with("parameters", s.params.1.clone())
+        .with("event", Val::from_json(&json!({"id": ev.id, "topic": event}), &event_type()));
+    let key = match expr::compile(&s.business_key, &env).map(|c| c.eval(&facts)) {
+        Ok(Val::Text(t)) if !t.is_empty() => t,
+        Ok(Val::Int(i)) => i.to_string(),
+        other => {
+            tracing::warn!(%tenant, process = %s.process, event = ev.id, "no run started: the business key came out as {other:?}");
+            return Ok(None);
+        }
+    };
+    let id = Uuid::now_v7();
+    let accepted: Option<Uuid> = sqlx::query_scalar(
+        "insert into logic_run (tenant_id, id, release_id, solution, process, business_key, trigger, trigger_event, requester, workflow_id, \
+           subject_entity, subject_id, generation) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) on conflict (tenant_id, solution, process, business_key) do nothing returning id",
+    )
+    .bind(tenant)
+    .bind(id)
+    .bind(s.release)
+    .bind(&s.solution)
+    .bind(&s.process)
+    .bind(&key)
+    .bind(payload)
+    .bind(ev.id)
+    .bind(ev.actor)
+    .bind(workflow_id(tenant, id))
+    .bind(ev.entity.as_deref())
+    .bind(ev.record_id)
+    .bind(generation)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some(run) = accepted {
+        outbox::enqueue(tx, tenant, START_TOPIC, None, None, json!({"run": run})).await?;
+    }
+    Ok(accepted)
+}
+
+/// Whether an event of `automation`'s is for the solution imported from it to run, claiming it if so. Once the
+/// solution's release is active the automation is off (turned off in the same step), and each of its events is
+/// claimed once in the automation's own record of runs, under its lock: by the solution's subscriber or by the
+/// automation's runner, whichever comes to it first. An event the automation ran before then stays its own.
+/// An automation deleted since leaves the solution as the only writer (FLC-MIG-003).
+pub(crate) async fn claim_handover(tx: &mut Tx, tenant: Uuid, automation: Uuid, event: i64) -> Result<bool> {
+    let active: Option<bool> = sqlx::query_scalar("select is_active from automation where tenant_id = $1 and id = $2 for share")
+        .bind(tenant)
+        .bind(automation)
+        .fetch_optional(&mut **tx)
+        .await?;
+    Ok(match active {
+        None => true,
+        Some(true) => false,
+        Some(false) => sqlx::query_scalar::<_, i32>(
+            "insert into automation_run (tenant_id, automation_id, outbox_id, status) values ($1, $2, $3, 'handed_over') on conflict do nothing returning 1",
+        )
+        .bind(tenant)
+        .bind(automation)
+        .bind(event)
+        .fetch_optional(&mut **tx)
+        .await?
+        .is_some(),
+    })
 }
 
 /// The catalog's id of an outbox event (`procurement.material_request.submitted` for `MaterialRequest.submitted`),
 /// what it is about, and its payload as a run reads it.
-fn identify(schema: &ferrum_meta::Schema, ev: &OutboxEvent) -> (String, String, Value) {
+pub(crate) fn identify(schema: &ferrum_meta::Schema, ev: &OutboxEvent) -> (String, String, Value) {
     if let Some(entity) = &ev.entity
         && let Some((name, kind)) = ev.topic.split_once('.')
         && name == entity
@@ -186,6 +271,16 @@ pub enum Waited {
     Until(Option<DateTime<Utc>>),
 }
 
+/// What came of moving a run onto another release (FLC-MIG-004), for its runtime.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum Migration {
+    /// Moved: the run's state on its new release, and the waiting activations renamed with their steps.
+    Moved { state: Run, renamed: Vec<(String, String)>, moved: Vec<String> },
+    /// It stays as it was, and why.
+    Refused { why: Vec<String> },
+}
+
 /// A run as its runtime loads it.
 #[derive(Debug, Clone)]
 pub struct Loaded {
@@ -202,10 +297,9 @@ impl Kernel {
     pub async fn accept_event(&self, ev: &OutboxEvent) -> Result<()> {
         let tenant = ev.tenant_id;
         let schema = self.registry.schema(tenant).await?;
-        let l = listening(self, tenant).await?;
+        let mut l = listening(self, tenant).await?;
         let (event, subject, payload) = identify(&schema, ev);
-        let starts = l.triggers.get(&event).map(|v| v.as_slice()).unwrap_or_default();
-        if starts.is_empty() && !l.waits.contains(&event) {
+        if l.triggers.get(&event).is_none_or(Vec::is_empty) && !l.waits.contains(&event) {
             return Ok(());
         }
         let mut tx = self.db.tenant_tx(tenant).await?;
@@ -214,40 +308,19 @@ impl Kernel {
             tx.commit().await?;
             return Ok(());
         }
-        for s in starts {
-            let env = Env::default().with("trigger", s.trigger.clone()).with("parameters", s.params.0.clone());
-            let facts = Facts::default().with("trigger", Val::from_json(&payload, &s.trigger)).with("parameters", s.params.1.clone());
-            let key = match expr::compile(&s.business_key, &env).map(|c| c.eval(&facts)) {
-                Ok(Val::Text(t)) if !t.is_empty() => t,
-                Ok(Val::Int(i)) => i.to_string(),
-                other => {
-                    tracing::warn!(%tenant, process = %s.process, event = ev.id, "no run started: the business key came out as {other:?}");
-                    continue;
-                }
-            };
-            let id = Uuid::now_v7();
-            let accepted: Option<Uuid> = sqlx::query_scalar(
-                "insert into logic_run (tenant_id, id, release_id, solution, process, business_key, trigger, trigger_event, requester, workflow_id, \
-                   subject_entity, subject_id) \
-                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) on conflict (tenant_id, solution, process, business_key) do nothing returning id",
-            )
-            .bind(tenant)
-            .bind(id)
-            .bind(s.release)
-            .bind(&s.solution)
-            .bind(&s.process)
-            .bind(&key)
-            .bind(&payload)
-            .bind(ev.id)
-            .bind(ev.actor)
-            .bind(workflow_id(tenant, id))
-            .bind(ev.entity.as_deref())
-            .bind(ev.record_id)
-            .fetch_optional(&mut *tx)
-            .await?;
-            if let Some(run) = accepted {
-                outbox::enqueue(&mut tx, tenant, START_TOPIC, None, None, json!({"run": run})).await?;
+        // Each solution starts under the release active as the event is accepted: a replica that has not yet
+        // taken up an activation reads what runs now, here, before starting anything (FLC-MIG-003).
+        if generations(&mut tx, tenant).await? != l.generations {
+            l = Arc::new(build_listening(&mut tx, tenant).await?);
+        }
+        for s in l.triggers.get(&event).into_iter().flatten() {
+            let generation = l.generations.get(&s.solution).map(|g| g.1).unwrap_or_default();
+            if let Some(automation) = crate::authoring::automation_of(&s.solution)
+                && !claim_handover(&mut tx, tenant, automation, ev.id).await?
+            {
+                continue;
             }
+            start_run(&mut tx, tenant, s, generation, ev, &event, &payload).await?;
         }
         if l.waits.contains(&event) && !subject.is_empty() {
             let digest = ferrum_logic::canonical::digest("ferrum.signal/1", &ferrum_logic::capability::digestible(&payload)).unwrap_or_default();
@@ -305,6 +378,208 @@ impl Kernel {
         }
         tx.commit().await?;
         Ok(())
+    }
+
+    /// An event of an automation that is off. When the solution imported from it runs in its place and nobody
+    /// has claimed the event yet, it is claimed and the solution's run started here, in the automation runner's
+    /// transaction, so an event the solution's own subscriber passed before the cutover is not lost
+    /// (FLC-MIG-003). `false` when the automation was only turned off, or the event was claimed already.
+    pub(crate) async fn hand_over_automation_event(&self, tx: &mut Tx, ev: &OutboxEvent, automation: Uuid) -> Result<bool> {
+        let tenant = ev.tenant_id;
+        let solution = crate::authoring::solution_of(automation);
+        let now = generations(tx, tenant).await?;
+        let Some(&(_, generation)) = now.get(&solution) else { return Ok(false) };
+        if !claim_handover(tx, tenant, automation, ev.id).await? {
+            return Ok(false);
+        }
+        let mut l = listening(self, tenant).await?;
+        if l.generations != now {
+            l = Arc::new(build_listening(tx, tenant).await?);
+        }
+        let schema = self.registry.schema(tenant).await?;
+        let (event, _, payload) = identify(&schema, ev);
+        for s in l.triggers.get(&event).into_iter().flatten().filter(|s| s.solution == solution) {
+            start_run(tx, tenant, s, generation, ev, &event, &payload).await?;
+        }
+        Ok(true)
+    }
+
+    /// Moves a run onto `release` as its runtime holds it (`state`), when an approved move reaches it
+    /// (FLC-MIG-004). Mapped again on the run as it is now, and checked where the business records are: what it
+    /// waits on must still be open, for a decision or an event that came meanwhile wins and the run stays where it
+    /// was. Then, at once, its waiting tasks and waits take their steps' new names, the run takes the release, and
+    /// the move is recorded on the run.
+    pub async fn process_migrate(&self, tenant: Uuid, run: Uuid, release: Uuid, map: &BTreeMap<String, String>, by: &str, state: &Run) -> Result<Migration> {
+        let mut tx = self.db.tenant_tx(tenant).await?;
+        let row: Option<(Uuid, Option<Value>)> = sqlx::query_as(
+            "select l.release_id, (select r.release from logic_release r where r.tenant_id = l.tenant_id and r.id = $3 and r.solution = l.solution) \
+             from logic_run l where l.tenant_id = $1 and l.id = $2 for update",
+        )
+        .bind(tenant)
+        .bind(run)
+        .bind(release)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let schema = self.registry.schema(tenant).await?;
+        let sys = Ctx::system(tenant, schema);
+        let refuse = |why: Vec<String>| Migration::Refused { why };
+        let outcome = match row {
+            None => return Err(Error::NotFound("run".into())),
+            Some((from, _)) if from == release => refuse(vec!["it is on that release already".into()]),
+            Some((_, None)) => refuse(vec!["that release is not one of its solution's".into()]),
+            Some((from, Some(stored))) => {
+                let target: Release = serde_json::from_value(stored).map_err(Error::internal)?;
+                let mut moved_state = state.clone();
+                match ferrum_logic::process::Machine::new(&target).migrate(&mut moved_state, map) {
+                    Err(why) => refuse(why),
+                    Ok(moved) => {
+                        let tasks: Vec<(String, String)> = sqlx::query_as(
+                            "select activation, status from logic_task where tenant_id = $1 and run_id = $2 and activation = any($3) for update",
+                        )
+                        .bind(tenant)
+                        .bind(run)
+                        .bind(&moved.waiting)
+                        .fetch_all(&mut *tx)
+                        .await?;
+                        let waits: Vec<(String, String)> = sqlx::query_as(
+                            "select activation, status from logic_wait where tenant_id = $1 and run_id = $2 and activation = any($3) for update",
+                        )
+                        .bind(tenant)
+                        .bind(run)
+                        .bind(&moved.waiting)
+                        .fetch_all(&mut *tx)
+                        .await?;
+                        let settled: Vec<String> = tasks
+                            .iter()
+                            .filter(|(_, st)| st != "open")
+                            .chain(waits.iter().filter(|(_, st)| st != "waiting"))
+                            .map(|(act, st)| format!("{act} was {st} meanwhile"))
+                            .collect();
+                        if !settled.is_empty() {
+                            refuse(settled)
+                        } else {
+                            for (old, new) in &moved.renamed {
+                                for table in ["logic_task", "logic_wait", "logic_signal"] {
+                                    sqlx::query(sqlx::AssertSqlSafe(format!(
+                                        "update {table} set activation = $4 where tenant_id = $1 and run_id = $2 and activation = $3"
+                                    )))
+                                    .bind(tenant)
+                                    .bind(run)
+                                    .bind(old)
+                                    .bind(new)
+                                    .execute(&mut *tx)
+                                    .await?;
+                                }
+                            }
+                            sqlx::query("update logic_run set release_id = $3, process = $4, state = $5, updated_at = now() where tenant_id = $1 and id = $2")
+                                .bind(tenant)
+                                .bind(run)
+                                .bind(release)
+                                .bind(&moved_state.process)
+                                .bind(serde_json::to_value(&moved_state).map_err(Error::internal)?)
+                                .execute(&mut *tx)
+                                .await?;
+                            crate::audit::record(
+                                &mut tx,
+                                &sys,
+                                "LogicRun",
+                                run,
+                                "migrated",
+                                None,
+                                json!({"from": from, "to": release, "map": map, "moved": moved.moved, "approved_by": by}),
+                            )
+                            .await?;
+                            tx.commit().await?;
+                            return Ok(Migration::Moved { state: moved_state, renamed: moved.renamed, moved: moved.moved });
+                        }
+                    }
+                }
+            }
+        };
+        if let Migration::Refused { why } = &outcome {
+            crate::audit::record(&mut tx, &sys, "LogicRun", run, "migration_refused", None, json!({"to": release, "map": map, "why": why, "approved_by": by}))
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(outcome)
+    }
+
+    /// Whether `run` can move onto `release` as `map` says, as it last reported where it is: the release must be
+    /// the one that runs now for its solution (reviewed and activated), and the mapping must hold.
+    async fn migration_check(&self, tx: &mut Tx, tenant: Uuid, run: Uuid, release: Uuid, map: &BTreeMap<String, String>) -> Result<Vec<String>> {
+        type Row = (String, Uuid, Option<Value>, Option<Value>, Option<Uuid>);
+        let row: Option<Row> = sqlx::query_as(
+            "select l.solution, l.release_id, l.state, \
+               (select r.release from logic_release r where r.tenant_id = l.tenant_id and r.id = $3 and r.solution = l.solution), \
+               (select a.release_id from logic_activation a where a.tenant_id = l.tenant_id and a.solution = l.solution) \
+             from logic_run l where l.tenant_id = $1 and l.id = $2",
+        )
+        .bind(tenant)
+        .bind(run)
+        .bind(release)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let Some((solution, from, state, target, active)) = row else { return Err(Error::NotFound("run".into())) };
+        let Some(target) = target else { return Err(Error::field("release", format!("is a release of {solution}"))) };
+        if active != Some(release) {
+            return Err(Error::Conflict(format!("a run moves only onto the release that runs now for {solution}: activate that one first")));
+        }
+        if from == release {
+            return Err(Error::Conflict("it is on that release already".into()));
+        }
+        let mut state: Run = state
+            .and_then(|s| serde_json::from_value(s).ok())
+            .ok_or_else(|| Error::Conflict("the run has not said where it is yet: try again in a moment".into()))?;
+        let target: Release = serde_json::from_value(target).map_err(Error::internal)?;
+        ferrum_logic::process::Machine::new(&target)
+            .migrate(&mut state, map)
+            .map(|m| m.moved)
+            .map_err(|why| Error::Conflict(format!("it cannot move as mapped: {}", why.join("; "))))
+    }
+
+    /// Plans moving a run onto the release that runs now for its solution (administrators; FLC-MIG-004): checked
+    /// as the run stands, and recorded on the run under a digest of exactly this run, release and mapping, for
+    /// another administrator to approve.
+    pub async fn plan_logic_migration(&self, ctx: &Ctx, run: Uuid, release: Uuid, map: &BTreeMap<String, String>) -> Result<Value> {
+        require_admin(ctx)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let moved = self.migration_check(&mut tx, ctx.tenant, run, release, map).await?;
+        let digest = ferrum_logic::canonical::digest("ferrum.logic.migration/1", &json!({"run": run, "release": release, "map": map}))
+            .map_err(|e| Error::field("map", e.to_string()))?;
+        crate::audit::record(&mut tx, ctx, "LogicRun", run, "plan_migration", None, json!({"release": release, "map": map, "digest": digest, "moved": moved}))
+            .await?;
+        tx.commit().await?;
+        Ok(json!({"digest": digest, "moved": moved, "next": "Another administrator approves exactly this; the run moves when its runtime takes it up."}))
+    }
+
+    /// Approves a planned move (another administrator than who planned it), checked again as the run stands, and
+    /// hands it to the run's runtime.
+    pub async fn approve_logic_migration(&self, ctx: &Ctx, run: Uuid, digest: &str, reason: &str) -> Result<Value> {
+        require_admin(ctx)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let plan: Option<(Option<Uuid>, Value)> = sqlx::query_as(
+            "select actor, diff from audit_event where tenant_id = $1 and entity = 'LogicRun' and record_id = $2 and action = 'plan_migration' \
+             and diff->>'digest' = $3 order by id desc limit 1",
+        )
+        .bind(ctx.tenant)
+        .bind(run)
+        .bind(digest)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((planner, plan)) = plan else { return Err(Error::NotFound("planned move".into())) };
+        if planner == Some(ctx.user) {
+            return Err(Error::Forbidden("someone other than who planned a move approves it".into()));
+        }
+        let release: Uuid = plan["release"].as_str().and_then(|s| s.parse().ok()).ok_or_else(|| Error::internal("a plan without its release"))?;
+        let map: BTreeMap<String, String> = serde_json::from_value(plan["map"].clone()).map_err(Error::internal)?;
+        self.migration_check(&mut tx, ctx.tenant, run, release, &map).await?;
+        deliver(&mut tx, ctx.tenant, run, &Event::Migrated { release: release.to_string(), map, by: ctx.user.to_string() }).await?;
+        crate::audit::record(&mut tx, ctx, "LogicRun", run, "approve_migration", None, json!({"digest": digest, "reason": reason})).await?;
+        tx.commit().await?;
+        Ok(json!({
+            "delivered": true,
+            "note": "The run moves when its runtime takes this up; if it moved on before then, the move is refused and that is recorded on the run.",
+        }))
     }
 
     /// A run, its release and its last reported state, for its runtime.
@@ -382,6 +657,20 @@ impl Kernel {
             Ok(c) => c,
             Err(e) => return settle(e),
         };
+        // A capability taken out of service since the release was activated (its app's release revoked or taken
+        // out of the workspace, or the version the release is bound to replaced) is neither used nor failed for:
+        // the step waits, as it waits for a hold, administrators see why and may end the run, and it goes on by
+        // itself once the capability is back. Nothing similarly named stands in for it (FLC-OPS-007).
+        match self.capability(&ctx, capability) {
+            Ok(c) if c.version == version => self.unpaused(tenant, run, activation).await?,
+            Ok(c) => {
+                let why = format!("the release is bound to version {version} of {capability}, and this workspace has {}", c.version);
+                return self.paused(tenant, run, activation, capability, &why).await;
+            }
+            Err(e) if e.code() == Code::CapabilityUnavailable.as_str() => return self.paused(tenant, run, activation, capability, &e.to_string()).await,
+            // Rights: the invocation below refuses it, for the run to route.
+            Err(_) => {}
+        }
         if let Some(a) = approval
             && let Err(e) = self.approval_holds(tenant, run, a).await
         {
@@ -398,6 +687,44 @@ impl Kernel {
             Err(e) if e.code() == Code::OutcomeUnknown.as_str() => Ok(Invoked::Unknown { why: e.to_string() }),
             Err(e) => Ok(Invoked::Refused { code: e.code().into(), message: e.to_string() }),
         }
+    }
+
+    /// A step waiting for a capability out of service: an item telling administrators, opened once, and the step
+    /// tried again later.
+    async fn paused(&self, tenant: Uuid, run: Uuid, activation: &str, capability: &str, why: &str) -> Result<Invoked> {
+        let mut tx = self.db.tenant_tx(tenant).await?;
+        sqlx::query(
+            "insert into logic_task (tenant_id, run_id, activation, kind, label, detail) values ($1, $2, $3, 'attention', $4, $5) on conflict do nothing",
+        )
+        .bind(tenant)
+        .bind(run)
+        .bind(format!("{activation}#unavailable"))
+        .bind(format!("Waiting for {capability}, which is out of service"))
+        .bind(json!({
+            "why": format!("{why}. The step waits and goes on by itself once {capability} is back; to stop instead, cancel the run."),
+            "capability": capability, "step": activation,
+        }))
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        tracing::warn!(%tenant, %run, %activation, %capability, "a step waits for a capability out of service: {why}");
+        Err(Error::Unavailable(format!("{capability} is out of service here ({why}): the step waits until it is back")))
+    }
+
+    /// A capability in service again: the item about waiting for it, if one is open, is resolved.
+    async fn unpaused(&self, tenant: Uuid, run: Uuid, activation: &str) -> Result<()> {
+        let mut tx = self.db.tenant_tx(tenant).await?;
+        sqlx::query(
+            "update logic_task set status = 'resolved', closed_at = now(), version = version + 1 \
+             where tenant_id = $1 and run_id = $2 and activation = $3 and status = 'open'",
+        )
+        .bind(tenant)
+        .bind(run)
+        .bind(format!("{activation}#unavailable"))
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Whether an approval an effect relies on still holds: decided as recorded, on the material it names, and
@@ -765,6 +1092,8 @@ impl Kernel {
         let row: Option<Value> = sqlx::query_scalar(
             "select jsonb_build_object('id', l.id, 'solution', l.solution, 'process', l.process, 'business_key', l.business_key, 'status', l.status, \
                'requester', l.requester, 'output', l.output, 'state', l.state, 'accepted_at', l.accepted_at, 'finished_at', l.finished_at, \
+               'release', jsonb_build_object('id', l.release_id, 'version', (select r.version from logic_release r where r.tenant_id = l.tenant_id and r.id = l.release_id)), \
+               'generation', l.generation, 'trigger_event', l.trigger_event, \
                'tasks', coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'activation', t.activation, 'kind', t.kind, 'label', t.label, \
                   'status', t.status, 'deadline', t.deadline) order by t.opened_at) from logic_task t where t.tenant_id = l.tenant_id and t.run_id = l.id), '[]'::jsonb)) \
              from logic_run l where l.tenant_id = $1 and l.id = $2 and ($3 or l.requester = $4)",
