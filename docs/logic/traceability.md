@@ -6,9 +6,9 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | State | Requirements |
 |---|---|
 | Not started | 12 |
-| Partial | 60 |
-| Implemented, unverified | 4 |
-| Verified in software | 47 |
+| Partial | 52 |
+| Implemented, unverified | 5 |
+| Verified in software | 54 |
 | Blocked externally | 1 |
 | **All** | **124** |
 
@@ -113,18 +113,18 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
-| FLC-EDGE-001 | Authenticated observation | Partial | AT-EDGE-001 | 1 | Devices and sites have identities held by the platform; pipeline v2 does not exist |
-| FLC-EDGE-002 | Normalization provenance | Partial | AT-EDGE-002 | 0 | Definitions describe what devices report; no checked unit and scale normalization keeps raw provenance |
-| FLC-EDGE-003 | Quality semantics | Partial | AT-EDGE-003 | 0 | Flows hear only readings within quality limits and can ignore stale inputs; there are no quality classes |
-| FLC-EDGE-004 | State scope | Partial | AT-EDGE-004 | 0 | Each device is watched on its own; there is no limit on how many keys a flow's state may hold |
-| FLC-EDGE-005 | Atomic critical state | Partial | AT-EDGE-005 | 0 | Platform flows apply a result with where they stand in one transaction; a gateway writes state every 15 seconds and may repeat an effect after a crash |
-| FLC-EDGE-006 | Event-time lateness | Partial | AT-EDGE-006 | 0 | Platform flows hear closed minutes and say late gateway data is not heard; there are no watermarks |
-| FLC-EDGE-007 | Episode identity | Partial | AT-EDGE-007 | 0 | Alarms are idempotent and notifications are rate-limited; there are no episodes |
-| FLC-EDGE-008 | Offline scope | Partial | AT-EDGE-008 | 0 | A command asked for offline waits and expires; cached context and grant ages are not declared |
-| FLC-EDGE-009 | Distributed owner | Partial | AT-EDGE-009 | 1 | Connections are fenced so an old one cannot revoke its replacement; pipeline owners do not exist |
-| FLC-EDGE-010 | State migration | Partial | AT-EDGE-010 | 0 | A new revision starts with nothing remembered, said plainly; there is no drain or migration |
-| FLC-EDGE-011 | Backpressure | Partial | AT-EDGE-011 | 0 | Traces are disposable and dropped first; there is no evidence reserve under disk pressure |
-| FLC-EDGE-012 | Operational intent | Implemented, unverified | AT-EDGE-012 | 0 | A flow has no step that moves equipment, only one that asks the ledger; this acceptance case was not run as written |
+| FLC-EDGE-001 | Authenticated observation | Partial | AT-EDGE-001 | 2 | Facts are bound to the workspace and site of the gateway that signed them; a gateway names only devices it holds, and the platform keeps a condition only for a device of the reporting site. A payload's own claims of workspace or site are never read. No test sends a forged payload from one gateway naming another site's device |
+| FLC-EDGE-002 | Normalization provenance | Verified in software | AT-EDGE-002 | 2 | Bring to units works in exact decimals (value × scale + offset), keeps the raw value as provenance (carried to each condition's evidence) and quarantines what is not a number or lands outside what it can be (pipeline and flow tests). Units are named, not converted between, and the raw value is kept with conditions, not with every measurement |
+| FLC-EDGE-003 | Quality semantics | Verified in software | AT-EDGE-003 | 3 | Readings carry good, uncertain or bad; a flow that judges quality hears bad ones marked; a bad reading during an episode is evidence and never a recovery, and silence is said once as stale with the episode left open (pipeline, flow and conditions tests). A stuck value is judged by its device's limits (repeats), not by the flow |
+| FLC-EDGE-004 | State scope | Verified in software | AT-EDGE-004 | 1 | A step keeps memory for 5,000 devices and a flow for 50,000 things in all; each one left out is said (flow test with 5,010 untrusted device codes). Memory is keyed by flow, revision, step and device at one gateway; nothing is keyed by correlation across gateways |
+| FLC-EDGE-005 | Atomic critical state | Verified in software | AT-EDGE-005 | 2 | A business-critical flow's state and what it did are written in one SQLite transaction after each step that does something; killing the gateway before that write leaves neither and the reading is decided again once, after it leaves both and the same reading changes nothing (critical_it, real aborts at named crash points; flow tests across a restart). A push protocol that acknowledges a reading before the step is written can lose that reading in between; polled devices are read again |
+| FLC-EDGE-006 | Event-time lateness | Verified in software | AT-EDGE-006 | 2 | Event-time windows declare their watermark (latest seen less a wait), a lateness for corrections said on revised, later readings on late, and a quiet device closing what it has; a correction revises the evidence and the command the first result led to is not repeated (pipeline and flow tests, simulated from midnight so the windows fall the same each run). Windows are tumbling; there are no sliding or session windows |
+| FLC-EDGE-007 | Episode identity | Verified in software | AT-EDGE-007 | 3 | An episode's identity comes from the flow, step, device and when it began to hold; the platform keeps one Edge Condition per episode, each reading once, publishes each turn once, and a process triggered by edge.condition_opened starts once per episode through duplicates, late and out-of-order facts and a reopening (pipeline, flow and conditions tests). The process's own runtime was not part of that test |
+| FLC-EDGE-008 | Offline scope | Partial | AT-EDGE-008 | 0 | Past its offline lease a gateway starts no new work and says so, and a command asked for offline waits and expires; what a flow looks up about devices has no declared maximum age, and grant ages are not declared per flow |
+| FLC-EDGE-009 | Distributed owner | Partial | AT-EDGE-009 | 1 | Connections are fenced so an old one cannot revoke its replacement; flows have no owner incarnation of their own beyond the gateway holding the site |
+| FLC-EDGE-010 | State migration | Verified in software | AT-EDGE-010 | 1 | Whoever runs a new revision chooses Start Empty, Drain First (open windows say their partial result, open episodes are said interrupted, not cleared) or Keep Unchanged (steps whose settings did not change keep their memory); the flow records which steps kept what before it runs, and the gateway notes the rest (flow tests). The gateway applies it when the running revision is replaced, not when it restarts in the middle of a change |
+| FLC-EDGE-011 | Backpressure | Implemented, unverified | AT-EDGE-011 | 0 | Below its disk reserve a gateway keeps only alarms of its measurements, starts no new work and says so in its health; facts (conditions and requests among them) are always written, outside the telemetry budget. No test fills a disk |
+| FLC-EDGE-012 | Operational intent | Implemented, unverified | AT-EDGE-012 | 0 | A flow has no step that moves equipment: a command is a request to the ledger, and a case is a condition the platform hands to a reviewed process. This acceptance case was not run as written |
 
 ## W6: Analytical semantics and engine reuse
 
