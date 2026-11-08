@@ -903,6 +903,17 @@ async fn scenario() {
         "said once"
     );
     assert_eq!(scalar::<i64>(&k, admin.tenant, "select count(*) from e_order where request = $1", r1).await, 1, "and not ordered again");
+    // A run still open, whose history is ahead too, says so as soon as it is asked where it stands: as every
+    // open run is when a restore's hold is released.
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    let gone = sqlx::query("delete from logic_effect where effect_key = $1").bind(format!("{run10}/order")).execute(&mut *tx).await.unwrap().rows_affected();
+    tx.commit().await.unwrap();
+    assert_eq!(gone, 1);
+    // Held, as a server holds when it notices a restore; a person releases it, and every open run is asked.
+    sqlx::query("update platform_incarnation set held_since = now(), held_because = 'a restore'").execute(&k.db.pool).await.unwrap();
+    k.release_hold(&admin, "checked the restored database against the order book").await.unwrap();
+    d.settle().await;
+    let _: Uuid = scalar(&k, admin.tenant, "select id from logic_task where run_id = $1 and activation = 'order#restored' and status = 'open'", run10).await;
     sqlx::query("update platform_incarnation set released_at = null").execute(&k.db.pool).await.unwrap();
 
     // A waiting run moves onto another release only by a mapping one administrator plans and another approves
@@ -982,4 +993,33 @@ async fn scenario() {
     let refusal: Value =
         scalar(&k, admin.tenant, "select diff from audit_event where record_id = $1 and action = 'migration_refused' order by id desc limit 1", run14).await;
     assert!(refusal["why"][0].as_str().unwrap().contains("review was approved meanwhile"), "{refusal}");
+
+    // An event and the wait for it arriving at the same moment, again and again: each pair ends matched, never
+    // the event kept as early while the wait waits on (FLC-PROC-004). Found by the walk on the assembled build.
+    for i in 0..60 {
+        let subject = Uuid::now_v7();
+        let ev = OutboxEvent {
+            id: 9_000_000 + i,
+            tenant_id: admin.tenant,
+            topic: "Order.updated".into(),
+            entity: Some("Order".into()),
+            record_id: Some(subject),
+            payload: json!({"doc": {"id": subject, "reference": format!("RACE-{i}")}}),
+            ..Default::default()
+        };
+        let (activation, value, timeout) = (format!("race{i}"), json!(subject.to_string()), json!("P1D"));
+        let (accepted, waited) =
+            tokio::join!(k.accept_event(&ev), k.process_register_wait(admin.tenant, run1, &activation, "procs.order.updated", &value, &timeout));
+        accepted.unwrap();
+        let waited = waited.unwrap();
+        let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+        let state: String = sqlx::query_scalar("select status from logic_wait where run_id = $1 and activation = $2")
+            .bind(run1)
+            .bind(&activation)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert!(state == "matched" || matches!(waited, Waited::Matched(_)), "round {i}: the wait is {state} and registering said {waited:?}");
+    }
 }

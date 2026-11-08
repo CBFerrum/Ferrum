@@ -151,6 +151,8 @@ MUTANTS = [
     ("restored-effect-unnoticed", "crates/kernel/src/process.rs", "            if restored.is_some() {\n", "            if restored.is_none() {\n", PROCESS_RECORDS),
     ("workspace-takes-every-slot", "crates/process/src/budget.rs", "|| mine >= self.limits.per_workspace", "|| mine >= usize::MAX", PROCESS_BUDGET),
     ("effects-take-bookkeeping-slots", "crates/process/src/budget.rs", "let effects = slots - (slots / 4).max(1);", "let effects = slots;", PROCESS_BUDGET),
+    ("signal-and-wait-unlocked", "crates/kernel/src/process.rs", "        signal_lock(&mut tx, tenant, event, &key).await?;\n", "", PROCESS_RECORDS),
+    ("restore-not-rechecked", "crates/kernel/src/recovery.rs", "        self.recheck_logic_runs().await?;\n", "", PROCESS_RECORDS),
     ("case-close-waits-for-deliveries", "crates/logic/src/process.rs", 'for (task, output) in recorded.as_object().into_iter().flatten() {', 'for (task, output) in recorded.as_object().into_iter().flatten().take(0) {', LOGIC_UNIT),
     ("capability-input-says-who-asks", "crates/logic/src/capability.rs", "map.keys().find(|k| CONTEXT_FIELDS.contains(&k.as_str()) && !self.declares(k))", "map.keys().find(|k| k.is_empty() && !self.declares(k))", CAPABILITY),
     # The directory of people is the members'.

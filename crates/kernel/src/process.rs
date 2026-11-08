@@ -190,6 +190,17 @@ async fn start_run(tx: &mut Tx, tenant: Uuid, s: &Listener, generation: i64, ev:
     Ok(accepted)
 }
 
+/// Takes, until `tx` ends, the lock an event and the waits for it share for one correlation in a workspace.
+async fn signal_lock(tx: &mut Tx, tenant: Uuid, event: &str, correlation: &str) -> Result<()> {
+    sqlx::query("select pg_advisory_xact_lock(hashtext('ferrum.logic.signal'), hashtext($1 || '/' || $2 || '/' || $3))")
+        .bind(tenant.to_string())
+        .bind(event)
+        .bind(correlation)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 /// Whether an event of `automation`'s is for the solution imported from it to run, claiming it if so. Once the
 /// solution's release is active the automation is off (turned off in the same step), and each of its events is
 /// claimed once in the automation's own record of runs, under its lock: by the solution's subscriber or by the
@@ -323,6 +334,9 @@ impl Kernel {
             start_run(&mut tx, tenant, s, generation, ev, &event, &payload).await?;
         }
         if l.waits.contains(&event) && !subject.is_empty() {
+            // One at a time per event and correlation, with a run registering its wait for it: whichever comes
+            // second sees what the first wrote, so an event and its wait arriving together cannot both miss.
+            signal_lock(&mut tx, tenant, &event, &subject).await?;
             let digest = ferrum_logic::canonical::digest("ferrum.signal/1", &ferrum_logic::capability::digestible(&payload)).unwrap_or_default();
             let waiting: Vec<(Uuid, String)> =
                 sqlx::query_as("select run_id, activation from logic_wait where tenant_id = $1 and event = $2 and correlation = $3 and status = 'waiting' order by run_id, activation for update")
@@ -402,6 +416,27 @@ impl Kernel {
             start_run(tx, tenant, s, generation, ev, &event, &payload).await?;
         }
         Ok(true)
+    }
+
+    /// Asks every open run, in every workspace, to say where it stands (a recheck its runtime answers with a
+    /// report). Run after a restore is released: a run whose history is ahead of the restored database then
+    /// names each effect it did that this database has no receipt for (FLC-OPS-005). How many were asked.
+    pub async fn recheck_logic_runs(&self) -> Result<u64> {
+        if !self.settings.process_runtime {
+            return Ok(0);
+        }
+        let mut tx = self.db.system_tx().await?;
+        let open: Vec<(Uuid, Uuid)> =
+            sqlx::query_as("select tenant_id, id from logic_run where status in ('starting', 'running', 'needs_attention', 'cancelling')")
+                .fetch_all(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        for (tenant, run) in &open {
+            let mut tx = self.db.tenant_tx(*tenant).await?;
+            deliver(&mut tx, *tenant, *run, &Event::Recheck {}).await?;
+            tx.commit().await?;
+        }
+        Ok(open.len() as u64)
     }
 
     /// Moves a run onto `release` as its runtime holds it (`state`), when an approved move reaches it
@@ -924,6 +959,8 @@ impl Kernel {
         let deadline = self.process_deadline(tenant, timeout, Utc::now()).await?.at;
         let key = correlation(value);
         let mut tx = self.db.tenant_tx(tenant).await?;
+        // Serialised with an event being accepted for the same correlation (see `accept_event`).
+        signal_lock(&mut tx, tenant, event, &key).await?;
         let inserted = sqlx::query(
             "insert into logic_wait (tenant_id, run_id, activation, event, correlation, deadline) values ($1, $2, $3, $4, $5, $6) on conflict (tenant_id, run_id, activation) do nothing",
         )
