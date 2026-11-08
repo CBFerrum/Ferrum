@@ -299,13 +299,26 @@ impl Kernel {
                     .bind(&ids)
                     .fetch_all(&mut *tx)
                     .await?;
+            // How people recovered stopped steps: resumed, or ended.
+            let recovered: Vec<(Uuid, String, String)> = sqlx::query_as(
+                "select t.run_id, t.activation, d.decision from logic_task t \
+                 join logic_task_decision d on d.tenant_id = t.tenant_id and d.task_id = t.id \
+                 where t.tenant_id = $1 and t.run_id = any($2) and t.kind in ('recovery', 'attention') and d.decision in ('resume', 'end')",
+            )
+            .bind(ctx.tenant)
+            .bind(&ids)
+            .fetch_all(&mut *tx)
+            .await?;
             tx.commit().await?;
             let mut cases = vec![];
             for (run, process, trigger, at, state) in runs {
                 let mut s = scenario(process, trigger, at);
-                // The answers it met: each finished step's output.
+                // The answers it met, as they came: an output, a refusal, or an outcome nobody knew.
                 for (activation, output) in state.as_ref().and_then(|s| s.get("outputs")).and_then(Value::as_object).into_iter().flatten() {
-                    s.results.insert(activation.clone(), Invoked::Done { output: output.clone() });
+                    s.results.insert(activation.clone(), answer_met(output));
+                }
+                for (_, activation, decision) in recovered.iter().filter(|r| r.0 == run) {
+                    s.recoveries.insert(activation.clone(), decision == "resume");
                 }
                 for (_, activation, decision, values) in decided.iter().filter(|d| d.0 == run) {
                     s.decisions.insert(activation.clone(), Decision { approve: decision == "approve", by: "someone".into(), values: values.clone(), after: 0 });
@@ -701,6 +714,20 @@ impl Kernel {
             out.push(json!({"automation": id, "name": name, "draft": draft, "check": check, "notes": notes, "active": active}));
         }
         Ok(out)
+    }
+}
+
+/// A step's recorded output as the answer it was: the machine records a refusal as `{"error": {code, message}}`
+/// and an outcome nobody knew as `{"unknown": why}`; anything else was a result.
+fn answer_met(output: &Value) -> Invoked {
+    let text = |v: &Value| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string());
+    match (output.get("error"), output.get("unknown")) {
+        (Some(e), _) => Invoked::Refused {
+            code: e.get("code").and_then(Value::as_str).unwrap_or("refused").to_string(),
+            message: e.get("message").map(text).unwrap_or_else(|| text(e)),
+        },
+        (None, Some(u)) => Invoked::Unknown { why: text(u) },
+        _ => Invoked::Done { output: output.clone() },
     }
 }
 

@@ -741,6 +741,10 @@ async fn scenario() {
         }
     }
     assert!(decided_otherwise >= 5 && ordered_otherwise >= 3, "{decided_otherwise} decided, {ordered_otherwise} ordered otherwise: {shadow}");
+    // A refusal replays as the refusal it was: the run whose order was refused for its requester's rights
+    // stopped for attention then, and does so in the replay.
+    let refused_then = cases.iter().find(|c| c["run"] == json!(run8)).expect("the run refused for rights");
+    assert_eq!(refused_then["now"]["outcome"], "needs_attention", "{refused_then}");
     assert_eq!(shadow["differing"].as_u64(), Some(cases.iter().filter(|c| c["same"] == json!(false)).count() as u64));
     assert_eq!(counts().await, before, "nothing ran, changed or was kept");
     assert_eq!(code(&k.shadow_solution(&reviewer, Some(&candidate.to_string()), None, 5).await.unwrap_err()), "forbidden");
