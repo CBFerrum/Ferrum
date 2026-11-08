@@ -480,6 +480,80 @@ solution with a process is refused and everything else runs as before. What Temp
 `FERRUM_SECRET_KEY`; after rotating it, keep the old key in `FERRUM_RETIRED_SECRET_KEYS` until the runs
 started before have finished. Settings and behaviour: [logic/processes.md](logic/processes.md).
 
+**Running Temporal.** With Docker Compose, `deploy/temporal.yml` adds Temporal Server 1.32.2 (the version
+qualified on PostgreSQL 17) keeping its histories in the stack's PostgreSQL, databases `temporal` and
+`temporal_visibility`, sets up their schemas and the namespace, and points Ferrum at it:
+
+```bash
+docker compose -f deploy/docker-compose.yml -f deploy/temporal.yml --env-file deploy/.env up -d
+```
+
+Nothing is published to the host. Back up the two Temporal databases with Ferrum's: a restore brings back
+both, and Ferrum then holds (below).
+
+**Watching.** `/metrics` carries `ferrum_logic_runs{status}` (starting, running, needs_attention),
+`ferrum_logic_start_wait_seconds` (how long the oldest accepted run has waited for Temporal to start it),
+`ferrum_logic_tasks_open`, `ferrum_logic_tasks_overdue` and `ferrum_logic_recovery_open`. Alert when the
+start wait passes a few minutes (Temporal or the worker is away: runs are accepted and wait, nothing is
+lost), and when recovery items stay open (a person must look: Studio, Tasks).
+
+**After a restore.** Ferrum holds after it notices a restore (see "After restoring a backup"): besides jobs
+and the outbox, a process's steps that would change something wait and are tried again, while reads and
+people's tasks go on. Release the hold once what came back is reconciled; the waiting steps then run, each
+under the same receipt, so none happens twice.
+
+**Upgrading with processes open.** A new Ferrum build must read open runs as the old one did. Before it
+takes over, export the histories of open runs and replay them on it:
+
+```bash
+TEMPORAL_ADDRESS=http://temporal:7233 ferrum task logic_replay
+```
+
+It fetches the history of every run that has not finished from Temporal and replays each on the new build
+(histories saved by the SDK can be given instead, `files:a.json,b.json`; the Temporal CLI's own JSON is not
+that format).
+
+A history that does not replay means the new build would decide those runs differently: keep the old build
+running them, and say so in the release notes. Replay needs the same `FERRUM_SECRET_KEY` (and retired keys)
+as the runs were sealed with.
+
+**From automations.** Studio's `POST /api/app/studio/solutions/import/automations` (administrators) turns each
+automation into a draft Solution: the same event, the condition as written, the actions as steps through
+capabilities, a run per event as the automation ran, and where it came from. It is a draft: someone finishes
+what did not map, keeps it as a release, and another administrator reviews and consents to what it may change.
+Activating that release turns the automation off in the same step, and from then on each of its events is
+claimed once, by the solution or by the automation's runner, whichever comes to it first: never run by both,
+never by neither, however the events and the activation interleave. While the solution runs, the automation
+cannot be turned back on; to go back, deactivate the solution first.
+
+**Comparing before it runs.** On a release's page in Studio (or `POST /api/app/studio/solutions/shadow`),
+recent work is replayed against the release and against what runs now: the last runs of its solution, with
+the answers, decisions and events they met, or, for a solution imported from an automation that has not taken
+over yet, the automation's recent events and what it did. Each case says what differs. Nothing runs, changes or
+is kept, so it is safe on production data; a step the candidate adds has no recorded answer and says so.
+
+**Going back.** Going back to an earlier release is activating it again: a new generation, new runs start under
+it, runs started under the later one go on under theirs, and nothing any run did is undone. The activation
+says which release it replaced and how many runs stay on another; each run records the generation it started
+under.
+
+**A capability out of service.** When an app's release is revoked, an app is taken out of a workspace, or the
+version a release is bound to is replaced, a step that would use one of its capabilities neither runs nor fails:
+it waits, an attention item tells administrators why (Studio, Tasks), and it goes on by itself, under its own
+receipt, once the capability is back. To stop instead, cancel the run. Nothing similarly named stands in.
+
+**Moving a waiting run.** A run keeps the release it started under. To move one that waits (at a task, an event,
+a delay or a stop) onto the release that runs now, an administrator plans it on the run's page with a mapping of
+each step it waits at (`POST /runs/{id}/migrate/plan`), and another administrator approves exactly that plan
+(`POST /runs/{id}/migrate`). The runtime carries it out on the run as it holds it, checked where the records
+are: a decision or an event that came meanwhile wins, and the move is refused and recorded. A run inside a loop,
+parallel branches or a subprocess, or with an effect in hand, does not move.
+
+**Packs between workspaces.** A release downloads as a pack (`GET /solutions/releases/{id}/pack`): its source,
+digests, the capabilities, events and calendars it needs, and its review decisions without names. A pack never
+carries a connection or a credential. Taken in elsewhere (`POST /solutions/import/pack`) it becomes a draft, with
+what must be mapped there; a pack changed on the way is refused.
+
 ## Background jobs
 
 Long work runs in the `job` table: bulk operations over many records, workspace exports, and whatever

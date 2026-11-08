@@ -5,10 +5,10 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Not started | 8 |
-| Partial | 49 |
+| Not started | 3 |
+| Partial | 45 |
 | Implemented, unverified | 5 |
-| Verified in software | 61 |
+| Verified in software | 70 |
 | Blocked externally | 1 |
 | **All** | **124** |
 
@@ -158,26 +158,26 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
-| FLC-OPS-001 | Observability | Partial | AT-OPS-001 | 0 | Requests, jobs and events have logs, metrics and traces; runs and effects do not exist |
-| FLC-OPS-002 | Fair scheduling | Partial | AT-OPS-002 | 2 | Events and jobs take turns per workspace; process workers do not exist |
-| FLC-OPS-003 | Resource budget | Partial | AT-OPS-003 | 0 | Pools and each workspace's share of a replica are bounded; process workers and providers are not |
-| FLC-OPS-004 | Restore fencing | Not started | AT-OPS-004 | 0 | No second store or effect ledger exists yet |
-| FLC-OPS-005 | Backup completeness | Partial | AT-OPS-005 | 0 | The database is backed up and restored; artifacts, receipts and a process backend do not exist |
-| FLC-OPS-006 | Retention | Partial | AT-OPS-006 | 1 | Retention and legal holds apply to records; process histories do not exist |
-| FLC-OPS-007 | Revocation response | Partial | AT-OPS-007 | 0 | Apps can be turned off and keys revoked; capabilities cannot |
-| FLC-OPS-008 | Portability | Partial | AT-OPS-008 | 0 | Workspaces export their records and Edge flows download as files; solution packs do not exist |
-| FLC-MIG-001 | Legacy import | Not started | AT-MIG-001 | 0 | No importer exists |
-| FLC-MIG-002 | Shadow comparison | Not started | AT-MIG-002 | 0 | No comparison exists |
-| FLC-MIG-003 | One-writer cutover | Not started | AT-MIG-003 | 0 | No subscription generations exist |
-| FLC-MIG-004 | In-flight migration | Not started | AT-MIG-004 | 0 | No running processes exist to migrate |
+| FLC-OPS-001 | Observability | Partial | AT-OPS-001 | 1 | /metrics carries runs by state, the oldest start's wait, open and overdue tasks and open recovery items, aggregated, and docs/operations.md says what to alert on (seen on the real server); a run's page shows each step's outcome and what it did, and a task its history. Attempts per step and logs correlated across workers are not shown in one place |
+| FLC-OPS-002 | Fair scheduling | Partial | AT-OPS-002 | 2 | Events, jobs, and the starts and deliveries of runs go through the outbox, which takes turns per workspace; the Temporal task queue the process worker polls is one per installation, so many steps of one workspace can delay another's, and no per-workspace limit on runs is enforced |
+| FLC-OPS-003 | Resource budget | Partial | AT-OPS-003 | 0 | Pools and each workspace's share of a replica are bounded, and a run has a step budget (max_steps) and a history that continues as new; there is no per-workspace budget of open runs, worker time or provider calls |
+| FLC-OPS-004 | Restore fencing | Verified in software | AT-OPS-004 | 1 | While the platform is held after a restore, or fenced to another region, a process step that would change something waits and is tried again; reads and people's tasks go on; it runs once a person releases the hold, under the same receipt (process_it; mutant effect-ignores-restore-hold). The hold does not compare Temporal's history with the database by itself: the person releasing it reconciles external effects |
+| FLC-OPS-005 | Backup completeness | Partial | AT-OPS-005 | 0 | The database is backed up and restored, and deploy/temporal.yml keeps Temporal's histories in the same PostgreSQL so they are backed up with it; keys are documented (FERRUM_SECRET_KEY, retired keys). No drill restores everything into a new, isolated environment |
+| FLC-OPS-006 | Retention | Partial | AT-OPS-006 | 1 | Retention and legal holds apply to records; Temporal keeps a closed run's history for its namespace's retention (30 days in deploy/temporal.yml) and logic_run rows stay with the workspace; no legal hold or erasure reaches a process history |
+| FLC-OPS-007 | Revocation response | Verified in software | AT-OPS-007 | 1 | A capability taken out of service (an app's release revoked or taken out of the workspace, or the version a release is bound to replaced) is not used: a step that needs it waits, administrators see why on an attention item and may cancel the run (audited), and it goes on by itself under its own receipt once the capability is back (process_it, with the app taken out of the workspace; mutant revoked-capability-fails-the-step). Keys and apps are revoked as before; a plugin digest is revoked with its app's release, not on its own |
+| FLC-OPS-008 | Portability | Verified in software | AT-OPS-008 | 1 | A release leaves as a pack (source, digests, the capabilities, events and calendars it needs, review decisions without names; never a connection or a credential) and arrives in another workspace as a draft with what must be mapped; a pack changed on the way is refused (solutions_it; mutant pack-taken-in-changed). A pack holds one solution; run histories do not travel in it, and workspaces export their records as before |
+| FLC-MIG-001 | Legacy import | Verified in software | AT-MIG-001 | 2 | Each automation becomes a draft Solution with its event, its condition as written, its actions as capability steps, a run per event (event.id) and its provenance (and the administrator rights it no longer has), once; a notification to a role or a field is flagged and left for a person (solutions_it, process_it; mutant automation-imported-twice). Edge flows are not Logic solutions and stay as they are |
+| FLC-MIG-002 | Shadow comparison | Verified in software | AT-MIG-002 | 1 | A candidate is replayed beside what runs now on the last runs of its solution, with the answers, decisions and events each met, or beside an automation's recorded events and what it did; cases say what differs (outcome, decisions, steps, effects), and no order, effect, release or run comes of it (process_it; mutant shadow-forgets-what-happened). A permission-aware sandbox against real test APIs does not exist, and a step the candidate adds has no recorded answer |
+| FLC-MIG-003 | One-writer cutover | Verified in software | AT-MIG-003 | 1 | Each run records the generation it was accepted under, and an event is accepted under the release active as it is accepted. Activating a solution imported from an automation turns the automation off in the same step; each of its events is then claimed once under the automation's lock, by the solution or the automation's runner: events before, during and after the activation, in every order and delivered again, each told once (process_it; mutants cutover-runs-both, cutover-leaves-automation-on, run-forgets-its-generation). A replica learns of an activation from PostgreSQL's notification: an event it passes in the instant before, for a solution new to that event, is not started there |
+| FLC-MIG-004 | In-flight migration | Verified in software | AT-MIG-004 | 2 | A waiting run moves onto the release that runs now only by a mapping of each step it waits at (and each approval it carries), planned by one administrator and approved by another; an unmapped removed step or one mapped to a step that waits otherwise is refused, and a move that reaches a run decided meanwhile is refused and recorded (process_it; on Temporal through a continuation, conformance_it; mutants move-approved-by-its-planner, move-over-a-decision). A run inside a loop, parallel branches or a subprocess, or with an effect in hand, does not move |
 | FLC-MIG-005 | Schema lifecycle | Partial | AT-MIG-005 | 1 | Packages declare resumable backfills run in batches; contraction is by hand |
-| FLC-MIG-006 | Rollback truth | Partial | AT-MIG-006 | 0 | Edge treats going back to an old flow as a change reviewed again; solutions do not exist |
-| FLC-QUAL-001 | Exact artifacts | Partial | AT-QUAL-001 | 0 | The release manifest pins every component; no logic qualification exists to invalidate |
-| FLC-QUAL-002 | Ordinary roles | Partial | AT-QUAL-002 | 0 | Journeys run as ordinary roles; the six reference profiles do not exist |
-| FLC-QUAL-003 | Mutation coverage | Partial | AT-QUAL-003 | 0 | Mutants guard existing invariants; none exist yet for this program's |
+| FLC-MIG-006 | Rollback truth | Verified in software | AT-MIG-006 | 1 | Going back is activating the earlier release again: a new generation; new runs start under it, the run started under the later release goes on under it, and its order and receipt stay; the activation's answer and the release page say what was replaced and that nothing done is undone (process_it). Edge treats going back to an old flow as a change reviewed again |
+| FLC-QUAL-001 | Exact artifacts | Partial | AT-QUAL-001 | 0 | The release manifest pins every component, and a logic release is bound to its source digest, artifact digest and capability lock, refused at activation when the workspace no longer compiles it the same; no qualification run is tied to an exact image digest |
+| FLC-QUAL-002 | Ordinary roles | Partial | AT-QUAL-002 | 0 | Journeys run as ordinary roles, and each reference profile's parts were exercised as ordinary roles in tests and walks (docs/logic/evidence/lrp-profiles.md); the six profiles were not run together on one assembled build |
+| FLC-QUAL-003 | Mutation coverage | Verified in software | AT-QUAL-003 | 1 | Mutants remove the program's invariants and the targeted tests fail: the workspace filter (no-tenant-share, replay-crosses-workspaces), the approval digest (decided-on-other-material, effect-on-stale-approval), stable effect identity (run-started-twice, late-effect-erased, capability-no-receipt), and each workstream's own (W4 to W8 recorded in their evidence). They run on demand; CI checks only that each still finds its text |
 | FLC-QUAL-004 | Performance evidence | Partial | AT-QUAL-004 | 0 | A soak measures the server; no logic workload is defined |
-| FLC-QUAL-005 | Independent fixtures | Partial | AT-QUAL-005 | 0 | Financial journeys check hand-worked numbers; semantic and decision fixtures do not exist |
-| FLC-QUAL-006 | Full journeys | Partial | AT-QUAL-006 | 0 | Lead to cash and procure to pay run across apps; the six reference profiles do not exist |
+| FLC-QUAL-005 | Independent fixtures | Partial | AT-QUAL-005 | 0 | Financial journeys check hand-worked numbers; decision tables (hit policies, gaps, overlaps) and composed metrics read per person are checked against hand-worked values; fixtures for fan-out, currencies, refunds and balances do not exist |
+| FLC-QUAL-006 | Full journeys | Partial | AT-QUAL-006 | 0 | Lead to cash and procure to pay run across apps; each Logic reference profile is exercised part by part (docs/logic/evidence/lrp-profiles.md), not end to end on one assembled build with two workspaces |
 | FLC-QUAL-007 | External qualification | Partial | AT-QUAL-007 | 0 | The registry keeps simulators and mocks from being called qualified; this program's evidence is not yet recorded |
 | FLC-QUAL-008 | Maintenance owner | Blocked externally | AT-QUAL-008 | 0 | Named people must take on supported profiles, versions and incidents |
 

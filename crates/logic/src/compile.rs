@@ -207,6 +207,12 @@ impl Pass<'_> {
     }
 }
 
+/// What a business key may read besides `trigger` and `parameters`: the delivery that started it, `event.id`
+/// (one run per event, as an automation ran) and `event.topic`.
+pub fn event_type() -> Ty {
+    Ty::Record(BTreeMap::from([("id".to_string(), Ty::Int), ("topic".to_string(), Ty::Text)]))
+}
+
 /// A parameter's declared type: `money:INR`, `quantity:kg`, `decimal`, `int`, `text`, `bool`, `date`.
 pub fn parameter_type(t: &str) -> Option<Ty> {
     Some(match t.split_once(':') {
@@ -822,7 +828,7 @@ fn process(
         }
     };
     let base = Env::default().with("trigger", trigger_ty.clone()).with("parameters", params.clone());
-    if let Err(e) = expr::compile(&proc_.trigger.business_key, &base) {
+    if let Err(e) = expr::compile(&proc_.trigger.business_key, &base.clone().with("event", event_type())) {
         p.refusal(e, format!("{at}/trigger/business_key"), None);
     }
     if proc_.label.trim().is_empty() {

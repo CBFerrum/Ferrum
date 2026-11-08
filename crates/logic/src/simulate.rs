@@ -239,7 +239,7 @@ fn event_activation(e: &Event) -> Option<&str> {
         | Event::CaseClosed { activation, .. }
         | Event::CaseTimedOut { activation }
         | Event::Recovered { activation, .. } => Some(activation),
-        Event::CancelRequested { .. } => None,
+        Event::CancelRequested { .. } | Event::Migrated { .. } => None,
     }
 }
 

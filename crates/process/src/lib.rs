@@ -18,7 +18,7 @@
 use ferrum_kernel::error::Error as KernelError;
 use ferrum_kernel::hooks::EventSink;
 use ferrum_kernel::outbox::Event as OutboxEvent;
-use ferrum_kernel::process::{DELIVER_TOPIC, START_TOPIC, Waited, workflow_id};
+use ferrum_kernel::process::{DELIVER_TOPIC, Migration, START_TOPIC, Waited, workflow_id};
 use ferrum_kernel::secret::SecretKey;
 use ferrum_kernel::{Kernel, Result as KernelResult};
 use ferrum_logic::compile::Release;
@@ -240,6 +240,17 @@ pub struct Report {
     pub state: Run,
 }
 
+/// An approved move onto another release, with the run as the workflow holds it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MigrateIn {
+    pub tenant: Uuid,
+    pub run: Uuid,
+    pub release: Uuid,
+    pub map: BTreeMap<String, String>,
+    pub by: String,
+    pub state: Run,
+}
+
 #[activities]
 impl Acts {
     #[activity]
@@ -323,6 +334,11 @@ impl Acts {
     #[activity]
     pub async fn report(self: Arc<Self>, _ctx: ActivityContext, r: Report) -> Result<(), ActivityError> {
         self.kernel(move |k| async move { k.process_report(r.tenant, r.run, &r.state).await }).await
+    }
+
+    #[activity]
+    pub async fn migrate(self: Arc<Self>, _ctx: ActivityContext, m: MigrateIn) -> Result<Migration, ActivityError> {
+        self.kernel(move |k| async move { k.process_migrate(m.tenant, m.run, m.release, &m.map, &m.by, &m.state).await }).await
     }
 }
 
@@ -559,6 +575,27 @@ impl ProcessWf {
             }
             // What comes next: something delivered, or the earliest deadline passing.
             if let Some(e) = ctx.state_mut(|s| (!s.inbox.is_empty()).then(|| s.inbox.remove(0))) {
+                // An approved move onto another release (FLC-MIG-004): carried out where the business records are,
+                // on the run as held here; moved, the run continues as new under that release, its deadlines kept;
+                // refused (it moved on meanwhile), it stays, and the refusal is on the run's record.
+                if let Event::Migrated { release, map, by } = &e {
+                    handled += 1;
+                    let release: Uuid = release.parse().map_err(fail)?;
+                    let m_in = MigrateIn { tenant: r.tenant, run: r.run, release, map: map.clone(), by: by.clone(), state: state.clone() };
+                    if let Migration::Moved { state: moved, renamed, .. } = ctx.execute_activity(Acts::migrate, m_in, options(None)).await? {
+                        for (old, new) in renamed {
+                            if let Some(d) = deadlines.remove(&old) {
+                                deadlines.insert(new, d);
+                            }
+                        }
+                        let inbox = ctx.state_mut(|s| std::mem::take(&mut s.inbox));
+                        let next =
+                            Start { tenant: r.tenant, run: r.run, carry: Some(Carry { state: moved, deadlines, inbox }), continue_after: start.continue_after };
+                        ctx.continue_as_new(next, ContinueAsNewOptions::default())?;
+                        return Ok(String::new());
+                    }
+                    continue;
+                }
                 if let Some(a) = closes(&e) {
                     deadlines.remove(a);
                 }
@@ -714,6 +751,23 @@ pub async fn replay(history: Vec<u8>, keys: Option<Arc<Keys>>) -> std::result::R
         })
         .map_err(|e| e.to_string())?;
     rx.await.map_err(|_| "the replay stopped without an answer".to_string())?
+}
+
+/// Fetches each run's history from Temporal and replays it against this build: what `ferrum task logic_replay`
+/// runs before a new build takes over open runs. One that does not replay is named with why; the others
+/// replay on this build.
+pub async fn replay_runs(s: &Settings, workflow_ids: &[String]) -> std::result::Result<Vec<(String, std::result::Result<(), String>)>, String> {
+    let c = client(s).await.map_err(|e| format!("TEMPORAL_ADDRESS: {e}"))?;
+    let mut out = Vec::with_capacity(workflow_ids.len());
+    for id in workflow_ids {
+        let history = c.get_workflow_handle::<ProcessWf>(id.clone()).fetch_history(temporalio_client::WorkflowFetchHistoryOptions::default()).to_json().await;
+        let replayed = match history {
+            Ok(h) => replay(h, Some(s.keys.clone())).await,
+            Err(e) => Err(format!("its history could not be read: {e}")),
+        };
+        out.push((id.clone(), replayed));
+    }
+    Ok(out)
 }
 
 /// A worker running beside the server.

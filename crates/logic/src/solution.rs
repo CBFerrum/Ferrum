@@ -157,7 +157,8 @@ pub enum Phase {
 pub struct Trigger {
     /// An event from the catalog (`procurement.material_request.submitted`).
     pub event: String,
-    /// What makes two triggers one request: an expression over `trigger`.
+    /// What makes two triggers one request: an expression over `trigger`, `parameters` and `event` (the
+    /// delivery that started it: `event.id` makes each event its own run).
     pub business_key: String,
 }
 

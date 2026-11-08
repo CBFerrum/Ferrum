@@ -494,6 +494,8 @@ impl Hooks for App {
 
     fn register_tasks(tasks: &mut Tasks) {
         tasks.register(crate::tasks::CreateTenant);
+        #[cfg(feature = "process")]
+        tasks.register(crate::tasks::LogicReplay);
         tasks.register(crate::tasks::Doctor);
         tasks.register(crate::tasks::KmsWrap);
         tasks.register(crate::tasks::AccountState);

@@ -106,7 +106,36 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
     .fetch_one(&mut *tx)
     .await
     .map_err(Error::from)?;
+    // Processes (Ferrum's docs/logic/processes.md): how many stand where, across workspaces, and how long the
+    // oldest start has waited for the runtime. Nothing about any one workspace.
+    let (runs_starting, runs_running, runs_attention, start_wait): (i64, i64, i64, Option<f64>) = sqlx::query_as(
+        "select count(*) filter (where status = 'starting'), count(*) filter (where status = 'running'), \
+         count(*) filter (where status = 'needs_attention'), \
+         extract(epoch from now() - min(accepted_at) filter (where status = 'starting'))::float8 from logic_run",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(Error::from)?;
+    let (tasks_open, tasks_overdue, recovery_open): (i64, i64, i64) = sqlx::query_as(
+        "select count(*) filter (where status = 'open' and kind in ('task', 'case')), \
+         count(*) filter (where status = 'open' and kind in ('task', 'case') and deadline < now()), \
+         count(*) filter (where status = 'open' and kind in ('recovery', 'attention')) from logic_task",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(Error::from)?;
     tx.commit().await.map_err(Error::from)?;
+    let logic = format!(
+        "# HELP ferrum_logic_runs Process runs by where they stand.\n# TYPE ferrum_logic_runs gauge\n\
+         ferrum_logic_runs{{status=\"starting\"}} {runs_starting}\nferrum_logic_runs{{status=\"running\"}} {runs_running}\n\
+         ferrum_logic_runs{{status=\"needs_attention\"}} {runs_attention}\n\
+         # HELP ferrum_logic_start_wait_seconds How long the oldest accepted run has waited for the runtime to start it.\n\
+         # TYPE ferrum_logic_start_wait_seconds gauge\nferrum_logic_start_wait_seconds {}\n\
+         # TYPE ferrum_logic_tasks_open gauge\nferrum_logic_tasks_open {tasks_open}\n\
+         # HELP ferrum_logic_tasks_overdue People's tasks past their deadline and still open.\n# TYPE ferrum_logic_tasks_overdue gauge\nferrum_logic_tasks_overdue {tasks_overdue}\n\
+         # HELP ferrum_logic_recovery_open Items waiting for an administrator to recover or acknowledge.\n# TYPE ferrum_logic_recovery_open gauge\nferrum_logic_recovery_open {recovery_open}\n",
+        start_wait.unwrap_or(0.0)
+    );
     let (conn_on, conn_failing, conn_waiting, conn_stale, drift_open) = st.kernel.connection_gauges().await?;
     let (held, fenced) = (u8::from(st.kernel.holding().await?), u8::from(st.kernel.db.fenced()));
     let pool = &st.kernel.db.pool;
@@ -117,6 +146,7 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
         apps.push_str(&(app.metrics)(&st).await?);
     }
     apps.push_str(&failures_text(&st.kernel.failures()));
+    apps.push_str(&logic);
     let body = format!(
         "# HELP ferrum_up 1 when the process is serving.\n# TYPE ferrum_up gauge\nferrum_up 1\n{apps}\
          # TYPE ferrum_restore_held gauge\nferrum_restore_held {held}\n\
