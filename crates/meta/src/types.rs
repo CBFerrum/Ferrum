@@ -92,6 +92,10 @@ pub struct ActionContract {
     /// Another action of the same entity that undoes this one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compensate_with: Option<String>,
+    /// That the action is on its way out: what replaces it and until when (FLC-CAP-008). Releases bound to it keep
+    /// it; one checked against it is told.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecated: Option<String>,
 }
 
 /// Rows of an engine table (`table`) or of an entity's (`entity`) that a release changes in

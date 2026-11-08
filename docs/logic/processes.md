@@ -62,6 +62,20 @@ whoever activated the release, so offboarding them changes nothing; the account 
 release's closure in the activation's own transaction, and turned off when the solution stops. An effect that relies on an approval is refused if the approved record's version has changed since,
 or the record is gone.
 
+**Evidence.** Someone who may decide a task, or an administrator, may attach files to it while it is open
+(`POST /api/app/studio/tasks/{id}/evidence?name=`, the file as the body). Each is scanned as every upload is and
+kept with that task alone: read through it (`GET /tasks/{id}/evidence/{file}`) by those who may decide it, never
+through another task or the ordinary file routes.
+
+**Erasure.** Erasing a person's data reaches what runs keep of the records erased: the event that started a run
+about one, the run's own record, the material its people were shown and what waits for it lose those fields, and
+they stay gone when a runtime reports the run again from a history taken before. An approval given on what was
+erased no longer holds for the effect relying on it. A held record, and so its runs' copies, is not erased.
+
+**A paused worker.** A step's receipt is claimed in the effect's own transaction, so a second worker on the same
+step waits behind the first's claim. If the first's session ends while it is paused, its claim and half-done
+effect go with it, the second does the step, and the first, resumed, commits nothing.
+
 **People.** A task is decided on the material the person was shown (its digest); a decision on anything
 else is refused, as is one by the requester, by someone without the role (an administrator included), or by
 anyone but the person it was handed to. Decisions never change. A task is handed on only to someone holding its role, never back along its
@@ -121,8 +135,6 @@ Temporal comes with W8.
 ## Not yet
 
 * A live stream of a run's status (FLC-PROC-014): the run feed is read with a cursor and kept up by polling.
-* Attachments as a task's evidence (FLC-HUMAN-006): forms take typed values only.
 * Replaying open runs' histories against a new worker build before it takes over is a step of the release
   (`ferrum task logic_replay`, docs/operations.md), not something the worker does by itself.
-* A worker paused past its activity's timeout and then resumed was not tried (FLC-PROC-012); effect keys
-  make its repeat a receipt, and Temporal refuses a timed-out attempt's completion.
+

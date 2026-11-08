@@ -34,6 +34,9 @@
 //! | `POST /tasks/{id}/close` | closes a case |
 //! | `POST /tasks/{id}/recover` | `{resume, reason}` |
 //! | `POST /tasks/{id}/look-up` | → whether each effect that came back unknown is on record here, kept on the item |
+//! | `POST /tasks/{id}/evidence?name=` | the file as the body, its type as `content-type` → the kept file |
+//! | `GET /tasks/{id}/evidence/{file}` | → the file, for someone who may decide that task |
+//! | `GET /dependents?package=` | → active releases using that app's capabilities, and their open runs (administrators) |
 //! | `POST /tasks/{id}/acknowledge` | `{reason}` |
 //! | `GET /calendars`, `PUT /calendars/{name}` | `{zone, weekends, holidays}` → `{revision}` |
 
@@ -78,7 +81,7 @@ fn generation(b: &Value) -> Option<i64> {
 /// The routes this module answers, or `None` for the caller to go on.
 pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> Option<Result<SiteResponse>> {
     let m = req.method.as_str();
-    let routed = matches!(path.first(), Some(&("solutions" | "runs" | "tasks" | "calendars")));
+    let routed = matches!(path.first(), Some(&("solutions" | "runs" | "tasks" | "calendars" | "dependents")));
     if !routed {
         return None;
     }
@@ -217,6 +220,21 @@ async fn route(k: &Kernel, ctx: &Ctx, req: &SiteRequest, m: &str, path: &[&str])
             ok(json!({}))
         }
         ("POST", ["tasks", t, "look-up"]) => ok(k.look_up_logic_effects(ctx, id(t, "task")?).await?),
+        ("POST", ["tasks", t, "evidence"]) => {
+            let name = req.query.get("name").and_then(Value::as_str).unwrap_or("evidence");
+            let content_type = req.headers.get("content-type").and_then(Value::as_str).unwrap_or("application/octet-stream");
+            ok(k.attach_task_evidence(ctx, id(t, "task")?, name, content_type, &req.body).await?)
+        }
+        ("GET", ["tasks", t, "evidence", f]) => {
+            let (name, content_type, bytes) = k.read_task_evidence(ctx, id(t, "task")?, id(f, "file")?).await?;
+            let safe: String = name.chars().filter(|c| c.is_ascii_alphanumeric() || " ._-".contains(*c)).collect();
+            let disposition = format!("attachment; filename=\"{}\"", if safe.trim().is_empty() { "evidence" } else { safe.trim() });
+            SiteResponse { status: 200, content_type, headers: vec![("content-disposition".into(), disposition)], body: bytes }
+        }
+        ("GET", ["dependents"]) => {
+            let package = req.query.get("package").and_then(Value::as_str).ok_or_else(|| Error::field("package", "name an app"))?;
+            ok(json!(k.logic_dependents(ctx, &[package.to_string()]).await?))
+        }
         ("POST", ["tasks", t, "acknowledge"]) => {
             k.acknowledge_logic_attention(ctx, id(t, "task")?, text(&body(req)?, "reason")).await?;
             ok(json!({}))

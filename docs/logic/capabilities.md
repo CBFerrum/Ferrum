@@ -34,6 +34,7 @@ actions:
       completion: The stock is held          # what "done" means
       compensate_with: release               # another action of the same entity that undoes it
       returns: {type: object, properties: {held: {type: integer}}}
+      # deprecated: place_v2 replaces it from 1 March 2027   # on its way out, and what replaces it
       # effect, idempotency, retention_days and unknown_outcome are derived when left out
 ```
 
@@ -41,6 +42,13 @@ A contract that contradicts its action is refused when the package loads: a read
 something, a writing one that calls itself pure, an undo that is not another action of the entity. The record
 operations' names (`create`, `read`, `list`, `update`, `delete`, `submit`, `cancel`, `amend`) cannot be action
 names.
+
+A record's id, in what a capability takes and returns, names the kind of record it is (`"x-ferrum-link":
+"Order"`), as link fields do: a process passing the id of one kind where another's is wanted is refused when it
+is checked, while an id written as text is checked when it runs (FLC-COMP-002). An action marked `deprecated`
+stays served to releases bound to it; checking a release that uses it says so, with what replaces it
+(FLC-CAP-008). What runs on an app's capabilities is listed with `GET /api/app/studio/dependents?package=`
+before the app is taken out, and recorded in the audit trail when it is: its steps then wait for it.
 
 Events a process can start on or wait for are listed beside them: each entity's own (`created`, `updated`,
 `deleted`, `submitted`, `cancelled`, `transitioned`) and the business events a package declares under `events:`.
@@ -91,6 +99,4 @@ All three describe a capability the same way, digest for digest (`crates/studio/
 ## Not yet
 
 - External effects stop at the outbox: `ferrum.mail` is queued once, and the mail server's delivery is not
-  confirmed. States for effects that can end unknown come with durable processes (W3).
-- Capabilities cannot yet be deprecated or revoked one by one, nor their dependents listed (FLC-CAP-008).
-- The builder's screens (W4) are not built; their endpoint is.
+  confirmed. A step whose answer was lost is looked up by its receipt (docs/logic/processes.md, Recovery).

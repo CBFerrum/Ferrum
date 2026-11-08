@@ -307,6 +307,124 @@ pub struct Loaded {
     pub status: String,
 }
 
+/// How a task's evidence files are kept: attached to the task, which no ordinary file route reaches.
+const TASK_EVIDENCE: &str = "logic_task";
+/// The largest file kept as a task's evidence.
+const MAX_EVIDENCE: usize = 10 << 20;
+
+/// A task's evidence, oldest first.
+async fn evidence_of(tx: &mut Tx, tenant: Uuid, task: Uuid) -> Result<Vec<Value>> {
+    Ok(sqlx::query_scalar(
+        "select jsonb_build_object('id', f.id, 'file_name', f.file_name, 'content_type', f.content_type, 'size', f.size_bytes, 'sha256', f.sha256, \
+           'at', f.created_at, 'by', coalesce(nullif(u.full_name, ''), u.email::text, f.created_by::text)) \
+         from file_object f left join app_user u on u.tenant_id = f.tenant_id and u.id = f.created_by \
+         where f.tenant_id = $1 and f.entity = $2 and f.record_id = $3 order by f.created_at, f.id",
+    )
+    .bind(tenant)
+    .bind(TASK_EVIDENCE)
+    .bind(task)
+    .fetch_all(&mut **tx)
+    .await?)
+}
+
+/// Takes `fields` out of every object in `v` that is a copy of `subject`: its `id` is the subject's.
+fn strip(v: &mut Value, subject: Uuid, fields: &[String]) {
+    fn walk(v: &mut Value, subject: &str, fields: &[String]) {
+        match v {
+            Value::Object(m) => {
+                if m.get("id").and_then(Value::as_str) == Some(subject) {
+                    for f in fields {
+                        m.remove(f);
+                    }
+                }
+                for x in m.values_mut() {
+                    walk(x, subject, fields);
+                }
+            }
+            Value::Array(a) => {
+                for x in a {
+                    walk(x, subject, fields);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(v, &subject.to_string(), fields);
+}
+
+/// An erasure reaching the copies runs keep of a record (FLC-OPS-006): the event that started a run about it, the
+/// run's own record, the material its people were shown and what waits for it lose the erased fields, and the
+/// erasure is kept so a runtime reporting the run again cannot bring them back. An approval given before then
+/// was given on what is gone, so the effect relying on it is refused as stale. How many copies it changed.
+pub(crate) async fn erase_run_copies(tx: &mut Tx, tenant: Uuid, entity: &str, record: Uuid, fields: &[String]) -> Result<u64> {
+    if fields.is_empty() {
+        return Ok(0);
+    }
+    sqlx::query(
+        "insert into logic_erasure (tenant_id, subject_entity, subject_id, fields) values ($1, $2, $3, $4) \
+         on conflict (tenant_id, subject_entity, subject_id) do update \
+           set fields = array(select distinct unnest(logic_erasure.fields || excluded.fields)), erased_at = now()",
+    )
+    .bind(tenant)
+    .bind(entity)
+    .bind(record)
+    .bind(fields)
+    .execute(&mut **tx)
+    .await?;
+    let mut changed = 0u64;
+    let runs: Vec<(Uuid, Value, Option<Value>)> =
+        sqlx::query_as("select id, trigger, state from logic_run where tenant_id = $1 and subject_entity = $2 and subject_id = $3 for update")
+            .bind(tenant)
+            .bind(entity)
+            .bind(record)
+            .fetch_all(&mut **tx)
+            .await?;
+    for (run, mut trigger, mut state) in runs {
+        strip(&mut trigger, record, fields);
+        if let Some(s) = state.as_mut() {
+            strip(s, record, fields);
+        }
+        sqlx::query("update logic_run set trigger = $3, state = $4 where tenant_id = $1 and id = $2")
+            .bind(tenant)
+            .bind(run)
+            .bind(&trigger)
+            .bind(&state)
+            .execute(&mut **tx)
+            .await?;
+        let tasks: Vec<(Uuid, Value)> = sqlx::query_as("select id, material from logic_task where tenant_id = $1 and run_id = $2 for update")
+            .bind(tenant)
+            .bind(run)
+            .fetch_all(&mut **tx)
+            .await?;
+        for (task, mut material) in tasks {
+            strip(&mut material, record, fields);
+            sqlx::query("update logic_task set material = $3 where tenant_id = $1 and id = $2")
+                .bind(tenant)
+                .bind(task)
+                .bind(&material)
+                .execute(&mut **tx)
+                .await?;
+        }
+        changed += 1;
+    }
+    let signals: Vec<(i64, Value)> = sqlx::query_as("select id, payload from logic_signal where tenant_id = $1 and correlation = $2 for update")
+        .bind(tenant)
+        .bind(record.to_string())
+        .fetch_all(&mut **tx)
+        .await?;
+    for (signal, mut payload) in signals {
+        strip(&mut payload, record, fields);
+        sqlx::query("update logic_signal set payload = $3 where tenant_id = $1 and id = $2")
+            .bind(tenant)
+            .bind(signal)
+            .bind(&payload)
+            .execute(&mut **tx)
+            .await?;
+        changed += 1;
+    }
+    Ok(changed)
+}
+
 impl Kernel {
     /// Starts the runs an event starts, and hands it to the runs waiting for it.
     pub async fn accept_event(&self, ev: &OutboxEvent) -> Result<()> {
@@ -1178,13 +1296,32 @@ impl Kernel {
             ),
         };
         let mut tx = self.db.tenant_tx(tenant).await?;
+        // A runtime holds the run as its history has it, which may be from before an erasure: what was erased is
+        // taken out again before it is kept (FLC-OPS-006).
+        let mut reported = serde_json::to_value(state).map_err(Error::internal)?;
+        let mut output = output;
+        let erased: Option<(Uuid, Vec<String>)> = sqlx::query_as(
+            "select e.subject_id, e.fields from logic_erasure e join logic_run l \
+               on l.tenant_id = e.tenant_id and l.subject_entity = e.subject_entity and l.subject_id = e.subject_id \
+             where l.tenant_id = $1 and l.id = $2",
+        )
+        .bind(tenant)
+        .bind(run)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some((subject, fields)) = &erased {
+            strip(&mut reported, *subject, fields);
+            if let Some(o) = output.as_mut() {
+                strip(o, *subject, fields);
+            }
+        }
         sqlx::query(
             "update logic_run set state = $3, status = $4, output = coalesce($5, output), reported = reported + 1, updated_at = now(), \
              finished_at = case when $6 then coalesce(finished_at, now()) else finished_at end where tenant_id = $1 and id = $2",
         )
         .bind(tenant)
         .bind(run)
-        .bind(serde_json::to_value(state).map_err(Error::internal)?)
+        .bind(reported)
         .bind(status)
         .bind(output)
         .bind(finished)
@@ -1420,9 +1557,52 @@ impl Kernel {
         .bind(id)
         .fetch_one(&mut *tx)
         .await?;
+        let evidence = evidence_of(&mut tx, ctx.tenant, id).await?;
         tx.commit().await?;
         task["history"] = history;
+        task["evidence"] = json!(evidence);
         Ok(task)
+    }
+
+    /// Attaches a file to a task as evidence for its decision (FLC-HUMAN-006). Only someone who may decide the
+    /// task, or an administrator, attaches to it, and only while it is open; the file is scanned as every upload is
+    /// and kept with that task alone, out of reach of the ordinary file routes.
+    pub async fn attach_task_evidence(&self, ctx: &Ctx, task: Uuid, file_name: &str, content_type: &str, data: &[u8]) -> Result<Value> {
+        let t = self.logic_task(ctx, task).await?;
+        if t["status"] != "open" {
+            return Err(Error::Conflict("this task is closed: its evidence stays as it was".into()));
+        }
+        if data.is_empty() || data.len() > MAX_EVIDENCE {
+            return Err(Error::invalid(format!("evidence is a file of at most {} MB", MAX_EVIDENCE >> 20)));
+        }
+        self.check_storage_quota(ctx.tenant, data.len() as u64).await?;
+        let scanned = self.scan_stream(ctx, file_name, data.len() as u64, futures::stream::iter([Ok::<_, Error>(data)])).await?;
+        let mut kept = self.keep_file(ctx, Some((TASK_EVIDENCE, task)), file_name, content_type, data, scanned).await?;
+        if let Some(m) = kept.as_object_mut() {
+            m.remove("url");
+        }
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        crate::audit::record(&mut tx, ctx, "LogicTask", task, "attach_evidence", None, json!({"file": kept["id"], "sha256": kept["sha256"]})).await?;
+        tx.commit().await?;
+        Ok(kept)
+    }
+
+    /// One file of a task's evidence, for someone who may decide that task or an administrator: a file is read
+    /// through the task it was given to, never through another's (FLC-HUMAN-006).
+    pub async fn read_task_evidence(&self, ctx: &Ctx, task: Uuid, file: Uuid) -> Result<(String, String, Vec<u8>)> {
+        self.logic_task(ctx, task).await?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let row: Option<(String, String, String)> =
+            sqlx::query_as("select file_name, content_type, storage_key from file_object where tenant_id = $1 and id = $2 and entity = $3 and record_id = $4")
+                .bind(ctx.tenant)
+                .bind(file)
+                .bind(TASK_EVIDENCE)
+                .bind(task)
+                .fetch_optional(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        let Some((name, content_type, key)) = row else { return Err(Error::NotFound("evidence".into())) };
+        Ok((name, content_type, self.file_store()?.get(&key).await?))
     }
 
     /// Decides a person's task, on the material shown to them: approved once enough different people approve,

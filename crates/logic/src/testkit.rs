@@ -46,6 +46,7 @@ pub(crate) fn cap(id: &str, effect: Effect, input: Value, output: Value) -> Capa
         completion: "done".into(),
         compensate_with: None,
         limits: Limits::default(),
+        deprecated: None,
     }
     .sealed()
     .unwrap()
