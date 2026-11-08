@@ -20,7 +20,7 @@ pub enum Kind {
 }
 
 /// One difference.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Change {
     /// `parameter`, `rule`, `decision`, `decision_row`, `process`, `step` or `capability`.
     pub area: String,
@@ -33,6 +33,20 @@ pub struct Change {
     /// For a capability: whether it changes something.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub changes_records: bool,
+    /// For a change, each differing setting as it was and as it is (`null` where absent), so a reviewer reads
+    /// the new recipient, not only that the input changed. A value longer than [`SHOWN`] characters of JSON
+    /// is replaced by a note of its length.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub values: BTreeMap<String, [Value; 2]>,
+}
+
+/// The most characters of JSON a changed value is shown with.
+pub const SHOWN: usize = 2000;
+
+fn shown(v: Option<&Value>) -> Value {
+    let v = v.cloned().unwrap_or(Value::Null);
+    let len = v.to_string().chars().count();
+    if len > SHOWN { Value::String(format!("({len} characters of JSON: read it in the source)")) } else { v }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -41,13 +55,18 @@ pub struct Diff {
     pub privilege_growth: Vec<String>,
 }
 
-/// The top-level settings of two JSON objects that differ, `id` aside.
-fn differing(a: &Value, b: &Value) -> Vec<String> {
-    let (Some(a), Some(b)) = (a.as_object(), b.as_object()) else {
-        return if a == b { vec![] } else { vec!["value".into()] };
+/// The top-level settings of two JSON objects that differ, `id` aside, each as it was and as it is.
+fn differing(a: &Value, b: &Value) -> BTreeMap<String, [Value; 2]> {
+    let (Some(ao), Some(bo)) = (a.as_object(), b.as_object()) else {
+        return if a == b { BTreeMap::new() } else { BTreeMap::from([("value".to_string(), [shown(Some(a)), shown(Some(b))])]) };
     };
-    let keys: BTreeSet<&String> = a.keys().chain(b.keys()).collect();
-    keys.into_iter().filter(|k| k.as_str() != "id" && a.get(*k) != b.get(*k)).cloned().collect()
+    let keys: BTreeSet<&String> = ao.keys().chain(bo.keys()).collect();
+    keys.into_iter().filter(|k| k.as_str() != "id" && ao.get(*k) != bo.get(*k)).map(|k| (k.clone(), [shown(ao.get(k)), shown(bo.get(k))])).collect()
+}
+
+fn changed(area: &str, id: &str, o: &Value, n: &Value) -> Change {
+    let values = differing(o, n);
+    Change { area: area.into(), id: id.into(), kind: Kind::Changed, fields: values.keys().cloned().collect(), changes_records: false, values }
 }
 
 /// Items by id, as JSON.
@@ -58,13 +77,13 @@ fn by_id<T: Serialize>(items: &[T], id: impl Fn(&T) -> String) -> BTreeMap<Strin
 fn compare(area: &str, old: &BTreeMap<String, Value>, new: &BTreeMap<String, Value>, out: &mut Vec<Change>) {
     for (id, n) in new {
         match old.get(id) {
-            None => out.push(Change { area: area.into(), id: id.clone(), kind: Kind::Added, fields: vec![], changes_records: false }),
-            Some(o) if o != n => out.push(Change { area: area.into(), id: id.clone(), kind: Kind::Changed, fields: differing(o, n), changes_records: false }),
+            None => out.push(Change { area: area.into(), id: id.clone(), kind: Kind::Added, fields: vec![], changes_records: false, values: BTreeMap::new() }),
+            Some(o) if o != n => out.push(changed(area, id, o, n)),
             _ => {}
         }
     }
     for id in old.keys().filter(|id| !new.contains_key(*id)) {
-        out.push(Change { area: area.into(), id: id.clone(), kind: Kind::Removed, fields: vec![], changes_records: false });
+        out.push(Change { area: area.into(), id: id.clone(), kind: Kind::Removed, fields: vec![], changes_records: false, values: BTreeMap::new() });
     }
 }
 
@@ -170,6 +189,7 @@ pub fn diff(old: Option<&Release>, new: &Release) -> Diff {
                     kind: Kind::Added,
                     fields: vec![n.version.clone()],
                     changes_records: n.effect.changes(),
+                    values: BTreeMap::new(),
                 });
             }
             Some(o) if o.digest != n.digest || o.version != n.version => {
@@ -183,6 +203,7 @@ pub fn diff(old: Option<&Release>, new: &Release) -> Diff {
                     kind: Kind::Changed,
                     fields: vec![o.version.clone(), n.version.clone()],
                     changes_records: n.effect.changes(),
+                    values: BTreeMap::new(),
                 });
             }
             _ => {}
@@ -195,9 +216,11 @@ pub fn diff(old: Option<&Release>, new: &Release) -> Diff {
             kind: Kind::Removed,
             fields: vec![o.version.clone()],
             changes_records: o.effect.changes(),
+            values: BTreeMap::new(),
         });
     }
-    changes.sort();
+    // In a stable order: by area, then what, then how.
+    changes.sort_by(|a, b| (&a.area, &a.id, a.kind).cmp(&(&b.area, &b.id, b.kind)));
     growth.sort();
     Diff { changes, privilege_growth: growth }
 }
@@ -252,7 +275,19 @@ mod tests {
         );
         assert!(find(&d, "parameter", "review_limit").is_some_and(|c| c.fields == vec!["value".to_string()]), "{d:#?}");
         assert!(find(&d, "step", "purchase_exception/review").is_some_and(|c| c.fields == vec!["label".to_string()]), "a label people read is meaning: {d:#?}");
+        let review = find(&d, "step", "purchase_exception/review").unwrap();
+        assert_eq!(review.values["label"][1], json!("Two reviewers look at it"), "the reviewer reads what it says now");
+        assert_ne!(review.values["label"][0], review.values["label"][1]);
         assert!(d.privilege_growth.is_empty(), "nothing new may change records");
+    }
+
+    #[test]
+    fn a_long_value_is_named_by_its_length() {
+        let long = json!("x".repeat(SHOWN + 10));
+        let values = differing(&json!({"id": "a", "form": long}), &json!({"id": "a", "form": "short"}));
+        assert_eq!(values["form"][1], json!("short"));
+        assert!(values["form"][0].as_str().unwrap().starts_with(&format!("({} characters of JSON", SHOWN + 12)), "{values:?}");
+        assert_eq!(differing(&json!({"id": "a", "to": "x"}), &json!({"id": "b", "to": "x"})), BTreeMap::new(), "the id is the change's own name");
     }
 
     #[test]

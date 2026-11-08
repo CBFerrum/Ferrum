@@ -86,6 +86,14 @@ async fn refused(k: &Kernel, ctx: &Ctx, method: &str, path: &str, headers: &[(&s
     }
 }
 
+/// What a workspace has waiting to be sent.
+async fn queued(k: &Kernel, tenant: Uuid) -> i64 {
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let n: i64 = sqlx::query_scalar("select count(*) from outbox where tenant_id = $1").bind(tenant).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    n
+}
+
 fn obj(v: Value) -> Doc {
     v.as_object().cloned().unwrap()
 }
@@ -199,6 +207,21 @@ async fn scenario() {
         .unwrap();
     tx.commit().await.unwrap();
     assert_eq!(touched, (0, 0, 0), "nothing reached anything");
+    // A mail step answered in the scenario is a stand-in: nothing is queued to send (FLC-UI-010).
+    let mut mailing: Value = serde_json::from_str(&source("1.0.0", "x")).unwrap();
+    mailing["requires"].as_array_mut().unwrap().push(json!({"id": "ferrum.mail", "version": "0.1.0"}));
+    let nodes = mailing["processes"][0]["nodes"].as_array_mut().unwrap();
+    nodes.iter_mut().find(|n| n["id"] == json!("order")).unwrap()["next"] = json!("tell");
+    nodes.push(json!({"type": "action", "id": "tell", "label": "Tell the requester", "capability": {"id": "ferrum.mail", "version": "0.1.0"},
+        "input": {"to": "\"requester@acme.test\"", "subject": "\"Ordered\"", "body": "trigger.id"}, "next": "completed", "on_error": "attention", "on_unknown": "attention"}));
+    let mut answered = scenario.clone();
+    answered["results"]["order"] = json!({"result": "done", "output": {"id": "o-1"}});
+    answered["results"]["tell"] = json!({"result": "done", "output": {}});
+    let before = queued(&k, admin.tenant).await;
+    let mailed = post(&k, &admin, "/solutions/simulate", json!({"source": mailing.to_string(), "scenario": answered})).await;
+    let sent = mailed["simulation"]["entries"].as_array().unwrap().iter().any(|e| e["activation"] == json!("tell") && e["source"] == json!("stand_in"));
+    assert!(sent && mailed["simulation"]["status"]["status"] == json!("finished"), "{mailed}");
+    assert_eq!(queued(&k, admin.tenant).await, before, "a simulated mail queues nothing");
     // Without the review's decision, its deadline is two business days on the workspace's calendar.
     let mut waiting = scenario.clone();
     waiting["decisions"] = json!({});
