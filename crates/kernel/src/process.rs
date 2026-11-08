@@ -372,6 +372,12 @@ impl Kernel {
             Error::Unavailable(_) | Error::Retryable(_) | Error::Db(_) => Err(e),
             e => Ok(Invoked::Refused { code: e.code().into(), message: e.to_string() }),
         };
+        // After a restore, or with another region holding the platform, nothing a run does may change the world
+        // until a person has reconciled what came back and released the hold: the effect waits and is tried
+        // again, as jobs and the outbox wait (FLC-OPS-004). A read changes nothing and goes ahead.
+        if changes && (self.db.fenced() || self.holding().await?) {
+            return Err(Error::Unavailable("held after a restore, or fenced to another region: effects wait until the hold is released".into()));
+        }
         let ctx = match self.run_ctx(tenant, run).await {
             Ok(c) => c,
             Err(e) => return settle(e),

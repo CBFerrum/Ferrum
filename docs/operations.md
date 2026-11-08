@@ -480,6 +480,49 @@ solution with a process is refused and everything else runs as before. What Temp
 `FERRUM_SECRET_KEY`; after rotating it, keep the old key in `FERRUM_RETIRED_SECRET_KEYS` until the runs
 started before have finished. Settings and behaviour: [logic/processes.md](logic/processes.md).
 
+**Running Temporal.** With Docker Compose, `deploy/temporal.yml` adds Temporal Server 1.32.2 (the version
+qualified on PostgreSQL 17) keeping its histories in the stack's PostgreSQL, databases `temporal` and
+`temporal_visibility`, sets up their schemas and the namespace, and points Ferrum at it:
+
+```bash
+docker compose -f deploy/docker-compose.yml -f deploy/temporal.yml --env-file deploy/.env up -d
+```
+
+Nothing is published to the host. Back up the two Temporal databases with Ferrum's: a restore brings back
+both, and Ferrum then holds (below).
+
+**Watching.** `/metrics` carries `ferrum_logic_runs{status}` (starting, running, needs_attention),
+`ferrum_logic_start_wait_seconds` (how long the oldest accepted run has waited for Temporal to start it),
+`ferrum_logic_tasks_open`, `ferrum_logic_tasks_overdue` and `ferrum_logic_recovery_open`. Alert when the
+start wait passes a few minutes (Temporal or the worker is away: runs are accepted and wait, nothing is
+lost), and when recovery items stay open (a person must look: Studio, Tasks).
+
+**After a restore.** Ferrum holds after it notices a restore (see "After restoring a backup"): besides jobs
+and the outbox, a process's steps that would change something wait and are tried again, while reads and
+people's tasks go on. Release the hold once what came back is reconciled; the waiting steps then run, each
+under the same receipt, so none happens twice.
+
+**Upgrading with processes open.** A new Ferrum build must read open runs as the old one did. Before it
+takes over, export the histories of open runs and replay them on it:
+
+```bash
+TEMPORAL_ADDRESS=http://temporal:7233 ferrum task logic_replay
+```
+
+It fetches the history of every run that has not finished from Temporal and replays each on the new build
+(histories saved by the SDK can be given instead, `files:a.json,b.json`; the Temporal CLI's own JSON is not
+that format).
+
+A history that does not replay means the new build would decide those runs differently: keep the old build
+running them, and say so in the release notes. Replay needs the same `FERRUM_SECRET_KEY` (and retired keys)
+as the runs were sealed with.
+
+**From automations.** Studio's `POST /api/app/studio/solutions/import/automations` (administrators) turns each
+automation into a draft Solution: the same event, the condition as written, the actions as steps through
+capabilities, and where it came from. It is a draft: someone finishes what did not map, keeps it as a release
+and another administrator reviews and consents to what it may change; the automation keeps running until
+someone turns it off, so turn it off when the release runs, not before.
+
 ## Background jobs
 
 Long work runs in the `job` table: bulk operations over many records, workspace exports, and whatever

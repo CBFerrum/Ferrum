@@ -599,3 +599,68 @@ mod tests {
         assert_eq!(refused(ferrum_kernel::Error::Invalid("no workspace acme".into())).to_string(), "no workspace acme");
     }
 }
+
+/// `logic_replay` (built with `process`, with `TEMPORAL_ADDRESS` set): fetches the history of every run that is
+/// not finished (or those named, `workflows:id1,id2`) and replays it against this build's process workflow with
+/// the workspace's keys; or, with `files:a.json,b.json`, histories saved by the SDK (`fetch_history().to_json()`). Run it with the new build
+/// before it takes over open runs: a history that does not replay means that build would read those runs
+/// differently, so the build that runs them keeps running them (docs/operations.md, "Upgrading with processes
+/// open").
+#[cfg(feature = "process")]
+pub struct LogicReplay;
+
+#[cfg(feature = "process")]
+#[async_trait]
+impl Task for LogicReplay {
+    fn task(&self) -> TaskInfo {
+        TaskInfo { name: "logic_replay".into(), detail: "Replay open runs' histories against this build before it takes over".into() }
+    }
+    async fn run(&self, ctx: &AppContext, vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        let Some(current) = k.settings.secret_key.clone() else { return Err(Error::Message("no secret key: runs are sealed with FERRUM_SECRET_KEY".into())) };
+        let keys = std::sync::Arc::new(ferrum_process::Keys { current, retired: k.settings.retired_secret_keys.clone() });
+        let mut results: Vec<(String, std::result::Result<(), String>)> = Vec::new();
+        if let Ok(files) = vars.cli_arg("files") {
+            for path in files.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+                let history = std::fs::read(path).map_err(|e| Error::Message(format!("{path}: {e}")))?;
+                results.push((path.to_string(), ferrum_process::replay(history, Some(keys.clone())).await));
+            }
+        } else {
+            let address = std::env::var("TEMPORAL_ADDRESS").map_err(|_| Error::Message("TEMPORAL_ADDRESS is not set".into()))?;
+            let settings = ferrum_process::Settings {
+                address,
+                namespace: std::env::var("TEMPORAL_NAMESPACE").unwrap_or_else(|_| "ferrum".into()),
+                queue: std::env::var("TEMPORAL_TASK_QUEUE").unwrap_or_else(|_| ferrum_process::QUEUE.into()),
+                keys,
+            };
+            // Named runs, or every one not finished.
+            let named: Vec<String> =
+                vars.cli_arg("workflows").map(|w| w.split(',').map(str::trim).filter(|x| !x.is_empty()).map(str::to_string).collect()).unwrap_or_default();
+            if !named.is_empty() {
+                results = ferrum_process::replay_runs(&settings, &named).await.map_err(Error::Message)?;
+            } else {
+                let mut tx = k.db.system_tx().await.map_err(|e| Error::Message(e.to_string()))?;
+                let open: Vec<String> = sqlx::query_scalar(
+                "select workflow_id from logic_run where status in ('starting', 'running', 'needs_attention', 'cancelling') order by accepted_at limit 100000",
+            )
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|e| Error::Message(e.to_string()))?;
+                tx.commit().await.map_err(|e| Error::Message(e.to_string()))?;
+                results = ferrum_process::replay_runs(&settings, &open).await.map_err(Error::Message)?;
+            }
+        }
+        let failed = results.iter().filter(|(_, r)| r.is_err()).count();
+        for (what, r) in &results {
+            match r {
+                Ok(()) => println!("{what}: replays on this build"),
+                Err(e) => println!("{what}: does not replay on this build: {e}"),
+            }
+        }
+        println!("{} replayed, {failed} did not", results.len() - failed);
+        if failed > 0 {
+            return Err(Error::Message(format!("{failed} histories do not replay on this build: keep the build that runs them")));
+        }
+        Ok(())
+    }
+}

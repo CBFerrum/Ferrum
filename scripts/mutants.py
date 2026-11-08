@@ -132,6 +132,8 @@ MUTANTS = [
     ("author-reviews", "crates/kernel/src/logic.rs", 'privileges: &[String], approve: bool, reason: &str) -> Result<()> {\n        require_admin(ctx)?;', 'privileges: &[String], approve: bool, reason: &str) -> Result<()> {\n        crate::authoring::require_author(ctx)?;', STUDIO_SOLUTIONS),
     ("related-runs-unchecked", "crates/kernel/src/process.rs", '        self.get(ctx, entity, record, false).await?;', '        let _ = self.get(ctx, entity, record, false).await;', STUDIO_SOLUTIONS),
     ("diff-shows-old-as-new", "crates/logic/src/diff.rs", "[shown(ao.get(k)), shown(bo.get(k))]", "[shown(ao.get(k)), shown(ao.get(k))]", LOGIC_UNIT),
+    ("effect-ignores-restore-hold", "crates/kernel/src/process.rs", "if changes && (self.db.fenced() || self.holding().await?) {", "if false && changes && (self.db.fenced() || self.holding().await?) {", PROCESS_RECORDS),
+    ("automation-imported-twice", "crates/kernel/src/authoring.rs", "if existing.contains(&solution) {", "if false && existing.contains(&solution) {", STUDIO_SOLUTIONS),
     ("case-close-waits-for-deliveries", "crates/logic/src/process.rs", 'for (task, output) in recorded.as_object().into_iter().flatten() {', 'for (task, output) in recorded.as_object().into_iter().flatten().take(0) {', LOGIC_UNIT),
     ("capability-input-says-who-asks", "crates/logic/src/capability.rs", "map.keys().find(|k| CONTEXT_FIELDS.contains(&k.as_str()) && !self.declares(k))", "map.keys().find(|k| k.is_empty() && !self.declares(k))", CAPABILITY),
     # The directory of people is the members'.

@@ -405,6 +405,32 @@ async fn scenario() {
     let partner = k.load_ctx(admin.tenant, partner.user, None, "it".into()).await.unwrap();
     assert_eq!(refused(&k, &partner, "GET", "/solutions", &[], Value::Null).await, "forbidden", "the role ended");
 
+    // An automation becomes a draft Solution with where it came from, its condition and its actions, once;
+    // what does not map waits for a person (FLC-MIG-001).
+    let saved = obj(json!({"name": "Order big requests", "entity": "Request", "event": "submitted", "condition": "doc.total > 1000",
+        "actions": [{"type": "create_document", "entity": "Order", "values": {"reference": "doc.reference", "request": "doc.id"}},
+                    {"type": "notify", "to": "role:Reviewer", "title": "'A big request came in'"}]}));
+    ferrum_kernel::automation::save(&k, &admin, &saved).await.unwrap();
+    assert_eq!(refused(&k, &author, "POST", "/solutions/import/automations", &[], json!({})).await, "forbidden", "an administrator imports");
+    let imported = post(&k, &admin, "/solutions/import/automations", json!({})).await;
+    let first = &imported["imported"][0];
+    assert_eq!(first["name"], "Order big requests", "{imported}");
+    assert_eq!(first["check"]["ok"], false, "the notification has nobody to tell until a person decides: {first}");
+    assert!(first["notes"][0].as_str().unwrap().contains("role:Reviewer"), "{first}");
+    let draft = get(&k, &admin, &format!("/solutions/drafts/{}", first["draft"]["id"].as_str().unwrap())).await;
+    let source: Value = serde_json::from_str(draft["source"].as_str().unwrap()).unwrap();
+    assert_eq!(source["processes"][0]["trigger"]["event"], "procs.request.submitted");
+    assert_eq!(source["decisions"][0]["rows"][0]["when"], "doc.total > 1000", "the condition as it was written");
+    let step = &source["processes"][0]["nodes"][1];
+    assert_eq!(
+        (step["capability"]["id"].as_str(), step["input"]["values.reference"].as_str()),
+        (Some("procs.order.create"), Some("trigger.reference")),
+        "{source}"
+    );
+    assert!(source["description"].as_str().unwrap().contains("rights of whoever starts it"), "where it came from, and the rights it no longer has");
+    let again = post(&k, &admin, "/solutions/import/automations", json!({})).await;
+    assert_eq!(again["imported"][0]["skipped"], "imported already");
+
     // Another workspace sees none of it.
     let other = workspace(&k, "globex").await;
     assert_eq!(refused(&k, &other, "GET", &d, &[], Value::Null).await, "not_found");

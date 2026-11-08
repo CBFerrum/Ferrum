@@ -716,6 +716,23 @@ pub async fn replay(history: Vec<u8>, keys: Option<Arc<Keys>>) -> std::result::R
     rx.await.map_err(|_| "the replay stopped without an answer".to_string())?
 }
 
+/// Fetches each run's history from Temporal and replays it against this build: what `ferrum task logic_replay`
+/// runs before a new build takes over open runs. One that does not replay is named with why; the others
+/// replay on this build.
+pub async fn replay_runs(s: &Settings, workflow_ids: &[String]) -> std::result::Result<Vec<(String, std::result::Result<(), String>)>, String> {
+    let c = client(s).await.map_err(|e| format!("TEMPORAL_ADDRESS: {e}"))?;
+    let mut out = Vec::with_capacity(workflow_ids.len());
+    for id in workflow_ids {
+        let history = c.get_workflow_handle::<ProcessWf>(id.clone()).fetch_history(temporalio_client::WorkflowFetchHistoryOptions::default()).to_json().await;
+        let replayed = match history {
+            Ok(h) => replay(h, Some(s.keys.clone())).await,
+            Err(e) => Err(format!("its history could not be read: {e}")),
+        };
+        out.push((id.clone(), replayed));
+    }
+    Ok(out)
+}
+
 /// A worker running beside the server.
 pub struct Running {
     stop: Box<dyn Fn() + Send + Sync>,
