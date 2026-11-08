@@ -2772,7 +2772,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-edge"
 version = "0.4.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-edge?branch=main#17a7c411d467ede8cc7183decc20d2f5e5e6d575"
+source = "git+https://github.com/CBFerrum/ferrum-app-edge?branch=main#96b4eb4d2e1b5aacf0ec7c7182ba3334fed4634c"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2985,8 +2985,8 @@ dependencies = [
 
 [[package]]
 name = "ferrum-app-intelligence"
-version = "0.1.1"
-source = "git+https://github.com/CBFerrum/ferrum-app-intelligence?branch=main#02c6227fbb76ca810db604232948f8e91eb4af4b"
+version = "0.2.0"
+source = "git+https://github.com/CBFerrum/ferrum-app-intelligence?branch=main#6ea3c5169a4ff5b08abf58f08c8bf747ba26177e"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2994,6 +2994,7 @@ dependencies = [
  "ferrum-kernel",
  "ferrum-meta",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -3078,7 +3079,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-metrics"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-metrics?branch=main#c2b0b667f0b9ce5d9b42bd0c7a4f6258c90ba46a"
+source = "git+https://github.com/CBFerrum/ferrum-app-metrics?branch=main#848c2a39eee04511fee3f3e14310b30d8b970291"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3114,7 +3115,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-objectives"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-objectives?branch=main#ae0aab9f012697f446f066686ab75f48a57f163f"
+source = "git+https://github.com/CBFerrum/ferrum-app-objectives?branch=main#f8e0444d3156ba7efb84c4b0a336b10a3fc48052"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3382,7 +3383,7 @@ dependencies = [
 [[package]]
 name = "ferrum-edge-contract"
 version = "0.4.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-edge?branch=main#17a7c411d467ede8cc7183decc20d2f5e5e6d575"
+source = "git+https://github.com/CBFerrum/ferrum-app-edge?branch=main#96b4eb4d2e1b5aacf0ec7c7182ba3334fed4634c"
 dependencies = [
  "base64 0.22.1",
  "chrono",
