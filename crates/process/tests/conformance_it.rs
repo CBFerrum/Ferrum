@@ -285,6 +285,33 @@ async fn scenario() {
     k.update(&requester, "Order", order2, obj(json!({"status": "Delivered"})), None).await.unwrap();
     assert_eq!(finished(&k, t, run2).await, "completed");
 
+    // A waiting run moves onto the release that runs now, by a mapping one administrator plans and another
+    // approves: its open task goes with it under its step's new name, and it goes on under the new release,
+    // through a continuation, on the runtime's own time (FLC-MIG-004).
+    let (r4, run4) = request(&k, &requester, "R-4").await;
+    let (task4, digest4) = review(&k, t, run4).await;
+    let _: i32 = eventually(&k, t, "select 1 from logic_run where id = $1 and state->'waiting' ? 'review'", run4, "the run to say it waits").await;
+    let admin3 = user(&k, &admin, "admin3@acme.test", &[], true).await;
+    let mut moved_to: Value = serde_json::from_str(&source(json!({"business_days": 2, "calendar": "office"}))).unwrap();
+    moved_to["version"] = json!("1.1.0");
+    moved_to["processes"][0]["nodes"][0]["next"] = json!("approve");
+    moved_to["processes"][0]["nodes"][1]["id"] = json!("approve");
+    moved_to["processes"][0]["nodes"][2]["approval"] = json!("approve");
+    moved_to["processes"][0]["nodes"][2]["input"]["values.status"] = json!("\"Moved\"");
+    let saved = k.save_release(&admin, &moved_to.to_string()).await.unwrap();
+    let to: Uuid = saved["id"].as_str().unwrap().parse().unwrap();
+    k.review_release_consenting(&admin3, to, saved["artifact_digest"].as_str().unwrap(), &[], true, "").await.unwrap();
+    k.activate_release(&admin, to, Some(1)).await.unwrap();
+    let map = BTreeMap::from([("review".to_string(), "approve".to_string())]);
+    let plan = k.plan_logic_migration(&admin, run4, to, &map).await.unwrap();
+    k.approve_logic_migration(&admin3, run4, plan["digest"].as_str().unwrap(), "").await.unwrap();
+    let _: Uuid = eventually(&k, t, "select id from logic_task where id = $1 and activation = 'approve'", task4, "the task to move with its step").await;
+    assert_eq!(eventually::<Uuid>(&k, t, "select release_id from logic_run where id = $1", run4, "the run").await, to, "moved with its task, at once");
+    k.decide_logic_task(&reviewer, task4, true, &digest4, &json!({}), "").await.unwrap();
+    let order4: Uuid = eventually(&k, t, "select id from e_order where request = $1 and status = 'Moved'", r4, "the order under the new release").await;
+    k.update(&requester, "Order", order4, obj(json!({"status": "Delivered"})), None).await.unwrap();
+    assert_eq!(finished(&k, t, run4).await, "completed");
+
     // Nobody decides in time: the runtime's timer fires and the database says the deadline came first.
     let (_, fast_requester, _) = deployed(&k, "fast", json!(3)).await;
     let (_, run3) = request(&k, &fast_requester, "F-1").await;

@@ -405,9 +405,68 @@ async fn scenario() {
     let partner = k.load_ctx(admin.tenant, partner.user, None, "it".into()).await.unwrap();
     assert_eq!(refused(&k, &partner, "GET", "/solutions", &[], Value::Null).await, "forbidden", "the role ended");
 
+    // An automation becomes a draft Solution with where it came from, its condition and its actions, once;
+    // what does not map waits for a person (FLC-MIG-001).
+    let saved = obj(json!({"name": "Order big requests", "entity": "Request", "event": "submitted", "condition": "doc.total > 1000",
+        "actions": [{"type": "create_document", "entity": "Order", "values": {"reference": "doc.reference", "request": "doc.id"}},
+                    {"type": "notify", "to": "role:Reviewer", "title": "'A big request came in'"}]}));
+    ferrum_kernel::automation::save(&k, &admin, &saved).await.unwrap();
+    assert_eq!(refused(&k, &author, "POST", "/solutions/import/automations", &[], json!({})).await, "forbidden", "an administrator imports");
+    let imported = post(&k, &admin, "/solutions/import/automations", json!({})).await;
+    let first = &imported["imported"][0];
+    assert_eq!(first["name"], "Order big requests", "{imported}");
+    assert_eq!(first["check"]["ok"], false, "the notification has nobody to tell until a person decides: {first}");
+    assert!(first["notes"][0].as_str().unwrap().contains("role:Reviewer"), "{first}");
+    let draft = get(&k, &admin, &format!("/solutions/drafts/{}", first["draft"]["id"].as_str().unwrap())).await;
+    let source: Value = serde_json::from_str(draft["source"].as_str().unwrap()).unwrap();
+    assert_eq!(source["processes"][0]["trigger"]["event"], "procs.request.submitted");
+    assert_eq!(source["decisions"][0]["rows"][0]["when"], "doc.total > 1000", "the condition as it was written");
+    let step = &source["processes"][0]["nodes"][1];
+    assert_eq!(
+        (step["capability"]["id"].as_str(), step["input"]["values.reference"].as_str()),
+        (Some("procs.order.create"), Some("trigger.reference")),
+        "{source}"
+    );
+    assert!(source["description"].as_str().unwrap().contains("rights of whoever starts it"), "where it came from, and the rights it no longer has");
+    let again = post(&k, &admin, "/solutions/import/automations", json!({})).await;
+    assert_eq!(again["imported"][0]["skipped"], "imported already");
+
     // Another workspace sees none of it.
     let other = workspace(&k, "globex").await;
     assert_eq!(refused(&k, &other, "GET", &d, &[], Value::Null).await, "not_found");
     assert_eq!(refused(&k, &other, "GET", &r, &[], Value::Null).await, "not_found");
     assert!(get(&k, &other, "/runs").await["runs"].as_array().unwrap().is_empty());
+
+    // A release leaves as a pack and arrives in another workspace as a draft, with what must be mapped there:
+    // nothing of it runs there, a pack changed on the way is refused, and no secret travels with it (FLC-OPS-008).
+    let pack = get(&k, &admin, &format!("{r}/pack")).await;
+    let keys: std::collections::BTreeSet<&str> = pack.as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(
+        keys,
+        std::collections::BTreeSet::from([
+            "format",
+            "solution",
+            "version",
+            "label",
+            "source",
+            "source_digest",
+            "artifact_digest",
+            "needs",
+            "evidence",
+            "exported_at"
+        ]),
+        "a source, its digests, what it needs and its review evidence; nothing else"
+    );
+    assert_eq!((pack["needs"]["calendars"].clone(), pack["needs"]["events"].clone()), (json!(["office"]), json!(["procs.request.submitted"])), "{pack}");
+    assert!(pack["evidence"]["reviews"].as_array().unwrap().iter().all(|r| r.get("by").is_none()), "who reviewed stays here");
+    assert_eq!(refused(&k, &other, "GET", &format!("{r}/pack"), &[], Value::Null).await, "not_found");
+    let arrived = post(&k, &other, "/solutions/import/pack", json!({"pack": pack})).await;
+    assert_eq!(arrived["check"]["ok"], false, "{arrived}");
+    assert!(arrived["to_map"].as_array().unwrap().iter().any(|m| m.as_str().unwrap().contains("office")), "{arrived}");
+    let there = get(&k, &other, "/solutions").await;
+    assert_eq!((there["drafts"].as_array().unwrap().len(), there["releases"].as_array().unwrap().len()), (1, 0), "a draft, nothing more: {there}");
+    let mut changed = pack.clone();
+    changed["source"] = json!(pack["source"].as_str().unwrap().replacen("\"max_steps\":50", "\"max_steps\":49", 1));
+    assert_ne!(changed["source"], pack["source"]);
+    assert_eq!(refused(&k, &other, "POST", "/solutions/import/pack", &[], json!({"pack": changed})).await, "validation_failed");
 }

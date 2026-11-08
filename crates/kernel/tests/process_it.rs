@@ -5,7 +5,7 @@
 //! on Temporal, is `crates/process/tests`.
 
 use ferrum_kernel::outbox::Event as OutboxEvent;
-use ferrum_kernel::process::{DELIVER_TOPIC, START_TOPIC, Waited};
+use ferrum_kernel::process::{DELIVER_TOPIC, Migration, START_TOPIC, Waited};
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings};
 use ferrum_logic::calendar::Calendar;
@@ -91,6 +91,8 @@ struct Driver {
     /// Waits held back, to let an event come before the run waits for it.
     hold_waits: bool,
     held: Vec<(Uuid, Command)>,
+    /// Steps that answered "try again later", as the runtime retries them.
+    retrying: Vec<(Uuid, Command)>,
 }
 
 impl Driver {
@@ -124,6 +126,13 @@ impl Driver {
         panic!("the runs never settled");
     }
 
+    /// Tries again the steps that asked to be, as the runtime would.
+    async fn retry(&mut self) {
+        for (run, c) in std::mem::take(&mut self.retrying) {
+            self.apply(run, vec![c]).await;
+        }
+    }
+
     async fn start(&mut self, run: Uuid) {
         if self.runs.contains_key(&run) {
             return;
@@ -135,6 +144,20 @@ impl Driver {
     }
 
     async fn feed(&mut self, run: Uuid, event: Event) {
+        // A move the runtime carries out as the workflow does: on the run as it holds it.
+        if let Event::Migrated { release, map, by } = &event {
+            let (old, state) = self.runs.remove(&run).unwrap();
+            match self.k.process_migrate(self.tenant, run, release.parse().unwrap(), map, by, &state).await.unwrap() {
+                Migration::Moved { state: moved, .. } => {
+                    let l = self.k.process_load(self.tenant, run).await.unwrap();
+                    self.runs.insert(run, (l.release, moved));
+                }
+                Migration::Refused { .. } => {
+                    self.runs.insert(run, (old, state));
+                }
+            }
+            return;
+        }
         let (release, mut state) = self.runs.remove(&run).unwrap();
         let cmds = Machine::new(&release).on(&mut state, event);
         self.runs.insert(run, (release, state));
@@ -157,8 +180,14 @@ impl Driver {
         let (k, t) = (self.k.clone(), self.tenant);
         match c {
             Command::Invoke { activation, capability, version, input, changes, approval } => {
-                let outcome = k.process_invoke(t, run, &activation, &capability, &version, input, changes, approval.as_ref()).await.unwrap();
-                vec![Event::Invoked { activation, outcome }]
+                match k.process_invoke(t, run, &activation, &capability, &version, input.clone(), changes, approval.as_ref()).await {
+                    Ok(outcome) => vec![Event::Invoked { activation, outcome }],
+                    Err(Error::Unavailable(_)) => {
+                        self.retrying.push((run, Command::Invoke { activation, capability, version, input, changes, approval }));
+                        vec![]
+                    }
+                    Err(e) => panic!("{e}"),
+                }
             }
             Command::OpenTask { activation, label, role, material, digest, form, approvals, delegation, exclude, timeout } => {
                 k.process_open_task(
@@ -330,6 +359,36 @@ async fn status(k: &Kernel, tenant: Uuid, run: Uuid) -> String {
     scalar(k, tenant, "select status from logic_run where id = $1", run).await
 }
 
+/// A draft request changed once, and the outbox event of the change.
+async fn updated(k: &Kernel, who: &Ctx, reference: &str) -> OutboxEvent {
+    let r = k.insert(who, "Request", obj(json!({"reference": reference, "total": "1"}))).await.unwrap();
+    let id: Uuid = r["id"].as_str().unwrap().parse().unwrap();
+    k.update(who, "Request", id, obj(json!({"total": "2"})), None).await.unwrap();
+    let mut tx = k.db.tenant_tx(who.tenant).await.unwrap();
+    let e: (i64, String, Option<String>, Option<Uuid>, Value) =
+        sqlx::query_as("select id, topic, entity, record_id, payload from outbox where topic = 'Request.updated' and record_id = $1")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+    OutboxEvent { id: e.0, tenant_id: who.tenant, topic: e.1, entity: e.2, record_id: e.3, payload: e.4, ..Default::default() }
+}
+
+/// What became of an event of an automation's: its record of the event, and the runs it started.
+async fn outcome(k: &Kernel, tenant: Uuid, automation: Uuid, event: i64) -> (Option<String>, i64) {
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let status: Option<String> = sqlx::query_scalar("select status from automation_run where automation_id = $1 and outbox_id = $2")
+        .bind(automation)
+        .bind(event)
+        .fetch_optional(&mut *tx)
+        .await
+        .unwrap();
+    let runs: i64 = sqlx::query_scalar("select count(*) from logic_run where trigger_event = $1").bind(event).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    (status, runs)
+}
+
 #[test]
 fn processes_keep_their_business_records() {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
@@ -365,7 +424,7 @@ async fn scenario() {
     // It may create orders, which nothing running could before: consented to by name.
     k.review_release_consenting(&admin2, release, saved["artifact_digest"].as_str().unwrap(), &["procs.order.create".to_string()], true, "").await.unwrap();
     k.activate_release(&admin, release, None).await.unwrap();
-    let mut d = Driver { k: k.clone(), tenant: admin.tenant, last: 0, runs: BTreeMap::new(), hold_waits: false, held: vec![] };
+    let mut d = Driver { k: k.clone(), tenant: admin.tenant, last: 0, runs: BTreeMap::new(), hold_waits: false, held: vec![], retrying: vec![] };
 
     // Accepted once per business key, however often the event comes, at once or again later (FLC-PROC-001).
     let (r1, run1) = request(&k, &mut d, &requester, "R-1", "5000").await;
@@ -443,6 +502,19 @@ async fn scenario() {
         .await
         .unwrap();
     assert!(matches!(&other, Invoked::Refused { code, .. } if code == "input_changed"), "{other:?}");
+    // Held after a restore: an effect waits, to be tried again once a person has released the hold; a read
+    // goes ahead (FLC-OPS-004).
+    let mut sys = k.db.system_tx().await.unwrap();
+    sqlx::query("update platform_incarnation set held_since = now(), held_because = 'a restore was noticed'").execute(&mut *sys).await.unwrap();
+    sys.commit().await.unwrap();
+    let held = k.process_invoke(admin.tenant, run1, "order_held", "procs.order.create", "1.0.0", json!({"values": {"reference": "HELD"}}), true, None).await;
+    assert!(matches!(&held, Err(Error::Unavailable(m)) if m.contains("held after a restore")), "{held:?}");
+    let read = k.process_invoke(admin.tenant, run1, "probe_held", "procs.request.read", "1.0.0", json!({"id": r1.to_string()}), false, None).await.unwrap();
+    assert!(matches!(read, Invoked::Done { .. }), "a read changes nothing: {read:?}");
+    k.release_hold(&admin, "the orders after the restore point were checked against the supplier").await.unwrap();
+    let released =
+        k.process_invoke(admin.tenant, run1, "order_held", "procs.order.create", "1.0.0", json!({"values": {"reference": "HELD"}}), true, None).await.unwrap();
+    assert!(matches!(released, Invoked::Done { .. }), "{released:?}");
     assert_eq!(scalar::<i64>(&k, admin.tenant, "select count(*) from e_order where request = $1", r1).await, 1);
     // A record approved and then deleted no longer holds the approval an effect relies on.
     let gone = k.insert(&admin, "Order", obj(json!({"reference": "GONE"}))).await.unwrap();
@@ -591,4 +663,274 @@ async fn scenario() {
     assert!(k.logic_runs(&other, 100).await.unwrap().is_empty());
     assert_eq!(code(&k.logic_run(&other, run1).await.unwrap_err()), "not_found");
     assert!(k.logic_runs(&admin, 100).await.unwrap().len() >= 10);
+
+    // Each run records the generation of the activation it started under (FLC-MIG-003).
+    let g1: i64 = scalar(&k, admin.tenant, "select generation from logic_activation where tenant_id = $1 and solution = 'acme.requests'", admin.tenant).await;
+    assert_eq!(scalar::<Option<i64>>(&k, admin.tenant, "select generation from logic_run where id = $1", run1).await, Some(g1));
+
+    // Going back to an earlier release is a new generation selecting it: new runs start under it, the run
+    // started under the later one goes on under it, and what that run did stays (FLC-MIG-006).
+    let mut later: Value = serde_json::from_str(&source()).unwrap();
+    later["version"] = json!("1.1.0");
+    later["processes"][0]["nodes"][3]["input"]["values.status"] = json!("\"Placed under 1.1.0\"");
+    let saved2 = k.save_release(&admin, &later.to_string()).await.unwrap();
+    let release2: Uuid = saved2["id"].as_str().unwrap().parse().unwrap();
+    k.review_release_consenting(&admin2, release2, saved2["artifact_digest"].as_str().unwrap(), &[], true, "").await.unwrap();
+    let to2 = k.activate_release_explained(&admin, release2, Some(g1)).await.unwrap();
+    assert_eq!((to2["generation"].as_i64(), to2["replaced"]["version"].as_str()), (Some(g1 + 1), Some("1.0.0")), "{to2}");
+    let (r10, run10) = request(&k, &mut d, &requester, "R-10", "5000").await;
+    let (task10, digest10) = task_of(&k, admin.tenant, run10, "review").await;
+    k.decide_logic_task(&reviewer, task10, true, &digest10, &json!({}), "").await.unwrap();
+    d.settle().await;
+    let order10: Uuid = scalar(&k, admin.tenant, "select id from e_order where request = $1", r10).await;
+    let back = k.activate_release_explained(&admin, release, Some(g1 + 1)).await.unwrap();
+    assert_eq!(
+        (back["generation"].as_i64(), back["replaced"]["version"].as_str(), back["open_elsewhere"].as_i64()),
+        (Some(g1 + 2), Some("1.1.0"), Some(1)),
+        "{back}"
+    );
+    assert!(back["kept"].as_str().unwrap().contains("nothing a run did is undone"), "{back}");
+    let (r11, run11) = request(&k, &mut d, &requester, "R-11", "5000").await;
+    assert_eq!(scalar::<Uuid>(&k, admin.tenant, "select release_id from logic_run where id = $1", run11).await, release);
+    assert_eq!(scalar::<Option<i64>>(&k, admin.tenant, "select generation from logic_run where id = $1", run11).await, Some(g1 + 2));
+    let (task11, digest11) = task_of(&k, admin.tenant, run11, "review").await;
+    k.decide_logic_task(&reviewer, task11, true, &digest11, &json!({}), "").await.unwrap();
+    d.settle().await;
+    assert_eq!(scalar::<Option<String>>(&k, admin.tenant, "select status from e_order where request = $1", r11).await, None, "ordered as 1.0.0 orders");
+    assert_eq!(scalar::<Uuid>(&k, admin.tenant, "select release_id from logic_run where id = $1", run10).await, release2, "still under 1.1.0");
+    assert_eq!(status(&k, admin.tenant, run10).await, "running");
+    assert_eq!(scalar::<Option<String>>(&k, admin.tenant, "select status from e_order where id = $1", order10).await.as_deref(), Some("Placed under 1.1.0"));
+    assert_eq!(scalar::<i64>(&k, admin.tenant, "select count(*) from logic_effect where effect_key = $1::uuid::text || '/order'", run10).await, 1);
+
+    // A candidate beside what runs now, replayed on what happened with the answers, decisions and events each
+    // run met: what differs is said run by run, and nothing is run, changed or kept (FLC-MIG-002).
+    let counts = || {
+        let k = k.clone();
+        let t = admin.tenant;
+        async move {
+            (
+                scalar::<i64>(&k, t, "select count(*) from e_order where tenant_id = $1", t).await,
+                scalar::<i64>(&k, t, "select count(*) from logic_effect where tenant_id = $1", t).await,
+                scalar::<i64>(&k, t, "select count(*) from logic_release where tenant_id = $1", t).await,
+                scalar::<i64>(&k, t, "select count(*) from logic_run where tenant_id = $1", t).await,
+            )
+        }
+    };
+    let before = counts().await;
+    let mut candidate: Value = serde_json::from_str(&source()).unwrap();
+    candidate["version"] = json!("1.2.0");
+    candidate["decisions"][0]["rows"][0]["match"]["total"]["gt"] = json!("6000");
+    candidate["processes"][0]["nodes"][3]["input"]["values.status"] = json!("\"Shadowed\"");
+    let shadow = k.shadow_solution(&admin, Some(&candidate.to_string()), None, 50).await.unwrap();
+    assert_eq!((shadow["against"]["kind"].as_str(), shadow["against"]["version"].as_str()), (Some("release"), Some("1.0.0")), "{shadow}");
+    let cases = shadow["cases"].as_array().unwrap();
+    assert!(cases.len() >= 10, "{shadow}");
+    let mut decided_otherwise = 0;
+    let mut ordered_otherwise = 0;
+    for c in cases {
+        let differences = c["differences"].as_array().unwrap();
+        if c["now"]["decisions"]["decide"] == "review" {
+            assert_eq!(c["candidate"]["decisions"]["decide"], "proceed", "{c}");
+            assert!(differences.contains(&json!("decisions")), "{c}");
+            decided_otherwise += 1;
+        }
+        if c["now"]["effects"].as_array().unwrap().iter().any(|e| e["capability"] == "procs.order.create") {
+            assert!(differences.contains(&json!("effects")), "{c}");
+            assert!(c["candidate"]["effects"].to_string().contains("Shadowed"), "{c}");
+            ordered_otherwise += 1;
+        }
+    }
+    assert!(decided_otherwise >= 5 && ordered_otherwise >= 3, "{decided_otherwise} decided, {ordered_otherwise} ordered otherwise: {shadow}");
+    // A refusal replays as the refusal it was: the run whose order was refused for its requester's rights
+    // stopped for attention then, and does so in the replay.
+    let refused_then = cases.iter().find(|c| c["run"] == json!(run8)).expect("the run refused for rights");
+    assert_eq!(refused_then["now"]["outcome"], "needs_attention", "{refused_then}");
+    let steps: Vec<&str> = refused_then["now"]["steps"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    assert!(!steps.contains(&"delivered"), "it stopped at the refusal, not after waiting for a delivery: {refused_then}");
+    assert_eq!(shadow["differing"].as_u64(), Some(cases.iter().filter(|c| c["same"] == json!(false)).count() as u64));
+    assert_eq!(counts().await, before, "nothing ran, changed or was kept");
+    assert_eq!(code(&k.shadow_solution(&reviewer, Some(&candidate.to_string()), None, 5).await.unwrap_err()), "forbidden");
+
+    // One writer at the cutover from an automation (FLC-MIG-003). Each of its events is run by it or by the
+    // solution imported from it, never both and never neither, whichever of the two comes to the event first:
+    // before the activation, while it commits, or after it, and however often the event comes again.
+    let told = user(&k, &admin, "told@acme.test", &["Reviewer"], false).await;
+    let saved = obj(json!({"name": "Tell about changes", "entity": "Request", "event": "updated",
+        "actions": [{"type": "notify", "to": format!("user:{}", told.user), "title": "\"Changed\"", "body": "doc.reference"}]}));
+    let automation = ferrum_kernel::automation::save(&k, &admin, &saved).await.unwrap();
+    let imported = k.import_automations(&admin).await.unwrap();
+    let mine = imported.iter().find(|i| i["automation"] == json!(automation)).expect("imported").clone();
+    assert_eq!(mine["check"]["ok"], json!(true), "{mine}");
+    let draft = k.logic_draft(&admin, mine["draft"]["id"].as_str().unwrap().parse().unwrap()).await.unwrap();
+    let text = draft["source"].as_str().unwrap().to_string();
+    assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["processes"][0]["trigger"]["business_key"], "event.id", "a run per event, as it ran");
+    let kept = k.save_release(&admin, &text).await.unwrap();
+    let imported_release: Uuid = kept["id"].as_str().unwrap().parse().unwrap();
+    let growth: Vec<String> = k.logic_release_review(&admin2, imported_release).await.unwrap()["diff"]["privilege_growth"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    k.review_release_consenting(&admin2, imported_release, kept["artifact_digest"].as_str().unwrap(), &growth, true, "").await.unwrap();
+    let e1 = updated(&k, &requester, "C-1").await;
+    let e2 = updated(&k, &requester, "C-2").await;
+    let e6 = updated(&k, &requester, "C-6").await;
+    ferrum_kernel::automation::run_for_event(&k, &e1).await.unwrap();
+    k.accept_event(&e2).await.unwrap();
+    // Before it takes over, the imported solution is compared with what the automation did, event by event.
+    let beside = k.shadow_solution(&admin, Some(&text), None, 20).await.unwrap();
+    assert_eq!(beside["against"]["kind"], "automation", "{beside}");
+    let first = beside["cases"].as_array().unwrap().iter().find(|c| c["event"] == json!(e1.id)).expect("the event the automation ran").clone();
+    assert_eq!(
+        (first["now"]["outcome"].as_str(), first["candidate"]["outcome"].as_str(), first["same"].as_bool()),
+        (Some("acted"), Some("acted"), Some(true)),
+        "{first}"
+    );
+    let (activated, a6, l6) =
+        tokio::join!(k.activate_release_explained(&admin, imported_release, None), ferrum_kernel::automation::run_for_event(&k, &e6), k.accept_event(&e6));
+    let activated = activated.unwrap();
+    a6.unwrap();
+    l6.unwrap();
+    assert_eq!(activated["handed_over"]["automation"], json!(automation), "{activated}");
+    assert!(!scalar::<bool>(&k, admin.tenant, "select is_active from automation where id = $1", automation).await, "turned off in the same step");
+    k.accept_event(&e1).await.unwrap();
+    ferrum_kernel::automation::run_for_event(&k, &e2).await.unwrap();
+    let e3 = updated(&k, &requester, "C-3").await;
+    let e4 = updated(&k, &requester, "C-4").await;
+    let e5 = updated(&k, &requester, "C-5").await;
+    k.accept_event(&e3).await.unwrap();
+    ferrum_kernel::automation::run_for_event(&k, &e3).await.unwrap();
+    ferrum_kernel::automation::run_for_event(&k, &e4).await.unwrap();
+    k.accept_event(&e4).await.unwrap();
+    let (a5, l5) = tokio::join!(ferrum_kernel::automation::run_for_event(&k, &e5), k.accept_event(&e5));
+    a5.unwrap();
+    l5.unwrap();
+    // Delivered again, as the outbox may: nothing more is run.
+    for e in [&e1, &e2, &e3, &e4, &e5, &e6] {
+        ferrum_kernel::automation::run_for_event(&k, e).await.unwrap();
+        k.accept_event(e).await.unwrap();
+    }
+    d.settle().await;
+    assert_eq!(outcome(&k, admin.tenant, automation, e1.id).await, (Some("done".into()), 0), "the automation ran it before the cutover");
+    for e in [&e2, &e3, &e4, &e5] {
+        assert_eq!(outcome(&k, admin.tenant, automation, e.id).await, (Some("handed_over".into()), 1), "the solution's: event {}", e.id);
+    }
+    let during = outcome(&k, admin.tenant, automation, e6.id).await;
+    assert!(during == (Some("done".into()), 0) || during == (Some("handed_over".into()), 1), "one of the two, during the activation: {during:?}");
+    for reference in ["C-1", "C-2", "C-3", "C-4", "C-5", "C-6"] {
+        let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+        let told_once: i64 = sqlx::query_scalar("select count(*) from notification where user_id = $1 and body = $2")
+            .bind(told.user)
+            .bind(reference)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(told_once, 1, "told once about {reference}");
+    }
+    // Never both: the automation stays off while the solution runs in its place.
+    let mut again = saved.clone();
+    again.insert("id".into(), json!(automation));
+    assert_eq!(code(&ferrum_kernel::automation::save(&k, &admin, &again).await.unwrap_err()), "conflict");
+
+    // An app taken out of the workspace while a run waits (FLC-OPS-007): the step that would use its capability
+    // is neither done nor failed. It waits; administrators see why and may end the run instead; and once the app
+    // is back the step goes on by itself, once, under its own effect key.
+    let (r12, run12) = request(&k, &mut d, &requester, "R-12", "5000").await;
+    let (task12, digest12) = task_of(&k, admin.tenant, run12, "review").await;
+    k.decide_logic_task(&reviewer, task12, true, &digest12, &json!({}), "").await.unwrap();
+    k.disable_packages(&admin, &["procs".to_string()]).await.unwrap();
+    d.settle().await;
+    assert_eq!(scalar::<i64>(&k, admin.tenant, "select count(*) from e_order where request = $1", r12).await, 0, "nothing done");
+    assert_eq!(status(&k, admin.tenant, run12).await, "running", "waiting, not failed");
+    let item: Uuid =
+        scalar(&k, admin.tenant, "select id from logic_task where run_id = $1 and activation = 'order#unavailable' and status = 'open'", run12).await;
+    assert!(k.my_logic_tasks(&admin).await.unwrap().iter().any(|t| t["id"] == json!(item) && t["kind"] == "attention"), "administrators see it");
+    assert!(!k.my_logic_tasks(&reviewer).await.unwrap().iter().any(|t| t["id"] == json!(item)), "nobody else is asked");
+    let why: Value = scalar(&k, admin.tenant, "select detail from logic_task where id = $1", item).await;
+    assert!(why["why"].as_str().unwrap().contains("cancel the run"), "{why}");
+    d.retry().await;
+    assert_eq!(scalar::<i64>(&k, admin.tenant, "select count(*) from e_order where request = $1", r12).await, 0, "still out of service");
+    k.install_packages(admin.tenant, &["procs".to_string()]).await.unwrap();
+    d.retry().await;
+    d.settle().await;
+    assert_eq!(scalar::<i64>(&k, admin.tenant, "select count(*) from e_order where request = $1", r12).await, 1, "done once it is back");
+    assert_eq!(scalar::<String>(&k, admin.tenant, "select status from logic_task where id = $1", item).await, "resolved");
+
+    // A waiting run moves onto another release only by a mapping one administrator plans and another approves
+    // (FLC-MIG-004). The release that runs now has no "review": unmapped, or mapped to a step that does not wait
+    // the same way, the move is refused and the run stays as it was; mapped to its new task, the run moves with
+    // its open task, and goes on under the new release. A move that reaches a run which moved on meanwhile is
+    // refused where the records are, and nothing is dropped.
+    let g_now: i64 =
+        scalar(&k, admin.tenant, "select generation from logic_activation where tenant_id = $1 and solution = 'acme.requests'", admin.tenant).await;
+    let (_, run13) = request(&k, &mut d, &requester, "R-13", "5000").await;
+    let (_, run14) = request(&k, &mut d, &requester, "R-14", "5000").await;
+    let mut moved_to: Value = serde_json::from_str(&source()).unwrap();
+    moved_to["version"] = json!("1.3.0");
+    moved_to["processes"][0]["nodes"][1]["routes"] = json!([{"outcome": "review", "target": "approve"}, {"outcome": "proceed", "target": "approve"}]);
+    moved_to["processes"][0]["nodes"][2]["id"] = json!("approve");
+    moved_to["processes"][0]["nodes"][3]["approval"] = json!("approve");
+    moved_to["processes"][0]["nodes"][3]["input"]["values.status"] = json!("\"Moved\"");
+    let saved3 = k.save_release(&admin, &moved_to.to_string()).await.unwrap();
+    let release3: Uuid = saved3["id"].as_str().unwrap().parse().unwrap();
+    k.review_release_consenting(&admin2, release3, saved3["artifact_digest"].as_str().unwrap(), &[], true, "").await.unwrap();
+    k.activate_release(&admin, release3, Some(g_now)).await.unwrap();
+    let none = BTreeMap::new();
+    let refused_plan = k.plan_logic_migration(&admin, run13, release3, &none).await.unwrap_err();
+    assert!(code(&refused_plan) == "conflict" && refused_plan.to_string().contains("review has no counterpart in 1.3.0"), "{refused_plan}");
+    let wrong = BTreeMap::from([("review".to_string(), "order".to_string())]);
+    let refused_plan = k.plan_logic_migration(&admin, run13, release3, &wrong).await.unwrap_err();
+    assert!(refused_plan.to_string().contains("waits as a task, and order is a step that does not wait"), "{refused_plan}");
+    assert_eq!(code(&k.plan_logic_migration(&reviewer, run13, release3, &wrong).await.unwrap_err()), "forbidden");
+    let map = BTreeMap::from([("review".to_string(), "approve".to_string())]);
+    let plan = k.plan_logic_migration(&admin, run13, release3, &map).await.unwrap();
+    let digest = plan["digest"].as_str().unwrap().to_string();
+    assert_eq!(code(&k.approve_logic_migration(&admin, run13, &digest, "").await.unwrap_err()), "forbidden", "not who planned it");
+    let (task13, _) = task_of(&k, admin.tenant, run13, "review").await;
+    k.approve_logic_migration(&admin2, run13, &digest, "1.3.0 asks the same people").await.unwrap();
+    d.settle().await;
+    assert_eq!(scalar::<Uuid>(&k, admin.tenant, "select release_id from logic_run where id = $1", run13).await, release3);
+    assert_eq!(
+        scalar::<String>(&k, admin.tenant, "select activation from logic_task where id = $1", task13).await,
+        "approve",
+        "the same task, under its new step"
+    );
+    let digest13: String = scalar(&k, admin.tenant, "select digest from logic_task where id = $1", task13).await;
+    k.decide_logic_task(&reviewer, task13, true, &digest13, &json!({}), "").await.unwrap();
+    d.settle().await;
+    assert_eq!(
+        scalar::<Option<String>>(
+            &k,
+            admin.tenant,
+            "select o.status from e_order o join logic_run l on l.business_key = o.request::text where l.id = $1",
+            run13
+        )
+        .await
+        .as_deref(),
+        Some("Moved")
+    );
+    let record: Vec<String> =
+        k.logic_run(&admin, run13).await.unwrap()["moves"].as_array().unwrap().iter().map(|m| m["action"].as_str().unwrap().to_string()).collect();
+    assert_eq!(record, ["plan_migration", "approve_migration", "migrated"], "the run keeps the record of its move");
+    // Planned and approved, but decided before its runtime took the move up: refused, and it goes on as it was.
+    let plan14 = k.plan_logic_migration(&admin, run14, release3, &map).await.unwrap();
+    k.approve_logic_migration(&admin2, run14, plan14["digest"].as_str().unwrap(), "").await.unwrap();
+    let (task14, digest14) = task_of(&k, admin.tenant, run14, "review").await;
+    k.decide_logic_task(&reviewer, task14, true, &digest14, &json!({}), "").await.unwrap();
+    d.settle().await;
+    assert_eq!(scalar::<Uuid>(&k, admin.tenant, "select release_id from logic_run where id = $1", run14).await, release, "it stayed");
+    assert_eq!(
+        scalar::<Option<String>>(
+            &k,
+            admin.tenant,
+            "select o.status from e_order o join logic_run l on l.business_key = o.request::text where l.id = $1",
+            run14
+        )
+        .await,
+        None,
+        "ordered as it was going to be"
+    );
+    let refusal: Value =
+        scalar(&k, admin.tenant, "select diff from audit_event where record_id = $1 and action = 'migration_refused' order by id desc limit 1", run14).await;
+    assert!(refusal["why"][0].as_str().unwrap().contains("review was approved meanwhile"), "{refusal}");
 }

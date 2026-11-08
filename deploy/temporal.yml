@@ -1,0 +1,75 @@
+# Durable processes (docs/logic/processes.md, docs/operations.md "Processes"): a Temporal server beside the
+# stack, keeping its histories in the stack's PostgreSQL (databases temporal and temporal_visibility), at the
+# version the platform was qualified on (docs/plan/spike-l01-temporal.md: Server 1.32.2 on PostgreSQL 17).
+# Ferrum's image has the process runtime built in; this add-on gives it somewhere to run.
+#   docker compose -f deploy/docker-compose.yml -f deploy/temporal.yml --env-file deploy/.env up -d
+# Nothing is published to the host: only Ferrum talks to Temporal, on the stack's network. Before a new
+# Ferrum image takes over while runs are open, replay their histories against it (docs/operations.md,
+# "Upgrading with processes open"). Back up the two Temporal databases with the stack's own.
+services:
+  temporal-schema:
+    image: temporalio/admin-tools:1.32.2
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+    entrypoint: ["sh", "-ec"]
+    # Each step can run again: a database or schema already there is left as it is, and update-schema only
+    # applies what is missing.
+    command:
+      - |
+        for db in temporal temporal_visibility; do
+          dir=temporal; [ "$$db" = temporal_visibility ] && dir=visibility
+          tool="temporal-sql-tool --plugin postgres12 --ep db -p 5432 -u postgres --pw $$PGPASSWORD --db $$db"
+          $$tool create-database || true
+          $$tool setup-schema -v 0.0 || true
+          $$tool update-schema -d /etc/temporal/schema/postgresql/v12/$$dir/versioned
+        done
+
+  temporal:
+    image: temporalio/server:1.32.2
+    restart: unless-stopped
+    depends_on:
+      temporal-schema:
+        condition: service_completed_successfully
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_SEEDS: db
+      POSTGRES_USER: postgres
+      POSTGRES_PWD: ${POSTGRES_PASSWORD}
+      DBNAME: temporal
+      VISIBILITY_DBNAME: temporal_visibility
+      BIND_ON_IP: 0.0.0.0
+      TEMPORAL_BROADCAST_ADDRESS: temporal
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 7233"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+  # The namespace Ferrum's runs live in, once; a namespace already there is left alone.
+  temporal-namespace:
+    image: temporalio/admin-tools:1.32.2
+    restart: "no"
+    depends_on:
+      temporal:
+        condition: service_healthy
+    entrypoint: ["sh", "-c"]
+    command:
+      - temporal operator namespace describe --address temporal:7233 --namespace "$${NS}" || temporal operator namespace create --address temporal:7233 --retention 30d --namespace "$${NS}"
+    environment:
+      NS: ${TEMPORAL_NAMESPACE:-ferrum}
+
+  ferrum:
+    depends_on:
+      temporal-namespace:
+        condition: service_completed_successfully
+    environment:
+      TEMPORAL_ADDRESS: http://temporal:7233
+      TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-ferrum}
