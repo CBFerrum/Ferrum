@@ -19,11 +19,12 @@ that third run.
 
 - **Server:** `cargo build -p ferrum-server --features process`, which is every default app (the countries,
   the business apps, Operations, Edge, Metrics, Intelligence, Studio, …) with the process runtime, at Ferrum
-  `BUILD_COMMIT`.
+  `cf284fa`. Its dependencies were built at opt-level 1 (`--config 'profile.dev.package."*".opt-level=1'`) so the
+  build fitted this machine's disk; the timings below are a little quicker for it than batch 3's.
 - **Pins:**
   - Ferrum-Frontend `48907d8`;
   - ferrum-app-edge `867bca9` (0.6.1);
-  - ferrum-app-metrics `METRICS_PIN` (0.7.2);
+  - ferrum-app-metrics `2709639` (0.7.2);
   - ferrum-app-intelligence `a0056b3` (0.2.1);
   - ferrum-app-objectives `f8e0444` (0.7.0);
   - the rest as `docs/registry/release-manifest.yaml` pins them.
@@ -38,7 +39,7 @@ that third run.
 - **Workspaces:** `acme` and `globex`. The second was made with `ferrum task create_tenant ... packages:core,procs`,
   the Requests package being the walk's own small app (`ERP/flc/walk/packages/procs`).
 
-## What each profile ran (all 75 checks passed)
+## What each profile ran (all 89 checks passed)
 
 **LRP-01, record policy.**
 - An author wrote a rule in Studio and checked it.
@@ -97,6 +98,11 @@ that third run.
   - the North's reader read 150, the South's 25.5, and a reader of no region 0, never every row;
   - with the lake's file two hours old, the value named it stale, and so did an Intelligence answer's limits;
     written again, it was fresh.
+  - on the KPI page in the browser, signed in as the North's reader (on the Metrics 0.7.1 build): each lake
+    metric read 150 USD and named `orders_lake` as stale, and metrics over records that reader cannot read said
+    why instead of seeming to load;
+  - with the engine stopped, on this build: a reader was told the engine cannot be reached, without its address
+    (503).
 
 **LRP-06, operator recovery.**
 - The requester's rights were withdrawn while their run waited. The order was refused, nothing was made with
@@ -112,11 +118,11 @@ that third run.
 
 | Scenario | Measured |
 |---|---|
-| Compile a source, simulate a run (HTTP round trip included) | 31 ms, 31 ms (median of 10) |
-| Cold: first run after start | review open 589 ms after submitting; order 452 ms after the decision |
-| Warm, ten in turn, each workspace | review open 557–601 ms median; decided to ordered 233–341 ms median, 442–451 ms p95 |
-| 60 at once in one workspace beside 5 in the other | the flood 1048 ms median, 2091 ms p95; the other workspace 420 ms median, 427 ms p95 (its quiet p95 was 442 ms); 65 runs in 5.1 s; 8 steps told to wait their turn |
-| Server stopped with 15 runs in hand | all ordered once, settled 17.5 s after the restart began |
+| Compile a source, simulate a run (HTTP round trip included) | 22 ms, 22 ms (median of 10) |
+| Cold: first run after start | review open 564 ms after submitting; order 434 ms after the decision |
+| Warm, ten in turn, each workspace | review open 538–569 ms median; decided to ordered 223–225 ms median, 231–427 ms p95 |
+| 60 at once in one workspace beside 5 in the other | the flood 1247 ms median, 2015 ms p95; the other workspace 636 ms median, 826 ms p95 (its quiet p95 was 427 ms); 65 runs in 6.5 s; 9 steps told to wait their turn since the server started |
+| Server stopped with 15 runs in hand | all ordered once, settled 7.4 s after the restart began |
 
 The worker's limits on that server were 10 slots, 8 for effects and 2 per workspace: half of a 20-connection
 pool.
