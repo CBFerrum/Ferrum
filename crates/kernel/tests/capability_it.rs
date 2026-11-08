@@ -138,6 +138,12 @@ async fn scenario() {
     // What each may use, read from what is installed and their rights; nothing typed in twice.
     let mine = k.catalog(&clerk);
     let theirs = k.catalog(&viewer);
+    // One descriptor per id: a solution's lock names each by id and version (the package's checker, case 20).
+    let all = k.catalog(&admin);
+    let mut unique = ids(&all);
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), all.len(), "a capability id is listed once");
     for id in [
         "stockcap.hold.create",
         "stockcap.hold.update",

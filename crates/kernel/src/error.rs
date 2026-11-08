@@ -25,7 +25,9 @@ impl FieldError {
 pub enum Error {
     #[error("{0} not found")]
     NotFound(String),
-    #[error("validation failed")]
+    /// Its text names each field and what is wrong with it, so that a failed automation or a dead event
+    /// says why wherever it is read (the API answers with the fields themselves).
+    #[error("validation failed: {}", .0.iter().map(|f| if f.field.is_empty() { f.message.clone() } else { format!("{}: {}", f.field, f.message) }).collect::<Vec<_>>().join("; "))]
     Validation(Vec<FieldError>),
     #[error("{0}")]
     Invalid(String),
