@@ -266,13 +266,21 @@ Metrics repository, plans a metric's query through its Wren semantic model with 
     cannot be stopped midway. DataFusion's own recursion protection was off, so a deeper query could have
     overflowed a thread's stack and taken the process down. Now:
     - before anything is planned, a query's terms nest at most 100 deep and it reads at most 32 models, counting
-      each time; a model's calculated columns and relationships are held to the same depth;
-    - each of the engine's threads has a 64 MiB stack, and DataFusion's recursion grows its stack as it needs.
+      each time; a model's calculated columns and relationships are held to the same depth, and a semantic
+      model to 32 models (it held 200), so the longest chain of relationships through one is planned at once;
+    - each of the engine's threads has a 64 MiB stack, and DataFusion's recursion grows its stack as it needs;
+    - a query's time is kept whether or not its work yields. GitHub's faster runner had answered a query a 1 ms
+      limit should have stopped, since a timeout fires only when the work yields. Each query now runs as a
+      task of its own, and the caller is refused once its wait and its time are up. The task keeps its turn
+      until it has stopped, and one that panics is refused, not the engine lost.
     - The test runs on a thread with the engine's own stack: 2,000 values in one list and 90 terms are answered;
       101 terms, the deepest query of the largest size (9,985 terms), 33 models read and a deep calculated
-      column are refused.
+      column are refused. A chain of 32 models, each read through the next's relationship, is answered
+      exactly within 5 seconds in a debug build, and 33 are refused.
+    - Wren's SQL for a long chain nests a subquery per relationship, so it may be parsed deeper (512) than the
+      reader's own query (50).
     - Mutants caught: `query-depth-unbounded`, `query-reads-unbounded`, `model-expressions-unshaped`,
-      `relationship-conditions-unshaped`.
+      `relationship-conditions-unshaped`, `models-unbounded`, `time-unbounded`, `planned-sql-held-to-readers-depth`.
 - *Freshness (FLC-SEM-007).* Every answer says when each dataset was last written. A value from data older than
   its source allows carries it under `stale`, and so does a composed metric over it and one of the records. An
   Intelligence answer says so in its `limits` (Intelligence 0.2.1, #4, a0056b3). With the engine gone, there is
@@ -332,7 +340,7 @@ failed on main since W7 and W8, and the checks run here had covered neither.
   - Metrics' unit tests (10), `composed_it`, `currency_it`, `datasets_it`, `external_it`, `metrics_it`, `wren_it`;
   - the engine's unit test, `engine_it` (8) and `http_it`;
   - the interface: dist matches its sources, typecheck, tests (3).
-  - The four new mutants were caught. All 490 packages pass the licence policy.
+  - The seven new mutants were caught. All 490 packages pass the licence policy.
   - GitHub's run of the PR built, ran and asked the engine's image (`engine-image`), which this disk cannot.
 - Intelligence (#4): fmt, clippy, its unit tests (2) and `evals_it`, against Metrics 0.7.0.
 - Edge (#16): no code changed; its app library tests (22) and interface check passed.

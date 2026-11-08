@@ -10,20 +10,21 @@ running server over HTTP as people signed in as themselves:
 Their output is kept beside this page: [lrp-walk.txt](lrp-walk.txt), [logic-load.txt](logic-load.txt) and
 [restore-drill.txt](restore-drill.txt).
 
-They first ran when W8 landed, at Ferrum `edbc786`. They ran again once the registry's open rows were closed
-([closing-gaps.md](closing-gaps.md), batch 3), on the build below. This page and the three outputs are from that
-second run.
+They first ran when W8 landed, at Ferrum `edbc786`, and again once the registry's open rows were closed
+([closing-gaps.md](closing-gaps.md), batch 3, at `40ff6d7`). They ran a third time for batch 4, on the build below,
+with Metrics' engine running beside the server as a process of its own. This page and the three outputs are from
+that third run.
 
 ## The build and what it was pinned to
 
 - **Server:** `cargo build -p ferrum-server --features process`, which is every default app (the countries,
   the business apps, Operations, Edge, Metrics, Intelligence, Studio, …) with the process runtime, at Ferrum
-  `40ff6d7`.
+  `BUILD_COMMIT`.
 - **Pins:**
   - Ferrum-Frontend `48907d8`;
-  - ferrum-app-edge `96b4eb4`;
-  - ferrum-app-metrics `848c2a3` (0.6.0);
-  - ferrum-app-intelligence `6ea3c51` (0.2.0);
+  - ferrum-app-edge `867bca9` (0.6.1);
+  - ferrum-app-metrics `METRICS_PIN` (0.7.1);
+  - ferrum-app-intelligence `a0056b3` (0.2.1);
   - ferrum-app-objectives `f8e0444` (0.7.0);
   - the rest as `docs/registry/release-manifest.yaml` pins them.
 
@@ -31,6 +32,9 @@ second run.
   ([qualification.yaml](qualification.yaml)), and fails once any of them moves.
 - **Runtime:** Temporal Server 1.32.2 (CLI 1.10.0 dev server, SQLite, namespace `ferrum-flc`) and PostgreSQL 17,
   on an 8-core Apple silicon Mac (macOS 15.6).
+- **Metrics' engine:** `ferrum-metrics-engine` built from the same Metrics commit, on `127.0.0.1:5180`, reading
+  the walk's lake (`orders.csv`, the dataset `orders_lake` of `acme`). The server reached it at
+  `FERRUM_METRICS_ENGINE_URL` with the token both held.
 - **Workspaces:** `acme` and `globex`. The second was made with `ferrum task create_tenant ... packages:core,procs`,
   the Requests package being the walk's own small app (`ERP/flc/walk/packages/procs`).
 
@@ -87,6 +91,12 @@ second run.
   nothing readable was declined with what can be asked.
 - A series marked the month not yet over as partial.
 - A proposal became only a draft, for review, and a reader could not propose.
+- Over data outside Ferrum, through Metrics' engine:
+  - a steward described the lake's orders, each sales role seeing its own region, and a reader could not;
+  - a query that would drop a table was refused as it was saved;
+  - the North's reader read 150, the South's 25.5, and a reader of no region 0, never every row;
+  - with the lake's file two hours old, the value named it stale, and so did an Intelligence answer's limits;
+    written again, it was fresh.
 
 **LRP-06, operator recovery.**
 - The requester's rights were withdrawn while their run waited. The order was refused, nothing was made with
