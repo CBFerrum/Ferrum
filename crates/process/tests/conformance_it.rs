@@ -182,6 +182,8 @@ async fn scenario() {
         .and_then(|mut a| a.next())
         .is_some_and(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_secs(2)).is_ok());
     if !reachable {
+        // Asked for by name, a server that does not answer is a failure; otherwise there is nothing to run on.
+        assert!(std::env::var("TEMPORAL_ADDRESS").is_err(), "TEMPORAL_ADDRESS is {address}, and nothing answers there");
         eprintln!("skipped: no Temporal server at {address}");
         return;
     }
