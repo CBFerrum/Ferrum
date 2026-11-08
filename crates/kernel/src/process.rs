@@ -759,7 +759,8 @@ impl Kernel {
         if let Some(to) = delegated.last() {
             return if *to == ctx.user { Ok(()) } else { Err(Error::Forbidden("this task was handed to someone else".into())) };
         }
-        if !role.is_empty() && !ctx.roles.iter().any(|r| r == role) && !ctx.is_admin {
+        // The solution's role decides, administrators included: being one is not a second pair of eyes.
+        if !role.is_empty() && !ctx.roles.iter().any(|r| r == role) {
             return Err(Error::Forbidden(format!("this task is for the {role} role")));
         }
         Ok(())
@@ -892,7 +893,8 @@ impl Kernel {
         if status != "open" {
             return Err(Error::Conflict("this task is closed".into()));
         }
-        if delegated.len() as i32 >= bound {
+        // The chain holds whoever handed it on first and each person it went to: one fewer hand-ons than people.
+        if delegated.len().saturating_sub(1) as i32 >= bound {
             return Err(Error::Forbidden(format!("this task may be handed on at most {bound} times")));
         }
         if to == ctx.user || delegated.contains(&to) || exclude.contains(&to) {
@@ -980,15 +982,16 @@ impl Kernel {
     /// Closes a case, by its owner, once its required tasks are done.
     pub async fn close_case(&self, ctx: &Ctx, id: Uuid) -> Result<()> {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let row: Option<(Uuid, String, String, Value, String)> =
-            sqlx::query_as("select run_id, activation, role, detail, status from logic_task where tenant_id = $1 and id = $2 and kind = 'case' for update")
-                .bind(ctx.tenant)
-                .bind(id)
-                .fetch_optional(&mut *tx)
-                .await?;
-        let Some((run, activation, owner, detail, status)) = row else { return Err(Error::NotFound("case".into())) };
-        if !ctx.is_admin && !ctx.roles.contains(&owner) {
-            return Err(Error::Forbidden(format!("the case is the {owner} role's to close")));
+        let row: Option<(Uuid, String, String, Value, Vec<Uuid>, String)> = sqlx::query_as(
+            "select run_id, activation, role, detail, exclude, status from logic_task where tenant_id = $1 and id = $2 and kind = 'case' for update",
+        )
+        .bind(ctx.tenant)
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((run, activation, owner, detail, exclude, status)) = row else { return Err(Error::NotFound("case".into())) };
+        if !ctx.roles.contains(&owner) || exclude.contains(&ctx.user) {
+            return Err(Error::Forbidden(format!("the case is the {owner} role's to close, and not whoever asked for it")));
         }
         if status != "open" {
             return Err(Error::Conflict("this case is closed".into()));
