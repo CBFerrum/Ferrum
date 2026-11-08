@@ -96,6 +96,62 @@ All local, at the head that merged:
   `release_evidence.py qualified` reports the stale qualification as intended.
 - Ferrum-Frontend #59: 504 tests, `tsc` and the app build pass.
 
+## Batch 2: privacy, evidence, references, retirement, support, contraction, workers
+
+**Erasure reaches what runs keep (FLC-OPS-006).** Erasing a person's data now also takes the erased fields out
+of the copies runs keep of each erased record: the event that started a run, the run's own state, the material
+shown and the signals waiting. The erasure is kept (`logic_erasure`, migration 20261108000007), and
+`process_report` takes the fields out again when a runtime reports a run from a history taken before.
+- *Evidence (process_it):* a request's contact address leaves its run's trigger, state and task material.
+- The test runtime then reports its own pre-erasure copy, and the address stays gone.
+- Mutants caught: `erasure-misses-run-copies`, `report-brings-erased-back`.
+
+**Task evidence (FLC-HUMAN-006).** Files attach to an open task (`POST /tasks/{id}/evidence`), are scanned, and are
+kept with that task alone. The task's own page lists them (Ferrum-Frontend #60).
+- *Evidence (process_it):* another reviewer and an administrator read the file.
+- It is not reached through another task, by the requester, or by the ordinary file route, and an outsider
+  cannot attach.
+- Mutants caught: `evidence-crosses-tasks`, `evidence-for-anyone`.
+
+**Typed references (FLC-COMP-002).** Record ids and link fields are typed by the kind of record they name
+(`x-ferrum-link` in capability schemas, `Ty::Ref` in the compiler).
+- A release passing the id of the request that started it where an order's id is wanted is refused when kept,
+  "a reference to a Request" (process_it).
+- Every existing source still compiles.
+- Mutant caught: `references-of-any-kind`.
+
+**Retiring a capability (FLC-CAP-008).**
+- `logic_dependents` (`GET /dependents?package=`) lists the active releases bound to an app's capabilities, with
+  their open runs.
+- Taking the app out records them in the audit trail.
+- An action's contract may say it is `deprecated` and what replaces it; checking a release that uses it says so,
+  and it still compiles.
+- Mutants caught: `dependents-overlooked`, `removal-forgets-what-waits`, `deprecation-unsaid`.
+
+**Deny precedence (FLC-SEC-002).** A compiler test now holds the rule that a customer's rule may not write a field
+its app owns, nor one of the platform's. Mutant caught: `rule-writes-the-apps-field`.
+
+**Secrets never reach runs (FLC-SEC-003).** A request with a secret starts a run. The secret, stored sealed apart,
+appears in none of the run's trigger, state or material, nor in a pack.
+
+**Partner diagnostics over runs (FLC-SEC-007).** The support report lists, from `diagnostics` up, the runs
+waiting for a person and their open steps, without trigger, state, material or evidence. A support key opens no
+run. Mutant caught: `support-report-shows-payloads`.
+
+**The older CEL reads no clock (FLC-COMP-003).** Workflows' and automations' expressions take the workspace's time
+from their caller, as the kernel always gave it, and have none otherwise. Mutant caught:
+`older-cel-reads-the-clock`.
+
+**A backfill under a running release (FLC-MIG-005).** backfill_it activates a release whose rule reads the old
+field while the backfill is stopped half-way by a crash. It checks saves then and after the backfill resumed and
+finished, the same activation throughout.
+
+**A paused worker (FLC-PROC-012).** process_it holds one worker inside an order's effect, its receipt claimed,
+while a second waits behind the claim.
+- The first's database session is ended, as a database ends one left idle in a transaction.
+- The second does the order, and the first, resumed, commits nothing.
+- Asked again, the gate answers with the order that was made.
+
 ## Still open after batch 1
 
 - **Next Ferrum batch:**
