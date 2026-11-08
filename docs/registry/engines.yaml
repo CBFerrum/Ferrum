@@ -27,6 +27,12 @@ engines:
     read: LICENSE (built from deploy/editors in this repository)
     terms: Ours
     decided_in: docs/operations.md
+  - image: ferrum-metrics-engine
+    name: Metrics' engine for external sources (built from CBFerrum/ferrum-app-metrics, engine/Dockerfile)
+    license: AGPL-3.0-only
+    read: CBFerrum/ferrum-app-metrics LICENSE; its dependencies (DataFusion, Arrow, Parquet, sqlparser, wren-semantic-core) are Apache-2.0, checked against scripts/licenses.py's policy
+    terms: Ours; it reads only the datasets its operator lists, read-only
+    decided_in: docs/logic/decisions.md (L-07)
   - image: postgres
     name: PostgreSQL
     license: PostgreSQL

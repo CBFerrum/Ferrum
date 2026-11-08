@@ -240,10 +240,70 @@ All local, against Ferrum's main:
 - The six profiles, the workload and the drill ran again on that build, at every pin above. All 75 walk checks
   passed, every workload bound held and the drill held (lrp-profiles.md). The qualification is stamped there.
 
-## Still open after batch 3
+## Batch 4: Metrics' engine for external sources, and what GitHub's checks had found
 
-- **External, recorded as blockers:**
-  - a screen-reader audit with assistive-technology users (FLC-UI-004);
-  - the DataFusion build, which needs more disk than this machine has (BLOCK-BUILD-CAPACITY: FLC-SEM-010 and the
-    external halves of FLC-SEM-005, -006, -007);
-  - named maintenance owners (FLC-QUAL-008).
+DataFusion had been recorded as blocked on this machine's disk. Built without debug information, Wren's engine
+and DataFusion take 1.5 GB, so the plan's W6 item was built as it describes (ADR L-07): an isolated service.
+
+**Metrics' engine (Metrics 0.7.0, #6, 624e1a5; FLC-SEM-005, -006, -007, -010).** `ferrum-metrics-engine`, in the
+Metrics repository, plans a metric's query through its Wren semantic model with Wren's own engine
+(`wren-semantic-core` 0.5.1, pinned) and runs it on DataFusion 55 over the operator's CSV and Parquet datasets.
+- *Rights in the scan (FLC-SEM-005).* A Data Steward describes each dataset as an External Source: the rows each
+  reader sees and the columns only some roles see. Metrics asks the engine for one reader at a time.
+  - The engine reads each dataset through a table that filters its rows and leaves out those columns in its own
+    scan. The dataset's files are deregistered once read, so no query can name them.
+  - Tested through a relationship and through a calculated column over a hidden column.
+  - Mutants caught: `rows-filter-skipped`, `hidden-columns-kept`, `no-values-every-row`, `every-row-for-everyone`,
+    `hidden-for-no-one`.
+- *The sandbox (FLC-SEM-006).* One SELECT over the model's own models, with DDL, DML and statements disabled.
+  - A dataset named directly, a file path, a URL, `SET`, `COPY` and several statements are refused.
+  - Memory is bounded with nothing spilled: a million-group aggregation is refused at 1 MB. Time, rows and
+    concurrency are bounded too, and the token is checked.
+  - Mutants caught: `models-only-unchecked`, `statements-unchecked`, `memory-unbounded`, `time-unbounded`,
+    `rows-uncapped`, `token-unchecked`.
+- *Freshness (FLC-SEM-007).* Every answer says when each dataset was last written. A value from data older than
+  its source allows carries it under `stale`, and so does a composed metric over it and one of the records. An
+  Intelligence answer says so in its `limits` (Intelligence 0.2.1, #4, a0056b3). With the engine gone, there is
+  no value, said so.
+  - Mutants caught: `written-at-unsaid`, `stale-never-said`, `stale-answer-unsaid`, `stale-limits-lost`.
+- *Interoperability (FLC-SEM-010).* Wren's models answer exactly against hand-worked fixtures, calculated
+  columns, CASE and relationships among them. An unknown function, `TOP` and a missing column fail explicitly; a
+  correlated subquery is answered exactly or refused.
+  - Mutants caught: `any-case-ignored`, `other-workspace-dataset`, `external-outside-fingerprint`,
+    `external-unchecked-at-save`.
+- *Deployment.* `deploy/metrics-engine.yml` adds the engine beside the stack, with its image approved in
+  `docs/registry/engines.yaml`. `docs/operations.md` has a section for it; the Metrics repository has
+  `docs/engine.md` and `engine/Dockerfile`.
+- All 490 packages of the Metrics workspace pass `scripts/licenses.py`'s policy. DataFusion, Arrow, Parquet,
+  sqlparser and Wren are Apache-2.0.
+
+**What GitHub's checks had found.** Ferrum's own checks run here before each merge. Two of GitHub's jobs had
+failed on main since W7 and W8, and the checks run here had covered neither.
+- *audit:* `scripts/check_apps.py` wants each app's README to have a changelog row for its version. Edge (0.6.0),
+  Intelligence and Metrics had none. They now do: Edge 0.6.1 (#16, 867bca9), Intelligence 0.2.1, Metrics 0.7.0.
+  It now reads 53 apps, none short of the contract.
+- *image:* the smoke test's backup failed with `tar: .: file changed as we read it`. The erasure journal is
+  written by the outbox's worker after the erasure commits, and it was landing in the files while `tar` read
+  them. The test now waits for the journal, which the backup must hold for `reapply_erasures` to work, and
+  takes tar's status 1, a file changed while read, as a backup of a running server. `docs/operations.md` says
+  the same to operators.
+- From now on, `check_apps.py` runs here with the other audit scripts.
+
+## Checks for batch 4
+
+- Metrics (#6): the workflow's steps, run here one test binary at a time:
+  - fmt;
+  - clippy over the workspace;
+  - Metrics' unit tests (10), `composed_it`, `currency_it`, `datasets_it`, `external_it`, `metrics_it`, `wren_it`;
+  - the engine's unit test, `engine_it` (7) and `http_it`;
+  - the interface: dist matches its sources, typecheck, tests.
+- Intelligence (#4): fmt, clippy, its unit tests (2) and `evals_it`, against Metrics 0.7.0.
+- Edge (#16): no code changed; its app library tests (22) and interface check passed.
+- Ferrum: `cargo metadata --locked`, `registry.py check`, `check_apps.py`, `licenses.py check` (12 engines),
+  `mutants.py --check`, and the other audit scripts.
+
+## Still open after batch 4
+
+122 of the 124 rows are verified. The other two wait on people, recorded as blockers:
+- a screen-reader audit with assistive-technology users (FLC-UI-004, BLOCK-ACCESSIBILITY-AUDIT);
+- named maintenance owners (FLC-QUAL-008, BLOCK-LTS-SUPPORT).
