@@ -14,7 +14,7 @@ Their output is kept beside this page: [lrp-walk.txt](lrp-walk.txt), [logic-load
 
 - **Server:** `cargo build -p ferrum-server --features process`, which is every default app (the countries,
   the business apps, Operations, Edge, Metrics, Intelligence, Studio, …) with the process runtime, at Ferrum
-  `874a28f` on the branch `logic/w8-operations`.
+  `edbc786` (built as `874a28f`, the same tree before the branch was rebased onto main's merge of #111).
 - **Pins:** Ferrum-Frontend `2f201d5`; ferrum-app-edge `17a7c41` (IoT Edge 0.6.0); ferrum-app-metrics `c2b0b66`
   (0.5.0); ferrum-app-intelligence `02c6227` (0.1.1). The rest are as `docs/registry/release-manifest.yaml`
   pins them.
