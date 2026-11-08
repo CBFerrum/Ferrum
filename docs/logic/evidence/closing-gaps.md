@@ -363,8 +363,20 @@ failed on main since W7 and W8, and the checks run here had covered neither.
   - `cargo metadata --locked`, `registry.py check`, `check_apps.py`, `licenses.py check` (13 engines),
     `mutants.py --check`, the other audit scripts, and the k8s manifests rendered with the engine's component.
 
-## Still open after batch 4
+## After batch 4
 
-122 of the 124 rows are verified. The other two wait on people, recorded as blockers:
-- a screen-reader audit with assistive-technology users (FLC-UI-004, BLOCK-ACCESSIBILITY-AUDIT);
-- named maintenance owners (FLC-QUAL-008, BLOCK-LTS-SUPPORT).
+- GitHub's checks on main passed for batch 4 (Ferrum #116, `0339fe0`): rust, saml, editors, audit, image (its
+  smoke test with the attachments backup fixed) and promote. The cluster deploy to kind then passed, for the
+  first time since W7.
+- Metrics' engine image is public: CBFerrum's package policy now allows public packages, at the owner's
+  decision, and `ghcr.io/cbferrum/ferrum-metrics-engine` pulls without credentials.
+- **FLC-QUAL-008 is verified.** The repository owner, Chinmoy Bhuyan, took on all four profiles, their
+  supported versions, incidents and retirements on 9 November 2026. [maintenance.md](../maintenance.md)
+  records this, with retiring Temporal, Metrics' engine or a dataset, a model provider and an app release
+  worked through as a tabletop. Support has one owner and no funded SLA (BLOCK-LTS-SUPPORT stays for that).
+
+## Still open
+
+123 of the 124 rows are verified. The last waits on people: a screen-reader audit with assistive-technology
+users (FLC-UI-004, BLOCK-ACCESSIBILITY-AUDIT). A virtual screen-reader pass of the Studio screens, agreed
+with the owner, will narrow the gap but cannot close it.

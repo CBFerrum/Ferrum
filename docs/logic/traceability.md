@@ -6,8 +6,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | State | Requirements |
 |---|---|
 | Implemented, unverified | 1 |
-| Verified in software | 122 |
-| Blocked externally | 1 |
+| Verified in software | 123 |
 | **All** | **124** |
 
 ## W0: Establish reality and decision records
@@ -177,5 +176,5 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FLC-QUAL-005 | Independent fixtures | Verified in software | AT-QUAL-005 | 4 | Expected results are worked out by hand, never by the code they check: financial journeys, decision tables (hit policies, gaps, overlaps), composed metrics read per person, and currencies, refunds, balances, fiscal years and fan-out (currency_it, its numbers derived in its header). An implementation and its helper altered together still fail them: eleven mutants of conversion, rounding, fiscal periods and fan-out were each caught by these fixtures alone |
 | FLC-QUAL-006 | Full journeys | Verified in software | AT-QUAL-006 | 3 | Each profile ran complete in one walk on one assembled build with two workspaces: authored, reviewed, deployed, executed and recovered across apps; lrp-profiles.md lists what was real and what stood in (a gateway played by the walk with a key of its own; no model; no provider sandbox; no equipment) |
 | FLC-QUAL-007 | External qualification | Verified in software | AT-QUAL-007 | 1 | Software, simulator, provider, equipment and independent review are kept apart: a qualified status needs an independent reviewer on record, a release digest and a profile, and nothing blocked; registry.py refuses a simulator-only claim, a reviewer not on record, a missing digest and a blocked row (self-test). Nobody independent is on record yet, so nothing is qualified |
-| FLC-QUAL-008 | Maintenance owner | Blocked externally | AT-QUAL-008 | 0 | Named people must take on supported profiles, versions and incidents |
+| FLC-QUAL-008 | Maintenance owner | Verified in software | AT-QUAL-008 | 6 | Chinmoy Bhuyan owns all four profiles (Core, Full Process, Edge, Intelligence), their supported versions (only the newest; no long-term branch), incident response (severities, playbooks, a written account after severity 1 or 2) and retirements, by their own decision on 9 Nov 2026 (maintenance.md). Retiring Temporal, Metrics' engine or a dataset, a model provider and an app release is worked through as a tabletop: impact, replacement or export, and the accountable path, each step a feature with its own tests (t21_a_process_needs_its_profile, process_it cancel and revocation, solutions_it packs, external_it, evals_it), not one rehearsed retirement. One person, so support has no second owner; no funded SLA or LTS commitment (BLOCK-LTS-SUPPORT), so nothing is labelled production-supported |
 
