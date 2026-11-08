@@ -51,29 +51,36 @@ const AAD: &str = "ferrum.process.payload/1";
 /// Events a run handles before it continues as new, unless the server suggests sooner (FLC-PROC-013).
 const CONTINUE_AFTER: u32 = 500;
 
-/// Where the runtime's Temporal is, and the key its payloads are sealed with.
+/// Where the runtime's Temporal is, and the keys its payloads are sealed with.
 #[derive(Clone)]
 pub struct Settings {
     pub address: String,
     pub namespace: String,
     pub queue: String,
-    pub key: Arc<SecretKey>,
+    pub keys: Arc<Keys>,
+}
+
+/// The server's secret key, which seals, and the keys a rotation retired, which still open what they sealed:
+/// a run that started before a rotation reads its own history after it.
+pub struct Keys {
+    pub current: SecretKey,
+    pub retired: Vec<SecretKey>,
 }
 
 // ----- What Temporal stores is sealed before it leaves the process -----
 
-/// Seals each payload with the server's key; one that is not sealed passes as it is (a history written
-/// before sealing).
-pub struct Sealed(Arc<SecretKey>);
+/// Seals each payload with the server's key and opens it with that key or a retired one; one that is not
+/// sealed passes as it is (a history written before sealing).
+pub struct Sealed(Arc<Keys>);
 
 impl PayloadCodec for Sealed {
     fn encode(&self, _: &SerializationContextData, payloads: Vec<Payload>) -> BoxFuture<'static, Result<Vec<Payload>, PayloadConversionError>> {
-        let key = self.0.clone();
+        let keys = self.0.clone();
         async move {
             let mut out = Vec::with_capacity(payloads.len());
             for p in payloads {
                 let inner = serde_json::to_string(&(p.metadata, p.data)).map_err(|e| PayloadConversionError::EncodingError(e.into()))?;
-                let sealed = key.seal(AAD, &inner).map_err(|e| PayloadConversionError::EncodingError(e.to_string().into()))?;
+                let sealed = keys.current.seal(AAD, &inner).map_err(|e| PayloadConversionError::EncodingError(e.to_string().into()))?;
                 let mut q = Payload::default();
                 q.metadata.insert("encoding".into(), b"binary/ferrum-sealed".to_vec());
                 q.data = sealed.into_bytes();
@@ -85,7 +92,7 @@ impl PayloadCodec for Sealed {
     }
 
     fn decode(&self, _: &SerializationContextData, payloads: Vec<Payload>) -> BoxFuture<'static, Result<Vec<Payload>, PayloadConversionError>> {
-        let key = self.0.clone();
+        let keys = self.0.clone();
         async move {
             let mut out = Vec::with_capacity(payloads.len());
             for p in payloads {
@@ -94,7 +101,9 @@ impl PayloadCodec for Sealed {
                     continue;
                 }
                 let sealed = String::from_utf8(p.data).map_err(|e| PayloadConversionError::EncodingError(e.into()))?;
-                let inner = key.open(AAD, &sealed).map_err(|e| PayloadConversionError::EncodingError(e.to_string().into()))?;
+                let inner = std::iter::once(&keys.current).chain(&keys.retired).find_map(|k| k.open(AAD, &sealed).ok()).ok_or_else(|| {
+                    PayloadConversionError::EncodingError("no configured key opens this payload: keep the key it was sealed with retired".into())
+                })?;
                 let (metadata, data): (HashMap<String, Vec<u8>>, Vec<u8>) =
                     serde_json::from_str(&inner).map_err(|e| PayloadConversionError::EncodingError(e.into()))?;
                 out.push(Payload { metadata, data, ..Default::default() });
@@ -106,15 +115,15 @@ impl PayloadCodec for Sealed {
 }
 
 /// The data converter every client, worker and replayer of Ferrum's uses.
-pub fn converter(key: Arc<SecretKey>) -> DataConverter {
-    DataConverter::new(PayloadConverter::default(), DefaultFailureConverter::default(), Sealed(key))
+pub fn converter(keys: Arc<Keys>) -> DataConverter {
+    DataConverter::new(PayloadConverter::default(), DefaultFailureConverter::default(), Sealed(keys))
 }
 
 pub async fn client(s: &Settings) -> std::result::Result<Client, Box<dyn std::error::Error + Send + Sync>> {
     let target = url::Url::parse(&s.address)?;
     let connection = Connection::connect(ConnectionOptions::new(target).build()).await?;
     let mut options = ClientOptions::new(s.namespace.clone()).build();
-    options.data_converter = converter(s.key.clone());
+    options.data_converter = converter(s.keys.clone());
     Ok(Client::new(connection, options)?)
 }
 
@@ -671,7 +680,7 @@ impl EventSink for Dispatch {
 /// Replays a recorded history (`fetch_history().to_json()`) against this build's workflow, with Ferrum's codec
 /// when a key is given: a changed interpreter fails here before it runs anything (decisions L-01). Run before a
 /// new worker build takes over.
-pub async fn replay(history: Vec<u8>, key: Option<Arc<SecretKey>>) -> std::result::Result<(), String> {
+pub async fn replay(history: Vec<u8>, keys: Option<Arc<Keys>>) -> std::result::Result<(), String> {
     use temporalio_sdk::workflow_replayer::{WorkflowReplayer, WorkflowReplayerOptions};
     let (tx, rx) = tokio::sync::oneshot::channel();
     std::thread::Builder::new()
@@ -680,7 +689,7 @@ pub async fn replay(history: Vec<u8>, key: Option<Arc<SecretKey>>) -> std::resul
             let out = own_runtime().and_then(|rt| {
                 rt.block_on(async move {
                     let options = WorkflowReplayerOptions::new().register_workflow::<ProcessWf>().map_err(|e| e.to_string())?;
-                    let options = match key {
+                    let options = match keys {
                         Some(k) => options.data_converter(converter(k)).build(),
                         None => options.build(),
                     };
@@ -752,4 +761,31 @@ pub async fn spawn(k: Arc<Kernel>, s: Settings) -> std::result::Result<Running, 
 /// driven from that thread, as the spike's `#[tokio::main]` drove them.
 fn own_runtime() -> std::result::Result<tokio::runtime::Runtime, String> {
     tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn keys(current: u8, retired: &[u8]) -> Sealed {
+        Sealed(Arc::new(Keys { current: SecretKey::new([current; 32]), retired: retired.iter().map(|b| SecretKey::new([*b; 32])).collect() }))
+    }
+
+    #[tokio::test]
+    async fn what_a_retired_key_sealed_still_opens() {
+        let ctx = SerializationContextData::None;
+        let plain = Payload {
+            metadata: HashMap::from([("encoding".to_string(), b"json/plain".to_vec())]),
+            data: b"{\"total\":\"5000\"}".to_vec(),
+            ..Default::default()
+        };
+        let sealed = keys(1, &[]).encode(&ctx, vec![plain.clone()]).await.unwrap();
+        assert_eq!(sealed[0].metadata["encoding"], b"binary/ferrum-sealed");
+        assert!(!String::from_utf8_lossy(&sealed[0].data).contains("5000"));
+        // After a rotation: the old key retired still opens it; without it, nothing does.
+        assert_eq!(keys(2, &[1]).decode(&ctx, sealed.clone()).await.unwrap(), vec![plain.clone()]);
+        assert!(keys(2, &[]).decode(&ctx, sealed).await.is_err());
+        // What was never sealed passes as it is.
+        assert_eq!(keys(2, &[]).decode(&ctx, vec![plain.clone()]).await.unwrap(), vec![plain]);
+    }
 }

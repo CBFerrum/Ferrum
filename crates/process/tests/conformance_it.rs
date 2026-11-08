@@ -194,12 +194,12 @@ async fn scenario() {
     let files: BTreeMap<String, String> =
         [("package.yaml", PACKAGE), ("entities/procs.yaml", ENTITIES)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     let pkg = ferrum_meta::catalog::load_package_files(&files).expect("package");
-    let key = Arc::new(SecretKey::new([9u8; 32]));
+    let keys = Arc::new(ferrum_process::Keys { current: SecretKey::new([9u8; 32]), retired: vec![] });
     let settings = Settings {
         address,
         namespace: std::env::var("TEMPORAL_NAMESPACE").unwrap_or_else(|_| "ferrum-flc".into()),
         queue: format!("ferrum-test-{}", Uuid::now_v7()),
-        key: key.clone(),
+        keys: keys.clone(),
     };
     let client = ferrum_process::client(&settings).await.expect("temporal client");
     let mut hooks = HookRegistry::default();
@@ -240,7 +240,11 @@ async fn scenario() {
     again.start(t, run1).await.expect("a repeated start is no error");
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert_eq!(eventually::<i64>(&k, t, "select count(*) from e_order where request = $1", r1, "orders").await, 1);
-    assert_eq!(eventually::<String>(&k, t, "select status from logic_run where id = $1", run1, "the run").await, "completed", "no second run reported anything");
+    assert_eq!(
+        eventually::<String>(&k, t, "select status from logic_run where id = $1", run1, "the run").await,
+        "completed",
+        "no second run reported anything"
+    );
 
     // Its history replays with the same code and codec; without the codec it cannot even be read (FLC-PROC-007).
     // Fetched by a client without the codec, as Temporal keeps it: the marker the run read is nowhere in it.
@@ -257,7 +261,7 @@ async fn scenario() {
     payload_encodings(&serde_json::from_slice(&history).unwrap(), &mut encodings);
     assert!(encodings.len() > 5, "the history holds the run's payloads: {encodings:?}");
     assert!(encodings.iter().all(|e| e == "YmluYXJ5L2ZlcnJ1bS1zZWFsZWQ="), "every payload Temporal keeps is sealed: {encodings:?}");
-    replay(history.clone(), Some(key.clone())).await.expect("replays with its codec");
+    replay(history.clone(), Some(keys.clone())).await.expect("replays with its codec");
     assert!(replay(history, None).await.is_err(), "unreadable without the key");
 
     // The worker goes away while a person decides; another takes over and the run goes on.
