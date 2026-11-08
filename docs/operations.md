@@ -270,6 +270,11 @@ the operators' install from one has not run on a cluster without internet.
 
 ## Upgrades
 
+* Before a release is tagged, two checks must pass. `scripts/release_evidence.py qualified` says whether each
+  qualification (docs/logic/evidence/qualification.yaml) ran at this very build; when Ferrum's code or any pin has
+  changed since, it names what changed and fails until the qualification's scripts are run again and
+  `--stamp <id>` records the build they ran at. `scripts/licenses.py check` fails on any image a deploy file names
+  that is not an engine approved in docs/registry/engines.yaml, its licence read and its terms stated.
 * Schema changes are forward-only migrations plus a metadata → DDL sync, both run at boot under
   advisory locks, so rolling several replicas at once is safe. Upgrades only add tables, columns
   and indexes; nothing is dropped automatically (orphaned columns are reported in the logs).
@@ -479,6 +484,11 @@ profile). They run on a [Temporal](https://temporal.io) server (MIT) beside Ferr
 solution with a process is refused and everything else runs as before. What Temporal stores is sealed with
 `FERRUM_SECRET_KEY`; after rotating it, keep the old key in `FERRUM_RETIRED_SECRET_KEYS` until the runs
 started before have finished. Settings and behaviour: [logic/processes.md](logic/processes.md).
+
+**Accounts solutions act as.** A run no person's act started acts as its solution's own service account,
+`solution.{id}@services.ferrum.invalid`, made at activation with exactly the rights its release was reviewed to
+use and turned off when the solution stops. It takes no seat. Do not give it more rights by hand: each activation
+puts back the reviewed closure, and a run that needs more needs a reviewed release that asks for it.
 
 **Running Temporal.** With Docker Compose, `deploy/temporal.yml` adds Temporal Server 1.32.2 (the version
 qualified on PostgreSQL 17) keeping its histories in the stack's PostgreSQL, databases `temporal` and

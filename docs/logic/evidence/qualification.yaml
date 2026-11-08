@@ -1,0 +1,63 @@
+# The builds each qualification ran at (FLC-QUAL-001). `scripts/release_evidence.py qualified` compares each with
+# the build at hand: Ferrum's code, the frontend and every repository Cargo.lock builds. A change to any of them
+# leaves the qualification stale, names what changed and fails, so a release waits until the scripts are run again;
+# `scripts/release_evidence.py qualified --stamp <id> [rev]` then records the build they ran at. Written by that
+# command below this comment.
+qualifications:
+- id: logic-profiles
+  evidence: docs/logic/evidence/lrp-profiles.md
+  scripts:
+  - scripts/lrp_walk.py
+  - scripts/logic_load.py
+  - scripts/restore_drill.py
+  rows:
+  - FLC-QUAL-002
+  - FLC-QUAL-004
+  - FLC-QUAL-006
+  - FLC-OPS-004
+  - FLC-OPS-005
+  ran_at:
+    ferrum_code: sha256:205487fb8905da8ae0b46bcbe48313d1493cb7df475e13424d7821af835feb55
+    pins:
+      CBFerrum/Ferrum-Frontend: 2f201d51e886191d5036de9376cde6f1e6423fcc
+      CBFerrum/ferrum-app-assets: caedcb7504b67e01e52be3dfb5b1728308045c47
+      CBFerrum/ferrum-app-bookings: ab929c397d037f8d9f35107ed7dae84c87b30855
+      CBFerrum/ferrum-app-campaigns: 43d5d33a6f7609eea8487e564b62589c16a4624f
+      CBFerrum/ferrum-app-commerce: 77f5f0e2263842ebe9f342d782c257b62f9ee79d
+      CBFerrum/ferrum-app-comms: 3abe5cf2a5df175ee4fe5ab87aba1349d0a37e4b
+      CBFerrum/ferrum-app-construction: 489d01548eccf53a3a3f09f2075486849351d60a
+      CBFerrum/ferrum-app-contracts: b39290b401db820db149c20dbdd8df0e6b4a0187
+      CBFerrum/ferrum-app-control: ea6e20b63941d97846439382fb2de489ac152c06
+      CBFerrum/ferrum-app-crm: 3da75cb3f7700a55ef5caef615d67af9b218fbff
+      CBFerrum/ferrum-app-dam: 08140b59f60a0e03785c1fcfb1827d46e843cf15
+      CBFerrum/ferrum-app-developers: 67f01bd5bf6be7e24cfd7120d834380b26f89621
+      CBFerrum/ferrum-app-docs: 2895bace4aff7ad7067e635b8e38b1e758064886
+      CBFerrum/ferrum-app-drive: 731a46475770cc4475cfc54d48f5bb9c6f126a1a
+      CBFerrum/ferrum-app-edge: 17a7c411d467ede8cc7183decc20d2f5e5e6d575
+      CBFerrum/ferrum-app-education: fec006b2fcbab61fb6846d8d0d03720091c063e2
+      CBFerrum/ferrum-app-erp: a20a9c4ce726f02fa3f30d8ec4fa20ca7411108b
+      CBFerrum/ferrum-app-field-service: f366150114ac9c01860ce86a21a749b2e33670f2
+      CBFerrum/ferrum-app-forms: 15a4b55e75026b0a5f2e93336eee6c29383de098
+      CBFerrum/ferrum-app-government: 254b0aeb6da78f8b94cdd6275eea711c07e23d7a
+      CBFerrum/ferrum-app-grc: 14aa83eed38003dd5db55254d23183985d1732eb
+      CBFerrum/ferrum-app-healthcare: a56fd320167ee7a5d9d31010e5d082e56c0c4fcd
+      CBFerrum/ferrum-app-helpdesk: b4452d4341b240d8e9e369f6e2f92d9e9309c13b
+      CBFerrum/ferrum-app-hospitality: c03da14fd2a1213bb5a14b3d8187f076976b8cf1
+      CBFerrum/ferrum-app-hr: a1d86a269b6cba67754dbef4920b27efc3361cc4
+      CBFerrum/ferrum-app-intelligence: 02c6227fbb76ca810db604232948f8e91eb4af4b
+      CBFerrum/ferrum-app-intranet: f703234ed3f002fa63d56f2c233969874a9afa28
+      CBFerrum/ferrum-app-itsm: 2e03ba0f078f16b45331a1517ada23209e9a4901
+      CBFerrum/ferrum-app-lms: f4381b44484b23052b0bc15334d7e75dbf798ace
+      CBFerrum/ferrum-app-logistics: b832e6c55e44582e137f6ed1cd5813c5e9e1c1bd
+      CBFerrum/ferrum-app-metrics: c2b0b667f0b9ce5d9b42bd0c7a4f6258c90ba46a
+      CBFerrum/ferrum-app-nonprofit: b60024140e3a026f5c760bc1b16e718a49394a6f
+      CBFerrum/ferrum-app-objectives: ae0aab9f012697f446f066686ab75f48a57f163f
+      CBFerrum/ferrum-app-pos: 8b616af541223a26779695b30ad6ca51af0566db
+      CBFerrum/ferrum-app-projects: 90b142154d7b25f684407678ed0e8a91830bcbe7
+      CBFerrum/ferrum-app-property: 4a1fbe39ef734265a38d4a86b778f691236b78a4
+      CBFerrum/ferrum-app-restaurant: 5adf419d95e133c6c6dd526772efe3c2f5cde688
+      CBFerrum/ferrum-app-retail: eab2e689ca39aaa954ae154ffa96812ab7f3bad2
+      CBFerrum/ferrum-app-sign: f202d894791b751c501f8e9573a30a1159a5852e
+      CBFerrum/ferrum-app-social: 3432bc314eecf86d21036bc1b414608a1f92d92b
+      CBFerrum/ferrum-app-website: 0b9e6f463e49a7397a10c14865b102beec603831
+    commit: 0e8e898ba57e9214348bcd966d0ca1820221afe8
