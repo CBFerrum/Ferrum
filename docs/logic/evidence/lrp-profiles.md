@@ -13,8 +13,8 @@ Their output is kept beside this page: [lrp-walk.txt](lrp-walk.txt), [logic-load
 ## The build and what it was pinned to
 
 - **Server:** `cargo build -p ferrum-server --features process`, which is every default app (the countries,
-  the business apps, Operations, Edge, Metrics, Intelligence, Studio, …) with the process runtime, from the
-  branch `logic/w8-operations`.
+  the business apps, Operations, Edge, Metrics, Intelligence, Studio, …) with the process runtime, at Ferrum
+  `874a28f` on the branch `logic/w8-operations`.
 - **Pins:** Ferrum-Frontend `2f201d5`; ferrum-app-edge `17a7c41` (IoT Edge 0.6.0); ferrum-app-metrics `c2b0b66`
   (0.5.0); ferrum-app-intelligence `02c6227` (0.1.1). The rest are as `docs/registry/release-manifest.yaml`
   pins them.
@@ -32,7 +32,7 @@ Their output is kept beside this page: [lrp-walk.txt](lrp-walk.txt), [logic-load
 - One invalid request was refused with the rule's message through the records API, the older resource API,
   import (a requester may not import at all; an administrator's import was refused too), bulk and MCP.
 - The other workspace was not bound by it.
-- Saves under the rule took 6 ms at the median and 8 ms at p95.
+- Saves under the rule took 7 ms at the median and 13 ms at p95, over 20.
 
 **LRP-02, durable procurement.**
 - A submitted request started one run on Temporal.
@@ -84,10 +84,10 @@ Their output is kept beside this page: [lrp-walk.txt](lrp-walk.txt), [logic-load
 
 | Scenario | Measured |
 |---|---|
-| Compile a source, simulate a run (HTTP round trip included) | 31 ms, 31 ms (median of 10) |
-| Cold: first run after start | review open 540 ms after submitting; order 460 ms after the decision |
-| Warm, ten in turn, each workspace | review open 544–548 ms median; decided to ordered 236–241 ms median, 429–455 ms p95 |
-| 60 at once in one workspace beside 5 in the other | the flood 1488 ms median, 1811 ms p95; the other workspace 427 ms median, 428 ms p95 (its quiet p95 was 429 ms); 65 runs in 7.1 s; 5 steps told to wait their turn |
+| Compile a source, simulate a run (HTTP round trip included) | 32 ms, 31 ms (median of 10) |
+| Cold: first run after start | review open 572 ms after submitting; order 458 ms after the decision |
+| Warm, ten in turn, each workspace | review open 548–572 ms median; decided to ordered 231–236 ms median, 436–447 ms p95 |
+| 60 at once in one workspace beside 5 in the other | the flood 1490 ms median, 1919 ms p95; the other workspace 434 ms median, 437 ms p95 (its quiet p95 was 436 ms); 65 runs in 7.0 s; 4 steps told to wait their turn |
 | Server stopped with 15 runs in hand | all ordered once, settled 17.5 s after the restart began |
 
 The worker's limits on that server were 10 slots, 8 for effects and 2 per workspace: half of a 20-connection
