@@ -33,6 +33,7 @@ SCAN = ("-p", "ferrum-kernel", "--test", "scan_it")
 SCAN_UNIT = ("-p", "ferrum-kernel", "--lib", "scan::tests")
 CUSTOMIZE = ("-p", "ferrum-kernel", "--test", "customize_it")
 CAPABILITY = ("-p", "ferrum-kernel", "--test", "capability_it")
+AUTOMATION_MAIL = ("-p", "ferrum-kernel", "--test", "automation_mail_it")
 HOOKS_UNIT = ("-p", "ferrum-kernel", "--lib", "hooks::tests")
 CLOSURE = ("-p", "ferrum-kernel", "--test", "closure_it")
 SSO = ("-p", "ferrum-server", "--test", "sso_it")
@@ -75,6 +76,7 @@ MUTANTS = [
     ("capability-ledger-offered", "crates/kernel/src/capability.rs", "matches!(ent.def.kind, EntityKind::Ledger | EntityKind::Child)", "matches!(ent.def.kind, EntityKind::Child)", CAPABILITY),
     ("capability-list-unmasked", "crates/kernel/src/capability.rs", "Value::Object(self.mask(ctx, &ent, d))", "Value::Object({ let _ = &ent; d })", CAPABILITY),
     ("capability-version-adopted", "crates/kernel/src/capability.rs", "            && v != &cap.version\n", "            && v.is_empty()\n", CAPABILITY),
+    ("automation-mails-before-commit", "crates/kernel/src/automation.rs", "k.queue_mail(tx, ctx.tenant, &to, &subject, &body).await?;", "k.mailer.as_ref().ok_or_else(|| Error::Unavailable(String::new()))?.send(&to, &subject, &body).await?;", AUTOMATION_MAIL),
     ("capability-input-says-who-asks", "crates/logic/src/capability.rs", "map.keys().find(|k| CONTEXT_FIELDS.contains(&k.as_str()) && !self.declares(k))", "map.keys().find(|k| k.is_empty() && !self.declares(k))", CAPABILITY),
     # The directory of people is the members'.
     ("directory-read-by-anyone", "crates/kernel/src/collab.rs", "if !ctx.is_system && self.user_kind(ctx.tenant, ctx.user).await? != \"member\" {", "if false {", SHELL),
