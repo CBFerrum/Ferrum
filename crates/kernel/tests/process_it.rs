@@ -359,6 +359,7 @@ async fn scenario() {
         Calendar { name: "office".into(), zone: "Asia/Kolkata".into(), weekends: vec!["sat".into(), "sun".into()], holidays: Default::default(), revision: 0 };
     assert_eq!(k.set_logic_calendar(&admin, &office).await.unwrap(), 1);
     assert_eq!(code(&k.set_logic_calendar(&reviewer, &office).await.unwrap_err()), "forbidden");
+    assert_eq!(code(&k.set_logic_calendar(&admin, &Calendar { name: "Office!".into(), ..office.clone() }).await.unwrap_err()), "validation_failed");
     let saved = k.save_release(&admin, &source()).await.expect("release");
     let release: Uuid = saved["id"].as_str().unwrap().parse().unwrap();
     k.review_release(&admin2, release, saved["artifact_digest"].as_str().unwrap(), true, "").await.unwrap();
@@ -442,6 +443,20 @@ async fn scenario() {
         .unwrap();
     assert!(matches!(&other, Invoked::Refused { code, .. } if code == "input_changed"), "{other:?}");
     assert_eq!(scalar::<i64>(&k, admin.tenant, "select count(*) from e_order where request = $1", r1).await, 1);
+    // A record approved and then deleted no longer holds the approval an effect relies on.
+    let gone = k.insert(&admin, "Order", obj(json!({"reference": "GONE"}))).await.unwrap();
+    let gone_id: Uuid = gone["id"].as_str().unwrap().parse().unwrap();
+    k.delete(&admin, "Order", gone_id, None).await.unwrap();
+    let approval = ferrum_logic::process::Approval {
+        task: "review".into(),
+        decision_id: String::new(),
+        digest: digest1.clone(),
+        material: json!({"id": gone_id.to_string(), "version": gone["version"]}),
+        entity: Some("Order".into()),
+    };
+    let stale =
+        k.process_invoke(admin.tenant, run1, "probe", "procs.request.read", "1.0.0", json!({"id": r1.to_string()}), false, Some(&approval)).await.unwrap();
+    assert!(matches!(&stale, Invoked::Refused { code, .. } if code == "stale_approval"), "{stale:?}");
 
     // An event that comes before its wait is kept for it; an event about another record matches nothing
     // (FLC-PROC-004, -005).
@@ -543,6 +558,10 @@ async fn scenario() {
     let (task7, _) = task_of(&k, admin.tenant, run7, "review").await;
     assert_eq!(k.logic_task(&reviewer, task7).await.unwrap()["deadline_basis"]["revision"], json!(2));
     assert_eq!(k.logic_task(&reviewer, task1).await.unwrap()["deadline_basis"]["revision"], json!(1));
+    // Asked again after its answer was lost, a deadline that passed says so again, not nothing.
+    let first = k.process_expire_task(admin.tenant, run7, "review").await.unwrap();
+    let again = k.process_expire_task(admin.tenant, run7, "review").await.unwrap();
+    assert!(matches!((&first, &again), (Some(Event::TaskTimedOut { .. }), Some(Event::TaskTimedOut { .. }))), "{first:?} then {again:?}");
 
     // Rights revoked while the run waited: the effect after it is refused, not done with borrowed power
     // (FLC-PROC-006).

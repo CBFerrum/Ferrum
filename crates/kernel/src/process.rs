@@ -364,14 +364,19 @@ impl Kernel {
         changes: bool,
         approval: Option<&ferrum_logic::process::Approval>,
     ) -> Result<Invoked> {
+        // What may be tried again is tried again; anything else is a refusal the run routes on.
+        let settle = |e: Error| match e {
+            Error::Unavailable(_) | Error::Retryable(_) | Error::Db(_) => Err(e),
+            e => Ok(Invoked::Refused { code: e.code().into(), message: e.to_string() }),
+        };
         let ctx = match self.run_ctx(tenant, run).await {
             Ok(c) => c,
-            Err(e) => return Ok(Invoked::Refused { code: e.code().into(), message: e.to_string() }),
+            Err(e) => return settle(e),
         };
         if let Some(a) = approval
             && let Err(e) = self.approval_holds(tenant, run, a).await
         {
-            return Ok(Invoked::Refused { code: e.code().into(), message: e.to_string() });
+            return settle(e);
         }
         let mut inv = crate::capability::Invocation::new(capability, input);
         inv.version = Some(version.to_string());
@@ -409,7 +414,14 @@ impl Kernel {
         let schema = self.registry.schema(tenant).await?;
         let sys = Ctx::system(tenant, schema.clone());
         if let Some(entity) = a.entity.clone() {
-            let now = self.get_tx(&sys, &mut tx, &entity, id, false).await.ok().and_then(|d| d.get("version").and_then(Value::as_i64));
+            let now = match self.get_tx(&sys, &mut tx, &entity, id, false).await {
+                Ok(d) => d.get("version").and_then(Value::as_i64),
+                Err(Error::NotFound(_)) => {
+                    tx.commit().await?;
+                    return Err(refusal(Code::StaleApproval, format!("the {entity} that was approved no longer exists")));
+                }
+                Err(e) => return Err(e),
+            };
             if now.is_some_and(|v| v != version) {
                 tx.commit().await?;
                 return Err(refusal(
@@ -522,44 +534,49 @@ impl Kernel {
                 .fetch_optional(&mut *tx)
                 .await?;
         let Some((task, status, kind)) = row else { return Err(Error::NotFound("task".into())) };
-        let out = if status == "open" {
-            sqlx::query("update logic_task set status = 'timed_out', closed_at = now(), version = version + 1 where tenant_id = $1 and id = $2")
-                .bind(tenant)
-                .bind(task)
-                .execute(&mut *tx)
-                .await?;
-            Some(if kind == "case" { Event::CaseTimedOut { activation: activation.into() } } else { Event::TaskTimedOut { activation: activation.into() } })
-        } else {
+        let out = match status.as_str() {
+            // The deadline came first, now or when this was asked before (an attempt whose answer was lost).
+            "open" | "timed_out" => {
+                if status == "open" {
+                    sqlx::query("update logic_task set status = 'timed_out', closed_at = now(), version = version + 1 where tenant_id = $1 and id = $2")
+                        .bind(tenant)
+                        .bind(task)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+                Some(if kind == "case" { Event::CaseTimedOut { activation: activation.into() } } else { Event::TaskTimedOut { activation: activation.into() } })
+            }
             // Decided first: that decision is the outcome. Cancelled: nothing to tell.
-            self.decided_event(&mut tx, tenant, task, activation, &kind).await?
+            "approved" | "rejected" | "done" => self.decided_event(&mut tx, tenant, task, activation, &kind, &status).await?,
+            _ => None,
         };
         tx.commit().await?;
         Ok(out)
     }
 
     /// What a closed task told its run, rebuilt from its decisions.
-    async fn decided_event(&self, tx: &mut Tx, tenant: Uuid, task: Uuid, activation: &str, kind: &str) -> Result<Option<Event>> {
-        let last: Option<(Uuid, Uuid, String, Value, DateTime<Utc>)> = sqlx::query_as(
-            "select id, by_user, decision, values, decided_at from logic_task_decision where tenant_id = $1 and task_id = $2 and decision in ('approve', 'reject', 'close') \
-             order by decided_at desc, id desc limit 1",
+    async fn decided_event(&self, tx: &mut Tx, tenant: Uuid, task: Uuid, activation: &str, kind: &str, status: &str) -> Result<Option<Event>> {
+        if kind == "case" {
+            return Ok((status == "done").then(|| Event::CaseClosed { activation: activation.into() }));
+        }
+        // The decision that closed it: the last approval of an approved task (the one that made the count), or
+        // the rejection.
+        let decision = if status == "approved" { "approve" } else { "reject" };
+        let last: Option<(Uuid, Uuid, Value, DateTime<Utc>)> = sqlx::query_as(
+            "select id, by_user, values, decided_at from logic_task_decision where tenant_id = $1 and task_id = $2 and decision = $3 order by decided_at desc, id desc limit 1",
         )
         .bind(tenant)
         .bind(task)
+        .bind(decision)
         .fetch_optional(&mut **tx)
         .await?;
-        Ok(last.map(|(id, by, decision, values, at)| {
-            if kind == "case" {
-                Event::CaseClosed { activation: activation.into() }
-            } else {
-                Event::TaskDecided {
-                    activation: activation.into(),
-                    approved: decision == "approve",
-                    by: by.to_string(),
-                    decision_id: id.to_string(),
-                    at: at.to_rfc3339(),
-                    values,
-                }
-            }
+        Ok(last.map(|(id, by, values, at)| Event::TaskDecided {
+            activation: activation.into(),
+            approved: status == "approved",
+            by: by.to_string(),
+            decision_id: id.to_string(),
+            at: at.to_rfc3339(),
+            values,
         }))
     }
 
@@ -1112,6 +1129,13 @@ impl Kernel {
     /// Sets a business calendar (administrators); each change is a new revision.
     pub async fn set_logic_calendar(&self, ctx: &Ctx, cal: &Calendar) -> Result<i64> {
         require_admin(ctx)?;
+        let mut chars = cal.name.chars();
+        if cal.name.len() > 64
+            || !chars.next().is_some_and(|c| c.is_ascii_lowercase())
+            || !chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        {
+            return Err(Error::field("name", "lower_snake_case, at most 64 characters"));
+        }
         if let Some(p) = cal.problem() {
             return Err(Error::field("calendar", p));
         }

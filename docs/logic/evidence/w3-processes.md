@@ -43,12 +43,12 @@ has.
 starts one run; the requester holding the reviewer's role still cannot decide, another task's material is not
 found for an outsider, and the task's deadline records its calendar; a decision on other material, or with a
 field the form does not ask, is refused; the approved order is made once under `{run}/order`, asked again it is
-the same order, other input under the key is refused; the order's own event completes the run, one that came
+the same order, other input under the key is refused, and an approval of a record since deleted holds nothing; the order's own event completes the run, one that came
 before the wait is kept for it, another order's event advances nothing; the request cancelled after approval
 makes the order refused and the run wait for a person, who can end it but not resume it, and the cancellation
 starts an investigation whose case refuses an unlisted task, a task before its dependency, closing before the
-required one, and closing by an administrator who is not its owner or by the requester; a decision and a deadline at once have one outcome, and a deadline after a decision tells
-the decision; a task handed on as often as its bound (two) allows, only to reviewers, never back or to the
+required one, and closing by an administrator who is not its owner or by the requester; a decision and a deadline at once have one outcome, a deadline after a decision tells
+the decision, and a deadline asked again says the same; a task handed on as often as its bound (two) allows, only to reviewers, never back or to the
 requester, decided by the last, and never by an administrator without the role; a revised calendar moves only later deadlines; the requester's roles revoked while the run waited
 refuse the order; the requester stops their run, its task closes; another workspace starts and sees nothing.
 
