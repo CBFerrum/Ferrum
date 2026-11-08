@@ -12,6 +12,7 @@ pub mod auth;
 pub mod automation;
 pub mod backfill;
 pub mod bulk;
+pub mod capability;
 pub mod coedit;
 pub mod collab;
 pub mod connect;

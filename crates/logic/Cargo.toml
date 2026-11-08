@@ -1,0 +1,15 @@
+[package]
+name = "ferrum-logic"
+description = "Customer logic's contracts with no I/O: canonical digests, approvals, capability descriptors and stable refusals. The server and an Edge gateway build the same code."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+
+[lints]
+workspace = true

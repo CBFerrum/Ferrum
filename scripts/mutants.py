@@ -32,6 +32,7 @@ KERNEL = ("-p", "ferrum-kernel", "--test", "kernel_it")
 SCAN = ("-p", "ferrum-kernel", "--test", "scan_it")
 SCAN_UNIT = ("-p", "ferrum-kernel", "--lib", "scan::tests")
 CUSTOMIZE = ("-p", "ferrum-kernel", "--test", "customize_it")
+CAPABILITY = ("-p", "ferrum-kernel", "--test", "capability_it")
 HOOKS_UNIT = ("-p", "ferrum-kernel", "--lib", "hooks::tests")
 CLOSURE = ("-p", "ferrum-kernel", "--test", "closure_it")
 SSO = ("-p", "ferrum-server", "--test", "sso_it")
@@ -67,6 +68,14 @@ TIMEOUT = 600
 
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
+    # The Logic Platform's capability gate (docs/logic, FLC-CAP-001 to 003, FLC-PROC-002).
+    ("capability-same-key-other-input", "crates/kernel/src/capability.rs", "if was != digest {", "if false {", CAPABILITY),
+    ("capability-no-receipt", "crates/kernel/src/capability.rs", "        if !claimed {\n", "        if false {\n", CAPABILITY),
+    ("capability-rights-ignored", "crates/kernel/src/capability.rs", "    cap.permissions.iter().all(|p| match p.split_once(':') {", "    cap.permissions.iter().all(|p| true || match p.split_once(':') {", CAPABILITY),
+    ("capability-ledger-offered", "crates/kernel/src/capability.rs", "matches!(ent.def.kind, EntityKind::Ledger | EntityKind::Child)", "matches!(ent.def.kind, EntityKind::Child)", CAPABILITY),
+    ("capability-list-unmasked", "crates/kernel/src/capability.rs", "Value::Object(self.mask(ctx, &ent, d))", "Value::Object({ let _ = &ent; d })", CAPABILITY),
+    ("capability-version-adopted", "crates/kernel/src/capability.rs", "            && v != &cap.version\n", "            && v.is_empty()\n", CAPABILITY),
+    ("capability-input-says-who-asks", "crates/logic/src/capability.rs", "map.keys().find(|k| CONTEXT_FIELDS.contains(&k.as_str()) && !self.declares(k))", "map.keys().find(|k| k.is_empty() && !self.declares(k))", CAPABILITY),
     # The directory of people is the members'.
     ("directory-read-by-anyone", "crates/kernel/src/collab.rs", "if !ctx.is_system && self.user_kind(ctx.tenant, ctx.user).await? != \"member\" {", "if false {", SHELL),
     ("directory-lists-everyone", "crates/kernel/src/collab.rs", "where tenant_id = $1 and is_active and kind = 'member' \\", "where tenant_id = $1 and is_active \\", SHELL),
