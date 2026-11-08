@@ -46,6 +46,52 @@ pub struct PackageManifest {
     /// stopped (`ferrum_kernel::backfill`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub backfills: Vec<BackfillDef>,
+    /// Business events this package publishes besides its records' own (created, submitted and the
+    /// rest), for processes to start on and wait for (docs/logic). Topic `{package}.{name}`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<EventDef>,
+}
+
+/// A business event a package publishes through the outbox.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EventDef {
+    /// `[a-z][a-z0-9_.]*`, unique in the package (`order_acknowledged`).
+    pub name: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The entity it is about, when it is about a record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity: Option<String>,
+    /// JSON Schema of its payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<Value>,
+}
+
+/// What an action promises beyond its parameters (docs/logic, FLC-CAP-001). Everything is optional and
+/// derived when left out: a read-only action is a query, any other a transactional action with a
+/// receipt committed beside it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ActionContract {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect: Option<ferrum_logic::capability::Effect>,
+    /// JSON Schema of what the action returns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub returns: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency: Option<ferrum_logic::capability::Idempotency>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_days: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unknown_outcome: Option<ferrum_logic::capability::UnknownOutcome>,
+    /// What it means when it reports done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion: Option<String>,
+    /// Another action of the same entity that undoes this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compensate_with: Option<String>,
 }
 
 /// Rows of an engine table (`table`) or of an entity's (`entity`) that a release changes in
@@ -379,6 +425,9 @@ pub struct ActionDef {
     /// Called by plugins and other code, never offered to a person as a button.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hidden: bool,
+    /// What it promises to processes and agents (docs/logic).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract: Option<ActionContract>,
 }
 
 /// One input an action asks for.

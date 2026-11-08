@@ -180,7 +180,7 @@ pub enum Ended {
 }
 
 fn gives_up(e: &Error) -> bool {
-    matches!(e, Error::Invalid(_) | Error::Validation(_) | Error::Forbidden(_) | Error::NotFound(_) | Error::Unauthorized(_))
+    matches!(e, Error::Invalid(_) | Error::Validation(_) | Error::Forbidden(_) | Error::NotFound(_) | Error::Unauthorized(_) | Error::Refused { .. })
 }
 
 /// What whoever asked may read of a failure: the detail of an internal one stays in the log.

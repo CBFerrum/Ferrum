@@ -6,12 +6,12 @@
 //! tenant customizations and plugin entities included — is covered without per-entity code. Every
 //! call runs through the same permission-checked kernel paths as the REST API, as the caller.
 
-use ferrum_kernel::describe::{describe, permissions};
+use ferrum_kernel::describe::{describe, entity_schema, permissions};
 use ferrum_kernel::query::parse_filters;
 use ferrum_kernel::value::canonical_json;
 use ferrum_kernel::{Access, Action, Ctx, Doc, Error, Kernel, ListQuery};
-use ferrum_meta::{EffEntity, EntityKind, FieldDef, FieldType, OverlayOp};
-use serde_json::{Map, Value, json};
+use ferrum_meta::{EffEntity, EntityKind, OverlayOp};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -295,6 +295,26 @@ fn tools(ctx: &Ctx) -> Vec<Value> {
             false,
         ),
         tool(
+            "list_capabilities",
+            "List business capabilities",
+            "The business capabilities you may use, as processes and the builder see them: each with its version, effect (query, transactional_action, external_effect...), rights, input and output schemas and what done means. `q` narrows by words in the id or label; `entity` to one entity.",
+            json!({"q": s("Words to look for"), "entity": s("Entity name"), "limit": {"type": "integer", "minimum": 1, "maximum": 200}}),
+            &[],
+            true,
+            false,
+            true,
+        ),
+        tool(
+            "invoke_capability",
+            "Use a business capability",
+            "Run a capability from list_capabilities through the same gate processes use. One that changes something needs `effect_key`: the same key with the same input returns what was done, never does it twice; the same key with other input is refused. `version` refuses to run if the installed version differs.",
+            json!({"capability": s("Capability id"), "input": {"type": "object"}, "effect_key": s("Logical effect key"), "version": s("Expected version")}),
+            &["capability", "input"],
+            false,
+            true,
+            true,
+        ),
+        tool(
             "workflow_transition",
             "Workflow transition",
             "Apply an approval workflow transition (e.g. approve, reject) to a document.",
@@ -465,6 +485,25 @@ async fn run_tool(k: &Kernel, ctx: &Ctx, name: &str, args: &Value) -> Result<Val
     let record = |d: Doc| Value::Object(d);
     match name {
         "ferrum_overview" => Ok(overview(ctx)),
+        "list_capabilities" => {
+            let q = args.get("q").and_then(Value::as_str).map(str::to_lowercase);
+            let entity = args.get("entity").and_then(Value::as_str);
+            let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(50).clamp(1, 200) as usize;
+            let found: Vec<_> = k
+                .catalog(ctx)
+                .into_iter()
+                .filter(|c| entity.is_none_or(|e| c.entity.as_deref() == Some(e)))
+                .filter(|c| q.as_deref().is_none_or(|q| c.id.contains(q) || c.label.to_lowercase().contains(q)))
+                .take(limit)
+                .collect();
+            Ok(json!({"capabilities": found}))
+        }
+        "invoke_capability" => {
+            let mut inv = ferrum_kernel::capability::Invocation::new(arg(args, "capability")?, args.get("input").cloned().unwrap_or(json!({})));
+            inv.effect_key = args.get("effect_key").and_then(Value::as_str).map(str::to_string);
+            inv.version = args.get("version").and_then(Value::as_str).map(str::to_string);
+            Ok(serde_json::to_value(k.invoke(ctx, inv).await?).unwrap_or(Value::Null))
+        }
         "describe_entity" => {
             let ent = entity_of(ctx, arg(args, "entity")?)?;
             Ok(json!({"entity": describe(ctx, &ent), "json_schema": entity_schema(ctx, &ent, 0)}))
@@ -600,67 +639,6 @@ fn overview(ctx: &Ctx) -> Value {
         "entities": entities,
         "reports": ferrum_domain::reports::catalog_for(ctx),
     })
-}
-
-/// JSON Schema for writing a record of `ent` (child tables nest their row schema).
-pub fn entity_schema(ctx: &Ctx, ent: &EffEntity, depth: usize) -> Value {
-    let mut props = Map::new();
-    let mut required = Vec::new();
-    for f in &ent.def.fields {
-        if f.hidden && f.ftype != FieldType::Table {
-            continue;
-        }
-        props.insert(f.name.clone(), field_schema(ctx, f, depth));
-        if f.required && f.default.is_none() && f.default_expr.is_none() && f.computed.is_none() && !f.read_only {
-            required.push(f.name.clone());
-        }
-    }
-    json!({"type": "object", "title": ent.def.label, "properties": props, "required": required})
-}
-
-fn field_schema(ctx: &Ctx, f: &FieldDef, depth: usize) -> Value {
-    let mut v = match f.ftype {
-        FieldType::Int => json!({"type": "integer"}),
-        FieldType::Decimal | FieldType::Currency | FieldType::Percent => {
-            json!({"type": ["string", "number"], "description": "Exact decimal; send it as a string"})
-        }
-        FieldType::Check => json!({"type": "boolean"}),
-        FieldType::Date => json!({"type": "string", "format": "date"}),
-        FieldType::Datetime => json!({"type": "string", "format": "date-time"}),
-        FieldType::Select => json!({"type": "string", "enum": f.options}),
-        FieldType::Email => json!({"type": "string", "format": "email"}),
-        FieldType::Url => json!({"type": "string", "format": "uri"}),
-        FieldType::Json => json!({"type": ["object", "array"]}),
-        FieldType::Secret => json!({"type": ["string", "boolean", "null"], "writeOnly": true,
-            "description": "Write-only secret: send text to set it, null to remove it; reads show true when one is set"}),
-        FieldType::Link => {
-            json!({"type": "string", "format": "uuid", "description": format!("Id of a {} record", f.to.as_deref().unwrap_or("linked"))})
-        }
-        FieldType::Table => match f.of.as_deref().and_then(|c| ctx.schema.entity(c)) {
-            Some(child) if depth < 2 => json!({"type": "array", "items": entity_schema(ctx, child, depth + 1)}),
-            _ => json!({"type": "array", "items": {"type": "object"}}),
-        },
-        _ => match f.max_length {
-            Some(n) => json!({"type": "string", "maxLength": n}),
-            None => json!({"type": "string"}),
-        },
-    };
-    let mut desc = f.label();
-    if let Some(d) = &f.description {
-        desc = format!("{desc}: {d}");
-    }
-    if let Some(existing) = v.get("description").and_then(Value::as_str) {
-        desc = format!("{desc}. {existing}");
-    }
-    if f.read_only || f.computed.is_some() {
-        v["readOnly"] = json!(true);
-        desc.push_str(" (set by the system)");
-    }
-    if let Some(d) = &f.default {
-        v["default"] = d.clone();
-    }
-    v["description"] = json!(desc);
-    v
 }
 
 // ───────────────────────────── resources ─────────────────────────────

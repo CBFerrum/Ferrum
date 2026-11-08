@@ -13,6 +13,10 @@
 //! | `GET\|POST /dashboards/{id}/data` | `{values?}` (dashboard filter values) → every widget |
 //! | `GET /spaces/{id}/data` | every block, resolved for the caller |
 //!
+//! | `GET /catalog` | `?q=&entity=&effect=` → `{capabilities, events}` the caller may use (docs/logic) |
+//! | `GET /catalog/{id}` | one capability |
+//! | `POST /catalog/{id}/invoke` | `{input, effect_key?, version?}` (or an `Idempotency-Key` header) → its receipt |
+//!
 //! GET variants take the same settings as query parameters (`filters`, `values`, `sort` as JSON).
 
 use crate::builder::{self, CARD, CHART, DASHBOARD, REPORT, Runtime, SPACE, WidgetRequest};
@@ -20,6 +24,7 @@ use crate::query;
 use crate::run::run;
 use crate::spec::Spec;
 use async_trait::async_trait;
+use ferrum_kernel::capability::Invocation;
 use ferrum_kernel::{Access, Action, Ctx, Error, Kernel, Result, Site, SiteRequest, SiteResponse};
 use ferrum_meta::EntityKind;
 use serde_json::{Map, Value, json};
@@ -90,6 +95,30 @@ fn sources(ctx: &Ctx) -> Value {
     json!({"builtin": ferrum_domain::reports::catalog_for(ctx), "entities": entities})
 }
 
+/// The capabilities and events this caller may use (docs/logic): `q` narrows by words in an id or label,
+/// `entity` to one entity, `effect` to one effect class.
+fn catalog(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Value {
+    let q = param(req, "q").map(str::to_lowercase);
+    let entity = param(req, "entity");
+    let effect = param(req, "effect");
+    let matches = |id: &str, label: &str| q.as_deref().is_none_or(|q| id.contains(q) || label.to_lowercase().contains(q));
+    let capabilities: Vec<Value> = k
+        .catalog(ctx)
+        .into_iter()
+        .filter(|c| entity.is_none_or(|e| c.entity.as_deref() == Some(e)))
+        .filter(|c| effect.is_none_or(|e| serde_json::to_value(c.effect).ok().and_then(|v| v.as_str().map(|s| s == e)).unwrap_or(false)))
+        .filter(|c| matches(&c.id, &c.label))
+        .filter_map(|c| serde_json::to_value(c).ok())
+        .collect();
+    let events: Vec<Value> = k
+        .events(ctx)
+        .into_iter()
+        .filter(|e| entity.is_none_or(|n| e["entity"].as_str() == Some(n)))
+        .filter(|e| matches(e["id"].as_str().unwrap_or_default(), e["label"].as_str().unwrap_or_default()))
+        .collect();
+    json!({"capabilities": capabilities, "events": events})
+}
+
 #[async_trait]
 impl Site for StudioSite {
     async fn handle(&self, k: &Kernel, req: SiteRequest) -> Result<SiteResponse> {
@@ -146,6 +175,17 @@ impl Site for StudioSite {
                 ok(builder::dashboard_data(k, ctx, uuid(id)?, &values).await?)
             }
             ("GET", ["spaces", id, "data"]) => ok(builder::space_data(k, ctx, uuid(id)?).await?),
+            ("GET", ["catalog"]) => ok(catalog(k, ctx, &req)),
+            ("GET", ["catalog", id]) => ok(serde_json::to_value(k.capability(ctx, id)?).unwrap_or(Value::Null)),
+            ("POST", ["catalog", id, "invoke"]) => {
+                let b = body(&req)?;
+                let mut inv = Invocation::new(*id, b.get("input").cloned().unwrap_or(json!({})));
+                // The logical effect's key: the body's, or the Idempotency-Key header a REST client sends.
+                inv.effect_key =
+                    b.get("effect_key").and_then(Value::as_str).or_else(|| req.headers.get("idempotency-key").and_then(Value::as_str)).map(str::to_string);
+                inv.version = b.get("version").and_then(Value::as_str).map(str::to_string);
+                ok(serde_json::to_value(k.invoke(ctx, inv).await?).unwrap_or(Value::Null))
+            }
             _ => return Err(Error::NotFound("endpoint".into())),
         })
     }

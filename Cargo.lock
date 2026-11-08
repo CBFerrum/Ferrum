@@ -3386,6 +3386,7 @@ dependencies = [
  "ciborium",
  "dashmap",
  "data-encoding",
+ "ferrum-logic",
  "ferrum-meta",
  "ferrum-saml",
  "futures",
@@ -3410,6 +3411,16 @@ dependencies = [
  "uuid",
  "yrs",
  "zip",
+]
+
+[[package]]
+name = "ferrum-logic"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -3457,6 +3468,7 @@ version = "0.1.0"
 dependencies = [
  "cel",
  "chrono",
+ "ferrum-logic",
  "hex",
  "regex",
  "rust_decimal",
@@ -3748,6 +3760,7 @@ dependencies = [
  "ferrum-calc",
  "ferrum-domain",
  "ferrum-kernel",
+ "ferrum-mcp",
  "ferrum-meta",
  "futures",
  "rust_decimal",
