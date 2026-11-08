@@ -5,10 +5,10 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Not started | 12 |
+| Not started | 10 |
 | Partial | 52 |
 | Implemented, unverified | 5 |
-| Verified in software | 54 |
+| Verified in software | 56 |
 | Blocked externally | 1 |
 | **All** | **124** |
 
@@ -130,16 +130,16 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
-| FLC-SEM-001 | Single semantic owner | Partial | AT-SEM-001 | 0 | Metrics owns definitions, certification and lineage; no external model is imported yet |
-| FLC-SEM-002 | Grain and joins | Partial | AT-SEM-002 | 0 | Studio joins along links and child tables; nothing refuses a measure that fans out |
-| FLC-SEM-003 | Composed metrics | Not started | AT-SEM-003 | 0 | Metrics has no ratios or series |
-| FLC-SEM-004 | Currency and time | Partial | AT-SEM-004 | 0 | Exchange rates exist and Studio has relative dates; metrics do not convert currencies or follow fiscal calendars |
-| FLC-SEM-005 | Query authority | Partial | AT-SEM-005 | 1 | Native queries apply every joined entity's row scope for the viewer; external sources do not exist |
-| FLC-SEM-006 | Query sandbox | Partial | AT-SEM-006 | 0 | Identifiers come from metadata, values are bound, aggregates are whitelisted, and queries run read-only under a timeout; no external engine exists |
-| FLC-SEM-007 | Result freshness | Not started | AT-SEM-007 | 0 | Results carry no freshness, partial or approximate flags |
-| FLC-SEM-008 | Sharing and schedules | Partial | AT-SEM-008 | 0 | Followed metrics are read with each follower's rights and shared dashboards compute for the viewer; exports and embeds are not reviewed against this case |
-| FLC-SEM-009 | Semantic change control | Partial | AT-SEM-009 | 0 | A changed certified definition returns to draft and kept values carry its fingerprint; analyses do not exist to bind |
-| FLC-SEM-010 | Engine interoperability | Not started | AT-SEM-010 | 0 | No Wren or DataFusion adapter exists |
+| FLC-SEM-001 | Single semantic owner | Partial | AT-SEM-001 | 2 | Metrics is the one place metrics are defined, certified and composed (queries of one measure, formulas over certified metrics, datasets), with lineage; no external semantic model (Wren) is imported, so no conflicting definition can arrive to be reviewed |
+| FLC-SEM-002 | Grain and joins | Verified in software | AT-SEM-002 | 1 | Grouping or measuring a child table makes its rows the grain; a sum, average or count of the parent's fields at that grain is refused ("would count each invoice once per items row"), count_distinct, min and max are allowed, and two child tables at once are refused (query.rs tests). Links are many-to-one and do not fan out. Totals across several documents' children (invoice, payment, shipment) are not joined at all |
+| FLC-SEM-003 | Composed metrics | Verified in software | AT-SEM-003 | 1 | A composed metric is an explicit formula over named certified metrics, a ratio of their values ([Company terms] / [Company customers]), evaluated exactly for each reader; it is never made of itself, is certified after its parts, and has no value rather than a wrong one when a part is missing or zero (composed_it). An average of ratios is not offered, so the two cannot be confused; balances across periods have no declared additivity |
+| FLC-SEM-004 | Currency and time | Partial | AT-SEM-004 | 0 | Exchange rates exist and Studio has relative dates and fiscal buckets; metrics are not converted by date, and rounding is not versioned |
+| FLC-SEM-005 | Query authority | Partial | AT-SEM-005 | 2 | Native queries apply every joined entity's row scope for the viewer, and a composed metric's parts are each read with the reader's own rights (three readers, three averages from one definition); external sources do not exist |
+| FLC-SEM-006 | Query sandbox | Partial | AT-SEM-006 | 0 | Identifiers come from metadata, values are bound, scans and time are bounded; no external engine or generated SQL exists to sandbox further |
+| FLC-SEM-007 | Result freshness | Partial | AT-SEM-007 | 1 | Every metric value says when it was worked out (as_of) and a series marks the period not yet over as partial (composed_it); there are no federated sources whose lag or failure could be disclosed |
+| FLC-SEM-008 | Sharing and schedules | Partial | AT-SEM-008 | 0 | Followed metrics are delivered as each follower's own value, never the sender's; embeds and exports of analyses are not authorised per recipient yet |
+| FLC-SEM-009 | Semantic change control | Partial | AT-SEM-009 | 2 | A changed certified definition returns to draft and kept values carry its fingerprint; impact lists every metric composed of one, and a composed metric whose part is deprecated or uncertified has no value rather than a new meaning (composed_it). Saved analyses do not exist to bind to a revision |
+| FLC-SEM-010 | Engine interoperability | Not started | AT-SEM-010 | 0 | No Wren or DataFusion adapter: DataFusion's build needs several gigabytes the build machine does not have, and native analysis runs through Studio's compiler. Recorded in docs/logic/evidence/w6-semantics.md |
 
 ## W7: Intelligence experience and governed proposals
 
