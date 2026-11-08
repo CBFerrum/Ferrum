@@ -50,7 +50,7 @@ fn source() -> String {
              "entry": "snapshot", "max_steps": 50, "nodes": [
                 {"type": "query", "id": "snapshot", "label": "Read it", "capability": cap("procs.request.read"), "input": {"id": "trigger.id"}, "next": "decide", "on_error": "attention"},
                 {"type": "decision", "id": "decide", "label": "Policy", "decision": "needs_review", "routes": [{"outcome": "review", "target": "review"}, {"outcome": "proceed", "target": "review"}], "on_error": "attention"},
-                {"type": "human_task", "id": "review", "label": "Approve the request", "role": "Reviewer", "material": "snapshot.output", "delegation": 3,
+                {"type": "human_task", "id": "review", "label": "Approve the request", "role": "Reviewer", "material": "snapshot.output", "delegation": 2,
                  "timeout": {"business_days": 2, "calendar": "office"}, "form": [{"name": "note", "label": "Note", "type": "text"}],
                  "next": "order", "on_reject": "refused", "on_timeout": "attention"},
                 {"type": "action", "id": "order", "label": "Order it", "capability": cap("procs.order.create"), "input": {"values.reference": "trigger.id", "values.request": "trigger.id"},
@@ -395,6 +395,7 @@ async fn scenario() {
     assert_eq!((seen["material"]["total"].as_str(), seen["material"]["id"].as_str()), (Some("5000"), Some(r1.to_string().as_str())), "{seen}");
     assert_eq!(seen["deadline_basis"]["calendar"], json!("office"));
     assert_eq!(code(&k.decide_logic_task(&requester, task1, true, &digest1, &json!({}), "").await.unwrap_err()), "forbidden");
+    assert_eq!(code(&k.decide_logic_task(&admin2, task1, true, &digest1, &json!({}), "").await.unwrap_err()), "forbidden", "an administrator without the role");
     assert_eq!(code(&k.decide_logic_task(&reviewer, task1, true, "sha256:other", &json!({}), "").await.unwrap_err()), "stale_approval");
     assert_eq!(code(&k.decide_logic_task(&reviewer, task1, true, &digest1, &json!({"colour": "red"}), "").await.unwrap_err()), "validation_failed");
 
@@ -497,6 +498,8 @@ async fn scenario() {
     assert_eq!(code(&k.close_case(&reviewer, case).await.unwrap_err()), "conflict", "inspect is required");
     k.case_task_done(&reviewer, case, "inspect", &json!({})).await.unwrap();
     assert_eq!(code(&k.close_case(&outsider, case).await.unwrap_err()), "forbidden");
+    assert_eq!(code(&k.close_case(&admin, case).await.unwrap_err()), "forbidden", "an administrator is not its owner");
+    assert_eq!(code(&k.close_case(&requester, case).await.unwrap_err()), "forbidden", "whoever asked does not close it");
     k.close_case(&reviewer, case).await.unwrap();
     d.settle().await;
     assert_eq!(status(&k, admin.tenant, case_run).await, "completed");
@@ -516,8 +519,8 @@ async fn scenario() {
     d.feed(run5, told).await;
     d.settle().await;
 
-    // Handed on within its bound (three hands here), never back along its chain nor to who asked; decided by
-    // whom it was handed to (FLC-HUMAN-004).
+    // Handed on within its bound (twice here), never back along its chain nor to who asked; decided by whom it
+    // was handed to (FLC-HUMAN-004).
     let (_, run6) = request(&k, &mut d, &requester, "R-6", "5000").await;
     let (task6, digest6) = task_of(&k, admin.tenant, run6, "review").await;
     assert_eq!(code(&k.delegate_logic_task(&reviewer, task6, outsider.user, "").await.unwrap_err()), "forbidden", "not a reviewer");
