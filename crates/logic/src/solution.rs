@@ -168,7 +168,9 @@ pub struct Route {
     pub target: String,
 }
 
-/// One step of a process.
+/// One step of a process. Routes name steps of the same block; a structured step (parallel, for-each, repeat)
+/// holds blocks of its own, each a graph that ends at its own `end` steps, so a join is never written by hand
+/// and so never malformed (package MASTER_PLAN §8).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Node {
@@ -214,7 +216,14 @@ pub enum Node {
         /// What the person deciding fills in, which later steps read as `{task}.output.{field}`.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         form: Vec<FormField>,
-        /// Seconds, or an ISO 8601 duration (`P2D`, `PT4H`).
+        /// How many different people must approve; one rejection rejects.
+        #[serde(default = "one", skip_serializing_if = "is_one")]
+        approvals: u32,
+        /// How far a decision may be handed on: 0, nobody may hand it on.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        delegation: u32,
+        /// Seconds, an ISO 8601 duration (`P2D`, `PT4H`), or business days on a calendar
+        /// (`{"business_days": 2, "calendar": "india"}`).
         timeout: Value,
         next: String,
         on_reject: String,
@@ -230,16 +239,130 @@ pub enum Node {
         next: String,
         on_timeout: String,
     },
+    /// Branches side by side. `all`: every branch settles, and one refused refuses the step (`on_error`).
+    /// `any`: the first branch to complete wins and the others are asked to stop; what they had done already
+    /// stays recorded and is reconciled, never assumed undone.
+    Parallel {
+        id: String,
+        label: String,
+        join: Join,
+        branches: Vec<Block>,
+        next: String,
+        on_error: String,
+    },
+    /// The body once per item of a bounded list, each item named by a stable key from its data, never its
+    /// position: reordered items keep their receipts.
+    ForEach {
+        id: String,
+        label: String,
+        /// A list.
+        items: String,
+        /// Over `item`: what makes one item itself.
+        key: String,
+        max_items: u32,
+        #[serde(default = "one", skip_serializing_if = "is_one")]
+        concurrency: u32,
+        body: Block,
+        next: String,
+        on_error: String,
+    },
+    /// The body again while it ends `again`, at most `max_rounds` times (review, changes, resubmit).
+    Repeat {
+        id: String,
+        label: String,
+        max_rounds: u32,
+        body: Block,
+        next: String,
+        on_exhausted: String,
+    },
+    /// Another process of the same release, run as part of this one.
+    Subprocess {
+        id: String,
+        label: String,
+        process: String,
+        /// The called process's trigger, field by field.
+        input: BTreeMap<String, String>,
+        next: String,
+        on_error: String,
+    },
+    /// Work its owner directs: they may start only the tasks listed here, each once its dependencies are done,
+    /// and close the case once the required ones are.
+    Case {
+        id: String,
+        label: String,
+        /// The role that owns the case.
+        owner: String,
+        tasks: Vec<CaseTask>,
+        timeout: Value,
+        next: String,
+        on_timeout: String,
+    },
+    /// Undoes what this run's actions did, newest first, each through its own app's compensating action. A
+    /// compensation that fails stays an open obligation.
+    Compensate {
+        id: String,
+        label: String,
+        next: String,
+        on_error: String,
+    },
+    /// Waits for a while: seconds, an ISO 8601 duration, or business days on a calendar.
+    Delay {
+        id: String,
+        label: String,
+        wait: Value,
+        next: String,
+    },
     End {
         id: String,
         label: String,
         outcome: EndOutcome,
+        /// What the run, branch or body hands back: name → expression.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        output: BTreeMap<String, String>,
     },
     Suspend {
         id: String,
         label: String,
         reason: String,
+        /// Where an authorized recovery resumes the run; without it, recovery can only end it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resume_to: Option<String>,
     },
+}
+
+/// A graph of steps inside a structured step.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Block {
+    pub id: String,
+    pub entry: String,
+    pub nodes: Vec<Node>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Join {
+    All,
+    Any,
+}
+
+/// A task in a case.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaseTask {
+    pub id: String,
+    pub label: String,
+    pub role: String,
+    #[serde(default = "yes")]
+    pub exclude_requester: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub form: Vec<FormField>,
+    /// Tasks of this case that must be done first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<String>,
+    /// Whether the case can close without it.
+    #[serde(default)]
+    pub required: bool,
 }
 
 /// A field of a person's task form. What a person is asked is part of the solution's meaning and digest.
@@ -270,11 +393,25 @@ fn yes() -> bool {
     true
 }
 
+fn one() -> u32 {
+    1
+}
+
+fn is_one(n: &u32) -> bool {
+    *n == 1
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EndOutcome {
     Completed,
     Refused,
+    /// In a repeat's body: once more.
+    Again,
 }
 
 impl Node {
@@ -285,6 +422,13 @@ impl Node {
             | Node::Decision { id, .. }
             | Node::HumanTask { id, .. }
             | Node::WaitEvent { id, .. }
+            | Node::Parallel { id, .. }
+            | Node::ForEach { id, .. }
+            | Node::Repeat { id, .. }
+            | Node::Subprocess { id, .. }
+            | Node::Case { id, .. }
+            | Node::Compensate { id, .. }
+            | Node::Delay { id, .. }
             | Node::End { id, .. }
             | Node::Suspend { id, .. } => id,
         }
@@ -297,15 +441,26 @@ impl Node {
             | Node::Decision { label, .. }
             | Node::HumanTask { label, .. }
             | Node::WaitEvent { label, .. }
+            | Node::Parallel { label, .. }
+            | Node::ForEach { label, .. }
+            | Node::Repeat { label, .. }
+            | Node::Subprocess { label, .. }
+            | Node::Case { label, .. }
+            | Node::Compensate { label, .. }
+            | Node::Delay { label, .. }
             | Node::End { label, .. }
             | Node::Suspend { label, .. } => label,
         }
     }
 
-    /// Every route out, by name.
+    /// Every route out, by name, to a step of the same block.
     pub fn routes(&self) -> Vec<(&'static str, &str)> {
         match self {
-            Node::Query { next, on_error, .. } => vec![("next", next), ("on_error", on_error)],
+            Node::Query { next, on_error, .. }
+            | Node::Parallel { next, on_error, .. }
+            | Node::ForEach { next, on_error, .. }
+            | Node::Subprocess { next, on_error, .. }
+            | Node::Compensate { next, on_error, .. } => vec![("next", next), ("on_error", on_error)],
             Node::Action { next, on_error, on_unknown, .. } => {
                 let mut r = vec![("next", next.as_str()), ("on_error", on_error.as_str())];
                 if let Some(u) = on_unknown {
@@ -319,8 +474,20 @@ impl Node {
                 r
             }
             Node::HumanTask { next, on_reject, on_timeout, .. } => vec![("next", next), ("on_reject", on_reject), ("on_timeout", on_timeout)],
-            Node::WaitEvent { next, on_timeout, .. } => vec![("next", next), ("on_timeout", on_timeout)],
-            Node::End { .. } | Node::Suspend { .. } => vec![],
+            Node::WaitEvent { next, on_timeout, .. } | Node::Case { next, on_timeout, .. } => vec![("next", next), ("on_timeout", on_timeout)],
+            Node::Repeat { next, on_exhausted, .. } => vec![("next", next), ("on_exhausted", on_exhausted)],
+            Node::Delay { next, .. } => vec![("next", next)],
+            Node::Suspend { resume_to, .. } => resume_to.iter().map(|r| ("resume_to", r.as_str())).collect(),
+            Node::End { .. } => vec![],
+        }
+    }
+
+    /// The blocks a structured step holds.
+    pub fn blocks(&self) -> Vec<&Block> {
+        match self {
+            Node::Parallel { branches, .. } => branches.iter().collect(),
+            Node::ForEach { body, .. } | Node::Repeat { body, .. } => vec![body],
+            _ => vec![],
         }
     }
 }
