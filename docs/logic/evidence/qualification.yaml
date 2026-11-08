@@ -17,9 +17,9 @@ qualifications:
   - FLC-OPS-004
   - FLC-OPS-005
   ran_at:
-    ferrum_code: sha256:4eb581a5b3fc5ecb5d9baf12780a1f4e2b54d415a2d100c1b29cd1ab3f963d93
+    ferrum_code: sha256:fcbd50ac0ea17a0e4dc02990546e28dfd3bffe2251bdc6fd66e32103061444a9
     pins:
-      CBFerrum/Ferrum-Frontend: 48907d8a73ab9c3aa9d9c4b2d05f81a24ec494f6
+      CBFerrum/Ferrum-Frontend: 58d2786b28510e8b4e310d3a3302f61904965f88
       CBFerrum/ferrum-app-assets: caedcb7504b67e01e52be3dfb5b1728308045c47
       CBFerrum/ferrum-app-bookings: ab929c397d037f8d9f35107ed7dae84c87b30855
       CBFerrum/ferrum-app-campaigns: 43d5d33a6f7609eea8487e564b62589c16a4624f
@@ -60,4 +60,4 @@ qualifications:
       CBFerrum/ferrum-app-sign: f202d894791b751c501f8e9573a30a1159a5852e
       CBFerrum/ferrum-app-social: 3432bc314eecf86d21036bc1b414608a1f92d92b
       CBFerrum/ferrum-app-website: 0b9e6f463e49a7397a10c14865b102beec603831
-    commit: cf284fa98bb80dbd0d66b525563574ff33467526
+    commit: 60dd8aceeb0f149523e3bbe70aac9f49037d2045

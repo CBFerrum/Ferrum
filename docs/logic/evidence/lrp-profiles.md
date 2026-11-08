@@ -11,18 +11,18 @@ Their output is kept beside this page: [lrp-walk.txt](lrp-walk.txt), [logic-load
 [restore-drill.txt](restore-drill.txt).
 
 They first ran when W8 landed, at Ferrum `edbc786`, and again once the registry's open rows were closed
-([closing-gaps.md](closing-gaps.md), batch 3, at `40ff6d7`). They ran a third time for batch 4, on the build below,
-with Metrics' engine running beside the server as a process of its own. This page and the three outputs are from
-that third run.
+([closing-gaps.md](closing-gaps.md), batch 3, at `40ff6d7`). They ran a third time for batch 4 (`cf284fa`), with
+Metrics' engine running beside the server as a process of its own, and a fourth time on the build below, once the
+interface took the screen-reader fixes. This page and the three outputs are from that fourth run.
 
 ## The build and what it was pinned to
 
 - **Server:** `cargo build -p ferrum-server --features process`, which is every default app (the countries,
   the business apps, Operations, Edge, Metrics, Intelligence, Studio, …) with the process runtime, at Ferrum
-  `cf284fa`. Its dependencies were built at opt-level 1 (`--config 'profile.dev.package."*".opt-level=1'`) so the
+  `60dd8ac`. Its dependencies were built at opt-level 1 (`--config 'profile.dev.package."*".opt-level=1'`) so the
   build fitted this machine's disk; the timings below are a little quicker for it than batch 3's.
 - **Pins:**
-  - Ferrum-Frontend `48907d8`;
+  - Ferrum-Frontend `58d2786`;
   - ferrum-app-edge `867bca9` (0.6.1);
   - ferrum-app-metrics `2709639` (0.7.2);
   - ferrum-app-intelligence `a0056b3` (0.2.1);
@@ -118,11 +118,11 @@ that third run.
 
 | Scenario | Measured |
 |---|---|
-| Compile a source, simulate a run (HTTP round trip included) | 22 ms, 22 ms (median of 10) |
-| Cold: first run after start | review open 564 ms after submitting; order 434 ms after the decision |
-| Warm, ten in turn, each workspace | review open 538–569 ms median; decided to ordered 223–225 ms median, 231–427 ms p95 |
-| 60 at once in one workspace beside 5 in the other | the flood 1247 ms median, 2015 ms p95; the other workspace 636 ms median, 826 ms p95 (its quiet p95 was 427 ms); 65 runs in 6.5 s; 9 steps told to wait their turn since the server started |
-| Server stopped with 15 runs in hand | all ordered once, settled 7.4 s after the restart began |
+| Compile a source, simulate a run (HTTP round trip included) | 26 ms, 22 ms (median of 10) |
+| Cold: first run after start | review open 567 ms after submitting; order 229 ms after the decision |
+| Warm, ten in turn, each workspace | review open 552–571 ms median; decided to ordered 227–233 ms median, 427–435 ms p95 |
+| 60 at once in one workspace beside 5 in the other | the flood 1268 ms median, 2489 ms p95; the other workspace 414 ms median, 415 ms p95 (its quiet p95 was 427 ms); 65 runs in 6.2 s; 11 steps told to wait their turn since the server started |
+| Server stopped with 15 runs in hand | all ordered once, settled 21.5 s after the restart began |
 
 The worker's limits on that server were 10 slots, 8 for effects and 2 per workspace: half of a 20-connection
 pool.
