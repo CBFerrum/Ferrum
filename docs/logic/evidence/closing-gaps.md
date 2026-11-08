@@ -255,6 +255,12 @@ Metrics repository, plans a metric's query through its Wren semantic model with 
   - Tested through a relationship and through a calculated column over a hidden column.
   - Mutants caught: `rows-filter-skipped`, `hidden-columns-kept`, `no-values-every-row`, `every-row-for-everyone`,
     `hidden-for-no-one`.
+  - *Found by walking the KPI page (Metrics 0.7.2, #8).* A value in a dataset that did not parse came back to the
+    reader with its whole raw row, since the file is parsed before a reader's rules apply: another person's row,
+    hidden columns included. A dataset that cannot be read is now refused as unavailable without the error's
+    text, which goes to the engine's log. Neither the engine's address nor a dataset's paths reach a reader.
+    Mutants `dataset-paths-told`, `unreadable-as-query-fault`, `parse-errors-told` and `engine-address-told`
+    caught.
 - *The sandbox (FLC-SEM-006).* One SELECT over the model's own models, with DDL, DML and statements disabled.
   - A dataset named directly, a file path, a URL, `SET`, `COPY` and several statements are refused.
   - Memory is bounded with nothing spilled: a million-group aggregation is refused at 1 MB. Time, rows and
@@ -289,7 +295,7 @@ Metrics repository, plans a metric's query through its Wren semantic model with 
   its source allows carries it under `stale`, and so does a composed metric over it and one of the records. An
   Intelligence answer says so in its `limits` (Intelligence 0.2.1, #4, a0056b3). With the engine gone, there is
   no value, said so. The KPI page says it too: it names the stale sources, and says when a metric has no value
-  now, with the reason, instead of seeming to load (Metrics 0.7.1, #7).
+  now, with the reason, instead of seeming to load (Metrics 0.7.1, #7; without repeating its name, 0.7.2).
   - Mutants caught: `written-at-unsaid`, `stale-never-said`, `stale-answer-unsaid`, `stale-limits-lost`.
 - *Interoperability (FLC-SEM-010).* Wren's models answer exactly against hand-worked fixtures, calculated
   columns, CASE and relationships among them. An unknown function, `TOP` and a missing column fail explicitly; a
@@ -346,6 +352,8 @@ failed on main since W7 and W8, and the checks run here had covered neither.
   - the interface: dist matches its sources, typecheck, tests (3).
   - Nine new mutants were caught, and one survived, as above. All 490 packages pass the licence policy.
   - GitHub's run of the PR built, ran and asked the engine's image (`engine-image`), which this disk cannot.
+- Metrics (#8): `scripts/app_ci.sh` passed (`engine_it` 9, interface tests 4); its four mutants were caught;
+  `external_it` passed ten runs in a row and on a reused database. GitHub's run built, ran and asked the image.
 - Intelligence (#4): fmt, clippy, its unit tests (2) and `evals_it`, against Metrics 0.7.0.
 - Edge (#16): no code changed; its app library tests (22) and interface check passed.
 - Ferrum:
