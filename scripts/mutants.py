@@ -153,6 +153,7 @@ MUTANTS = [
     ("effects-take-bookkeeping-slots", "crates/process/src/budget.rs", "let effects = slots - (slots / 4).max(1);", "let effects = slots;", PROCESS_BUDGET),
     ("signal-and-wait-unlocked", "crates/kernel/src/process.rs", "        signal_lock(&mut tx, tenant, event, &key).await?;\n", "", PROCESS_RECORDS),
     ("restore-not-rechecked", "crates/kernel/src/recovery.rs", "        self.recheck_logic_runs().await?;\n", "", PROCESS_RECORDS),
+    ("tries-not-counted", "crates/kernel/src/process.rs", "set attempts = logic_attempt.attempts + 1,", "set attempts = logic_attempt.attempts,", PROCESS_RECORDS),
     ("case-close-waits-for-deliveries", "crates/logic/src/process.rs", 'for (task, output) in recorded.as_object().into_iter().flatten() {', 'for (task, output) in recorded.as_object().into_iter().flatten().take(0) {', LOGIC_UNIT),
     ("capability-input-says-who-asks", "crates/logic/src/capability.rs", "map.keys().find(|k| CONTEXT_FIELDS.contains(&k.as_str()) && !self.declares(k))", "map.keys().find(|k| k.is_empty() && !self.declares(k))", CAPABILITY),
     # The directory of people is the members'.

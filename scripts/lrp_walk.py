@@ -28,6 +28,8 @@ HOME = sys.argv[2] if len(sys.argv) > 2 else "acme"
 AWAY = sys.argv[3] if len(sys.argv) > 3 else "globex"
 PASSWORD = "Correct-Horse-9"
 RUN = int(time.time()) % 100000
+# A business calendar of this walk's own, so the second workspace never has it before it maps it.
+CALENDAR = f"office{RUN}"
 STUDIO = "/api/app/studio"
 FAILED = []
 
@@ -70,7 +72,12 @@ def eventually(fn, seconds=60, every=0.5):
 
 class Person:
     def __init__(self, tenant, email):
-        s, d = http("POST", "/api/auth/login", {"tenant": tenant, "email": email, "password": PASSWORD})
+        # Signing in is rate limited, as it should be: wait and try again rather than fail the walk.
+        for attempt in range(12):
+            s, d = http("POST", "/api/auth/login", {"tenant": tenant, "email": email, "password": PASSWORD})
+            if s != 429:
+                break
+            time.sleep(5 * (attempt + 1))
         if s != 200:
             raise SystemExit(f"{email} cannot sign in to {tenant}: {s} {d}")
         self.tenant, self.email, self.token = tenant, email, d["token"]
@@ -159,7 +166,7 @@ def procurement(sid, label, version_):
                        "entry": "snapshot", "max_steps": 50, "nodes": [
             {"type": "query", "id": "snapshot", "label": "Read it", "capability": cap("procs.request.read"), "input": {"id": "trigger.id"}, "next": "review", "on_error": "attention"},
             {"type": "human_task", "id": "review", "label": "Approve the request", "role": "Reviewer", "material": "snapshot.output",
-             "timeout": {"business_days": 2, "calendar": "office"}, "next": "order", "on_reject": "refused", "on_timeout": "attention"},
+             "timeout": {"business_days": 2, "calendar": CALENDAR}, "next": "order", "on_reject": "refused", "on_timeout": "attention"},
             {"type": "action", "id": "order", "label": "Order it", "capability": cap("procs.order.create"), "input": {"values.reference": "trigger.id", "values.request": "trigger.id"},
              "approval": "review", "next": "delivered", "on_error": "stuck", "on_unknown": "stuck"},
             {"type": "wait_event", "id": "delivered", "label": "Delivered", "event": "procs.order.updated", "correlation": "order.output.id", "timeout": "P7D", "next": "completed", "on_timeout": "attention"},
@@ -343,9 +350,9 @@ def lrp04(p, away, released):
     tomorrow = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)).isoformat()
     partner = person(away["admin"], f"partner{RUN}@{AWAY}.test", ["Solution Author", "Requester"], until={"Solution Author": tomorrow})
     s, arrived = partner("POST", f"{STUDIO}/solutions/import/pack", {"pack": pack})
-    check("LRP-04 the partner takes it in as a draft, with what to map", s == 200 and arrived["check"]["ok"] is False and any("office" in m for m in arrived["to_map"]), (s, arrived))
-    s, d = away["admin"]("PUT", f"{STUDIO}/calendars/office", {"zone": "Asia/Kolkata", "weekends": ["sat", "sun"], "holidays": []})
-    check("LRP-04 the workspace maps it: its own office calendar", s == 200, (s, d))
+    check("LRP-04 the partner takes it in as a draft, with what to map", s == 200 and arrived["check"]["ok"] is False and any(CALENDAR in m for m in arrived["to_map"]), (s, arrived))
+    s, d = away["admin"]("PUT", f"{STUDIO}/calendars/{CALENDAR}", {"zone": "Asia/Kolkata", "weekends": ["sat", "sun"], "holidays": []})
+    check("LRP-04 the workspace maps it: a business calendar of its own by that name", s == 200, (s, d))
     draft = partner("GET", f"{STUDIO}/solutions/drafts/{arrived['draft']['id']}")[1]
     s, d = partner("POST", f"{STUDIO}/solutions/compile", {"source": draft["source"]})
     check("LRP-04 mapped, it checks here without faults", s == 200 and d.get("ok") is True, d)
@@ -367,12 +374,12 @@ def lrp04(p, away, released):
     # Uninstall retention: an app taken out of a workspace keeps its records, and has them again once back.
     before = rows(p["admin"]("GET", "/api/v1/EdgeCondition")[1])
     s, d = p["admin"]("POST", "/api/admin/apps/edge/disable", {})
-    check("LRP-04 an administrator takes an app (Edge) out of the workspace", s == 200, (s, d))
+    check("LRP-04 an administrator takes an app (Edge) out of the workspace", s in (200, 204), (s, d))
     gone = p["admin"]("GET", "/api/v1/EdgeCondition")
     check("LRP-04 its records are out of reach while it is out", gone[0] >= 400, gone)
     s, d = p["admin"]("POST", "/api/admin/apps/edge/enable", {})
     after = rows(p["admin"]("GET", "/api/v1/EdgeCondition")[1])
-    check("LRP-04 brought back, every record it had is there again", s == 200 and {c["id"] for c in after} >= {c["id"] for c in before} and before, (s, len(before), len(after)))
+    check("LRP-04 brought back, every record it had is there again", s in (200, 204) and {c["id"] for c in after} >= {c["id"] for c in before} and bool(before), (s, len(before), len(after)))
 
 
 def lrp05(p):
@@ -453,7 +460,7 @@ def main():
         "admin2": person(away_admin, f"admin2@{AWAY}.test", [], is_admin=True),
         "requester": person(away_admin, f"requester@{AWAY}.test", ["Requester"]),
     }
-    admin("PUT", f"{STUDIO}/calendars/office", {"zone": "Asia/Kolkata", "weekends": ["sat", "sun"], "holidays": []})
+    admin("PUT", f"{STUDIO}/calendars/{CALENDAR}", {"zone": "Asia/Kolkata", "weekends": ["sat", "sun"], "holidays": []})
     # What already runs for these requests is stopped, so each profile's runs are its own.
     for r in admin("GET", f"{STUDIO}/solutions")[1].get("releases", []):
         if r.get("active") and r["solution"] in ("workspace.approval",):
