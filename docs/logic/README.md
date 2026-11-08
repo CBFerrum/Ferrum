@@ -14,6 +14,8 @@ digest in [catalog.json](catalog.json)): a proposed specification, not software.
 | [reuse-map.yaml](reuse-map.yaml) | Each area the package names, against the code that already does part of it, at a pinned commit |
 | [decisions.md](decisions.md) | The decisions the rest stands on (L-01 to L-08), with what was rejected and why |
 | [profiles.md](profiles.md) | What each way of running Ferrum supports, and what it refuses |
+| [capabilities.md](capabilities.md) | Business capabilities: where they come from, what each promises, and the gate every use goes through |
+| [rules.md](rules.md) | A solution's source, its compiler, releases, review and activation, how customer rules run in every save, and how chains of events stop |
 | [evidence/](evidence) | What was run, by whom, on what, and what it showed |
 
 The design itself stays in the package. [../references/logic.md](../references/logic.md) says what

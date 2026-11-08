@@ -117,6 +117,27 @@ async fn scenario() {
     let trail = k.audit_trail(&admin, "XDevice", devices.rows[0]["id"].as_str().unwrap().parse().unwrap()).await.unwrap();
     assert_eq!(trail["chain_valid"], json!(true), "plugin writes are audited like any other");
 
+    // ───────────── a customer's rule holds for what a plugin writes, as for anyone (FLC-HOOK-005) ─────────────
+    let reviewer = k.create_user(&admin, "reviewer@fleet.test", "Reviewer", Some("Correct-Horse-9"), &[], true).await.unwrap();
+    let reviewer = k.load_ctx(tenant, reviewer, None, "it".into()).await.unwrap();
+    let source = json!({"schema_version": "ferrum.solution/1", "kind": "Solution", "id": "fleet.readings", "version": "1.0.0", "label": "Readings",
+        "rules": [{"id": "no_forbidden", "entity": "XReading", "phase": "validate", "check": "doc.metric != \"forbidden\"", "message": "A reading of that metric is refused"}]});
+    let release = k.save_release(&admin, &source.to_string()).await.expect("release");
+    let release_id: Uuid = release["id"].as_str().unwrap().parse().unwrap();
+    k.review_release(&reviewer, release_id, release["artifact_digest"].as_str().unwrap(), true, "").await.unwrap();
+    let generation = k.activate_release(&admin, release_id, None).await.expect("activate");
+    let refused = host
+        .socket_event(&k, tenant, &gateway, None, socket("message", c1, "/devices/D1", Some(json!({"type": "reading", "metric": "forbidden", "value": "1"}))))
+        .await;
+    let said = match &refused {
+        Ok(reply) => reply.to_string(),
+        Err(e) => e.to_string(),
+    };
+    assert!(said.contains("A reading of that metric is refused"), "the plugin's insert met the rule: {said}");
+    assert_eq!(k.list(&admin, "XReading", &ListQuery::default()).await.unwrap().rows.len(), 1, "and nothing was written");
+    k.deactivate_solution(&admin, "fleet.readings", generation).await.unwrap();
+    let admin = k.load_ctx(tenant, session.user, Some(session.token_version), "it".into()).await.unwrap();
+
     // ───────────── a user sends a command; the plugin pushes it down the device's socket ─────────────
     let reply =
         host.handle_http(&k, tenant, "device-gateway", call("POST", "/devices/D1/command", r#"{"action":"reboot"}"#), Some(admin.clone())).await.unwrap();

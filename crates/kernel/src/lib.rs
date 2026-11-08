@@ -32,6 +32,7 @@ pub mod identity;
 pub mod jobs;
 pub mod kms;
 pub mod lifecycle;
+pub mod logic;
 pub mod merge;
 pub mod notify;
 pub mod numbering;
@@ -149,6 +150,10 @@ pub struct KernelSettings {
     pub plans: serde_json::Map<String, serde_json::Value>,
     /// Who may make a workspace of their own ([`signup`]).
     pub signup: signup::SignupPolicy,
+    /// How long a chain of events may grow before it is stopped and kept as a dead event saying why:
+    /// steps from the change that started it, and events that followed from that change (FLC-HOOK-008).
+    pub chain_depth: i16,
+    pub chain_events: i32,
 }
 
 impl Default for KernelSettings {
@@ -170,6 +175,8 @@ impl Default for KernelSettings {
             accounts_host: None,
             plans: serde_json::Map::new(),
             signup: signup::SignupPolicy::default(),
+            chain_depth: 8,
+            chain_events: 1000,
         }
     }
 }
@@ -231,6 +238,8 @@ impl Kernel {
 
     /// Migrates the kernel schema, syncs entity tables for the catalog, and returns a ready kernel.
     pub async fn boot(db: Db, catalog: Catalog, mut hooks: HookRegistry, settings: KernelSettings, mailer: Option<Arc<dyn Mailer>>) -> Result<Arc<Kernel>> {
+        // Customer logic's rules run in every workspace's saves, after the apps' own hooks (logic.rs).
+        hooks.register("*", Arc::new(logic::TenantRules));
         hooks.settle().map_err(|problems| Error::Invalid(format!("hooks cannot run as registered: {}", problems.join("; "))))?;
         // Superusers and BYPASSRLS roles ignore row-level security, which would silently remove
         // tenant isolation. Refuse to run that way.

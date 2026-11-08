@@ -31,7 +31,8 @@ pub enum AutomationAction {
         #[serde(default)]
         body: Option<String>,
     },
-    /// E-mail through the configured mailer. All fields are CEL expressions.
+    /// E-mail, queued with the outbox in the run's transaction: it goes out only if the run commits,
+    /// once per event. All fields are CEL expressions.
     Email { to: String, subject: String, body: String },
 }
 
@@ -62,8 +63,29 @@ pub fn validate_actions(actions: &Value) -> Result<Vec<AutomationAction>> {
     Ok(list)
 }
 
-fn eval(src: &str, doc: &Value, user: &Value) -> Result<Value> {
+/// Compiled expressions by their source: an automation's are compiled once, not at every run. Bounded:
+/// emptied when it grows past what any workspace's automations need.
+static COMPILED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Expr>>> = std::sync::LazyLock::new(Default::default);
+const COMPILED_MAX: usize = 4096;
+/// How many expressions were compiled, for the test that they are not compiled again.
+static COMPILES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn compiled(src: &str) -> Result<Expr> {
+    if let Some(e) = COMPILED.lock().unwrap_or_else(|p| p.into_inner()).get(src) {
+        return Ok(e.clone());
+    }
     let expr = Expr::compile(src).map_err(Error::invalid)?;
+    COMPILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut cache = COMPILED.lock().unwrap_or_else(|p| p.into_inner());
+    if cache.len() >= COMPILED_MAX {
+        cache.clear();
+    }
+    cache.insert(src.to_string(), expr.clone());
+    Ok(expr)
+}
+
+fn eval(src: &str, doc: &Value, user: &Value) -> Result<Value> {
+    let expr = compiled(src)?;
     expr.eval(&Scope { doc, old: None, parent: None, user }).map_err(|e| Error::invalid(format!("'{src}': {e}")))
 }
 
@@ -106,9 +128,6 @@ async fn runner(
 pub async fn run_for_event(k: &Kernel, ev: &Event) -> Result<()> {
     let Some((entity, event)) = ev.topic.split_once('.') else { return Ok(()) };
     let depth = ev.payload.get("depth").and_then(Value::as_u64).unwrap_or(0) as u8;
-    if depth >= MAX_DEPTH {
-        return Ok(());
-    }
     let mut tx = k.db.tenant_tx(ev.tenant_id).await?;
     let autos: Vec<Automation> = sqlx::query_as(
         "select id, condition, actions, created_by from automation where tenant_id = $1 and entity = $2 and event = $3 and is_active order by created_at",
@@ -118,6 +137,25 @@ pub async fn run_for_event(k: &Kernel, ev: &Event) -> Result<()> {
     .bind(event)
     .fetch_all(&mut *tx)
     .await?;
+    if depth >= MAX_DEPTH && !autos.is_empty() {
+        // Not run, and recorded so an administrator sees which automations answer one another's changes.
+        for a in &autos {
+            sqlx::query(
+                "insert into automation_run (tenant_id, automation_id, outbox_id, status, error) values ($1, $2, $3, 'failed', $4) on conflict do nothing",
+            )
+            .bind(ev.tenant_id)
+            .bind(a.id)
+            .bind(ev.id)
+            .bind(format!(
+                "not run: automations made this change after {depth} others in one chain, and stop at {MAX_DEPTH}; one of them answers its own changes"
+            ))
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        tracing::warn!(event = ev.id, topic = %ev.topic, "automations stopped at depth {depth}");
+        return Ok(());
+    }
     tx.commit().await?;
     if autos.is_empty() {
         return Ok(());
@@ -253,11 +291,11 @@ async fn execute(
             }
         }
         AutomationAction::Email { to, subject, body } => {
-            let mailer = k.mailer.as_ref().ok_or_else(|| Error::Unavailable("no mailer configured".into()))?;
             let to = as_text(eval(&to, doc, user)?);
             let subject = as_text(eval(&subject, doc, user)?);
             let body = as_text(eval(&body, doc, user)?);
-            mailer.send(&to, &subject, &body).await?;
+            // Never sent from here: a later action could still roll the run back (FLC-HOOK-002).
+            k.queue_mail(tx, ctx.tenant, &to, &subject, &body).await?;
         }
     }
     Ok(())
@@ -307,4 +345,20 @@ pub async fn save(k: &Kernel, ctx: &Ctx, input: &Map<String, Value>) -> Result<U
     .await?;
     tx.commit().await?;
     Ok(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn an_expression_is_compiled_once() {
+        let src = "doc.title + ' (compiled once)'";
+        let before = COMPILES.load(Ordering::Relaxed);
+        for _ in 0..3 {
+            assert_eq!(eval(src, &serde_json::json!({"title": "A"}), &Value::Null).unwrap(), "A (compiled once)");
+        }
+        assert_eq!(COMPILES.load(Ordering::Relaxed) - before, 1);
+    }
 }

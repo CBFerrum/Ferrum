@@ -11,6 +11,10 @@ use std::sync::Arc;
 
 pub const MAX_EXPR_LEN: usize = 4096;
 const MAX_NESTING: usize = 32;
+/// Operator characters one expression may hold. A chain of operators nests as deep as it is long,
+/// parentheses or not, and evaluation recurses that deep: a thousand-term chain overflowed a 2 MiB
+/// stack (8 November 2026). The longest shipped expression has about twenty.
+const MAX_OPERATORS: usize = 512;
 
 #[derive(Clone)]
 pub struct Expr {
@@ -52,6 +56,9 @@ impl Expr {
                 ')' | ']' | '}' => depth = depth.saturating_sub(1),
                 _ => {}
             }
+        }
+        if source.chars().filter(|c| "+-*/%<>=!&|?".contains(*c)).count() > MAX_OPERATORS {
+            return Err(format!("expression holds more than {MAX_OPERATORS} operators: split it"));
         }
         let program = Program::compile(source).map_err(|e| e.to_string())?;
         Ok(Expr { source: source.into(), program: Arc::new(program) })
@@ -119,6 +126,14 @@ fn cel_to_json(v: &cel::Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chain_too_long_to_evaluate_safely_is_refused() {
+        let long = format!("{}1", "1 + ".repeat(1000));
+        assert!(Expr::compile(&long).unwrap_err().contains("operators"));
+        let ordinary = "doc.qty > 0 && (doc.status == 'Open' || doc.status == 'Draft') && doc.rate * doc.qty < 100000";
+        assert!(Expr::compile(ordinary).is_ok());
+    }
     use serde_json::json;
 
     fn scope<'a>(doc: &'a Value, user: &'a Value) -> Scope<'a> {

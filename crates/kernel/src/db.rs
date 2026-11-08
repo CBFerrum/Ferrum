@@ -30,6 +30,9 @@ pub struct Trace {
     pub traceparent: Option<String>,
     /// Events' priority; unset means normal ([`crate::outbox::PRIORITY_BULK`] for bulk work).
     pub priority: Option<i16>,
+    /// How far down a chain of events this work is: 0 for a request or job, one more than the event's
+    /// own for work that answers an event, whatever handler does it (FLC-HOOK-008).
+    pub depth: i16,
 }
 
 tokio::task_local! {
@@ -61,9 +64,12 @@ impl Trace {
 /// `settings` (their parameters start at `$5`) with the current [`Trace`] set beside them.
 fn carrying(settings: &str) -> Query<'static, Postgres, PgArguments> {
     let t = TRACE.try_with(Trace::clone).unwrap_or_default();
+    // The depth is a number, written in place, so the settings' parameters still start at $5.
     sqlx::query(AssertSqlSafe(format!(
         "select set_config('ferrum.correlation', $1, true), set_config('ferrum.causation', $2, true), \
-         set_config('ferrum.traceparent', $3, true), set_config('ferrum.priority', $4, true), {settings}"
+         set_config('ferrum.traceparent', $3, true), set_config('ferrum.priority', $4, true), \
+         set_config('ferrum.depth', '{}', true), {settings}",
+        t.depth
     )))
     .bind(t.correlation)
     .bind(t.causation.map(|c| c.to_string()).unwrap_or_default())
