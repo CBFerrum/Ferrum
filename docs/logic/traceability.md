@@ -5,10 +5,10 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Not started | 10 |
-| Partial | 52 |
+| Not started | 8 |
+| Partial | 49 |
 | Implemented, unverified | 5 |
-| Verified in software | 56 |
+| Verified in software | 61 |
 | Blocked externally | 1 |
 | **All** | **124** |
 
@@ -145,14 +145,14 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
-| FLC-AI-001 | Typed proposals | Partial | AT-AI-001 | 1 | The assistant acts through typed tools as the person, with writes approved in the conversation; no process or query proposals exist |
-| FLC-AI-002 | Prompt injection | Partial | AT-AI-002 | 1 | Tools stay within the person's rights and egress policy; analysis over retrieved rows does not exist |
-| FLC-AI-003 | Ambiguity | Not started | AT-AI-003 | 0 | No analysis conversation exists |
-| FLC-AI-004 | Evidence-based answers | Not started | AT-AI-004 | 0 | No analysis answers exist |
-| FLC-AI-005 | Bounded agent loop | Partial | AT-AI-005 | 0 | The assistant has budgets and egress limits; analysis loops do not exist |
-| FLC-AI-006 | Separate action authority | Partial | AT-AI-006 | 0 | Writes need the person's approval in the conversation; nothing proposes a business process |
-| FLC-AI-007 | Memory governance | Not started | AT-AI-007 | 0 | Nothing learns examples from feedback |
-| FLC-AI-008 | Model changes | Partial | AT-AI-008 | 1 | The assistant has an evaluation harness; runs against a real model wait for a key (BLOCK-MODEL-KEY) |
+| FLC-AI-001 | Typed proposals | Verified in software | AT-AI-001 | 2 | Intelligence turns a question into a typed request about certified metrics (a value or a series) and nothing else, and a proposal into a draft Solution checked by the platform's compiler, which returns its diagnostics; nothing generated can run without a person's review (evals_it). No model generates proposals here: they come from a template, so an invented capability from a model is not exercised |
+| FLC-AI-002 | Prompt injection | Verified in software | AT-AI-002 | 2 | A question's words never become a query or an action: injected instructions name no metric and are declined, actions asked for are noticed and said back while only the metric is read (nothing was deleted), and every answer is read through Metrics with the asker's own rights (evals_it). Retrieved documents are not read by Intelligence at all |
+| FLC-AI-003 | Ambiguity | Verified in software | AT-AI-003 | 2 | A question that could mean several certified metrics is asked back with them as options (Customers (companies) or (people)); a revoked metric is never offered (evals_it). No approved default interpretation is configured: it always asks |
+| FLC-AI-004 | Evidence-based answers | Verified in software | AT-AI-004 | 1 | An answer is only what Metrics returned, with who certified the metric and when, its definition's fingerprint, its lineage, when it was worked out and which periods are partial; with no value (a part revoked, a division by zero) it declines with the reason instead of giving a number (evals_it). No model writes the answer, so no fabricated number can be offered to refuse |
+| FLC-AI-005 | Bounded agent loop | Partial | AT-AI-005 | 1 | Intelligence answers in one step: a question becomes one request, a range over 120 periods is declined before anything runs, a question over 500 characters is refused, and a failing provider ends in a plain no (evals_it); the assistant has its own budgets. There is no multi-step agent loop to bound |
+| FLC-AI-006 | Separate action authority | Verified in software | AT-AI-006 | 1 | Intelligence writes nothing operational: a proposal is a draft Solution kept as a Solution Author, refused to anyone else, and it has no way to review, approve or activate; the platform refuses its author's own approval anyway (evals_it, Ferrum solutions_it) |
+| FLC-AI-007 | Memory governance | Not started | AT-AI-007 | 0 | Nothing learns from feedback: questions are kept for their asker only, and no example is retrieved into another answer |
+| FLC-AI-008 | Model changes | Partial | AT-AI-008 | 2 | Fixed and adversarial evaluations run on every change against the rules provider (evals_it), and the assistant has its harness; runs against a real model wait for a key (BLOCK-MODEL-KEY), so a confidently wrong model is not tried |
 
 ## W8: Migration, release and operations
 
