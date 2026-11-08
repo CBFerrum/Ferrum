@@ -348,8 +348,12 @@ failed on main since W7 and W8, and the checks run here had covered neither.
   - GitHub's run of the PR built, ran and asked the engine's image (`engine-image`), which this disk cannot.
 - Intelligence (#4): fmt, clippy, its unit tests (2) and `evals_it`, against Metrics 0.7.0.
 - Edge (#16): no code changed; its app library tests (22) and interface check passed.
-- Ferrum: `cargo metadata --locked`, `registry.py check`, `check_apps.py`, `licenses.py check` (12 engines),
-  `mutants.py --check`, and the other audit scripts.
+- Ferrum:
+  - the server's `journeys_it` (1) and `extensions_it` (1), which batch 3 could not fit on this disk;
+  - the server built with every default app and the process runtime, on the pins above;
+  - the profiles, the workload and the restore drill on that build ([lrp-profiles.md](lrp-profiles.md));
+  - `cargo metadata --locked`, `registry.py check`, `check_apps.py`, `licenses.py check` (13 engines),
+    `mutants.py --check`, the other audit scripts, and the k8s manifests rendered with the engine's component.
 
 ## Still open after batch 4
 
