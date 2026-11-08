@@ -48,10 +48,11 @@ spec:
           livenessProbe:
             httpGet: {path: /health, port: http}
             periodSeconds: 30
-          # Its configuration's memory_mb (512 unless set) for each query at once, and its own overhead.
+          # Each query at once may hold its configuration's memory_mb: 4 × 512 MiB unless set, and the engine's
+          # own overhead. Raise the limit with either.
           resources:
-            requests: {cpu: 250m, memory: 256Mi}
-            limits: {memory: 2Gi}
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {memory: 3Gi}
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
