@@ -55,7 +55,8 @@ the run; one that ended is never started again.
 same on every attempt, so a retried step finds its receipt, and other input under the key is refused. It runs
 with the rights of whoever started the run as they are when it runs; a run no person started acts with the
 rights of whoever activated its release, as they are then. Revoked rights refuse the effect; nothing stronger
-is borrowed. An effect that relies on an approval is refused if the approved record's version has changed since.
+is borrowed. An effect that relies on an approval is refused if the approved record's version has changed since,
+or the record is gone.
 
 **People.** A task is decided on the material the person was shown (its digest); a decision on anything
 else is refused, as is one by the requester, by someone without the role (an administrator included), or by
@@ -87,7 +88,8 @@ release through an activity, so its bytes are in the history, feeds the state ma
 carries out what it asks as activities through the kernel. Each effect's activity id is its node's activation,
 so a changed interpreter fails on replay instead of running a different effect (the spike's rule, decisions
 L-01). Decisions, events, recoveries and cancellations reach a run through the outbox and Temporal signals,
-and are handled once, in order. A run continues as new after 500 events, or sooner when Temporal suggests it,
+and are handled once, in order. Activities are retried until they answer, so a database or dependency away for
+an hour stalls a run but never ends it; an effect retried finds its receipt. A run continues as new after 500 events, or sooner when Temporal suggests it,
 carrying its state, deadlines and undelivered signals.
 
 Everything Temporal stores is sealed with `FERRUM_SECRET_KEY` before it leaves the server, and opened with

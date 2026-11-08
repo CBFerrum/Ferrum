@@ -330,7 +330,9 @@ impl Acts {
 /// the same effect key; everything else is quick bookkeeping.
 fn options(activity_id: Option<String>) -> ActivityOptions {
     let mut o = ActivityOptions::start_to_close_timeout(Duration::from_secs(60));
-    o.retry_policy = Some(RetryPolicy::builder().initial_interval(Duration::from_millis(500)).maximum_attempts(8).build());
+    // Retried until it answers: a database or dependency away for an hour stalls a run, never ends it. What will
+    // not succeed on another attempt fails at once (`failed`), and an effect retried finds its receipt.
+    o.retry_policy = Some(RetryPolicy::builder().initial_interval(Duration::from_millis(500)).maximum_interval(Duration::from_secs(60)).build());
     o.activity_id = activity_id;
     o
 }
