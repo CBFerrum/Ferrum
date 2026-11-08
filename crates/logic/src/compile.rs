@@ -97,6 +97,8 @@ pub struct FieldShape {
     pub customer: bool,
     /// In a permission group, masked or secret: a rule may not read it.
     pub restricted: bool,
+    /// For a link: the entity it points to.
+    pub link: Option<String>,
 }
 
 /// Where a release may run (decisions L-06).
@@ -131,7 +133,7 @@ pub struct Locked {
 /// What runs: the checked source, with every capability resolved to its digest.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Ir {
-    pub parameters: BTreeMap<String, Value>,
+    pub parameters: BTreeMap<String, crate::solution::Parameter>,
     pub rules: Vec<crate::solution::Rule>,
     pub decisions: Vec<decision::Table>,
     pub processes: Vec<crate::solution::Process>,
@@ -147,10 +149,20 @@ pub struct Release {
     pub source_digest: String,
     pub artifact_digest: String,
     pub lock: Vec<Locked>,
+    /// The fields its rules read or fill, `Entity.field` → type, as they were when it was compiled.
+    #[serde(default)]
+    pub fields: BTreeMap<String, String>,
     pub ir: Ir,
     /// Notes that do not refuse it, for the builder to show.
     #[serde(default)]
     pub notes: Vec<Value>,
+}
+
+impl Release {
+    /// Whether one of its derivations fills `entity.field`.
+    pub fn writes(&self, entity: &str, field: &str) -> bool {
+        self.ir.rules.iter().any(|r| r.entity == entity && r.writes.contains_key(field))
+    }
 }
 
 struct Pass<'a> {
@@ -369,7 +381,7 @@ pub fn compile(src: &Solution, resolver: &dyn Resolver, profile: RuntimeProfile)
     let params_ty = Ty::Record(params.clone());
     let params_val = Val::Record(param_values);
 
-    rules(&mut p, src, &params_ty);
+    let fields = rules(&mut p, src, &params_ty);
     let decisions: BTreeMap<String, &decision::Table> = src.decisions.iter().map(|d| (d.id.clone(), d)).collect();
     if decisions.len() != src.decisions.len() {
         p.fault(Code::SchemaInvalid, "/decisions".into(), None, "two decisions share an id");
@@ -425,22 +437,17 @@ pub fn compile(src: &Solution, resolver: &dyn Resolver, profile: RuntimeProfile)
     }
     let lock: Vec<Locked> =
         caps.values().map(|c| Locked { id: c.id.clone(), version: c.version.clone(), digest: c.digest.clone(), effect: c.effect }).collect();
-    let ir = Ir {
-        parameters: src.parameters.iter().map(|(k, v)| (k.clone(), v.value.clone())).collect(),
-        rules: src.rules.clone(),
-        decisions: src.decisions.clone(),
-        processes: src.processes.clone(),
-    };
+    let ir = Ir { parameters: src.parameters.clone(), rules: src.rules.clone(), decisions: src.decisions.clone(), processes: src.processes.clone() };
     let source_digest = match canonical::digest(SOURCE_SCHEMA, &digestible(&src.semantic())) {
         Ok(d) => d,
         Err(e) => return Err(vec![Diagnostic { code: Code::SchemaInvalid, message: e.to_string(), pointer: String::new(), node: None, fault: true }]),
     };
-    let body = json!({"compiler": COMPILER, "profile": profile, "solution": src.id, "version": src.version, "lock": lock, "ir": ir});
+    let body = json!({"compiler": COMPILER, "profile": profile, "solution": src.id, "version": src.version, "lock": lock, "fields": fields, "ir": ir});
     let artifact_digest = match canonical::digest(ARTIFACT_SCHEMA, &digestible(&body)) {
         Ok(d) => d,
         Err(e) => return Err(vec![Diagnostic { code: Code::SchemaInvalid, message: e.to_string(), pointer: String::new(), node: None, fault: true }]),
     };
-    Ok(Release {
+    let release = Release {
         solution: src.id.clone(),
         version: src.version.clone(),
         compiler: COMPILER.into(),
@@ -448,12 +455,29 @@ pub fn compile(src: &Solution, resolver: &dyn Resolver, profile: RuntimeProfile)
         source_digest,
         artifact_digest,
         lock,
+        fields,
         ir,
         notes: p.out.iter().map(|d| serde_json::to_value(d).unwrap_or(Value::Null)).collect(),
-    })
+    };
+    // The rules as the server will run them: derivations ordered by what they read, and none waiting for
+    // another in a circle, linked reads within one save's budget.
+    let origin = crate::rules::Origin {
+        release: String::new(),
+        solution: release.solution.clone(),
+        version: release.version.clone(),
+        artifact_digest: release.artifact_digest.clone(),
+    };
+    let problems = crate::rules::Active::prepare(&[(origin, release.clone())], &|name| resolver.entity(name)).problems();
+    if !problems.is_empty() {
+        return Err(problems.into_iter().map(|m| Diagnostic { code: Code::Conflict, message: m, pointer: "/rules".into(), node: None, fault: true }).collect());
+    }
+    Ok(release)
 }
 
-fn rules(p: &mut Pass, src: &Solution, params: &Ty) {
+/// Checks the rules, and returns the fields they read or fill, with their types, as the release's lock
+/// writes them down (FLC-COMP-005): a field that changes under an active release stops it.
+fn rules(p: &mut Pass, src: &Solution, params: &Ty) -> BTreeMap<String, String> {
+    let mut fields = BTreeMap::new();
     let mut writers: BTreeMap<(String, String), String> = BTreeMap::new();
     let mut ids = BTreeSet::new();
     for (i, r) in src.rules.iter().enumerate() {
@@ -468,31 +492,54 @@ fn rules(p: &mut Pass, src: &Solution, params: &Ty) {
             p.fault(Code::SchemaInvalid, format!("{at}/writes"), None, format!("a rule writes at most {MAX_WRITES} fields"));
         }
         let Some(shape) = p.resolver.entity(&r.entity) else {
-            p.fault(Code::SchemaInvalid, format!("{at}/entity"), None, format!("{} is not an entity of this workspace", r.entity));
+            p.fault(Code::SchemaInvalid, format!("{at}/entity"), None, format!("{} is not an entity a rule can be on", r.entity));
             continue;
         };
-        // A rule sees the record as fields it may read: restricted ones are not there to read.
-        let readable: BTreeMap<String, Ty> = shape.fields.iter().filter(|(_, f)| !f.restricted).map(|(k, f)| (k.clone(), f.ty.clone())).collect();
-        let restricted: Vec<&String> = shape.fields.iter().filter(|(_, f)| f.restricted).map(|(k, _)| k).collect();
-        let env = Env::default()
-            .with("doc", Ty::Record(readable.clone()))
-            .with("old", Ty::Record(readable))
-            .with("parameters", params.clone())
-            .with("user", Ty::Record(BTreeMap::from([("id".into(), Ty::Text), ("email".into(), Ty::Text), ("roles".into(), Ty::List(Box::new(Ty::Text)))])))
-            .with("today", Ty::Date)
-            .with("now", Ty::Instant);
-        let check = |p: &mut Pass, src_expr: &str, want: &Ty, pointer: String| {
-            if let Err(e) = expr::compile_as(src_expr, &env, want) {
-                let mentions_restricted = restricted.iter().any(|f| src_expr.contains(&format!("doc.{f}")) || src_expr.contains(&format!("old.{f}")));
-                if mentions_restricted {
-                    p.fault(Code::PermissionDenied, pointer, None, format!("a rule may not read a restricted field of {}: '{src_expr}'", r.entity));
-                } else {
-                    p.refusal(e, pointer, None);
-                }
+        let resolver = p.resolver;
+        let lookups = match crate::rules::lookup_types(r, &shape, &|name| resolver.entity(name)) {
+            Ok(l) => l,
+            Err(e) => {
+                let code = if e.contains("restricted") { Code::PermissionDenied } else { Code::SchemaInvalid };
+                p.fault(code, format!("{at}/lookups"), None, e);
+                BTreeMap::new()
             }
         };
+        for l in &r.lookups {
+            let to = shape.fields.get(&l.link).and_then(|f| f.link.clone()).unwrap_or_default();
+            if let Some(linked) = resolver.entity(&to) {
+                for f in &l.fields {
+                    if let Some(t) = linked.fields.get(f) {
+                        fields.insert(format!("{to}.{f}"), crate::rules::lock_name(&t.ty));
+                    }
+                }
+            }
+        }
+        // A rule sees the record as fields it may read: restricted ones are not there to read.
+        let restricted: Vec<&String> = shape.fields.iter().filter(|(_, f)| f.restricted).map(|(k, _)| k).collect();
+        let env = crate::rules::env(&shape, r.phase, params, &lookups);
+        let check =
+            |p: &mut Pass, fields: &mut BTreeMap<String, String>, src_expr: &str, want: &Ty, pointer: String| match expr::compile_as(src_expr, &env, want) {
+                Ok(c) => {
+                    for path in c.references() {
+                        if let Some(f) = path.strip_prefix("doc.").or_else(|| path.strip_prefix("old.")) {
+                            let f = f.split('.').next().unwrap_or(f);
+                            if let Some(shaped) = shape.fields.get(f) {
+                                fields.insert(format!("{}.{f}", r.entity), crate::rules::lock_name(&shaped.ty));
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    let mentions_restricted = restricted.iter().any(|f| src_expr.contains(&format!("doc.{f}")) || src_expr.contains(&format!("old.{f}")));
+                    if mentions_restricted {
+                        p.fault(Code::PermissionDenied, pointer, None, format!("a rule may not read a restricted field of {}: '{src_expr}'", r.entity));
+                    } else {
+                        p.refusal(e, pointer, None);
+                    }
+                }
+            };
         if let Some(w) = &r.when {
-            check(p, w, &Ty::Bool, format!("{at}/when"));
+            check(p, &mut fields, w, &Ty::Bool, format!("{at}/when"));
         }
         match r.phase {
             Phase::Derive => {
@@ -518,7 +565,8 @@ fn rules(p: &mut Pass, src: &Solution, params: &Ty) {
                         );
                         continue;
                     }
-                    check(p, e, &f.ty, wp.clone());
+                    fields.insert(format!("{}.{field}", r.entity), crate::rules::lock_name(&f.ty));
+                    check(p, &mut fields, e, &f.ty, wp.clone());
                     if let Some(other) = writers.insert((r.entity.clone(), field.clone()), r.id.clone()) {
                         p.fault(Code::Conflict, wp, None, format!("{other} and {} both write {}.{field}: one writer per field", r.id, r.entity));
                     }
@@ -529,7 +577,7 @@ fn rules(p: &mut Pass, src: &Solution, params: &Ty) {
                     p.fault(Code::SchemaInvalid, format!("{at}/writes"), None, format!("{}: a validate rule writes nothing", r.id));
                 }
                 match &r.check {
-                    Some(c) => check(p, c, &Ty::Bool, format!("{at}/check")),
+                    Some(c) => check(p, &mut fields, c, &Ty::Bool, format!("{at}/check")),
                     None => p.fault(Code::SchemaInvalid, at.clone(), None, format!("{}: a validate rule says what must hold (check)", r.id)),
                 }
                 if r.message.as_deref().is_none_or(|m| m.trim().is_empty()) {
@@ -543,6 +591,7 @@ fn rules(p: &mut Pass, src: &Solution, params: &Ty) {
             }
         }
     }
+    fields
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1015,13 +1064,22 @@ mod tests {
             }
         }
         fn entity(&self, name: &str) -> Option<EntityShape> {
+            if name == "Supplier" {
+                return Some(EntityShape {
+                    fields: BTreeMap::from([
+                        ("credit_limit".into(), FieldShape { ty: Ty::Decimal, customer: false, restricted: false, link: None }),
+                        ("bank_account".into(), FieldShape { ty: Ty::Text, customer: false, restricted: true, link: None }),
+                    ]),
+                });
+            }
             (name == "MaterialRequest").then(|| EntityShape {
                 fields: BTreeMap::from([
-                    ("company".into(), FieldShape { ty: Ty::Text, customer: false, restricted: false }),
-                    ("requested_by".into(), FieldShape { ty: Ty::Text, customer: false, restricted: false }),
-                    ("x_department".into(), FieldShape { ty: Ty::Text, customer: true, restricted: false }),
-                    ("x_risk".into(), FieldShape { ty: Ty::Text, customer: true, restricted: false }),
-                    ("x_cost_centre_budget".into(), FieldShape { ty: Ty::Decimal, customer: true, restricted: true }),
+                    ("supplier".into(), FieldShape { ty: Ty::Text, customer: false, restricted: false, link: Some("Supplier".into()) }),
+                    ("company".into(), FieldShape { ty: Ty::Text, customer: false, restricted: false, link: None }),
+                    ("requested_by".into(), FieldShape { ty: Ty::Text, customer: false, restricted: false, link: None }),
+                    ("x_department".into(), FieldShape { ty: Ty::Text, customer: true, restricted: false, link: None }),
+                    ("x_risk".into(), FieldShape { ty: Ty::Text, customer: true, restricted: false, link: None }),
+                    ("x_cost_centre_budget".into(), FieldShape { ty: Ty::Decimal, customer: true, restricted: true, link: None }),
                 ]),
             })
         }
@@ -1406,6 +1464,40 @@ mod tests {
             .unwrap()
             .push(json!({"id": "another_department", "entity": "MaterialRequest", "phase": "derive", "writes": {"x_department": "\"ops\""}}));
         refused_with(v, Code::Conflict, "one writer per field");
+    }
+
+    #[test]
+    fn a_release_locks_the_fields_its_rules_use() {
+        let r = compile_value(purchase(), RuntimeProfile::FullProcess).unwrap();
+        let locked: Vec<&str> = r.fields.keys().map(String::as_str).collect();
+        assert_eq!(locked, vec!["MaterialRequest.company", "MaterialRequest.requested_by", "MaterialRequest.x_department"]);
+    }
+
+    #[test]
+    fn linked_records_are_declared_and_unrestricted() {
+        let mut v = purchase();
+        v["rules"].as_array_mut().unwrap().push(json!({
+            "id": "within_credit", "entity": "MaterialRequest", "phase": "validate", "message": "Over the supplier's limit",
+            "lookups": [{"name": "supplier", "link": "supplier", "fields": ["credit_limit"]}],
+            "check": "lookups.supplier.credit_limit > dec(\"0\")"
+        }));
+        let r = compile_value(v.clone(), RuntimeProfile::FullProcess).unwrap_or_else(|d| panic!("{d:#?}"));
+        assert!(r.fields.contains_key("Supplier.credit_limit"));
+        v["rules"][2]["lookups"][0]["fields"] = json!(["bank_account"]);
+        refused_with(v.clone(), Code::PermissionDenied, "restricted");
+        v["rules"][2]["lookups"][0]["link"] = json!("company");
+        refused_with(v, Code::SchemaInvalid, "not a link");
+    }
+
+    #[test]
+    fn derivations_may_not_wait_for_each_other() {
+        let mut v = purchase();
+        v["rules"][1]["writes"] = json!({"x_department": "doc.x_risk"});
+        v["rules"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id": "risk", "entity": "MaterialRequest", "phase": "derive", "writes": {"x_risk": "doc.x_department"}}));
+        refused_with(v, Code::Conflict, "each read what another fills");
     }
 
     #[test]

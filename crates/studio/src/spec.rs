@@ -505,7 +505,7 @@ mod tests {
         let bucket = Spec::parse(&json!({"entity": "X", "group_by": [{"field": "d", "bucket": "monthly"}]})).unwrap_err();
         assert!(matches!(&bucket, Error::Validation(f) if f[0].message.contains("expected one of")), "{bucket:?}");
         assert!(Spec::parse(&json!("SalesInvoice")).is_err());
-        assert_eq!(Spec { limit: Some(10_001), ..Default::default() }.limit().unwrap_err().to_string(), "validation failed");
+        assert!(Spec { limit: Some(10_001), ..Default::default() }.limit().unwrap_err().to_string().starts_with("validation failed: limit"));
     }
 
     #[test]

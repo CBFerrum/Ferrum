@@ -16,7 +16,7 @@ use crate::refusal::{Code, Refusal};
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::str::FromStr;
 
@@ -631,6 +631,40 @@ fn num(v: &Val) -> Option<Decimal> {
 }
 
 impl Compiled {
+    /// What the expression reads, as dotted paths from a name (`doc.x_risk`, `parameters.review_limit`); a
+    /// name read whole is the name alone. `has(doc.x)` reads `doc.x`.
+    pub fn references(&self) -> BTreeSet<String> {
+        fn path(e: &IdedExpr) -> Option<String> {
+            match &e.expr {
+                Expr::Ident(n) => Some(n.clone()),
+                Expr::Select(s) => path(&s.operand).map(|p| format!("{p}.{}", s.field)),
+                _ => None,
+            }
+        }
+        fn walk(e: &IdedExpr, out: &mut BTreeSet<String>) {
+            if let Some(p) = path(e) {
+                out.insert(p);
+                return;
+            }
+            match &e.expr {
+                Expr::Select(s) => walk(&s.operand, out),
+                Expr::Call(c) => {
+                    if let Some(t) = &c.target {
+                        walk(t, out);
+                    }
+                    for a in &c.args {
+                        walk(a, out);
+                    }
+                }
+                Expr::List(l) => l.elements.iter().for_each(|el| walk(el, out)),
+                _ => {}
+            }
+        }
+        let mut out = BTreeSet::new();
+        walk(&self.ast, &mut out);
+        out
+    }
+
     /// Evaluates with `facts`. Never panics and never reads anything but `facts`.
     pub fn eval(&self, facts: &Facts) -> Val {
         let mut run = Run { facts, steps: 0 };
@@ -1081,6 +1115,12 @@ mod tests {
             Val::Bool(true)
         );
         assert_eq!(run("coalesce(doc.supplier_category, \"none\")", json!({})), Val::Text("none".into()));
+    }
+
+    #[test]
+    fn what_an_expression_reads() {
+        let c = compile("has(doc.total) && doc.total > limit && size(doc.items) > 0", &Env::default().with("doc", Ty::Any).with("limit", Ty::Any)).unwrap();
+        assert_eq!(c.references().into_iter().collect::<Vec<_>>(), vec!["doc.items", "doc.total", "limit"]);
     }
 
     #[test]

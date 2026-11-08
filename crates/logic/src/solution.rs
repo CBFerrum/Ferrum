@@ -130,9 +130,22 @@ pub struct Rule {
     /// For `validate`: keep evidence of each refusal, apart from the change it refused (FLC-HOOK-007).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub audit_refusals: bool,
+    /// Linked records the rule reads, as `lookups.{name}.{field}`: named, few and bounded, read with the
+    /// rights of whoever saves before the rule runs (FLC-HOOK-004).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lookups: Vec<Lookup>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// A linked record a rule reads: the record its `link` field points to, and only these fields of it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Lookup {
+    pub name: String,
+    pub link: String,
+    pub fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
     Derive,

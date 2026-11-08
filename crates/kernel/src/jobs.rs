@@ -92,6 +92,8 @@ pub struct Job {
     pub max_attempts: i32,
     pub created_by: Option<Uuid>,
     pub correlation_id: Option<String>,
+    /// How far down a chain of events the work that queued it was: its own work is as far (db.rs, Trace).
+    pub depth: i16,
     pub lease_token: Option<Uuid>,
     /// What the last [`Job::progress`] said, from this attempt or an earlier one.
     pub resumed: Value,
@@ -249,7 +251,7 @@ impl Kernel {
              update job j set status = 'running', attempts = j.attempts + 1, lease_token = $1, lease_until = now() + make_interval(secs => $2), \
                started_at = coalesce(j.started_at, now()) \
              from picked p where j.tenant_id = p.tenant_id and j.id = p.id \
-             returning j.tenant_id, j.id, j.kind, j.payload, j.priority, j.attempts, j.max_attempts, j.created_by, j.correlation_id, j.lease_token, j.progress as resumed, j.undo_on_cancel",
+             returning j.tenant_id, j.id, j.kind, j.payload, j.priority, j.attempts, j.max_attempts, j.created_by, j.correlation_id, j.depth, j.lease_token, j.progress as resumed, j.undo_on_cancel",
         )
         .bind(Uuid::now_v7())
         .bind(LEASE.as_secs_f64())
@@ -376,8 +378,12 @@ impl Kernel {
 
     /// Runs one claimed job to its end.
     pub async fn run_job(&self, job: Job, mut stopping: watch::Receiver<bool>) -> Result<()> {
-        let trace =
-            Trace { correlation: job.correlation_id.clone().unwrap_or_else(|| format!("job-{}", job.id)), priority: Some(job.priority), ..Default::default() };
+        let trace = Trace {
+            correlation: job.correlation_id.clone().unwrap_or_else(|| format!("job-{}", job.id)),
+            priority: Some(job.priority),
+            depth: job.depth,
+            ..Default::default()
+        };
         let Some(handler) = self.job_handler(&job.kind) else {
             return self
                 .finish_job(&job, &job.kind, Ended::Failed(Error::Invalid(format!("nothing here runs {} jobs; is its app installed?", job.kind))))
