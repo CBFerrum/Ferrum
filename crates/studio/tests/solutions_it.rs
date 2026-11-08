@@ -436,4 +436,37 @@ async fn scenario() {
     assert_eq!(refused(&k, &other, "GET", &d, &[], Value::Null).await, "not_found");
     assert_eq!(refused(&k, &other, "GET", &r, &[], Value::Null).await, "not_found");
     assert!(get(&k, &other, "/runs").await["runs"].as_array().unwrap().is_empty());
+
+    // A release leaves as a pack and arrives in another workspace as a draft, with what must be mapped there:
+    // nothing of it runs there, a pack changed on the way is refused, and no secret travels with it (FLC-OPS-008).
+    let pack = get(&k, &admin, &format!("{r}/pack")).await;
+    let keys: std::collections::BTreeSet<&str> = pack.as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(
+        keys,
+        std::collections::BTreeSet::from([
+            "format",
+            "solution",
+            "version",
+            "label",
+            "source",
+            "source_digest",
+            "artifact_digest",
+            "needs",
+            "evidence",
+            "exported_at"
+        ]),
+        "a source, its digests, what it needs and its review evidence; nothing else"
+    );
+    assert_eq!((pack["needs"]["calendars"].clone(), pack["needs"]["events"].clone()), (json!(["office"]), json!(["procs.request.submitted"])), "{pack}");
+    assert!(pack["evidence"]["reviews"].as_array().unwrap().iter().all(|r| r.get("by").is_none()), "who reviewed stays here");
+    assert_eq!(refused(&k, &other, "GET", &format!("{r}/pack"), &[], Value::Null).await, "not_found");
+    let arrived = post(&k, &other, "/solutions/import/pack", json!({"pack": pack})).await;
+    assert_eq!(arrived["check"]["ok"], false, "{arrived}");
+    assert!(arrived["to_map"].as_array().unwrap().iter().any(|m| m.as_str().unwrap().contains("office")), "{arrived}");
+    let there = get(&k, &other, "/solutions").await;
+    assert_eq!((there["drafts"].as_array().unwrap().len(), there["releases"].as_array().unwrap().len()), (1, 0), "a draft, nothing more: {there}");
+    let mut changed = pack.clone();
+    changed["source"] = json!(pack["source"].as_str().unwrap().replacen("\"max_steps\":50", "\"max_steps\":49", 1));
+    assert_ne!(changed["source"], pack["source"]);
+    assert_eq!(refused(&k, &other, "POST", "/solutions/import/pack", &[], json!({"pack": changed})).await, "validation_failed");
 }

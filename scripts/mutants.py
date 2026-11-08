@@ -96,7 +96,7 @@ MUTANTS = [
     # Chains of events stop, whoever answers whom (FLC-HOOK-008).
     ("chain-depth-not-carried", "crates/kernel/src/outbox.rs", "depth: ev.depth.saturating_add(1),", "depth: 0,", EVENT_CHAIN),
     ("chain-budget-ignored", "crates/kernel/src/outbox.rs", "} else if events > budget {", "} else if events < 0 {", EVENT_CHAIN),
-    ("run-started-twice", "crates/kernel/src/process.rs", '.bind(&s.process)\n            .bind(&key)', '.bind(&s.process)\n            .bind(format!("{key}/{id}"))', PROCESS_RECORDS),
+    ("run-started-twice", "crates/kernel/src/process.rs", '.bind(&s.process)\n    .bind(&key)', '.bind(&s.process)\n    .bind(format!("{key}/{id}"))', PROCESS_RECORDS),
     ("requester-decides", "crates/kernel/src/process.rs", '        if exclude.contains(&ctx.user) {', '        if false && exclude.contains(&ctx.user) {', PROCESS_RECORDS),
     ("decided-on-other-material", "crates/kernel/src/process.rs", '        if shown != digest {', '        if false && shown != digest {', PROCESS_RECORDS),
     ("deadline-overrides-decision", "crates/kernel/src/process.rs", '"open" | "timed_out" => {', '"open" | "timed_out" | "approved" => {', PROCESS_RECORDS),
@@ -134,6 +134,16 @@ MUTANTS = [
     ("diff-shows-old-as-new", "crates/logic/src/diff.rs", "[shown(ao.get(k)), shown(bo.get(k))]", "[shown(ao.get(k)), shown(ao.get(k))]", LOGIC_UNIT),
     ("effect-ignores-restore-hold", "crates/kernel/src/process.rs", "if changes && (self.db.fenced() || self.holding().await?) {", "if false && changes && (self.db.fenced() || self.holding().await?) {", PROCESS_RECORDS),
     ("automation-imported-twice", "crates/kernel/src/authoring.rs", "if existing.contains(&solution) {", "if false && existing.contains(&solution) {", STUDIO_SOLUTIONS),
+    # W8: one writer at a cutover, rollback truth, shadows that run nothing, steps that wait for a capability out of
+    # service, packs checked on arrival, moves approved by a second person and refused over a decision.
+    ("cutover-runs-both", "crates/kernel/src/process.rs", "                && !claim_handover(&mut tx, tenant, automation, ev.id).await?\n", "                && automation.is_nil()\n", PROCESS_RECORDS),
+    ("cutover-leaves-automation-on", "crates/kernel/src/logic.rs", '"update automation set is_active = false, updated_at = now() where tenant_id = $1 and id = $2"', '"update automation set updated_at = now() where tenant_id = $1 and id = $2"', PROCESS_RECORDS),
+    ("run-forgets-its-generation", "crates/kernel/src/process.rs", "    .bind(generation)\n    .fetch_optional(&mut **tx)", "    .bind(None::<i64>.or(Some(generation)).filter(|_| false))\n    .fetch_optional(&mut **tx)", PROCESS_RECORDS),
+    ("shadow-forgets-what-happened", "crates/kernel/src/authoring.rs", "s.results.insert(activation.clone(), Invoked::Done { output: output.clone() });", "let _ = (activation, output);", PROCESS_RECORDS),
+    ("revoked-capability-fails-the-step", "crates/kernel/src/process.rs", "Err(e) if e.code() == Code::CapabilityUnavailable.as_str() => return self.paused(", "Err(e) if false && e.code() == Code::CapabilityUnavailable.as_str() => return self.paused(", PROCESS_RECORDS),
+    ("pack-taken-in-changed", "crates/kernel/src/authoring.rs", 'if pack.get("source_digest").and_then(Value::as_str) != Some(digest.as_str()) {', 'if digest.is_empty() {', STUDIO_SOLUTIONS),
+    ("move-approved-by-its-planner", "crates/kernel/src/process.rs", "if planner == Some(ctx.user) {", "if false && planner == Some(ctx.user) {", PROCESS_RECORDS),
+    ("move-over-a-decision", "crates/kernel/src/process.rs", '.filter(|(_, st)| st != "open")', '.filter(|(_, st)| st == "never")', PROCESS_RECORDS),
     ("case-close-waits-for-deliveries", "crates/logic/src/process.rs", 'for (task, output) in recorded.as_object().into_iter().flatten() {', 'for (task, output) in recorded.as_object().into_iter().flatten().take(0) {', LOGIC_UNIT),
     ("capability-input-says-who-asks", "crates/logic/src/capability.rs", "map.keys().find(|k| CONTEXT_FIELDS.contains(&k.as_str()) && !self.declares(k))", "map.keys().find(|k| k.is_empty() && !self.declares(k))", CAPABILITY),
     # The directory of people is the members'.

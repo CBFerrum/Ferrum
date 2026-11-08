@@ -103,6 +103,7 @@ struct Automation {
     condition: Option<String>,
     actions: Value,
     created_by: Option<Uuid>,
+    is_active: bool,
 }
 
 /// Whom an automation runs as: the administrator who saved it, read now; or why it may not run.
@@ -130,16 +131,20 @@ pub async fn run_for_event(k: &Kernel, ev: &Event) -> Result<()> {
     let depth = ev.payload.get("depth").and_then(Value::as_u64).unwrap_or(0) as u8;
     let mut tx = k.db.tenant_tx(ev.tenant_id).await?;
     let autos: Vec<Automation> = sqlx::query_as(
-        "select id, condition, actions, created_by from automation where tenant_id = $1 and entity = $2 and event = $3 and is_active order by created_at",
+        // The active ones, and those off because the solution imported from each runs in its place: their events
+        // are handed over to it (FLC-MIG-003).
+        "select id, condition, actions, created_by, is_active from automation where tenant_id = $1 and entity = $2 and event = $3 \
+           and (is_active or exists (select 1 from logic_activation a where a.tenant_id = automation.tenant_id \
+             and a.solution = 'workspace.automation_' || replace(automation.id::text, '-', ''))) order by created_at",
     )
     .bind(ev.tenant_id)
     .bind(entity)
     .bind(event)
     .fetch_all(&mut *tx)
     .await?;
-    if depth >= MAX_DEPTH && !autos.is_empty() {
+    if depth >= MAX_DEPTH && autos.iter().any(|a| a.is_active) {
         // Not run, and recorded so an administrator sees which automations answer one another's changes.
-        for a in &autos {
+        for a in autos.iter().filter(|a| a.is_active) {
             sqlx::query(
                 "insert into automation_run (tenant_id, automation_id, outbox_id, status, error) values ($1, $2, $3, 'failed', $4) on conflict do nothing",
             )
@@ -166,29 +171,23 @@ pub async fn run_for_event(k: &Kernel, ev: &Event) -> Result<()> {
     let cel_doc = ent.cel_view(&doc, &schema);
     let mut first_error = None;
     for a in autos {
-        let mut ctx = match runner(k, ev.tenant_id, &schema, a.created_by, format!("automation-{}-{}", a.id, ev.id)).await {
-            Ok(ctx) => ctx,
-            Err(why) => {
-                // Recorded, so it is not tried again for this event, and an administrator can see why.
-                let mut tx = k.db.tenant_tx(ev.tenant_id).await?;
-                sqlx::query(
-                    "insert into automation_run (tenant_id, automation_id, outbox_id, status, error) values ($1, $2, $3, 'failed', $4) on conflict do nothing",
-                )
-                .bind(ev.tenant_id)
-                .bind(a.id)
-                .bind(ev.id)
-                .bind(&why)
-                .execute(&mut *tx)
-                .await?;
-                tx.commit().await?;
-                tracing::warn!(automation = %a.id, event = ev.id, "automation not run: {why}");
-                continue;
-            }
-        };
-        ctx.depth = depth + 1;
-        let user = ctx.user_value();
+        // Whom it would run as, worked out before its transaction holds anything.
+        let who = runner(k, ev.tenant_id, &schema, a.created_by, format!("automation-{}-{}", a.id, ev.id)).await;
         let res: Result<&str> = async {
             let mut tx = k.db.tenant_tx(ev.tenant_id).await?;
+            // Read again under its lock. An activation handing it over to the solution imported from it waits for
+            // this to finish, or went first, and then the event is the solution's: claimed and started here unless
+            // the solution's own subscriber claimed it already. Each event is run by one of the two (FLC-MIG-003).
+            let active: Option<bool> = sqlx::query_scalar("select is_active from automation where tenant_id = $1 and id = $2 for share")
+                .bind(ev.tenant_id)
+                .bind(a.id)
+                .fetch_optional(&mut *tx)
+                .await?;
+            if active != Some(true) {
+                let handed = k.hand_over_automation_event(&mut tx, ev, a.id).await?;
+                tx.commit().await?;
+                return Ok(if handed { "handed over" } else { "off" });
+            }
             let done: Option<i32> = sqlx::query_scalar("select 1 from automation_run where tenant_id = $1 and automation_id = $2 and outbox_id = $3")
                 .bind(ev.tenant_id)
                 .bind(a.id)
@@ -198,6 +197,26 @@ pub async fn run_for_event(k: &Kernel, ev: &Event) -> Result<()> {
             if done.is_some() {
                 return Ok("already");
             }
+            let mut ctx = match &who {
+                Ok(ctx) => ctx.clone(),
+                Err(why) => {
+                    // Recorded, so it is not tried again for this event, and an administrator can see why.
+                    sqlx::query(
+                        "insert into automation_run (tenant_id, automation_id, outbox_id, status, error) values ($1, $2, $3, 'failed', $4) on conflict do nothing",
+                    )
+                    .bind(ev.tenant_id)
+                    .bind(a.id)
+                    .bind(ev.id)
+                    .bind(why)
+                    .execute(&mut *tx)
+                    .await?;
+                    tx.commit().await?;
+                    tracing::warn!(automation = %a.id, event = ev.id, "automation not run: {why}");
+                    return Ok("not run");
+                }
+            };
+            ctx.depth = depth + 1;
+            let user = ctx.user_value();
             let pass = match &a.condition {
                 Some(c) if !c.trim().is_empty() => matches!(eval(c, &cel_doc, &user)?, Value::Bool(true)),
                 _ => true,
@@ -326,6 +345,22 @@ pub async fn save(k: &Kernel, ctx: &Ctx, input: &Map<String, Value>) -> Result<U
     let id = input.get("id").and_then(Value::as_str).and_then(|s| s.parse().ok()).unwrap_or_else(Uuid::now_v7);
     let active = input.get("is_active").and_then(Value::as_bool).unwrap_or(true);
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    if active {
+        // Never both: while the solution imported from it runs in its place, it stays off. Its row is locked first,
+        // as an activation handing it over locks it, so the two cannot cross (FLC-MIG-003).
+        sqlx::query("select 1 from automation where tenant_id = $1 and id = $2 for update").bind(ctx.tenant).bind(id).execute(&mut *tx).await?;
+        let solution = crate::authoring::solution_of(id);
+        let running: Option<i32> = sqlx::query_scalar("select 1 from logic_activation where tenant_id = $1 and solution = $2")
+            .bind(ctx.tenant)
+            .bind(&solution)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if running.is_some() {
+            return Err(Error::Conflict(format!(
+                "{solution}, imported from this automation, runs in its place: deactivate it before turning the automation on again"
+            )));
+        }
+    }
     sqlx::query(
         "insert into automation (tenant_id, id, name, entity, event, condition, actions, is_active, created_by) \
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9) on conflict (tenant_id, id) do update set name = excluded.name, \
