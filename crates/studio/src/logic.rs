@@ -13,7 +13,7 @@
 //! | `POST /solutions/import/pack` | `{pack}` → `{draft, check, to_map}`: a pack from another workspace, as a draft |
 //! | `POST /solutions/compile` | `{source}` → `{ok, release?, diagnostics}`; keeps nothing |
 //! | `POST /solutions/simulate` | `{source \| release, scenario}` → the timeline; reaches nothing |
-//! | `POST /solutions/shadow` | `{source \| release, last?}` → recent cases replayed against it and what runs now; reaches nothing |
+//! | `POST /solutions/shadow` | `{source \| release, last?, assume?}` → recent cases replayed against it and what runs now; reaches nothing |
 //! | `GET /solutions/releases/{id}` | → the release, what runs now, reviews, and the semantic diff |
 //! | `GET /solutions/releases/{id}/pack` | → the release as a pack: source, digests, needs, review evidence; no secret |
 //! | `POST /solutions/releases/{id}/review` | `{digest, privileges, approve, reason}` |
@@ -134,7 +134,10 @@ async fn route(k: &Kernel, ctx: &Ctx, req: &SiteRequest, m: &str, path: &[&str])
             let b = body(req)?;
             let release = b.get("release").and_then(Value::as_str).map(|s| id(s, "release")).transpose()?;
             let last = b.get("last").and_then(Value::as_i64).unwrap_or(20);
-            ok(k.shadow_solution(ctx, b.get("source").and_then(Value::as_str), release, last).await?)
+            let assumed: std::collections::BTreeMap<String, ferrum_logic::process::Invoked> =
+                serde_json::from_value(b.get("assume").cloned().unwrap_or(json!({})))
+                    .map_err(|e| Error::field("assume", format!("answers by step or capability, as a simulation's results: {e}")))?;
+            ok(k.shadow_solution(ctx, b.get("source").and_then(Value::as_str), release, last, &assumed).await?)
         }
         ("GET", ["solutions", "refusals"]) => ok(json!(k.logic_refusals(ctx, 200).await?)),
         ("GET", ["solutions", "releases", r]) => ok(k.logic_release_review(ctx, id(r, "release")?).await?),

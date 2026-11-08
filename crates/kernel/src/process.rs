@@ -1064,6 +1064,47 @@ impl Kernel {
         .bind(finished)
         .execute(&mut *tx)
         .await?;
+        // A history ahead of this database: on a database restored to a point before Temporal's histories, an
+        // effect the run says it did can have no receipt here. It may have happened, and nothing here can tell,
+        // so a person looks; nothing is done again by itself (FLC-OPS-005). Only a database that has been held
+        // after a restore is checked, for runs it accepted before then.
+        if !state.effects.is_empty() {
+            let restored: Option<DateTime<Utc>> = sqlx::query_scalar(
+                "select coalesce(p.held_since, p.released_at) from platform_incarnation p, logic_run l \
+                 where l.tenant_id = $1 and l.id = $2 and l.accepted_at < coalesce(p.held_since, p.released_at)",
+            )
+            .bind(tenant)
+            .bind(run)
+            .fetch_optional(&mut *tx)
+            .await?
+            .flatten();
+            if restored.is_some() {
+                let keys: Vec<String> = state.effects.iter().map(|e| format!("{run}/{}", e.activation)).collect();
+                let have: Vec<String> = sqlx::query_scalar("select effect_key from logic_effect where tenant_id = $1 and effect_key = any($2)")
+                    .bind(tenant)
+                    .bind(&keys)
+                    .fetch_all(&mut *tx)
+                    .await?;
+                for e in state.effects.iter().filter(|e| !have.contains(&format!("{run}/{}", e.activation))) {
+                    sqlx::query(
+                        "insert into logic_task (tenant_id, run_id, activation, kind, label, detail) values ($1, $2, $3, 'attention', $4, $5) on conflict do nothing",
+                    )
+                    .bind(tenant)
+                    .bind(run)
+                    .bind(format!("{}#restored", e.activation))
+                    .bind(format!("No receipt here for {}: check whether it happened", e.capability))
+                    .bind(json!({
+                        "why": format!(
+                            "The run's history says {} was done at {}, and this database, restored to a point before it, has no receipt of it. It may have happened: check, put right what the restore lost, then acknowledge. Nothing is done again by itself.",
+                            e.capability, e.activation
+                        ),
+                        "capability": e.capability, "step": e.activation, "output": e.output,
+                    }))
+                    .execute(&mut *tx)
+                    .await?;
+                }
+            }
+        }
         tx.commit().await?;
         Ok(())
     }
