@@ -261,19 +261,48 @@ Metrics repository, plans a metric's query through its Wren semantic model with 
     concurrency are bounded too, and the token is checked.
   - Mutants caught: `models-only-unchecked`, `statements-unchecked`, `memory-unbounded`, `time-unbounded`,
     `rows-uncapped`, `token-unchecked`.
+  - *Found once the local CI ran the engine's tests as its workflow does (Metrics 0.7.1, #7).* A query of 3,329
+    terms took over a minute to plan in a debug build, and the timeout fired 18 seconds late, since planning
+    cannot be stopped midway. DataFusion's own recursion protection was off, so a deeper query could have
+    overflowed a thread's stack and taken the process down. Now:
+    - before anything is planned, a query's terms nest at most 100 deep and it reads at most 32 models, counting
+      each time; a model's calculated columns and relationships are held to the same depth;
+    - each of the engine's threads has a 64 MiB stack, and DataFusion's recursion grows its stack as it needs.
+    - The test runs on a thread with the engine's own stack: 2,000 values in one list and 90 terms are answered;
+      101 terms, the deepest query of the largest size (9,985 terms), 33 models read and a deep calculated
+      column are refused.
+    - Mutants caught: `query-depth-unbounded`, `query-reads-unbounded`, `model-expressions-unshaped`,
+      `relationship-conditions-unshaped`.
 - *Freshness (FLC-SEM-007).* Every answer says when each dataset was last written. A value from data older than
   its source allows carries it under `stale`, and so does a composed metric over it and one of the records. An
   Intelligence answer says so in its `limits` (Intelligence 0.2.1, #4, a0056b3). With the engine gone, there is
-  no value, said so.
+  no value, said so. The KPI page says it too: it names the stale sources, and says when a metric has no value
+  now, with the reason, instead of seeming to load (Metrics 0.7.1, #7).
   - Mutants caught: `written-at-unsaid`, `stale-never-said`, `stale-answer-unsaid`, `stale-limits-lost`.
 - *Interoperability (FLC-SEM-010).* Wren's models answer exactly against hand-worked fixtures, calculated
   columns, CASE and relationships among them. An unknown function, `TOP` and a missing column fail explicitly; a
   correlated subquery is answered exactly or refused.
   - Mutants caught: `any-case-ignored`, `other-workspace-dataset`, `external-outside-fingerprint`,
     `external-unchecked-at-save`.
-- *Deployment.* `deploy/metrics-engine.yml` adds the engine beside the stack, with its image approved in
-  `docs/registry/engines.yaml`. `docs/operations.md` has a section for it; the Metrics repository has
-  `docs/engine.md` and `engine/Dockerfile`.
+- *On the assembled build.* The engine binary ran as a process of its own beside the walk's server, which reached
+  it at `FERRUM_METRICS_ENGINE_URL` with its token. LRP-05 now reads a metric over the lake as people signed in
+  as themselves ([lrp-walk.txt](lrp-walk.txt)):
+  - a steward described the lake's orders, and a reader could not;
+  - a query that would drop a table was refused as it was saved;
+  - each region's reader read their own region's orders alone, and a reader of no region read no rows;
+  - with the lake's file two hours old, the value said it was stale, and so did an Intelligence answer's limits.
+- *Deployment.* `deploy/metrics-engine.yml` adds the engine beside the stack with Compose. The new
+  `deploy/k8s/metrics-engine` component runs two replicas on Kubernetes:
+  - read-only, unprivileged, with a disruption budget;
+  - only the API may call them, and they call nothing;
+  - it points Ferrum at them and opens Ferrum's network policy to them.
+  - Both images are approved in `docs/registry/engines.yaml`. `docs/operations.md` has a section for it; the
+    Metrics repository has `docs/engine.md` and `engine/Dockerfile`.
+- *The image.* `engine/Dockerfile` had never been built. Metrics' CI now builds it and runs it read-only and
+  unprivileged, then:
+  - asks it as Metrics does: the North's rows alone, nothing without the token, a change refused;
+  - checks Docker's health check and a clean SIGTERM;
+  - from main, publishes it as `ghcr.io/cbferrum/ferrum-metrics-engine` (Metrics #7).
 - All 490 packages of the Metrics workspace pass `scripts/licenses.py`'s policy. DataFusion, Arrow, Parquet,
   sqlparser and Wren are Apache-2.0.
 
@@ -297,6 +326,14 @@ failed on main since W7 and W8, and the checks run here had covered neither.
   - Metrics' unit tests (10), `composed_it`, `currency_it`, `datasets_it`, `external_it`, `metrics_it`, `wren_it`;
   - the engine's unit test, `engine_it` (7) and `http_it`;
   - the interface: dist matches its sources, typecheck, tests.
+- Metrics (#7): `scripts/app_ci.sh` passed, with the workflow's stack:
+  - fmt;
+  - clippy over the workspace;
+  - Metrics' unit tests (10), `composed_it`, `currency_it`, `datasets_it`, `external_it`, `metrics_it`, `wren_it`;
+  - the engine's unit test, `engine_it` (8) and `http_it`;
+  - the interface: dist matches its sources, typecheck, tests (3).
+  - The four new mutants were caught. All 490 packages pass the licence policy.
+  - GitHub's run of the PR built, ran and asked the engine's image (`engine-image`), which this disk cannot.
 - Intelligence (#4): fmt, clippy, its unit tests (2) and `evals_it`, against Metrics 0.7.0.
 - Edge (#16): no code changed; its app library tests (22) and interface check passed.
 - Ferrum: `cargo metadata --locked`, `registry.py check`, `check_apps.py`, `licenses.py check` (12 engines),
