@@ -41,6 +41,7 @@ PROCESS_RECORDS = ("-p", "ferrum-kernel", "--test", "process_it")
 # Needs a Temporal server at TEMPORAL_ADDRESS (docs/logic/processes.md); set, it fails rather than skips.
 RUNTIME = ("-p", "ferrum-process", "--test", "conformance_it")
 STUDIO_SOLUTIONS = ("-p", "ferrum-studio", "--test", "solutions_it")
+PROCESS_BUDGET = ("-p", "ferrum-process", "--lib", "budget::tests")
 HOOKS_UNIT = ("-p", "ferrum-kernel", "--lib", "hooks::tests")
 CLOSURE = ("-p", "ferrum-kernel", "--test", "closure_it")
 SSO = ("-p", "ferrum-server", "--test", "sso_it")
@@ -145,6 +146,11 @@ MUTANTS = [
     ("pack-taken-in-changed", "crates/kernel/src/authoring.rs", 'if pack.get("source_digest").and_then(Value::as_str) != Some(digest.as_str()) {', 'if digest.is_empty() {', STUDIO_SOLUTIONS),
     ("move-approved-by-its-planner", "crates/kernel/src/process.rs", "if planner == Some(ctx.user) {", "if false && planner == Some(ctx.user) {", PROCESS_RECORDS),
     ("move-over-a-decision", "crates/kernel/src/process.rs", '.filter(|(_, st)| st != "open")', '.filter(|(_, st)| st == "never")', PROCESS_RECORDS),
+    ("move-renames-a-holder", "crates/logic/src/process.rs", "if !leaf && target != *node {", "if false && !leaf && target != *node {", LOGIC_UNIT),
+    ("shadow-assumes-over-history", "crates/kernel/src/authoring.rs", "if !s.results.contains_key(key) {", "if !key.is_empty() {", PROCESS_RECORDS),
+    ("restored-effect-unnoticed", "crates/kernel/src/process.rs", "            if restored.is_some() {\n", "            if restored.is_none() {\n", PROCESS_RECORDS),
+    ("workspace-takes-every-slot", "crates/process/src/budget.rs", "|| mine >= self.limits.per_workspace", "|| mine >= usize::MAX", PROCESS_BUDGET),
+    ("effects-take-bookkeeping-slots", "crates/process/src/budget.rs", "let effects = slots - (slots / 4).max(1);", "let effects = slots;", PROCESS_BUDGET),
     ("case-close-waits-for-deliveries", "crates/logic/src/process.rs", 'for (task, output) in recorded.as_object().into_iter().flatten() {', 'for (task, output) in recorded.as_object().into_iter().flatten().take(0) {', LOGIC_UNIT),
     ("capability-input-says-who-asks", "crates/logic/src/capability.rs", "map.keys().find(|k| CONTEXT_FIELDS.contains(&k.as_str()) && !self.declares(k))", "map.keys().find(|k| k.is_empty() && !self.declares(k))", CAPABILITY),
     # The directory of people is the members'.

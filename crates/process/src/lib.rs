@@ -10,11 +10,16 @@
 //!   the server's key;
 //! * people's decisions and other deliveries reach a run by its workflow id, never a run-bound handle, so they
 //!   survive a continuation;
-//! * receipts are Ferrum's: an activity retried after a lost answer finds its effect's receipt.
+//! * receipts are Ferrum's: an activity retried after a lost answer finds its effect's receipt;
+//! * the worker takes no more steps at once than the database serves, and no workspace more than its share
+//!   ([`budget`]).
 //!
 //! A deadline is a timer against workflow time; when it fires, the database decides whether the deadline or a
 //! decision came first, and the run hears that outcome.
 
+pub mod budget;
+
+use budget::{Budget, Limits};
 use ferrum_kernel::error::Error as KernelError;
 use ferrum_kernel::hooks::EventSink;
 use ferrum_kernel::outbox::Event as OutboxEvent;
@@ -39,6 +44,7 @@ use temporalio_common::data_converters::{
 use temporalio_common::protos::temporal::api::common::v1::Payload;
 use temporalio_macros::{activities, workflow, workflow_methods};
 use temporalio_sdk::activities::{ActivityContext, ActivityError};
+use temporalio_sdk::runtime::worker_tuner::{FixedSizeSlotSupplier, TunerHolder, WorkerTuner};
 use temporalio_sdk::{
     ActivityOptions, ApplicationFailure, ContinueAsNewOptions, Runtime, SyncWorkflowContext, Worker, WorkerOptions, WorkflowContext, WorkflowResult,
 };
@@ -134,11 +140,23 @@ pub async fn client(s: &Settings) -> std::result::Result<Client, Box<dyn std::er
 pub struct Acts {
     k: Arc<Kernel>,
     main: tokio::runtime::Handle,
+    /// Effects in hand, by workspace (FLC-OPS-002, -003).
+    budget: Arc<Budget>,
 }
 
 impl Acts {
+    /// Activities for this kernel, with the worker's budget worked out from its database pool, or from
+    /// `FERRUM_PROCESS_STEPS` and `FERRUM_PROCESS_STEPS_PER_WORKSPACE`.
     pub fn new(k: Arc<Kernel>, main: tokio::runtime::Handle) -> Acts {
-        Acts { k, main }
+        let set = |name: &str| std::env::var(name).ok().and_then(|v| v.trim().parse::<usize>().ok()).filter(|n| *n > 0);
+        let limits = Limits::from_pool(k.db.pool.options().get_max_connections(), set("FERRUM_PROCESS_STEPS"), set("FERRUM_PROCESS_STEPS_PER_WORKSPACE"));
+        let budget = budget::STEPS.get_or_init(|| Budget::new(limits)).clone();
+        Acts { k, main, budget }
+    }
+
+    /// How many activities the worker may run at once.
+    pub fn slots(&self) -> usize {
+        self.budget.limits.slots
     }
 
     /// Runs kernel work on the server's runtime and hands back how it went.
@@ -266,6 +284,16 @@ impl Acts {
 
     #[activity]
     pub async fn invoke(self: Arc<Self>, _ctx: ActivityContext, i: InvokeIn) -> Result<Invoked, ActivityError> {
+        // Over its workspace's share, or with every effect slot taken, a step waits its turn: it answers "try
+        // again", Temporal retries it later under the same activation and so the same effect key, and the slot
+        // serves another workspace meanwhile.
+        let Some(_turn) = self.budget.take(i.tenant) else {
+            return Err(ApplicationFailure::new(format!(
+                "the workspace has {} steps in hand, its share, or every effect slot is taken: this one waits its turn",
+                self.budget.limits.per_workspace
+            ))
+            .into());
+        };
         self.kernel(move |k| async move {
             k.process_invoke(i.tenant, i.run, &i.activation, &i.capability, &i.version, i.input, i.changes, i.approval.as_ref()).await
         })
@@ -801,8 +829,19 @@ pub async fn spawn(k: Arc<Kernel>, s: Settings) -> std::result::Result<Running, 
             rt.block_on(async move {
                 let c = client(&s).await.map_err(|e| e.to_string())?;
                 let runtime = Runtime::from_current_tokio(Default::default()).map_err(|e| e.to_string())?;
+                let acts = Acts::new(k, main);
+                // No more activities at once than the database serves beside the server's own work (FLC-OPS-003).
+                let slots = acts.slots();
+                let tuner: WorkerTuner = TunerHolder::builder()
+                    .workflow_task_slot_supplier(FixedSizeSlotSupplier::new(100))
+                    .activity_task_slot_supplier(FixedSizeSlotSupplier::new(slots))
+                    .local_activity_task_slot_supplier(FixedSizeSlotSupplier::new(slots))
+                    .nexus_task_slot_supplier(FixedSizeSlotSupplier::new(1))
+                    .build()
+                    .into();
                 let options = WorkerOptions::new(s.queue.clone())
-                    .register_activities(Acts::new(k, main))
+                    .tuner(tuner)
+                    .register_activities(acts)
                     .register_workflow::<ProcessWf>()
                     .map_err(|e| e.to_string())?
                     .build();

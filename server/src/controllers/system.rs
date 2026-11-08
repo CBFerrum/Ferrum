@@ -136,6 +136,23 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
          # HELP ferrum_logic_recovery_open Items waiting for an administrator to recover or acknowledge.\n# TYPE ferrum_logic_recovery_open gauge\nferrum_logic_recovery_open {recovery_open}\n",
         start_wait.unwrap_or(0.0)
     );
+    // This replica's worker: effects in hand, the workspaces holding them, and steps told to wait their turn.
+    #[cfg(feature = "process")]
+    let logic = match ferrum_process::budget::STEPS.get() {
+        Some(b) => {
+            let ((effects, workspaces), deferred, l) = (b.in_hand(), b.deferred(), b.limits);
+            format!(
+                "{logic}# HELP ferrum_logic_steps_in_hand Effects this replica's worker has in hand.\n# TYPE ferrum_logic_steps_in_hand gauge\n\
+                 ferrum_logic_steps_in_hand {effects}\n# TYPE ferrum_logic_steps_workspaces gauge\nferrum_logic_steps_workspaces {workspaces}\n\
+                 # HELP ferrum_logic_steps_deferred_total Steps told to wait their turn: their workspace held its share, or every effect slot was taken.\n\
+                 # TYPE ferrum_logic_steps_deferred_total counter\nferrum_logic_steps_deferred_total {deferred}\n\
+                 # TYPE ferrum_logic_steps_limit gauge\nferrum_logic_steps_limit{{kind=\"slots\"}} {}\nferrum_logic_steps_limit{{kind=\"effects\"}} {}\n\
+                 ferrum_logic_steps_limit{{kind=\"per_workspace\"}} {}\n",
+                l.slots, l.effects, l.per_workspace
+            )
+        }
+        None => logic,
+    };
     let (conn_on, conn_failing, conn_waiting, conn_stale, drift_open) = st.kernel.connection_gauges().await?;
     let (held, fenced) = (u8::from(st.kernel.holding().await?), u8::from(st.kernel.db.fenced()));
     let pool = &st.kernel.db.pool;
