@@ -104,13 +104,17 @@ fn parameters(release: &Release) -> (Ty, Val) {
 }
 
 async fn listening(k: &Kernel, tenant: Uuid) -> Result<Arc<Listening>> {
-    let version = k.registry.schema(tenant).await?.version;
+    // The workspace's version as the database has it, not as this replica last heard: an activation committed
+    // on another replica is taken up by the very next event here, never passed over in the moment before its
+    // notification arrives (FLC-MIG-003).
+    let mut tx = k.db.tenant_tx(tenant).await?;
+    let version: i64 = sqlx::query_scalar("select meta_version from tenant where id = $1").bind(tenant).fetch_one(&mut *tx).await?;
     if let Some(found) = LISTENING.get(&tenant)
         && found.0 == version
     {
+        tx.commit().await?;
         return Ok(found.1.clone());
     }
-    let mut tx = k.db.tenant_tx(tenant).await?;
     let l = Arc::new(build_listening(&mut tx, tenant).await?);
     tx.commit().await?;
     if LISTENING.get(&tenant).is_none_or(|e| e.0 <= version) {

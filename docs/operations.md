@@ -500,7 +500,22 @@ lost), and when recovery items stay open (a person must look: Studio, Tasks).
 **After a restore.** Ferrum holds after it notices a restore (see "After restoring a backup"): besides jobs
 and the outbox, a process's steps that would change something wait and are tried again, while reads and
 people's tasks go on. Release the hold once what came back is reconciled; the waiting steps then run, each
-under the same receipt, so none happens twice.
+under the same receipt, so none happens twice. Releasing it also asks every open run where it stands. A run
+whose history in Temporal is ahead of the restored database (Temporal's store backed up later than
+PostgreSQL) then names each effect it did that this database has no receipt for, as an attention item in
+Studio, Tasks: check whether it happened and put right what the restore lost; nothing is done again by
+itself. `scripts/restore_drill.py` rehearses all of this into a new, isolated environment.
+
+**How much the worker takes on.** The process worker runs at most half the database pool's connections in
+activities at once, keeps a quarter of those for bookkeeping (people's tasks, reports, deadlines), and lets
+one workspace hold at most a quarter of the rest as effects; a step over its workspace's share waits its
+turn and is tried again under the same receipt, so one busy workspace cannot hold back the others or
+anyone's recovery. Set `FERRUM_PROCESS_STEPS` (activities at once) and `FERRUM_PROCESS_STEPS_PER_WORKSPACE`
+to change them, and size the pool (`FERRUM_DB_MAX_CONNECTIONS` or the database settings) with replicas in
+mind. `/metrics` shows `ferrum_logic_steps_in_hand`, `ferrum_logic_steps_workspaces`,
+`ferrum_logic_steps_deferred_total` and the limits; deferrals climbing steadily mean a workspace is asking
+for more than its share for a long time. `scripts/logic_load.py` measures a logic workload and this
+fairness on a running build.
 
 **Upgrading with processes open.** A new Ferrum build must read open runs as the old one did. Before it
 takes over, export the histories of open runs and replay them on it:

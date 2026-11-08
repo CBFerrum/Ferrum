@@ -1,57 +1,125 @@
-# The Logic reference profiles: what ran, where, and what did not (8 November 2026)
+# The Logic reference profiles on one assembled build (8 November 2026)
 
-The package's exit (MASTER_PLAN, "Reference profiles") asks for six profiles, LRP-01 to LRP-06, on one assembled
-build with two workspaces and ordinary roles. This page says, profile by profile, which parts were exercised,
-in which kind of evidence, and which were not. It claims nothing beyond that.
+The package's exit (MASTER_PLAN, "Reference profiles") asks for six profiles, LRP-01 to LRP-06, on one
+assembled build with two workspaces and ordinary roles. They ran so, through three scripts that drive the
+running server over HTTP as people signed in as themselves:
+- [`scripts/lrp_walk.py`](../../../scripts/lrp_walk.py), the profiles;
+- [`scripts/logic_load.py`](../../../scripts/logic_load.py), a measured workload and fairness;
+- [`scripts/restore_drill.py`](../../../scripts/restore_drill.py), a recovery into a new, isolated environment.
 
-The kinds of evidence:
-- **Test**: a suite against a real PostgreSQL (and, for processes, Temporal's dev server), run on the owner's
-  development machine. Each workstream's page has the commands and the numbers.
-- **Walk**: the real `ferrum` binary in a browser or over HTTP, signed in as ordinary roles of a workspace.
-- **Simulator**: Edge's gateway with simulated devices and named crash points. It is labelled as such, and is
-  not hardware.
+Their output is kept beside this page: [lrp-walk.txt](lrp-walk.txt), [logic-load.txt](logic-load.txt) and
+[restore-drill.txt](restore-drill.txt).
 
-None of it is a production deployment, a live provider, a model, real equipment, an independent security
-review, or an accessibility audit with assistive-technology users. Those stay blocked (BLOCK-*).
+## The build and what it was pinned to
 
-| Profile | Exercised | Kind | Not exercised |
-|---|---|---|---|
-| LRP-01 Record policy | Authored in Studio without source, checked, kept, reviewed by another, activated (W4 journey 1). One invalid record refused alike through insert, update, import, bulk, capability, automation, job, a plugin's `data.insert` and MCP; derivations in order; refusal evidence kept apart (W2 `logic_rules_it`, `platform_it`, `mcp_it`). | Walk, test | Latency was not measured under load (FLC-QUAL-004). |
-| LRP-02 Durable procurement | Approval bound to what was shown, requester excluded; a record changed after approval refused at the effect; effects once under their key; an unknown outcome waiting for a person; rework and compensation newest first, a failed undo left open; signals before waits; replay with the codec, and on a new build (`logic_replay`) (W3 `process_it`, `conformance_it`, logic unit tests; W8). Requests approved and ordered on Temporal (W4 walk). | Test, walk | No live supplier or provider sandbox. The stock hold keeps the package's example name, as Ferrum has none (W2). |
-| LRP-03 Generic condition response | Typed ingest, quality classes, exact normalization, event-time windows with lateness and idle sources, episodes with hysteresis and reopen, critical flows committing state and facts together across crash points, one Logic run per episode (W5 Edge `critical_it`, `conditions_it`). | Simulator, test | Real equipment and power cuts (BLOCK-INDUSTRIAL-HARDWARE). Offline scope and owner incarnation are as they were before W5. |
-| LRP-04 Partner solution pack | A partner authors until their role ends (W4, `solutions_it`). A release leaves as a pack and arrives elsewhere as a draft with what to map, refused if changed on the way; nothing of the core is forked. Moving runs by an approved mapping. An app taken out of a workspace keeps its data and its runs wait, then go on once it is back (W8 `solutions_it`, `process_it`). | Test | Logical rebinding is done by editing the draft; no mapping assistant exists. |
-| LRP-05 Agentic BI | Certified metrics read per person with their own rights, composed metrics, series with the current period partial, impact (W6 `composed_it`). Questions to typed requests, plan before reading, evidence, ask-back and decline, injected actions noticed and never obeyed, proposals as drafts (W7 `evals_it`). | Test | No model was called (BLOCK-MODEL-KEY). Intelligence has no dashboards, subscriptions or exports of its own; cancelling a long question does not apply to the rules provider. |
-| LRP-06 Operator recovery | A worker away while a person decides, then another takes over (W3 `conformance_it`). Effects held after a restore until released (W8 `process_it`). Rights revoked while waiting refuse the effect. A failed compensation stays visible. Recovery by an ordinary administrator in Studio, resuming only where the process allows (W4 journey 7 walk). | Test, walk | No restore drill of PostgreSQL and Temporal's histories from different points into an isolated environment. |
+- **Server:** `cargo build -p ferrum-server --features process`, which is every default app (the countries,
+  the business apps, Operations, Edge, Metrics, Intelligence, Studio, …) with the process runtime, from the
+  branch `logic/w8-operations`.
+- **Pins:** Ferrum-Frontend `2f201d5`; ferrum-app-edge `17a7c41` (IoT Edge 0.6.0); ferrum-app-metrics `c2b0b66`
+  (0.5.0); ferrum-app-intelligence `02c6227` (0.1.1). The rest are as `docs/registry/release-manifest.yaml`
+  pins them.
+- **Runtime:** Temporal Server 1.32.2 (CLI 1.10.0 dev server, SQLite, namespace `ferrum-flc`) and PostgreSQL 17,
+  on an 8-core Apple silicon Mac (macOS 15.6).
+- **Workspaces:** `acme` and `globex`. The second was made with `ferrum task create_tenant ... packages:core,procs`,
+  the Requests package being the walk's own small app (`ERP/flc/walk/packages/procs`).
 
-## On one assembled build
+## What each profile ran (all 67 checks passed)
 
-One build ran the walk: `cargo build -p ferrum-server --features process`, which is every default app (the
-countries, the business apps, Edge, Metrics, Intelligence, Studio, …) with the process runtime. It served
-Ferrum-Frontend `dd70c28` on port 5170, with the database `ferrum_flc_walk` and Temporal's dev server (namespace
-`ferrum-flc`). People signed in through the login page as ordinary roles of the workspace `acme`: two
-administrators, a Solution Author, a reviewer and a requester. What it showed:
+**LRP-01, record policy.**
+- An author wrote a rule in Studio and checked it.
+- The author kept it, could not approve it, and could not have it activated by a requester. Another
+  administrator approved it, and an administrator activated it.
+- One invalid request was refused with the rule's message through the records API, the older resource API,
+  import (a requester may not import at all; an administrator's import was refused too), bulk and MCP.
+- The other workspace was not bound by it.
+- Saves under the rule took 6 ms at the median and 8 ms at p95.
 
-- **LRP-02 and LRP-04.** The requester submitted REQ-W8-1, and a run of `workspace.approval` 0.1.0 started on
-  Temporal and waited for its review.
-- **Compare (LRP-04).** admin2 opened release 0.3.0 and compared it with what runs now: 5 cases, 4 differing.
-  This walk found a fault: a run that had ended refused replayed as completed. The replay now gives each step
-  the refusal, unknown outcome or recovery it met (commit `b1745ae`, a `process_it` assertion, mutant
-  `shadow-replays-refusal-as-success`). On the rebuilt binary, comparing 0.1.0 with 0.3.0 (by then running),
-  that run replayed as refused on both sides, as it had ended, and came out the same.
-- **Activate (LRP-04).** admin2 approved 0.3.0 and ran it instead of 0.1.0. The page said: new runs start under
-  0.3.0 (generation 2), it replaced 0.1.0, the one run still open under 0.1.0 goes on under it, and nothing a
-  run did is undone.
-- **Move (LRP-04, LRP-06).** On the waiting run's page admin2 mapped review to `order_it`, and was refused:
-  "review waits as a task, and order_it is a step that does not wait". Mapping review to review, admin2
-  planned the move, and the page said another administrator approves it. The administrator approved it with a
-  reason. Within seconds the runtime moved the run onto 0.3.0, and the record read planned, approved, moved.
-  The review task, the same one, stayed open.
-- **Continue (LRP-02).** The reviewer approved the task, and the run went on under 0.3.0's steps: the order step
-  ran.
-- **Packs (LRP-04).** The Solution Author downloaded 0.3.0 as a pack: its keys exactly the documented set, its
-  needs listed, its review evidence without names. Taken back in, it arrived as a draft with nothing to map
-  here. The reviewer, who does not author, was refused (403).
+**LRP-02, durable procurement.**
+- A submitted request started one run on Temporal.
+- The requester and someone without the role could not decide. Two reviewers deciding at the same moment:
+  one decision counted, and the other reviewer was told.
+- One order was made under its effect key, and the order's own event completed the run.
 
-Not on this build: the Edge gateway and its simulators (LRP-03 ran on simulators in Edge's own suites);
-Intelligence's questions (LRP-05 ran in `evals_it`); a restore (LRP-06's hold ran in `process_it`); a second
-workspace taking in the pack (that ran in `solutions_it`).
+**LRP-03, generic condition response.**
+- The walk played a site's gateway. It enrolled with a key of its own (the code worked once) and signed what
+  it reported.
+- A report of a bearing running hot, sent seven minutes after it began, made one condition record carrying the
+  time it began at the site, and one process run across apps.
+- The same report sent again, as after a gateway restart, changed nothing. A report with a forged signature was
+  refused.
+- A reviewer took the case. When the condition cleared at the site, the case resolved and the record closed.
+- This walk found a real race, now fixed (see W8's evidence): an event and the wait for it arriving at the same
+  moment both missed each other.
+
+**LRP-04, partner solution pack.**
+- The author downloaded the procurement release as a pack: no secret, and no reviewer's name.
+- In the other workspace, a partner whose Solution Author grant ends tomorrow took it in. It arrived as a draft
+  showing the calendar to map. The workspace made its own calendar of that name, and the draft then checked.
+- The partner kept it, and could neither approve nor activate it; that workspace's administrators did both.
+- It ran there as that workspace's own run, which the first workspace cannot see.
+- No core change was needed.
+- Uninstall retention: Edge was taken out of the first workspace and its records went out of reach; brought
+  back, every record was there again.
+
+**LRP-05, agentic BI.**
+- An analyst defined a metric, could not certify it, and a steward did.
+- A question became a plan, an answer and its evidence, read with the asker's own rights. A reader who cannot
+  read requests got no value from them.
+- Words asking it to delete records and ignore its instructions were noticed and not acted on. A question about
+  nothing readable was declined with what can be asked.
+- A series marked the month not yet over as partial.
+- A proposal became only a draft, for review, and a reader could not propose.
+
+**LRP-06, operator recovery.**
+- The requester's rights were withdrawn while their run waited. The order was refused, nothing was made with
+  rights no longer held, and the run stopped for a person.
+- A reviewer could not recover it. An administrator resumed it in Studio with a reason, and the order was made,
+  once.
+- A worker or backend crash ran in `logic_load.py`: the server was stopped with 15 runs decided and in hand, and
+  every one ordered exactly once after it came back.
+- A restore mismatch ran in `restore_drill.py`, below.
+- A failed compensation is the state machine's and runs in its tests: a refused undo stays open for a person.
+
+## The workload, on the same build (logic-load.txt)
+
+| Scenario | Measured |
+|---|---|
+| Compile a source, simulate a run (HTTP round trip included) | 31 ms, 31 ms (median of 10) |
+| Cold: first run after start | review open 540 ms after submitting; order 460 ms after the decision |
+| Warm, ten in turn, each workspace | review open 544–548 ms median; decided to ordered 236–241 ms median, 429–455 ms p95 |
+| 60 at once in one workspace beside 5 in the other | the flood 1488 ms median, 1811 ms p95; the other workspace 427 ms median, 428 ms p95 (its quiet p95 was 429 ms); 65 runs in 7.1 s; 5 steps told to wait their turn |
+| Server stopped with 15 runs in hand | all ordered once, settled 17.5 s after the restart began |
+
+The worker's limits on that server were 10 slots, 8 for effects and 2 per workspace: half of a 20-connection
+pool.
+
+## The restore drill, into a new environment (restore-drill.txt)
+
+The drill:
+1. Took PostgreSQL before a run ordered, and Temporal's store after it.
+2. Stopped the original server and Temporal.
+3. Restored both into a new database (`ferrum_flc_drill`, dumped and restored as the database's superuser, as
+   `docs/operations.md` says), a new Temporal on port 7234 and a new server on 5171.
+
+What happened on the new environment:
+- It held. Both runs read back with the same keys.
+- An order asked for while held waited.
+- A person released the hold with `ferrum task release_restore`. The waiting order was then made, once.
+- The run whose history was ahead of the database was named for a person, as an attention item "No receipt here
+  for procs.order.create". Nothing was ordered again for it by itself.
+
+## Real and stood in
+
+**Real:**
+- the server binary, PostgreSQL, Temporal, every HTTP call, the Studio screens, and the signing and enrollment
+  protocol;
+- each workspace's data, and each person's rights.
+
+**Stood in, and labelled so:**
+- the gateway, played by the walk with an Ed25519 key of its own (real equipment and power cuts are
+  BLOCK-INDUSTRIAL-HARDWARE; Edge's gateway runs with simulators and crash points in its own suites);
+- no model was called (BLOCK-MODEL-KEY);
+- no provider sandbox was reached.
+
+**Still outside software:** independent security review, an accessibility audit with assistive-technology
+users, and production Temporal operation.
