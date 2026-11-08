@@ -1,0 +1,125 @@
+# What the Logic Platform builds on (package MASTER_PLAN §3, FLC-BASE-003). Each area: the code that already
+# does part of it, at the revision read, and how this program relates to it:
+#   reuse    - used as it is
+#   extend   - grows to cover the requirement; its owner and behaviour stay
+#   migrate  - kept working, then carried into the new model with its identifiers and history
+#   new      - nothing here does it
+#   move     - code in another repository brought here because several components need it
+# Confirmed when each workstream starts; a later reading that differs updates this file, not the plan.
+read_at:
+  CBFerrum/Ferrum: a3236e6207
+  CBFerrum/Ferrum-Frontend: 155518c362
+  CBFerrum/ferrum-app-edge: b69698f894
+  CBFerrum/ferrum-app-metrics: b708d7cd3f
+  CBFerrum/ferrum-app-erp: a20a9c4ce7
+  CBFerrum/ferrum-app-cloud: c64e0bcdd5 (private)
+areas:
+  - area: Native business actions
+    existing: [crates/meta/src/types.rs (ActionDef, ActionParam), crates/kernel/src/doc.rs (run_action_tx, transition_tx), crates/mcp/src/lib.rs]
+    relationship: extend
+    how: "Actions already carry typed parameters, permission, document states and a condition. Add an optional contract (effect class, returns, idempotency, completion, compensation, outcome lookup) with derived defaults; the catalog is built from installed packages, not typed in again"
+    requirements: [FLC-CAP-001, FLC-CAP-002, FLC-CAP-006]
+  - area: Record hooks
+    existing: [crates/kernel/src/hooks.rs (DocHook, after, fills), crates/kernel/src/doc.rs]
+    relationship: reuse
+    how: "Compiled tenant rules run as a DocHook per workspace and entity; their derived fields join the fills check, so two writers of one field are refused"
+    requirements: [FLC-HOOK-001, FLC-HOOK-003, FLC-HOOK-004]
+  - area: No external calls inside a record's transaction
+    existing: [crates/plugins/src/host.rs, crates/plugins/tests/after_commit_it.rs]
+    relationship: reuse
+    how: "The plugin host already refuses fetches, sockets and resources inside a hook; tenant rules get no host at all, and the compiler refuses effects in rule phases before they run"
+    requirements: [FLC-HOOK-002, FLC-COMP-008]
+  - area: Automations
+    existing: [crates/kernel/src/automation.rs]
+    relationship: migrate
+    how: "Kept running. W2 fixes its e-mail (queued with the outbox in its transaction) and compiles its expressions once; W8 imports each into a draft with its id and history, and turns its saver's administrator rights into a reviewed grant"
+    requirements: [FLC-MIG-001, FLC-HOOK-006, FLC-CAP-005]
+  - area: Events and the outbox
+    existing: [crates/kernel/src/outbox.rs (enqueue, enqueue_change, queue_mail, first_time), docs/events.md]
+    relationship: reuse
+    how: "Start intents, effect publications and signals are outbox events written in the transaction that causes them; consumers deduplicate with first_time"
+    requirements: [FLC-PROC-001, FLC-HOOK-006, FLC-HOOK-008]
+  - area: Durable work
+    existing: [crates/kernel/src/jobs.rs, crates/kernel/src/saga.rs]
+    relationship: reuse
+    how: "Jobs dispatch starts and run short work with leases and fencing; sagas stay for code-defined compensation. Long processes run on the backend ADR L-01 chooses"
+    requirements: [FLC-PROC-001, FLC-PROC-010, FLC-PROC-011, FLC-PROC-012]
+  - area: Approvals and separation of duties
+    existing: [crates/meta/src/types.rs (WorkflowDef, WorkflowTransition.not_creator), crates/kernel/src/doc.rs (transition_tx), ferrum-app-cloud:contract/src/approval.rs]
+    relationship: extend
+    how: "Record workflows stay the Core approval; process tasks bind a decision to a digest of their material inputs, as Cloud's approvals do"
+    requirements: [FLC-HUMAN-001, FLC-HUMAN-002]
+  - area: Canonical digests
+    existing: [ferrum-app-cloud:contract/src/canonical.rs]
+    relationship: move
+    how: "Moved into crates/logic (the user agreed on 8 November), and Cloud depends on the platform's copy, so approvals, releases and effect keys share one way of writing an intent down"
+    requirements: [FLC-COMP-004, FLC-PROC-003]
+  - area: Effect states
+    existing: [crates/ops-contract/src/command.rs (State, step)]
+    relationship: reuse
+    how: "The business effect ledger follows the command ledger's rule: one function decides how evidence moves an effect, accepted is not completed, and an unknown outcome waits for evidence"
+    requirements: [FLC-CAP-006, FLC-CAP-007, FLC-HUMAN-008]
+  - area: Idempotent writes
+    existing: [crates/kernel/src/doc.rs (insert_idempotent_with), idempotency_key table]
+    relationship: extend
+    how: "Receipts for every native action: key plus input digest, the same key with another digest is a conflict"
+    requirements: [FLC-PROC-002, FLC-PROC-003]
+  - area: Identity, service accounts, support
+    existing: [crates/kernel/src/ctx.rs, crates/kernel/src/service.rs, crates/kernel/src/support.rs, crates/kernel/src/access.rs]
+    relationship: reuse
+    how: "An approved service process runs as an account whose role carries exactly its granted capabilities, so it passes every check a person's request does; support diagnostics use graded, expiring grants"
+    requirements: [FLC-CAP-003, FLC-CAP-005, FLC-SEC-001, FLC-SEC-007]
+  - area: Custom models and forms
+    existing: [crates/kernel/src/customize.rs, Ferrum-Frontend:src/app/Customize.tsx, Ferrum-Frontend:src/app/designer/Canvas.tsx]
+    relationship: reuse
+    how: "Studio's Models & Forms is a view of a solution's customizations, with impact plans before a change"
+    requirements: [FLC-UI-001]
+  - area: Studio analytics
+    existing: [crates/studio/src/query.rs, crates/studio/src/run.rs, crates/studio/src/site.rs, Ferrum-Frontend:src/app/QueryInput.tsx]
+    relationship: extend
+    how: "Its compiler stays the native authorized query path; the solutions APIs live beside its endpoints"
+    requirements: [FLC-SEM-005, FLC-SEM-006, FLC-UI-002]
+  - area: Metrics
+    existing: [ferrum-app-metrics:src/metric.rs, ferrum-app-metrics:src/dataset.rs, ferrum-app-metrics:src/delivery.rs]
+    relationship: extend
+    how: "The one authority for metric definitions, certification and lineage; gains composed metrics, series and semantic revisions"
+    requirements: [FLC-SEM-001, FLC-SEM-003, FLC-SEM-009]
+  - area: Edge flows
+    existing: [ferrum-app-edge:contract/src/flow.rs, ferrum-app-edge:contract/src/subflow.rs, ferrum-app-edge:ui/src/FlowEditor.tsx, ferrum-app-edge:ui/src/drawing.ts]
+    relationship: extend
+    how: "Flows keep their stated semantics; pipeline v2 adds node kinds and a business-critical profile. The canvas moves to a shared Frontend package so Studio draws with it too"
+    requirements: [FLC-EDGE-001, FLC-EDGE-005, FLC-EDGE-007, FLC-UI-004]
+  - area: Operations
+    existing: [crates/ops/src/commands.rs, crates/ops-contract/src/command.rs]
+    relationship: reuse
+    how: "The only way to an operational effect; a process or a pipeline proposes, the ledger decides"
+    requirements: [FLC-EDGE-012]
+  - area: Connectors, secrets, resources
+    existing: [crates/kernel/src/connect.rs, crates/kernel/src/secret.rs, crates/kernel/src/resources.rs]
+    relationship: reuse
+    how: "Logical bindings name connections and secrets by reference; credentials are resolved where they are used"
+    requirements: [FLC-SEC-003, FLC-SEC-005]
+  - area: Assistant
+    existing: [server/src/assistant.rs, server/src/assistant_eval.rs]
+    relationship: reuse
+    how: "Intelligence uses its egress policy, budgets and evaluation harness, and proposes rather than writes"
+    requirements: [FLC-AI-001, FLC-AI-005, FLC-AI-008]
+  - area: Evidence and release
+    existing: [scripts/registry.py, scripts/baseline.py, scripts/mutants.py, scripts/release_evidence.py, scripts/licenses.py, scripts/soak.py]
+    relationship: reuse
+    requirements: [FLC-BASE-001, FLC-QUAL-001, FLC-QUAL-003, FLC-QUAL-004]
+  - area: Capability catalog, compiler, evaluator, IR
+    existing: []
+    relationship: new
+    how: "crates/logic, pure, so a gateway can run the evaluator a simulator runs"
+    requirements: [FLC-CAP-004, FLC-COMP-001, FLC-COMP-005, FLC-COMP-006, FLC-COMP-010]
+  - area: Durable processes, tasks, signals
+    existing: []
+    relationship: new
+    how: "Kernel tables Ferrum owns (start intents, effects, tasks, signals, deployments) and a process worker on the backend ADR L-01 chooses"
+    requirements: [FLC-PROC-004, FLC-PROC-007, FLC-HUMAN-003]
+  - area: Intelligence
+    existing: []
+    relationship: new
+    how: "An app in its own repository, CBFerrum/ferrum-app-intelligence"
+    requirements: [FLC-AI-003, FLC-AI-004]

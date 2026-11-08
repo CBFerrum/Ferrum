@@ -3,6 +3,9 @@
 
     scripts/baseline.py            # writes docs/platform/baseline.json and baseline.md
     scripts/baseline.py --offline  # the same, leaving out what needs GitHub or a database
+    scripts/baseline.py --out docs/logic   # another program's baseline, leaving docs/platform's as it was
+
+From a worktree that is not beside the other checkouts, FERRUM_SIBLINGS names the folder that holds them.
 
 A repository's head, the revision the platform pins, what was built and what a workspace has
 installed can all differ, so none is inferred from another. What could not be read is recorded with
@@ -20,10 +23,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "docs" / "platform"
+# The folder holding the other checkouts: beside this one, unless a worktree elsewhere says where.
+SIB = Path(os.environ.get("FERRUM_SIBLINGS") or ROOT.parent)
 # Where each repository may be checked out here, nearest first. Absent ones are recorded as absent.
 CHECKOUTS = {
     "CBFerrum/Ferrum": ["."],
-    "CBFerrum/Ferrum-Frontend": ["web"],
+    "CBFerrum/Ferrum-Frontend": ["web", "../ferrum/web"],
     "CBFerrum/ferrum-sdk": ["../ferrum-sdk"],
     "CBFerrum/ferrum-store": ["../ferrum-store"],
     "CBFerrum/ferrum-app-erp": ["../docs-work/ferrum-app-erp", "../ferrum-app-erp"],
@@ -38,6 +43,11 @@ def run(*cmd, cwd=None) -> tuple:
     except (OSError, subprocess.TimeoutExpired) as e:
         return 1, "", str(e)
     return p.returncode, p.stdout.strip(), p.stderr.strip()
+
+
+def place(p: str) -> Path:
+    """`.` and `web` are in this checkout, `../x` is beside it (or in FERRUM_SIBLINGS), an absolute path is itself."""
+    return SIB / p[3:] if p.startswith("../") else ROOT / p
 
 
 def digest(path: Path):
@@ -75,10 +85,10 @@ def repositories(offline: bool) -> list:
             remote[f"CBFerrum/{r['name']}"] = r
             names.setdefault(f"CBFerrum/{r['name']}", [f"../{r['name']}"])
     for repo, places in sorted(names.items()):
-        where = next((ROOT / p for p in places if (ROOT / p / ".git").exists()), None)
+        where = next((place(p) for p in places if (place(p) / ".git").exists()), None)
         row = {"repository": repo, "visibility": remote.get(repo, {}).get("visibility"), "checkout": None}
         if where is not None:
-            row["checkout"] = "ferrum" if where.resolve() == ROOT.resolve() else os.path.relpath(where.resolve(), ROOT.parent.resolve())
+            row["checkout"] = "ferrum" if where.resolve() == ROOT.resolve() else os.path.relpath(where.resolve(), SIB.resolve())
             row["branch"] = run("git", "rev-parse", "--abbrev-ref", "HEAD", cwd=where)[1]
             row["commit"] = run("git", "rev-parse", "HEAD", cwd=where)[1]
             row["dirty"] = sorted(line.split(None, 1)[1] for line in run("git", "status", "--porcelain", cwd=where)[1].splitlines())
@@ -97,7 +107,7 @@ def repositories(offline: bool) -> list:
 
 
 def places_of(places: list) -> list:
-    return [ROOT / p for p in places if (ROOT / p / "Cargo.lock").exists()]
+    return [place(p) for p in places if (place(p) / "Cargo.lock").exists()]
 
 
 def depended_on(where: Path) -> set:
@@ -108,12 +118,12 @@ def depended_on(where: Path) -> set:
 def apps() -> list:
     """The version each compiled-in app declares, from the checkouts."""
     found = []
-    for manifest in sorted(ROOT.parent.glob("ferrum-app-*/app.yaml")) + sorted(ROOT.parent.glob("docs-work/ferrum-app-*/app.yaml")) + sorted(ROOT.parent.glob("docs-work/ferrum-app-erp/addons/*/app.yaml")):
+    for manifest in sorted(SIB.glob("ferrum-app-*/app.yaml")) + sorted(SIB.glob("docs-work/ferrum-app-*/app.yaml")) + sorted(SIB.glob("docs-work/ferrum-app-erp/addons/*/app.yaml")):
         text = manifest.read_text()
         name = re.search(r"^(?:id|name): *(\S+)", text, re.M)
         version = re.search(r"^version: *(\S+)", text, re.M)
         stamp = manifest.parent / "ui" / "dist" / ".source"
-        found.append({"manifest": str(manifest.resolve().relative_to(ROOT.parent.resolve())), "id": name.group(1) if name else None, "version": version.group(1) if version else None, "ui_source": stamp.read_text().strip() if stamp.exists() else None})
+        found.append({"manifest": str(manifest.resolve().relative_to(SIB.resolve())), "id": name.group(1) if name else None, "version": version.group(1) if version else None, "ui_source": stamp.read_text().strip() if stamp.exists() else None})
     return found
 
 
@@ -220,6 +230,7 @@ def markdown(b: dict) -> str:
 
 def main() -> int:
     offline = "--offline" in sys.argv
+    out = ROOT / sys.argv[sys.argv.index("--out") + 1] if "--out" in sys.argv else OUT
     baseline = {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "platform_commit": run("git", "rev-parse", "HEAD", cwd=ROOT)[1],
@@ -233,9 +244,9 @@ def main() -> int:
         "images": images(offline),
         "installed": installed(offline),
     }
-    OUT.mkdir(parents=True, exist_ok=True)
-    (OUT / "baseline.json").write_text(json.dumps(baseline, indent=1, sort_keys=True) + "\n")
-    (OUT / "baseline.md").write_text(markdown(baseline))
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "baseline.json").write_text(json.dumps(baseline, indent=1, sort_keys=True) + "\n")
+    (out / "baseline.md").write_text(markdown(baseline))
     print(f"{len(baseline['repositories'])} repositories, {len(baseline['dependency_pins'])} pinned, {len(baseline['apps_declared'])} apps declared")
     return 0
 

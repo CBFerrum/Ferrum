@@ -39,4 +39,21 @@ with tempfile.TemporaryDirectory() as d:
     hidden = next(r for r in baseline.repositories(offline=True) if r["repository"] == "CBFerrum/hidden")
     assert "nothing here can read it" in hidden["unread"] and hidden["checkout"] is None, hidden
     assert not subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=repo).returncode, "and nothing was staged"
+
+# AT-BASE-001 (Logic Platform): an app's head moves on while the platform still pins the old commit. The two
+# are told apart, and nothing claims what is deployed.
+pin, head = "a" * 40, "b" * 40
+moved = {
+    "generated_at": "2026-11-08T00:00:00Z",
+    "repositories": [{"repository": "CBFerrum/ferrum-app-x", "visibility": "PUBLIC", "default_head": head, "checkout": "ferrum-app-x", "commit": head, "branch": "main", "dirty": []}],
+    "dependency_pins": {"CBFerrum/ferrum-app-x": {"revision": pin, "crates": {"ferrum-app-x": "0.1.0"}}},
+    "frontend_rev": "c" * 40,
+    "images": {"unread": "offline"},
+    "installed": {"unread": "offline"},
+    "migrations": {"server": [], "package_sql": {}},
+}
+page = baseline.markdown(moved)
+row = next(line for line in page.splitlines() if "ferrum-app-x" in line)
+assert f"`{head[:10]}`" in row and f"`{pin[:10]}` **behind**" in row, row
+assert "Container images: could not be read" in page and "Not read: offline" in page, "what was not read is not called absent"
 print("ok")
