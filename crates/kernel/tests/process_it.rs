@@ -397,14 +397,15 @@ fn processes_keep_their_business_records() {
 
 async fn scenario() {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 12, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 12, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core")).expect("core");
     let files: BTreeMap<String, String> =
         [("package.yaml", PACKAGE), ("entities/procs.yaml", ENTITIES)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     let pkg = ferrum_meta::catalog::load_package_files(&files).expect("package");
+    let catalog = Catalog::from_packages(vec![core, pkg]).unwrap();
     let settings = KernelSettings { process_runtime: true, ..Default::default() };
-    let k = Kernel::boot(db, Catalog::from_packages(vec![core, pkg]).unwrap(), HookRegistry::default(), settings, None).await.expect("boot");
+    let k = Kernel::boot(db, catalog.clone(), HookRegistry::default(), settings.clone(), None).await.expect("boot");
     let admin = workspace(&k, "acme").await;
     let admin2 = user(&k, &admin, "admin2@acme.test", &[], true).await;
     // The requester also holds the reviewer's role: still not theirs to decide.
@@ -1025,4 +1026,40 @@ async fn scenario() {
         tx.commit().await.unwrap();
         assert!(state == "matched" || matches!(waited, Waited::Matched(_)), "round {i}: the wait is {state} and registering said {waited:?}");
     }
+
+    // A replica that has not yet heard of an activation made on another takes it up with the very next event:
+    // what starts runs follows the workspace's version in the database, not the replica's last word of it
+    // (FLC-MIG-003). This one has its own pool and no listeners, so it hears of nothing by itself, and it has
+    // read the workspace, and what starts runs there, just before the activation.
+    let pool = Db::connect(DbConfig { url, max_connections: 4, ..Default::default() }).await.expect("connect");
+    let replica = Kernel::boot(pool, catalog, HookRegistry::default(), settings, None).await.expect("a replica");
+    replica.accept_event(&OutboxEvent { id: 9_100_000, tenant_id: admin.tenant, topic: "Nothing.happened".into(), ..Default::default() }).await.unwrap();
+    let noted = json!({
+        "schema_version": "ferrum.solution/1", "kind": "Solution", "id": "acme.noted", "version": "1.0.0", "label": "Orders noted",
+        "processes": [{"id": "note", "label": "Note an order", "trigger": {"event": "procs.order.created", "business_key": "trigger.id"},
+            "entry": "noted", "max_steps": 5, "nodes": [{"type": "end", "id": "noted", "label": "Noted", "outcome": "completed"}]}]
+    });
+    let kept = k.save_release(&admin, &noted.to_string()).await.unwrap();
+    let noted_release: Uuid = kept["id"].as_str().unwrap().parse().unwrap();
+    let growth: Vec<String> = k.logic_release_review(&admin2, noted_release).await.unwrap()["diff"]["privilege_growth"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    k.review_release_consenting(&admin2, noted_release, kept["artifact_digest"].as_str().unwrap(), &growth, true, "").await.unwrap();
+    k.activate_release(&admin, noted_release, None).await.unwrap();
+    let order: Uuid = k.insert(&requester, "Order", obj(json!({"reference": "REPLICA-1"}))).await.unwrap()["id"].as_str().unwrap().parse().unwrap();
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    let e: (i64, String, Option<String>, Option<Uuid>, Value) =
+        sqlx::query_as("select id, topic, entity, record_id, payload from outbox where topic = 'Order.created' and record_id = $1")
+            .bind(order)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+    let created = OutboxEvent { id: e.0, tenant_id: admin.tenant, topic: e.1, entity: e.2, record_id: e.3, payload: e.4, ..Default::default() };
+    replica.accept_event(&created).await.unwrap();
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    let runs: i64 = sqlx::query_scalar("select count(*) from logic_run where trigger_event = $1").bind(created.id).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(runs, 1, "the replica started the run, under an activation it had not heard of");
 }
