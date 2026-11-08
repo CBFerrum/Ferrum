@@ -17,6 +17,7 @@ digest in [catalog.json](catalog.json)): a proposed specification, not software.
 | [capabilities.md](capabilities.md) | Business capabilities: where they come from, what each promises, and the gate every use goes through |
 | [rules.md](rules.md) | A solution's source, its compiler, releases, review and activation, how customer rules run in every save, and how chains of events stop |
 | [processes.md](processes.md) | Durable processes: their steps, how a run starts, does its work, waits for people and events, and recovers, and how to run them on Temporal |
+| [studio.md](studio.md) | Building, checking, simulating and reviewing solutions in Studio, and working with the runs and tasks they start |
 | [evidence/](evidence) | What was run, by whom, on what, and what it showed |
 
 The design itself stays in the package. [../references/logic.md](../references/logic.md) says what

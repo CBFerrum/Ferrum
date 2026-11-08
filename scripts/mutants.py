@@ -40,6 +40,7 @@ EVENT_CHAIN = ("-p", "ferrum-kernel", "--test", "event_chain_it")
 PROCESS_RECORDS = ("-p", "ferrum-kernel", "--test", "process_it")
 # Needs a Temporal server at TEMPORAL_ADDRESS (docs/logic/processes.md); set, it fails rather than skips.
 RUNTIME = ("-p", "ferrum-process", "--test", "conformance_it")
+STUDIO_SOLUTIONS = ("-p", "ferrum-studio", "--test", "solutions_it")
 HOOKS_UNIT = ("-p", "ferrum-kernel", "--lib", "hooks::tests")
 CLOSURE = ("-p", "ferrum-kernel", "--test", "closure_it")
 SSO = ("-p", "ferrum-server", "--test", "sso_it")
@@ -124,6 +125,13 @@ MUTANTS = [
     ("history-not-sealed", "crates/process/src/lib.rs", '    options.data_converter = converter(s.keys.clone());', '    let _ = converter(s.keys.clone());', RUNTIME),
     ("run-started-again", "crates/process/src/lib.rs", 'options.id_reuse_policy = WorkflowIdReusePolicy::RejectDuplicate;', 'options.id_reuse_policy = WorkflowIdReusePolicy::AllowDuplicate;', RUNTIME),
     ("late-delivery-retried", "crates/process/src/lib.rs", 'Err(e) if matches!(k.process_load(', 'Err(e) if false && matches!(k.process_load(', RUNTIME),
+    ("draft-save-overwrites", "crates/kernel/src/authoring.rs", 'where tenant_id = $1 and id = $2 and version = $3 returning version', 'where tenant_id = $1 and id = $2 and ($3::int is not null) returning version', STUDIO_SOLUTIONS),
+    ("approval-without-consent", "crates/kernel/src/logic.rs", '            if named != growth {', '            if false && named != growth {', STUDIO_SOLUTIONS),
+    ("cursor-passes-open-transaction", "crates/kernel/src/process.rs", 'select pg_snapshot_xmin(s)::text, pg_snapshot_xmax(s)::text', 'select pg_snapshot_xmax(s)::text, pg_snapshot_xmax(s)::text', STUDIO_SOLUTIONS),
+    ("restored-cursor-not-resynced", "crates/kernel/src/process.rs", 'let resync = cursor.is_some() && parsed.is_none_or(', 'let resync = false && cursor.is_some() && parsed.is_none_or(', STUDIO_SOLUTIONS),
+    ("author-reviews", "crates/kernel/src/logic.rs", 'privileges: &[String], approve: bool, reason: &str) -> Result<()> {\n        require_admin(ctx)?;', 'privileges: &[String], approve: bool, reason: &str) -> Result<()> {\n        crate::authoring::require_author(ctx)?;', STUDIO_SOLUTIONS),
+    ("related-runs-unchecked", "crates/kernel/src/process.rs", '        self.get(ctx, entity, record, false).await?;', '        let _ = self.get(ctx, entity, record, false).await;', STUDIO_SOLUTIONS),
+    ("diff-shows-old-as-new", "crates/logic/src/diff.rs", "[shown(ao.get(k)), shown(bo.get(k))]", "[shown(ao.get(k)), shown(ao.get(k))]", LOGIC_UNIT),
     ("case-close-waits-for-deliveries", "crates/logic/src/process.rs", 'for (task, output) in recorded.as_object().into_iter().flatten() {', 'for (task, output) in recorded.as_object().into_iter().flatten().take(0) {', LOGIC_UNIT),
     ("capability-input-says-who-asks", "crates/logic/src/capability.rs", "map.keys().find(|k| CONTEXT_FIELDS.contains(&k.as_str()) && !self.declares(k))", "map.keys().find(|k| k.is_empty() && !self.declares(k))", CAPABILITY),
     # The directory of people is the members'.

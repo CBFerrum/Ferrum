@@ -20,6 +20,9 @@ roles:
       - {entity: NumberCard, read: true, write: true, create: true, delete: true, if_owner: true}
       - {entity: Dashboard, read: true, write: true, create: true, delete: true, if_owner: true}
       - {entity: Space, read: true, write: true, create: true, delete: true, if_owner: true}
+  - name: Solution Author
+    description: Builds customer solutions (rules, decisions, processes) as drafts, checks and simulates them, and keeps releases for an administrator to review. Never reviews or activates.
+    permissions: []
   - name: Studio Manager
     description: Manages every report, chart, number card, dashboard and space of the workspace.
     permissions:

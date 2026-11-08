@@ -5,10 +5,10 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Not started | 14 |
-| Partial | 67 |
-| Implemented, unverified | 2 |
-| Verified in software | 40 |
+| Not started | 12 |
+| Partial | 60 |
+| Implemented, unverified | 4 |
+| Verified in software | 47 |
 | Blocked externally | 1 |
 | **All** | **124** |
 
@@ -27,7 +27,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
-| FLC-CAP-001 | Typed capability registry | Implemented, unverified | AT-CAP-001 | 2 | Read from what a workspace installs, with effect, rights, input and output schemas, idempotency, completion and digest; the builder's endpoint, the agent's tools and the kernel agree digest for digest over ERP's packages (catalog_it). The builder's screens (W4) do not exist, so the case's UI is not yet part of it |
+| FLC-CAP-001 | Typed capability registry | Implemented, unverified | AT-CAP-001 | 2 | Read from what a workspace installs, with effect, rights, input and output schemas, idempotency, completion and digest; the builder's endpoint, the agent's tools and the kernel agree digest for digest over ERP's packages (catalog_it). Studio's solution screens (W4) choose capabilities from the same catalog |
 | FLC-CAP-002 | Native invariants | Verified in software | AT-CAP-002 | 2 | A ledger offers no capability, a read-only field is the app's to set, and actions run through their owning app (capability_it, mutant capability-ledger-offered). Record updates remain capabilities for the fields an app leaves writable: an app protects a balance by making it read-only or a ledger |
 | FLC-CAP-003 | Trusted context | Verified in software | AT-CAP-003 | 2 | An input naming a workspace, a role or an administrator flag is refused unless the capability declares that field as data, and another workspace's records and receipts do not exist (capability_it, mutant capability-input-says-who-asks). Values resolved inside a process (references from a device message) come with W3 and W5 |
 | FLC-CAP-004 | Version and digest lock | Partial | AT-CAP-004 | 1 | Each capability carries its package's version and a digest of what it promises; asked for another version, the gate refuses (mutant capability-version-adopted). Keeping a waiting process on its old binding needs processes (W3) |
@@ -84,7 +84,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FLC-PROC-011 | Compensation failure | Verified in software | AT-PROC-011 | 2 | Compensation runs newest first through each app's compensating action; a refused or unknown one stays open, handed to a person, and the run waits for a recovery that tries only what is still open (process tests; mutant compensation-oldest-first). The compensating action is given the effect's record, not a mapping the solution declares |
 | FLC-PROC-012 | Worker fencing | Partial | AT-PROC-012 | 1 | A stopped worker's runs are taken up by another (conformance_it); a repeated effect finds its receipt, and Temporal refuses the completion of an attempt that timed out. A worker paused past its timeout and then resumed was not tried |
 | FLC-PROC-013 | History bounds | Verified in software | AT-PROC-013 | 1 | A run continues as new after 500 events, or when Temporal suggests it, carrying its state, deadlines and undelivered signals under the same workflow id and activations; the conformance test continues after every event, across a decision delivered while no worker ran |
-| FLC-PROC-014 | Snapshot plus subscription | Not started | AT-PROC-014 | 0 | Runs are read as they stand (logic_runs, logic_run); there is no live stream of a run's status |
+| FLC-PROC-014 | Snapshot plus subscription | Verified in software | AT-PROC-014 | 1 | The run feed's cursor is a transaction boundary: a run committed late by a slower transaction comes in a later page, never skipped, and a cursor from another database gets resync and the runs as they stand (solutions_it; mutants cursor-passes-open-transaction, restored-cursor-not-resynced). The page polls every five seconds; there is no push channel |
 | FLC-HUMAN-001 | Independent approval | Verified in software | AT-HUMAN-001 | 2 | The requester cannot decide their own request whatever roles they hold, nor an administrator without the task's role, and a task approved by several needs that many different people; the compiler refuses a task that allows the requester (process_it; mutants requester-decides, administrator-decides) |
 | FLC-HUMAN-002 | Input-bound approval | Verified in software | AT-HUMAN-002 | 1 | A decision is bound to the digest of what was shown; an effect relying on an approval carries it and is refused if the approved record's version changed since, or the record is gone (process_it; mutants decided-on-other-material, effect-on-stale-approval, approval-of-deleted-record). Any change of version counts as material; the release's digest is the policy it ran under |
 | FLC-HUMAN-003 | Timeout race | Verified in software | AT-HUMAN-003 | 2 | A decision and a deadline are settled under the task's row lock: one of them, never both; a deadline after a decision tells the decision, and asked again after a lost answer it says the same (process_it; mutants deadline-overrides-decision, repeated-deadline-says-nothing). On Temporal a deadline is a timer, and the database decides what it means (conformance_it) |
@@ -98,16 +98,16 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
-| FLC-UI-001 | In-app authoring | Partial | AT-UI-001 | 0 | Edge flows, fields and rules are authored in the product; there is no solution, decision or process builder |
-| FLC-UI-002 | Single definition | Partial | AT-UI-002 | 0 | Studio's builder and JSON edit one query spec; nothing else has synchronized views |
-| FLC-UI-003 | Typed inspector | Partial | AT-UI-003 | 0 | Edge's inspector shows a step's settings; no node shows permissions, effects, retries or completion |
-| FLC-UI-004 | Accessible outline | Partial | AT-UI-004 | 0 | Edge's canvas is reached by Tab and moved by arrow keys, and the form designer moves fields by menu; no linear outline exists for processes |
-| FLC-UI-005 | Semantic diff | Not started | AT-UI-005 | 0 | No release review exists |
-| FLC-UI-006 | Conflict handling | Partial | AT-UI-006 | 0 | Records are saved against their version and a stale save is refused; drafts of logic do not exist |
-| FLC-UI-007 | Simulator parity | Partial | AT-UI-007 | 0 | Edge simulates with the code a gateway runs; nothing simulates processes |
-| FLC-UI-008 | Recovery console | Partial | AT-UI-008 | 0 | Operations shows unknown outcomes with a plain reason; nothing recovers business runs |
-| FLC-UI-009 | Localization | Partial | AT-UI-009 | 0 | Interfaces carry Arabic and Hindi, right to left and workspace time zones; the builder does not exist |
-| FLC-UI-010 | Preview isolation | Partial | AT-UI-010 | 0 | A draft or simulated Edge flow reaches nothing; process simulation does not exist |
+| FLC-UI-001 | In-app authoring | Verified in software | AT-UI-001 | 2 | A Solution Author built, checked, simulated and kept an approval in the guided editor; another administrator reviewed it, consented to its new power and activated it; requests then ran through it on the real binary with Temporal, as ordinary roles (evidence/w4-studio.md). Activation is per workspace, with no test workspace or cohort first (W8); decision tables and rules are edited in the source |
+| FLC-UI-002 | Single definition | Partial | AT-UI-002 | 1 | Guided and Source edit one parsed source in place: settings written in the source (a business-day deadline, a parallel step, an action's approval) survived the guided view, a save and a reload (walk journey 2). No drawn diagram view exists, so the visual editor the requirement names is missing |
+| FLC-UI-003 | Typed inspector | Verified in software | AT-UI-003 | 2 | The inspector shows, from the catalog, what a step's capability does, the rights it needs from whoever starts the run, what done means, its attempts and receipts, what happens to an unknown outcome and what undoes it, and flags an action that can end unknown without a route for it, as the compiler refuses (render.test, compile tests). Attempts and timeouts are the capability's, not settable per step |
+| FLC-UI-004 | Accessible outline | Implemented, unverified | AT-UI-004 | 1 | By keyboard alone an administrator added a step, routed a rejection to it and mended the faults the check announced (each check result read out through a live region, opening a fault moving focus to that step's settings), and a reviewer reached, read and decided a task; focus moves into each new page; axe finds nothing on the solution, run and task screens (walk journey 6, render.test). No screen reader was used and no assistive-technology user has tried it (BLOCK-ACCESSIBILITY-AUDIT) |
+| FLC-UI-005 | Semantic diff | Verified in software | AT-UI-005 | 3 | A release's review lists what changed by meaning, each changed setting as it was and as it is, capabilities with versions and whether they change records; new changing capabilities need consent one by one, and approval binds to the digest shown, so any change needs a review of its own (diff tests, solutions_it; mutants approval-without-consent, diff-shows-old-as-new, author-reviews). Data destinations are read from the changed inputs; there is no separate data-flow view |
+| FLC-UI-006 | Conflict handling | Verified in software | AT-UI-006 | 1 | A draft saves against the version read (If-Match); a later save is refused naming who saved and when, and the page offers to keep one's own text as a new draft or open the latest (solutions_it, walk journey 4; mutant draft-save-overwrites). Text not yet saved is also kept in the browser |
+| FLC-UI-007 | Simulator parity | Implemented, unverified | AT-UI-007 | 2 | The simulator drives the runtime's own state machine with the workspace's calendars on a virtual clock, labels each line stand-in, not modelled or deadline, and treats an unanswered capability as an unknown outcome, never a success (simulate tests, solutions_it). The same boundary fixtures have not been run side by side in the simulator and a deployed test profile |
+| FLC-UI-008 | Recovery console | Partial | AT-UI-008 | 2 | A run shows each step's outcome, refusals first, and what it did; a recovery records who did what and why and resumes where the process allows or ends the run refused, and the run and task read the same after a refresh and a server restart (walk journey 7). An unknown outcome is settled by a person with evidence: the console has no capability-specific lookup action, and one server was walked, not two replicas |
+| FLC-UI-009 | Localization | Verified in software | AT-UI-009 | 2 | In Arabic, right to left, with times shown in Asia/Kolkata, an author edited a solution and a reviewer decided a task whose deadline came from the office calendar (Asia/Kolkata, Saturday and Sunday off); identifiers stay as written (walk). Every word of these screens is in the Arabic and Hindi catalogs. The workspace's own zone was UTC; Hindi was not walked |
+| FLC-UI-010 | Preview isolation | Verified in software | AT-UI-010 | 1 | A simulation creates no run, task or record and a mail step answered in it queues nothing (solutions_it); the simulator is pure and has no gate to call; a draft never runs. A separate sandbox for real test effects does not exist |
 
 ## W5: Generic edge and event integration
 

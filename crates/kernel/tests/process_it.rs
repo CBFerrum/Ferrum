@@ -362,7 +362,8 @@ async fn scenario() {
     assert_eq!(code(&k.set_logic_calendar(&admin, &Calendar { name: "Office!".into(), ..office.clone() }).await.unwrap_err()), "validation_failed");
     let saved = k.save_release(&admin, &source()).await.expect("release");
     let release: Uuid = saved["id"].as_str().unwrap().parse().unwrap();
-    k.review_release(&admin2, release, saved["artifact_digest"].as_str().unwrap(), true, "").await.unwrap();
+    // It may create orders, which nothing running could before: consented to by name.
+    k.review_release_consenting(&admin2, release, saved["artifact_digest"].as_str().unwrap(), &["procs.order.create".to_string()], true, "").await.unwrap();
     k.activate_release(&admin, release, None).await.unwrap();
     let mut d = Driver { k: k.clone(), tenant: admin.tenant, last: 0, runs: BTreeMap::new(), hold_waits: false, held: vec![] };
 
