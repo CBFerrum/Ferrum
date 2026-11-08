@@ -236,7 +236,9 @@ async fn scenario() {
     // Started again, as after a lost answer: the run is not started twice, before or after it ended.
     let again = Dispatch::new(client.clone(), settings.queue.clone());
     again.start(t, run1).await.expect("a repeated start is no error");
+    tokio::time::sleep(Duration::from_secs(2)).await;
     assert_eq!(eventually::<i64>(&k, t, "select count(*) from e_order where request = $1", r1, "orders").await, 1);
+    assert_eq!(eventually::<String>(&k, t, "select status from logic_run where id = $1", run1, "the run").await, "completed", "no second run reported anything");
 
     // Its history replays with the same code and codec; without the codec it cannot even be read (FLC-PROC-007).
     // Fetched by a client without the codec, as Temporal keeps it: the marker the run read is nowhere in it.

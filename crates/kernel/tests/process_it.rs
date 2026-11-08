@@ -50,7 +50,7 @@ fn source() -> String {
              "entry": "snapshot", "max_steps": 50, "nodes": [
                 {"type": "query", "id": "snapshot", "label": "Read it", "capability": cap("procs.request.read"), "input": {"id": "trigger.id"}, "next": "decide", "on_error": "attention"},
                 {"type": "decision", "id": "decide", "label": "Policy", "decision": "needs_review", "routes": [{"outcome": "review", "target": "review"}, {"outcome": "proceed", "target": "review"}], "on_error": "attention"},
-                {"type": "human_task", "id": "review", "label": "Approve the request", "role": "Reviewer", "material": "snapshot.output", "delegation": 2,
+                {"type": "human_task", "id": "review", "label": "Approve the request", "role": "Reviewer", "material": "snapshot.output", "delegation": 3,
                  "timeout": {"business_days": 2, "calendar": "office"}, "form": [{"name": "note", "label": "Note", "type": "text"}],
                  "next": "order", "on_reject": "refused", "on_timeout": "attention"},
                 {"type": "action", "id": "order", "label": "Order it", "capability": cap("procs.order.create"), "input": {"values.reference": "trigger.id", "values.request": "trigger.id"},
@@ -352,6 +352,8 @@ async fn scenario() {
     let requester = user(&k, &admin, "requester@acme.test", &["Requester", "Reviewer"], false).await;
     let reviewer = user(&k, &admin, "reviewer@acme.test", &["Reviewer"], false).await;
     let reviewer2 = user(&k, &admin, "reviewer2@acme.test", &["Reviewer"], false).await;
+    let reviewer3 = user(&k, &admin, "reviewer3@acme.test", &["Reviewer"], false).await;
+    let reviewer4 = user(&k, &admin, "reviewer4@acme.test", &["Reviewer"], false).await;
     let outsider = user(&k, &admin, "outsider@acme.test", &[], false).await;
     let office =
         Calendar { name: "office".into(), zone: "Asia/Kolkata".into(), weekends: vec!["sat".into(), "sun".into()], holidays: Default::default(), revision: 0 };
@@ -398,6 +400,9 @@ async fn scenario() {
 
     // Approved, ordered under its effect key, and completed when the order's own event comes.
     k.decide_logic_task(&reviewer, task1, true, &digest1, &json!({"note": "fine"}), "").await.unwrap();
+    // Its deadline passing afterwards tells the run the decision, not a timeout.
+    let after = k.process_expire_task(admin.tenant, run1, "review").await.unwrap();
+    assert!(matches!(&after, Some(Event::TaskDecided { approved: true, .. })), "{after:?}");
     d.settle().await;
     let order1: Uuid = scalar(&k, admin.tenant, "select id from e_order where request = $1", r1).await;
     assert_eq!(scalar::<i64>(&k, admin.tenant, "select count(*) from logic_effect where effect_key = $1::uuid::text || '/order'", run1).await, 1);
@@ -511,8 +516,8 @@ async fn scenario() {
     d.feed(run5, told).await;
     d.settle().await;
 
-    // Handed on within its bound, never back along its chain nor to who asked; decided by whom it was handed to
-    // (FLC-HUMAN-004).
+    // Handed on within its bound (three hands here), never back along its chain nor to who asked; decided by
+    // whom it was handed to (FLC-HUMAN-004).
     let (_, run6) = request(&k, &mut d, &requester, "R-6", "5000").await;
     let (task6, digest6) = task_of(&k, admin.tenant, run6, "review").await;
     assert_eq!(code(&k.delegate_logic_task(&reviewer, task6, outsider.user, "").await.unwrap_err()), "forbidden", "not a reviewer");
@@ -520,10 +525,11 @@ async fn scenario() {
     k.delegate_logic_task(&reviewer, task6, reviewer2.user, "on leave").await.unwrap();
     assert_eq!(code(&k.decide_logic_task(&reviewer, task6, true, &digest6, &json!({}), "").await.unwrap_err()), "forbidden", "handed on");
     assert_eq!(code(&k.delegate_logic_task(&reviewer2, task6, reviewer.user, "").await.unwrap_err()), "forbidden", "back along the chain");
-    assert_eq!(code(&k.delegate_logic_task(&reviewer2, task6, admin2.user, "").await.unwrap_err()), "forbidden", "past its bound");
-    k.decide_logic_task(&reviewer2, task6, true, &digest6, &json!({}), "").await.unwrap();
+    k.delegate_logic_task(&reviewer2, task6, reviewer3.user, "away").await.unwrap();
+    assert_eq!(code(&k.delegate_logic_task(&reviewer3, task6, reviewer4.user, "").await.unwrap_err()), "forbidden", "past its bound");
+    k.decide_logic_task(&reviewer3, task6, true, &digest6, &json!({}), "").await.unwrap();
     let by: Uuid = scalar(&k, admin.tenant, "select by_user from logic_task_decision where task_id = $1 and decision = 'approve'", task6).await;
-    assert_eq!(by, reviewer2.user, "attributed to who decided");
+    assert_eq!(by, reviewer3.user, "attributed to who decided");
     d.settle().await;
 
     // A revised calendar moves the deadlines resolved after it, never those before (FLC-HUMAN-005).
