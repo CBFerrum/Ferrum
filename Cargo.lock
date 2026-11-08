@@ -2772,7 +2772,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-edge"
 version = "0.4.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-edge?branch=main#96b4eb4d2e1b5aacf0ec7c7182ba3334fed4634c"
+source = "git+https://github.com/CBFerrum/ferrum-app-edge?branch=main#867bca95ef30353cc121f8bebe870da52600a596"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2985,8 +2985,8 @@ dependencies = [
 
 [[package]]
 name = "ferrum-app-intelligence"
-version = "0.2.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-intelligence?branch=main#6ea3c5169a4ff5b08abf58f08c8bf747ba26177e"
+version = "0.2.1"
+source = "git+https://github.com/CBFerrum/ferrum-app-intelligence?branch=main#a0056b3123e043b4b167f843878b7324c8f716b3"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3079,7 +3079,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-metrics"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-metrics?branch=main#848c2a39eee04511fee3f3e14310b30d8b970291"
+source = "git+https://github.com/CBFerrum/ferrum-app-metrics?branch=main#2709639ec64a94cddb31e979c3ce0584abb1ffac"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3093,6 +3093,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
+ "tracing",
  "uuid",
 ]
 
@@ -3383,7 +3384,7 @@ dependencies = [
 [[package]]
 name = "ferrum-edge-contract"
 version = "0.4.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-edge?branch=main#96b4eb4d2e1b5aacf0ec7c7182ba3334fed4634c"
+source = "git+https://github.com/CBFerrum/ferrum-app-edge?branch=main#867bca95ef30353cc121f8bebe870da52600a596"
 dependencies = [
  "base64 0.22.1",
  "chrono",

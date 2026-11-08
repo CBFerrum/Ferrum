@@ -344,8 +344,14 @@ the operators' install from one has not run on a cluster without internet.
 
   ```bash
   docker compose exec -T db pg_dump -U postgres -Fc ferrum > ferrum-$(date +%F).dump
-  docker compose exec -T ferrum tar -C /var/lib/ferrum/files -czf - . > files-$(date +%F).tgz
+  docker compose exec -T ferrum tar -C /var/lib/ferrum/files --warning=no-file-changed -czf - . > files-$(date +%F).tgz
   ```
+
+  Take the attachments after the database, so that they include everything the dump refers to,
+  and every erasure journalled since (`privacy-journal/`, which `ferrum task reapply_erasures`
+  replays after a restore). The server keeps writing while tar reads. An exit status of 1 means a
+  file changed as it was read, and the archive still holds it as it was then; 2 means the archive
+  failed.
 
   To restore onto a new host, start the database alone (`docker compose up -d db`), wait until
   `docker compose exec db pg_isready -h 127.0.0.1` succeeds, then:
@@ -578,6 +584,41 @@ parallel branches or a subprocess, or with an effect in hand, does not move.
 digests, the capabilities, events and calendars it needs, and its review decisions without names. A pack never
 carries a connection or a credential. Taken in elsewhere (`POST /solutions/import/pack`) it becomes a draft, with
 what must be mapped there; a pack changed on the way is refused.
+
+## Metrics' engine for external sources
+
+A metric whose numbers live in a data lake's CSV or Parquet files is read through Metrics' engine. The engine
+is a service of its own (`ferrum-metrics-engine`, built from the Metrics repository's `engine/Dockerfile` and
+published from its main as `ghcr.io/cbferrum/ferrum-metrics-engine`). It
+plans the metric's query through the metric's Wren semantic model with Wren's engine and runs it on DataFusion,
+so a heavy query is bounded there and cannot take the server down. The server never links it.
+
+```bash
+docker compose -f deploy/docker-compose.yml -f deploy/metrics-engine.yml --env-file deploy/.env up -d
+```
+
+- **Configuration.** `deploy/.env` holds `FERRUM_METRICS_ENGINE_TOKEN`, at least 32 characters; Ferrum and the
+  engine hold the same one. `deploy/metrics-engine.json` lists the datasets: each has a name, its workspace by
+  slug or id, a format, and a path under `/data`. It also sets the limits: rows, time, memory (nothing spills),
+  and queries at once. The datasets directory (`FERRUM_METRICS_DATASETS`) is mounted read-only. Nothing is
+  published to the host. Compose builds the image from a Metrics checkout (`FERRUM_METRICS_REPO`) unless
+  `FERRUM_METRICS_ENGINE_IMAGE` names the published one.
+- **On Kubernetes,** list the `metrics-engine` component in `deploy/k8s/kustomization.yaml`. It runs two
+  replicas, either one answering, read-only and unprivileged, with a disruption budget; only the API may call
+  them, and they call nothing. It points Ferrum at them and lets Ferrum's network policy reach them. First
+  create the Secret `ferrum-metrics-engine` (key `token`), the ConfigMap `ferrum-metrics-engine` (key
+  `engine.json`, its paths under `/data`) and the claim `ferrum-metrics-datasets` (ReadOnlyMany) holding the
+  datasets.
+- **In each workspace,** a Data Steward describes each dataset as an External Source in Metrics: which rows each
+  reader sees, which columns only some roles see, and how fresh its data must be. Metrics asks the engine for
+  one reader at a time, with only what that reader may see. The engine applies it in each dataset's own scan.
+- **Down.** With the engine down, an external metric has no value and says so; nothing else waits on it.
+  Before planning, it refuses a query whose terms nest more than 100 deep or that reads more than 32 models,
+  since planning cannot be stopped midway; no query can overflow its threads' stacks.
+  `GET /health` on port 5180 answers without a token. A value read from data older than its source allows
+  carries the source under `stale`, and Intelligence says so in its answers.
+- **Datasets** are files. Refresh them in place, by writing a new file and renaming it over the old one; the
+  newest file's time is the dataset's age. They are not backed up with the stack: they are the lake's.
 
 ## Background jobs
 

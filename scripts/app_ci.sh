@@ -31,6 +31,9 @@ done < <(grep -rhoE --include='*.rs' 'env::var\("FERRUM_[A-Z0-9_]*_TEST_DATABASE
 [ ${#DBS[@]} -gt 0 ] || DBS=("FERRUM_$(echo "$APP" | tr 'a-z-' 'A-Z_')_TEST_DATABASE_URL=$PG/ferrum_${APP//-/_}_localci")
 # A workspace's members too, when its workflow tests them.
 WS=$(grep -q "cargo test --workspace" "$APP_DIR/.github/workflows/ci.yml" 2>/dev/null && echo --workspace)
+# The stack its workflow gives its tests' threads (RUST_MIN_STACK), as GitHub runs them.
+STACK=$(sed -n 's/^ *RUST_MIN_STACK: *"*\([0-9][0-9]*\)"* *$/\1/p' "$APP_DIR/.github/workflows/ci.yml" 2>/dev/null | head -1)
+[ -n "$STACK" ] && export RUST_MIN_STACK=$STACK
 for kv in "${DBS[@]}"; do case "${kv##*/}" in *ferrum_dev*|*walk*|ferrum_test) echo "refusing to reset ${kv##*/}"; exit 2;; esac; done
 TARGET=${CARGO_TARGET_DIR:-$PLATFORM/target}
 export CARGO_INCREMENTAL=0
@@ -49,6 +52,11 @@ tests() {
 }
 
 cd "$APP_DIR" || exit 2
+# A lock the app commits (one that ships a binary) is put back as it was when the run ends: the patch below
+# rewrites it, and what it rewrites must never be committed.
+if git ls-files --error-unmatch Cargo.lock >/dev/null 2>&1; then
+  LOCK=$(mktemp "${TMPDIR:-/tmp}/app-ci-lock.XXXXXX") && cp Cargo.lock "$LOCK" && trap 'cp "$LOCK" "$APP_DIR/Cargo.lock"; rm -f "$LOCK"' EXIT
+fi
 if [ ! -f .cargo/config.toml ]; then
   mkdir -p .cargo
   {
