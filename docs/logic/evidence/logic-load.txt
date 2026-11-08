@@ -1,27 +1,27 @@
 Hardware: macOS-15.6-arm64-arm-64bit-Mach-O, 8 cores, Python 3.14.2; server http://127.0.0.1:5170
 
 == Source and planner costs (nothing runs)
-     compile a source (HTTP round trip included): n=10 median 22 ms, p95 22 ms, max 23 ms
-     simulate a run to its end on the virtual clock: n=10 median 22 ms, p95 22 ms, max 22 ms
+     compile a source (HTTP round trip included): n=10 median 26 ms, p95 28 ms, max 38 ms
+     simulate a run to its end on the virtual clock: n=10 median 22 ms, p95 29 ms, max 29 ms
 
 == Cold: the first run after the server started
-     review open after 564 ms; order 434 ms after the decision
+     review open after 567 ms; order 229 ms after the decision
 
 == Warm: ten in turn, in each workspace
-     acme: submitted to review open: n=10 median 569 ms, p95 579 ms, max 582 ms
-     acme: decided to ordered: n=10 median 223 ms, p95 231 ms, max 237 ms
-     globex: submitted to review open: n=10 median 538 ms, p95 550 ms, max 551 ms
-     globex: decided to ordered: n=10 median 225 ms, p95 427 ms, max 437 ms
+     acme: submitted to review open: n=10 median 571 ms, p95 585 ms, max 612 ms
+     acme: decided to ordered: n=10 median 227 ms, p95 435 ms, max 453 ms
+     globex: submitted to review open: n=10 median 552 ms, p95 557 ms, max 565 ms
+     globex: decided to ordered: n=10 median 233 ms, p95 427 ms, max 440 ms
 
 == Concurrent and fair: acme floods 60 at once while globex asks for 5
-     acme under its own flood: decided to ordered: n=60 median 1247 ms, p95 2015 ms, max 2683 ms
-     globex beside the flood: decided to ordered: n=5 median 636 ms, p95 826 ms, max 834 ms
-     65 runs approved and ordered in 6.5 s (10.0 runs/s end to end)
+     acme under its own flood: decided to ordered: n=60 median 1268 ms, p95 2489 ms, max 2701 ms
+     globex beside the flood: decided to ordered: n=5 median 414 ms, p95 415 ms, max 619 ms
+     65 runs approved and ordered in 6.2 s (10.6 runs/s end to end)
 ok   every flooded run ordered exactly once
 ok   globex's orders beside the flood stay within 10 s at p95
      ferrum_logic_steps_in_hand 0
      ferrum_logic_steps_workspaces 0
-     ferrum_logic_steps_deferred_total 9
+     ferrum_logic_steps_deferred_total 11
      ferrum_logic_steps_limit{kind="slots"} 10
      ferrum_logic_steps_limit{kind="effects"} 8
      ferrum_logic_steps_limit{kind="per_workspace"} 2
@@ -29,7 +29,7 @@ ok   the worker's step budget is on /metrics
 up after 6s
 
 == Failure: the server stops while runs are in hand, and comes back
-     back and settled 7.4 s after the restart began
+     back and settled 21.5 s after the restart began
 ok   every run decided before the stop ordered, after it
 ok   and none ordered twice
 
