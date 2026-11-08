@@ -5,9 +5,11 @@
 //! * [`approval`]: what makes an approval count;
 //! * [`capability`]: what a business capability promises: its effect, the rights it needs, how a repeat is
 //!   recognised and what "done" means (FLC-CAP-001);
+//! * [`expr`]: typed expressions on CEL's syntax, exact money and quantities, unknown kept apart from false;
 //! * [`refusal`]: the stable codes a refusal carries, whichever path it came by.
 
 pub mod approval;
 pub mod canonical;
 pub mod capability;
+pub mod expr;
 pub mod refusal;
