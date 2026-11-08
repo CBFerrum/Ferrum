@@ -1,0 +1,83 @@
+Walk 42105 on http://127.0.0.1:5170: workspaces acme and globex
+
+== LRP-01 Record policy
+ok   LRP-01 a rule written in Studio checks without faults
+ok   LRP-01 the author keeps it as a release
+ok   LRP-01 the author may not approve their own release
+ok   LRP-01 another administrator approves it
+ok   LRP-01 a requester may not activate it
+ok   LRP-01 an administrator activates it
+ok   LRP-01 refused through the records API, with the rule's message
+ok   LRP-01 refused through the older resource API alike
+ok   LRP-01 a requester may not import at all
+ok   LRP-01 refused through import alike, even for an administrator
+ok   LRP-01 refused through bulk alike
+ok   LRP-01 refused through MCP alike
+ok   LRP-01 the other workspace is not bound by it
+     saves with the rule: median 7 ms, p95 13 ms over 20
+ok   LRP-01 a save with the rule stays within 1.5 s at p95 on this machine
+
+== LRP-02 Durable procurement
+ok   LRP-02 the procurement solution is reviewed and running
+ok   LRP-02 submitting the request starts one run on the runtime
+ok   LRP-02 the review waits for a reviewer
+ok   LRP-02 the requester may not decide their own request
+ok   LRP-02 someone without the role may not decide
+ok   LRP-02 two reviewers deciding at once: one decision counts, the other is told
+ok   LRP-02 the order is made once, under its effect key
+ok   LRP-02 exactly one order
+ok   LRP-02 the order's own event completes the run
+
+== LRP-03 Generic condition response (a gateway played by this script)
+ok   LRP-03 Edge (and Operations) installed in the workspace
+ok   LRP-03 the catalog offers Edge's condition events
+ok   LRP-03 a solution answering conditions runs
+ok   LRP-03 an enrollment code for the gateway
+ok   LRP-03 the gateway enrolls with its own key
+ok   LRP-03 an enrollment code works once
+ok   LRP-03 a signed report of an opened condition is taken
+ok   LRP-03 the same report again, after a gateway restart, changes nothing
+ok   LRP-03 a report not signed by the gateway's key is refused
+ok   LRP-03 one condition record for the episode, with the time it began at the site
+ok   LRP-03 one process run for the episode, across apps
+ok   LRP-03 a reviewer takes the case
+ok   LRP-03 the condition clearing at the site resolves the case
+ok   LRP-03 the condition record says it closed
+
+== LRP-04 Partner solution pack
+ok   LRP-04 the author downloads the release as a pack
+ok   LRP-04 the pack holds no secret, and no reviewer's name
+ok   LRP-04 the partner takes it in as a draft, with what to map
+ok   LRP-04 the workspace maps it: a business calendar of its own by that name
+ok   LRP-04 mapped, it checks here without faults
+ok   LRP-04 the partner keeps it as a release here
+ok   LRP-04 the partner may not approve it
+ok   LRP-04 nor activate it
+ok   LRP-04 the workspace's own administrators approve and activate it
+ok   LRP-04 it runs in the other workspace, its own run
+ok   LRP-04 the first workspace cannot see that run
+ok   LRP-04 an administrator takes an app (Edge) out of the workspace
+ok   LRP-04 its records are out of reach while it is out
+ok   LRP-04 brought back, every record it had is there again
+
+== LRP-05 Agentic BI
+ok   LRP-05 Metrics and Intelligence installed
+ok   LRP-05 an analyst defines a metric
+ok   LRP-05 its author may not certify it
+ok   LRP-05 a steward certifies it
+ok   LRP-05 a question becomes a plan, an answer and its evidence
+ok   LRP-05 someone who cannot read requests gets no value from them
+ok   LRP-05 asked to act as well, it reads the metric and says it acted on nothing
+ok   LRP-05 a question about nothing it may read is declined, with what can be asked
+ok   LRP-05 a series, the month not over marked partial
+ok   LRP-05 a proposal is only a draft, for review
+ok   LRP-05 a reader may not propose
+
+== LRP-06 Operator recovery
+ok   LRP-06 the requester's rights withdrawn while waiting: the order is refused, the run stops for a person
+ok   LRP-06 no order made with rights it no longer had
+ok   LRP-06 recovery is not for someone without administration
+ok   LRP-06 an administrator resumes it in Studio, with a reason
+ok   LRP-06 resumed, the order is made, once
+
+every check passed

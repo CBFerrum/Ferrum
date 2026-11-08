@@ -105,6 +105,61 @@ runs now (cases that differ first), and downloads a pack. The solutions page tak
 map. A run's page plans and approves a move and lists every move. These were drawn in the screen tests with
 the accessibility check, and walked on the real binary as recorded in [lrp-profiles.md](lrp-profiles.md).
 
+## Completing W8: the profiles on one build, fairness, a restore drill, and what the walk found
+
+The six reference profiles, a measured workload and a restore drill ran on one assembled build in two
+workspaces; [lrp-profiles.md](lrp-profiles.md) gives the build, the pins and every result. What W8 added for
+them:
+
+**Fair scheduling and budgets (FLC-OPS-002, -003).**
+- The process worker now takes at most half the database pool in activities, through its Temporal tuner, and
+  keeps a quarter of those for bookkeeping (people's tasks, reports, deadlines).
+- One workspace holds at most a quarter of the effect slots. A step over that share answers "try again later"
+  and is retried under the same activity, so the same receipt.
+- `/metrics` shows steps in hand, the workspaces holding them, deferrals and the limits.
+- `budget::tests` and the mutants `workspace-takes-every-slot` and `effects-take-bookkeeping-slots` cover it.
+- Measured: a flood of 60 runs in one workspace left the other workspace's orders at its quiet p95.
+
+**Restores (FLC-OPS-005).**
+- On a database held after a restore, a run whose history reports an effect with no receipt here gets one
+  attention item saying so, and nothing is done again.
+- Releasing the hold asks every open run where it stands (`Event::Recheck`), so runs whose history is ahead of
+  the database say so.
+- `process_it` covers this through a held platform released by a person; mutants `restored-effect-unnoticed`
+  and `restore-not-rechecked`.
+- `scripts/restore_drill.py` recovered into a new database, Temporal and server, from a PostgreSQL backup taken
+  before an order and a Temporal store taken after.
+
+**An event and its wait arriving together (FLC-PROC-004).** The walk's LRP-03 found a race: a condition clearing
+at the site as its run began waiting for it left both waiting forever. Each transaction had missed the other's
+uncommitted row. Accepting an event and registering a wait now take one advisory lock per workspace, event and
+correlation. `process_it` runs sixty such races, and the mutant `signal-and-wait-unlocked` is caught.
+
+**Attempts (FLC-OPS-001).** Every invocation of a step is counted with how it went (`logic_attempt`, migration
+20261108000006), and the run's page shows how often each step was tried and its last outcome (Frontend
+CBFerrum/Ferrum-Frontend#58). Mutant `tries-not-counted`.
+
+**Moves inside blocks (FLC-MIG-004).**
+- A run waiting inside a loop's item, a branch, a round or a subprocess now moves by an approved mapping. Each
+  frame finds its block in the target by the same steps; a step that holds others keeps its id; a waiting step
+  moves within its block.
+- The logic unit test `a_run_waiting_inside_a_round_moves_with_its_step_and_a_step_holding_others_keeps_its_id`
+  and the mutant `move-renames-a-holder` cover it.
+
+**Assumed answers (FLC-MIG-002).** A comparison may assume answers for steps history has none for, never over a
+recorded one, and each case lists the assumptions it used. Mutant `shadow-assumes-over-history`.
+
+**Activations seen at once (FLC-MIG-003).** Whether a replica's list of what starts runs is current is now
+judged by the workspace's version in the database, read with each event, not by the replica's last notification.
+An activation committed on another replica is taken up by the very next event. `process_it` shows it with a
+second kernel on its own pool and without listeners: it read the workspace just before another kernel activated
+a solution starting on new orders, and the next order's event, given to it, started the run. Mutant
+`replica-misses-an-activation` (the replica's own version again) is caught.
+
+**Intelligence 0.1.1.** The boot log showed the App Manager leaving Intelligence out: its summary was longer
+than 200 characters. CBFerrum/ferrum-app-intelligence#2 (`02c6227`) shortened it, Ferrum pins it, and the boot
+log no longer says so.
+
 ## The package's acceptance cases
 
 | Case | Where it ran |
@@ -118,19 +173,21 @@ the accessibility check, and walked on the real binary as recorded in [lrp-profi
 | AT-MIG-004: migrate a waiting run to a release with removed steps | `process_it`, `conformance_it` on Temporal, the walk |
 | AT-MIG-006: roll back after an effect completed | `process_it`: new runs under the earlier release, the later run's order and receipt stay |
 | AT-QUAL-003: mutants | each W8 mutant named above, all caught; `run-started-twice` follows its moved text |
+| AT-OPS-001: one process across workers and a delayed action | the run's page: original event, release and generation, each step's outcome and tries, effects, moves |
+| AT-OPS-002: one workspace floods | `logic_load.py`: the other workspace stayed at its quiet pace; recovery and bookkeeping slots kept apart |
+| AT-OPS-003: more workers than the pool | the worker's slots follow the pool; `budget::tests` |
+| AT-OPS-005: recover into a new isolated environment | `restore_drill.py` |
+| AT-QUAL-002, AT-QUAL-006: the six profiles with constrained participants, complete | `lrp_walk.py`, 67 checks |
+| AT-QUAL-004: cold, warm, concurrent, failure on stated hardware | `logic_load.py` |
 
 ## Not done here
 
 - **Shadow:** there is no permission-aware sandbox against providers' test systems. A step the candidate adds
-  has no recorded answer and is reported as such.
-- **Moves:** a run inside a loop, parallel branches or a subprocess, or with an effect in hand, does not move.
-  A task keeps the deadline it had.
-- **Cutover timing:** a replica learns of an activation from PostgreSQL's notification. An event it passes in
-  the instant before, for a solution new to that event, is not started there; for a solution imported from an
-  automation, the automation's runner starts it instead.
-- **Restore drills:** no drill restored PostgreSQL and Temporal's histories from different points in time into
-  a new, isolated environment. The hold and the replay are what was shown.
-- **Scheduling and load:** no per-workspace budget of runs or worker time exists, and no load or soak test of
-  logic workloads was run (FLC-OPS-002, -003, FLC-QUAL-004).
+  is answered only by an assumption the person gives, and each case lists the assumptions it used.
+- **Moves:** a run with an effect or an undoing in hand moves only once that has settled, and a task keeps the
+  deadline it had.
+- **Restore drills:** object storage and its journals are not part of the drill.
+- **Scheduling and load:** the share is per replica's worker, not across replicas. The workload ran on one
+  machine with a development Temporal.
 - **External blockers:** production Temporal operation, independent security review and an accessibility
   audit with assistive-technology users are outside software, and remain open.

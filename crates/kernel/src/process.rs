@@ -104,13 +104,17 @@ fn parameters(release: &Release) -> (Ty, Val) {
 }
 
 async fn listening(k: &Kernel, tenant: Uuid) -> Result<Arc<Listening>> {
-    let version = k.registry.schema(tenant).await?.version;
+    // The workspace's version as the database has it, not as this replica last heard: an activation committed
+    // on another replica is taken up by the very next event here, never passed over in the moment before its
+    // notification arrives (FLC-MIG-003).
+    let mut tx = k.db.tenant_tx(tenant).await?;
+    let version: i64 = sqlx::query_scalar("select meta_version from tenant where id = $1").bind(tenant).fetch_one(&mut *tx).await?;
     if let Some(found) = LISTENING.get(&tenant)
         && found.0 == version
     {
+        tx.commit().await?;
         return Ok(found.1.clone());
     }
-    let mut tx = k.db.tenant_tx(tenant).await?;
     let l = Arc::new(build_listening(&mut tx, tenant).await?);
     tx.commit().await?;
     if LISTENING.get(&tenant).is_none_or(|e| e.0 <= version) {
@@ -188,6 +192,17 @@ async fn start_run(tx: &mut Tx, tenant: Uuid, s: &Listener, generation: i64, ev:
         outbox::enqueue(tx, tenant, START_TOPIC, None, None, json!({"run": run})).await?;
     }
     Ok(accepted)
+}
+
+/// Takes, until `tx` ends, the lock an event and the waits for it share for one correlation in a workspace.
+async fn signal_lock(tx: &mut Tx, tenant: Uuid, event: &str, correlation: &str) -> Result<()> {
+    sqlx::query("select pg_advisory_xact_lock(hashtext('ferrum.logic.signal'), hashtext($1 || '/' || $2 || '/' || $3))")
+        .bind(tenant.to_string())
+        .bind(event)
+        .bind(correlation)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
 }
 
 /// Whether an event of `automation`'s is for the solution imported from it to run, claiming it if so. Once the
@@ -323,6 +338,9 @@ impl Kernel {
             start_run(&mut tx, tenant, s, generation, ev, &event, &payload).await?;
         }
         if l.waits.contains(&event) && !subject.is_empty() {
+            // One at a time per event and correlation, with a run registering its wait for it: whichever comes
+            // second sees what the first wrote, so an event and its wait arriving together cannot both miss.
+            signal_lock(&mut tx, tenant, &event, &subject).await?;
             let digest = ferrum_logic::canonical::digest("ferrum.signal/1", &ferrum_logic::capability::digestible(&payload)).unwrap_or_default();
             let waiting: Vec<(Uuid, String)> =
                 sqlx::query_as("select run_id, activation from logic_wait where tenant_id = $1 and event = $2 and correlation = $3 and status = 'waiting' order by run_id, activation for update")
@@ -402,6 +420,27 @@ impl Kernel {
             start_run(tx, tenant, s, generation, ev, &event, &payload).await?;
         }
         Ok(true)
+    }
+
+    /// Asks every open run, in every workspace, to say where it stands (a recheck its runtime answers with a
+    /// report). Run after a restore is released: a run whose history is ahead of the restored database then
+    /// names each effect it did that this database has no receipt for (FLC-OPS-005). How many were asked.
+    pub async fn recheck_logic_runs(&self) -> Result<u64> {
+        if !self.settings.process_runtime {
+            return Ok(0);
+        }
+        let mut tx = self.db.system_tx().await?;
+        let open: Vec<(Uuid, Uuid)> =
+            sqlx::query_as("select tenant_id, id from logic_run where status in ('starting', 'running', 'needs_attention', 'cancelling')")
+                .fetch_all(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        for (tenant, run) in &open {
+            let mut tx = self.db.tenant_tx(*tenant).await?;
+            deliver(&mut tx, *tenant, *run, &Event::Recheck {}).await?;
+            tx.commit().await?;
+        }
+        Ok(open.len() as u64)
     }
 
     /// Moves a run onto `release` as its runtime holds it (`state`), when an approved move reaches it
@@ -632,6 +671,50 @@ impl Kernel {
     /// away); a refusal or an unknown outcome is the run's to route.
     #[allow(clippy::too_many_arguments)]
     pub async fn process_invoke(
+        &self,
+        tenant: Uuid,
+        run: Uuid,
+        activation: &str,
+        capability: &str,
+        version: &str,
+        input: Value,
+        changes: bool,
+        approval: Option<&ferrum_logic::process::Approval>,
+    ) -> Result<Invoked> {
+        let out = self.invoke_step(tenant, run, activation, capability, version, input, changes, approval).await;
+        // Each try counted, with how it went, for whoever looks at the run (FLC-OPS-001). The database away is the
+        // one try that cannot be counted; counting never fails the step itself.
+        let outcome = match &out {
+            Ok(Invoked::Done { .. }) => "done".to_string(),
+            Ok(Invoked::Refused { code, message }) => format!("refused ({code}): {message}"),
+            Ok(Invoked::Unknown { why }) => format!("outcome unknown: {why}"),
+            Err(Error::Db(_)) => return out,
+            Err(e) => format!("waits: {e}"),
+        };
+        if let Err(e) = self.count_attempt(tenant, run, activation, &outcome).await {
+            tracing::warn!(%tenant, %run, %activation, "a step's try was not counted: {e}");
+        }
+        out
+    }
+
+    async fn count_attempt(&self, tenant: Uuid, run: Uuid, activation: &str, outcome: &str) -> Result<()> {
+        let mut tx = self.db.tenant_tx(tenant).await?;
+        sqlx::query(
+            "insert into logic_attempt (tenant_id, run_id, activation, attempts, last_outcome) values ($1, $2, $3, 1, $4) \
+             on conflict (tenant_id, run_id, activation) do update set attempts = logic_attempt.attempts + 1, last_outcome = excluded.last_outcome, last_at = now()",
+        )
+        .bind(tenant)
+        .bind(run)
+        .bind(activation)
+        .bind(outcome.chars().take(500).collect::<String>())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn invoke_step(
         &self,
         tenant: Uuid,
         run: Uuid,
@@ -924,6 +1007,8 @@ impl Kernel {
         let deadline = self.process_deadline(tenant, timeout, Utc::now()).await?.at;
         let key = correlation(value);
         let mut tx = self.db.tenant_tx(tenant).await?;
+        // Serialised with an event being accepted for the same correlation (see `accept_event`).
+        signal_lock(&mut tx, tenant, event, &key).await?;
         let inserted = sqlx::query(
             "insert into logic_wait (tenant_id, run_id, activation, event, correlation, deadline) values ($1, $2, $3, $4, $5, $6) on conflict (tenant_id, run_id, activation) do nothing",
         )
@@ -1064,6 +1149,47 @@ impl Kernel {
         .bind(finished)
         .execute(&mut *tx)
         .await?;
+        // A history ahead of this database: on a database restored to a point before Temporal's histories, an
+        // effect the run says it did can have no receipt here. It may have happened, and nothing here can tell,
+        // so a person looks; nothing is done again by itself (FLC-OPS-005). Only a database that has been held
+        // after a restore is checked, for runs it accepted before then.
+        if !state.effects.is_empty() {
+            let restored: Option<DateTime<Utc>> = sqlx::query_scalar(
+                "select coalesce(p.held_since, p.released_at) from platform_incarnation p, logic_run l \
+                 where l.tenant_id = $1 and l.id = $2 and l.accepted_at < coalesce(p.held_since, p.released_at)",
+            )
+            .bind(tenant)
+            .bind(run)
+            .fetch_optional(&mut *tx)
+            .await?
+            .flatten();
+            if restored.is_some() {
+                let keys: Vec<String> = state.effects.iter().map(|e| format!("{run}/{}", e.activation)).collect();
+                let have: Vec<String> = sqlx::query_scalar("select effect_key from logic_effect where tenant_id = $1 and effect_key = any($2)")
+                    .bind(tenant)
+                    .bind(&keys)
+                    .fetch_all(&mut *tx)
+                    .await?;
+                for e in state.effects.iter().filter(|e| !have.contains(&format!("{run}/{}", e.activation))) {
+                    sqlx::query(
+                        "insert into logic_task (tenant_id, run_id, activation, kind, label, detail) values ($1, $2, $3, 'attention', $4, $5) on conflict do nothing",
+                    )
+                    .bind(tenant)
+                    .bind(run)
+                    .bind(format!("{}#restored", e.activation))
+                    .bind(format!("No receipt here for {}: check whether it happened", e.capability))
+                    .bind(json!({
+                        "why": format!(
+                            "The run's history says {} was done at {}, and this database, restored to a point before it, has no receipt of it. It may have happened: check, put right what the restore lost, then acknowledge. Nothing is done again by itself.",
+                            e.capability, e.activation
+                        ),
+                        "capability": e.capability, "step": e.activation, "output": e.output,
+                    }))
+                    .execute(&mut *tx)
+                    .await?;
+                }
+            }
+        }
         tx.commit().await?;
         Ok(())
     }
@@ -1094,6 +1220,8 @@ impl Kernel {
                'requester', l.requester, 'output', l.output, 'state', l.state, 'accepted_at', l.accepted_at, 'finished_at', l.finished_at, \
                'release', jsonb_build_object('id', l.release_id, 'version', (select r.version from logic_release r where r.tenant_id = l.tenant_id and r.id = l.release_id)), \
                'generation', l.generation, 'trigger_event', l.trigger_event, \
+               'attempts', coalesce((select jsonb_object_agg(a.activation, jsonb_build_object('attempts', a.attempts, 'last', a.last_outcome, \
+                  'first_at', a.first_at, 'last_at', a.last_at)) from logic_attempt a where a.tenant_id = l.tenant_id and a.run_id = l.id), '{}'::jsonb), \
                'moves', coalesce((select jsonb_agg(jsonb_build_object('action', e.action, 'at', e.at, 'by', e.actor, 'diff', e.diff) order by e.id) \
                   from audit_event e where e.tenant_id = l.tenant_id and e.entity = 'LogicRun' and e.record_id = l.id \
                   and e.action in ('plan_migration', 'approve_migration', 'migrated', 'migration_refused')), '[]'::jsonb), \

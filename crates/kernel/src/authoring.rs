@@ -243,8 +243,17 @@ impl Kernel {
     /// decisions and events that run met; a solution imported from an automation that has not taken over yet
     /// is compared, event by event, with what the automation did. Both sides are simulations: nothing is
     /// invoked, changed or kept, and what differs (the outcome, the steps taken, the effects asked for) is
-    /// said case by case. A step the candidate takes that never ran before has no answer on record, and says so.
-    pub async fn shadow_solution(&self, ctx: &Ctx, source: Option<&str>, release: Option<Uuid>, last: i64) -> Result<Value> {
+    /// said case by case. A step the candidate takes that never ran before has no answer on record: `assumed`
+    /// answers it, by activation or by capability id, only where history has none, and each case lists the
+    /// assumptions it used; without one the step says it was not modelled.
+    pub async fn shadow_solution(
+        &self,
+        ctx: &Ctx,
+        source: Option<&str>,
+        release: Option<Uuid>,
+        last: i64,
+        assumed: &BTreeMap<String, Invoked>,
+    ) -> Result<Value> {
         require_author(ctx)?;
         let candidate = self.candidate_release(ctx, source, release).await?;
         let calendars = self.calendars(ctx).await?;
@@ -326,8 +335,18 @@ impl Kernel {
                 for (_, activation, payload) in heard.iter().filter(|h| h.0 == run) {
                     s.signals.insert(activation.clone(), Signal { payload: payload.clone(), after: 0 });
                 }
+                // What the person assumes, only where history has no answer of its own.
+                let mut used = vec![];
+                for (key, answer) in assumed {
+                    if !s.results.contains_key(key) {
+                        s.results.insert(key.clone(), answer.clone());
+                        used.push(key.clone());
+                    }
+                }
                 let (was, would) = (Side::of(&now, simulate::simulate(&now, &s)), Side::of(&candidate, simulate::simulate(&candidate, &s)));
-                cases.push(was.against(would, json!({"run": run, "at": at})));
+                let mut case = was.against(would, json!({"run": run, "at": at}));
+                case["assumed"] = json!(used);
+                cases.push(case);
             }
             return Ok(shadowed(json!({"kind": "release", "release": id, "version": version}), about, cases));
         }
@@ -376,7 +395,9 @@ impl Kernel {
                 effects: if acted { did.clone() } else { vec![] },
                 not_modelled: vec![],
             };
-            let mut would = Side::of(&candidate, simulate::simulate(&candidate, &scenario(process.clone(), trigger, at)));
+            let mut s = scenario(process.clone(), trigger, at);
+            s.results = assumed.clone().into_iter().collect();
+            let mut would = Side::of(&candidate, simulate::simulate(&candidate, &s));
             would.outcome = if would.effects.is_empty() { "passed it by".into() } else { "acted".into() };
             let mut case = json!({"event": id, "at": at, "now": was.json(), "candidate": would.json()});
             let differs = (acted != (would.outcome == "acted")).then_some("whether it acts");
