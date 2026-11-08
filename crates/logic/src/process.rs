@@ -170,6 +170,10 @@ pub enum Event {
     },
     CaseClosed {
         activation: String,
+        /// Each finished task's outputs as the record has them, so a close that overtakes a task's own delivery
+        /// still closes.
+        #[serde(default)]
+        done: Value,
     },
     CaseTimedOut {
         activation: String,
@@ -531,8 +535,11 @@ impl<'r> Machine<'r> {
                     done.entry(task).or_insert(Value::Object(output));
                 }
             }
-            Event::CaseClosed { activation } => {
-                if let Some(Waiting::Case { frame, node, done }) = run.waiting.get(&activation).cloned() {
+            Event::CaseClosed { activation, done: recorded } => {
+                if let Some(Waiting::Case { frame, node, mut done }) = run.waiting.get(&activation).cloned() {
+                    for (task, output) in recorded.as_object().into_iter().flatten() {
+                        done.entry(task.clone()).or_insert_with(|| output.clone());
+                    }
                     let required: Vec<&CaseTask> = match self.node(run, &frame, &node) {
                         Some(Node::Case { tasks, .. }) => tasks.iter().filter(|t| t.required).collect(),
                         _ => vec![],
@@ -1520,22 +1527,13 @@ mod tests {
         assert!(cmds.iter().any(|c| matches!(c, Command::OpenTask { activation, .. } if activation == "review_loop#2/review")), "{cmds:?}");
         let cmds = approve(&m, &mut run, "review_loop#2/review", true);
         assert!(matches!(cmds.as_slice(), [Command::OpenCase { activation, .. }] if activation == "investigate"), "{cmds:?}");
-        assert!(m.on(&mut run, Event::CaseClosed { activation: "investigate".into() }).is_empty(), "inspect is required and not done");
-        m.on(
-            &mut run,
-            Event::CaseTaskDone {
-                activation: "investigate".into(),
-                task: "inspect".into(),
-                by: "u-insp".into(),
-                decision_id: "d-1".into(),
-                at: "t".into(),
-                values: json!({"passed": true}),
-            },
-        );
-        let cmds = m.on(&mut run, Event::CaseClosed { activation: "investigate".into() });
+        assert!(m.on(&mut run, Event::CaseClosed { activation: "investigate".into(), done: json!({}) }).is_empty(), "inspect is required and not done");
+        // The close carries what the record says was done, so it closes even ahead of the task's own delivery.
+        let cmds = m.on(&mut run, Event::CaseClosed { activation: "investigate".into(), done: json!({"inspect": {"passed": true, "decision": "done"}}) });
         assert_eq!(cmds, vec![Command::Sleep { activation: "settle".into(), wait: json!({"business_days": 1, "calendar": "india"}) }]);
         let cmds = m.on(&mut run, Event::Woke { activation: "settle".into(), at: "2026-11-10T10:00:00Z".into() });
         let Some(Command::Finish { outcome: Finished::Completed, output }) = cmds.first() else { panic!("{cmds:?}") };
+        assert_eq!(run.outputs["investigate"]["inspect"]["passed"], json!(true));
         assert_eq!(output["rounds"], json!(2));
         assert_eq!(output["lines"].as_array().unwrap().iter().map(|l| l["key"].as_str().unwrap()).collect::<Vec<_>>(), vec!["A", "B.2", "C"]);
     }

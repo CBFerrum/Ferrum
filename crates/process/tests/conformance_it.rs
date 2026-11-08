@@ -245,6 +245,14 @@ async fn scenario() {
         "completed",
         "no second run reported anything"
     );
+    // A delivery to a run that has ended is dropped, not retried until the outbox gives up on it.
+    let late = ferrum_kernel::outbox::Event {
+        tenant_id: t,
+        topic: ferrum_kernel::process::DELIVER_TOPIC.into(),
+        payload: json!({"run": run1, "event": {"event": "cancel_requested", "by": "u", "reason": "late"}}),
+        ..Default::default()
+    };
+    ferrum_kernel::hooks::EventSink::on_event(&again, &k, &late).await.expect("dropped");
 
     // Its history replays with the same code and codec; without the codec it cannot even be read (FLC-PROC-007).
     // Fetched by a client without the codec, as Temporal keeps it: the marker the run read is nowhere in it.
