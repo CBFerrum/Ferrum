@@ -58,8 +58,8 @@ rights of whoever activated its release, as they are then. Revoked rights refuse
 is borrowed. An effect that relies on an approval is refused if the approved record's version has changed since.
 
 **People.** A task is decided on the material the person was shown (its digest); a decision on anything
-else is refused, as is one by the requester, by someone without the role, or by anyone but the person it was
-handed to. Decisions never change. A task is handed on only to someone holding its role, never back along its
+else is refused, as is one by the requester, by someone without the role (an administrator included), or by
+anyone but the person it was handed to. Decisions never change. A task is handed on only to someone holding its role, never back along its
 chain or to the requester. A task's material is readable only by someone who may decide it, or an
 administrator. Approved form values are checked against the form.
 
