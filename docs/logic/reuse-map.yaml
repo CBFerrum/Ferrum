@@ -123,3 +123,8 @@ areas:
     relationship: new
     how: "An app in its own repository, CBFerrum/ferrum-app-intelligence"
     requirements: [FLC-AI-003, FLC-AI-004]
+  - area: Stock holds for a quality case
+    existing: [ferrum-app-erp:addons/stock-ops/packages/stock_ops/entities/quality.yaml (QualityInspection), ferrum-app-assets:packages/assets_ops/entities/maintenance.yaml (MaintenanceRequest, EquipmentLockout)]
+    relationship: new
+    how: "The package's condition example places and releases an inventory hold. Ferrum has inspections, maintenance requests and equipment lockouts, but no capability that holds stock, so the compiler's copy of the example keeps the package's names for those two steps (crates/logic/src/compile.rs). An ERP action with a contract would fill it"
+    requirements: [FLC-CAP-001]
