@@ -116,7 +116,7 @@ MUTANTS = [
     ("subprocess-recurses", "crates/logic/src/compile.rs", 'if s.recursive.contains(process) {', 'if s.recursive.contains(process) && false {', LOGIC_UNIT),
     ("resume-reads-unrun", "crates/logic/src/compile.rs", 'find(|&&d| d != ti && !dom[si].contains(&d))', 'find(|&&d| d != ti && !dom[si].contains(&d) && d == usize::MAX)', LOGIC_UNIT),
     ("approval-may-come-later", "crates/logic/src/compile.rs", '&& (!s.tasks.contains(task) || !env.vars.contains_key(task))', '&& !s.tasks.contains(task)', LOGIC_UNIT),
-    ("history-not-sealed", "crates/process/src/lib.rs", '    options.data_converter = converter(s.key.clone());', '    let _ = converter(s.key.clone());', RUNTIME),
+    ("history-not-sealed", "crates/process/src/lib.rs", '    options.data_converter = converter(s.keys.clone());', '    let _ = converter(s.keys.clone());', RUNTIME),
     ("run-started-again", "crates/process/src/lib.rs", 'options.id_reuse_policy = WorkflowIdReusePolicy::RejectDuplicate;', 'options.id_reuse_policy = WorkflowIdReusePolicy::AllowDuplicate;', RUNTIME),
     ("capability-input-says-who-asks", "crates/logic/src/capability.rs", "map.keys().find(|k| CONTEXT_FIELDS.contains(&k.as_str()) && !self.declares(k))", "map.keys().find(|k| k.is_empty() && !self.declares(k))", CAPABILITY),
     # The directory of people is the members'.

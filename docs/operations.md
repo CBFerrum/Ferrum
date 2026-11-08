@@ -471,6 +471,15 @@ rather than go out unsigned, so make new ones. The Web Push key is replaced, and
 again. Passwords, sessions and business data are not affected. Restoring a backup without its key
 leaves the same state.
 
+## Durable processes
+
+Customers' solutions may hold processes that wait for people, events and deadlines (the Full Process
+profile). They run on a [Temporal](https://temporal.io) server (MIT) beside Ferrum: set `TEMPORAL_ADDRESS`
+(and `TEMPORAL_NAMESPACE`, created beforehand) on the replicas that run background work. Without it, a
+solution with a process is refused and everything else runs as before. What Temporal stores is sealed with
+`FERRUM_SECRET_KEY`; after rotating it, keep the old key in `FERRUM_RETIRED_SECRET_KEYS` until the runs
+started before have finished. Settings and behaviour: [logic/processes.md](logic/processes.md).
+
 ## Background jobs
 
 Long work runs in the `job` table: bulk operations over many records, workspace exports, and whatever

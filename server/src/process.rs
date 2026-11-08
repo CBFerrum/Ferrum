@@ -14,7 +14,7 @@ static SETTINGS: std::sync::OnceLock<ferrum_process::Settings> = std::sync::Once
 
 /// Connects to Temporal when it is configured and registers what starts and signals runs. Whether this server
 /// runs processes.
-pub async fn configure(hooks: &mut HookRegistry, key: &SecretKey) -> Result<bool, String> {
+pub async fn configure(hooks: &mut HookRegistry, key: &SecretKey, retired: &[SecretKey]) -> Result<bool, String> {
     let Some(address) = std::env::var("TEMPORAL_ADDRESS").ok().filter(|a| !a.trim().is_empty()) else { return Ok(false) };
     #[cfg(feature = "process")]
     {
@@ -22,7 +22,7 @@ pub async fn configure(hooks: &mut HookRegistry, key: &SecretKey) -> Result<bool
             address,
             namespace: std::env::var("TEMPORAL_NAMESPACE").unwrap_or_else(|_| "ferrum".into()),
             queue: std::env::var("TEMPORAL_TASK_QUEUE").unwrap_or_else(|_| ferrum_process::QUEUE.into()),
-            key: Arc::new(key.clone()),
+            keys: Arc::new(ferrum_process::Keys { current: key.clone(), retired: retired.to_vec() }),
         };
         let client = ferrum_process::client(&settings).await.map_err(|e| format!("TEMPORAL_ADDRESS: {e}"))?;
         hooks.add_event_sink(Arc::new(ferrum_process::Dispatch::new(client, settings.queue.clone())));
@@ -31,7 +31,7 @@ pub async fn configure(hooks: &mut HookRegistry, key: &SecretKey) -> Result<bool
     }
     #[cfg(not(feature = "process"))]
     {
-        let _ = (hooks, key);
+        let _ = (hooks, key, retired);
         tracing::warn!(%address, "TEMPORAL_ADDRESS is set, but this build has no process runtime (the `process` feature): processes are refused");
         Ok(false)
     }

@@ -116,7 +116,7 @@ areas:
   - area: Durable processes, tasks, signals
     existing: []
     relationship: new
-    how: "Kernel tables Ferrum owns (start intents, effects, tasks, signals, deployments) and a process worker on the backend ADR L-01 chooses"
+    how: "Built in W3 (docs/logic/processes.md): kernel tables Ferrum owns (runs as start intents, tasks and decisions, waits, signals, calendars; effects are W1's receipts) and crates/process, the worker on Temporal that ADR L-01 chose; deployments and their bindings come with W4"
     requirements: [FLC-PROC-004, FLC-PROC-007, FLC-HUMAN-003]
   - area: Intelligence
     existing: []
