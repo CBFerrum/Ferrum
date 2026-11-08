@@ -253,6 +253,11 @@ pub fn schema_type(s: &Value) -> Ty {
     if has("string") && s.get("format").and_then(Value::as_str) == Some("date") {
         return Ty::Date;
     }
+    if has("string")
+        && let Some(entity) = s.get("x-ferrum-link").and_then(Value::as_str)
+    {
+        return Ty::Ref(entity.to_string());
+    }
     if has("string") && has("number") {
         return Ty::Decimal;
     }
@@ -352,6 +357,9 @@ pub fn compile(src: &Solution, resolver: &dyn Resolver, profile: RuntimeProfile)
         }
         match resolver.capability(&r.id, &r.version) {
             Some(c) => {
+                if let Some(why) = &c.deprecated {
+                    p.note(Code::CapabilityUnavailable, at.clone(), None, format!("{} is deprecated: {why}", r.id));
+                }
                 caps.insert(r.id.clone(), c);
             }
             None => match resolver.installed(&r.id) {
@@ -1832,6 +1840,29 @@ mod tests {
             .unwrap()
             .push(json!({"id": "another_department", "entity": "MaterialRequest", "phase": "derive", "writes": {"x_department": "\"ops\""}}));
         refused_with(v, Code::Conflict, "one writer per field");
+    }
+
+    #[test]
+    fn a_deprecated_capability_is_said_when_checked_and_still_compiles() {
+        // AT-CAP-008: its owner says it is on its way out and what replaces it; a release using it is told, and one
+        // bound to it keeps working until it is gone.
+        let mut fx = Fixture::new();
+        let used = fx.caps.iter_mut().find(|c| c.id == "procurement.material_request.make_purchase_order").expect("the fixture's order");
+        used.deprecated = Some("make_purchase_order_v2 replaces it from 1 March 2027".into());
+        let r = compile(&Solution::from_value(purchase()).unwrap(), &fx, RuntimeProfile::FullProcess).expect("still compiles");
+        assert!(r.notes.iter().any(|n| n["message"].as_str().unwrap().contains("is deprecated: make_purchase_order_v2 replaces it")), "{:?}", r.notes);
+    }
+
+    #[test]
+    fn rules_cannot_write_what_the_app_or_the_platform_owns() {
+        // AT-SEC-002: a customer's rule may not take over a field its app owns, nor one of the platform's, so it
+        // cannot switch off a native guard or the rights that read them by writing what they decide on.
+        let mut v = purchase();
+        v["rules"][1]["writes"] = json!({"requested_by": "\"someone else\""});
+        refused_with(v, Code::PermissionDenied, "belongs to MaterialRequest's app");
+        let mut v = purchase();
+        v["rules"][1]["writes"] = json!({"owner": "\"someone else\""});
+        refused_with(v, Code::PermissionDenied, "the platform's");
     }
 
     #[test]

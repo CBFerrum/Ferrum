@@ -390,6 +390,8 @@ async fn erase_record(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, id: U
         k.set_values_tx(&engine, tx, entity, id, values).await?;
     }
     let events = redact(tx, ctx, entity, id, fields, reason).await?;
+    // What runs keep of the record goes too, and stays gone when a runtime reports a run again (FLC-OPS-006).
+    let runs = crate::process::erase_run_copies(tx, ctx.tenant, entity, id, fields).await?;
     let files = attached(tx, ctx.tenant, entity, id).await?;
     if !files.is_empty() {
         let ids: Vec<Uuid> = files.iter().map(|f| f.0).collect();
@@ -397,7 +399,8 @@ async fn erase_record(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, id: U
         sqlx::query("delete from file_object where tenant_id = $1 and id = any($2)").bind(ctx.tenant).bind(&ids).execute(&mut **tx).await?;
         outbox::release_objects(tx, ctx.tenant, &keys).await?;
     }
-    audit::record(tx, ctx, entity, id, "erase_personal_data", None, json!({"fields": fields, "reason": reason, "files": files.len()})).await?;
+    audit::record(tx, ctx, entity, id, "erase_personal_data", None, json!({"fields": fields, "reason": reason, "files": files.len(), "run_copies": runs}))
+        .await?;
     Ok((events, files.len() as u64))
 }
 

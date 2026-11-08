@@ -404,6 +404,9 @@ impl Kernel {
                 users.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
             )));
         }
+        // What runs on these apps' capabilities waits for them once they are out, and is recorded as such
+        // (FLC-CAP-008): never failed by their going.
+        let waiting = if ctx.is_admin && !ctx.is_system { self.logic_dependents(ctx, names).await? } else { vec![] };
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         if delete_data {
             for name in names {
@@ -434,6 +437,16 @@ impl Kernel {
             sqlx::query("delete from role where tenant_id = $1 and package = $2").bind(ctx.tenant).bind(name).execute(&mut *tx).await?;
             sqlx::query("delete from installed_package where tenant_id = $1 and name = $2").bind(ctx.tenant).bind(name).execute(&mut *tx).await?;
         }
+        crate::audit::record(
+            &mut tx,
+            ctx,
+            "Package",
+            Uuid::now_v7(),
+            if delete_data { "remove_with_data" } else { "remove" },
+            None,
+            json!({"packages": names, "waiting": waiting}),
+        )
+        .await?;
         Registry::bump_version(&mut tx, ctx.tenant).await?;
         tx.commit().await?;
         self.registry.invalidate(ctx.tenant);

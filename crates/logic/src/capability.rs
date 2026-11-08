@@ -149,6 +149,10 @@ pub struct Capability {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compensate_with: Option<String>,
     pub limits: Limits,
+    /// That it is on its way out, and what replaces it and until when, as its owner says (FLC-CAP-008). A release
+    /// bound to it keeps it; checking a new one says so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecated: Option<String>,
 }
 
 /// A value as a digest sees it: a fraction becomes its decimal text, because canonical JSON holds no
@@ -278,6 +282,7 @@ mod tests {
             completion: "The order exists, committed with the receipt".into(),
             compensate_with: None,
             limits: Limits::default(),
+            deprecated: None,
         }
     }
 
