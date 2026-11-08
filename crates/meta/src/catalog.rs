@@ -167,6 +167,22 @@ impl Catalog {
             {
                 return invalid(format!("{name}: field_prefix must be an identifier ending in '_' (not 'x_')"));
             }
+            let mut events = HashSet::new();
+            for ev in &p.manifest.events {
+                let well_formed = ev.name.starts_with(|c: char| c.is_ascii_lowercase())
+                    && ev.name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.');
+                if !well_formed || !events.insert(ev.name.as_str()) {
+                    return invalid(format!("{name}: event '{}' must be unique and written [a-z][a-z0-9_.]*", ev.name));
+                }
+                if let Some(entity) = &ev.entity
+                    && !self.entities.get(entity).is_some_and(|(owner, _)| deps.contains(owner))
+                {
+                    return invalid(format!("{name}: event {} is about {entity}, which is not this package's or a dependency's", ev.name));
+                }
+                if ev.payload.as_ref().is_some_and(|v| !v.is_object()) {
+                    return invalid(format!("{name}: event {}'s payload must be a JSON Schema object", ev.name));
+                }
+            }
             for ov in &p.manifest.overlays {
                 let Some((owner, _)) = self.entities.get(&ov.entity) else {
                     return invalid(format!("{name}: overlay targets unknown entity {}", ov.entity));
@@ -731,7 +747,8 @@ pub(crate) fn validate_entity(e: &EntityDef, all: &HashMap<&str, &EntityDef>) ->
     }
     let mut action_names = HashSet::new();
     for a in &e.actions {
-        if !is_ident(&a.name) || ["submit", "cancel", "amend", "delete"].contains(&a.name.as_str()) {
+        // The record operations' names stay theirs, so a capability's id names one thing.
+        if !is_ident(&a.name) || ["submit", "cancel", "amend", "delete", "create", "read", "list", "update"].contains(&a.name.as_str()) {
             return Err(format!("invalid action name '{}'", a.name));
         }
         if !action_names.insert(a.name.as_str()) {
@@ -741,9 +758,43 @@ pub(crate) fn validate_entity(e: &EntityDef, all: &HashMap<&str, &EntityDef>) ->
             return Err(format!("action {}: invalid permission {}", a.name, a.permission));
         }
         compile(&format!("action {}", a.name), &a.condition)?;
+        if let Some(c) = &a.contract {
+            validate_contract(e, a, c)?;
+        }
     }
     if let Some(n) = &e.numbering {
         validate_numbering(e, n)?;
+    }
+    Ok(())
+}
+
+/// An action's contract must agree with what the action is: a read-only one cannot change anything, any
+/// other cannot claim to be pure, and what undoes it must be another action of the same entity.
+fn validate_contract(e: &EntityDef, a: &ActionDef, c: &ActionContract) -> Result<(), String> {
+    use ferrum_logic::capability::Effect;
+    if let Some(effect) = c.effect {
+        if a.read_only && effect.changes() {
+            return Err(format!("action {}: a read-only action cannot be {effect:?}", a.name));
+        }
+        if !a.read_only && !effect.changes() {
+            return Err(format!("action {}: an action that writes cannot be {effect:?}; mark it read_only", a.name));
+        }
+        if effect == Effect::HumanTask {
+            return Err(format!("action {}: a person's task is the platform's, not an action's", a.name));
+        }
+    }
+    if let Some(returns) = &c.returns
+        && !returns.is_object()
+    {
+        return Err(format!("action {}: returns must be a JSON Schema object", a.name));
+    }
+    if let Some(undo) = &c.compensate_with
+        && (undo == &a.name || !e.actions.iter().any(|x| &x.name == undo))
+    {
+        return Err(format!("action {}: compensate_with names {undo}, which is not another action of {}", a.name, e.name));
+    }
+    if c.completion.as_deref().is_some_and(|t| t.trim().is_empty()) {
+        return Err(format!("action {}: completion says nothing", a.name));
     }
     Ok(())
 }
@@ -1058,5 +1109,49 @@ mod tests {
             "[]",
         );
         assert!(Catalog::from_packages(vec![pkg("{package: core, version: '1'}", CORE), no_dep]).is_err());
+    }
+
+    /// A package with one document whose actions are `actions` (YAML flow sequence).
+    fn with_actions(actions: &str) -> Result<Catalog, MetaError> {
+        let entities = format!("- {{name: Hold, label: Hold, kind: document, submittable: true, fields: [{{name: qty, type: int}}], actions: {actions}}}");
+        Catalog::from_packages(vec![pkg("{package: core, version: '1'}", CORE), pkg("{package: holds, version: '0.1.0', depends: [core]}", &entities)])
+    }
+
+    #[test]
+    fn an_action_contract_agrees_with_the_action() {
+        assert!(with_actions("[{name: place, label: Place, contract: {effect: transactional_action, completion: The hold is placed}}]").is_ok());
+        assert!(with_actions("[{name: peek, label: Peek, read_only: true, contract: {effect: query}}]").is_ok());
+        let refused = |actions: &str| with_actions(actions).unwrap_err().to_string();
+        assert!(refused("[{name: peek, label: Peek, read_only: true, contract: {effect: transactional_action}}]").contains("read-only"));
+        assert!(refused("[{name: place, label: Place, contract: {effect: pure}}]").contains("writes"), "a write cannot call itself pure");
+        assert!(refused("[{name: place, label: Place, contract: {effect: human_task}}]").contains("platform"));
+        assert!(refused("[{name: place, label: Place, contract: {compensate_with: release}}]").contains("release"), "an undo that does not exist");
+        assert!(refused("[{name: place, label: Place, contract: {compensate_with: place}}]").contains("place"), "an action cannot undo itself");
+        assert!(with_actions("[{name: place, label: Place, contract: {compensate_with: release}}, {name: release, label: Release}]").is_ok());
+        assert!(refused("[{name: place, label: Place, contract: {returns: 3}}]").contains("returns"));
+        let unknown = serde_yaml::from_str::<ActionDef>("{name: place, label: Place, contract: {effect: query, sideways: true}}");
+        assert!(unknown.unwrap_err().to_string().contains("sideways"), "unknown keys are refused when the package is read");
+    }
+
+    #[test]
+    fn the_record_operations_keep_their_names() {
+        for name in ["create", "read", "list", "update", "delete", "submit"] {
+            assert!(with_actions(&format!("[{{name: {name}, label: X}}]")).is_err(), "{name}");
+        }
+    }
+
+    #[test]
+    fn declared_events_are_checked() {
+        let with_events = |events: &str| {
+            Catalog::from_packages(vec![
+                pkg("{package: core, version: '1'}", CORE),
+                pkg(&format!("{{package: supply, version: '0.1.0', depends: [core], events: {events}}}"), "[]"),
+            ])
+        };
+        assert!(with_events("[{name: order_acknowledged, label: Order acknowledged, entity: Invoice, payload: {type: object}}]").is_ok());
+        assert!(with_events("[{name: Order-Ack, label: X}]").is_err(), "a badly written name");
+        assert!(with_events("[{name: a, label: X}, {name: a, label: Y}]").is_err(), "twice");
+        assert!(with_events("[{name: a, label: X, entity: Nowhere}]").is_err(), "about an entity nobody has");
+        assert!(with_events("[{name: a, label: X, payload: 3}]").is_err());
     }
 }

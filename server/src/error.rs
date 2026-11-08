@@ -42,6 +42,7 @@ impl IntoResponse for ApiError {
                 tracing::warn!("service unavailable: {e}");
                 json!({"error": e.code(), "message": e.to_string()})
             }
+            Error::Refused { pointer: Some(pointer), .. } => json!({"error": e.code(), "message": e.to_string(), "pointer": pointer}),
             _ => json!({"error": e.code(), "message": e.to_string()}),
         };
         let mut resp = (status, axum::Json(body)).into_response();

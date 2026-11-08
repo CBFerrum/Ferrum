@@ -84,7 +84,7 @@ pub struct Saga {
 }
 
 fn final_error(e: &Error) -> bool {
-    matches!(e, Error::Invalid(_) | Error::Validation(_) | Error::Forbidden(_) | Error::NotFound(_) | Error::Unauthorized(_))
+    matches!(e, Error::Invalid(_) | Error::Validation(_) | Error::Forbidden(_) | Error::NotFound(_) | Error::Unauthorized(_) | Error::Refused { .. })
 }
 
 impl Saga {
