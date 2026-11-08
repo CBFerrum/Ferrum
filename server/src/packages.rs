@@ -396,6 +396,7 @@ apps! {
         "objectives" => ferrum_app_objectives,
         "dam" => ferrum_app_dam,
         "metrics" => ferrum_app_metrics,
+        "intelligence" => ferrum_app_intelligence,
         "control" => ferrum_app_control,
         "social" => ferrum_app_social,
         "field-service" => ferrum_app_field_service,
