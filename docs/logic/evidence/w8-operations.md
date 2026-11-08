@@ -151,7 +151,10 @@ recorded one, and each case lists the assumptions it used. Mutant `shadow-assume
 
 **Activations seen at once (FLC-MIG-003).** Whether a replica's list of what starts runs is current is now
 judged by the workspace's version in the database, read with each event, not by the replica's last notification.
-An activation committed on another replica is taken up by the very next event.
+An activation committed on another replica is taken up by the very next event. `process_it` shows it with a
+second kernel on its own pool and without listeners: it read the workspace just before another kernel activated
+a solution starting on new orders, and the next order's event, given to it, started the run. Mutant
+`replica-misses-an-activation` (the replica's own version again) is caught.
 
 **Intelligence 0.1.1.** The boot log showed the App Manager leaving Intelligence out: its summary was longer
 than 200 characters. CBFerrum/ferrum-app-intelligence#2 (`02c6227`) shortened it, Ferrum pins it, and the boot
