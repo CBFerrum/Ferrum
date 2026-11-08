@@ -32,8 +32,9 @@ pub const STEP_BUDGET: u32 = 10_000;
 pub const MAX_LIST: usize = 1_000;
 pub const MAX_TEXT: usize = 64 * 1024;
 
-/// A static type.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A static type. Written into a release so that a run reads each step's output as the compiler typed it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Ty {
     Bool,
     Int,
@@ -48,6 +49,7 @@ pub enum Ty {
     List(Box<Ty>),
     Record(BTreeMap<String, Ty>),
     /// Untyped data (a JSON value whose shape is not declared): fields read from it are untyped too.
+    #[default]
     Any,
 }
 

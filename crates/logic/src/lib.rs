@@ -9,6 +9,7 @@
 //! * [`compile`]: a solution's source in, an immutable release (or every fault, each with a pointer) out;
 //! * [`decision`]: decision tables with hit policies, overlap, gap and reachability findings;
 //! * [`expr`]: typed expressions on CEL's syntax, exact money and quantities, unknown kept apart from false;
+//! * [`process`]: a process run as a pure state machine, which the durable runtime and the simulator drive;
 //! * [`refusal`]: the stable codes a refusal carries, whichever path it came by;
 //! * [`rules`]: active releases' rules, run on records the same way by the server and the simulator;
 //! * [`solution`]: a solution's source, read strictly (a key twice, an unknown key or excess depth refused).
@@ -20,6 +21,9 @@ pub mod capability;
 pub mod compile;
 pub mod decision;
 pub mod expr;
+pub mod process;
 pub mod refusal;
 pub mod rules;
 pub mod solution;
+#[cfg(test)]
+mod testkit;
