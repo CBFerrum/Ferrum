@@ -18,7 +18,7 @@ second run.
 
 - **Server:** `cargo build -p ferrum-server --features process`, which is every default app (the countries,
   the business apps, Operations, Edge, Metrics, Intelligence, Studio, …) with the process runtime, at Ferrum
-  `BUILD_COMMIT`.
+  `40ff6d7`.
 - **Pins:**
   - Ferrum-Frontend `48907d8`;
   - ferrum-app-edge `96b4eb4`;
