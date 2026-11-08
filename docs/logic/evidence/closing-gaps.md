@@ -280,7 +280,11 @@ Metrics repository, plans a metric's query through its Wren semantic model with 
     - Wren's SQL for a long chain nests a subquery per relationship, so it may be parsed deeper (512) than the
       reader's own query (50).
     - Mutants caught: `query-depth-unbounded`, `query-reads-unbounded`, `model-expressions-unshaped`,
-      `relationship-conditions-unshaped`, `models-unbounded`, `time-unbounded`, `planned-sql-held-to-readers-depth`.
+      `relationship-conditions-unshaped`, `models-unbounded`, `time-unbounded`, `planned-sql-held-to-readers-depth`;
+      on the caller's bound, `caller-waits-for-the-work` and `work-not-stopped`, driven by work that never yields.
+    - One survives: `caller-waits-on-unyielding-work`, which awaits the query in the caller. Every query the
+      engine takes yields, so the time inside the task already stops it. The task bound guards against work
+      that does not.
 - *Freshness (FLC-SEM-007).* Every answer says when each dataset was last written. A value from data older than
   its source allows carries it under `stale`, and so does a composed metric over it and one of the records. An
   Intelligence answer says so in its `limits` (Intelligence 0.2.1, #4, a0056b3). With the engine gone, there is
@@ -338,9 +342,9 @@ failed on main since W7 and W8, and the checks run here had covered neither.
   - fmt;
   - clippy over the workspace;
   - Metrics' unit tests (10), `composed_it`, `currency_it`, `datasets_it`, `external_it`, `metrics_it`, `wren_it`;
-  - the engine's unit test, `engine_it` (8) and `http_it`;
+  - the engine's unit tests (2), `engine_it` (8) and `http_it`;
   - the interface: dist matches its sources, typecheck, tests (3).
-  - The seven new mutants were caught. All 490 packages pass the licence policy.
+  - Nine new mutants were caught, and one survived, as above. All 490 packages pass the licence policy.
   - GitHub's run of the PR built, ran and asked the engine's image (`engine-image`), which this disk cannot.
 - Intelligence (#4): fmt, clippy, its unit tests (2) and `evals_it`, against Metrics 0.7.0.
 - Edge (#16): no code changed; its app library tests (22) and interface check passed.
