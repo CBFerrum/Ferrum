@@ -19,8 +19,11 @@ resources:
   - networkpolicy.yaml
   - servicemonitor.yaml
 # Browser editors (docs/operations.md, "Browser editors"): uncomment, and set its hosts in editors/.
+# Metrics' engine for external sources (docs/operations.md, "Metrics' engine for external sources"):
+# uncomment, after creating what metrics-engine/kustomization.yaml lists.
 # components:
 #   - editors
+#   - metrics-engine
 images:
   - name: ferrum
     newName: ghcr.io/cbferrum/ferrum
