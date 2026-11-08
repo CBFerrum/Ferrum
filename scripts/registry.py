@@ -11,6 +11,7 @@ runs, the digest of a release and a named reviewer. See docs/registry/README.md.
 
 import datetime
 import json
+import os
 import re
 import sys
 from collections import Counter, defaultdict
@@ -80,8 +81,28 @@ FCP_WORKSTREAMS = {
 }
 PLATFORM = ROOT / "docs" / "platform"
 TRACEABILITY = PLATFORM / "traceability.md"
+# The Logic Platform program (docs/registry/flc.yaml, docs/logic): the same states, its own workstreams.
+LOGIC = ROOT / "docs" / "logic"
+FLC_WORKSTREAMS = {
+    "W0": "Establish reality and decision records",
+    "W1": "Shared types and business capabilities",
+    "W2": "Compiler, pure rules and hook integration",
+    "W3": "Durable processes and human work",
+    "W4": "Complete Studio product",
+    "W5": "Generic edge and event integration",
+    "W6": "Analytical semantics and engine reuse",
+    "W7": "Intelligence experience and governed proposals",
+    "W8": "Migration, release and operations",
+}
+# A program: its registry, its catalog of requirements and cases, its workstreams and its generated page.
+PROGRAMS = {
+    "fcp": (REGISTRY / "fcp.yaml", PLATFORM / "catalog.json", FCP_WORKSTREAMS, TRACEABILITY),
+    "flc": (REGISTRY / "flc.yaml", LOGIC / "catalog.json", FLC_WORKSTREAMS, LOGIC / "traceability.md"),
+}
+# The folder holding the other checkouts: beside this one, unless a worktree elsewhere says where.
+SIB = Path(os.environ.get("FERRUM_SIBLINGS") or ROOT.parent)
 # Sibling checkouts, where a file of another repository is looked for. Absent ones (CI) are skipped.
-SIBLINGS = {"ferrum-app-erp": ["../docs-work/ferrum-app-erp", "../erp4/ferrum-app-erp", "../ferrum-app-erp"], "ferrum-app-edge": ["../docs-work/ferrum-app-edge", "../ferrum-app-edge"], "Ferrum-Frontend": ["web"]}
+SIBLINGS = {"ferrum-app-erp": ["../docs-work/ferrum-app-erp", "../erp4/ferrum-app-erp", "../ferrum-app-erp"], "ferrum-app-edge": ["../docs-work/ferrum-app-edge", "../ferrum-app-edge"], "Ferrum-Frontend": ["web", "../ferrum/web"]}
 # What the documents must no longer say, because the code says otherwise.
 DRIFT = [
     ("docs/limits.md", r"security keys \(WebAuthn\)", "passkeys exist: crates/kernel/src/passkey.rs"),
@@ -142,7 +163,7 @@ def located(path: str):
     if ":" not in path:
         return ROOT / path
     repo, rest = path.split(":", 1)
-    bases = [ROOT / base for base in [f"../{repo}", *SIBLINGS.get(repo, [])] if (ROOT / base).is_dir()]
+    bases = [b for b in (SIB / base[3:] if base.startswith("../") else ROOT / base for base in [f"../{repo}", *SIBLINGS.get(repo, [])]) if b.is_dir()]
     return next((base / rest for base in bases if (base / rest).exists()), bases[0] / rest if bases else None)
 
 
@@ -195,17 +216,18 @@ def problems(reqs: list) -> list:
     return bad
 
 
-def fcp_load() -> list:
-    return yaml.safe_load((REGISTRY / "fcp.yaml").read_text())["requirements"]
+def fcp_load(program: str = "fcp") -> list:
+    return yaml.safe_load(PROGRAMS[program][0].read_text())["requirements"]
 
 
-def fcp_problems(entries: list) -> list:
+def fcp_problems(entries: list, program: str = "fcp") -> list:
     """What a status may claim. A file, a menu or a green build is not evidence of a later state."""
-    catalog = json.loads((PLATFORM / "catalog.json").read_text())
+    registry_file, catalog_file, _, _ = PROGRAMS[program]
+    catalog = json.loads(catalog_file.read_text())
     expected = {r["id"]: r for r in catalog["requirements"]}
     blockers = {b["id"] for b in yaml.safe_load((REGISTRY / "blockers.yaml").read_text())["blockers"]}
     reviewers = set(yaml.safe_load((REGISTRY / "reviewers.yaml").read_text())["independent"] or [])
-    bad = [f"{i}: missing from fcp.yaml" for i in expected.keys() - {e["id"] for e in entries}]
+    bad = [f"{i}: missing from {registry_file.name}" for i in expected.keys() - {e["id"] for e in entries}]
     seen = Counter(e["id"] for e in entries)
     bad += [f"{i}: appears {n} times" for i, n in seen.items() if n > 1]
     for e in entries:
@@ -276,14 +298,15 @@ def journey_problems() -> list:
     return bad
 
 
-def traceability(entries: list) -> str:
+def traceability(entries: list, program: str = "fcp") -> str:
+    registry_file, catalog_file, workstreams, _ = PROGRAMS[program]
     counts = Counter(e["status"] for e in entries)
-    cases = {c["id"]: c for c in json.loads((PLATFORM / "catalog.json").read_text())["acceptance"]}
+    cases = {c["id"]: c for c in json.loads(catalog_file.read_text())["acceptance"]}
     by_requirement = {c["requirement"]: c for c in cases.values()}
     out = [
         "# Traceability",
         "",
-        "Generated from [docs/registry/fcp.yaml](../registry/fcp.yaml) by `scripts/registry.py generate`; edit the registry, not this.",
+        f"Generated from [docs/registry/{registry_file.name}](../registry/{registry_file.name}) by `scripts/registry.py generate`; edit the registry, not this.",
         "Each requirement's acceptance case is in [catalog.json](catalog.json). See [README.md](README.md) for what a state may claim.",
         "",
         "| State | Requirements |",
@@ -291,7 +314,7 @@ def traceability(entries: list) -> str:
     ]
     out += [f"| {label} | {counts[key]} |" for key, label in FCP_STATES.items() if counts[key]]
     out += [f"| **All** | **{len(entries)}** |", ""]
-    for w, label in FCP_WORKSTREAMS.items():
+    for w, label in workstreams.items():
         rows = [e for e in entries if e["workstream"] == w]
         out += [f"## {w}: {label}", "", "| Id | Requirement | State | Case | Tests | What it does not yet do |", "|---|---|---|---|---|---|"]
         for e in rows:
@@ -394,12 +417,12 @@ def main() -> int:
     if command == "export":
         print(json.dumps(reqs, indent=2))
         return 0
-    fcp = fcp_load()
-    bad = problems(reqs) + fcp_problems(fcp) + journey_problems() + advisory_problems() + drift_problems()
+    fcp, flc = fcp_load(), fcp_load("flc")
+    bad = problems(reqs) + fcp_problems(fcp) + fcp_problems(flc, "flc") + journey_problems() + advisory_problems() + drift_problems()
     if bad:
         print("\n".join(bad), file=sys.stderr)
         return 1
-    generated = {CAPABILITIES: matrix(reqs) + "\n", BACKLOG: backlog(reqs), MANIFEST: release_evidence.manifest(), TRACEABILITY: traceability(fcp) + "\n"}
+    generated = {CAPABILITIES: matrix(reqs) + "\n", BACKLOG: backlog(reqs), MANIFEST: release_evidence.manifest(), TRACEABILITY: traceability(fcp) + "\n", PROGRAMS["flc"][3]: traceability(flc, "flc") + "\n"}
     if command == "generate":
         for path, text in generated.items():
             path.write_text(text)
@@ -409,7 +432,7 @@ def main() -> int:
     if stale:
         print(f"out of date, run scripts/registry.py generate: {', '.join(stale)}", file=sys.stderr)
         return 1
-    print(f"{len(reqs)} requirements and {len(fcp)} of the platform program check out")
+    print(f"{len(reqs)} requirements, {len(fcp)} of the platform program and {len(flc)} of the Logic Platform check out")
     return 0
 
 
