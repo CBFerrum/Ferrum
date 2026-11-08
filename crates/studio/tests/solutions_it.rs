@@ -152,11 +152,13 @@ async fn scenario() {
     let draft = post(&k, &author, "/solutions/drafts", json!({"source": source("1.0.0", "Approve the request")})).await;
     let d = format!("/solutions/drafts/{}", draft["id"].as_str().unwrap());
     let opened = call(&k, &author, "GET", &d, &[], &[], Value::Null).await.unwrap();
-    assert!(opened.headers.iter().any(|(h, v)| h == "etag" && v == "\"1\""), "{:?}", opened.headers);
+    assert!(opened.headers.iter().any(|(h, v)| h == "etag" && v == "\"v1\""), "{:?}", opened.headers);
     assert_eq!(json_of(&opened)["solution"], json!("acme.requests"));
-    let mine = call(&k, &author, "PUT", &d, &[("if-match", "\"1\"")], &[], json!({"source": source("1.0.0", "Approve this request")})).await.unwrap();
+    let mine = call(&k, &author, "PUT", &d, &[("if-match", "\"v1\"")], &[], json!({"source": source("1.0.0", "Approve this request")})).await.unwrap();
     assert_eq!(json_of(&mine)["version"], json!(2));
     assert_eq!(refused(&k, &admin, "PUT", &d, &[("if-match", "\"1\"")], json!({"source": source("1.0.0", "Theirs")})).await, "conflict", "a stale save");
+    let why = call(&k, &admin, "PUT", &d, &[("if-match", "\"v1\"")], &[], json!({"source": source("1.0.0", "Theirs")})).await.err().unwrap().to_string();
+    assert!(why.contains("version 2, saved by author@acme.test at ") && why.ends_with("UTC; open it again and compare before saving"), "{why}");
     assert_eq!(refused(&k, &admin, "PUT", &d, &[], json!({"source": "{}"})).await, "validation_failed", "no If-Match");
     assert!(get(&k, &admin, &d).await["source"].as_str().unwrap().contains("Approve this request"), "the first save stands");
 
@@ -333,6 +335,41 @@ async fn scenario() {
         "stale_approval"
     );
     assert_eq!(post(&k, &reviewer, &format!("/tasks/{task}/decide"), json!({"approve": true, "digest": digest_of})).await["closed"], json!(true));
+    assert_eq!(get(&k, &reviewer, &format!("/tasks/{task}")).await["history"][0]["by"], json!("reviewer@acme.test"), "a closed task keeps who decided");
+
+    // Handed on by the email people know each other by, and the hand-on kept with its reason.
+    let second = user(&k, &admin, "reviewer2@acme.test", &["Reviewer"], false).await;
+    k.process_open_task(
+        admin.tenant,
+        run1,
+        "review_again",
+        "task",
+        "Approve again",
+        "Reviewer",
+        &material,
+        &digest_of,
+        &json!([]),
+        1,
+        1,
+        &[requester.user.to_string()],
+        &json!({}),
+        None,
+    )
+    .await
+    .unwrap();
+    let again = get(&k, &reviewer, "/tasks").await.as_array().unwrap().iter().find(|t| t["label"] == json!("Approve again")).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let hand_on = format!("/tasks/{again}/delegate");
+    assert_eq!(refused(&k, &reviewer, "POST", &hand_on, &[], json!({"to": "nobody@acme.test"})).await, "validation_failed");
+    assert_eq!(refused(&k, &reviewer, "POST", &hand_on, &[], json!({"to": "outsider@acme.test"})).await, "forbidden", "someone without the role");
+    post(&k, &reviewer, &hand_on, json!({"to": " Reviewer2@ACME.test ", "reason": "on leave"})).await;
+    let history = get(&k, &second, &format!("/tasks/{again}")).await["history"].clone();
+    assert_eq!(
+        (history[0]["decision"].as_str(), history[0]["to"].as_str(), history[0]["reason"].as_str()),
+        (Some("delegate"), Some("reviewer2@acme.test"), Some("on leave"))
+    );
 
     // A partner authors until their role ends, and not after (BUILDER_UX journey 8).
     let partner = user(&k, &admin, "partner@acme.test", &[], false).await;

@@ -5,8 +5,8 @@
 //! |---|---|
 //! | `GET /solutions` | → `{drafts, releases, calendars, profile}` |
 //! | `POST /solutions/drafts` | `{source}` → `{id, version}` |
-//! | `GET /solutions/drafts/{id}` | → the draft; `ETag: "{version}"` |
-//! | `PUT /solutions/drafts/{id}` | `If-Match: "{version}"`, `{source}` → `{version}`; 409 when another save came first |
+//! | `GET /solutions/drafts/{id}` | → the draft; `ETag: "v{version}"` |
+//! | `PUT /solutions/drafts/{id}` | `If-Match: "v{version}"`, `{source}` → `{version}`; 409 when another save came first |
 //! | `DELETE /solutions/drafts/{id}` | `If-Match: "{version}"` |
 //! | `POST /solutions/drafts/{id}/release` | `If-Match: "{version}"` → the kept release |
 //! | `POST /solutions/compile` | `{source}` → `{ok, release?, diagnostics}`; keeps nothing |
@@ -23,7 +23,7 @@
 //! | `GET /tasks` | → the open tasks the caller may decide (administrators: what needs recovering too) |
 //! | `GET /tasks/{id}` | → the task and what it is about |
 //! | `POST /tasks/{id}/decide` | `{approve, digest, values?, reason?}` |
-//! | `POST /tasks/{id}/delegate` | `{to, reason?}` |
+//! | `POST /tasks/{id}/delegate` | `{to (an email or a user id), reason?}` |
 //! | `POST /tasks/{id}/done` | `{task, values?}`: one of a case's tasks |
 //! | `POST /tasks/{id}/close` | closes a case |
 //! | `POST /tasks/{id}/recover` | `{resume, reason}` |
@@ -54,12 +54,12 @@ fn text<'a>(b: &'a Value, k: &str) -> &'a str {
     b.get(k).and_then(Value::as_str).unwrap_or_default()
 }
 
-/// The version an editor read, from `If-Match: "3"` (or `3`, or `W/"3"`).
+/// The version an editor read, from `If-Match: "v3"` as the platform's records take it (or `"3"`, `3`, `W/"v3"`).
 fn if_match(req: &SiteRequest) -> Result<i32> {
     req.headers
         .get("if-match")
         .and_then(Value::as_str)
-        .map(|v| v.trim().trim_start_matches("W/").trim_matches('"'))
+        .map(|v| v.trim().trim_start_matches("W/").trim_matches('"').trim_start_matches('v'))
         .and_then(|v| v.parse().ok())
         .ok_or_else(|| Error::field("If-Match", "say which version you edited: If-Match: \"<version>\""))
 }
@@ -90,7 +90,7 @@ async fn route(k: &Kernel, ctx: &Ctx, req: &SiteRequest, m: &str, path: &[&str])
         ("GET", ["solutions", "drafts", d]) => {
             let draft = k.logic_draft(ctx, id(d, "draft")?).await?;
             let mut resp = ok(draft.clone());
-            resp.headers.push(("etag".into(), format!("\"{}\"", draft["version"])));
+            resp.headers.push(("etag".into(), format!("\"v{}\"", draft["version"])));
             resp
         }
         ("PUT", ["solutions", "drafts", d]) => ok(k.save_logic_draft(ctx, id(d, "draft")?, if_match(req)?, text(&body(req)?, "source")).await?),
@@ -160,7 +160,11 @@ async fn route(k: &Kernel, ctx: &Ctx, req: &SiteRequest, m: &str, path: &[&str])
         }
         ("POST", ["tasks", t, "delegate"]) => {
             let b = body(req)?;
-            let to = id(text(&b, "to"), "person")?;
+            // By the email people know each other by, or a user id.
+            let to = match Uuid::parse_str(text(&b, "to").trim()) {
+                Ok(u) => u,
+                Err(_) => k.member_by_email(ctx, text(&b, "to")).await?,
+            };
             k.delegate_logic_task(ctx, id(t, "task")?, to, text(&b, "reason")).await?;
             ok(json!({}))
         }

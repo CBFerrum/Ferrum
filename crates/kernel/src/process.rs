@@ -886,18 +886,35 @@ impl Kernel {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let row: Option<(Value, String, Vec<Uuid>, Vec<Uuid>)> = sqlx::query_as(
             "select jsonb_build_object('id', id, 'run', run_id, 'activation', activation, 'kind', kind, 'label', label, 'role', role, 'material', material, \
-               'digest', digest, 'form', form, 'approvals', approvals, 'status', status, 'deadline', deadline, 'deadline_basis', deadline_basis, 'detail', detail), \
+               'digest', digest, 'form', form, 'approvals', approvals, 'status', status, 'deadline', deadline, 'deadline_basis', deadline_basis, 'detail', detail, \
+               'delegation', delegation, 'handed_on', greatest(cardinality(delegated) - 1, 0)), \
                role, exclude, delegated from logic_task where tenant_id = $1 and id = $2",
         )
         .bind(ctx.tenant)
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?;
-        tx.commit().await?;
-        let Some((task, role, exclude, delegated)) = row else { return Err(Error::NotFound("task".into())) };
+        let Some((mut task, role, exclude, delegated)) = row else { return Err(Error::NotFound("task".into())) };
         if !ctx.is_admin && Self::may_decide(ctx, &role, &exclude, &delegated).is_err() {
             return Err(Error::NotFound("task".into()));
         }
+        // Who did what on it, and why: the record a closed task is read by.
+        let history: Value = sqlx::query_scalar(
+            "select coalesce(jsonb_agg(jsonb_build_object('decision', d.decision, 'part', d.part, 'reason', d.reason, 'at', d.decided_at, \
+               'by', coalesce(nullif(u.full_name, ''), u.email::text, d.by_user::text), \
+               'to', case when d.to_user is null then null else coalesce(nullif(t.full_name, ''), t.email::text, d.to_user::text) end) \
+               order by d.decided_at, d.id), '[]') \
+             from logic_task_decision d \
+             left join app_user u on u.tenant_id = d.tenant_id and u.id = d.by_user \
+             left join app_user t on t.tenant_id = d.tenant_id and t.id = d.to_user \
+             where d.tenant_id = $1 and d.task_id = $2",
+        )
+        .bind(ctx.tenant)
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        task["history"] = history;
         Ok(task)
     }
 
@@ -973,6 +990,24 @@ impl Kernel {
     }
 
     /// Hands a task on to another person who could decide it, within the task's bound, never back along its chain.
+    /// A member of the workspace by email, to hand a task on by the address people know each other by. Members
+    /// see each other already (mentions, sharing), so this tells nobody anything new.
+    pub async fn member_by_email(&self, ctx: &Ctx, email: &str) -> Result<Uuid> {
+        let email = email.trim();
+        if email.is_empty() || email.len() > 254 {
+            return Err(Error::field("to", "is an email of someone in this workspace"));
+        }
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let id: Option<Uuid> =
+            sqlx::query_scalar("select id from app_user where tenant_id = $1 and lower(email::text) = lower($2) and is_active and kind = 'member'")
+                .bind(ctx.tenant)
+                .bind(email)
+                .fetch_optional(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        id.ok_or_else(|| Error::field("to", "nobody in this workspace has that email"))
+    }
+
     pub async fn delegate_logic_task(&self, ctx: &Ctx, id: Uuid, to: Uuid, reason: &str) -> Result<()> {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let row: Option<(String, i32, Vec<Uuid>, Vec<Uuid>, String)> =

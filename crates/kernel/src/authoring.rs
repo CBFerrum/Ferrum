@@ -117,19 +117,22 @@ impl Kernel {
         .fetch_optional(&mut *tx)
         .await?;
         let Some(version) = saved else {
-            let now: Option<(i32, Option<Uuid>, chrono::DateTime<chrono::Utc>)> =
-                sqlx::query_as("select version, updated_by, updated_at from logic_draft where tenant_id = $1 and id = $2")
-                    .bind(ctx.tenant)
-                    .bind(id)
-                    .fetch_optional(&mut *tx)
-                    .await?;
+            // Who saved it, by name: the person reading this decides whether to talk to them first.
+            let now: Option<(i32, Option<String>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+                "select d.version, coalesce(nullif(u.full_name, ''), u.email::text), d.updated_at from logic_draft d \
+                 left join app_user u on u.tenant_id = d.tenant_id and u.id = d.updated_by where d.tenant_id = $1 and d.id = $2",
+            )
+            .bind(ctx.tenant)
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
             tx.commit().await?;
             return Err(match now {
                 None => Error::NotFound("draft".into()),
                 Some((v, by, at)) => Error::Conflict(format!(
                     "this draft changed since you opened it: it is at version {v}, saved by {} at {}; open it again and compare before saving",
-                    by.map(|u| u.to_string()).unwrap_or_else(|| "someone".into()),
-                    at.to_rfc3339()
+                    by.unwrap_or_else(|| "someone".into()),
+                    at.format("%-d %b %Y %H:%M UTC")
                 )),
             });
         };

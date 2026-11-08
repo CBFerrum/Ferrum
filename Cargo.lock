@@ -3911,6 +3911,7 @@ dependencies = [
  "ferrum-calc",
  "ferrum-domain",
  "ferrum-kernel",
+ "ferrum-logic",
  "ferrum-mcp",
  "ferrum-meta",
  "futures",
