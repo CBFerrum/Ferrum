@@ -609,6 +609,12 @@ docker compose -f deploy/docker-compose.yml -f deploy/metrics-engine.yml --env-f
   create the Secret `ferrum-metrics-engine` (key `token`), the ConfigMap `ferrum-metrics-engine` (key
   `engine.json`, its paths under `/data`) and the claim `ferrum-metrics-datasets` (ReadOnlyMany) holding the
   datasets.
+- **Pulling the image.** The organization decides whether `ghcr.io/cbferrum/ferrum-metrics-engine` is public.
+  While it is private, a cluster needs a pull secret: create one with a token that can read packages
+  (`kubectl create secret docker-registry ghcr-pull --docker-server=ghcr.io --docker-username=<user>
+  --docker-password=<token>`) and add `imagePullSecrets: [{name: ghcr-pull}]` to the engine's Deployment in
+  your overlay. Alternatively, copy the image into your own registry and map it with `images:`. Either way,
+  pin it by digest, as the published `sha-<commit>` tag names one.
 - **In each workspace,** a Data Steward describes each dataset as an External Source in Metrics: which rows each
   reader sees, which columns only some roles see, and how fresh its data must be. Metrics asks the engine for
   one reader at a time, with only what that reader may see. The engine applies it in each dataset's own scan.
