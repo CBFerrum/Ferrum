@@ -903,6 +903,9 @@ async fn scenario() {
         .as_deref(),
         Some("Moved")
     );
+    let record: Vec<String> =
+        k.logic_run(&admin, run13).await.unwrap()["moves"].as_array().unwrap().iter().map(|m| m["action"].as_str().unwrap().to_string()).collect();
+    assert_eq!(record, ["plan_migration", "approve_migration", "migrated"], "the run keeps the record of its move");
     // Planned and approved, but decided before its runtime took the move up: refused, and it goes on as it was.
     let plan14 = k.plan_logic_migration(&admin, run14, release3, &map).await.unwrap();
     k.approve_logic_migration(&admin2, run14, plan14["digest"].as_str().unwrap(), "").await.unwrap();
