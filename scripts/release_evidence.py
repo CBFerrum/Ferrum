@@ -3,6 +3,12 @@
 
     scripts/release_evidence.py manifest                 # docs/registry/release-manifest.yaml, as text
     scripts/release_evidence.py evidence [--image DIGEST]   # one build's evidence, as JSON
+    scripts/release_evidence.py qualified [--stamp ID [REV]]  # whether each qualification ran at this build
+
+A qualification (docs/logic/evidence/qualification.yaml) names the exact build it ran at: Ferrum's code, the
+frontend and every repository Cargo.lock builds (FLC-QUAL-001). Once any of them changes it no longer stands:
+`qualified` names what changed and fails, so a release waits until the qualification's scripts are run again
+and `--stamp` records the build they ran at.
 
 The manifest says what Cargo.lock builds, and `scripts/registry.py check` fails if it says anything
 else. The evidence is written by CI for each build and kept with its run: the commits, the lockfile,
@@ -85,6 +91,7 @@ def registry() -> tuple[int, int]:
 
 def evidence(image: str | None) -> dict:
     total, verified = registry()
+    now = build_identity()
     blockers = yaml.safe_load((ROOT / "docs" / "registry" / "blockers.yaml").read_text())["blockers"]
     commit = os.environ.get("GITHUB_SHA") or subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
     repository, run = os.environ.get("GITHUB_REPOSITORY", f"{OWNER}/Ferrum"), os.environ.get("GITHUB_RUN_ID")
@@ -99,6 +106,11 @@ def evidence(image: str | None) -> dict:
         "workflow": {"run": run, "attempt": os.environ.get("GITHUB_RUN_ATTEMPT"), "url": f"https://github.com/{repository}/actions/runs/{run}" if run else None},
         "equipment_profiles": [],
         "exclusions": [{"blocker": b["id"], "needs": b["needs"]} for b in blockers],
+        # Whether each profile qualification ran at this very build (FLC-QUAL-001).
+        "profile_qualifications": [
+            {"id": q["id"], "stands": not stale(q["ran_at"], now), "changed": stale(q["ran_at"], now), "evidence": q["evidence"]}
+            for q in yaml.safe_load(QUALIFICATIONS.read_text())["qualifications"]
+        ],
         "qualification": {
             "status": "not qualified",
             "requirements": total,
@@ -108,10 +120,83 @@ def evidence(image: str | None) -> dict:
     }
 
 
+QUALIFICATIONS = ROOT / "docs" / "logic" / "evidence" / "qualification.yaml"
+# What decides what runs: a change anywhere here is a different build.
+CODE = ["crates", "server", "packages", "Cargo.toml", "Cargo.lock", "Dockerfile"]
+
+
+def git(*args: str) -> str:
+    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=True).stdout
+
+
+def build_identity(rev: str = "HEAD") -> dict:
+    """The build `rev` makes: a digest of Ferrum's own code and the commit of everything it pins."""
+    objects = git("rev-parse", *[f"{rev}:{path}" for path in CODE]).split()
+    lock, dockerfile = git("show", f"{rev}:Cargo.lock"), git("show", f"{rev}:Dockerfile")
+    pins = {}
+    for package in lock.split("[[package]]")[1:]:
+        source = re.search(rf'^source = "git\+https://github\.com/{OWNER}/([^?"#]+)[^#"]*#([0-9a-f]+)"$', package, re.M)
+        if source:
+            pins[f"{OWNER}/{source.group(1)}"] = source.group(2)
+    front = re.search(r"^ARG FRONTEND_REV=([0-9a-f]+)$", dockerfile, re.M)
+    pins[f"{OWNER}/Ferrum-Frontend"] = front.group(1) if front else "none"
+    code = "sha256:" + hashlib.sha256(" ".join(f"{p}={o}" for p, o in zip(CODE, objects)).encode()).hexdigest()
+    return {"ferrum_code": code, "pins": dict(sorted(pins.items()))}
+
+
+def stale(ran_at: dict, now: dict) -> list[str]:
+    """What differs between the build a qualification ran at and `now`; empty when it still stands."""
+    changed = []
+    if ran_at.get("ferrum_code") != now["ferrum_code"]:
+        changed.append("Ferrum's code")
+    was = ran_at.get("pins", {})
+    for repo in sorted(set(was) | set(now["pins"])):
+        if was.get(repo) != now["pins"].get(repo):
+            changed.append(f"{repo}: {(was.get(repo) or 'absent')[:10]} -> {(now['pins'].get(repo) or 'absent')[:10]}")
+    return changed
+
+
+def self_test() -> None:
+    now = {"ferrum_code": "sha256:a", "pins": {"CBFerrum/ferrum-app-edge": "17a7c41", "CBFerrum/Ferrum-Frontend": "2f201d5"}}
+    assert stale(now, now) == [], "the same build stands"
+    moved = {"ferrum_code": "sha256:a", "pins": {"CBFerrum/ferrum-app-edge": "abcdef1", "CBFerrum/Ferrum-Frontend": "2f201d5"}}
+    assert stale(now, moved) == ["CBFerrum/ferrum-app-edge: 17a7c41 -> abcdef1"], "an app's pin changed after it passed"
+    assert stale(now, dict(now, ferrum_code="sha256:b")) == ["Ferrum's code"]
+    assert stale(now, {"ferrum_code": "sha256:a", "pins": dict(now["pins"], **{"CBFerrum/new-app": "1"})}) == ["CBFerrum/new-app: absent -> 1"]
+
+
+def qualified(argv: list[str]) -> int:
+    data = yaml.safe_load(QUALIFICATIONS.read_text())
+    if "--stamp" in argv:
+        at = argv.index("--stamp")
+        name, rev = argv[at + 1], (argv[at + 2] if len(argv) > at + 2 else "HEAD")
+        entry = next((q for q in data["qualifications"] if q["id"] == name), None)
+        if entry is None:
+            raise SystemExit(f"no qualification {name}")
+        entry["ran_at"] = dict(build_identity(rev), commit=git("rev-parse", rev).strip())
+        text = QUALIFICATIONS.read_text().split("qualifications:")[0]
+        QUALIFICATIONS.write_text(text + yaml.safe_dump({"qualifications": data["qualifications"]}, sort_keys=False, width=120))
+        print(f"{name}: stamped at {rev}")
+        return 0
+    now, failing = build_identity(), 0
+    for q in data["qualifications"]:
+        changed = stale(q["ran_at"], now)
+        if changed:
+            failing += 1
+            print(f"{q['id']}: stale since it ran at {q['ran_at'].get('commit', '?')[:10]}: {', '.join(changed)}. Run again: {', '.join(q['scripts'])}")
+            print(f"  rows standing on it: {', '.join(q['rows'])}")
+        else:
+            print(f"{q['id']}: ran at this build")
+    return 1 if failing else 0
+
+
 def main() -> int:
-    if len(sys.argv) < 2 or sys.argv[1] not in ("manifest", "evidence"):
+    self_test()
+    if len(sys.argv) < 2 or sys.argv[1] not in ("manifest", "evidence", "qualified"):
         print(__doc__, file=sys.stderr)
         return 2
+    if sys.argv[1] == "qualified":
+        return qualified(sys.argv[2:])
     if sys.argv[1] == "manifest":
         print(manifest(), end="")
         return 0

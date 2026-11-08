@@ -52,10 +52,14 @@ runtime starts the run under a workflow id made from the workspace and the run, 
 the run; one that ended is never started again.
 
 **Effects.** Each step's work goes through the capability gate under the effect key `{run}/{activation}`: the
-same on every attempt, so a retried step finds its receipt, and other input under the key is refused. It runs
-with the rights of whoever started the run as they are when it runs; a run no person started acts with the
-rights of whoever activated its release, as they are then. Revoked rights refuse the effect; nothing stronger
-is borrowed. An effect that relies on an approval is refused if the approved record's version has changed since,
+same on every attempt, so a retried step finds its receipt, and other input under the key is refused. A run
+some person's act started acts with that person's rights as they are when each step runs: revoked, the next
+effect is refused, and nothing stronger is borrowed. A run nobody's act started (an event of the platform's, a
+site's or a schedule's) acts as its solution's own account, `solution.{id}@services.ferrum.invalid`, which holds
+exactly the rights of the capabilities its active release was reviewed with: an administrator's capability, such
+as mail, is allowed by that review, never by making the account an administrator. It is never the rights of
+whoever activated the release, so offboarding them changes nothing; the account is given each newly activated
+release's closure in the activation's own transaction, and turned off when the solution stops. An effect that relies on an approval is refused if the approved record's version has changed since,
 or the record is gone.
 
 **People.** A task is decided on the material the person was shown (its digest); a decision on anything
@@ -78,7 +82,11 @@ newest first; one that fails stays an open item, and the run waits for a person,
 is still open. A cancelled run closes its tasks and waits, and finishes once the work it had in hand settles.
 
 **Recovery.** A suspended step is recovered by an administrator with a reason: resumed where its source
-allows, or ended refused. Nothing marks it a success. What a run hands to a person (a late effect, a failed
+allows, or ended refused. Nothing marks it a success. When a step's outcome came back unknown (its answer lost
+after it may have run), "look it up" (`POST /api/app/studio/tasks/{id}/look-up`) says for each such step whether
+its effect is on record here: every capability writes its receipt in the effect's own transaction, so a receipt
+means it was done and none means it was not. What was found is kept on the item, the same on every replica, and
+resuming repeats the step under its key, which a receipt answers without doing it again. What a run hands to a person (a late effect, a failed
 compensation) is acknowledged by an administrator with what was done about it.
 
 ## The runtime
@@ -112,12 +120,9 @@ Temporal comes with W8.
 
 ## Not yet
 
-* The Studio endpoints, the run console and the recovery screens: W4. Today these are kernel functions
-  (`decide_logic_task`, `delegate_logic_task`, `case_task_done`, `close_case`, `recover_logic_task`,
-  `acknowledge_logic_attention`, `cancel_logic_run`, `logic_runs`, `set_logic_calendar`).
-* A live stream of a run's status (FLC-PROC-014): runs are read as they stand.
+* A live stream of a run's status (FLC-PROC-014): the run feed is read with a cursor and kept up by polling.
 * Attachments as a task's evidence (FLC-HUMAN-006): forms take typed values only.
-* Replaying open runs' histories against a new worker build before it takes over: `ferrum_process::replay`
-  does one; the release step that runs it over every open run comes with W8.
+* Replaying open runs' histories against a new worker build before it takes over is a step of the release
+  (`ferrum task logic_replay`, docs/operations.md), not something the worker does by itself.
 * A worker paused past its activity's timeout and then resumed was not tried (FLC-PROC-012); effect keys
   make its repeat a receipt, and Temporal refuses a timed-out attempt's completion.

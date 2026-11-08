@@ -476,6 +476,8 @@ async fn scenario() {
     d.settle().await;
     let order1: Uuid = scalar(&k, admin.tenant, "select id from e_order where request = $1", r1).await;
     assert_eq!(scalar::<i64>(&k, admin.tenant, "select count(*) from logic_effect where effect_key = $1::uuid::text || '/order'", run1).await, 1);
+    // The order accepted is not the business done: the run waits for the delivery (FLC-CAP-006).
+    assert_eq!(status(&k, admin.tenant, run1).await, "running", "accepted, and waiting for the delivery");
     k.update(&requester, "Order", order1, obj(json!({"status": "Delivered"})), None).await.unwrap();
     d.settle().await;
     assert_eq!(status(&k, admin.tenant, run1).await, "completed");

@@ -411,7 +411,25 @@ def backlog(reqs: list) -> str:
     return "\n".join(out) + "\n"
 
 
+def self_test() -> None:
+    """AT-QUAL-007: a simulator that passed, or a reviewer nobody independent vouches for, is not a qualification.
+    Whatever a row claims, the check refuses a qualified status that lacks an independent reviewer on record, a
+    release digest and a profile, or that still waits on equipment, a provider or an audit."""
+    base = next(e for e in fcp_load("flc") if e["id"] == "FLC-EDGE-011")
+    digest = "sha256:" + "0" * 64
+    assert not any(p.startswith("FLC-EDGE-011:") for p in fcp_problems([base], "flc")), "the row as recorded is sound"
+    claimed = dict(base, status="qualified_profile", tests=["ferrum-app-edge:gateway/tests/critical_it.rs"], profile="edge", release_digest=digest)
+    for row, why in [
+        (dict(claimed), "no reviewer: the simulator passing is all there is"),
+        (dict(claimed, reviewer="Claude"), "a reviewer who is not on record as independent"),
+        (dict(claimed, release_digest="sha256:short", reviewer="Claude"), "no exact release digest"),
+        (dict(claimed, blockers=["BLOCK-INDUSTRIAL-HARDWARE"]), "still waiting for real equipment"),
+    ]:
+        assert any(p.startswith("FLC-EDGE-011:") for p in fcp_problems([row], "flc")), f"accepted a qualification with {why}"
+
+
 def main() -> int:
+    self_test()
     command = sys.argv[1] if len(sys.argv) > 1 else "check"
     reqs = load()
     if command == "export":

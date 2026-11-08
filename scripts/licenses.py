@@ -36,6 +36,25 @@ WEAK_COPYLEFT = {"MPL-2.0"}
 # whole at version 3.
 OURS = {"AGPL-3.0-or-later", "AGPL-3.0-only"}
 ACCEPTED = PERMISSIVE | WEAK_COPYLEFT | OURS
+# Crates that name a licence file instead of an SPDX expression. Each file was read; a crate is taken as that licence
+# only while its file still says so, so a changed file is refused rather than assumed.
+LICENSE_FILES = {
+    # temporalio/sdk-rust, LICENSE.txt: "The MIT License" (docs/references/logic.md).
+    "temporalio-": ("MIT", "Permission is hereby granted, free of charge"),
+}
+
+
+def declared(p: dict) -> str:
+    """A package's licence: its SPDX expression, or the one its licence file was read as and still reads as."""
+    if p.get("license"):
+        return p["license"]
+    if p.get("license_file"):
+        for prefix, (spdx, words) in LICENSE_FILES.items():
+            if p["name"].startswith(prefix):
+                path = Path(p["manifest_path"]).parent / p["license_file"]
+                if path.exists() and words in path.read_text(errors="replace"):
+                    return spdx
+    return ""
 
 
 def packages() -> list:
@@ -117,7 +136,7 @@ def report(pkgs: list) -> tuple:
     by_license = collections.defaultdict(set)
     refused = []
     for p in pkgs:
-        license = p.get("license") or ""
+        license = declared(p)
         by_license[license or "(none declared)"].add(p["name"])
         if not accepted(license):
             refused.append((p["name"], p["version"], license or "(none declared)"))
