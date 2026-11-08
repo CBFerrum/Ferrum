@@ -22,6 +22,7 @@ ok   released, the held order is made
 ok   and only once
 ok   the first run, whose history says it ordered, is named for a person: no receipt here
 ok   and nothing ordered again for it by itself
-up after 16s
+Connection to 127.0.0.1 port 7233 [tcp/*] succeeded!
+up after 15s
 
 the drill held

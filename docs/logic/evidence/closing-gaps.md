@@ -152,24 +152,98 @@ while a second waits behind the claim.
 - The second does the order, and the first, resumed, commits nothing.
 - Asked again, the gate answers with the order that was made.
 
-## Still open after batch 1
+## Batch 3: the apps' rows
 
-- **Next Ferrum batch:**
-  - task evidence attachments (FLC-HUMAN-006);
-  - capability retirement with dependents (FLC-CAP-008);
-  - erasure reaching run copies (FLC-OPS-006);
-  - contraction under budgets (FLC-MIG-005);
-  - a worker paused past its timeout (FLC-PROC-012);
-  - typed references (FLC-COMP-002);
-  - the older CEL's clock (FLC-COMP-003);
-  - deny precedence, secret handles and diagnostic access over runs (FLC-SEC-002, -003, -007).
-- **The apps' rows:**
-  - Edge: FLC-EDGE-001, -008, -009, -011, -012;
-  - Metrics: FLC-SEM-001, -004, -005, -006, -007, -008, -009, FLC-QUAL-005;
-  - Intelligence: FLC-AI-005, -007, -008.
-- **Then:** the six profiles, the workload and the drill run again on one assembled build, and the qualification
-  stamped there.
+Edge, Intelligence and Metrics each merged their part, and Ferrum pins them: IoT Edge 96b4eb4 (#15), Intelligence
+6ea3c51 (0.2.0, #3), Metrics 848c2a3 (0.6.0, #5).
+
+**IoT Edge.**
+- *A flow's lookups have an age (FLC-EDGE-008).* `enrich` takes `fresh`: a value seen longer ago, or at no known
+  time, is left out. A site past its offline lease starts nothing new and says why (`recovery_it`, `dispatch_it`).
+  Mutant caught: `enrich-ignores-age`.
+- *Short of disk (FLC-EDGE-011).* `recovery_it` starves a site of disk. No plain sample reaches the platform while
+  it is short, and given room again it takes up the command that waited. Mutant caught:
+  `short-of-disk-keeps-samples`.
+- *No step moves equipment (FLC-EDGE-012).* A write step, a set step naming a device and a math step writing to one
+  are each refused when the flow is read. Mutant caught, run by hand against Edge 96b4eb4:
+  `steps-take-unknown-fields`.
+- *No formula reads a clock (FLC-COMP-003).* The gateway's formulas refuse `now()`, `rand()` and `today()`.
+- *Authenticated observation (FLC-EDGE-001)* was already shown, and the row now says so.
+  - `ops_it` stores nothing a gateway sends about another site's device, and refuses a request signed by another
+    key, replayed or altered.
+  - `conditions_it` keeps another site's gateway from reporting a condition about this site's device.
+  - Mutants already in the list: `ops-other-site-measurements`, `ops-signature-unchecked`, `ops-replay-accepted`.
+- *Distributed owner (FLC-EDGE-009).* `ops_it` overlaps an old and a new connection to one device. The old gateway's
+  close ends nothing of the new connection, and its journal replayed late does not take it back. At the gateway,
+  a fence or a new epoch during a batch stops what is left (`dispatch_it`). New mutants caught:
+  `ops-old-close-ends-the-new`, `ops-late-open-takes-it-back`.
+
+**Intelligence.**
+- *Bounded loop (FLC-AI-005).* At most three tries to understand a question, each failure repaired, within 20
+  seconds that cancel the work and end in a plain answer. Mutants caught: `tries-unbounded`, `no-time-budget`.
+- *Memory governance (FLC-AI-007).* An example is used only once someone who did not propose it accepts it, only in
+  its own workspace, and only for those who may read its metric. Mutants caught: `example-used-unaccepted`,
+  `example-accepted-by-proposer`, `example-widens-reach`.
+- *Model changes (FLC-AI-008).* A provider answering confidently but wrongly fails the fixed and adversarial sets,
+  and the rules keep answering. Mutant caught: `failed-model-promoted`.
+- *Stale answers (FLC-SEM-007, -009).* An answer is marked stale once its metric's certified definition changes.
+  Mutant caught: `old-answer-never-stale`.
+
+**Metrics.**
+- *Currencies and fiscal time (FLC-SEM-004, FLC-QUAL-005).* A metric summing amounts in several currencies converts
+  each row at the rate of its own day, keeps products exact and rounds each total half to even.
+  - How it converts is certified with its definition.
+  - Series go by fiscal quarters and years.
+  - `currency_it`'s expected numbers are worked out by hand in its header: four currencies, a rate on its first
+    day, an inverse rate, a refund dated back across a fiscal year, ties to the even digit, a sale with two
+    matching lines counted once, and a missing rate.
+  - Mutants caught: `rate-strictly-before`, `first-rate-ever`, `rounding-half-up`, `refund-sign-lost`,
+    `inverse-not-inverted`, `missing-rate-read-as-zero`, `fiscal-start-ignored`, `fiscal-buckets-calendar`,
+    `conversion-outside-fingerprint`, `currencies-mixed-in-formula`, `fan-out-unchecked`, `cut-short-summed`.
+- *Kept values (FLC-SEM-008, -009).* A kept value keeps what the metric meant when it was read. It is its reader's
+  alone: authors and stewards could read everyone's, an administrator's all-rows numbers among them, and no
+  longer do. Mutants caught: `snapshot-forgets-meaning`, `steward-reads-others-values`,
+  `author-reads-others-values`.
+- *A Wren model reviewed, never a second authority (FLC-SEM-001, -010).* `POST /api/app/metrics/import/wren`
+  sorts each measure into new, same, duplicate, conflict or unsupported.
+  - A conflicting revenue stays exactly as certified; the import comes in only under another name, as a draft.
+  - Anything other than one aggregate of one column is refused with its reason.
+  - Mutants caught: `review-hides-conflict`, `duplicate-defined-twice`, `unknown-aggregate-approximated`,
+    `calculated-column-taken`, `import-without-rights`.
+
+**A metric read the same everywhere (Objectives 0.7.0, #8, f8e0444).** Objectives measured a key result by a
+certified metric by running the metric's query itself. A converted metric would have measured it as a sum of the
+amounts as they are, and a composed one could not measure it at all.
+- It now asks Metrics for the value, with the key result's owner's rights, as Intelligence does.
+- When Metrics has no value, nothing is measured that day, and Metrics' reason stays on the key result.
+- Its `metrics_it` measures key results by a converted metric (8000 INR as 100 USD) and a composed one. Mutant
+  caught: `metric-definition-run-here`.
+
+The app mutants were run with a script that restored each file and then touched it. A restored file keeps its
+copy's older time, so cargo would otherwise have taken the last mutated build for current.
+
+## Checks for batch 3
+
+All local, against Ferrum's main:
+- IoT Edge (#15): contract 120, gateway lib 133, `critical_it`, `recovery_it` (three runs) and the app's tests all
+  passed. Clippy with failpoints and fmt: clean.
+- Intelligence (#3): through `scripts/app_ci.sh`, fmt, clippy, its unit test and `evals_it` passed. The interface step
+  does not apply: it has no `ui/`.
+- Metrics (#5): `scripts/app_ci.sh` passed: fmt, clippy, the unit tests (8), `composed_it`, `currency_it`,
+  `datasets_it`, `metrics_it` and `wren_it`, and the interface's build check, typecheck and tests.
+- Objectives (#8): `scripts/app_ci.sh` passed: fmt, clippy, the unit tests (4), `metrics_it`, `objectives_it`
+  and the interface's check and tests.
+- Ferrum:
+  - `cargo metadata --locked` resolves the new pins, and the server builds with them and the process runtime;
+  - `mutants.py --check` finds the text of all 324;
+  - `registry.py check` and `licenses.py check` pass, the latter with 998 packages and 11 engines, none refused.
+- The six profiles, the workload and the drill ran again on that build, at every pin above. All 75 walk checks
+  passed, every workload bound held and the drill held (lrp-profiles.md). The qualification is stamped there.
+
+## Still open after batch 3
+
 - **External, recorded as blockers:**
   - a screen-reader audit with assistive-technology users (FLC-UI-004);
-  - the DataFusion build, which needs more disk than this machine has (FLC-SEM-010);
+  - the DataFusion build, which needs more disk than this machine has (BLOCK-BUILD-CAPACITY: FLC-SEM-010 and the
+    external halves of FLC-SEM-005, -006, -007);
   - named maintenance owners (FLC-QUAL-008).
