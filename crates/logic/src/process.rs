@@ -107,6 +107,9 @@ pub struct Approval {
     pub decision_id: String,
     pub digest: String,
     pub material: Value,
+    /// The entity of the record the material is, when it is one: re-checked as the effect runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity: Option<String>,
 }
 
 /// How a capability's invocation came out.
@@ -486,7 +489,9 @@ impl<'r> Machine<'r> {
                     output.insert("by".into(), json!(by));
                     output.insert("at".into(), json!(at));
                     if approved {
-                        run.approvals.insert(activation.clone(), Approval { task: activation.clone(), decision_id, digest, material });
+                        let process = run.frames.get(&frame).map(|f| f.process.clone()).unwrap_or_default();
+                        let entity = self.types(&process).and_then(|t| t.materials.get(&node)).cloned();
+                        run.approvals.insert(activation.clone(), Approval { task: activation.clone(), decision_id, digest, material, entity });
                     }
                     run.outputs.insert(activation, Value::Object(output));
                     self.route(run, &frame, &node, if approved { "next" } else { "on_reject" }, &mut queue);
