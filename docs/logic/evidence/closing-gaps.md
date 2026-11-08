@@ -378,5 +378,14 @@ failed on main since W7 and W8, and the checks run here had covered neither.
 ## Still open
 
 123 of the 124 rows are verified. The last waits on people: a screen-reader audit with assistive-technology
-users (FLC-UI-004, BLOCK-ACCESSIBILITY-AUDIT). A virtual screen-reader pass of the Studio screens, agreed
-with the owner, will narrow the gap but cannot close it.
+users (FLC-UI-004, BLOCK-ACCESSIBILITY-AUDIT).
+
+What software could add has been added (Frontend #61, `58d2786`, pinned here). A virtual screen reader
+(Guidepup's) reads the guided editor, the task page and the run page from their accessibility trees, item by
+item.
+- It checks that every control has a name, that a task's subject is read before its decision buttons, that a
+  run's refusal comes before what went well, and that the reason a button is off is read before the button.
+- It found that a field the form requires was spoken without "required". The kit's Field hid its star from
+  assistive technology and never told the control, nor tied its error or hint to it. Every field now tells
+  its control (`aria-required`, `aria-invalid`, `aria-describedby`); without the fix, the test fails.
+- Apps' own interfaces take the fix when they are next built against the kit.
