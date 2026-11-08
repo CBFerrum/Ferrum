@@ -1,0 +1,3350 @@
+{
+ "source": {
+  "file": "Ferrum_Logic_Platform_v2_Claude_Package.zip",
+  "sha256": "014e91214706d1cef2bfb7d687c8ada4ba47e707e658b1322df3cd33d196d262",
+  "prepared": "2026-11-08",
+  "note": "Imported verbatim from REQUIREMENTS.json, ACCEPTANCE.json and LEGACY_ACCEPTANCE_CROSSWALK.json. The package's acceptance ids (AT-BASE-001 and the rest) are its own: several repeat ids of the platform program's catalog (docs/platform/catalog.json), so a case is named with its requirement, FLC-*."
+ },
+ "requirements": [
+  {
+   "id": "FLC-BASE-001",
+   "title": "Fresh assembled baseline",
+   "workstream": "W0",
+   "requirement": "Record source heads, dependency pins, artifacts and installed versions independently.",
+   "acceptance": "AT-BASE-001"
+  },
+  {
+   "id": "FLC-BASE-002",
+   "title": "Safe worktree",
+   "workstream": "W0",
+   "requirement": "Preserve unrelated modifications and report local patches.",
+   "acceptance": "AT-BASE-002"
+  },
+  {
+   "id": "FLC-BASE-003",
+   "title": "Reuse map",
+   "workstream": "W0",
+   "requirement": "Map existing automation, Studio, Metrics, Edge, hooks and jobs before adding owners.",
+   "acceptance": "AT-BASE-003"
+  },
+  {
+   "id": "FLC-BASE-004",
+   "title": "Durable backend ADR",
+   "workstream": "W0",
+   "requirement": "Select one production durable backend using the required conformance spike.",
+   "acceptance": "AT-BASE-004"
+  },
+  {
+   "id": "FLC-BASE-005",
+   "title": "Supported profiles",
+   "workstream": "W0",
+   "requirement": "Publish exact features, topology and exclusions per execution profile.",
+   "acceptance": "AT-BASE-005"
+  },
+  {
+   "id": "FLC-BASE-006",
+   "title": "License inventory",
+   "workstream": "W0",
+   "requirement": "Review exact engine, SDK, dependency and distribution licenses.",
+   "acceptance": "AT-BASE-006"
+  },
+  {
+   "id": "FLC-CAP-001",
+   "title": "Typed capability registry",
+   "workstream": "W1",
+   "requirement": "Describe app-owned actions, queries, effects, permissions and outcomes in one registry.",
+   "acceptance": "AT-CAP-001"
+  },
+  {
+   "id": "FLC-CAP-002",
+   "title": "Native invariants",
+   "workstream": "W1",
+   "requirement": "Invoke owning application actions rather than mutating protected business fields.",
+   "acceptance": "AT-CAP-002"
+  },
+  {
+   "id": "FLC-CAP-003",
+   "title": "Trusted context",
+   "workstream": "W1",
+   "requirement": "Derive tenant and authorization context from execution identity, never data parameters.",
+   "acceptance": "AT-CAP-003"
+  },
+  {
+   "id": "FLC-CAP-004",
+   "title": "Version and digest lock",
+   "workstream": "W1",
+   "requirement": "Bind execution to an immutable action revision and implementation digest.",
+   "acceptance": "AT-CAP-004"
+  },
+  {
+   "id": "FLC-CAP-005",
+   "title": "Delegation modes",
+   "workstream": "W1",
+   "requirement": "Separate delegated-user rights from approved company service identities.",
+   "acceptance": "AT-CAP-005"
+  },
+  {
+   "id": "FLC-CAP-006",
+   "title": "Completion semantics",
+   "workstream": "W1",
+   "requirement": "Distinguish request acceptance, external completion and business completion.",
+   "acceptance": "AT-CAP-006"
+  },
+  {
+   "id": "FLC-CAP-007",
+   "title": "Unknown outcomes",
+   "workstream": "W1",
+   "requirement": "Declare outcome lookup and reconciliation for potentially ambiguous effects.",
+   "acceptance": "AT-CAP-007"
+  },
+  {
+   "id": "FLC-CAP-008",
+   "title": "Deprecation ownership",
+   "workstream": "W1",
+   "requirement": "Track supported versions, dependents, owners and replacement/export plans.",
+   "acceptance": "AT-CAP-008"
+  },
+  {
+   "id": "FLC-COMP-001",
+   "title": "Strict parsing",
+   "workstream": "W2",
+   "requirement": "Reject unknown keys, duplicate keys, oversized nesting and unsafe references.",
+   "acceptance": "AT-COMP-001"
+  },
+  {
+   "id": "FLC-COMP-002",
+   "title": "Business types",
+   "workstream": "W2",
+   "requirement": "Check nullability, money, units, references and outputs.",
+   "acceptance": "AT-COMP-002"
+  },
+  {
+   "id": "FLC-COMP-003",
+   "title": "Deterministic expressions",
+   "workstream": "W2",
+   "requirement": "Supply time/random facts explicitly and qualify custom pure functions.",
+   "acceptance": "AT-COMP-003"
+  },
+  {
+   "id": "FLC-COMP-004",
+   "title": "Canonical identity",
+   "workstream": "W2",
+   "requirement": "Hash canonical semantic content, not layout; include behavior-changing prompts/forms.",
+   "acceptance": "AT-COMP-004"
+  },
+  {
+   "id": "FLC-COMP-005",
+   "title": "Dependency closure",
+   "workstream": "W2",
+   "requirement": "Resolve subflow/schema/action versions into a frozen lock.",
+   "acceptance": "AT-COMP-005"
+  },
+  {
+   "id": "FLC-COMP-006",
+   "title": "Graph semantics",
+   "workstream": "W2",
+   "requirement": "Validate reachability, structured joins, terminal/error paths and node identity.",
+   "acceptance": "AT-COMP-006"
+  },
+  {
+   "id": "FLC-COMP-007",
+   "title": "Bounded iteration",
+   "workstream": "W2",
+   "requirement": "Require safe limits and stable item keys for loops/fan-out.",
+   "acceptance": "AT-COMP-007"
+  },
+  {
+   "id": "FLC-COMP-008",
+   "title": "Effect typing",
+   "workstream": "W2",
+   "requirement": "Reject effects in pure/transactional hook contexts.",
+   "acceptance": "AT-COMP-008"
+  },
+  {
+   "id": "FLC-COMP-009",
+   "title": "Data-flow policy",
+   "workstream": "W2",
+   "requirement": "Treat outputs, traces, validation messages and destinations as data sinks.",
+   "acceptance": "AT-COMP-009"
+  },
+  {
+   "id": "FLC-COMP-010",
+   "title": "Source maps",
+   "workstream": "W2",
+   "requirement": "Link runtime errors to exact node and source revision.",
+   "acceptance": "AT-COMP-010"
+  },
+  {
+   "id": "FLC-HOOK-001",
+   "title": "Phase ordering",
+   "workstream": "W2",
+   "requirement": "Apply approved derivations then final native guards and scope checks.",
+   "acceptance": "AT-HOOK-001"
+  },
+  {
+   "id": "FLC-HOOK-002",
+   "title": "Pure hook boundary",
+   "workstream": "W2",
+   "requirement": "Block network, file, SMTP, model and physical I/O in custom transactional hooks.",
+   "acceptance": "AT-HOOK-002"
+  },
+  {
+   "id": "FLC-HOOK-003",
+   "title": "Competing writes",
+   "workstream": "W2",
+   "requirement": "Reject ambiguous derivations to the same field.",
+   "acceptance": "AT-HOOK-003"
+  },
+  {
+   "id": "FLC-HOOK-004",
+   "title": "Bounded prefetch",
+   "workstream": "W2",
+   "requirement": "Limit authorized transaction-local data supplied to a rule.",
+   "acceptance": "AT-HOOK-004"
+  },
+  {
+   "id": "FLC-HOOK-005",
+   "title": "Equivalent mutation paths",
+   "workstream": "W2",
+   "requirement": "Enforce the same invariant across UI, REST, MCP, import, jobs and connectors.",
+   "acceptance": "AT-HOOK-005"
+  },
+  {
+   "id": "FLC-HOOK-006",
+   "title": "After-commit durability",
+   "workstream": "W2",
+   "requirement": "Persist effect intent/outbox instead of relying on a volatile callback.",
+   "acceptance": "AT-HOOK-006"
+  },
+  {
+   "id": "FLC-HOOK-007",
+   "title": "Rejection evidence",
+   "workstream": "W2",
+   "requirement": "Keep required refusal evidence without committing invalid business data.",
+   "acceptance": "AT-HOOK-007"
+  },
+  {
+   "id": "FLC-HOOK-008",
+   "title": "Event recursion",
+   "workstream": "W2",
+   "requirement": "Bound asynchronous cycles using causation and work budgets.",
+   "acceptance": "AT-HOOK-008"
+  },
+  {
+   "id": "FLC-PROC-001",
+   "title": "Idempotent starts",
+   "workstream": "W3",
+   "requirement": "Atomically record trigger acceptance and exact release using stable business identity.",
+   "acceptance": "AT-PROC-001"
+  },
+  {
+   "id": "FLC-PROC-002",
+   "title": "Native action receipts",
+   "workstream": "W3",
+   "requirement": "Commit action receipt and native mutation atomically.",
+   "acceptance": "AT-PROC-002"
+  },
+  {
+   "id": "FLC-PROC-003",
+   "title": "External effect identity",
+   "workstream": "W3",
+   "requirement": "Keep stable effect keys and input digest across transport attempts.",
+   "acceptance": "AT-PROC-003"
+  },
+  {
+   "id": "FLC-PROC-004",
+   "title": "Signal before wait",
+   "workstream": "W3",
+   "requirement": "Persist authenticated early signals with bounded retention.",
+   "acceptance": "AT-PROC-004"
+  },
+  {
+   "id": "FLC-PROC-005",
+   "title": "Signal spoofing",
+   "workstream": "W3",
+   "requirement": "Validate emitter and tenant/instance correlation.",
+   "acceptance": "AT-PROC-005"
+  },
+  {
+   "id": "FLC-PROC-006",
+   "title": "Current authority",
+   "workstream": "W3",
+   "requirement": "Reauthorize every consequential future action.",
+   "acceptance": "AT-PROC-006"
+  },
+  {
+   "id": "FLC-PROC-007",
+   "title": "Replay determinism",
+   "workstream": "W3",
+   "requirement": "Keep mutable reads and side effects outside workflow replay.",
+   "acceptance": "AT-PROC-007"
+  },
+  {
+   "id": "FLC-PROC-008",
+   "title": "Parallel race",
+   "workstream": "W3",
+   "requirement": "Handle a winning branch without assuming losers were cancelled.",
+   "acceptance": "AT-PROC-008"
+  },
+  {
+   "id": "FLC-PROC-009",
+   "title": "Business rework",
+   "workstream": "W3",
+   "requirement": "Allow bounded durable review/resubmit transitions.",
+   "acceptance": "AT-PROC-009"
+  },
+  {
+   "id": "FLC-PROC-010",
+   "title": "Cancellation",
+   "workstream": "W3",
+   "requirement": "Distinguish request, remote acknowledgment and completed effects.",
+   "acceptance": "AT-PROC-010"
+  },
+  {
+   "id": "FLC-PROC-011",
+   "title": "Compensation failure",
+   "workstream": "W3",
+   "requirement": "Preserve failed compensating obligations.",
+   "acceptance": "AT-PROC-011"
+  },
+  {
+   "id": "FLC-PROC-012",
+   "title": "Worker fencing",
+   "workstream": "W3",
+   "requirement": "Fence obsolete workers at authoritative write boundaries where enforceable.",
+   "acceptance": "AT-PROC-012"
+  },
+  {
+   "id": "FLC-PROC-013",
+   "title": "History bounds",
+   "workstream": "W3",
+   "requirement": "Continue/partition histories without changing business IDs.",
+   "acceptance": "AT-PROC-013"
+  },
+  {
+   "id": "FLC-PROC-014",
+   "title": "Snapshot plus subscription",
+   "workstream": "W3",
+   "requirement": "Avoid gaps between reading state and subscribing to live status.",
+   "acceptance": "AT-PROC-014"
+  },
+  {
+   "id": "FLC-HUMAN-001",
+   "title": "Independent approval",
+   "workstream": "W3",
+   "requirement": "Enforce actor separation even when a requester has several roles.",
+   "acceptance": "AT-HUMAN-001"
+  },
+  {
+   "id": "FLC-HUMAN-002",
+   "title": "Input-bound approval",
+   "workstream": "W3",
+   "requirement": "Bind approval to material data and policy revision.",
+   "acceptance": "AT-HUMAN-002"
+  },
+  {
+   "id": "FLC-HUMAN-003",
+   "title": "Timeout race",
+   "workstream": "W3",
+   "requirement": "Resolve a decision versus timeout atomically.",
+   "acceptance": "AT-HUMAN-003"
+  },
+  {
+   "id": "FLC-HUMAN-004",
+   "title": "Delegation",
+   "workstream": "W3",
+   "requirement": "Bound delegation and preserve actual decision actor.",
+   "acceptance": "AT-HUMAN-004"
+  },
+  {
+   "id": "FLC-HUMAN-005",
+   "title": "Calendar semantics",
+   "workstream": "W3",
+   "requirement": "Version business calendars and handle DST/holiday rules explicitly.",
+   "acceptance": "AT-HUMAN-005"
+  },
+  {
+   "id": "FLC-HUMAN-006",
+   "title": "Task evidence",
+   "workstream": "W3",
+   "requirement": "Authorize form/attachment access per task and participant.",
+   "acceptance": "AT-HUMAN-006"
+  },
+  {
+   "id": "FLC-HUMAN-007",
+   "title": "Case work",
+   "workstream": "W3",
+   "requirement": "Permit only declared discretionary tasks and dependencies.",
+   "acceptance": "AT-HUMAN-007"
+  },
+  {
+   "id": "FLC-HUMAN-008",
+   "title": "Manual disposition",
+   "workstream": "W3",
+   "requirement": "Require reason/evidence and appropriate authority for unresolved outcomes.",
+   "acceptance": "AT-HUMAN-008"
+  },
+  {
+   "id": "FLC-SEC-001",
+   "title": "Least privilege grants",
+   "workstream": "W1",
+   "requirement": "Separate author, reviewer, executor, deployer and support authority.",
+   "acceptance": "AT-SEC-001"
+  },
+  {
+   "id": "FLC-SEC-002",
+   "title": "Deny precedence",
+   "workstream": "W1",
+   "requirement": "Prevent overlays from weakening protected security/domain constraints.",
+   "acceptance": "AT-SEC-002"
+  },
+  {
+   "id": "FLC-SEC-003",
+   "title": "Secret handles",
+   "workstream": "W1",
+   "requirement": "Keep raw credentials out of source, history, logs and browser.",
+   "acceptance": "AT-SEC-003"
+  },
+  {
+   "id": "FLC-SEC-004",
+   "title": "WASM budgets",
+   "workstream": "W1",
+   "requirement": "Bound guest and host resource consumption independently.",
+   "acceptance": "AT-SEC-004"
+  },
+  {
+   "id": "FLC-SEC-005",
+   "title": "Egress and SSRF",
+   "workstream": "W1",
+   "requirement": "Enforce destination policy at actual connection/redirect boundaries.",
+   "acceptance": "AT-SEC-005"
+  },
+  {
+   "id": "FLC-SEC-006",
+   "title": "Cross-tenant caches",
+   "workstream": "W1",
+   "requirement": "Scope plans/results/state by tenant and effective authorization.",
+   "acceptance": "AT-SEC-006"
+  },
+  {
+   "id": "FLC-SEC-007",
+   "title": "Diagnostic access",
+   "workstream": "W1",
+   "requirement": "Restrict detailed run/context inspection and time-bound partner support.",
+   "acceptance": "AT-SEC-007"
+  },
+  {
+   "id": "FLC-SEC-008",
+   "title": "Fail-closed uncertainty",
+   "workstream": "W1",
+   "requirement": "Do not treat unknown permission/data state as approval or normality.",
+   "acceptance": "AT-SEC-008"
+  },
+  {
+   "id": "FLC-UI-001",
+   "title": "In-app authoring",
+   "workstream": "W4",
+   "requirement": "Allow supported customization entirely inside Ferrum.",
+   "acceptance": "AT-UI-001"
+  },
+  {
+   "id": "FLC-UI-002",
+   "title": "Single definition",
+   "workstream": "W4",
+   "requirement": "Keep visual, guided and source editors lossless.",
+   "acceptance": "AT-UI-002"
+  },
+  {
+   "id": "FLC-UI-003",
+   "title": "Typed inspector",
+   "workstream": "W4",
+   "requirement": "Explain permissions, effects, retries and completion per node.",
+   "acceptance": "AT-UI-003"
+  },
+  {
+   "id": "FLC-UI-004",
+   "title": "Accessible outline",
+   "workstream": "W4",
+   "requirement": "Provide all essential graph edits without dragging.",
+   "acceptance": "AT-UI-004"
+  },
+  {
+   "id": "FLC-UI-005",
+   "title": "Semantic diff",
+   "workstream": "W4",
+   "requirement": "Show changed actions, inputs, data destinations and grants.",
+   "acceptance": "AT-UI-005"
+  },
+  {
+   "id": "FLC-UI-006",
+   "title": "Conflict handling",
+   "workstream": "W4",
+   "requirement": "Protect concurrent edits with revision/CAS.",
+   "acceptance": "AT-UI-006"
+  },
+  {
+   "id": "FLC-UI-007",
+   "title": "Simulator parity",
+   "workstream": "W4",
+   "requirement": "Use the runtime pure evaluator and recorded/mocked effects.",
+   "acceptance": "AT-UI-007"
+  },
+  {
+   "id": "FLC-UI-008",
+   "title": "Recovery console",
+   "workstream": "W4",
+   "requirement": "Offer capability-specific retry/reconcile actions with durable state.",
+   "acceptance": "AT-UI-008"
+  },
+  {
+   "id": "FLC-UI-009",
+   "title": "Localization",
+   "workstream": "W4",
+   "requirement": "Use stable identifiers and correct localized display/calendar semantics.",
+   "acceptance": "AT-UI-009"
+  },
+  {
+   "id": "FLC-UI-010",
+   "title": "Preview isolation",
+   "workstream": "W4",
+   "requirement": "Prevent simulation/draft modes from using production effects and secrets.",
+   "acceptance": "AT-UI-010"
+  },
+  {
+   "id": "FLC-EDGE-001",
+   "title": "Authenticated observation",
+   "workstream": "W5",
+   "requirement": "Bind measurement identities/sites from the trusted adapter context.",
+   "acceptance": "AT-EDGE-001"
+  },
+  {
+   "id": "FLC-EDGE-002",
+   "title": "Normalization provenance",
+   "workstream": "W5",
+   "requirement": "Normalize units/scale/offset and retain raw provenance.",
+   "acceptance": "AT-EDGE-002"
+  },
+  {
+   "id": "FLC-EDGE-003",
+   "title": "Quality semantics",
+   "workstream": "W5",
+   "requirement": "Separate missing/stale/bad values from normal measurements.",
+   "acceptance": "AT-EDGE-003"
+  },
+  {
+   "id": "FLC-EDGE-004",
+   "title": "State scope",
+   "workstream": "W5",
+   "requirement": "Key state by tenant/release/entity/correlation with cardinality limits.",
+   "acceptance": "AT-EDGE-004"
+  },
+  {
+   "id": "FLC-EDGE-005",
+   "title": "Atomic critical state",
+   "workstream": "W5",
+   "requirement": "Persist critical input progress, state and effect intents consistently.",
+   "acceptance": "AT-EDGE-005"
+  },
+  {
+   "id": "FLC-EDGE-006",
+   "title": "Event-time lateness",
+   "workstream": "W5",
+   "requirement": "Declare watermark, idle source and correction behavior.",
+   "acceptance": "AT-EDGE-006"
+  },
+  {
+   "id": "FLC-EDGE-007",
+   "title": "Episode identity",
+   "workstream": "W5",
+   "requirement": "Generate one business process per sustained episode.",
+   "acceptance": "AT-EDGE-007"
+  },
+  {
+   "id": "FLC-EDGE-008",
+   "title": "Offline scope",
+   "workstream": "W5",
+   "requirement": "Enforce cached-context/grant ages and local authority.",
+   "acceptance": "AT-EDGE-008"
+  },
+  {
+   "id": "FLC-EDGE-009",
+   "title": "Distributed owner",
+   "workstream": "W5",
+   "requirement": "Bind work to exact authorized connection/owner incarnation.",
+   "acceptance": "AT-EDGE-009"
+  },
+  {
+   "id": "FLC-EDGE-010",
+   "title": "State migration",
+   "workstream": "W5",
+   "requirement": "Version stateful node changes and require safe transition.",
+   "acceptance": "AT-EDGE-010"
+  },
+  {
+   "id": "FLC-EDGE-011",
+   "title": "Backpressure",
+   "workstream": "W5",
+   "requirement": "Protect critical evidence from disposable telemetry pressure.",
+   "acceptance": "AT-EDGE-011"
+  },
+  {
+   "id": "FLC-EDGE-012",
+   "title": "Operational intent",
+   "workstream": "W5",
+   "requirement": "Route physical actions through existing Operations authority.",
+   "acceptance": "AT-EDGE-012"
+  },
+  {
+   "id": "FLC-SEM-001",
+   "title": "Single semantic owner",
+   "workstream": "W6",
+   "requirement": "Extend Metrics rather than creating a competing catalog.",
+   "acceptance": "AT-SEM-001"
+  },
+  {
+   "id": "FLC-SEM-002",
+   "title": "Grain and joins",
+   "workstream": "W6",
+   "requirement": "Enforce measure grain/cardinality against fan-out.",
+   "acceptance": "AT-SEM-002"
+  },
+  {
+   "id": "FLC-SEM-003",
+   "title": "Composed metrics",
+   "workstream": "W6",
+   "requirement": "Define ratio/additivity/history semantics explicitly.",
+   "acceptance": "AT-SEM-003"
+  },
+  {
+   "id": "FLC-SEM-004",
+   "title": "Currency and time",
+   "workstream": "W6",
+   "requirement": "Version FX/rounding, fiscal dates and historical dimensions.",
+   "acceptance": "AT-SEM-004"
+  },
+  {
+   "id": "FLC-SEM-005",
+   "title": "Query authority",
+   "workstream": "W6",
+   "requirement": "Preserve row/field rights across native and external sources.",
+   "acceptance": "AT-SEM-005"
+  },
+  {
+   "id": "FLC-SEM-006",
+   "title": "Query sandbox",
+   "workstream": "W6",
+   "requirement": "Disable unauthorized statements, functions, URLs and scans.",
+   "acceptance": "AT-SEM-006"
+  },
+  {
+   "id": "FLC-SEM-007",
+   "title": "Result freshness",
+   "workstream": "W6",
+   "requirement": "Expose stale/partial/approximate results.",
+   "acceptance": "AT-SEM-007"
+  },
+  {
+   "id": "FLC-SEM-008",
+   "title": "Sharing and schedules",
+   "workstream": "W6",
+   "requirement": "Authorize recipients, embeds, exports and histories.",
+   "acceptance": "AT-SEM-008"
+  },
+  {
+   "id": "FLC-SEM-009",
+   "title": "Semantic change control",
+   "workstream": "W6",
+   "requirement": "Keep certification/version lineage and invalidate affected queries.",
+   "acceptance": "AT-SEM-009"
+  },
+  {
+   "id": "FLC-SEM-010",
+   "title": "Engine interoperability",
+   "workstream": "W6",
+   "requirement": "Test a pinned Wren/DataFusion adapter against supported models.",
+   "acceptance": "AT-SEM-010"
+  },
+  {
+   "id": "FLC-AI-001",
+   "title": "Typed proposals",
+   "workstream": "W7",
+   "requirement": "Constrain generated processes/queries to the common schema/compiler.",
+   "acceptance": "AT-AI-001"
+  },
+  {
+   "id": "FLC-AI-002",
+   "title": "Prompt injection",
+   "workstream": "W7",
+   "requirement": "Treat retrieved records/documents as untrusted data.",
+   "acceptance": "AT-AI-002"
+  },
+  {
+   "id": "FLC-AI-003",
+   "title": "Ambiguity",
+   "workstream": "W7",
+   "requirement": "Clarify or disclose approved interpretation of ambiguous business terms.",
+   "acceptance": "AT-AI-003"
+  },
+  {
+   "id": "FLC-AI-004",
+   "title": "Evidence-based answers",
+   "workstream": "W7",
+   "requirement": "Attach semantic/query/source/time/quality evidence.",
+   "acceptance": "AT-AI-004"
+  },
+  {
+   "id": "FLC-AI-005",
+   "title": "Bounded agent loop",
+   "workstream": "W7",
+   "requirement": "Limit steps, tokens, queries, retries and wall time.",
+   "acceptance": "AT-AI-005"
+  },
+  {
+   "id": "FLC-AI-006",
+   "title": "Separate action authority",
+   "workstream": "W7",
+   "requirement": "Propose business workflows rather than write operational tables.",
+   "acceptance": "AT-AI-006"
+  },
+  {
+   "id": "FLC-AI-007",
+   "title": "Memory governance",
+   "workstream": "W7",
+   "requirement": "Review accepted examples and isolate tenant knowledge.",
+   "acceptance": "AT-AI-007"
+  },
+  {
+   "id": "FLC-AI-008",
+   "title": "Model changes",
+   "workstream": "W7",
+   "requirement": "Evaluate new prompts/models against fixed and adversarial datasets.",
+   "acceptance": "AT-AI-008"
+  },
+  {
+   "id": "FLC-OPS-001",
+   "title": "Observability",
+   "workstream": "W8",
+   "requirement": "Expose correlated scoped run/effect/queue/unknown-state metrics and logs.",
+   "acceptance": "AT-OPS-001"
+  },
+  {
+   "id": "FLC-OPS-002",
+   "title": "Fair scheduling",
+   "workstream": "W8",
+   "requirement": "Bound tenant concurrency and separate heavy work from recovery.",
+   "acceptance": "AT-OPS-002"
+  },
+  {
+   "id": "FLC-OPS-003",
+   "title": "Resource budget",
+   "workstream": "W8",
+   "requirement": "Coordinate worker, database and provider limits.",
+   "acceptance": "AT-OPS-003"
+  },
+  {
+   "id": "FLC-OPS-004",
+   "title": "Restore fencing",
+   "workstream": "W8",
+   "requirement": "Reconcile workflow/business persistence after mismatched restores.",
+   "acceptance": "AT-OPS-004"
+  },
+  {
+   "id": "FLC-OPS-005",
+   "title": "Backup completeness",
+   "workstream": "W8",
+   "requirement": "Restore artifacts, keys, definitions, receipts, signals and backend state.",
+   "acceptance": "AT-OPS-005"
+  },
+  {
+   "id": "FLC-OPS-006",
+   "title": "Retention",
+   "workstream": "W8",
+   "requirement": "Keep dedupe/history long enough and honor privacy/holds.",
+   "acceptance": "AT-OPS-006"
+  },
+  {
+   "id": "FLC-OPS-007",
+   "title": "Revocation response",
+   "workstream": "W8",
+   "requirement": "Stop new use of compromised capabilities/keys.",
+   "acceptance": "AT-OPS-007"
+  },
+  {
+   "id": "FLC-OPS-008",
+   "title": "Portability",
+   "workstream": "W8",
+   "requirement": "Export logical definitions, evidence and required mappings.",
+   "acceptance": "AT-OPS-008"
+  },
+  {
+   "id": "FLC-MIG-001",
+   "title": "Legacy import",
+   "workstream": "W8",
+   "requirement": "Preserve old automation/flow IDs, semantics and history.",
+   "acceptance": "AT-MIG-001"
+  },
+  {
+   "id": "FLC-MIG-002",
+   "title": "Shadow comparison",
+   "workstream": "W8",
+   "requirement": "Compare old/new intended effects without emitting live work.",
+   "acceptance": "AT-MIG-002"
+  },
+  {
+   "id": "FLC-MIG-003",
+   "title": "One-writer cutover",
+   "workstream": "W8",
+   "requirement": "Switch trigger authority atomically by release/subscription generation.",
+   "acceptance": "AT-MIG-003"
+  },
+  {
+   "id": "FLC-MIG-004",
+   "title": "In-flight migration",
+   "workstream": "W8",
+   "requirement": "Require explicit state/node/timer/approval mapping.",
+   "acceptance": "AT-MIG-004"
+  },
+  {
+   "id": "FLC-MIG-005",
+   "title": "Schema lifecycle",
+   "workstream": "W8",
+   "requirement": "Use expand/backfill/verify/contract under budgets.",
+   "acceptance": "AT-MIG-005"
+  },
+  {
+   "id": "FLC-MIG-006",
+   "title": "Rollback truth",
+   "workstream": "W8",
+   "requirement": "Do not imply code rollback reverses completed business effects.",
+   "acceptance": "AT-MIG-006"
+  },
+  {
+   "id": "FLC-QUAL-001",
+   "title": "Exact artifacts",
+   "workstream": "W8",
+   "requirement": "Run required tests against pinned release/worker/schema/binding versions.",
+   "acceptance": "AT-QUAL-001"
+  },
+  {
+   "id": "FLC-QUAL-002",
+   "title": "Ordinary roles",
+   "workstream": "W8",
+   "requirement": "Use real role/tenant combinations, not only administrator actors.",
+   "acceptance": "AT-QUAL-002"
+  },
+  {
+   "id": "FLC-QUAL-003",
+   "title": "Mutation coverage",
+   "workstream": "W8",
+   "requirement": "Prove tests catch removal of essential invariants.",
+   "acceptance": "AT-QUAL-003"
+  },
+  {
+   "id": "FLC-QUAL-004",
+   "title": "Performance evidence",
+   "workstream": "W8",
+   "requirement": "Measure actual workload and fault profiles, not language claims.",
+   "acceptance": "AT-QUAL-004"
+  },
+  {
+   "id": "FLC-QUAL-005",
+   "title": "Independent fixtures",
+   "workstream": "W8",
+   "requirement": "Use independently derived expected business/query results.",
+   "acceptance": "AT-QUAL-005"
+  },
+  {
+   "id": "FLC-QUAL-006",
+   "title": "Full journeys",
+   "workstream": "W8",
+   "requirement": "Run complete profiles rather than disconnected component tests.",
+   "acceptance": "AT-QUAL-006"
+  },
+  {
+   "id": "FLC-QUAL-007",
+   "title": "External qualification",
+   "workstream": "W8",
+   "requirement": "Separate software evidence from provider/hardware/independent review.",
+   "acceptance": "AT-QUAL-007"
+  },
+  {
+   "id": "FLC-QUAL-008",
+   "title": "Maintenance owner",
+   "workstream": "W8",
+   "requirement": "Assign supported profiles, versions, incident procedures and ownership.",
+   "acceptance": "AT-QUAL-008"
+  }
+ ],
+ "acceptance": [
+  {
+   "id": "AT-BASE-001",
+   "title": "Fresh assembled baseline",
+   "requirement": "FLC-BASE-001",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Advance an app head without changing its platform pin.",
+   "acceptance": "The inventory distinguishes the two and makes no deployed-version claim.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BASE-002",
+   "title": "Safe worktree",
+   "requirement": "FLC-BASE-002",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Run discovery against dirty checkouts with an unused local patch.",
+   "acceptance": "No work is overwritten or staged; patch discrepancy is visible.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BASE-003",
+   "title": "Reuse map",
+   "requirement": "FLC-BASE-003",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Compare proposed modules with actual source interfaces.",
+   "acceptance": "Each capability is reused, extended or explicitly new; no duplicate authority.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BASE-004",
+   "title": "Durable backend ADR",
+   "requirement": "FLC-BASE-004",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Run crash, early signal, replay, payload and recovery probes on pinned backend.",
+   "acceptance": "ADR cites actual results and rejects unsupported profiles; no parallel engine promise.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BASE-005",
+   "title": "Supported profiles",
+   "requirement": "FLC-BASE-005",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Import a long-lived process into a Core-only installation.",
+   "acceptance": "Installation reports the missing qualified runtime rather than a best-effort fallback.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BASE-006",
+   "title": "License inventory",
+   "requirement": "FLC-BASE-006",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Add a new engine/provider to a hosted deployment plan.",
+   "acceptance": "Its license/terms gate is explicit and unapproved use does not deploy.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CAP-001",
+   "title": "Typed capability registry",
+   "requirement": "FLC-CAP-001",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Discover the same capability through UI, API and agent tooling.",
+   "acceptance": "Version, types, rights and completion semantics agree.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CAP-002",
+   "title": "Native invariants",
+   "requirement": "FLC-CAP-002",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Try to reserve inventory by directly changing a protected balance.",
+   "acceptance": "The request is rejected; native reservation remains the only authorized route.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CAP-003",
+   "title": "Trusted context",
+   "requirement": "FLC-CAP-003",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Put another tenant ID and an admin role in an action input.",
+   "acceptance": "Neither influences trusted scope; access is denied and audited as appropriate.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CAP-004",
+   "title": "Version and digest lock",
+   "requirement": "FLC-CAP-004",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Replace a capability version while a process is waiting.",
+   "acceptance": "The process keeps its supported old binding or pauses; it does not silently adopt new code.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CAP-005",
+   "title": "Delegation modes",
+   "requirement": "FLC-CAP-005",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Offboard the initiator of both kinds of process.",
+   "acceptance": "Delegated work loses rights; valid company-owned work follows its explicit grant, not admin fallback.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CAP-006",
+   "title": "Completion semantics",
+   "requirement": "FLC-CAP-006",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Return accepted without the later business outcome event.",
+   "acceptance": "The run remains pending for the required milestone.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CAP-007",
+   "title": "Unknown outcomes",
+   "requirement": "FLC-CAP-007",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Lose a provider response after it commits.",
+   "acceptance": "The original effect is reconciled or held; it is not blindly repeated.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-CAP-008",
+   "title": "Deprecation ownership",
+   "requirement": "FLC-CAP-008",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Retire a capability used by a live instance.",
+   "acceptance": "Unsafe removal is blocked or affected work is paused with a supported migration path.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-COMP-001",
+   "title": "Strict parsing",
+   "requirement": "FLC-COMP-001",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Submit malformed/duplicate-key JSON and a remote schema reference.",
+   "acceptance": "Compilation refuses them with source-located errors and no network fetch.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-COMP-002",
+   "title": "Business types",
+   "requirement": "FLC-COMP-002",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Connect a temperature quantity to a money comparison and omit currency.",
+   "acceptance": "Type/unit errors block publication rather than coercing values.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-COMP-003",
+   "title": "Deterministic expressions",
+   "requirement": "FLC-COMP-003",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Replay identical fixture input through server and edge evaluator.",
+   "acceptance": "Same typed result or explicit unsupported function; no ambient time/network access.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-COMP-004",
+   "title": "Canonical identity",
+   "requirement": "FLC-COMP-004",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Move a node, then change an approval instruction and compare hashes.",
+   "acceptance": "Layout preserves semantic identity; instruction change invalidates approval.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-COMP-005",
+   "title": "Dependency closure",
+   "requirement": "FLC-COMP-005",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Upgrade a dependency after a parent release is approved.",
+   "acceptance": "New behavior requires a new artifact and approval.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-COMP-006",
+   "title": "Graph semantics",
+   "requirement": "FLC-COMP-006",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Add an unreachable action, missing timeout route and duplicate node ID.",
+   "acceptance": "Each is rejected or explicitly classified before publication.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-COMP-007",
+   "title": "Bounded iteration",
+   "requirement": "FLC-COMP-007",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Use an unbounded repeated branch or reorder foreach inputs.",
+   "acceptance": "Unbounded work is refused; stable item identities preserve receipts.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-COMP-008",
+   "title": "Effect typing",
+   "requirement": "FLC-COMP-008",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Attach an external mail action to a validation hook.",
+   "acceptance": "Compiler and runtime gates both refuse it.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-COMP-009",
+   "title": "Data-flow policy",
+   "requirement": "FLC-COMP-009",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Map restricted payroll data into a public validation error.",
+   "acceptance": "Unauthorized disclosure is blocked even if no record is mutated.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-COMP-010",
+   "title": "Source maps",
+   "requirement": "FLC-COMP-010",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Trigger a mapping error in a released nested subflow.",
+   "acceptance": "Operator sees correct parent/subflow/node/version and a safe diagnostic.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-HOOK-001",
+   "title": "Phase ordering",
+   "requirement": "FLC-HOOK-001",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "A derivation attempts to change company/owner to a forbidden target.",
+   "acceptance": "Authorization/native guards reject the final state.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-HOOK-002",
+   "title": "Pure hook boundary",
+   "requirement": "FLC-HOOK-002",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Attempt an indirect service/host call from a supposedly pure function.",
+   "acceptance": "It fails without external effects; phase violation is visible.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-HOOK-003",
+   "title": "Competing writes",
+   "requirement": "FLC-HOOK-003",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Two active rules compute incompatible values for one field.",
+   "acceptance": "Activation refuses the conflict unless a qualified merge rule is declared.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-HOOK-004",
+   "title": "Bounded prefetch",
+   "requirement": "FLC-HOOK-004",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Request a large related-record lookup or a hidden field.",
+   "acceptance": "Budget/permission denial occurs before rule evaluation.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-HOOK-005",
+   "title": "Equivalent mutation paths",
+   "requirement": "FLC-HOOK-005",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Submit one invalid record through every supported mutation path.",
+   "acceptance": "All reject consistently; bulk mode does not skip domain checks.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-HOOK-006",
+   "title": "After-commit durability",
+   "requirement": "FLC-HOOK-006",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Crash immediately before and after the transaction commit.",
+   "acceptance": "No precommit external effect; committed work is eventually available once.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-HOOK-007",
+   "title": "Rejection evidence",
+   "requirement": "FLC-HOOK-007",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Cause a wrong identity scan and transaction rollback.",
+   "acceptance": "Attempt audit remains according to policy, while domain mutation does not.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-HOOK-008",
+   "title": "Event recursion",
+   "requirement": "FLC-HOOK-008",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Create an A-to-B-to-A event chain across different apps.",
+   "acceptance": "The chain is stopped/quarantined with diagnosis before unbounded work.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-PROC-001",
+   "title": "Idempotent starts",
+   "requirement": "FLC-PROC-001",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Deliver the same trigger concurrently and lose the workflow-start response.",
+   "acceptance": "One logical run exists and returns the same identity.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-PROC-002",
+   "title": "Native action receipts",
+   "requirement": "FLC-PROC-002",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Crash at all receipt/mutation commit boundaries.",
+   "acceptance": "Retry returns one committed outcome with no duplicate domain mutation.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-PROC-003",
+   "title": "External effect identity",
+   "requirement": "FLC-PROC-003",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Retry an effect and then reuse the key with changed inputs.",
+   "acceptance": "Retry reuses the key; changed inputs conflict.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-PROC-004",
+   "title": "Signal before wait",
+   "requirement": "FLC-PROC-004",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Deliver the awaited event before the wait step registers.",
+   "acceptance": "It is consumed once when eligible, not lost.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-PROC-005",
+   "title": "Signal spoofing",
+   "requirement": "FLC-PROC-005",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Submit a correctly shaped signal for another tenant or business record.",
+   "acceptance": "It cannot advance the process.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-PROC-006",
+   "title": "Current authority",
+   "requirement": "FLC-PROC-006",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Revoke the service grant while a workflow is asleep.",
+   "acceptance": "After waking no newly disallowed effect occurs.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-PROC-007",
+   "title": "Replay determinism",
+   "requirement": "FLC-PROC-007",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Replay a stored history with a changed wall clock and provider state.",
+   "acceptance": "Historical decisions remain compatible; no repeated I/O during replay.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-PROC-008",
+   "title": "Parallel race",
+   "requirement": "FLC-PROC-008",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "One branch succeeds while another commits after cancellation request.",
+   "acceptance": "The second effect is reconciled/disposed explicitly, not erased.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-PROC-009",
+   "title": "Business rework",
+   "requirement": "FLC-PROC-009",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Request changes twice then approve; exceed configured maximum.",
+   "acceptance": "Valid rework proceeds durably; excess reaches a defined review/failure path.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-PROC-010",
+   "title": "Cancellation",
+   "requirement": "FLC-PROC-010",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Cancel while an external effect commits.",
+   "acceptance": "UI/history retain the actual result and required compensation.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-PROC-011",
+   "title": "Compensation failure",
+   "requirement": "FLC-PROC-011",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Primary work succeeds, later work fails and compensation times out.",
+   "acceptance": "Run stays unresolved with evidence and an authorized recovery route.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-PROC-012",
+   "title": "Worker fencing",
+   "requirement": "FLC-PROC-012",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Pause worker A, expire claim, run worker B, then resume A.",
+   "acceptance": "A cannot commit a stale local state change; ambiguous external work is not blindly resent.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-PROC-013",
+   "title": "History bounds",
+   "requirement": "FLC-PROC-013",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Exceed history budget with pending signals and prior effects.",
+   "acceptance": "Continuation retains dedupe/correlation and consumes signals once.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-PROC-014",
+   "title": "Snapshot plus subscription",
+   "requirement": "FLC-PROC-014",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Commit an event between snapshot and subscription under reordered commits.",
+   "acceptance": "Client eventually sees it or receives explicit resynchronization, never false emptiness.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-HUMAN-001",
+   "title": "Independent approval",
+   "requirement": "FLC-HUMAN-001",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Requester is also a Reviewer and tries to approve.",
+   "acceptance": "The decision is refused where policy requires another person.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-HUMAN-002",
+   "title": "Input-bound approval",
+   "requirement": "FLC-HUMAN-002",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Change amount/target after approval but before execution.",
+   "acceptance": "Effect is blocked and new review is required.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-HUMAN-003",
+   "title": "Timeout race",
+   "requirement": "FLC-HUMAN-003",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Submit approval at the same instant the task expires.",
+   "acceptance": "One defined outcome wins; no double branch.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-HUMAN-004",
+   "title": "Delegation",
+   "requirement": "FLC-HUMAN-004",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Create circular delegation or delegate beyond allowed scope.",
+   "acceptance": "Invalid delegation fails and history remains attributable.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-HUMAN-005",
+   "title": "Calendar semantics",
+   "requirement": "FLC-HUMAN-005",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Create due dates over repeated/skipped local hours and revised holidays.",
+   "acceptance": "Resolved deadlines follow the selected rule/version with no silent shift.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-HUMAN-006",
+   "title": "Task evidence",
+   "requirement": "FLC-HUMAN-006",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Use a task token to upload/read another task evidence.",
+   "acceptance": "Denied; no cross-task access.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-HUMAN-007",
+   "title": "Case work",
+   "requirement": "FLC-HUMAN-007",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Case owner tries to insert a privileged unlisted task.",
+   "acceptance": "It requires a new reviewed definition rather than bypassing authority.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-HUMAN-008",
+   "title": "Manual disposition",
+   "requirement": "FLC-HUMAN-008",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Operator attempts a generic force-success on an unknown effect.",
+   "acceptance": "No bypass exists; only qualified disposition actions are offered.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SEC-001",
+   "title": "Least privilege grants",
+   "requirement": "FLC-SEC-001",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Author adds an admin capability to a pack.",
+   "acceptance": "The request is not self-granted and cannot run without approval.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SEC-002",
+   "title": "Deny precedence",
+   "requirement": "FLC-SEC-002",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Tenant parameter tries to disable authorization or a native guard.",
+   "acceptance": "Rejected in compiler and runtime.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SEC-003",
+   "title": "Secret handles",
+   "requirement": "FLC-SEC-003",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Export pack and inspect runtime traces of an authenticated connector.",
+   "acceptance": "Only approved handles/redacted evidence appear.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SEC-004",
+   "title": "WASM budgets",
+   "requirement": "FLC-SEC-004",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Run an infinite guest loop plus a slow host operation.",
+   "acceptance": "Fuel/deadline/host budgets terminate safely and preserve platform capacity.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SEC-005",
+   "title": "Egress and SSRF",
+   "requirement": "FLC-SEC-005",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "A permitted domain redirects or resolves to a forbidden private endpoint.",
+   "acceptance": "No unauthorized destination is contacted.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SEC-006",
+   "title": "Cross-tenant caches",
+   "requirement": "FLC-SEC-006",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Two users with distinct row rights ask identical queries.",
+   "acceptance": "They receive only their authorized results, including cache hits.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SEC-007",
+   "title": "Diagnostic access",
+   "requirement": "FLC-SEC-007",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Partner grant expires while examining traces.",
+   "acceptance": "New protected access fails; customer-visible audit retains the attempts.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SEC-008",
+   "title": "Fail-closed uncertainty",
+   "requirement": "FLC-SEC-008",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Policy source or required evidence becomes stale/unavailable.",
+   "acceptance": "Consequence is explicit block/review/degradation per profile, never silent allow.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-UI-001",
+   "title": "In-app authoring",
+   "requirement": "FLC-UI-001",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Business user creates a workflow without Git or source checkout.",
+   "acceptance": "Guided editor, tests, review and deployment are all usable.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-UI-002",
+   "title": "Single definition",
+   "requirement": "FLC-UI-002",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Edit a supported setting in JSON, switch views, save and re-export.",
+   "acceptance": "Semantic content is preserved.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-UI-003",
+   "title": "Typed inspector",
+   "requirement": "FLC-UI-003",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Select an external-effect node versus a pure node.",
+   "acceptance": "Available fields and warnings match actual contract.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-UI-004",
+   "title": "Accessible outline",
+   "requirement": "FLC-UI-004",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Keyboard/screen-reader user builds a branch and repairs a failed mapping.",
+   "acceptance": "Task is achievable with focus, labels and announced errors.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-UI-005",
+   "title": "Semantic diff",
+   "requirement": "FLC-UI-005",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Change a recipient and capability version before review.",
+   "acceptance": "Reviewer sees material changes and prior approval is invalidated.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-UI-006",
+   "title": "Conflict handling",
+   "requirement": "FLC-UI-006",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Two sessions save different conditions from the same draft version.",
+   "acceptance": "One conflict is explicit; no silent overwrite.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-UI-007",
+   "title": "Simulator parity",
+   "requirement": "FLC-UI-007",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Run identical boundary fixtures in simulator and deployed test profile.",
+   "acceptance": "Decisions agree; mocks are clearly labeled.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-UI-008",
+   "title": "Recovery console",
+   "requirement": "FLC-UI-008",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Refresh/change API replica during an unknown-outcome recovery.",
+   "acceptance": "Same evidence/state appears; no in-memory-only result.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-UI-009",
+   "title": "Localization",
+   "requirement": "FLC-UI-009",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Edit and operate under RTL UI and a non-UTC business zone.",
+   "acceptance": "Labels/layout work while execution times remain correct.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-UI-010",
+   "title": "Preview isolation",
+   "requirement": "FLC-UI-010",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Test fixture attempts real mail or operational mutation.",
+   "acceptance": "It is captured/refused unless explicitly authorized as a separate sandbox test.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-EDGE-001",
+   "title": "Authenticated observation",
+   "requirement": "FLC-EDGE-001",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Device payload nominates a different tenant/site asset.",
+   "acceptance": "It cannot become a trusted fact for that target.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-EDGE-002",
+   "title": "Normalization provenance",
+   "requirement": "FLC-EDGE-002",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Inputs use different scale factors, offsets, units and invalid values.",
+   "acceptance": "Known values normalize correctly; unknowns quarantine rather than become normal.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-EDGE-003",
+   "title": "Quality semantics",
+   "requirement": "FLC-EDGE-003",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Sensor sticks or goes silent during an active condition.",
+   "acceptance": "Quality is explicit; no fabricated recovery.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-EDGE-004",
+   "title": "State scope",
+   "requirement": "FLC-EDGE-004",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Millions of distinct untrusted entity keys arrive.",
+   "acceptance": "Capacity is bounded and overflow/degradation is visible.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-EDGE-005",
+   "title": "Atomic critical state",
+   "requirement": "FLC-EDGE-005",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Power-cut at each transition/effect boundary.",
+   "acceptance": "Recovery neither loses acknowledged critical evidence nor repeats logical business intent.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-EDGE-006",
+   "title": "Event-time lateness",
+   "requirement": "FLC-EDGE-006",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "A late reading alters a previously closed analytical window.",
+   "acceptance": "Evidence can revise; previous physical/financial action is not automatically repeated.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-EDGE-007",
+   "title": "Episode identity",
+   "requirement": "FLC-EDGE-007",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Duplicate high-frequency observations and restart during an episode.",
+   "acceptance": "One case/intent remains, with additional evidence.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-EDGE-008",
+   "title": "Offline scope",
+   "requirement": "FLC-EDGE-008",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Site loses cloud beyond approved duration.",
+   "acceptance": "Only preauthorized supported behavior continues; new cloud-only work waits/refuses.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-EDGE-009",
+   "title": "Distributed owner",
+   "requirement": "FLC-EDGE-009",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Overlap old/new service connections with skew and delayed closures.",
+   "acceptance": "Old traffic cannot steal or clear current ownership.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-EDGE-010",
+   "title": "State migration",
+   "requirement": "FLC-EDGE-010",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Change window/key semantics while critical state exists.",
+   "acceptance": "Qualified migration/drain/reset is explicit; no silent data loss.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-EDGE-011",
+   "title": "Backpressure",
+   "requirement": "FLC-EDGE-011",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Fill storage or saturate export queues.",
+   "acceptance": "Drop only declared disposable data or refuse new work with alarm; evidence reserve is protected.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-EDGE-012",
+   "title": "Operational intent",
+   "requirement": "FLC-EDGE-012",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Flow attempts direct device mutation from a transform node.",
+   "acceptance": "It is rejected; only approved operational intent path is available.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SEM-001",
+   "title": "Single semantic owner",
+   "requirement": "FLC-SEM-001",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Import a Wren model with a conflicting revenue definition.",
+   "acceptance": "Conflict/mapping review is explicit; no silent second authority.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SEM-002",
+   "title": "Grain and joins",
+   "requirement": "FLC-SEM-002",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Join invoice, payment and shipment rows with multiple children.",
+   "acceptance": "Totals match an independently calculated fixture or query is rejected.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SEM-003",
+   "title": "Composed metrics",
+   "requirement": "FLC-SEM-003",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Compare ratio-of-sums with average-of-ratios and period balances.",
+   "acceptance": "Chosen metric definition returns its specified value and cannot be confused.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SEM-004",
+   "title": "Currency and time",
+   "requirement": "FLC-SEM-004",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Cross-currency refunds and backdated correction span a fiscal boundary.",
+   "acceptance": "The expected independently defined semantic result is retained.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SEM-005",
+   "title": "Query authority",
+   "requirement": "FLC-SEM-005",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "A restricted user joins a visible entity to hidden related rows.",
+   "acceptance": "Hidden data does not leak through rows or aggregates under the supported policy.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SEM-006",
+   "title": "Query sandbox",
+   "requirement": "FLC-SEM-006",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "LLM proposes filesystem/network/DDL queries or explosive joins.",
+   "acceptance": "Policy/cost gate refuses or bounds them before unauthorized access.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SEM-007",
+   "title": "Result freshness",
+   "requirement": "FLC-SEM-007",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "A source lags or fails part of a federation.",
+   "acceptance": "Answer discloses limits or abstains; no false current total.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SEM-008",
+   "title": "Sharing and schedules",
+   "requirement": "FLC-SEM-008",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "An admin shares a sensitive report with a lower-privilege user.",
+   "acceptance": "Recipient sees their authorized view or a denial, not the admin snapshot.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SEM-009",
+   "title": "Semantic change control",
+   "requirement": "FLC-SEM-009",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Change a certified metric dependency.",
+   "acceptance": "Review and impact handling occur; old analyses preserve their actual definition.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-SEM-010",
+   "title": "Engine interoperability",
+   "requirement": "FLC-SEM-010",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Translate an unsupported semantic construct/dialect feature.",
+   "acceptance": "It fails explicitly or uses a reviewed mapping, not a silent approximation.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-AI-001",
+   "title": "Typed proposals",
+   "requirement": "FLC-AI-001",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Model emits an invented capability or malformed graph.",
+   "acceptance": "It cannot execute; compiler returns useful diagnostics.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-AI-002",
+   "title": "Prompt injection",
+   "requirement": "FLC-AI-002",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "A ticket instructs the agent to reveal secrets and bypass permissions.",
+   "acceptance": "Tools remain within authenticated grant and expose no secrets.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-AI-003",
+   "title": "Ambiguity",
+   "requirement": "FLC-AI-003",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Ask for revenue with two materially different certified definitions.",
+   "acceptance": "The app requests clarification or visibly applies an approved default.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-AI-004",
+   "title": "Evidence-based answers",
+   "requirement": "FLC-AI-004",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Agent supplies a plausible unsupported number.",
+   "acceptance": "Result validation refuses fabricated evidence and labels uncertainty.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-AI-005",
+   "title": "Bounded agent loop",
+   "requirement": "FLC-AI-005",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Model loops through failed repairs and expensive queries.",
+   "acceptance": "Budgets terminate it with a useful result/error and cancellation.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-AI-006",
+   "title": "Separate action authority",
+   "requirement": "FLC-AI-006",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Analysis recommends inventory or financial changes.",
+   "acceptance": "A normal authorized proposal/approval path is required.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-AI-007",
+   "title": "Memory governance",
+   "requirement": "FLC-AI-007",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Malicious feedback attempts to teach a cross-tenant secret as an example.",
+   "acceptance": "It does not enter shared retrieval or widen access.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-AI-008",
+   "title": "Model changes",
+   "requirement": "FLC-AI-008",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Replace a model with one that answers confidently but incorrectly.",
+   "acceptance": "Release evidence detects correctness/regression; no automatic promotion.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OPS-001",
+   "title": "Observability",
+   "requirement": "FLC-OPS-001",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Trace one process across workers and a delayed external action.",
+   "acceptance": "Operators can identify original intent, version, attempts and actual outcome.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OPS-002",
+   "title": "Fair scheduling",
+   "requirement": "FLC-OPS-002",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "One tenant floods slow flows and analytical jobs.",
+   "acceptance": "Other tenant and recovery budgets remain within the qualified profile.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OPS-003",
+   "title": "Resource budget",
+   "requirement": "FLC-OPS-003",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Scale worker count beyond available pools/provider allowance.",
+   "acceptance": "Admission/autoscaling limits prevent resource exhaustion.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OPS-004",
+   "title": "Restore fencing",
+   "requirement": "FLC-OPS-004",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Restore DB earlier than external effects and durable history.",
+   "acceptance": "No stale effect is redispatched before explicit reconciliation.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OPS-005",
+   "title": "Backup completeness",
+   "requirement": "FLC-OPS-005",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Remove the original infrastructure and recover to a new isolated environment.",
+   "acceptance": "Supported runs can be inspected/recovered with correct keys and authority.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OPS-006",
+   "title": "Retention",
+   "requirement": "FLC-OPS-006",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Replay an old event after expiry or request deletion during a long run.",
+   "acceptance": "Explicit resync/review/retention policy applies; no unsafe reexecution.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OPS-007",
+   "title": "Revocation response",
+   "requirement": "FLC-OPS-007",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Revoke a plugin digest while runs are sleeping.",
+   "acceptance": "Affected effects pause; supported mitigation is visible and audited.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-OPS-008",
+   "title": "Portability",
+   "requirement": "FLC-OPS-008",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Move a pack to a tenant with different resource bindings.",
+   "acceptance": "It remains a draft pending explicit mapping/consent; secrets are absent.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-MIG-001",
+   "title": "Legacy import",
+   "requirement": "FLC-MIG-001",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Import a current simple automation twice.",
+   "acceptance": "It maps once, retains provenance and flags unsupported semantics.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-MIG-002",
+   "title": "Shadow comparison",
+   "requirement": "FLC-MIG-002",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Replay historical fixtures with a candidate that changes decisions.",
+   "acceptance": "Differences are explicit and no real effect occurs.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-MIG-003",
+   "title": "One-writer cutover",
+   "requirement": "FLC-MIG-003",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Activate new release during concurrent event delivery.",
+   "acceptance": "Each logical event runs under one defined release, not both.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-MIG-004",
+   "title": "In-flight migration",
+   "requirement": "FLC-MIG-004",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Migrate a waiting run to a release with removed nodes.",
+   "acceptance": "Unsupported mapping fails; existing work is not silently dropped.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-MIG-005",
+   "title": "Schema lifecycle",
+   "requirement": "FLC-MIG-005",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Cancel/restart backfill while existing processes use old fields.",
+   "acceptance": "Old profile remains valid and progress resumes safely.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-MIG-006",
+   "title": "Rollback truth",
+   "requirement": "FLC-MIG-006",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Roll back a definition after an external effect completed.",
+   "acceptance": "New work uses selected release; prior effects remain and disposition is explicit.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-QUAL-001",
+   "title": "Exact artifacts",
+   "requirement": "FLC-QUAL-001",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "An app pin changes after a test passed.",
+   "acceptance": "Affected qualification is invalidated and rerun.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-QUAL-002",
+   "title": "Ordinary roles",
+   "requirement": "FLC-QUAL-002",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Execute the six reference profiles with constrained participants.",
+   "acceptance": "Allowed work completes and prohibited actions fail.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-QUAL-003",
+   "title": "Mutation coverage",
+   "requirement": "FLC-QUAL-003",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Remove tenant filter, approval digest check or stable effect dedupe in mutants.",
+   "acceptance": "Targeted tests fail; survivors block the corresponding claim.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-QUAL-004",
+   "title": "Performance evidence",
+   "requirement": "FLC-QUAL-004",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Run cold/warm/concurrent/failure scenarios on stated hardware.",
+   "acceptance": "Results separate model/source/planner/runtime costs and expose limits.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-QUAL-005",
+   "title": "Independent fixtures",
+   "requirement": "FLC-QUAL-005",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Implementation and its helper formula are both altered incorrectly.",
+   "acceptance": "Independent oracle fixtures detect the error.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-QUAL-006",
+   "title": "Full journeys",
+   "requirement": "FLC-QUAL-006",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Author/deploy/execute/recover one solution across apps in one run.",
+   "acceptance": "Evidence covers the assembled path and lists real versus mocked dependencies.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-QUAL-007",
+   "title": "External qualification",
+   "requirement": "FLC-QUAL-007",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "A simulator passes but real equipment or audit is unavailable.",
+   "acceptance": "Status remains limited; no qualification badge is fabricated.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  },
+  {
+   "id": "AT-QUAL-008",
+   "title": "Maintenance owner",
+   "requirement": "FLC-QUAL-008",
+   "setup": "Use a release-pinned isolated test environment with ordinary roles and a second tenant where relevant. Retain exact source/artifact/runtime/configuration identities.",
+   "exercise": "Retire a provider/runtime used by customers.",
+   "acceptance": "Impact, replacement/export and accountable support path are documented.",
+   "retain": [
+    "exact command or browser steps",
+    "actor and tenant scope",
+    "input/response and durable state assertions",
+    "fault boundary and timing where relevant",
+    "actual result and limitations"
+   ],
+   "result": "not_run"
+  }
+ ],
+ "legacy": [
+  {
+   "id": "LOGIC-001",
+   "area": "Compile",
+   "exercise": "Misspell a required node field and include an unsupported DSL version.",
+   "acceptance": "Reject before activation with an actionable path and version error.",
+   "maps_to": [
+    "FLC-COMP-001"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "LOGIC-002",
+   "area": "Types",
+   "exercise": "Compare Money to an untyped float and temperature to a pressure quantity.",
+   "acceptance": "Reject incompatible types; no implicit currency/unit conversion.",
+   "maps_to": [
+    "FLC-COMP-002"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "LOGIC-003",
+   "area": "Round-trip",
+   "exercise": "Edit a valid definition on the canvas, export, import and change only layout.",
+   "acceptance": "Executable digest remains the same for layout-only changes.",
+   "maps_to": [
+    "FLC-UI-002",
+    "FLC-COMP-004"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "LOGIC-004",
+   "area": "Permissions",
+   "exercise": "A pack requests an action or destination not granted to its environment.",
+   "acceptance": "Installation/execution denied; the declaration cannot grant authority.",
+   "maps_to": [
+    "FLC-SEC-001",
+    "FLC-SEC-005"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "LOGIC-005",
+   "area": "Native invariants",
+   "exercise": "A flow attempts to change submitted financial fields or bypass stock approval via generic CRUD.",
+   "acceptance": "Native domain rules refuse it on every entry path.",
+   "maps_to": [
+    "FLC-CAP-002",
+    "FLC-HOOK-005"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "LOGIC-006",
+   "area": "Duplicate intent",
+   "exercise": "Deliver the same business episode concurrently and after worker restart.",
+   "acceptance": "One logical case/process and no duplicate consequential effect.",
+   "maps_to": [
+    "FLC-PROC-001",
+    "FLC-EDGE-007"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "LOGIC-007",
+   "area": "Ambiguous effect",
+   "exercise": "Provider commits an action but its response is lost.",
+   "acceptance": "Unknown outcome is reconciled; no new-key blind retry.",
+   "maps_to": [
+    "FLC-PROC-003",
+    "FLC-CAP-007"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "LOGIC-008",
+   "area": "Signal race",
+   "exercise": "Reply arrives immediately while process moves into an event wait.",
+   "acceptance": "Signal is retained and correlated, never lost before the waiter exists.",
+   "maps_to": [
+    "FLC-PROC-004"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "LOGIC-009",
+   "area": "Approvals",
+   "exercise": "Change relevant records after approval, or have one multi-role person approve their own plan.",
+   "acceptance": "Approval invalidated or action rejected; separation of duties preserved.",
+   "maps_to": [
+    "FLC-HUMAN-001",
+    "FLC-HUMAN-002"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "LOGIC-010",
+   "area": "Revocation",
+   "exercise": "Disable a delegated user or service grant during a week-long wait.",
+   "acceptance": "Next effect is denied or sent to a governed reassignment path.",
+   "maps_to": [
+    "FLC-PROC-006"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "LOGIC-011",
+   "area": "Compensation",
+   "exercise": "Later step fails after an irreversible business action; compensation also fails.",
+   "acceptance": "Retain original facts; surface explicit recovery, not fictional rollback.",
+   "maps_to": [
+    "FLC-PROC-011"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "LOGIC-012",
+   "area": "Versioning",
+   "exercise": "Upgrade a definition and remove an action version while old instances are waiting.",
+   "acceptance": "Old instances remain pinned; incompatible removal blocked or explicitly migrated.",
+   "maps_to": [
+    "FLC-CAP-004",
+    "FLC-CAP-008",
+    "FLC-MIG-004"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "LOGIC-013",
+   "area": "Resource limits",
+   "exercise": "Create large fan-out, a causal event cycle and expensive expressions.",
+   "acceptance": "Budgets and cycle controls bound work without taking down other tenants.",
+   "maps_to": [
+    "FLC-COMP-007",
+    "FLC-HOOK-008",
+    "FLC-SEC-004"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "LOGIC-014",
+   "area": "Calendars",
+   "exercise": "Run deadlines across timezone changes, DST transitions and a site holiday.",
+   "acceptance": "Declared business-calendar semantics and durable timers are preserved.",
+   "maps_to": [
+    "FLC-HUMAN-005"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "LOGIC-015",
+   "area": "Restore",
+   "exercise": "Restore process state older than a completed external operation.",
+   "acceptance": "Dispatch stays fenced until reconciliation establishes the true outcome.",
+   "maps_to": [
+    "FLC-OPS-004"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "LOGIC-016",
+   "area": "Simulation",
+   "exercise": "Replay production evidence in a simulation with a new rule version.",
+   "acceptance": "No real messages, records or equipment effects; outputs are labelled simulated.",
+   "maps_to": [
+    "FLC-MIG-002",
+    "FLC-UI-010"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "IOT-001",
+   "area": "Normalization",
+   "exercise": "Send equivalent readings in different supported units and exponents.",
+   "acceptance": "Same canonical typed quantity with preserved source evidence.",
+   "maps_to": [
+    "FLC-EDGE-002"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "IOT-002",
+   "area": "Schema evolution",
+   "exercise": "Introduce renamed fields, missing fields and unknown firmware/schema versions.",
+   "acceptance": "Compatible mapping or explicit quarantine; no silent reinterpretation.",
+   "maps_to": [
+    "FLC-COMP-001",
+    "FLC-COMP-005",
+    "FLC-MIG-005"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "IOT-003",
+   "area": "Identity",
+   "exercise": "Payload attempts to replace tenant, site or device authority.",
+   "acceptance": "Trusted ingress identity wins; unauthorized reference is refused/audited.",
+   "maps_to": [
+    "FLC-EDGE-001"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "IOT-004",
+   "area": "Event time",
+   "exercise": "Reorder, delay and duplicate observations around window boundaries.",
+   "acceptance": "Declared watermark/lateness policy and stable episode identity hold.",
+   "maps_to": [
+    "FLC-EDGE-006"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "IOT-005",
+   "area": "Crash durability",
+   "exercise": "Power-cut between window-state update and effect publication.",
+   "acceptance": "Critical profile restores consistent state/intents; noncritical loss policy is visible.",
+   "maps_to": [
+    "FLC-EDGE-005"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "IOT-006",
+   "area": "Offline",
+   "exercise": "Lose cloud and expire an enrichment snapshot while detection continues.",
+   "acceptance": "Only the declared local envelope continues; stale data becomes unknown/degraded.",
+   "maps_to": [
+    "FLC-EDGE-008"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "IOT-007",
+   "area": "Replay and corrections",
+   "exercise": "Late readings revise an already-processed historical episode.",
+   "acceptance": "Analytical corrections do not repeat irreversible actions.",
+   "maps_to": [
+    "FLC-EDGE-006",
+    "FLC-EDGE-007"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "IOT-008",
+   "area": "Node compatibility",
+   "exercise": "Deploy a graph using a cloud-only or unsupported node to an edge site.",
+   "acceptance": "Compiler refuses or partitions explicitly; no silent fallback.",
+   "maps_to": [
+    "FLC-COMP-008",
+    "FLC-BASE-005"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "IOT-009",
+   "area": "Configuration rollout",
+   "exercise": "Change a subflow/model during staged rollout with old instances active.",
+   "acceptance": "Approved dependency digests retained; mixed versions remain supported or blocked.",
+   "maps_to": [
+    "FLC-EDGE-010",
+    "FLC-COMP-005",
+    "FLC-MIG-004"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "BI-001",
+   "area": "Semantic correctness",
+   "exercise": "Join invoices, lines and payments with different grains.",
+   "acceptance": "Independently computed total matches; no join fan-out double counting.",
+   "maps_to": [
+    "FLC-SEM-002"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "BI-002",
+   "area": "Temporal meaning",
+   "exercise": "Compare posting-date vs order-date revenue, fiscal periods and historical ownership.",
+   "acceptance": "Definition is explicit; ambiguous request is clarified or assumptions surfaced.",
+   "maps_to": [
+    "FLC-SEM-004"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "BI-003",
+   "area": "Currency and quality",
+   "exercise": "Mix currencies, missing records, zero values and late corrections.",
+   "acceptance": "Correct approved conversion/aggregation; missing is not silently zero.",
+   "maps_to": [
+    "FLC-SEM-004",
+    "FLC-SEM-007"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "BI-004",
+   "area": "Permission equivalence",
+   "exercise": "Run the same metric as two sales reps and their manager through UI/API/MCP.",
+   "acceptance": "Every path returns only its authorized scope and protects metadata too.",
+   "maps_to": [
+    "FLC-SEM-005"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "BI-005",
+   "area": "Cached leakage",
+   "exercise": "Prime a result/cache under a privileged identity then query as a restricted identity.",
+   "acceptance": "No reuse of broader result; policy revision invalidation works.",
+   "maps_to": [
+    "FLC-SEC-006"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "BI-006",
+   "area": "Dangerous query",
+   "exercise": "Ask for a SELECT using a prohibited UDF, remote URL/file or system catalog.",
+   "acceptance": "Plan rejected or source capability absent; read-only text is not the sole control.",
+   "maps_to": [
+    "FLC-SEM-006"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "BI-007",
+   "area": "Prompt injection",
+   "exercise": "Put adversarial tool instructions in row text, schema comments and retrieved documents.",
+   "acceptance": "They remain data; no new tools, credentials, egress or privilege.",
+   "maps_to": [
+    "FLC-AI-002"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "BI-008",
+   "area": "Model uncertainty",
+   "exercise": "Use ambiguous language, a nonexistent metric and intentionally stale sources.",
+   "acceptance": "Clarification, abstention or clearly bounded answer; no fabricated result.",
+   "maps_to": [
+    "FLC-AI-003",
+    "FLC-AI-004",
+    "FLC-SEM-007"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "BI-009",
+   "area": "Delivery policies",
+   "exercise": "Revoke a viewer before scheduled report delivery, embedded render or history access.",
+   "acceptance": "Reauthorization prevents stale access and recipient leakage.",
+   "maps_to": [
+    "FLC-SEM-008"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "BI-010",
+   "area": "OLTP isolation",
+   "exercise": "Flood analytical scans from one tenant while another performs business transactions.",
+   "acceptance": "Declared query budgets/fairness/cancellation protect transactional service goals.",
+   "maps_to": [
+    "FLC-OPS-002"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "BI-011",
+   "area": "Lineage",
+   "exercise": "Change metric/model version after a saved answer.",
+   "acceptance": "Answer records original semantics and freshness; recomputation is identified as new.",
+   "maps_to": [
+    "FLC-SEM-009"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "BI-012",
+   "area": "Analysis to action",
+   "exercise": "Have the agent identify an issue and attempt direct database writes.",
+   "acceptance": "Writes unavailable; only a scoped proposal reaches the governed workflow.",
+   "maps_to": [
+    "FLC-AI-006"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "BI-013",
+   "area": "Engine parity",
+   "exercise": "Compare a pinned Wren adapter/native planner on a semantic fixture corpus.",
+   "acceptance": "Supported features match independent expected results; unsupported features reject.",
+   "maps_to": [
+    "FLC-SEM-010"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "PACK-001",
+   "area": "Portability",
+   "exercise": "Install the same pack in a sandbox and another tenant with different bindings.",
+   "acceptance": "No embedded secrets or tenant IDs; requested grants are reviewed per environment.",
+   "maps_to": [
+    "FLC-OPS-008"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "PACK-002",
+   "area": "No-code proof",
+   "exercise": "Deliver services, procurement and condition-response customer variants.",
+   "acceptance": "Only approved definitions/bindings change; missing primitives are honestly recorded.",
+   "maps_to": [
+    "FLC-UI-001",
+    "FLC-QUAL-006"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "PACK-003",
+   "area": "Lifecycle",
+   "exercise": "Disable/uninstall a pack with running work and retained evidence.",
+   "acceptance": "Policy-controlled pause/drain/migration; no silent deletion or orphaned effects.",
+   "maps_to": [
+    "FLC-OPS-006",
+    "FLC-CAP-008"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  },
+  {
+   "id": "PACK-004",
+   "area": "Licensing",
+   "exercise": "Attempt to import engine/documentation/commercial artifacts without a license inventory.",
+   "acceptance": "Admission requires exact component/license/provenance review; no assumed blanket reuse.",
+   "maps_to": [
+    "FLC-BASE-006"
+   ],
+   "mapping": "proposed_crosswalk_not_test_equivalence_proof",
+   "result": "not_run"
+  }
+ ]
+}

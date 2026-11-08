@@ -1,0 +1,72 @@
+setup: tables ready
+
+== worker
+
+== effect
+effect: first run -> done sent=1 attempts=2 repeated=true
+effect: same key, other input -> refused "CONFLICT: effect-18e5e99e0ea435f0 was used with other input"
+effect: ledger sent=1 attempts=3
+PROBE effect HOLDS
+
+== early-signal
+early-signal: three deliveries of one reply, before the wait -> consumed=1 duplicates_ignored=1
+PROBE early-signal HOLDS
+
+== revoked
+revoked: grant revoked during the timer -> refused "PERMISSION_DENIED: grant grant-18e5e99eb245a928 is not active now"
+PROBE revoked HOLDS
+
+== race
+race: 20 rounds, 12 decided, 8 expired, process agreed with the record in 20
+PROBE race HOLDS
+
+== codec
+codec: history rows in Temporal's database holding the marker: 0
+codec: decoded result carries the marker: true
+codec: marker readable in the stored history: false
+PROBE codec HOLDS
+
+== replay
+replay [no activity id]: ran -> snapshot,decide,reserve
+replay [no activity id]: replayer without Ferrum's codec -> cannot read the sealed history
+replay [no activity id]: same code -> replays
+replay [no activity id]: steps reordered -> replayed (not caught)
+replay [activity id = node id]: ran -> snapshot,decide,reserve
+replay [activity id = node id]: replayer without Ferrum's codec -> cannot read the sealed history
+replay [activity id = node id]: same code -> replays
+replay [activity id = node id]: steps reordered -> caught: workflow replay was nondeterministic: Workflow activation completion failed: Failure { failure: Some(Failure { message: "[TMPRL1100] Nondeterminism error: Activity id of scheduled event 'node-snapshot' does not match activity id of activity command 'node-reserve'", source: "", stack_trace: "", encoded_attributes: None, cause: None, failure_info: Some(ApplicationFailureInfo(ApplicationFailureInfo { r#type: "", non_retryable: false, details: None, next_retry_delay: None, category: Unspecified })) }), force_cause: NonDeterministicError }
+PROBE replay HOLDS (with node ids as activity ids)
+
+== carry
+carry: 12 signals and one repeat across runs of 3 -> consumed=12 unique=12 runs=2
+PROBE carry HOLDS
+
+== crash: the worker is killed after the work is done, before it answers
+crash-start: p0-1794096918
+crash-result: worker killed while holding the answer -> done sent=1 attempts=2 repeated=true; ledger sent=1 attempts=2
+PROBE crash HOLDS
+
+== restore A: Temporal restored to before an effect Ferrum recorded
+gate-start: p8a-1794096929 at epoch 2
+gate-signal: p8a-1794096929 go
+gate-signal: p8a-1794096929 go
+gate-signal: p8a-1794096929 finish
+gate-result: p8a-1794096929 -> a sent=1 repeated=true; b sent=1
+gate-result: ledger p8a-1794096929/a sent=1 attempts=2 status=sent
+gate-result: ledger p8a-1794096929/b sent=1 attempts=1 status=sent
+
+== restore B: Ferrum restored to before an effect it made; the restore runbook bumps the recovery epoch
+gate-start: p8b-1794096941 at epoch 2
+gate-signal: p8b-1794096941 go
+epoch-bump: now 3
+gate-signal: p8b-1794096941 finish
+gate-result: p8b-1794096941 -> a sent=1 repeated=false; needs_attention at b: "RECOVERY_REQUIRED: p8b-1794096941/b predates recovery epoch 3"
+gate-result: ledger p8b-1794096941/b sent=0 attempts=1 status=claimed
+
+== footprint
+server rss at rest: 145 MB, worker rss: 33 MB
+load: 200 workflows started in 1.5s, all finished in 1.7s
+server rss after 200 workflows: 199 MB, worker rss: 35 MB
+ferrum_flc_temporal: 18 MB
+ferrum_flc_temporal_visibility: 26 MB
+spike binary:  73M
