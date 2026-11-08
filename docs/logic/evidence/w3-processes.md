@@ -11,7 +11,23 @@ version the spike qualified on PostgreSQL, ran as the CLI's dev server (`tempora
 ```bash
 export CARGO_TARGET_DIR=$HOME/Desktop/Personal/ERP/flc/target CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0
 temporal server start-dev --headless --port 7233 --namespace ferrum-flc --db-filename …/temporal.db
-CI_RESULTS
+# each suite with a database of its own (FERRUM_*_TEST_DATABASE_URL → ferrum_flc_*_test)
+cargo test -p ferrum-logic --lib                                   # 109 passed
+cargo test -p ferrum-kernel --lib                                  # 70 passed
+cargo test -p ferrum-kernel --test <each of 37>                    # all pass; saml_it and saml_keycloak_it run
+                                                                   # nothing without their identity provider
+cargo test -p ferrum-meta                                          # 20 passed
+cargo test -p ferrum-plugins                                       # 28 passed
+cargo test -p ferrum-mcp                                           # 1 passed
+cargo test -p ferrum-studio                                        # 28 passed
+cargo test -p ferrum-ops                                           # 5 passed
+TEMPORAL_ADDRESS=http://127.0.0.1:7233 cargo test -p ferrum-process   # 2 passed: the codec, the conformance run
+PROTOC=/usr/bin/false cargo check -p ferrum-process                # builds without protoc
+cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy -p ferrum-server --no-default-features --features process -- -D warnings
+cargo fmt --all -- --check
+python3 scripts/registry.py check
+python3 scripts/mutants.py <each W3 mutant>                        # 30 of 30 caught
 ```
 
 ## What it showed
@@ -59,7 +75,22 @@ replays with the codec but not without it; the worker stopped while a person dec
 the run goes on; a review nobody decides times out on Temporal's timer, the task is `timed_out` and the run waits
 for a person.
 
-**Mutants**: MUTANT_RESULTS
+**Mutants**: thirty, each breaking one guarantee, all caught. State machine and compiler: `late-effect-erased`,
+`compensation-oldest-first`, `rework-unbounded`, `item-keys-collide`, `step-budget-ignored`,
+`cancel-drops-work-in-hand`, `case-close-waits-for-deliveries`, `subprocess-recurses`, `resume-reads-unrun`,
+`approval-may-come-later`. Ferrum's records: `run-started-twice`, `requester-decides`, `administrator-decides`,
+`decided-on-other-material`, `deadline-overrides-decision`, `repeated-deadline-says-nothing`,
+`delegation-unbounded`, `delegation-counts-people`, `delegation-goes-back`, `effect-on-stale-approval`,
+`approval-of-deleted-record`, `effect-borrows-rights`, `early-event-dropped`, `event-crosses-records`,
+`case-order-ignored`, `requester-closes-case`, `recovery-forces-success`. The runtime: `history-not-sealed`,
+`run-started-again`, `late-delivery-retried`. `scripts/mutants.py --check`: 276 mutants find their text.
+
+**Found while re-reading, fixed before this record** (each now has a test and a mutant): a delegation bound
+counted people instead of hand-ons; administrators could decide any task and close any case; a deadline asked
+again after a lost answer told nothing (the run would have waited for ever); activities gave up after eight
+attempts; transient errors while checking rights or an approval became refusals; an approval of a deleted
+record held; a case's close could be overtaken by a task's delivery and ignored; a rotated key would have left
+earlier runs unable to read their history.
 
 ## The package's acceptance cases
 
