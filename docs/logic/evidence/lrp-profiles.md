@@ -10,20 +10,31 @@ running server over HTTP as people signed in as themselves:
 Their output is kept beside this page: [lrp-walk.txt](lrp-walk.txt), [logic-load.txt](logic-load.txt) and
 [restore-drill.txt](restore-drill.txt).
 
+They first ran when W8 landed, at Ferrum `edbc786`. They ran again once the registry's open rows were closed
+([closing-gaps.md](closing-gaps.md), batch 3), on the build below. This page and the three outputs are from that
+second run.
+
 ## The build and what it was pinned to
 
 - **Server:** `cargo build -p ferrum-server --features process`, which is every default app (the countries,
   the business apps, Operations, Edge, Metrics, Intelligence, Studio, …) with the process runtime, at Ferrum
-  `edbc786` (built as `874a28f`, the same tree before the branch was rebased onto main's merge of #111).
-- **Pins:** Ferrum-Frontend `2f201d5`; ferrum-app-edge `17a7c41` (IoT Edge 0.6.0); ferrum-app-metrics `c2b0b66`
-  (0.5.0); ferrum-app-intelligence `02c6227` (0.1.1). The rest are as `docs/registry/release-manifest.yaml`
-  pins them.
+  `40ff6d7`.
+- **Pins:**
+  - Ferrum-Frontend `48907d8`;
+  - ferrum-app-edge `96b4eb4`;
+  - ferrum-app-metrics `848c2a3` (0.6.0);
+  - ferrum-app-intelligence `6ea3c51` (0.2.0);
+  - ferrum-app-objectives `f8e0444` (0.7.0);
+  - the rest as `docs/registry/release-manifest.yaml` pins them.
+
+  `scripts/release_evidence.py qualified` compares this build with the one at hand
+  ([qualification.yaml](qualification.yaml)), and fails once any of them moves.
 - **Runtime:** Temporal Server 1.32.2 (CLI 1.10.0 dev server, SQLite, namespace `ferrum-flc`) and PostgreSQL 17,
   on an 8-core Apple silicon Mac (macOS 15.6).
 - **Workspaces:** `acme` and `globex`. The second was made with `ferrum task create_tenant ... packages:core,procs`,
   the Requests package being the walk's own small app (`ERP/flc/walk/packages/procs`).
 
-## What each profile ran (all 67 checks passed)
+## What each profile ran (all 75 checks passed)
 
 **LRP-01, record policy.**
 - An author wrote a rule in Studio and checked it.
@@ -32,7 +43,14 @@ Their output is kept beside this page: [lrp-walk.txt](lrp-walk.txt), [logic-load
 - One invalid request was refused with the rule's message through the records API, the older resource API,
   import (a requester may not import at all; an administrator's import was refused too), bulk and MCP.
 - The other workspace was not bound by it.
-- Saves under the rule took 7 ms at the median and 13 ms at p95, over 20.
+- Saves under the rule took 4 ms at the median and 7 ms at p95, over 20.
+
+**The simulator's parity (FLC-UI-007), run before LRP-02.**
+- A policy release with a decision table (a total over 1000 is reviewed) ran two requests on the runtime: 1000
+  proceeded, and 1000.01 was reviewed.
+- On the same deployed build, the simulator decided each again from what that real run had read, standing in for
+  the read. It decided the same both times, and labelled the stand-in.
+- The policy was then stopped, so the procurement profile's runs were its own.
 
 **LRP-02, durable procurement.**
 - A submitted request started one run on Temporal.
@@ -84,10 +102,10 @@ Their output is kept beside this page: [lrp-walk.txt](lrp-walk.txt), [logic-load
 
 | Scenario | Measured |
 |---|---|
-| Compile a source, simulate a run (HTTP round trip included) | 32 ms, 31 ms (median of 10) |
-| Cold: first run after start | review open 572 ms after submitting; order 458 ms after the decision |
-| Warm, ten in turn, each workspace | review open 548–572 ms median; decided to ordered 231–236 ms median, 436–447 ms p95 |
-| 60 at once in one workspace beside 5 in the other | the flood 1490 ms median, 1919 ms p95; the other workspace 434 ms median, 437 ms p95 (its quiet p95 was 436 ms); 65 runs in 7.0 s; 4 steps told to wait their turn |
+| Compile a source, simulate a run (HTTP round trip included) | 31 ms, 31 ms (median of 10) |
+| Cold: first run after start | review open 589 ms after submitting; order 452 ms after the decision |
+| Warm, ten in turn, each workspace | review open 557–601 ms median; decided to ordered 233–341 ms median, 442–451 ms p95 |
+| 60 at once in one workspace beside 5 in the other | the flood 1048 ms median, 2091 ms p95; the other workspace 420 ms median, 427 ms p95 (its quiet p95 was 442 ms); 65 runs in 5.1 s; 8 steps told to wait their turn |
 | Server stopped with 15 runs in hand | all ordered once, settled 17.5 s after the restart began |
 
 The worker's limits on that server were 10 slots, 8 for effects and 2 per workspace: half of a 20-connection

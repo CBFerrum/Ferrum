@@ -221,6 +221,53 @@ def lrp01(p, away):
     check("LRP-01 a save with the rule stays within 1.5 s at p95 on this machine", p95 < 1500, times)
 
 
+def parity(p):
+    """FLC-UI-007 on the deployed build: a release decides two boundary requests for real, then the simulator decides
+    them again from what each real run read, and the two agree. Deactivated after, so LRP-02's runs are its own."""
+    print("\n== Simulator parity (FLC-UI-007)")
+    sid = "workspace.lrp_policy"
+    cap = {"id": "procs.request.read", "version": "1.0.0"}
+    source = {
+        "schema_version": "ferrum.solution/1", "kind": "Solution", "id": sid, "version": version(), "label": "Policy boundary walk", "requires": [cap],
+        "decisions": [{"id": "needs_review", "hit_policy": "first", "inputs": [{"name": "total", "value": "snapshot.output.total"}],
+                       "rows": [{"id": "big", "match": {"total": {"gt": "1000"}}, "outcome": "review"}], "default": "proceed"}],
+        "processes": [{"id": "classify", "label": "Classify a request", "trigger": {"event": "procs.request.submitted", "business_key": "trigger.id"},
+                       "entry": "snapshot", "max_steps": 10, "nodes": [
+            {"type": "query", "id": "snapshot", "label": "Read it", "capability": cap, "input": {"id": "trigger.id"}, "next": "decide", "on_error": "attention"},
+            {"type": "decision", "id": "decide", "label": "Policy", "decision": "needs_review",
+             "routes": [{"outcome": "review", "target": "reviewed"}, {"outcome": "proceed", "target": "proceeded"}], "on_error": "attention"},
+            {"type": "end", "id": "reviewed", "label": "Needs review", "outcome": "completed"},
+            {"type": "end", "id": "proceeded", "label": "Proceeds", "outcome": "completed"},
+            {"type": "suspend", "id": "attention", "label": "Needs attention", "reason": "Look into it before anything more is done."},
+        ]}],
+    }
+    s, rel = keep(p["author"], source)
+    review(p["admin2"], rel)
+    s, d = activate(p["admin"], rel)
+    check("UI-007 the boundary policy is reviewed and running", s == 200, (s, d))
+    for total, expected in (("1000", "proceed"), ("1000.01", "review")):
+        s, req = create(p["requester"], "Request", {"reference": f"EDGE-{RUN}-{total}", "total": total})
+        p["requester"]("POST", f"/api/v1/Request/{req['id']}/submit", {})
+        run = run_of(p["admin"], sid, req["id"])
+        done = bool(run) and eventually(lambda: status_of(p["admin"], run["id"]) == "completed", 60)
+        view = p["admin"]("GET", f"{STUDIO}/runs/{run['id']}")[1] if run else {}
+        state = view.get("state") or {}
+        outputs = state.get("outputs") or {}
+        real = outputs.get("decide") or {}
+        check(f"UI-007 {total}: the run decides {expected}", done and real.get("outcome") == expected, view)
+        scenario = {"process": "classify", "trigger": state.get("trigger"), "requester": state.get("requester") or view.get("requester"),
+                    "start": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "results": {"snapshot": {"result": "done", "output": outputs.get("snapshot")}}}
+        s, sim = p["author"]("POST", f"{STUDIO}/solutions/simulate", {"release": rel["id"], "scenario": scenario})
+        simulated = ((sim or {}).get("simulation") or {}).get("run", {}).get("outputs", {}).get("decide") if isinstance(sim, dict) else None
+        check(f"UI-007 {total}: the simulator, from what the run read, decides the same", s == 200 and simulated == real and bool(real), (s, sim, real))
+        entries = ((sim or {}).get("simulation") or {}).get("entries", []) if isinstance(sim, dict) else []
+        check(f"UI-007 {total}: the simulation labels its stand-in", any(e.get("activation") == "snapshot" and e.get("source") == "stand_in" for e in entries), entries)
+    live = next((r for r in p["admin"]("GET", f"{STUDIO}/solutions")[1].get("releases", []) if r.get("active") and r["solution"] == sid), None)
+    s, d = p["admin"]("POST", f"{STUDIO}/solutions/{sid}/deactivate", {"expected_generation": live["generation"]}) if live else (0, "not active")
+    check("UI-007 the boundary policy is stopped again, so the next profile's runs are its own", s == 200, (s, d))
+
+
 def lrp02(p):
     print("\n== LRP-02 Durable procurement")
     sid = "workspace.lrp_procurement"
@@ -467,6 +514,7 @@ def main():
             admin("POST", f"{STUDIO}/solutions/{r['solution']}/deactivate", {"expected_generation": r["generation"]})
     print(f"Walk {RUN} on {BASE}: workspaces {HOME} and {AWAY}")
     lrp01(p, away)
+    parity(p)
     released = lrp02(p)
     lrp03(p)
     if released:
