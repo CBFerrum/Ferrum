@@ -1094,6 +1094,9 @@ impl Kernel {
                'requester', l.requester, 'output', l.output, 'state', l.state, 'accepted_at', l.accepted_at, 'finished_at', l.finished_at, \
                'release', jsonb_build_object('id', l.release_id, 'version', (select r.version from logic_release r where r.tenant_id = l.tenant_id and r.id = l.release_id)), \
                'generation', l.generation, 'trigger_event', l.trigger_event, \
+               'moves', coalesce((select jsonb_agg(jsonb_build_object('action', e.action, 'at', e.at, 'by', e.actor, 'diff', e.diff) order by e.id) \
+                  from audit_event e where e.tenant_id = l.tenant_id and e.entity = 'LogicRun' and e.record_id = l.id \
+                  and e.action in ('plan_migration', 'approve_migration', 'migrated', 'migration_refused')), '[]'::jsonb), \
                'tasks', coalesce((select jsonb_agg(jsonb_build_object('id', t.id, 'activation', t.activation, 'kind', t.kind, 'label', t.label, \
                   'status', t.status, 'deadline', t.deadline) order by t.opened_at) from logic_task t where t.tenant_id = l.tenant_id and t.run_id = l.id), '[]'::jsonb)) \
              from logic_run l where l.tenant_id = $1 and l.id = $2 and ($3 or l.requester = $4)",
