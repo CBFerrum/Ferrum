@@ -519,9 +519,40 @@ as the runs were sealed with.
 
 **From automations.** Studio's `POST /api/app/studio/solutions/import/automations` (administrators) turns each
 automation into a draft Solution: the same event, the condition as written, the actions as steps through
-capabilities, and where it came from. It is a draft: someone finishes what did not map, keeps it as a release
-and another administrator reviews and consents to what it may change; the automation keeps running until
-someone turns it off, so turn it off when the release runs, not before.
+capabilities, a run per event as the automation ran, and where it came from. It is a draft: someone finishes
+what did not map, keeps it as a release, and another administrator reviews and consents to what it may change.
+Activating that release turns the automation off in the same step, and from then on each of its events is
+claimed once, by the solution or by the automation's runner, whichever comes to it first: never run by both,
+never by neither, however the events and the activation interleave. While the solution runs, the automation
+cannot be turned back on; to go back, deactivate the solution first.
+
+**Comparing before it runs.** On a release's page in Studio (or `POST /api/app/studio/solutions/shadow`),
+recent work is replayed against the release and against what runs now: the last runs of its solution, with
+the answers, decisions and events they met, or, for a solution imported from an automation that has not taken
+over yet, the automation's recent events and what it did. Each case says what differs. Nothing runs, changes or
+is kept, so it is safe on production data; a step the candidate adds has no recorded answer and says so.
+
+**Going back.** Going back to an earlier release is activating it again: a new generation, new runs start under
+it, runs started under the later one go on under theirs, and nothing any run did is undone. The activation
+says which release it replaced and how many runs stay on another; each run records the generation it started
+under.
+
+**A capability out of service.** When an app's release is revoked, an app is taken out of a workspace, or the
+version a release is bound to is replaced, a step that would use one of its capabilities neither runs nor fails:
+it waits, an attention item tells administrators why (Studio, Tasks), and it goes on by itself, under its own
+receipt, once the capability is back. To stop instead, cancel the run. Nothing similarly named stands in.
+
+**Moving a waiting run.** A run keeps the release it started under. To move one that waits (at a task, an event,
+a delay or a stop) onto the release that runs now, an administrator plans it on the run's page with a mapping of
+each step it waits at (`POST /runs/{id}/migrate/plan`), and another administrator approves exactly that plan
+(`POST /runs/{id}/migrate`). The runtime carries it out on the run as it holds it, checked where the records
+are: a decision or an event that came meanwhile wins, and the move is refused and recorded. A run inside a loop,
+parallel branches or a subprocess, or with an effect in hand, does not move.
+
+**Packs between workspaces.** A release downloads as a pack (`GET /solutions/releases/{id}/pack`): its source,
+digests, the capabilities, events and calendars it needs, and its review decisions without names. A pack never
+carries a connection or a credential. Taken in elsewhere (`POST /solutions/import/pack`) it becomes a draft, with
+what must be mapped there; a pack changed on the way is refused.
 
 ## Background jobs
 
