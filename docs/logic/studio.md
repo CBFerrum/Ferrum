@@ -65,7 +65,8 @@ Before activating, **Compare with what runs now** replays recent work against th
 runs now (`POST /solutions/shadow`): the last runs of its solution with the answers, decisions and events they
 met, or an automation's recent events against what it did. Cases that differ come first, each with what
 differs: how it ends, what it decides, the steps it takes, what it changes. Nothing runs, changes or is kept
-(FLC-MIG-002). **Download as a pack** gives the release to another workspace: its source, digests, needs and
+(FLC-MIG-002). A step the release adds has no answer on record; `assume` gives one, by step or capability,
+used only where history has none, and each case lists the assumptions it used. **Download as a pack** gives the release to another workspace: its source, digests, needs and
 review decisions without names, never a connection or a credential; there **Take in a pack** makes a draft of
 it and lists what must be mapped (FLC-OPS-008).
 
@@ -87,7 +88,8 @@ refused; nothing marks it a success. A step waiting for a capability out of serv
 saying so; it goes on by itself once the capability is back (FLC-OPS-007). On a run that waits under an older
 release, an administrator can plan moving it onto the release that runs now, naming the step of that release
 each waiting step becomes, and another administrator approves exactly that; the run's page keeps every move
-planned, approved, made or refused (FLC-MIG-004). A record's Related tab lists the processes about it, with their state and
+planned, approved, made or refused (FLC-MIG-004). A run waiting inside a loop, branches, a round or a
+subprocess moves too: a step that holds others keeps its id there, and a waiting step moves within its block. A record's Related tab lists the processes about it, with their state and
 who they wait on, to whoever may read the record; not what those tasks are about.
 
 ## Not yet

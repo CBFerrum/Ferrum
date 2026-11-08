@@ -1,0 +1,36 @@
+Hardware: macOS-15.6-arm64-arm-64bit-Mach-O, 8 cores, Python 3.14.2; server http://127.0.0.1:5170
+
+== Source and planner costs (nothing runs)
+     compile a source (HTTP round trip included): n=10 median 31 ms, p95 31 ms, max 31 ms
+     simulate a run to its end on the virtual clock: n=10 median 31 ms, p95 31 ms, max 32 ms
+
+== Cold: the first run after the server started
+     review open after 540 ms; order 460 ms after the decision
+
+== Warm: ten in turn, in each workspace
+     acme: submitted to review open: n=10 median 548 ms, p95 558 ms, max 561 ms
+     acme: decided to ordered: n=10 median 241 ms, p95 455 ms, max 459 ms
+     globex: submitted to review open: n=10 median 544 ms, p95 552 ms, max 570 ms
+     globex: decided to ordered: n=10 median 236 ms, p95 429 ms, max 446 ms
+
+== Concurrent and fair: acme floods 60 at once while globex asks for 5
+     acme under its own flood: decided to ordered: n=60 median 1488 ms, p95 1811 ms, max 3052 ms
+     globex beside the flood: decided to ordered: n=5 median 427 ms, p95 428 ms, max 440 ms
+     65 runs approved and ordered in 7.1 s (9.2 runs/s end to end)
+ok   every flooded run ordered exactly once
+ok   globex's orders beside the flood stay within 10 s at p95
+     ferrum_logic_steps_in_hand 0
+     ferrum_logic_steps_workspaces 0
+     ferrum_logic_steps_deferred_total 5
+     ferrum_logic_steps_limit{kind="slots"} 10
+     ferrum_logic_steps_limit{kind="effects"} 8
+     ferrum_logic_steps_limit{kind="per_workspace"} 2
+ok   the worker's step budget is on /metrics
+up after 15s
+
+== Failure: the server stops while runs are in hand, and comes back
+     back and settled 17.5 s after the restart began
+ok   every run decided before the stop ordered, after it
+ok   and none ordered twice
+
+every bound held
