@@ -128,9 +128,6 @@ async fn runner(
 pub async fn run_for_event(k: &Kernel, ev: &Event) -> Result<()> {
     let Some((entity, event)) = ev.topic.split_once('.') else { return Ok(()) };
     let depth = ev.payload.get("depth").and_then(Value::as_u64).unwrap_or(0) as u8;
-    if depth >= MAX_DEPTH {
-        return Ok(());
-    }
     let mut tx = k.db.tenant_tx(ev.tenant_id).await?;
     let autos: Vec<Automation> = sqlx::query_as(
         "select id, condition, actions, created_by from automation where tenant_id = $1 and entity = $2 and event = $3 and is_active order by created_at",
@@ -140,6 +137,25 @@ pub async fn run_for_event(k: &Kernel, ev: &Event) -> Result<()> {
     .bind(event)
     .fetch_all(&mut *tx)
     .await?;
+    if depth >= MAX_DEPTH && !autos.is_empty() {
+        // Not run, and recorded so an administrator sees which automations answer one another's changes.
+        for a in &autos {
+            sqlx::query(
+                "insert into automation_run (tenant_id, automation_id, outbox_id, status, error) values ($1, $2, $3, 'failed', $4) on conflict do nothing",
+            )
+            .bind(ev.tenant_id)
+            .bind(a.id)
+            .bind(ev.id)
+            .bind(format!(
+                "not run: automations made this change after {depth} others in one chain, and stop at {MAX_DEPTH}; one of them answers its own changes"
+            ))
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        tracing::warn!(event = ev.id, topic = %ev.topic, "automations stopped at depth {depth}");
+        return Ok(());
+    }
     tx.commit().await?;
     if autos.is_empty() {
         return Ok(());

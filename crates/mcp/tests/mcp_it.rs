@@ -230,4 +230,22 @@ async fn scenario() {
     assert_eq!(forbidden["error"], json!("forbidden"));
     let cannot_submit = c.tool_err("submit_record", json!({"entity": "SalesInvoice", "id": invoice_id})).await;
     assert!(cannot_submit["error"] == json!("forbidden") || cannot_submit["error"] == json!("invalid"), "{cannot_submit}");
+
+    // ───────────── a customer's rule holds for what an agent writes, by either tool (FLC-HOOK-005) ─────────────
+    let reviewer = k.create_user(&a.ctx, "reviewer@agents.test", "Reviewer", Some("Correct-Horse-9"), &[], true).await.unwrap();
+    let reviewer = k.load_ctx(tenant, reviewer, None, "mcp-it".into()).await.unwrap();
+    let source = json!({"schema_version": "ferrum.solution/1", "kind": "Solution", "id": "agents.customers", "version": "1.0.0", "label": "Customers",
+        "rules": [{"id": "not_a_shell", "entity": "Customer", "phase": "validate", "check": "doc.customer_name != \"Shell Company\"", "message": "We do not trade with that name"}]});
+    let release = k.save_release(&a.ctx, &source.to_string()).await.expect("release");
+    let release_id = release["id"].as_str().unwrap().parse().unwrap();
+    k.review_release(&reviewer, release_id, release["artifact_digest"].as_str().unwrap(), true, "").await.unwrap();
+    k.activate_release(&a.ctx, release_id, None).await.expect("activate");
+    let refused = a.tool_err("create_record", json!({"entity": "Customer", "data": {"customer_name": "Shell Company"}})).await;
+    assert!(refused.to_string().contains("We do not trade with that name"), "create_record: {refused}");
+    let create = k.catalog(&a.ctx).into_iter().find(|c| c.id.ends_with(".customer.create")).expect("Customer's create").id;
+    let invoked = a
+        .tool_err("invoke_capability", json!({"capability": create, "input": {"values": {"customer_name": "Shell Company"}}, "effect_key": "agent-shell-1"}))
+        .await;
+    assert!(invoked.to_string().contains("We do not trade with that name"), "invoke_capability: {invoked}");
+    a.tool("create_record", json!({"entity": "Customer", "data": {"customer_name": "Honest Traders"}})).await;
 }

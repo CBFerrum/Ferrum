@@ -207,6 +207,9 @@ pub struct Event {
     pub legal_entity: Option<Uuid>,
     pub source_version: Option<i32>,
     pub schema_version: i16,
+    /// Events between this one and the change that started its chain.
+    #[sqlx(default)]
+    pub depth: i16,
     /// The claim this worker holds: `available_at` as it set it, which changes if the claim passes on.
     #[sqlx(default)]
     pub lease: chrono::DateTime<chrono::Utc>,
@@ -269,7 +272,7 @@ impl Kernel {
                cross join lateral (select o.id from outbox o where o.tenant_id = w.tenant_id and o.processed_at is null and not o.dead \
                  and o.available_at <= now() order by o.priority, o.id limit $2 for update skip locked) claimed \
                limit $3) \
-             returning id, tenant_id, topic, entity, record_id, payload, attempts, correlation_id, traceparent, actor, legal_entity, source_version, schema_version, available_at as lease",
+             returning id, tenant_id, topic, entity, record_id, payload, attempts, correlation_id, traceparent, actor, legal_entity, source_version, schema_version, depth, available_at as lease",
         )
         .bind(LEASE_SECS)
         .bind(TENANT_SHARE)
@@ -307,11 +310,25 @@ impl Kernel {
             .await?;
             tx.commit().await?;
             let Some(lease) = lease else { continue };
+            if let Some(why) = self.chain_stops(ev).await? {
+                // Stopped before any handler runs, and kept where administrators look, saying why.
+                tracing::warn!(event = ev.id, topic = %ev.topic, "event chain stopped: {why}");
+                let mut tx = self.db.system_tx().await?;
+                sqlx::query("update outbox set dead = true, last_error = $2 where id = $1 and available_at = $3")
+                    .bind(ev.id)
+                    .bind(&why)
+                    .bind(lease)
+                    .execute(&mut *tx)
+                    .await?;
+                tx.commit().await?;
+                continue;
+            }
             let trace = Trace {
                 correlation: ev.correlation_id.clone().unwrap_or_else(|| format!("event-{}", ev.id)),
                 causation: Some(ev.id),
                 traceparent: ev.traceparent.clone(),
                 priority: None,
+                depth: ev.depth.saturating_add(1),
             };
             let outcome = trace.scope(tokio::time::timeout(EVENT_TIMEOUT, self.handle_event(ev))).await;
             let outcome = outcome.unwrap_or_else(|_| Err(Error::Unavailable(format!("handlers took longer than {} s", EVENT_TIMEOUT.as_secs()))));
@@ -346,6 +363,60 @@ impl Kernel {
         Ok(())
     }
 
+    /// Why an event's chain stops here, if it does: it is too many steps from the change that started it,
+    /// or that change has been followed by too many events. Checked here, before any handler, so it holds
+    /// whichever apps, automations, plugins or processes answer one another (FLC-HOOK-008). A request's or
+    /// job's own events never count: an import of ten thousand rows is one step, not a loop.
+    async fn chain_stops(&self, ev: &Event) -> Result<Option<String>> {
+        if ev.depth == 0 {
+            return Ok(None);
+        }
+        let correlation = ev.correlation_id.clone().unwrap_or_else(|| format!("event-{}", ev.id));
+        let mut tx = self.db.system_tx().await?;
+        // Counted once per event, not once per attempt.
+        let events: i32 = if ev.attempts == 0 {
+            sqlx::query_scalar(
+                "insert into event_chain (tenant_id, correlation_id, events) values ($1, $2, 1) \
+                 on conflict (tenant_id, correlation_id) do update set events = event_chain.events + 1 returning events",
+            )
+            .bind(ev.tenant_id)
+            .bind(&correlation)
+            .fetch_one(&mut *tx)
+            .await?
+        } else {
+            sqlx::query_scalar("select events from event_chain where tenant_id = $1 and correlation_id = $2")
+                .bind(ev.tenant_id)
+                .bind(&correlation)
+                .fetch_optional(&mut *tx)
+                .await?
+                .unwrap_or(0)
+        };
+        let (depth, budget) = (self.settings.chain_depth, self.settings.chain_events);
+        let why = if ev.depth >= depth {
+            format!("stopped: this event is {} steps from the change that started its chain (at most {depth})", ev.depth)
+        } else if events > budget {
+            format!("stopped: {events} events have followed from one change (at most {budget})")
+        } else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        // The chain as it went, oldest first, from each event to the one its writer was answering.
+        let path: Vec<String> = sqlx::query_scalar(
+            "with recursive up(id, topic, causation_id, n) as ( \
+               select id, topic, causation_id, 0 from outbox where id = $1 \
+               union all select o.id, o.topic, o.causation_id, up.n + 1 from outbox o join up on o.id = up.causation_id where up.n < 12) \
+             select topic from up order by n desc",
+        )
+        .bind(ev.id)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(Some(format!(
+            "{why}. Chain {correlation}: {}. Something answers its own changes: correct the rule, automation, plugin or app that does, then replay this event.",
+            path.join(" → ")
+        )))
+    }
+
     /// The events this workspace's handlers gave up on, newest first: what they are and why, never
     /// their payloads, which can hold anything (administrators only).
     pub async fn dead_events(&self, ctx: &Ctx, limit: i64) -> Result<Vec<Value>> {
@@ -369,8 +440,13 @@ impl Kernel {
     pub async fn replay_event(&self, ctx: &Ctx, id: i64) -> Result<()> {
         require_admin(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        // Replayed by a person's decision, it starts a chain of its own: its depth and its chain's count
+        // start again, so it is not stopped at once for what it was stopped for before.
         let topic: Option<String> = sqlx::query_scalar(
-            "update outbox set dead = false, attempts = 0, last_error = null, available_at = now() where tenant_id = $1 and id = $2 and dead returning topic",
+            "with chain as (delete from event_chain c using outbox o where o.tenant_id = $1 and o.id = $2 and o.dead \
+               and c.tenant_id = o.tenant_id and c.correlation_id = coalesce(o.correlation_id, 'event-' || o.id)) \
+             update outbox set dead = false, attempts = 0, last_error = null, depth = 0, available_at = now() \
+             where tenant_id = $1 and id = $2 and dead returning topic",
         )
         .bind(ctx.tenant)
         .bind(id)
@@ -644,6 +720,7 @@ impl Kernel {
             .await?
             .rows_affected();
         n += sqlx::query("delete from idempotency_key where created_at < now() - interval '24 hours'").execute(&mut *tx).await?.rows_affected();
+        n += sqlx::query("delete from event_chain where first_at < now() - make_interval(days => $1)").bind(keep_days).execute(&mut *tx).await?.rows_affected();
         tx.commit().await?;
         Ok(n)
     }

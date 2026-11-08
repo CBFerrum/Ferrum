@@ -5,10 +5,10 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Not started | 24 |
-| Partial | 91 |
+| Not started | 23 |
+| Partial | 77 |
 | Implemented, unverified | 2 |
-| Verified in software | 6 |
+| Verified in software | 21 |
 | Blocked externally | 1 |
 | **All** | **124** |
 
@@ -48,24 +48,24 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
-| FLC-COMP-001 | Strict parsing | Partial | AT-COMP-001 | 0 | Package YAML and Studio specs refuse unknown keys; duplicate JSON keys are not detected anywhere, and no solution source exists |
-| FLC-COMP-002 | Business types | Partial | AT-COMP-002 | 0 | Money and tax go through ferrum-calc decimals; expressions have no typed money, quantity or reference |
-| FLC-COMP-003 | Deterministic expressions | Partial | AT-COMP-003 | 0 | Edge flows evaluate purely in exact decimals; kernel CEL reads the wall clock when no time is supplied |
-| FLC-COMP-004 | Canonical identity | Partial | AT-COMP-004 | 1 | Cloud's canonical JSON is now the platform's (crates/logic), and capabilities and invocations are digested with it; logic definitions do not exist yet to hash |
-| FLC-COMP-005 | Dependency closure | Partial | AT-COMP-005 | 0 | Edge copies a reviewed subflow in at check time and stops a flow whose subflow changed; nothing else resolves dependencies |
-| FLC-COMP-006 | Graph semantics | Partial | AT-COMP-006 | 0 | Edge flows are checked for cycles and missing steps; process graphs do not exist |
-| FLC-COMP-007 | Bounded iteration | Partial | AT-COMP-007 | 0 | An Edge flow cannot loop and bounds one message's work; processes with bounded loops do not exist |
-| FLC-COMP-008 | Effect typing | Partial | AT-COMP-008 | 1 | Plugins are refused external calls inside hooks at run time; no compiler checks effects, and automations send mail from their transaction |
-| FLC-COMP-009 | Data-flow policy | Partial | AT-COMP-009 | 0 | Field masks and read permissions shape what a reader sees; messages, traces and destinations of tenant logic are not checked against them |
-| FLC-COMP-010 | Source maps | Partial | AT-COMP-010 | 0 | Edge traces name the step a message reached; nothing maps logic runs to source revisions |
-| FLC-HOOK-001 | Phase ordering | Partial | AT-HOOK-001 | 0 | Native hooks run derive, validate, change checks and writes in order; tenant derivations have no stage of their own |
-| FLC-HOOK-002 | Pure hook boundary | Partial | AT-HOOK-002 | 1 | Enforced for plugins; an automation's e-mail action sends from inside its transaction |
-| FLC-HOOK-003 | Competing writes | Partial | AT-HOOK-003 | 0 | Hooks filling the same field must be ordered or the server does not start; apps have not declared fills yet, and tenant rules do not exist |
-| FLC-HOOK-004 | Bounded prefetch | Partial | AT-HOOK-004 | 0 | A plugin's reads in a hook go through its declared permissions and a cap on host calls; tenant rules with declared prefetch do not exist |
-| FLC-HOOK-005 | Equivalent mutation paths | Partial | AT-HOOK-005 | 0 | The 96 direct writes were classified (FERRUM-PLATFORM-011); no single test sends one invalid record through every path |
-| FLC-HOOK-006 | After-commit durability | Partial | AT-HOOK-006 | 1 | Events and queued mail commit with the change; an automation's e-mail does not |
-| FLC-HOOK-007 | Rejection evidence | Not started | AT-HOOK-007 | 0 | A refused change is counted, not recorded as evidence |
-| FLC-HOOK-008 | Event recursion | Partial | AT-HOOK-008 | 0 | Automations stop at depth 3 and events carry causation; there is no work budget per correlation across apps |
+| FLC-COMP-001 | Strict parsing | Verified in software | AT-COMP-001 | 2 | A solution's source is JSON read strictly: a key twice, an unknown key anywhere, more than 1 MiB or 64 levels, a non-finite number or trailing text is refused before compiling (t03, t32, t33, unknown_keys_are_refused_everywhere). The format has no reference to fetch, so nothing is fetched |
+| FLC-COMP-002 | Business types | Partial | AT-COMP-002 | 2 | Money in one currency, quantities in one unit, exact decimals, missing kept apart from unknown, and outputs typed from each capability's schema, all checked before publishing (types_follow_the_data, money_compares_exactly_at_the_boundary). Links are typed as text ids, so a reference to the wrong kind of record is not caught before running |
+| FLC-COMP-003 | Deterministic expressions | Partial | AT-COMP-003 | 1 | The rules evaluator reads no clock, network or randomness: the kernel hands it today and now once per save, and functions are a fixed list (the_clock_is_a_fact_not_a_reading, an unknown function refused at compile). The Edge gateway's build of the evaluator and the replay across server and gateway come with W5; automations' and workflows' older CEL still reads the clock when no time is given |
+| FLC-COMP-004 | Canonical identity | Verified in software | AT-COMP-004 | 2 | The source digest leaves out layout and keeps labels, forms and parameters; the artifact digest adds the compiler, the profile and the lock (layout_is_not_meaning_and_meaning_is). A review is of the digest shown and activation compares it, so a changed instruction needs a new approval (logic_rules_it) |
+| FLC-COMP-005 | Dependency closure | Verified in software | AT-COMP-005 | 2 | A release locks each capability at its digest and each field its rules read or fill at its type; activation compiles it again and needs the same digest, and an active release whose fields changed refuses its entity's saves with stale_approval (logic_rules_it, a_release_approved_against_other_fields_does_not_run). Solutions have no subflows to resolve |
+| FLC-COMP-006 | Graph semantics | Verified in software | AT-COMP-006 | 1 | One entry, routes to existing steps, every step reachable, no cycle, a step budget covering the graph, unique lower_snake ids, a label on every step, and a step reads only what surely ran before it (t04-t07, names_versions_and_bounds, a_step_reads_only_what_has_surely_run). Processes have no parallel branches, so no join can be malformed |
+| FLC-COMP-007 | Bounded iteration | Partial | AT-COMP-007 | 1 | Cycles are refused and expressions have no comprehensions, so no work in a solution is unbounded (t07); a bounded for-each with stable item keys does not exist yet |
+| FLC-COMP-008 | Effect typing | Verified in software | AT-COMP-008 | 2 | A rule cannot name a capability (t10, logic_rules_it), and at run time its evaluator has nothing to call; a query step cannot use a capability that changes anything, nor an action step a read (t13) |
+| FLC-COMP-009 | Data-flow policy | Verified in software | AT-COMP-009 | 2 | A rule reads no restricted field of its record or of a linked one, at compile and at run time; its message is plain text; linked records are read with the saver's rights; refusal evidence keeps no copy of the record (logic_rules_it, rules_read_nothing_restricted_and_write_once). Process outputs, traces and destinations come with W3 |
+| FLC-COMP-010 | Source maps | Verified in software | AT-COMP-010 | 2 | Every fault has a stable code and a JSON pointer; a refusal at run time names its solution, version and rule, and its evidence the release and rule (logic_rules_it). Process steps map to their nodes with W3; there are no subflows |
+| FLC-HOOK-001 | Phase ordering | Verified in software | AT-HOOK-001 | 1 | Tenant derivations run after the app's own fills and before every validation, so the app's guards see the final record; a derivation writes only the customer's own fields, never company, owner or the app's (logic_rules_it, t10_t11_t12) |
+| FLC-HOOK-002 | Pure hook boundary | Verified in software | AT-HOOK-002 | 3 | Tenant rules can call no function outside a fixed pure list (an http_get is refused at compile); an automation's e-mail is queued with its run (mutant automation-mails-before-commit); plugins are refused I/O inside hooks |
+| FLC-HOOK-003 | Competing writes | Verified in software | AT-HOOK-003 | 2 | One writer per field within a solution (compile), across active releases and against apps' declared fills (activation), and an entity whose active rules conflict refuses its saves (logic_rules_it, cycles_and_competing_writers_are_found_when_prepared). No merge rule can be declared. Plugins' own hooks are not compared |
+| FLC-HOOK-004 | Bounded prefetch | Verified in software | AT-HOOK-004 | 2 | A rule reads only the linked records it declares: four per rule, sixteen fields each, eight per save, none restricted; they are read with the saver's rights before any rule runs, and a saver who may not read one is refused (logic_rules_it) |
+| FLC-HOOK-005 | Equivalent mutation paths | Verified in software | AT-HOOK-005 | 3 | One invalid order through insert, update, import, bulk, a capability's invocation, an automation and a job, and a customer through MCP's create_record and invoke_capability and a plugin's data.insert: all refused alike and nothing written. The REST and /api/v1 routes call the same kernel insert and are not sent through over HTTP here |
+| FLC-HOOK-006 | After-commit durability | Verified in software | AT-HOOK-006 | 2 | Events and queued mail commit with their change: an automation run that rolls back queues nothing, and one delivered twice mails once (automation_mail_it, mutant automation-mails-before-commit); consumers dedupe by receipt (events_it) |
+| FLC-HOOK-007 | Rejection evidence | Verified in software | AT-HOOK-007 | 1 | A rule with audit_refusals keeps when, which release and rule, which record, who and whether false or unknown, in a transaction of its own; the refused change is not written and no copy of it is kept (logic_rules_it). It takes a second database connection while the save's is held |
+| FLC-HOOK-008 | Event recursion | Verified in software | AT-HOOK-008 | 1 | Work answering an event writes events one step further, whatever handler does it, jobs included; the dispatcher stops an event 8 steps from its chain's start, or past 1000 events from one change, before any handler runs, and keeps it dead with the chain it took; a replay starts afresh; automations stopped at their own limit say so (event_chain_it) |
 
 ## W3: Durable processes and human work
 
