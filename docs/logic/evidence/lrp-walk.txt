@@ -1,4 +1,4 @@
-Walk 42105 on http://127.0.0.1:5170: workspaces acme and globex
+Walk 54381 on http://127.0.0.1:5170: workspaces acme and globex
 
 == LRP-01 Record policy
 ok   LRP-01 a rule written in Studio checks without faults
@@ -14,8 +14,18 @@ ok   LRP-01 refused through import alike, even for an administrator
 ok   LRP-01 refused through bulk alike
 ok   LRP-01 refused through MCP alike
 ok   LRP-01 the other workspace is not bound by it
-     saves with the rule: median 7 ms, p95 13 ms over 20
+     saves with the rule: median 4 ms, p95 7 ms over 20
 ok   LRP-01 a save with the rule stays within 1.5 s at p95 on this machine
+
+== Simulator parity (FLC-UI-007)
+ok   UI-007 the boundary policy is reviewed and running
+ok   UI-007 1000: the run decides proceed
+ok   UI-007 1000: the simulator, from what the run read, decides the same
+ok   UI-007 1000: the simulation labels its stand-in
+ok   UI-007 1000.01: the run decides review
+ok   UI-007 1000.01: the simulator, from what the run read, decides the same
+ok   UI-007 1000.01: the simulation labels its stand-in
+ok   UI-007 the boundary policy is stopped again, so the next profile's runs are its own
 
 == LRP-02 Durable procurement
 ok   LRP-02 the procurement solution is reviewed and running

@@ -246,6 +246,10 @@ MUTANTS = [
     ("ops-ai-queues-directly", "crates/ops/src/commands.rs", "            Err(why) => (State::Proposed, None, Some(why)),", "            Err(why) => (State::Queued, None, Some(why)),", OPS),
     ("ops-own-approval", "crates/ops/src/commands.rs", "    if row.issued_by == person(ctx) && person(ctx).is_some() {", "    if false {", OPS),
     ("ops-other-site-measurements", "crates/ops/src/telemetry.rs", "if !ours.contains(&m.device_id) || m.check(now).is_err() {", "if m.check(now).is_err() {", OPS),
+    # A connection is one gateway's at a time, by generation (FLC-EDGE-009): the old one closing ends
+    # nothing of the new, and an open older than what is known does not take it back.
+    ("ops-old-close-ends-the-new", "crates/ops/src/connections.rs", "where tenant_id = $1 and device_id = $2 and gateway_id = $3 and closed_at is null", "where tenant_id = $1 and device_id = $2 and (gateway_id = $3 or true) and closed_at is null", OPS),
+    ("ops-late-open-takes-it-back", "crates/ops/src/connections.rs", "        Some((_, _, since, _)) if at < since => Ok(None),\n", "        Some((_, _, since, _)) if at < since && false => Ok(None),\n", OPS),
     ("refused-token-kept", "crates/plugins/src/host.rs", "self.tokens.remove(&key);", "let _ = &key;", HOST_UNIT),
     ("secret-goes-anywhere-to-sign-in", "crates/plugins/src/host.rs", "if !host_allowed(&c.hosts, host) {", "if false && !host_allowed(&c.hosts, host) {", HOST_UNIT),
     ("rotated-secret-keeps-token", "crates/plugins/src/host.rs", 'let digest = hex::encode(Sha256::digest(format!("{user}:{secret}")));', 'let digest = user.to_string();', HOST_UNIT),
