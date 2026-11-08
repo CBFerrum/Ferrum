@@ -34,6 +34,9 @@ SCAN_UNIT = ("-p", "ferrum-kernel", "--lib", "scan::tests")
 CUSTOMIZE = ("-p", "ferrum-kernel", "--test", "customize_it")
 CAPABILITY = ("-p", "ferrum-kernel", "--test", "capability_it")
 AUTOMATION_MAIL = ("-p", "ferrum-kernel", "--test", "automation_mail_it")
+LOGIC_UNIT = ("-p", "ferrum-logic", "--lib")
+LOGIC_RULES = ("-p", "ferrum-kernel", "--test", "logic_rules_it")
+EVENT_CHAIN = ("-p", "ferrum-kernel", "--test", "event_chain_it")
 HOOKS_UNIT = ("-p", "ferrum-kernel", "--lib", "hooks::tests")
 CLOSURE = ("-p", "ferrum-kernel", "--test", "closure_it")
 SSO = ("-p", "ferrum-server", "--test", "sso_it")
@@ -77,6 +80,18 @@ MUTANTS = [
     ("capability-list-unmasked", "crates/kernel/src/capability.rs", "Value::Object(self.mask(ctx, &ent, d))", "Value::Object({ let _ = &ent; d })", CAPABILITY),
     ("capability-version-adopted", "crates/kernel/src/capability.rs", "            && v != &cap.version\n", "            && v.is_empty()\n", CAPABILITY),
     ("automation-mails-before-commit", "crates/kernel/src/automation.rs", "k.queue_mail(tx, ctx.tenant, &to, &subject, &body).await?;", "k.mailer.as_ref().ok_or_else(|| Error::Unavailable(String::new()))?.send(&to, &subject, &body).await?;", AUTOMATION_MAIL),
+    # Customer rules (docs/logic/rules.md): every path that saves, reviewed releases, evidence kept apart.
+    ("rules-skip-system-saves", "crates/kernel/src/logic.rs", "doc: &Doc) -> Result<()> {\n        let active = active(hc).await?;", "doc: &Doc) -> Result<()> {\n        if hc.ctx.is_system {\n            return Ok(());\n        }\n        let active = active(hc).await?;", LOGIC_RULES),
+    ("refusal-evidence-not-kept", "crates/kernel/src/logic.rs", "                if r.audit {\n", "                if false && r.audit {\n", LOGIC_RULES),
+    ("release-runs-unapproved", "crates/kernel/src/logic.rs", "approval::satisfied(&r.plan(), &r.digest, &r.approvals(), POLICY, Utc::now().timestamp_millis()).map_err(approval_error)?;", "let _ = approval::satisfied(&r.plan(), &r.digest, &r.approvals(), POLICY, Utc::now().timestamp_millis());", LOGIC_RULES),
+    ("release-approved-unseen", "crates/kernel/src/logic.rs", "approval::may_decide(&r.plan(), shown,", "approval::may_decide(&r.plan(), &r.digest,", LOGIC_RULES),
+    ("release-beside-a-rival", "crates/kernel/src/logic.rs", "        if !problems.is_empty() {\n            return Err(Error::Conflict(format!(\"{} {} cannot run beside", "        if false {\n            return Err(Error::Conflict(format!(\"{} {} cannot run beside", LOGIC_RULES),
+    ("rules-read-restricted", "crates/logic/src/rules.rs", "shape.fields.iter().filter(|(_, f)| !f.restricted).map(", "shape.fields.iter().filter(|(_, f)| f.restricted || !f.restricted).map(", LOGIC_UNIT),
+    ("rules-unknown-passes", "crates/logic/src/rules.rs", "Some(Err(_)) => return Err(r.refused(\"unknown\", format!(\"{} (it could not be checked)\", r.message))),", "Some(Err(_)) => {}", LOGIC_UNIT),
+    ("rules-derive-in-written-order", "crates/logic/src/rules.rs", ".find(|&i| derives[i].reads.iter().all(|r| !filled_later(i).contains(r.as_str())))", ".find(|&i| i == 0 || filled_later(i).is_empty())", LOGIC_UNIT),
+    # Chains of events stop, whoever answers whom (FLC-HOOK-008).
+    ("chain-depth-not-carried", "crates/kernel/src/outbox.rs", "depth: ev.depth.saturating_add(1),", "depth: 0,", EVENT_CHAIN),
+    ("chain-budget-ignored", "crates/kernel/src/outbox.rs", "} else if events > budget {", "} else if events < 0 {", EVENT_CHAIN),
     ("capability-input-says-who-asks", "crates/logic/src/capability.rs", "map.keys().find(|k| CONTEXT_FIELDS.contains(&k.as_str()) && !self.declares(k))", "map.keys().find(|k| k.is_empty() && !self.declares(k))", CAPABILITY),
     # The directory of people is the members'.
     ("directory-read-by-anyone", "crates/kernel/src/collab.rs", "if !ctx.is_system && self.user_kind(ctx.tenant, ctx.user).await? != \"member\" {", "if false {", SHELL),
@@ -164,7 +179,7 @@ MUTANTS = [
     ("no-priority", "crates/kernel/src/outbox.rs", "order by o.priority, o.id limit $2", "order by o.id limit $2", EVENTS),
     ("event-loses-its-cause", "crates/kernel/src/outbox.rs", "causation: Some(ev.id),", "causation: None,", EVENTS),
     # Row-level security holds even without the statement's filter, so both have to go.
-    ("replay-crosses-workspaces", "crates/kernel/src/outbox.rs", 'let mut tx = self.db.tenant_tx(ctx.tenant).await?;\n        let topic: Option<String> = sqlx::query_scalar(\n            "update outbox set dead = false, attempts = 0, last_error = null, available_at = now() where tenant_id = $1 and id = $2 and dead returning topic",', 'let mut tx = self.db.system_tx().await?;\n        let topic: Option<String> = sqlx::query_scalar(\n            "update outbox set dead = false, attempts = 0, last_error = null, available_at = now() where ($1::uuid is not null) and id = $2 and dead returning topic",', EVENTS),
+    ("replay-crosses-workspaces", "crates/kernel/src/outbox.rs", 'let mut tx = self.db.tenant_tx(ctx.tenant).await?;\n        // Replayed by a person\'s decision, it starts a chain of its own: its depth and its chain\'s count\n        // start again, so it is not stopped at once for what it was stopped for before.\n        let topic: Option<String> = sqlx::query_scalar(\n            "with chain as (delete from event_chain c using outbox o where o.tenant_id = $1 and o.id = $2 and o.dead \\\n               and c.tenant_id = o.tenant_id and c.correlation_id = coalesce(o.correlation_id, \'event-\' || o.id)) \\\n             update outbox set dead = false, attempts = 0, last_error = null, depth = 0, available_at = now() \\\n             where tenant_id = $1 and id = $2 and dead returning topic",', 'let mut tx = self.db.system_tx().await?;\n        // Replayed by a person\'s decision, it starts a chain of its own: its depth and its chain\'s count\n        // start again, so it is not stopped at once for what it was stopped for before.\n        let topic: Option<String> = sqlx::query_scalar(\n            "with chain as (delete from event_chain c using outbox o where o.tenant_id = $1 and o.id = $2 and o.dead \\\n               and c.tenant_id = o.tenant_id and c.correlation_id = coalesce(o.correlation_id, \'event-\' || o.id)) \\\n             update outbox set dead = false, attempts = 0, last_error = null, depth = 0, available_at = now() \\\n             where ($1::uuid is not null) and id = $2 and dead returning topic",', EVENTS),
     ("dead-list-shows-payloads", "crates/kernel/src/outbox.rs", "'last_error', last_error, 'created_at', created_at, 'correlation_id', correlation_id)", "'last_error', last_error, 'created_at', created_at, 'correlation_id', correlation_id, 'payload', payload)", EVENTS),
     ("webhook-holds-transaction", "crates/kernel/src/outbox.rs", "        .bind(WEBHOOK_LEASE_SECS)\n        .fetch_all(&mut *tx)\n        .await?;\n        tx.commit().await?;\n        let outcomes", "        .bind(WEBHOOK_LEASE_SECS)\n        .fetch_all(&mut *tx)\n        .await?;\n        let outcomes", EVENTS),
     ("keys-survive-deprovisioning", "crates/kernel/src/lifecycle.rs", '"update api_key set revoked_at = now() where tenant_id = $1 and user_id = $2 and revoked_at is null"', '"update api_key set revoked_at = revoked_at where tenant_id = $1 and user_id = $2 and revoked_at is null"', LIFECYCLE),
