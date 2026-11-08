@@ -37,6 +37,9 @@ AUTOMATION_MAIL = ("-p", "ferrum-kernel", "--test", "automation_mail_it")
 LOGIC_UNIT = ("-p", "ferrum-logic", "--lib")
 LOGIC_RULES = ("-p", "ferrum-kernel", "--test", "logic_rules_it")
 EVENT_CHAIN = ("-p", "ferrum-kernel", "--test", "event_chain_it")
+PROCESS_RECORDS = ("-p", "ferrum-kernel", "--test", "process_it")
+# Needs a Temporal server at TEMPORAL_ADDRESS (docs/logic/processes.md); set, it fails rather than skips.
+RUNTIME = ("-p", "ferrum-process", "--test", "conformance_it")
 HOOKS_UNIT = ("-p", "ferrum-kernel", "--lib", "hooks::tests")
 CLOSURE = ("-p", "ferrum-kernel", "--test", "closure_it")
 SSO = ("-p", "ferrum-server", "--test", "sso_it")
@@ -92,6 +95,29 @@ MUTANTS = [
     # Chains of events stop, whoever answers whom (FLC-HOOK-008).
     ("chain-depth-not-carried", "crates/kernel/src/outbox.rs", "depth: ev.depth.saturating_add(1),", "depth: 0,", EVENT_CHAIN),
     ("chain-budget-ignored", "crates/kernel/src/outbox.rs", "} else if events > budget {", "} else if events < 0 {", EVENT_CHAIN),
+    ("run-started-twice", "crates/kernel/src/process.rs", '.bind(&s.process)\n            .bind(&key)', '.bind(&s.process)\n            .bind(format!("{key}/{id}"))', PROCESS_RECORDS),
+    ("requester-decides", "crates/kernel/src/process.rs", '        if exclude.contains(&ctx.user) {', '        if false && exclude.contains(&ctx.user) {', PROCESS_RECORDS),
+    ("decided-on-other-material", "crates/kernel/src/process.rs", '        if shown != digest {', '        if false && shown != digest {', PROCESS_RECORDS),
+    ("deadline-overrides-decision", "crates/kernel/src/process.rs", 'let out = if status == "open" {', 'let out = if status != "cancelled" {', PROCESS_RECORDS),
+    ("delegation-unbounded", "crates/kernel/src/process.rs", 'if delegated.len() as i32 >= bound {', 'if false && delegated.len() as i32 >= bound {', PROCESS_RECORDS),
+    ("delegation-goes-back", "crates/kernel/src/process.rs", 'if to == ctx.user || delegated.contains(&to) || exclude.contains(&to) {', 'if to == ctx.user || exclude.contains(&to) {', PROCESS_RECORDS),
+    ("effect-on-stale-approval", "crates/kernel/src/process.rs", '&& let Err(e) = self.approval_holds(tenant, run, a).await', '&& let Err(e) = self.approval_holds(tenant, run, a).await.or(Ok::<(), Error>(()))', PROCESS_RECORDS),
+    ("effect-borrows-rights", "crates/kernel/src/process.rs", 'let user = requester.unwrap_or(activator);', 'let user = requester.map(|_| activator).unwrap_or(activator);', PROCESS_RECORDS),
+    ("early-event-dropped", "crates/kernel/src/process.rs", '            if waiting.is_empty() {', '            if false && waiting.is_empty() {', PROCESS_RECORDS),
+    ("event-crosses-records", "crates/kernel/src/process.rs", "and event = $2 and correlation = $3 and status = 'waiting' order by", "and event = $2 and ($3::text is not null) and status = 'waiting' order by", PROCESS_RECORDS),
+    ("case-order-ignored", "crates/kernel/src/process.rs", 'find(|r| !done.iter().any(|d| d == r))', 'find(|r| r.is_empty() && !done.iter().any(|d| d == r))', PROCESS_RECORDS),
+    ("recovery-forces-success", "crates/kernel/src/process.rs", 'if resume && detail.get("resumable") != Some(&Value::Bool(true)) {', 'if false && resume && detail.get("resumable") != Some(&Value::Bool(true)) {', PROCESS_RECORDS),
+    ("late-effect-erased", "crates/logic/src/process.rs", '                Invoked::Done { output } => out.push(Command::Attention {\n                    activation: act.to_string(),\n                    why: "an effect settled after it was no longer wanted: decide what to do with it".into(),\n                    evidence: output.clone(),\n                }),', '                Invoked::Done { .. } => {}', LOGIC_UNIT),
+    ("compensation-oldest-first", "crates/logic/src/process.rs", '(0..run.effects.len()).rev().filter(', '(0..run.effects.len()).filter(', LOGIC_UNIT),
+    ("rework-unbounded", "crates/logic/src/process.rs", 'if again && *round < *max {', 'if again && *round < *max + 1 {', LOGIC_UNIT),
+    ("item-keys-collide", "crates/logic/src/process.rs", 'if keys.contains(&k) {', 'if false && keys.contains(&k) {', LOGIC_UNIT),
+    ("step-budget-ignored", "crates/logic/src/process.rs", 'if run.steps > max {', 'if run.steps > max.saturating_mul(1000) {', LOGIC_UNIT),
+    ("cancel-drops-work-in-hand", "crates/logic/src/process.rs", 'Some(Waiting::Invoke { .. }) => out.push(Command::Cancel { activation: a }),', 'Some(Waiting::Invoke { .. }) => {\n                    run.waiting.remove(&a);\n                }', LOGIC_UNIT),
+    ("subprocess-recurses", "crates/logic/src/compile.rs", 'if s.recursive.contains(process) {', 'if s.recursive.contains(process) && false {', LOGIC_UNIT),
+    ("resume-reads-unrun", "crates/logic/src/compile.rs", 'find(|&&d| d != ti && !dom[si].contains(&d))', 'find(|&&d| d != ti && !dom[si].contains(&d) && d == usize::MAX)', LOGIC_UNIT),
+    ("approval-may-come-later", "crates/logic/src/compile.rs", '&& (!s.tasks.contains(task) || !env.vars.contains_key(task))', '&& !s.tasks.contains(task)', LOGIC_UNIT),
+    ("history-not-sealed", "crates/process/src/lib.rs", '    options.data_converter = converter(s.key.clone());', '    let _ = converter(s.key.clone());', RUNTIME),
+    ("run-started-again", "crates/process/src/lib.rs", 'options.id_reuse_policy = WorkflowIdReusePolicy::RejectDuplicate;', 'options.id_reuse_policy = WorkflowIdReusePolicy::AllowDuplicate;', RUNTIME),
     ("capability-input-says-who-asks", "crates/logic/src/capability.rs", "map.keys().find(|k| CONTEXT_FIELDS.contains(&k.as_str()) && !self.declares(k))", "map.keys().find(|k| k.is_empty() && !self.declares(k))", CAPABILITY),
     # The directory of people is the members'.
     ("directory-read-by-anyone", "crates/kernel/src/collab.rs", "if !ctx.is_system && self.user_kind(ctx.tenant, ctx.user).await? != \"member\" {", "if false {", SHELL),
