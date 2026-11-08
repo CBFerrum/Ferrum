@@ -484,8 +484,10 @@ def lake(p, analyst, steward, seer):
     path = os.path.join(LAKE, "orders.csv")
     with open(path, "w") as f:
         f.write(LAKE_ORDERS)
+    # A role exists once it holds a permission: reading metrics, which their people may anyway.
     for role in ("North Sales", "South Sales", "Auditor"):
-        admin("PUT", f"/api/admin/roles/{urllib.request.quote(role)}/permissions", {"entity": "Customer", "read": True})
+        s, d = admin("PUT", f"/api/admin/roles/{urllib.request.quote(role)}/permissions", {"entity": "Metric", "read": True})
+        check(f"LRP-05 the {role} role is defined", s in (200, 204), (s, d))
     north = person(admin, f"north@{HOME}.test", ["Metric Reader", "Intelligence User", "North Sales"])
     south = person(admin, f"south@{HOME}.test", ["Metric Reader", "South Sales"])
     source = {"source_name": "orders_lake", "description": "Orders in the lake", "fresh_within_minutes": 60,
