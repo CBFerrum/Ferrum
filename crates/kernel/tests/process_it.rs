@@ -875,6 +875,9 @@ async fn scenario() {
     d.settle().await;
     assert_eq!(scalar::<i64>(&k, admin.tenant, "select count(*) from e_order where request = $1", r12).await, 1, "done once it is back");
     assert_eq!(scalar::<String>(&k, admin.tenant, "select status from logic_task where id = $1", item).await, "resolved");
+    // The run says how often its order was tried, and how the last try went (FLC-OPS-001).
+    let tried = &k.logic_run(&admin, run12).await.unwrap()["attempts"]["order"];
+    assert!(tried["attempts"].as_i64().unwrap() >= 2 && tried["last"] == "done", "{tried}");
 
     // A database restored to a point before Temporal's histories (FLC-OPS-005): the run says it ordered, and no
     // receipt of it is here. Administrators are told to check; nothing is ordered again by itself.

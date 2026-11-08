@@ -28,6 +28,11 @@ import lrp_walk as w  # noqa: E402
 
 ERP = os.path.expanduser("~/Desktop/Personal/ERP/flc")
 PG = os.environ.get("DRILL_PG", "postgres://ferrum:ferrum@localhost:5432")
+# Backups are taken and restored as the database's superuser: the application's role is held to the
+# workspaces' row-level security, so a dump as it would miss rows (docs/operations.md, "Backups and restore").
+# Empty means the local socket as this machine's user.
+ADMIN = os.environ.get("DRILL_PG_ADMIN", "")
+OWNER = os.environ.get("DRILL_OWNER", "ferrum")
 SOURCE = os.environ.get("DRILL_SOURCE_DB", "ferrum_flc_walk")
 TARGET = os.environ.get("DRILL_TARGET_DB", "ferrum_flc_drill")
 FERRUM = os.environ.get("DRILL_FERRUM", f"{ERP}/target/debug/ferrum")
@@ -79,7 +84,7 @@ def main():
         runs.append(run["id"])
     w.check("two runs wait for their reviews", len(runs) == 2, runs)
     dump = f"{WORK}/{SOURCE}-t1.dump"
-    sh(["pg_dump", "-Fc", "-f", dump, f"{PG}/{SOURCE}"])
+    sh(["pg_dump", "-Fc", "-f", dump, "-d", f"{ADMIN}/{SOURCE}" if ADMIN else SOURCE])
     print("     PostgreSQL backed up (t1)")
     task1 = w.task_of(p["admin"], runs[0], "review")
     w.decide(p["reviewer"], task1["id"])
@@ -95,9 +100,10 @@ def main():
     print("     Temporal's store copied (t2), after the order")
 
     print(f"== A new, isolated environment: database {TARGET}, Temporal on {NEW_TEMPORAL}, Ferrum on {NEW_PORT}")
-    sh(["dropdb", "--if-exists", f"--maintenance-db={PG}/postgres", TARGET])
-    sh(["createdb", f"--maintenance-db={PG}/postgres", TARGET])
-    sh(["pg_restore", "--no-owner", "-d", f"{PG}/{TARGET}", dump])
+    on = [f"--maintenance-db={ADMIN}/postgres"] if ADMIN else []
+    sh(["dropdb", "--if-exists", *on, TARGET])
+    sh(["createdb", "-O", OWNER, *on, TARGET])
+    sh(["pg_restore", "-d", f"{ADMIN}/{TARGET}" if ADMIN else TARGET, dump])
     log = open(f"{WORK}/drill-temporal.log", "w")
     temporal = subprocess.Popen([TEMPORAL, "server", "start-dev", "--headless", "--port", str(NEW_TEMPORAL), "--namespace", "ferrum-flc", "--log-level", "warn", "--db-filename", copy],
                                 stdout=log, stderr=log)

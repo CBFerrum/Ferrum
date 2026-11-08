@@ -677,6 +677,50 @@ impl Kernel {
         changes: bool,
         approval: Option<&ferrum_logic::process::Approval>,
     ) -> Result<Invoked> {
+        let out = self.invoke_step(tenant, run, activation, capability, version, input, changes, approval).await;
+        // Each try counted, with how it went, for whoever looks at the run (FLC-OPS-001). The database away is the
+        // one try that cannot be counted; counting never fails the step itself.
+        let outcome = match &out {
+            Ok(Invoked::Done { .. }) => "done".to_string(),
+            Ok(Invoked::Refused { code, message }) => format!("refused ({code}): {message}"),
+            Ok(Invoked::Unknown { why }) => format!("outcome unknown: {why}"),
+            Err(Error::Db(_)) => return out,
+            Err(e) => format!("waits: {e}"),
+        };
+        if let Err(e) = self.count_attempt(tenant, run, activation, &outcome).await {
+            tracing::warn!(%tenant, %run, %activation, "a step's try was not counted: {e}");
+        }
+        out
+    }
+
+    async fn count_attempt(&self, tenant: Uuid, run: Uuid, activation: &str, outcome: &str) -> Result<()> {
+        let mut tx = self.db.tenant_tx(tenant).await?;
+        sqlx::query(
+            "insert into logic_attempt (tenant_id, run_id, activation, attempts, last_outcome) values ($1, $2, $3, 1, $4) \
+             on conflict (tenant_id, run_id, activation) do update set attempts = logic_attempt.attempts + 1, last_outcome = excluded.last_outcome, last_at = now()",
+        )
+        .bind(tenant)
+        .bind(run)
+        .bind(activation)
+        .bind(outcome.chars().take(500).collect::<String>())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn invoke_step(
+        &self,
+        tenant: Uuid,
+        run: Uuid,
+        activation: &str,
+        capability: &str,
+        version: &str,
+        input: Value,
+        changes: bool,
+        approval: Option<&ferrum_logic::process::Approval>,
+    ) -> Result<Invoked> {
         // What may be tried again is tried again; anything else is a refusal the run routes on.
         let settle = |e: Error| match e {
             Error::Unavailable(_) | Error::Retryable(_) | Error::Db(_) => Err(e),
@@ -1172,6 +1216,8 @@ impl Kernel {
                'requester', l.requester, 'output', l.output, 'state', l.state, 'accepted_at', l.accepted_at, 'finished_at', l.finished_at, \
                'release', jsonb_build_object('id', l.release_id, 'version', (select r.version from logic_release r where r.tenant_id = l.tenant_id and r.id = l.release_id)), \
                'generation', l.generation, 'trigger_event', l.trigger_event, \
+               'attempts', coalesce((select jsonb_object_agg(a.activation, jsonb_build_object('attempts', a.attempts, 'last', a.last_outcome, \
+                  'first_at', a.first_at, 'last_at', a.last_at)) from logic_attempt a where a.tenant_id = l.tenant_id and a.run_id = l.id), '{}'::jsonb), \
                'moves', coalesce((select jsonb_agg(jsonb_build_object('action', e.action, 'at', e.at, 'by', e.actor, 'diff', e.diff) order by e.id) \
                   from audit_event e where e.tenant_id = l.tenant_id and e.entity = 'LogicRun' and e.record_id = l.id \
                   and e.action in ('plan_migration', 'approve_migration', 'migrated', 'migration_refused')), '[]'::jsonb), \
