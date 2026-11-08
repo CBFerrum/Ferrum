@@ -155,6 +155,10 @@ pub struct ProcessTypes {
     pub steps: BTreeMap<String, Ty>,
     #[serde(default)]
     pub items: BTreeMap<String, Ty>,
+    /// For each person's task whose material is a record a step read or wrote: that record's entity, which an
+    /// effect relying on the task re-checks as it runs.
+    #[serde(default)]
+    pub materials: BTreeMap<String, String>,
 }
 
 /// An immutable, executable release.
@@ -646,6 +650,8 @@ struct Scope<'a> {
     ids: BTreeSet<String>,
     /// The process's human tasks, which an action may rely on.
     tasks: BTreeSet<String>,
+    /// Each query or action step's capability.
+    step_caps: BTreeMap<String, String>,
     /// What the checks worked out, for the release.
     types: ProcessTypes,
 }
@@ -679,6 +685,18 @@ fn tasks(nodes: &[Node], out: &mut BTreeSet<String>) {
         }
         for b in n.blocks() {
             tasks(&b.nodes, out);
+        }
+    }
+}
+
+/// Every query or action step anywhere in `nodes`, with its capability.
+fn step_capabilities(nodes: &[Node], out: &mut BTreeMap<String, String>) {
+    for n in nodes {
+        if let Node::Query { id, capability, .. } | Node::Action { id, capability, .. } = n {
+            out.insert(id.clone(), capability.id.clone());
+        }
+        for b in n.blocks() {
+            step_capabilities(&b.nodes, out);
         }
     }
 }
@@ -839,8 +857,11 @@ fn process(
         .collect();
     let mut human = BTreeSet::new();
     tasks(&proc_.nodes, &mut human);
+    let mut step_caps = BTreeMap::new();
+    step_capabilities(&proc_.nodes, &mut step_caps);
     let types = ProcessTypes { trigger: trigger_ty, ..Default::default() };
-    let mut s = Scope { caps, asked, decisions, processes, outputs, recursive, decision_scopes, compensable, ids: BTreeSet::new(), tasks: human, types };
+    let mut s =
+        Scope { caps, asked, decisions, processes, outputs, recursive, decision_scopes, compensable, ids: BTreeSet::new(), tasks: human, step_caps, types };
     let out = block(p, &at, &proc_.entry, &proc_.nodes, Kind::Process, &base, &mut s);
     (out, s.types)
 }
@@ -1129,8 +1150,18 @@ fn step(p: &mut Pass, np: &str, node: &Node, env: &Env, kind: Kind, index: &BTre
                 p.fault(Code::SchemaInvalid, format!("{np}/delegation"), nid, format!("a decision is handed on at most {MAX_DELEGATION} times"));
             }
             form_ok(p, &np, form, nid);
-            if let Err(e) = expr::compile(material, env) {
-                p.refusal(e, format!("{np}/material"), nid);
+            match expr::compile(material, env) {
+                Ok(c) => {
+                    // A record a step read or wrote: an effect relying on this task re-checks it as it runs.
+                    let entity = c.references().iter().find_map(|path| {
+                        let step = path.strip_suffix(".output").or_else(|| path.split_once(".output.").map(|(s, _)| s))?;
+                        s.caps.get(s.step_caps.get(step)?)?.entity.clone()
+                    });
+                    if let Some(e) = entity {
+                        s.types.materials.insert(node.id().to_string(), e);
+                    }
+                }
+                Err(e) => p.refusal(e, format!("{np}/material"), nid),
             }
             wait_ok(p, format!("{np}/timeout"), timeout, nid, "a task's timeout");
             not_success(p, "on_timeout", on_timeout, "nobody deciding is not success");

@@ -45,6 +45,7 @@ pub mod plans;
 pub mod prefs;
 pub mod print;
 pub mod privacy;
+pub mod process;
 pub mod query;
 pub mod recovery;
 pub mod registry;
@@ -154,6 +155,9 @@ pub struct KernelSettings {
     /// steps from the change that started it, and events that followed from that change (FLC-HOOK-008).
     pub chain_depth: i16,
     pub chain_events: i32,
+    /// A durable process runtime runs this installation's processes (crates/process): releases compile under
+    /// the Full Process profile. Without one, a solution with a process is refused (docs/logic/profiles.md).
+    pub process_runtime: bool,
 }
 
 impl Default for KernelSettings {
@@ -177,6 +181,7 @@ impl Default for KernelSettings {
             signup: signup::SignupPolicy::default(),
             chain_depth: 8,
             chain_events: 1000,
+            process_runtime: false,
         }
     }
 }
@@ -240,6 +245,8 @@ impl Kernel {
     pub async fn boot(db: Db, catalog: Catalog, mut hooks: HookRegistry, settings: KernelSettings, mailer: Option<Arc<dyn Mailer>>) -> Result<Arc<Kernel>> {
         // Customer logic's rules run in every workspace's saves, after the apps' own hooks (logic.rs).
         hooks.register("*", Arc::new(logic::TenantRules));
+        // Active releases' processes start on, and wait for, the workspace's events (process.rs).
+        hooks.add_event_sink(Arc::new(process::Processes));
         hooks.settle().map_err(|problems| Error::Invalid(format!("hooks cannot run as registered: {}", problems.join("; "))))?;
         // Superusers and BYPASSRLS roles ignore row-level security, which would silently remove
         // tenant isolation. Refuse to run that way.

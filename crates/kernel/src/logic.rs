@@ -86,11 +86,13 @@ pub fn shape(schema: &Schema, name: &str) -> Option<EntityShape> {
     Some(EntityShape { fields })
 }
 
-/// What the compiler sees of a workspace: its capabilities at their versions, its events, its entities.
+/// What the compiler sees of a workspace: its capabilities at their versions, its events, its entities and its
+/// calendars.
 struct Workspace {
     caps: BTreeMap<String, Capability>,
     events: BTreeMap<String, Ty>,
     schema: Arc<Schema>,
+    calendars: std::collections::BTreeSet<String>,
 }
 
 impl Resolver for Workspace {
@@ -105,6 +107,9 @@ impl Resolver for Workspace {
     }
     fn entity(&self, name: &str) -> Option<EntityShape> {
         shape(&self.schema, name)
+    }
+    fn calendar(&self, name: &str) -> bool {
+        self.calendars.contains(name)
     }
 }
 
@@ -169,7 +174,7 @@ async fn reviewed(tx: &mut crate::db::Tx, tenant: Uuid, release: Uuid) -> Result
 }
 
 /// The active releases of a workspace, as the rules run them.
-async fn active_releases(tx: &mut crate::db::Tx, tenant: Uuid, except: Option<&str>) -> Result<Vec<(Origin, Release)>> {
+pub(crate) async fn active_releases(tx: &mut crate::db::Tx, tenant: Uuid, except: Option<&str>) -> Result<Vec<(Origin, Release)>> {
     let rows: Vec<(Uuid, String, String, String, Value)> = sqlx::query_as(
         "select r.id, r.solution, r.version, r.artifact_digest, r.release from logic_activation a \
          join logic_release r on r.tenant_id = a.tenant_id and r.id = a.release_id \
@@ -188,13 +193,20 @@ async fn active_releases(tx: &mut crate::db::Tx, tenant: Uuid, except: Option<&s
 }
 
 impl Kernel {
-    /// What this installation runs releases under (docs/logic/decisions.md L-06): the Core profile, rules
-    /// and decisions, until the durable process runtime is configured.
+    /// What this installation runs releases under (docs/logic/decisions.md L-06): Full Process when a durable
+    /// process runtime is configured, otherwise Core (rules and decisions; a process is refused).
     pub fn logic_profile(&self) -> RuntimeProfile {
-        RuntimeProfile::Core
+        if self.settings.process_runtime { RuntimeProfile::FullProcess } else { RuntimeProfile::Core }
     }
 
-    fn workspace(&self, ctx: &Ctx) -> Workspace {
+    async fn workspace(&self, ctx: &Ctx) -> Result<Workspace> {
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let calendars: Vec<String> = sqlx::query_scalar("select name from logic_calendar where tenant_id = $1").bind(ctx.tenant).fetch_all(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(self.workspace_with(ctx, calendars.into_iter().collect()))
+    }
+
+    fn workspace_with(&self, ctx: &Ctx, calendars: std::collections::BTreeSet<String>) -> Workspace {
         let caps = self.catalog(ctx).into_iter().map(|c| (c.id.clone(), c)).collect();
         let events = self
             .events(ctx)
@@ -210,23 +222,26 @@ impl Kernel {
                 Some((id, ty))
             })
             .collect();
-        Workspace { caps, events, schema: ctx.schema.clone() }
+        Workspace { caps, events, schema: ctx.schema.clone(), calendars }
     }
 
     /// Compiles a solution against this workspace, keeping nothing: the builder's check.
-    pub fn compile_solution(&self, ctx: &Ctx, source: &str) -> std::result::Result<Release, Vec<Diagnostic>> {
-        let solution = Solution::parse(source).map_err(|r| {
-            let pointer = r.pointer.clone().unwrap_or_default();
-            vec![Diagnostic { code: r.code, message: r.message, pointer, node: None, fault: true }]
-        })?;
-        compile::compile(&solution, &self.workspace(ctx), self.logic_profile())
+    pub async fn compile_solution(&self, ctx: &Ctx, source: &str) -> Result<std::result::Result<Release, Vec<Diagnostic>>> {
+        let solution = match Solution::parse(source) {
+            Ok(s) => s,
+            Err(r) => {
+                let pointer = r.pointer.clone().unwrap_or_default();
+                return Ok(Err(vec![Diagnostic { code: r.code, message: r.message, pointer, node: None, fault: true }]));
+            }
+        };
+        Ok(compile::compile(&solution, &self.workspace(ctx).await?, self.logic_profile()))
     }
 
     /// Compiles a solution and keeps the release, which never changes (administrators).
     pub async fn save_release(&self, ctx: &Ctx, source: &str) -> Result<Value> {
         require_admin(ctx)?;
         let solution = Solution::parse(source)?;
-        let release = compile::compile(&solution, &self.workspace(ctx), self.logic_profile()).map_err(diagnostics)?;
+        let release = compile::compile(&solution, &self.workspace(ctx).await?, self.logic_profile()).map_err(diagnostics)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let id: Option<Uuid> = sqlx::query_scalar(
             "insert into logic_release (tenant_id, solution, version, source_digest, artifact_digest, compiler, profile, source, release, created_by) \
@@ -348,7 +363,7 @@ impl Kernel {
             Refusal::new(Code::StaleApproval, format!("{} {} {why}: compile and review a new version", r.solution, r.version)).into()
         };
         let source: Solution = serde_json::from_value(source).map_err(|e| stale(format!("cannot be read again ({e})")))?;
-        let now = compile::compile(&source, &self.workspace(ctx), self.logic_profile())
+        let now = compile::compile(&source, &self.workspace(ctx).await?, self.logic_profile())
             .map_err(|d| stale(format!("no longer compiles here ({})", d.iter().find(|d| d.fault).map(|d| d.message.as_str()).unwrap_or("?"))))?;
         if now.artifact_digest != r.digest {
             return Err(stale("was approved against capabilities or fields that have changed since".into()));
