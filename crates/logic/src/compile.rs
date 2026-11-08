@@ -131,6 +131,9 @@ pub struct Locked {
     pub version: String,
     pub digest: String,
     pub effect: Effect,
+    /// The capability that undoes it, when its app declares one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compensation: Option<String>,
 }
 
 /// What runs: the checked source, with every capability resolved to its digest.
@@ -140,6 +143,18 @@ pub struct Ir {
     pub rules: Vec<crate::solution::Rule>,
     pub decisions: Vec<decision::Table>,
     pub processes: Vec<crate::solution::Process>,
+    /// Each process's types, as the compiler worked them out, so a run reads outputs the same way.
+    #[serde(default)]
+    pub types: BTreeMap<String, ProcessTypes>,
+}
+
+/// What a process's expressions see, typed: its trigger, each step's output and each for-each's item.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProcessTypes {
+    pub trigger: Ty,
+    pub steps: BTreeMap<String, Ty>,
+    #[serde(default)]
+    pub items: BTreeMap<String, Ty>,
 }
 
 /// An immutable, executable release.
@@ -392,10 +407,12 @@ pub fn compile(src: &Solution, resolver: &dyn Resolver, profile: RuntimeProfile)
     let mut order: Vec<usize> = (0..src.processes.len()).collect();
     order.sort_by_key(|&i| src.processes.iter().filter(|q| reaches(&src.processes[i].id, &q.id)).count());
     let mut outputs: BTreeMap<String, Ty> = BTreeMap::new();
+    let mut types: BTreeMap<String, ProcessTypes> = BTreeMap::new();
     for pi in order {
         let proc_ = &src.processes[pi];
-        let t = process(&mut p, pi, proc_, &caps, &asked, &decisions, &processes, &outputs, &recursive, &params_ty, profile, &mut decision_scopes);
+        let (t, typed) = process(&mut p, pi, proc_, &caps, &asked, &decisions, &processes, &outputs, &recursive, &params_ty, profile, &mut decision_scopes);
         outputs.insert(proc_.id.clone(), t);
+        types.insert(proc_.id.clone(), typed);
     }
 
     // Decisions no process uses are still checked, in a scope of the parameters alone.
@@ -442,9 +459,11 @@ pub fn compile(src: &Solution, resolver: &dyn Resolver, profile: RuntimeProfile)
     if p.out.iter().any(|d| d.fault) {
         return Err(p.out);
     }
-    let lock: Vec<Locked> =
-        caps.values().map(|c| Locked { id: c.id.clone(), version: c.version.clone(), digest: c.digest.clone(), effect: c.effect }).collect();
-    let ir = Ir { parameters: src.parameters.clone(), rules: src.rules.clone(), decisions: src.decisions.clone(), processes: src.processes.clone() };
+    let lock: Vec<Locked> = caps
+        .values()
+        .map(|c| Locked { id: c.id.clone(), version: c.version.clone(), digest: c.digest.clone(), effect: c.effect, compensation: c.compensation() })
+        .collect();
+    let ir = Ir { parameters: src.parameters.clone(), rules: src.rules.clone(), decisions: src.decisions.clone(), processes: src.processes.clone(), types };
     let source_digest = match canonical::digest(SOURCE_SCHEMA, &digestible(&src.semantic())) {
         Ok(d) => d,
         Err(e) => return Err(vec![Diagnostic { code: Code::SchemaInvalid, message: e.to_string(), pointer: String::new(), node: None, fault: true }]),
@@ -625,6 +644,10 @@ struct Scope<'a> {
     compensable: Vec<(String, String, Option<String>)>,
     /// Every step id of the process: ids are the process's, not a block's, so a step's output has one name.
     ids: BTreeSet<String>,
+    /// The process's human tasks, which an action may rely on.
+    tasks: BTreeSet<String>,
+    /// What the checks worked out, for the release.
+    types: ProcessTypes,
 }
 
 /// Where a block sits, which decides how it may end.
@@ -644,6 +667,18 @@ fn actions(nodes: &[Node], out: &mut Vec<(String, CapRef)>) {
         }
         for b in n.blocks() {
             actions(&b.nodes, out);
+        }
+    }
+}
+
+/// Every human task anywhere in `nodes`.
+fn tasks(nodes: &[Node], out: &mut BTreeSet<String>) {
+    for n in nodes {
+        if let Node::HumanTask { id, .. } = n {
+            out.insert(id.clone());
+        }
+        for b in n.blocks() {
+            tasks(&b.nodes, out);
         }
     }
 }
@@ -738,7 +773,7 @@ fn process(
     params: &Ty,
     profile: RuntimeProfile,
     decision_scopes: &mut BTreeMap<String, Env>,
-) -> Ty {
+) -> (Ty, ProcessTypes) {
     let at = format!("/processes/{pi}");
     if profile == RuntimeProfile::Core {
         p.fault(
@@ -747,7 +782,7 @@ fn process(
             None,
             format!("{} is a durable process: it needs the Full Process profile, and this installation runs Core", proc_.id),
         );
-        return Ty::Any;
+        return (Ty::Any, ProcessTypes::default());
     }
     let mut all = vec![];
     actions(&proc_.nodes, &mut all);
@@ -759,7 +794,7 @@ fn process(
     };
     if count(&proc_.nodes) > MAX_NODES {
         p.fault(Code::SchemaInvalid, format!("{at}/nodes"), None, format!("a process holds at most {MAX_NODES} steps, its blocks' included"));
-        return Ty::Any;
+        return (Ty::Any, ProcessTypes::default());
     }
     let trigger_ty = match p.resolver.event(&proc_.trigger.event) {
         Some(t) => t,
@@ -768,7 +803,7 @@ fn process(
             Ty::Any
         }
     };
-    let base = Env::default().with("trigger", trigger_ty).with("parameters", params.clone());
+    let base = Env::default().with("trigger", trigger_ty.clone()).with("parameters", params.clone());
     if let Err(e) = expr::compile(&proc_.trigger.business_key, &base) {
         p.refusal(e, format!("{at}/trigger/business_key"), None);
     }
@@ -802,8 +837,12 @@ fn process(
             (step, cap.id, undo)
         })
         .collect();
-    let mut s = Scope { caps, asked, decisions, processes, outputs, recursive, decision_scopes, compensable, ids: BTreeSet::new() };
-    block(p, &at, &proc_.entry, &proc_.nodes, Kind::Process, &base, &mut s)
+    let mut human = BTreeSet::new();
+    tasks(&proc_.nodes, &mut human);
+    let types = ProcessTypes { trigger: trigger_ty, ..Default::default() };
+    let mut s = Scope { caps, asked, decisions, processes, outputs, recursive, decision_scopes, compensable, ids: BTreeSet::new(), tasks: human, types };
+    let out = block(p, &at, &proc_.entry, &proc_.nodes, Kind::Process, &base, &mut s);
+    (out, s.types)
 }
 
 /// Checks a block's graph and its steps, in an order where each step's inputs are known. Returns the type of
@@ -932,6 +971,7 @@ fn block(p: &mut Pass, at: &str, entry: &str, nodes: &[Node], kind: Kind, outer:
             }
         }
         let t = step(p, &format!("{at}/nodes/{i}"), &nodes[i], &env, kind, &index, nodes, s);
+        s.types.steps.insert(nodes[i].id().to_string(), t.clone());
         if let Node::End { outcome: EndOutcome::Completed, .. } = &nodes[i]
             && let Ty::Record(fields) = &t
         {
@@ -1005,7 +1045,19 @@ fn step(p: &mut Pass, np: &str, node: &Node, env: &Env, kind: Kind, index: &BTre
                     Err(err) => p.refusal(err, ip, nid),
                 }
             }
-            if let Node::Action { effect_key, on_unknown, .. } = node {
+            if let Node::Action { effect_key, on_unknown, approval, .. } = node {
+                // An effect that relies on an approval names it, and the approval surely came first: the runtime
+                // binds the effect to what was approved and re-checks it as the effect runs.
+                if let Some(task) = approval
+                    && (!s.tasks.contains(task) || !env.vars.contains_key(task))
+                {
+                    p.fault(
+                        Code::SchemaInvalid,
+                        format!("{np}/approval"),
+                        nid,
+                        format!("{} relies on {task}, which is not a person's task that surely decided before it", node.id()),
+                    );
+                }
                 if effect_key != "stable_activation" {
                     p.fault(
                         Code::SchemaInvalid,
@@ -1129,6 +1181,7 @@ fn step(p: &mut Pass, np: &str, node: &Node, env: &Env, kind: Kind, index: &BTre
                     Ty::Any
                 }
             };
+            s.types.items.insert(node.id().to_string(), item.clone());
             let inner = env.clone().with("item", item);
             match expr::compile(key, &inner) {
                 Ok(c) if matches!(c.ty, Ty::Text | Ty::Int | Ty::Any) => {}
@@ -1309,290 +1362,7 @@ fn step(p: &mut Pass, np: &str, node: &Node, env: &Env, kind: Kind, index: &BTre
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capability::{Idempotency, Limits, Operation, object_schema};
-    use serde_json::Map;
-
-    /// A workspace with the package's purchase and condition capabilities, named as Ferrum names them
-    /// (`{package}.{entity}.{operation}`, docs/logic/capabilities.md). Ferrum has no stock hold yet, so those two
-    /// keep the package's example names (docs/logic/reuse-map.yaml records the gap).
-    struct Fixture {
-        caps: Vec<Capability>,
-    }
-
-    fn flat(fields: &[&str]) -> Value {
-        object_schema(fields.iter().map(|k| (k.to_string(), json!({"type": "string"}))).collect(), fields.iter().map(|s| s.to_string()).collect())
-    }
-
-    /// W1's create: the record's fields under `values`.
-    fn create_input(fields: &[&str], required: &[&str]) -> Value {
-        let values =
-            object_schema(fields.iter().map(|k| (k.to_string(), json!({"type": "string"}))).collect(), required.iter().map(|s| s.to_string()).collect());
-        object_schema(Map::from_iter([("values".to_string(), values), ("submit".to_string(), json!({"type": "boolean"}))]), vec!["values".into()])
-    }
-
-    fn cap(id: &str, effect: Effect, input: Value, output: Value) -> Capability {
-        Capability {
-            id: id.into(),
-            version: "1.0.0".into(),
-            digest: String::new(),
-            owner: id.split('.').next().unwrap().into(),
-            entity: None,
-            operation: Operation::Action(id.rsplit('.').next().unwrap().into()),
-            label: id.into(),
-            description: None,
-            effect,
-            profiles: vec![Profile::Process],
-            permissions: vec![],
-            input,
-            output,
-            idempotency: if effect.changes() { Idempotency::NativeReceipt } else { Idempotency::ReadOnly },
-            retention_days: 365,
-            unknown_outcome: if effect.changes() { UnknownOutcome::Reconcile } else { UnknownOutcome::NotApplicable },
-            completion: "done".into(),
-            compensate_with: None,
-            limits: Limits::default(),
-        }
-        .sealed()
-        .unwrap()
-    }
-
-    impl Fixture {
-        fn new() -> Fixture {
-            let request = json!({"type": "object", "properties": {
-                "total": {"type": "object", "properties": {"amount": {"type": "string"}, "currency": {"type": "string"}}},
-                "supplier_email": {"type": "string"}, "version": {"type": "integer"}, "category": {"type": "string"},
-                "lines": {"type": "array", "items": {"type": "object", "properties": {"item_code": {"type": "string"}, "qty": {"type": ["string", "number"]}}}}}});
-            let id_out = json!({"type": "object", "properties": {"id": {"type": "string"}}});
-            let mut mail = cap("ferrum.mail", Effect::ExternalEffect, flat(&["to", "subject", "body"]), json!({"type": "object"}));
-            mail.unknown_outcome = UnknownOutcome::Manual;
-            Fixture {
-                caps: vec![
-                    cap("procurement.material_request.read", Effect::Query, flat(&["id"]), request),
-                    cap(
-                        "procurement.material_request.make_purchase_order",
-                        Effect::TransactionalAction,
-                        flat(&["id"]),
-                        json!({"type": "object", "properties": {"order_id": {"type": "string"}}}),
-                    ),
-                    mail.sealed().unwrap(),
-                    cap(
-                        "assets_ops.maintenance_request.create",
-                        Effect::TransactionalAction,
-                        create_input(&["asset", "description"], &["asset"]),
-                        id_out.clone(),
-                    ),
-                    cap(
-                        "assets_ops.maintenance_request.update",
-                        Effect::TransactionalAction,
-                        json!({"type": "object", "properties": {"id": {"type": "string"}, "values": {"type": "object", "properties": {"status": {"type": "string"}}}}, "required": ["id"]}),
-                        id_out.clone(),
-                    ),
-                    cap("field_service.service_request.create", Effect::TransactionalAction, create_input(&["subject", "description"], &["subject"]), id_out),
-                    Capability {
-                        owner: "example.inventory".into(),
-                        compensate_with: Some("release_hold".into()),
-                        ..cap(
-                            "example.inventory.place_hold",
-                            Effect::TransactionalAction,
-                            flat(&["scope_ref", "case_ref"]),
-                            json!({"type": "object", "properties": {"hold_id": {"type": "string"}}}),
-                        )
-                    }
-                    .sealed()
-                    .unwrap(),
-                    cap("example.inventory.release_hold", Effect::TransactionalAction, flat(&["hold_ref", "disposition_ref"]), json!({"type": "object"})),
-                ],
-            }
-        }
-    }
-
-    impl Resolver for Fixture {
-        fn capability(&self, id: &str, version: &str) -> Option<Capability> {
-            self.caps.iter().find(|c| c.id == id && c.version == version).cloned()
-        }
-        fn installed(&self, id: &str) -> Option<String> {
-            self.caps.iter().find(|c| c.id == id).map(|c| c.version.clone())
-        }
-        fn calendar(&self, name: &str) -> bool {
-            name == "india"
-        }
-        fn event(&self, id: &str) -> Option<Ty> {
-            let rec = |fields: &[&str]| Some(Ty::Record(fields.iter().map(|f| (f.to_string(), Ty::Text)).collect()));
-            match id {
-                "procurement.material_request.submitted" => rec(&["id"]),
-                "buying.purchase_order.updated" => rec(&["id", "status"]),
-                // Declared by Edge's manifest when its episodes land (W5).
-                "edge.condition_episode.opened" => rec(&["episode_id", "asset_id", "evidence_id"]),
-                "stock_ops.quality_inspection.submitted" => rec(&["id", "reference_name", "status"]),
-                _ => None,
-            }
-        }
-        fn entity(&self, name: &str) -> Option<EntityShape> {
-            if name == "Supplier" {
-                return Some(EntityShape {
-                    fields: BTreeMap::from([
-                        ("credit_limit".into(), FieldShape { ty: Ty::Decimal, customer: false, restricted: false, link: None }),
-                        ("bank_account".into(), FieldShape { ty: Ty::Text, customer: false, restricted: true, link: None }),
-                    ]),
-                });
-            }
-            (name == "MaterialRequest").then(|| EntityShape {
-                fields: BTreeMap::from([
-                    ("supplier".into(), FieldShape { ty: Ty::Text, customer: false, restricted: false, link: Some("Supplier".into()) }),
-                    ("company".into(), FieldShape { ty: Ty::Text, customer: false, restricted: false, link: None }),
-                    ("requested_by".into(), FieldShape { ty: Ty::Text, customer: false, restricted: false, link: None }),
-                    ("x_department".into(), FieldShape { ty: Ty::Text, customer: true, restricted: false, link: None }),
-                    ("x_risk".into(), FieldShape { ty: Ty::Text, customer: true, restricted: false, link: None }),
-                    ("x_cost_centre_budget".into(), FieldShape { ty: Ty::Decimal, customer: true, restricted: true, link: None }),
-                ]),
-            })
-        }
-    }
-
-    /// The package's purchase-exception example (examples/purchase.solution.json), with Ferrum's ids.
-    fn purchase() -> Value {
-        json!({
-            "schema_version": "ferrum.solution/1", "kind": "Solution", "id": "acme.purchase_exception", "version": "1.0.0", "label": "Purchase exception",
-            "requires": [
-                {"id": "procurement.material_request.read", "version": "1.0.0"},
-                {"id": "procurement.material_request.make_purchase_order", "version": "1.0.0"},
-                {"id": "ferrum.mail", "version": "1.0.0"}
-            ],
-            "parameters": {"review_limit": {"type": "money:INR", "value": {"amount": "100000.00", "currency": "INR"}}},
-            "rules": [
-                {"id": "required_request_data", "entity": "MaterialRequest", "phase": "validate", "check": "has(doc.company) && has(doc.requested_by)", "message": "A request names its company and who asked"},
-                {"id": "department_from_requester", "entity": "MaterialRequest", "phase": "derive", "writes": {"x_department": "coalesce(doc.x_department, \"general\")"}}
-            ],
-            "decisions": [{
-                "id": "requires_review", "hit_policy": "unique",
-                "inputs": [{"name": "total", "value": "snapshot.output.total"}],
-                "rows": [{"id": "high_amount", "match": {"total": {"gt": {"amount": "100000.00", "currency": "INR"}}}, "outcome": "review"}],
-                "default": "proceed"
-            }],
-            "processes": [{
-                "id": "purchase_exception", "label": "Purchase exception",
-                "trigger": {"event": "procurement.material_request.submitted", "business_key": "trigger.id"},
-                "entry": "snapshot", "max_steps": 100,
-                "nodes": [
-                    {"type": "query", "id": "snapshot", "label": "Read the request", "capability": {"id": "procurement.material_request.read", "version": "1.0.0"}, "input": {"id": "trigger.id"}, "next": "decision", "on_error": "needs_attention"},
-                    {"type": "decision", "id": "decision", "label": "Policy", "decision": "requires_review", "routes": [{"outcome": "review", "target": "review"}, {"outcome": "proceed", "target": "create_order"}], "on_error": "needs_attention"},
-                    {"type": "human_task", "id": "review", "label": "Independent approval", "role": "Purchasing Reviewer", "material": "snapshot.output", "timeout": "P2D", "next": "create_order", "on_reject": "refused", "on_timeout": "needs_attention"},
-                    {"type": "action", "id": "create_order", "label": "Create the order", "capability": {"id": "procurement.material_request.make_purchase_order", "version": "1.0.0"}, "input": {"id": "trigger.id"}, "next": "submit_supplier", "on_error": "needs_attention", "on_unknown": "needs_attention"},
-                    {"type": "action", "id": "submit_supplier", "label": "Send to the supplier", "capability": {"id": "ferrum.mail", "version": "1.0.0"}, "input": {"to": "snapshot.output.supplier_email", "subject": "\"Purchase order\"", "body": "create_order.output.order_id"}, "next": "supplier_ack", "on_error": "needs_attention", "on_unknown": "needs_attention"},
-                    {"type": "wait_event", "id": "supplier_ack", "label": "Acknowledged", "event": "buying.purchase_order.updated", "correlation": "create_order.output.order_id", "timeout": 86400, "next": "completed", "on_timeout": "needs_attention"},
-                    {"type": "end", "id": "completed", "label": "Completed", "outcome": "completed"},
-                    {"type": "end", "id": "refused", "label": "Refused", "outcome": "refused"},
-                    {"type": "suspend", "id": "needs_attention", "label": "Needs attention", "reason": "Resolve original effects before continuing. This is not success."}
-                ]
-            }],
-            "tests": [
-                {"id": "at_the_limit", "decision": "requires_review", "given": {"snapshot": {"output": {"total": {"amount": "100000.00", "currency": "INR"}}}}, "expect": "proceed"},
-                {"id": "over_the_limit", "decision": "requires_review", "given": {"snapshot": {"output": {"total": {"amount": "100000.01", "currency": "INR"}}}}, "expect": "review"},
-                {"id": "no_currency", "decision": "requires_review", "given": {"snapshot": {"output": {"total": {"amount": "5"}}}}, "expect": "unknown"}
-            ],
-            "ui": {"layout": {"snapshot": {"x": 10, "y": 20}}, "notes": "needs_attention is not success"}
-        })
-    }
-
-    /// The package's condition-response example (examples/condition.solution.json), with Ferrum's ids: one
-    /// operational episode opens one case; people approve the hold and its release; nothing overrides quality.
-    fn condition() -> Value {
-        let act = |id: &str, label: &str, cap: &str, input: Value, next: &str| json!({"type": "action", "id": id, "label": label, "capability": {"id": cap, "version": "1.0.0"}, "input": input, "next": next, "on_error": "needs_attention", "on_unknown": "needs_attention"});
-        json!({
-            "schema_version": "ferrum.solution/1", "kind": "Solution", "id": "acme.condition_response", "version": "1.0.0", "label": "Condition response",
-            "description": "One operational episode starts one business case; does not bypass native action or physical authority.",
-            "requires": [
-                {"id": "assets_ops.maintenance_request.create", "version": "1.0.0"},
-                {"id": "example.inventory.place_hold", "version": "1.0.0"},
-                {"id": "field_service.service_request.create", "version": "1.0.0"},
-                {"id": "example.inventory.release_hold", "version": "1.0.0"},
-                {"id": "assets_ops.maintenance_request.update", "version": "1.0.0"}
-            ],
-            "processes": [{
-                "id": "condition_response", "label": "Condition response",
-                "trigger": {"event": "edge.condition_episode.opened", "business_key": "trigger.episode_id"},
-                "entry": "open_case", "max_steps": 100,
-                "nodes": [
-                    act("open_case", "Open the case with its evidence", "assets_ops.maintenance_request.create", json!({"values.asset": "trigger.asset_id", "values.description": "trigger.evidence_id"}), "review_hold"),
-                    {"type": "human_task", "id": "review_hold", "label": "Approve the affected stock and the hold", "role": "Quality Manager", "material": "open_case.output",
-                     "form": [{"name": "affected_stock", "label": "Affected stock", "type": "text", "required": true}],
-                     "timeout": 3600, "next": "hold", "on_reject": "refused", "on_timeout": "needs_attention"},
-                    act("hold", "Place the approved hold", "example.inventory.place_hold", json!({"scope_ref": "review_hold.output.affected_stock", "case_ref": "open_case.output.id"}), "request_work"),
-                    act("request_work", "Ask for maintenance", "field_service.service_request.create", json!({"values.subject": "trigger.asset_id", "values.description": "open_case.output.id"}), "inspection"),
-                    {"type": "wait_event", "id": "inspection", "label": "Wait for the completed inspection", "event": "stock_ops.quality_inspection.submitted", "correlation": "open_case.output.id", "timeout": 604800, "next": "disposition", "on_timeout": "needs_attention"},
-                    {"type": "end", "id": "refused", "label": "Refused", "outcome": "refused"},
-                    {"type": "suspend", "id": "needs_attention", "label": "Needs attention", "reason": "Resolve original effects, prerequisites and evidence before continuing. This is not success."},
-                    {"type": "human_task", "id": "disposition", "label": "Approve the release on the inspection's evidence", "role": "Quality Release Authority", "material": "inspection.output",
-                     "timeout": 86400, "next": "release_hold", "on_reject": "needs_attention", "on_timeout": "needs_attention"},
-                    act("release_hold", "Release only the approved hold", "example.inventory.release_hold", json!({"hold_ref": "hold.output.hold_id", "disposition_ref": "disposition.output.decision_id"}), "close_case"),
-                    act("close_case", "Close the case with its evidence", "assets_ops.maintenance_request.update", json!({"id": "open_case.output.id", "values.status": "\"Closed\""}), "completed"),
-                    {"type": "end", "id": "completed", "label": "Resolved and recorded", "outcome": "completed"}
-                ]
-            }],
-            "ui": {"notes": "Inspection and an independent disposition gate the hold's release. Rejection or unresolved effects suspend for reviewed recovery; no implicit quality override."}
-        })
-    }
-
-    /// One process using every structured step: each line held (for-each), the supplier answering by mail or
-    /// on the portal, whichever comes first (any), a two-person review with rework (repeat), an investigation
-    /// case, a business-day delay, compensation and a recovery that resumes it.
-    fn structured() -> Value {
-        let mut v = purchase();
-        v["requires"]
-            .as_array_mut()
-            .unwrap()
-            .extend([json!({"id": "example.inventory.place_hold", "version": "1.0.0"}), json!({"id": "example.inventory.release_hold", "version": "1.0.0"})]);
-        v["processes"][0]["nodes"] = json!([
-            {"type": "query", "id": "snapshot", "label": "Read the request", "capability": {"id": "procurement.material_request.read", "version": "1.0.0"}, "input": {"id": "trigger.id"}, "next": "lines_each", "on_error": "refused"},
-            {"type": "for_each", "id": "lines_each", "label": "Hold each line", "items": "snapshot.output.lines", "key": "item.item_code", "max_items": 50, "concurrency": 5,
-             "body": {"id": "line", "entry": "hold_line", "nodes": [
-                {"type": "action", "id": "hold_line", "label": "Hold the line's stock", "capability": {"id": "example.inventory.place_hold", "version": "1.0.0"}, "input": {"scope_ref": "item.item_code", "case_ref": "trigger.id"}, "next": "line_done", "on_error": "line_failed", "on_unknown": "line_failed"},
-                {"type": "end", "id": "line_done", "label": "Held", "outcome": "completed", "output": {"held": "hold_line.output.hold_id"}},
-                {"type": "end", "id": "line_failed", "label": "Not held", "outcome": "refused"}
-             ]},
-             "next": "quotes", "on_error": "undo"},
-            {"type": "parallel", "id": "quotes", "label": "Hear from the supplier", "join": "any", "branches": [
-                {"id": "email", "entry": "mail", "nodes": [
-                    {"type": "action", "id": "mail", "label": "Mail the supplier", "capability": {"id": "ferrum.mail", "version": "1.0.0"}, "input": {"to": "snapshot.output.supplier_email", "subject": "\"Order\"", "body": "trigger.id"}, "next": "sent", "on_error": "mail_failed", "on_unknown": "mail_failed"},
-                    {"type": "end", "id": "sent", "label": "Mailed", "outcome": "completed"},
-                    {"type": "end", "id": "mail_failed", "label": "Not mailed", "outcome": "refused"}
-                ]},
-                {"id": "portal", "entry": "wait_portal", "nodes": [
-                    {"type": "wait_event", "id": "wait_portal", "label": "Acknowledged on the portal", "event": "buying.purchase_order.updated", "correlation": "trigger.id", "timeout": "P1D", "next": "acknowledged", "on_timeout": "late"},
-                    {"type": "end", "id": "acknowledged", "label": "Acknowledged", "outcome": "completed"},
-                    {"type": "end", "id": "late", "label": "Too late", "outcome": "refused"}
-                ]}
-            ], "next": "review_loop", "on_error": "undo"},
-            {"type": "repeat", "id": "review_loop", "label": "Review until right", "max_rounds": 3,
-             "body": {"id": "round", "entry": "review", "nodes": [
-                {"type": "human_task", "id": "review", "label": "Two reviewers approve", "role": "Purchasing Reviewer", "material": "snapshot.output", "approvals": 2, "delegation": 1,
-                 "timeout": {"business_days": 2, "calendar": "india"}, "next": "approved", "on_reject": "rework", "on_timeout": "nobody"},
-                {"type": "end", "id": "approved", "label": "Approved", "outcome": "completed"},
-                {"type": "end", "id": "rework", "label": "Changes asked for", "outcome": "again"},
-                {"type": "end", "id": "nobody", "label": "Nobody decided", "outcome": "refused"}
-             ]},
-             "next": "investigate", "on_exhausted": "undo"},
-            {"type": "case", "id": "investigate", "label": "Investigate", "owner": "Quality Manager", "timeout": "P7D", "tasks": [
-                {"id": "inspect", "label": "Inspect the goods", "role": "Inspector", "required": true, "form": [{"name": "passed", "label": "Passed", "type": "bool", "required": true}]},
-                {"id": "report", "label": "Write the report", "role": "Quality Manager", "requires": ["inspect"]}
-            ], "next": "settle", "on_timeout": "undo"},
-            {"type": "delay", "id": "settle", "label": "Let it settle", "wait": {"business_days": 1, "calendar": "india"}, "next": "completed"},
-            {"type": "compensate", "id": "undo", "label": "Release what was held", "next": "refused", "on_error": "attention"},
-            {"type": "end", "id": "completed", "label": "Completed", "outcome": "completed", "output": {"lines": "lines_each.output", "rounds": "review_loop.output.rounds"}},
-            {"type": "end", "id": "refused", "label": "Refused", "outcome": "refused"},
-            {"type": "suspend", "id": "attention", "label": "Needs attention", "reason": "A compensation failed: settle it, then release again.", "resume_to": "undo"}
-        ]);
-        v["processes"][0]["entry"] = json!("snapshot");
-        // Its review is a person's, not the purchase example's decision table.
-        v["decisions"] = json!([]);
-        v["tests"] = json!([]);
-        v
-    }
-
-    fn compile_value(v: Value, profile: RuntimeProfile) -> Result<Release, Vec<Diagnostic>> {
-        let s = Solution::from_value(v).map_err(|r| vec![Diagnostic { code: r.code, message: r.message, pointer: String::new(), node: None, fault: true }])?;
-        compile(&s, &Fixture::new(), profile)
-    }
+    use crate::testkit::*;
 
     fn faults(v: Value) -> Vec<Diagnostic> {
         match compile_value(v, RuntimeProfile::FullProcess) {

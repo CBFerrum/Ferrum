@@ -195,6 +195,10 @@ pub enum Node {
         on_error: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         on_unknown: Option<String>,
+        /// The person's task whose approval this effect relies on: the effect is bound to what was approved,
+        /// and refused if the approved record changed since (FLC-HUMAN-002).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approval: Option<String>,
     },
     Decision {
         id: String,
