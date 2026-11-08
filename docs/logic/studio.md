@@ -57,7 +57,17 @@ capabilities. Moving a box changes nothing there; a label a person reads does (F
 capabilities the release may use that what runs now cannot are listed for the reviewer to consent to one by
 one: approving without naming exactly those is refused. Approval is bound to the digest shown; the author is
 told why they cannot approve, and the server refuses it anyway. Activation names the generation seen
-running; one changed meanwhile is refused.
+running; one changed meanwhile is refused. Its answer says which release it replaced, the automation it took
+over from (turned off in the same step), how many runs stay on another release, and that nothing a run did is
+undone; going back is activating the earlier release again (FLC-MIG-006, FLC-MIG-003).
+
+Before activating, **Compare with what runs now** replays recent work against the release and against what
+runs now (`POST /solutions/shadow`): the last runs of its solution with the answers, decisions and events they
+met, or an automation's recent events against what it did. Cases that differ come first, each with what
+differs: how it ends, what it decides, the steps it takes, what it changes. Nothing runs, changes or is kept
+(FLC-MIG-002). **Download as a pack** gives the release to another workspace: its source, digests, needs and
+review decisions without names, never a connection or a credential; there **Take in a pack** makes a draft of
+it and lists what must be mapped (FLC-OPS-008).
 
 ## Runs and tasks
 
@@ -73,7 +83,11 @@ look again. A decision may be handed on, by email, as many times as its process 
 the role who has not had it; never to the requester. A closed task keeps who did what on it, when and why. A
 case lists only its tasks, each with what it waits for. Recovery and attention items are an
 administrator's: a recovery records what was done and resumes where the process allows, or ends the run
-refused; nothing marks it a success. A record's Related tab lists the processes about it, with their state and
+refused; nothing marks it a success. A step waiting for a capability out of service has an attention item
+saying so; it goes on by itself once the capability is back (FLC-OPS-007). On a run that waits under an older
+release, an administrator can plan moving it onto the release that runs now, naming the step of that release
+each waiting step becomes, and another administrator approves exactly that; the run's page keeps every move
+planned, approved, made or refused (FLC-MIG-004). A record's Related tab lists the processes about it, with their state and
 who they wait on, to whoever may read the record; not what those tasks are about.
 
 ## Not yet
