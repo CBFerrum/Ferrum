@@ -268,4 +268,37 @@ async fn scenario() {
     let across = Invocation::new("stockcap.hold.read", json!({"id": hold.to_string()}));
     assert_eq!(code(&k.invoke(&beta, across).await.unwrap_err()), "not_found", "another workspace's record does not exist here");
     assert_eq!(count(&k, &beta, "select count(*) from logic_effect").await, 1, "and none of its receipts are visible");
+
+    // A destination is held to at the connection itself (FLC-SEC-005): a host that resolves to a private or loopback
+    // address is refused before anything is sent, and a permitted host's redirect is never followed, so it cannot
+    // point the call at a private endpoint.
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let reached = Arc::new(AtomicUsize::new(0));
+    let private = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let private_port = private.local_addr().unwrap().port();
+    let seen = reached.clone();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = private.accept().await {
+            seen.fetch_add(1, Ordering::SeqCst);
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 6\r\n\r\nsecret").await;
+        }
+    });
+    let permitted = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let permitted_port = permitted.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = permitted.accept().await {
+            let mut request = [0u8; 2048];
+            let _ = s.read(&mut request).await;
+            let reply = format!("HTTP/1.1 302 Found\r\nlocation: http://127.0.0.1:{private_port}/secret\r\ncontent-length: 0\r\n\r\n");
+            let _ = s.write_all(reply.as_bytes()).await;
+        }
+    });
+    let wait = std::time::Duration::from_secs(5);
+    let refused = k.vetted_client(&format!("https://localhost:{private_port}/secret"), false, wait, "it").await.unwrap_err();
+    assert!(refused.to_string().contains("is a private address"), "{refused}");
+    // Plain http and loopback allowed, as for development: the redirect still comes back unfollowed.
+    let (client, url) = k.vetted_client(&format!("http://127.0.0.1:{permitted_port}/start"), true, wait, "it").await.unwrap();
+    let answer = client.get(url).send().await.unwrap();
+    assert_eq!(answer.status().as_u16(), 302, "the redirect comes back as it is");
+    assert_eq!(reached.load(Ordering::SeqCst), 0, "and the private endpoint it pointed at was never reached");
 }

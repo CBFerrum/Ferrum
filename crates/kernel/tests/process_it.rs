@@ -93,6 +93,9 @@ struct Driver {
     held: Vec<(Uuid, Command)>,
     /// Steps that answered "try again later", as the runtime retries them.
     retrying: Vec<(Uuid, Command)>,
+    /// Steps whose answer is lost after they ran, as when a worker dies between the effect and its report: the
+    /// run is told the outcome is unknown.
+    lose_answers: Vec<String>,
 }
 
 impl Driver {
@@ -181,6 +184,9 @@ impl Driver {
         match c {
             Command::Invoke { activation, capability, version, input, changes, approval } => {
                 match k.process_invoke(t, run, &activation, &capability, &version, input.clone(), changes, approval.as_ref()).await {
+                    Ok(_) if self.lose_answers.contains(&activation) => {
+                        vec![Event::Invoked { activation, outcome: Invoked::Unknown { why: "the answer was lost after the step ran".into() } }]
+                    }
                     Ok(outcome) => vec![Event::Invoked { activation, outcome }],
                     Err(Error::Unavailable(_)) => {
                         self.retrying.push((run, Command::Invoke { activation, capability, version, input, changes, approval }));
@@ -425,7 +431,8 @@ async fn scenario() {
     // It may create orders, which nothing running could before: consented to by name.
     k.review_release_consenting(&admin2, release, saved["artifact_digest"].as_str().unwrap(), &["procs.order.create".to_string()], true, "").await.unwrap();
     k.activate_release(&admin, release, None).await.unwrap();
-    let mut d = Driver { k: k.clone(), tenant: admin.tenant, last: 0, runs: BTreeMap::new(), hold_waits: false, held: vec![], retrying: vec![] };
+    let mut d =
+        Driver { k: k.clone(), tenant: admin.tenant, last: 0, runs: BTreeMap::new(), hold_waits: false, held: vec![], retrying: vec![], lose_answers: vec![] };
 
     // Accepted once per business key, however often the event comes, at once or again later (FLC-PROC-001).
     let (r1, run1) = request(&k, &mut d, &requester, "R-1", "5000").await;
@@ -469,6 +476,8 @@ async fn scenario() {
     d.settle().await;
     let order1: Uuid = scalar(&k, admin.tenant, "select id from e_order where request = $1", r1).await;
     assert_eq!(scalar::<i64>(&k, admin.tenant, "select count(*) from logic_effect where effect_key = $1::uuid::text || '/order'", run1).await, 1);
+    // The order accepted is not the business done: the run waits for the delivery (FLC-CAP-006).
+    assert_eq!(status(&k, admin.tenant, run1).await, "running", "accepted, and waiting for the delivery");
     k.update(&requester, "Order", order1, obj(json!({"status": "Delivered"})), None).await.unwrap();
     d.settle().await;
     assert_eq!(status(&k, admin.tenant, run1).await, "completed");
@@ -1062,4 +1071,137 @@ async fn scenario() {
     let runs: i64 = sqlx::query_scalar("select count(*) from logic_run where trigger_event = $1").bind(created.id).fetch_one(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
     assert_eq!(runs, 1, "the replica started the run, under an activation it had not heard of");
+
+    // The simulator decides as the runtime does (FLC-UI-007): the same boundary fixtures, run for real and simulated
+    // with what the real run read standing in, reach the same decision, and the simulation labels the stand-in.
+    for (reference, total, expected) in [("EDGE-1", "1000", "proceed"), ("EDGE-2", "1000.01", "review")] {
+        let (_, run) = request(&k, &mut d, &requester, reference, total).await;
+        let real = d.runs[&run].1.clone();
+        assert_eq!(real.outputs["decide"]["outcome"], expected, "{reference}: {:?}", real.outputs);
+        let scenario = json!({"process": "approve_request", "trigger": real.trigger, "requester": real.requester, "start": "2026-11-10T09:00:00Z",
+            "results": {"snapshot": {"result": "done", "output": real.outputs["snapshot"]}}});
+        let sim = k.simulate_solution(&admin, None, Some(release3), scenario).await.unwrap();
+        assert_eq!(sim["simulation"]["run"]["outputs"]["decide"], real.outputs["decide"], "{reference}: {sim}");
+        let entries = sim["simulation"]["entries"].as_array().unwrap();
+        assert!(entries.iter().any(|e| e["activation"] == "snapshot" && e["source"] == "stand_in"), "the stand-in is labelled: {sim}");
+    }
+
+    // A capability's version replaced while a run waits (FLC-CAP-004): the run neither adopts the new code nor fails.
+    // Its step waits and administrators are told why; with the version it was reviewed against back, it goes on, once.
+    let (r15, run15) = request(&k, &mut d, &requester, "R-15", "5000").await;
+    let (task15, digest15) = task_of(&k, admin.tenant, run15, "approve").await;
+    let original = k.registry.catalog();
+    let mut packages: Vec<_> = original.packages().cloned().collect();
+    packages.iter_mut().find(|p| p.manifest.package == "procs").expect("procs").manifest.version = "1.1.0".into();
+    k.registry.set_catalog(Arc::new(Catalog::from_packages(packages).unwrap()));
+    k.decide_logic_task(&reviewer, task15, true, &digest15, &json!({}), "").await.unwrap();
+    d.settle().await;
+    assert_eq!(scalar::<i64>(&k, admin.tenant, "select count(*) from e_order where request = $1", r15).await, 0, "the new version is not adopted");
+    assert_eq!(status(&k, admin.tenant, run15).await, "running", "waiting, not failed");
+    let why: Value =
+        scalar(&k, admin.tenant, "select detail from logic_task where run_id = $1 and activation = 'order#unavailable' and status = 'open'", run15).await;
+    assert!(why["why"].as_str().unwrap().contains("bound to version 1.0.0 of procs.order.create"), "{why}");
+    k.registry.set_catalog(original);
+    d.retry().await;
+    d.settle().await;
+    assert_eq!(scalar::<i64>(&k, admin.tenant, "select count(*) from e_order where request = $1", r15).await, 1, "on its own version again: done once");
+
+    // A step whose answer is lost after it ran (FLC-UI-008): the run stops for a person with the outcome unknown. The
+    // console looks the effect up by its receipt and keeps what it found on the item, so another replica and a page
+    // read again show the same; resumed, the step repeats under its key and the receipt answers it: one order.
+    let mut resumable: Value = serde_json::from_str(&moved_to.to_string()).unwrap();
+    resumable["version"] = json!("1.5.0");
+    // Resumable only where everything the order reads has surely run: a step of its own after the order.
+    resumable["processes"][0]["nodes"][3]["on_unknown"] = json!("lost");
+    resumable["processes"][0]["nodes"].as_array_mut().unwrap().push(json!({"type": "suspend", "id": "lost", "label": "Outcome unknown",
+        "reason": "Find out whether the order was made before anything more is done.", "resume_to": "order"}));
+    let saved4 = k.save_release(&admin, &resumable.to_string()).await.unwrap();
+    let release4: Uuid = saved4["id"].as_str().unwrap().parse().unwrap();
+    k.review_release_consenting(&admin2, release4, saved4["artifact_digest"].as_str().unwrap(), &[], true, "").await.unwrap();
+    let g_requests: i64 =
+        scalar(&k, admin.tenant, "select generation from logic_activation where tenant_id = $1 and solution = 'acme.requests'", admin.tenant).await;
+    k.activate_release(&admin, release4, Some(g_requests)).await.unwrap();
+    d.lose_answers = vec!["order".into()];
+    let (r16, run16) = request(&k, &mut d, &requester, "R-16", "5000").await;
+    let (task16, digest16) = task_of(&k, admin.tenant, run16, "approve").await;
+    k.decide_logic_task(&reviewer, task16, true, &digest16, &json!({}), "").await.unwrap();
+    d.settle().await;
+    d.lose_answers.clear();
+    assert_eq!(status(&k, admin.tenant, run16).await, "needs_attention");
+    assert_eq!(scalar::<i64>(&k, admin.tenant, "select count(*) from e_order where request = $1", r16).await, 1, "it ran; only its answer was lost");
+    let recovery: Uuid = scalar(&k, admin.tenant, "select id from logic_task where run_id = $1 and kind = 'recovery' and status = 'open'", run16).await;
+    assert_eq!(code(&k.look_up_logic_effects(&reviewer, recovery).await.unwrap_err()), "forbidden");
+    let found = k.look_up_logic_effects(&admin, recovery).await.unwrap();
+    let first = &found["effects"][0];
+    assert_eq!(
+        (first["activation"].as_str(), first["on_record"].as_bool(), first["capability"].as_str()),
+        (Some("order"), Some(true), Some("procs.order.create")),
+        "{found}"
+    );
+    let kept: Value = scalar(&replica, admin.tenant, "select detail from logic_task where id = $1", recovery).await;
+    assert_eq!(kept["lookup"], found, "another replica reads the evidence the console found");
+    let elsewhere = replica.load_ctx(admin.tenant, admin.user, None, "it".into()).await.unwrap();
+    assert_eq!(replica.logic_run(&elsewhere, run16).await.unwrap(), k.logic_run(&admin, run16).await.unwrap(), "the same run on another replica");
+    k.recover_logic_task(&admin, recovery, true, "looked up: on record, so resumed").await.unwrap();
+    d.settle().await;
+    assert_eq!(scalar::<i64>(&k, admin.tenant, "select count(*) from e_order where request = $1", r16).await, 1, "the receipt answered: nothing twice");
+    assert!(d.runs[&run16].1.outputs["order"].get("unknown").is_none(), "its outcome is known now: {:?}", d.runs[&run16].1.outputs);
+
+    // A run no person's act started acts as its solution's own account (FLC-CAP-005), holding what its release was
+    // reviewed to use and never its activator's rights: offboarding the administrator who activated it changes
+    // nothing, the account cannot use what its release does not, and it stops with the solution.
+    let admin3 = user(&k, &admin, "admin3@acme.test", &[], true).await;
+    let stamped = json!({
+        "schema_version": "ferrum.solution/1", "kind": "Solution", "id": "acme.stamped", "version": "1.0.0", "label": "Orders stamped",
+        "requires": [{"id": "procs.order.update", "version": "1.0.0"}],
+        "processes": [{"id": "stamp", "label": "Stamp an order", "trigger": {"event": "procs.order.created", "business_key": "trigger.id"},
+            "entry": "stamp", "max_steps": 5, "nodes": [
+                {"type": "action", "id": "stamp", "label": "Stamp it", "capability": {"id": "procs.order.update", "version": "1.0.0"},
+                 "input": {"id": "trigger.id", "values.reference": "trigger.reference", "values.status": "\"Stamped\""}, "next": "stamped", "on_error": "stopped", "on_unknown": "stopped"},
+                {"type": "end", "id": "stamped", "label": "Stamped", "outcome": "completed"},
+                {"type": "end", "id": "stopped", "label": "Stopped", "outcome": "refused"}]}]
+    });
+    let kept = k.save_release(&admin, &stamped.to_string()).await.unwrap();
+    let stamped_release: Uuid = kept["id"].as_str().unwrap().parse().unwrap();
+    let growth: Vec<String> = k.logic_release_review(&admin2, stamped_release).await.unwrap()["diff"]["privilege_growth"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    k.review_release_consenting(&admin2, stamped_release, kept["artifact_digest"].as_str().unwrap(), &growth, true, "").await.unwrap();
+    k.activate_release(&admin3, stamped_release, None).await.unwrap();
+    k.set_user_active(&admin, admin3.user, false).await.unwrap();
+    let platform = Ctx::system(admin.tenant, k.registry.schema(admin.tenant).await.unwrap());
+    let order: Uuid = k.insert(&platform, "Order", obj(json!({"reference": "STAMP-1"}))).await.unwrap()["id"].as_str().unwrap().parse().unwrap();
+    d.settle().await;
+    let stamp_run: Uuid = scalar(&k, admin.tenant, "select id from logic_run where solution = 'acme.stamped' and business_key = $1::uuid::text", order).await;
+    assert!(scalar::<Option<Uuid>>(&k, admin.tenant, "select requester from logic_run where id = $1", stamp_run).await.is_none(), "nobody's act");
+    assert_eq!(scalar::<Option<String>>(&k, admin.tenant, "select status from e_order where id = $1", order).await.as_deref(), Some("Stamped"));
+    let actor: Uuid = scalar(&k, admin.tenant, "select actor from logic_effect where effect_key = $1::uuid::text || '/stamp'", stamp_run).await;
+    assert_eq!(scalar::<String>(&k, admin.tenant, "select email from app_user where id = $1", actor).await, "solution.acme.stamped@services.ferrum.invalid");
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    let rights: Vec<(String, bool, bool, bool, bool)> = sqlx::query_as(
+        "select entity, can_read, can_write, can_create, can_delete from role_permission where tenant_id = $1 and role = 'solution:acme.stamped'",
+    )
+    .bind(admin.tenant)
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(rights, vec![("Order".to_string(), false, true, false, false)], "exactly what its release was reviewed to use");
+    let account = k.load_ctx(admin.tenant, actor, None, "it".into()).await.unwrap();
+    assert!(!account.is_admin, "never an administrator");
+    let outside = ferrum_kernel::capability::Invocation::new("procs.request.read", json!({"id": r16}));
+    assert_eq!(code(&k.invoke(&account, outside).await.unwrap_err()), "forbidden", "nothing its release does not use");
+    let g_stamped: i64 =
+        scalar(&k, admin.tenant, "select generation from logic_activation where tenant_id = $1 and solution = 'acme.stamped'", admin.tenant).await;
+    k.deactivate_solution(&admin, "acme.stamped", g_stamped).await.unwrap();
+    assert!(!scalar::<bool>(&k, admin.tenant, "select is_active from app_user where id = $1", actor).await, "it stops with the solution");
+
+    // An old event delivered again after its receipt has expired (FLC-OPS-006): the run it started is found by its
+    // business key, and nothing starts again.
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    sqlx::query("delete from event_receipt where tenant_id = $1 and event_id = $2").bind(admin.tenant).bind(ev.id).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    k.accept_event(&ev).await.unwrap();
+    assert_eq!(scalar::<i64>(&k, admin.tenant, "select count(*) from logic_run where business_key = $1::uuid::text", r1).await, 1, "no second run");
 }

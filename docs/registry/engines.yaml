@@ -1,0 +1,77 @@
+# The engines, servers and providers a deployment plan may run beside Ferrum (FLC-BASE-006). Every image a file in
+# deploy/ names must match one approved here, its licence read and its terms known; `scripts/licenses.py check`
+# fails on any other, so an engine nobody approved does not reach a deployment. Adding one means reading its
+# licence and terms, saying where the decision to run it was taken, and adding it here in the same change.
+#
+#   image:       the image's repository, without tag or digest
+#   license:     SPDX expression, as the project declares it (scripts/licenses.py must accept it)
+#   read:        where the licence was read
+#   terms:       anything beyond the licence that limits how it runs
+#   decided_in:  where running it was decided
+engines:
+  - image: ferrum
+    name: Ferrum (the image kustomize builds, deploy/k8s)
+    license: AGPL-3.0-or-later
+    read: LICENSE
+    terms: Ours
+    decided_in: README.md
+  - image: ghcr.io/cbferrum/ferrum
+    name: Ferrum
+    license: AGPL-3.0-or-later
+    read: LICENSE
+    terms: Ours
+    decided_in: README.md
+  - image: ghcr.io/cbferrum/ferrum-editors
+    name: Ferrum editors
+    license: AGPL-3.0-or-later
+    read: LICENSE (built from deploy/editors in this repository)
+    terms: Ours
+    decided_in: docs/operations.md
+  - image: postgres
+    name: PostgreSQL
+    license: PostgreSQL
+    read: postgres/postgres COPYRIGHT (the PostgreSQL License)
+    terms: None beyond the licence
+    decided_in: docs/plan/architecture.md
+  - image: temporalio/server
+    name: Temporal server (Full Process profile)
+    license: MIT
+    read: temporalio/temporal LICENSE; docs/references/logic.md
+    terms: None beyond the licence; run unchanged at the version qualified in docs/logic/decisions.md (L-01)
+    decided_in: docs/logic/decisions.md (L-01)
+  - image: temporalio/admin-tools
+    name: Temporal admin tools (schema setup)
+    license: MIT
+    read: temporalio/temporal LICENSE; docs/references/logic.md
+    terms: None beyond the licence
+    decided_in: docs/logic/decisions.md (L-01)
+  - image: gotenberg/gotenberg
+    name: Gotenberg (PDF renderer)
+    license: MIT
+    read: gotenberg/gotenberg LICENSE
+    terms: None beyond the licence
+    decided_in: docs/limits.md
+  - image: livekit/livekit-server
+    name: LiveKit server (meetings)
+    license: Apache-2.0
+    read: livekit/livekit LICENSE; docs/references/comms.md
+    terms: LiveKit's marks are not ours to ship
+    decided_in: docs/references/comms.md
+  - image: stalwartlabs/stalwart
+    name: Stalwart (mail)
+    license: AGPL-3.0-only OR LicenseRef-SEL
+    read: docs/references/comms.md (per-file SPDX headers)
+    terms: Run unchanged under the AGPL alternative; features under the Stalwart Enterprise License are not used
+    decided_in: docs/plan/spike-s2-stalwart.md
+  - image: collabora/code
+    name: Collabora Online, development edition (office)
+    license: MPL-2.0
+    read: docs/references/office-drive-docs.md
+    terms: The CODE image is Collabora's development edition; production use of Collabora's images is on their terms
+    decided_in: docs/plan/platform.md
+  - image: motoserver/moto
+    name: Moto (an S3 stand-in for test clusters)
+    license: Apache-2.0
+    read: getmoto/moto LICENSE
+    terms: "Test clusters only (deploy/kind): it stands in for object storage and is never part of a production plan"
+    decided_in: docs/capabilities.md (FERRUM-OPS-006)

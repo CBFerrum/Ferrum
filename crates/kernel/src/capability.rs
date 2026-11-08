@@ -82,10 +82,18 @@ fn version_of(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> String {
 
 /// Whether the caller holds a capability's permissions.
 pub fn allowed(ctx: &Ctx, cap: &Capability) -> bool {
+    allowed_as(ctx, cap, false)
+}
+
+/// The same, for a run acting as its solution's own account when `granted`: an administrator's capability
+/// (mail) is then allowed because a second administrator reviewed the release with it in its lock, never
+/// because the account is an administrator (FLC-CAP-005). Every other permission still comes from the
+/// account's role.
+fn allowed_as(ctx: &Ctx, cap: &Capability, granted: bool) -> bool {
     cap.permissions.iter().all(|p| match p.split_once(':') {
         Some(("role", role)) => ctx.is_admin || ctx.has_role(role),
         Some((entity, action)) => Action::parse(action).is_some_and(|a| ctx.perms.access(entity, a) != Access::None),
-        None => p == "admin" && ctx.is_admin,
+        None => p == "admin" && (ctx.is_admin || granted),
     })
 }
 
@@ -404,6 +412,11 @@ impl Kernel {
 
     /// One capability, if this caller may use it. Only its own entity's are worked out.
     pub fn capability(&self, ctx: &Ctx, id: &str) -> Result<Capability> {
+        self.capability_as(ctx, id, false)
+    }
+
+    /// One capability for a run acting as its solution's own account (`granted`, see [`allowed_as`]).
+    pub(crate) fn capability_as(&self, ctx: &Ctx, id: &str, granted: bool) -> Result<Capability> {
         let candidates = if id.starts_with("ferrum.") {
             platform_capabilities()
         } else {
@@ -416,7 +429,7 @@ impl Kernel {
         };
         let found = candidates.into_iter().find(|c| c.id == id).and_then(|c| c.sealed().ok());
         match found {
-            Some(c) if allowed(ctx, &c) => Ok(c),
+            Some(c) if allowed_as(ctx, &c, granted) => Ok(c),
             Some(c) => Err(refused(Code::PermissionDenied, format!("you may not use {}: it needs {}", c.id, c.permissions.join(", ")))),
             None => Err(refused(Code::CapabilityUnavailable, format!("{id} is not installed in this workspace"))),
         }
@@ -468,14 +481,19 @@ impl Kernel {
 
     /// Runs a capability in its own transaction, again on a serialization failure under the same key.
     pub async fn invoke(&self, ctx: &Ctx, inv: Invocation) -> Result<Receipt> {
-        let cap = self.capability(ctx, &inv.capability)?;
+        self.invoke_as(ctx, inv, false).await
+    }
+
+    /// The same for a run, `granted` when it acts as its solution's own account (see [`allowed_as`]).
+    pub(crate) async fn invoke_as(&self, ctx: &Ctx, inv: Invocation, granted: bool) -> Result<Receipt> {
+        let cap = self.capability_as(ctx, &inv.capability, granted)?;
         with_retry(|| async {
             let mut tx = self.db.tenant_tx(ctx.tenant).await?;
             if !cap.effect.changes() {
                 // A read promises not to write; the database holds it to that.
                 sqlx::query("set transaction read only").execute(&mut *tx).await?;
             }
-            let out = self.invoke_tx(ctx, &mut tx, &inv).await?;
+            let out = self.invoke_tx_as(ctx, &mut tx, &inv, granted).await?;
             tx.commit().await?;
             Ok(out)
         })
@@ -484,7 +502,11 @@ impl Kernel {
 
     /// Runs a capability in the caller's transaction, with its receipt.
     pub async fn invoke_tx(&self, ctx: &Ctx, tx: &mut Tx, inv: &Invocation) -> Result<Receipt> {
-        let cap = self.capability(ctx, &inv.capability)?;
+        self.invoke_tx_as(ctx, tx, inv, false).await
+    }
+
+    async fn invoke_tx_as(&self, ctx: &Ctx, tx: &mut Tx, inv: &Invocation, granted: bool) -> Result<Receipt> {
+        let cap = self.capability_as(ctx, &inv.capability, granted)?;
         if let Some(v) = &inv.version
             && v != &cap.version
         {

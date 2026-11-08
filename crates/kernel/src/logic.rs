@@ -192,6 +192,98 @@ pub(crate) async fn active_releases(tx: &mut crate::db::Tx, tenant: Uuid, except
         .collect()
 }
 
+/// The account a solution's runs act as when no person's act started them (an event of the platform's, a site's or
+/// a schedule's). Each solution has its own, holding exactly the rights of the capabilities its active release was
+/// reviewed with, never its activator's: offboarding whoever activated it changes nothing, and nothing beyond the
+/// reviewed closure is reachable (FLC-CAP-005).
+pub(crate) fn solution_account(solution: &str) -> String {
+    format!("solution.{solution}{}", crate::service::SERVICE_DOMAIN)
+}
+
+/// Gives a solution's own account the closure `release` was reviewed with, in the activation's transaction, so
+/// what its runs may do changes only with what runs. `ctx` sees every capability installed (the activating
+/// administrator, or the system for an account made later).
+pub(crate) async fn grant_solution(k: &Kernel, tx: &mut crate::db::Tx, ctx: &Ctx, solution: &str, release: &Release) -> Result<Uuid> {
+    let role = format!("solution:{solution}");
+    let mut rights: BTreeMap<String, ferrum_meta::PermissionDef> = BTreeMap::new();
+    let mut roles = vec![role.clone()];
+    for locked in &release.lock {
+        // One no longer installed grants nothing: its step waits for it (FLC-OPS-007).
+        let Ok(cap) = k.capability(ctx, &locked.id) else { continue };
+        for p in &cap.permissions {
+            match p.split_once(':') {
+                // A transition only that role may take: the account holds the role, as the review saw.
+                Some(("role", r)) => roles.push(r.to_string()),
+                Some((entity, action)) => {
+                    let d = rights.entry(entity.to_string()).or_insert_with(|| ferrum_meta::PermissionDef { entity: entity.to_string(), ..Default::default() });
+                    match action {
+                        "read" => d.read = true,
+                        "write" => d.write = true,
+                        "create" => d.create = true,
+                        "delete" => d.delete = true,
+                        "submit" => d.submit = true,
+                        "cancel" => d.cancel = true,
+                        _ => {}
+                    }
+                }
+                // An administrator's (mail): allowed at each step by this review, never through a role.
+                None => {}
+            }
+        }
+    }
+    roles.sort();
+    roles.dedup();
+    for r in &roles {
+        sqlx::query("insert into role (tenant_id, name) values ($1, $2) on conflict do nothing").bind(ctx.tenant).bind(r).execute(&mut **tx).await?;
+    }
+    let user: Uuid = sqlx::query_scalar(
+        "insert into app_user (tenant_id, id, email, full_name, kind) values ($1, $2, $3, $4, 'service') \
+         on conflict (tenant_id, email) do update set is_active = true, kind = 'service', full_name = excluded.full_name returning id",
+    )
+    .bind(ctx.tenant)
+    .bind(Uuid::now_v7())
+    .bind(solution_account(solution))
+    .bind(format!("Solution: {solution}"))
+    .fetch_one(&mut **tx)
+    .await?;
+    sqlx::query("delete from user_role where tenant_id = $1 and user_id = $2 and role <> all($3)")
+        .bind(ctx.tenant)
+        .bind(user)
+        .bind(&roles)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("insert into user_role (tenant_id, user_id, role) select $1, $2, unnest($3::text[]) on conflict do nothing")
+        .bind(ctx.tenant)
+        .bind(user)
+        .bind(&roles)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("delete from role_permission where tenant_id = $1 and role = $2").bind(ctx.tenant).bind(&role).execute(&mut **tx).await?;
+    for d in rights.values() {
+        sqlx::query(
+            "insert into role_permission (tenant_id, role, entity, can_read, can_write, can_create, can_delete, can_submit, can_cancel, \
+             can_export, can_import, if_owner, read_groups, write_groups, match_rule, rule_key) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, false, false, false, $10, $11, null, $12)",
+        )
+        .bind(ctx.tenant)
+        .bind(&role)
+        .bind(&d.entity)
+        .bind(d.read)
+        .bind(d.write)
+        .bind(d.create)
+        .bind(d.delete)
+        .bind(d.submit)
+        .bind(d.cancel)
+        .bind(&d.read_groups)
+        .bind(&d.write_groups)
+        .bind(d.condition_key())
+        .execute(&mut **tx)
+        .await?;
+    }
+    crate::auth::notify_users(tx, ctx.tenant, None).await?;
+    Ok(user)
+}
+
 impl Kernel {
     /// What this installation runs releases under (docs/logic/decisions.md L-06): Full Process when a durable
     /// process runtime is configured, otherwise Core (rules and decisions; a process is refused).
@@ -492,6 +584,7 @@ impl Kernel {
                 .fetch_one(&mut *tx)
                 .await?;
         let replaced = replaced.filter(|(id, _)| *id != release).map(|(id, version)| json!({"release": id, "version": version}));
+        let account = grant_solution(self, &mut tx, ctx, &r.solution, &stored).await?;
         crate::audit::record(
             &mut tx,
             ctx,
@@ -500,13 +593,14 @@ impl Kernel {
             "activate",
             None,
             json!({"solution": r.solution, "version": r.version, "artifact_digest": r.digest, "generation": generation, "replaced": replaced,
-                   "handed_over": handed_over}),
+                   "handed_over": handed_over, "account": account}),
         )
         .await?;
         // Every replica takes up the workspace's rules afresh: this one now, the others when told.
         Registry::bump_version(&mut tx, ctx.tenant).await?;
         tx.commit().await?;
         self.registry.invalidate(ctx.tenant);
+        self.invalidate_tenant_users(ctx.tenant);
         let open = match elsewhere {
             0 => "No run started under another release is still open".to_string(),
             1 => "The one run still open under another release goes on under it".to_string(),
@@ -531,10 +625,18 @@ impl Kernel {
                 .fetch_optional(&mut *tx)
                 .await?;
         let Some(release) = release else { return Err(Error::Conflict(format!("what runs for {solution} changed meanwhile: look again"))) };
+        // Its own account stops with it; activated again, it is given that release's closure.
+        sqlx::query("update app_user set is_active = false where tenant_id = $1 and email = $2")
+            .bind(ctx.tenant)
+            .bind(solution_account(solution))
+            .execute(&mut *tx)
+            .await?;
+        crate::auth::notify_users(&mut tx, ctx.tenant, None).await?;
         crate::audit::record(&mut tx, ctx, "LogicRelease", release, "deactivate", None, json!({"solution": solution, "generation": expected})).await?;
         Registry::bump_version(&mut tx, ctx.tenant).await?;
         tx.commit().await?;
         self.registry.invalidate(ctx.tenant);
+        self.invalidate_tenant_users(ctx.tenant);
         Ok(())
     }
 

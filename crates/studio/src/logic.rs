@@ -33,6 +33,7 @@
 //! | `POST /tasks/{id}/done` | `{task, values?}`: one of a case's tasks |
 //! | `POST /tasks/{id}/close` | closes a case |
 //! | `POST /tasks/{id}/recover` | `{resume, reason}` |
+//! | `POST /tasks/{id}/look-up` | → whether each effect that came back unknown is on record here, kept on the item |
 //! | `POST /tasks/{id}/acknowledge` | `{reason}` |
 //! | `GET /calendars`, `PUT /calendars/{name}` | `{zone, weekends, holidays}` → `{revision}` |
 
@@ -215,6 +216,7 @@ async fn route(k: &Kernel, ctx: &Ctx, req: &SiteRequest, m: &str, path: &[&str])
             k.recover_logic_task(ctx, id(t, "task")?, resume, text(&b, "reason")).await?;
             ok(json!({}))
         }
+        ("POST", ["tasks", t, "look-up"]) => ok(k.look_up_logic_effects(ctx, id(t, "task")?).await?),
         ("POST", ["tasks", t, "acknowledge"]) => {
             k.acknowledge_logic_attention(ctx, id(t, "task")?, text(&body(req)?, "reason")).await?;
             ok(json!({}))
