@@ -268,6 +268,51 @@ mod tests {
         assert!(!committed.load(Ordering::SeqCst), "and what it was doing never completes");
     }
 
+    /// Answers at once.
+    struct Prompt;
+
+    #[async_trait]
+    impl HostApi for Prompt {
+        async fn call(&mut self, _: &str, _: Value) -> Result<Value, Value> {
+            Ok(Value::Null)
+        }
+
+        fn deadline(&self) -> Duration {
+            Duration::from_secs(5)
+        }
+    }
+
+    /// AT-SEC-004: an endless guest and a guest held in a slow host call, side by side, each stop at their own
+    /// budget, and a guest that behaves, started meanwhile, finishes without waiting for either.
+    #[tokio::test]
+    async fn an_endless_guest_beside_a_slow_host_call_leaves_room_for_others() {
+        let engine = engine();
+        let spin = guest(&engine, "(loop $l (br $l)) (i64.const 0)");
+        let calls = guest(&engine, "(call $host (i32.const 16) (i32.const 13))");
+        let quick = guest(&engine, "(i64.const 0)");
+        let mut slow = stuck(Duration::from_millis(300));
+        let (dropped, committed) = (slow.dropped.clone(), slow.committed.clone());
+        let started = std::time::Instant::now();
+        let (endless, held, (fine, took)) = tokio::join!(
+            async { run(&engine, &spin, u64::MAX / 2, 8, vec![], &mut stuck(Duration::from_millis(300))).await },
+            async { run(&engine, &calls, 1_000_000, 8, vec![], &mut slow).await },
+            async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let at = std::time::Instant::now();
+                let out = run(&engine, &quick, 1_000_000, 8, vec![], &mut Prompt).await;
+                (out, at.elapsed())
+            },
+        );
+        assert!(endless.as_ref().is_err_and(|e| e.contains("time limit")), "{endless:?}");
+        assert!(held.as_ref().is_err_and(|e| e.contains("time limit")), "{held:?}");
+        assert!(dropped.load(Ordering::SeqCst), "the slow call is dropped at its deadline");
+        assert!(fine.is_ok(), "{fine:?}");
+        assert!(took < Duration::from_millis(250), "the guest that behaves waited for nobody: {took:?}");
+        assert!(started.elapsed() < Duration::from_secs(3), "both stopped by their budgets");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!committed.load(Ordering::SeqCst), "and the slow call never completes");
+    }
+
     #[tokio::test]
     async fn fuel_still_stops_a_guest_inside_its_deadline() {
         let engine = engine();
