@@ -129,9 +129,11 @@ fn field_schema(ctx: &Ctx, f: &FieldDef, depth: usize) -> Value {
         FieldType::Json => json!({"type": ["object", "array"]}),
         FieldType::Secret => json!({"type": ["string", "boolean", "null"], "writeOnly": true,
             "description": "Write-only secret: send text to set it, null to remove it; reads show true when one is set"}),
-        FieldType::Link => {
-            json!({"type": "string", "format": "uuid", "description": format!("Id of a {} record", f.to.as_deref().unwrap_or("linked"))})
-        }
+        FieldType::Link => match f.to.as_deref() {
+            // The kind it links to, for a checker as well as a reader (FLC-COMP-002).
+            Some(to) => json!({"type": "string", "format": "uuid", "x-ferrum-link": to, "description": format!("Id of a {to} record")}),
+            None => json!({"type": "string", "format": "uuid", "description": "Id of a linked record"}),
+        },
         FieldType::Table => match f.of.as_deref().and_then(|c| ctx.schema.entity(c)) {
             Some(child) if depth < 2 => json!({"type": "array", "items": entity_schema(ctx, child, depth + 1)}),
             _ => json!({"type": "array", "items": {"type": "object"}}),

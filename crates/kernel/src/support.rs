@@ -312,7 +312,28 @@ impl Kernel {
         let meters: Vec<(String, i64)> = sqlx::query_as(crate::account::METERS).bind(ctx.tenant).fetch_all(&mut *tx).await?;
         let meter = |m: &str| meters.iter().find(|(name, _)| name == m).map_or(0, |(_, q)| *q);
         let (mut failures, mut events): (Vec<Value>, Vec<Value>) = (Vec::new(), Vec::new());
+        // Runs stuck for a person, as counts for health and, from diagnostics up, which ones and at what step,
+        // never what they carry: no trigger, material, state or evidence (FLC-SEC-007).
+        let stuck: i64 = sqlx::query_scalar("select count(*) from logic_run where tenant_id = $1 and status = 'needs_attention'")
+            .bind(ctx.tenant)
+            .fetch_one(&mut *tx)
+            .await?;
+        let (mut runs, mut items): (Vec<Value>, Vec<Value>) = (Vec::new(), Vec::new());
         if level != "health" {
+            runs = sqlx::query_scalar(
+                "select jsonb_build_object('run', id, 'solution', solution, 'process', process, 'status', status, 'since', updated_at) \
+                 from logic_run where tenant_id = $1 and status = 'needs_attention' order by updated_at desc limit 50",
+            )
+            .bind(ctx.tenant)
+            .fetch_all(&mut *tx)
+            .await?;
+            items = sqlx::query_scalar(
+                "select jsonb_build_object('run', run_id, 'kind', kind, 'step', activation, 'opened_at', opened_at) \
+                 from logic_task where tenant_id = $1 and status = 'open' and kind in ('recovery', 'attention') order by opened_at desc limit 50",
+            )
+            .bind(ctx.tenant)
+            .fetch_all(&mut *tx)
+            .await?;
             failures = sqlx::query_scalar("select jsonb_build_object('kind', kind, 'attempts', attempts, 'error', last_error, 'at', finished_at) from job where tenant_id = $1 and status = 'failed' order by finished_at desc limit 50").bind(ctx.tenant).fetch_all(&mut *tx).await?;
             events = sqlx::query_scalar("select jsonb_build_object('topic', topic, 'attempts', attempts, 'error', last_error, 'at', created_at) from outbox where tenant_id = $1 and dead order by id desc limit 50").bind(ctx.tenant).fetch_all(&mut *tx).await?;
         }
@@ -341,6 +362,7 @@ impl Kernel {
             "usage": {"people": meter("people"), "storage_bytes": meter("storage_bytes")}, "apps": apps,
             "customization_warnings": if level == "health" { json!(warnings.len()) } else { json!(warnings) },
             "failed_jobs": failures, "dead_events": events,
+            "runs": {"needing_attention": stuck, "stuck": runs, "open_items": items},
         }))
     }
 }

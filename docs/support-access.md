@@ -22,7 +22,9 @@ one, reads included. Administrators are told when a grant is made and when it is
 `GET /api/support/report` is what `health` and `diagnostics` keys reach. At every level the report also
 counts what the workspace uses: its active people and the bytes its files take (`usage`). An operator
 charges for usage beyond a plan from these. They are counts only, never who the people are or what the
-files hold.
+files hold. It also counts the runs waiting for a person; from `diagnostics` up it lists which runs and
+which of their steps are open, never what the runs carry (no trigger, material, state or evidence), and a
+support key opens no run.
 
 The report also says how each installed app's own part is doing (`apps`), where the app tells:
 IoT Edge, for instance, how many of its gateways have gone silent. An app registers that with

@@ -26,6 +26,7 @@ SCIM_UNIT = ("-p", "ferrum-kernel", "--lib", "scim::tests")
 RULES = ("-p", "ferrum-kernel", "--test", "rules_it")
 SECRETS = ("-p", "ferrum-kernel", "--test", "secret_it")
 PRIVACY = ("-p", "ferrum-kernel", "--test", "privacy_it")
+META_EXPR = ("-p", "ferrum-meta", "--lib", "expr")
 JOBS = ("-p", "ferrum-kernel", "--test", "jobs_it")
 HANDOVER = ("-p", "ferrum-kernel", "--test", "handover_it")
 KERNEL = ("-p", "ferrum-kernel", "--test", "kernel_it")
@@ -107,6 +108,18 @@ MUTANTS = [
     ("administrator-decides", "crates/kernel/src/process.rs", 'if !role.is_empty() && !ctx.roles.iter().any(|r| r == role) {', 'if !role.is_empty() && !ctx.roles.iter().any(|r| r == role) && !ctx.is_admin {', PROCESS_RECORDS),
     ("requester-closes-case", "crates/kernel/src/process.rs", 'if !ctx.roles.contains(&owner) || exclude.contains(&ctx.user) {', 'if !ctx.roles.contains(&owner) || exclude.is_empty() && exclude.contains(&ctx.user) {', PROCESS_RECORDS),
     ("delegation-goes-back", "crates/kernel/src/process.rs", 'if to == ctx.user || delegated.contains(&to) || exclude.contains(&to) {', 'if to == ctx.user || exclude.contains(&to) {', PROCESS_RECORDS),
+    # Batch 2 of closing the registry's open rows (docs/logic/evidence/closing-gaps.md).
+    ("older-cel-reads-the-clock", "crates/meta/src/expr.rs", "bind(&mut ctx, key, scope.user.get(key).unwrap_or(&Value::Null))?;", 'bind(&mut ctx, key, scope.user.get(key).unwrap_or(&Value::String(chrono::Utc::now().to_rfc3339())))?;', META_EXPR),
+    ("rule-writes-the-apps-field", "crates/logic/src/compile.rs", "if !f.customer {", "if false && !f.customer {", LOGIC_UNIT),
+    ("deprecation-unsaid", "crates/logic/src/compile.rs", "if let Some(why) = &c.deprecated {", "if let Some(why) = c.deprecated.as_ref().filter(|_| false) {", LOGIC_UNIT),
+    ("erasure-misses-run-copies", "crates/kernel/src/privacy.rs", "let runs = crate::process::erase_run_copies(tx, ctx.tenant, entity, id, fields).await?;", "let runs = 0u64;", PROCESS_RECORDS),
+    ("report-brings-erased-back", "crates/kernel/src/process.rs", "if let Some((subject, fields)) = &erased {", "if let Some((subject, fields)) = erased.as_ref().filter(|_| false) {", PROCESS_RECORDS),
+    ("evidence-crosses-tasks", "crates/kernel/src/process.rs", "and entity = $3 and record_id = $4", "and entity = $3 and $4::uuid is not null", PROCESS_RECORDS),
+    ("evidence-for-anyone", "crates/kernel/src/process.rs", "let t = self.logic_task(ctx, task).await?;", "let t = self.logic_task(&Ctx::system(ctx.tenant, ctx.schema.clone()), task).await?;", PROCESS_RECORDS),
+    ("support-report-shows-payloads", "crates/kernel/src/support.rs", "'status', status, 'since', updated_at)", "'status', status, 'since', updated_at, 'trigger', trigger)", PROCESS_RECORDS),
+    ("dependents-overlooked", "crates/kernel/src/logic.rs", '.filter(|l| packages.iter().any(|p| l.id.starts_with(&format!("{p}."))))', '.filter(|l| packages.iter().any(|p| l.id.starts_with(&format!("{p}.x"))))', PROCESS_RECORDS),
+    ("removal-forgets-what-waits", "crates/kernel/src/apps.rs", 'json!({"packages": names, "waiting": waiting})', 'json!({"packages": names, "waiting": waiting.iter().take(0).collect::<Vec<_>>()})', PROCESS_RECORDS),
+    ("references-of-any-kind", "crates/logic/src/expr.rs", "(Ty::Ref(_), Ty::Text) | (Ty::Text, Ty::Ref(_)) => true,", "(Ty::Ref(_), _) | (_, Ty::Ref(_)) => true,", PROCESS_RECORDS),
     # Company-owned runs act as their solution's own account, with the reviewed closure only (FLC-CAP-005).
     ("company-run-acts-as-its-activator", "crates/kernel/src/process.rs", '"select id, is_active from app_user where tenant_id = $1 and email = $2"', """"select a.activated_by, true from logic_activation a where a.tenant_id = $1 and $2 like 'solution.' || a.solution || '@%'\"""", PROCESS_RECORDS),
     ("solution-account-holds-more", "crates/kernel/src/logic.rs", '"write" => d.write = true,', '"write" => { d.write = true; d.read = true; d.create = true }', PROCESS_RECORDS),

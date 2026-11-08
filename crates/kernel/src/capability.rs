@@ -97,8 +97,9 @@ fn allowed_as(ctx: &Ctx, cap: &Capability, granted: bool) -> bool {
     })
 }
 
-fn id_prop() -> Value {
-    json!({"type": "string", "format": "uuid", "description": "The record's id"})
+/// A record's id, naming its kind (FLC-COMP-002).
+fn id_prop(entity: &str) -> Value {
+    json!({"type": "string", "format": "uuid", "x-ferrum-link": entity, "description": "The record's id"})
 }
 
 fn version_prop() -> Value {
@@ -110,7 +111,10 @@ fn param_schema(ptype: &str, to: Option<&str>, options: &[String]) -> Value {
         "int" => json!({"type": "integer"}),
         "date" => json!({"type": "string", "format": "date"}),
         "select" => json!({"type": "string", "enum": options}),
-        "link" => json!({"type": "string", "format": "uuid", "description": format!("Id of a {} record", to.unwrap_or("linked"))}),
+        "link" => match to {
+            Some(to) => json!({"type": "string", "format": "uuid", "x-ferrum-link": to, "description": format!("Id of a {to} record")}),
+            None => json!({"type": "string", "format": "uuid", "description": "Id of a linked record"}),
+        },
         _ => json!({"type": "string"}),
     }
 }
@@ -159,6 +163,7 @@ fn capability(
         completion: completion.to_string(),
         compensate_with: None,
         limits: Limits::default(),
+        deprecated: None,
     }
 }
 
@@ -179,7 +184,7 @@ fn entity_capabilities(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> Vec<Capability
     let stored = {
         let mut s = record.clone();
         if let Some(props) = s.get_mut("properties").and_then(Value::as_object_mut) {
-            props.insert("id".into(), id_prop());
+            props.insert("id".into(), id_prop(name));
             props.insert("version".into(), json!({"type": "integer", "description": "The record's version"}));
             if ent.def.submittable {
                 props.insert("docstatus".into(), json!({"type": "integer", "description": "0 draft, 1 submitted, 2 cancelled"}));
@@ -189,7 +194,7 @@ fn entity_capabilities(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> Vec<Capability
     };
     let perm = |a: &str| format!("{name}:{a}");
     let by_id = |extra: &[(&str, Value)]| {
-        let mut props = Map::from_iter([("id".to_string(), id_prop())]);
+        let mut props = Map::from_iter([("id".to_string(), id_prop(name))]);
         props.extend(extra.iter().map(|(k, v)| (k.to_string(), v.clone())));
         object_schema(props, vec!["id".into()])
     };
@@ -306,6 +311,7 @@ fn entity_capabilities(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> Vec<Capability
         if let Some(i) = contract.idempotency {
             c.idempotency = i;
         }
+        c.deprecated = contract.deprecated.clone();
         if let Some(u) = contract.unknown_outcome {
             c.unknown_outcome = u;
         }

@@ -2,7 +2,9 @@
 //!
 //! Variables available to every expression: `doc`, `old` (previous version or null), `parent`
 //! (parent document for child rows, or null), `user` (`{id, email, roles, companies}`), `today`
-//! (`YYYY-MM-DD`, UTC) and `now` (RFC 3339). Dates are ISO strings, so `>=` compares them correctly.
+//! (`YYYY-MM-DD`), `now` (RFC 3339) and `time`. Time is a fact the caller supplies in `user` (the kernel: the
+//! workspace's local time, read once per evaluation), never read from a clock here: without it they are null
+//! (FLC-COMP-003). Dates are ISO strings, so `>=` compares them correctly.
 
 use cel::{Context, Program};
 use serde_json::Value;
@@ -79,13 +81,10 @@ impl Expr {
         bind(&mut ctx, "old", scope.old.unwrap_or(&Value::Null))?;
         bind(&mut ctx, "parent", scope.parent.unwrap_or(&Value::Null))?;
         bind(&mut ctx, "user", scope.user)?;
-        // "today" and "now" are local to the workspace: the kernel puts them in `user` (its time
-        // zone); without them (no workspace context) UTC is used.
-        let now = chrono::Utc::now();
-        let local = |key: &str| scope.user.get(key).and_then(Value::as_str).map(str::to_string);
-        ctx.add_variable_from_value("today".to_string(), local("today").unwrap_or_else(|| now.format("%Y-%m-%d").to_string()));
-        ctx.add_variable_from_value("now".to_string(), local("now").unwrap_or_else(|| now.to_rfc3339()));
-        ctx.add_variable_from_value("time".to_string(), local("time").unwrap_or_else(|| now.format("%H:%M:%S").to_string()));
+        // Time is the caller's fact, as the workspace sees it: never a clock read here (FLC-COMP-003).
+        for key in ["today", "now", "time"] {
+            bind(&mut ctx, key, scope.user.get(key).unwrap_or(&Value::Null))?;
+        }
         let out = self.program.execute(&ctx).map_err(|e| e.to_string())?;
         Ok(cel_to_json(&out))
     }
@@ -151,7 +150,18 @@ mod tests {
         let r = Expr::compile("'Accounts Manager' in user.roles").unwrap();
         assert!(r.eval_bool(&scope(&doc, &user)).unwrap());
         let t = Expr::compile("today.size() == 10").unwrap();
-        assert!(t.eval_bool(&scope(&doc, &user)).unwrap());
+        let dated = json!({"roles": ["Accounts Manager"], "today": "2026-11-09"});
+        assert!(t.eval_bool(&scope(&doc, &dated)).unwrap());
+    }
+
+    #[test]
+    fn time_is_supplied_never_read_from_a_clock() {
+        let doc = json!({"due_date": "2026-11-10"});
+        let late = Expr::compile("doc.due_date < today").unwrap();
+        assert!(late.eval_bool(&scope(&doc, &json!({"today": "2026-11-11"}))).unwrap());
+        assert!(!late.eval_bool(&scope(&doc, &json!({"today": "2026-11-09"}))).unwrap(), "the same input, the same answer");
+        let unsupplied = Expr::compile("today == null && now == null && time == null").unwrap();
+        assert!(unsupplied.eval_bool(&scope(&doc, &json!({}))).unwrap(), "without the caller's time there is none");
     }
 
     #[test]

@@ -48,6 +48,8 @@ pub enum Ty {
     Quantity(Option<String>),
     List(Box<Ty>),
     Record(BTreeMap<String, Ty>),
+    /// The id of a record of one kind (FLC-COMP-002): text where text is wanted, but never the id of another kind.
+    Ref(String),
     /// Untyped data (a JSON value whose shape is not declared): fields read from it are untyped too.
     #[default]
     Any,
@@ -60,6 +62,7 @@ impl fmt::Display for Ty {
             Ty::Int => f.write_str("whole number"),
             Ty::Decimal => f.write_str("decimal"),
             Ty::Text => f.write_str("text"),
+            Ty::Ref(entity) => write!(f, "a reference to a {entity}"),
             Ty::Date => f.write_str("date"),
             Ty::Instant => f.write_str("moment"),
             Ty::Money(Some(c)) => write!(f, "money in {c}"),
@@ -129,8 +132,8 @@ impl Val {
             (Ty::Int, Value::String(s)) => s.parse().map(Val::Int).unwrap_or_else(|_| unknown("not a whole number")),
             (Ty::Decimal, Value::Number(n)) => Decimal::from_str(&n.to_string()).map(Val::Dec).unwrap_or_else(|_| unknown("not a decimal")),
             (Ty::Decimal, Value::String(s)) => Decimal::from_str(s).map(Val::Dec).unwrap_or_else(|_| unknown("not a decimal")),
-            (Ty::Text, Value::String(s)) if s.len() <= MAX_TEXT => Val::Text(s.clone()),
-            (Ty::Text, Value::String(_)) => unknown("text too long"),
+            (Ty::Text | Ty::Ref(_), Value::String(s)) if s.len() <= MAX_TEXT => Val::Text(s.clone()),
+            (Ty::Text | Ty::Ref(_), Value::String(_)) => unknown("text too long"),
             (Ty::Date, Value::String(s)) => {
                 NaiveDate::parse_from_str(s.get(..10).unwrap_or(s), "%Y-%m-%d").map(Val::Date).unwrap_or_else(|_| unknown("not a date"))
             }
@@ -273,6 +276,8 @@ pub fn fits(have: &Ty, want: &Ty) -> bool {
         (Ty::Money(a), Ty::Money(b)) => a.is_none() || b.is_none() || a == b,
         (Ty::Quantity(a), Ty::Quantity(b)) => a.is_none() || b.is_none() || a == b,
         (Ty::List(a), Ty::List(b)) => fits(a, b),
+        // An id is text, and text may hold any id (checked when it runs); one kind's id is never another's.
+        (Ty::Ref(_), Ty::Text) | (Ty::Text, Ty::Ref(_)) => true,
         (a, b) => a == b,
     }
 }
@@ -291,6 +296,7 @@ fn unify(a: &Ty, b: &Ty) -> Option<Ty> {
             _ => Ty::Quantity(x.clone().or_else(|| y.clone())),
         },
         (a, b) if a == b => a.clone(),
+        (Ty::Ref(_), Ty::Ref(_)) | (Ty::Ref(_), Ty::Text) | (Ty::Text, Ty::Ref(_)) => Ty::Text,
         _ => return None,
     })
 }
@@ -515,7 +521,7 @@ fn call(name: &str, target: Option<&IdedExpr>, args: &[IdedExpr], env: &Env) -> 
         "size" => {
             arity(1)?;
             match arg(0)? {
-                Ty::Text | Ty::List(_) | Ty::Any => Ok(Ty::Int),
+                Ty::Text | Ty::Ref(_) | Ty::List(_) | Ty::Any => Ok(Ty::Int),
                 t => Err(bad(Code::TypeMismatch, format!("size counts a text or a list, not {t}"))),
             }
         }

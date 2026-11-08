@@ -826,7 +826,9 @@ request's reference as the reason and erase. Their details leave the records lis
 records' audit history (the events keep their place in the hash chain and record who redacted what,
 when and why), files attached to those records are deleted, and their login account is anonymized
 and closed, with its sessions, keys, notifications, preferences and devices. An administrator's
-account is not erased until it is no longer one. The same is available as `GET
+account is not erased until it is no longer one. What durable processes keep of the records erased (the
+event that started a run, the run's own record, the material shown) loses those fields too, and keeps them out
+when the run is reported again. The same is available as `GET
 /api/admin/personal-data` and `POST /api/admin/personal-data/erase`; packages and apps declare their
 entities with `personal_data` in their manifests.
 
