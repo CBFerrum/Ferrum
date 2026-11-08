@@ -3,6 +3,7 @@
 //!
 //! * [`canonical`]: one way to write an intent down, and its digest (L-03);
 //! * [`approval`]: what makes an approval count;
+//! * [`calendar`]: waits as elapsed time or business days, resolved to instants with what they came from;
 //! * [`capability`]: what a business capability promises: its effect, the rights it needs, how a repeat is
 //!   recognised and what "done" means (FLC-CAP-001);
 //! * [`compile`]: a solution's source in, an immutable release (or every fault, each with a pointer) out;
@@ -13,6 +14,7 @@
 //! * [`solution`]: a solution's source, read strictly (a key twice, an unknown key or excess depth refused).
 
 pub mod approval;
+pub mod calendar;
 pub mod canonical;
 pub mod capability;
 pub mod compile;

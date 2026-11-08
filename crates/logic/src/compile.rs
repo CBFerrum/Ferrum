@@ -18,7 +18,7 @@ use crate::capability::{Capability, Effect, Profile, UnknownOutcome, digestible}
 use crate::decision::{self, Outcome};
 use crate::expr::{self, Env, Facts, Ty, Val};
 use crate::refusal::{Code, Refusal};
-use crate::solution::{CapRef, EndOutcome, Node, Phase, Solution};
+use crate::solution::{CapRef, EndOutcome, Node, Phase, Process, Solution};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,10 +33,8 @@ const MAX_RULES: usize = 128;
 const MAX_DECISIONS: usize = 64;
 const MAX_WRITES: usize = 32;
 const MAX_STEPS: u32 = 100_000;
-/// A person's task waits at most a year (the package's bound).
-const MAX_TASK_WAIT: u64 = 31_536_000;
 /// Names an expression already has, which no step may take.
-const SCOPE_NAMES: &[&str] = &["trigger", "parameters", "doc", "old", "user", "today", "now", "true", "false", "null", "in", "has"];
+const SCOPE_NAMES: &[&str] = &["trigger", "parameters", "doc", "old", "user", "today", "now", "item", "lookups", "true", "false", "null", "in", "has"];
 
 /// A name an expression can refer to: lower_snake_case, at most 64 characters.
 fn name_ok(s: &str) -> bool {
@@ -83,6 +81,11 @@ pub trait Resolver {
     fn event(&self, id: &str) -> Option<Ty>;
     /// An entity's fields.
     fn entity(&self, name: &str) -> Option<EntityShape>;
+    /// Whether the workspace has a business calendar of this name.
+    fn calendar(&self, name: &str) -> bool {
+        let _ = name;
+        false
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -271,33 +274,6 @@ fn task_output(form: &[crate::solution::FormField]) -> Ty {
     Ty::Record(out)
 }
 
-fn parse_duration(v: &Value) -> Option<u64> {
-    if let Some(n) = v.as_u64() {
-        return Some(n);
-    }
-    let s = v.as_str()?;
-    let rest = s.strip_prefix('P')?;
-    let (days, time) = rest.split_once('T').unwrap_or((rest, ""));
-    let mut secs = 0u64;
-    let take = |part: &str, units: &[(char, u64)]| -> Option<u64> {
-        let mut total = 0u64;
-        let mut num = String::new();
-        for c in part.chars() {
-            if c.is_ascii_digit() {
-                num.push(c);
-            } else {
-                let (_, mult) = units.iter().find(|(u, _)| *u == c)?;
-                total = total.checked_add(num.parse::<u64>().ok()?.checked_mul(*mult)?)?;
-                num.clear();
-            }
-        }
-        num.is_empty().then_some(total)
-    };
-    secs += take(days, &[('W', 604_800), ('D', 86_400)])?;
-    secs += take(time, &[('H', 3600), ('M', 60), ('S', 1)])?;
-    (secs > 0).then_some(secs)
-}
-
 /// Compiles a solution for a workspace.
 pub fn compile(src: &Solution, resolver: &dyn Resolver, profile: RuntimeProfile) -> Result<Release, Vec<Diagnostic>> {
     let mut p = Pass { out: vec![], resolver };
@@ -387,8 +363,39 @@ pub fn compile(src: &Solution, resolver: &dyn Resolver, profile: RuntimeProfile)
         p.fault(Code::SchemaInvalid, "/decisions".into(), None, "two decisions share an id");
     }
     let mut decision_scopes: BTreeMap<String, Env> = BTreeMap::new();
-    for (pi, proc_) in src.processes.iter().enumerate() {
-        process(&mut p, pi, proc_, &caps, &asked, &decisions, &params_ty, profile, &mut decision_scopes);
+    // Callees before callers, so a subprocess's output is typed where it is used; a process that calls itself,
+    // directly or not, is refused where it does.
+    let processes: BTreeMap<String, &Process> = src.processes.iter().map(|p| (p.id.clone(), p)).collect();
+    let callees: BTreeMap<String, BTreeSet<String>> = src
+        .processes
+        .iter()
+        .map(|p| {
+            let mut c = BTreeSet::new();
+            calls(&p.nodes, &mut c);
+            (p.id.clone(), c)
+        })
+        .collect();
+    let reaches = |from: &str, to: &str| -> bool {
+        let mut seen = BTreeSet::new();
+        let mut todo: Vec<String> = callees.get(from).into_iter().flatten().cloned().collect();
+        while let Some(next) = todo.pop() {
+            if next == to {
+                return true;
+            }
+            if seen.insert(next.clone()) {
+                todo.extend(callees.get(&next).into_iter().flatten().cloned());
+            }
+        }
+        false
+    };
+    let recursive: BTreeSet<String> = processes.keys().filter(|id| reaches(id, id)).cloned().collect();
+    let mut order: Vec<usize> = (0..src.processes.len()).collect();
+    order.sort_by_key(|&i| src.processes.iter().filter(|q| reaches(&src.processes[i].id, &q.id)).count());
+    let mut outputs: BTreeMap<String, Ty> = BTreeMap::new();
+    for pi in order {
+        let proc_ = &src.processes[pi];
+        let t = process(&mut p, pi, proc_, &caps, &asked, &decisions, &processes, &outputs, &recursive, &params_ty, profile, &mut decision_scopes);
+        outputs.insert(proc_.id.clone(), t);
     }
 
     // Decisions no process uses are still checked, in a scope of the parameters alone.
@@ -594,18 +601,144 @@ fn rules(p: &mut Pass, src: &Solution, params: &Ty) -> BTreeMap<String, String> 
     fields
 }
 
+/// The bounds of structured steps.
+const MAX_BRANCHES: usize = 16;
+pub const MAX_ITEMS: u32 = 1_000;
+pub const MAX_CONCURRENCY: u32 = 20;
+pub const MAX_ROUNDS: u32 = 100;
+pub const MAX_APPROVALS: u32 = 9;
+pub const MAX_DELEGATION: u32 = 3;
+const MAX_CASE_TASKS: usize = 32;
+
+/// What the blocks of one process are checked against.
+struct Scope<'a> {
+    caps: &'a BTreeMap<String, Capability>,
+    asked: &'a BTreeSet<CapRef>,
+    decisions: &'a BTreeMap<String, &'a decision::Table>,
+    processes: &'a BTreeMap<String, &'a Process>,
+    /// What each process already checked hands back from its completed ends.
+    outputs: &'a BTreeMap<String, Ty>,
+    /// Processes that call themselves, directly or through others.
+    recursive: &'a BTreeSet<String>,
+    decision_scopes: &'a mut BTreeMap<String, Env>,
+    /// Each action of the process with what undoes it: its step, its capability, the compensating one.
+    compensable: Vec<(String, String, Option<String>)>,
+    /// Every step id of the process: ids are the process's, not a block's, so a step's output has one name.
+    ids: BTreeSet<String>,
+}
+
+/// Where a block sits, which decides how it may end.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Process,
+    Branch,
+    Body,
+    RepeatBody,
+}
+
+/// Every action anywhere in `nodes`, with its capability.
+fn actions(nodes: &[Node], out: &mut Vec<(String, CapRef)>) {
+    for n in nodes {
+        if let Node::Action { id, capability, .. } = n {
+            out.push((id.clone(), capability.clone()));
+        }
+        for b in n.blocks() {
+            actions(&b.nodes, out);
+        }
+    }
+}
+
+/// The processes `nodes` call as subprocesses.
+fn calls(nodes: &[Node], out: &mut BTreeSet<String>) {
+    for n in nodes {
+        if let Node::Subprocess { process, .. } = n {
+            out.insert(process.clone());
+        }
+        for b in n.blocks() {
+            calls(&b.nodes, out);
+        }
+    }
+}
+
+/// The most steps a run of `nodes` can take, every bound spent.
+fn worst(nodes: &[Node], processes: &BTreeMap<String, &Process>, stack: &mut Vec<String>) -> u64 {
+    nodes.iter().fold(0u64, |sum, n| {
+        let inner = match n {
+            Node::Parallel { branches, .. } => branches.iter().map(|b| worst(&b.nodes, processes, stack)).fold(0u64, u64::saturating_add),
+            Node::ForEach { max_items, body, .. } => u64::from(*max_items).saturating_mul(worst(&body.nodes, processes, stack)),
+            Node::Repeat { max_rounds, body, .. } => u64::from(*max_rounds).saturating_mul(worst(&body.nodes, processes, stack)),
+            Node::Case { tasks, .. } => tasks.len() as u64,
+            Node::Subprocess { process, .. } if !stack.contains(process) => match processes.get(process) {
+                Some(called) => {
+                    stack.push(process.clone());
+                    let w = worst(&called.nodes, processes, stack);
+                    stack.pop();
+                    w
+                }
+                None => 0,
+            },
+            _ => 0,
+        };
+        sum.saturating_add(1).saturating_add(inner)
+    })
+}
+
+fn wait_ok(p: &mut Pass, pointer: String, v: &Value, nid: Option<&str>, what: &str) {
+    match crate::calendar::Wait::parse(v) {
+        None => p.fault(
+            Code::SchemaInvalid,
+            pointer,
+            nid,
+            format!("{what} is seconds, an ISO 8601 duration (P2D, PT4H) or {{\"business_days\": n, \"calendar\": name}}, at most a year"),
+        ),
+        Some(w) => {
+            if let Some(c) = w.calendar()
+                && !p.resolver.calendar(c)
+            {
+                p.fault(Code::CapabilityUnavailable, pointer, nid, format!("{c} is not a calendar of this workspace"));
+            }
+        }
+    }
+}
+
+fn form_ok(p: &mut Pass, at: &str, form: &[crate::solution::FormField], nid: Option<&str>) {
+    let mut names = BTreeSet::new();
+    for (fi, f) in form.iter().enumerate() {
+        let fp = format!("{at}/form/{fi}");
+        if !name_ok(&f.name) || TASK_FIELDS.contains(&f.name.as_str()) || !names.insert(f.name.as_str()) {
+            p.fault(
+                Code::SchemaInvalid,
+                format!("{fp}/name"),
+                nid,
+                format!("'{}' cannot name a form field: lower_snake_case, once, and none of {}", f.name, TASK_FIELDS.join(", ")),
+            );
+        }
+        match parameter_type(&f.ty) {
+            None => p.fault(Code::SchemaInvalid, format!("{fp}/type"), nid, format!("{} has an unknown type '{}'", f.name, f.ty)),
+            Some(t) if !f.options.is_empty() && t != Ty::Text => {
+                p.fault(Code::SchemaInvalid, format!("{fp}/options"), nid, format!("{} offers choices, which are text", f.name))
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Checks one process. Returns the type of what its completed ends hand back.
 #[allow(clippy::too_many_arguments)]
 fn process(
     p: &mut Pass,
     pi: usize,
-    proc_: &crate::solution::Process,
+    proc_: &Process,
     caps: &BTreeMap<String, Capability>,
     asked: &BTreeSet<CapRef>,
     decisions: &BTreeMap<String, &decision::Table>,
+    processes: &BTreeMap<String, &Process>,
+    outputs: &BTreeMap<String, Ty>,
+    recursive: &BTreeSet<String>,
     params: &Ty,
     profile: RuntimeProfile,
     decision_scopes: &mut BTreeMap<String, Env>,
-) {
+) -> Ty {
     let at = format!("/processes/{pi}");
     if profile == RuntimeProfile::Core {
         p.fault(
@@ -614,11 +747,19 @@ fn process(
             None,
             format!("{} is a durable process: it needs the Full Process profile, and this installation runs Core", proc_.id),
         );
-        return;
+        return Ty::Any;
     }
-    if proc_.nodes.len() > MAX_NODES {
-        p.fault(Code::SchemaInvalid, format!("{at}/nodes"), None, format!("a process holds at most {MAX_NODES} steps"));
-        return;
+    let mut all = vec![];
+    actions(&proc_.nodes, &mut all);
+    let count = |nodes: &[Node]| -> usize {
+        fn count(nodes: &[Node]) -> usize {
+            nodes.iter().map(|n| 1 + n.blocks().iter().map(|b| count(&b.nodes)).sum::<usize>()).sum()
+        }
+        count(nodes)
+    };
+    if count(&proc_.nodes) > MAX_NODES {
+        p.fault(Code::SchemaInvalid, format!("{at}/nodes"), None, format!("a process holds at most {MAX_NODES} steps, its blocks' included"));
+        return Ty::Any;
     }
     let trigger_ty = match p.resolver.event(&proc_.trigger.event) {
         Some(t) => t,
@@ -627,115 +768,137 @@ fn process(
             Ty::Any
         }
     };
-    let base = Env::default().with("trigger", trigger_ty.clone()).with("parameters", params.clone());
+    let base = Env::default().with("trigger", trigger_ty).with("parameters", params.clone());
     if let Err(e) = expr::compile(&proc_.trigger.business_key, &base) {
         p.refusal(e, format!("{at}/trigger/business_key"), None);
-    }
-
-    // Identities and routes. A step's id is how later expressions read its output, so it is a name.
-    let mut index: BTreeMap<&str, usize> = BTreeMap::new();
-    for (ni, n) in proc_.nodes.iter().enumerate() {
-        if index.insert(n.id(), ni).is_some() {
-            p.fault(Code::SchemaInvalid, format!("{at}/nodes/{ni}/id"), Some(n.id()), format!("two steps are called {}", n.id()));
-        }
-        if !name_ok(n.id()) || SCOPE_NAMES.contains(&n.id()) {
-            p.fault(
-                Code::SchemaInvalid,
-                format!("{at}/nodes/{ni}/id"),
-                Some(n.id()),
-                format!("'{}' cannot name a step: lower_snake_case, and none of {}", n.id(), SCOPE_NAMES.join(", ")),
-            );
-        }
-        if n.label().trim().is_empty() {
-            p.fault(Code::SchemaInvalid, format!("{at}/nodes/{ni}/label"), Some(n.id()), "every step has a label people can read");
-        }
     }
     if proc_.label.trim().is_empty() {
         p.fault(Code::SchemaInvalid, format!("{at}/label"), None, "a process has a label");
     }
     if proc_.max_steps == 0 || proc_.max_steps > MAX_STEPS {
         p.fault(Code::SchemaInvalid, format!("{at}/max_steps"), None, format!("max_steps is between 1 and {MAX_STEPS}"));
-    }
-    if !index.contains_key(proc_.entry.as_str()) {
-        p.fault(Code::SchemaInvalid, format!("{at}/entry"), None, format!("the entry {} is not a step", proc_.entry));
-        return;
-    }
-    let mut broken = false;
-    for (ni, n) in proc_.nodes.iter().enumerate() {
-        for (name, target) in n.routes() {
-            if !index.contains_key(target) {
-                p.fault(Code::SchemaInvalid, format!("{at}/nodes/{ni}/{name}"), Some(n.id()), format!("{} goes to {target}, which is not a step", n.id()));
-                broken = true;
-            }
-        }
-    }
-    if broken {
-        return;
-    }
-    if (proc_.max_steps as usize) < proc_.nodes.len() {
+    } else if (proc_.max_steps as usize) < proc_.nodes.len() {
         p.fault(
             Code::SchemaInvalid,
             format!("{at}/max_steps"),
             None,
             format!("{} steps cannot all run within max_steps {}", proc_.nodes.len(), proc_.max_steps),
         );
+    } else {
+        let w = worst(&proc_.nodes, processes, &mut vec![proc_.id.clone()]);
+        if w > u64::from(proc_.max_steps) {
+            p.note(
+                Code::SchemaInvalid,
+                format!("{at}/max_steps"),
+                None,
+                format!("at worst {w} steps run; a run that reaches max_steps {} stops and waits for a person", proc_.max_steps),
+            );
+        }
+    }
+    let compensable = all
+        .into_iter()
+        .map(|(step, cap)| {
+            let undo = caps.get(&cap.id).and_then(Capability::compensation);
+            (step, cap.id, undo)
+        })
+        .collect();
+    let mut s = Scope { caps, asked, decisions, processes, outputs, recursive, decision_scopes, compensable, ids: BTreeSet::new() };
+    block(p, &at, &proc_.entry, &proc_.nodes, Kind::Process, &base, &mut s)
+}
+
+/// Checks a block's graph and its steps, in an order where each step's inputs are known. Returns the type of
+/// what its completed ends hand back.
+fn block(p: &mut Pass, at: &str, entry: &str, nodes: &[Node], kind: Kind, outer: &Env, s: &mut Scope) -> Ty {
+    let mut index: BTreeMap<&str, usize> = BTreeMap::new();
+    for (ni, n) in nodes.iter().enumerate() {
+        let np = format!("{at}/nodes/{ni}");
+        if index.insert(n.id(), ni).is_some() || !s.ids.insert(n.id().to_string()) {
+            p.fault(Code::SchemaInvalid, format!("{np}/id"), Some(n.id()), format!("two steps are called {}", n.id()));
+        }
+        if !name_ok(n.id()) || SCOPE_NAMES.contains(&n.id()) {
+            p.fault(
+                Code::SchemaInvalid,
+                format!("{np}/id"),
+                Some(n.id()),
+                format!("'{}' cannot name a step: lower_snake_case, and none of {}", n.id(), SCOPE_NAMES.join(", ")),
+            );
+        }
+        if n.label().trim().is_empty() {
+            p.fault(Code::SchemaInvalid, format!("{np}/label"), Some(n.id()), "every step has a label people can read");
+        }
+    }
+    if !index.contains_key(entry) {
+        p.fault(Code::SchemaInvalid, format!("{at}/entry"), None, format!("the entry {entry} is not a step of this block"));
+        return Ty::Any;
+    }
+    let mut broken = false;
+    for (ni, n) in nodes.iter().enumerate() {
+        for (name, target) in n.routes() {
+            if !index.contains_key(target) {
+                p.fault(
+                    Code::SchemaInvalid,
+                    format!("{at}/nodes/{ni}/{name}"),
+                    Some(n.id()),
+                    format!("{} goes to {target}, which is not a step of its block", n.id()),
+                );
+                broken = true;
+            }
+        }
+    }
+    if broken {
+        return Ty::Any;
     }
 
-    // Reachability and cycles: a durable loop must be a bounded construct, which this version has not.
-    let succ = |n: &Node| -> Vec<usize> { n.routes().iter().filter_map(|(_, t)| index.get(t).copied()).collect() };
-    let mut state = vec![0u8; proc_.nodes.len()]; // 0 unseen, 1 on the path, 2 done
+    // Reachability and cycles: within a block a graph is acyclic; repetition is the repeat step's. A recovery's
+    // way back (`resume_to`) runs only when a person decides, so it is no loop, and is checked on its own below.
+    let succ = |n: &Node| -> Vec<usize> { n.routes().iter().filter(|(name, _)| *name != "resume_to").filter_map(|(_, t)| index.get(t).copied()).collect() };
+    let mut state = vec![0u8; nodes.len()]; // 0 unseen, 1 on the path, 2 done
     let mut cycle = None;
-    fn dfs(i: usize, nodes: &[Node], succ: &dyn Fn(&Node) -> Vec<usize>, state: &mut [u8], cycle: &mut Option<usize>) {
+    let mut post = vec![];
+    fn dfs(i: usize, nodes: &[Node], succ: &dyn Fn(&Node) -> Vec<usize>, state: &mut [u8], cycle: &mut Option<usize>, post: &mut Vec<usize>) {
         state[i] = 1;
         for j in succ(&nodes[i]) {
             match state[j] {
                 1 => {
                     cycle.get_or_insert(j);
                 }
-                0 => dfs(j, nodes, succ, state, cycle),
+                0 => dfs(j, nodes, succ, state, cycle, post),
                 _ => {}
             }
         }
         state[i] = 2;
+        post.push(i);
     }
-    let entry = index[proc_.entry.as_str()];
-    dfs(entry, &proc_.nodes, &succ, &mut state, &mut cycle);
-    if let Some(j) = cycle {
-        p.fault(
-            Code::SchemaInvalid,
-            format!("{at}/nodes/{j}"),
-            Some(proc_.nodes[j].id()),
-            "a loop back to an earlier step: rework needs a bounded construct, not a cycle",
-        );
-    }
-    for (ni, n) in proc_.nodes.iter().enumerate() {
+    let entry = index[entry];
+    dfs(entry, nodes, &succ, &mut state, &mut cycle, &mut post);
+    for (ni, n) in nodes.iter().enumerate() {
         if state[ni] == 0 {
             p.fault(Code::SchemaInvalid, format!("{at}/nodes/{ni}"), Some(n.id()), format!("{} can never be reached", n.id()));
         }
     }
+    if let Some(j) = cycle {
+        p.fault(
+            Code::SchemaInvalid,
+            format!("{at}/nodes/{j}"),
+            Some(nodes[j].id()),
+            "a loop back to an earlier step: rework is a repeat step with a bound, not a cycle",
+        );
+        return Ty::Any;
+    }
 
-    // What each step may read: the outputs of steps that always ran before it (its dominators).
-    let n = proc_.nodes.len();
-    let preds: Vec<Vec<usize>> = (0..n).map(|i| (0..n).filter(|&j| succ(&proc_.nodes[j]).contains(&i)).collect()).collect();
+    // What each step may read: the outputs of steps that always ran before it (its dominators), and what the
+    // enclosing blocks could read where this one starts.
+    let n = nodes.len();
+    let preds: Vec<Vec<usize>> = (0..n).map(|i| (0..n).filter(|&j| state[j] != 0 && succ(&nodes[j]).contains(&i)).collect()).collect();
     let mut dom: Vec<BTreeSet<usize>> = (0..n).map(|i| if i == entry { BTreeSet::from([i]) } else { (0..n).collect() }).collect();
     let mut changed = true;
-    while changed && cycle.is_none() {
+    while changed {
         changed = false;
         for i in 0..n {
             if i == entry || state[i] == 0 {
                 continue;
             }
-            let mut d: Option<BTreeSet<usize>> = None;
-            for &q in &preds[i] {
-                if state[q] == 0 {
-                    continue;
-                }
-                d = Some(match d {
-                    None => dom[q].clone(),
-                    Some(x) => x.intersection(&dom[q]).copied().collect(),
-                });
-            }
-            let mut d = d.unwrap_or_default();
+            let mut d = preds[i].iter().map(|&q| dom[q].clone()).reduce(|a, b| a.intersection(&b).copied().collect()).unwrap_or_default();
             d.insert(i);
             if d != dom[i] {
                 dom[i] = d;
@@ -743,211 +906,402 @@ fn process(
             }
         }
     }
-    let output_ty = |m: &Node| -> Ty {
-        match m {
-            Node::Query { capability, .. } | Node::Action { capability, .. } => {
-                caps.get(&capability.id).map(|c| crate::compile::schema_type(&c.output)).unwrap_or(Ty::Any)
-            }
-            Node::HumanTask { form, .. } => task_output(form),
-            Node::WaitEvent { event, .. } => p.resolver.event(event).unwrap_or(Ty::Any),
-            _ => Ty::Any,
+    // A recovery resumes where everything the step reads has run: what surely ran before the resumed step
+    // surely ran before the suspension.
+    for (si, node) in nodes.iter().enumerate() {
+        if let Node::Suspend { resume_to: Some(target), .. } = node
+            && let Some(&ti) = index.get(target.as_str())
+            && state[si] != 0
+            && let Some(missing) = dom[ti].iter().find(|&&d| d != ti && !dom[si].contains(&d))
+        {
+            p.fault(
+                Code::SchemaInvalid,
+                format!("{at}/nodes/{si}/resume_to"),
+                Some(node.id()),
+                format!("{target} may read {}, which may not have run before {}", nodes[*missing].id(), node.id()),
+            );
         }
-    };
-    let env_of = |i: usize| -> Env {
-        let mut env = base.clone();
+    }
+    let mut out: BTreeMap<usize, Ty> = BTreeMap::new();
+    let mut ends: BTreeMap<String, Ty> = BTreeMap::new();
+    for &i in post.iter().rev() {
+        let mut env = outer.clone();
         for &d in &dom[i] {
             if d != i {
-                let m = &proc_.nodes[d];
-                env = env.with(m.id(), Ty::Record(BTreeMap::from([("output".into(), output_ty(m))])));
+                env = env.with(nodes[d].id(), Ty::Record(BTreeMap::from([("output".into(), out.get(&d).cloned().unwrap_or(Ty::Any))])));
             }
         }
-        env
-    };
+        let t = step(p, &format!("{at}/nodes/{i}"), &nodes[i], &env, kind, &index, nodes, s);
+        if let Node::End { outcome: EndOutcome::Completed, .. } = &nodes[i]
+            && let Ty::Record(fields) = &t
+        {
+            ends.extend(fields.clone());
+        }
+        out.insert(i, t);
+    }
+    Ty::Record(ends)
+}
 
-    for (ni, node) in proc_.nodes.iter().enumerate() {
-        let np = format!("{at}/nodes/{ni}");
-        let nid = Some(node.id());
-        let env = env_of(ni);
-        let completed = |target: &str| matches!(index.get(target).map(|&k| &proc_.nodes[k]), Some(Node::End { outcome: EndOutcome::Completed, .. }));
-        match node {
-            Node::Query { capability, input, on_error, .. } | Node::Action { capability, input, on_error, .. } => {
-                let query = matches!(node, Node::Query { .. });
-                if !asked.contains(capability) {
-                    p.fault(
-                        Code::PermissionDenied,
-                        format!("{np}/capability"),
-                        nid,
-                        format!("{} uses {} {}, which the solution does not ask for in requires", node.id(), capability.id, capability.version),
-                    );
+/// Checks one step in its scope. Returns the type of its output (for an end, of what it hands back).
+#[allow(clippy::too_many_arguments)]
+fn step(p: &mut Pass, np: &str, node: &Node, env: &Env, kind: Kind, index: &BTreeMap<&str, usize>, nodes: &[Node], s: &mut Scope) -> Ty {
+    let np = np.to_string();
+    let nid = Some(node.id());
+    let completed = |target: &str| matches!(index.get(target).map(|&k| &nodes[k]), Some(Node::End { outcome: EndOutcome::Completed, .. }));
+    let not_success = |p: &mut Pass, route: &str, target: &str, why: &str| {
+        if completed(target) {
+            p.fault(Code::SchemaInvalid, format!("{np}/{route}"), nid, why.to_string());
+        }
+    };
+    match node {
+        Node::Query { capability, input, on_error, .. } | Node::Action { capability, input, on_error, .. } => {
+            let query = matches!(node, Node::Query { .. });
+            not_success(p, "on_error", on_error, &format!("{}'s failure goes to a completed end: a failure is not success", node.id()));
+            if !s.asked.contains(capability) {
+                p.fault(
+                    Code::PermissionDenied,
+                    format!("{np}/capability"),
+                    nid,
+                    format!("{} uses {} {}, which the solution does not ask for in requires", node.id(), capability.id, capability.version),
+                );
+                return Ty::Any;
+            }
+            let Some(cap) = s.caps.get(&capability.id) else { return Ty::Any };
+            if !cap.profiles.contains(&Profile::Process) {
+                p.fault(Code::UnsupportedProfile, format!("{np}/capability"), nid, format!("{} does not run in a process", cap.id));
+            }
+            if query && cap.effect.changes() {
+                p.fault(
+                    Code::SchemaInvalid,
+                    format!("{np}/capability"),
+                    nid,
+                    format!("a query step cannot use {}, which changes something ({:?})", cap.id, cap.effect),
+                );
+            }
+            if !query && !cap.effect.changes() {
+                p.fault(Code::SchemaInvalid, format!("{np}/capability"), nid, format!("an action step uses {}, which only reads: make it a query", cap.id));
+            }
+            if cap.effect == Effect::HumanTask {
+                p.fault(Code::SchemaInvalid, format!("{np}/capability"), nid, "a person's decision is a human_task step");
+            }
+            // The input: every required field given, nothing it does not take, each of the right type. A
+            // dotted key (`values.description`) fills a field of an object the capability takes.
+            for missing in missing_inputs(&cap.input, input) {
+                p.fault(Code::SchemaInvalid, format!("{np}/input"), nid, format!("{} needs {missing}", cap.id));
+            }
+            for (k, e) in input {
+                let ip = format!("{np}/input/{k}");
+                if input.keys().any(|other| other.starts_with(&format!("{k}."))) {
+                    p.fault(Code::SchemaInvalid, ip, nid, format!("{k} is given whole and field by field"));
                     continue;
                 }
-                let Some(cap) = caps.get(&capability.id) else { continue };
-                if !cap.profiles.contains(&Profile::Process) {
-                    p.fault(Code::UnsupportedProfile, format!("{np}/capability"), nid, format!("{} does not run in a process", cap.id));
-                }
-                if query && cap.effect.changes() {
-                    p.fault(
-                        Code::SchemaInvalid,
-                        format!("{np}/capability"),
-                        nid,
-                        format!("a query step cannot use {}, which changes something ({:?})", cap.id, cap.effect),
-                    );
-                }
-                if !query && !cap.effect.changes() {
-                    p.fault(Code::SchemaInvalid, format!("{np}/capability"), nid, format!("an action step uses {}, which only reads: make it a query", cap.id));
-                }
-                if cap.effect == Effect::HumanTask {
-                    p.fault(Code::SchemaInvalid, format!("{np}/capability"), nid, "a person's decision is a human_task step");
-                }
-                if completed(on_error) {
-                    p.fault(
-                        Code::SchemaInvalid,
-                        format!("{np}/on_error"),
-                        nid,
-                        format!("{}'s failure goes to a completed end: a failure is not success", node.id()),
-                    );
-                }
-                // The input: every required field given, nothing it does not take, each of the right type. A
-                // dotted key (`values.description`) fills a field of an object the capability takes.
-                for missing in missing_inputs(&cap.input, input) {
-                    p.fault(Code::SchemaInvalid, format!("{np}/input"), nid, format!("{} needs {missing}", cap.id));
-                }
-                for (k, e) in input {
-                    let ip = format!("{np}/input/{k}");
-                    if input.keys().any(|other| other.starts_with(&format!("{k}."))) {
-                        p.fault(Code::SchemaInvalid, ip, nid, format!("{k} is given whole and field by field"));
-                        continue;
-                    }
-                    let Some(s) = k.split('.').try_fold(&cap.input, |s, part| s.get("properties")?.get(part)) else {
-                        p.fault(Code::SchemaInvalid, ip, nid, format!("{} takes no {k}", cap.id));
-                        continue;
-                    };
-                    match expr::compile(e, &env) {
-                        Ok(c) if expr::fits(&c.ty, &schema_type(s)) => {}
-                        Ok(c) => p.fault(Code::TypeMismatch, ip, nid, format!("{k} of {} is {}, and '{e}' is {}", cap.id, schema_type(s), c.ty)),
-                        Err(err) => p.refusal(err, ip, nid),
-                    }
-                }
-                if let Node::Action { effect_key, on_unknown, .. } = node {
-                    if effect_key != "stable_activation" {
-                        p.fault(
-                            Code::SchemaInvalid,
-                            format!("{np}/effect_key"),
-                            nid,
-                            "an effect's key is the same for every attempt at one activation (stable_activation), never an attempt's own",
-                        );
-                    }
-                    match on_unknown {
-                        None if cap.unknown_outcome != UnknownOutcome::NotApplicable => p.fault(
-                            Code::SchemaInvalid,
-                            np.clone(),
-                            nid,
-                            format!("{} can end with its outcome unknown: say where that goes (on_unknown)", cap.id),
-                        ),
-                        Some(u) if completed(u) => {
-                            p.fault(Code::SchemaInvalid, format!("{np}/on_unknown"), nid, "an unknown outcome goes to a completed end: unknown is not success")
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            Node::Decision { decision: name, routes, on_error, .. } => {
-                let Some(table) = decisions.get(name) else {
-                    p.fault(Code::SchemaInvalid, format!("{np}/decision"), nid, format!("{name} is not a decision of this solution"));
+                let Some(sc) = k.split('.').try_fold(&cap.input, |sc, part| sc.get("properties")?.get(part)) else {
+                    p.fault(Code::SchemaInvalid, ip, nid, format!("{} takes no {k}", cap.id));
                     continue;
                 };
-                if matches!(table.hit_policy, decision::HitPolicy::Collect(_)) {
-                    p.fault(
-                        Code::SchemaInvalid,
-                        format!("{np}/decision"),
-                        nid,
-                        format!("{name} collects many outcomes; a step routes on one: use a unique or first table"),
-                    );
-                }
-                decision_scopes.entry(name.clone()).or_insert_with(|| env.clone());
-                let mut outcomes: BTreeSet<String> = table.rows.iter().map(|r| r.outcome.to_string()).collect();
-                if let Some(d) = &table.default {
-                    outcomes.insert(d.to_string());
-                }
-                let routed: BTreeSet<String> = routes.iter().map(|r| r.outcome.to_string()).collect();
-                if routed != outcomes || routed.len() != routes.len() {
-                    p.fault(
-                        Code::SchemaInvalid,
-                        format!("{np}/routes"),
-                        nid,
-                        format!(
-                            "{name}'s outcomes are {}; its routes say {}",
-                            outcomes.into_iter().collect::<Vec<_>>().join(", "),
-                            routed.into_iter().collect::<Vec<_>>().join(", ")
-                        ),
-                    );
-                }
-                if completed(on_error) {
-                    p.fault(Code::SchemaInvalid, format!("{np}/on_error"), nid, "an undecided decision goes to a completed end: unknown is not success");
+                match expr::compile(e, env) {
+                    Ok(c) if expr::fits(&c.ty, &schema_type(sc)) => {}
+                    Ok(c) => p.fault(Code::TypeMismatch, ip, nid, format!("{k} of {} is {}, and '{e}' is {}", cap.id, schema_type(sc), c.ty)),
+                    Err(err) => p.refusal(err, ip, nid),
                 }
             }
-            Node::HumanTask { exclude_requester, material, form, timeout, on_timeout, .. } => {
-                if !exclude_requester {
+            if let Node::Action { effect_key, on_unknown, .. } = node {
+                if effect_key != "stable_activation" {
+                    p.fault(
+                        Code::SchemaInvalid,
+                        format!("{np}/effect_key"),
+                        nid,
+                        "an effect's key is the same for every attempt at one activation (stable_activation), never an attempt's own",
+                    );
+                }
+                match on_unknown {
+                    None if cap.unknown_outcome != UnknownOutcome::NotApplicable => {
+                        p.fault(Code::SchemaInvalid, np.clone(), nid, format!("{} can end with its outcome unknown: say where that goes (on_unknown)", cap.id))
+                    }
+                    Some(u) => not_success(p, "on_unknown", u, "an unknown outcome goes to a completed end: unknown is not success"),
+                    _ => {}
+                }
+            }
+            schema_type(&cap.output)
+        }
+        Node::Decision { decision: name, routes, on_error, .. } => {
+            not_success(p, "on_error", on_error, "an undecided decision goes to a completed end: unknown is not success");
+            let Some(table) = s.decisions.get(name) else {
+                p.fault(Code::SchemaInvalid, format!("{np}/decision"), nid, format!("{name} is not a decision of this solution"));
+                return Ty::Any;
+            };
+            if matches!(table.hit_policy, decision::HitPolicy::Collect(_)) {
+                p.fault(
+                    Code::SchemaInvalid,
+                    format!("{np}/decision"),
+                    nid,
+                    format!("{name} collects many outcomes; a step routes on one: use a unique or first table"),
+                );
+            }
+            s.decision_scopes.entry(name.clone()).or_insert_with(|| env.clone());
+            let mut outcomes: BTreeSet<String> = table.rows.iter().map(|r| r.outcome.to_string()).collect();
+            if let Some(d) = &table.default {
+                outcomes.insert(d.to_string());
+            }
+            let routed: BTreeSet<String> = routes.iter().map(|r| r.outcome.to_string()).collect();
+            if routed != outcomes || routed.len() != routes.len() {
+                p.fault(
+                    Code::SchemaInvalid,
+                    format!("{np}/routes"),
+                    nid,
+                    format!(
+                        "{name}'s outcomes are {}; its routes say {}",
+                        outcomes.into_iter().collect::<Vec<_>>().join(", "),
+                        routed.into_iter().collect::<Vec<_>>().join(", ")
+                    ),
+                );
+            }
+            Ty::Record(BTreeMap::from([("outcome".into(), Ty::Any)]))
+        }
+        Node::HumanTask { role, exclude_requester, material, form, approvals, delegation, timeout, on_timeout, .. } => {
+            if role.trim().is_empty() {
+                p.fault(Code::SchemaInvalid, format!("{np}/role"), nid, "say which role decides");
+            }
+            if !exclude_requester {
+                p.fault(
+                    Code::PermissionDenied,
+                    format!("{np}/exclude_requester"),
+                    nid,
+                    "the requester may not decide their own request: keep exclude_requester",
+                );
+            }
+            if *approvals == 0 || *approvals > MAX_APPROVALS {
+                p.fault(Code::SchemaInvalid, format!("{np}/approvals"), nid, format!("between 1 and {MAX_APPROVALS} people approve"));
+            }
+            if *delegation > MAX_DELEGATION {
+                p.fault(Code::SchemaInvalid, format!("{np}/delegation"), nid, format!("a decision is handed on at most {MAX_DELEGATION} times"));
+            }
+            form_ok(p, &np, form, nid);
+            if let Err(e) = expr::compile(material, env) {
+                p.refusal(e, format!("{np}/material"), nid);
+            }
+            wait_ok(p, format!("{np}/timeout"), timeout, nid, "a task's timeout");
+            not_success(p, "on_timeout", on_timeout, "nobody deciding is not success");
+            task_output(form)
+        }
+        Node::WaitEvent { event, correlation, timeout, on_timeout, .. } => {
+            let payload = p.resolver.event(event);
+            if payload.is_none() {
+                p.fault(Code::CapabilityUnavailable, format!("{np}/event"), nid, format!("{event} is not an event of this workspace"));
+            }
+            if let Err(e) = expr::compile(correlation, env) {
+                p.refusal(e, format!("{np}/correlation"), nid);
+            }
+            wait_ok(p, format!("{np}/timeout"), timeout, nid, "a wait's timeout");
+            not_success(p, "on_timeout", on_timeout, "an event that never came is not success");
+            payload.unwrap_or(Ty::Any)
+        }
+        Node::Parallel { join: _, branches, on_error, .. } => {
+            not_success(p, "on_error", on_error, "a refused branch is not success");
+            if branches.len() < 2 || branches.len() > MAX_BRANCHES {
+                p.fault(Code::SchemaInvalid, format!("{np}/branches"), nid, format!("a parallel step has between 2 and {MAX_BRANCHES} branches"));
+            }
+            let mut ids = BTreeSet::new();
+            let mut out = BTreeMap::new();
+            for (bi, b) in branches.iter().enumerate() {
+                let bp = format!("{np}/branches/{bi}");
+                if !name_ok(&b.id) || !ids.insert(b.id.as_str()) {
+                    p.fault(Code::SchemaInvalid, format!("{bp}/id"), nid, format!("'{}' cannot name a branch: lower_snake_case, once", b.id));
+                }
+                let t = block(p, &bp, &b.entry, &b.nodes, Kind::Branch, env, s);
+                out.insert(b.id.clone(), t);
+            }
+            Ty::Record(BTreeMap::from([("branches".into(), Ty::Record(out)), ("winner".into(), Ty::Text)]))
+        }
+        Node::ForEach { items, key, max_items, concurrency, body, on_error, .. } => {
+            not_success(p, "on_error", on_error, "a refused item is not success");
+            let item = match expr::compile(items, env) {
+                Ok(c) => match c.ty {
+                    Ty::List(t) => *t,
+                    Ty::Any => Ty::Any,
+                    other => {
+                        p.fault(Code::TypeMismatch, format!("{np}/items"), nid, format!("'{items}' is {other}, not a list"));
+                        Ty::Any
+                    }
+                },
+                Err(e) => {
+                    p.refusal(e, format!("{np}/items"), nid);
+                    Ty::Any
+                }
+            };
+            let inner = env.clone().with("item", item);
+            match expr::compile(key, &inner) {
+                Ok(c) if matches!(c.ty, Ty::Text | Ty::Int | Ty::Any) => {}
+                Ok(c) => p.fault(Code::TypeMismatch, format!("{np}/key"), nid, format!("an item's key is text or a whole number, and '{key}' is {}", c.ty)),
+                Err(e) => p.refusal(e, format!("{np}/key"), nid),
+            }
+            if *max_items == 0 || *max_items > MAX_ITEMS {
+                p.fault(Code::SchemaInvalid, format!("{np}/max_items"), nid, format!("between 1 and {MAX_ITEMS} items"));
+            }
+            if *concurrency == 0 || *concurrency > MAX_CONCURRENCY || concurrency > max_items {
+                p.fault(
+                    Code::SchemaInvalid,
+                    format!("{np}/concurrency"),
+                    nid,
+                    format!("between 1 and {MAX_CONCURRENCY} items at once, and no more than max_items"),
+                );
+            }
+            if !name_ok(&body.id) {
+                p.fault(Code::SchemaInvalid, format!("{np}/body/id"), nid, format!("'{}' cannot name a block: lower_snake_case", body.id));
+            }
+            let t = block(p, &format!("{np}/body"), &body.entry, &body.nodes, Kind::Body, &inner, s);
+            Ty::List(Box::new(Ty::Record(BTreeMap::from([("key".into(), Ty::Text), ("outcome".into(), Ty::Text), ("output".into(), t)]))))
+        }
+        Node::Repeat { max_rounds, body, on_exhausted, .. } => {
+            not_success(p, "on_exhausted", on_exhausted, "running out of rounds is not success");
+            if *max_rounds == 0 || *max_rounds > MAX_ROUNDS {
+                p.fault(Code::SchemaInvalid, format!("{np}/max_rounds"), nid, format!("between 1 and {MAX_ROUNDS} rounds"));
+            }
+            if !name_ok(&body.id) {
+                p.fault(Code::SchemaInvalid, format!("{np}/body/id"), nid, format!("'{}' cannot name a block: lower_snake_case", body.id));
+            }
+            if !body.nodes.iter().any(|n| matches!(n, Node::End { outcome: EndOutcome::Again, .. })) {
+                p.note(Code::SchemaInvalid, format!("{np}/body"), nid, "no step of the body ends `again`, so it runs once");
+            }
+            let t = block(p, &format!("{np}/body"), &body.entry, &body.nodes, Kind::RepeatBody, env, s);
+            Ty::Record(BTreeMap::from([("rounds".into(), Ty::Int), ("output".into(), t)]))
+        }
+        Node::Subprocess { process, input, on_error, .. } => {
+            not_success(p, "on_error", on_error, "a refused subprocess is not success");
+            let Some(called) = s.processes.get(process) else {
+                p.fault(Code::SchemaInvalid, format!("{np}/process"), nid, format!("{process} is not a process of this solution"));
+                return Ty::Any;
+            };
+            if s.recursive.contains(process) {
+                p.fault(
+                    Code::SchemaInvalid,
+                    format!("{np}/process"),
+                    nid,
+                    format!("{process} calls itself, directly or through others: a subprocess does not recurse"),
+                );
+                return Ty::Any;
+            }
+            let trigger = p.resolver.event(&called.trigger.event).unwrap_or(Ty::Any);
+            for (k, e) in input {
+                let ip = format!("{np}/input/{k}");
+                let want = match &trigger {
+                    Ty::Record(fields) => match fields.get(k) {
+                        Some(t) => t.clone(),
+                        None => {
+                            p.fault(Code::SchemaInvalid, ip, nid, format!("{process}'s trigger has no {k}"));
+                            continue;
+                        }
+                    },
+                    _ => Ty::Any,
+                };
+                match expr::compile(e, env) {
+                    Ok(c) if expr::fits(&c.ty, &want) => {}
+                    Ok(c) => p.fault(Code::TypeMismatch, ip, nid, format!("{k} of {process} is {want}, and '{e}' is {}", c.ty)),
+                    Err(err) => p.refusal(err, ip, nid),
+                }
+            }
+            s.outputs.get(process).cloned().unwrap_or(Ty::Any)
+        }
+        Node::Case { owner, tasks, timeout, on_timeout, .. } => {
+            not_success(p, "on_timeout", on_timeout, "a case nobody closed is not success");
+            if owner.trim().is_empty() {
+                p.fault(Code::SchemaInvalid, format!("{np}/owner"), nid, "say which role owns the case");
+            }
+            if tasks.is_empty() || tasks.len() > MAX_CASE_TASKS {
+                p.fault(Code::SchemaInvalid, format!("{np}/tasks"), nid, format!("a case lists between 1 and {MAX_CASE_TASKS} tasks"));
+            }
+            let names: BTreeSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+            let mut seen = BTreeSet::new();
+            let mut out = BTreeMap::new();
+            for (ti, t) in tasks.iter().enumerate() {
+                let tp = format!("{np}/tasks/{ti}");
+                if !name_ok(&t.id) || !seen.insert(t.id.as_str()) {
+                    p.fault(Code::SchemaInvalid, format!("{tp}/id"), nid, format!("'{}' cannot name a case task: lower_snake_case, once", t.id));
+                }
+                if t.role.trim().is_empty() {
+                    p.fault(Code::SchemaInvalid, format!("{tp}/role"), nid, "say which role does the task");
+                }
+                if !t.exclude_requester {
                     p.fault(
                         Code::PermissionDenied,
-                        format!("{np}/exclude_requester"),
+                        format!("{tp}/exclude_requester"),
                         nid,
                         "the requester may not decide their own request: keep exclude_requester",
                     );
                 }
-                let mut names = BTreeSet::new();
-                for (fi, f) in form.iter().enumerate() {
-                    let fp = format!("{np}/form/{fi}");
-                    let ident = f.name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
-                        && f.name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
-                    if !ident || TASK_FIELDS.contains(&f.name.as_str()) || !names.insert(f.name.as_str()) {
-                        p.fault(
-                            Code::SchemaInvalid,
-                            format!("{fp}/name"),
-                            nid,
-                            format!("'{}' cannot name a form field: lower_snake_case, once, and none of {}", f.name, TASK_FIELDS.join(", ")),
-                        );
-                    }
-                    match parameter_type(&f.ty) {
-                        None => p.fault(Code::SchemaInvalid, format!("{fp}/type"), nid, format!("{} has an unknown type '{}'", f.name, f.ty)),
-                        Some(t) if !f.options.is_empty() && t != Ty::Text => {
-                            p.fault(Code::SchemaInvalid, format!("{fp}/options"), nid, format!("{} offers choices, which are text", f.name))
-                        }
-                        _ => {}
+                if t.label.trim().is_empty() {
+                    p.fault(Code::SchemaInvalid, format!("{tp}/label"), nid, "every task has a label people can read");
+                }
+                form_ok(p, &tp, &t.form, nid);
+                for r in &t.requires {
+                    if r == &t.id || !names.contains(r.as_str()) {
+                        p.fault(Code::SchemaInvalid, format!("{tp}/requires"), nid, format!("{} requires {r}, which is not another task of this case", t.id));
                     }
                 }
-                if let Err(e) = expr::compile(material, &env) {
-                    p.refusal(e, format!("{np}/material"), nid);
-                }
-                if parse_duration(timeout).is_none_or(|t| t > MAX_TASK_WAIT) {
-                    p.fault(
-                        Code::SchemaInvalid,
-                        format!("{np}/timeout"),
+                out.insert(t.id.clone(), task_output(&t.form));
+            }
+            // Dependencies that wait for each other could never be met.
+            let mut done: BTreeSet<&str> = BTreeSet::new();
+            while let Some(t) =
+                tasks.iter().find(|t| !done.contains(t.id.as_str()) && t.requires.iter().all(|r| done.contains(r.as_str()) || !names.contains(r.as_str())))
+            {
+                done.insert(&t.id);
+            }
+            if done.len() < names.len() {
+                p.fault(Code::SchemaInvalid, format!("{np}/tasks"), nid, "some of the case's tasks require each other: none of them could start");
+            }
+            wait_ok(p, format!("{np}/timeout"), timeout, nid, "a case's timeout");
+            Ty::Record(out)
+        }
+        Node::Compensate { on_error, .. } => {
+            not_success(p, "on_error", on_error, "a compensation that failed is not success");
+            for (step_id, cap, undo) in s.compensable.clone() {
+                let Some(undo) = undo else { continue };
+                match s.asked.iter().find(|c| c.id == undo) {
+                    None => p.fault(
+                        Code::PermissionDenied,
+                        np.clone(),
                         nid,
-                        "a task's timeout is seconds or an ISO 8601 duration (P2D, PT4H), at most a year",
-                    );
-                }
-                if completed(on_timeout) {
-                    p.fault(Code::SchemaInvalid, format!("{np}/on_timeout"), nid, "nobody deciding is not success");
-                }
-            }
-            Node::WaitEvent { event, correlation, timeout, .. } => {
-                if p.resolver.event(event).is_none() {
-                    p.fault(Code::CapabilityUnavailable, format!("{np}/event"), nid, format!("{event} is not an event of this workspace"));
-                }
-                if let Err(e) = expr::compile(correlation, &env) {
-                    p.refusal(e, format!("{np}/correlation"), nid);
-                }
-                if parse_duration(timeout).is_none() {
-                    p.fault(Code::SchemaInvalid, format!("{np}/timeout"), nid, "a wait's timeout is seconds or an ISO 8601 duration (P1D, PT4H)");
+                        format!("{step_id} ({cap}) is undone by {undo}, which the solution does not ask for in requires"),
+                    ),
+                    Some(r) if p.resolver.capability(&r.id, &r.version).is_none_or(|c| !c.effect.changes()) => {
+                        p.fault(Code::CapabilityUnavailable, np.clone(), nid, format!("{undo} {} cannot undo anything here", r.version))
+                    }
+                    _ => {}
                 }
             }
-            Node::End { .. } => {}
-            Node::Suspend { reason, .. } => {
-                if reason.trim().is_empty() {
-                    p.fault(Code::SchemaInvalid, format!("{np}/reason"), nid, "say why it waits for a person");
+            Ty::Record(BTreeMap::from([("compensated".into(), Ty::Int), ("failed".into(), Ty::Int)]))
+        }
+        Node::Delay { wait, .. } => {
+            wait_ok(p, format!("{np}/wait"), wait, nid, "a delay");
+            Ty::Record(BTreeMap::from([("at".into(), Ty::Instant)]))
+        }
+        Node::End { outcome, output, .. } => {
+            if *outcome == EndOutcome::Again && kind != Kind::RepeatBody {
+                p.fault(Code::SchemaInvalid, format!("{np}/outcome"), nid, "only a repeat step's body ends `again`");
+            }
+            let mut fields = BTreeMap::new();
+            for (name, e) in output {
+                if !name_ok(name) {
+                    p.fault(Code::SchemaInvalid, format!("{np}/output/{name}"), nid, format!("'{name}' cannot name an output: lower_snake_case"));
+                }
+                match expr::compile(e, env) {
+                    Ok(c) => {
+                        fields.insert(name.clone(), c.ty);
+                    }
+                    Err(err) => p.refusal(err, format!("{np}/output/{name}"), nid),
                 }
             }
+            Ty::Record(fields)
+        }
+        Node::Suspend { reason, resume_to, .. } => {
+            if reason.trim().is_empty() {
+                p.fault(Code::SchemaInvalid, format!("{np}/reason"), nid, "say why it waits for a person");
+            }
+            if let Some(r) = resume_to {
+                not_success(p, "resume_to", r, "a recovery that resumes at a completed end would make needing attention a success");
+            }
+            Ty::Any
         }
     }
 }
@@ -1006,7 +1360,8 @@ mod tests {
         fn new() -> Fixture {
             let request = json!({"type": "object", "properties": {
                 "total": {"type": "object", "properties": {"amount": {"type": "string"}, "currency": {"type": "string"}}},
-                "supplier_email": {"type": "string"}, "version": {"type": "integer"}, "category": {"type": "string"}}});
+                "supplier_email": {"type": "string"}, "version": {"type": "integer"}, "category": {"type": "string"},
+                "lines": {"type": "array", "items": {"type": "object", "properties": {"item_code": {"type": "string"}, "qty": {"type": ["string", "number"]}}}}}});
             let id_out = json!({"type": "object", "properties": {"id": {"type": "string"}}});
             let mut mail = cap("ferrum.mail", Effect::ExternalEffect, flat(&["to", "subject", "body"]), json!({"type": "object"}));
             mail.unknown_outcome = UnknownOutcome::Manual;
@@ -1033,12 +1388,18 @@ mod tests {
                         id_out.clone(),
                     ),
                     cap("field_service.service_request.create", Effect::TransactionalAction, create_input(&["subject", "description"], &["subject"]), id_out),
-                    cap(
-                        "example.inventory.place_hold",
-                        Effect::TransactionalAction,
-                        flat(&["scope_ref", "case_ref"]),
-                        json!({"type": "object", "properties": {"hold_id": {"type": "string"}}}),
-                    ),
+                    Capability {
+                        owner: "example.inventory".into(),
+                        compensate_with: Some("release_hold".into()),
+                        ..cap(
+                            "example.inventory.place_hold",
+                            Effect::TransactionalAction,
+                            flat(&["scope_ref", "case_ref"]),
+                            json!({"type": "object", "properties": {"hold_id": {"type": "string"}}}),
+                        )
+                    }
+                    .sealed()
+                    .unwrap(),
                     cap("example.inventory.release_hold", Effect::TransactionalAction, flat(&["hold_ref", "disposition_ref"]), json!({"type": "object"})),
                 ],
             }
@@ -1051,6 +1412,9 @@ mod tests {
         }
         fn installed(&self, id: &str) -> Option<String> {
             self.caps.iter().find(|c| c.id == id).map(|c| c.version.clone())
+        }
+        fn calendar(&self, name: &str) -> bool {
+            name == "india"
         }
         fn event(&self, id: &str) -> Option<Ty> {
             let rec = |fields: &[&str]| Some(Ty::Record(fields.iter().map(|f| (f.to_string(), Ty::Text)).collect()));
@@ -1167,6 +1531,62 @@ mod tests {
             }],
             "ui": {"notes": "Inspection and an independent disposition gate the hold's release. Rejection or unresolved effects suspend for reviewed recovery; no implicit quality override."}
         })
+    }
+
+    /// One process using every structured step: each line held (for-each), the supplier answering by mail or
+    /// on the portal, whichever comes first (any), a two-person review with rework (repeat), an investigation
+    /// case, a business-day delay, compensation and a recovery that resumes it.
+    fn structured() -> Value {
+        let mut v = purchase();
+        v["requires"]
+            .as_array_mut()
+            .unwrap()
+            .extend([json!({"id": "example.inventory.place_hold", "version": "1.0.0"}), json!({"id": "example.inventory.release_hold", "version": "1.0.0"})]);
+        v["processes"][0]["nodes"] = json!([
+            {"type": "query", "id": "snapshot", "label": "Read the request", "capability": {"id": "procurement.material_request.read", "version": "1.0.0"}, "input": {"id": "trigger.id"}, "next": "lines_each", "on_error": "refused"},
+            {"type": "for_each", "id": "lines_each", "label": "Hold each line", "items": "snapshot.output.lines", "key": "item.item_code", "max_items": 50, "concurrency": 5,
+             "body": {"id": "line", "entry": "hold_line", "nodes": [
+                {"type": "action", "id": "hold_line", "label": "Hold the line's stock", "capability": {"id": "example.inventory.place_hold", "version": "1.0.0"}, "input": {"scope_ref": "item.item_code", "case_ref": "trigger.id"}, "next": "line_done", "on_error": "line_failed", "on_unknown": "line_failed"},
+                {"type": "end", "id": "line_done", "label": "Held", "outcome": "completed", "output": {"held": "hold_line.output.hold_id"}},
+                {"type": "end", "id": "line_failed", "label": "Not held", "outcome": "refused"}
+             ]},
+             "next": "quotes", "on_error": "undo"},
+            {"type": "parallel", "id": "quotes", "label": "Hear from the supplier", "join": "any", "branches": [
+                {"id": "email", "entry": "mail", "nodes": [
+                    {"type": "action", "id": "mail", "label": "Mail the supplier", "capability": {"id": "ferrum.mail", "version": "1.0.0"}, "input": {"to": "snapshot.output.supplier_email", "subject": "\"Order\"", "body": "trigger.id"}, "next": "sent", "on_error": "mail_failed", "on_unknown": "mail_failed"},
+                    {"type": "end", "id": "sent", "label": "Mailed", "outcome": "completed"},
+                    {"type": "end", "id": "mail_failed", "label": "Not mailed", "outcome": "refused"}
+                ]},
+                {"id": "portal", "entry": "wait_portal", "nodes": [
+                    {"type": "wait_event", "id": "wait_portal", "label": "Acknowledged on the portal", "event": "buying.purchase_order.updated", "correlation": "trigger.id", "timeout": "P1D", "next": "acknowledged", "on_timeout": "late"},
+                    {"type": "end", "id": "acknowledged", "label": "Acknowledged", "outcome": "completed"},
+                    {"type": "end", "id": "late", "label": "Too late", "outcome": "refused"}
+                ]}
+            ], "next": "review_loop", "on_error": "undo"},
+            {"type": "repeat", "id": "review_loop", "label": "Review until right", "max_rounds": 3,
+             "body": {"id": "round", "entry": "review", "nodes": [
+                {"type": "human_task", "id": "review", "label": "Two reviewers approve", "role": "Purchasing Reviewer", "material": "snapshot.output", "approvals": 2, "delegation": 1,
+                 "timeout": {"business_days": 2, "calendar": "india"}, "next": "approved", "on_reject": "rework", "on_timeout": "nobody"},
+                {"type": "end", "id": "approved", "label": "Approved", "outcome": "completed"},
+                {"type": "end", "id": "rework", "label": "Changes asked for", "outcome": "again"},
+                {"type": "end", "id": "nobody", "label": "Nobody decided", "outcome": "refused"}
+             ]},
+             "next": "investigate", "on_exhausted": "undo"},
+            {"type": "case", "id": "investigate", "label": "Investigate", "owner": "Quality Manager", "timeout": "P7D", "tasks": [
+                {"id": "inspect", "label": "Inspect the goods", "role": "Inspector", "required": true, "form": [{"name": "passed", "label": "Passed", "type": "bool", "required": true}]},
+                {"id": "report", "label": "Write the report", "role": "Quality Manager", "requires": ["inspect"]}
+            ], "next": "settle", "on_timeout": "undo"},
+            {"type": "delay", "id": "settle", "label": "Let it settle", "wait": {"business_days": 1, "calendar": "india"}, "next": "completed"},
+            {"type": "compensate", "id": "undo", "label": "Release what was held", "next": "refused", "on_error": "attention"},
+            {"type": "end", "id": "completed", "label": "Completed", "outcome": "completed", "output": {"lines": "lines_each.output", "rounds": "review_loop.output.rounds"}},
+            {"type": "end", "id": "refused", "label": "Refused", "outcome": "refused"},
+            {"type": "suspend", "id": "attention", "label": "Needs attention", "reason": "A compensation failed: settle it, then release again.", "resume_to": "undo"}
+        ]);
+        v["processes"][0]["entry"] = json!("snapshot");
+        // Its review is a person's, not the purchase example's decision table.
+        v["decisions"] = json!([]);
+        v["tests"] = json!([]);
+        v
     }
 
     fn compile_value(v: Value, profile: RuntimeProfile) -> Result<Release, Vec<Diagnostic>> {
@@ -1294,6 +1714,147 @@ mod tests {
         let again = v["processes"][0].clone();
         v["processes"].as_array_mut().unwrap().push(again);
         refused_with(v, Code::SchemaInvalid, "another process has it");
+    }
+
+    fn set_in(v: &mut Value, path: &[&str], f: impl Fn(&mut Value)) {
+        let mut cur = &mut v["processes"][0]["nodes"];
+        for id in path {
+            let list = if cur.is_array() { cur } else { &mut cur["nodes"] };
+            cur = list.as_array_mut().unwrap().iter_mut().find(|n| n["id"] == *id).unwrap_or_else(|| panic!("no {id}"));
+        }
+        f(cur);
+    }
+
+    #[test]
+    fn structured_steps_compile() {
+        let r = compile_value(structured(), RuntimeProfile::FullProcess).unwrap_or_else(|d| panic!("{d:#?}"));
+        assert!(r.notes.iter().any(|n| n["message"].as_str().unwrap().contains("at worst")), "every bound spent is more than max_steps: {:?}", r.notes);
+    }
+
+    #[test]
+    fn for_each_reads_a_bounded_list_by_stable_keys() {
+        let mut v = structured();
+        set_in(&mut v, &["lines_each"], |n| n["items"] = json!("snapshot.output.total"));
+        refused_with(v, Code::TypeMismatch, "not a list");
+        let mut v = structured();
+        set_in(&mut v, &["lines_each"], |n| n["key"] = json!("item"));
+        refused_with(v, Code::TypeMismatch, "an item's key");
+        for (field, value, words) in [("max_items", json!(0), "items"), ("max_items", json!(5000), "items"), ("concurrency", json!(80), "at once")] {
+            let mut v = structured();
+            set_in(&mut v, &["lines_each"], |n| n[field] = value.clone());
+            refused_with(v, Code::SchemaInvalid, words);
+        }
+        let mut v = structured();
+        set_in(&mut v, &["quotes"], |n| n["branches"][0]["nodes"][0]["input"]["body"] = json!("item.item_code"));
+        refused_with(v, Code::SchemaInvalid, "unknown name 'item'");
+    }
+
+    #[test]
+    fn a_block_keeps_its_steps_to_itself() {
+        let mut v = structured();
+        set_in(&mut v, &["completed"], |n| n["output"]["held"] = json!("hold_line.output.hold_id"));
+        refused_with(v, Code::SchemaInvalid, "unknown name 'hold_line'");
+        let mut v = structured();
+        set_in(&mut v, &["lines_each"], |n| n["body"]["nodes"][0]["next"] = json!("quotes"));
+        refused_with(v, Code::SchemaInvalid, "not a step of its block");
+        let mut v = structured();
+        set_in(&mut v, &["lines_each"], |n| n["body"]["nodes"][1]["id"] = json!("snapshot"));
+        refused_with(v, Code::SchemaInvalid, "two steps are called snapshot");
+    }
+
+    #[test]
+    fn parallel_branches_are_named_and_more_than_one() {
+        let mut v = structured();
+        set_in(&mut v, &["quotes"], |n| {
+            n["branches"].as_array_mut().unwrap().pop();
+        });
+        refused_with(v, Code::SchemaInvalid, "between 2 and");
+        let mut v = structured();
+        set_in(&mut v, &["quotes"], |n| n["branches"][1]["id"] = json!("email"));
+        refused_with(v, Code::SchemaInvalid, "cannot name a branch");
+        let mut v = structured();
+        set_in(&mut v, &["quotes"], |n| n["on_error"] = json!("completed"));
+        refused_with(v, Code::SchemaInvalid, "a refused branch is not success");
+    }
+
+    #[test]
+    fn rework_is_bounded_and_running_out_is_not_success() {
+        let mut v = structured();
+        set_in(&mut v, &["review_loop"], |n| n["max_rounds"] = json!(0));
+        refused_with(v, Code::SchemaInvalid, "rounds");
+        let mut v = structured();
+        set_in(&mut v, &["review_loop"], |n| n["on_exhausted"] = json!("completed"));
+        refused_with(v, Code::SchemaInvalid, "running out of rounds is not success");
+        let mut v = structured();
+        set_in(&mut v, &["lines_each"], |n| n["body"]["nodes"][2]["outcome"] = json!("again"));
+        refused_with(v, Code::SchemaInvalid, "only a repeat step's body ends `again`");
+    }
+
+    #[test]
+    fn tasks_bound_their_approvers_delegation_and_calendar() {
+        for (field, value, words) in [("approvals", json!(0), "approve"), ("approvals", json!(12), "approve"), ("delegation", json!(9), "handed on")] {
+            let mut v = structured();
+            set_in(&mut v, &["review_loop"], |n| n["body"]["nodes"][0][field] = value.clone());
+            refused_with(v, Code::SchemaInvalid, words);
+        }
+        let mut v = structured();
+        set_in(&mut v, &["settle"], |n| n["wait"] = json!({"business_days": 1, "calendar": "mars"}));
+        refused_with(v, Code::CapabilityUnavailable, "mars is not a calendar");
+    }
+
+    #[test]
+    fn a_case_offers_only_its_tasks_and_their_order() {
+        let mut v = structured();
+        set_in(&mut v, &["investigate"], |n| n["tasks"][0]["requires"] = json!(["report"]));
+        refused_with(v, Code::SchemaInvalid, "require each other");
+        let mut v = structured();
+        set_in(&mut v, &["investigate"], |n| n["tasks"][1]["requires"] = json!(["approve_payment"]));
+        refused_with(v, Code::SchemaInvalid, "not another task of this case");
+        let mut v = structured();
+        set_in(&mut v, &["investigate"], |n| n["tasks"][0]["exclude_requester"] = json!(false));
+        refused_with(v, Code::PermissionDenied, "their own request");
+    }
+
+    #[test]
+    fn compensation_is_asked_for_and_recovery_is_not_success() {
+        let mut v = structured();
+        v["requires"].as_array_mut().unwrap().retain(|c| c["id"] != "example.inventory.release_hold");
+        refused_with(v, Code::PermissionDenied, "undone by example.inventory.release_hold");
+        let mut v = structured();
+        set_in(&mut v, &["attention"], |n| n["resume_to"] = json!("completed"));
+        refused_with(v, Code::SchemaInvalid, "needing attention a success");
+        let mut v = structured();
+        set_in(&mut v, &["snapshot"], |n| n["on_error"] = json!("attention"));
+        refused_with(v, Code::SchemaInvalid, "undo may read lines_each, which may not have run before attention");
+    }
+
+    #[test]
+    fn subprocesses_are_typed_and_never_recurse() {
+        let mut v = structured();
+        let mut child = v["processes"][0].clone();
+        child["id"] = json!("child");
+        child["nodes"] = json!([{"type": "end", "id": "child_done", "label": "Done", "outcome": "completed", "output": {"echo": "trigger.id"}}]);
+        child["entry"] = json!("child_done");
+        v["processes"].as_array_mut().unwrap().push(child);
+        set_in(
+            &mut v,
+            &["settle"],
+            |n| *n = json!({"type": "subprocess", "id": "settle", "label": "Run the child", "process": "child", "input": {"id": "trigger.id"}, "next": "completed", "on_error": "undo"}),
+        );
+        compile_value(v.clone(), RuntimeProfile::FullProcess).unwrap_or_else(|d| panic!("{d:#?}"));
+        let mut typed = v.clone();
+        set_in(&mut typed, &["completed"], |n| n["output"]["echo"] = json!("settle.output.echo"));
+        compile_value(typed, RuntimeProfile::FullProcess).unwrap_or_else(|d| panic!("a subprocess's output is typed: {d:#?}"));
+        let mut wrong = v.clone();
+        set_in(&mut wrong, &["settle"], |n| n["input"] = json!({"colour": "\"red\""}));
+        refused_with(wrong, Code::SchemaInvalid, "trigger has no colour");
+        let mut looped = v;
+        looped["processes"][1]["nodes"] = json!([
+            {"type": "subprocess", "id": "again_child", "label": "Itself", "process": "child", "input": {}, "next": "child_done", "on_error": "child_done"},
+            {"type": "end", "id": "child_done", "label": "Done", "outcome": "refused"}
+        ]);
+        looped["processes"][1]["entry"] = json!("again_child");
+        refused_with(looped, Code::SchemaInvalid, "a subprocess does not recurse");
     }
 
     #[test]
@@ -1528,14 +2089,5 @@ mod tests {
         limit["tests"][0]["given"]["snapshot"]["output"]["total"]["amount"] = json!("150000.00");
         let d = compile_value(limit, RuntimeProfile::FullProcess).unwrap_or_else(|d| panic!("{d:#?}"));
         assert_ne!(a.artifact_digest, d.artifact_digest, "a parameter is behaviour");
-    }
-
-    #[test]
-    fn durations() {
-        assert_eq!(parse_duration(&json!("P2D")), Some(172_800));
-        assert_eq!(parse_duration(&json!("PT4H30M")), Some(16_200));
-        assert_eq!(parse_duration(&json!(60)), Some(60));
-        assert_eq!(parse_duration(&json!("P")), None);
-        assert_eq!(parse_duration(&json!("2 days")), None);
     }
 }
