@@ -7,6 +7,7 @@ members = ["crates/calc", "crates/meta", "crates/kernel", "crates/domain", "crat
     "crates/studio",
     "crates/ops-contract",
     "crates/logic",
+    "crates/process",
     "crates/ops",
     "server", "server/migration"]
 # Vendored crates are dependencies, not members: yrs with a fix (third_party/yrs/FERRUM.md).

@@ -185,6 +185,7 @@ impl Hooks for App {
         }
         plugins.seal_with(secret_key.clone());
         plugins.open_also_with(retired.clone());
+        let processes = crate::process::configure(&mut hooks, &secret_key, &retired).await.map_err(Error::Message)?;
         let (plans, signup) = signup_settings(|name| std::env::var(name).ok(), crate::shell::base_domain(&settings).is_some()).map_err(Error::Message)?;
         if signup.open && mailer.is_none() {
             return Err(Error::Message("FERRUM_SIGNUP=open needs mail (settings.mailer): sign-up proves addresses with emailed codes".into()));
@@ -208,6 +209,7 @@ impl Hooks for App {
                 accounts_host: crate::shell::base_domain(&settings).map(|b| format!("{DIRECTORY}.{b}", DIRECTORY = ferrum_kernel::identity::DIRECTORY)),
                 plans,
                 signup,
+                process_runtime: processes,
                 ..Default::default()
             },
             mailer,
@@ -360,6 +362,9 @@ impl Hooks for App {
                 }
             }));
             handles.push(crate::packages::spawn(state.kernel.clone(), state.shutdown.subscribe()));
+            if let Some(worker) = crate::process::spawn(state.kernel.clone(), state.shutdown.subscribe()).await.map_err(Error::Message)? {
+                handles.push(worker);
+            }
             // Apps that were waiting for their resources.
             let (apps, mut stop) = (state.apps.clone(), state.shutdown.subscribe());
             handles.push(tokio::spawn(async move {

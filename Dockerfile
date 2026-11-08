@@ -34,7 +34,7 @@ ARG BUILD_SHA=dev
 ENV BUILD_SHA=${BUILD_SHA}
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p ferrum-server --features saml && cp target/release/ferrum /usr/local/bin/ferrum
+    cargo build --release --locked -p ferrum-server --features saml,process && cp target/release/ferrum /usr/local/bin/ferrum
 
 FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 RUN apt-get update \

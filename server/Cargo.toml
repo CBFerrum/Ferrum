@@ -18,6 +18,9 @@ default = ["india", "eu", "de", "be", "es", "fr", "it", "pl", "pt", "ro", "gb", 
 # SAML single sign-on, checked by xmlsec1: needs libxml2, libxmlsec1 and libclang to build (the
 # release image has it; docs/operations.md).
 saml = ["ferrum-kernel/saml"]
+# Durable processes on a Temporal server (TEMPORAL_ADDRESS): the worker and what starts and signals runs. The
+# release image has it; without TEMPORAL_ADDRESS it does nothing.
+process = ["dep:ferrum-process"]
 india = ["dep:ferrum-india"]
 eu = ["dep:ferrum-eu"]
 de = ["dep:ferrum-de", "eu"]
@@ -98,6 +101,8 @@ ferrum-kernel = { path = "../crates/kernel" }
 ferrum-meta = { path = "../crates/meta" }
 ferrum-domain = { path = "../crates/domain" }
 ferrum-plugins = { path = "../crates/plugins" }
+# Durable processes on Temporal, with the `process` feature (docs/logic/processes.md).
+ferrum-process = { path = "../crates/process", optional = true }
 ferrum-mcp = { path = "../crates/mcp" }
 ferrum-apps = { path = "../crates/apps" }
 ferrum-app-crm = { git = "https://github.com/CBFerrum/ferrum-app-crm", branch = "main", optional = true }

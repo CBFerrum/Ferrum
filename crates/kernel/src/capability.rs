@@ -166,6 +166,19 @@ fn entity_capabilities(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> Vec<Capability
     let owner = ent.package.as_str();
     let prefix = format!("{owner}.{}", snake(name));
     let record = crate::describe::entity_schema(ctx, ent, 0);
+    // What comes back is the record as stored: what was written, and its id and version, so that a process
+    // can name it and see whether it changed since.
+    let stored = {
+        let mut s = record.clone();
+        if let Some(props) = s.get_mut("properties").and_then(Value::as_object_mut) {
+            props.insert("id".into(), id_prop());
+            props.insert("version".into(), json!({"type": "integer", "description": "The record's version"}));
+            if ent.def.submittable {
+                props.insert("docstatus".into(), json!({"type": "integer", "description": "0 draft, 1 submitted, 2 cancelled"}));
+            }
+        }
+        s
+    };
     let perm = |a: &str| format!("{name}:{a}");
     let by_id = |extra: &[(&str, Value)]| {
         let mut props = Map::from_iter([("id".to_string(), id_prop())]);
@@ -176,7 +189,7 @@ fn entity_capabilities(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> Vec<Capability
         capability(format!("{prefix}.{op}"), &version, owner, Some(name), operation, l, effect, vec![perm(permission)], input, output, completion)
     };
     let mut out = vec![
-        cap("read", Operation::Read, format!("Read a {label}"), Effect::Query, "read", by_id(&[]), record.clone(), "The record as the caller may see it"),
+        cap("read", Operation::Read, format!("Read a {label}"), Effect::Query, "read", by_id(&[]), stored.clone(), "The record as the caller may see it"),
         cap(
             "list",
             Operation::List,
@@ -191,7 +204,7 @@ fn entity_capabilities(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> Vec<Capability
                 ]),
                 vec![],
             ),
-            json!({"type": "array", "items": record}),
+            json!({"type": "array", "items": stored}),
             "The records the caller may see, at most the limit",
         ),
     ];
@@ -202,7 +215,7 @@ fn entity_capabilities(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> Vec<Capability
         Effect::TransactionalAction,
         "create",
         object_schema(Map::from_iter([("values".into(), record.clone()), ("submit".into(), json!({"type": "boolean"}))]), vec!["values".into()]),
-        record.clone(),
+        stored.clone(),
         "The record exists, committed with this receipt",
     ));
     out.push(cap(
@@ -212,7 +225,7 @@ fn entity_capabilities(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> Vec<Capability
         Effect::TransactionalAction,
         "write",
         by_id(&[("values", record.clone()), ("expected_version", version_prop())]),
-        record.clone(),
+        stored.clone(),
         "The change is committed with this receipt",
     ));
     out.push(cap(
@@ -233,7 +246,7 @@ fn entity_capabilities(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> Vec<Capability
             Effect::TransactionalAction,
             "submit",
             by_id(&[("expected_version", version_prop())]),
-            record.clone(),
+            stored.clone(),
             "Submitted, with every posting its app makes, committed with this receipt",
         ));
         out.push(cap(
@@ -243,7 +256,7 @@ fn entity_capabilities(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> Vec<Capability
             Effect::TransactionalAction,
             "cancel",
             by_id(&[("expected_version", version_prop())]),
-            record.clone(),
+            stored.clone(),
             "Cancelled, with its postings reversed by its app, committed with this receipt",
         ));
     }
@@ -315,7 +328,7 @@ fn entity_capabilities(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> Vec<Capability
                 Effect::TransactionalAction,
                 permissions,
                 by_id(&[("expected_version", version_prop())]),
-                record.clone(),
+                stored.clone(),
                 &format!("The record has moved to {}, committed with this receipt", t.to),
             ));
         }

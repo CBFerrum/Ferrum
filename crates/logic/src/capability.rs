@@ -178,6 +178,15 @@ impl Capability {
         Ok(self)
     }
 
+    /// The capability that undoes this one, when its app declares one: an action of the same entity.
+    pub fn compensation(&self) -> Option<String> {
+        let action = self.compensate_with.as_ref()?;
+        Some(match &self.entity {
+            Some(e) => format!("{}.{}.{action}", self.owner, snake(e)),
+            None => format!("{}.{action}", self.owner),
+        })
+    }
+
     /// Whether the input's top-level fields are ones the capability declares.
     pub fn declares(&self, field: &str) -> bool {
         self.input.get("properties").and_then(Value::as_object).is_some_and(|p| p.contains_key(field))
