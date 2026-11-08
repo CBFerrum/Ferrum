@@ -1,0 +1,27 @@
+== Before: on the original environment (http://127.0.0.1:5170)
+ok   two runs wait for their reviews
+     $ pg_dump -Fc -f /private/tmp/claude-501/-Users-chinmoybhuyan-Desktop-Personal-ERP/eccac2fe-7ff7-481b-9bb5-09ef58fdbd46/scratchpad/drill/ferrum_flc_walk-t1.dump -d ferrum_flc_walk
+     PostgreSQL backed up (t1)
+ok   after the backup, the first run ordered (PostgreSQL's backup does not know it; Temporal's history will)
+== The original infrastructure goes away
+     Temporal's store copied (t2), after the order
+== A new, isolated environment: database ferrum_flc_drill, Temporal on 7234, Ferrum on 5171
+     $ dropdb --if-exists ferrum_flc_drill
+     $ createdb -O ferrum ferrum_flc_drill
+     $ pg_restore -d ferrum_flc_drill /private/tmp/claude-501/-Users-chinmoybhuyan-Desktop-Personal-ERP/eccac2fe-7ff7-481b-9bb5-09ef58fdbd46/scratchpad/drill/ferrum_flc_walk-t1.dump
+ok   Temporal starts from the copied store
+ok   Ferrum starts on the restored database
+ok   it notices it is not on the database it knew, and holds
+ok   both runs are there, read with the same keys
+ok   the second run's review is still open, as the backup had it
+ok   while held, the order asked for waits
+ok   the first run's order is not in the restored database
+     $ DATABASE_URL=postgres://ferrum:ferrum@localhost:5432/ferrum_flc_drill FERRUM_PACKAGES_DIR=/Users/chinmoybhuyan/Desktop/Personal/ERP/flc/walk/packages TEMPORAL_ADDRESS=http://127.0.0.1:7234 TEMPORAL_NAMESPACE=ferrum-flc /Users/chinmoybhuyan/Desktop/Personal/ERP/flc/target/debug/ferrum task release_restore note:'Drill: checked the restored database against the order book' > /private/tmp/claude-501/-Users-chinmoybhuyan-Desktop-Personal-ERP/eccac2fe-7ff7-481b-9bb5-09ef58fdbd46/scratchpad/drill/release.log 2>&1
+ok   a person releases the hold
+ok   released, the held order is made
+ok   and only once
+ok   the first run, whose history says it ordered, is named for a person: no receipt here
+ok   and nothing ordered again for it by itself
+up after 16s
+
+the drill held

@@ -332,7 +332,7 @@ async fn scalar<T: for<'r> sqlx::Decode<'r, sqlx::Postgres> + sqlx::Type<sqlx::P
     bind: Uuid,
 ) -> T {
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();
-    let v: T = sqlx::query_scalar(sql).bind(bind).fetch_one(&mut *tx).await.unwrap();
+    let v: T = sqlx::query_scalar(sql).bind(bind).fetch_one(&mut *tx).await.unwrap_or_else(|e| panic!("{sql}: {e}"));
     tx.commit().await.unwrap();
     v
 }
@@ -397,14 +397,15 @@ fn processes_keep_their_business_records() {
 
 async fn scenario() {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 12, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 12, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core")).expect("core");
     let files: BTreeMap<String, String> =
         [("package.yaml", PACKAGE), ("entities/procs.yaml", ENTITIES)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     let pkg = ferrum_meta::catalog::load_package_files(&files).expect("package");
+    let catalog = Catalog::from_packages(vec![core, pkg]).unwrap();
     let settings = KernelSettings { process_runtime: true, ..Default::default() };
-    let k = Kernel::boot(db, Catalog::from_packages(vec![core, pkg]).unwrap(), HookRegistry::default(), settings, None).await.expect("boot");
+    let k = Kernel::boot(db, catalog.clone(), HookRegistry::default(), settings.clone(), None).await.expect("boot");
     let admin = workspace(&k, "acme").await;
     let admin2 = user(&k, &admin, "admin2@acme.test", &[], true).await;
     // The requester also holds the reviewer's role: still not theirs to decide.
@@ -721,7 +722,7 @@ async fn scenario() {
     candidate["version"] = json!("1.2.0");
     candidate["decisions"][0]["rows"][0]["match"]["total"]["gt"] = json!("6000");
     candidate["processes"][0]["nodes"][3]["input"]["values.status"] = json!("\"Shadowed\"");
-    let shadow = k.shadow_solution(&admin, Some(&candidate.to_string()), None, 50).await.unwrap();
+    let shadow = k.shadow_solution(&admin, Some(&candidate.to_string()), None, 50, &BTreeMap::new()).await.unwrap();
     assert_eq!((shadow["against"]["kind"].as_str(), shadow["against"]["version"].as_str()), (Some("release"), Some("1.0.0")), "{shadow}");
     let cases = shadow["cases"].as_array().unwrap();
     assert!(cases.len() >= 10, "{shadow}");
@@ -748,8 +749,28 @@ async fn scenario() {
     let steps: Vec<&str> = refused_then["now"]["steps"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
     assert!(!steps.contains(&"delivered"), "it stopped at the refusal, not after waiting for a delivery: {refused_then}");
     assert_eq!(shadow["differing"].as_u64(), Some(cases.iter().filter(|c| c["same"] == json!(false)).count() as u64));
+    // A step the candidate adds has no answer on record: not modelled, unless the person assumes one, which each
+    // case then lists.
+    let mut added: Value = serde_json::from_str(&source()).unwrap();
+    added["version"] = json!("1.4.0");
+    added["processes"][0]["nodes"][0]["next"] = json!("check");
+    let check = json!({"type": "query", "id": "check", "label": "Read it again", "capability": {"id": "procs.request.read", "version": "1.0.0"},
+        "input": {"id": "trigger.id"}, "next": "decide", "on_error": "attention"});
+    added["processes"][0]["nodes"].as_array_mut().unwrap().insert(1, check);
+    let blind = k.shadow_solution(&admin, Some(&added.to_string()), None, 5, &BTreeMap::new()).await.unwrap();
+    assert!(blind["cases"].as_array().unwrap().iter().all(|c| c["candidate"]["not_modelled"].as_array().unwrap().contains(&json!("check"))), "{blind}");
+    // Assumed answers fill only what history lacks: the recorded read of the request still answers "snapshot".
+    let assume = BTreeMap::from([
+        ("check".to_string(), Invoked::Done { output: json!({"total": "5000"}) }),
+        ("snapshot".to_string(), Invoked::Refused { code: "forbidden".into(), message: "assumed".into() }),
+    ]);
+    let seen = k.shadow_solution(&admin, Some(&added.to_string()), None, 5, &assume).await.unwrap();
+    for c in seen["cases"].as_array().unwrap() {
+        assert_eq!(c["assumed"], json!(["check"]), "{c}");
+        assert!(c["candidate"]["not_modelled"].as_array().unwrap().is_empty(), "{c}");
+    }
     assert_eq!(counts().await, before, "nothing ran, changed or was kept");
-    assert_eq!(code(&k.shadow_solution(&reviewer, Some(&candidate.to_string()), None, 5).await.unwrap_err()), "forbidden");
+    assert_eq!(code(&k.shadow_solution(&reviewer, Some(&candidate.to_string()), None, 5, &BTreeMap::new()).await.unwrap_err()), "forbidden");
 
     // One writer at the cutover from an automation (FLC-MIG-003). Each of its events is run by it or by the
     // solution imported from it, never both and never neither, whichever of the two comes to the event first:
@@ -777,7 +798,7 @@ async fn scenario() {
     ferrum_kernel::automation::run_for_event(&k, &e1).await.unwrap();
     k.accept_event(&e2).await.unwrap();
     // Before it takes over, the imported solution is compared with what the automation did, event by event.
-    let beside = k.shadow_solution(&admin, Some(&text), None, 20).await.unwrap();
+    let beside = k.shadow_solution(&admin, Some(&text), None, 20, &BTreeMap::new()).await.unwrap();
     assert_eq!(beside["against"]["kind"], "automation", "{beside}");
     let first = beside["cases"].as_array().unwrap().iter().find(|c| c["event"] == json!(e1.id)).expect("the event the automation ran").clone();
     assert_eq!(
@@ -855,6 +876,49 @@ async fn scenario() {
     d.settle().await;
     assert_eq!(scalar::<i64>(&k, admin.tenant, "select count(*) from e_order where request = $1", r12).await, 1, "done once it is back");
     assert_eq!(scalar::<String>(&k, admin.tenant, "select status from logic_task where id = $1", item).await, "resolved");
+    // The run says how often its order was tried, and how the last try went (FLC-OPS-001).
+    let tried = &k.logic_run(&admin, run12).await.unwrap()["attempts"]["order"];
+    assert!(tried["attempts"].as_i64().unwrap() >= 2 && tried["last"] == "done", "{tried}");
+
+    // A database restored to a point before Temporal's histories (FLC-OPS-005): the run says it ordered, and no
+    // receipt of it is here. Administrators are told to check; nothing is ordered again by itself.
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    let gone = sqlx::query("delete from logic_effect where effect_key = $1").bind(format!("{run1}/order")).execute(&mut *tx).await.unwrap().rows_affected();
+    tx.commit().await.unwrap();
+    assert_eq!(gone, 1, "the receipt, as the restored database lacks it");
+    // As a server notices a restore and a person releases its hold; a bare test kernel has not looked yet.
+    sqlx::query(
+        "insert into platform_incarnation (system_identifier, timeline, database_oid, released_at) values (0, 1, 0, now()) \
+         on conflict (id) do update set released_at = now()",
+    )
+    .execute(&k.db.pool)
+    .await
+    .unwrap();
+    let state1 = d.runs[&run1].1.clone();
+    k.process_report(admin.tenant, run1, &state1).await.unwrap();
+    let lost: Uuid = scalar(&k, admin.tenant, "select id from logic_task where run_id = $1 and activation = 'order#restored' and status = 'open'", run1).await;
+    assert!(k.my_logic_tasks(&admin).await.unwrap().iter().any(|t| t["id"] == json!(lost)), "administrators see it");
+    let said: Value = scalar(&k, admin.tenant, "select detail from logic_task where id = $1", lost).await;
+    assert!(said["why"].as_str().unwrap().contains("Nothing is done again by itself"), "{said}");
+    k.process_report(admin.tenant, run1, &state1).await.unwrap();
+    assert_eq!(
+        scalar::<i64>(&k, admin.tenant, "select count(*) from logic_task where run_id = $1 and activation = 'order#restored'", run1).await,
+        1,
+        "said once"
+    );
+    assert_eq!(scalar::<i64>(&k, admin.tenant, "select count(*) from e_order where request = $1", r1).await, 1, "and not ordered again");
+    // A run still open, whose history is ahead too, says so as soon as it is asked where it stands: as every
+    // open run is when a restore's hold is released.
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    let gone = sqlx::query("delete from logic_effect where effect_key = $1").bind(format!("{run10}/order")).execute(&mut *tx).await.unwrap().rows_affected();
+    tx.commit().await.unwrap();
+    assert_eq!(gone, 1);
+    // Held, as a server holds when it notices a restore; a person releases it, and every open run is asked.
+    sqlx::query("update platform_incarnation set held_since = now(), held_because = 'a restore'").execute(&k.db.pool).await.unwrap();
+    k.release_hold(&admin, "checked the restored database against the order book").await.unwrap();
+    d.settle().await;
+    let _: Uuid = scalar(&k, admin.tenant, "select id from logic_task where run_id = $1 and activation = 'order#restored' and status = 'open'", run10).await;
+    sqlx::query("update platform_incarnation set released_at = null").execute(&k.db.pool).await.unwrap();
 
     // A waiting run moves onto another release only by a mapping one administrator plans and another approves
     // (FLC-MIG-004). The release that runs now has no "review": unmapped, or mapped to a step that does not wait
@@ -933,4 +997,69 @@ async fn scenario() {
     let refusal: Value =
         scalar(&k, admin.tenant, "select diff from audit_event where record_id = $1 and action = 'migration_refused' order by id desc limit 1", run14).await;
     assert!(refusal["why"][0].as_str().unwrap().contains("review was approved meanwhile"), "{refusal}");
+
+    // An event and the wait for it arriving at the same moment, again and again: each pair ends matched, never
+    // the event kept as early while the wait waits on (FLC-PROC-004). Found by the walk on the assembled build.
+    for i in 0..60 {
+        let subject = Uuid::now_v7();
+        let ev = OutboxEvent {
+            id: 9_000_000 + i,
+            tenant_id: admin.tenant,
+            topic: "Order.updated".into(),
+            entity: Some("Order".into()),
+            record_id: Some(subject),
+            payload: json!({"doc": {"id": subject, "reference": format!("RACE-{i}")}}),
+            ..Default::default()
+        };
+        let (activation, value, timeout) = (format!("race{i}"), json!(subject.to_string()), json!("P1D"));
+        let (accepted, waited) =
+            tokio::join!(k.accept_event(&ev), k.process_register_wait(admin.tenant, run1, &activation, "procs.order.updated", &value, &timeout));
+        accepted.unwrap();
+        let waited = waited.unwrap();
+        let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+        let state: String = sqlx::query_scalar("select status from logic_wait where run_id = $1 and activation = $2")
+            .bind(run1)
+            .bind(&activation)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert!(state == "matched" || matches!(waited, Waited::Matched(_)), "round {i}: the wait is {state} and registering said {waited:?}");
+    }
+
+    // A replica that has not yet heard of an activation made on another takes it up with the very next event:
+    // what starts runs follows the workspace's version in the database, not the replica's last word of it
+    // (FLC-MIG-003). This one has its own pool and no listeners, so it hears of nothing by itself, and it has
+    // read the workspace, and what starts runs there, just before the activation.
+    let pool = Db::connect(DbConfig { url, max_connections: 4, ..Default::default() }).await.expect("connect");
+    let replica = Kernel::boot(pool, catalog, HookRegistry::default(), settings, None).await.expect("a replica");
+    replica.accept_event(&OutboxEvent { id: 9_100_000, tenant_id: admin.tenant, topic: "Nothing.happened".into(), ..Default::default() }).await.unwrap();
+    let noted = json!({
+        "schema_version": "ferrum.solution/1", "kind": "Solution", "id": "acme.noted", "version": "1.0.0", "label": "Orders noted",
+        "processes": [{"id": "note", "label": "Note an order", "trigger": {"event": "procs.order.created", "business_key": "trigger.id"},
+            "entry": "noted", "max_steps": 5, "nodes": [{"type": "end", "id": "noted", "label": "Noted", "outcome": "completed"}]}]
+    });
+    let kept = k.save_release(&admin, &noted.to_string()).await.unwrap();
+    let noted_release: Uuid = kept["id"].as_str().unwrap().parse().unwrap();
+    let growth: Vec<String> = k.logic_release_review(&admin2, noted_release).await.unwrap()["diff"]["privilege_growth"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    k.review_release_consenting(&admin2, noted_release, kept["artifact_digest"].as_str().unwrap(), &growth, true, "").await.unwrap();
+    k.activate_release(&admin, noted_release, None).await.unwrap();
+    let order: Uuid = k.insert(&requester, "Order", obj(json!({"reference": "REPLICA-1"}))).await.unwrap()["id"].as_str().unwrap().parse().unwrap();
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    let e: (i64, String, Option<String>, Option<Uuid>, Value) =
+        sqlx::query_as("select id, topic, entity, record_id, payload from outbox where topic = 'Order.created' and record_id = $1")
+            .bind(order)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+    let created = OutboxEvent { id: e.0, tenant_id: admin.tenant, topic: e.1, entity: e.2, record_id: e.3, payload: e.4, ..Default::default() };
+    replica.accept_event(&created).await.unwrap();
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    let runs: i64 = sqlx::query_scalar("select count(*) from logic_run where trigger_event = $1").bind(created.id).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(runs, 1, "the replica started the run, under an activation it had not heard of");
 }
