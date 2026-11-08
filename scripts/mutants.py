@@ -123,6 +123,8 @@ MUTANTS = [
     ("approval-may-come-later", "crates/logic/src/compile.rs", '&& (!s.tasks.contains(task) || !env.vars.contains_key(task))', '&& !s.tasks.contains(task)', LOGIC_UNIT),
     ("history-not-sealed", "crates/process/src/lib.rs", '    options.data_converter = converter(s.keys.clone());', '    let _ = converter(s.keys.clone());', RUNTIME),
     ("run-started-again", "crates/process/src/lib.rs", 'options.id_reuse_policy = WorkflowIdReusePolicy::RejectDuplicate;', 'options.id_reuse_policy = WorkflowIdReusePolicy::AllowDuplicate;', RUNTIME),
+    ("late-delivery-retried", "crates/process/src/lib.rs", 'Err(e) if matches!(k.process_load(', 'Err(e) if false && matches!(k.process_load(', RUNTIME),
+    ("case-close-waits-for-deliveries", "crates/logic/src/process.rs", 'for (task, output) in recorded.as_object().into_iter().flatten() {', 'for (task, output) in recorded.as_object().into_iter().flatten().take(0) {', LOGIC_UNIT),
     ("capability-input-says-who-asks", "crates/logic/src/capability.rs", "map.keys().find(|k| CONTEXT_FIELDS.contains(&k.as_str()) && !self.declares(k))", "map.keys().find(|k| k.is_empty() && !self.declares(k))", CAPABILITY),
     # The directory of people is the members'.
     ("directory-read-by-anyone", "crates/kernel/src/collab.rs", "if !ctx.is_system && self.user_kind(ctx.tenant, ctx.user).await? != \"member\" {", "if false {", SHELL),

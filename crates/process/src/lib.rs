@@ -371,9 +371,10 @@ pub struct Start {
 /// The activation an event closes, when it closes one.
 fn closes(e: &Event) -> Option<&str> {
     match e {
-        Event::TaskDecided { activation, .. } | Event::Signal { activation, .. } | Event::CaseClosed { activation } | Event::Recovered { activation, .. } => {
-            Some(activation)
-        }
+        Event::TaskDecided { activation, .. }
+        | Event::Signal { activation, .. }
+        | Event::CaseClosed { activation, .. }
+        | Event::Recovered { activation, .. } => Some(activation),
         _ => None,
     }
 }
@@ -671,7 +672,16 @@ impl EventSink for Dispatch {
                 _ => Ok(()),
             },
             DELIVER_TOPIC => match (run(), ev.payload.get("event").cloned().and_then(|e| serde_json::from_value::<Event>(e).ok())) {
-                (Some(run), Some(event)) => self.deliver(ev.tenant_id, run, event).await,
+                (Some(run), Some(event)) => match self.deliver(ev.tenant_id, run, event).await {
+                    // Nothing waits for a run that has ended. One that has not (its start still on its way) is
+                    // tried again, so a cancellation sent first is not lost.
+                    Err(e) if matches!(k.process_load(ev.tenant_id, run).await.map(|l| l.status), Ok(s) if s == "completed" || s == "refused" || s == "cancelled") =>
+                    {
+                        tracing::debug!(%run, "dropped a delivery to a run that has ended: {e}");
+                        Ok(())
+                    }
+                    other => other,
+                },
                 _ => Ok(()),
             },
             _ => Ok(()),

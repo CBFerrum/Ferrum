@@ -88,7 +88,8 @@ release through an activity, so its bytes are in the history, feeds the state ma
 carries out what it asks as activities through the kernel. Each effect's activity id is its node's activation,
 so a changed interpreter fails on replay instead of running a different effect (the spike's rule, decisions
 L-01). Decisions, events, recoveries and cancellations reach a run through the outbox and Temporal signals,
-and are handled once, in order. Activities are retried until they answer, so a database or dependency away for
+and are handled once. Each says all it needs (a case's close carries every finished task's result), so one
+that overtakes another still counts; a delivery to a run that has ended is dropped. Activities are retried until they answer, so a database or dependency away for
 an hour stalls a run but never ends it; an effect retried finds its receipt. A run continues as new after 500 events, or sooner when Temporal suggests it,
 carrying its state, deadlines and undelivered signals.
 

@@ -557,7 +557,10 @@ impl Kernel {
     /// What a closed task told its run, rebuilt from its decisions.
     async fn decided_event(&self, tx: &mut Tx, tenant: Uuid, task: Uuid, activation: &str, kind: &str, status: &str) -> Result<Option<Event>> {
         if kind == "case" {
-            return Ok((status == "done").then(|| Event::CaseClosed { activation: activation.into() }));
+            return Ok(match status {
+                "done" => Some(Event::CaseClosed { activation: activation.into(), done: case_done(tx, tenant, task).await? }),
+                _ => None,
+            });
         }
         // The decision that closed it: the last approval of an approved task (the one that made the count), or
         // the rejection.
@@ -1033,7 +1036,8 @@ impl Kernel {
             .bind(ctx.user)
             .execute(&mut *tx)
             .await?;
-        deliver(&mut tx, ctx.tenant, run, &Event::CaseClosed { activation }).await?;
+        let recorded = case_done(&mut tx, ctx.tenant, id).await?;
+        deliver(&mut tx, ctx.tenant, run, &Event::CaseClosed { activation, done: recorded }).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -1184,6 +1188,28 @@ fn filled(form: &Value, values: &Value) -> Result<()> {
         errors.push(crate::error::FieldError::new(k, "is not asked by this task"));
     }
     if errors.is_empty() { Ok(()) } else { Err(Error::Validation(errors)) }
+}
+
+/// A case's finished tasks as their outputs: what each was filled in with, and who did it when.
+async fn case_done(tx: &mut Tx, tenant: Uuid, task: Uuid) -> Result<Value> {
+    let rows: Vec<(String, Value, Uuid, Uuid, DateTime<Utc>)> =
+        sqlx::query_as("select part, values, by_user, id, decided_at from logic_task_decision where tenant_id = $1 and task_id = $2 and decision = 'done'")
+            .bind(tenant)
+            .bind(task)
+            .fetch_all(&mut **tx)
+            .await?;
+    Ok(Value::Object(
+        rows.into_iter()
+            .map(|(part, values, by, id, at)| {
+                let mut out = values.as_object().cloned().unwrap_or_default();
+                out.insert("decision".into(), json!("done"));
+                out.insert("decision_id".into(), json!(id));
+                out.insert("by".into(), json!(by));
+                out.insert("at".into(), json!(at.to_rfc3339()));
+                (part, Value::Object(out))
+            })
+            .collect(),
+    ))
 }
 
 /// Queues something that happened for a run, in the transaction that made it so: its runtime hands it over.
