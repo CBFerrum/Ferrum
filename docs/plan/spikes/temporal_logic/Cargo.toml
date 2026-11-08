@@ -1,0 +1,24 @@
+# Spike L-01 (docs/plan/spike-l01-temporal.md): does Temporal hold what Ferrum's durable processes need?
+# Not part of Ferrum's build; see run.sh in this folder.
+[package]
+name = "temporal-logic-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# A workspace of its own: Ferrum's does not build it.
+[workspace]
+
+[dependencies]
+temporalio-sdk = { version = "=1.1.2", default-features = false }
+temporalio-client = { version = "=1.1.2", default-features = false }
+temporalio-common = { version = "=1.1.2", default-features = false }
+temporalio-macros = "=1.1.2"
+temporalio-workflow = "=1.1.2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres"] }
+aes-gcm = "0.10"
+url = "2"

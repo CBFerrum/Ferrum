@@ -55,3 +55,26 @@ independently (`BLOCK-SECURITY-REVIEW`).
 These run without row-level limits or change who can do what, and each is audited: deprovisioning,
 SCIM, erasure, replays, plugin installation, permission changes, secret reads, support sessions
 (`user_session.actor`).
+
+## Customer logic (the Logic Platform program)
+
+What a customer writes is treated as program input that will run with real rights
+([docs/logic](../logic/README.md)). Rows marked *planned* describe what the program builds; their
+evidence column fills in as each lands, and nothing here is claimed before its test exists.
+
+| Surface | Threat | Mitigation | Evidence |
+|---|---|---|---|
+| Solution source and imported packs | Duplicate keys that read differently in two parsers, remote schemas fetched at compile time, oversized nesting | Strict parser: duplicate keys, unknown keys, remote references and depth beyond the cap refused before anything resolves | *Planned (W2)* |
+| A pack's requested capabilities | A pack grants itself an administrator's action | Declaring is asking: grants come from a reviewed deployment binding, by someone other than the author | *Planned (W1, W4)* |
+| Capability inputs | A tenant id, role or another workspace's record passed as an argument | Tenant and rights come only from the caller's context; references resolve inside its scope; such fields are refused | *Planned (W1)* |
+| Tenant rules in a record's transaction | Mail, HTTP, files, models or equipment reached before the record commits | The compiler refuses effects in rule phases, and rules run with no host to call | *Planned (W2)*; plugins already refused (`after_commit_it`) |
+| Rule messages, traces, notifications | A rule reads a hidden field and says it in an error | Outputs carry the classification of what they read and are checked against the reader | *Planned (W2)* |
+| Automations' e-mail | Sent from inside the transaction: a later failure retries and mails again | Queued in the outbox in the same transaction (defect found 8 November) | *Planned (W2)* |
+| Signals into a waiting process | A well-formed signal for another workspace or record advances a process | The emitter is authenticated, the target resolved by business reference inside the workspace, conflicting duplicates flagged | *Planned (W3)* |
+| Approvals | The requester approves their own request; inputs change after approval | The requester is excluded whatever roles they hold; a decision is bound to a digest of its material inputs and checked again before the effect | *Planned (W3)*; record workflows' `not_creator` exists |
+| Effects and retries | A retry or a lost answer orders twice | One logical key per effect, not per attempt; a changed input under a used key is a conflict; an unknown outcome is reconciled, never resent blindly | *Planned (W1, W3)* |
+| The process backend | Its administration reached by customers; histories holding records or secrets | Ferrum's API binds every workflow to a workspace; payloads are references through Ferrum's codec; the backend is not exposed | *Planned (W3)* |
+| Restores | An effect sent again because a restored record says pending | Effects fenced by a recovery epoch until reconciled | *Planned (W8)* |
+| Simulation | A test run sends real mail or moves stock | Effects captured by default; a sandbox run is separate and labelled | *Planned (W4)* |
+| Analysis | A question answered from rows the asker may not read, or from a cache another person filled | Studio's row scopes for every joined entity; caches keyed by workspace, effective rights and policy revision | *Planned (W6)*; Studio's scopes exist |
+| Intelligence | A retrieved record tells the agent to write or reveal | Proposals only, into an ordinary reviewed process; budgets on steps, tokens, queries and time | *Planned (W7)* |
