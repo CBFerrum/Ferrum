@@ -281,3 +281,163 @@ pub(crate) async fn privilege_growth(tx: &mut crate::db::Tx, tenant: Uuid, relea
     let running: Option<Release> = rows.iter().find(|(id, _, _)| *id != release).and_then(|(_, r, _)| serde_json::from_value(r.clone()).ok());
     Ok(diff::diff(running.as_ref(), &this).privilege_growth)
 }
+
+// ───────────────────────────── importing automations ─────────────────────────────
+
+/// `doc.` in an automation's expressions is the triggering record, which a process calls `trigger`.
+fn trigger_of(cel: &str) -> String {
+    let mut out = String::with_capacity(cel.len());
+    let bytes = cel.as_bytes();
+    let mut i = 0;
+    while i < cel.len() {
+        let boundary = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_' || bytes[i - 1] == b'.');
+        if boundary && cel[i..].starts_with("doc.") {
+            out.push_str("trigger.");
+            i += 4;
+        } else {
+            let c = cel[i..].chars().next().unwrap_or_default();
+            out.push(c);
+            i += c.len_utf8();
+        }
+    }
+    out
+}
+
+impl Kernel {
+    /// Each automation of the workspace as a draft Solution (FLC-MIG-001): the same event as its trigger, its
+    /// condition carried as written into a decision, its actions as steps through capabilities, and where it
+    /// came from in its description. An automation ran with its saver's administrator rights; a process runs
+    /// with the requester's, and what it may change is consented to when its release is reviewed, so nothing
+    /// carries the old rights over. What does not map (a notification to a role or a field) is left as a step
+    /// with nothing to say who, which the check refuses until a person decides. An automation imported before
+    /// is not imported again. Nothing is released or turned off: the automation runs until a person stops it.
+    pub async fn import_automations(&self, ctx: &Ctx) -> Result<Vec<Value>> {
+        if !ctx.is_admin {
+            return Err(Error::Forbidden("an administrator imports automations".into()));
+        }
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let autos: Vec<(Uuid, String, String, String, Option<String>, Value, bool)> = sqlx::query_as(
+            "select id, name, entity, event, condition, actions, is_active from automation where tenant_id = $1 order by created_at, id limit 500",
+        )
+        .bind(ctx.tenant)
+        .fetch_all(&mut *tx)
+        .await?;
+        let existing: Vec<String> = sqlx::query_scalar("select solution from logic_draft where tenant_id = $1").bind(ctx.tenant).fetch_all(&mut *tx).await?;
+        tx.commit().await?;
+        let mut out = Vec::new();
+        for (id, name, entity, event, condition, actions, active) in autos {
+            let solution = format!("workspace.automation_{}", id.simple());
+            if existing.contains(&solution) {
+                out.push(json!({"automation": id, "name": name, "skipped": "imported already"}));
+                continue;
+            }
+            let Some(ent) = ctx.schema.entity(&entity) else {
+                out.push(json!({"automation": id, "name": name, "skipped": format!("{entity} is not installed")}));
+                continue;
+            };
+            let package = ent.package.clone();
+            let version = |cap: &str| self.capability(ctx, cap).map(|c| c.version).unwrap_or_else(|_| "1.0.0".into());
+            let mut notes: Vec<String> = Vec::new();
+            let mut steps: Vec<Value> = Vec::new();
+            let list = crate::automation::validate_actions(&actions).unwrap_or_default();
+            for (i, a) in list.iter().enumerate() {
+                let step = format!("step_{}", i + 1);
+                let action = |cap: String, input: Value, label: String| {
+                    let v = version(&cap);
+                    json!({"type": "action", "id": step, "label": label, "capability": {"id": cap, "version": v}, "input": input,
+                           "next": "", "on_error": "attention", "on_unknown": "attention"})
+                };
+                let values = |m: &std::collections::BTreeMap<String, String>| -> Value {
+                    Value::Object(m.iter().map(|(k, v)| (format!("values.{k}"), json!(trigger_of(v)))).collect())
+                };
+                steps.push(match a {
+                    crate::automation::AutomationAction::SetFields { values: v } => {
+                        let mut input = values(v);
+                        input["id"] = json!("trigger.id");
+                        action(format!("{package}.{}.update", ferrum_logic::capability::snake(&entity)), input, format!("Set fields on the {entity}"))
+                    }
+                    crate::automation::AutomationAction::CreateDocument { entity: other, values: v } => {
+                        let pkg = ctx.schema.entity(other).map(|e| e.package.clone()).unwrap_or_else(|| package.clone());
+                        action(format!("{pkg}.{}.create", ferrum_logic::capability::snake(other)), values(v), format!("Create a {other}"))
+                    }
+                    crate::automation::AutomationAction::Email { to, subject, body } => action(
+                        "ferrum.mail".into(),
+                        json!({"to": trigger_of(to), "subject": trigger_of(subject), "body": trigger_of(body)}),
+                        "Send an e-mail".into(),
+                    ),
+                    crate::automation::AutomationAction::Notify { to, title, body } => {
+                        let user = match to.strip_prefix("user:") {
+                            Some(u) => json!(format!("\"{u}\"")),
+                            None => {
+                                notes.push(format!("{step}: it told {to}; say which person a process tells"));
+                                json!("")
+                            }
+                        };
+                        // A title and a body are expressions, as they were in the automation.
+                        let mut input = json!({"user": user, "title": trigger_of(title)});
+                        if let Some(b) = body {
+                            input["body"] = json!(trigger_of(b));
+                        }
+                        action("ferrum.notify".into(), input, "Tell someone".into())
+                    }
+                });
+            }
+            if steps.is_empty() {
+                notes.push("it had no actions this platform still reads".into());
+            }
+            // Each step leads to the next, the last to done.
+            for i in 0..steps.len() {
+                let next = if i + 1 < steps.len() { format!("step_{}", i + 2) } else { "done".into() };
+                steps[i]["next"] = json!(next);
+            }
+            let first = if steps.is_empty() { "done".to_string() } else { "step_1".to_string() };
+            let (entry, decisions) = match condition.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+                Some(cel) => {
+                    steps.insert(
+                        0,
+                        json!({"type": "decision", "id": "applies", "label": "Whether it applies", "decision": "applies",
+                               "routes": [{"outcome": "run", "target": first}, {"outcome": "skip", "target": "not_for_this"}], "on_error": "attention"}),
+                    );
+                    let table = json!({"id": "applies", "hit_policy": "first", "inputs": [{"name": "doc", "value": "trigger"}],
+                                       "rows": [{"id": "condition", "when": cel, "outcome": "run"}], "default": "skip"});
+                    ("applies".to_string(), vec![table])
+                }
+                None => (first, vec![]),
+            };
+            steps.push(json!({"type": "end", "id": "done", "label": "Done", "outcome": "completed"}));
+            steps.push(json!({"type": "end", "id": "not_for_this", "label": "Not for this record", "outcome": "completed"}));
+            steps.push(json!({"type": "suspend", "id": "attention", "label": "Needs attention", "reason": "A step did not go as planned: look into it before anything more is done."}));
+            let source = json!({
+                "schema_version": "ferrum.solution/1", "kind": "Solution", "id": solution, "version": "0.1.0", "label": name,
+                "description": format!(
+                    "Imported from the automation {name} ({id}){} on {}. It ran with the rights of the administrator who saved it; this runs with the rights of whoever starts it, and what it may change is consented to when its release is reviewed.{}",
+                    if active { "" } else { ", which was off" },
+                    chrono::Utc::now().date_naive(),
+                    if notes.is_empty() { String::new() } else { format!(" To decide: {}.", notes.join("; ")) }
+                ),
+                "requires": [],
+                "decisions": decisions,
+                "processes": [{"id": "automation", "label": name, "trigger": {"event": format!("{package}.{}.{event}", ferrum_logic::capability::snake(&entity)), "business_key": "trigger.id"},
+                               "entry": entry, "max_steps": 50, "nodes": steps}]
+            });
+            // What the capabilities need is declared as the guided editor would: each one's installed version.
+            let mut source = source;
+            let caps: std::collections::BTreeMap<String, Value> = source["processes"][0]["nodes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|n| n.get("capability").cloned())
+                .filter_map(|c| Some((c["id"].as_str()?.to_string(), c)))
+                .collect();
+            source["requires"] = json!(caps.into_values().collect::<Vec<_>>());
+            let text = source.to_string();
+            let draft = self.create_logic_draft(ctx, &text).await?;
+            let check = match self.compile_solution(ctx, &text).await? {
+                Ok(_) => json!({"ok": true}),
+                Err(d) => json!({"ok": false, "diagnostics": serde_json::to_value(&d).unwrap_or_default()}),
+            };
+            out.push(json!({"automation": id, "name": name, "draft": draft, "check": check, "notes": notes, "active": active}));
+        }
+        Ok(out)
+    }
+}

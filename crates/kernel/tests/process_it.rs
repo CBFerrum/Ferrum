@@ -443,6 +443,19 @@ async fn scenario() {
         .await
         .unwrap();
     assert!(matches!(&other, Invoked::Refused { code, .. } if code == "input_changed"), "{other:?}");
+    // Held after a restore: an effect waits, to be tried again once a person has released the hold; a read
+    // goes ahead (FLC-OPS-004).
+    let mut sys = k.db.system_tx().await.unwrap();
+    sqlx::query("update platform_incarnation set held_since = now(), held_because = 'a restore was noticed'").execute(&mut *sys).await.unwrap();
+    sys.commit().await.unwrap();
+    let held = k.process_invoke(admin.tenant, run1, "order_held", "procs.order.create", "1.0.0", json!({"values": {"reference": "HELD"}}), true, None).await;
+    assert!(matches!(&held, Err(Error::Unavailable(m)) if m.contains("held after a restore")), "{held:?}");
+    let read = k.process_invoke(admin.tenant, run1, "probe_held", "procs.request.read", "1.0.0", json!({"id": r1.to_string()}), false, None).await.unwrap();
+    assert!(matches!(read, Invoked::Done { .. }), "a read changes nothing: {read:?}");
+    k.release_hold(&admin, "the orders after the restore point were checked against the supplier").await.unwrap();
+    let released =
+        k.process_invoke(admin.tenant, run1, "order_held", "procs.order.create", "1.0.0", json!({"values": {"reference": "HELD"}}), true, None).await.unwrap();
+    assert!(matches!(released, Invoked::Done { .. }), "{released:?}");
     assert_eq!(scalar::<i64>(&k, admin.tenant, "select count(*) from e_order where request = $1", r1).await, 1);
     // A record approved and then deleted no longer holds the approval an effect relies on.
     let gone = k.insert(&admin, "Order", obj(json!({"reference": "GONE"}))).await.unwrap();

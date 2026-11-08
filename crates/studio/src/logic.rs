@@ -9,6 +9,7 @@
 //! | `PUT /solutions/drafts/{id}` | `If-Match: "v{version}"`, `{source}` → `{version}`; 409 when another save came first |
 //! | `DELETE /solutions/drafts/{id}` | `If-Match: "{version}"` |
 //! | `POST /solutions/drafts/{id}/release` | `If-Match: "{version}"` → the kept release |
+//! | `POST /solutions/import/automations` | each automation as a draft Solution (administrators) |
 //! | `POST /solutions/compile` | `{source}` → `{ok, release?, diagnostics}`; keeps nothing |
 //! | `POST /solutions/simulate` | `{source \| release, scenario}` → the timeline; reaches nothing |
 //! | `GET /solutions/releases/{id}` | → the release, what runs now, reviews, and the semantic diff |
@@ -99,6 +100,8 @@ async fn route(k: &Kernel, ctx: &Ctx, req: &SiteRequest, m: &str, path: &[&str])
             ok(json!({}))
         }
         ("POST", ["solutions", "drafts", d, "release"]) => ok(k.release_logic_draft(ctx, id(d, "draft")?, if_match(req)?).await?),
+        // Each automation as a draft Solution, for a person to finish and someone else to review (FLC-MIG-001).
+        ("POST", ["solutions", "import", "automations"]) => ok(json!({"imported": k.import_automations(ctx).await?})),
         ("POST", ["solutions", "compile"]) => {
             let b = body(req)?;
             let source = text(&b, "source");
