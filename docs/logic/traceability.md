@@ -5,10 +5,10 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Not started | 25 |
-| Partial | 94 |
-| Implemented, unverified | 1 |
-| Verified in software | 3 |
+| Not started | 24 |
+| Partial | 91 |
+| Implemented, unverified | 2 |
+| Verified in software | 6 |
 | Blocked externally | 1 |
 | **All** | **124** |
 
@@ -27,15 +27,15 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
-| FLC-CAP-001 | Typed capability registry | Partial | AT-CAP-001 | 0 | Entity actions are declared with typed parameters and permissions, and MCP offers them as tools; nothing declares an effect class, output, idempotency, completion meaning or outcome lookup |
-| FLC-CAP-002 | Native invariants | Partial | AT-CAP-002 | 1 | Ledger entities refuse writes and read-only fields are kept from callers; there is no capability gate yet, so a no-code path can still choose generic record writes over an owning action |
-| FLC-CAP-003 | Trusted context | Partial | AT-CAP-003 | 0 | The tenant comes from the session and row-level security holds it in the database; capability inputs do not exist yet to be checked |
-| FLC-CAP-004 | Version and digest lock | Not started | AT-CAP-004 | 0 | No capability revisions exist |
+| FLC-CAP-001 | Typed capability registry | Implemented, unverified | AT-CAP-001 | 2 | Read from what a workspace installs, with effect, rights, input and output schemas, idempotency, completion and digest; the builder's endpoint, the agent's tools and the kernel agree digest for digest over ERP's packages (catalog_it). The builder's screens (W4) do not exist, so the case's UI is not yet part of it |
+| FLC-CAP-002 | Native invariants | Verified in software | AT-CAP-002 | 2 | A ledger offers no capability, a read-only field is the app's to set, and actions run through their owning app (capability_it, mutant capability-ledger-offered). Record updates remain capabilities for the fields an app leaves writable: an app protects a balance by making it read-only or a ledger |
+| FLC-CAP-003 | Trusted context | Verified in software | AT-CAP-003 | 2 | An input naming a workspace, a role or an administrator flag is refused unless the capability declares that field as data, and another workspace's records and receipts do not exist (capability_it, mutant capability-input-says-who-asks). Values resolved inside a process (references from a device message) come with W3 and W5 |
+| FLC-CAP-004 | Version and digest lock | Partial | AT-CAP-004 | 1 | Each capability carries its package's version and a digest of what it promises; asked for another version, the gate refuses (mutant capability-version-adopted). Keeping a waiting process on its old binding needs processes (W3) |
 | FLC-CAP-005 | Delegation modes | Partial | AT-CAP-005 | 0 | Jobs run with their creator's rights as they are now and service apps have accounts of their own; automations run on their saver's administrator rights, a third mode this program replaces |
-| FLC-CAP-006 | Completion semantics | Partial | AT-CAP-006 | 0 | Operational commands separate accepted from completed; business effects have no such states |
-| FLC-CAP-007 | Unknown outcomes | Partial | AT-CAP-007 | 0 | Operational commands wait in OutcomeUnknown for evidence and saga steps repeat under one key; no business capability declares an outcome lookup |
+| FLC-CAP-006 | Completion semantics | Partial | AT-CAP-006 | 0 | Each capability says what done means, and mail says it is queued, not delivered; a run waiting for the business outcome after an acceptance needs processes (W3) |
+| FLC-CAP-007 | Unknown outcomes | Partial | AT-CAP-007 | 0 | Each capability declares its unknown-outcome behaviour; a native receipt lets the outcome of a transactional action be looked up. External effects that can end unknown, and their reconciliation, come with W3 |
 | FLC-CAP-008 | Deprecation ownership | Not started | AT-CAP-008 | 0 | No capability revisions exist to deprecate |
-| FLC-SEC-001 | Least privilege grants | Partial | AT-SEC-001 | 0 | Edge flows separate author and reviewer; an automation needs an administrator to save it and runs with all of their rights |
+| FLC-SEC-001 | Least privilege grants | Partial | AT-SEC-001 | 1 | Capabilities come from installed apps and each needs its own rights, so declaring one grants nothing (mutant capability-rights-ignored); mail is an administrator's. Solution packs, their reviewers and deployers come with W2 and W4; an automation still runs with its saver's administrator rights |
 | FLC-SEC-002 | Deny precedence | Partial | AT-SEC-002 | 1 | A customization that makes a packaged required field optional is suspended; rules, workflows and tenant logic are not compared yet |
 | FLC-SEC-003 | Secret handles | Partial | AT-SEC-003 | 1 | Connectors and plugins name secrets by reference; no solution source or run history exists yet to keep them out of |
 | FLC-SEC-004 | WASM budgets | Partial | AT-SEC-004 | 1 | Plugins run under memory limits, epoch deadlines that count host calls, and a cap on host calls; no test here runs an endless guest beside a slow host call |
@@ -51,7 +51,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FLC-COMP-001 | Strict parsing | Partial | AT-COMP-001 | 0 | Package YAML and Studio specs refuse unknown keys; duplicate JSON keys are not detected anywhere, and no solution source exists |
 | FLC-COMP-002 | Business types | Partial | AT-COMP-002 | 0 | Money and tax go through ferrum-calc decimals; expressions have no typed money, quantity or reference |
 | FLC-COMP-003 | Deterministic expressions | Partial | AT-COMP-003 | 0 | Edge flows evaluate purely in exact decimals; kernel CEL reads the wall clock when no time is supplied |
-| FLC-COMP-004 | Canonical identity | Partial | AT-COMP-004 | 0 | Cloud canonicalizes intents (narrowed RFC 8785) in a private repository; nothing hashes logic definitions |
+| FLC-COMP-004 | Canonical identity | Partial | AT-COMP-004 | 1 | Cloud's canonical JSON is now the platform's (crates/logic), and capabilities and invocations are digested with it; logic definitions do not exist yet to hash |
 | FLC-COMP-005 | Dependency closure | Partial | AT-COMP-005 | 0 | Edge copies a reviewed subflow in at check time and stops a flow whose subflow changed; nothing else resolves dependencies |
 | FLC-COMP-006 | Graph semantics | Partial | AT-COMP-006 | 0 | Edge flows are checked for cycles and missing steps; process graphs do not exist |
 | FLC-COMP-007 | Bounded iteration | Partial | AT-COMP-007 | 0 | An Edge flow cannot loop and bounds one message's work; processes with bounded loops do not exist |
@@ -72,7 +72,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
 | FLC-PROC-001 | Idempotent starts | Partial | AT-PROC-001 | 1 | A saga starts in the caller's transaction with a dedupe key; no process pins a release at acceptance |
-| FLC-PROC-002 | Native action receipts | Partial | AT-PROC-002 | 1 | Idempotent inserts keep a key and request hash; actions have no receipts |
+| FLC-PROC-002 | Native action receipts | Verified in software | AT-PROC-002 | 1 | The receipt commits in the change's transaction: a repeat gets it, two racing get one change, a failure before the commit leaves neither (capability_it; mutants capability-no-receipt, capability-same-key-other-input). A database crash mid-commit is PostgreSQL's to keep atomic; receipts are not yet removed after their retention |
 | FLC-PROC-003 | External effect identity | Partial | AT-PROC-003 | 1 | A saga step runs under the same key on every attempt; no input digest is bound to it |
 | FLC-PROC-004 | Signal before wait | Not started | AT-PROC-004 | 0 | Nothing waits for a signal |
 | FLC-PROC-005 | Signal spoofing | Not started | AT-PROC-005 | 0 | Nothing receives process signals |
@@ -86,7 +86,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FLC-PROC-013 | History bounds | Not started | AT-PROC-013 | 0 | No process history exists |
 | FLC-PROC-014 | Snapshot plus subscription | Not started | AT-PROC-014 | 0 | Record pages update live; no run status stream exists, and the live updates were not reviewed against this case |
 | FLC-HUMAN-001 | Independent approval | Partial | AT-HUMAN-001 | 1 | A workflow transition may refuse the record's creator whatever roles they hold; process tasks do not exist |
-| FLC-HUMAN-002 | Input-bound approval | Partial | AT-HUMAN-002 | 0 | Cloud binds approvals to a digest in a private repository; a record's approval is bound to its version, not to its material inputs |
+| FLC-HUMAN-002 | Input-bound approval | Partial | AT-HUMAN-002 | 1 | Approvals bound to a digest, by someone other than the requester, under a policy revision, are the platform's rules now (crates/logic/src/approval.rs); process tasks that use them come with W3, and a record's own approval is still bound to its version |
 | FLC-HUMAN-003 | Timeout race | Not started | AT-HUMAN-003 | 0 | No task has a deadline |
 | FLC-HUMAN-004 | Delegation | Not started | AT-HUMAN-004 | 0 | No task can be delegated |
 | FLC-HUMAN-005 | Calendar semantics | Partial | AT-HUMAN-005 | 0 | Workspaces have a time zone; there is no versioned business calendar for deadlines |

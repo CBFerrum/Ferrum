@@ -10,6 +10,7 @@ license.workspace = true
 saml = ["ferrum-saml/xmlsec"]
 
 [dependencies]
+ferrum-logic = { path = "../logic" }
 ferrum-meta = { path = "../meta" }
 ferrum-saml = { path = "../saml" }
 rust_decimal = { workspace = true }

@@ -48,6 +48,11 @@ pub enum Error {
     Db(String),
     #[error("internal error: {0}")]
     Internal(String),
+    /// A refusal with a stable code of its own (`ferrum_logic::refusal`): `input_changed`,
+    /// `stale_approval`, `recovery_required` and the rest. Never retried: what may be tried again is
+    /// `Retryable` or `Unavailable`.
+    #[error("{message}")]
+    Refused { code: &'static str, status: u16, message: String, pointer: Option<String> },
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -74,6 +79,7 @@ impl Error {
             Error::TooManyRequests(_) | Error::Wait(..) => 429,
             Error::Retryable(_) | Error::Unavailable(_) => 503,
             Error::Db(_) | Error::Internal(_) => 500,
+            Error::Refused { status, .. } => *status,
         }
     }
 
@@ -90,11 +96,28 @@ impl Error {
             Error::Unavailable(_) => "unavailable",
             Error::Db(_) => "database_error",
             Error::Internal(_) => "internal_error",
+            Error::Refused { code, .. } => code,
         }
     }
 
     pub fn is_retryable(&self) -> bool {
         matches!(self, Error::Retryable(_))
+    }
+}
+
+/// A logic refusal in Ferrum's words: the codes Ferrum already has keep their variants, so callers that
+/// match on `Forbidden` or `Conflict` see these too.
+impl From<ferrum_logic::refusal::Refusal> for Error {
+    fn from(r: ferrum_logic::refusal::Refusal) -> Self {
+        use ferrum_logic::refusal::Code;
+        match r.code {
+            Code::PermissionDenied => Error::Forbidden(r.message),
+            Code::Conflict => Error::Conflict(r.message),
+            Code::RateLimited => Error::TooManyRequests(r.message),
+            Code::DependencyUnavailable => Error::Unavailable(r.message),
+            Code::DefinitelyNotSent => Error::Retryable(r.message),
+            code => Error::Refused { code: code.as_str(), status: code.status(), message: r.message, pointer: r.pointer },
+        }
     }
 }
 
