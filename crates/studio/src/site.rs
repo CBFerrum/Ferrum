@@ -17,6 +17,8 @@
 //! | `GET /catalog/{id}` | one capability |
 //! | `POST /catalog/{id}/invoke` | `{input, effect_key?, version?}` (or an `Idempotency-Key` header) → its receipt |
 //!
+//! Solutions, runs, tasks and calendars: [`crate::logic`].
+//!
 //! GET variants take the same settings as query parameters (`filters`, `values`, `sort` as JSON).
 
 use crate::builder::{self, CARD, CHART, DASHBOARD, REPORT, Runtime, SPACE, WidgetRequest};
@@ -124,6 +126,10 @@ impl Site for StudioSite {
     async fn handle(&self, k: &Kernel, req: SiteRequest) -> Result<SiteResponse> {
         let Some(ctx) = req.user.as_ref() else { return Err(Error::NotFound("page".into())) };
         let path: Vec<&str> = req.path.split('/').filter(|p| !p.is_empty()).collect();
+        // Customer solutions, their runs and people's tasks (docs/logic/studio.md).
+        if let Some(answer) = crate::logic::handle(k, ctx, &req, &path).await {
+            return answer;
+        }
         let m = req.method.as_str();
         Ok(match (m, path.as_slice()) {
             ("POST", ["query"]) => ok(run(k, ctx, &Spec::parse(&body(&req)?)?).await?),
