@@ -10,11 +10,17 @@ with a key of its own and signing what it reports, exactly as a site runtime doe
 Needs the two workspaces with the Requests package (`procs`; the second made by
 `ferrum task create_tenant slug:globex ... packages:core,procs`), a Temporal server behind the build, and
 Python's `cryptography` module. Prints each check as `ok` or `FAIL` and exits 1 if any failed.
+
+With `LRP_LAKE` set, LRP-05 also reads a metric over data outside Ferrum through Metrics' engine, running as
+a process of its own beside the server (`FERRUM_METRICS_ENGINE_URL` and `_TOKEN` on the server). `LRP_LAKE` is
+the directory whose `orders.csv` the engine's configuration lists as the dataset `orders_lake` of the first
+workspace; the walk writes that file.
 """
 
 import datetime
 import hashlib
 import json
+import os
 import statistics
 import sys
 import threading
@@ -32,6 +38,11 @@ RUN = int(time.time()) % 100000
 CALENDAR = f"office{RUN}"
 STUDIO = "/api/app/studio"
 FAILED = []
+LAKE = os.environ.get("LRP_LAKE")
+# The lake's orders as the walk writes them: the North's total is 150, the South's 25.50.
+LAKE_ORDERS = "id,region,total,secret\n1,North,100.00,a\n2,North,50.00,b\n3,South,25.50,c\n"
+LAKE_MODEL = {"catalog": "wren", "schema": "public", "models": [{"name": "orders", "tableReference": {"table": "orders_lake"}, "primaryKey": "id", "columns": [
+    {"name": "id", "type": "integer"}, {"name": "region", "type": "varchar"}, {"name": "total", "type": "double"}, {"name": "secret", "type": "varchar"}]}]}
 
 
 def http(method, path, body=None, token=None, headers=None):
@@ -456,12 +467,59 @@ def lrp05(p):
     check("LRP-05 a question about nothing it may read is declined, with what can be asked", s == 200 and e.get("status") == "declined", (s, e))
     s, f = seer("POST", "/api/app/intelligence/ask", {"question": f"{name} by month for the last 3 months"})
     check("LRP-05 a series, the month not over marked partial", s == 200 and f.get("status") == "answered" and f["result"]["points"][-1]["partial"] is True, (s, f))
+    if LAKE:
+        lake(p, analyst, steward, seer)
     # Proposing needs both: reading certified metrics, and authoring solutions.
     p["author"] = person(admin, f"author@{HOME}.test", ["Solution Author", "Requester", "Edge Viewer", "Metric Reader", "Intelligence User"])
     s, g = p["author"]("POST", "/api/app/intelligence/propose", {"metric": name, "why": "Too many big requests"})
     check("LRP-05 a proposal is only a draft, for review", s == 200 and "draft" in g, (s, g))
     s, h = seer("POST", "/api/app/intelligence/propose", {"metric": name, "why": "x"})
     check("LRP-05 a reader may not propose", s == 403, (s, h))
+
+
+def lake(p, analyst, steward, seer):
+    """LRP-05 over data outside Ferrum: a metric read through Metrics' engine, a process of its own beside the
+    server, with each reader's rows applied in the engine's own scan and data older than allowed said so."""
+    admin = p["admin"]
+    path = os.path.join(LAKE, "orders.csv")
+    with open(path, "w") as f:
+        f.write(LAKE_ORDERS)
+    # A role exists once it holds a permission: reading metrics, which their people may anyway.
+    for role in ("North Sales", "South Sales", "Auditor"):
+        s, d = admin("PUT", f"/api/admin/roles/{urllib.request.quote(role)}/permissions", {"entity": "Metric", "read": True})
+        check(f"LRP-05 the {role} role is defined", s in (200, 204), (s, d))
+    north = person(admin, f"north@{HOME}.test", ["Metric Reader", "Intelligence User", "North Sales"])
+    south = person(admin, f"south@{HOME}.test", ["Metric Reader", "South Sales"])
+    source = {"source_name": "orders_lake", "description": "Orders in the lake", "fresh_within_minutes": 60,
+              "rows_by": {"column": "region", "by": "roles", "map": {"North Sales": ["North"], "South Sales": ["South"]}},
+              "hidden_columns": {"secret": ["Auditor"]}}
+    known = next((r for r in rows(steward("GET", "/api/v1/ExternalSource")[1]) if r.get("source_name") == "orders_lake"), None)
+    s, d = steward("PUT", f"/api/v1/ExternalSource/{known['id']}", source) if known else create(steward, "ExternalSource", source)
+    check("LRP-05 a steward describes the lake's orders: each sales role its own region's rows", s in (200, 201), (s, d))
+    s, d = create(seer, "ExternalSource", {"source_name": f"mine_{RUN}"})
+    check("LRP-05 a reader may not describe a source", s == 403, (s, d))
+    s, d = create(analyst, "Metric", {"metric_name": f"Dropped {RUN}", "external": {"model": LAKE_MODEL, "sql": "drop table orders"}})
+    check("LRP-05 an external query that would change data is refused as it is saved", s in (400, 422) and "only a single SELECT" in json.dumps(d), (s, d))
+    name = f"Lake revenue {RUN}"
+    s, metric = create(analyst, "Metric", {"metric_name": name, "external": {"model": LAKE_MODEL, "sql": "select sum(total) from orders"}, "unit": "USD"})
+    check("LRP-05 an analyst defines a metric over the lake, which the engine checks as it is saved", s in (200, 201), (s, metric))
+    s, d = steward("POST", f"/api/v1/Metric/{metric['id']}/actions/certify", {})
+    check("LRP-05 a steward certifies it", s == 200, (s, d))
+
+    def read(who):
+        s, v = who("GET", f"/api/app/metrics/value?metric={urllib.request.quote(name)}")
+        return (v.get("value"), [x["source"] for x in v.get("stale", [])]) if s == 200 else (s, v)
+
+    check("LRP-05 a reader of the North reads the North's orders alone, fresh", read(north) == ("150", []), read(north))
+    check("LRP-05 a reader of the South reads the South's alone", read(south) == ("25.5", []), read(south))
+    check("LRP-05 a reader of no region reads no rows, never every row", read(seer) == ("0", []), read(seer))
+    two_hours_ago = time.time() - 7200
+    os.utime(path, (two_hours_ago, two_hours_ago))
+    check("LRP-05 the lake older than its hour: the value says it is stale", read(north) == ("150", ["orders_lake"]), read(north))
+    s, a = north("POST", "/api/app/intelligence/ask", {"question": f"What is {name}?"})
+    check("LRP-05 and an answer from it says so in its limits", s == 200 and any("orders_lake" in x for x in a.get("limits", [])), (s, a))
+    os.utime(path, None)
+    check("LRP-05 written again: fresh", read(north) == ("150", []), read(north))
 
 
 def lrp06(p):

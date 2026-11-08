@@ -5,6 +5,7 @@
 **/node_modules
 .DS_Store
 *.log
+__pycache__/
 
 # The web frontend is its own repository (CBFerrum/Ferrum-Frontend); clone it into web/ for local development.
 /web/

@@ -17,7 +17,7 @@ qualifications:
   - FLC-OPS-004
   - FLC-OPS-005
   ran_at:
-    ferrum_code: sha256:7180f0ae6a3d55f1824a2be2fd5153f5e84035870b6d545bdb855d8cd567448f
+    ferrum_code: sha256:4eb581a5b3fc5ecb5d9baf12780a1f4e2b54d415a2d100c1b29cd1ab3f963d93
     pins:
       CBFerrum/Ferrum-Frontend: 48907d8a73ab9c3aa9d9c4b2d05f81a24ec494f6
       CBFerrum/ferrum-app-assets: caedcb7504b67e01e52be3dfb5b1728308045c47
@@ -33,7 +33,7 @@ qualifications:
       CBFerrum/ferrum-app-developers: 67f01bd5bf6be7e24cfd7120d834380b26f89621
       CBFerrum/ferrum-app-docs: 2895bace4aff7ad7067e635b8e38b1e758064886
       CBFerrum/ferrum-app-drive: 731a46475770cc4475cfc54d48f5bb9c6f126a1a
-      CBFerrum/ferrum-app-edge: 96b4eb4d2e1b5aacf0ec7c7182ba3334fed4634c
+      CBFerrum/ferrum-app-edge: 867bca95ef30353cc121f8bebe870da52600a596
       CBFerrum/ferrum-app-education: fec006b2fcbab61fb6846d8d0d03720091c063e2
       CBFerrum/ferrum-app-erp: a20a9c4ce726f02fa3f30d8ec4fa20ca7411108b
       CBFerrum/ferrum-app-field-service: f366150114ac9c01860ce86a21a749b2e33670f2
@@ -44,12 +44,12 @@ qualifications:
       CBFerrum/ferrum-app-helpdesk: b4452d4341b240d8e9e369f6e2f92d9e9309c13b
       CBFerrum/ferrum-app-hospitality: c03da14fd2a1213bb5a14b3d8187f076976b8cf1
       CBFerrum/ferrum-app-hr: a1d86a269b6cba67754dbef4920b27efc3361cc4
-      CBFerrum/ferrum-app-intelligence: 6ea3c5169a4ff5b08abf58f08c8bf747ba26177e
+      CBFerrum/ferrum-app-intelligence: a0056b3123e043b4b167f843878b7324c8f716b3
       CBFerrum/ferrum-app-intranet: f703234ed3f002fa63d56f2c233969874a9afa28
       CBFerrum/ferrum-app-itsm: 2e03ba0f078f16b45331a1517ada23209e9a4901
       CBFerrum/ferrum-app-lms: f4381b44484b23052b0bc15334d7e75dbf798ace
       CBFerrum/ferrum-app-logistics: b832e6c55e44582e137f6ed1cd5813c5e9e1c1bd
-      CBFerrum/ferrum-app-metrics: 848c2a39eee04511fee3f3e14310b30d8b970291
+      CBFerrum/ferrum-app-metrics: 2709639ec64a94cddb31e979c3ce0584abb1ffac
       CBFerrum/ferrum-app-nonprofit: b60024140e3a026f5c760bc1b16e718a49394a6f
       CBFerrum/ferrum-app-objectives: f8e0444d3156ba7efb84c4b0a336b10a3fc48052
       CBFerrum/ferrum-app-pos: 8b616af541223a26779695b30ad6ca51af0566db
@@ -60,4 +60,4 @@ qualifications:
       CBFerrum/ferrum-app-sign: f202d894791b751c501f8e9573a30a1159a5852e
       CBFerrum/ferrum-app-social: 3432bc314eecf86d21036bc1b414608a1f92d92b
       CBFerrum/ferrum-app-website: 0b9e6f463e49a7397a10c14865b102beec603831
-    commit: 40ff6d73582c770a0a506d228bd33b09ebde133b
+    commit: cf284fa98bb80dbd0d66b525563574ff33467526

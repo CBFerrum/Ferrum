@@ -1,4 +1,4 @@
-Walk 54381 on http://127.0.0.1:5170: workspaces acme and globex
+Walk 68797 on http://127.0.0.1:5170: workspaces acme and globex
 
 == LRP-01 Record policy
 ok   LRP-01 a rule written in Studio checks without faults
@@ -14,7 +14,7 @@ ok   LRP-01 refused through import alike, even for an administrator
 ok   LRP-01 refused through bulk alike
 ok   LRP-01 refused through MCP alike
 ok   LRP-01 the other workspace is not bound by it
-     saves with the rule: median 4 ms, p95 7 ms over 20
+     saves with the rule: median 5 ms, p95 6 ms over 20
 ok   LRP-01 a save with the rule stays within 1.5 s at p95 on this machine
 
 == Simulator parity (FLC-UI-007)
@@ -80,6 +80,20 @@ ok   LRP-05 someone who cannot read requests gets no value from them
 ok   LRP-05 asked to act as well, it reads the metric and says it acted on nothing
 ok   LRP-05 a question about nothing it may read is declined, with what can be asked
 ok   LRP-05 a series, the month not over marked partial
+ok   LRP-05 the North Sales role is defined
+ok   LRP-05 the South Sales role is defined
+ok   LRP-05 the Auditor role is defined
+ok   LRP-05 a steward describes the lake's orders: each sales role its own region's rows
+ok   LRP-05 a reader may not describe a source
+ok   LRP-05 an external query that would change data is refused as it is saved
+ok   LRP-05 an analyst defines a metric over the lake, which the engine checks as it is saved
+ok   LRP-05 a steward certifies it
+ok   LRP-05 a reader of the North reads the North's orders alone, fresh
+ok   LRP-05 a reader of the South reads the South's alone
+ok   LRP-05 a reader of no region reads no rows, never every row
+ok   LRP-05 the lake older than its hour: the value says it is stale
+ok   LRP-05 and an answer from it says so in its limits
+ok   LRP-05 written again: fresh
 ok   LRP-05 a proposal is only a draft, for review
 ok   LRP-05 a reader may not propose
 

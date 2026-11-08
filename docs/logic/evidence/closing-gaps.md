@@ -240,10 +240,131 @@ All local, against Ferrum's main:
 - The six profiles, the workload and the drill ran again on that build, at every pin above. All 75 walk checks
   passed, every workload bound held and the drill held (lrp-profiles.md). The qualification is stamped there.
 
-## Still open after batch 3
+## Batch 4: Metrics' engine for external sources, and what GitHub's checks had found
 
-- **External, recorded as blockers:**
-  - a screen-reader audit with assistive-technology users (FLC-UI-004);
-  - the DataFusion build, which needs more disk than this machine has (BLOCK-BUILD-CAPACITY: FLC-SEM-010 and the
-    external halves of FLC-SEM-005, -006, -007);
-  - named maintenance owners (FLC-QUAL-008).
+DataFusion had been recorded as blocked on this machine's disk. Built without debug information, Wren's engine
+and DataFusion take 1.5 GB, so the plan's W6 item was built as it describes (ADR L-07): an isolated service.
+
+**Metrics' engine (Metrics 0.7.0, #6, 624e1a5; FLC-SEM-005, -006, -007, -010).** `ferrum-metrics-engine`, in the
+Metrics repository, plans a metric's query through its Wren semantic model with Wren's own engine
+(`wren-semantic-core` 0.5.1, pinned) and runs it on DataFusion 55 over the operator's CSV and Parquet datasets.
+- *Rights in the scan (FLC-SEM-005).* A Data Steward describes each dataset as an External Source: the rows each
+  reader sees and the columns only some roles see. Metrics asks the engine for one reader at a time.
+  - The engine reads each dataset through a table that filters its rows and leaves out those columns in its own
+    scan. The dataset's files are deregistered once read, so no query can name them.
+  - Tested through a relationship and through a calculated column over a hidden column.
+  - Mutants caught: `rows-filter-skipped`, `hidden-columns-kept`, `no-values-every-row`, `every-row-for-everyone`,
+    `hidden-for-no-one`.
+  - *Found by walking the KPI page (Metrics 0.7.2, #8).* A value in a dataset that did not parse came back to the
+    reader with its whole raw row, since the file is parsed before a reader's rules apply: another person's row,
+    hidden columns included. A dataset that cannot be read is now refused as unavailable without the error's
+    text, which goes to the engine's log. Neither the engine's address nor a dataset's paths reach a reader.
+    Mutants `dataset-paths-told`, `unreadable-as-query-fault`, `parse-errors-told` and `engine-address-told`
+    caught.
+- *The sandbox (FLC-SEM-006).* One SELECT over the model's own models, with DDL, DML and statements disabled.
+  - A dataset named directly, a file path, a URL, `SET`, `COPY` and several statements are refused.
+  - Memory is bounded with nothing spilled: a million-group aggregation is refused at 1 MB. Time, rows and
+    concurrency are bounded too, and the token is checked.
+  - Mutants caught: `models-only-unchecked`, `statements-unchecked`, `memory-unbounded`, `time-unbounded`,
+    `rows-uncapped`, `token-unchecked`.
+  - *Found once the local CI ran the engine's tests as its workflow does (Metrics 0.7.1, #7).* A query of 3,329
+    terms took over a minute to plan in a debug build, and the timeout fired 18 seconds late, since planning
+    cannot be stopped midway. DataFusion's own recursion protection was off, so a deeper query could have
+    overflowed a thread's stack and taken the process down. Now:
+    - before anything is planned, a query's terms nest at most 100 deep and it reads at most 32 models, counting
+      each time; a model's calculated columns and relationships are held to the same depth, and a semantic
+      model to 32 models (it held 200), so the longest chain of relationships through one is planned at once;
+    - each of the engine's threads has a 64 MiB stack, and DataFusion's recursion grows its stack as it needs;
+    - a query's time is kept whether or not its work yields. GitHub's faster runner had answered a query a 1 ms
+      limit should have stopped, since a timeout fires only when the work yields. Each query now runs as a
+      task of its own, and the caller is refused once its wait and its time are up. The task keeps its turn
+      until it has stopped, and one that panics is refused, not the engine lost.
+    - The test runs on a thread with the engine's own stack: 2,000 values in one list and 90 terms are answered;
+      101 terms, the deepest query of the largest size (9,985 terms), 33 models read and a deep calculated
+      column are refused. A chain of 32 models, each read through the next's relationship, is answered
+      exactly within 5 seconds in a debug build, and 33 are refused.
+    - Wren's SQL for a long chain nests a subquery per relationship, so it may be parsed deeper (512) than the
+      reader's own query (50).
+    - Mutants caught: `query-depth-unbounded`, `query-reads-unbounded`, `model-expressions-unshaped`,
+      `relationship-conditions-unshaped`, `models-unbounded`, `time-unbounded`, `planned-sql-held-to-readers-depth`;
+      on the caller's bound, `caller-waits-for-the-work` and `work-not-stopped`, driven by work that never yields.
+    - One survives: `caller-waits-on-unyielding-work`, which awaits the query in the caller. Every query the
+      engine takes yields, so the time inside the task already stops it. The task bound guards against work
+      that does not.
+- *Freshness (FLC-SEM-007).* Every answer says when each dataset was last written. A value from data older than
+  its source allows carries it under `stale`, and so does a composed metric over it and one of the records. An
+  Intelligence answer says so in its `limits` (Intelligence 0.2.1, #4, a0056b3). With the engine gone, there is
+  no value, said so. The KPI page says it too: it names the stale sources, and says when a metric has no value
+  now, with the reason, instead of seeming to load (Metrics 0.7.1, #7; without repeating its name, 0.7.2).
+  - Mutants caught: `written-at-unsaid`, `stale-never-said`, `stale-answer-unsaid`, `stale-limits-lost`.
+- *Interoperability (FLC-SEM-010).* Wren's models answer exactly against hand-worked fixtures, calculated
+  columns, CASE and relationships among them. An unknown function, `TOP` and a missing column fail explicitly; a
+  correlated subquery is answered exactly or refused.
+  - Mutants caught: `any-case-ignored`, `other-workspace-dataset`, `external-outside-fingerprint`,
+    `external-unchecked-at-save`.
+- *On the assembled build.* The engine binary ran as a process of its own beside the walk's server, which reached
+  it at `FERRUM_METRICS_ENGINE_URL` with its token. LRP-05 now reads a metric over the lake as people signed in
+  as themselves ([lrp-walk.txt](lrp-walk.txt)):
+  - a steward described the lake's orders, and a reader could not;
+  - a query that would drop a table was refused as it was saved;
+  - each region's reader read their own region's orders alone, and a reader of no region read no rows;
+  - with the lake's file two hours old, the value said it was stale, and so did an Intelligence answer's limits.
+- *Deployment.* `deploy/metrics-engine.yml` adds the engine beside the stack with Compose. The new
+  `deploy/k8s/metrics-engine` component runs two replicas on Kubernetes:
+  - read-only, unprivileged, with a disruption budget;
+  - only the API may call them, and they call nothing;
+  - it points Ferrum at them and opens Ferrum's network policy to them.
+  - Both images are approved in `docs/registry/engines.yaml`. `docs/operations.md` has a section for it; the
+    Metrics repository has `docs/engine.md` and `engine/Dockerfile`.
+- *The image.* `engine/Dockerfile` had never been built. Metrics' CI now builds it and runs it read-only and
+  unprivileged, then:
+  - asks it as Metrics does: the North's rows alone, nothing without the token, a change refused;
+  - checks Docker's health check and a clean SIGTERM;
+  - from main, publishes it as `ghcr.io/cbferrum/ferrum-metrics-engine` (Metrics #7).
+- All 490 packages of the Metrics workspace pass `scripts/licenses.py`'s policy. DataFusion, Arrow, Parquet,
+  sqlparser and Wren are Apache-2.0.
+
+**What GitHub's checks had found.** Ferrum's own checks run here before each merge. Two of GitHub's jobs had
+failed on main since W7 and W8, and the checks run here had covered neither.
+- *audit:* `scripts/check_apps.py` wants each app's README to have a changelog row for its version. Edge (0.6.0),
+  Intelligence and Metrics had none. They now do: Edge 0.6.1 (#16, 867bca9), Intelligence 0.2.1, Metrics 0.7.0.
+  It now reads 53 apps, none short of the contract.
+- *image:* the smoke test's backup failed with `tar: .: file changed as we read it`. The erasure journal is
+  written by the outbox's worker after the erasure commits, and it was landing in the files while `tar` read
+  them. The test now waits for the journal, which the backup must hold for `reapply_erasures` to work, and
+  takes tar's status 1, a file changed while read, as a backup of a running server. `docs/operations.md` says
+  the same to operators.
+- From now on, `check_apps.py` runs here with the other audit scripts.
+
+## Checks for batch 4
+
+- Metrics (#6): the workflow's steps, run here one test binary at a time:
+  - fmt;
+  - clippy over the workspace;
+  - Metrics' unit tests (10), `composed_it`, `currency_it`, `datasets_it`, `external_it`, `metrics_it`, `wren_it`;
+  - the engine's unit test, `engine_it` (7) and `http_it`;
+  - the interface: dist matches its sources, typecheck, tests.
+- Metrics (#7): `scripts/app_ci.sh` passed, with the workflow's stack:
+  - fmt;
+  - clippy over the workspace;
+  - Metrics' unit tests (10), `composed_it`, `currency_it`, `datasets_it`, `external_it`, `metrics_it`, `wren_it`;
+  - the engine's unit tests (2), `engine_it` (8) and `http_it`;
+  - the interface: dist matches its sources, typecheck, tests (3).
+  - Nine new mutants were caught, and one survived, as above. All 490 packages pass the licence policy.
+  - GitHub's run of the PR built, ran and asked the engine's image (`engine-image`), which this disk cannot.
+- Metrics (#8): `scripts/app_ci.sh` passed (`engine_it` 9, interface tests 4); its four mutants were caught;
+  `external_it` passed ten runs in a row and on a reused database. GitHub's run built, ran and asked the image.
+- Intelligence (#4): fmt, clippy, its unit tests (2) and `evals_it`, against Metrics 0.7.0.
+- Edge (#16): no code changed; its app library tests (22) and interface check passed.
+- Ferrum:
+  - the server's `journeys_it` (1) and `extensions_it` (1), which batch 3 could not fit on this disk;
+  - the server built with every default app and the process runtime, on the pins above;
+  - the profiles, the workload and the restore drill on that build ([lrp-profiles.md](lrp-profiles.md));
+  - `cargo metadata --locked`, `registry.py check`, `check_apps.py`, `licenses.py check` (13 engines),
+    `mutants.py --check`, the other audit scripts, and the k8s manifests rendered with the engine's component.
+
+## Still open after batch 4
+
+122 of the 124 rows are verified. The other two wait on people, recorded as blockers:
+- a screen-reader audit with assistive-technology users (FLC-UI-004, BLOCK-ACCESSIBILITY-AUDIT);
+- named maintenance owners (FLC-QUAL-008, BLOCK-LTS-SUPPORT).
