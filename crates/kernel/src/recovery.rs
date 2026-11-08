@@ -451,6 +451,8 @@ impl Kernel {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         audit::record(&mut tx, ctx, "Platform", Uuid::nil(), "platform.restore_released", None, serde_json::json!({"note": note})).await?;
         tx.commit().await?;
+        // Every open run says where it stands, so a history ahead of what came back names what is missing.
+        self.recheck_logic_runs().await?;
         Ok(())
     }
 }

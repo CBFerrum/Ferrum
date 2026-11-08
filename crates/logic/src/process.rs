@@ -197,6 +197,9 @@ pub enum Event {
         map: BTreeMap<String, String>,
         by: String,
     },
+    /// Say where you stand: asked of every open run after a restore is released, so a history ahead of the
+    /// restored database reports what it did (FLC-OPS-005). Changes nothing.
+    Recheck {},
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -503,7 +506,7 @@ impl<'r> Machine<'r> {
             return out;
         }
         match event {
-            Event::Migrated { .. } => return out,
+            Event::Migrated { .. } | Event::Recheck {} => return out,
             Event::CancelRequested { by, reason } => {
                 self.cancel(run, &by, &reason, &mut out);
                 return out;

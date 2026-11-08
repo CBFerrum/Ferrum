@@ -2985,8 +2985,8 @@ dependencies = [
 
 [[package]]
 name = "ferrum-app-intelligence"
-version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-intelligence?branch=main#3f16218a47157cf8b27e174a263fddb595db2917"
+version = "0.1.1"
+source = "git+https://github.com/CBFerrum/ferrum-app-intelligence?branch=main#02c6227fbb76ca810db604232948f8e91eb4af4b"
 dependencies = [
  "async-trait",
  "chrono",
