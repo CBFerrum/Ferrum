@@ -23,7 +23,7 @@ that third run.
 - **Pins:**
   - Ferrum-Frontend `48907d8`;
   - ferrum-app-edge `867bca9` (0.6.1);
-  - ferrum-app-metrics `METRICS_PIN` (0.7.1);
+  - ferrum-app-metrics `METRICS_PIN` (0.7.2);
   - ferrum-app-intelligence `a0056b3` (0.2.1);
   - ferrum-app-objectives `f8e0444` (0.7.0);
   - the rest as `docs/registry/release-manifest.yaml` pins them.
