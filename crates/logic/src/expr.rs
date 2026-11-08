@@ -371,7 +371,8 @@ fn comparable(a: &Ty, b: &Ty, op: &str) -> Result<(), Refusal> {
             }
             true
         }
-        (x, y) => x == y && !matches!(x, Ty::List(_) | Ty::Record(_)) || (op == "==" && x == y),
+        // Lists and records are equal or not; they have no order.
+        (x, y) => x == y && (matches!(op, "==" | "!=") || !matches!(x, Ty::List(_) | Ty::Record(_))),
     };
     if ok { Ok(()) } else { Err(bad(Code::TypeMismatch, format!("{a} and {b} cannot be compared ({op})"))) }
 }
@@ -1080,6 +1081,13 @@ mod tests {
             Val::Bool(true)
         );
         assert_eq!(run("coalesce(doc.supplier_category, \"none\")", json!({})), Val::Text("none".into()));
+    }
+
+    #[test]
+    fn lists_are_equal_or_not_and_have_no_order() {
+        assert_eq!(run("[1, 2] != [1, 3]", json!({})), Val::Bool(true));
+        assert_eq!(run("[1, 2] == [1, 2]", json!({})), Val::Bool(true));
+        assert_eq!(compile("[1] < [2]", &env()).unwrap_err().code, Code::TypeMismatch);
     }
 
     #[test]
