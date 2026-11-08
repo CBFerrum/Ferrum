@@ -9,6 +9,7 @@ pub mod account;
 pub mod apps;
 pub mod audit;
 pub mod auth;
+pub mod authoring;
 pub mod automation;
 pub mod backfill;
 pub mod bulk;

@@ -227,8 +227,9 @@ impl Kernel {
             };
             let id = Uuid::now_v7();
             let accepted: Option<Uuid> = sqlx::query_scalar(
-                "insert into logic_run (tenant_id, id, release_id, solution, process, business_key, trigger, trigger_event, requester, workflow_id) \
-                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) on conflict (tenant_id, solution, process, business_key) do nothing returning id",
+                "insert into logic_run (tenant_id, id, release_id, solution, process, business_key, trigger, trigger_event, requester, workflow_id, \
+                   subject_entity, subject_id) \
+                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) on conflict (tenant_id, solution, process, business_key) do nothing returning id",
             )
             .bind(tenant)
             .bind(id)
@@ -240,6 +241,8 @@ impl Kernel {
             .bind(ev.id)
             .bind(ev.actor)
             .bind(workflow_id(tenant, id))
+            .bind(ev.entity.as_deref())
+            .bind(ev.record_id)
             .fetch_optional(&mut *tx)
             .await?;
             if let Some(run) = accepted {
@@ -770,6 +773,76 @@ impl Kernel {
         row.ok_or_else(|| Error::NotFound("run".into()))
     }
 
+    /// Runs that changed since `cursor`, for a page that keeps up with them (FLC-PROC-014). Without a cursor, the
+    /// runs as they stand; either way a new cursor. The cursor is a transaction boundary: every transaction below
+    /// it had finished when this read, so a change a slower transaction commits later is in a later answer, never
+    /// skipped. A run may come twice; the page keeps the latest. A cursor from another database (a restore) gets
+    /// `resync`: the runs as they stand, and a fresh cursor.
+    pub async fn logic_run_changes(&self, ctx: &Ctx, cursor: Option<&str>) -> Result<Value> {
+        const PAGE: i64 = 500;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let (boundary, next_xid): (String, String) =
+            sqlx::query_as("select pg_snapshot_xmin(s)::text, pg_snapshot_xmax(s)::text from (select pg_current_snapshot() as s) x")
+                .fetch_one(&mut *tx)
+                .await?;
+        let parsed = cursor.and_then(|c| c.parse::<u64>().ok());
+        let resync = cursor.is_some() && parsed.is_none_or(|c| next_xid.parse::<u64>().is_ok_and(|n| c > n));
+        let fields = "jsonb_build_object('id', id, 'solution', solution, 'process', process, 'business_key', business_key, 'status', status, \
+             'requester', requester, 'subject_entity', subject_entity, 'subject_id', subject_id, 'accepted_at', accepted_at, \
+             'updated_at', updated_at, 'finished_at', finished_at)";
+        let rows: Vec<(Value, String)> = match parsed.filter(|_| !resync) {
+            None => {
+                sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                    "select {fields}, changed::text from logic_run where tenant_id = $1 and ($2 or requester = $3) order by accepted_at desc limit {PAGE}"
+                )))
+                .bind(ctx.tenant)
+                .bind(ctx.is_admin)
+                .bind(ctx.user)
+                .fetch_all(&mut *tx)
+                .await?
+            }
+            Some(c) => {
+                sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                    "select {fields}, changed::text from logic_run where tenant_id = $1 and ($2 or requester = $3) and changed >= $4::text::xid8 \
+                 order by changed limit {PAGE}"
+                )))
+                .bind(ctx.tenant)
+                .bind(ctx.is_admin)
+                .bind(ctx.user)
+                .bind(c.to_string())
+                .fetch_all(&mut *tx)
+                .await?
+            }
+        };
+        tx.commit().await?;
+        // A full page of changes ends at its last change, which the next answer starts from again.
+        let next = match (parsed.filter(|_| !resync), rows.len() as i64 == PAGE) {
+            (Some(_), true) => rows.last().map(|(_, c)| c.clone()).unwrap_or(boundary),
+            _ => boundary,
+        };
+        Ok(json!({"runs": rows.into_iter().map(|(r, _)| r).collect::<Vec<_>>(), "cursor": next, "resync": resync}))
+    }
+
+    /// The processes about a record, for its page, to whoever may read the record: their state and the tasks
+    /// they wait on, not what those tasks are about.
+    pub async fn logic_runs_about(&self, ctx: &Ctx, entity: &str, record: Uuid) -> Result<Vec<Value>> {
+        self.get(ctx, entity, record, false).await?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let rows: Vec<Value> = sqlx::query_scalar(
+            "select jsonb_build_object('id', l.id, 'solution', l.solution, 'process', l.process, 'status', l.status, 'accepted_at', l.accepted_at, \
+               'finished_at', l.finished_at, 'waiting', coalesce((select jsonb_agg(jsonb_build_object('kind', t.kind, 'label', t.label, 'role', t.role, \
+                  'deadline', t.deadline) order by t.opened_at) from logic_task t where t.tenant_id = l.tenant_id and t.run_id = l.id and t.status = 'open'), '[]'::jsonb)) \
+             from logic_run l where l.tenant_id = $1 and l.subject_entity = $2 and l.subject_id = $3 order by l.accepted_at desc limit 50",
+        )
+        .bind(ctx.tenant)
+        .bind(entity)
+        .bind(record)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(rows)
+    }
+
     /// Whether `ctx` may decide a task now: its role, not excluded, not a decision already given, and when it was
     /// handed on, the person it was handed to.
     fn may_decide(ctx: &Ctx, role: &str, exclude: &[Uuid], delegated: &[Uuid]) -> Result<()> {
@@ -813,18 +886,35 @@ impl Kernel {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let row: Option<(Value, String, Vec<Uuid>, Vec<Uuid>)> = sqlx::query_as(
             "select jsonb_build_object('id', id, 'run', run_id, 'activation', activation, 'kind', kind, 'label', label, 'role', role, 'material', material, \
-               'digest', digest, 'form', form, 'approvals', approvals, 'status', status, 'deadline', deadline, 'deadline_basis', deadline_basis, 'detail', detail), \
+               'digest', digest, 'form', form, 'approvals', approvals, 'status', status, 'deadline', deadline, 'deadline_basis', deadline_basis, 'detail', detail, \
+               'delegation', delegation, 'handed_on', greatest(cardinality(delegated) - 1, 0)), \
                role, exclude, delegated from logic_task where tenant_id = $1 and id = $2",
         )
         .bind(ctx.tenant)
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?;
-        tx.commit().await?;
-        let Some((task, role, exclude, delegated)) = row else { return Err(Error::NotFound("task".into())) };
+        let Some((mut task, role, exclude, delegated)) = row else { return Err(Error::NotFound("task".into())) };
         if !ctx.is_admin && Self::may_decide(ctx, &role, &exclude, &delegated).is_err() {
             return Err(Error::NotFound("task".into()));
         }
+        // Who did what on it, and why: the record a closed task is read by.
+        let history: Value = sqlx::query_scalar(
+            "select coalesce(jsonb_agg(jsonb_build_object('decision', d.decision, 'part', d.part, 'reason', d.reason, 'at', d.decided_at, \
+               'by', coalesce(nullif(u.full_name, ''), u.email::text, d.by_user::text), \
+               'to', case when d.to_user is null then null else coalesce(nullif(t.full_name, ''), t.email::text, d.to_user::text) end) \
+               order by d.decided_at, d.id), '[]') \
+             from logic_task_decision d \
+             left join app_user u on u.tenant_id = d.tenant_id and u.id = d.by_user \
+             left join app_user t on t.tenant_id = d.tenant_id and t.id = d.to_user \
+             where d.tenant_id = $1 and d.task_id = $2",
+        )
+        .bind(ctx.tenant)
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        task["history"] = history;
         Ok(task)
     }
 
@@ -900,6 +990,24 @@ impl Kernel {
     }
 
     /// Hands a task on to another person who could decide it, within the task's bound, never back along its chain.
+    /// A member of the workspace by email, to hand a task on by the address people know each other by. Members
+    /// see each other already (mentions, sharing), so this tells nobody anything new.
+    pub async fn member_by_email(&self, ctx: &Ctx, email: &str) -> Result<Uuid> {
+        let email = email.trim();
+        if email.is_empty() || email.len() > 254 {
+            return Err(Error::field("to", "is an email of someone in this workspace"));
+        }
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let id: Option<Uuid> =
+            sqlx::query_scalar("select id from app_user where tenant_id = $1 and lower(email::text) = lower($2) and is_active and kind = 'member'")
+                .bind(ctx.tenant)
+                .bind(email)
+                .fetch_optional(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        id.ok_or_else(|| Error::field("to", "nobody in this workspace has that email"))
+    }
+
     pub async fn delegate_logic_task(&self, ctx: &Ctx, id: Uuid, to: Uuid, reason: &str) -> Result<()> {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let row: Option<(String, i32, Vec<Uuid>, Vec<Uuid>, String)> =

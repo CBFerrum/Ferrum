@@ -8,6 +8,7 @@ build = "build.rs"
 
 [dependencies]
 ferrum-kernel = { path = "../kernel" }
+ferrum-logic = { path = "../logic" }
 ferrum-meta = { path = "../meta" }
 ferrum-domain = { path = "../domain" }
 ferrum-calc = { path = "../calc" }
