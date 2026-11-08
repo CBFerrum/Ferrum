@@ -7,7 +7,6 @@ ok   after the backup, the first run ordered (PostgreSQL's backup does not know 
      Temporal's store copied (t2), after the order
 == A new, isolated environment: database ferrum_flc_drill, Temporal on 7234, Ferrum on 5171
      $ dropdb --if-exists ferrum_flc_drill
-NOTICE:  database "ferrum_flc_drill" does not exist, skipping
      $ createdb -O ferrum ferrum_flc_drill
      $ pg_restore -d ferrum_flc_drill /private/tmp/claude-501/-Users-chinmoybhuyan-Desktop-Personal-ERP/eccac2fe-7ff7-481b-9bb5-09ef58fdbd46/scratchpad/drill/ferrum_flc_walk-t1.dump
 ok   Temporal starts from the copied store
