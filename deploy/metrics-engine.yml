@@ -1,0 +1,29 @@
+# Metrics' engine for external sources (docs/operations.md, "Metrics' engine"; the Metrics repository's
+# docs/engine.md): a metric read from a data lake's CSV or Parquet files through its Wren semantic model, on
+# DataFusion, by a service of its own beside the server, so a heavy query is bounded there and cannot take
+# the server down.
+#   docker compose -f deploy/docker-compose.yml -f deploy/metrics-engine.yml --env-file deploy/.env up -d
+# Its image is built from a checkout of the Metrics repository (engine/Dockerfile) unless one is named. Its
+# configuration and the datasets are mounted read-only. Nothing is published to the host: only Ferrum
+# talks to it, with the token both hold.
+services:
+  metrics-engine:
+    image: ${FERRUM_METRICS_ENGINE_IMAGE:-ferrum-metrics-engine:local}
+    build:
+      context: ${FERRUM_METRICS_REPO:-../../ferrum-app-metrics}
+      dockerfile: engine/Dockerfile
+    restart: unless-stopped
+    read_only: true
+    environment:
+      FERRUM_METRICS_ENGINE_CONFIG: /etc/ferrum/engine.json
+      FERRUM_METRICS_ENGINE_TOKEN: ${FERRUM_METRICS_ENGINE_TOKEN:?set FERRUM_METRICS_ENGINE_TOKEN in deploy/.env, 32 characters or more}
+      FERRUM_METRICS_ENGINE_ADDR: 0.0.0.0:5180
+    volumes:
+      # The datasets and limits (docs/engine.md); each dataset's path is under /data.
+      - ${FERRUM_METRICS_ENGINE_CONFIG_FILE:-./metrics-engine.json}:/etc/ferrum/engine.json:ro
+      - ${FERRUM_METRICS_DATASETS:-./datasets}:/data:ro
+
+  ferrum:
+    environment:
+      FERRUM_METRICS_ENGINE_URL: http://metrics-engine:5180
+      FERRUM_METRICS_ENGINE_TOKEN: ${FERRUM_METRICS_ENGINE_TOKEN}
