@@ -107,11 +107,24 @@ MUTANTS = [
     ("administrator-decides", "crates/kernel/src/process.rs", 'if !role.is_empty() && !ctx.roles.iter().any(|r| r == role) {', 'if !role.is_empty() && !ctx.roles.iter().any(|r| r == role) && !ctx.is_admin {', PROCESS_RECORDS),
     ("requester-closes-case", "crates/kernel/src/process.rs", 'if !ctx.roles.contains(&owner) || exclude.contains(&ctx.user) {', 'if !ctx.roles.contains(&owner) || exclude.is_empty() && exclude.contains(&ctx.user) {', PROCESS_RECORDS),
     ("delegation-goes-back", "crates/kernel/src/process.rs", 'if to == ctx.user || delegated.contains(&to) || exclude.contains(&to) {', 'if to == ctx.user || exclude.contains(&to) {', PROCESS_RECORDS),
+    # Company-owned runs act as their solution's own account, with the reviewed closure only (FLC-CAP-005).
+    ("company-run-acts-as-its-activator", "crates/kernel/src/process.rs", '"select id, is_active from app_user where tenant_id = $1 and email = $2"', """"select a.activated_by, true from logic_activation a where a.tenant_id = $1 and $2 like 'solution.' || a.solution || '@%'\"""", PROCESS_RECORDS),
+    ("solution-account-holds-more", "crates/kernel/src/logic.rs", '"write" => d.write = true,', '"write" => { d.write = true; d.read = true; d.create = true }', PROCESS_RECORDS),
+    ("admin-capability-for-anyone", "crates/kernel/src/capability.rs", 'None => p == "admin" && (ctx.is_admin || granted),', 'None => p == "admin",', CAPABILITY),
+    # The console's lookup reads the receipt under the step's own key (FLC-UI-008).
+    ("look-up-misses-the-receipt", "crates/kernel/src/process.rs", "from logic_effect where tenant_id = $1 and effect_key = $2 order by created_at limit 1", "from logic_effect where tenant_id = $1 and effect_key = $2 || '?' order by created_at limit 1", PROCESS_RECORDS),
+    # A replaced capability version is waited out, never taken up (FLC-CAP-004).
+    ("replaced-version-taken-up", "crates/kernel/src/process.rs", "Ok(c) if c.version == version => self.unpaused(tenant, run, activation).await?,", "Ok(_) => self.unpaused(tenant, run, activation).await?,", PROCESS_RECORDS),
+    # Destinations are held to at the connection (FLC-SEC-005).
+    ("egress-follows-redirects", "crates/kernel/src/outbound.rs", ".redirect(reqwest::redirect::Policy::none())", ".redirect(reqwest::redirect::Policy::limited(5))", CAPABILITY),
+    ("egress-reaches-private-hosts", "crates/kernel/src/outbound.rs", "if !allow_private && addrs.iter().any(|a| crate::outbox::is_private(a.ip())) {", "if false && addrs.iter().any(|a| crate::outbox::is_private(a.ip())) {", CAPABILITY),
+    # Core refuses a durable process (FLC-BASE-005).
+    ("core-runs-a-process", "crates/logic/src/compile.rs", "    if profile == RuntimeProfile::Core {\n        p.fault(\n            Code::UnsupportedProfile,", "    if false {\n        p.fault(\n            Code::UnsupportedProfile,", LOGIC_RULES),
     # A replica takes up an activation made on another with the very next event (FLC-MIG-003).
     ("replica-misses-an-activation", "crates/kernel/src/process.rs", 'let version: i64 = sqlx::query_scalar("select meta_version from tenant where id = $1").bind(tenant).fetch_one(&mut *tx).await?;', "let version: i64 = k.registry.schema(tenant).await?.version;", PROCESS_RECORDS),
     ("effect-on-stale-approval", "crates/kernel/src/process.rs", '&& let Err(e) = self.approval_holds(tenant, run, a).await', '&& let Err(e) = self.approval_holds(tenant, run, a).await.or(Ok::<(), Error>(()))', PROCESS_RECORDS),
     ("approval-of-deleted-record", "crates/kernel/src/process.rs", 'Err(Error::NotFound(_)) => {\n                    tx.commit().await?;\n                    return Err(refusal(Code::StaleApproval', 'Err(Error::NotFound(_)) if false => {\n                    tx.commit().await?;\n                    return Err(refusal(Code::StaleApproval', PROCESS_RECORDS),
-    ("effect-borrows-rights", "crates/kernel/src/process.rs", 'let user = requester.unwrap_or(activator);', 'let user = requester.map(|_| activator).unwrap_or(activator);', PROCESS_RECORDS),
+    ("effect-borrows-rights", "crates/kernel/src/process.rs", 'if let Some(user) = requester {', 'if let Some(user) = requester.filter(|_| false) {', PROCESS_RECORDS),
     ("early-event-dropped", "crates/kernel/src/process.rs", '            if waiting.is_empty() {', '            if false && waiting.is_empty() {', PROCESS_RECORDS),
     ("event-crosses-records", "crates/kernel/src/process.rs", "and event = $2 and correlation = $3 and status = 'waiting' order by", "and event = $2 and ($3::text is not null) and status = 'waiting' order by", PROCESS_RECORDS),
     ("case-order-ignored", "crates/kernel/src/process.rs", 'find(|r| !done.iter().any(|d| d == r))', 'find(|r| r.is_empty() && !done.iter().any(|d| d == r))', PROCESS_RECORDS),

@@ -318,4 +318,15 @@ async fn scenario() {
     k.insert(&other, "Order", obj(json!({"reference": "G-1", "total": "-5"}))).await.expect("another workspace's rules are its own");
     assert!(k.logic_releases(&other).await.unwrap().is_empty());
     assert_eq!(k.logic_releases(&admin).await.unwrap().len(), 3);
+
+    // This installation has no durable process runtime (the Core profile): a long-lived process is refused outright,
+    // naming the runtime it needs, never run some lesser way (FLC-BASE-005, decisions L-06).
+    let durable = json!({
+        "schema_version": "ferrum.solution/1", "kind": "Solution", "id": "acme.chaser", "version": "1.0.0", "label": "Chase orders",
+        "processes": [{"id": "chase", "label": "Chase an order", "trigger": {"event": "orders.order.created", "business_key": "trigger.id"},
+            "entry": "done", "max_steps": 5, "nodes": [{"type": "end", "id": "done", "label": "Done", "outcome": "completed"}]}]
+    });
+    let e = k.save_release(&admin, &durable.to_string()).await.unwrap_err();
+    assert!(e.to_string().contains("unsupported_profile") && e.to_string().contains("needs the Full Process profile"), "{e}");
+    assert_eq!(k.logic_releases(&admin).await.unwrap().len(), 3, "nothing kept");
 }

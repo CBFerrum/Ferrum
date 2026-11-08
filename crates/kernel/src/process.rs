@@ -647,24 +647,65 @@ impl Kernel {
     /// The context a run's effects run under: its requester's rights as they are now, or for a run no person
     /// started, those of whoever activated its release. Revoked rights refuse the effect; nothing stronger is
     /// borrowed (FLC-PROC-006).
-    async fn run_ctx(&self, tenant: Uuid, run: Uuid) -> Result<Ctx> {
+    /// Whom a run acts as, and whether that is its solution's own account (FLC-CAP-005). Delegated: the person
+    /// whose act started it, with their rights as they are now, so offboarding them stops what it would do next.
+    /// Company-owned, when no person's act started it: the solution's own account, holding only what its active
+    /// release was reviewed to use. Never the rights of whoever activated it.
+    async fn run_ctx(&self, tenant: Uuid, run: Uuid) -> Result<(Ctx, bool)> {
         let mut tx = self.db.tenant_tx(tenant).await?;
-        let who: Option<(Option<Uuid>, Uuid)> = sqlx::query_as(
-            "select l.requester, a.activated_by from logic_run l left join logic_activation a on a.tenant_id = l.tenant_id and a.solution = l.solution \
-             where l.tenant_id = $1 and l.id = $2",
-        )
-        .bind(tenant)
-        .bind(run)
-        .fetch_optional(&mut *tx)
-        .await?
-        .map(|(r, a): (Option<Uuid>, Option<Uuid>)| (r, a.unwrap_or_default()));
-        tx.commit().await?;
-        let Some((requester, activator)) = who else { return Err(Error::NotFound("run".into())) };
-        let user = requester.unwrap_or(activator);
-        if user.is_nil() {
-            return Err(Error::Forbidden("nobody's rights cover this run any more".into()));
+        let who: Option<(Option<Uuid>, String)> = sqlx::query_as("select requester, solution from logic_run where tenant_id = $1 and id = $2")
+            .bind(tenant)
+            .bind(run)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let Some((requester, solution)) = who else {
+            tx.commit().await?;
+            return Err(Error::NotFound("run".into()));
+        };
+        if let Some(user) = requester {
+            tx.commit().await?;
+            let ctx = self.load_ctx(tenant, user, None, format!("run-{run}")).await;
+            return ctx.map(|c| (c, false)).map_err(|_| Error::Forbidden("whoever the run acts for can no longer act here".into()));
         }
-        self.load_ctx(tenant, user, None, format!("run-{run}")).await.map_err(|_| Error::Forbidden("whoever the run acts for can no longer act here".into()))
+        let account: Option<(Uuid, bool)> = sqlx::query_as("select id, is_active from app_user where tenant_id = $1 and email = $2")
+            .bind(tenant)
+            .bind(crate::logic::solution_account(&solution))
+            .fetch_optional(&mut *tx)
+            .await?;
+        let user = match account {
+            Some((user, true)) => {
+                tx.commit().await?;
+                user
+            }
+            Some((_, false)) => {
+                tx.commit().await?;
+                return Err(Error::Forbidden(format!("{solution} is not running here, so its own account is off")));
+            }
+            // Activated before solutions had accounts of their own: given its active release's closure now, as
+            // its activation would have.
+            None => {
+                let active: Option<Value> = sqlx::query_scalar(
+                    "select r.release from logic_activation a join logic_release r on r.tenant_id = a.tenant_id and r.id = a.release_id \
+                     where a.tenant_id = $1 and a.solution = $2",
+                )
+                .bind(tenant)
+                .bind(&solution)
+                .fetch_optional(&mut *tx)
+                .await?;
+                let Some(release) = active else {
+                    tx.commit().await?;
+                    return Err(Error::Forbidden(format!("{solution} is not running here, and nobody's act started this run")));
+                };
+                let release: Release = serde_json::from_value(release).map_err(Error::internal)?;
+                let system = Ctx::system(tenant, self.registry.schema(tenant).await?);
+                let user = crate::logic::grant_solution(self, &mut tx, &system, &solution, &release).await?;
+                tx.commit().await?;
+                self.invalidate_tenant_users(tenant);
+                user
+            }
+        };
+        let ctx = self.load_ctx(tenant, user, None, format!("run-{run}")).await;
+        ctx.map(|c| (c, true)).map_err(|_| Error::Forbidden(format!("{solution}'s own account cannot act here")))
     }
 
     /// Runs one capability for a run. `Err` only for what may be tried again (the database or a dependency
@@ -736,7 +777,7 @@ impl Kernel {
         if changes && (self.db.fenced() || self.holding().await?) {
             return Err(Error::Unavailable("held after a restore, or fenced to another region: effects wait until the hold is released".into()));
         }
-        let ctx = match self.run_ctx(tenant, run).await {
+        let (ctx, granted) = match self.run_ctx(tenant, run).await {
             Ok(c) => c,
             Err(e) => return settle(e),
         };
@@ -744,7 +785,7 @@ impl Kernel {
         // out of the workspace, or the version the release is bound to replaced) is neither used nor failed for:
         // the step waits, as it waits for a hold, administrators see why and may end the run, and it goes on by
         // itself once the capability is back. Nothing similarly named stands in for it (FLC-OPS-007).
-        match self.capability(&ctx, capability) {
+        match self.capability_as(&ctx, capability, granted) {
             Ok(c) if c.version == version => self.unpaused(tenant, run, activation).await?,
             Ok(c) => {
                 let why = format!("the release is bound to version {version} of {capability}, and this workspace has {}", c.version);
@@ -764,7 +805,7 @@ impl Kernel {
         if changes {
             inv.effect_key = Some(format!("{run}/{activation}"));
         }
-        match self.invoke(&ctx, inv).await {
+        match self.invoke_as(&ctx, inv, granted).await {
             Ok(receipt) => Ok(Invoked::Done { output: receipt.result }),
             Err(e @ (Error::Unavailable(_) | Error::Retryable(_) | Error::Db(_))) => Err(e),
             Err(e) if e.code() == Code::OutcomeUnknown.as_str() => Ok(Invoked::Unknown { why: e.to_string() }),
@@ -1653,6 +1694,68 @@ impl Kernel {
         deliver(&mut tx, ctx.tenant, run, &Event::Recovered { activation, by: ctx.user.to_string(), reason: reason.trim().into(), resume }).await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// For a run stopped after a step's outcome came back unknown (its answer lost after the effect may have
+    /// committed), looks up whether each such effect is on record here (FLC-UI-008): every capability a run uses
+    /// writes its receipt in the effect's own transaction, under the step's effect key, so a receipt means it was
+    /// done and none means it was not. What was found is kept on the recovery item and audited, so a page read
+    /// again or another replica shows the same evidence; resuming then repeats the step under its key, which the
+    /// receipt answers with what was done, never doing it twice. Administrators only.
+    pub async fn look_up_logic_effects(&self, ctx: &Ctx, id: Uuid) -> Result<Value> {
+        require_admin(ctx)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let row: Option<(Uuid, String)> =
+            sqlx::query_as("select run_id, status from logic_task where tenant_id = $1 and id = $2 and kind = 'recovery' for update")
+                .bind(ctx.tenant)
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some((run, status)) = row else { return Err(Error::NotFound("recovery".into())) };
+        if status != "open" {
+            return Err(Error::Conflict("this has been recovered already".into()));
+        }
+        let state: Option<Value> =
+            sqlx::query_scalar("select state from logic_run where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(run).fetch_one(&mut *tx).await?;
+        let doubtful: Vec<String> = state
+            .as_ref()
+            .and_then(|s| s.get("outputs"))
+            .and_then(Value::as_object)
+            .map(|o| o.iter().filter(|(_, v)| v.get("unknown").is_some()).map(|(a, _)| a.clone()).collect())
+            .unwrap_or_default();
+        if doubtful.is_empty() {
+            return Err(Error::Conflict("no step of this run came back with its outcome unknown: there is nothing to look up".into()));
+        }
+        let mut found = vec![];
+        for activation in &doubtful {
+            let receipt: Option<(String, Value, Option<Uuid>, DateTime<Utc>)> = sqlx::query_as(
+                "select capability, result, actor, created_at from logic_effect where tenant_id = $1 and effect_key = $2 order by created_at limit 1",
+            )
+            .bind(ctx.tenant)
+            .bind(format!("{run}/{activation}"))
+            .fetch_optional(&mut *tx)
+            .await?;
+            found.push(match receipt {
+                Some((capability, result, actor, at)) => json!({
+                    "activation": activation, "on_record": true, "capability": capability, "at": at, "actor": actor, "result": result,
+                    "meaning": "It was done: its receipt is here. Resuming repeats the step under its key, which the receipt answers; nothing is done twice.",
+                }),
+                None => json!({
+                    "activation": activation, "on_record": false,
+                    "meaning": "It was not done here: no receipt, and a receipt is written with the effect itself. Resuming does it once.",
+                }),
+            });
+        }
+        let lookup = json!({"by": ctx.user, "at": Utc::now(), "effects": found});
+        sqlx::query("update logic_task set detail = detail || jsonb_build_object('lookup', $3::jsonb), version = version + 1 where tenant_id = $1 and id = $2")
+            .bind(ctx.tenant)
+            .bind(id)
+            .bind(&lookup)
+            .execute(&mut *tx)
+            .await?;
+        crate::audit::record(&mut tx, ctx, "LogicRun", run, "look_up_effects", None, json!({"recovery": id, "effects": lookup["effects"]})).await?;
+        tx.commit().await?;
+        Ok(lookup)
     }
 
     /// Acknowledges something a run handed to a person (an effect that settled when no longer wanted, a failed
