@@ -52,6 +52,8 @@ fn field_ty(f: &FieldDef, schema: &Schema, nested: bool) -> Ty {
         FieldType::Date => Ty::Date,
         FieldType::Datetime => Ty::Instant,
         FieldType::Json => Ty::Any,
+        // The id of a record of the kind the link names: one kind's never goes where another's is wanted.
+        FieldType::Link if f.to.is_some() => Ty::Ref(f.to.clone().unwrap_or_default()),
         FieldType::Table => match f.of.as_deref().and_then(|c| schema.entity(c)) {
             Some(child) if !nested => Ty::List(Box::new(Ty::Record(
                 child.def.fields.iter().filter(|cf| !restricted(cf)).map(|cf| (cf.name.clone(), field_ty(cf, schema, true))).collect(),
@@ -82,7 +84,7 @@ pub fn shape(schema: &Schema, name: &str) -> Option<EntityShape> {
             (f.name.clone(), FieldShape { ty: field_ty(f, schema, false), customer: ent.custom || f.name.starts_with("x_"), restricted: restricted(f), link })
         })
         .collect();
-    fields.entry("id".into()).or_insert(FieldShape { ty: Ty::Text, customer: false, restricted: false, link: None });
+    fields.entry("id".into()).or_insert(FieldShape { ty: Ty::Ref(ent.def.name.clone()), customer: false, restricted: false, link: None });
     Some(EntityShape { fields })
 }
 
@@ -638,6 +640,39 @@ impl Kernel {
         self.registry.invalidate(ctx.tenant);
         self.invalidate_tenant_users(ctx.tenant);
         Ok(())
+    }
+
+    /// What runs on the capabilities of `packages` here (FLC-CAP-008): each active release whose reviewed lock names
+    /// one of them, with the capabilities and versions it is bound to and how many of its runs are open.
+    /// Administrators. Taking such an app out does not fail that work: its steps wait for the capability, telling
+    /// administrators (FLC-OPS-007), and the ways on are bringing the app back, or moving the runs to a release that
+    /// does without it (FLC-MIG-004).
+    pub async fn logic_dependents(&self, ctx: &Ctx, packages: &[String]) -> Result<Vec<Value>> {
+        require_admin(ctx)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let rows: Vec<(String, Uuid, String, Value, i64)> = sqlx::query_as(
+            "select a.solution, r.id, r.version, r.release, \
+               (select count(*) from logic_run l where l.tenant_id = a.tenant_id and l.solution = a.solution and l.finished_at is null) \
+             from logic_activation a join logic_release r on r.tenant_id = a.tenant_id and r.id = a.release_id where a.tenant_id = $1 order by a.solution",
+        )
+        .bind(ctx.tenant)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        let mut out = vec![];
+        for (solution, release, version, stored, open) in rows {
+            let Ok(stored) = serde_json::from_value::<Release>(stored) else { continue };
+            let used: Vec<Value> = stored
+                .lock
+                .iter()
+                .filter(|l| packages.iter().any(|p| l.id.starts_with(&format!("{p}."))))
+                .map(|l| json!({"capability": l.id, "version": l.version}))
+                .collect();
+            if !used.is_empty() {
+                out.push(json!({"solution": solution, "release": release, "version": version, "uses": used, "open_runs": open}));
+            }
+        }
+        Ok(out)
     }
 
     /// Evidence of refused saves the rules asked to keep, newest first (administrators).

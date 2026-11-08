@@ -4,10 +4,13 @@
 //! delivered, without the runtime's schedule: deadlines are passed by hand. The runtime's own conformance,
 //! on Temporal, is `crates/process/tests`.
 
+use ferrum_kernel::files::FileStore;
 use ferrum_kernel::outbox::Event as OutboxEvent;
 use ferrum_kernel::process::{DELIVER_TOPIC, Migration, START_TOPIC, Waited};
+use ferrum_kernel::secret::SecretKey;
+use ferrum_kernel::support::GrantInput;
 use ferrum_kernel::tenant::NewTenant;
-use ferrum_kernel::{Ctx, Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings};
+use ferrum_kernel::{Ctx, Db, DbConfig, Doc, DocHook, Error, HookCtx, HookRegistry, Kernel, KernelSettings};
 use ferrum_logic::calendar::Calendar;
 use ferrum_logic::compile::Release;
 use ferrum_logic::process::{Command, Event, Invoked, Machine, Run};
@@ -15,10 +18,52 @@ use ferrum_meta::Catalog;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
-const PACKAGE: &str = "package: procs\nversion: 1.0.0\ndepends: [core]\nroles:\n  - name: Requester\n    permissions:\n      - {entity: Request, read: true, write: true, create: true, submit: true, cancel: true}\n      - {entity: Order, read: true, write: true, create: true}\n  - name: Reviewer\n    permissions:\n      - {entity: Request, read: true}\n      - {entity: Order, read: true}\n";
+/// Holds the next order being saved inside its transaction until told, as a worker paused in the middle of a step
+/// would: its claim on the step's effect is taken and its effect not yet done.
+#[derive(Default)]
+struct Pause {
+    armed: std::sync::atomic::AtomicBool,
+    entered: tokio::sync::Notify,
+    go: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl DocHook for Pause {
+    fn name(&self) -> &'static str {
+        "test.pause"
+    }
+    async fn before_validate(&self, _: &mut HookCtx<'_>, _: &mut Doc) -> ferrum_kernel::Result<()> {
+        if self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            self.entered.notify_one();
+            self.go.notified().await;
+        }
+        Ok(())
+    }
+}
+
+/// Files kept in memory, as an object store would keep them.
+#[derive(Default)]
+struct MemFiles(Mutex<BTreeMap<String, Vec<u8>>>);
+
+#[async_trait::async_trait]
+impl FileStore for MemFiles {
+    async fn put(&self, key: &str, data: &[u8]) -> ferrum_kernel::Result<()> {
+        self.0.lock().unwrap().insert(key.to_string(), data.to_vec());
+        Ok(())
+    }
+    async fn get(&self, key: &str) -> ferrum_kernel::Result<Vec<u8>> {
+        self.0.lock().unwrap().get(key).cloned().ok_or_else(|| Error::NotFound("object".into()))
+    }
+    async fn delete(&self, key: &str) -> ferrum_kernel::Result<()> {
+        self.0.lock().unwrap().remove(key);
+        Ok(())
+    }
+}
+
+const PACKAGE: &str = "package: procs\nversion: 1.0.0\ndepends: [core]\nroles:\n  - name: Requester\n    permissions:\n      - {entity: Request, read: true, write: true, create: true, submit: true, cancel: true}\n      - {entity: Order, read: true, write: true, create: true}\n  - name: Reviewer\n    permissions:\n      - {entity: Request, read: true}\n      - {entity: Order, read: true}\npersonal_data:\n  - {entity: Request, match: contact, erase: [contact]}\n";
 const ENTITIES: &str = r#"
 - name: Request
   label: Request
@@ -28,6 +73,8 @@ const ENTITIES: &str = r#"
   fields:
     - {name: reference, type: data, required: true}
     - {name: total, type: decimal}
+    - {name: contact, type: data}
+    - {name: pin, type: secret}
 - name: Order
   label: Order
   kind: master
@@ -410,8 +457,12 @@ async fn scenario() {
         [("package.yaml", PACKAGE), ("entities/procs.yaml", ENTITIES)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     let pkg = ferrum_meta::catalog::load_package_files(&files).expect("package");
     let catalog = Catalog::from_packages(vec![core, pkg]).unwrap();
-    let settings = KernelSettings { process_runtime: true, ..Default::default() };
-    let k = Kernel::boot(db, catalog.clone(), HookRegistry::default(), settings.clone(), None).await.expect("boot");
+    let settings = KernelSettings { process_runtime: true, secret_key: Some(SecretKey::new([42u8; 32])), ..Default::default() };
+    let pause = Arc::new(Pause::default());
+    let mut hooks = HookRegistry::default();
+    hooks.register("Order", pause.clone());
+    let k = Kernel::boot(db, catalog.clone(), hooks, settings.clone(), None).await.expect("boot");
+    k.set_file_store(Arc::new(MemFiles::default()));
     let admin = workspace(&k, "acme").await;
     let admin2 = user(&k, &admin, "admin2@acme.test", &[], true).await;
     // The requester also holds the reviewer's role: still not theirs to decide.
@@ -1204,4 +1255,154 @@ async fn scenario() {
     tx.commit().await.unwrap();
     k.accept_event(&ev).await.unwrap();
     assert_eq!(scalar::<i64>(&k, admin.tenant, "select count(*) from logic_run where business_key = $1::uuid::text", r1).await, 1, "no second run");
+
+    // A secret on a record never reaches a run (FLC-SEC-003): not the event that starts it, not the material a person
+    // decides on, not the run's own record; and a pack carries the source, never a record.
+    let pinned: Uuid = k.insert(&requester, "Request", obj(json!({"reference": "R-17", "total": "5000", "pin": "4242-not-for-runs"}))).await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(scalar::<i64>(&k, admin.tenant, "select count(*) from record_secret where record_id = $1", pinned).await, 1, "kept as a secret");
+    k.submit(&requester, "Request", pinned, None).await.unwrap();
+    d.settle().await;
+    let run17: Uuid = scalar(&k, admin.tenant, "select id from logic_run where business_key = $1::uuid::text", pinned).await;
+    let kept: String = scalar(&k, admin.tenant, "select trigger::text || coalesce(state::text, '') from logic_run where id = $1", run17).await;
+    let shown: String = scalar(&k, admin.tenant, "select coalesce(string_agg(material::text, ''), '') from logic_task where run_id = $1", run17).await;
+    assert!(!kept.contains("4242-not-for-runs") && !shown.contains("4242-not-for-runs"), "{kept} {shown}");
+    assert!(!k.solution_pack(&admin, release4).await.unwrap().to_string().contains("4242"), "nothing of a record travels in a pack");
+
+    // A task's evidence is its own (FLC-HUMAN-006): attached and read only by someone who may decide that task, or an
+    // administrator, and never through another task's id or the ordinary file routes.
+    let (task17, _) = task_of(&k, admin.tenant, run17, "approve").await;
+    let (_, run19) = request(&k, &mut d, &requester, "R-19", "5000").await;
+    let (task19, _) = task_of(&k, admin.tenant, run19, "approve").await;
+    let file = k.attach_task_evidence(&reviewer, task17, "quote.pdf", "application/pdf", b"%PDF-1.4 the supplier's quote").await.unwrap();
+    let evidence: Uuid = file["id"].as_str().unwrap().parse().unwrap();
+    assert_eq!(k.read_task_evidence(&reviewer2, task17, evidence).await.unwrap().2, b"%PDF-1.4 the supplier's quote".to_vec(), "another who may decide it");
+    assert_eq!(k.read_task_evidence(&admin, task17, evidence).await.unwrap().0, "quote.pdf", "an administrator");
+    assert_eq!(code(&k.read_task_evidence(&reviewer, task19, evidence).await.unwrap_err()), "not_found", "not through another task");
+    assert_eq!(code(&k.read_task_evidence(&requester, task17, evidence).await.unwrap_err()), "not_found", "the requester may not decide it");
+    assert_eq!(code(&k.attach_task_evidence(&outsider, task17, "x.txt", "text/plain", b"x").await.unwrap_err()), "not_found");
+    assert!(k.read_file(&admin, evidence).await.is_err(), "the ordinary file route does not reach it");
+    let listed = k.logic_task(&reviewer, task17).await.unwrap();
+    assert!(listed["evidence"].as_array().unwrap().iter().any(|e| e["id"] == json!(evidence) && e["file_name"] == "quote.pdf"), "{listed}");
+    assert!(k.logic_task(&reviewer, task19).await.unwrap()["evidence"].as_array().unwrap().is_empty(), "nor listed on another");
+
+    // An erasure reaches what runs keep of a record (FLC-OPS-006): the event that started its run, the run's own record
+    // and the material shown lose the erased fields, and a runtime reporting the run again from what it held before
+    // cannot bring them back.
+    let asked: Uuid =
+        k.insert(&requester, "Request", obj(json!({"reference": "R-18", "total": "5000", "contact": "erase.me@example.com"}))).await.unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+    k.submit(&requester, "Request", asked, None).await.unwrap();
+    d.settle().await;
+    let run18: Uuid = scalar(&k, admin.tenant, "select id from logic_run where business_key = $1::uuid::text", asked).await;
+    assert!(scalar::<String>(&k, admin.tenant, "select trigger::text from logic_run where id = $1", run18).await.contains("erase.me@example.com"));
+    let answer = k.erase_personal_data(&admin, "erase.me@example.com", "asked to be forgotten").await.unwrap();
+    assert!(answer["erased"].as_array().unwrap().iter().any(|e| e["id"] == json!(asked)), "{answer}");
+    let after: String = scalar(&k, admin.tenant, "select trigger::text || coalesce(state::text, '') from logic_run where id = $1", run18).await;
+    let shown: String = scalar(&k, admin.tenant, "select coalesce(string_agg(material::text, ''), '') from logic_task where run_id = $1", run18).await;
+    assert!(!after.contains("erase.me@example.com") && !shown.contains("erase.me@example.com"), "{after} {shown}");
+    let held = d.runs[&run18].1.clone();
+    assert!(serde_json::to_string(&held).unwrap().contains("erase.me@example.com"), "the runtime's own copy still has it");
+    k.process_report(admin.tenant, run18, &held).await.unwrap();
+    let reported: String = scalar(&k, admin.tenant, "select coalesce(state::text, '') from logic_run where id = $1", run18).await;
+    assert!(!reported.contains("erase.me@example.com"), "reported again, it stays erased: {reported}");
+
+    // What runs on an app's capabilities is known before it goes, and recorded when it goes (FLC-CAP-008).
+    let deps = k.logic_dependents(&admin, &["procs".to_string()]).await.unwrap();
+    let on_procs = deps.iter().find(|d| d["solution"] == "acme.requests").expect("acme.requests uses procs");
+    assert!(on_procs["uses"].as_array().unwrap().iter().any(|u| u["capability"] == "procs.order.create"), "{on_procs}");
+    assert!(on_procs["open_runs"].as_i64().unwrap() >= 1, "{on_procs}");
+    assert_eq!(code(&k.logic_dependents(&reviewer, &["procs".to_string()]).await.unwrap_err()), "forbidden");
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    let removal: Value =
+        sqlx::query_scalar("select diff from audit_event where tenant_id = $1 and entity = 'Package' and action = 'remove' order by id limit 1")
+            .bind(admin.tenant)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+    assert!(removal["waiting"].as_array().unwrap().iter().any(|w| w["solution"] == "acme.requests"), "taking procs out recorded what waits: {removal}");
+
+    // A partner's time-bound support sees which runs are stuck and at what step, never what they carry, and opens no
+    // run (FLC-SEC-007). Its expiry and the customer's list of every request it made are support_it's.
+    let (_, key) = k
+        .grant_support(
+            &admin,
+            GrantInput { level: "diagnostics".into(), grantee: "Partner Ltd".into(), entities: vec![], can_write: false, reason: "Ticket 77".into(), hours: 1 },
+        )
+        .await
+        .unwrap();
+    let (session, _) = k.verify_api_key(&key).await.unwrap();
+    let partner = k.load_ctx(session.tenant, session.user, Some(session.token_version), "it".into()).await.unwrap();
+    let report = k.support_report(&partner, "diagnostics").await.unwrap();
+    let stuck = report["runs"]["stuck"].as_array().unwrap();
+    assert!(report["runs"]["needing_attention"].as_i64().unwrap() >= 1 && stuck.iter().any(|r| r["run"] == json!(run8)), "{report}");
+    assert!(stuck.iter().all(|r| r.get("trigger").is_none() && r.get("state").is_none()), "{report}");
+    assert!(!report.to_string().contains("R-8\""), "no record's contents: {report}");
+    assert_eq!(code(&k.logic_run(&partner, run8).await.unwrap_err()), "not_found", "and no run opened");
+
+    // A worker paused in the middle of a step past its claim, another doing the step, and the first resumed
+    // (FLC-PROC-012): the effect's receipt is claimed in the effect's own transaction, so the second waits behind the
+    // first's claim; when the first's session ends, as a database ends one left idle in a transaction, its claim and
+    // its half-done effect go with it, the second does the step, and the first, resumed, cannot commit anything.
+    // Asked again, as a retry would, it finds the receipt and does nothing more.
+    let fenced = || ferrum_kernel::capability::Invocation::new("procs.order.create", json!({"values": {"reference": "FENCE-1"}})).key("fence/order");
+    pause.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+    let first = tokio::spawn({
+        let (k, who, inv) = (k.clone(), requester.clone(), fenced());
+        async move { k.invoke(&who, inv).await }
+    });
+    pause.entered.notified().await;
+    let second = tokio::spawn({
+        let (k, who, inv) = (k.clone(), requester.clone(), fenced());
+        async move { k.invoke(&who, inv).await }
+    });
+    let mut blocker: Option<i32> = None;
+    for _ in 0..200 {
+        let mut tx = k.db.system_tx().await.unwrap();
+        blocker = sqlx::query_scalar(
+            "select held.pid from pg_locks waiting join pg_locks held on held.locktype = 'transactionid' and held.transactionid = waiting.transactionid \
+             and held.granted where waiting.locktype = 'transactionid' and not waiting.granted limit 1",
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        if blocker.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    let blocker = blocker.expect("the second worker waits behind the first's claim");
+    let mut tx = k.db.system_tx().await.unwrap();
+    let ended: bool = sqlx::query_scalar("select pg_terminate_backend($1)").bind(blocker).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert!(ended, "the first worker's session ended");
+    let did = second.await.unwrap().expect("the second does the step");
+    assert!(!did.repeated, "it did it, not repeated it");
+    pause.go.notify_one();
+    assert!(first.await.unwrap().is_err(), "the first, resumed, commits nothing");
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    let orders: i64 = sqlx::query_scalar("select count(*) from e_order where reference = 'FENCE-1'").fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(orders, 1, "one order");
+    let again = k.invoke(&requester, fenced()).await.unwrap();
+    assert!(again.repeated && again.result["id"] == did.result["id"], "asked again, it answers with what was done");
+
+    // A reference is to one kind of record (FLC-COMP-002): the id of the request that started a run does not go where
+    // an order's id is wanted, and such a release is refused before it ever runs; the request's id still goes where a
+    // request's, or plain text, is wanted.
+    let mut wrong: Value = serde_json::from_str(&source()).unwrap();
+    wrong["version"] = json!("1.9.0");
+    wrong["requires"].as_array_mut().unwrap().push(json!({"id": "procs.order.update", "version": "1.0.0"}));
+    wrong["processes"][0]["nodes"][3]["capability"] = json!({"id": "procs.order.update", "version": "1.0.0"});
+    wrong["processes"][0]["nodes"][3]["input"] = json!({"id": "trigger.id", "values.reference": "trigger.id"});
+    let e = k.save_release(&admin, &wrong.to_string()).await.unwrap_err();
+    assert!(e.to_string().contains("a reference to a Request"), "{e}");
 }

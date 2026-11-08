@@ -107,10 +107,26 @@ async fn scenario() {
         "the first batch stays"
     );
     assert_eq!(count("select count(*) from e_note where slug is not null").await, 250);
+    // Meanwhile what runs keeps to the fields it was reviewed with (FLC-MIG-005): a release whose rule reads the old
+    // field, kept and activated while the backfill is stopped half-way, checks every save then and after the backfill
+    // has resumed and finished, as it was approved.
+    let reviewer = k.create_user(&admin, "reviewer@acme.test", "Reviewer", Some("Correct-Horse-9"), &[], true).await.unwrap();
+    let reviewer = k.load_ctx(tenant, reviewer, None, "it".into()).await.unwrap();
+    let titled = json!({"schema_version": "ferrum.solution/1", "kind": "Solution", "id": "acme.titles", "version": "1.0.0", "label": "Titles",
+        "rules": [{"id": "titled", "entity": "Note", "phase": "validate", "check": "!has(doc.title) || doc.title != \"forbidden\"",
+                   "message": "That title is not allowed", "field": "title"}]});
+    let kept = k.save_release(&admin, &titled.to_string()).await.unwrap();
+    let release: Uuid = kept["id"].as_str().unwrap().parse().unwrap();
+    k.review_release(&reviewer, release, kept["artifact_digest"].as_str().unwrap(), true, "").await.unwrap();
+    k.activate_release(&admin, release, None).await.unwrap();
+    let admin = k.load_ctx(tenant, session.user, Some(session.token_version), "it".into()).await.unwrap();
+    assert!(k.insert(&admin, "Note", obj(json!({"title": "forbidden"}))).await.is_err(), "checked while the backfill is stopped");
     sql("update job set run_at = now() where status = 'queued'").await;
     k.run_jobs_once(4).await.unwrap();
     assert_eq!(count("select count(*) from e_note where slug = lower(title)").await, 620, "every note");
     assert_eq!(count("select max(touched)::bigint from e_note").await, 1, "each once, though a batch failed");
+    assert!(k.insert(&admin, "Note", obj(json!({"title": "forbidden"}))).await.is_err(), "and after it finished, as approved");
+    assert_eq!(count("select generation from logic_activation where solution = 'acme.titles'").await, 1, "the same activation throughout");
     let report = k.backfills(&admin).await.unwrap();
     assert_eq!(
         (&report[0]["state"], &report[0]["changed"], &report[0]["remaining"], &report[0]["needing_now"]),
