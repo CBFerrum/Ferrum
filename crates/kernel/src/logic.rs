@@ -113,7 +113,7 @@ impl Resolver for Workspace {
     }
 }
 
-fn diagnostics(d: Vec<Diagnostic>) -> Error {
+pub(crate) fn diagnostics(d: Vec<Diagnostic>) -> Error {
     Error::Validation(d.into_iter().filter(|d| d.fault).map(|d| FieldError::new(d.pointer, format!("{}: {}", d.code.as_str(), d.message))).collect())
 }
 
@@ -237,9 +237,10 @@ impl Kernel {
         Ok(compile::compile(&solution, &self.workspace(ctx).await?, self.logic_profile()))
     }
 
-    /// Compiles a solution and keeps the release, which never changes (administrators).
+    /// Compiles a solution and keeps the release, which never changes (administrators and solution authors;
+    /// someone else reviews it).
     pub async fn save_release(&self, ctx: &Ctx, source: &str) -> Result<Value> {
-        require_admin(ctx)?;
+        crate::authoring::require_author(ctx)?;
         let solution = Solution::parse(source)?;
         let release = compile::compile(&solution, &self.workspace(ctx).await?, self.logic_profile()).map_err(diagnostics)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
@@ -304,8 +305,15 @@ impl Kernel {
     }
 
     /// Records a decision on a release, by an administrator other than its author, of the digest they were
-    /// shown: a release that is not the one they looked at cannot be approved by mistake.
+    /// shown: a release that is not the one they looked at cannot be approved by mistake. One that may change
+    /// records with capabilities what runs now cannot is approved only by naming them (`review_release_consenting`).
     pub async fn review_release(&self, ctx: &Ctx, release: Uuid, shown: &str, approve: bool, reason: &str) -> Result<()> {
+        self.review_release_consenting(ctx, release, shown, &[], approve, reason).await
+    }
+
+    /// As `review_release`, consenting to `privileges`: the changing capabilities the release may use that what
+    /// runs now for its solution cannot, exactly as the reviewer was shown them (FLC-UI-005).
+    pub async fn review_release_consenting(&self, ctx: &Ctx, release: Uuid, shown: &str, privileges: &[String], approve: bool, reason: &str) -> Result<()> {
         require_admin(ctx)?;
         if !approve && reason.trim().is_empty() {
             return Err(Error::field("reason", "say why it is rejected"));
@@ -315,6 +323,22 @@ impl Kernel {
         let earlier: Vec<Decided> =
             r.decisions.iter().map(|(by, digest, _)| Decided { approver: by, digest, policy_revision: POLICY, expires_at_ms: r.expires_ms }).collect();
         approval::may_decide(&r.plan(), shown, &ctx.user.to_string(), &earlier, POLICY, Utc::now().timestamp_millis()).map_err(approval_error)?;
+        if approve {
+            let growth = crate::authoring::privilege_growth(&mut tx, ctx.tenant, release).await?;
+            let mut named = privileges.to_vec();
+            named.sort();
+            named.dedup();
+            if named != growth {
+                return Err(Error::field(
+                    "privileges",
+                    if growth.is_empty() {
+                        "this release may do nothing more than what runs now: consent to nothing".to_string()
+                    } else {
+                        format!("this release may change records with {} that what runs now cannot: name exactly these to consent", growth.join(", "))
+                    },
+                ));
+            }
+        }
         let decision = if approve { "approved" } else { "rejected" };
         sqlx::query("insert into logic_review (tenant_id, release_id, artifact_digest, decided_by, decision, reason) values ($1, $2, $3, $4, $5, $6)")
             .bind(ctx.tenant)

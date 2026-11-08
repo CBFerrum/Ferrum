@@ -114,7 +114,8 @@ async fn deployed(k: &Kernel, slug: &str, timeout: Value) -> (Ctx, Ctx, Ctx) {
     k.set_logic_calendar(&admin, &office).await.unwrap();
     let saved = k.save_release(&admin, &source(timeout)).await.expect("release");
     let release: Uuid = saved["id"].as_str().unwrap().parse().unwrap();
-    k.review_release(&admin2, release, saved["artifact_digest"].as_str().unwrap(), true, "").await.unwrap();
+    // It may create orders, which nothing running could before: consented to by name.
+    k.review_release_consenting(&admin2, release, saved["artifact_digest"].as_str().unwrap(), &["procs.order.create".to_string()], true, "").await.unwrap();
     k.activate_release(&admin, release, None).await.unwrap();
     (admin, requester, reviewer)
 }
