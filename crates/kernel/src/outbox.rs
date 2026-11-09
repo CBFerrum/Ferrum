@@ -475,6 +475,25 @@ impl Kernel {
         Ok(())
     }
 
+    /// The webhook deliveries that gave up, newest first: where each was going and why, never its
+    /// payload, which can hold anything (administrators only).
+    pub async fn dead_webhook_deliveries(&self, ctx: &Ctx, limit: i64) -> Result<Vec<Value>> {
+        require_admin(ctx)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let rows: Vec<Value> = sqlx::query_scalar(
+            "select jsonb_build_object('id', d.id, 'webhook', d.webhook_id, 'webhook_name', w.name, 'topic', d.topic, 'attempts', d.attempts, \
+               'response_code', d.response_code, 'last_error', d.last_error, 'created_at', d.created_at, 'updated_at', d.updated_at) \
+             from webhook_delivery d join webhook w on w.tenant_id = d.tenant_id and w.id = d.webhook_id \
+             where d.tenant_id = $1 and d.status = 'dead' order by d.updated_at desc, d.id limit $2",
+        )
+        .bind(ctx.tenant)
+        .bind(limit.clamp(1, 500))
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(rows)
+    }
+
     /// Queues a webhook delivery that gave up again, from the first attempt (administrators only).
     pub async fn replay_webhook_delivery(&self, ctx: &Ctx, id: Uuid) -> Result<()> {
         require_admin(ctx)?;

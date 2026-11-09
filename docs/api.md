@@ -516,7 +516,9 @@ files_deleted, audit_events_redacted, account_erased, not_searched}`. Legal hold
 
 Failed events ([events](events.md)): `GET /api/admin/events/dead?limit=` → `{events: [{id, topic,
 entity, record_id, attempts, last_error, created_at, correlation_id}]}`; `POST
-/api/admin/events/{id}/replay`; `POST /api/admin/webhook-deliveries/{id}/replay`.
+/api/admin/events/{id}/replay`; `GET /api/admin/webhook-deliveries/dead?limit=` → `{deliveries: [{id,
+webhook, webhook_name, topic, attempts, response_code, last_error, created_at, updated_at}]}`; `POST
+/api/admin/webhook-deliveries/{id}/replay`.
 
 Personal data, beside `/api/admin/privacy`: `GET`/`POST /api/admin/restrictions`, `POST
 /api/admin/restrictions/lift` `{email}`; `GET`/`POST /api/admin/retention`, `PUT`/`DELETE
