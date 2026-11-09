@@ -877,6 +877,10 @@ pub struct WorkflowTransition {
     /// The acting user may not be the document's creator (four-eyes principle).
     #[serde(default)]
     pub not_creator: bool,
+    /// Links whose records the acting user may not have raised: `field`, or `table.field` for a child
+    /// table's links. Whoever raised an order does not approve paying it (FEO-013).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_creator_of: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
