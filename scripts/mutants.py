@@ -306,6 +306,11 @@ MUTANTS = [
     ("lost-key-blanks-values", "crates/kernel/src/secret.rs", "                *unopened += 1;\n                Ok(None)", "                *unopened += 1;\n                current.seal(aad, \"\").map(Some)", SECRETS),
     ("webhook-secret-stays-plain", "crates/kernel/src/secret.rs", 'None => Some(format!("{SEALED_WEBHOOK}{}", current.seal(&label, &stored)?)),', "None => None,", SECRETS),
     ("privacy-hold-on-a-person-ignored", "crates/kernel/src/privacy.rs", 'if person_held(&mut tx, ctx.tenant, &emails).await? {\n            return Err(Error::Conflict', 'if false {\n            return Err(Error::Conflict', PRIVACY),
+    # What apps keep of people in tables of their own (FEO-016).
+    ("erasure-forgets-app-tables", "crates/kernel/src/privacy.rs", "let n = app.erase(&mut tx, ctx.tenant, account, &emails, reason).await?;", "let n = u64::from(app.app().is_empty());", PRIVACY),
+    ("report-omits-app-tables", "crates/kernel/src/privacy.rs", "for held in app.report(&mut tx, ctx.tenant, account_id, &emails).await? {", "for held in Vec::<Value>::new().into_iter().filter(|_| app.app().is_empty()) {", PRIVACY),
+    ("name-in-a-list-missed", "crates/kernel/src/privacy.rs", "[,;]", "[|]", PRIVACY),
+    ("restore-revives-app-tables", "crates/kernel/src/privacy.rs", "done += app.erase(tx, tenant, account, &addresses, reason).await? as usize;", "done += usize::from(app.app().is_empty());", PRIVACY),
     ("privacy-held-record-deletable", "crates/kernel/src/doc.rs", "if crate::privacy::held(ctx, tx, &ent.def.name, id).await? {", "if false {", PRIVACY),
     ("privacy-retained-records-erased", "crates/kernel/src/privacy.rs", "if let Some(why) = &def.retain {", "if let Some(why) = None::<&String> {", PRIVACY),
     ("privacy-erased-files-stay", "crates/kernel/src/privacy.rs", "        outbox::release_objects(tx, ctx.tenant, &keys).await?;\n", "        let _ = &keys;\n", PRIVACY),

@@ -876,7 +876,11 @@ account is not erased until it is no longer one. What durable processes keep of 
 event that started a run, the run's own record, the material shown) loses those fields too, and keeps them out
 when the run is reported again. The same is available as `GET
 /api/admin/personal-data` and `POST /api/admin/personal-data/erase`; packages and apps declare their
-entities with `personal_data` in their manifests.
+entities with `personal_data` in their manifests. What an app keeps of people in tables of its own,
+outside its entities (a meeting's transcript, say), it reports and erases itself
+(`ferrum_kernel::privacy::PersonalHeld`): it is in the copy under `apps`, goes with the erasure in the
+same transaction, and goes again when a restore replays the erasure. A name asked for is matched whole
+or as one of the names a field lists (`Ann Smith, Pat Lee`), and such records are only possibly theirs.
 
 Read the answer, because it says what was not done:
 

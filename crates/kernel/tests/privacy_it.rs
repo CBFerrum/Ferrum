@@ -4,15 +4,44 @@
 //! restored from before an erasure can be erased again from the journal.
 
 use ferrum_kernel::files::FileStore;
-use ferrum_kernel::privacy::{JOURNAL_PREFIX, Person};
+use ferrum_kernel::privacy::{JOURNAL_PREFIX, Person, PersonalHeld};
 use ferrum_kernel::tenant::NewTenant;
-use ferrum_kernel::{Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings};
+use ferrum_kernel::{Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings, Tx};
 use ferrum_meta::Catalog;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
+
+/// An app's own table of what people said, outside the entities it declares, as a meeting's
+/// transcript is (FEO-016).
+struct Notes;
+
+#[async_trait::async_trait]
+impl PersonalHeld for Notes {
+    fn app(&self) -> &'static str {
+        "notes"
+    }
+    async fn report(&self, tx: &mut Tx, tenant: Uuid, account: Option<Uuid>, _: &[String]) -> ferrum_kernel::Result<Vec<Value>> {
+        let Some(account) = account else { return Ok(vec![]) };
+        let said: Vec<String> = sqlx::query_scalar("select text from test_notes where tenant_id = $1 and speaker = $2 and text <> '' order by text")
+            .bind(tenant)
+            .bind(account)
+            .fetch_all(&mut **tx)
+            .await?;
+        Ok(if said.is_empty() { vec![] } else { vec![json!({"what": "What they said", "said": said})] })
+    }
+    async fn erase(&self, tx: &mut Tx, tenant: Uuid, account: Option<Uuid>, _: &[String], _: &str) -> ferrum_kernel::Result<u64> {
+        let Some(account) = account else { return Ok(0) };
+        let gone = sqlx::query("update test_notes set text = '' where tenant_id = $1 and speaker = $2 and text <> ''")
+            .bind(tenant)
+            .bind(account)
+            .execute(&mut **tx)
+            .await?;
+        Ok(gone.rows_affected())
+    }
+}
 
 #[derive(Default)]
 struct MemFiles(Mutex<HashMap<String, Vec<u8>>>);
@@ -151,7 +180,10 @@ async fn scenario() {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
-    let k = Kernel::boot(db, catalog(), HookRegistry::default(), KernelSettings::default(), None).await.expect("boot");
+    let mut hooks = HookRegistry::default();
+    hooks.add_personal_held(Arc::new(Notes));
+    let k = Kernel::boot(db, catalog(), hooks, KernelSettings::default(), None).await.expect("boot");
+    sqlx::raw_sql("create table test_notes (tenant_id uuid not null, speaker uuid not null, text text not null)").execute(&k.db.pool).await.unwrap();
     let store = Arc::new(MemFiles::default());
     k.set_file_store(store.clone());
     let tenant = workspace(&k, "acme").await;
@@ -165,6 +197,11 @@ async fn scenario() {
     let pat = k.create_user(&admin, "pat@old.test", "Pat Lee", Some("Correct-Horse-9"), &[], false).await.unwrap();
     let pat_ctx = k.load_ctx(tenant, pat, None, "it".into()).await.unwrap();
     let (_, key) = k.create_api_key(&pat_ctx, pat, "laptop", None, None).await.unwrap();
+    let said = async |who: Uuid, text: &str| {
+        sqlx::query("insert into test_notes values ($1, $2, $3)").bind(tenant).bind(who).bind(text).execute(&k.db.pool).await.unwrap();
+    };
+    said(pat, "Pat said this in a meeting").await;
+    said(admin.user, "The administrator said this").await;
     let early = k
         .insert(&admin, "Visitor", obj(json!({"full_name": "Pat Lee", "email": "pat@old.test", "phone": "+15550100", "notes": "Allergic to nuts"})))
         .await
@@ -199,6 +236,11 @@ async fn scenario() {
         |entity: &str, id: &str| found["records"].as_array().unwrap().iter().find(|r| r["entity"] == json!(entity) && r["id"] == json!(id)).unwrap().clone();
     assert_eq!(record("Visitor", early["id"].as_str().unwrap())["files"][0]["file_name"], json!("passport.pdf"), "their files are named");
     assert_eq!(record("Receipt", receipt["id"].as_str().unwrap())["retained_because"], json!("Accounting records"));
+    assert_eq!(
+        found["apps"],
+        json!([{"app": "notes", "held": {"what": "What they said", "said": ["Pat said this in a meeting"]}}]),
+        "what an app keeps of them in a table of its own is in their report, and nobody else's"
+    );
     let unsearched = found["not_searched"].as_array().unwrap();
     assert!(unsearched.contains(&json!("silent")), "a package that declares nothing is named, not skipped in silence: {unsearched:?}");
     assert!(!unsearched.contains(&json!("people")));
@@ -215,14 +257,17 @@ async fn scenario() {
     k.insert(&admin, "Visitor", obj(json!({"full_name": "Sam Roe", "phone": "+1 555 0199"}))).await.unwrap();
     // One recorded without the country code is only possibly theirs.
     let local = k.insert(&admin, "Visitor", obj(json!({"full_name": "P. Lee", "phone": "555-0100"}))).await.unwrap();
+    // Names listed in one field (a table for two, the people a photograph shows): each counts as a name.
+    let table = k.insert(&admin, "Diner", obj(json!({"guest_name": "Ann Smith,  pat lee", "phone": "+44 20 7946 0000"}))).await.unwrap();
+    k.insert(&admin, "Diner", obj(json!({"guest_name": "Pat Leeson, Ann Smith", "phone": "+44 20 7946 0001"}))).await.unwrap();
     let person = |phone: &str, name: &str| Person { email: "pat@old.test".into(), phone: Some(phone.into()), name: Some(name.into()) };
     let wider = k.personal_data_of(&admin, &person("+1-555-0100", "Pat Lee")).await.unwrap();
     assert_eq!(wider["records"].as_array().unwrap().len(), 5, "the walk-in as well: {wider}");
     assert!(ids(&wider["records"]).contains(&walk_in["id"].as_str().unwrap().to_string()));
     assert_eq!(
         ids(&wider["possibly"]),
-        vec![namesake["id"].as_str().unwrap().to_string(), local["id"].as_str().unwrap().to_string()],
-        "the namesake and the number without its country code, apart from what is theirs"
+        vec![namesake["id"].as_str().unwrap().to_string(), table["id"].as_str().unwrap().to_string(), local["id"].as_str().unwrap().to_string()],
+        "the namesake, a table for two with them at it (not one with a longer name), and the number without its country code, apart from what is theirs"
     );
     assert_eq!(wider["phone"], json!("15550100"));
     assert!(matches!(k.personal_data_of(&admin, &person("55", "")).await, Err(Error::Validation(_))), "too few digits to name anyone");
@@ -289,6 +334,9 @@ async fn scenario() {
     let part_key: String = sqlx::query_scalar("select storage_key from file_object where id = $1").bind(part).fetch_one(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
     let done = k.erase_personal_data(&admin, "pat@old.test", "Request 1").await.unwrap();
+    assert_eq!(done["apps"], json!([{"app": "notes", "erased": 1}]), "{done}");
+    let notes: Vec<(Uuid, String)> = sqlx::query_as("select speaker, text from test_notes order by text").fetch_all(&k.db.pool).await.unwrap();
+    assert_eq!(notes, vec![(pat, String::new()), (admin.user, "The administrator said this".to_string())], "theirs went, and only theirs");
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();
     let history: Value = sqlx::query_scalar("select diff from audit_event where tenant_id = $1 and entity = 'Passkey' and record_id = $2")
         .bind(tenant)
@@ -387,7 +435,10 @@ async fn scenario() {
     assert_eq!(k.get(&admin, "Visitor", early_id, false).await.unwrap()["email"], json!("pat@old.test"), "as a backup from before would have it");
     assert!(k.load_ctx(tenant, pat, None, "it".into()).await.is_ok(), "and the account is back");
 
-    assert_eq!(k.reapply_erasure(&journal[0]).await.unwrap(), 3, "the visitor, the visit and the account");
+    sqlx::query("update test_notes set text = 'Pat said this in a meeting' where speaker = $1").bind(pat).execute(&k.db.pool).await.unwrap();
+    assert_eq!(k.reapply_erasure(&journal[0]).await.unwrap(), 4, "the visitor, the visit, the account and what an app kept");
+    let back: String = sqlx::query_scalar("select text from test_notes where speaker = $1").bind(pat).fetch_one(&k.db.pool).await.unwrap();
+    assert_eq!(back, "", "what the app kept is erased again");
     let erased = k.get(&admin, "Visitor", early_id, false).await.unwrap();
     assert!(erased["full_name"].as_str().unwrap().starts_with("Erased ") && erased["email"].is_null() && erased["notes"].is_null(), "{erased:?}");
     assert!(k.load_ctx(tenant, pat, None, "it".into()).await.is_err(), "and the account is gone again");

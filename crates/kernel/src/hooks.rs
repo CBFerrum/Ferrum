@@ -202,6 +202,7 @@ pub struct HookRegistry {
     resources: Option<Arc<dyn crate::resources::Resources>>,
     restored: Vec<Arc<dyn crate::recovery::Restored>>,
     leaving: Vec<Arc<dyn crate::account::Leaving>>,
+    personal_held: Vec<Arc<dyn crate::privacy::PersonalHeld>>,
     health: Vec<(String, Arc<dyn crate::support::Health>)>,
     /// The packages owning what is being registered (see [`HookRegistry::scoped`]).
     scope: Option<Arc<[String]>>,
@@ -404,6 +405,15 @@ impl HookRegistry {
 
     pub fn leaving(&self) -> &[Arc<dyn crate::account::Leaving>] {
         &self.leaving
+    }
+
+    /// An app that keeps people's data in tables of its own (see [`crate::privacy::PersonalHeld`]).
+    pub fn add_personal_held(&mut self, app: Arc<dyn crate::privacy::PersonalHeld>) {
+        self.personal_held.push(app);
+    }
+
+    pub fn personal_held(&self) -> &[Arc<dyn crate::privacy::PersonalHeld>] {
+        &self.personal_held
     }
 
     /// Adds how `package`'s part of a workspace is doing to the support report (see
