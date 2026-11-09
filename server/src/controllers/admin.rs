@@ -524,6 +524,10 @@ async fn replay_event(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): 
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+async fn operation(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<String>) -> ApiResult<Response> {
+    Ok(Json(app_state(&app)?.kernel.operation(&ctx, &id).await?).into_response())
+}
+
 async fn dead_webhook_deliveries(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query<DeadEvents>) -> ApiResult<Response> {
     let st = app_state(&app)?;
     Ok(Json(json!({"deliveries": st.kernel.dead_webhook_deliveries(&ctx, q.limit.unwrap_or(100)).await?})).into_response())
@@ -736,6 +740,7 @@ pub fn routes() -> Routes {
         .add("/admin/events/dead", get(dead_events))
         .add("/admin/events/{id}/replay", post(replay_event))
         .add("/admin/webhook-deliveries/dead", get(dead_webhook_deliveries))
+        .add("/admin/operations/{id}", get(operation))
         .add("/admin/webhook-deliveries/{id}/replay", post(replay_webhook_delivery))
         .add("/admin/webhooks", get(list_webhooks).post(create_webhook))
         .add("/admin/webhooks/{id}", delete(delete_webhook))
