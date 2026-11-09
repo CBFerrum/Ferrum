@@ -290,6 +290,11 @@ impl Kernel {
             failures: Default::default(),
         });
         kernel.notice_restore().await?;
+        match kernel.adopt_customization_baselines().await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(customizations = n, "customizations compared from here on with what their packages say now"),
+            Err(e) => tracing::warn!("customizations' baselines: {e}"),
+        }
         Ok(kernel)
     }
 

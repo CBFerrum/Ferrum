@@ -2678,7 +2678,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-crm"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-crm?branch=main#3da75cb3f7700a55ef5caef615d67af9b218fbff"
+source = "git+https://github.com/CBFerrum/ferrum-app-crm?branch=main#a44b96eb0781ca7bfe4947bb0b50369e914d8d2b"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2744,7 +2744,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-drive"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-drive?branch=main#08cd7c75288df13c762726436084421723a0974f"
+source = "git+https://github.com/CBFerrum/ferrum-app-drive?branch=main#301875bc42e0c9f6ba76c807edd7a413157bc35b"
 dependencies = [
  "async-trait",
  "base64 0.22.1",

@@ -33,6 +33,9 @@ pub struct NewRelease {
     /// Workspace-private uploads: sandboxed code only, visible to that workspace alone.
     pub private_tenant: Option<Uuid>,
     pub created_by: Option<Uuid>,
+    /// The workspace whose administrator agreed to it in a plan that showed what it changes there.
+    /// Every other workspace with its packages is told what it changed once it lands.
+    pub shown_to: Option<Uuid>,
 }
 
 /// A release recorded on the cluster.
@@ -67,6 +70,13 @@ pub struct Label {
 }
 
 impl Release {
+    /// Its packages, read again from what was stored when it was made available.
+    pub fn parsed_packages(&self) -> Result<Vec<Package>> {
+        let files: BTreeMap<String, BTreeMap<String, String>> = serde_json::from_value(self.packages.clone())
+            .map_err(|e| Error::Internal(format!("{} {}: stored packages unreadable: {e}", self.app_id, self.version)))?;
+        parse_packages(&self.app_id, &files)
+    }
+
     pub fn package_names(&self) -> Vec<String> {
         self.packages.as_object().map(|m| m.keys().cloned().collect()).unwrap_or_default()
     }
@@ -105,6 +115,15 @@ fn parse_packages(app: &str, packages: &BTreeMap<String, BTreeMap<String, String
 }
 
 impl Kernel {
+    /// The cluster's catalog with `apps`' packages in place of those apps' own there now, or why
+    /// they do not fit together.
+    pub async fn catalog_with(&self, apps: Vec<(String, Vec<Package>)>) -> Result<std::result::Result<Catalog, ferrum_meta::MetaError>> {
+        let mut all: Vec<Package> = self.registry.base().to_vec();
+        all.extend(Registry::app_packages(&self.db).await?.into_iter().filter(|(a, _)| !apps.iter().any(|(b, _)| a == b)).flat_map(|(_, p)| p));
+        all.extend(apps.into_iter().flat_map(|(_, p)| p));
+        Ok(Catalog::from_packages(all))
+    }
+
     /// Makes a release available on the cluster: its packages are validated together with the
     /// catalog, their tables and columns created (additive DDL under the cluster lock), the app's
     /// previous release superseded, and every replica reloads its catalog. The same version with
@@ -117,15 +136,36 @@ impl Kernel {
         let catalog = if pkgs.is_empty() {
             None
         } else {
-            let mut apps = Registry::app_packages(&self.db).await?;
-            apps.retain(|(a, _)| a != &rel.app_id);
-            let mut all: Vec<Package> = self.registry.base().to_vec();
-            all.extend(apps.into_iter().flat_map(|(_, p)| p));
-            all.extend(pkgs);
-            let catalog = Catalog::from_packages(all).map_err(|e| Error::invalid(format!("{} {} does not fit this platform: {e}", rel.app_id, rel.version)))?;
+            let catalog = self
+                .catalog_with(vec![(rel.app_id.clone(), pkgs)])
+                .await?
+                .map_err(|e| Error::invalid(format!("{} {} does not fit this platform: {e}", rel.app_id, rel.version)))?;
             ddl::sync(&self.db, &catalog, false).await?;
             Some(catalog)
         };
+        // Every workspace with these packages takes the cluster's release as it is made available,
+        // without an administrator of its own agreeing: what it changes in each is worked out now,
+        // and said to them once it lands (FEO-056). The workspace whose plan brought it saw it there.
+        let mut changed = Vec::new();
+        if let Some(c) = &catalog {
+            let names: Vec<String> = rel.packages.keys().cloned().collect();
+            let mut tx = self.db.system_tx().await?;
+            let tenants: Vec<Uuid> =
+                sqlx::query_scalar("select distinct tenant_id from installed_package where name = any($1)").bind(&names).fetch_all(&mut *tx).await?;
+            tx.commit().await?;
+            // ponytail: one workspace after another; a job each when a cluster has thousands of them.
+            for tenant in tenants.into_iter().filter(|t| Some(*t) != rel.shown_to) {
+                let impact = match self.registry.schema(tenant).await {
+                    Ok(schema) => self.upgrade_impact(&Ctx::system(tenant, schema), c, &[]).await,
+                    Err(e) => Err(e),
+                };
+                match impact {
+                    Ok(i) if !i.customizations.is_empty() || !i.open_work.is_empty() => changed.push((tenant, i)),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(%tenant, app = %rel.app_id, "what the release changes in this workspace: {e}"),
+                }
+            }
+        }
 
         let mut tx = self.db.system_tx().await?;
         let same: Option<(String, String)> =
@@ -195,6 +235,12 @@ impl Kernel {
             self.registry.set_catalog(Arc::new(c));
         }
         tracing::info!(app = %rel.app_id, version = %rel.version, source = %rel.source, "app release available");
+        let name = rel.manifest.pointer("/app/name").and_then(Value::as_str).unwrap_or(&rel.app_id);
+        for (tenant, impact) in changed {
+            if let Err(e) = self.tell_impact(tenant, &format!("{name} {}", rel.version), &impact).await {
+                tracing::warn!(%tenant, app = %rel.app_id, "telling the workspace what the release changed: {e}");
+            }
+        }
         Ok(release)
     }
 

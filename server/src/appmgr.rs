@@ -14,6 +14,7 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use ferrum_apps::{AppError, AppManifest, Bundle, PLATFORM_VERSION, Permissions, Role, Runtime, TrustedKey, Uninstall};
 use ferrum_kernel::apps::{NewRelease, Release};
+use ferrum_kernel::customize::{Conflict, OpenWork, UpgradeImpact};
 use ferrum_kernel::{Access, Action, Ctx, Error, Kernel, Result, Tx};
 use ferrum_plugins::{NewPlugin, PluginHost};
 use futures_util::future::join_all;
@@ -141,6 +142,11 @@ pub struct Plan {
     /// The apps it brings that a store sells: each installs only with a live licence for this
     /// workspace, which an administrator gives (`PUT /api/admin/apps/{id}/licence`).
     pub licences: Vec<LicenceNeed>,
+    /// The workspace's customizations whose packages this plan changes under them, as
+    /// `/api/customize/conflicts` will list them once it is carried out; `digest` covers them.
+    pub customizations: Vec<Conflict>,
+    /// Records waiting in workflow states this plan removes, or whose ways out it changes.
+    pub open_work: Vec<OpenWork>,
 }
 
 /// An app a store sells, and the licence this workspace gave for it, as its store last said.
@@ -735,13 +741,50 @@ fn merge(into: &mut Permissions, p: &Permissions) {
     into.sql.extend(sql.iter().cloned());
 }
 
-fn plan_digest(steps: &[StepData]) -> String {
+fn plan_digest(steps: &[StepData], parted: &[Conflict]) -> String {
     let mut h = Sha256::new();
     h.update(b"ferrum-app-plan-v1\n");
     for s in steps {
         h.update(format!("{}\0{}\0{}\n", s.id, s.version, s.permissions.digest()).as_bytes());
     }
+    // A customization it parts from its package is part of what is agreed to (FEO-056).
+    for c in parted {
+        h.update(format!("parts\0{}\0{}\0{}\n", c.id, c.was, c.now).as_bytes());
+    }
     hex::encode(h.finalize())
+}
+
+/// What a plan does to the workspace's customizations and open work, for the person agreeing to it.
+fn impact_lines(ctx: &Ctx, impact: &UpgradeImpact) -> Vec<String> {
+    let label = |entity: &str| ctx.schema.entity(entity).map_or_else(|| entity.to_string(), |e| e.def.label.clone());
+    let mut out = Vec::new();
+    for c in &impact.customizations {
+        let of = label(&c.entity);
+        let what = match (c.op["op"].as_str(), c.op["field"].as_str(), c.op["property"].as_str()) {
+            (Some("set_workflow"), ..) => format!("{of}'s workflow"),
+            (Some("set_print_template"), ..) => format!("{of}'s print template"),
+            (_, Some(field), Some(property)) => format!("{of}'s {field} ({property})"),
+            (_, None, Some(property)) => format!("{of}'s {property}"),
+            _ => of,
+        };
+        out.push(if c.gone {
+            format!("Your customization of {what} replaces something this update removes: switch it off under Customizations.")
+        } else if c.suspended {
+            format!("This update makes {what} required, which your customization made optional: it is required until you keep your customization under Customizations.")
+        } else {
+            format!("Your customization of {what} replaces what this update changes: yours stays until you keep it or switch it off under Customizations.")
+        });
+    }
+    for w in &impact.open_work {
+        let change = if w.removed { "which this update removes" } else { "whose ways out this update changes: they go on under the new ones" };
+        let (noun, verb) = match (w.records, ctx.schema.entity(&w.entity)) {
+            (1, _) => (label(&w.entity), "waits"),
+            (_, Some(e)) => (e.def.label_plural.clone().unwrap_or_else(|| e.def.label.clone()), "wait"),
+            (_, None) => (w.entity.clone(), "wait"),
+        };
+        out.push(format!("{} {noun} {verb} in {}, {change}.", w.records, w.state));
+    }
+    out
 }
 
 fn pick<'a>(offers: &'a BTreeMap<String, Vec<Offer>>, id: &str, version: &Version) -> Option<&'a Offer> {
@@ -1144,8 +1187,8 @@ impl AppManager {
     }
 
     /// Makes a verified bundle (already in object storage at `key`) available: on the cluster,
-    /// or to one workspace (`private`).
-    async fn publish(&self, b: &Bundle, key: &str, private: Option<Uuid>, source: &str, by: Option<Uuid>) -> Result<Release> {
+    /// or to one workspace (`private`). `shown_to`: the workspace whose plan showed what it changes.
+    async fn publish(&self, b: &Bundle, key: &str, private: Option<Uuid>, source: &str, by: Option<Uuid>, shown_to: Option<Uuid>) -> Result<Release> {
         let plugin = b.plugin().map_err(app_err)?;
         self.check_routes(&b.manifest).await?;
         // An interface of its own runs on the workspace's host with the person's session when the
@@ -1182,6 +1225,7 @@ impl AppManager {
                 plugin_sha256: plugin.map(|(wasm, _)| hex::encode(Sha256::digest(&wasm))),
                 private_tenant: private,
                 created_by: by,
+                shown_to,
             })
             .await
     }
@@ -1217,7 +1261,7 @@ impl AppManager {
         }
         let key = bundle_key(&id, &version, &b.digest());
         self.put(&key, bytes).await?;
-        let r = self.publish(&b, &key, private, "upload", by).await?;
+        let r = self.publish(&b, &key, private, "upload", by, None).await?;
         Ok((b, r))
     }
 
@@ -1523,6 +1567,26 @@ impl AppManager {
             let (live, period_end, last_error) = given.clone().unwrap_or((false, None, None));
             licences.push(LicenceNeed { app: s.id.clone(), store: url.to_string(), given: given.is_some(), live, period_end, last_error });
         }
+        // What it does to this workspace's customizations and to its records waiting in workflows,
+        // with the packages it brings in place of what the cluster has (FEO-056).
+        let mut incoming = Vec::new();
+        for s in &changing {
+            let packages = match (&s.origin, &s.staged) {
+                (Origin::Store { .. }, Some((b, _))) => b.packages().map_err(app_err)?,
+                (Origin::Local(rel), _) => rel.parsed_packages()?,
+                _ => continue,
+            };
+            if !packages.is_empty() {
+                incoming.push((s.id.clone(), packages));
+            }
+        }
+        let catalog = match incoming.is_empty() {
+            true => self.kernel.registry.catalog(),
+            false => Arc::new(self.kernel.catalog_with(incoming).await?.map_err(|e| Error::invalid(format!("{id} does not fit this platform: {e}")))?),
+        };
+        let adding: Vec<String> = changing.iter().flat_map(|s| s.manifest.packages.iter().cloned()).collect();
+        let impact = self.kernel.upgrade_impact(ctx, &catalog, &adding).await?;
+        warnings.extend(impact_lines(ctx, &impact));
         let plan = Plan {
             app: PlanApp {
                 summary: summary(m, &origin, root.verified, root.source == "private", icon_url),
@@ -1540,11 +1604,13 @@ impl AppManager {
                 .map(|s| Step { id: s.id.clone(), name: s.manifest.name.clone(), version: s.version.to_string(), action: s.action, source: s.source.clone() })
                 .collect(),
             permissions,
-            digest: plan_digest(&steps),
+            digest: plan_digest(&steps, &impact.customizations),
             increases,
             warnings,
             uninstall: m.uninstall,
             licences,
+            customizations: impact.customizations,
+            open_work: impact.open_work,
         };
         Ok((plan, steps, ws))
     }
@@ -1590,7 +1656,7 @@ impl AppManager {
                 }
                 Origin::Store { url, .. } => {
                     let (bundle, key) = s.staged.as_ref().ok_or_else(|| Error::internal("store bundle not staged"))?;
-                    let r = self.publish(bundle, key, None, &format!("store:{url}"), user_of(ctx)).await?;
+                    let r = self.publish(bundle, key, None, &format!("store:{url}"), user_of(ctx), Some(ctx.tenant)).await?;
                     releases.insert(s.id.clone(), r);
                 }
                 Origin::Native => {}
@@ -1917,7 +1983,9 @@ impl AppManager {
         };
         let (b, _) = self.accept(bytes, private, self.allow_unsigned, user_of(ctx)).await?;
         tracing::info!(tenant = %ctx.tenant, app = %b.manifest.id, version = %b.manifest.version, private = private.is_some(), "app uploaded");
-        let plan = self.plan(ctx, &b.manifest.id, Some(&b.manifest.version.to_string())).await?;
+        // Planned in the workspace as it is now: a release made available on the cluster has already
+        // changed its packages here, and its administrators were told what that changed.
+        let plan = self.plan(&self.fresh(ctx).await?, &b.manifest.id, Some(&b.manifest.version.to_string())).await?;
         Ok((plan.app.summary.clone(), plan))
     }
 
@@ -2077,7 +2145,7 @@ impl AppManager {
             };
             let outcome = async {
                 let (b, key) = self.stage(&id, &url, &rel).await?;
-                self.publish(&b, &key, None, &format!("store:{url}"), None).await
+                self.publish(&b, &key, None, &format!("store:{url}"), None, None).await
             }
             .await;
             match outcome {

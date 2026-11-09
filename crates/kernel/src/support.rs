@@ -165,7 +165,8 @@ impl Kernel {
         Ok((id, key))
     }
 
-    async fn tell_admins(&self, tx: &mut crate::Tx, tenant: Uuid, title: &str, body: &str) -> Result<()> {
+    /// A notification to each active administrator of the workspace.
+    pub(crate) async fn tell_admins(&self, tx: &mut crate::Tx, tenant: Uuid, title: &str, body: &str) -> Result<()> {
         let admins: Vec<Uuid> = sqlx::query_scalar("select id from app_user where tenant_id = $1 and is_admin and is_active and kind = 'member'")
             .bind(tenant)
             .fetch_all(&mut **tx)

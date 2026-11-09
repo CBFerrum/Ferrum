@@ -6,14 +6,17 @@
 //! two have parted ways, and [`Kernel::customization_conflicts`] says so: an upgrade neither undoes a
 //! customization nor is silently undone by it. The one case that does not wait for a person is a
 //! field a package has come to require, which a customization made optional before it did: the
-//! requirement applies until an administrator keeps the customization.
+//! requirement applies until an administrator keeps the customization. An app's plan says the same
+//! before anyone agrees to it ([`Kernel::upgrade_impact`]), with the records waiting in workflow
+//! states the change removes or changes (FEO-056).
 
+use crate::Kernel;
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 use crate::registry::Registry;
-use crate::{Kernel, notify};
-use ferrum_meta::{Overlay, OverlayOp, Schema, effective};
+use ferrum_meta::{Catalog, Overlay, OverlayOp, Schema, WorkflowDef, effective};
 use serde_json::{Value, json};
+use sqlx::AssertSqlSafe;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
@@ -41,6 +44,34 @@ pub struct Conflict {
     pub gone: bool,
     /// The customization is not applied until someone keeps it.
     pub suspended: bool,
+}
+
+/// Records waiting in a workflow state that a change of packages removes, or whose ways out (or what
+/// it lets people do) it changes: they go on under the new definition.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OpenWork {
+    pub entity: String,
+    pub state: String,
+    pub records: i64,
+    pub removed: bool,
+}
+
+/// What a change of packages would do to a workspace's customizations and open work.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct UpgradeImpact {
+    pub customizations: Vec<Conflict>,
+    pub open_work: Vec<OpenWork>,
+}
+
+/// The ops that replace something a package says, and so can part ways with it.
+const REPLACING: &str = "('set_property', 'set_entity_property', 'set_workflow', 'set_print_template')";
+
+/// A state as `w` defines it, with its ways out in a stable order.
+fn state_of(w: &WorkflowDef, state: &str) -> Option<Value> {
+    let def = w.states.iter().find(|s| s.name == state)?;
+    let mut out: Vec<Value> = w.transitions.iter().filter(|t| t.from == state).filter_map(|t| serde_json::to_value(t).ok()).collect();
+    out.sort_by_key(|t| t.to_string());
+    Some(json!([def, out]))
 }
 
 /// Whether `op` makes a field optional that was not required when it was made: such a customization
@@ -89,23 +120,110 @@ impl Kernel {
     pub async fn customization_conflicts(&self, ctx: &Ctx) -> Result<Vec<Conflict>> {
         require_admin(ctx)?;
         let packaged = self.packaged(ctx)?;
+        self.parted(ctx, &packaged, &packaged).await
+    }
+
+    /// The customizations whose packages say otherwise in `after` than when they were made, or last
+    /// kept; one that has not said what it replaced (`base`) is compared from `before`.
+    async fn parted(&self, ctx: &Ctx, before: &Schema, after: &Schema) -> Result<Vec<Conflict>> {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let rows: Vec<(Uuid, String, Value, Value, Option<String>)> =
-            sqlx::query_as("select id, entity, op, base, note from meta_overlay where tenant_id = $1 and is_active and base is not null order by seq")
+        let rows: Vec<(Uuid, String, Value, Option<Value>, Option<String>)> =
+            sqlx::query_as("select id, entity, op, base, note from meta_overlay where tenant_id = $1 and is_active order by seq")
                 .bind(ctx.tenant)
                 .fetch_all(&mut *tx)
                 .await?;
         tx.commit().await?;
         let mut out = Vec::new();
-        for (id, entity, raw, was, note) in rows {
+        for (id, entity, raw, base, note) in rows {
             let Ok(op) = serde_json::from_value::<OverlayOp>(raw.clone()) else { continue };
-            let now = packaged.entity(&entity).and_then(|e| effective::replaced_value(&e.def, &op));
+            let Some(was) = base.or_else(|| before.entity(&entity).and_then(|e| effective::replaced_value(e, &op))) else { continue };
+            let now = after.entity(&entity).and_then(|e| effective::replaced_value(e, &op));
             if now.as_ref() != Some(&was) {
-                let suspended = relaxes(&op, Some(&was)) && now_required(&packaged, &entity, &op);
+                let suspended = relaxes(&op, Some(&was)) && now_required(after, &entity, &op);
                 out.push(Conflict { id, entity, note, op: raw, was, gone: now.is_none(), now: now.unwrap_or(Value::Null), suspended });
             }
         }
         Ok(out)
+    }
+
+    /// What `catalog` in place of the cluster's, with this workspace's packages and `adding`, would
+    /// do to its customizations and to the records waiting in its workflows: an app's plan shows it
+    /// before anyone agrees to it (FEO-056).
+    pub async fn upgrade_impact(&self, ctx: &Ctx, catalog: &Catalog, adding: &[String]) -> Result<UpgradeImpact> {
+        require_admin(ctx)?;
+        let packages: Vec<String> = ctx.schema.packages.iter().chain(adding).cloned().collect();
+        let build = |overlays: &[Overlay]| effective::build(catalog, &packages, overlays, 0).map_err(|e| Error::invalid(e.to_string()));
+        let before = self.packaged(ctx)?;
+        // Only what this change moves: a customization that parted ways earlier, and still differs
+        // by as much, is not its doing.
+        let customizations = self
+            .parted(ctx, &before, &build(&[])?)
+            .await?
+            .into_iter()
+            .filter(|c| {
+                let op = serde_json::from_value::<OverlayOp>(c.op.clone()).ok();
+                let today = op.and_then(|op| before.entity(&c.entity).and_then(|e| effective::replaced_value(e, &op)));
+                today != (!c.gone).then(|| c.now.clone())
+            })
+            .collect();
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let after = build(&self.active_overlays(&mut tx, ctx.tenant).await?)?;
+        let mut open_work = Vec::new();
+        for (name, e) in &ctx.schema.entities {
+            let Some(w) = e.workflow.as_ref().filter(|_| !e.custom && !e.table.is_empty()) else { continue };
+            let next = after.entity(name).and_then(|n| n.workflow.as_ref()).map(|n| &n.def);
+            for state in &w.def.states {
+                let then = next.and_then(|n| state_of(n, &state.name));
+                if then.is_some() && then == state_of(&w.def, &state.name) {
+                    continue;
+                }
+                let records: i64 =
+                    sqlx::query_scalar(AssertSqlSafe(format!("select count(*) from \"{}\" where tenant_id = $1 and workflow_state = $2", e.table)))
+                        .bind(ctx.tenant)
+                        .bind(&state.name)
+                        .fetch_one(&mut *tx)
+                        .await?;
+                if records > 0 {
+                    open_work.push(OpenWork { entity: name.clone(), state: state.name.clone(), records, removed: then.is_none() });
+                }
+            }
+        }
+        tx.commit().await?;
+        Ok(UpgradeImpact { customizations, open_work })
+    }
+
+    /// Customizations made before they kept what they replaced, and the workflows and print templates
+    /// they replaced, which were not kept at all: compared from the packages as they are now, since
+    /// what they replaced when they were made is not known. Once; returns how many.
+    pub async fn adopt_customization_baselines(&self) -> Result<usize> {
+        let pick = format!("base is null and is_active and op->>'op' in {REPLACING}");
+        let mut tx = self.db.system_tx().await?;
+        let tenants: Vec<Uuid> =
+            sqlx::query_scalar(AssertSqlSafe(format!("select distinct tenant_id from meta_overlay where {pick}"))).fetch_all(&mut *tx).await?;
+        tx.commit().await?;
+        let mut adopted = 0;
+        for tenant in tenants {
+            let packaged = self.packaged(&Ctx::system(tenant, self.registry.schema(tenant).await?))?;
+            let mut tx = self.db.system_tenant_tx(tenant).await?;
+            let rows: Vec<(Uuid, String, Value)> =
+                sqlx::query_as(AssertSqlSafe(format!("select id, entity, op from meta_overlay where tenant_id = $1 and {pick}")))
+                    .bind(tenant)
+                    .fetch_all(&mut *tx)
+                    .await?;
+            for (id, entity, op) in rows {
+                let Ok(op) = serde_json::from_value::<OverlayOp>(op) else { continue };
+                let Some(base) = packaged.entity(&entity).and_then(|e| effective::replaced_value(e, &op)) else { continue };
+                sqlx::query("update meta_overlay set base = $3 where tenant_id = $1 and id = $2 and base is null")
+                    .bind(tenant)
+                    .bind(id)
+                    .bind(base)
+                    .execute(&mut *tx)
+                    .await?;
+                adopted += 1;
+            }
+            tx.commit().await?;
+        }
+        Ok(adopted)
     }
 
     /// An administrator looked at a conflict and the customization stands: it now replaces what the
@@ -123,7 +241,7 @@ impl Kernel {
         let op: OverlayOp = serde_json::from_value(op).map_err(|e| Error::invalid(e.to_string()))?;
         let now = packaged
             .entity(&entity)
-            .and_then(|e| effective::replaced_value(&e.def, &op))
+            .and_then(|e| effective::replaced_value(e, &op))
             .ok_or_else(|| Error::invalid("what this customization replaced is gone; switch it off"))?;
         sqlx::query("update meta_overlay set base = $3 where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).bind(now).execute(&mut *tx).await?;
         Registry::bump_version(&mut tx, ctx.tenant).await?;
@@ -139,23 +257,34 @@ impl Kernel {
         if conflicts == 0 {
             return Ok(());
         }
-        let mut tx = self.db.system_tenant_tx(tenant).await?;
-        let admins: Vec<Uuid> = sqlx::query_scalar("select id from app_user where tenant_id = $1 and is_admin and is_active and kind = 'member'")
-            .bind(tenant)
-            .fetch_all(&mut *tx)
-            .await?;
-        for admin in admins {
-            notify::send(
-                &mut tx,
-                tenant,
-                admin,
-                "An update changed what your customizations replace",
-                Some(&format!("{conflicts} to look at, under Customizations")),
-                None,
-                None,
-            )
-            .await?;
+        self.tell(tenant, "An update changed what your customizations replace", &format!("{conflicts} to look at, under Customizations")).await
+    }
+
+    /// Tells a workspace's administrators what a release made available on the cluster changed there.
+    pub(crate) async fn tell_impact(&self, tenant: Uuid, release: &str, impact: &UpgradeImpact) -> Result<()> {
+        let schema = self.registry.schema(tenant).await?;
+        let mut lines = Vec::new();
+        match impact.customizations.len() {
+            0 => {}
+            1 => lines.push("One of your customizations replaces what it changed: keep it or switch it off under Customizations.".to_string()),
+            n => lines.push(format!("{n} of your customizations replace what it changed: keep or switch them off under Customizations.")),
         }
+        for w in &impact.open_work {
+            let label = schema.entity(&w.entity).map(|e| (e.def.label.clone(), e.def.label_plural.clone().unwrap_or_else(|| e.def.label.clone())));
+            let (noun, verb) = match (w.records, label) {
+                (1, Some((one, _))) => (one, "waits"),
+                (_, Some((_, many))) => (many, "wait"),
+                (n, None) => (w.entity.clone(), if n == 1 { "waits" } else { "wait" }),
+            };
+            let change = if w.removed { "which it removed" } else { "whose ways out it changed: they go on under the new ones" };
+            lines.push(format!("{} {noun} {verb} in {}, {change}.", w.records, w.state));
+        }
+        self.tell(tenant, &format!("{release} changed this workspace"), &lines.join(" ")).await
+    }
+
+    async fn tell(&self, tenant: Uuid, title: &str, body: &str) -> Result<()> {
+        let mut tx = self.db.system_tenant_tx(tenant).await?;
+        self.tell_admins(&mut tx, tenant, title, body).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -170,7 +299,7 @@ impl Kernel {
         };
         self.check_overlays(ctx, &base, &[Overlay { entity: target.clone(), ops: vec![op.clone()] }])?;
         let id = Uuid::now_v7();
-        let replaced = self.packaged(ctx)?.entity(&target).and_then(|e| effective::replaced_value(&e.def, &op));
+        let replaced = self.packaged(ctx)?.entity(&target).and_then(|e| effective::replaced_value(e, &op));
         sqlx::query("insert into meta_overlay (tenant_id, id, entity, op, note, created_by, base) values ($1, $2, $3, $4, $5, $6, $7)")
             .bind(ctx.tenant)
             .bind(id)
@@ -262,7 +391,7 @@ impl Kernel {
         self.check_overlays(ctx, &base, &extra)?;
         let packaged = self.packaged(ctx)?;
         for (entity, op, op_v, note) in &new {
-            let replaced = packaged.entity(entity).and_then(|e| effective::replaced_value(&e.def, op));
+            let replaced = packaged.entity(entity).and_then(|e| effective::replaced_value(e, op));
             sqlx::query("insert into meta_overlay (tenant_id, id, entity, op, note, created_by, base) values ($1, $2, $3, $4, $5, $6, $7)")
                 .bind(ctx.tenant)
                 .bind(Uuid::now_v7())
