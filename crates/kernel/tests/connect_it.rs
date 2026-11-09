@@ -472,6 +472,35 @@ async fn scenario() {
     let names: Vec<String> = world.lock().unwrap().pushes.iter().map(|p| p.1.clone()).collect();
     assert!(names.contains(&"Ben".to_string()) && !names.contains(&"Ann".to_string()), "one who withdrew is not sent: {names:?}");
 
+    // ───────────── a provider's limit is its account's (FEO-067) ─────────────
+    // Another connection on the same credentials waits with this one; one on other credentials does not.
+    let twin = k.save_connection(&admin, None, input("right", "review", "keep", false)).await.unwrap();
+    let elsewhere = k.save_connection(&admin, None, input("another", "review", "keep", false)).await.unwrap();
+    world.lock().unwrap().throttle = vec![0];
+    k.sync_connection(&admin, id, true).await.unwrap();
+    k.run_jobs_once(4).await.unwrap();
+    let waiting = |c: Uuid| {
+        let k = k.clone();
+        async move {
+            let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+            let w: bool = sqlx::query_scalar("select waiting_until is not null and waiting_until > now() from connection where tenant_id = $1 and id = $2")
+                .bind(tenant)
+                .bind(c)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            w
+        }
+    };
+    assert!(waiting(id).await, "told to slow down, it waits");
+    assert!(waiting(twin).await, "and so does every connection on the same account");
+    assert!(!waiting(elsewhere).await, "but not one on another account");
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("update connection set waiting_until = null where tenant_id = $1").bind(tenant).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    jobs(k.clone()).await;
+
     // ───────────── disconnecting ─────────────
     k.disconnect(&admin, id).await.expect("disconnected");
     let view = k.connections(&admin).await.unwrap();

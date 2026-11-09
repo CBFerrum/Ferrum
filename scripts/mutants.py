@@ -84,6 +84,9 @@ TIMEOUT = 600
 
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
+    # A provider's limit is its account's (FEO-067).
+    ("account-limit-per-connection", "crates/kernel/src/connect.rs", "where (tenant_id = $1 and id = $2) or account_key = (select account_key from connection where tenant_id = $1 and id = $2)", "where (tenant_id = $1 and id = $2)", CONNECT),
+    ("account-by-provider-alone", "crates/kernel/src/connect.rs", 'key.fingerprint("connection account", &format!("{}:{}", input.provider, String::from_utf8_lossy(&crate::value::canonical_json(c))))', 'key.fingerprint("connection account", &format!("{}:{}", input.provider, c.is_null()))', CONNECT),
     # An operation found by the id a person quotes (FEO-079).
     ("operation-finds-the-wrong-events", "crates/kernel/src/outbox.rs", "from outbox where tenant_id = $1 and correlation_id = $2 order by id limit 200", "from outbox where tenant_id = $1 and correlation_id is distinct from $2 order by id limit 200", EVENTS),
     # Who stands in for someone away (FEO-034).

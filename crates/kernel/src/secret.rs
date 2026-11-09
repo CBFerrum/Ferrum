@@ -57,6 +57,17 @@ impl SecretKey {
         LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &self.key).expect("32-byte AES key"))
     }
 
+    /// A fingerprint of `data` under this key (HMAC-SHA256, hex), for telling equal secrets apart without
+    /// keeping them: the same data gives the same fingerprint, and the fingerprint gives away nothing.
+    pub fn fingerprint(&self, label: &str, data: &str) -> String {
+        use hmac::Mac;
+        let mut mac = hmac::Hmac::<Sha256>::new_from_slice(&self.key).expect("any key length");
+        mac.update(label.as_bytes());
+        mac.update(&[0]);
+        mac.update(data.as_bytes());
+        hex::encode(mac.finalize().into_bytes())
+    }
+
     pub fn seal(&self, aad: &str, plain: &str) -> Result<String> {
         let mut nonce = [0u8; NONCE_LEN];
         SystemRandom::new().fill(&mut nonce).map_err(|_| Error::Internal("no randomness for sealing".into()))?;
