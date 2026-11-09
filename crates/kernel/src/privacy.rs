@@ -45,6 +45,21 @@ pub const JOURNAL_PREFIX: &str = "privacy-journal/";
 const MAX_RECORDS: i64 = 1000;
 const MAX_RETAINED: i64 = 20_000;
 
+/// An app that keeps people's data in tables of its own, outside the entities it declares (a meeting's
+/// transcript, say): it says what it holds of a person in their report, and erases it with their
+/// erasure, in the same transaction, and again when a restore replays the erasure (FEO-016). `account`
+/// is their user id in the workspace, when they have one; `emails` every address of theirs.
+#[async_trait::async_trait]
+pub trait PersonalHeld: Send + Sync {
+    /// The app, as a report names it.
+    fn app(&self) -> &'static str;
+    /// What it holds of the person: one entry for each kind of thing, with what a person reading the
+    /// report needs.
+    async fn report(&self, tx: &mut Tx, tenant: Uuid, account: Option<Uuid>, emails: &[String]) -> Result<Vec<Value>>;
+    /// Erases it, returning how much went. Doing it twice changes nothing.
+    async fn erase(&self, tx: &mut Tx, tenant: Uuid, account: Option<Uuid>, emails: &[String], reason: &str) -> Result<u64>;
+}
+
 /// Who a personal-data request is about: their email, and what else names them on records that
 /// hold no address.
 #[derive(Debug, Default, Clone, serde::Deserialize)]
@@ -242,18 +257,23 @@ async fn numbered(ctx: &Ctx, tx: &mut Tx, digits: &str, reached: &[(PersonalData
     Ok(out)
 }
 
-/// Records whose declared name field holds `name` (case and spacing aside), apart from those already
-/// reached: possibly the person's, never erased for it.
+/// Records whose declared name field holds `name` (case and spacing aside), whole or as one of the
+/// names it lists (a table for two, the people a photograph shows: `Ann Smith, Pat Lee`), apart from
+/// those already reached: possibly the person's, never erased for it.
 async fn named(ctx: &Ctx, tx: &mut Tx, name: &str, reached: &[(PersonalDataDef, Vec<Uuid>)]) -> Result<Vec<Value>> {
+    let wanted = name.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
     let mut out = Vec::new();
     for def in ctx.schema.personal_data.iter().filter(|d| d.name.is_some()) {
         let Some(ent) = ctx.schema.entity(&def.entity) else { continue };
         let Some(expr) = def.name.as_deref().and_then(|f| field_expr(ent, f, "a")) else { continue };
+        let held = format!("regexp_replace(lower(btrim(({expr})::text)), '\\s+', ' ', 'g')");
         let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(format!("select a.id, ({expr})::text from {} a where a.tenant_id = ", q(&ent.table)));
         qb.push_bind(ctx.tenant)
-            .push(format!(" and regexp_replace(lower(btrim(({expr})::text)), '\\s+', ' ', 'g') = regexp_replace(lower(btrim("))
-            .push_bind(name.to_string())
-            .push(")), '\\s+', ' ', 'g')");
+            .push(format!(" and ({held} = "))
+            .push_bind(wanted.clone())
+            .push(" or ")
+            .push_bind(wanted.clone())
+            .push(format!(" = any(regexp_split_to_array({held}, '\\s*[,;]\\s*')))"));
         qb.push(entity_predicate(ent, "a")).push(" order by a.id limit 50");
         let found: Vec<(Uuid, String)> = qb.build_query_as().fetch_all(&mut **tx).await?;
         let known = reached.iter().filter(|r| r.0.entity == def.entity).flat_map(|r| r.1.iter()).collect::<Vec<_>>();
@@ -585,10 +605,18 @@ impl Kernel {
         .fetch_optional(&mut *tx)
         .await?;
         let held = person_held(&mut tx, ctx.tenant, &emails).await?;
+        // What apps keep of them in tables of their own.
+        let account_id = account.as_ref().and_then(|a| a["id"].as_str()).and_then(|i| i.parse::<Uuid>().ok());
+        let mut apps = Vec::new();
+        for app in self.hooks.personal_held() {
+            for held in app.report(&mut tx, ctx.tenant, account_id, &emails).await? {
+                apps.push(json!({"app": app.app(), "held": held}));
+            }
+        }
         tx.rollback().await?;
         Ok(json!({
             "email": email, "addresses": emails, "phone": phone, "records": records, "possibly": possibly, "account": account, "held": held,
-            "not_searched": ctx.schema.undeclared_personal_data,
+            "apps": apps, "not_searched": ctx.schema.undeclared_personal_data,
         }))
     }
 
@@ -661,6 +689,14 @@ impl Kernel {
         if let Some(id) = account {
             erase_account(&mut tx, ctx, id, reason).await?;
         }
+        // What apps keep of them in tables of their own goes with it.
+        let mut apps = Vec::new();
+        for app in self.hooks.personal_held() {
+            let n = app.erase(&mut tx, ctx.tenant, account, &emails, reason).await?;
+            if n > 0 {
+                apps.push(json!({"app": app.app(), "erased": n}));
+            }
+        }
         // Their addresses in the history's payloads (who did what, as apps write it) go as well.
         if !erased.is_empty() || account.is_some() {
             events += redact_addresses(&mut tx, ctx, &emails, reason).await?;
@@ -670,7 +706,7 @@ impl Kernel {
         // By id and field name only: it outlives the data, and must not hold what it erased. Kept here too,
         // for a workspace taken back to an older copy to erase again (FEO-078).
         let entry = json!({"account": account, "records": journal, "reason": reason});
-        if !journal.is_empty() || account.is_some() {
+        if !journal.is_empty() || account.is_some() || !apps.is_empty() {
             sqlx::query("insert into privacy_erasure (tenant_id, erasure) values ($1, $2)").bind(ctx.tenant).bind(&entry).execute(&mut *tx).await?;
         }
         outbox::enqueue(&mut tx, ctx.tenant, ERASED_TOPIC, None, None, entry).await?;
@@ -680,7 +716,7 @@ impl Kernel {
         }
         Ok(json!({
             "email": email, "addresses": emails, "phone": phone, "erased": erased, "retained": retained, "held": held, "account_erased": account.is_some(),
-            "audit_events_redacted": events, "files_deleted": files, "exports_deleted": exports, "not_searched": ctx.schema.undeclared_personal_data,
+            "audit_events_redacted": events, "files_deleted": files, "exports_deleted": exports, "apps": apps, "not_searched": ctx.schema.undeclared_personal_data,
         }))
     }
 
@@ -775,6 +811,10 @@ impl Kernel {
             }
         }
         let addresses: Vec<String> = addresses.into_iter().collect();
+        // What apps keep in tables of their own, as the restore brought it back.
+        for app in self.hooks.personal_held() {
+            done += app.erase(tx, tenant, account, &addresses, reason).await? as usize;
+        }
         if !addresses.is_empty() {
             redact_addresses(tx, ctx, &addresses, reason).await?;
         }
