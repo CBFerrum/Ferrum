@@ -130,6 +130,16 @@ impl JobHandler for RetentionJob {
     }
 }
 
+/// Why a message goes to someone (FEO-015): a transactional notice (a receipt, a reset, a reply to
+/// them) or marketing, which needs their consent and stops when they withdraw it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Purpose {
+    #[default]
+    Transactional,
+    Marketing,
+}
+
 impl Kernel {
     /// What a rule reaches, up to `limit`, continuing after `from` (null: from the beginning), and where
     /// the scan stands after them (null: it reached the end).
@@ -406,18 +416,67 @@ impl Kernel {
         Ok(rows)
     }
 
-    /// Whether anything may be sent to this address. Every automated path that reaches people asks:
-    /// queued mail does here, and apps with their own delivery ask the same.
+    /// Whether a transactional notice may be sent to this address: not while processing of their
+    /// data is restricted. [`Kernel::may_contact_for`] for marketing.
     pub async fn may_contact(&self, tx: &mut crate::Tx, tenant: Uuid, email: &str) -> Result<bool> {
-        let Ok(email) = checked_email(email) else { return Ok(true) };
+        self.may_contact_for(tx, tenant, email, Purpose::Transactional).await
+    }
+
+    /// The one decision every automated path that reaches people asks, at the moment a message goes
+    /// out (FEO-015): kernel mail, apps' own delivery, automations and connectors. Nothing goes to a
+    /// person whose processing is restricted; marketing does not go to one who withdrew their consent
+    /// to it, under any address they have had. A transactional notice does not ask for consent.
+    pub async fn may_contact_for(&self, tx: &mut crate::Tx, tenant: Uuid, email: &str, purpose: Purpose) -> Result<bool> {
+        let Ok(email) = checked_email(email) else { return Ok(purpose == Purpose::Transactional) };
         let emails = addresses(tx, tenant, &email).await?;
-        let restricted: bool = sqlx::query_scalar(
-            "select exists (select 1 from processing_restriction where tenant_id = $1 and lifted_at is null and lower(email::text) = any($2))",
+        let (restricted, withdrawn): (bool, bool) = sqlx::query_as(
+            "select exists (select 1 from processing_restriction where tenant_id = $1 and lifted_at is null and lower(email::text) = any($2)), \
+                    exists (select 1 from contact_consent where tenant_id = $1 and purpose = 'marketing' and not granted and lower(email::text) = any($2))",
         )
         .bind(tenant)
         .bind(&emails)
         .fetch_one(&mut **tx)
         .await?;
-        Ok(!restricted)
+        Ok(!(restricted || (purpose == Purpose::Marketing && withdrawn)))
+    }
+
+    /// Records what a person said about being contacted for `purpose`: an unsubscribe, or their own
+    /// confirmed subscription, from any app. Every app's marketing asks it when it sends. Audited.
+    pub async fn record_consent_tx(&self, tx: &mut crate::Tx, ctx: &Ctx, email: &str, purpose: Purpose, granted: bool, source: &str) -> Result<()> {
+        let email = checked_email(email)?;
+        let source = source.trim();
+        if source.is_empty() || source.chars().count() > 200 {
+            return Err(Error::field("source", "where it was said (a campaign's unsubscribe, a form), at most 200 characters"));
+        }
+        let Purpose::Marketing = purpose else { return Err(Error::field("purpose", "consent is recorded for marketing; transactional notices do not ask it")) };
+        sqlx::query(
+            "insert into contact_consent (tenant_id, email, purpose, granted, source, recorded_by) values ($1, $2, 'marketing', $3, $4, $5) \
+             on conflict (tenant_id, email, purpose) do update set granted = excluded.granted, source = excluded.source, recorded_by = excluded.recorded_by, recorded_at = now()",
+        )
+        .bind(ctx.tenant)
+        .bind(&email)
+        .bind(granted)
+        .bind(source)
+        .bind((!ctx.user.is_nil()).then_some(ctx.user))
+        .execute(&mut **tx)
+        .await?;
+        audit::record(
+            tx,
+            ctx,
+            "ContactConsent",
+            Uuid::nil(),
+            if granted { "consent_granted" } else { "consent_withdrawn" },
+            None,
+            json!({"email": email, "purpose": "marketing", "source": source}),
+        )
+        .await
+    }
+
+    /// [`Kernel::record_consent_tx`] in a transaction of its own.
+    pub async fn record_consent(&self, ctx: &Ctx, email: &str, purpose: Purpose, granted: bool, source: &str) -> Result<()> {
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        self.record_consent_tx(&mut tx, ctx, email, purpose, granted, source).await?;
+        tx.commit().await?;
+        Ok(())
     }
 }

@@ -73,10 +73,26 @@ impl Kernel {
     /// files are read when the mail goes out; one deleted by then fails the delivery, never
     /// sends without it.
     pub async fn queue_mail_with(&self, tx: &mut Tx, tenant: Uuid, to: &str, subject: &str, html: &str, files: &[Uuid]) -> Result<()> {
+        self.queue_mail_for(tx, tenant, to, subject, html, files, crate::retention::Purpose::Transactional).await
+    }
+
+    /// [`queue_mail_with`](Self::queue_mail_with) for a purpose: marketing is not sent to someone who
+    /// withdrew their consent, asked again when it goes out (FEO-015), as a restriction is.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn queue_mail_for(
+        &self,
+        tx: &mut Tx,
+        tenant: Uuid,
+        to: &str,
+        subject: &str,
+        html: &str,
+        files: &[Uuid],
+        purpose: crate::retention::Purpose,
+    ) -> Result<()> {
         let to = to.trim();
         check_mail(to, subject)?;
-        if !self.may_contact(tx, tenant, to).await? {
-            tracing::info!(%tenant, "a queued mail was not sent: processing of its recipient's data is restricted");
+        if !self.may_contact_for(tx, tenant, to, purpose).await? {
+            tracing::info!(%tenant, ?purpose, "a queued mail was not sent: its recipient may not be contacted for it");
             return Ok(());
         }
         if html.len() > 1 << 20 {
@@ -102,7 +118,8 @@ impl Kernel {
                 return Err(Error::field("attachments", "attachments are larger than 20 MB together"));
             }
         }
-        enqueue(tx, tenant, MAIL_TOPIC, None, None, serde_json::json!({"to": to, "subject": subject.trim(), "html": html, "files": files})).await
+        enqueue(tx, tenant, MAIL_TOPIC, None, None, serde_json::json!({"to": to, "subject": subject.trim(), "html": html, "files": files, "purpose": purpose}))
+            .await
     }
 
     /// The files a queued mail attaches, read from storage.
@@ -500,6 +517,15 @@ impl Kernel {
         if ev.topic == MAIL_TOPIC {
             let mailer = self.mailer.as_ref().ok_or_else(|| Error::Unavailable("no mailer is configured; queued mail waits for one".into()))?;
             let field = |k: &str| ev.payload.get(k).and_then(Value::as_str).unwrap_or_default();
+            // Asked again as it goes: a restriction or a withdrawal since it was queued stops it (FEO-015).
+            let purpose: crate::retention::Purpose = ev.payload.get("purpose").cloned().and_then(|p| serde_json::from_value(p).ok()).unwrap_or_default();
+            let mut tx = self.db.tenant_tx(ev.tenant_id).await?;
+            let may = self.may_contact_for(&mut tx, ev.tenant_id, field("to"), purpose).await?;
+            tx.commit().await?;
+            if !may {
+                tracing::info!(tenant = %ev.tenant_id, ?purpose, "a queued mail was not sent: its recipient may no longer be contacted for it");
+                return Ok(());
+            }
             let attachments = self.mail_attachments(ev.tenant_id, &ev.payload).await?;
             return mailer.send_with(field("to"), field("subject"), field("html"), &attachments).await;
         }

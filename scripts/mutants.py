@@ -62,6 +62,7 @@ ASSISTANT = ("-p", "ferrum-server", "--test", "assistant_it")
 BOUNDARIES = ("-p", "ferrum-server", "--test", "assistant_boundaries_it")
 ASSISTANT_UNIT = ("-p", "ferrum-server", "--lib", "assistant::tests")
 RECEIPTS = ("-p", "ferrum-kernel", "--test", "receipts_it")
+CONSENT = ("-p", "ferrum-kernel", "--test", "consent_it")
 SHARES_UNIT = ("-p", "ferrum-server", "--lib", "state::tests")
 EXTENSIONS = ("-p", "ferrum-server", "--test", "extensions_it")
 SUPPORT = ("-p", "ferrum-kernel", "--test", "support_it")
@@ -89,7 +90,7 @@ MUTANTS = [
     ("capability-ledger-offered", "crates/kernel/src/capability.rs", "matches!(ent.def.kind, EntityKind::Ledger | EntityKind::Child)", "matches!(ent.def.kind, EntityKind::Child)", CAPABILITY),
     ("capability-list-unmasked", "crates/kernel/src/capability.rs", "Value::Object(self.mask(ctx, &ent, d))", "Value::Object({ let _ = &ent; d })", CAPABILITY),
     ("capability-version-adopted", "crates/kernel/src/capability.rs", "            && v != &cap.version\n", "            && v.is_empty()\n", CAPABILITY),
-    ("automation-mails-before-commit", "crates/kernel/src/automation.rs", "k.queue_mail(tx, ctx.tenant, &to, &subject, &body).await?;", "k.mailer.as_ref().ok_or_else(|| Error::Unavailable(String::new()))?.send(&to, &subject, &body).await?;", AUTOMATION_MAIL),
+    ("automation-mails-before-commit", "crates/kernel/src/automation.rs", "k.queue_mail_for(tx, ctx.tenant, &to, &subject, &body, &[], purpose).await?;", "{ let _ = purpose; k.mailer.as_ref().ok_or_else(|| Error::Unavailable(String::new()))?.send(&to, &subject, &body).await?; }", AUTOMATION_MAIL),
     # Customer rules (docs/logic/rules.md): every path that saves, reviewed releases, evidence kept apart.
     ("rules-skip-system-saves", "crates/kernel/src/logic.rs", "doc: &Doc) -> Result<()> {\n        let active = active(hc).await?;", "doc: &Doc) -> Result<()> {\n        if hc.ctx.is_system {\n            return Ok(());\n        }\n        let active = active(hc).await?;", LOGIC_RULES),
     ("refusal-evidence-not-kept", "crates/kernel/src/logic.rs", "                if r.audit {\n", "                if false && r.audit {\n", LOGIC_RULES),
@@ -380,8 +381,8 @@ MUTANTS = [
     ("merged-record-still-editable", "crates/kernel/src/doc.rs", "if lock && ent.def.mergeable && crate::merge::canonical(tx, ctx.tenant, &ent.def.name, id).await?.is_some() {", "if false {", MERGE),
     ("stale-link-saved", "crates/kernel/src/doc.rs", "crate::merge::resolve_links(ctx, tx, ent, doc).await?;", "", MERGE),
     ("mask-shows-it-all", "crates/kernel/src/doc.rs", "doc.insert(f.name.clone(), Value::String(mask.apply(&v)));", "doc.insert(f.name.clone(), Value::String(v));", RETENTION),
-    ("restriction-ignored", "crates/kernel/src/outbox.rs", "if !self.may_contact(tx, tenant, to).await? {", "if false {", RETENTION),
-    ("restriction-misses-old-addresses", "crates/kernel/src/retention.rs", "let emails = addresses(tx, tenant, &email).await?;\n        let restricted", "let emails = vec![email.clone()];\n        let restricted", RETENTION),
+    ("restriction-ignored", "crates/kernel/src/retention.rs", "Ok(!(restricted || (purpose == Purpose::Marketing && withdrawn)))", "Ok(!(purpose == Purpose::Marketing && withdrawn))", RETENTION),
+    ("restriction-misses-old-addresses", "crates/kernel/src/retention.rs", "let emails = addresses(tx, tenant, &email).await?;\n        let (restricted, withdrawn)", "let emails = vec![email.clone()];\n        let (restricted, withdrawn)", RETENTION),
     ("retention-past-a-legal-hold", "crates/kernel/src/retention.rs", "if on_hold {", "if false {", RETENTION),
     ("retention-deletes-what-is-kept", "crates/kernel/src/retention.rs", "if let Some(why) = declared.iter().find_map(|d| d.retain.as_deref()) {", "if let Some(why) = None::<&str> {", RETENTION),
     ("retention-more-than-once-a-day", "crates/kernel/src/retention.rs", "if ran {", "if false {", RETENTION),
@@ -397,6 +398,13 @@ MUTANTS = [
     ("workspace-deleted-under-a-hold", "crates/kernel/src/recovery.rs", "if holds > 0 {", "if false {", CLOSURE),
     # The values chosen to stay are written in the merge's own transaction (FEO-006).
     ("merge-forgets-the-chosen-values", "crates/kernel/src/merge.rs", "if let Some((chosen, version)) = values.filter(|(v, _)| !v.is_empty()) {", "if let Some((chosen, version)) = values.filter(|_| false) {", MERGE),
+    # Marketing stops where consent ends, asked as each message goes (FEO-015).
+    ("marketing-ignores-withdrawal", "crates/kernel/src/retention.rs", "Ok(!(restricted || (purpose == Purpose::Marketing && withdrawn)))", "Ok(!restricted)", CONSENT),
+    ("mail-not-asked-as-it-goes", "crates/kernel/src/outbox.rs", "            if !may {\n                tracing::info!(tenant = %ev.tenant_id, ?purpose, \"a queued mail was not sent: its recipient may no longer be contacted for it\");\n                return Ok(());\n            }\n", "", CONSENT),
+    ("automation-mail-loses-its-purpose", "crates/kernel/src/automation.rs", "k.queue_mail_for(tx, ctx.tenant, &to, &subject, &body, &[], purpose).await?;", "k.queue_mail_for(tx, ctx.tenant, &to, &subject, &body, &[], crate::retention::Purpose::Transactional).await?;", CONSENT),
+    ("marketing-capability-as-a-notice", "crates/kernel/src/capability.rs", 'let purpose = if cap.id == "ferrum.mail.marketing" {', 'let purpose = if cap.id == "never" {', CONSENT),
+    ("marketing-stream-asks-no-one", "crates/kernel/src/connect.rs", "        if let Some(field) = &map.consent {", "        if let Some(field) = map.consent.as_ref().filter(|_| false) {", CONNECT),
+    ("going-back-undoes-what-people-asked", "crates/kernel/src/recovery.rs", 'const KEPT: &[&str] = &["audit_event", "support_grant", "support_access", "legal_hold", "held_version", "processing_restriction", "contact_consent"];', 'const KEPT: &[&str] = &["audit_event", "support_grant", "support_access"];', RECOVERY),
     ("retention-starts-over-every-day", "crates/kernel/src/retention.rs", "match self.due_records(sys, rule, rule.scan_cursor.clone(), limit).await {", "match self.due_records(sys, rule, None, limit).await {", RETENTION),
     # A person under a hold keeps their records from retention, deletion and an app's removal (FEO-007).
     ("retention-ignores-held-people", "crates/kernel/src/retention.rs", "let on_hold = people.contains(id) || record_held(", "let on_hold = record_held(", RETENTION),

@@ -46,8 +46,10 @@ pub trait Restored: Send + Sync {
 const NOTE: &str = "the database was restored: this may or may not have happened since, so a person decides";
 
 /// What stays as it is when a workspace goes back, because it happened: the audit trail, and who was
-/// let in, and what they did there.
-const KEPT: &[&str] = &["audit_event", "support_grant", "support_access"];
+/// let in, and what they did there; and what the people its data is about asked for and what the law
+/// holds, which no copy undoes (FEO-078): legal holds and the versions kept under them, restrictions of
+/// processing, and consent given or withdrawn.
+const KEPT: &[&str] = &["audit_event", "support_grant", "support_access", "legal_hold", "held_version", "processing_restriction", "contact_consent"];
 /// How many rows go across at once.
 const BATCH: usize = 1000;
 

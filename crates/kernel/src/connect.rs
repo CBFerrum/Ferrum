@@ -201,6 +201,10 @@ pub struct StreamMap {
     /// Local changes go out to the provider.
     #[serde(default)]
     pub push: bool,
+    /// For a stream that sends people to a marketing service: the field holding the person's address,
+    /// whose marketing consent each record sent asks first (FEO-015). One who withdrew is not sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consent: Option<String>,
 }
 
 fn default_conflict() -> String {
@@ -451,7 +455,7 @@ impl Kernel {
                 return Err(Error::field("mapping", format!("{} has no stream {stream}", info.label)));
             }
             let ent = self.entity(ctx, &map.entity)?;
-            if let Some(f) = map.fields.values().find(|f| ent.field(f).is_none()) {
+            if let Some(f) = map.fields.values().chain(map.consent.iter()).find(|f| ent.field(f).is_none()) {
                 return Err(Error::field("mapping", format!("{} has no field {f}", map.entity)));
             }
             if !matches!(map.conflict.as_str(), "source" | "local" | "review") || !matches!(map.tombstone.as_str(), "keep" | "delete") {
@@ -876,6 +880,14 @@ impl Kernel {
             Err(Error::NotFound(_)) => return Ok(json!({"skipped": "the record is gone"})),
             Err(e) => return Err(e),
         };
+        // A marketing stream sends no one who withdrew their consent, asked as it goes (FEO-015).
+        if let Some(field) = &map.consent {
+            let email = doc.get(field).and_then(Value::as_str).unwrap_or_default();
+            if !self.may_contact_for(&mut tx, job.tenant_id, email, crate::retention::Purpose::Marketing).await? {
+                tx.commit().await?;
+                return Ok(json!({"skipped": "the person may not be sent marketing"}));
+            }
+        }
         let external: Option<String> =
             sqlx::query_scalar("select external_id from connection_link where tenant_id = $1 and connection_id = $2 and stream = $3 and record_id = $4")
                 .bind(job.tenant_id)

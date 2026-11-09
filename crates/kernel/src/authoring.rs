@@ -653,8 +653,11 @@ impl Kernel {
                         let pkg = ctx.schema.entity(other).map(|e| e.package.clone()).unwrap_or_else(|| package.clone());
                         action(format!("{pkg}.{}.create", ferrum_logic::capability::snake(other)), values(v), format!("Create a {other}"))
                     }
-                    crate::automation::AutomationAction::Email { to, subject, body } => action(
-                        "ferrum.mail".into(),
+                    crate::automation::AutomationAction::Email { to, subject, body, purpose } => action(
+                        match purpose {
+                            crate::retention::Purpose::Marketing => "ferrum.mail.marketing".into(),
+                            crate::retention::Purpose::Transactional => "ferrum.mail".into(),
+                        },
                         json!({"to": trigger_of(to), "subject": trigger_of(subject), "body": trigger_of(body)}),
                         "Send an e-mail".into(),
                     ),
