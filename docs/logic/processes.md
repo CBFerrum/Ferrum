@@ -80,7 +80,11 @@ effect go with it, the second does the step, and the first, resumed, commits not
 else is refused, as is one by the requester, by someone without the role (an administrator included), or by
 anyone but the person it was handed to. Decisions never change. A task is handed on only to someone holding its role, never back along its
 chain or to the requester. A task's material is readable only by someone who may decide it, or an
-administrator. Approved form values are checked against the form.
+administrator. Approved form values are checked against the form. Someone away names who stands in for
+them between two days (`POST /api/app/studio/away` `{starts_on, ends_on, substitute, reason}`, for
+themselves, or an administrator for anyone with `user`): a task handed to them is the substitute's to decide
+meanwhile, if the substitute holds its role and it is not their own request; an absence that is over stands
+nobody in. Whoever left hands their tasks on as [identity lifecycle](../identity-lifecycle.md) says.
 
 **Waiting.** A run waits for an event about one record. An event that comes before the run waits for it is
 kept for seven days; an event about another record, or from another workspace, advances nothing. A
