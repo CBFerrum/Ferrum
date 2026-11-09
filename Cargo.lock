@@ -2920,15 +2920,19 @@ dependencies = [
 [[package]]
 name = "ferrum-app-healthcare"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-healthcare?branch=main#a56fd320167ee7a5d9d31010e5d082e56c0c4fcd"
+source = "git+https://github.com/CBFerrum/ferrum-app-healthcare?branch=main#fa33be8ef7a0b19c5e8c007760f488eb23d6e20e"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "ferrum-domain",
  "ferrum-kernel",
  "ferrum-meta",
+ "hex",
+ "rand 0.9.5",
  "rust_decimal",
  "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "uuid",
 ]
