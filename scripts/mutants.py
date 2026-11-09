@@ -84,6 +84,9 @@ TIMEOUT = 600
 
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
+    # Who stands in for someone away (FEO-034).
+    ("substitute-ignored", "crates/kernel/src/process.rs", "if !standing_for.contains(to) {", "if !standing_for.contains(to) || standing_for.len() < 1000 {", PROCESS_RECORDS),
+    ("away-forever", "crates/kernel/src/process.rs", "and current_date between starts_on and ends_on", "and current_date >= starts_on", PROCESS_RECORDS),
     # An export holds every row or says it cannot (FEO-066).
     ("workbook-cut-short", "server/src/controllers/docs.rs", "Some(_) if rows.len() >= cap => {", "Some(_) if rows.len() >= cap && cap == 0 => {", EXPORT_UNIT),
     ("csv-stops-at-a-page", "server/src/controllers/docs.rs", "(None, next.map(Some), fetch, columns)", "(None, None, fetch, columns)", EXPORT_UNIT),

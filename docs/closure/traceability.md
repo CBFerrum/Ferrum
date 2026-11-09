@@ -5,8 +5,8 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Not started | 53 |
-| Partial | 9 |
+| Not started | 52 |
+| Partial | 10 |
 | Verified in software | 16 |
 | Blocked externally | 4 |
 | **All** | **82** |
@@ -59,7 +59,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FEO-031 | Qualify complete Field Service mobile work | P1 | Not started | documented incomplete | partial / none / none / none | not run | 0 | Not started here: After queue repairs, complete offline day/work-order startup, map integration, parts/expenses, customer proof and exception reconciliation on real supported mobile browsers. The review saw: Native field-to-invoice works in a walkthrough; cold-start offline browser evidence is incomplete and queue defects were identified. |
 | FEO-032 | Close Bookings payment and calendar conflict gaps | P1 | Not started | documented incomplete | partial / none / none / none | not run | 0 | Not started here: Define consistent booking/deposit semantics, material calendar conflict handling, recurring paid appointments and cancellation/no-show policies. The review saw: Deposits/refunds and inbound iCalendar polling exist. Staff/guest payment paths differ; paid recurring series and conflicts introduced by later external calendar updates remain limited. |
 | FEO-033 | Complete HR and payroll by explicit jurisdiction | P0 | Not started | qualification gap | partial / none / none / none | not run | 0 | Not started here: Finish a jurisdiction’s effective-date rules, payroll adjustments, final settlement, statutory reports and bank acknowledgment/reconciliation before claiming support. The review saw: Payroll, bank files, expenses and separation work exist; statutory outputs/bank acceptance and comprehensive independent fixtures are not established. |
-| FEO-034 | Integrate training, leave, approver delegation and renewals | P1 | Not started | documented incomplete | partial / none / none / none | not run | 0 | Not started here: Use shared calendars and explicit expiring delegation. The review saw: Training exists without certificate-expiry reminders. Logic lacks standing leave substitutes; schedules and capacity are not consistently shared. |
+| FEO-034 | Integrate training, leave, approver delegation and renewals | P1 | Partial | documented incomplete | verified / partial / none / none | not run | 1 | Standing leave substitutes now exist for process tasks: someone away names who stands in for them between two days (themselves, or an administrator for anyone), and a task handed to them is the substitute's to decide meanwhile, only with the task's role and never on the substitute's own request; an absence that is over stands nobody in; whoever holds it still may (process_it; mutants substitute-ignored, away-forever). Tasks handed to someone who leaves go on (FEO-012). Not yet: HR leave driving the absence by itself, record workflow approvals by personal assignment, certificate-expiry reminders in training, a technician whose qualification expires reassigned in Field Service, and shared calendars and capacity |
 
 ## D: Authoring, customization, AI and semantics
 
