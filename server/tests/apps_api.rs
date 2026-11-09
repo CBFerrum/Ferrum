@@ -730,7 +730,22 @@ async fn scenario() {
     let reinstall = dev.plan(&admin, "gw", None).await.unwrap();
     assert_eq!(reinstall.steps.iter().map(|s| (s.id.as_str(), s.source.as_str())).collect::<Vec<_>>(), [("kit", "cluster"), ("gw", "cluster")]);
     dev.install(&admin, "gw", None, &reinstall.digest, false).await.unwrap();
-    fake.publish(&bundle(gw("2.2.0", &["api.example.com", "hooks.example.com"]), &store_sig));
+    // Another workspace with the app, which has named the serial for itself too: it takes the
+    // cluster's release when this one brings it, and its administrators are told what that changed.
+    let label = |v: &str| serde_json::from_value(json!({"op": "set_property", "field": "serial", "property": "label", "value": v})).unwrap();
+    let their_session = k.login("other", "admin@other.test", "Correct-Horse-9").await.unwrap();
+    let their_ctx = || async { k.load_ctx(other, their_session.user, None, "it".into()).await.unwrap() };
+    let joined = dev.plan(&their_ctx().await, "gw", Some("2.1.0")).await.unwrap();
+    dev.install(&their_ctx().await, "gw", Some("2.1.0"), &joined.digest, false).await.unwrap();
+    let their_serial = k.add_customization(&their_ctx().await, "GwDevice", label("Their serial"), None).await.unwrap();
+    // 2.2.0 names the serial, which this workspace has named for itself.
+    let mut relabelled = gw("2.2.0", &["api.example.com", "hooks.example.com"]);
+    relabelled.insert(
+        "packages/gw/entities/device.yaml".into(),
+        b"name: GwDevice\nlabel: Device\nkind: master\nfields:\n  - {name: serial, type: data, label: Serial number}\n".to_vec(),
+    );
+    fake.publish(&bundle(relabelled, &store_sig));
+    let serial = k.add_customization(&ctx().await, "GwDevice", label("Serial no."), None).await.unwrap();
     // Store answers are cached for a minute; a replica that has not asked yet sees the release.
     let dev = manager(Uploads::Cluster, true);
     let c = ctx().await;
@@ -740,11 +755,33 @@ async fn scenario() {
         Value::Null,
         "without cluster-wide uploads only the operator brings store upgrades to the cluster"
     );
-    let up = dev.plan(&admin, "gw", Some("2.2.0")).await.unwrap();
+    let up = dev.plan(&ctx().await, "gw", Some("2.2.0")).await.unwrap();
     assert_eq!(up.steps.iter().map(|s| (s.id.as_str(), s.action)).collect::<Vec<_>>(), [("gw", StepAction::Upgrade)]);
     assert_eq!(up.increases, ["calls host: hooks.example.com"]);
+    // What it changes under a customization is said before anyone agrees, and agreed to (FEO-056).
+    assert_eq!(up.customizations.iter().map(|c| (c.id, c.now.clone())).collect::<Vec<_>>(), [(serial, json!("Serial number"))]);
+    assert!(up.warnings.iter().any(|w| w.starts_with("Your customization of Device's serial (label) replaces what this update changes")), "{:?}", up.warnings);
+    k.set_customization_active(&ctx().await, serial, false).await.unwrap();
+    let unparted = dev.plan(&ctx().await, "gw", Some("2.2.0")).await.unwrap();
+    assert!(unparted.customizations.is_empty() && unparted.digest != up.digest, "a consent given without it does not cover it");
+    k.set_customization_active(&ctx().await, serial, true).await.unwrap();
+    assert_eq!(dev.plan(&ctx().await, "gw", Some("2.2.0")).await.unwrap().digest, up.digest);
     assert!(matches!(dev.install(&admin, "gw", Some("2.2.0"), &reinstall.digest, true).await, Err(Refusal::Stale(_))));
     dev.install(&admin, "gw", Some("2.2.0"), &up.digest, true).await.unwrap();
+    let parted = k.customization_conflicts(&ctx().await).await.unwrap();
+    assert_eq!(parted.iter().map(|c| c.id).collect::<Vec<_>>(), [serial], "and reported once it has landed");
+    assert_eq!(ctx().await.schema.entity("GwDevice").unwrap().field("serial").unwrap().label.as_deref(), Some("Serial no."), "theirs stands");
+    k.set_customization_active(&ctx().await, serial, false).await.unwrap();
+    let mut tx = k.db.system_tx().await.unwrap();
+    let told = "select title, body from notification where tenant_id = $1 and title like '%changed this workspace'";
+    let theirs: Vec<(String, Option<String>)> = sqlx::query_as(told).bind(other).fetch_all(&mut *tx).await.unwrap();
+    let ours: Vec<(String, Option<String>)> = sqlx::query_as(told).bind(tenant).fetch_all(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(theirs.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(), ["Gateway 2.2.0 changed this workspace"], "the other workspace is told");
+    assert!(theirs[0].1.as_deref().is_some_and(|b| b.starts_with("One of your customizations replaces what it changed")), "{theirs:?}");
+    assert!(ours.is_empty(), "this one saw it in its plan before agreeing: {ours:?}");
+    assert_eq!(k.customization_conflicts(&their_ctx().await).await.unwrap().iter().map(|c| c.id).collect::<Vec<_>>(), [their_serial]);
+    k.set_customization_active(&their_ctx().await, their_serial, false).await.unwrap();
     let history: Vec<(String, String)> = k.release_history("gw").await.unwrap().into_iter().map(|r| (r.version, r.status)).collect();
     assert_eq!(history, [("2.2.0".to_string(), "active".to_string()), ("2.1.0".to_string(), "superseded".to_string())]);
     let c = ctx().await;

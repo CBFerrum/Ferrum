@@ -1832,4 +1832,7 @@ database alone rebuilds every replica's catalog. With `FERRUM_APP_UPLOADS=cluste
 administrator's upgrade from a store also upgrades the cluster's release; otherwise store upgrades
 reach the cluster through `app_upgrade`, and workspaces then move to them from their Apps page.
 Native apps upgrade with the server image; each workspace applies the new roles and seed data with
-"Update" on its Apps page.
+"Update" on its Apps page. A release's packages change for every workspace that has them as it is made
+available, so the administrators of each are told what it changed there: the customizations it parted
+ways with, to keep or switch off under Customizations, and the records waiting in workflow states it
+removed or changed. The workspace whose plan brought it saw the same in the plan before agreeing.

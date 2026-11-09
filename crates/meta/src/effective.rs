@@ -245,19 +245,23 @@ fn as_opt_string(v: &Value, prop: &str) -> Result<Option<String>, String> {
     }
 }
 
-/// Applies one overlay op to an entity definition. Returns the name of a field it added.
-/// What `op` replaces in `def` as it stands: `None` if it replaces nothing, or what it names is gone.
-pub fn replaced_value(def: &EntityDef, op: &OverlayOp) -> Option<Value> {
+/// What `op` replaces in `e` as it stands: `None` if it replaces nothing, or what it names is gone.
+/// A workflow or print template replaces the packages' own, or their having none (`null`).
+pub fn replaced_value(e: &EffEntity, op: &OverlayOp) -> Option<Value> {
+    let def = &e.def;
     match op {
         OverlayOp::SetProperty { field, property, .. } => {
             let f = def.fields.iter().find(|f| &f.name == field)?;
             Some(serde_json::to_value(f).ok()?.get(property).cloned().unwrap_or(Value::Null))
         }
         OverlayOp::SetEntityProperty { property, .. } => Some(serde_json::to_value(def).ok()?.get(property).cloned().unwrap_or(Value::Null)),
+        OverlayOp::SetWorkflow { .. } => Some(e.workflow.as_ref().and_then(|w| serde_json::to_value(&w.def).ok()).unwrap_or(Value::Null)),
+        OverlayOp::SetPrintTemplate { .. } => Some(e.print_template.clone().map_or(Value::Null, Value::String)),
         _ => None,
     }
 }
 
+/// Applies one overlay op to an entity definition. Returns the name of a field it added.
 pub(crate) fn apply_op(def: &mut EntityDef, op: &OverlayOp, source: OverlaySource) -> Result<Option<String>, String> {
     match op {
         OverlayOp::AddAction { action } => {
