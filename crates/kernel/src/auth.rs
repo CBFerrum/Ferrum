@@ -857,6 +857,16 @@ impl Kernel {
             .bind(active)
             .execute(&mut *tx)
             .await?;
+        // Journalled outside the database, so that a restore from before does not undo it (FEO-014).
+        crate::outbox::enqueue(
+            &mut tx,
+            ctx.tenant,
+            crate::lifecycle::ACCESS_TOPIC,
+            Some("User"),
+            Some(user),
+            serde_json::json!({"user": user, "active": active}),
+        )
+        .await?;
         notify_users(&mut tx, ctx.tenant, Some(user)).await?;
         tx.commit().await?;
         self.invalidate_user(ctx.tenant, user);
