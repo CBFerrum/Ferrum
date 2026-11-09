@@ -826,8 +826,10 @@ by the share, and the database's CPU is not divided between workspaces.
 ## Incident playbooks
 
 **Database failover.** Automatic. In-flight transactions fail with a retryable error (clients see
-`503 retry`, idempotent creates can be replayed with the same `Idempotency-Key`). Check
-`kubectl cnpg status ferrum-db`.
+`503 retry`; a create, an update or an action sent with an `Idempotency-Key` can be sent again with the
+same key and is done once). Check `kubectl cnpg status ferrum-db`. While the database cannot be read,
+the assistant runs on each workspace's policy as last read for up to five minutes, then says it is
+unavailable rather than run unrestricted.
 
 **Outbox or webhook backlog growing.** Check API pod health and logs for the dispatcher. Dead
 webhook deliveries usually mean the receiving endpoint is down or rejects the signature; fix the
@@ -887,8 +889,16 @@ Read the answer, because it says what was not done:
 **Legal holds** stop erasure and deletion while a matter is open: `POST /api/admin/legal-holds` with
 `{"email": "...", "reason": "..."}` for a person, or `{"entity": "...", "record_id": "...", "reason":
 "..."}` for a record; `GET /api/admin/legal-holds`; `POST /api/admin/legal-holds/{id}/release`. They
-are audited, and released holds stay listed. A hold applies to the platform's erasure and deletion:
-an app that deletes rows in its own SQL (Drive's trash, for one) does not check it yet.
+are audited, and released holds stay listed.
+
+A hold on a record: the database refuses to delete it, whatever asks (an app's own SQL included), and
+whenever anything changes it the version it had is kept, for administrators to read with
+`Kernel::held_versions` until the hold is released, when those versions go and the release says how
+many. A hold on a person keeps their records, under any address they have had, from erasure, deletion,
+retention rules and an app's removal with its data; to keep the earlier versions of one of their records
+as well, place a hold on that record. Removing an app with its data (`DELETE /api/admin/apps/{id}?delete_data=true`)
+and deleting a workspace (`ferrum task delete_tenant`) are refused while a hold covers what they
+would destroy: release the hold first, which is recorded, and say why.
 
 Restriction of processing, as an operation of its own, is not built.
 
@@ -899,8 +909,12 @@ can read the records. `POST /api/admin/restrictions/lift` undoes it.
 
 **Retention rules** say how long an entity's records are kept: `POST /api/admin/retention` `{entity,
 after_days, date_field, action: delete | anonymize, condition, reason}`. They run once a day as a job,
-5,000 records a rule at most. A legal hold stops a rule, what a package keeps for a stated reason cannot
-have a rule that deletes it, and a record that cannot be deleted is counted in `last_result`, not forced.
+5,000 records a rule at most (`KernelSettings::retention_daily_records`), each day going on from where
+the last stopped; a scan that reaches the end starts again, and a changed rule starts afresh. A legal
+hold, on the record or on its person, stops a rule for that record; what a package keeps for a stated
+reason cannot have a rule that deletes it; and a record that cannot be deleted is listed in
+`last_result` (`held`, `failed`, `failures`, `scan`, `more`), passed over, and tried again when the scan
+comes round.
 `POST /api/admin/retention/{id}/preview` says what a rule would reach, without touching it. Immutable
 financial history is out of their reach by design.
 
@@ -1187,8 +1201,11 @@ It is off unless you set a key:
   sees only what the person may see. Set the key only where your data policy allows it; Anthropic's
   API terms and retention apply to what is sent.
 * **Per workspace.** Administrators turn it off for their workspace from the panel's
-  Conversations menu (or `PUT /api/admin/settings {"assistant": false}`); every replica follows
-  within 20 seconds. Guests and portal people never have it.
+  Conversations menu (or `PUT /api/admin/settings {"assistant": false}`); every replica follows at
+  once (within 20 seconds where its notifications are not reaching it). A policy that cannot be read
+  is never the defaults: the one last read stands in for up to five minutes of an outage, never once the
+  settings are known to have changed, and otherwise the assistant is unavailable. Guests and portal
+  people never have it.
 * **Limits.** 25 calls to the model per message (then it stops and says so), 400 messages per
   conversation, the hourly allowance above, one answer at a time per conversation, and tool
   results cut at 150,000 characters (with a note to the model saying so). Rate limits and
@@ -1711,8 +1728,9 @@ ferrum task delete_tenant slug:acme confirm:acme note:"kept until 2027-02-01, as
 ferrum task delete_tenant slug:acme confirm:acme note:"kept until 2027-02-01, as agreed" apply:yes
 ```
 
-The first says what would go: rows by table, files, and anything an app still holds outside the database, which stops
-it. The second deletes the workspace's files, then its private app bundles, then every row that names it, in one
+The first says what would go: rows by table, files, legal holds in force, and anything an app still holds outside the
+database. A hold, or anything outside, stops it: release each hold first (Administration, Legal holds), which is
+recorded. The second deletes the workspace's files, then its private app bundles, then every row that names it, in one
 transaction, and records in `tenant_deletion` that it happened. A file store failing part way leaves every row in place,
 so running it again finishes the job. Like extraction, it needs `GRANT SET ON PARAMETER session_replication_role TO
 ferrum` for as long as it runs.

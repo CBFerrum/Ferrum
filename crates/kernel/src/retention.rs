@@ -17,7 +17,7 @@ use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 use crate::jobs::{Job, JobHandler, NewJob, enqueue};
 use crate::outbox::PRIORITY_BULK;
-use crate::privacy::{addresses, checked_email, record_held};
+use crate::privacy::{addresses, checked_email, held_people_records, record_held};
 use crate::query::{Filter, ListQuery, Op, parse_filters};
 use crate::{Kernel, audit};
 use async_trait::async_trait;
@@ -29,8 +29,8 @@ use std::time::Duration;
 use uuid::Uuid;
 
 pub const RETENTION_KIND: &str = "platform.retention";
-/// Records one rule reaches in a day: what is left waits for tomorrow.
-const DAILY_RECORDS: usize = 5000;
+/// Records a page of a rule's scan reads.
+const PAGE: usize = 500;
 /// Failures a run lists.
 const LISTED_FAILURES: usize = 100;
 
@@ -79,9 +79,11 @@ struct Rule {
     action: String,
     condition: Value,
     reason: String,
+    /// Where its scan stands: the next run continues after the records the last one reached.
+    scan_cursor: Option<String>,
 }
 
-const RULE: &str = "select id, entity, after_days, date_field, action, condition, reason from retention_rule where tenant_id = $1";
+const RULE: &str = "select id, entity, after_days, date_field, action, condition, reason, scan_cursor from retention_rule where tenant_id = $1";
 
 pub(crate) struct RetentionJob;
 
@@ -107,16 +109,18 @@ impl JobHandler for RetentionJob {
         let sys = Ctx::system(job.tenant_id, k.registry.schema(job.tenant_id).await?);
         let mut results = Vec::new();
         for rule in rules {
-            let outcome = match k.apply_rule(&sys, &rule).await {
-                Ok(outcome) => outcome,
-                // One rule that no longer fits (its entity's app was removed) leaves the others.
-                Err(e) => json!({"error": e.to_string()}),
+            let (outcome, cursor) = match k.apply_rule(&sys, &rule).await {
+                Ok(done) => done,
+                // One rule that no longer fits (its entity's app was removed) leaves the others; its
+                // scan starts again when it fits once more.
+                Err(e) => (json!({"error": e.to_string()}), None),
             };
             let mut tx = k.db.tenant_tx(job.tenant_id).await?;
-            sqlx::query("update retention_rule set last_run_at = now(), last_result = $3 where tenant_id = $1 and id = $2")
+            sqlx::query("update retention_rule set last_run_at = now(), last_result = $3, scan_cursor = $4 where tenant_id = $1 and id = $2")
                 .bind(job.tenant_id)
                 .bind(rule.id)
                 .bind(&outcome)
+                .bind(cursor)
                 .execute(&mut *tx)
                 .await?;
             tx.commit().await?;
@@ -127,21 +131,23 @@ impl JobHandler for RetentionJob {
 }
 
 impl Kernel {
-    /// What a rule reaches today, up to `limit`.
-    async fn due_records(&self, sys: &Ctx, rule: &Rule, limit: usize) -> Result<Vec<Uuid>> {
+    /// What a rule reaches, up to `limit`, continuing after `from` (null: from the beginning), and where
+    /// the scan stands after them (null: it reached the end).
+    async fn due_records(&self, sys: &Ctx, rule: &Rule, from: Option<String>, limit: usize) -> Result<(Vec<Uuid>, Option<String>)> {
         let cutoff = Utc::now() - Days::days(rule.after_days as i64);
         let is_date = self.entity(sys, &rule.entity)?.field(&rule.date_field).is_some_and(|f| f.ftype == FieldType::Date);
         let cutoff = if is_date { cutoff.date_naive().to_string() } else { cutoff.to_rfc3339() };
         let mut filters =
             if rule.condition.as_object().is_some_and(|o| o.is_empty()) || rule.condition.is_null() { vec![] } else { parse_filters(&rule.condition)? };
         filters.push(Filter { field: rule.date_field.clone(), op: Op::Lt, value: json!(cutoff) });
-        let (mut ids, mut cursor) = (Vec::new(), None);
+        let (mut ids, mut cursor) = (Vec::new(), from);
         while ids.len() < limit {
             let q = ListQuery {
                 filters: filters.clone(),
                 fields: Some(vec!["id".into()]),
                 sort: Some("created_at".into()),
-                limit: Some(500),
+                // Never more than is left of the limit, so the cursor stands just after the last taken.
+                limit: Some((limit - ids.len()).min(PAGE) as u32),
                 cursor,
                 ..Default::default()
             };
@@ -152,16 +158,28 @@ impl Kernel {
                 break;
             }
         }
-        ids.truncate(limit);
-        Ok(ids)
+        Ok((ids, cursor))
     }
 
-    async fn apply_rule(&self, sys: &Ctx, rule: &Rule) -> Result<Value> {
+    /// One run of a rule: up to the daily number of records, after where its last run stopped, so what
+    /// it cannot remove (held, or failing) never keeps it from the records after them. What it reached,
+    /// and where its scan now stands.
+    async fn apply_rule(&self, sys: &Ctx, rule: &Rule) -> Result<(Value, Option<String>)> {
         let (mut done, mut held, mut failed, mut failures) = (0u64, 0u64, 0u64, Vec::new());
-        let ids = self.due_records(sys, rule, DAILY_RECORDS).await?;
+        let limit = self.settings.retention_daily_records.max(1);
+        let started = rule.scan_cursor.is_none();
+        let (ids, cursor) = match self.due_records(sys, rule, rule.scan_cursor.clone(), limit).await {
+            // A cursor that no longer reads (the list's format changed) starts the scan again.
+            Err(Error::Invalid(_)) if !started => self.due_records(sys, rule, None, limit).await?,
+            other => other?,
+        };
+        // The records of people under a hold are kept as much as records placed under one.
+        let mut tx = self.db.system_tenant_tx(sys.tenant).await?;
+        let people: Vec<Uuid> = held_people_records(sys, &mut tx).await?.into_iter().filter(|(e, _)| *e == rule.entity).flat_map(|(_, ids)| ids).collect();
+        tx.commit().await?;
         for id in &ids {
             let mut tx = self.db.system_tenant_tx(sys.tenant).await?;
-            let on_hold = record_held(&mut tx, sys.tenant, &rule.entity, *id).await?;
+            let on_hold = people.contains(id) || record_held(&mut tx, sys.tenant, &rule.entity, *id).await?;
             tx.commit().await?;
             if on_hold {
                 held += 1;
@@ -181,7 +199,11 @@ impl Kernel {
                 }
             }
         }
-        Ok(json!({"reached": ids.len(), "done": done, "held": held, "failed": failed, "failures": failures, "more": ids.len() == DAILY_RECORDS}))
+        let outcome = json!({
+            "reached": ids.len(), "done": done, "held": held, "failed": failed, "failures": failures,
+            "scan": if started { "started" } else { "continued" }, "more": cursor.is_some(),
+        });
+        Ok((outcome, cursor))
     }
 
     fn check_rule(&self, ctx: &Ctx, r: &RetentionInput) -> Result<()> {
@@ -230,7 +252,7 @@ impl Kernel {
     }
 
     /// Adds or replaces a rule. It takes effect at the next daily run, and [`Kernel::retention_preview`]
-    /// says what that would reach.
+    /// says what that would reach. A replaced rule's scan starts again from the beginning.
     pub async fn save_retention_rule(&self, ctx: &Ctx, id: Option<Uuid>, r: RetentionInput) -> Result<Uuid> {
         admin_only(ctx)?;
         self.check_rule(ctx, &r)?;
@@ -239,7 +261,7 @@ impl Kernel {
         let n = sqlx::query(
             "insert into retention_rule (tenant_id, id, entity, after_days, date_field, action, condition, reason, is_active, created_by) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
              on conflict (tenant_id, id) do update set entity = excluded.entity, after_days = excluded.after_days, date_field = excluded.date_field, action = excluded.action, \
-             condition = excluded.condition, reason = excluded.reason, is_active = excluded.is_active",
+             condition = excluded.condition, reason = excluded.reason, is_active = excluded.is_active, scan_cursor = null",
         )
         .bind(ctx.tenant)
         .bind(rule)
@@ -282,7 +304,8 @@ impl Kernel {
         Ok(())
     }
 
-    /// How many records a rule would reach if it ran now, without touching any.
+    /// How many records a rule reaches now, from the beginning and up to a day's number, without
+    /// touching any.
     pub async fn retention_preview(&self, ctx: &Ctx, id: Uuid) -> Result<Value> {
         admin_only(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
@@ -290,8 +313,8 @@ impl Kernel {
         tx.commit().await?;
         let rule = rule.ok_or_else(|| Error::NotFound("retention rule".into()))?;
         let sys = Ctx::system(ctx.tenant, ctx.schema.clone());
-        let ids = self.due_records(&sys, &rule, DAILY_RECORDS).await?;
-        Ok(json!({"reaches": ids.len(), "more": ids.len() == DAILY_RECORDS}))
+        let (ids, more) = self.due_records(&sys, &rule, None, self.settings.retention_daily_records.max(1)).await?;
+        Ok(json!({"reaches": ids.len(), "more": more.is_some()}))
     }
 
     /// Queues today's run for every workspace with rules (`maintenance`, hourly: once a day each).

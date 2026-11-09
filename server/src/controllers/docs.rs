@@ -124,6 +124,19 @@ async fn read(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity, id))
     Ok(doc_response(st.kernel.get(&ctx, &entity, id, titles).await?, StatusCode::OK))
 }
 
+/// The receipt a write is sent under (`Idempotency-Key`, and the client's `Idempotency-Digest` when its body
+/// is rebuilt on each try): the key, and the digest bound to `target` ([`ferrum_kernel::receipt`]).
+fn receipt<'h>(headers: &'h HeaderMap, target: &str, body: &Value) -> Option<(&'h str, String)> {
+    let key = headers.get("idempotency-key").and_then(|v| v.to_str().ok())?;
+    let client = headers.get("idempotency-digest").and_then(|v| v.to_str().ok());
+    Some((key, ferrum_kernel::receipt::digest(target, client, body)))
+}
+
+fn replayed(mut resp: Response) -> Response {
+    resp.headers_mut().insert("idempotent-replayed", HeaderValue::from_static("true"));
+    resp
+}
+
 async fn update(
     Auth(ctx): Auth,
     State(app): State<AppContext>,
@@ -133,6 +146,11 @@ async fn update(
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let expected = if_match(&headers)?;
+    if let Some((key, digest)) = receipt(&headers, &format!("PATCH {entity}/{id}"), &body) {
+        let (doc, again) = st.kernel.update_idempotent(&ctx, &entity, id, body_doc(body)?, expected, key, &digest).await?;
+        let resp = doc_response(doc, StatusCode::OK);
+        return Ok(if again { replayed(resp) } else { resp });
+    }
     Ok(doc_response(st.kernel.update(&ctx, &entity, id, body_doc(body)?, expected).await?, StatusCode::OK))
 }
 
@@ -161,13 +179,18 @@ async fn action(
     Auth(ctx): Auth,
     State(app): State<AppContext>,
     Path((entity, id, action)): Path<(String, Uuid, String)>,
+    headers: HeaderMap,
     body: Option<Json<Value>>,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let params = body.map(|Json(v)| v).unwrap_or_else(|| json!({}));
-    let mut done = st.kernel.run_action(&ctx, &entity, id, &action, params).await?;
+    let (mut done, again) = match receipt(&headers, &format!("POST {entity}/{id}/actions/{action}"), &params) {
+        Some((key, digest)) => st.kernel.run_action_idempotent(&ctx, &entity, id, &action, params, key, &digest).await?,
+        None => (st.kernel.run_action(&ctx, &entity, id, &action, params).await?, false),
+    };
     said(&mut done, |e, n| ctx.schema.entity(e).map(|x| if n > 1 { x.def.plural_label() } else { x.def.label.clone() }).unwrap_or_else(|| e.to_string()));
-    Ok(Json(done).into_response())
+    let resp = Json(done).into_response();
+    Ok(if again { replayed(resp) } else { resp })
 }
 
 /// An action that does not say what it did is described from its answer: the record's new status
@@ -460,11 +483,19 @@ async fn bulk(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Path
 struct MergeRequest {
     duplicate: Uuid,
     reason: String,
+    /// Values chosen from the duplicate to stay on this record, written in the merge's own transaction.
+    #[serde(default)]
+    values: Option<serde_json::Map<String, Value>>,
+    /// The version of this record the values were chosen against.
+    #[serde(default)]
+    version: Option<i64>,
 }
 
-/// Merges a duplicate into this record ([`ferrum_kernel::merge`]): all its links come here.
+/// Merges a duplicate into this record ([`ferrum_kernel::merge`]): all its links come here, with the
+/// values chosen to stay, whole or not at all.
 async fn merge(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity, id)): Path<(String, Uuid)>, Json(m): Json<MergeRequest>) -> ApiResult<Response> {
-    Ok(Json(app_state(&app)?.kernel.merge_records(&ctx, &entity, id, m.duplicate, &m.reason).await?).into_response())
+    let values = m.values.map(|v| (v, m.version));
+    Ok(Json(app_state(&app)?.kernel.merge_records_with(&ctx, &entity, id, m.duplicate, &m.reason, values).await?).into_response())
 }
 
 #[derive(Deserialize)]

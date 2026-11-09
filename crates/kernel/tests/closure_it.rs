@@ -136,6 +136,9 @@ async fn scenario() {
     let deleting = async |confirm: &str, apply: bool| k.delete_tenant("acme", confirm, apply, "the customer left, and the retention passed").await;
     assert!(matches!(deleting("acme", false).await, Err(Error::Conflict(m)) if m.contains("only a closed")));
 
+    // A legal hold in force keeps the workspace from deletion until it is released (FEO-007).
+    let hold = k.place_legal_hold(&admin, Some("clerk@acme.test"), None, "Matter 9").await.unwrap();
+
     // Closed: nothing is destroyed, everyone may still read, and nobody may change anything.
     let until = Utc::now().date_naive() + Duration::days(30);
     assert!(k.close_account(acme, Utc::now().date_naive(), "the customer left").await.is_err(), "a closed workspace is kept a while");
@@ -156,6 +159,17 @@ async fn scenario() {
     assert!(said["rows"]["app_user"].as_i64().unwrap() >= 2 && said["files"] == json!(1), "{said}");
     assert!(matches!(deleting("acme", true).await, Err(Error::Conflict(m)) if m.contains("outside this database")));
     holding.store(false, Ordering::SeqCst);
+    assert_eq!(said["legal_holds"], json!(1), "{said}");
+    assert!(matches!(deleting("acme", true).await, Err(Error::Conflict(m)) if m.contains("legal holds are in force")), "a hold in force stops it");
+    // Releasing it is its own act, recorded: the workspace is opened for it, then closed again.
+    k.set_account_state(acme, "active", Some("to release Matter 9")).await.unwrap();
+    let admin = k.load_ctx(acme, admin.user, None, "it".into()).await.unwrap();
+    k.release_legal_hold(&admin, hold).await.unwrap();
+    k.close_account(acme, until, "the customer left").await.unwrap();
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update tenant set retain_until = current_date - 1 where id = $1").bind(acme).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(deleting("acme", false).await.unwrap()["legal_holds"], json!(0));
 
     // The store fails part way: no row goes, and running it again finishes the job.
     as_superuser(&url, "grant set on parameter session_replication_role to ferrum").await;

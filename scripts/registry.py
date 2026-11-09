@@ -94,10 +94,29 @@ FLC_WORKSTREAMS = {
     "W7": "Intelligence experience and governed proposals",
     "W8": "Migration, release and operations",
 }
+# The Ferrum-only closure review (docs/registry/feo.yaml, docs/closure): its work packages, in the execution
+# brief's dependency order.
+CLOSURE = ROOT / "docs" / "closure"
+FEO_WORKSTREAMS = {
+    "A": "Baseline and failure regressions",
+    "B": "Shared authority, identity, consent and receipts",
+    "C": "Finance and high-use business cycles",
+    "D": "Authoring, customization, AI and semantics",
+    "E": "Connectors, SDK, office, accessibility and offline experience",
+    "F": "Installation, migration, upgrade, restore, capacity and support",
+    "G": "Industry operating cycles and their qualification",
+}
+# What a package was found to be (the brief's rule 4); a mixed one names more than one.
+FEO_CLASSES = {"reproduced_defect", "source_flaw", "documented_incomplete", "qualification_gap", "product_boundary", "stale_evidence"}
+# Where each of its four levels stands (the brief's "nonnegotiable distinction"): the mechanism a library
+# implements, its adoption by the apps, the customer workflow using it, and a supported release proving it.
+FEO_LEVELS = ("mechanism", "adoption", "workflow", "release")
+FEO_LEVEL_STATES = {"none", "partial", "built", "verified", "proven", "not_applicable"}
 # A program: its registry, its catalog of requirements and cases, its workstreams and its generated page.
 PROGRAMS = {
     "fcp": (REGISTRY / "fcp.yaml", PLATFORM / "catalog.json", FCP_WORKSTREAMS, TRACEABILITY),
     "flc": (REGISTRY / "flc.yaml", LOGIC / "catalog.json", FLC_WORKSTREAMS, LOGIC / "traceability.md"),
+    "feo": (REGISTRY / "feo.yaml", CLOSURE / "catalog.json", FEO_WORKSTREAMS, CLOSURE / "traceability.md"),
 }
 # The folder holding the other checkouts: beside this one, unless a worktree elsewhere says where.
 SIB = Path(os.environ.get("FERRUM_SIBLINGS") or ROOT.parent)
@@ -268,6 +287,39 @@ def fcp_problems(entries: list, program: str = "fcp") -> list:
             bad.append(f"{i}: needs a rationale and who approved it")
         if status != "production_supported" and not e.get("limits"):
             bad.append(f"{i}: says what it does not yet do")
+        if program == "feo":
+            bad += feo_row_problems(e)
+    return bad
+
+
+def feo_row_problems(e: dict) -> list:
+    """A closure package says what it was found to be and where each of its four levels stands, and none
+    claims more than its evidence: a level verified names tests, a release proven is a qualified one, and an
+    acceptance case ran only where a test runs it."""
+    i, status, tests = e["id"], e.get("status"), e.get("tests", [])
+    bad = []
+    classes = e.get("classification") or []
+    if not classes or any(c not in FEO_CLASSES for c in classes):
+        bad.append(f"{i}: classification must be one or more of {sorted(FEO_CLASSES)}")
+    levels = e.get("levels") or {}
+    if set(levels) != set(FEO_LEVELS) or any(v not in FEO_LEVEL_STATES for v in levels.values()):
+        bad.append(f"{i}: levels must give each of {', '.join(FEO_LEVELS)} one of {sorted(FEO_LEVEL_STATES)}")
+        return bad
+    if any(v in ("verified", "proven") for v in levels.values()) and not tests:
+        bad.append(f"{i}: a level verified names its tests")
+    if "proven" in [levels[k] for k in FEO_LEVELS[:3]]:
+        bad.append(f"{i}: only a release is proven; the other levels are at most verified")
+    if levels["release"] == "proven" and status not in ("qualified_profile", "production_supported"):
+        bad.append(f"{i}: a release is proven only by a qualification")
+    if status in ("verified_software", "qualified_profile", "production_supported") and levels["mechanism"] != "verified":
+        bad.append(f"{i}: {status} with its mechanism not verified")
+    if status == "not_started" and any(levels[k] in ("built", "verified", "proven") for k in FEO_LEVELS[1:]):
+        bad.append(f"{i}: not started, yet a level past the mechanism stands built")
+    acceptance = e.get("acceptance", "not_run")
+    if acceptance not in ("not_run", "ran_in_software"):
+        bad.append(f"{i}: acceptance is not_run or ran_in_software")
+    if acceptance == "ran_in_software" and not tests:
+        bad.append(f"{i}: its acceptance ran, in tests it does not name")
     return bad
 
 
@@ -314,6 +366,8 @@ def traceability(entries: list, program: str = "fcp") -> str:
     ]
     out += [f"| {label} | {counts[key]} |" for key, label in FCP_STATES.items() if counts[key]]
     out += [f"| **All** | **{len(entries)}** |", ""]
+    if program == "feo":
+        return "\n".join(out + feo_sections(entries, workstreams, catalog_file))
     for w, label in workstreams.items():
         rows = [e for e in entries if e["workstream"] == w]
         out += [f"## {w}: {label}", "", "| Id | Requirement | State | Case | Tests | What it does not yet do |", "|---|---|---|---|---|---|"]
@@ -322,6 +376,21 @@ def traceability(entries: list, program: str = "fcp") -> str:
             out.append(f"| {e['id']} | {e['title']} | {FCP_STATES[e['status']]} | {by_requirement[e['id']]['id']} | {len(e.get('tests', []))} | {limits} |")
         out.append("")
     return "\n".join(out)
+
+
+def feo_sections(entries: list, workstreams: dict, catalog_file: Path) -> list:
+    """The closure packages by workstream, each with its priority, what it was found to be and its four levels."""
+    priority = {r["id"]: r["priority"] for r in json.loads(catalog_file.read_text())["requirements"]}
+    out = []
+    for w, label in workstreams.items():
+        out += [f"## {w}: {label}", "", "| Id | Package | Priority | State | Found to be | Mechanism / adoption / workflow / release | Acceptance | Tests | What it does not yet do |", "|---|---|---|---|---|---|---|---|---|"]
+        for e in (e for e in entries if e["workstream"] == w):
+            limits = e.get("limits", "").replace("|", "\\|")
+            levels = " / ".join(e["levels"][k] for k in FEO_LEVELS)
+            found = ", ".join(c.replace("_", " ") for c in e["classification"])
+            out.append(f"| {e['id']} | {e['title']} | {priority[e['id']]} | {FCP_STATES[e['status']]} | {found} | {levels} | {e.get('acceptance', 'not_run').replace('_', ' ')} | {len(e.get('tests', []))} | {limits} |")
+        out.append("")
+    return out
 
 
 def advisory_problems() -> list:
@@ -426,6 +495,16 @@ def self_test() -> None:
         (dict(claimed, blockers=["BLOCK-INDUSTRIAL-HARDWARE"]), "still waiting for real equipment"),
     ]:
         assert any(p.startswith("FLC-EDGE-011:") for p in fcp_problems([row], "flc")), f"accepted a qualification with {why}"
+    # A closure package claims no level its evidence does not carry.
+    sound = next(e for e in fcp_load("feo") if e["id"] == "FEO-004")
+    assert not any(p.startswith("FEO-004:") for p in fcp_problems([sound], "feo")), "the row as recorded is sound"
+    for row, why in [
+        (dict(sound, levels=dict(sound["levels"], release="proven")), "a release proven without a qualification"),
+        (dict(sound, tests=[]), "levels verified without tests"),
+        (dict(sound, classification=["probably_fine"]), "a class the brief does not have"),
+        (dict(sound, levels=dict(sound["levels"], mechanism="partial")), "verified in software, its mechanism not"),
+    ]:
+        assert any(p.startswith("FEO-004:") for p in fcp_problems([row], "feo")), f"accepted a package with {why}"
 
 
 def main() -> int:
@@ -435,12 +514,12 @@ def main() -> int:
     if command == "export":
         print(json.dumps(reqs, indent=2))
         return 0
-    fcp, flc = fcp_load(), fcp_load("flc")
-    bad = problems(reqs) + fcp_problems(fcp) + fcp_problems(flc, "flc") + journey_problems() + advisory_problems() + drift_problems()
+    fcp, flc, feo = fcp_load(), fcp_load("flc"), fcp_load("feo")
+    bad = problems(reqs) + fcp_problems(fcp) + fcp_problems(flc, "flc") + fcp_problems(feo, "feo") + journey_problems() + advisory_problems() + drift_problems()
     if bad:
         print("\n".join(bad), file=sys.stderr)
         return 1
-    generated = {CAPABILITIES: matrix(reqs) + "\n", BACKLOG: backlog(reqs), MANIFEST: release_evidence.manifest(), TRACEABILITY: traceability(fcp) + "\n", PROGRAMS["flc"][3]: traceability(flc, "flc") + "\n"}
+    generated = {CAPABILITIES: matrix(reqs) + "\n", BACKLOG: backlog(reqs), MANIFEST: release_evidence.manifest(), TRACEABILITY: traceability(fcp) + "\n", PROGRAMS["flc"][3]: traceability(flc, "flc") + "\n", PROGRAMS["feo"][3]: traceability(feo, "feo") + "\n"}
     if command == "generate":
         for path, text in generated.items():
             path.write_text(text)
@@ -450,7 +529,7 @@ def main() -> int:
     if stale:
         print(f"out of date, run scripts/registry.py generate: {', '.join(stale)}", file=sys.stderr)
         return 1
-    print(f"{len(reqs)} requirements, {len(fcp)} of the platform program and {len(flc)} of the Logic Platform check out")
+    print(f"{len(reqs)} requirements, {len(fcp)} of the platform program, {len(flc)} of the Logic Platform and {len(feo)} closure packages check out")
     return 0
 
 

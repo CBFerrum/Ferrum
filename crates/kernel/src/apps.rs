@@ -409,6 +409,21 @@ impl Kernel {
         let waiting = if ctx.is_admin && !ctx.is_system { self.logic_dependents(ctx, names).await? } else { vec![] };
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         if delete_data {
+            // Nothing a legal hold covers goes with an app: the hold is released first, which is recorded.
+            let entities: Vec<String> = names.iter().filter_map(|n| catalog.package(n)).flat_map(|p| p.entities.iter().map(|e| e.name.clone())).collect();
+            let placed: i64 = sqlx::query_scalar("select count(*) from legal_hold where tenant_id = $1 and released_at is null and entity = any($2)")
+                .bind(ctx.tenant)
+                .bind(&entities)
+                .fetch_one(&mut *tx)
+                .await?;
+            let people: usize =
+                crate::privacy::held_people_records(ctx, &mut tx).await?.into_iter().filter(|(e, _)| entities.contains(e)).map(|(_, ids)| ids.len()).sum();
+            if placed > 0 || people > 0 {
+                return Err(Error::Conflict(format!(
+                    "legal holds cover records of these apps ({placed} placed on records, {people} records of people under a hold): \
+                     release them first, or remove the apps keeping their data"
+                )));
+            }
             for name in names {
                 let Some(pkg) = catalog.package(name) else { continue };
                 // Its own tables first: they may refer to its entities' rows.
