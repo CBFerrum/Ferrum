@@ -210,6 +210,10 @@ async fn one_workspace_goes_back_alone() {
     k.create_user(&bravo, "later@bravo.test", "Later", Some(PASSWORD), &[], false).await.unwrap();
     k.set_password(&acme, stays, None, "Another-Horse-7").await.unwrap();
     k.set_user_active(&acme, leaves, false).await.unwrap();
+    // Since the backup: a hold, a restriction and a withdrawn consent, which going back does not undo (FEO-078).
+    k.place_legal_hold(&acme, Some("subject@acme.test"), None, "Matter 12").await.unwrap();
+    k.restrict_processing(&acme, "subject@acme.test", "Disputes how their data is used").await.unwrap();
+    k.record_consent(&acme, "subject@acme.test", ferrum_kernel::retention::Purpose::Marketing, false, "Unsubscribed").await.unwrap();
     pay(&k, bravo.tenant).await;
 
     let emails = async |tenant: Uuid| -> Vec<String> {
@@ -248,6 +252,18 @@ async fn one_workspace_goes_back_alone() {
     let done = k.extract_tenant(&acme, &copy, true, "the customer asked").await.expect("extracted");
     assert_eq!((done["applied"].clone(), done["status"].clone()), (json!(true), json!("active")), "{done}");
     assert!(!emails(acme.tenant).await.contains(&"later@acme.test".to_string()), "acme is as it was");
+    let mut tx = k.db.system_tx().await.unwrap();
+    let kept: (i64, i64, i64) = sqlx::query_as(
+        "select (select count(*) from legal_hold where tenant_id = $1 and released_at is null), \
+                (select count(*) from processing_restriction where tenant_id = $1 and lifted_at is null), \
+                (select count(*) from contact_consent where tenant_id = $1 and not granted)",
+    )
+    .bind(acme.tenant)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(kept, (1, 1, 1), "what the law holds and what people asked for stay as they are now");
     assert_eq!(emails(bravo.tenant).await, bravo_now, "and nobody else went anywhere");
 
     // Nobody gets in who could not before.

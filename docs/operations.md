@@ -903,9 +903,19 @@ would destroy: release the hold first, which is recorded, and say why.
 Restriction of processing, as an operation of its own, is not built.
 
 **Restricting processing** keeps someone's data and stops using it: `POST /api/admin/restrictions`
-`{email, reason}` covers every address they have had. No queued mail goes to them, and apps with
-their own delivery ask `Kernel::may_contact`. It deletes nothing, and hides nothing from people who
-can read the records. `POST /api/admin/restrictions/lift` undoes it.
+`{email, reason}` covers every address they have had. No automated message goes to them, asked again
+as each one goes out, so mail queued before the restriction stops too; apps with their own delivery ask
+`Kernel::may_contact_for` the same way. It deletes nothing, and hides nothing from people who can read
+the records. `POST /api/admin/restrictions/lift` undoes it.
+
+**Consent to marketing** is one record per address (`contact_consent`), whichever app heard it: an
+unsubscribe from a campaign, a confirmed subscription from a form (`Kernel::record_consent`, audited).
+Every path that sends marketing asks `Kernel::may_contact_for(.., Purpose::Marketing)` as the message
+goes out: kernel mail queued for marketing, an automation's e-mail whose `purpose` is `marketing`, a
+process's `ferrum.mail.marketing` capability, and a connector stream that names its `consent` field
+(the address of each person it sends to a marketing service). A withdrawal stops all of them, under any
+address the person has had, including what was already queued. Transactional notices (receipts,
+resets, replies) do not ask for consent; a restriction stops them as well.
 
 **Retention rules** say how long an entity's records are kept: `POST /api/admin/retention` `{entity,
 after_days, date_field, action: delete | anonymize, condition, reason}`. They run once a day as a job,
@@ -1698,6 +1708,7 @@ Numbers issued since, such as invoice numbers, may be issued again.
 | Each app's records of the same kind, such as Cloud's signing keys, revocations and usage | The same |
 | Passwords, second factors and deactivations, as they are now | Nobody gets in who could not before |
 | Passkeys removed since | The same |
+| Legal holds and the versions kept under them, restrictions of processing, consent given or withdrawn | What the law holds and what the people the data is about asked for |
 
 Everyone has to sign in again and **every API key has to be issued again**, because a revocation since the
 copy was taken would otherwise come undone. Roles and everything else are as they were in the copy, and what
