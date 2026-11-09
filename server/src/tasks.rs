@@ -262,7 +262,10 @@ pub struct ReapplyErasures;
 #[async_trait]
 impl Task for ReapplyErasures {
     fn task(&self) -> TaskInfo {
-        TaskInfo { name: "reapply_erasures".into(), detail: "After a restore: erase again what the erasure journal names".into() }
+        TaskInfo {
+            name: "reapply_erasures".into(),
+            detail: "After a restore: erase again what the erasure journal names, and apply again who left or came back".into(),
+        }
     }
     async fn run(&self, ctx: &AppContext, _vars: &Vars) -> Result<()> {
         let k = kernel(ctx)?;
@@ -273,6 +276,10 @@ impl Task for ReapplyErasures {
             records += k.reapply_erasure(key).await.map_err(|e| Error::Message(format!("{key}: {e}")))?;
         }
         println!("{} erasures replayed, {records} records and accounts erased again", keys.len());
+        // Who left or came back since the backup (FEO-014).
+        let access = st.objects.list(ferrum_kernel::lifecycle::ACCESS_JOURNAL_PREFIX).await.map_err(refused)?;
+        let changed = k.reapply_access(&access).await.map_err(|e| Error::Message(format!("access journal: {e}")))?;
+        println!("{} changes of access replayed, {changed} people changed back to how they stand", access.len());
         Ok(())
     }
 }
