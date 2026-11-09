@@ -64,6 +64,7 @@ ASSISTANT_UNIT = ("-p", "ferrum-server", "--lib", "assistant::tests")
 RECEIPTS = ("-p", "ferrum-kernel", "--test", "receipts_it")
 CONSENT = ("-p", "ferrum-kernel", "--test", "consent_it")
 SHARES_UNIT = ("-p", "ferrum-server", "--lib", "state::tests")
+EXPORT_UNIT = ("-p", "ferrum-server", "--lib", "controllers::docs::tests")
 EXTENSIONS = ("-p", "ferrum-server", "--test", "extensions_it")
 SUPPORT = ("-p", "ferrum-kernel", "--test", "support_it")
 CONTRACT = ("-p", "ferrum-ops-contract", "--lib")
@@ -83,6 +84,9 @@ TIMEOUT = 600
 
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
+    # An export holds every row or says it cannot (FEO-066).
+    ("workbook-cut-short", "server/src/controllers/docs.rs", "Some(_) if rows.len() >= cap => {", "Some(_) if rows.len() >= cap && cap == 0 => {", EXPORT_UNIT),
+    ("csv-stops-at-a-page", "server/src/controllers/docs.rs", "(None, next.map(Some), fetch, columns)", "(None, None, fetch, columns)", EXPORT_UNIT),
     # A person's choices follow them to their record's new address (FEO-009).
     ("address-change-forgets-consent", "crates/kernel/src/retention.rs", "where tenant_id = $1 and email = $2 on conflict (tenant_id, email, purpose) do nothing", "where tenant_id = $1 and email = $3 on conflict (tenant_id, email, purpose) do nothing", CONSENT),
     ("address-change-overrides-own-word", "crates/kernel/src/retention.rs", "where tenant_id = $1 and email = $2 on conflict (tenant_id, email, purpose) do nothing", "where tenant_id = $1 and email = $2 on conflict (tenant_id, email, purpose) do update set granted = excluded.granted", CONSENT),
