@@ -486,7 +486,7 @@ Manifest, contract and host calls: [plugins.md](plugins.md).
 
 People leaving and provisioning ([identity lifecycle](identity-lifecycle.md)): `POST
 /api/admin/users/{id}/deprovision` `{reason, reassign_to?}` → `{user, sessions_ended, api_keys_revoked,
-oauth_tokens_revoked, assignments_moved, assignments_left_open, reassign_to}`; `GET
+oauth_tokens_revoked, assignments_moved, assignments_left_open, tasks_handed_on, reassign_to}`; `GET
 /api/admin/scim/groups` → `{groups: [{id, display_name, roles, members}]}`; `PUT
 /api/admin/scim/groups/{id}/roles` `{roles}`.
 

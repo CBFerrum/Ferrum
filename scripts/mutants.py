@@ -108,6 +108,10 @@ MUTANTS = [
     ("decided-on-other-material", "crates/kernel/src/process.rs", '        if shown != digest {', '        if false && shown != digest {', PROCESS_RECORDS),
     ("deadline-overrides-decision", "crates/kernel/src/process.rs", '"open" | "timed_out" => {', '"open" | "timed_out" | "approved" => {', PROCESS_RECORDS),
     ("repeated-deadline-says-nothing", "crates/kernel/src/process.rs", '"open" | "timed_out" => {', '"open" => {', PROCESS_RECORDS),
+    # A task handed to someone who leaves is not stranded (FEO-012).
+    ("departure-strands-handed-task", "crates/kernel/src/lifecycle.rs", "let tasks = hand_on_tasks(&mut tx, ctx, user, &email, successor).await?;", "let tasks = 0u64;", PROCESS_RECORDS),
+    ("successor-takes-task-without-role", "crates/kernel/src/lifecycle.rs", "(role.is_empty() || heir_roles.contains(&role))", "(role.is_empty() || !heir_roles.contains(&role) || true)", PROCESS_RECORDS),
+    ("task-back-to-someone-gone", "crates/kernel/src/lifecycle.rs", "|p| *p == user || !active.contains(p)", "|p| *p == user", PROCESS_RECORDS),
     ("delegation-unbounded", "crates/kernel/src/process.rs", 'if delegated.len().saturating_sub(1) as i32 >= bound {', 'if false && delegated.len().saturating_sub(1) as i32 >= bound {', PROCESS_RECORDS),
     ("delegation-counts-people", "crates/kernel/src/process.rs", 'if delegated.len().saturating_sub(1) as i32 >= bound {', 'if delegated.len() as i32 >= bound {', PROCESS_RECORDS),
     ("administrator-decides", "crates/kernel/src/process.rs", 'if !role.is_empty() && !ctx.roles.iter().any(|r| r == role) {', 'if !role.is_empty() && !ctx.roles.iter().any(|r| r == role) && !ctx.is_admin {', PROCESS_RECORDS),

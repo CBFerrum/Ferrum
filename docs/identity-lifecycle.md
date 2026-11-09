@@ -18,14 +18,19 @@ the identity provider turning them off. In one transaction:
 | OAuth grants | Refresh tokens revoked, codes spent. |
 | Notifications on devices | Push subscriptions removed. Queued mail to them is not sent. |
 | Open assignments | Move to `reassign_to`, or the workspace's `deprovision_reassign_to` setting (a person's id). Without either they stay open, and the answer counts them. |
+| Process tasks handed to them | Nobody else could decide them. Each goes on to the successor when the successor may take it (holds its role, did not ask for it, is not on its chain already), else back to the last person on its chain still active, else to its role. Each move is a decision on the task, by the administrator, and whoever it goes to by name is told. |
 | What packages say they are named on | Moves to the successor right after, in batches (`handover` in a package's manifest): open tickets, leads, tasks. What is finished keeps the name of who did it. |
-| Anything an app does beyond that | `ferrum.user.deprovisioned` is published for it: Drive's links and locks, say. |
+| Anything an app does beyond that | `ferrum.user.deprovisioned` is published for it. Drive: what they checked out opens up, shares made to them end, the successor gets their space, and each of their public links goes to the successor or stops, unless it belongs to the workspace, saying which in Drive's access review. Helpdesk declares its open tickets, team places and maintenance schedules as `handover`. |
 
 Their row stays, so their name stays on what they did. The audit trail records the reason and the
 counts, by the person's id, never their email.
 
 It refuses your own account, a plugin's service account, and a workspace's last administrator, so
 that nobody locks a workspace out. Repeating it is harmless.
+
+One journey proves it across apps (`server/tests/journeys_it.rs`, `someone_leaves`): someone signed in,
+with a key, a notice waiting to be emailed, a case waiting on them, a folder shared with them, a link
+they made, a service case and a team place, all ended or handed on by one departure.
 
 With no successor, nothing moves and the answer counts the open assignments. Name one later with
 `POST /api/admin/users/{id}/hand-over` `{"to": "<person's id>", "reason": "..."}`.
