@@ -59,7 +59,10 @@ of their own, and a request that takes more than 10 seconds fails.
 | `POST /api/admin/webhook-deliveries/{id}/replay` | The same for one webhook delivery. |
 
 These are for administrators, stay within their workspace, and are recorded in the audit trail.
-Administration's **Needs a person** tab lists dead events, dead webhook deliveries and jobs that failed,
+`GET /api/admin/operations/{id}` lists everything one operation set off in the workspace (its events, jobs,
+process runs, effects and webhook deliveries, how each stands and why, never what it carried), found by the
+id a person quotes: every error carries it as `operation`, and an internal error's message names it.
+Administration's **Needs a person** tab finds an operation, and lists dead events, dead webhook deliveries and jobs that failed,
 each with why and a button to try it again once its cause is put right. A job tried again runs with the
 rights its requester has now, so someone who has left gets nothing from it.
 
