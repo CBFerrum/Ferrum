@@ -83,6 +83,9 @@ TIMEOUT = 600
 
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
+    # Duties kept apart across documents (FEO-013).
+    ("approves-what-they-raised", "crates/kernel/src/doc.rs", "if raised_linked(tx, ctx, &ent, &doc, path, ctx.user).await? {", "if raised_linked(tx, ctx, &ent, &doc, path, ctx.user).await? && path.is_empty() {", COLLAB),
+    ("approvals-list-what-they-raised", "crates/kernel/src/collab.rs", "if !raised && holds {", "if holds {", COLLAB),
     # The Logic Platform's capability gate (docs/logic, FLC-CAP-001 to 003, FLC-PROC-002).
     ("capability-same-key-other-input", "crates/kernel/src/capability.rs", "if was != digest {", "if false {", CAPABILITY),
     ("capability-no-receipt", "crates/kernel/src/capability.rs", "        if !claimed {\n", "        if false {\n", CAPABILITY),

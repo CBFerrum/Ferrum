@@ -975,6 +975,22 @@ pub(crate) fn validate_workflow(wf: &WorkflowDef, entities: &BTreeMap<String, (S
             return Err(format!("duplicate transition {} from {}", t.action, t.from));
         }
         compile(&format!("transition {}", t.action), &t.condition)?;
+        for path in &t.not_creator_of {
+            let link = |fields: &[crate::types::FieldDef], name: &str| fields.iter().any(|f| f.name == name && f.ftype == FieldType::Link && f.to.is_some());
+            let ok = match path.split_once('.') {
+                None => link(&e.fields, path),
+                Some((table, field)) => e
+                    .fields
+                    .iter()
+                    .find(|f| f.name == table && f.ftype == FieldType::Table)
+                    .and_then(|f| f.of.as_deref())
+                    .and_then(|child| entities.get(child))
+                    .is_some_and(|(_, c)| link(&c.fields, field)),
+            };
+            if !ok {
+                return Err(format!("transition {}: {path} is not a link (a field, or table.field)", t.action));
+            }
+        }
     }
     Ok(())
 }
