@@ -32,8 +32,15 @@ pub enum AutomationAction {
         body: Option<String>,
     },
     /// E-mail, queued with the outbox in the run's transaction: it goes out only if the run commits,
-    /// once per event. All fields are CEL expressions.
-    Email { to: String, subject: String, body: String },
+    /// once per event. All fields are CEL expressions. Marketing (`purpose`) is not sent to someone who
+    /// withdrew their consent, asked again as it goes (FEO-015); a transactional notice does not ask.
+    Email {
+        to: String,
+        subject: String,
+        body: String,
+        #[serde(default)]
+        purpose: crate::retention::Purpose,
+    },
 }
 
 pub fn validate_actions(actions: &Value) -> Result<Vec<AutomationAction>> {
@@ -54,7 +61,7 @@ pub fn validate_actions(actions: &Value) -> Result<Vec<AutomationAction>> {
         let exprs: Vec<&String> = match a {
             AutomationAction::SetFields { values } | AutomationAction::CreateDocument { values, .. } => values.values().collect(),
             AutomationAction::Notify { title, body, .. } => std::iter::once(title).chain(body.iter()).collect(),
-            AutomationAction::Email { to, subject, body } => vec![to, subject, body],
+            AutomationAction::Email { to, subject, body, .. } => vec![to, subject, body],
         };
         for e in exprs {
             Expr::compile(e).map_err(|m| Error::invalid(format!("expression '{e}': {m}")))?;
@@ -309,12 +316,12 @@ async fn execute(
                 crate::notify::send_kind(tx, ctx.tenant, u, "automation", "inapp", &title, body.as_deref(), Some(entity), record).await?;
             }
         }
-        AutomationAction::Email { to, subject, body } => {
+        AutomationAction::Email { to, subject, body, purpose } => {
             let to = as_text(eval(&to, doc, user)?);
             let subject = as_text(eval(&subject, doc, user)?);
             let body = as_text(eval(&body, doc, user)?);
             // Never sent from here: a later action could still roll the run back (FLC-HOOK-002).
-            k.queue_mail(tx, ctx.tenant, &to, &subject, &body).await?;
+            k.queue_mail_for(tx, ctx.tenant, &to, &subject, &body, &[], purpose).await?;
         }
     }
     Ok(())

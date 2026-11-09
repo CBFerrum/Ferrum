@@ -24,6 +24,7 @@ const ENTITIES: &str = r#"
     - {name: full_name, type: data, required: true, max_length: 20}
     - {name: city, type: data}
     - {name: status, type: select, options: [Active, Archived], default: Active}
+    - {name: email, type: email}
 "#;
 
 const SIGNATURE: &str = "good-signature";
@@ -450,6 +451,26 @@ async fn scenario() {
     assert!(kinds.contains(&"missing_here:9".to_string()), "{kinds:?}");
     assert!(kinds.contains(&"missing_there:3".to_string()), "{kinds:?}");
     assert_eq!(contacts().await.iter().filter(|n| *n == "Dee").count(), 1, "reconciliation reports, and repairs nothing by itself");
+
+    // ───────────── a stream to a marketing service asks each person's consent as it goes (FEO-015) ─────────────
+    let mut marketing = input("right", "source", "keep", true);
+    marketing.mapping.get_mut("people").unwrap().consent = Some("email".into());
+    k.save_connection(&admin, Some(id), marketing).await.expect("a marketing stream");
+    let mut unknown = input("right", "source", "keep", true);
+    unknown.mapping.get_mut("people").unwrap().consent = Some("nothing".into());
+    assert!(matches!(k.save_connection(&admin, Some(id), unknown).await, Err(Error::Validation(_) | Error::Invalid(_))), "a field the entity has");
+    k.test_connection(&admin, id).await.unwrap();
+    drain(k.clone()).await;
+    jobs(k.clone()).await;
+    k.record_consent(&admin, "ann@example.com", ferrum_kernel::retention::Purpose::Marketing, false, "Unsubscribed from the newsletter").await.unwrap();
+    world.lock().unwrap().pushes.clear();
+    for (name, email) in [("Ann", "ann@example.com"), ("Ben", "ben@example.com")] {
+        k.insert(&admin, "Contact", Doc::from_iter([("full_name".to_string(), json!(name)), ("email".to_string(), json!(email))])).await.unwrap();
+    }
+    drain(k.clone()).await;
+    jobs(k.clone()).await;
+    let names: Vec<String> = world.lock().unwrap().pushes.iter().map(|p| p.1.clone()).collect();
+    assert!(names.contains(&"Ben".to_string()) && !names.contains(&"Ann".to_string()), "one who withdrew is not sent: {names:?}");
 
     // ───────────── disconnecting ─────────────
     k.disconnect(&admin, id).await.expect("disconnected");

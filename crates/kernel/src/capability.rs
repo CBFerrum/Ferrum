@@ -398,7 +398,15 @@ fn platform_capabilities() -> Vec<Capability> {
     );
     // SMTP has no idempotency of its own: the outbox delivers at least once, and a person settles doubt.
     mail.unknown_outcome = UnknownOutcome::Manual;
-    vec![notify, mail]
+    // Marketing by e-mail: the same, not sent to someone who withdrew their consent to marketing, asked as
+    // it goes (FEO-015). Its own capability, so `ferrum.mail`'s digest, and the releases reviewed with
+    // it, stay as they were.
+    let mut marketing = mail.clone();
+    marketing.id = "ferrum.mail.marketing".into();
+    marketing.label = "Send a marketing e-mail".into();
+    marketing.completion =
+        "Queued in the outbox with this receipt, unless the person withdrew their consent to marketing; the mail server's delivery is not confirmed".into();
+    vec![notify, mail, marketing]
 }
 
 impl Kernel {
@@ -660,7 +668,8 @@ impl Kernel {
             }
             Operation::Mail => {
                 let text = |k: &str| input.get(k).and_then(Value::as_str).unwrap_or_default();
-                self.queue_mail(tx, ctx.tenant, text("to"), text("subject"), text("body")).await?;
+                let purpose = if cap.id == "ferrum.mail.marketing" { crate::retention::Purpose::Marketing } else { crate::retention::Purpose::Transactional };
+                self.queue_mail_for(tx, ctx.tenant, text("to"), text("subject"), text("body"), &[], purpose).await?;
                 json!({"queued": true})
             }
         })
