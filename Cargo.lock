@@ -2629,7 +2629,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-construction"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-construction?branch=main#489d01548eccf53a3a3f09f2075486849351d60a"
+source = "git+https://github.com/CBFerrum/ferrum-app-construction?branch=main#a86d3c16835733db3bef0d1f91d1b74fed96163f"
 dependencies = [
  "async-trait",
  "chrono",
