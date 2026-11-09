@@ -794,7 +794,7 @@ async fn scenario() {
         "transitions": [
             {"action": "Send for approval", "from": "Draft", "to": "Pending"},
             {"action": "Approve", "from": "Pending", "to": "Approved", "roles": ["Sales Manager"], "not_creator": true,
-             "condition": "doc.customer_name != 'Blocked Ltd'"},
+             "not_creator_of": ["customer_group"], "condition": "doc.customer_name != 'Blocked Ltd'"},
         ],
     }))
     .unwrap();
@@ -858,6 +858,31 @@ async fn scenario() {
     assert!(matches!(&own, Err(Error::Forbidden(m)) if m.contains("creator")), "its automation's saver: {own:?}");
     k.update(&admin, "Customer", made, obj(json!({"email": "first@export.test"})), None).await.unwrap();
     k.transition(&maya_ctx, "Customer", made, "Approve", None).await.expect("a second person");
+    // Nor does whoever raised what it names: a customer in the group Maya made waits for someone else,
+    // through any role she holds (FEO-013).
+    let mayas_group = id_of(&k.insert(&admin, "CustomerGroup", obj(json!({"group_name": "Maya's Picks"}))).await.unwrap());
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("update e_customer_group set created_by = $2 where tenant_id = $1 and id = $3")
+        .bind(tenant)
+        .bind(maya)
+        .bind(mayas_group)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let picked = id_of(
+        &k.insert(&bea_ctx, "Customer", obj(json!({"customer_name": "Picked Co", "customer_group": mayas_group, "email": "pick@collab.test"}))).await.unwrap(),
+    );
+    k.transition(&bea_ctx, "Customer", picked, "Send for approval", None).await.unwrap();
+    assert!(!k.my_approvals(&maya_ctx, 50).await.unwrap().iter().any(|a| a["id"] == json!(picked)), "not hers to decide");
+    let raised = k.transition(&maya_ctx, "Customer", picked, "Approve", None).await;
+    assert!(matches!(&raised, Err(Error::Forbidden(m)) if m.contains("customer_group")), "{raised:?}");
+    let wrong: ferrum_meta::WorkflowDef = serde_json::from_value(json!({
+        "name": "Bad", "entity": "Customer", "initial_state": "Draft", "states": [{"name": "Draft"}, {"name": "Done"}],
+        "transitions": [{"action": "Done", "from": "Draft", "to": "Done", "not_creator_of": ["customer_name"]}],
+    }))
+    .unwrap();
+    assert!(k.add_customization(&admin, "Customer", ferrum_meta::OverlayOp::SetWorkflow { workflow: wrong }, None).await.is_err(), "it names a link");
     // A step its own rules refuse is counted for the metrics; one refused for who asks is not.
     let blocked = k
         .list(&admin, "Customer", &ListQuery { filters: parse_filters(&json!({"customer_name": "Blocked Ltd"})).unwrap(), ..Default::default() })
