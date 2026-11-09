@@ -51,6 +51,79 @@ async fn move_assignments(tx: &mut Tx, ctx: &Ctx, from: Uuid, to: Uuid) -> Resul
     Ok(moved)
 }
 
+/// Open process tasks handed to someone who leaves (FEO-012): nobody else may decide them, and they
+/// can no longer sign in. Each goes on to their successor when the successor may take it (holds its
+/// role, did not ask for it, is not on its chain already), or else back to the last person on its
+/// chain still active, or to its role when nobody on it is. Each move is a decision on the task, by
+/// the administrator who ended the access; whoever it goes to by name is told.
+async fn hand_on_tasks(tx: &mut Tx, ctx: &Ctx, user: Uuid, email: &str, successor: Option<Uuid>) -> Result<u64> {
+    let tasks: Vec<(Uuid, String, String, Vec<Uuid>, Vec<Uuid>)> = sqlx::query_as(
+        "select id, label, role, exclude, delegated from logic_task where tenant_id = $1 and kind = 'task' and status = 'open' \
+         and delegated[cardinality(delegated)] = $2 order by opened_at for update",
+    )
+    .bind(ctx.tenant)
+    .bind(user)
+    .fetch_all(&mut **tx)
+    .await?;
+    if tasks.is_empty() {
+        return Ok(0);
+    }
+    let heir_roles: Vec<String> = match successor {
+        Some(to) => {
+            sqlx::query_scalar("select role from user_role where tenant_id = $1 and user_id = $2 and (expires_at is null or expires_at > now())")
+                .bind(ctx.tenant)
+                .bind(to)
+                .fetch_all(&mut **tx)
+                .await?
+        }
+        None => vec![],
+    };
+    let on_chains: Vec<Uuid> = tasks.iter().flat_map(|t| t.4.iter().copied()).collect();
+    let active: Vec<Uuid> = sqlx::query_scalar("select id from app_user where tenant_id = $1 and id = any($2) and is_active and kind = 'member'")
+        .bind(ctx.tenant)
+        .bind(&on_chains)
+        .fetch_all(&mut **tx)
+        .await?;
+    for (id, label, role, exclude, mut chain) in tasks.iter().cloned() {
+        let heir = successor.filter(|to| !exclude.contains(to) && !chain.contains(to) && (role.is_empty() || heir_roles.contains(&role)));
+        let reason = match heir {
+            Some(to) => {
+                chain.push(to);
+                format!("{email} left the workspace: handed on to their successor")
+            }
+            None => {
+                while chain.last().is_some_and(|p| *p == user || !active.contains(p)) {
+                    chain.pop();
+                }
+                match chain.last() {
+                    Some(_) => format!("{email} left the workspace: back to whoever handed it to them"),
+                    None if role.is_empty() => format!("{email} left the workspace: back to whoever may decide it"),
+                    None => format!("{email} left the workspace: back to the {role} role"),
+                }
+            }
+        };
+        let to = chain.last().copied();
+        sqlx::query("update logic_task set delegated = $3, version = version + 1 where tenant_id = $1 and id = $2")
+            .bind(ctx.tenant)
+            .bind(id)
+            .bind(&chain)
+            .execute(&mut **tx)
+            .await?;
+        sqlx::query("insert into logic_task_decision (tenant_id, task_id, by_user, decision, to_user, reason) values ($1, $2, $3, 'delegate', $4, $5)")
+            .bind(ctx.tenant)
+            .bind(id)
+            .bind(ctx.user)
+            .bind(to)
+            .bind(&reason)
+            .execute(&mut **tx)
+            .await?;
+        if let Some(to) = to {
+            notify::send(tx, ctx.tenant, to, &format!("“{label}” is yours to decide: {email} left"), None, None, None).await?;
+        }
+    }
+    Ok(tasks.len() as u64)
+}
+
 /// The next batch of a declaration's records naming `from`.
 async fn named_on(tx: &mut Tx, tenant: Uuid, ent: &EffEntity, schema: &ferrum_meta::Schema, def: &HandoverDef, from: &str) -> Result<Vec<Uuid>> {
     let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(format!("select a.id from {} a where a.tenant_id = ", q(&ent.table)));
@@ -172,6 +245,7 @@ impl Kernel {
                 notify::send(&mut tx, ctx.tenant, to, &title, None, None, None).await?;
             }
         }
+        let tasks = hand_on_tasks(&mut tx, ctx, user, &email, successor).await?;
         let left_open: i64 = sqlx::query_scalar("select count(*) from record_assignment where tenant_id = $1 and user_id = $2 and status = 'Open'")
             .bind(ctx.tenant)
             .bind(user)
@@ -180,7 +254,7 @@ impl Kernel {
 
         let done = json!({
             "user": user, "sessions_ended": sessions, "api_keys_revoked": keys, "oauth_tokens_revoked": tokens,
-            "assignments_moved": moved, "assignments_left_open": left_open, "reassign_to": successor,
+            "assignments_moved": moved, "assignments_left_open": left_open, "tasks_handed_on": tasks, "reassign_to": successor,
         });
         // The audit trail outlives an erasure of the person, so it names them by id only.
         audit::record(&mut tx, ctx, "User", user, "deprovision", None, json!({"reason": reason, "outcome": done})).await?;
