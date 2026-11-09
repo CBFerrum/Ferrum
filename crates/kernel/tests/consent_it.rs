@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-const PACKAGE: &str = "package: leads\nversion: 0.1.0\ndepends: [core]\nroles:\n  - name: Seller\n    permissions:\n      - {entity: Lead, read: true, write: true, create: true}\n";
+const PACKAGE: &str = "package: leads\nversion: 0.1.0\ndepends: [core]\npersonal_data:\n  - {entity: Lead, match: email, erase: [email]}\nroles:\n  - name: Seller\n    permissions:\n      - {entity: Lead, read: true, write: true, create: true}\n";
 const ENTITIES: &str =
     "name: Lead\nlabel: Lead\nkind: master\ntitle_field: title\nfields:\n  - {name: title, type: data, required: true}\n  - {name: email, type: email}\n";
 
@@ -142,4 +142,37 @@ async fn scenario() {
         .unwrap();
     tx.commit().await.unwrap();
     assert_eq!((granted, source.as_str()), (true, "Subscribed again from the newsletter form"));
+
+    // A person's address changes on their record: what they said, and any restriction, follow them,
+    // unless the new address has a word of its own (FEO-009).
+    let may = |email: &'static str, purpose: Purpose| {
+        let k = &k;
+        async move {
+            let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+            let may = k.may_contact_for(&mut tx, tenant, email, purpose).await.unwrap();
+            tx.commit().await.unwrap();
+            may
+        }
+    };
+    let moved = |title: &'static str, from: &'static str, to: &'static str| {
+        let (k, admin) = (&k, &admin);
+        async move {
+            let lead = k.insert(admin, "Lead", obj(json!({"title": title, "email": from}))).await.unwrap();
+            lead["id"].as_str().unwrap().parse::<uuid::Uuid>().map(|id| (id, to)).unwrap()
+        }
+    };
+    let (cy, cy_new) = moved("Cy", "cy@old.test", "cy@new.test").await;
+    k.record_consent(&admin, "cy@old.test", Purpose::Marketing, false, "Unsubscribed").await.unwrap();
+    k.update(&admin, "Lead", cy, obj(json!({"email": cy_new})), None).await.unwrap();
+    assert!(!may("cy@new.test", Purpose::Marketing).await, "the withdrawal followed them");
+    assert!(may("cy@new.test", Purpose::Transactional).await, "notices still go");
+    let (dee, dee_new) = moved("Dee", "dee@old.test", "dee@new.test").await;
+    k.record_consent(&admin, "dee@old.test", Purpose::Marketing, false, "Unsubscribed").await.unwrap();
+    k.record_consent(&admin, "dee@new.test", Purpose::Marketing, true, "Subscribed from the form").await.unwrap();
+    k.update(&admin, "Lead", dee, obj(json!({"email": dee_new})), None).await.unwrap();
+    assert!(may("dee@new.test", Purpose::Marketing).await, "an address with a word of its own keeps it");
+    let (eve, eve_new) = moved("Eve", "eve@old.test", "eve@new.test").await;
+    k.restrict_processing(&admin, "eve@old.test", "Disputes how their data is used").await.unwrap();
+    k.update(&admin, "Lead", eve, obj(json!({"email": eve_new})), None).await.unwrap();
+    assert!(!may("eve@new.test", Purpose::Transactional).await, "a restriction follows them too");
 }

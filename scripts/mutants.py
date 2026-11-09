@@ -83,6 +83,10 @@ TIMEOUT = 600
 
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
+    # A person's choices follow them to their record's new address (FEO-009).
+    ("address-change-forgets-consent", "crates/kernel/src/retention.rs", "where tenant_id = $1 and email = $2 on conflict (tenant_id, email, purpose) do nothing", "where tenant_id = $1 and email = $3 on conflict (tenant_id, email, purpose) do nothing", CONSENT),
+    ("address-change-overrides-own-word", "crates/kernel/src/retention.rs", "where tenant_id = $1 and email = $2 on conflict (tenant_id, email, purpose) do nothing", "where tenant_id = $1 and email = $2 on conflict (tenant_id, email, purpose) do update set granted = excluded.granted", CONSENT),
+    ("address-change-forgets-restriction", "crates/kernel/src/retention.rs", "where tenant_id = $1 and email = $2 and lifted_at is null", "where tenant_id = $1 and email = $3 and lifted_at is null", CONSENT),
     # Duties kept apart across documents (FEO-013).
     ("approves-what-they-raised", "crates/kernel/src/doc.rs", "if raised_linked(tx, ctx, &ent, &doc, path, ctx.user).await? {", "if raised_linked(tx, ctx, &ent, &doc, path, ctx.user).await? && path.is_empty() {", COLLAB),
     ("approvals-list-what-they-raised", "crates/kernel/src/collab.rs", "if !raised && holds {", "if holds {", COLLAB),

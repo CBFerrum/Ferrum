@@ -480,3 +480,67 @@ impl Kernel {
         Ok(())
     }
 }
+
+/// When a record declared as someone's (`personal_data`, matched by an address field) changes that
+/// address, what they said about being contacted and any restriction of processing follow them to the
+/// new one, unless the new address has a word of its own: one person, whichever address their record
+/// holds now (FEO-009). A record that now names someone else errs on the side of not contacting them,
+/// until their own subscription says otherwise.
+pub(crate) async fn carry_contact_choices(
+    tx: &mut crate::Tx,
+    ctx: &Ctx,
+    ent: &ferrum_meta::EffEntity,
+    id: Uuid,
+    old: &crate::Doc,
+    new: &crate::Doc,
+) -> Result<()> {
+    let address = |doc: &crate::Doc, field: &str| doc.get(field).and_then(Value::as_str).map(|s| s.trim().to_lowercase()).filter(|s| s.contains('@'));
+    let actor = (!ctx.user.is_nil()).then_some(ctx.user);
+    for def in ctx.schema.personal_data.iter().filter(|d| d.entity == ent.def.name && !d.match_field.contains('.')) {
+        if !ent.def.fields.iter().any(|f| f.name == def.match_field && f.ftype == FieldType::Email) {
+            continue;
+        }
+        let (Some(was), Some(now)) = (address(old, &def.match_field), address(new, &def.match_field)) else { continue };
+        if was == now {
+            continue;
+        }
+        let consent = sqlx::query(
+            "insert into contact_consent (tenant_id, email, purpose, granted, source, recorded_by) \
+             select tenant_id, $3, purpose, granted, left('followed from ' || $2 || ': ' || source, 200), $4 from contact_consent \
+             where tenant_id = $1 and email = $2 on conflict (tenant_id, email, purpose) do nothing",
+        )
+        .bind(ctx.tenant)
+        .bind(&was)
+        .bind(&now)
+        .bind(actor)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+        let restriction = sqlx::query(
+            "insert into processing_restriction (tenant_id, id, email, reason, created_by) \
+             select tenant_id, gen_random_uuid(), $3, left(reason || ' (followed from ' || $2 || ')', 500), $4 from processing_restriction \
+             where tenant_id = $1 and email = $2 and lifted_at is null \
+             and not exists (select 1 from processing_restriction n where n.tenant_id = $1 and n.email = $3 and n.lifted_at is null) limit 1",
+        )
+        .bind(ctx.tenant)
+        .bind(&was)
+        .bind(&now)
+        .bind(actor)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+        if consent + restriction > 0 {
+            audit::record(
+                tx,
+                ctx,
+                &ent.def.name,
+                id,
+                "contact_choices_followed",
+                None,
+                json!({"field": def.match_field, "consent": consent, "restriction": restriction}),
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
