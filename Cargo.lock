@@ -2645,7 +2645,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-contracts"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-contracts?branch=main#b39290b401db820db149c20dbdd8df0e6b4a0187"
+source = "git+https://github.com/CBFerrum/ferrum-app-contracts?branch=main#da7cd3991dcdb93f0ffefe45a23cfdd212ad5a77"
 dependencies = [
  "async-trait",
  "chrono",
