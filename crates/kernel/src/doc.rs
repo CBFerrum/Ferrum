@@ -476,6 +476,7 @@ impl Kernel {
         self.write_secrets(ctx, tx, &ent, id, &secrets).await?;
         let stored = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::internal("update vanished"))?;
         self.hook_after_save(ctx, tx, &ent, &stored, Some(&old)).await?;
+        crate::retention::carry_contact_choices(tx, ctx, &ent, id, &old, &stored).await?;
         self.emit(ctx, tx, &ent, id, "updated", "update", Some(version), Some(&old), Some(&stored)).await?;
         Ok(self.mask(ctx, &ent, stored))
     }

@@ -925,7 +925,10 @@ goes out: kernel mail queued for marketing, an automation's e-mail whose `purpos
 process's `ferrum.mail.marketing` capability, and a connector stream that names its `consent` field
 (the address of each person it sends to a marketing service). A withdrawal stops all of them, under any
 address the person has had, including what was already queued. Transactional notices (receipts,
-resets, replies) do not ask for consent; a restriction stops them as well.
+resets, replies) do not ask for consent; a restriction stops them as well. When a record declared as
+someone's changes its address (a customer's, a contact's), their consent and any restriction follow them
+to the new address, unless that address has a word of its own; a record that now names someone else errs
+on the side of not contacting them until their own subscription says otherwise.
 
 **Retention rules** say how long an entity's records are kept: `POST /api/admin/retention` `{entity,
 after_days, date_field, action: delete | anonymize, condition, reason}`. They run once a day as a job,
