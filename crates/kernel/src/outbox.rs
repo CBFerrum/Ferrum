@@ -475,6 +475,45 @@ impl Kernel {
         Ok(())
     }
 
+    /// Everything one operation set off in this workspace, found by the id a person quotes (the request's,
+    /// which its events, jobs, process runs, effects and deliveries carry): what each is, how it stands and
+    /// why, never what it carried (administrators only, FEO-079).
+    pub async fn operation(&self, ctx: &Ctx, id: &str) -> Result<Value> {
+        require_admin(ctx)?;
+        let id = id.trim();
+        if id.is_empty() || id.len() > 100 || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            return Err(Error::field("id", "an operation's id, as a person was shown it"));
+        }
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let all = |sql: &'static str| sqlx::query_scalar::<_, Value>(sql).bind(ctx.tenant).bind(id);
+        let events = all("select jsonb_build_object('id', id, 'topic', topic, 'entity', entity, 'record_id', record_id, \
+               'state', case when dead then 'dead' when processed_at is not null then 'done' else 'waiting' end, \
+               'attempts', attempts, 'last_error', last_error, 'created_at', created_at) \
+             from outbox where tenant_id = $1 and correlation_id = $2 order by id limit 200")
+        .fetch_all(&mut *tx)
+        .await?;
+        let jobs = all("select jsonb_build_object('id', id, 'kind', kind, 'status', status, 'attempts', attempts, 'last_error', last_error, \
+               'created_at', created_at, 'finished_at', finished_at) from job where tenant_id = $1 and correlation_id = $2 order by created_at limit 200")
+        .fetch_all(&mut *tx)
+        .await?;
+        let runs = all("select jsonb_build_object('id', id, 'solution', solution, 'process', process, 'status', status, 'accepted_at', accepted_at, \
+               'finished_at', finished_at) from logic_run where tenant_id = $1 and correlation_id = $2 order by accepted_at limit 200")
+        .fetch_all(&mut *tx)
+        .await?;
+        let effects = all("select jsonb_build_object('capability', capability, 'status', status, 'record_entity', record_entity, 'record_id', record_id, \
+               'created_at', created_at) from logic_effect where tenant_id = $1 and correlation_id = $2 order by created_at limit 200")
+        .fetch_all(&mut *tx)
+        .await?;
+        let deliveries = all("select jsonb_build_object('id', d.id, 'webhook_name', w.name, 'topic', d.topic, 'status', d.status, 'attempts', d.attempts, \
+               'response_code', d.response_code, 'last_error', d.last_error) \
+             from webhook_delivery d join outbox o on o.id = d.outbox_id join webhook w on w.tenant_id = d.tenant_id and w.id = d.webhook_id \
+             where d.tenant_id = $1 and o.correlation_id = $2 order by d.created_at limit 200")
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(json!({"operation": id, "events": events, "jobs": jobs, "runs": runs, "effects": effects, "deliveries": deliveries}))
+    }
+
     /// The webhook deliveries that gave up, newest first: where each was going and why, never its
     /// payload, which can hold anything (administrators only).
     pub async fn dead_webhook_deliveries(&self, ctx: &Ctx, limit: i64) -> Result<Vec<Value>> {

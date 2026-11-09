@@ -265,4 +265,24 @@ async fn scenario() {
     assert!(k.dead_webhook_deliveries(&admin, 10).await.unwrap().is_empty(), "replayed, it is no longer dead");
     assert!(matches!(k.replay_webhook_delivery(&admin, delivery).await, Err(Error::NotFound(_))));
     assert!(matches!(k.replay_webhook_delivery(&other, delivery).await, Err(Error::NotFound(_))), "nor across workspaces");
+
+    // What one operation set off, found by the id a person was shown (FEO-079).
+    let op = "op-7f3a-quote-me";
+    ferrum_kernel::Trace { correlation: op.into(), ..Default::default() }
+        .scope(async {
+            assert_eq!(ferrum_kernel::Trace::operation().as_deref(), Some(op));
+            let mut tx = k.db.tenant_tx(quiet).await.unwrap();
+            outbox::enqueue(&mut tx, quiet, "payment.captured", Some("Payment"), None, json!({"card": "never shown"})).await.unwrap();
+            ferrum_kernel::jobs::enqueue(&mut tx, quiet, Some(admin.user), ferrum_kernel::jobs::NewJob::new("payment.settle", json!({}))).await.unwrap();
+            tx.commit().await.unwrap();
+        })
+        .await;
+    let found = k.operation(&admin, op).await.unwrap();
+    assert_eq!(found["events"].as_array().unwrap().iter().map(|e| e["topic"].as_str().unwrap()).collect::<Vec<_>>(), ["payment.captured"], "{found}");
+    assert_eq!(found["events"][0]["state"], json!("waiting"));
+    assert_eq!(found["jobs"][0]["kind"], json!("payment.settle"), "{found}");
+    assert!(!found.to_string().contains("never shown"), "never what it carried");
+    assert!(k.operation(&other, op).await.unwrap()["events"].as_array().unwrap().is_empty(), "another workspace finds none of it");
+    assert!(matches!(k.operation(&clerk, op).await, Err(Error::Forbidden(_))), "administrators only");
+    assert!(matches!(k.operation(&admin, "drop table; --").await, Err(Error::Validation(_))), "an id, not anything");
 }
