@@ -1683,9 +1683,11 @@ workspace from it:
 ferrum task extract_tenant from:"postgres://ferrum:...@restore-host/ferrum_copy" tenant:acme note:"deleted a ledger by mistake"
 ```
 
-That compares and changes nothing: it shows, table by table, how many rows there are now and in the copy. Add
-`apply:yes` to do it, then run `ferrum task reapply_erasures`, because the copy brings back whatever was erased
-since it was taken.
+That compares and changes nothing: it shows, table by table, how many rows there are now and in the copy, and
+what went out after the copy was taken (`went_out_since`, by topic: payments taken, messages sent, deliveries
+made, as far back as the outbox keeps them, `outbox_keep_days`). Add `apply:yes` to do it. Every erasure the
+workspace has made is done again in the same transaction, before anyone sees the copy, so what was erased since
+it was taken stays erased without a task of its own.
 
 Tables here refer to each other in circles, so the rows go in with referential triggers off. That takes a grant,
 which is worth taking away again afterwards. As a superuser:
@@ -1709,13 +1711,17 @@ Numbers issued since, such as invoice numbers, may be issued again.
 | Passwords, second factors and deactivations, as they are now | Nobody gets in who could not before |
 | Passkeys removed since | The same |
 | Legal holds and the versions kept under them, restrictions of processing, consent given or withdrawn | What the law holds and what the people the data is about asked for |
+| Erasures | Each is done again, from the workspace's own record of them (`privacy_erasure`, ids and field names only) |
 
 Everyone has to sign in again and **every API key has to be issued again**, because a revocation since the
 copy was taken would otherwise come undone. Roles and everything else are as they were in the copy, and what
 was waiting in the copy is set aside as it is after a restore. Workspace settings and quotas stay as they are
-now. Files are not checked against the store, and a resource made since is no longer known to the workspace
-though it still exists at its provider. Look at `cloud_resource_instance` in the live database first if that
-matters.
+now. The files the copy names that the workspace did not are checked against the store afterwards: those whose
+bytes went since the copy was taken are listed (`files.missing`, and in the audit trail), since their records came
+back without them. What went out since (`went_out_since`) is not undone: reconcile it by hand, such as a payment
+the copy does not record or stock that left the warehouse; it is kept in the audit trail, since the outbox goes
+back with the copy. A resource made since is no longer known to the workspace though it still exists at its
+provider. Look at `cloud_resource_instance` in the live database first if that matters.
 
 ## Plans and sign-up
 
