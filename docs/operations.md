@@ -417,8 +417,8 @@ A failover to a synchronous replica is also a new timeline, and loses nothing. S
 `FERRUM_HOLD_ON_TIMELINE=false` if that is the only way a timeline changes here. Then an in-place
 point-in-time restore is not noticed, so run the steps below by hand after one.
 
-A database restored from a backup brings back whatever was erased since it was taken, so do this
-before people, integrations or the assistant reach it:
+A database restored from a backup brings back whatever was erased since it was taken, and lets back in
+whoever left since, so do this before people, integrations or the assistant reach it:
 
 ```bash
 ferrum task reapply_erasures
@@ -429,6 +429,12 @@ by value, so the journal survives a database restore and holds nothing it erased
 of any lifecycle rule that would expire it sooner than your oldest backup. If object storage was
 restored too, journals written after that backup are gone: take the erasures since then from your
 request records and run them again.
+
+The same task applies again every change of someone's access since the backup: who left or was turned
+off is out again, with every session, key and grant ended, and who came back is in. Each change is
+journalled in object storage (`access-journal/`) by the person's id only, and only each person's last
+word counts. Keep that prefix as long as `privacy-journal/`; if it is gone, take departures since the
+backup from your identity provider.
 
 ## Rotating the secret key
 

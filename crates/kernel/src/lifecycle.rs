@@ -23,6 +23,53 @@ use uuid::Uuid;
 /// Published once someone's access has ended: `{user, email, reassign_to, reason}`.
 pub const DEPROVISIONED_TOPIC: &str = "ferrum.user.deprovisioned";
 
+/// Every change of someone's access, `{user, active}`: journalled outside the database, so that a
+/// database restored from a backup taken before it can apply it again (FEO-014).
+pub const ACCESS_TOPIC: &str = "ferrum.user.access";
+
+/// Where changes of access are journalled in object storage, one object each, by the person's id only.
+pub const ACCESS_JOURNAL_PREFIX: &str = "access-journal/";
+
+/// Ends a person's ways in: their account inactive and every session, key, OAuth grant, emailed code
+/// and device they had. Returns the sessions, keys and OAuth grants it ended.
+async fn end_access(tx: &mut Tx, tenant: Uuid, user: Uuid) -> Result<(u64, u64, u64)> {
+    sqlx::query("update app_user set is_active = false, token_version = token_version + 1, updated_at = now() where tenant_id = $1 and id = $2")
+        .bind(tenant)
+        .bind(user)
+        .execute(&mut **tx)
+        .await?;
+    let sessions = sqlx::query("update user_session set revoked_at = now() where tenant_id = $1 and user_id = $2 and revoked_at is null")
+        .bind(tenant)
+        .bind(user)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+    let keys = sqlx::query("update api_key set revoked_at = now() where tenant_id = $1 and user_id = $2 and revoked_at is null")
+        .bind(tenant)
+        .bind(user)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+    let tokens = sqlx::query("update oauth_refresh set revoked_at = now() where tenant_id = $1 and user_id = $2 and revoked_at is null")
+        .bind(tenant)
+        .bind(user)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+    sqlx::query("update oauth_code set used_at = now() where tenant_id = $1 and user_id = $2 and used_at is null")
+        .bind(tenant)
+        .bind(user)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("update sign_in_code set used_at = now() where tenant_id = $1 and user_id = $2 and used_at is null")
+        .bind(tenant)
+        .bind(user)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("delete from push_subscription where tenant_id = $1 and user_id = $2").bind(tenant).bind(user).execute(&mut **tx).await?;
+    Ok((sessions, keys, tokens))
+}
+
 /// Records moved in one transaction.
 const HANDOVER_BATCH: i64 = 200;
 
@@ -202,40 +249,8 @@ impl Kernel {
             }
         }
 
-        sqlx::query("update app_user set is_active = false, token_version = token_version + 1, updated_at = now() where tenant_id = $1 and id = $2")
-            .bind(ctx.tenant)
-            .bind(user)
-            .execute(&mut *tx)
-            .await?;
-        let sessions = sqlx::query("update user_session set revoked_at = now() where tenant_id = $1 and user_id = $2 and revoked_at is null")
-            .bind(ctx.tenant)
-            .bind(user)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        let keys = sqlx::query("update api_key set revoked_at = now() where tenant_id = $1 and user_id = $2 and revoked_at is null")
-            .bind(ctx.tenant)
-            .bind(user)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        let tokens = sqlx::query("update oauth_refresh set revoked_at = now() where tenant_id = $1 and user_id = $2 and revoked_at is null")
-            .bind(ctx.tenant)
-            .bind(user)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-        sqlx::query("update oauth_code set used_at = now() where tenant_id = $1 and user_id = $2 and used_at is null")
-            .bind(ctx.tenant)
-            .bind(user)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("update sign_in_code set used_at = now() where tenant_id = $1 and user_id = $2 and used_at is null")
-            .bind(ctx.tenant)
-            .bind(user)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("delete from push_subscription where tenant_id = $1 and user_id = $2").bind(ctx.tenant).bind(user).execute(&mut *tx).await?;
+        let (sessions, keys, tokens) = end_access(&mut tx, ctx.tenant, user).await?;
+        outbox::enqueue(&mut tx, ctx.tenant, ACCESS_TOPIC, Some("User"), Some(user), json!({"user": user, "active": false})).await?;
 
         let mut moved = 0;
         if let Some(to) = successor {
@@ -264,6 +279,76 @@ impl Kernel {
         tx.commit().await?;
         self.invalidate_user(ctx.tenant, user);
         Ok(done)
+    }
+
+    /// Writes a change of someone's access to object storage ([`ACCESS_TOPIC`]'s handler), by their id
+    /// only. Named by the event, so a retry writes the same object.
+    pub(crate) async fn journal_access(&self, tenant: Uuid, event: i64, payload: &Value) -> Result<()> {
+        let Some(store) = self.files.get() else {
+            tracing::warn!(%tenant, "no object storage: this change of access is not journalled, and a restore would undo it");
+            return Ok(());
+        };
+        let entry = json!({"tenant": tenant, "user": payload["user"], "active": payload["active"], "at": chrono::Utc::now().to_rfc3339()});
+        store.put(&format!("{ACCESS_JOURNAL_PREFIX}{tenant}/{event}.json"), &serde_json::to_vec(&entry).map_err(Error::internal)?).await
+    }
+
+    /// Applies again the changes of access journal entries name, oldest first, after a database was
+    /// restored from a backup taken before them: whoever left since is out again, with every session,
+    /// key and grant ended, and whoever came back since is in. People the backup does not have are
+    /// skipped; doing it twice changes nothing. Returns how many people changed.
+    pub async fn reapply_access(&self, keys: &[String]) -> Result<usize> {
+        let store = self.files.get().ok_or_else(|| Error::Unavailable("no file storage is configured".into()))?;
+        // `{prefix}{tenant}/{event}.json`: in each workspace, in the order they happened.
+        let order = |k: &String| {
+            let rest = k.strip_prefix(ACCESS_JOURNAL_PREFIX).unwrap_or(k);
+            let (tenant, event) = rest.split_once('/').unwrap_or((rest, ""));
+            (tenant.to_string(), event.trim_end_matches(".json").parse::<i64>().unwrap_or(0))
+        };
+        let mut keys: Vec<&String> = keys.iter().collect();
+        keys.sort_by_key(|k| order(k));
+        // Only each person's last word counts: stepping through the ones before would end the sessions
+        // and keys of someone who came back since.
+        let mut last: std::collections::BTreeMap<(Uuid, Uuid), bool> = std::collections::BTreeMap::new();
+        for key in keys {
+            let entry: Value = serde_json::from_slice(&store.get(key).await?).map_err(Error::internal)?;
+            if let (Some(tenant), Some(user), Some(active)) = (
+                entry["tenant"].as_str().and_then(|t| t.parse::<Uuid>().ok()),
+                entry["user"].as_str().and_then(|u| u.parse::<Uuid>().ok()),
+                entry["active"].as_bool(),
+            ) {
+                last.insert((tenant, user), active);
+            }
+        }
+        let mut changed = 0;
+        for ((tenant, user), active) in last {
+            let mut tx = self.db.system_tenant_tx(tenant).await?;
+            let now: Option<bool> = sqlx::query_scalar("select is_active from app_user where tenant_id = $1 and id = $2 and kind = 'member'")
+                .bind(tenant)
+                .bind(user)
+                .fetch_optional(&mut *tx)
+                .await?;
+            match now {
+                Some(true) if !active => {
+                    end_access(&mut tx, tenant, user).await?;
+                }
+                Some(false) if active => {
+                    sqlx::query("update app_user set is_active = true, token_version = token_version + 1, updated_at = now() where tenant_id = $1 and id = $2")
+                        .bind(tenant)
+                        .bind(user)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+                _ => {
+                    tx.rollback().await?;
+                    continue;
+                }
+            }
+            notify_users(&mut tx, tenant, Some(user)).await?;
+            tx.commit().await?;
+            self.invalidate_user(tenant, user);
+            changed += 1;
+        }
+        Ok(changed)
     }
 
     /// Hands what someone is named on to `to`, later than their leaving: when nobody was named then,

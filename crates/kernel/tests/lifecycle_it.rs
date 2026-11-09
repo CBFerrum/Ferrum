@@ -2,7 +2,8 @@
 //! (`FERRUM_TEST_DATABASE_URL`; the database is reset first). When someone is turned off, their
 //! access ends everywhere at once, on every replica, and their work moves on.
 
-use ferrum_kernel::lifecycle::DEPROVISIONED_TOPIC;
+use ferrum_kernel::files::FileStore;
+use ferrum_kernel::lifecycle::{ACCESS_JOURNAL_PREFIX, DEPROVISIONED_TOPIC};
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Db, DbConfig, Error, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::Catalog;
@@ -13,6 +14,25 @@ use std::time::Duration;
 use uuid::Uuid;
 
 const PASSWORD: &str = "Correct-Horse-9";
+
+/// Object storage, in memory.
+#[derive(Default)]
+struct MemFiles(std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>);
+
+#[async_trait::async_trait]
+impl FileStore for MemFiles {
+    async fn put(&self, key: &str, data: &[u8]) -> ferrum_kernel::Result<()> {
+        self.0.lock().unwrap().insert(key.to_string(), data.to_vec());
+        Ok(())
+    }
+    async fn get(&self, key: &str) -> ferrum_kernel::Result<Vec<u8>> {
+        self.0.lock().unwrap().get(key).cloned().ok_or_else(|| Error::NotFound("object".into()))
+    }
+    async fn delete(&self, key: &str) -> ferrum_kernel::Result<()> {
+        self.0.lock().unwrap().remove(key);
+        Ok(())
+    }
+}
 
 async fn connect() -> Db {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
@@ -57,6 +77,8 @@ async fn scenario() {
     let db = connect().await;
     sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let k = replica().await;
+    let files = Arc::new(MemFiles::default());
+    k.set_file_store(files.clone());
     let tenant = workspace(&k, "acme").await;
     let other = workspace(&k, "other").await;
     let session = k.login("acme", "admin@acme.test", PASSWORD).await.unwrap();
@@ -288,4 +310,40 @@ async fn scenario() {
     tx.commit().await.unwrap();
     assert!(matches!(k.deprovision_user(&fresh, service, None, "no").await, Err(Error::Invalid(_))));
     assert!(matches!(k.scim_user(&fresh, service).await, Err(Error::NotFound(_))), "SCIM sees members only");
+
+    // ───────────── who left since a backup stays out after a restore (FEO-014) ─────────────
+    // Each change of someone's access is journalled outside the database, by their id only.
+    let rae = k.create_user(&fresh, "rae@acme.test", "Rae", Some(PASSWORD), &[], false).await.unwrap();
+    let sam = k.create_user(&fresh, "sam@acme.test", "Sam", Some(PASSWORD), &[], false).await.unwrap();
+    k.deprovision_user(&fresh, rae, Some(fresh.user), "left").await.unwrap();
+    k.set_user_active(&fresh, sam, false).await.unwrap();
+    k.set_user_active(&fresh, sam, true).await.unwrap();
+    let sam_ctx = k.load_ctx(tenant, sam, None, "it".into()).await.unwrap();
+    let (_, sam_key) = k.create_api_key(&sam_ctx, sam, "laptop", None, None).await.unwrap();
+    while k.dispatch_outbox_once().await.unwrap() > 0 {}
+    let keys: Vec<String> = files.0.lock().unwrap().keys().filter(|k| k.starts_with(ACCESS_JOURNAL_PREFIX)).cloned().collect();
+    assert!(keys.len() >= 3, "{keys:?}");
+    for key in &keys {
+        let entry = String::from_utf8(files.0.lock().unwrap()[key].clone()).unwrap();
+        assert!(!entry.contains('@'), "no address in the journal: {entry}");
+    }
+    // A backup from before: Rae still in, Sam out.
+    let mut tx = k.db.system_tenant_tx(tenant).await.unwrap();
+    sqlx::query("update app_user set is_active = (id = $2) where tenant_id = $1 and id in ($2, $3)")
+        .bind(tenant)
+        .bind(rae)
+        .bind(sam)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    k.invalidate_user(tenant, rae);
+    k.invalidate_user(tenant, sam);
+    k.login("acme", "rae@acme.test", PASSWORD).await.expect("as a backup from before would have it");
+    let n = k.reapply_access(&keys).await.unwrap();
+    assert_eq!(n, 2, "Rae out again, Sam in again, everyone else as they stand");
+    assert!(k.verify_api_key(&sam_key).await.is_ok(), "only the last word counts: a key made after coming back is not ended on the way");
+    assert!(k.login("acme", "rae@acme.test", PASSWORD).await.is_err(), "who left is out again");
+    k.login("acme", "sam@acme.test", PASSWORD).await.expect("who came back is in, the last word standing");
+    assert_eq!(k.reapply_access(&keys).await.unwrap(), 0, "doing it twice changes nothing");
 }
