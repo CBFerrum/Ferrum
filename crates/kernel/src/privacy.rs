@@ -667,8 +667,13 @@ impl Kernel {
         }
         // A stored export of the workspace is a copy from before: it goes too.
         let exports = if erased.is_empty() && account.is_none() { 0 } else { crate::export::drop_exports(&mut tx, ctx.tenant, None).await? };
-        // By id and field name only: it outlives the data, and must not hold what it erased.
-        outbox::enqueue(&mut tx, ctx.tenant, ERASED_TOPIC, None, None, json!({"account": account, "records": journal, "reason": reason})).await?;
+        // By id and field name only: it outlives the data, and must not hold what it erased. Kept here too,
+        // for a workspace taken back to an older copy to erase again (FEO-078).
+        let entry = json!({"account": account, "records": journal, "reason": reason});
+        if !journal.is_empty() || account.is_some() {
+            sqlx::query("insert into privacy_erasure (tenant_id, erasure) values ($1, $2)").bind(ctx.tenant).bind(&entry).execute(&mut *tx).await?;
+        }
+        outbox::enqueue(&mut tx, ctx.tenant, ERASED_TOPIC, None, None, entry).await?;
         tx.commit().await?;
         if let Some(id) = account {
             self.invalidate_user(ctx.tenant, id);
@@ -717,17 +722,29 @@ impl Kernel {
             return Ok(0);
         }
         let ctx = Ctx::system(tenant, self.registry.schema(tenant).await?);
-        let erasure = &entry["erasure"];
-        let reason = erasure["reason"].as_str().unwrap_or("erased before this restore");
         let mut tx = self.db.system_tenant_tx(tenant).await?;
+        let (done, account) = self.erase_again(&mut tx, &ctx, &entry["erasure"]).await?;
+        tx.commit().await?;
+        if let Some(id) = account {
+            self.invalidate_user(tenant, id);
+        }
+        Ok(done)
+    }
+
+    /// Erases again, in `tx`, what one erasure's journal entry (`{account, records, reason}`) names: records
+    /// that are not there are skipped, and doing it twice changes nothing. Returns how many records and
+    /// accounts it erased, and the account, whose cached sign-in goes once `tx` commits.
+    pub(crate) async fn erase_again(&self, tx: &mut Tx, ctx: &Ctx, erasure: &Value) -> Result<(usize, Option<Uuid>)> {
+        let tenant = ctx.tenant;
+        let reason = erasure["reason"].as_str().unwrap_or("erased before this restore");
         let mut done = 0;
         // The journal holds no address; what came back holds them again, and says which to take out
         // of the history's payloads once more.
         let mut addresses: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for r in erasure["records"].as_array().into_iter().flatten() {
             let (Some(entity), Some(id)) = (r["entity"].as_str(), r["id"].as_str().and_then(|i| i.parse::<Uuid>().ok())) else { continue };
-            let Ok(ent) = self.entity(&ctx, entity) else { continue };
-            let Ok(doc) = self.get_tx(&ctx, &mut tx, entity, id, false).await else {
+            let Ok(ent) = self.entity(ctx, entity) else { continue };
+            let Ok(doc) = self.get_tx(ctx, tx, entity, id, false).await else {
                 continue;
             };
             for def in ctx.schema.personal_data.iter().filter(|d| d.entity == entity && !d.match_field.contains('.')) {
@@ -739,10 +756,10 @@ impl Kernel {
             match r["table"].as_str() {
                 Some(table) => {
                     let rows: Vec<Uuid> = r["rows"].as_array().into_iter().flatten().filter_map(|i| i.as_str().and_then(|i| i.parse().ok())).collect();
-                    erase_rows(self, &ctx, &mut tx, &ent, id, table, &rows, &fields, reason).await?;
+                    erase_rows(self, ctx, tx, &ent, id, table, &rows, &fields, reason).await?;
                 }
                 None => {
-                    erase_record(self, &ctx, &mut tx, &ent, id, &fields, reason).await?;
+                    erase_record(self, ctx, tx, &ent, id, &fields, reason).await?;
                 }
             }
             done += 1;
@@ -750,24 +767,20 @@ impl Kernel {
         let account = erasure["account"].as_str().and_then(|i| i.parse::<Uuid>().ok());
         if let Some(id) = account {
             let present: Option<String> =
-                sqlx::query_scalar("select email::text from app_user where tenant_id = $1 and id = $2").bind(tenant).bind(id).fetch_optional(&mut *tx).await?;
+                sqlx::query_scalar("select email::text from app_user where tenant_id = $1 and id = $2").bind(tenant).bind(id).fetch_optional(&mut **tx).await?;
             if let Some(email) = present.filter(|e| !e.ends_with("@erased.invalid")) {
-                addresses.extend(self::addresses(&mut tx, tenant, &email.to_lowercase()).await?);
-                erase_account(&mut tx, &ctx, id, reason).await?;
+                addresses.extend(self::addresses(tx, tenant, &email.to_lowercase()).await?);
+                erase_account(tx, ctx, id, reason).await?;
                 done += 1;
             }
         }
         let addresses: Vec<String> = addresses.into_iter().collect();
         if !addresses.is_empty() {
-            redact_addresses(&mut tx, &ctx, &addresses, reason).await?;
+            redact_addresses(tx, ctx, &addresses, reason).await?;
         }
         // The backup's stored exports are from before the erasure; their objects went with it.
-        crate::export::drop_exports(&mut tx, tenant, None).await?;
-        tx.commit().await?;
-        if let Some(id) = account {
-            self.invalidate_user(tenant, id);
-        }
-        Ok(done)
+        crate::export::drop_exports(tx, tenant, None).await?;
+        Ok((done, account))
     }
 
     /// Holds a person (`email`) or a record (`record`) against erasure and deletion, until released
