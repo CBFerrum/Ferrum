@@ -2812,7 +2812,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-erp"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#a20a9c4ce726f02fa3f30d8ec4fa20ca7411108b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#b93dd61a5a48cb4953d27b9ee4b9375473ea8d51"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2831,7 +2831,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-field-service"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-field-service?branch=main#f366150114ac9c01860ce86a21a749b2e33670f2"
+source = "git+https://github.com/CBFerrum/ferrum-app-field-service?branch=main#623271084e80c2f603e197469044dca9e0bfd2bc"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3062,7 +3062,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-logistics"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-logistics?branch=main#b832e6c55e44582e137f6ed1cd5813c5e9e1c1bd"
+source = "git+https://github.com/CBFerrum/ferrum-app-logistics?branch=main#71494f7d5f7a5d2292a93b3443581306ef22e705"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3133,7 +3133,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-pos"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-pos?branch=main#8b616af541223a26779695b30ad6ca51af0566db"
+source = "git+https://github.com/CBFerrum/ferrum-app-pos?branch=main#1af224b3bb90a31b26e6d94c323c2b1bd4b80f9a"
 dependencies = [
  "async-trait",
  "chrono",
@@ -7227,7 +7227,7 @@ version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
- "heck 0.5.0",
+ "heck 0.4.1",
  "itertools 0.14.0",
  "log",
  "multimap",
@@ -7297,7 +7297,7 @@ version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb5cd191fad9142d096efc97c64715db73db4adb60c38ebdf22f5b54cd6ea712"
 dependencies = [
- "heck 0.5.0",
+ "heck 0.4.1",
  "prost",
  "prost-build",
  "prost-types",

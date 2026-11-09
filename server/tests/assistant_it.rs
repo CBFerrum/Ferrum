@@ -2,7 +2,7 @@
 //! `postgres://ferrum:ferrum@localhost:5432/ferrum_assistant_test`; the database is reset) and a
 //! stand-in for the model's API on a local port: a question answered with a read that runs at once;
 //! a change that waits for the person and runs when allowed; one refused, which does not run; the
-//! conversation sent back exactly as stored; a workspace that turned it off, and a guest.
+//! turn sent back as stored and earlier turns as their words; a workspace that turned it off, and a guest.
 
 mod common;
 
@@ -234,7 +234,7 @@ async fn scenario() {
     assert!(last_result["text"].as_str().unwrap().contains("did not allow"));
     assert!(matches!(assistant::begin(&env, &ctx, thread, Input::Decision { allow: true }, "member").await, Err(Error::Conflict(_))), "nothing waits now");
 
-    // ── what was sent: the API's version, history exactly as stored, calls paired with results ──
+    // ── what was sent: the API's version, the turn as stored, earlier turns as words, calls paired with results ──
     let requests = model.requests.lock().unwrap().clone();
     assert_eq!(requests.len(), 6);
     for (i, (h, body)) in requests.iter().enumerate() {
@@ -260,10 +260,15 @@ async fn scenario() {
                 }
             }
         }
-        // Each request holds the previous one's messages, unchanged, at its start.
-        if i > 0 {
+        // Within a turn, each request holds the previous one's messages, unchanged, at its start. A new
+        // turn sends of earlier ones only the words: their calls, results and reasoning are not sent again.
+        let continues = msgs.last().unwrap()["content"].as_array().unwrap().iter().any(|b| b["type"] == "tool_result");
+        if i > 0 && continues {
             let before = requests[i - 1].1["messages"].as_array().unwrap();
-            assert_eq!(&msgs[..before.len()], &before[..], "request {i}: history is only appended to");
+            assert_eq!(&msgs[..before.len()], &before[..], "request {i}: within a turn, history is only appended to");
+        } else if i > 0 {
+            let earlier = &msgs[..msgs.len() - 1];
+            assert!(earlier.iter().flat_map(|m| m["content"].as_array().unwrap()).all(|b| b["type"] == "text"), "request {i}: earlier turns as words only");
         }
     }
 
