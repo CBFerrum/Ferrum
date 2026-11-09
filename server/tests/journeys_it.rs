@@ -3,11 +3,12 @@
 //! every app this build compiles in. Each app's own suite proves its part; these prove the parts meet.
 //! Expected figures are worked out by hand in the comments beside them, not by the code under test.
 //! Each journey also goes the wrong way: what must be refused is, and what is undone comes back.
+//! The server's mailer is captured: what it was asked to send is checked, never sent.
 
 mod common;
 
 use ferrum_kernel::tenant::NewTenant;
-use ferrum_kernel::{Ctx, Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings, ListQuery};
+use ferrum_kernel::{Ctx, Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings, ListQuery, SiteRequest};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -15,6 +16,23 @@ use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 use uuid::Uuid;
+
+/// What the server's mailer was asked to send: (to, subject).
+static SENT: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+struct Captured;
+
+#[async_trait::async_trait]
+impl ferrum_kernel::Mailer for Captured {
+    async fn send(&self, to: &str, subject: &str, _html: &str) -> ferrum_kernel::Result<()> {
+        SENT.lock().unwrap().push((to.to_string(), subject.to_string()));
+        Ok(())
+    }
+}
+
+fn mailed_to(to: &str) -> Vec<String> {
+    SENT.lock().unwrap().iter().filter(|(t, _)| t == to).map(|(_, s)| s.clone()).collect()
+}
 
 fn obj(v: Value) -> Doc {
     v.as_object().cloned().unwrap()
@@ -80,7 +98,7 @@ async fn kernel() -> Arc<Kernel> {
     let mut hooks = HookRegistry::default();
     ferrum_domain::register(&mut hooks);
     ferrum_server::packages::register(&mut hooks);
-    let k = Kernel::boot(db, catalog, hooks, KernelSettings::default(), None).await.expect("boot");
+    let k = Kernel::boot(db, catalog, hooks, KernelSettings::default(), Some(Arc::new(Captured))).await.expect("boot");
     ferrum_domain::maintenance(&k).await.expect("maintenance");
     ferrum_app_erp::maintenance(&k).await.expect("partitions");
     k
@@ -117,6 +135,7 @@ fn journeys() {
             let k = kernel().await;
             lead_to_cash(&k).await;
             procure_to_pay(&k).await;
+            someone_leaves(&k).await;
         })
         .await
         .unwrap()
@@ -329,4 +348,96 @@ async fn procure_to_pay(k: &Arc<Kernel>) {
     assert_eq!(admin.report("payables", std::slice::from_ref(&company_param)).await["rows"].as_array().unwrap().len(), 1);
     admin.cancel("PurchaseInvoice", invoice).await;
     assert_ne!(admin.get("PurchaseOrder", po).await["status"], json!("Completed"));
+}
+
+/// A person's Drive space and its top folder, as Drive's site opens it for them.
+async fn drive_space(k: &Arc<Kernel>, who: &Ctx) -> (Uuid, Uuid) {
+    let site = k.hooks.site("drive").expect("Drive's site").clone();
+    let req = SiteRequest {
+        tenant: who.tenant,
+        user: Some(who.clone()),
+        method: "GET".into(),
+        path: "/space".into(),
+        query: Default::default(),
+        headers: Default::default(),
+        body: vec![],
+        client_ip: "127.0.0.1".into(),
+    };
+    let v: Value = serde_json::from_slice(&site.handle(k, req).await.expect("space").body).unwrap();
+    (made(&v), v["root_folder"].as_str().unwrap().parse().unwrap())
+}
+
+/// Someone leaves in the middle of things (FEO-012): signed in, with a key, a notice waiting to be
+/// emailed, a case waiting on them, a folder shared with them, a link they made, a service case they
+/// hold and a team they are on. One departure ends or hands on all of it, across the platform,
+/// Drive and Helpdesk; and they cannot come back in.
+async fn someone_leaves(k: &Arc<Kernel>) {
+    let admin = workspace(k, "parting", &["drive", "helpdesk"]).await;
+    let tenant = admin.ctx.tenant;
+    let roles = ["Drive User".to_string(), "Support Agent".to_string()];
+    let lee_id = k.create_user(&admin.ctx, "lee@parting.test", "Lee", Some("Correct-Horse-9"), &roles, false).await.expect("Lee");
+    let session = k.login("parting", "lee@parting.test", "Correct-Horse-9").await.expect("Lee signs in");
+    let lee = As { k: k.clone(), ctx: k.load_ctx(tenant, lee_id, Some(session.token_version), "it".into()).await.unwrap() };
+    k.create_api_key(&lee.ctx, lee_id, "laptop", None, None).await.expect("a key");
+    let sam = person(&admin, "sam@parting.test", &["Drive User", "Support Agent"]).await;
+    let ana = person(&admin, "ana@parting.test", &["Drive User"]).await;
+
+    // Drive: Ana shares a folder with Lee; Lee makes a public link to a folder of their own.
+    let (ana_space, ana_root) = drive_space(k, &ana.ctx).await;
+    let (lee_space, lee_root) = drive_space(k, &lee.ctx).await;
+    let (sam_space, _) = drive_space(k, &sam.ctx).await;
+    let plans = made(&ana.action("DriveSpace", ana_space, "create_folder", json!({"parent": ana_root, "name": "Plans"})).await);
+    ana.action("DriveSpace", ana_space, "share", json!({"item": plans, "email": "lee@parting.test", "permission": "Edit"})).await;
+    let handover = made(&lee.action("DriveSpace", lee_space, "create_folder", json!({"parent": lee_root, "name": "Handover"})).await);
+    let link = made(&lee.action("DriveSpace", lee_space, "create_link", json!({"item": handover})).await);
+    assert!(k.run_action(&sam.ctx, "DriveSpace", sam_space, "item_info", json!({"item": handover})).await.is_err(), "not Sam's yet");
+
+    // Helpdesk: Lee is on the front desk and holds a case, which also waits on Lee by assignment.
+    let team = admin.insert("SupportTeam", json!({"team_name": "Front desk", "members": [{"agent": "lee@parting.test"}]})).await;
+    let case = admin.insert("Ticket", json!({"subject": "Printer jammed", "assigned_to": "lee@parting.test", "team": uid(&team)})).await;
+    k.assign(&admin.ctx, "Ticket", uid(&case), lee_id, Some("Approve the refund"), None, None).await.expect("waiting on Lee");
+
+    // A notice for Lee waits to be emailed; Sam has notices emailed too.
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("insert into notification_pref (tenant_id, user_id, kind, channel) values ($1, $2, 'general', 'email'), ($1, $3, 'general', 'email')")
+        .bind(tenant)
+        .bind(lee_id)
+        .bind(sam.ctx.user)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    ferrum_kernel::notify::send(&mut tx, tenant, lee_id, "The quarter's figures are ready", None, None, None).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let left = k.deprovision_user(&admin.ctx, lee_id, Some(sam.ctx.user), "left the company").await.expect("Lee leaves");
+    assert_eq!((left["api_keys_revoked"].clone(), left["assignments_moved"].clone()), (json!(1), json!(1)), "{left}");
+    while k.dispatch_outbox_once().await.unwrap() > 0 {}
+
+    // Their session, key and sign-in are over.
+    assert!(matches!(k.load_ctx(tenant, lee_id, Some(session.token_version), "it".into()).await, Err(Error::Unauthorized(_))), "the session is over");
+    assert!(k.login("parting", "lee@parting.test", "Correct-Horse-9").await.is_err(), "and Lee cannot sign in again");
+    // The notice waiting for Lee is not emailed to them; Sam's are.
+    assert_eq!(mailed_to("lee@parting.test"), Vec::<String>::new());
+    assert!(mailed_to("sam@parting.test").contains(&"1 assignments moved to you from lee@parting.test".to_string()), "{:?}", mailed_to("sam@parting.test"));
+    // What waited on Lee waits on Sam.
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let waiting: Vec<Uuid> = sqlx::query_scalar("select user_id from record_assignment where record_id = $1 and status = 'Open'")
+        .bind(uid(&case))
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    let shared: i64 = sqlx::query_scalar("select count(*) from e_drive_share where lower(email::text) = 'lee@parting.test'").fetch_one(&mut *tx).await.unwrap();
+    let (by, outcome, revoked): (String, Option<String>, bool) =
+        sqlx::query_as("select shared_by::text, on_leaving, revoked from e_drive_link where id = $1").bind(link).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(waiting, vec![sam.ctx.user]);
+    // Drive: nothing is shared with Lee any more; Lee's link is Sam's, and says so; Sam reaches Lee's folder.
+    assert_eq!(shared, 0);
+    assert_eq!((by.as_str(), outcome.as_deref(), revoked), ("sam@parting.test", Some("Passed On"), false));
+    assert!(k.run_action(&sam.ctx, "DriveSpace", sam_space, "item_info", json!({"item": handover})).await.is_ok(), "Sam reaches what Lee kept");
+    // Helpdesk: the case and the place on the desk are Sam's.
+    assert_eq!(admin.get("Ticket", uid(&case)).await["assigned_to"], json!("sam@parting.test"));
+    let desk = admin.get("SupportTeam", uid(&team)).await;
+    let agents: Vec<&str> = desk["members"].as_array().unwrap().iter().map(|m| m["agent"].as_str().unwrap()).collect();
+    assert_eq!(agents, ["sam@parting.test"]);
 }
