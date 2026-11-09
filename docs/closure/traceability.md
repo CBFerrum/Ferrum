@@ -5,8 +5,8 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Not started | 61 |
-| Partial | 2 |
+| Not started | 60 |
+| Partial | 3 |
 | Verified in software | 16 |
 | Blocked externally | 3 |
 | **All** | **82** |
@@ -37,7 +37,7 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 | FEO-014 | Qualify identity providers and key lifecycle | P1 | Not started | qualification gap | partial / none / none / none | not run | 0 | Not started here: Test selected IdPs, certificate/key rotation, recovery and provider outage. The review saw: SAML was exercised with Keycloak; SCIM/OIDC against named commercial tenants are not established. OpenBao Transit exists; the remaining KMS modes and key paths are not all qualified. |
 | FEO-015 | Unify purpose-aware consent and communication restrictions | P0 | Verified in software | documented incomplete | verified / verified / built / none | ran in software | 4 | Purposes kept apart: consent to marketing is one record per address that Campaigns writes (an unsubscribe or complaint withdraws it, a confirmed subscription gives it, an import says nothing) and that every path asks as a message goes: kernel mail (a restriction for anything), an automation's e-mail by its purpose, a process's ferrum.mail.marketing, a connector stream with its consent field, Campaigns before handing mail over, and hosted mail (Comms) for each recipient when it sends, withholding what may not go; transactional notices do not ask (consent_it, connect_it, comms_it, campaigns_it; five mutants). CRM sends no mail of its own. Not walked in a browser; other lawful purposes than marketing are not modelled |
 | FEO-016 | Complete personal-data discovery and derivative handling | P1 | Not started | documented incomplete | partial / none / none / none | not run | 0 | Not started here: Inventory every sensitive source and derivative. The review saw: Personal-data declarations are incomplete; Comms transcripts and DAM people-by-name have gaps, and comments/free text remain outside reliable exact-person discovery. |
-| FEO-017 | Finish shared jobs, dead letters and notifications | P1 | Not started | documented incomplete | partial / none / none / none | not run | 0 | Not started here: Provide an operator exception queue, bounded retry/replay, tenant fairness for heavy native jobs, current recipient checks, schedule semantics and complete correlation across records/jobs/connectors. The review saw: Outbox and plugin fairness exist; app-specific maintenance/sending is uneven. Dead-letter operations are API-oriented; trace context across spawned work is incomplete. |
+| FEO-017 | Finish shared jobs, dead letters and notifications | P1 | Partial | stale evidence, documented incomplete | verified / verified / built / none | ran in software | 3 | Rechecked on 9 November: the acceptance was already met in software. A quiet workspace's event goes in the first batch behind 500 of another's, and workspaces take turns for jobs (events_it, jobs_it); a dead event is listed without its payload and replayed once, by an administrator of its workspace only (events_it); work runs with its requester's rights when it runs, so someone who left gets nothing done and a demoted administrator no export, and notification mail skips inactive people (jobs_it, notify). Added: dead webhook deliveries listed for the operator, and Administration's Needs a person tab with dead events, dead deliveries and failed jobs, each to replay or retry, walked on a running server (evidence browser-2026-11-09-exceptions). Not yet: schedule semantics (missed runs, overlap, time zones) stated for every scheduled thing, and trace context carried across every piece of spawned work and connector |
 
 ## C: Finance and high-use business cycles
 

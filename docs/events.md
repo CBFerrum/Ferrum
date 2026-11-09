@@ -55,9 +55,13 @@ of their own, and a request that takes more than 10 seconds fails.
 |---|---|
 | `GET /api/admin/events/dead?limit=` | Lists the workspace's dead events: topic, record, attempts, last error, correlation id. Never payloads, which can hold anything. |
 | `POST /api/admin/events/{id}/replay` | Queues one again from its first attempt. Consumers that already handled it are not repeated. |
+| `GET /api/admin/webhook-deliveries/dead?limit=` | Lists the webhook deliveries that gave up: webhook, topic, attempts, the endpoint's last answer and error. Never payloads. |
 | `POST /api/admin/webhook-deliveries/{id}/replay` | The same for one webhook delivery. |
 
 These are for administrators, stay within their workspace, and are recorded in the audit trail.
+Administration's **Needs a person** tab lists dead events, dead webhook deliveries and jobs that failed,
+each with why and a button to try it again once its cause is put right. A job tried again runs with the
+rights its requester has now, so someone who has left gets nothing from it.
 
 ## Topics the platform publishes
 

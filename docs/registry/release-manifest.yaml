@@ -1,7 +1,7 @@
 # What this commit builds: generated from Cargo.lock and the Dockerfile by scripts/release_evidence.py,
 # and checked by scripts/registry.py. A build's own evidence is release-evidence.json, on its CI run.
 components:
-  - {repository: CBFerrum/Ferrum-Frontend, pinned: 7a008a6e9d9ff8e5dc0fd8fba7c1aa3aeaa25652}
+  - {repository: CBFerrum/Ferrum-Frontend, pinned: c938ea3933449fce05211fedb8a860bbdbae5491}
   - {repository: CBFerrum/ferrum-app-assets, pinned: caedcb7504b67e01e52be3dfb5b1728308045c47}
   - {repository: CBFerrum/ferrum-app-bookings, pinned: ab929c397d037f8d9f35107ed7dae84c87b30855}
   - {repository: CBFerrum/ferrum-app-campaigns, pinned: 1a97741cf2ab16be6e124c7cd7bae63ac7094d03}
