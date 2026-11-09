@@ -6,9 +6,10 @@
 //! any app shows it again (the side panel, or `/assistant/` on a phone).
 //!
 //! Off unless the operator sets `FERRUM_ASSISTANT_API_KEY`; a workspace's administrators can turn
-//! it off for their workspace (the `assistant` setting). Messages are kept exactly as the API
-//! returned them and only ever appended: the model's thinking stays valid only in the conversation
-//! that produced it.
+//! it off for their workspace (the `assistant` setting). Messages are kept as the API returned them
+//! (keys withheld) and only ever appended: the model's thinking stays valid only in the conversation
+//! that produced it. What is sent back is the current turn as kept, and of earlier turns only what
+//! may still go (`history`).
 
 use crate::appmgr_mcp::AppTools;
 use crate::state::AppState;
@@ -493,20 +494,6 @@ pub async fn stop(env: &Env, ctx: &Ctx, id: Uuid) -> Result<()> {
     Ok(())
 }
 
-/// Tokens to and from the model this calendar month, in the workspace.
-async fn tokens_this_month(k: &Kernel, tenant: Uuid) -> Result<i64> {
-    let mut tx = k.db.tenant_tx(tenant).await?;
-    let n: Option<i64> = sqlx::query_scalar(
-        "select sum(coalesce((usage->'usage'->>'input_tokens')::bigint, 0) + coalesce((usage->'usage'->>'output_tokens')::bigint, 0))::bigint \
-         from assistant_message where tenant_id = $1 and role = 'assistant' and created_at >= date_trunc('month', now())",
-    )
-    .bind(tenant)
-    .fetch_one(&mut *tx)
-    .await?;
-    tx.commit().await?;
-    Ok(n.unwrap_or(0))
-}
-
 /// What the workspace has used this month, by person and model, for its administrators.
 pub async fn usage(k: &Kernel, ctx: &Ctx) -> Result<Value> {
     if !ctx.is_admin {
@@ -614,8 +601,10 @@ pub fn display(seq: i32, role: &str, content: &Value) -> Value {
     } else {
         for b in &blocks {
             match b["type"].as_str() {
-                Some("text") => items.push(json!({"kind": "text", "text": b["text"]})),
-                Some("thinking") if b["thinking"].as_str().is_some_and(|t| !t.is_empty()) => items.push(json!({"kind": "thinking", "text": b["thinking"]})),
+                Some("text") => items.push(json!({"kind": "text", "text": redact(b["text"].as_str().unwrap_or_default(), true)})),
+                Some("thinking") if b["thinking"].as_str().is_some_and(|t| !t.is_empty()) => {
+                    items.push(json!({"kind": "thinking", "text": redact(b["thinking"].as_str().unwrap_or_default(), true)}))
+                }
                 Some("tool_use") => items.push(json!({"kind": "tool", "id": b["id"], "name": b["name"], "input": b["input"]})),
                 _ => {}
             }
@@ -657,6 +646,42 @@ fn confirmation(pending: &Value) -> Value {
 
 // ───────────────────────── tools ─────────────────────────
 
+/// Ferrum's own tools that only read, as this server knows them: they run at once. Every other tool asks
+/// the person first, whatever it says of itself (a tool's `readOnlyHint` is its author's word, not this
+/// server's: FEO-061); a capability or an action runs at once only when its own definition says it reads,
+/// which the kernel holds it to.
+const READS: &[&str] = &[
+    "ferrum_overview",
+    "describe_entity",
+    "search_records",
+    "get_record",
+    "preview_record",
+    "list_capabilities",
+    "run_report",
+    "get_audit_trail",
+    "get_collaboration",
+    "my_assignments",
+    "search_workspace",
+    "list_apps",
+    "plan_app",
+    "ops_overview",
+    "ops_command",
+];
+
+/// Whether a call runs without asking the person: one of [`READS`], a capability whose definition only
+/// reads, or an action declared read-only (run in a read-only transaction).
+fn unasked(k: &Kernel, ctx: &Ctx, name: &str, input: &Value) -> bool {
+    match name {
+        n if READS.contains(&n) => true,
+        "invoke_capability" => input["capability"].as_str().and_then(|c| k.capability(ctx, c).ok()).is_some_and(|c| !c.effect.changes()),
+        "run_action" => match (input["entity"].as_str(), input["action"].as_str()) {
+            (Some(e), Some(a)) => ctx.schema.entity(e).is_some_and(|ent| ent.def.actions.iter().any(|x| x.name == a && x.read_only)),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// The person's tools, as MCP lists them (with the App Manager's for administrators).
 struct Tools {
     /// For the API: name, description, input schema.
@@ -682,7 +707,8 @@ async fn tools(env: &Env, ctx: &Ctx) -> Tools {
     let mut meta = Map::new();
     for t in list.and_then(|r| r["result"]["tools"].as_array().cloned()).unwrap_or_default() {
         let Some(name) = t["name"].as_str() else { continue };
-        let read_only = t["annotations"]["readOnlyHint"].as_bool().unwrap_or(false);
+        // This server's word, not the tool's own (FEO-061).
+        let read_only = READS.contains(&name);
         let mut description = t["description"].as_str().unwrap_or_default().to_string();
         if !read_only {
             description.push_str(" Changes data: the person sees the call and allows or refuses it before it runs.");
@@ -691,41 +717,115 @@ async fn tools(env: &Env, ctx: &Ctx) -> Tools {
         meta.insert(
             name.to_string(),
             json!({"title": t["annotations"]["title"].as_str().or(t["title"].as_str()).unwrap_or(name), "read_only": read_only,
-                   "destructive": t["annotations"]["destructiveHint"].as_bool().unwrap_or(!read_only), "schema": t["inputSchema"]}),
+                   "destructive": !read_only && t["annotations"]["destructiveHint"].as_bool().unwrap_or(true), "schema": t["inputSchema"]}),
         );
     }
     Tools { api, meta, instructions }
 }
 
-/// Checks a call's input against its tool's schema (top level: required fields, no others when the
-/// schema says so, and the declared types), as the API does not when inputs stream.
+/// Checks a call's input against its tool's schema before anything runs, as the API does not when
+/// inputs stream: at every depth, types (null only where the schema allows it), required and unknown
+/// fields, enumerations, bounds, lengths and the formats the tools use (FEO-061).
 fn check_input(schema: &Value, input: &Value) -> std::result::Result<(), String> {
-    let Some(obj) = input.as_object() else { return Err("the input must be an object".into()) };
-    let props = schema["properties"].as_object();
-    for r in schema["required"].as_array().into_iter().flatten().filter_map(Value::as_str) {
-        if !obj.contains_key(r) {
-            return Err(format!("'{r}' is required"));
+    if !input.is_object() {
+        return Err("the input must be an object".into());
+    }
+    conforms(schema, input, "")
+}
+
+fn conforms(schema: &Value, v: &Value, at: &str) -> std::result::Result<(), String> {
+    let types: Vec<&str> = match &schema["type"] {
+        Value::String(t) => vec![t.as_str()],
+        Value::Array(ts) => ts.iter().filter_map(Value::as_str).collect(),
+        _ => vec![],
+    };
+    let is = |t: &str| match t {
+        "string" => v.is_string(),
+        "integer" => v.is_i64() || v.is_u64(),
+        "number" => v.is_number(),
+        "boolean" => v.is_boolean(),
+        "array" => v.is_array(),
+        "object" => v.is_object(),
+        "null" => v.is_null(),
+        _ => true,
+    };
+    if !types.is_empty() && !types.iter().any(|t| is(t)) {
+        return Err(format!("'{at}' must be {}", types.join(" or ")));
+    }
+    if let Some(options) = schema["enum"].as_array()
+        && !options.contains(v)
+    {
+        return Err(format!("'{at}' must be one of {}", Value::Array(options.clone())));
+    }
+    if let Some(c) = schema.get("const")
+        && c != v
+    {
+        return Err(format!("'{at}' must be {c}"));
+    }
+    for (key, any) in [("anyOf", true), ("oneOf", false)] {
+        if let Some(options) = schema[key].as_array() {
+            let fits = options.iter().filter(|o| conforms(o, v, at).is_ok()).count();
+            if (any && fits == 0) || (!any && fits != 1) {
+                return Err(format!("'{at}' does not fit any of its allowed forms"));
+            }
         }
     }
-    for (k, v) in obj {
-        let Some(p) = props.and_then(|p| p.get(k)) else {
-            if schema["additionalProperties"] == json!(false) {
-                return Err(format!("'{k}' is not an input of this tool"));
+    match v {
+        Value::String(text) => {
+            let n = text.chars().count() as u64;
+            if schema["minLength"].as_u64().is_some_and(|m| n < m) || schema["maxLength"].as_u64().is_some_and(|m| n > m) {
+                return Err(format!("'{at}' has the wrong length ({n} characters)"));
             }
-            continue;
-        };
-        let ok = match p["type"].as_str() {
-            Some("string") => v.is_string(),
-            Some("integer") => v.is_i64() || v.is_u64(),
-            Some("number") => v.is_number(),
-            Some("boolean") => v.is_boolean(),
-            Some("array") => v.is_array(),
-            Some("object") => v.is_object(),
-            _ => true,
-        };
-        if !ok && !v.is_null() {
-            return Err(format!("'{k}' must be of type {}", p["type"]));
+            let format_ok = match schema["format"].as_str() {
+                Some("uuid") => text.parse::<Uuid>().is_ok(),
+                Some("date") => chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").is_ok(),
+                Some("date-time") => chrono::DateTime::parse_from_rfc3339(text).is_ok(),
+                _ => true,
+            };
+            if !format_ok {
+                return Err(format!("'{at}' must be a {}", schema["format"].as_str().unwrap_or_default()));
+            }
         }
+        Value::Number(n) => {
+            let x = n.as_f64().unwrap_or(f64::NAN);
+            let below = schema["minimum"].as_f64().is_some_and(|m| x < m) || schema["exclusiveMinimum"].as_f64().is_some_and(|m| x <= m);
+            let above = schema["maximum"].as_f64().is_some_and(|m| x > m) || schema["exclusiveMaximum"].as_f64().is_some_and(|m| x >= m);
+            if below || above || x.is_nan() {
+                return Err(format!("'{at}' is out of range"));
+            }
+        }
+        Value::Array(items) => {
+            let n = items.len() as u64;
+            if schema["minItems"].as_u64().is_some_and(|m| n < m) || schema["maxItems"].as_u64().is_some_and(|m| n > m) {
+                return Err(format!("'{at}' has the wrong number of items ({n})"));
+            }
+            if schema.get("items").is_some_and(Value::is_object) {
+                for (i, item) in items.iter().enumerate() {
+                    conforms(&schema["items"], item, &format!("{at}[{i}]"))?;
+                }
+            }
+        }
+        Value::Object(obj) => {
+            let props = schema["properties"].as_object();
+            let path = |key: &str| if at.is_empty() { key.to_string() } else { format!("{at}.{key}") };
+            for r in schema["required"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                if !obj.contains_key(r) {
+                    return Err(format!("'{}' is required", path(r)));
+                }
+            }
+            for (key, value) in obj {
+                let path = path(key);
+                match props.and_then(|p| p.get(key)) {
+                    Some(p) => conforms(p, value, &path)?,
+                    None => match &schema["additionalProperties"] {
+                        Value::Bool(false) => return Err(format!("'{path}' is not an input of this tool")),
+                        extra @ Value::Object(_) => conforms(extra, value, &path)?,
+                        _ => {}
+                    },
+                }
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -1002,6 +1102,284 @@ impl Assistant {
     }
 }
 
+// ───────────────────────── what a turn may still do ─────────────────────────
+
+/// The person and the workspace's policy as they stand now (FEO-059): asked again before every call to
+/// the model, every retry and every tool, so a role taken away, a person signed out everywhere or turned
+/// away, or the assistant turned off stops the next thing it would have allowed. `signed_in` is the
+/// person's session version when the turn began; `begun`, what they could do then: a turn whose rights
+/// changed under it stops, since what it read before is in the context it would send on.
+async fn standing(env: &Env, first: &Ctx, signed_in: i32, begun: Option<&Ctx>) -> Result<(Ctx, Policy)> {
+    let k = &env.kernel;
+    let policy = env.assistant.policy(k, first.tenant).await?;
+    if policy.off {
+        return Err(Error::Forbidden("the assistant was turned off for this workspace".into()));
+    }
+    let now = k.load_ctx(first.tenant, first.user, Some(signed_in), first.request_id.clone()).await.map_err(|e| match e {
+        Error::Unauthorized(m) | Error::Forbidden(m) => Error::Forbidden(format!("you can no longer use the assistant here: {m}")),
+        other => other,
+    })?;
+    let now = now.for_provider(policy.egress.clone());
+    if let Some(b) = begun
+        && !same_rights(b, &now)
+    {
+        return Err(Error::Forbidden("what you may see or do changed while the assistant was answering: ask again".into()));
+    }
+    Ok((now, policy))
+}
+
+/// Whether two views of a person allow the same: their roles, administration, scopes, read-only state
+/// and what may go to the provider.
+fn same_rights(a: &Ctx, b: &Ctx) -> bool {
+    let egress = |c: &Ctx| serde_json::to_string(&c.egress).unwrap_or_default();
+    a.roles == b.roles && a.is_admin == b.is_admin && a.scopes == b.scopes && a.read_only == b.read_only && egress(a) == egress(b)
+}
+
+/// Where a call goes and under what policy, as each answer records it: an earlier answer is sent to the
+/// model again only to the same destination under the same egress policy (FEO-060).
+fn here(config: &Config, egress: &Egress) -> (String, String) {
+    use sha2::{Digest, Sha256};
+    let destination = format!("{:?} {}", config.protocol, config.base_url);
+    let policy = hex::encode(&Sha256::digest(serde_json::to_vec(egress).unwrap_or_default())[..8]);
+    (destination, policy)
+}
+
+/// A context block the panel adds before the person's words: for that turn only.
+fn context_block(b: &Value) -> bool {
+    b["text"].as_str().is_some_and(|t| t.starts_with("<context>"))
+}
+
+/// Whether a user message carries the person's own words (it starts a turn).
+fn person_wrote(content: &Value) -> bool {
+    content.as_array().is_some_and(|blocks| blocks.iter().any(|b| b["type"] == "text" && !context_block(b)))
+}
+
+/// Whether what an earlier turn drew on may still go to the model now: each of its answers went to this
+/// destination under this policy, and the person may still read, as narrowed for the provider, every
+/// record and every kind of record its calls named.
+async fn still_sendable(k: &Kernel, ctx: &Ctx, turn: &[(String, Value, Option<Value>)], (destination, policy): &(String, String)) -> bool {
+    for (role, content, usage) in turn {
+        if role != "assistant" {
+            continue;
+        }
+        let u = usage.as_ref();
+        if u.and_then(|u| u["destination"].as_str()) != Some(destination) || u.and_then(|u| u["egress"].as_str()) != Some(policy) {
+            return false;
+        }
+        for call in content.as_array().into_iter().flatten().filter(|b| b["type"] == "tool_use") {
+            let input = &call["input"];
+            let Some(entity) = input["entity"].as_str() else { continue };
+            let readable = match input["id"].as_str().and_then(|i| i.parse::<Uuid>().ok()) {
+                Some(id) => k.get(ctx, entity, id, false).await.is_ok(),
+                None => k.list(ctx, entity, &ferrum_kernel::ListQuery { limit: Some(1), ..Default::default() }).await.is_ok(),
+            };
+            if !readable {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// The conversation as the model may be sent it now (FEO-060). The current turn (from the person's
+/// last words, with the call their first message answers) goes as stored: its calls and results belong
+/// together. Of earlier turns go the person's words, and the answers only where what they drew on is
+/// still the person's to send here; their calls, results and context blocks are not sent again. What
+/// was kept is an archive, not context to reuse.
+async fn history(k: &Kernel, ctx: &Ctx, thread: Uuid, here: &(String, String)) -> Result<Vec<Value>> {
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let rows: Vec<(String, Value, Option<Value>)> =
+        sqlx::query_as("select role, content, usage from assistant_message where tenant_id = $1 and thread_id = $2 order by seq")
+            .bind(ctx.tenant)
+            .bind(thread)
+            .fetch_all(&mut *tx)
+            .await?;
+    tx.commit().await?;
+    let mut start = rows.iter().rposition(|(role, content, _)| role == "user" && person_wrote(content)).unwrap_or(0);
+    // Its first message answers the calls an earlier answer left: that answer goes with it.
+    if start > 0 && rows[start].1.as_array().is_some_and(|b| b.iter().any(|x| x["type"] == "tool_result")) && rows[start - 1].0 == "assistant" {
+        start -= 1;
+    }
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < start {
+        let end = (i + 1..start).find(|&j| rows[j].0 == "user" && person_wrote(&rows[j].1)).unwrap_or(start);
+        let turn = &rows[i..end];
+        let sendable = still_sendable(k, ctx, turn, here).await;
+        let mut left_out = false;
+        for (role, content, _) in turn {
+            let words: Vec<Value> =
+                content.as_array().into_iter().flatten().filter(|b| b["type"] == "text" && (role == "assistant" || !context_block(b))).cloned().collect();
+            if words.is_empty() {
+                continue;
+            }
+            if role == "assistant" && !sendable {
+                if !left_out {
+                    left_out = true;
+                    said(
+                        &mut out,
+                        "assistant",
+                        vec![json!({"type": "text", "text": "[An earlier answer is left out: what it drew on is no longer the person's to send here.]"})],
+                    );
+                }
+                continue;
+            }
+            said(&mut out, role, words);
+        }
+        i = end;
+    }
+    for (role, content, _) in &rows[start..] {
+        said(&mut out, role, content.as_array().cloned().unwrap_or_default());
+    }
+    Ok(out)
+}
+
+/// Adds a message, joined to the one before when it is the same speaker's (their calls left out in
+/// between), so the conversation still alternates.
+fn said(out: &mut Vec<Value>, role: &str, blocks: Vec<Value>) {
+    match out.last_mut() {
+        Some(last) if last["role"] == role => {
+            if let Some(content) = last["content"].as_array_mut() {
+                content.extend(blocks);
+            }
+        }
+        _ => out.push(json!({"role": role, "content": blocks})),
+    }
+}
+
+/// The least a call is left to answer with: with less of the allowance left, it is not made.
+const MIN_OUTPUT: i64 = 1_024;
+
+/// What has been used this month and what calls in flight hold (FEO-062).
+async fn spoken_for(tx: &mut ferrum_kernel::db::Tx, tenant: Uuid) -> Result<i64> {
+    let n: Option<i64> = sqlx::query_scalar(
+        "select ((select coalesce(sum(coalesce((usage->'usage'->>'input_tokens')::bigint, 0) + coalesce((usage->'usage'->>'output_tokens')::bigint, 0)), 0) \
+                 from assistant_message where tenant_id = $1 and role = 'assistant' and created_at >= date_trunc('month', now())) \
+              + (select coalesce(sum(tokens), 0) from assistant_reservation where tenant_id = $1 and created_at > now() - interval '15 minutes'))::bigint",
+    )
+    .bind(tenant)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(n.unwrap_or(0))
+}
+
+/// Holds back what one call to the model may use from the month's allowance before it is made
+/// (FEO-062): under one lock per workspace, what is used and held must leave room for the call's input
+/// and some answer, or it is not made; its answer is capped at what is left. Turns at once cannot spend
+/// more than the allowance between them. The call's most output tokens, and what is held (`None`
+/// without an allowance), let go by [`release`] once its use is recorded or it failed.
+async fn reserve(k: &Kernel, ctx: &Ctx, budget: Option<i64>, input: i64) -> Result<(u32, Option<Uuid>)> {
+    let Some(budget) = budget else { return Ok((MAX_TOKENS, None)) };
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    sqlx::query("select pg_advisory_xact_lock(hashtextextended('ferrum.assistant.allowance ' || $1::text, 0))").bind(ctx.tenant).execute(&mut *tx).await?;
+    let room = budget - spoken_for(&mut tx, ctx.tenant).await? - input;
+    if room < MIN_OUTPUT {
+        return Err(Error::TooManyRequests("this workspace has used its assistant allowance for the month".into()));
+    }
+    let answer = room.min(i64::from(MAX_TOKENS));
+    let id = Uuid::now_v7();
+    sqlx::query("insert into assistant_reservation (tenant_id, id, user_id, tokens) values ($1, $2, $3, $4)")
+        .bind(ctx.tenant)
+        .bind(id)
+        .bind(ctx.user)
+        .bind(input + answer)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok((answer as u32, Some(id)))
+}
+
+async fn release(k: &Kernel, tenant: Uuid, held: Option<Uuid>) {
+    let Some(id) = held else { return };
+    let done = async {
+        let mut tx = k.db.tenant_tx(tenant).await?;
+        sqlx::query("delete from assistant_reservation where tenant_id = $1 and id = $2").bind(tenant).bind(id).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok::<(), Error>(())
+    };
+    // One that cannot be let go now counts for 15 minutes, then not at all.
+    if let Err(e) = done.await {
+        tracing::warn!(error = %e, "an assistant reservation was not let go");
+    }
+}
+
+/// What no answer shows, whatever the model says (FEO-062): Ferrum's API keys, providers' API keys and
+/// private keys. A private key still being written is matched to the end only when the text is complete.
+fn redact(text: &str, complete: bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some((at, len)) = next_secret(rest, complete) {
+        out.push_str(&rest[..at]);
+        out.push_str("[withheld]");
+        rest = &rest[at + len..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Where the first secret in `s` starts, and how long it is.
+fn next_secret(s: &str, complete: bool) -> Option<(usize, usize)> {
+    let b = s.as_bytes();
+    let lower = |c: &u8| c.is_ascii_lowercase() || c.is_ascii_digit();
+    let token = |c: &u8| c.is_ascii_alphanumeric() || *c == b'-' || *c == b'_';
+    let starts_word = |i: usize| i == 0 || !b[i - 1].is_ascii_alphanumeric();
+    let mut found: Vec<(usize, usize)> = Vec::new();
+    // fk_<10>_<40>
+    found.extend(
+        s.match_indices("fk_")
+            .map(|(i, _)| i)
+            .find(|&i| starts_word(i) && b.len() >= i + 54 && b[i + 3..i + 13].iter().all(lower) && b[i + 13] == b'_' && b[i + 14..i + 54].iter().all(lower))
+            .map(|i| (i, 54)),
+    );
+    // sk-… (a provider's key), at least 20 characters after its prefix
+    found.extend(s.match_indices("sk-").map(|(i, _)| i).filter(|&i| starts_word(i)).find_map(|i| {
+        let n = b[i + 3..].iter().take_while(|c| token(c)).count();
+        (n >= 20).then_some((i, 3 + n))
+    }));
+    // A private key, from its first line to its last
+    if let Some(i) = s.find("-----BEGIN ").filter(|&i| s[i..].lines().next().is_some_and(|l| l.contains("PRIVATE KEY"))) {
+        match s[i..].find("-----END ").map(|e| i + e) {
+            Some(e) => {
+                let close = s[e + 9..].find("-----").map(|c| e + 9 + c + 5).unwrap_or(s.len());
+                found.push((i, close - i));
+            }
+            None if complete => found.push((i, s.len() - i)),
+            None => {}
+        }
+    }
+    found.into_iter().min_by_key(|(i, _)| *i)
+}
+
+/// Text streamed as it comes, short of where a secret could still be starting (FEO-062).
+#[derive(Default)]
+struct Guard {
+    held: String,
+}
+
+/// Longer than any secret [`redact`] knows; a private key is held whole from its first line.
+const HOLD: usize = 200;
+
+impl Guard {
+    fn push(&mut self, text: &str) -> String {
+        self.held.push_str(text);
+        self.held = redact(&self.held, false);
+        let mut cut = self.held.len().saturating_sub(HOLD);
+        if let Some(open) = self.held.rfind("-----BEGIN ").filter(|&i| !self.held[i..].contains("-----END ")) {
+            cut = cut.min(open);
+        }
+        while !self.held.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        self.held.drain(..cut).collect()
+    }
+
+    fn finish(&mut self) -> String {
+        let out = redact(&self.held, true);
+        self.held.clear();
+        out
+    }
+}
+
 // ───────────────────────── turns ─────────────────────────
 
 /// What starts or continues a turn.
@@ -1091,12 +1469,12 @@ fn not_run(calls: &[Value], why: &str) -> Vec<Value> {
 async fn run(env: &Env, ctx: &Ctx, thread: Uuid, live: &Live, t: Thread, input: Input) -> Result<&'static str> {
     let k = &env.kernel;
     let config = env.assistant.config.clone().ok_or_else(|| Error::Unavailable("the assistant is not set up on this server".into()))?;
-    let policy = env.assistant.policy(k, ctx.tenant).await?;
+    // The person's sessions as the turn begins: each step loads them with it again (FEO-059).
+    let first = ctx;
+    let signed_in = k.token_version(first.tenant, first.user).await?;
     // From here on, what is read goes to the provider: narrowed, whatever the person may see.
-    let ctx = &ctx.for_provider(policy.egress.clone());
-    let model = policy.model.clone().filter(|m| *m == config.model || config.models.contains(m)).unwrap_or_else(|| config.model.clone());
-    let budget = [policy.monthly_tokens, config.monthly_tokens].into_iter().flatten().min();
-    let tools = tools(env, ctx).await;
+    let (begun, _) = standing(env, first, signed_in, None).await?;
+    let ctx = &begun;
 
     // What the person sent, after whatever was left open: the results of calls that were waiting
     // for them (or that an earlier turn left half done).
@@ -1169,29 +1547,32 @@ async fn run(env: &Env, ctx: &Ctx, thread: Uuid, live: &Live, t: Thread, input: 
         live.send(json!({"type": "message", "message": display(seq, "user", &content)}));
     }
 
-    let system = if tools.instructions.is_empty() { SYSTEM.to_string() } else { format!("{SYSTEM}\n\nAbout the tools: {}", tools.instructions) };
-    let prompt = prompt_version(&system, &tools.api, &model);
-    record_prompt(k, ctx, &prompt, &model, &system, &tools.api).await?;
     let stopped = || -> Result<&'static str> {
         live.send(json!({"type": "note", "text": "Stopped."}));
         Ok("idle")
     };
+    let mut recorded = String::new();
     for _ in 0..MAX_STEPS {
         if live.stop.load(Ordering::SeqCst) || stop_requested(k, ctx, thread).await {
             return stopped();
         }
-        if let Some(budget) = budget
-            && tokens_this_month(k, ctx.tenant).await? >= budget
-        {
-            return Err(Error::TooManyRequests("this workspace has used its assistant allowance for the month".into()));
+        // As things stand now: the person's rights, the workspace's policy, the model and the tools (FEO-059).
+        let (now, policy) = standing(env, first, signed_in, Some(&begun)).await?;
+        let ctx = &now;
+        let model = policy.model.clone().filter(|m| *m == config.model || config.models.contains(m)).unwrap_or_else(|| config.model.clone());
+        let budget = [policy.monthly_tokens, config.monthly_tokens].into_iter().flatten().min();
+        let tools = tools(env, ctx).await;
+        let system = if tools.instructions.is_empty() { SYSTEM.to_string() } else { format!("{SYSTEM}\n\nAbout the tools: {}", tools.instructions) };
+        let prompt = prompt_version(&system, &tools.api, &model);
+        if prompt != recorded {
+            record_prompt(k, ctx, &prompt, &model, &system, &tools.api).await?;
+            recorded = prompt.clone();
         }
         if calls_last_hour(k, ctx).await? >= config.calls_per_hour {
             return Err(Error::TooManyRequests("you have used the assistant a lot in the last hour; it is available again shortly".into()));
         }
-        let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-        let history: Vec<Value> =
-            messages(&mut tx, ctx.tenant, thread).await?.into_iter().map(|(_, role, content)| json!({"role": role, "content": content})).collect();
-        tx.commit().await?;
+        let sent_to = here(&config, &policy.egress);
+        let history = history(k, ctx, thread, &sent_to).await?;
         let mut body = json!({
             "model": model,
             "max_tokens": MAX_TOKENS,
@@ -1207,20 +1588,40 @@ async fn run(env: &Env, ctx: &Ctx, thread: Uuid, live: &Live, t: Thread, input: 
         if config.fallbacks {
             body["fallbacks"] = json!("default");
         }
+        // What the call may use, held back from the allowance before it is made (FEO-062).
+        let input = (serde_json::to_vec(&body).map(|b| b.len()).unwrap_or(0) / 3) as i64;
+        let (answer, held) = reserve(k, ctx, budget, input).await?;
+        body["max_tokens"] = json!(answer);
 
         let mut attempt = 0;
         let reply = loop {
             let mut said = false;
+            // What is shown as it comes, short of where a secret could still be starting (FEO-062).
+            let (mut text, mut thinking) = (Guard::default(), Guard::default());
             let outcome = env
                 .assistant
-                .call(&body, &live.stop, &mut |kind, text| {
+                .call(&body, &live.stop, &mut |kind, piece| {
                     said = true;
-                    live.send(json!({"type": "delta", "kind": kind, "text": text}));
+                    let out = if kind == "thinking" { thinking.push(piece) } else { text.push(piece) };
+                    if !out.is_empty() {
+                        live.send(json!({"type": "delta", "kind": kind, "text": out}));
+                    }
                 })
                 .await;
             match outcome {
-                Ok(r) => break r,
-                Err(e) if e.stopped => return stopped(),
+                Ok(r) => {
+                    for (kind, guard) in [("text", &mut text), ("thinking", &mut thinking)] {
+                        let out = guard.finish();
+                        if !out.is_empty() {
+                            live.send(json!({"type": "delta", "kind": kind, "text": out}));
+                        }
+                    }
+                    break r;
+                }
+                Err(e) if e.stopped => {
+                    release(k, ctx.tenant, held).await;
+                    return stopped();
+                }
                 Err(e) if e.retryable && attempt < RETRIES => {
                     attempt += 1;
                     if said {
@@ -1228,17 +1629,41 @@ async fn run(env: &Env, ctx: &Ctx, thread: Uuid, live: &Live, t: Thread, input: 
                     }
                     let wait = e.retry_after.unwrap_or(Duration::from_secs(2u64.pow(attempt))).min(Duration::from_secs(60));
                     tokio::time::sleep(wait).await;
+                    // Not tried again once the person or the workspace says otherwise (FEO-059).
+                    if let Err(e) = standing(env, first, signed_in, Some(&begun)).await {
+                        release(k, ctx.tenant, held).await;
+                        return Err(e);
+                    }
                 }
-                Err(e) => return Err(Error::Unavailable(e.message)),
+                Err(e) => {
+                    release(k, ctx.tenant, held).await;
+                    return Err(Error::Unavailable(e.message));
+                }
             }
         };
 
         // What was asked and answered stays in the conversation: the log says only that it happened.
         let called: Vec<&str> = reply.content.iter().filter(|b| b["type"] == "tool_use").filter_map(|b| b["name"].as_str()).collect();
         tracing::info!(tenant = %ctx.tenant, user = %ctx.user, model = %reply.model, input_tokens = %reply.usage["input_tokens"], output_tokens = %reply.usage["output_tokens"], tools = ?called, "assistant call");
-        let content = json!(reply.content);
-        let usage = json!({"model": reply.model, "usage": reply.usage, "stop_reason": reply.stop_reason, "prompt": prompt});
-        let seq = append(k, ctx, thread, "assistant", &content, Some(&usage)).await?;
+        // What no answer shows is not kept either (FEO-062).
+        let content = json!(
+            reply
+                .content
+                .iter()
+                .map(|b| match b["text"].as_str().filter(|_| b["type"] == "text") {
+                    Some(t) => {
+                        let mut b = b.clone();
+                        b["text"] = json!(redact(t, true));
+                        b
+                    }
+                    None => b.clone(),
+                })
+                .collect::<Vec<_>>()
+        );
+        let usage = json!({"model": reply.model, "usage": reply.usage, "stop_reason": reply.stop_reason, "prompt": prompt, "destination": sent_to.0, "egress": sent_to.1});
+        let seq = append(k, ctx, thread, "assistant", &content, Some(&usage)).await;
+        release(k, ctx.tenant, held).await;
+        let seq = seq?;
         live.send(json!({"type": "message", "message": display(seq, "assistant", &content)}));
         let calls: Vec<Value> = reply.content.iter().filter(|b| b["type"] == "tool_use").cloned().collect();
 
@@ -1276,25 +1701,37 @@ async fn run(env: &Env, ctx: &Ctx, thread: Uuid, live: &Live, t: Thread, input: 
         for call in &calls {
             let id = call["id"].as_str().unwrap_or_default().to_string();
             let name = call["name"].as_str().unwrap_or_default();
+            // Every call is kept with what waits, answered or not, so its result goes back with the rest.
+            let refused = |why: String| {
+                (json!({"id": id, "name": name, "title": name, "input": call["input"], "version": null, "destructive": false}), json!([true, why]))
+            };
             let Some(m) = tools.meta.get(name) else {
-                results.insert(id, json!([true, format!("There is no tool named {name}.")]));
+                let (d, r) = refused(format!("There is no tool named {name}."));
+                described.push(d);
+                results.insert(id, r);
                 continue;
             };
             if let Some(raw) = reply.bad_input.get(&id) {
-                results.insert(id, json!([true, json!({"INVALID_JSON": raw}).to_string()]));
+                let (d, r) = refused(json!({"INVALID_JSON": raw}).to_string());
+                described.push(d);
+                results.insert(id, r);
                 continue;
             }
             if let Err(why) = check_input(&m["schema"], &call["input"]) {
-                results.insert(id, json!([true, format!("Invalid input: {why}.")]));
+                let (d, r) = refused(format!("Invalid input: {why}."));
+                described.push(d);
+                results.insert(id, r);
                 continue;
             }
-            let version = if m["read_only"] == json!(true) { None } else { version_of(k, ctx, &call["input"]).await };
+            let runs = unasked(k, ctx, name, &call["input"]);
+            let version = if runs { None } else { version_of(k, ctx, &call["input"]).await };
             described.push(json!({"id": id, "name": name, "title": m["title"], "input": call["input"], "version": version, "destructive": m["destructive"]}));
-            if m["read_only"] == json!(true) {
+            if runs {
                 continue;
             }
             awaiting.push(json!(id));
         }
+        let mut halt: Option<Error> = None;
         for call in &calls {
             let id = call["id"].as_str().unwrap_or_default();
             let name = call["name"].as_str().unwrap_or_default();
@@ -1305,10 +1742,38 @@ async fn run(env: &Env, ctx: &Ctx, thread: Uuid, live: &Live, t: Thread, input: 
                 results.insert(id.to_string(), json!([true, "Stopped before this call ran."]));
                 continue;
             }
-            live.send(json!({"type": "tool", "id": id, "name": name, "status": "running"}));
-            let (error, text) = run_tool(env, ctx, name, &call["input"]).await;
-            live.send(json!({"type": "tool", "id": id, "name": name, "status": if error { "error" } else { "done" }, "text": preview(&text, 600)}));
-            results.insert(id.to_string(), json!([error, text]));
+            // Each call as things stand when it runs (FEO-059).
+            let current = match &halt {
+                None => standing(env, first, signed_in, Some(&begun)).await,
+                Some(_) => Err(Error::Forbidden(String::new())),
+            };
+            match current {
+                Ok((now, _)) => {
+                    live.send(json!({"type": "tool", "id": id, "name": name, "status": "running"}));
+                    let (error, text) = run_tool(env, &now, name, &call["input"]).await;
+                    live.send(json!({"type": "tool", "id": id, "name": name, "status": if error { "error" } else { "done" }, "text": preview(&text, 600)}));
+                    results.insert(id.to_string(), json!([error, text]));
+                }
+                Err(e) => {
+                    let why = halt.get_or_insert(e).to_string();
+                    results.insert(id.to_string(), json!([true, format!("Not run: {why}")]));
+                }
+            }
+        }
+        if let Some(e) = halt {
+            // Nothing more runs or is offered; the calls left are answered, so the conversation stays well formed.
+            for id in awaiting.iter().filter_map(Value::as_str) {
+                results.insert(id.to_string(), json!([true, format!("Not run: {e}")]));
+            }
+            let content = json!(
+                calls
+                    .iter()
+                    .filter_map(|c| c["id"].as_str())
+                    .map(|id| tool_result(id, true, results[id][1].as_str().unwrap_or("Not run.")))
+                    .collect::<Vec<_>>()
+            );
+            append(k, ctx, thread, "user", &content, None).await?;
+            return Err(e);
         }
         if !awaiting.is_empty() {
             let pending = json!({"calls": described, "results": results, "awaiting": awaiting, "asked_at": chrono::Utc::now().timestamp()});
@@ -1414,6 +1879,70 @@ mod tests {
         // Not read, and what was read is older than the grace: unavailable.
         let (p, _) = settle(Some((now - POLICY_GRACE - Duration::from_secs(1), rev, Policy::default())), failed(), now, rev);
         assert!(matches!(p, Err(Error::Unavailable(_))));
+    }
+
+    #[test]
+    fn inputs_are_checked_at_every_depth() {
+        let uuid = "0195f0a0-0000-7000-8000-000000000001";
+        let schema = json!({"type": "object", "additionalProperties": false, "required": ["entity"], "properties": {
+            "entity": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+            "priority": {"type": "string", "enum": ["Low", "High"]},
+            "id": {"type": "string", "format": "uuid"},
+            "due": {"type": "string", "format": "date"},
+            "mentions": {"type": "array", "items": {"type": "string", "format": "uuid"}, "maxItems": 2},
+            "data": {"type": "object", "properties": {"amount": {"type": "number", "exclusiveMinimum": 0}}, "required": ["amount"], "additionalProperties": false},
+            "note": {"type": ["string", "null"], "maxLength": 5}
+        }});
+        let ok = |v: Value| check_input(&schema, &v);
+        assert!(ok(json!({"entity": "Case", "limit": 5, "priority": "Low", "id": uuid, "due": "2026-11-09", "mentions": [uuid], "note": null, "data": {"amount": 1.5}})).is_ok());
+        for (bad, why) in [
+            (json!({"entity": "Case", "limit": null}), "null where the schema does not allow it"),
+            (json!({"entity": "Case", "limit": 0}), "a number below its minimum"),
+            (json!({"entity": "Case", "limit": 2.5}), "a fraction for an integer"),
+            (json!({"entity": "Case", "priority": "Urgent"}), "a value outside its enumeration"),
+            (json!({"entity": "Case", "id": "not-a-uuid"}), "a malformed id"),
+            (json!({"entity": "Case", "due": "9 November"}), "a malformed date"),
+            (json!({"entity": "Case", "mentions": [123]}), "an item of the wrong type"),
+            (json!({"entity": "Case", "mentions": [uuid, uuid, uuid]}), "too many items"),
+            (json!({"entity": "Case", "data": {"amount": 0}}), "a nested bound"),
+            (json!({"entity": "Case", "data": {}}), "a nested required field missing"),
+            (json!({"entity": "Case", "data": {"amount": 1, "admin": true}}), "a nested unknown field"),
+            (json!({"entity": "Case", "note": "too long"}), "a string past its length"),
+            (json!({"limit": 3}), "its required field missing"),
+            (json!({"entity": "Case", "is_admin": true}), "an unknown field"),
+        ] {
+            assert!(ok(bad).is_err(), "accepted {why}");
+        }
+        assert!(check_input(&schema, &json!(["Case"])).is_err(), "not an object");
+    }
+
+    #[test]
+    fn a_secret_split_across_pieces_is_never_shown() {
+        let key = "fk_abcdefghij_0123456789abcdefghij0123456789abcdefghij";
+        let mut g = Guard::default();
+        let mut shown = String::new();
+        let words = "More words. ".repeat(30);
+        for piece in ["Your key is fk_abcde", "fghij_0123456789abcdefghij", "0123456789abcdefghij and that is all. ", words.as_str()] {
+            shown.push_str(&g.push(piece));
+        }
+        shown.push_str(&g.finish());
+        assert!(!shown.contains(key) && !shown.contains("abcdefghij0123456789abcdefghij"), "{shown}");
+        assert!(shown.starts_with("Your key is [withheld] and that is all. More words."), "{shown}");
+        // A private key is held from its first line until it ends, and is not shown unfinished either.
+        let mut g = Guard::default();
+        let mut shown = g.push("Here: -----BEGIN RSA PRIVATE KEY-----\nMIIEow");
+        shown.push_str(&g.push(&"A".repeat(500)));
+        assert_eq!(shown, "Here: ");
+        shown.push_str(&g.push("\n-----END RSA PRIVATE KEY----- done"));
+        shown.push_str(&g.finish());
+        assert_eq!(shown, "Here: [withheld] done");
+        let mut g = Guard::default();
+        let unfinished = g.push("-----BEGIN PRIVATE KEY-----\nabc") + &g.finish();
+        assert_eq!(unfinished, "[withheld]");
+        // A provider's key too; ordinary words go through as they are.
+        assert_eq!(redact("use sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUV_x now", true), "use [withheld] now");
+        assert_eq!(redact("a desk-top, sk-short and fk_x", true), "a desk-top, sk-short and fk_x");
     }
 
     #[test]
