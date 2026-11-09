@@ -50,7 +50,8 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   packages that declare nothing are not searched (each answer names them). Records a package
   keeps for a stated reason, and submitted documents' copies of names, stay. An erasure deletes the
   workspace's stored exports; backups taken before it still hold the data until they expire, and
-  after a restore `ferrum task reapply_erasures` erases it again. A restriction of processing stops
+  after a restore `ferrum task reapply_erasures` erases it again (one workspace taken back to a copy
+  erases it again itself). A restriction of processing stops
   mail queued to any of the person's addresses; apps that deliver on their own ask
   `Kernel::may_contact`.
 - **Rate limits** (sign-ins, documents emailed, 300 requests a minute per address on public

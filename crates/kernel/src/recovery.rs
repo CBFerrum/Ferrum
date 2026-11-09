@@ -49,7 +49,8 @@ const NOTE: &str = "the database was restored: this may or may not have happened
 /// let in, and what they did there; and what the people its data is about asked for and what the law
 /// holds, which no copy undoes (FEO-078): legal holds and the versions kept under them, restrictions of
 /// processing, and consent given or withdrawn.
-const KEPT: &[&str] = &["audit_event", "support_grant", "support_access", "legal_hold", "held_version", "processing_restriction", "contact_consent"];
+const KEPT: &[&str] =
+    &["audit_event", "support_grant", "support_access", "legal_hold", "held_version", "processing_restriction", "contact_consent", "privacy_erasure"];
 /// How many rows go across at once.
 const BATCH: usize = 1000;
 
@@ -304,7 +305,8 @@ impl Kernel {
     /// Going back does not unlearn what has happened. [`KEPT`] tables and each app's own stay as they are.
     /// Nobody who cannot get in now can get in afterwards: passwords, second factors and deactivations stay
     /// as they are now, passkeys removed since stay removed, and every session and API key stops working.
-    /// Roles and everything else are as they were in the copy, and files are not checked against the store.
+    /// Roles and everything else are as they were in the copy. Every erasure the workspace has made is done again
+    /// before the transaction commits, so what was erased since the copy stays erased (FEO-078).
     pub async fn extract_tenant(&self, ctx: &Ctx, source_url: &str, apply: bool, note: &str) -> Result<Value> {
         if !ctx.is_admin {
             return Err(Error::Forbidden("administrator access required".into()));
@@ -349,11 +351,32 @@ impl Kernel {
                 tables.push(json!({"table": t, "now": now, "in_copy": in_copy}));
             }
         }
+        // What went out after the copy was taken, which the copy does not know of: payments taken, messages
+        // sent, deliveries made. Not undone; listed for a person to reconcile, here and in the audit trail,
+        // within the outbox's keep window (`outbox_keep_days`).
+        let mut tx = source.system_tx().await?;
+        let seen: Option<chrono::DateTime<chrono::Utc>> =
+            sqlx::query_scalar("select max(processed_at) from outbox where tenant_id = $1").bind(tenant).fetch_one(&mut *tx).await?;
+        tx.commit().await?;
+        let mut tx = self.db.system_tx().await?;
+        let since: Vec<(String, i64)> = sqlx::query_as(
+            "select topic, count(*) from outbox where tenant_id = $1 and not dead and processed_at > coalesce($2, '-infinity'::timestamptz) \
+             group by topic order by topic",
+        )
+        .bind(tenant)
+        .bind(seen)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        let went_out: Vec<Value> = since.into_iter().map(|(topic, count)| json!({"topic": topic, "count": count})).collect();
         if !apply {
-            return Ok(json!({"applied": false, "tables": tables, "kept": kept}));
+            return Ok(json!({"applied": false, "tables": tables, "kept": kept, "went_out_since": went_out}));
         }
 
         let mut tx = self.db.system_tx().await?;
+        // The objects this workspace's files name now: the copy's others may be gone from the store.
+        let stored: BTreeSet<String> =
+            sqlx::query_scalar("select storage_key from file_object where tenant_id = $1").bind(tenant).fetch_all(&mut *tx).await?.into_iter().collect();
         let was: String = sqlx::query_scalar("update tenant t set status = 'suspended' from tenant o where o.id = t.id and t.id = $1 returning o.status")
             .bind(tenant)
             .fetch_one(&mut *tx)
@@ -424,13 +447,56 @@ impl Kernel {
         sqlx::query("update user_session set revoked_at = now() where tenant_id = $1 and revoked_at is null").bind(tenant).execute(&mut *tx).await?;
         sqlx::query("update api_key set revoked_at = now() where tenant_id = $1 and revoked_at is null").bind(tenant).execute(&mut *tx).await?;
         self.set_aside(&mut tx, Some(tenant)).await?;
-        audit::record(&mut tx, ctx, "Tenant", tenant, "platform.tenant_restored", None, json!({"note": note, "tables": tables, "kept": kept})).await?;
+        // Erasures since the copy was taken stay done: each one this workspace made is erased again before
+        // anyone sees what came back, with the triggers on again, so that what keeps derived copies sees it.
+        sqlx::query("set local session_replication_role = origin").execute(&mut *tx).await?;
+        sqlx::query("select set_config('ferrum.tenant_id', $1, true)").bind(tenant.to_string()).execute(&mut *tx).await?;
+        let erasures: Vec<Value> =
+            sqlx::query_scalar("select erasure from privacy_erasure where tenant_id = $1 order by id").bind(tenant).fetch_all(&mut *tx).await?;
+        let system = Ctx::system(tenant, self.registry.schema(tenant).await?);
+        let mut erased_again = 0;
+        for erasure in &erasures {
+            erased_again += self.erase_again(&mut tx, &system, erasure).await?.0;
+        }
+        let done = json!({"note": note, "tables": tables, "kept": kept, "erasures": erasures.len(), "erased_again": erased_again, "went_out_since": went_out});
+        audit::record(&mut tx, ctx, "Tenant", tenant, "platform.tenant_restored", None, done).await?;
         sqlx::query("update tenant set status = $2 where id = $1").bind(tenant).bind(&was).execute(&mut *tx).await?;
         notify_users(&mut tx, tenant, None).await?;
         tx.commit().await?;
         from.rollback().await?;
         self.invalidate_tenant_users(tenant);
-        Ok(json!({"applied": true, "status": was, "tables": tables, "kept": kept}))
+        let files = self.check_restored_files(ctx, tenant, &stored).await?;
+        Ok(json!({
+            "applied": true, "status": was, "tables": tables, "kept": kept, "erasures": erasures.len(), "erased_again": erased_again, "files": files,
+            "went_out_since": went_out,
+        }))
+    }
+
+    /// The files a workspace taken back to a copy names that it did not name before, checked against the
+    /// store: those whose bytes are gone (deleted since the copy) are listed for a person, here and in the
+    /// audit trail, since their records came back without them. Without a store, they are only counted.
+    async fn check_restored_files(&self, ctx: &Ctx, tenant: Uuid, stored: &BTreeSet<String>) -> Result<Value> {
+        let mut tx = self.db.system_tx().await?;
+        let back: Vec<(Uuid, String, String)> =
+            sqlx::query_as("select id, storage_key, file_name from file_object where tenant_id = $1 order by id").bind(tenant).fetch_all(&mut *tx).await?;
+        tx.commit().await?;
+        let back: Vec<_> = back.into_iter().filter(|(_, key, _)| !stored.contains(key)).collect();
+        let Ok(store) = self.file_store() else {
+            return Ok(json!({"checked": 0, "unchecked": back.len(), "missing": []}));
+        };
+        let mut missing = Vec::new();
+        for (id, key, name) in &back {
+            if !store.exists(key).await? {
+                missing.push(json!({"id": id, "name": name}));
+            }
+        }
+        let files = json!({"checked": back.len(), "unchecked": 0, "missing": missing});
+        if !missing.is_empty() {
+            let mut tx = self.db.system_tenant_tx(tenant).await?;
+            audit::record(&mut tx, ctx, "Tenant", tenant, "platform.tenant_restored_files_missing", None, files.clone()).await?;
+            tx.commit().await?;
+        }
+        Ok(files)
     }
 
     /// Whether a restore is waiting for a person. Everything that reaches outside asks this first.

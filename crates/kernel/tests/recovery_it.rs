@@ -52,6 +52,25 @@ impl Restored for App {
     }
 }
 
+/// Object storage, in memory.
+#[derive(Default)]
+struct MemFiles(std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>);
+
+#[async_trait]
+impl ferrum_kernel::files::FileStore for MemFiles {
+    async fn put(&self, key: &str, data: &[u8]) -> Result<()> {
+        self.0.lock().unwrap().insert(key.to_string(), data.to_vec());
+        Ok(())
+    }
+    async fn get(&self, key: &str) -> Result<Vec<u8>> {
+        self.0.lock().unwrap().get(key).cloned().ok_or_else(|| Error::NotFound("object".into()))
+    }
+    async fn delete(&self, key: &str) -> Result<()> {
+        self.0.lock().unwrap().remove(key);
+        Ok(())
+    }
+}
+
 fn catalog() -> Catalog {
     Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog")
 }
@@ -192,11 +211,16 @@ async fn one_workspace_goes_back_alone() {
     let (live, copy) = (url("FERRUM_TEST_DATABASE_URL", "ferrum_test"), url("FERRUM_RESTORE_TEST_DATABASE_URL", "ferrum_restore_test"));
     let (sent, app) = (Arc::new(Sent::default()), Arc::new(App::default()));
     let k = kernel(database(&live, true).await, sent.clone(), app.clone()).await;
+    k.set_file_store(Arc::new(MemFiles::default()));
     let (acme, bravo) = (workspace(&k, "acme").await, workspace(&k, "bravo").await);
     drain(&k).await;
     assert!(k.extract_tenant(&acme, &copy, false, "not yet").await.is_err(), "there is nothing there");
+    let file = |v: serde_json::Value| -> Uuid { v["id"].as_str().unwrap().parse().unwrap() };
+    k.store_file(&acme, None, "kept.txt", "text/plain", b"still here").await.unwrap();
+    let gone = file(k.store_file(&acme, None, "gone.txt", "text/plain", b"deleted later").await.unwrap());
     let stays = k.create_user(&acme, "stays@acme.test", "Stays", Some(PASSWORD), &[], false).await.unwrap();
     let leaves = k.create_user(&acme, "leaves@acme.test", "Leaves", Some(PASSWORD), &[], false).await.unwrap();
+    k.create_user(&acme, "forget-me@acme.test", "Forget Me", Some(PASSWORD), &[], false).await.unwrap();
     let (_, key) = k.create_api_key(&acme, stays, "a key", None, None).await.unwrap();
     let signed_in = k.login("acme", "stays@acme.test", PASSWORD).await.unwrap();
     pay(&k, acme.tenant).await;
@@ -214,6 +238,11 @@ async fn one_workspace_goes_back_alone() {
     k.place_legal_hold(&acme, Some("subject@acme.test"), None, "Matter 12").await.unwrap();
     k.restrict_processing(&acme, "subject@acme.test", "Disputes how their data is used").await.unwrap();
     k.record_consent(&acme, "subject@acme.test", ferrum_kernel::retention::Purpose::Marketing, false, "Unsubscribed").await.unwrap();
+    // A file deleted since, bytes and all, which the copy still names.
+    k.remove_file(&acme, gone).await.unwrap();
+    // And someone asked to be forgotten: the copy has them as they were.
+    let forgotten = k.erase_personal_data(&acme, "forget-me@acme.test", "Asked to be forgotten").await.expect("erased");
+    assert_eq!(forgotten["account_erased"], json!(true), "{forgotten}");
     pay(&k, bravo.tenant).await;
 
     let emails = async |tenant: Uuid| -> Vec<String> {
@@ -238,8 +267,10 @@ async fn one_workspace_goes_back_alone() {
     // Comparing changes nothing, and it says what would go.
     let compared = k.extract_tenant(&acme, &copy, false, "to see").await.expect("compared");
     let people = compared["tables"].as_array().unwrap().iter().find(|t| t["table"] == json!("app_user")).unwrap().clone();
-    assert_eq!((people["now"].clone(), people["in_copy"].clone()), (json!(4), json!(3)), "{compared}");
+    assert_eq!((people["now"].clone(), people["in_copy"].clone()), (json!(5), json!(4)), "{compared}");
     assert_eq!(compared["applied"], json!(false));
+    // Acme's payment went out after the copy was taken: listed to reconcile, not undone (FEO-078).
+    assert!(compared["went_out_since"].as_array().unwrap().contains(&json!({"topic": "pay", "count": 1})), "{compared}");
     assert_eq!(emails(acme.tenant).await, acme_now);
 
     // What it will not do.
@@ -252,6 +283,11 @@ async fn one_workspace_goes_back_alone() {
     let done = k.extract_tenant(&acme, &copy, true, "the customer asked").await.expect("extracted");
     assert_eq!((done["applied"].clone(), done["status"].clone()), (json!(true), json!("active")), "{done}");
     assert!(!emails(acme.tenant).await.contains(&"later@acme.test".to_string()), "acme is as it was");
+    assert!(!emails(acme.tenant).await.contains(&"forget-me@acme.test".to_string()), "but what was erased since stays erased, without a task");
+    assert_eq!((done["erasures"].clone(), done["erased_again"].clone()), (json!(1), json!(1)), "{done}");
+    // The file that came back without its bytes is checked and listed; the one still stored is not (FEO-078).
+    assert_eq!(done["files"], json!({"checked": 1, "unchecked": 0, "missing": [{"id": gone, "name": "gone.txt"}]}), "{done}");
+    assert_eq!(done["went_out_since"], compared["went_out_since"], "said again as it went back, and kept in the audit trail");
     let mut tx = k.db.system_tx().await.unwrap();
     let kept: (i64, i64, i64) = sqlx::query_as(
         "select (select count(*) from legal_hold where tenant_id = $1 and released_at is null), \

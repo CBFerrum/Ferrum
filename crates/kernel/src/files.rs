@@ -15,6 +15,15 @@ pub trait FileStore: Send + Sync {
     async fn put(&self, key: &str, data: &[u8]) -> Result<()>;
     async fn get(&self, key: &str) -> Result<Vec<u8>>;
     async fn delete(&self, key: &str) -> Result<()>;
+    /// Whether an object is there. By default it reads it; a store that can ask without reading may say
+    /// so more cheaply.
+    async fn exists(&self, key: &str) -> Result<bool> {
+        match self.get(key).await {
+            Ok(_) => Ok(true),
+            Err(Error::NotFound(_)) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
 }
 
 /// The most an app reads of a file at once (FERRUM-OPS-006), the size of the largest an app works on
