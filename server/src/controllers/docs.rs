@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+/// The most rows a workbook export holds: it is made whole in memory. CSV streams every row.
 const EXPORT_MAX_ROWS: usize = 100_000;
 
 #[derive(Debug, Default, Deserialize)]
@@ -366,26 +367,22 @@ async fn export(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Pa
         Some("xlsx") => true,
         Some(other) => return Err(ApiError(Error::invalid(format!("unknown export format '{other}' (csv or xlsx)")))),
     };
-    let mut records: Vec<Doc> = Vec::new();
-    loop {
-        let page = st.kernel.list(&ctx, &entity, &q).await?;
-        records.extend(page.rows);
-        match page.next_cursor {
-            Some(c) if records.len() < EXPORT_MAX_ROWS => q.cursor = Some(c),
-            _ => break,
+    let fetch = {
+        let (k, ctx, entity, q) = (st.kernel.clone(), ctx.clone(), entity.clone(), q.clone());
+        move |cursor: Option<String>| {
+            let (k, ctx, entity, mut q) = (k.clone(), ctx.clone(), entity.clone(), q.clone());
+            async move {
+                q.cursor = cursor;
+                let page = k.list(&ctx, &entity, &q).await?;
+                Ok((page.rows, page.next_cursor))
+            }
         }
-    }
+    };
     let (body, content_type, ext) = if xlsx {
-        (xlsx_sheet(&ent, &columns, &records)?, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx")
+        let records = up_to(EXPORT_MAX_ROWS, fetch).await?;
+        (axum::body::Body::from(xlsx_sheet(&ent, &columns, &records)?), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx")
     } else {
-        let mut out = String::new();
-        out.push_str(&columns.iter().map(|c| csv_cell(&Value::String(c.clone()))).collect::<Vec<_>>().join(","));
-        out.push('\n');
-        for r in &records {
-            out.push_str(&columns.iter().map(|c| csv_cell(r.get(c).unwrap_or(&Value::Null))).collect::<Vec<_>>().join(","));
-            out.push('\n');
-        }
-        (out.into_bytes(), "text/csv; charset=utf-8", "csv")
+        (axum::body::Body::from_stream(csv_stream(columns, fetch)), "text/csv; charset=utf-8", "csv")
     };
     let mut resp = body.into_response();
     let h = resp.headers_mut();
@@ -394,6 +391,58 @@ async fn export(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Pa
         h.insert(header::CONTENT_DISPOSITION, v);
     }
     Ok(resp)
+}
+
+/// A page of an export: its rows, and where the next begins.
+type Page = (Vec<Doc>, Option<String>);
+
+/// Rows for a workbook, which is made whole in memory: at most `cap`, refusing more rather than
+/// cutting the list short without a word (FEO-066).
+async fn up_to<F, Fut>(cap: usize, mut fetch: F) -> Result<Vec<Doc>, Error>
+where
+    F: FnMut(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<Page, Error>>,
+{
+    let (mut rows, mut cursor) = (Vec::new(), None);
+    loop {
+        let (page, next) = fetch(cursor).await?;
+        rows.extend(page);
+        match next {
+            Some(_) if rows.len() >= cap => {
+                return Err(Error::invalid(format!("more than {cap} rows for a workbook: export them as CSV, which has no limit, or narrow the list")));
+            }
+            Some(c) => cursor = Some(c),
+            None => return Ok(rows),
+        }
+    }
+}
+
+/// Every row of a list as CSV, a page at a time, however many there are (FEO-066). A page that fails
+/// ends the download with an error, so a cut file is never taken for a whole one.
+fn csv_stream<F, Fut>(columns: Vec<String>, fetch: F) -> impl futures_util::Stream<Item = std::io::Result<bytes::Bytes>> + Send + 'static
+where
+    F: FnMut(Option<String>) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<Page, Error>> + Send,
+{
+    let header = format!("{}\n", columns.iter().map(|c| csv_cell(&Value::String(c.clone()))).collect::<Vec<_>>().join(","));
+    // The cursor: Some(None) for the first page, Some(Some(c)) for the next, None when done.
+    futures_util::stream::unfold((Some(header), Some(None::<String>), fetch, columns), |(header, cursor, mut fetch, columns)| async move {
+        if let Some(h) = header {
+            return Some((Ok(bytes::Bytes::from(h)), (None, cursor, fetch, columns)));
+        }
+        let cursor = cursor?;
+        match fetch(cursor).await {
+            Ok((rows, next)) => {
+                let mut out = String::new();
+                for r in &rows {
+                    out.push_str(&columns.iter().map(|c| csv_cell(r.get(c).unwrap_or(&Value::Null))).collect::<Vec<_>>().join(","));
+                    out.push('\n');
+                }
+                Some((Ok(bytes::Bytes::from(out)), (None, next.map(Some), fetch, columns)))
+            }
+            Err(e) => Some((Err(std::io::Error::other(e.to_string())), (None, None, fetch, columns))),
+        }
+    })
 }
 
 /// The columns an export writes: those asked for, else the number and every field shown, never a
@@ -558,6 +607,30 @@ mod tests {
         let mut nothing = json!({"ok": true});
         said(&mut nothing, label);
         assert!(nothing.get("message").is_none(), "nothing to say: the page says done");
+    }
+
+    /// Pages of `n` rows, `per` a page, as the list hands them out.
+    fn pages(n: usize, per: usize) -> impl FnMut(Option<String>) -> std::future::Ready<Result<Page, Error>> {
+        move |cursor: Option<String>| {
+            let from: usize = cursor.map_or(0, |c| c.parse().unwrap());
+            let to = (from + per).min(n);
+            let rows = (from..to).map(|i| json!({"n": i}).as_object().cloned().unwrap()).collect();
+            std::future::ready(Ok((rows, (to < n).then(|| to.to_string()))))
+        }
+    }
+
+    #[tokio::test]
+    async fn exports_hold_every_row_or_say_they_cannot() {
+        use futures_util::StreamExt;
+        // CSV: every row of 1,201, past any cap, in pages of 500.
+        let chunks: Vec<_> = csv_stream(vec!["n".into()], pages(1201, 500)).collect().await;
+        let text: String = chunks.into_iter().map(|c| String::from_utf8(c.unwrap().to_vec()).unwrap()).collect();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!((lines.len(), lines[0], lines[1201]), (1202, "n", "1200"), "the header and every row");
+        // A workbook: up to its cap, and refused past it rather than cut short.
+        assert_eq!(up_to(1201, pages(1201, 500)).await.unwrap().len(), 1201);
+        let refused = up_to(1000, pages(1201, 500)).await.unwrap_err();
+        assert!(refused.to_string().contains("more than 1000 rows"), "{refused}");
     }
 
     #[test]
