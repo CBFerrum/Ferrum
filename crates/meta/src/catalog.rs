@@ -302,8 +302,9 @@ impl Catalog {
                 if pd.phone.as_deref().is_some_and(|f| field(f).is_none_or(|x| !matches!(x.ftype, FieldType::Phone | FieldType::Data))) {
                     return invalid(format!("{name}: personal data of {}: phone must be a phone (or data) field", pd.entity));
                 }
-                if pd.name.as_deref().is_some_and(|f| field(f).is_none_or(|x| x.ftype != FieldType::Data)) {
-                    return invalid(format!("{name}: personal data of {}: name must be a data field", pd.entity));
+                // A name, or the names a field lists (the people a photograph shows), which may run long.
+                if pd.name.as_deref().is_some_and(|f| field(f).is_none_or(|x| !matches!(x.ftype, FieldType::Data | FieldType::Text))) {
+                    return invalid(format!("{name}: personal data of {}: name must be a data or text field", pd.entity));
                 }
             }
             for m in &p.manifest.merge_links {
