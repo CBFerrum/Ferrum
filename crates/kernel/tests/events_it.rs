@@ -252,9 +252,17 @@ async fn scenario() {
     let mut tx = k.db.system_tx().await.unwrap();
     let status: String = sqlx::query_scalar("select status from webhook_delivery where id = $1").bind(delivery).fetch_one(&mut *tx).await.unwrap();
     assert_eq!(status, "delivered");
-    sqlx::query("update webhook_delivery set status = 'dead' where id = $1").bind(delivery).execute(&mut *tx).await.unwrap();
+    sqlx::query("update webhook_delivery set status = 'dead', last_error = 'HTTP 503' where id = $1").bind(delivery).execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
+    // The operator's queue lists it, with why and where to, never what it carried (FEO-017).
+    let dead = k.dead_webhook_deliveries(&admin, 10).await.unwrap();
+    assert_eq!(dead.len(), 1, "{dead:?}");
+    assert_eq!((dead[0]["id"].clone(), dead[0]["last_error"].clone()), (json!(delivery), json!("HTTP 503")));
+    assert!(dead[0].get("payload").is_none(), "never its payload");
+    assert!(k.dead_webhook_deliveries(&other, 10).await.unwrap().is_empty(), "another workspace sees none of it");
+    assert!(matches!(k.dead_webhook_deliveries(&clerk, 10).await, Err(Error::Forbidden(_))), "administrators only");
     k.replay_webhook_delivery(&admin, delivery).await.unwrap();
+    assert!(k.dead_webhook_deliveries(&admin, 10).await.unwrap().is_empty(), "replayed, it is no longer dead");
     assert!(matches!(k.replay_webhook_delivery(&admin, delivery).await, Err(Error::NotFound(_))));
     assert!(matches!(k.replay_webhook_delivery(&other, delivery).await, Err(Error::NotFound(_))), "nor across workspaces");
 }

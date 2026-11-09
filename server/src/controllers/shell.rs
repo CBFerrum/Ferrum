@@ -289,7 +289,9 @@ async fn shell_core(st: &AppState, headers: &HeaderMap, uri: &Uri, first: &str, 
         Err(r) => return Ok(r),
     };
     let Some(rest) = rest else {
-        return Ok(Redirect::permanent(&format!("/{first}/")).into_response());
+        // `/admin?tab=…` keeps what it asked for on its way to `/admin/`.
+        let q = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
+        return Ok(Redirect::permanent(&format!("/{first}/{q}")).into_response());
     };
     let mut scope = None;
     // `/data/{app}/…`: the records of an app without an interface of its own (beside the
