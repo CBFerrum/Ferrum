@@ -2796,15 +2796,19 @@ dependencies = [
 [[package]]
 name = "ferrum-app-education"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-education?branch=main#fec006b2fcbab61fb6846d8d0d03720091c063e2"
+source = "git+https://github.com/CBFerrum/ferrum-app-education?branch=main#a3b7b83f7679308d17ad13ed8cb27f27467f0e3b"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "ferrum-domain",
  "ferrum-kernel",
  "ferrum-meta",
+ "hex",
+ "rand 0.9.5",
  "rust_decimal",
  "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "uuid",
 ]
