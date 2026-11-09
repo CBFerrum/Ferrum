@@ -55,6 +55,12 @@ impl Trace {
         tokio::spawn(TRACE.try_with(Trace::clone).unwrap_or_default().scope(work))
     }
 
+    /// The operation the current work belongs to (the request or job that started it), if any: what a
+    /// person is shown to quote, and what an operator looks everything up by (FEO-079).
+    pub fn operation() -> Option<String> {
+        TRACE.try_with(|t| t.correlation.clone()).ok().filter(|c| !c.is_empty())
+    }
+
     /// The current trace, with what it sets off at `priority`.
     pub fn at_priority(priority: i16) -> Trace {
         Trace { priority: Some(priority), ..TRACE.try_with(Trace::clone).unwrap_or_default() }

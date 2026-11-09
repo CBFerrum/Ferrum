@@ -31,12 +31,18 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let e = self.0;
         let status = StatusCode::from_u16(e.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        let body = match &e {
+        // The operation a person quotes to whoever helps them, found under Needs a person (FEO-079).
+        let operation = ferrum_kernel::Trace::operation();
+        let mut body = match &e {
             Error::Validation(fields) => json!({"error": e.code(), "message": "Please correct the highlighted fields", "fields": fields}),
             Error::Db(_) | Error::Internal(_) => {
                 let id = uuid::Uuid::now_v7();
-                tracing::error!(error_id = %id, "request failed: {e}");
-                json!({"error": e.code(), "message": "An internal error occurred", "error_id": id})
+                tracing::error!(error_id = %id, operation = operation.as_deref().unwrap_or_default(), "request failed: {e}");
+                let said = match &operation {
+                    Some(op) => format!("An internal error occurred (operation {op})"),
+                    None => "An internal error occurred".to_string(),
+                };
+                json!({"error": e.code(), "message": said, "error_id": id})
             }
             Error::Unavailable(_) => {
                 tracing::warn!("service unavailable: {e}");
@@ -45,6 +51,9 @@ impl IntoResponse for ApiError {
             Error::Refused { pointer: Some(pointer), .. } => json!({"error": e.code(), "message": e.to_string(), "pointer": pointer}),
             _ => json!({"error": e.code(), "message": e.to_string()}),
         };
+        if let (Some(op), Some(b)) = (operation, body.as_object_mut()) {
+            b.insert("operation".into(), json!(op));
+        }
         let mut resp = (status, axum::Json(body)).into_response();
         if matches!(e, Error::Retryable(_) | Error::Unavailable(_) | Error::TooManyRequests(_) | Error::Wait(..)) {
             resp.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_static("2"));

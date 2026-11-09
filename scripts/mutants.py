@@ -84,6 +84,8 @@ TIMEOUT = 600
 
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
+    # An operation found by the id a person quotes (FEO-079).
+    ("operation-finds-the-wrong-events", "crates/kernel/src/outbox.rs", "from outbox where tenant_id = $1 and correlation_id = $2 order by id limit 200", "from outbox where tenant_id = $1 and correlation_id is distinct from $2 order by id limit 200", EVENTS),
     # Who stands in for someone away (FEO-034).
     ("substitute-ignored", "crates/kernel/src/process.rs", "if !standing_for.contains(to) {", "if !standing_for.contains(to) || standing_for.len() < 1000 {", PROCESS_RECORDS),
     ("away-forever", "crates/kernel/src/process.rs", "and current_date between starts_on and ends_on", "and current_date >= starts_on", PROCESS_RECORDS),
