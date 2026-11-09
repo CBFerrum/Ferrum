@@ -79,6 +79,7 @@ INDUSTRIAL = ("-p", "ferrum-apps", "--lib", "industrial::tests")
 MANIFEST_UNIT = ("-p", "ferrum-apps", "--lib", "manifest::tests")
 SERVICES = ("-p", "ferrum-server", "--test", "service_apps_it")
 SHELL = ("-p", "ferrum-kernel", "--test", "shell_it")
+APPS_API = ("-p", "ferrum-server", "--test", "apps_api")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
@@ -372,6 +373,14 @@ MUTANTS = [
     ("scan-skipped", "crates/kernel/src/files.rs", 'let scanned = self.scan_stream(ctx, file_name, data.len() as u64, futures::stream::iter([Ok::<_, Error>(data)])).await?;', 'let scanned = "clean";', SCAN),
     ("conflict-unnoticed", "crates/kernel/src/customize.rs", "if now.as_ref() != Some(&was) {", "if false {", CUSTOMIZE),
     ("requirement-silently-undone", "crates/kernel/src/customize.rs", "packaged.entity(entity).and_then(|e| e.field(field)).is_some_and(|f| f.required)", "packaged.entity(entity).and_then(|e| e.field(field)).is_some_and(|_| false)", CUSTOMIZE),
+    # FEO-056: an upgrade's plan says what it parts and which records it changes things under, before anyone agrees.
+    ("workflow-customization-uncompared", "crates/meta/src/effective.rs", "OverlayOp::SetWorkflow { .. } => Some(e.workflow", "OverlayOp::SetWorkflow { .. } if false => Some(e.workflow", CUSTOMIZE),
+    ("old-conflicts-blamed-on-the-plan", "crates/kernel/src/customize.rs", "today != (!c.gone).then(|| c.now.clone())", "today.is_some() || today.is_none()", CUSTOMIZE),
+    ("open-work-unseen", "crates/kernel/src/customize.rs", "if then.is_some() && then == state_of(&w.def, &state.name) {", "if then.is_some() || then.is_none() {", CUSTOMIZE),
+    ("legacy-customizations-never-compared", "crates/kernel/src/customize.rs", "let Some(base) = packaged.entity(&entity).and_then(|e| effective::replaced_value(e, &op)) else { continue };", "let Some(base) = None::<Value> else { continue };", CUSTOMIZE),
+    ("consent-ignores-what-it-parts", "server/src/appmgr.rs", "    for c in parted {\n", "    for c in &parted[..0] {\n", APPS_API),
+    ("other-workspaces-changed-silently", "crates/kernel/src/apps.rs", "for tenant in tenants.into_iter().filter(|t| Some(*t) != rel.shown_to) {", "for tenant in tenants.into_iter().filter(|_| false) {", APPS_API),
+    ("installer-told-twice", "crates/kernel/src/apps.rs", "for tenant in tenants.into_iter().filter(|t| Some(*t) != rel.shown_to) {", "for tenant in tenants.into_iter().filter(|t| Some(*t) != rel.shown_to || true) {", APPS_API),
     ("hooks-cycle-accepted", "crates/kernel/src/hooks.rs", 'let Some(next) = (0..hooks.len()).find(|&i| !placed[i] && waits[i].iter().all(|&w| placed[w])) else {', 'let Some(next) = (0..hooks.len()).find(|&i| !placed[i]) else {', HOOKS_UNIT),
     ("hooks-conflict-accepted", "crates/kernel/src/hooks.rs", "if !shared.is_empty() && !reaches(&waits, i, j) && !reaches(&waits, j, i) {", "if false {", HOOKS_UNIT),
     ("logout-token-replayed", "crates/kernel/src/sso.rs", "        if !fresh {\n            return Ok(tx.commit().await?);\n        }\n", "", SSO),

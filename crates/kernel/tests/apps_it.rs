@@ -111,6 +111,7 @@ fn release(version: &str, extra_field: bool) -> NewRelease {
         plugin_sha256: None,
         private_tenant: None,
         created_by: None,
+        shown_to: None,
     }
 }
 

@@ -430,6 +430,7 @@ flowchart LR
 | 🖨️ | Documents | MiniJinja HTML print templates per entity |
 | 🗃️ | New entity | `define_entity` overlay (stored without DDL) |
 | 📦 | Bundles | Packages: YAML entities, overlays, roles, seeds and SQL, installed per tenant |
+| 🔁 | Upgrades | A customization remembers what it replaced. An app's plan says which ones its update would change underneath, and which records wait in workflow states it changes, before anyone agrees; afterwards Customizations lists them to keep or switch off |
 | 🧩 | Custom code | WebAssembly plugins bound to entity hooks — see below |
 
 ### Plugins: turn Ferrum into any platform
