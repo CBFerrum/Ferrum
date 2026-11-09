@@ -2950,15 +2950,19 @@ dependencies = [
 [[package]]
 name = "ferrum-app-hospitality"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-hospitality?branch=main#c03da14fd2a1213bb5a14b3d8187f076976b8cf1"
+source = "git+https://github.com/CBFerrum/ferrum-app-hospitality?branch=main#e0613a6a687d439b9dca79cf3b250d0359196f18"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "ferrum-domain",
  "ferrum-kernel",
  "ferrum-meta",
+ "hex",
+ "rand 0.9.5",
  "rust_decimal",
  "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "uuid",
 ]
@@ -3187,7 +3191,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-restaurant"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-restaurant?branch=main#4eeb8a2c57bffb07c770982dbf960c52fb9a0e22"
+source = "git+https://github.com/CBFerrum/ferrum-app-restaurant?branch=main#ee8fdc1300862eac81fe6568e104f47abbfee41f"
 dependencies = [
  "async-trait",
  "chrono",
