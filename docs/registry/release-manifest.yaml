@@ -23,7 +23,7 @@ components:
   - {repository: CBFerrum/ferrum-app-government, pinned: 254b0aeb6da78f8b94cdd6275eea711c07e23d7a}
   - {repository: CBFerrum/ferrum-app-grc, pinned: 14aa83eed38003dd5db55254d23183985d1732eb}
   - {repository: CBFerrum/ferrum-app-healthcare, pinned: a56fd320167ee7a5d9d31010e5d082e56c0c4fcd}
-  - {repository: CBFerrum/ferrum-app-helpdesk, pinned: b4452d4341b240d8e9e369f6e2f92d9e9309c13b}
+  - {repository: CBFerrum/ferrum-app-helpdesk, pinned: 3a3e915576ad7bcdbc76f3f6d012cdf6a627aa8b}
   - {repository: CBFerrum/ferrum-app-hospitality, pinned: c03da14fd2a1213bb5a14b3d8187f076976b8cf1}
   - {repository: CBFerrum/ferrum-app-hr, pinned: a1d86a269b6cba67754dbef4920b27efc3361cc4}
   - {repository: CBFerrum/ferrum-app-intelligence, pinned: a0056b3123e043b4b167f843878b7324c8f716b3}
