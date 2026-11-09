@@ -81,6 +81,21 @@ pub async fn merged_ids(tx: &mut Tx, tenant: Uuid, entity: &str, id: Uuid) -> Re
 impl Kernel {
     /// Merges `duplicate` into `keep`, for someone who could read both and delete the duplicate.
     pub async fn merge_records(&self, ctx: &Ctx, entity: &str, keep: Uuid, duplicate: Uuid, reason: &str) -> Result<Value> {
+        self.merge_records_with(ctx, entity, keep, duplicate, reason, None).await
+    }
+
+    /// [`Kernel::merge_records`], first writing onto the record that stays the values chosen from the
+    /// duplicate (`values`, at the `version` they were chosen against), in the same transaction: a merge
+    /// that fails leaves no chosen value behind, and a record changed since the choice is not merged.
+    pub async fn merge_records_with(
+        &self,
+        ctx: &Ctx,
+        entity: &str,
+        keep: Uuid,
+        duplicate: Uuid,
+        reason: &str,
+        values: Option<(Doc, Option<i64>)>,
+    ) -> Result<Value> {
         let ent = self.entity(ctx, entity)?;
         if !ent.def.mergeable {
             return Err(Error::invalid(format!("{} records cannot be merged", ent.def.label)));
@@ -124,6 +139,10 @@ impl Kernel {
                 return Err(Error::Conflict("a legal hold covers this record; release it first".into()));
             }
         }
+        // The values chosen to stay, as the caller may write them, in this same transaction.
+        if let Some((chosen, version)) = values.filter(|(v, _)| !v.is_empty()) {
+            self.update_tx(ctx, &mut tx, entity, keep, chosen, version).await?;
+        }
 
         // The schema as it is now: a link left behind by an older view would point at nothing.
         let schema = self.registry.schema(ctx.tenant).await?;
@@ -160,6 +179,44 @@ impl Kernel {
             sqlx::query(AssertSqlSafe(sql)).bind(keep).bind(ctx.tenant).bind(entity).bind(duplicate).execute(&mut *tx).await?;
             let sql = format!("update {table} set record_id = $1 where tenant_id = $2 and entity = $3 and record_id = $4");
             links += sqlx::query(AssertSqlSafe(sql)).bind(keep).bind(ctx.tenant).bind(entity).bind(duplicate).execute(&mut *tx).await?.rows_affected();
+        }
+
+        // Records at a provider linked to the duplicate stand for the record that stays from now on: what
+        // changes here goes there, and theirs comes here. Each is marked changed here since it was last
+        // synced (no version is -1), so a provider's next change meets the merge as any change made here.
+        // Where the record that stays is linked in that stream already, two records there are one here:
+        // that link stays as it was, for a person to settle at the provider.
+        links += sqlx::query(
+            "update connection_link d set record_id = $1, local_version = -1 where d.tenant_id = $2 and d.entity = $3 and d.record_id = $4 \
+             and not exists (select 1 from connection_link k where k.tenant_id = d.tenant_id and k.connection_id = d.connection_id and k.stream = d.stream and k.record_id = $1)",
+        )
+        .bind(keep)
+        .bind(ctx.tenant)
+        .bind(entity)
+        .bind(duplicate)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let twice: Vec<(Uuid, String, String)> =
+            sqlx::query_as("select connection_id, stream, external_id from connection_link where tenant_id = $1 and entity = $2 and record_id = $3")
+                .bind(ctx.tenant)
+                .bind(entity)
+                .bind(duplicate)
+                .fetch_all(&mut *tx)
+                .await?;
+        for (connection, stream, external_id) in twice {
+            sqlx::query(
+                "insert into connection_drift (tenant_id, id, connection_id, stream, external_id, kind, detail) values ($1, $2, $3, $4, $5, 'conflict', $6) \
+                 on conflict (tenant_id, connection_id, stream, external_id, kind) where resolved_at is null do update set detail = excluded.detail",
+            )
+            .bind(ctx.tenant)
+            .bind(Uuid::now_v7())
+            .bind(connection)
+            .bind(&stream)
+            .bind(&external_id)
+            .bind(json!({"record": keep, "merged": duplicate, "why": "two records there are one here since a merge: merge or unlink them there"}))
+            .execute(&mut *tx)
+            .await?;
         }
 
         sqlx::query("update record_alias set canonical_id = $1 where tenant_id = $2 and entity = $3 and canonical_id = $4")

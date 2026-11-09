@@ -183,7 +183,7 @@ async fn scenario() {
         models: vec![],
         monthly_tokens: None,
     };
-    let env = Env { kernel: k.clone(), apps: None, assistant: Assistant::new(Some(config)) };
+    let env = Env { kernel: k.clone(), apps: None, assistant: Assistant::new(Some(config.clone())) };
     let thread = assistant::create_thread(&k, &ctx).await.unwrap();
     let ask = |text: &str| Input::Message { text: text.into(), context: "Page: the test".into() };
 
@@ -277,18 +277,34 @@ async fn scenario() {
     // ── a workspace that turned it off, and a guest ──
     let mut off = serde_json::Map::new();
     off.insert("assistant".into(), json!(false));
+    // Read a moment ago, so cached: the change is heard at once, not when the cache would have aged.
+    assert!(env.assistant.available(&k, &ctx, "member").await);
     k.update_tenant_settings(&ctx, &off).await.unwrap();
-    env.assistant.setting_changed(tenant);
-    assert!(!env.assistant.available(&k, &ctx, "member").await);
+    assert!(!env.assistant.available(&k, &ctx, "member").await, "off as soon as it is turned off");
     assert!(matches!(assistant::begin(&env, &ctx, thread, ask("hello"), "member").await, Err(Error::Forbidden(_))));
     let mut on = serde_json::Map::new();
     on.insert("assistant".into(), json!(true));
     k.update_tenant_settings(&ctx, &on).await.unwrap();
-    env.assistant.setting_changed(tenant);
     assert!(env.assistant.available(&k, &ctx, "member").await);
     assert!(matches!(assistant::begin(&env, &ctx, thread, ask("hello"), "guest").await, Err(Error::Forbidden(_))), "the workspace's own people only");
     let none = Env { kernel: k.clone(), apps: None, assistant: Assistant::new(None) };
     assert!(!none.assistant.available(&k, &ctx, "member").await, "no key, no assistant");
+
+    // ── a policy that cannot be read is never the defaults (FEO-004) ──
+    // Another replica whose database has gone: a fresh assistant there has read nothing, so it is not
+    // available, and no turn reaches the model, rather than running on, unlimited, by default.
+    let url = std::env::var("FERRUM_ASSISTANT_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_assistant_test".into());
+    let gone = Db::connect(DbConfig { url, max_connections: 2, ..Default::default() }).await.expect("connect");
+    let catalog =
+        Catalog::from_packages(["core", "contacts", "parties"].map(|p| ferrum_meta::catalog::load_package_dir(&dir.join(p)).expect(p)).to_vec()).unwrap();
+    let k_gone = Kernel::boot(gone, catalog, HookRegistry::default(), KernelSettings::default(), None).await.expect("boot");
+    k_gone.db.pool.close().await;
+    k_gone.db.side.close().await;
+    let replica = Env { kernel: k_gone.clone(), apps: None, assistant: Assistant::new(Some(config.clone())) };
+    let asked = model.requests.lock().unwrap().len();
+    assert!(!replica.assistant.available(&k_gone, &ctx, "member").await, "a policy that cannot be read: not available");
+    assert!(assistant::begin(&replica, &ctx, thread, ask("hello"), "member").await.is_err());
+    assert_eq!(model.requests.lock().unwrap().len(), asked, "nothing was sent to the model");
 
     // ── the bar's search: records by title, as the person may read them ──
     let found = ferrum_server::search::search(&k, &ctx, "made by the assistant", 10).await.unwrap();

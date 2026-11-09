@@ -719,7 +719,12 @@ impl Kernel {
             .execute(&mut *tx)
             .await?
             .rows_affected();
-        n += sqlx::query("delete from idempotency_key where created_at < now() - interval '24 hours'").execute(&mut *tx).await?.rows_affected();
+        // A receipt answers a request sent again for as long as a device's work may wait offline.
+        n += sqlx::query("delete from idempotency_key where created_at < now() - make_interval(days => $1)")
+            .bind(crate::receipt::RECEIPT_DAYS)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
         n += sqlx::query("delete from event_chain where first_at < now() - make_interval(days => $1)").bind(keep_days).execute(&mut *tx).await?.rows_affected();
         tx.commit().await?;
         Ok(n)

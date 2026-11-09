@@ -6,6 +6,7 @@ use dashmap::DashMap;
 use ferrum_meta::{Catalog, Overlay, OverlayOp, Schema, SchemaWarning, effective};
 use sqlx::postgres::PgListener;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use uuid::Uuid;
@@ -28,11 +29,23 @@ pub struct Registry {
     db: Db,
     cache: DashMap<Uuid, Cached>,
     ttl: Duration,
+    /// How often each workspace's settings were seen to change, from this replica or another.
+    changes: DashMap<Uuid, u64>,
+    /// How often everything was dropped, a notification having perhaps been missed.
+    epoch: AtomicU64,
 }
 
 impl Registry {
     pub fn new(base: &Catalog, catalog: Arc<Catalog>, db: Db) -> Self {
-        Registry { base: base.packages().cloned().collect(), catalog: std::sync::RwLock::new(catalog), db, cache: DashMap::new(), ttl: Duration::from_secs(30) }
+        Registry {
+            base: base.packages().cloned().collect(),
+            catalog: std::sync::RwLock::new(catalog),
+            db,
+            cache: DashMap::new(),
+            ttl: Duration::from_secs(30),
+            changes: DashMap::new(),
+            epoch: AtomicU64::new(0),
+        }
     }
 
     /// The cluster catalog: platform packages plus the packages of available apps.
@@ -153,10 +166,19 @@ impl Registry {
 
     pub fn invalidate(&self, tenant: Uuid) {
         self.cache.remove(&tenant);
+        *self.changes.entry(tenant).or_insert(0) += 1;
     }
 
     pub fn invalidate_all(&self) {
         self.cache.clear();
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Where a workspace's settings stand as this replica knows: `(epoch, changes)`. Something read
+    /// from them is current while this is unchanged; `changes` moving means they did change, `epoch`
+    /// moving that they may have. Taken before the read it goes with.
+    pub fn revision(&self, tenant: Uuid) -> (u64, u64) {
+        (self.epoch.load(Ordering::SeqCst), self.changes.get(&tenant).map_or(0, |c| *c))
     }
 
     /// Call inside the transaction that changed a tenant's metadata; the notification fires on commit.
