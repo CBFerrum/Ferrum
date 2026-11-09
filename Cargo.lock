@@ -3187,7 +3187,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-restaurant"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-restaurant?branch=main#5adf419d95e133c6c6dd526772efe3c2f5cde688"
+source = "git+https://github.com/CBFerrum/ferrum-app-restaurant?branch=main#4eeb8a2c57bffb07c770982dbf960c52fb9a0e22"
 dependencies = [
  "async-trait",
  "chrono",
