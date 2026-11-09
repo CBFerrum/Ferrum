@@ -30,6 +30,8 @@ const ENTITIES: &str = r#"
   label: Party
   kind: master
   title_field: party_name
+  actions:
+    - {name: make_order, label: Make Order, permission: read}
   fields:
     - {name: party_name, type: data, required: true}
     - {name: credit_limit, type: decimal}
@@ -50,6 +52,22 @@ impl DocHook for OrdersApp {
     async fn validate(&self, _hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
         self.seen.lock().unwrap().push(doc.get("x_band").cloned().unwrap_or(Value::Null));
         Ok(())
+    }
+}
+
+/// A native action that saves an order for a party, in the action's own transaction: the native
+/// actions path (FEO-010).
+struct PartyActions;
+
+#[async_trait]
+impl DocHook for PartyActions {
+    async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
+        if name != "make_order" {
+            return Ok(None);
+        }
+        let values = obj(json!({"reference": params["reference"], "party": doc["id"], "total": params["total"]}));
+        let order = hc.kernel.insert_tx(hc.ctx, hc.tx, "Order", values).await?;
+        Ok(Some(json!({"order": order["id"]})))
     }
 }
 
@@ -163,6 +181,7 @@ async fn scenario() {
     let app = Arc::new(OrdersApp::default());
     let mut hooks = HookRegistry::default();
     hooks.register("Order", app.clone());
+    hooks.register("Party", Arc::new(PartyActions));
     hooks.add_job_handler(Arc::new(SaveOrder));
     let k = Kernel::boot(db, Catalog::from_packages(vec![core, pkg]).unwrap(), hooks, KernelSettings::default(), None).await.expect("boot");
     let admin = workspace(&k, "acme").await;
@@ -252,6 +271,10 @@ async fn scenario() {
     assert!(bulk.to_string().contains("An order has a total above zero"), "bulk: {bulk}");
     let created = Invocation { effect_key: Some("k-1".into()), ..Invocation::new("orders.order.create", json!({"values": invalid})) };
     assert!(refused(&k.invoke(&clerk, created).await.unwrap_err()), "a capability's invocation (agents, processes)");
+    let acted = k.run_action(&clerk, "Party", party.parse().unwrap(), "make_order", json!({"reference": "SO-ACT", "total": "-1"})).await.unwrap_err();
+    assert!(refused(&acted), "a native action's own write (FEO-010): {acted}");
+    let made = k.run_action(&clerk, "Party", party.parse().unwrap(), "make_order", json!({"reference": "SO-ACT", "total": "5"})).await.expect("a valid one");
+    assert!(made["order"].is_string(), "{made}");
     automation::save(
         &k,
         &admin,
