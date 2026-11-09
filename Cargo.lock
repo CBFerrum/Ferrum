@@ -2883,7 +2883,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-government"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-government?branch=main#254b0aeb6da78f8b94cdd6275eea711c07e23d7a"
+source = "git+https://github.com/CBFerrum/ferrum-app-government?branch=main#a1dcf1c03be0c9ea0e0c38bb5bdf618289a4994c"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
