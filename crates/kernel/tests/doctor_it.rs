@@ -122,4 +122,15 @@ async fn scenario() {
 
     let text = json!(f).to_string();
     assert!(!text.contains(&url) && !text.contains("ferrum:ferrum"), "no connection string");
+
+    // A release older than its database does not start on it: a migration it does not know was applied by a
+    // newer one, and going back that way is refused (FEO-080); the way back is a restore or upgrade_back.
+    sqlx::query("insert into _sqlx_migrations (version, description, success, checksum, execution_time) values (29991231000000, 'from a newer release', true, '\\x00', 0)")
+        .execute(&k.db.pool)
+        .await
+        .unwrap();
+    let refused = k.db.migrate().await.unwrap_err().to_string();
+    assert!(refused.contains("29991231000000"), "the migration it does not know is named: {refused}");
+    sqlx::query("delete from _sqlx_migrations where version = 29991231000000").execute(&k.db.pool).await.unwrap();
+    k.db.migrate().await.expect("and once it is gone, it starts");
 }
