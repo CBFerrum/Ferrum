@@ -791,6 +791,9 @@ async fn scenario() {
     let c = ctx().await;
     assert!(plugin(&host, &k, &c, "helper").await.is_some() && plugin(&host, &k, &c, "gw").await.unwrap()["version"] == json!("2.3.0"));
     assert!(dev.plan(&admin, "gw", None).await.unwrap().app.labels.is_empty(), "installed now, and still unreviewed");
+    // Going back is not an upgrade: an older version than the one installed is refused, with the way back (FEO-080).
+    let back = dev.plan(&admin, "gw", Some("2.2.0")).await.unwrap_err();
+    assert!(matches!(&back, Error::Invalid(m) if m.contains("going back to 2.2.0 is not supported") && m.contains("gw 2.3.0 is installed")), "{back:?}");
 
     // AT-EXT-009: support ending is said out loud, with the way out, before anyone agrees to it.
     let mut retiring = gw("2.4.0", &["api.example.com", "hooks.example.com"]);
