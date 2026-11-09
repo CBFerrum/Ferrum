@@ -1488,13 +1488,19 @@ impl Kernel {
     }
 
     /// Whether `ctx` may decide a task now: its role, not excluded, not a decision already given, and when it was
-    /// handed on, the person it was handed to.
-    fn may_decide(ctx: &Ctx, role: &str, exclude: &[Uuid], delegated: &[Uuid]) -> Result<()> {
+    /// handed on, the person it was handed to, or whoever stands in for them while they are away (`standing_for`,
+    /// holding the task's role as well).
+    fn may_decide(ctx: &Ctx, role: &str, exclude: &[Uuid], delegated: &[Uuid], standing_for: &[Uuid]) -> Result<()> {
         if exclude.contains(&ctx.user) {
             return Err(Error::Forbidden("someone else decides this: it is your own request".into()));
         }
         if let Some(to) = delegated.last() {
-            return if *to == ctx.user { Ok(()) } else { Err(Error::Forbidden("this task was handed to someone else".into())) };
+            if *to == ctx.user {
+                return Ok(());
+            }
+            if !standing_for.contains(to) {
+                return Err(Error::Forbidden("this task was handed to someone else".into()));
+            }
         }
         // The solution's role decides, administrators included: being one is not a second pair of eyes.
         if !role.is_empty() && !ctx.roles.iter().any(|r| r == role) {
@@ -1503,9 +1509,69 @@ impl Kernel {
         Ok(())
     }
 
+    /// The people `ctx` stands in for today, while they are away (FEO-034).
+    async fn standing_for(tx: &mut crate::Tx, ctx: &Ctx) -> Result<Vec<Uuid>> {
+        // ponytail: the server's day, not the workspace's time zone; a stand-in may start or end a few hours off.
+        Ok(sqlx::query_scalar("select user_id from person_away where tenant_id = $1 and substitute = $2 and current_date between starts_on and ends_on")
+            .bind(ctx.tenant)
+            .bind(ctx.user)
+            .fetch_all(&mut **tx)
+            .await?)
+    }
+
+    /// Says who stands in for `user` while they are away, between two days: themselves, or an administrator for
+    /// anyone. The substitute is another active member; a task handed to `user` is theirs to decide meanwhile, as
+    /// `user` could have, never on their own request (FEO-034).
+    pub async fn set_away(
+        &self,
+        ctx: &Ctx,
+        user: Uuid,
+        starts_on: chrono::NaiveDate,
+        ends_on: chrono::NaiveDate,
+        substitute: Uuid,
+        reason: &str,
+    ) -> Result<()> {
+        if user != ctx.user && !ctx.is_admin {
+            return Err(Error::Forbidden("you say when you are away, or an administrator does".into()));
+        }
+        let reason = reason.trim();
+        if reason.is_empty() || reason.chars().count() > 500 {
+            return Err(Error::field("reason", "say why (leave, travel), at most 500 characters"));
+        }
+        if ends_on < starts_on {
+            return Err(Error::field("ends_on", "on or after the day it starts"));
+        }
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let fit: Option<bool> = sqlx::query_scalar("select is_active and kind = 'member' from app_user where tenant_id = $1 and id = $2")
+            .bind(ctx.tenant)
+            .bind(substitute)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if substitute == user || fit != Some(true) {
+            return Err(Error::field("substitute", "another active member of the workspace"));
+        }
+        sqlx::query(
+            "insert into person_away (tenant_id, user_id, starts_on, ends_on, substitute, reason, created_by) values ($1, $2, $3, $4, $5, $6, $7) \
+             on conflict (tenant_id, user_id, starts_on) do update set ends_on = excluded.ends_on, substitute = excluded.substitute, reason = excluded.reason",
+        )
+        .bind(ctx.tenant)
+        .bind(user)
+        .bind(starts_on)
+        .bind(ends_on)
+        .bind(substitute)
+        .bind(reason)
+        .bind(ctx.user)
+        .execute(&mut *tx)
+        .await?;
+        crate::audit::record(&mut tx, ctx, "User", user, "away", None, json!({"from": starts_on, "until": ends_on, "substitute": substitute})).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// The open tasks `ctx` may decide.
     pub async fn my_logic_tasks(&self, ctx: &Ctx) -> Result<Vec<Value>> {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let standing = Self::standing_for(&mut tx, ctx).await?;
         let rows: Vec<(Uuid, String, String, String, Vec<Uuid>, Vec<Uuid>, Option<DateTime<Utc>>)> = sqlx::query_as(
             "select id, kind, label, role, exclude, delegated, deadline from logic_task where tenant_id = $1 and status = 'open' order by opened_at limit 500",
         )
@@ -1518,7 +1584,7 @@ impl Kernel {
             .filter(|(_, kind, _, role, exclude, delegated, _)| match kind.as_str() {
                 // What needs recovering or looking at is an administrator's.
                 "recovery" | "attention" => ctx.is_admin,
-                _ => Self::may_decide(ctx, role, exclude, delegated).is_ok(),
+                _ => Self::may_decide(ctx, role, exclude, delegated, &standing).is_ok(),
             })
             .map(|(id, kind, label, role, _, _, deadline)| json!({"id": id, "kind": kind, "label": label, "role": role, "deadline": deadline}))
             .collect())
@@ -1539,7 +1605,8 @@ impl Kernel {
         .fetch_optional(&mut *tx)
         .await?;
         let Some((mut task, role, exclude, delegated)) = row else { return Err(Error::NotFound("task".into())) };
-        if !ctx.is_admin && Self::may_decide(ctx, &role, &exclude, &delegated).is_err() {
+        let standing = Self::standing_for(&mut tx, ctx).await?;
+        if !ctx.is_admin && Self::may_decide(ctx, &role, &exclude, &delegated, &standing).is_err() {
             return Err(Error::NotFound("task".into()));
         }
         // Who did what on it, and why: the record a closed task is read by.
@@ -1616,7 +1683,8 @@ impl Kernel {
                 .fetch_optional(&mut *tx)
                 .await?;
         let Some((run, activation, role, digest, approvals, exclude, delegated, status)) = row else { return Err(Error::NotFound("task".into())) };
-        Self::may_decide(ctx, &role, &exclude, &delegated)?;
+        let standing = Self::standing_for(&mut tx, ctx).await?;
+        Self::may_decide(ctx, &role, &exclude, &delegated, &standing)?;
         if status != "open" {
             return Err(Error::Conflict(format!("this task is {} already", status.replace('_', " "))));
         }
@@ -1704,7 +1772,8 @@ impl Kernel {
                 .fetch_optional(&mut *tx)
                 .await?;
         let Some((role, bound, exclude, delegated, status)) = row else { return Err(Error::NotFound("task".into())) };
-        Self::may_decide(ctx, &role, &exclude, &delegated)?;
+        let standing = Self::standing_for(&mut tx, ctx).await?;
+        Self::may_decide(ctx, &role, &exclude, &delegated, &standing)?;
         if status != "open" {
             return Err(Error::Conflict("this task is closed".into()));
         }
@@ -1761,7 +1830,7 @@ impl Kernel {
             return Err(Error::Forbidden(format!("{part} is not one of this case's tasks: other work needs a new reviewed definition")));
         };
         let role = task["role"].as_str().unwrap_or_default();
-        Self::may_decide(ctx, role, &exclude, &[])?;
+        Self::may_decide(ctx, role, &exclude, &[], &[])?;
         let done: Vec<String> = sqlx::query_scalar("select part from logic_task_decision where tenant_id = $1 and task_id = $2 and decision = 'done'")
             .bind(ctx.tenant)
             .bind(id)

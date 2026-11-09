@@ -783,6 +783,46 @@ async fn scenario() {
     k.decide_logic_task(&reviewer2, task12, false, &digest12, &json!({}), "not now").await.expect("anyone of the role decides");
     d.settle().await;
 
+    // Someone away names who stands in for them (FEO-034): a task handed to them is the substitute's to decide
+    // meanwhile, if they hold its role and it is not their own request.
+    let today = chrono::Utc::now().date_naive();
+    let week = today + chrono::Duration::days(7);
+    assert!(k.set_away(&reviewer2, reviewer2.user, today, week, reviewer2.user, "Leave").await.is_err(), "not themselves");
+    assert!(k.set_away(&reviewer2, reviewer2.user, week, today, reviewer3.user, "Leave").await.is_err(), "not ending before it starts");
+    assert!(k.set_away(&reviewer3, reviewer2.user, today, week, reviewer3.user, "Leave").await.is_err(), "only they or an administrator say so");
+    k.set_away(&reviewer2, reviewer2.user, today, week, reviewer3.user, "Annual leave").await.unwrap();
+    let (_, run13) = request(&k, &mut d, &requester, "R-13", "5000").await;
+    let (task13, digest13) = task_of(&k, admin.tenant, run13, "review").await;
+    k.delegate_logic_task(&reviewer, task13, reviewer2.user, "for Reviewer 2").await.unwrap();
+    assert!(k.my_logic_tasks(&reviewer3).await.unwrap().iter().any(|t| t["id"] == json!(task13)), "the substitute holds it while they are away");
+    k.decide_logic_task(&reviewer3, task13, false, &digest13, &json!({}), "not now").await.expect("decided by the substitute");
+    let (_, run14) = request(&k, &mut d, &requester, "R-14", "5000").await;
+    let (task14, digest14) = task_of(&k, admin.tenant, run14, "review").await;
+    k.delegate_logic_task(&reviewer, task14, reviewer2.user, "").await.unwrap();
+    k.set_away(&admin, reviewer2.user, today, week, requester.user, "Annual leave").await.unwrap();
+    assert_eq!(code(&k.decide_logic_task(&requester, task14, true, &digest14, &json!({}), "").await.unwrap_err()), "forbidden", "never on their own request");
+    k.set_away(&admin, reviewer2.user, today, week, outsider.user, "Annual leave").await.unwrap();
+    assert_eq!(
+        code(&k.decide_logic_task(&outsider, task14, true, &digest14, &json!({}), "").await.unwrap_err()),
+        "forbidden",
+        "a substitute without the role does not"
+    );
+    k.decide_logic_task(&reviewer2, task14, false, &digest14, &json!({}), "not now").await.expect("whoever holds it still may");
+    // An absence that is over no longer stands anyone in.
+    k.set_away(&admin, reviewer4.user, today - chrono::Duration::days(14), today - chrono::Duration::days(7), reviewer.user, "Last month's leave")
+        .await
+        .unwrap();
+    let (_, run15) = request(&k, &mut d, &requester, "R-15", "5000").await;
+    let (task15, digest15) = task_of(&k, admin.tenant, run15, "review").await;
+    k.delegate_logic_task(&reviewer3, task15, reviewer4.user, "").await.unwrap();
+    assert_eq!(
+        code(&k.decide_logic_task(&reviewer, task15, false, &digest15, &json!({}), "").await.unwrap_err()),
+        "forbidden",
+        "back from leave, it is theirs again"
+    );
+    k.decide_logic_task(&reviewer4, task15, false, &digest15, &json!({}), "not now").await.unwrap();
+    d.settle().await;
+
     // Another workspace starts nothing of this and sees none of it.
     let other = workspace(&k, "globex").await;
     let x = k.insert(&other, "Request", obj(json!({"reference": "G-1", "total": "1"}))).await.unwrap();
