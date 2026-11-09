@@ -716,6 +716,73 @@ async fn scenario() {
     assert_eq!(status(&k, admin.tenant, run9).await, "cancelled");
     assert_eq!(scalar::<String>(&k, admin.tenant, "select status from logic_task where run_id = $1 and activation = 'review'", run9).await, "cancelled");
 
+    // Handed to someone who then leaves (FEO-012): it goes on to their successor when the successor may
+    // take it, else back to whoever handed it to them, else to its role; each move is a decision.
+    let lee = user(&k, &admin, "lee@acme.test", &["Reviewer"], false).await;
+    let sam = user(&k, &admin, "sam@acme.test", &["Reviewer"], false).await;
+    let kim = user(&k, &admin, "kim@acme.test", &["Reviewer"], false).await;
+    let jo = user(&k, &admin, "jo@acme.test", &["Reviewer"], false).await;
+    let max = user(&k, &admin, "max@acme.test", &["Reviewer"], false).await;
+    let (_, run10) = request(&k, &mut d, &requester, "R-10", "5000").await;
+    let (task10, digest10) = task_of(&k, admin.tenant, run10, "review").await;
+    k.delegate_logic_task(&reviewer, task10, lee.user, "on leave").await.unwrap();
+    let (_, run11) = request(&k, &mut d, &requester, "R-11", "5000").await;
+    let (task11, digest11) = task_of(&k, admin.tenant, run11, "review").await;
+    k.delegate_logic_task(&reviewer, task11, kim.user, "").await.unwrap();
+    let (_, run12) = request(&k, &mut d, &requester, "R-12", "5000").await;
+    let (task12, digest12) = task_of(&k, admin.tenant, run12, "review").await;
+    k.delegate_logic_task(&jo, task12, max.user, "").await.unwrap();
+    // A successor who holds the role takes it on.
+    let left = k.deprovision_user(&admin, lee.user, Some(sam.user), "left the company").await.unwrap();
+    assert_eq!(left["tasks_handed_on"], json!(1));
+    // One without it does not: it goes back to whoever handed it on.
+    k.deprovision_user(&admin, kim.user, Some(outsider.user), "left the company").await.unwrap();
+    // Whoever handed it on is not holding it, so their leaving leaves it; once its holder leaves too,
+    // with nobody taking over, it goes back to the role.
+    assert_eq!(k.deprovision_user(&admin, jo.user, None, "left").await.unwrap()["tasks_handed_on"], json!(0));
+    k.deprovision_user(&admin, max.user, None, "left").await.unwrap();
+    let holds = |who: &Ctx, task: Uuid| {
+        let (k, who) = (&k, who.clone());
+        async move { k.my_logic_tasks(&who).await.unwrap().iter().any(|t| t["id"] == json!(task)) }
+    };
+    assert!(holds(&sam, task10).await && !holds(&reviewer, task10).await, "the successor's now");
+    assert!(holds(&reviewer, task11).await && !holds(&outsider, task11).await, "back to whoever handed it on");
+    assert!(holds(&reviewer2, task12).await && holds(&reviewer, task12).await && !holds(&requester, task12).await, "the role's again, never the requester's");
+    let to: Option<Uuid> = scalar(
+        &k,
+        admin.tenant,
+        "select to_user from logic_task_decision where task_id = $1 and decision = 'delegate' and reason like '%left the workspace%'",
+        task10,
+    )
+    .await;
+    assert_eq!(to, Some(sam.user));
+    let to: Option<Uuid> = scalar(
+        &k,
+        admin.tenant,
+        "select to_user from logic_task_decision where task_id = $1 and decision = 'delegate' and reason like '%left the workspace%'",
+        task11,
+    )
+    .await;
+    assert_eq!(to, Some(reviewer.user));
+    let (to, by): (Option<Uuid>, Uuid) = {
+        let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+        let row = sqlx::query_as("select to_user, by_user from logic_task_decision where task_id = $1 and reason like '%left the workspace%'")
+            .bind(task12)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        row
+    };
+    assert_eq!((to, by), (None, admin.user), "recorded as the administrator's, to nobody by name");
+    let told: i64 = scalar(&k, admin.tenant, "select count(*) from notification where user_id = $1 and title like '%is yours to decide%'", sam.user).await;
+    assert_eq!(told, 1, "the successor is told");
+    assert_eq!(code(&k.decide_logic_task(&reviewer, task10, false, &digest10, &json!({}), "no").await.unwrap_err()), "forbidden");
+    k.decide_logic_task(&sam, task10, false, &digest10, &json!({}), "not now").await.expect("the successor decides");
+    k.decide_logic_task(&reviewer, task11, false, &digest11, &json!({}), "not now").await.expect("whoever handed it on decides");
+    k.decide_logic_task(&reviewer2, task12, false, &digest12, &json!({}), "not now").await.expect("anyone of the role decides");
+    d.settle().await;
+
     // Another workspace starts nothing of this and sees none of it.
     let other = workspace(&k, "globex").await;
     let x = k.insert(&other, "Request", obj(json!({"reference": "G-1", "total": "1"}))).await.unwrap();
