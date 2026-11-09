@@ -405,15 +405,20 @@ impl Kernel {
         }
     }
 
+    /// Leaves a connection alone for a while, and every other connection on the same provider account with it,
+    /// in any workspace: a provider's limit is the account's, not one connection's (FEO-067).
     async fn leave_alone(&self, tenant: Uuid, connection: Uuid, why: &str, seconds: u64) -> Result<()> {
         let mut tx = self.db.system_tenant_tx(tenant).await?;
-        sqlx::query("update connection set waiting_until = now() + make_interval(secs => $3), waiting_reason = $4 where tenant_id = $1 and id = $2")
-            .bind(tenant)
-            .bind(connection)
-            .bind(seconds as f64)
-            .bind(why)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "update connection set waiting_until = greatest(waiting_until, now() + make_interval(secs => $3)), waiting_reason = $4 \
+             where (tenant_id = $1 and id = $2) or account_key = (select account_key from connection where tenant_id = $1 and id = $2)",
+        )
+        .bind(tenant)
+        .bind(connection)
+        .bind(seconds as f64)
+        .bind(why)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -467,12 +472,20 @@ impl Kernel {
         }
         let connection = id.unwrap_or_else(Uuid::now_v7);
         let sealed = input.credentials.as_ref().map(|c| self.seal(ctx.tenant, connection, c)).transpose()?;
+        // The account they open, known by a fingerprint: connections on one account wait together (FEO-067).
+        let account_key = match (&input.credentials, self.settings.secret_key.as_ref()) {
+            (Some(c), Some(key)) => {
+                Some(key.fingerprint("connection account", &format!("{}:{}", input.provider, String::from_utf8_lossy(&crate::value::canonical_json(c)))))
+            }
+            _ => None,
+        };
         let mapping = serde_json::to_value(&input.mapping).map_err(Error::internal)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let n = sqlx::query(
-            "insert into connection (tenant_id, id, provider, name, config, mapping, sealed, created_by) values ($1, $2, $3, $4, $5, $6, $7, $8) \
+            "insert into connection (tenant_id, id, provider, name, config, mapping, sealed, created_by, account_key) values ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
              on conflict (tenant_id, id) do update set name = excluded.name, config = excluded.config, mapping = excluded.mapping, \
-             sealed = coalesce(excluded.sealed, connection.sealed), enabled = false where connection.provider = excluded.provider",
+             sealed = coalesce(excluded.sealed, connection.sealed), account_key = coalesce(excluded.account_key, connection.account_key), enabled = false \
+             where connection.provider = excluded.provider",
         )
         .bind(ctx.tenant)
         .bind(connection)
@@ -482,6 +495,7 @@ impl Kernel {
         .bind(mapping)
         .bind(sealed)
         .bind((!ctx.user.is_nil()).then_some(ctx.user))
+        .bind(&account_key)
         .execute(&mut *tx)
         .await?;
         if n.rows_affected() == 0 {
