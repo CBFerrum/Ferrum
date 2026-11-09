@@ -3100,7 +3100,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-nonprofit"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-nonprofit?branch=main#b60024140e3a026f5c760bc1b16e718a49394a6f"
+source = "git+https://github.com/CBFerrum/ferrum-app-nonprofit?branch=main#451c517dd5fcebb368897460355306c184d4f015"
 dependencies = [
  "async-trait",
  "chrono",
