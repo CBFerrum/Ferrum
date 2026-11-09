@@ -785,6 +785,13 @@ impl Kernel {
         if t.not_creator && !ctx.is_system && uuid_of(doc.get("created_by")) == Some(ctx.user) {
             return Err(Error::Forbidden("the creator of a document cannot approve it".into()));
         }
+        if !ctx.is_system {
+            for path in &t.not_creator_of {
+                if raised_linked(tx, ctx, &ent, &doc, path, ctx.user).await? {
+                    return Err(Error::Forbidden(format!("whoever raised what {path} names cannot {action} it")));
+                }
+            }
+        }
         if let Some(guard) = wf.guards.get(&(t.action.clone(), t.from.clone())) {
             let view = ent.cel_view(&Value::Object(doc.clone()), &ctx.schema);
             let user = ctx.user_value();
@@ -1457,4 +1464,32 @@ pub fn copy_for_new(ent: &EffEntity, schema: &ferrum_meta::Schema, src: &Doc) ->
         }
     }
     out
+}
+
+/// Whether `user` raised any record the document's `path` links to (`field`, or `table.field` for a
+/// child table's links): a step that separates duties across documents (FEO-013).
+pub(crate) async fn raised_linked(tx: &mut Tx, ctx: &Ctx, ent: &EffEntity, doc: &Doc, path: &str, user: Uuid) -> Result<bool> {
+    let link = |fields: &[ferrum_meta::FieldDef], name: &str| fields.iter().find(|f| f.name == name).and_then(|f| f.to.clone());
+    let (ids, target): (Vec<Uuid>, Option<String>) = match path.split_once('.') {
+        None => (uuid_of(doc.get(path)).into_iter().collect(), link(&ent.def.fields, path)),
+        Some((table, field)) => {
+            let child = ent.def.fields.iter().find(|f| f.name == table).and_then(|f| f.of.as_deref()).and_then(|c| ctx.schema.entity(c));
+            let rows = doc.get(table).and_then(Value::as_array).cloned().unwrap_or_default();
+            (rows.iter().filter_map(|r| uuid_of(r.get(field))).collect(), child.and_then(|c| link(&c.def.fields, field)))
+        }
+    };
+    let Some(target) = target.and_then(|t| ctx.schema.entity(&t).cloned()) else { return Ok(false) };
+    if ids.is_empty() {
+        return Ok(false);
+    }
+    let raised: bool = sqlx::query_scalar(AssertSqlSafe(format!(
+        "select exists (select 1 from {} where tenant_id = $1 and id = any($2) and created_by = $3)",
+        crate::ddl::q(&target.table)
+    )))
+    .bind(ctx.tenant)
+    .bind(&ids)
+    .bind(user)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(raised)
 }

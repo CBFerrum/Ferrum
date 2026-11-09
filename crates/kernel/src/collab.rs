@@ -415,17 +415,28 @@ impl Kernel {
                 let state = doc.get("workflow_state").and_then(Value::as_str).unwrap_or(&wf.def.initial_state).to_string();
                 let view = ent.cel_view(&Value::Object(doc.clone()), &ctx.schema);
                 let user = ctx.user_value();
-                let actions: Vec<&str> = mine
-                    .iter()
-                    .filter(|t| t.from == state)
-                    .filter(|t| !(t.not_creator && crate::doc::uuid_of(doc.get("created_by")) == Some(ctx.user)))
-                    .filter(|t| {
-                        wf.guards
-                            .get(&(t.action.clone(), t.from.clone()))
-                            .is_none_or(|g| g.eval_bool(&ferrum_meta::Scope { doc: &view, old: None, parent: None, user: &user }).unwrap_or(false))
-                    })
-                    .map(|t| t.action.as_str())
-                    .collect();
+                let mut actions: Vec<&str> = Vec::new();
+                for t in mine.iter().filter(|t| t.from == state) {
+                    if t.not_creator && crate::doc::uuid_of(doc.get("created_by")) == Some(ctx.user) {
+                        continue;
+                    }
+                    // Not theirs to decide either when they raised what it names (FEO-013).
+                    let mut raised = false;
+                    if !t.not_creator_of.is_empty() {
+                        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+                        for path in &t.not_creator_of {
+                            raised = raised || crate::doc::raised_linked(&mut tx, ctx, ent, &doc, path, ctx.user).await?;
+                        }
+                        tx.commit().await?;
+                    }
+                    let holds = wf
+                        .guards
+                        .get(&(t.action.clone(), t.from.clone()))
+                        .is_none_or(|g| g.eval_bool(&ferrum_meta::Scope { doc: &view, old: None, parent: None, user: &user }).unwrap_or(false));
+                    if !raised && holds {
+                        actions.push(t.action.as_str());
+                    }
+                }
                 if !actions.is_empty() {
                     out.push(json!({
                         "entity": name, "id": id, "title": record_title(ctx, name, &doc), "entity_label": label(ctx, name),
