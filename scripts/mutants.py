@@ -58,6 +58,8 @@ COLLAB = ("-p", "ferrum-kernel", "--test", "collab_it")
 HOST_UNIT = ("-p", "ferrum-plugins", "--lib", "host::tests")
 SOCKETS_UNIT = ("-p", "ferrum-plugins", "--lib", "sockets::tests")
 EGRESS = ("-p", "ferrum-server", "--test", "assistant_egress_it")
+ASSISTANT = ("-p", "ferrum-server", "--test", "assistant_it")
+RECEIPTS = ("-p", "ferrum-kernel", "--test", "receipts_it")
 SHARES_UNIT = ("-p", "ferrum-server", "--lib", "state::tests")
 EXTENSIONS = ("-p", "ferrum-server", "--test", "extensions_it")
 SUPPORT = ("-p", "ferrum-kernel", "--test", "support_it")
@@ -293,7 +295,7 @@ MUTANTS = [
     ("lost-key-blanks-values", "crates/kernel/src/secret.rs", "                *unopened += 1;\n                Ok(None)", "                *unopened += 1;\n                current.seal(aad, \"\").map(Some)", SECRETS),
     ("webhook-secret-stays-plain", "crates/kernel/src/secret.rs", 'None => Some(format!("{SEALED_WEBHOOK}{}", current.seal(&label, &stored)?)),', "None => None,", SECRETS),
     ("privacy-hold-on-a-person-ignored", "crates/kernel/src/privacy.rs", 'if person_held(&mut tx, ctx.tenant, &emails).await? {\n            return Err(Error::Conflict', 'if false {\n            return Err(Error::Conflict', PRIVACY),
-    ("privacy-held-record-deletable", "crates/kernel/src/doc.rs", "if crate::privacy::record_held(tx, ctx.tenant, &ent.def.name, id).await? {", "if false {", PRIVACY),
+    ("privacy-held-record-deletable", "crates/kernel/src/doc.rs", "if crate::privacy::held(ctx, tx, &ent.def.name, id).await? {", "if false {", PRIVACY),
     ("privacy-retained-records-erased", "crates/kernel/src/privacy.rs", "if let Some(why) = &def.retain {", "if let Some(why) = None::<&String> {", PRIVACY),
     ("privacy-erased-files-stay", "crates/kernel/src/privacy.rs", "        outbox::release_objects(tx, ctx.tenant, &keys).await?;\n", "        let _ = &keys;\n", PRIVACY),
     ("privacy-old-address-lost", "crates/kernel/src/privacy.rs", "           union select user_id from person_identifier where tenant_id = $1 and email = $2::citext) \\\n", "           ) \\\n", PRIVACY),
@@ -381,6 +383,28 @@ MUTANTS = [
     ("retention-past-a-legal-hold", "crates/kernel/src/retention.rs", "if on_hold {", "if false {", RETENTION),
     ("retention-deletes-what-is-kept", "crates/kernel/src/retention.rs", "if let Some(why) = declared.iter().find_map(|d| d.retain.as_deref()) {", "if let Some(why) = None::<&str> {", RETENTION),
     ("retention-more-than-once-a-day", "crates/kernel/src/retention.rs", "if ran {", "if false {", RETENTION),
+    # A scan goes on from where the last run stopped, so held or failing records never starve the rest (FEO-005).
+    # A write sent again is done once, for its own person and request (FEO-003).
+    ("receipt-for-anyone", "crates/kernel/src/receipt.rs", "    if by != actor {", "    if false {", RECEIPTS),
+    ("receipt-without-its-request", "crates/kernel/src/receipt.rs", "    if hash != digest {", "    if false {", RECEIPTS),
+    ("receipt-not-kept", "crates/kernel/src/receipt.rs", "        .bind(status)\n        .bind(answer)", "        .bind(status)\n        .bind(None::<Value>)", RECEIPTS),
+    ("receipts-gone-in-a-day", "crates/kernel/src/outbox.rs", ".bind(crate::receipt::RECEIPT_DAYS)", ".bind(1)", RECEIPTS),
+    # A held record's evidence survives changes and a workspace's deletion (FEO-007).
+    ("held-record-changed-without-a-trace", "crates/kernel/src/ddl.rs", "ddl.exec(format!(\"create or replace trigger ferrum_held_keep before update on {} for each row execute function ferrum_held_keep('{named}')\", q(&t)))\n            .await?;", "let _ = &named;", PRIVACY),
+    ("held-versions-outlive-the-hold", "crates/kernel/src/privacy.rs", "and o.released_at is null and o.entity = h.entity and o.record_id = h.record_id)", "and o.entity = h.entity and o.record_id = h.record_id)", PRIVACY),
+    ("workspace-deleted-under-a-hold", "crates/kernel/src/recovery.rs", "if holds > 0 {", "if false {", CLOSURE),
+    # The values chosen to stay are written in the merge's own transaction (FEO-006).
+    ("merge-forgets-the-chosen-values", "crates/kernel/src/merge.rs", "if let Some((chosen, version)) = values.filter(|(v, _)| !v.is_empty()) {", "if let Some((chosen, version)) = values.filter(|_| false) {", MERGE),
+    ("retention-starts-over-every-day", "crates/kernel/src/retention.rs", "match self.due_records(sys, rule, rule.scan_cursor.clone(), limit).await {", "match self.due_records(sys, rule, None, limit).await {", RETENTION),
+    # A person under a hold keeps their records from retention, deletion and an app's removal (FEO-007).
+    ("retention-ignores-held-people", "crates/kernel/src/retention.rs", "let on_hold = people.contains(id) || record_held(", "let on_hold = record_held(", RETENTION),
+    ("held-person-record-deleted", "crates/kernel/src/privacy.rs", "Ok(record_held(tx, ctx.tenant, entity, record).await? || held_people_records(ctx, tx).await?.iter().any(|(e, ids)| e == entity && ids.contains(&record)))", "Ok(record_held(tx, ctx.tenant, entity, record).await?)", PRIVACY),
+    ("app-removed-over-a-hold", "crates/kernel/src/apps.rs", "if placed > 0 || people > 0 {", "if placed < 0 && people > 0 {", PRIVACY),
+    # A record's identities at providers follow it into the merge (FEO-006).
+    ("merge-leaves-provider-links", "crates/kernel/src/merge.rs", "set record_id = $1, local_version = -1 where d.tenant_id", "set record_id = d.record_id where d.tenant_id", MERGE),
+    # A workspace's settings changing is heard at once, wherever they changed (FEO-004).
+    ("policy-change-unheard", "server/src/assistant.rs", "            && *read_at == revision\n", "", ASSISTANT),
+    ("plan-change-unheard", "crates/kernel/src/plans.rs", "        crate::registry::Registry::bump_version(&mut tx, tenant).await?;\n        tx.commit().await?;\n        self.registry.invalidate(tenant);\n", "        tx.commit().await?;\n", SIGNUP),
     ("doctor-misses-unforced-security", "crates/kernel/src/doctor.rs", "not (c.relrowsecurity and c.relforcerowsecurity)", "not c.relrowsecurity", DOCTOR),
     ("connection-credentials-shown", "crates/kernel/src/connect.rs", "'has_credentials', c.sealed is not null,", "'has_credentials', c.sealed is not null, 'sealed', c.sealed,", CONNECT),
     ("sync-restarts-from-the-top", "crates/kernel/src/connect.rs", "self.stored_cursor(job.tenant_id, connection, stream).await?", "None", CONNECT),
@@ -399,6 +423,8 @@ MUTANTS = [
     ("approval-outlives-its-record", "server/src/assistant.rs", 'if json!(version_of(k, ctx, &call["input"]).await) != call["version"] => {', 'if false => {', EGRESS),
     ("approval-never-expires", "server/src/assistant.rs", 'if chrono::Utc::now().timestamp() - p["asked_at"].as_i64().unwrap_or(0) > APPROVAL_SECS => {', 'if false => {', EGRESS),
     ("budget-ignored", "server/src/assistant.rs", "&& tokens_this_month(k, ctx.tenant).await? >= budget", "&& tokens_this_month(k, ctx.tenant).await? >= i64::MAX - budget", EGRESS),
+    # A policy that cannot be read never means fewer restrictions (FEO-004).
+    ("unread-policy-is-the-default", "server/src/assistant.rs", '_ => (Err(Error::Unavailable("the assistant\'s settings cannot be read now: try again shortly".into())), None),', "_ => (Ok(Policy::of(&Value::Null, &Value::Null)), None),", ASSISTANT),
     ("any-model-allowed", "server/src/assistant.rs", ".filter(|m| *m == config.model || config.models.contains(m))", "", EGRESS),
     ("support-key-outlives-revocation", "crates/kernel/src/support.rs", "update api_key set revoked_at = now() where tenant_id = $1 and user_id = $2 and revoked_at is null", "update api_key set revoked_at = revoked_at where tenant_id = $1 and user_id = $2 and revoked_at is null", SUPPORT),
     ("support-lasts-for-ever", "crates/kernel/src/support.rs", "if !(1..=longest).contains(&input.hours) {", "if false {", SUPPORT),

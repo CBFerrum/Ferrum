@@ -222,11 +222,69 @@ async fn scenario() {
     let u2 = id(&k.insert(&admin, "Unique", obj(json!({"code": "b", "party": dup}))).await.unwrap());
     assert!(matches!(k.merge_records(&manager, "Party", keep, dup, "same").await, Err(Error::Conflict(_))), "both have one, and only one is allowed");
     assert_eq!(k.get(&admin, "Order", order_id, false).await.unwrap()["party"], json!(dup.to_string()), "whole or not at all");
+    // The values chosen to stay are part of the merge: one that fails leaves none of them (FEO-006).
+    let version = k.get(&admin, "Party", keep, false).await.unwrap()["version"].as_i64();
+    let chosen = |version: Option<i64>| Some((obj(json!({"email": "billing@globex.test"})), version));
+    assert!(matches!(k.merge_records_with(&manager, "Party", keep, dup, "same", chosen(version)).await, Err(Error::Conflict(_))));
+    assert_eq!(k.get(&admin, "Party", keep, false).await.unwrap()["email"], json!("ap@globex.test"), "no chosen value is left behind");
     assert_eq!(k.get(&admin, "Party", dup, false).await.unwrap()["id"], json!(dup.to_string()));
     k.delete(&admin, "Unique", u2, None).await.unwrap();
     k.delete(&admin, "Unique", u1, None).await.unwrap();
 
-    let done = k.merge_records(&manager, "Party", keep, dup, "Same company, entered twice").await.expect("merged");
+    // Chosen against a version that has since moved on: nothing is merged, and nothing is written.
+    let stale = version.map(|v| v - 1);
+    assert!(
+        matches!(k.merge_records_with(&manager, "Party", keep, dup, "same", chosen(stale)).await, Err(Error::Conflict(_))),
+        "chosen against an older version"
+    );
+    assert_eq!(k.get(&admin, "Party", dup, false).await.unwrap()["id"], json!(dup.to_string()), "not merged");
+    // Records at providers: the duplicate's alone in one stream, and both linked in another.
+    let (crm, books) = (Uuid::now_v7(), Uuid::now_v7());
+    let mut tx = k.db.system_tenant_tx(tenant).await.unwrap();
+    for (id, provider) in [(crm, "crm"), (books, "books")] {
+        sqlx::query("insert into connection (tenant_id, id, provider, name) values ($1, $2, $3, $3)")
+            .bind(tenant)
+            .bind(id)
+            .bind(provider)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
+    for (connection, stream, external, record) in [(crm, "contacts", "crm-9", dup), (books, "customers", "bk-1", keep), (books, "customers", "bk-2", dup)] {
+        sqlx::query("insert into connection_link (tenant_id, connection_id, stream, external_id, entity, record_id, local_version) values ($1, $2, $3, $4, 'Party', $5, 1)")
+            .bind(tenant)
+            .bind(connection)
+            .bind(stream)
+            .bind(external)
+            .bind(record)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
+    tx.commit().await.unwrap();
+    let done = k.merge_records_with(&manager, "Party", keep, dup, "Same company, entered twice", chosen(version)).await.expect("merged");
+    let mut tx = k.db.system_tenant_tx(tenant).await.unwrap();
+    let links: Vec<(String, Uuid, Option<i32>)> =
+        sqlx::query_as("select external_id, record_id, local_version from connection_link where tenant_id = $1 order by external_id")
+            .bind(tenant)
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+    let drift: Vec<(String, String, Value)> =
+        sqlx::query_as("select external_id, kind, detail from connection_drift where tenant_id = $1 and resolved_at is null")
+            .bind(tenant)
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        links,
+        [("bk-1".into(), keep, Some(1)), ("bk-2".into(), dup, Some(1)), ("crm-9".into(), keep, Some(-1))],
+        "the provider's record now stands for the one that stays"
+    );
+    assert_eq!(drift.len(), 1, "{drift:?}");
+    assert_eq!((drift[0].0.as_str(), drift[0].1.as_str(), &drift[0].2["record"]), ("bk-2", "conflict", &json!(keep)), "two there, one here: for a person");
+    assert_eq!(k.get(&admin, "Party", keep, false).await.unwrap()["email"], json!("billing@globex.test"), "the chosen value, with the merge");
     assert!(done["links_moved"].as_u64().unwrap() >= 6, "{done}");
 
     let merged = k.get(&admin, "Order", order_id, false).await.unwrap();

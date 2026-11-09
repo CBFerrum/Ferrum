@@ -234,17 +234,39 @@ async fn scenario() {
     let person_hold = k.place_legal_hold(&admin, Some("pat@old.test"), None, "Matter 7").await.unwrap();
     assert_eq!(k.personal_data(&admin, "pat@new.test").await.unwrap()["held"], json!(true), "whichever address the hold named");
     assert!(matches!(k.erase_personal_data(&admin, "pat@new.test", "Request 1").await, Err(Error::Conflict(_))), "a person on hold is not erased");
+    // Nor are their records deleted, one by one or with the app they belong to (FEO-007).
+    // The hold named their old address; this record has their new one, and nothing links to it.
+    let refused = k.delete(&admin, "Visitor", late_id, None).await;
+    assert!(matches!(&refused, Err(Error::Conflict(m)) if m.contains("legal hold")), "a record of a person on hold stays: {refused:?}");
+    assert!(matches!(k.uninstall_packages(&admin, &["people".to_string()], true).await, Err(Error::Conflict(_))), "and its app does not take it");
+    assert!(k.get(&admin, "Visitor", late_id, false).await.is_ok());
     assert!(matches!(k.release_legal_hold(&outsider, person_hold).await, Err(Error::NotFound(_))), "nor released from outside");
     k.release_legal_hold(&admin, person_hold).await.unwrap();
     assert!(matches!(k.release_legal_hold(&admin, person_hold).await, Err(Error::NotFound(_))), "once");
 
     let record_hold = k.place_legal_hold(&admin, None, Some(("Visitor", late_id)), "Matter 8").await.unwrap();
     assert!(matches!(k.delete(&admin, "Visitor", late_id, None).await, Err(Error::Conflict(_))), "nor deleted");
+    assert!(matches!(k.uninstall_packages(&admin, &["people".to_string()], true).await, Err(Error::Conflict(_))), "nor taken with its app");
     // Nor by an app's own SQL: the database refuses that too.
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();
     let direct = sqlx::query("delete from e_visitor where tenant_id = $1 and id = $2").bind(tenant).bind(late_id).execute(&mut *tx).await;
     assert!(direct.as_ref().is_err_and(|e| e.to_string().contains("under a legal hold")), "{direct:?}");
     tx.rollback().await.unwrap();
+    // An app's own SQL that blanks a held record's field goes through, as work on it goes on, and the
+    // record as it was is kept while the hold lasts (FEO-007).
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("update e_visitor set full_name = '' where tenant_id = $1 and id = $2")
+        .bind(tenant)
+        .bind(late_id)
+        .execute(&mut *tx)
+        .await
+        .expect("not refused");
+    tx.commit().await.unwrap();
+    let versions = k.held_versions(&admin, "Visitor", late_id).await.unwrap();
+    assert_eq!(versions.len(), 1, "{versions:?}");
+    assert_eq!(versions[0]["row"]["full_name"], json!("Pat Lee"), "the held version keeps what was blanked");
+    assert!(matches!(k.held_versions(&pat_ctx, "Visitor", late_id).await, Err(Error::Forbidden(_))), "administrators only");
+    assert!(k.held_versions(&outsider, "Visitor", late_id).await.unwrap().is_empty(), "and only their own workspace's");
     assert_eq!(k.legal_holds(&admin).await.unwrap().len(), 2, "released ones stay on the record");
     assert!(k.legal_holds(&outsider).await.unwrap().is_empty());
 
@@ -392,6 +414,7 @@ async fn scenario() {
     assert_eq!(k.reapply_erasure(&journal[0]).await.unwrap(), 0);
 
     k.release_legal_hold(&admin, record_hold).await.unwrap();
+    assert!(k.held_versions(&admin, "Visitor", late_id).await.unwrap().is_empty(), "what was kept goes with the last hold");
     k.delete(&admin, "Visitor", late_id, None).await.expect("deletable once released");
 
     // ───────────── what a reviewer is handed ─────────────

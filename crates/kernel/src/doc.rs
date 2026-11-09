@@ -327,44 +327,20 @@ impl Kernel {
 
     /// Like `insert_idempotent`; with `submit` the document is also submitted in the same transaction.
     pub async fn insert_idempotent_with(&self, ctx: &Ctx, entity: &str, input: Doc, key: &str, request_hash: &str, submit: bool) -> Result<(Doc, bool)> {
-        if key.len() < 8 || key.len() > 200 {
-            return Err(Error::invalid("Idempotency-Key must be 8-200 characters"));
-        }
         with_retry(|| async {
             let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-            let inserted = sqlx::query("insert into idempotency_key (tenant_id, key, request_hash) values ($1, $2, $3) on conflict do nothing")
-                .bind(ctx.tenant)
-                .bind(key)
-                .bind(request_hash)
-                .execute(&mut *tx)
-                .await?
-                .rows_affected();
-            if inserted == 0 {
-                let (hash, response): (String, Option<Value>) =
-                    sqlx::query_as("select request_hash, response from idempotency_key where tenant_id = $1 and key = $2")
-                        .bind(ctx.tenant)
-                        .bind(key)
-                        .fetch_one(&mut *tx)
-                        .await?;
+            if let Some(answer) = crate::receipt::claim(&mut tx, ctx, key, request_hash).await? {
                 tx.rollback().await?;
-                if hash != request_hash {
-                    return Err(Error::Conflict("this Idempotency-Key was already used for a different request".into()));
-                }
-                return match response {
-                    Some(Value::Object(m)) => Ok((m, true)),
-                    _ => Err(Error::Conflict("a request with this Idempotency-Key is still being processed".into())),
+                return match answer {
+                    Value::Object(m) => Ok((m, true)),
+                    _ => Err(Error::Conflict("this Idempotency-Key was already used for a different request".into())),
                 };
             }
             let mut doc = self.insert_tx(ctx, &mut tx, entity, input.clone()).await?;
             if submit {
                 doc = self.submit_tx(ctx, &mut tx, entity, store::doc_id(&doc)?, None).await?;
             }
-            sqlx::query("update idempotency_key set status_code = 201, response = $3 where tenant_id = $1 and key = $2")
-                .bind(ctx.tenant)
-                .bind(key)
-                .bind(Value::Object(doc.clone()))
-                .execute(&mut *tx)
-                .await?;
+            crate::receipt::keep(&mut tx, ctx, key, 201, &Value::Object(doc.clone())).await?;
             tx.commit().await?;
             Ok((doc, false))
         })
@@ -526,7 +502,7 @@ impl Kernel {
         if ent.is_submittable() && docstatus_of(&old) == 1 {
             return Err(Error::invalid("submitted documents cannot be deleted; cancel first"));
         }
-        if crate::privacy::record_held(tx, ctx.tenant, &ent.def.name, id).await? {
+        if crate::privacy::held(ctx, tx, &ent.def.name, id).await? {
             return Err(Error::Conflict("a legal hold covers this record; release it first".into()));
         }
         for h in self.hooks.for_tenant(&ent.def.name, &ctx.schema.packages) {

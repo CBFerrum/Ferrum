@@ -48,6 +48,7 @@ pub mod print;
 pub mod privacy;
 pub mod process;
 pub mod query;
+pub mod receipt;
 pub mod recovery;
 pub mod registry;
 pub mod resources;
@@ -159,6 +160,8 @@ pub struct KernelSettings {
     /// A durable process runtime runs this installation's processes (crates/process): releases compile under
     /// the Full Process profile. Without one, a solution with a process is refused (docs/logic/profiles.md).
     pub process_runtime: bool,
+    /// Records one retention rule reaches in a daily run; the next run continues after them.
+    pub retention_daily_records: usize,
 }
 
 impl Default for KernelSettings {
@@ -183,6 +186,7 @@ impl Default for KernelSettings {
             chain_depth: 8,
             chain_events: 1000,
             process_runtime: false,
+            retention_daily_records: 5000,
         }
     }
 }

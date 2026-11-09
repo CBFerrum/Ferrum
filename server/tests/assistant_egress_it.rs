@@ -295,7 +295,6 @@ async fn scenario() {
     // ───────────── the workspace widens it, deliberately ─────────────
     k.update_tenant_settings(&admin, json!({"assistant_egress": {"groups": ["pay"], "entities": ["Payslip"]}}).as_object().unwrap()).await.unwrap();
     assert!(k.update_tenant_settings(&admin, json!({"assistant_egress": {"groups": "all"}}).as_object().unwrap()).await.is_err());
-    env.assistant.setting_changed(tenant);
     model.script.lock().unwrap().push_back((
         vec![call("w1", "search_records", json!({"entity": "Payslip"})), call("w2", "get_record", json!({"entity": "Person", "id": person_id}))],
         "tool_use",
@@ -309,12 +308,10 @@ async fn scenario() {
 
     // ───────────── models and money ─────────────
     k.update_tenant_settings(&admin, json!({"assistant_model": "claude-haiku-5-5"}).as_object().unwrap()).await.unwrap();
-    env.assistant.setting_changed(tenant);
     let mut rx = assistant::begin(&env, &admin, thread, ask("Hi"), "member").await.unwrap();
     turn(&mut rx).await;
     assert!(model.seen.lock().unwrap().last().unwrap().contains("\"model\":\"claude-haiku-5-5\""), "the operator allows this one");
     k.update_tenant_settings(&admin, json!({"assistant_model": "gpt-who-knows"}).as_object().unwrap()).await.unwrap();
-    env.assistant.setting_changed(tenant);
     let mut rx = assistant::begin(&env, &admin, thread, ask("Hi"), "member").await.unwrap();
     turn(&mut rx).await;
     assert!(model.seen.lock().unwrap().last().unwrap().contains("\"model\":\"claude-opus-5-5\""), "and not this one: back to the operator's");
@@ -327,7 +324,6 @@ async fn scenario() {
     assert!(matches!(assistant::usage(&k, &clerk).await, Err(Error::Forbidden(_))));
 
     k.update_tenant_settings(&admin, json!({"assistant_monthly_tokens": total - 1}).as_object().unwrap()).await.unwrap();
-    env.assistant.setting_changed(tenant);
     let calls = model.seen.lock().unwrap().len();
     let mut rx = assistant::begin(&env, &admin, thread, ask("Hi"), "member").await.unwrap();
     let events = turn(&mut rx).await;
@@ -336,7 +332,6 @@ async fn scenario() {
 
     // ───────────── AT-AI-005: a model that will not stop, and a service that keeps failing ─────────────
     k.update_tenant_settings(&admin, json!({"assistant_monthly_tokens": null}).as_object().unwrap()).await.unwrap();
-    env.assistant.setting_changed(tenant);
     let thread = assistant::create_thread(&k, &admin).await.unwrap();
     let calls = model.seen.lock().unwrap().len();
     let again = (0..40).map(|i| (vec![call(&format!("l{i}"), "get_record", json!({"entity": "Ticket", "id": ticket["id"]}))], "tool_use"));

@@ -30,6 +30,7 @@ const ENTITIES: &str = r#"
   fields:
     - {name: subject, type: data, required: true}
     - {name: person, type: email}
+    - {name: enquiry, type: link, to: Enquiry, on_delete: restrict}
 "#;
 
 const PACKAGE: &str = r#"package: cases
@@ -86,7 +87,9 @@ async fn scenario() {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
-    let k = Kernel::boot(db, catalog(), HookRegistry::default(), KernelSettings::default(), None).await.expect("boot");
+    // Three records a rule reaches in a day, so a scan's progress across days can be seen.
+    let settings = KernelSettings { retention_daily_records: 3, ..Default::default() };
+    let k = Kernel::boot(db, catalog(), HookRegistry::default(), settings, None).await.expect("boot");
     let tenant = k
         .create_tenant(NewTenant {
             slug: "acme".into(),
@@ -241,4 +244,75 @@ async fn scenario() {
     assert_ne!(stays["person"], json!("open@acme.test"), "the person does not");
     assert_ne!(stays["tax_id"], json!("99"));
     assert_eq!(k.retention_preview(&admin, anonymize).await.unwrap()["reaches"], json!(1), "it still matches: anonymizing again changes nothing");
+
+    // ───────────── what a rule cannot remove never keeps it from the rest (FEO-005) ─────────────
+    // Held records at the front of the scan and removable ones behind them, three a day: each day goes
+    // on from where the last stopped, the held ones are never touched, and a finished scan comes round.
+    k.delete_retention_rule(&admin, anonymize).await.unwrap();
+    let mut blocked = vec![held];
+    for subject in ["held-1", "held-2", "held-3"] {
+        let id = enquiry(subject, "Closed", old.into()).await;
+        k.place_legal_hold(&admin, None, Some(("Enquiry", id)), "Litigation").await.unwrap();
+        blocked.push(id);
+    }
+    let behind = [enquiry("behind-1", "Closed", old.into()).await, enquiry("behind-2", "Closed", old.into()).await];
+    // Behind those, one whose deletion fails: a receipt still links to it.
+    let stuck = enquiry("stuck", "Closed", old.into()).await;
+    let receipt: Uuid = k.insert(&admin, "Receipt", obj(json!({"subject": "Paid", "enquiry": stuck}))).await.unwrap()["id"].as_str().unwrap().parse().unwrap();
+    // And the record of a person under a hold: kept as a record placed under one is.
+    let kept = enquiry("kept", "Closed", old.into()).await;
+    k.place_legal_hold(&admin, Some("kept@acme.test"), None, "Matter 9").await.unwrap();
+    let sweep = k.save_retention_rule(&admin, None, rule("Enquiry", "delete", json!({"status": "Closed"}))).await.expect("a rule");
+    let day = || {
+        let k = k.clone();
+        async move {
+            let mut tx = k.db.system_tx().await.unwrap();
+            sqlx::query("update job set created_at = now() - interval '2 days' where kind = 'platform.retention'").execute(&mut *tx).await.unwrap();
+            tx.commit().await.unwrap();
+            k.maintenance().await.unwrap();
+            while k.run_jobs_once(1).await.unwrap() > 0 {}
+        }
+    };
+    let last = |k: std::sync::Arc<Kernel>, admin: ferrum_kernel::Ctx| async move {
+        k.retention_rules(&admin).await.unwrap().into_iter().find(|r| r["id"] == json!(sweep)).unwrap()["last_result"].clone()
+    };
+    day().await;
+    let first = last(k.clone(), admin.clone()).await;
+    assert_eq!(
+        (first["held"].as_u64(), first["done"].as_u64(), first["more"].as_bool(), first["scan"].as_str()),
+        (Some(3), Some(0), Some(true), Some("started")),
+        "{first}"
+    );
+    assert!(k.get(&admin, "Enquiry", behind[0], false).await.is_ok(), "not reached yet: the day's three were held");
+    day().await;
+    let second = last(k.clone(), admin.clone()).await;
+    assert_eq!(second["scan"].as_str(), Some("continued"), "{second}");
+    for id in behind {
+        assert!(k.get(&admin, "Enquiry", id, false).await.is_err(), "the next day goes on past the held records to these: {second}");
+    }
+    for id in &blocked {
+        assert!(k.get(&admin, "Enquiry", *id, false).await.is_ok(), "a legal hold stops it, every day");
+    }
+    // A deletion that fails is listed and passed over; the scan reaches its end.
+    day().await;
+    let third = last(k.clone(), admin.clone()).await;
+    assert_eq!((third["failed"].as_u64(), third["held"].as_u64(), third["more"].as_bool()), (Some(1), Some(1), Some(false)), "{third}");
+    assert_eq!(third["failures"][0]["id"], json!(stuck), "{third}");
+    assert!(k.get(&admin, "Enquiry", stuck, false).await.is_ok());
+    // Unlinked, it goes when the scan comes round again, from the beginning, to it.
+    k.update(&admin, "Receipt", receipt, obj(json!({"enquiry": null})), None).await.unwrap();
+    day().await;
+    let r = last(k.clone(), admin.clone()).await;
+    assert_eq!((r["scan"].as_str(), r["held"].as_u64()), (Some("started"), Some(3)), "a finished scan starts again: {r}");
+    day().await;
+    let r = last(k.clone(), admin.clone()).await;
+    assert_eq!((r["done"].as_u64(), r["failed"].as_u64(), r["held"].as_u64()), (Some(1), Some(0), Some(2)), "{r}");
+    assert!(k.get(&admin, "Enquiry", stuck, false).await.is_err(), "retried, and gone");
+    assert!(k.get(&admin, "Enquiry", kept, false).await.is_ok(), "the held person's record stays");
+    // A changed rule starts its scan again.
+    day().await;
+    k.save_retention_rule(&admin, Some(sweep), rule("Enquiry", "delete", json!({"status": "Closed"}))).await.unwrap();
+    day().await;
+    assert_eq!(last(k.clone(), admin.clone()).await["scan"].as_str(), Some("started"));
+    assert_eq!(blocked.len(), 4);
 }
