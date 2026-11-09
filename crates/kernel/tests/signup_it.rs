@@ -124,7 +124,9 @@ async fn scenario() {
     assert!(matches!(k.set_user_active(&ana, bo, true).await, Err(Error::Invalid(_))), "turning someone back on needs room too");
 
     // A larger plan makes room; an unknown one is refused.
+    let before = k.registry.revision(anaco);
     k.set_plan(anaco, "team").await.unwrap();
+    assert_ne!(k.registry.revision(anaco), before, "what was read of its quotas (the assistant's allowance) is stale");
     k.set_user_active(&ana, bo, true).await.unwrap();
     assert!(matches!(k.set_plan(anaco, "gold").await, Err(Error::Validation(_))));
     assert_eq!(k.plan_of(anaco).await.unwrap().as_deref(), Some("team"));

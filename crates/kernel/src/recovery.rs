@@ -146,6 +146,10 @@ impl Kernel {
         for app in self.hooks.leaving() {
             outside.extend(app.held_outside(&mut tx, tenant).await?);
         }
+        // A legal hold keeps its evidence through a workspace's deletion too (FEO-007): each is released first,
+        // and each release is recorded, by whoever is entitled to make it.
+        let holds: i64 =
+            sqlx::query_scalar("select count(*) from legal_hold where tenant_id = $1 and released_at is null").bind(tenant).fetch_one(&mut *tx).await?;
         let files: Vec<(Uuid, String)> =
             sqlx::query_as("select id, storage_key from file_object where tenant_id = $1").bind(tenant).fetch_all(&mut *tx).await?;
         // Every column that names a workspace: tenant_id everywhere, and any other that refers to one.
@@ -166,12 +170,15 @@ impl Kernel {
             }
         }
         tx.commit().await?;
-        let mut said = json!({"workspace": slug, "closed_at": closed_at, "retain_until": retain_until, "rows": rows, "files": files.len(), "held_outside": outside, "deleted": false});
+        let mut said = json!({"workspace": slug, "closed_at": closed_at, "retain_until": retain_until, "rows": rows, "files": files.len(), "held_outside": outside, "legal_holds": holds, "deleted": false});
         if !apply {
             return Ok(said);
         }
         if !outside.is_empty() {
             return Err(Error::Conflict(format!("{slug} still has, outside this database: {}", outside.join("; "))));
+        }
+        if holds > 0 {
+            return Err(Error::Conflict(format!("{holds} legal holds are in force in {slug}: release each first, which is recorded, then delete it")));
         }
         may_copy(&self.db).await?;
         let store = if files.is_empty() { None } else { Some(self.file_store()?) };

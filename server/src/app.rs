@@ -632,7 +632,7 @@ async fn isolated_cors(req: axum::extract::Request, next: axum::middleware::Next
     h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
     if preflight {
         h.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST, PUT, PATCH, DELETE"));
-        h.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("authorization, content-type, if-match, idempotency-key"));
+        h.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("authorization, content-type, if-match, idempotency-key, idempotency-digest"));
         h.insert(header::ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("600"));
     }
     res

@@ -488,6 +488,33 @@ pub(crate) async fn record_held(tx: &mut Tx, tenant: Uuid, entity: &str, record:
         .await?)
 }
 
+/// The records of the people under a legal hold, under any address they have had, as an erasure would
+/// find them: by entity, those found.
+pub(crate) async fn held_people_records(ctx: &Ctx, tx: &mut Tx) -> Result<Vec<(String, Vec<Uuid>)>> {
+    let people: Vec<String> =
+        sqlx::query_scalar("select distinct lower(email::text) from legal_hold where tenant_id = $1 and released_at is null and email is not null")
+            .bind(ctx.tenant)
+            .fetch_all(&mut **tx)
+            .await?;
+    if people.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut emails = Vec::new();
+    for person in &people {
+        emails.extend(addresses(tx, ctx.tenant, person).await?);
+    }
+    emails.sort();
+    emails.dedup();
+    Ok(reached(ctx, tx, &emails, None).await?.into_iter().map(|(d, ids)| (d.entity, ids)).filter(|(_, ids)| !ids.is_empty()).collect())
+}
+
+/// Whether a legal hold covers this record: one placed on it, or one on a person whose record it is.
+// ponytail: finds every held person's records to answer for one; narrow it to this entity's
+// declarations if deleting while many people are held gets slow.
+pub(crate) async fn held(ctx: &Ctx, tx: &mut Tx, entity: &str, record: Uuid) -> Result<bool> {
+    Ok(record_held(tx, ctx.tenant, entity, record).await? || held_people_records(ctx, tx).await?.iter().any(|(e, ids)| e == entity && ids.contains(&record)))
+}
+
 impl Kernel {
     /// Everything the installed packages keep about the person with this email, under any address
     /// they have had, and their login account (administrators only).
@@ -787,9 +814,38 @@ impl Kernel {
         if done.rows_affected() == 0 {
             return Err(Error::NotFound("active legal hold".into()));
         }
-        audit::record(&mut tx, ctx, "LegalHold", id, "release", None, json!({})).await?;
+        // The versions kept while the record was held go with its last hold: their purpose has ended.
+        let forgotten = sqlx::query(
+            "delete from held_version v using legal_hold h where h.tenant_id = $1 and h.id = $2 and v.tenant_id = h.tenant_id \
+             and v.entity = h.entity and v.record_id = h.record_id and not exists (select 1 from legal_hold o where o.tenant_id = h.tenant_id \
+             and o.released_at is null and o.entity = h.entity and o.record_id = h.record_id)",
+        )
+        .bind(ctx.tenant)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        audit::record(&mut tx, ctx, "LegalHold", id, "release", None, json!({"versions_forgotten": forgotten})).await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// A held record as it was before each change made to it while held, newest first (FEO-007): what an
+    /// app's own SQL changed or blanked is still there. Administrators only.
+    pub async fn held_versions(&self, ctx: &Ctx, entity: &str, record: Uuid) -> Result<Vec<Value>> {
+        admin_only(ctx)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let rows: Vec<Value> = sqlx::query_scalar(
+            "select jsonb_build_object('saved_at', saved_at, 'row', row - 'tenant_id') from held_version \
+             where tenant_id = $1 and entity = $2 and record_id = $3 order by saved_at desc",
+        )
+        .bind(ctx.tenant)
+        .bind(entity)
+        .bind(record)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(rows)
     }
 
     pub async fn legal_holds(&self, ctx: &Ctx) -> Result<Vec<Value>> {

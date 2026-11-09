@@ -638,8 +638,8 @@ impl Kernel {
     pub async fn attachments(&self, ctx: &Ctx, entity: &str, id: Uuid) -> Result<Vec<Value>> {
         self.readable(ctx, entity, id).await?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let rows: Vec<(Uuid, String, String, i64, Option<Uuid>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
-            "select id, file_name, content_type, size_bytes, created_by, created_at from file_object \
+        let rows: Vec<(Uuid, String, String, i64, Option<Uuid>, chrono::DateTime<chrono::Utc>, Option<String>)> = sqlx::query_as(
+            "select id, file_name, content_type, size_bytes, created_by, created_at, sha256 from file_object \
              where tenant_id = $1 and entity = $2 and record_id = $3 order by created_at limit 500",
         )
         .bind(ctx.tenant)
@@ -650,7 +650,10 @@ impl Kernel {
         tx.commit().await?;
         Ok(rows
             .into_iter()
-            .map(|(fid, name, ct, size, by, at)| json!({"id": fid, "file_name": name, "content_type": ct, "size_bytes": size, "created_by": by, "created_at": at, "url": format!("/files/{fid}")}))
+            // The content's digest lets a device sending a file again see it is already here.
+            .map(|(fid, name, ct, size, by, at, sha)| {
+                json!({"id": fid, "file_name": name, "content_type": ct, "size_bytes": size, "created_by": by, "created_at": at, "sha256": sha, "url": format!("/files/{fid}")})
+            })
             .collect())
     }
 

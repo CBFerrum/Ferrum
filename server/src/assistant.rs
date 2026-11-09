@@ -93,6 +93,49 @@ struct Policy {
     egress: Egress,
 }
 
+/// How long a workspace's policy, once read, is used without reading it again.
+const POLICY_FRESH: Duration = Duration::from_secs(20);
+/// How long the policy last read stands in while it cannot be read (a database failing over). Never
+/// longer, and never in place of a policy that was not read.
+const POLICY_GRACE: Duration = Duration::from_secs(300);
+
+impl Policy {
+    /// The policy a workspace's settings and its plan's quotas say.
+    fn of(settings: &Value, quotas: &Value) -> Policy {
+        Policy {
+            off: settings.get("assistant").and_then(Value::as_bool) == Some(false),
+            model: settings.get("assistant_model").and_then(Value::as_str).map(str::to_string),
+            // The workspace may set less than its plan allows, not more.
+            monthly_tokens: [settings.get("assistant_monthly_tokens"), quotas.get("ai_tokens_month")].into_iter().flatten().filter_map(Value::as_i64).min(),
+            egress: settings.get("assistant_egress").cloned().and_then(|e| serde_json::from_value(e).ok()).unwrap_or_default(),
+        }
+    }
+}
+
+/// A policy as read: when, and at which revision of the workspace's settings
+/// ([`ferrum_kernel::registry::Registry::revision`]).
+type Read = (Instant, (u64, u64), Policy);
+
+/// What a read of the policy comes to, and what is kept of it. A read that failed never means fewer
+/// restrictions: the policy last read stands in within [`POLICY_GRACE`] of when it was read, unless the
+/// settings are known to have changed since (then what they say now is not known), and otherwise there
+/// is no policy, so the assistant is unavailable until it can be read again.
+fn settle(cached: Option<Read>, read: Result<(Value, Value)>, now: Instant, revision: (u64, u64)) -> (Result<Policy>, Option<Read>) {
+    match read {
+        Ok((settings, quotas)) => {
+            let policy = Policy::of(&settings, &quotas);
+            (Ok(policy.clone()), Some((now, revision, policy)))
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "the assistant's policy for a workspace cannot be read");
+            match cached {
+                Some((at, (_, changes), policy)) if changes == revision.1 && now.saturating_duration_since(at) < POLICY_GRACE => (Ok(policy), None),
+                _ => (Err(Error::Unavailable("the assistant's settings cannot be read now: try again shortly".into())), None),
+            }
+        }
+    }
+}
+
 /// How the model's service is spoken to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Protocol {
@@ -196,8 +239,8 @@ pub struct Assistant {
     config: Option<Config>,
     http: reqwest::Client,
     live: DashMap<(Uuid, Uuid), Arc<Live>>,
-    /// Workspaces whose administrators turned the assistant off, as read a moment ago.
-    off: DashMap<Uuid, (Instant, Policy)>,
+    /// Each workspace's policy, as read a moment ago.
+    off: DashMap<Uuid, Read>,
 }
 
 impl Assistant {
@@ -221,9 +264,17 @@ impl Assistant {
         self.config.is_some() && kind == "member" && !self.turned_off(k, ctx.tenant).await
     }
 
-    async fn policy(&self, k: &Kernel, tenant: Uuid) -> Policy {
-        if let Some(e) = self.off.get(&tenant).filter(|e| e.0.elapsed() < Duration::from_secs(20)) {
-            return e.1.clone();
+    /// The workspace's policy for the assistant, read at most every [`POLICY_FRESH`], and again as soon
+    /// as its settings change on any replica (the registry hears of it). When it cannot be read, the
+    /// one last read stands in for a short while ([`settle`]); otherwise this is an error.
+    async fn policy(&self, k: &Kernel, tenant: Uuid) -> Result<Policy> {
+        let revision = k.registry.revision(tenant);
+        let cached = self.off.get(&tenant).map(|e| e.value().clone());
+        if let Some((at, read_at, policy)) = &cached
+            && *read_at == revision
+            && at.elapsed() < POLICY_FRESH
+        {
+            return Ok(policy.clone());
         }
         let read = async {
             let mut tx = k.db.tenant_tx(tenant).await?;
@@ -231,27 +282,17 @@ impl Assistant {
             tx.commit().await?;
             Ok::<(Value, Value), Error>(s)
         }
-        .await
-        .unwrap_or((Value::Null, Value::Null));
-        let (read, quotas) = read;
-        let policy = Policy {
-            off: read.get("assistant").and_then(Value::as_bool) == Some(false),
-            model: read.get("assistant_model").and_then(Value::as_str).map(str::to_string),
-            // The workspace may set less than its plan allows, not more.
-            monthly_tokens: [read.get("assistant_monthly_tokens"), quotas.get("ai_tokens_month")].into_iter().flatten().filter_map(Value::as_i64).min(),
-            egress: read.get("assistant_egress").cloned().and_then(|e| serde_json::from_value(e).ok()).unwrap_or_default(),
-        };
-        self.off.insert(tenant, (Instant::now(), policy.clone()));
+        .await;
+        let (policy, keep) = settle(cached, read, Instant::now(), revision);
+        if let Some(entry) = keep {
+            self.off.insert(tenant, entry);
+        }
         policy
     }
 
+    /// Off by the workspace's setting, or off because its setting cannot be read now.
     async fn turned_off(&self, k: &Kernel, tenant: Uuid) -> bool {
-        self.policy(k, tenant).await.off
-    }
-
-    /// Forgets what was read about a workspace's setting (it just changed here).
-    pub fn setting_changed(&self, tenant: Uuid) {
-        self.off.remove(&tenant);
+        self.policy(k, tenant).await.map(|p| p.off).unwrap_or(true)
     }
 
     /// One short call with the operator's settings and no tools (`ferrum task assistant_check`):
@@ -1050,7 +1091,7 @@ fn not_run(calls: &[Value], why: &str) -> Vec<Value> {
 async fn run(env: &Env, ctx: &Ctx, thread: Uuid, live: &Live, t: Thread, input: Input) -> Result<&'static str> {
     let k = &env.kernel;
     let config = env.assistant.config.clone().ok_or_else(|| Error::Unavailable("the assistant is not set up on this server".into()))?;
-    let policy = env.assistant.policy(k, ctx.tenant).await;
+    let policy = env.assistant.policy(k, ctx.tenant).await?;
     // From here on, what is read goes to the provider: narrowed, whatever the person may see.
     let ctx = &ctx.for_provider(policy.egress.clone());
     let model = policy.model.clone().filter(|m| *m == config.model || config.models.contains(m)).unwrap_or_else(|| config.model.clone());
@@ -1347,6 +1388,33 @@ pub fn follow(env: &Env, ctx: &Ctx, id: Uuid) -> Option<Response> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_policy_that_cannot_be_read_never_loosens() {
+        let now = Instant::now();
+        let failed = || Err(Error::Db("connection refused".into()));
+        let off = Policy { off: true, monthly_tokens: Some(0), ..Policy::default() };
+        // Read: the workspace's own settings, and the smaller of its allowance and its plan's.
+        let rev = (0, 4);
+        let (p, keep) = settle(None, Ok((json!({"assistant": false, "assistant_monthly_tokens": 500}), json!({"ai_tokens_month": 200}))), now, rev);
+        let p = p.unwrap();
+        assert!(p.off && p.monthly_tokens == Some(200) && keep.is_some_and(|k| k.1 == rev));
+        // Not read, and nothing read before: unavailable, never the defaults (on, unlimited).
+        let (p, keep) = settle(None, failed(), now, rev);
+        assert!(matches!(p, Err(Error::Unavailable(_))) && keep.is_none());
+        // Not read: what was read a minute ago stands in, off and allowance as they were.
+        let minute_ago = || Some((now - Duration::from_secs(60), rev, off.clone()));
+        let (p, keep) = settle(minute_ago(), failed(), now, rev);
+        let p = p.unwrap();
+        assert!(p.off && p.monthly_tokens == Some(0) && keep.is_none(), "a failure keeps nothing new");
+        // Everything was dropped since (a notification perhaps missed): no more is known than before.
+        assert!(settle(minute_ago(), failed(), now, (1, 4)).0.is_ok_and(|p| p.off));
+        // The settings changed since, and cannot be read: what they say now is not known.
+        assert!(matches!(settle(minute_ago(), failed(), now, (0, 5)).0, Err(Error::Unavailable(_))));
+        // Not read, and what was read is older than the grace: unavailable.
+        let (p, _) = settle(Some((now - POLICY_GRACE - Duration::from_secs(1), rev, Policy::default())), failed(), now, rev);
+        assert!(matches!(p, Err(Error::Unavailable(_))));
+    }
 
     #[test]
     fn events_are_read_whatever_the_chunks() {
