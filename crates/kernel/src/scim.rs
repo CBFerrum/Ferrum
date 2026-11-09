@@ -368,6 +368,10 @@ impl Kernel {
             other => other,
         })?;
         audit::record(&mut tx, ctx, "User", id, "scim_create", None, json!({"returned": gone.is_some()})).await?;
+        // Someone back, or made inactive, is a change of access a restore must not undo (FEO-014).
+        if gone.is_some() || !active {
+            crate::outbox::enqueue(&mut tx, ctx.tenant, crate::lifecycle::ACCESS_TOPIC, Some("User"), Some(id), json!({"user": id, "active": active})).await?;
+        }
         notify_users(&mut tx, ctx.tenant, Some(id)).await?;
         let row = self.scim_person_row(&mut tx, ctx.tenant, id).await?;
         tx.commit().await?;

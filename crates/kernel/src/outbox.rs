@@ -530,6 +530,9 @@ impl Kernel {
         if ev.topic == crate::privacy::ERASED_TOPIC {
             return self.journal_erasure(ev.tenant_id, ev.id, &ev.payload).await;
         }
+        if ev.topic == crate::lifecycle::ACCESS_TOPIC {
+            return self.journal_access(ev.tenant_id, ev.id, &ev.payload).await;
+        }
         if ev.topic == crate::webpush::PUSH_TOPIC {
             return self.push_notification(ev.tenant_id, &ev.payload).await;
         }

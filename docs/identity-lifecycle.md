@@ -35,6 +35,11 @@ they made, a service case and a team place, all ended or handed on by one depart
 With no successor, nothing moves and the answer counts the open assignments. Name one later with
 `POST /api/admin/users/{id}/hand-over` `{"to": "<person's id>", "reason": "..."}`.
 
+A restore does not let them back in. Every change of someone's access (leaving, turned off, turned on
+again, brought back by SCIM) is journalled in object storage by their id only. After a database is
+restored from an older backup, `ferrum task reapply_erasures` applies each person's last word again;
+a workspace taken back to a copy keeps deactivations as they are now in any case.
+
 **What it cannot do.** Files already downloaded, and offline copies on a device, cannot be reached
 from here.
 
