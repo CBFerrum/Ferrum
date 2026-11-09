@@ -1230,8 +1230,35 @@ record as it stood: if the record changed meanwhile, or 30 minutes passed, nothi
 assistant has to look again. A model that does whatever a ticket tells it can read what the person's
 narrowed view allows, and can propose. `server/tests/assistant_egress_it.rs` runs exactly that.
 
+A call runs at once only when this server knows it reads: Ferrum's own reading tools, a capability
+whose definition only reads, or an action declared read-only (run in a read-only transaction). What a
+tool says of itself (its `readOnlyHint`) does not count. Every input is checked against its tool's
+schema at every depth before anything runs: types (null only where allowed), required and unknown
+fields, enumerations, bounds, lengths and formats.
+
+**While it answers.** Before every call to the model, every retry and every tool, the person and the
+workspace's policy are read again: a person signed out everywhere or turned away, the assistant turned
+off, or a change to what the person may see or do (roles, scopes, what may go to the provider) stops
+the turn there, and the calls it left are answered as not run. `server/tests/assistant_boundaries_it.rs`
+takes a role away between two rounds of calls and turns the assistant off during a retry.
+
+**Earlier in a conversation.** A new turn sends the model the person's earlier words, but never the
+earlier calls, their results or the page context, and an earlier answer only while the person may
+still read every record and kind of record it drew on, and only to the destination it went to under
+the same egress policy (each answer records both). An answer that no longer qualifies is replaced by a
+line saying it was left out. A kept conversation is an archive, not context reused as it was.
+
+**Shown and kept.** A key the model writes (a Ferrum API key, a provider's key, a private key) is
+shown and kept as `[withheld]`. Text streams to the page short of where such a key could still be
+starting, so one cut across the pieces it streams in is caught as well.
+
 **How much.** Workspaces set `assistant_model` from the models the operator allows, and
-`assistant_monthly_tokens`, which cannot exceed the operator's. Past it, the provider is not called.
+`assistant_monthly_tokens`, which cannot exceed the operator's. Before each call, what it may use (its
+input and the most it may answer) is held back from what is left, under one lock per workspace, and the
+answer is capped at what is left; with less than 1,024 tokens to answer with, the call is not made.
+Turns at once cannot spend more than the allowance between them. What a call holds is let go once its
+use is recorded or it fails; one left by a server that stopped counts for 15 minutes
+(`assistant_reservation`).
 `GET /api/assistant/usage` shows this month's tokens by person and model. The log records each call's
 model, tokens and tool names, and never what was said.
 

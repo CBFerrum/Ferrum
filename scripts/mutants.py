@@ -59,6 +59,8 @@ HOST_UNIT = ("-p", "ferrum-plugins", "--lib", "host::tests")
 SOCKETS_UNIT = ("-p", "ferrum-plugins", "--lib", "sockets::tests")
 EGRESS = ("-p", "ferrum-server", "--test", "assistant_egress_it")
 ASSISTANT = ("-p", "ferrum-server", "--test", "assistant_it")
+BOUNDARIES = ("-p", "ferrum-server", "--test", "assistant_boundaries_it")
+ASSISTANT_UNIT = ("-p", "ferrum-server", "--lib", "assistant::tests")
 RECEIPTS = ("-p", "ferrum-kernel", "--test", "receipts_it")
 SHARES_UNIT = ("-p", "ferrum-server", "--lib", "state::tests")
 EXTENSIONS = ("-p", "ferrum-server", "--test", "extensions_it")
@@ -416,14 +418,25 @@ MUTANTS = [
     ("delivery-key-changes", "crates/kernel/src/connect.rs", "let change = Outgoing { key: key.to_string(),", "let change = Outgoing { key: Uuid::now_v7().to_string(),", CONNECT),
     ("untested-connection-runs", "crates/kernel/src/connect.rs", """        if !row.enabled {\n            return Err(Error::invalid("test this connection first"));\n        }\n""", "", CONNECT),
     ("disconnect-keeps-credentials", "crates/kernel/src/connect.rs", "update connection set enabled = false, sealed = null where", "update connection set enabled = false where", CONNECT),
-    ("assistant-reads-everything", "server/src/assistant.rs", "let ctx = &ctx.for_provider(policy.egress.clone());", "let ctx = ctx;", EGRESS),
+    ("assistant-reads-everything", "server/src/assistant.rs", "    let now = now.for_provider(policy.egress.clone());", "    let now = now;", EGRESS),
     ("internal-entity-goes-out", "crates/kernel/src/ctx.rs", "if ctx.egress.as_ref().is_some_and(|e| !e.allows_entity(&ent.def)) {", "if false {", EGRESS),
     ("field-group-goes-out", "crates/kernel/src/doc.rs", "                if !egress.allows_field(f) {\n                    doc.remove(&f.name);\n                } else", "                if false {\n                    doc.remove(&f.name);\n                } else", EGRESS),
     ("salary-by-filter", "crates/kernel/src/query.rs", "ctx.perms.can_read_field(&ent.def.name, f) && ctx.egress.as_ref().is_none_or(|e| e.allows_field(f))", "ctx.perms.can_read_field(&ent.def.name, f)", EGRESS),
     ("approval-outlives-its-record", "server/src/assistant.rs", 'if json!(version_of(k, ctx, &call["input"]).await) != call["version"] => {', 'if false => {', EGRESS),
     ("approval-never-expires", "server/src/assistant.rs", 'if chrono::Utc::now().timestamp() - p["asked_at"].as_i64().unwrap_or(0) > APPROVAL_SECS => {', 'if false => {', EGRESS),
-    ("budget-ignored", "server/src/assistant.rs", "&& tokens_this_month(k, ctx.tenant).await? >= budget", "&& tokens_this_month(k, ctx.tenant).await? >= i64::MAX - budget", EGRESS),
+    ("budget-ignored", "server/src/assistant.rs", "    if room < MIN_OUTPUT {", "    if room < i64::MIN + MIN_OUTPUT {", EGRESS),
     # A policy that cannot be read never means fewer restrictions (FEO-004).
+    # What the assistant may still do once things change under it (FEO-059 to FEO-062).
+    ("turn-trusts-its-start", "server/src/assistant.rs", "                None => standing(env, first, signed_in, Some(&begun)).await,", "                None => Ok((ctx.clone(), Policy::default())),", BOUNDARIES),
+    ("retry-without-asking", "server/src/assistant.rs", "                    if let Err(e) = standing(env, first, signed_in, Some(&begun)).await {\n                        release(k, ctx.tenant, held).await;\n                        return Err(e);\n                    }\n", "", BOUNDARIES),
+    ("earlier-answers-always-sent", "server/src/assistant.rs", "        let sendable = still_sendable(k, ctx, turn, here).await;", "        let sendable = true;", BOUNDARIES),
+    ("earlier-results-sent-again", "server/src/assistant.rs", '.filter(|b| b["type"] == "text" && (role == "assistant" || !context_block(b)))', ".filter(|_| true)", BOUNDARIES),
+    ("tool-says-it-reads", "server/src/assistant.rs", "        _ => false,\n    }\n}\n\n/// The person's tools", "        _ => true,\n    }\n}\n\n/// The person's tools", BOUNDARIES),
+    ("null-for-any-type", "server/src/assistant.rs", "    if !types.is_empty() && !types.iter().any(|t| is(t)) {", "    if !types.is_empty() && !v.is_null() && !types.iter().any(|t| is(t)) {", ASSISTANT_UNIT),
+    ("nested-inputs-unchecked", "server/src/assistant.rs", "                    Some(p) => conforms(p, value, &path)?,", "                    Some(_) => {}", ASSISTANT_UNIT),
+    ("allowance-not-held", "server/src/assistant.rs", "+ (select coalesce(sum(tokens), 0) from assistant_reservation where tenant_id = $1 and created_at > now() - interval '15 minutes')", "+ 0", BOUNDARIES),
+    ("keys-streamed-as-written", "server/src/assistant.rs", 'let out = if kind == "thinking" { thinking.push(piece) } else { text.push(piece) };', "let out = piece.to_string();", BOUNDARIES),
+    ("answers-kept-unredacted", "server/src/assistant.rs", 'b["text"] = json!(redact(t, true));', 'b["text"] = json!(t);', BOUNDARIES),
     ("unread-policy-is-the-default", "server/src/assistant.rs", '_ => (Err(Error::Unavailable("the assistant\'s settings cannot be read now: try again shortly".into())), None),', "_ => (Ok(Policy::of(&Value::Null, &Value::Null)), None),", ASSISTANT),
     ("any-model-allowed", "server/src/assistant.rs", ".filter(|m| *m == config.model || config.models.contains(m))", "", EGRESS),
     ("support-key-outlives-revocation", "crates/kernel/src/support.rs", "update api_key set revoked_at = now() where tenant_id = $1 and user_id = $2 and revoked_at is null", "update api_key set revoked_at = revoked_at where tenant_id = $1 and user_id = $2 and revoked_at is null", SUPPORT),

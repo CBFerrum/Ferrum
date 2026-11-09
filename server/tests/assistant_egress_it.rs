@@ -328,7 +328,7 @@ async fn scenario() {
     let mut rx = assistant::begin(&env, &admin, thread, ask("Hi"), "member").await.unwrap();
     let events = turn(&mut rx).await;
     assert_eq!(model.seen.lock().unwrap().len(), calls, "past the allowance, the provider is not called");
-    assert!(events.iter().any(|e| e["type"] == json!("error")), "{events:?}");
+    assert!(events.iter().any(|e| e["type"] == json!("error") && e["message"].as_str().is_some_and(|m| m.contains("allowance"))), "{events:?}");
 
     // ───────────── AT-AI-005: a model that will not stop, and a service that keeps failing ─────────────
     k.update_tenant_settings(&admin, json!({"assistant_monthly_tokens": null}).as_object().unwrap()).await.unwrap();
