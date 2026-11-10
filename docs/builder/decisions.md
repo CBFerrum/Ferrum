@@ -284,3 +284,36 @@ listed actions, its workflow's transitions.
 **Rules out**: configuration writing an app's tables or ledger lines itself; an effect reaching a
 configured action through the gate (no effect runs another one); a step that changes something without
 an effect key; a new kind of permission for it.
+
+## BD-14. Linked records in expressions, and effects on a record's own lines
+
+Decided 10 November 2026. Qualifies BD-10 and BD-11. Asked for by the paper measurement of Government and
+Retail ([evidence](evidence/government-retail-on-paper-2026-11-10.md)): G6, G12, G15, G16 and R23.
+
+An expression may read the record a link field names as `links.<field>`, its fields and its lines (docs/api.md,
+"Linked records"); a configured action or an automation may append a line to the record (`append_line`) or
+change the one line an expression picks (`set_line`).
+
+* **Read as the workspace.** As BD-10 reads aggregates, and for the same reason: "submit needs every
+  document the permit type lists" must not pass for a clerk who cannot open permit types. Secret fields
+  are left out. What follows: a condition, a refusal or an effect's value can depend on, and an effect can
+  copy, values of a record the person could not open themselves. An administrator sets that up, in
+  reviewed configuration, as with automations and configured actions; it is not a way for a person to read
+  more.
+* **One level.** `links.type.documents` works; a link of the linked record is an id. No chains, no
+  `links` of lines.
+* **Only where a transaction is at hand.** Entity rules, an action's condition and refusals, workflow
+  guards, automations and service targets. Not `default_expr`, `computed`, `visible_if`, `required_if`,
+  `read_only_if` or a section's condition: they are worked out without a transaction and in the browser,
+  which has no linked records, and a field that changed with a record a person never saved would be a
+  surprise. The approvals inbox, which has no transaction, takes such a guard to hold; taking the step
+  decides.
+* **Known before it runs.** The names come from the expression itself, checked when saved against the
+  entity's link fields, at most five; `links` read any other way is refused. Each place reads each name it
+  uses once, without a lock: a rule sees a linked record as it is when the save runs.
+* **Lines through the ordinary save.** `append_line` and `set_line` build a patch naming every stored line
+  by its id, so other lines keep their values; the record's computed fields, row rules, totals, checks and
+  audit run, one version per effect. A submitted record refuses them. No other effect writes a table.
+
+**Rules out**: chains of links, a linked record read with the saver's rights in these places, `links` in
+expressions the browser evaluates, lines within lines, and a role named by data.
