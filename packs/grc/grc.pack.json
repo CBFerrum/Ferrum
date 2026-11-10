@@ -3032,9 +3032,960 @@
   "format": "ferrum.pack/1",
   "label": "Governance and Risk",
   "name": "grc",
-  "records": [],
+  "records": [
+    {
+      "entity": "InterfaceWord",
+      "key": [
+        "language",
+        "english"
+      ],
+      "rows": [
+        {
+          "english": "Accept It",
+          "language": "ar",
+          "words": "اقبله"
+        },
+        {
+          "english": "Accept",
+          "language": "ar",
+          "words": "اقبل"
+        },
+        {
+          "english": "Accepted",
+          "language": "ar",
+          "words": "مقبول"
+        },
+        {
+          "english": "Acknowledged At",
+          "language": "ar",
+          "words": "وقت الإقرار"
+        },
+        {
+          "english": "Approver",
+          "language": "ar",
+          "words": "المعتمِد"
+        },
+        {
+          "english": "Avoid",
+          "language": "ar",
+          "words": "تجنّب"
+        },
+        {
+          "english": "Category",
+          "language": "ar",
+          "words": "الفئة"
+        },
+        {
+          "english": "Closed",
+          "language": "ar",
+          "words": "مغلق"
+        },
+        {
+          "english": "Compliance",
+          "language": "ar",
+          "words": "الامتثال"
+        },
+        {
+          "english": "Control Test",
+          "language": "ar",
+          "words": "اختبار الضابط"
+        },
+        {
+          "english": "Control Tests",
+          "language": "ar",
+          "words": "اختبارات الضوابط"
+        },
+        {
+          "english": "Control",
+          "language": "ar",
+          "words": "ضابط"
+        },
+        {
+          "english": "Controls",
+          "language": "ar",
+          "words": "الضوابط"
+        },
+        {
+          "english": "Critical",
+          "language": "ar",
+          "words": "حرج"
+        },
+        {
+          "english": "Current Impact",
+          "language": "ar",
+          "words": "الأثر الحالي"
+        },
+        {
+          "english": "Current Likelihood",
+          "language": "ar",
+          "words": "الاحتمال الحالي"
+        },
+        {
+          "english": "Current Score",
+          "language": "ar",
+          "words": "الدرجة الحالية"
+        },
+        {
+          "english": "Decided On",
+          "language": "ar",
+          "words": "قُرّر في"
+        },
+        {
+          "english": "Description",
+          "language": "ar",
+          "words": "الوصف"
+        },
+        {
+          "english": "Draft",
+          "language": "ar",
+          "words": "مسودة"
+        },
+        {
+          "english": "Due On",
+          "language": "ar",
+          "words": "يستحق في"
+        },
+        {
+          "english": "Effective",
+          "language": "ar",
+          "words": "سارٍ"
+        },
+        {
+          "english": "Evidence",
+          "language": "ar",
+          "words": "الدليل"
+        },
+        {
+          "english": "Expired",
+          "language": "ar",
+          "words": "منتهي الصلاحية"
+        },
+        {
+          "english": "Expires On",
+          "language": "ar",
+          "words": "تنتهي في"
+        },
+        {
+          "english": "Financial",
+          "language": "ar",
+          "words": "مالي"
+        },
+        {
+          "english": "Finding",
+          "language": "ar",
+          "words": "الملاحظة"
+        },
+        {
+          "english": "Findings",
+          "language": "ar",
+          "words": "الملاحظات"
+        },
+        {
+          "english": "Governance and Risk",
+          "language": "ar",
+          "words": "الحوكمة والمخاطر"
+        },
+        {
+          "english": "High",
+          "language": "ar",
+          "words": "مرتفع"
+        },
+        {
+          "english": "I Have Read It",
+          "language": "ar",
+          "words": "لقد قرأته"
+        },
+        {
+          "english": "In Place",
+          "language": "ar",
+          "words": "مُطبَّق"
+        },
+        {
+          "english": "Ineffective",
+          "language": "ar",
+          "words": "غير فعّال"
+        },
+        {
+          "english": "Inherent Impact",
+          "language": "ar",
+          "words": "الأثر الكامن"
+        },
+        {
+          "english": "Inherent Likelihood",
+          "language": "ar",
+          "words": "الاحتمال الكامن"
+        },
+        {
+          "english": "Inherent Score",
+          "language": "ar",
+          "words": "الدرجة الكامنة"
+        },
+        {
+          "english": "Justification",
+          "language": "ar",
+          "words": "التبرير"
+        },
+        {
+          "english": "Last Result",
+          "language": "ar",
+          "words": "آخر نتيجة"
+        },
+        {
+          "english": "Last Tested On",
+          "language": "ar",
+          "words": "آخر اختبار في"
+        },
+        {
+          "english": "Level",
+          "language": "ar",
+          "words": "المستوى"
+        },
+        {
+          "english": "Low",
+          "language": "ar",
+          "words": "منخفض"
+        },
+        {
+          "english": "Medium",
+          "language": "ar",
+          "words": "متوسطة"
+        },
+        {
+          "english": "Mitigate",
+          "language": "ar",
+          "words": "خفّف"
+        },
+        {
+          "english": "Name",
+          "language": "ar",
+          "words": "الاسم"
+        },
+        {
+          "english": "Notes",
+          "language": "ar",
+          "words": "الملاحظات"
+        },
+        {
+          "english": "Open",
+          "language": "ar",
+          "words": "افتح"
+        },
+        {
+          "english": "Operational",
+          "language": "ar",
+          "words": "يعمل"
+        },
+        {
+          "english": "Overdue",
+          "language": "ar",
+          "words": "متأخر"
+        },
+        {
+          "english": "Owner",
+          "language": "ar",
+          "words": "المالك"
+        },
+        {
+          "english": "Partially Effective",
+          "language": "ar",
+          "words": "فعّال جزئيًا"
+        },
+        {
+          "english": "Person",
+          "language": "ar",
+          "words": "الشخص"
+        },
+        {
+          "english": "Physical",
+          "language": "ar",
+          "words": "مادي"
+        },
+        {
+          "english": "Planned",
+          "language": "ar",
+          "words": "مخطط"
+        },
+        {
+          "english": "Policies",
+          "language": "ar",
+          "words": "السياسات"
+        },
+        {
+          "english": "Policy Acknowledgement",
+          "language": "ar",
+          "words": "الإقرار بالسياسة"
+        },
+        {
+          "english": "Policy Acknowledgements",
+          "language": "ar",
+          "words": "الإقرارات بالسياسات"
+        },
+        {
+          "english": "Policy",
+          "language": "ar",
+          "words": "السياسة"
+        },
+        {
+          "english": "Process",
+          "language": "ar",
+          "words": "العملية"
+        },
+        {
+          "english": "Publish It",
+          "language": "ar",
+          "words": "انشره"
+        },
+        {
+          "english": "Published On",
+          "language": "ar",
+          "words": "نُشر في"
+        },
+        {
+          "english": "Published Text",
+          "language": "ar",
+          "words": "النص المنشور"
+        },
+        {
+          "english": "Published",
+          "language": "ar",
+          "words": "منشور"
+        },
+        {
+          "english": "References",
+          "language": "ar",
+          "words": "المراجع"
+        },
+        {
+          "english": "Reject It",
+          "language": "ar",
+          "words": "ارفضه"
+        },
+        {
+          "english": "Rejected",
+          "language": "ar",
+          "words": "مرفوض"
+        },
+        {
+          "english": "Remediating",
+          "language": "ar",
+          "words": "قيد المعالجة"
+        },
+        {
+          "english": "Remediation",
+          "language": "ar",
+          "words": "المعالجة"
+        },
+        {
+          "english": "Reputational",
+          "language": "ar",
+          "words": "السمعة"
+        },
+        {
+          "english": "Residual Impact",
+          "language": "ar",
+          "words": "الأثر المتبقي"
+        },
+        {
+          "english": "Residual Likelihood",
+          "language": "ar",
+          "words": "الاحتمال المتبقي"
+        },
+        {
+          "english": "Residual Score",
+          "language": "ar",
+          "words": "الدرجة المتبقية"
+        },
+        {
+          "english": "Result",
+          "language": "ar",
+          "words": "النتيجة"
+        },
+        {
+          "english": "Retire It",
+          "language": "ar",
+          "words": "أحِله إلى التقاعد"
+        },
+        {
+          "english": "Retired",
+          "language": "ar",
+          "words": "خارج الخدمة"
+        },
+        {
+          "english": "Review By",
+          "language": "ar",
+          "words": "المراجعة بحلول"
+        },
+        {
+          "english": "Revision",
+          "language": "ar",
+          "words": "المراجعة"
+        },
+        {
+          "english": "Revoke It",
+          "language": "ar",
+          "words": "ألغِه"
+        },
+        {
+          "english": "Revoked",
+          "language": "ar",
+          "words": "مُلغى"
+        },
+        {
+          "english": "Risk Acceptance",
+          "language": "ar",
+          "words": "قبول المخاطرة"
+        },
+        {
+          "english": "Risk Acceptances",
+          "language": "ar",
+          "words": "حالات قبول المخاطر"
+        },
+        {
+          "english": "Risk Register",
+          "language": "ar",
+          "words": "سجل المخاطر"
+        },
+        {
+          "english": "Risk",
+          "language": "ar",
+          "words": "المخاطرة"
+        },
+        {
+          "english": "Risks, controls, policies and findings",
+          "language": "ar",
+          "words": "المخاطر والضوابط والسياسات والملاحظات"
+        },
+        {
+          "english": "Security",
+          "language": "ar",
+          "words": "الأمان"
+        },
+        {
+          "english": "Severity",
+          "language": "ar",
+          "words": "الخطورة"
+        },
+        {
+          "english": "Status",
+          "language": "ar",
+          "words": "الحالة"
+        },
+        {
+          "english": "Strategic",
+          "language": "ar",
+          "words": "استراتيجي"
+        },
+        {
+          "english": "Technical",
+          "language": "ar",
+          "words": "تقني"
+        },
+        {
+          "english": "Tested On",
+          "language": "ar",
+          "words": "اختُبر في"
+        },
+        {
+          "english": "Tester",
+          "language": "ar",
+          "words": "المختبِر"
+        },
+        {
+          "english": "Text",
+          "language": "ar",
+          "words": "النص"
+        },
+        {
+          "english": "Title",
+          "language": "ar",
+          "words": "العنوان"
+        },
+        {
+          "english": "Transfer",
+          "language": "ar",
+          "words": "التحويل"
+        },
+        {
+          "english": "Treatment",
+          "language": "ar",
+          "words": "المعالجة"
+        },
+        {
+          "english": "Accept It",
+          "language": "hi",
+          "words": "इसे स्वीकार करें"
+        },
+        {
+          "english": "Accept",
+          "language": "hi",
+          "words": "स्वीकार करें"
+        },
+        {
+          "english": "Accepted",
+          "language": "hi",
+          "words": "स्वीकृत"
+        },
+        {
+          "english": "Acknowledged At",
+          "language": "hi",
+          "words": "स्वीकृति का समय"
+        },
+        {
+          "english": "Approver",
+          "language": "hi",
+          "words": "अनुमोदक"
+        },
+        {
+          "english": "Avoid",
+          "language": "hi",
+          "words": "बचें"
+        },
+        {
+          "english": "Category",
+          "language": "hi",
+          "words": "श्रेणी"
+        },
+        {
+          "english": "Closed",
+          "language": "hi",
+          "words": "बंद"
+        },
+        {
+          "english": "Compliance",
+          "language": "hi",
+          "words": "अनुपालन"
+        },
+        {
+          "english": "Control Test",
+          "language": "hi",
+          "words": "नियंत्रण परीक्षण"
+        },
+        {
+          "english": "Control Tests",
+          "language": "hi",
+          "words": "नियंत्रण परीक्षण"
+        },
+        {
+          "english": "Control",
+          "language": "hi",
+          "words": "नियंत्रण"
+        },
+        {
+          "english": "Controls",
+          "language": "hi",
+          "words": "नियंत्रण"
+        },
+        {
+          "english": "Critical",
+          "language": "hi",
+          "words": "गंभीर"
+        },
+        {
+          "english": "Current Impact",
+          "language": "hi",
+          "words": "वर्तमान प्रभाव"
+        },
+        {
+          "english": "Current Likelihood",
+          "language": "hi",
+          "words": "वर्तमान संभावना"
+        },
+        {
+          "english": "Current Score",
+          "language": "hi",
+          "words": "वर्तमान स्कोर"
+        },
+        {
+          "english": "Decided On",
+          "language": "hi",
+          "words": "निर्णय तिथि"
+        },
+        {
+          "english": "Description",
+          "language": "hi",
+          "words": "विवरण"
+        },
+        {
+          "english": "Draft",
+          "language": "hi",
+          "words": "ड्राफ़्ट"
+        },
+        {
+          "english": "Due On",
+          "language": "hi",
+          "words": "देय तिथि"
+        },
+        {
+          "english": "Effective",
+          "language": "hi",
+          "words": "प्रभावी"
+        },
+        {
+          "english": "Evidence",
+          "language": "hi",
+          "words": "साक्ष्य"
+        },
+        {
+          "english": "Expired",
+          "language": "hi",
+          "words": "समाप्त"
+        },
+        {
+          "english": "Expires On",
+          "language": "hi",
+          "words": "इस दिन समाप्त"
+        },
+        {
+          "english": "Financial",
+          "language": "hi",
+          "words": "वित्तीय"
+        },
+        {
+          "english": "Finding",
+          "language": "hi",
+          "words": "निष्कर्ष"
+        },
+        {
+          "english": "Findings",
+          "language": "hi",
+          "words": "निष्कर्ष"
+        },
+        {
+          "english": "Governance and Risk",
+          "language": "hi",
+          "words": "शासन और जोखिम"
+        },
+        {
+          "english": "High",
+          "language": "hi",
+          "words": "उच्च"
+        },
+        {
+          "english": "I Have Read It",
+          "language": "hi",
+          "words": "मैंने इसे पढ़ लिया है"
+        },
+        {
+          "english": "In Place",
+          "language": "hi",
+          "words": "लागू"
+        },
+        {
+          "english": "Ineffective",
+          "language": "hi",
+          "words": "अप्रभावी"
+        },
+        {
+          "english": "Inherent Impact",
+          "language": "hi",
+          "words": "अंतर्निहित प्रभाव"
+        },
+        {
+          "english": "Inherent Likelihood",
+          "language": "hi",
+          "words": "अंतर्निहित संभावना"
+        },
+        {
+          "english": "Inherent Score",
+          "language": "hi",
+          "words": "अंतर्निहित स्कोर"
+        },
+        {
+          "english": "Justification",
+          "language": "hi",
+          "words": "औचित्य"
+        },
+        {
+          "english": "Last Result",
+          "language": "hi",
+          "words": "अंतिम परिणाम"
+        },
+        {
+          "english": "Last Tested On",
+          "language": "hi",
+          "words": "अंतिम परीक्षण तिथि"
+        },
+        {
+          "english": "Level",
+          "language": "hi",
+          "words": "स्तर"
+        },
+        {
+          "english": "Low",
+          "language": "hi",
+          "words": "निम्न"
+        },
+        {
+          "english": "Medium",
+          "language": "hi",
+          "words": "मध्यम"
+        },
+        {
+          "english": "Mitigate",
+          "language": "hi",
+          "words": "कम करें"
+        },
+        {
+          "english": "Name",
+          "language": "hi",
+          "words": "नाम"
+        },
+        {
+          "english": "Notes",
+          "language": "hi",
+          "words": "नोट्स"
+        },
+        {
+          "english": "Open",
+          "language": "hi",
+          "words": "खोलें"
+        },
+        {
+          "english": "Operational",
+          "language": "hi",
+          "words": "चालू"
+        },
+        {
+          "english": "Overdue",
+          "language": "hi",
+          "words": "अतिदेय"
+        },
+        {
+          "english": "Owner",
+          "language": "hi",
+          "words": "मालिक"
+        },
+        {
+          "english": "Partially Effective",
+          "language": "hi",
+          "words": "आंशिक प्रभावी"
+        },
+        {
+          "english": "Person",
+          "language": "hi",
+          "words": "व्यक्ति"
+        },
+        {
+          "english": "Physical",
+          "language": "hi",
+          "words": "भौतिक"
+        },
+        {
+          "english": "Planned",
+          "language": "hi",
+          "words": "नियोजित"
+        },
+        {
+          "english": "Policies",
+          "language": "hi",
+          "words": "नीतियाँ"
+        },
+        {
+          "english": "Policy Acknowledgement",
+          "language": "hi",
+          "words": "नीति पावती"
+        },
+        {
+          "english": "Policy Acknowledgements",
+          "language": "hi",
+          "words": "नीति पावतियाँ"
+        },
+        {
+          "english": "Policy",
+          "language": "hi",
+          "words": "नीति"
+        },
+        {
+          "english": "Process",
+          "language": "hi",
+          "words": "प्रक्रिया"
+        },
+        {
+          "english": "Publish It",
+          "language": "hi",
+          "words": "इसे प्रकाशित करें"
+        },
+        {
+          "english": "Published On",
+          "language": "hi",
+          "words": "प्रकाशन तिथि"
+        },
+        {
+          "english": "Published Text",
+          "language": "hi",
+          "words": "प्रकाशित टेक्स्ट"
+        },
+        {
+          "english": "Published",
+          "language": "hi",
+          "words": "प्रकाशित"
+        },
+        {
+          "english": "References",
+          "language": "hi",
+          "words": "संदर्भ"
+        },
+        {
+          "english": "Reject It",
+          "language": "hi",
+          "words": "इसे अस्वीकार करें"
+        },
+        {
+          "english": "Rejected",
+          "language": "hi",
+          "words": "अस्वीकृत"
+        },
+        {
+          "english": "Remediating",
+          "language": "hi",
+          "words": "सुधार जारी"
+        },
+        {
+          "english": "Remediation",
+          "language": "hi",
+          "words": "सुधार"
+        },
+        {
+          "english": "Reputational",
+          "language": "hi",
+          "words": "प्रतिष्ठा संबंधी"
+        },
+        {
+          "english": "Residual Impact",
+          "language": "hi",
+          "words": "अवशिष्ट प्रभाव"
+        },
+        {
+          "english": "Residual Likelihood",
+          "language": "hi",
+          "words": "अवशिष्ट संभावना"
+        },
+        {
+          "english": "Residual Score",
+          "language": "hi",
+          "words": "अवशिष्ट स्कोर"
+        },
+        {
+          "english": "Result",
+          "language": "hi",
+          "words": "परिणाम"
+        },
+        {
+          "english": "Retire It",
+          "language": "hi",
+          "words": "इसे सेवानिवृत्त करें"
+        },
+        {
+          "english": "Retired",
+          "language": "hi",
+          "words": "सेवानिवृत्त"
+        },
+        {
+          "english": "Review By",
+          "language": "hi",
+          "words": "तक समीक्षा"
+        },
+        {
+          "english": "Revision",
+          "language": "hi",
+          "words": "संशोधन"
+        },
+        {
+          "english": "Revoke It",
+          "language": "hi",
+          "words": "इसे रद्द करें"
+        },
+        {
+          "english": "Revoked",
+          "language": "hi",
+          "words": "रद्द"
+        },
+        {
+          "english": "Risk Acceptance",
+          "language": "hi",
+          "words": "जोखिम स्वीकृति"
+        },
+        {
+          "english": "Risk Acceptances",
+          "language": "hi",
+          "words": "जोखिम स्वीकृतियाँ"
+        },
+        {
+          "english": "Risk Register",
+          "language": "hi",
+          "words": "जोखिम रजिस्टर"
+        },
+        {
+          "english": "Risk",
+          "language": "hi",
+          "words": "जोखिम"
+        },
+        {
+          "english": "Risks, controls, policies and findings",
+          "language": "hi",
+          "words": "जोखिम, नियंत्रण, नीतियाँ और निष्कर्ष"
+        },
+        {
+          "english": "Security",
+          "language": "hi",
+          "words": "सुरक्षा"
+        },
+        {
+          "english": "Severity",
+          "language": "hi",
+          "words": "गंभीरता"
+        },
+        {
+          "english": "Status",
+          "language": "hi",
+          "words": "स्थिति"
+        },
+        {
+          "english": "Strategic",
+          "language": "hi",
+          "words": "रणनीतिक"
+        },
+        {
+          "english": "Technical",
+          "language": "hi",
+          "words": "तकनीकी"
+        },
+        {
+          "english": "Tested On",
+          "language": "hi",
+          "words": "परीक्षण तिथि"
+        },
+        {
+          "english": "Tester",
+          "language": "hi",
+          "words": "परीक्षक"
+        },
+        {
+          "english": "Text",
+          "language": "hi",
+          "words": "पाठ"
+        },
+        {
+          "english": "Title",
+          "language": "hi",
+          "words": "शीर्षक"
+        },
+        {
+          "english": "Transfer",
+          "language": "hi",
+          "words": "स्थानांतरण"
+        },
+        {
+          "english": "Treatment",
+          "language": "hi",
+          "words": "उपचार"
+        }
+      ]
+    }
+  ],
   "requires": {
     "packages": {
+      "core": "0.2.0",
       "studio": "0.1.0"
     }
   },

@@ -82,7 +82,7 @@ platform's, said where they differ); **different** means the intent is met anoth
 | U4 | Quick create of a risk and a finding | `shell.create` | **same** (was cannot): the menu's `create`, offered to those who may create them (a Risk Manager), opening a new record's form | |
 | U5 | What the assistant knows of its records, and the questions it suggests | `shell.assistant` | **same** (was cannot): the menu's `assistant`, the app's text with the pack's entity names, on `/data/x_grc/` pages, where `/open` sends its records | |
 | U6 | A menu module "Governance and Risk" grouping its records | `modules` in `package.yaml` | **same** (was cannot): `define_module`; the records frame shows it once the web pages filter on `scope.modules` (with one menu, as now, they show it already) | |
-| U7 | Its names and words in Arabic and Hindi | `ui/src/locales` | **cannot** | a pack can now carry `InterfaceWord` records, but the pack carries none, and entity labels and choices are not interface words |
+| U7 | Its names and words in Arabic and Hindi | `ui/src/locales` | **different** (was cannot): 188 `InterfaceWord` records, the app's own words for 94 of the pack's 106 texts in each language; 12 texts, descriptions, the home space's labels and everything the server writes stay in English | the app's words for those texts; words for descriptions and Studio labels |
 | U8 | Reports and notifications | none | **same**: none | |
 | U9 | Uninstall ("ask") and versioned upgrades | app manifest, migrations | **different**: no uninstall; an upgrade is a newer pack installed over it (redefinitions under their guards) | uninstalling a pack (BF-PACK-003) |
 
@@ -264,3 +264,41 @@ steps do not reach the shell).
 - **Not checked**: no browser. `/api/shell`, `/data/x_grc/` and `/open` were checked by the server's unit
   tests, not on a running server with this pack; the web pages do not yet filter the records frame by
   `scope.modules` (with one menu it makes no difference).
+
+## Measured again with the workspace's words (10 November 2026, last)
+
+The web interface now reads the workspace's own word (its `InterfaceWord` records in the person's language)
+for the name of an entity, field, choice, button, workflow state or form section before the apps' names and
+its own catalog (Ferrum-Frontend PR 69). The pack now carries 188 `InterfaceWord` reference records, built
+from [packs/grc/words.json](../../../packs/grc/words.json): the coded app's own Arabic and Hindi words
+(`ui/src/locales/{ar,hi}.json` and `ui/src/locales/names/{ar,hi}.json`) for the texts the pack defines, and
+for nothing else (the test refuses a word for a text the pack does not define). Its requirements now name
+core as well, whose entity `InterfaceWord` is. Nothing stood in the way: `InterfaceWord` travels as reference
+data as it is, and the pack is 125 KB of its 5 MiB.
+
+**The pack's texts**: 106 (15 entity labels and plurals, 48 field labels, those without a label counted as
+the label shown, 33 choices, 8 button labels and confirmations, the menu's label and description; it has no
+workflow and no form sections). **Arabic: 94 have a word, 12 do not. Hindi: 94 have a word, 12 do not.** The
+12, the same in both: Evidence File, Test Every (Days), Tests, Risk Control, Risk Controls, Recheck, Risk
+Owner, Decision, Revoked On, Nothing New, and the confirmations of Revoke It and Retire It: texts the pack
+names differently from the app (tests as lines, the test interval per control, hidden fields for decisions
+and publishing), for which the app has no word.
+
+[grc_pack_it.rs](../../../crates/studio/tests/grc_pack_it.rs) installs the committed pack and checks that the
+workspace's words for `ar` and `hi` (what a page's bootstrap sends) are the 94 of each, among them the words
+for Risk and Mitigate in Arabic and Risk Acceptance and Critical in Hindi, and that installing it again adds
+none.
+
+**What stays in English whatever the pack carries**: the messages of checks, refusals and configured actions'
+refusals; mail and notification text from automations; anything the server writes (a computed field's text,
+an audit line); entity and field descriptions (the app translated those as well); the home space's list
+labels (U1), which are Studio's, not interface words; and the 12 texts above.
+
+**U7: cannot → different.** A person reading Arabic or Hindi sees the app's words for nearly every name on
+the records pages and the menu, but not for the 12 texts, the descriptions or the home space, as the app gave
+them. Not checked in a browser.
+
+### Counts
+
+58 behaviours: **49 same, 8 different, 1 cannot** (were 49, 7, 2). The only "cannot" left is C4 (lines
+within lines).
