@@ -88,6 +88,14 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   A child entity holds no unique keys, is the lines of one table field only, and holds no table of its
   own; customizations add no table field to a package's entity. A total over lines (`rollup`) is a sum
   or a count, with no condition; computed fields see the total of the previous save.
+- **Scheduled automations** look for due moments once a minute: the smallest step is a minute, and a
+  moment fires up to about a minute and a half late. A schedule on a custom entity's date (or on any
+  field kept in JSON) reads every record's date out of JSON on each look that may find something, with no
+  index; a repeating schedule on a datetime field looks at every record that has started on every look.
+  A monthly schedule is not offered on days 29 to 31: use `last`. Moments more than seven days old when
+  the scan reaches them (after the servers were down) are skipped, not fired. A moment fires only for the
+  automation, the record and the time; it does not wait for a business calendar, and a schedule cannot
+  follow a linked document's change (an invoice paid).
 - **Merging duplicates** is for entities that opt in (customers and suppliers so far). It finds
   duplicates by equal fields, not by resemblance, and is not undone. Append-only history keeps the id
   it was posted under: a report on it must ask `ferrum_kernel::merge::merged_ids`.

@@ -66,6 +66,7 @@ BOUNDARIES = ("-p", "ferrum-server", "--test", "assistant_boundaries_it")
 ASSISTANT_UNIT = ("-p", "ferrum-server", "--lib", "assistant::tests")
 RECEIPTS = ("-p", "ferrum-kernel", "--test", "receipts_it")
 CONSENT = ("-p", "ferrum-kernel", "--test", "consent_it")
+SCHEDULE = ("-p", "ferrum-kernel", "--test", "schedule_it")
 SHARES_UNIT = ("-p", "ferrum-server", "--lib", "state::tests")
 EXPORT_UNIT = ("-p", "ferrum-server", "--lib", "controllers::docs::tests")
 EXTENSIONS = ("-p", "ferrum-server", "--test", "extensions_it")
@@ -546,6 +547,13 @@ MUTANTS = [
     ("custom-keys-held-by-cancelled", "crates/kernel/src/store.rs", "a.id = $2 and a.docstatus <> 2 and v.value", "a.id = $2 and v.value", CUSTOM_LINES),
     ("custom-key-over-duplicates", "crates/kernel/src/customize.rs", "            if !shared.is_empty() {", "            if false {", CUSTOM_LINES),
     ("rollup-not-computed", "crates/kernel/src/doc.rs", "        roll_up(ent, doc)\n    }", "        Ok(())\n    }", CUSTOM_LINES),
+    # Automations that fire on time (docs/api.md, Automations).
+    ("scheduled-moment-not-rechecked", "crates/kernel/src/automation.rs", "        if !crate::schedule::still_due(k, ev.tenant_id, &schema, &ent, &plan, record, due).await? {", "        if false {", SCHEDULE),
+    ("scheduled-ignores-the-zone", "crates/kernel/src/schedule.rs", "    qb.push_bind(tz.to_string()).push(\"::text as tz, \").push_bind(at)", "    qb.push_bind(\"UTC\".to_string()).push(\"::text as tz, \").push_bind(at)", SCHEDULE),
+    ("scheduled-catches-up-forever", "crates/kernel/src/schedule.rs", "let floor = now - chrono::Duration::days(CATCH_UP_DAYS);", "let floor = now - chrono::Duration::days(3650);", SCHEDULE),
+    ("scheduled-page-repeats-its-cursor", "crates/kernel/src/schedule.rs", "qb.push(\" and a.id > \").push_bind(c);", "qb.push(\" and a.id >= \").push_bind(c);", SCHEDULE),
+    ("scheduled-occurrences-never-pruned", "crates/kernel/src/schedule.rs", "\"delete from automation_occurrence where due_at < now() - make_interval(days => $1)\"", "\"delete from automation_occurrence where false and $1 = 0\"", SCHEDULE),
+    ("schedule-takes-any-field", "crates/kernel/src/schedule.rs", "Some(_) => Err(bad(format!(\"{at}: {name} is not a date or datetime field\"))),", "Some(_) => Ok(false),", SCHEDULE),
 
 ]
 
