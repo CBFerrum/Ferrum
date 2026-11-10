@@ -320,13 +320,8 @@ async fn email_doc(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity,
         None if files.is_empty() => format!("<p>{}</p>", esc(&title)),
         None => format!("<p>Please find {} attached.</p>", esc(&title)),
     };
-    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    k.queue_mail_with(&mut tx, ctx.tenant, &b.to, &subject, &html, &files).await?;
-    tx.commit().await.map_err(Error::from)?;
+    k.email_record(&ctx, &entity, &doc, &b.to, &subject, &html, &files).await?;
     let to = b.to.trim().to_string();
-    if let Err(e) = k.add_comment(&ctx, &entity, id, &format!("Emailed to {to}: {subject}"), &[]).await {
-        tracing::warn!(%entity, %id, "could not note the email on the record: {e}");
-    }
     Ok((StatusCode::ACCEPTED, Json(json!({"queued": true, "to": to, "subject": subject, "attachments": files}))).into_response())
 }
 
