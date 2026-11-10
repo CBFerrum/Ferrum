@@ -591,6 +591,7 @@ as the runs were sealed with.
 automation into a draft Solution: the same event, the condition as written, the actions as steps through
 capabilities, a run per event as the automation ran, and where it came from. It is a draft: someone finishes
 what did not map, keeps it as a release, and another administrator reviews and consents to what it may change.
+A scheduled automation is not imported (a solution starts on a record's event); it keeps running as it is.
 Activating that release turns the automation off in the same step, and from then on each of its events is
 claimed once, by the solution or by the automation's runner, whichever comes to it first: never run by both,
 never by neither, however the events and the activation interleave. While the solution runs, the automation
