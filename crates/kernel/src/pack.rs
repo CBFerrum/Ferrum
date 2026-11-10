@@ -405,6 +405,8 @@ fn requirements(ctx: &Ctx, pack: &Pack, role_packages: &BTreeSet<String>, instal
             OverlayOp::AddField { field, .. } => names.extend(field.to.clone()),
             // What a configured action's effects make.
             OverlayOp::AddAction { action } => names.extend(action.effects.iter().filter_map(|x| x.get("entity").and_then(Value::as_str).map(str::to_string))),
+            // The entities a menu shows.
+            OverlayOp::DefineModule { module } => names.extend(module.items.iter().filter(|i| !i.starts_with("report:")).cloned()),
             _ => {}
         }
     }

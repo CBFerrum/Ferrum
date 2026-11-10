@@ -5,7 +5,7 @@
 use crate::catalog::{Catalog, OverlaySource, validate_entity, validate_workflow};
 use crate::expr::Expr;
 use crate::types::*;
-use crate::{MetaError, child_table, invalid, is_entity_name, table_for};
+use crate::{MetaError, child_table, invalid, is_entity_name, is_ident, table_for};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 use serde::Serialize;
@@ -463,10 +463,71 @@ pub(crate) fn apply_op(def: &mut EntityDef, op: &OverlayOp, source: OverlaySourc
             }
             Ok(None)
         }
-        OverlayOp::DefineEntity { .. } | OverlayOp::RedefineEntity { .. } | OverlayOp::SetWorkflow { .. } | OverlayOp::SetPrintTemplate { .. } => {
-            Err("this operation is only valid as a tenant customization".into())
+        OverlayOp::DefineEntity { .. }
+        | OverlayOp::RedefineEntity { .. }
+        | OverlayOp::SetWorkflow { .. }
+        | OverlayOp::SetPrintTemplate { .. }
+        | OverlayOp::DefineModule { .. }
+        | OverlayOp::RemoveModule { .. } => Err("this operation is only valid as a tenant customization".into()),
+    }
+}
+
+/// At most this many items in a workspace's menu.
+pub const MAX_MENU_ITEMS: usize = 50;
+
+/// What a workspace's own menu may say, before its items are looked up.
+fn validate_menu(m: &ModuleDef) -> Result<(), String> {
+    let n = &m.name;
+    if !n.starts_with("x_") || n.len() < 3 || n.len() > 40 || !is_ident(n) {
+        return Err(format!("menu {n}: its name is x_ then lowercase letters, digits and underscores, at most 40 in all"));
+    }
+    let long = |what: &str, s: &str, max: usize| if s.chars().count() > max { Err(format!("menu {n}: {what} is at most {max} characters")) } else { Ok(()) };
+    if m.label.trim().is_empty() {
+        return Err(format!("menu {n}: it needs a label"));
+    }
+    long("its label", &m.label, 60)?;
+    long("its description", m.description.as_deref().unwrap_or_default(), 200)?;
+    if m.icon.as_deref().is_some_and(|i| i.is_empty() || i.len() > 40 || !i.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')) {
+        return Err(format!("menu {n}: an icon is a short name such as clipboard-list"));
+    }
+    if m.color.as_deref().is_some_and(|c| c.len() != 7 || !c.starts_with('#') || !c[1..].bytes().all(|b| b.is_ascii_hexdigit())) {
+        return Err(format!("menu {n}: a colour is #rrggbb"));
+    }
+    if m.items.len() > MAX_MENU_ITEMS {
+        return Err(format!("menu {n}: at most {MAX_MENU_ITEMS} items"));
+    }
+    let mut seen = HashSet::new();
+    for i in &m.items {
+        let ok = match i.strip_prefix("report:") {
+            Some(r) => !r.is_empty() && r.len() <= 100 && r.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.:-".contains(&b)),
+            None => is_entity_name(i),
+        };
+        if !ok {
+            return Err(format!("menu {n}: {i} is neither an entity's name nor report:<name>"));
+        }
+        if !seen.insert(i.as_str()) {
+            return Err(format!("menu {n}: {i} is listed twice"));
         }
     }
+    let mut offered = HashSet::new();
+    for c in &m.create {
+        if c.starts_with("report:") || !m.items.contains(c) || !offered.insert(c.as_str()) {
+            return Err(format!("menu {n}: create offers {c}, which is not one of its entities (or is offered twice)"));
+        }
+    }
+    if let Some(a) = &m.assistant {
+        if a.instructions.trim().is_empty() {
+            return Err(format!("menu {n}: the assistant's instructions are empty"));
+        }
+        long("the assistant's instructions", &a.instructions, 2000)?;
+        if a.suggestions.len() > 6 {
+            return Err(format!("menu {n}: at most 6 suggestions"));
+        }
+        for s in &a.suggestions {
+            long("a suggestion", s, 200)?;
+        }
+    }
+    Ok(())
 }
 
 struct Building {
@@ -675,9 +736,34 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
             }
         }
     }
+    // The workspace's own menus, in the order they were first defined; their items are looked up once
+    // the entities are settled.
+    let mut menus: Vec<ModuleDef> = Vec::new();
     for (at, ov) in tenant.iter().enumerate() {
         for op in &ov.ops {
             if matches!(op, OverlayOp::DefineEntity { .. } | OverlayOp::RedefineEntity { .. }) {
+                continue;
+            }
+            let menu = match op {
+                // Never a package's module: those take no x_ names (the catalog's check).
+                OverlayOp::DefineModule { module } => Some(validate_menu(module).map(|_| match menus.iter().position(|m| m.name == module.name) {
+                    // As a workspace's action: replaced where it stands.
+                    Some(i) => menus[i] = ModuleDef { package: "tenant".into(), ..module.clone() },
+                    None => menus.push(ModuleDef { package: "tenant".into(), ..module.clone() }),
+                })),
+                OverlayOp::RemoveModule { name } => Some(match menus.iter().position(|m| &m.name == name) {
+                    Some(i) => {
+                        menus.remove(i);
+                        Ok(())
+                    }
+                    None => Err(format!("there is no menu {name} of this workspace to remove")),
+                }),
+                _ => None,
+            };
+            if let Some(res) = menu {
+                if let Err(m) = res {
+                    warnings.push(SchemaWarning { entity: ov.entity.clone(), message: m });
+                }
                 continue;
             }
             // A change to the definition made before its latest redefinition is part of what that
@@ -760,6 +846,25 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
                 b.storage = storage.clone();
             }
         }
+    }
+    // A menu names entities the workspace has (not lines); one that went (its app uninstalled) drops
+    // out of the menu, which keeps the rest.
+    for mut m in menus {
+        m.items.retain(|i| {
+            let gone = match building.get(i) {
+                _ if i.starts_with("report:") => None,
+                Some(b) if b.def.kind == EntityKind::Child => Some("is the lines of another entity"),
+                Some(_) => None,
+                None => Some("is not an entity here"),
+            };
+            if let Some(why) = gone {
+                warnings.push(SchemaWarning { entity: m.name.clone(), message: format!("menu {}: {i} {why}, so it is left out", m.name) });
+            }
+            gone.is_none()
+        });
+        let items = m.items.clone();
+        m.create.retain(|c| items.contains(c));
+        modules.push(m);
     }
 
     // Workflows: validate against the merged entities; drop invalid tenant ones with a warning.
@@ -1055,6 +1160,85 @@ mod tests {
         assert!(built(vec![remove("x_z")]).warnings[0].message.contains("no action x_z"));
         let mut def = cat.packages().next().unwrap().entities[0].clone();
         assert!(apply_op(&mut def, &serde_json::from_value(remove("block")).unwrap(), OverlaySource::Package).is_err(), "a workspace's operation");
+    }
+
+    #[test]
+    fn workspace_menus_are_defined_replaced_removed_and_bounded() {
+        let cat = Catalog::from_packages(vec![package(
+            "{package: core, version: '1', modules: [{name: selling, label: Selling, items: [Customer]}]}",
+            "[{name: Customer, label: Customer, kind: master, fields: [{name: n, type: data}, {name: lines, type: table, of: Line}]},
+              {name: Line, label: Line, kind: child, fields: [{name: a, type: data}]},
+              {name: Order, label: Order, kind: master, fields: [{name: n, type: data}]}]",
+        )])
+        .unwrap();
+        let menu = |extra: Value| {
+            let mut m = json!({"name": "x_sales", "label": "Sales", "items": ["Customer", "report:sales_by_month"]});
+            m.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            json!({"op": "define_module", "module": m})
+        };
+        let built = |ops: Vec<Value>| {
+            let tenant: Vec<Overlay> =
+                ops.into_iter().map(|o| ov(o["module"]["name"].as_str().or(o["name"].as_str()).unwrap_or("x_sales"), json!([o]))).collect();
+            build(&cat, &["core".into()], &tenant, 1).unwrap()
+        };
+        let warned = |op: Value| built(vec![op]).warnings.iter().map(|w| w.message.clone()).collect::<Vec<_>>().join("; ");
+        let ours = |s: &Schema| s.modules.iter().filter(|m| m.package == "tenant").map(|m| format!("{}:{}", m.name, m.label)).collect::<Vec<_>>();
+
+        let s = built(vec![menu(json!({
+            "icon": "briefcase", "color": "#7c3aed", "description": "Who buys", "order": 5, "create": ["Customer"],
+            "assistant": {"instructions": "A customer buys.", "suggestions": ["Who bought most?"]}
+        }))]);
+        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+        let m = s.modules.iter().find(|m| m.name == "x_sales").unwrap();
+        assert_eq!((m.package.as_str(), m.create.clone(), m.assistant.as_ref().unwrap().suggestions.len()), ("tenant", vec!["Customer".to_string()], 1));
+        assert_eq!(s.modules.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["selling", "x_sales"], "sorted with the packages' by order");
+        // Replaced where it stands; removed; what is not there to remove is said.
+        let other = json!({"op": "define_module", "module": {"name": "x_buy", "label": "Buying", "items": ["Order"]}});
+        let s = built(vec![menu(json!({})), other.clone(), menu(json!({"label": "Sales 2"}))]);
+        assert_eq!((ours(&s), s.warnings.len()), (vec!["x_buy:Buying".into(), "x_sales:Sales 2".into()], 0));
+        let s = built(vec![menu(json!({})), other, json!({"op": "remove_module", "name": "x_sales"})]);
+        assert_eq!(ours(&s), ["x_buy:Buying"]);
+        assert!(warned(json!({"op": "remove_module", "name": "x_none"})).contains("no menu x_none"));
+        assert!(warned(json!({"op": "remove_module", "name": "selling"})).contains("no menu selling"), "a package's is not the workspace's to remove");
+        // Every refusal.
+        for (extra, says) in [
+            (json!({"name": "sales"}), "its name is x_"),
+            (json!({"name": "x_Sales"}), "its name is x_"),
+            (json!({"name": format!("x_{}", "a".repeat(39))}), "at most 40"),
+            (json!({"label": " "}), "needs a label"),
+            (json!({"label": "L".repeat(61)}), "label is at most 60"),
+            (json!({"description": "d".repeat(201)}), "description is at most 200"),
+            (json!({"icon": "Big Icon"}), "a short name"),
+            (json!({"color": "purple"}), "#rrggbb"),
+            (json!({"items": (0..51).map(|i| format!("report:r{i}")).collect::<Vec<_>>()}), "at most 50 items"),
+            (json!({"items": ["Customer", "Customer"]}), "listed twice"),
+            (json!({"items": ["customer"]}), "neither an entity"),
+            (json!({"create": ["Order"]}), "create offers Order"),
+            (json!({"create": ["report:sales_by_month"]}), "create offers report"),
+            (json!({"assistant": {"instructions": ""}}), "instructions are empty"),
+            (json!({"assistant": {"instructions": "i".repeat(2001)}}), "at most 2000"),
+            (json!({"assistant": {"instructions": "i", "suggestions": vec!["s"; 7]}}), "at most 6 suggestions"),
+            (json!({"assistant": {"instructions": "i", "suggestions": ["s".repeat(201)]}}), "a suggestion is at most 200"),
+            (json!({"items": ["Nowhere"]}), "Nowhere is not an entity here"),
+            (json!({"items": ["Line"]}), "Line is the lines of another entity"),
+        ] {
+            assert!(warned(menu(extra.clone())).contains(says), "{extra}: {}", warned(menu(extra.clone())));
+        }
+        assert!(serde_json::from_value::<OverlayOp>(menu(json!({"badge": 1}))).is_err(), "unknown properties are refused");
+        // An entity that goes (its app uninstalled) drops out of the menu, with a warning; the rest stays.
+        let s = built(vec![menu(json!({"items": ["Customer", "Gone"], "create": ["Customer", "Gone"]}))]);
+        let m = s.modules.iter().find(|m| m.name == "x_sales").unwrap();
+        assert_eq!((m.items.clone(), m.create.clone()), (vec!["Customer".to_string()], vec!["Customer".to_string()]));
+        assert_eq!(s.warnings.len(), 1);
+        // A package's module: no x_ name, none of a menu's properties; never a workspace's operation.
+        let bad = |modules: &str| {
+            Catalog::from_packages(vec![package(&format!("{{package: core, version: '1', modules: [{modules}]}}"), "[]")]).unwrap_err().to_string()
+        };
+        assert!(bad("{name: x_mine, label: M}").contains("x_ names are a workspace's"));
+        assert!(bad("{name: mine, label: M, color: '#000000'}").contains("a workspace's own menu's"));
+        assert!(bad("{name: mine, label: M, assistant: {instructions: i}}").contains("a workspace's own menu's"));
+        let mut def = cat.packages().next().unwrap().entities[0].clone();
+        assert!(apply_op(&mut def, &serde_json::from_value(menu(json!({}))).unwrap(), OverlaySource::Package).is_err());
     }
 
     #[test]

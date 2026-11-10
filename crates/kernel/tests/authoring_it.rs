@@ -126,6 +126,54 @@ async fn scenario() {
     clerk.is_admin = false;
     let r = k.batch_customizations(&clerk, vec![op("define_entity", entity("XClerk", "master", json!([])))], false).await;
     assert!(matches!(r, Err((None, Error::Forbidden(_)))), "{r:?}");
+    // The route's body, read loosely: an operation that does not parse is refused with its index, naming
+    // the property, like every other batch refusal; a body without a list of operations, without one.
+    use ferrum_kernel::customize::parse_batch;
+    let parsed = |v: Value| parse_batch(v.to_string().as_bytes()).map(|(ops, dry)| (ops.len(), dry));
+    assert_eq!(parsed(json!({"ops": [{"entity": "Shop", "op": {"op": "add_options", "field": "f", "options": ["a"]}}], "dry_run": true})).unwrap(), (1, true));
+    let bad = json!({"ops": [{"entity": "Shop", "op": {"op": "add_options", "field": "f", "options": ["a"]}},
+        {"entity": "Shop", "op": {"op": "add_action", "action": {"name": "x_go", "label": "Go", "may_run": true}}}]});
+    for (body, index, says) in [
+        (bad, Some(1), "may_run"),
+        (json!({"dry_run": true}), None, "ops is a list"),
+        (json!({"ops": {"entity": "Shop"}}), None, "ops is a list"),
+        (json!({"ops": [], "extra": 1}), None, "extra"),
+        (json!([]), None, "an object"),
+    ] {
+        let Err((i, e)) = parse_batch(body.to_string().as_bytes()) else { panic!("{body} parsed") };
+        assert!(i == index && matches!(&e, Error::Invalid(m) if m.contains(says)), "{body}: {i:?} {e}");
+    }
+    assert!(matches!(parse_batch(b"{ops"), Err((None, Error::Invalid(_)))));
+
+    // ───────────── a workspace's own menu ─────────────
+    let menu = |label: &str, items: Value| -> NewCustomization {
+        serde_json::from_value(json!({"entity": "ignored", "op": {"op": "define_module", "module": {"name": "x_work", "label": label, "icon": "list",
+            "color": "#123456", "items": items, "create": ["XTask"], "assistant": {"instructions": "Tasks have steps.", "suggestions": ["What is open?"]}}}}))
+        .unwrap()
+    };
+    refused(w.batch(vec![menu("Work", json!(["XTask", "XNowhere"]))], false).await, Some(0), "XNowhere is not an entity here");
+    refused(w.batch(vec![menu("Work", json!(["XTask", "XStep"]))], false).await, Some(0), "XStep is the lines of another entity");
+    assert_eq!(w.batch(vec![menu("Work", json!(["XTask", "Shop"]))], false).await.unwrap(), 1);
+    assert_eq!(w.batch(vec![menu("Our work", json!(["Shop", "XTask"]))], false).await.unwrap(), 1, "the same name replaces it");
+    let admin = w.admin().await;
+    let ours: Vec<&ferrum_meta::ModuleDef> = admin.schema.modules.iter().filter(|m| m.package == "tenant").collect();
+    assert_eq!((ours.len(), ours[0].label.as_str(), ours[0].items.clone()), (1, "Our work", vec!["Shop".to_string(), "XTask".to_string()]));
+    assert!(admin.schema.warnings.is_empty(), "{:?}", admin.schema.warnings);
+    let rows = k.list_customizations(&admin).await.unwrap();
+    let menus: Vec<_> = rows.iter().filter(|r| r.op["op"] == "define_module").collect();
+    assert_eq!((menus[0].entity.as_str(), menus[0].superseded_by), ("x_work", Some(menus[1].id)), "the row is the menu's, marked replaced");
+    assert_eq!(menus[1].superseded_by, None);
+    // Exported and imported elsewhere with the entities it names; removed.
+    let set = k.export_customizations(&admin).await.unwrap();
+    let delta = workspace(&k, "delta").await;
+    assert!(k.import_customizations(&delta.admin().await, &set).await.unwrap() > 0);
+    let there = delta.admin().await;
+    let menu_there = there.schema.modules.iter().find(|m| m.name == "x_work").expect("the menu came");
+    assert_eq!((menu_there.label.as_str(), menu_there.create.clone()), ("Our work", vec!["XTask".to_string()]));
+    let remove: NewCustomization = serde_json::from_value(json!({"entity": "", "op": {"op": "remove_module", "name": "x_work"}})).unwrap();
+    assert_eq!(delta.batch(vec![remove.clone()], false).await.unwrap(), 1);
+    assert!(delta.admin().await.schema.modules.iter().all(|m| m.package != "tenant"));
+    refused(delta.batch(vec![remove], false).await, Some(0), "already active");
 
     // ───────────── an order with records ─────────────
     let line = entity("XLine", "child", json!([{"name": "item", "type": "data"}, {"name": "amount", "type": "currency"}]));
