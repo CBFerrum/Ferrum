@@ -28,8 +28,8 @@ pub struct OverlayRow {
     pub is_active: bool,
     pub note: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
-    /// An active `add_action` or `remove_action` (`define_module` or `remove_module`) a later active one of the
-    /// same action (menu) replaced: that one's id, where its definition now comes from.
+    /// An active `add_action` or `remove_action` (`define_module` or `remove_module`, `add_target` or `remove_target`)
+    /// a later active one of the same action (menu, target) replaced: that one's id, where its definition now comes from.
     #[sqlx(skip)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<Uuid>,
@@ -152,7 +152,7 @@ pub(crate) type Saved = (String, &'static str);
 /// An operation as a plan names it: `XGym: add_field fee`.
 pub(crate) fn label_of(target: &str, raw: &Value) -> String {
     let what = raw["op"].as_str().unwrap_or("customization");
-    match raw.get("field").or_else(|| raw.get("action")).or_else(|| raw.get("rule")).or_else(|| raw.get("module")).or_else(|| raw.get("name")) {
+    match raw.get("field").or_else(|| raw.get("action")).or_else(|| raw.get("target")).or_else(|| raw.get("rule")).or_else(|| raw.get("module")).or_else(|| raw.get("name")) {
         Some(Value::Object(f)) => format!("{target}: {what} {}", f.get("name").and_then(Value::as_str).unwrap_or_default()),
         Some(Value::String(f)) => format!("{target}: {what} {f}"),
         _ => format!("{target}: {what}"),
@@ -611,6 +611,7 @@ impl Kernel {
             return Err(Error::invalid(format!("customization rejected: {}", msgs.join("; "))));
         }
         configured_actions(self, ctx.tenant, was, &now)?;
+        crate::targets::check_calendars(tx, ctx.tenant, was, &now).await?;
         self.guard_records(ctx, tx, was, &now).await?;
         Ok(now)
     }
@@ -635,6 +636,8 @@ impl Kernel {
             Some("add_action") if r.is_active => r.op["action"]["name"].as_str().map(|n| (r.entity.clone(), n.to_string())),
             Some("define_module") if r.is_active => r.op["module"]["name"].as_str().map(|n| (r.entity.clone(), n.to_string())),
             Some("remove_action" | "remove_module") if r.is_active => r.op["name"].as_str().map(|n| (r.entity.clone(), n.to_string())),
+            Some("add_target") if r.is_active => r.op["target"]["name"].as_str().map(|n| (r.entity.clone(), format!("target:{n}"))),
+            Some("remove_target") if r.is_active => r.op["name"].as_str().map(|n| (r.entity.clone(), format!("target:{n}"))),
             _ => None,
         };
         let latest: std::collections::HashMap<(String, String), Uuid> = rows.iter().filter_map(|r| Some((named(r)?, r.id))).collect();
@@ -684,6 +687,7 @@ impl Kernel {
         // Switching a redefinition off or on changes the definition back or forth: the same guards hold.
         let now = self.build(ctx, &self.active_overlays(&mut tx, ctx.tenant).await?)?;
         configured_actions(self, ctx.tenant, &was, &now)?;
+        crate::targets::check_calendars(&mut tx, ctx.tenant, &was, &now).await?;
         self.guard_records(ctx, &mut tx, &was, &now).await?;
         self.sync_custom_keys(ctx, &mut tx, &was, &now).await?;
         Registry::bump_version(&mut tx, ctx.tenant).await?;

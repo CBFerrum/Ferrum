@@ -596,7 +596,7 @@ async fn delete_entity_rows(tx: &mut Tx, tenant: Uuid, ent: &ferrum_meta::EffEnt
         sqlx::query(AssertSqlSafe(format!("delete from {} where tenant_id = $1", ddl::q(&child.table)))).bind(tenant).execute(&mut **tx).await?;
     }
     sqlx::query(AssertSqlSafe(format!("delete from {} where tenant_id = $1", ddl::q(&ent.table)))).bind(tenant).execute(&mut **tx).await?;
-    for table in ["record_comment", "record_assignment", "record_tag", "record_follower", "record_secret"] {
+    for table in ["record_comment", "record_assignment", "record_tag", "record_follower", "record_secret", "record_target"] {
         sqlx::query(AssertSqlSafe(format!("delete from {table} where tenant_id = $1 and entity = $2")))
             .bind(tenant)
             .bind(&ent.def.name)

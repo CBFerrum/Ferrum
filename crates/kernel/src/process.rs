@@ -2059,6 +2059,9 @@ impl Kernel {
     /// names it later is refused, as one naming a calendar the workspace never had.
     pub async fn delete_logic_calendar(&self, ctx: &Ctx, name: &str) -> Result<()> {
         require_admin(ctx)?;
+        if let Some(by) = crate::targets::naming(&ctx.schema, name) {
+            return Err(Error::Conflict(format!("the calendar {name} is named by {by}: change or remove the target first")));
+        }
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let gone = sqlx::query("delete from logic_calendar where tenant_id = $1 and name = $2").bind(ctx.tenant).bind(name).execute(&mut *tx).await?;
         tx.commit().await?;
@@ -2071,35 +2074,39 @@ impl Kernel {
     /// Sets a business calendar (administrators); each change is a new revision.
     pub async fn set_logic_calendar(&self, ctx: &Ctx, cal: &Calendar) -> Result<i64> {
         require_admin(ctx)?;
-        let mut chars = cal.name.chars();
-        if cal.name.len() > 64
-            || !chars.next().is_some_and(|c| c.is_ascii_lowercase())
-            || !chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-        {
-            return Err(Error::field("name", "lower_snake_case, at most 64 characters"));
-        }
-        if let Some(p) = cal.problem() {
-            return Err(Error::field(if p.starts_with("hours:") { "hours" } else { "calendar" }, p));
-        }
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let holidays: Vec<chrono::NaiveDate> = cal.holidays.iter().copied().collect();
-        let revision: i64 = sqlx::query_scalar(
-            "insert into logic_calendar (tenant_id, name, zone, weekends, holidays, updated_by, hours) values ($1, $2, $3, $4, $5, $6, $7) \
-             on conflict (tenant_id, name) do update set zone = $3, weekends = $4, holidays = $5, updated_by = $6, hours = $7, revision = logic_calendar.revision + 1, updated_at = now() \
-             returning revision",
-        )
-        .bind(ctx.tenant)
-        .bind(&cal.name)
-        .bind(&cal.zone)
-        .bind(&cal.weekends)
-        .bind(&holidays)
-        .bind(ctx.user)
-        .bind(cal.hours.as_ref().map(|h| json!(h)))
-        .fetch_one(&mut *tx)
-        .await?;
+        let revision = set_calendar_in(&mut tx, ctx, cal).await?;
         tx.commit().await?;
         Ok(revision)
     }
+}
+
+/// [`Kernel::set_logic_calendar`]'s checks and write, in the caller's transaction (a pack's install).
+pub(crate) async fn set_calendar_in(tx: &mut Tx, ctx: &Ctx, cal: &Calendar) -> Result<i64> {
+    let mut chars = cal.name.chars();
+    if cal.name.len() > 64 || !chars.next().is_some_and(|c| c.is_ascii_lowercase()) || !chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    {
+        return Err(Error::field("name", "lower_snake_case, at most 64 characters"));
+    }
+    if let Some(p) = cal.problem() {
+        return Err(Error::field(if p.starts_with("hours:") { "hours" } else { "calendar" }, p));
+    }
+    let holidays: Vec<chrono::NaiveDate> = cal.holidays.iter().copied().collect();
+    let revision: i64 = sqlx::query_scalar(
+        "insert into logic_calendar (tenant_id, name, zone, weekends, holidays, updated_by, hours) values ($1, $2, $3, $4, $5, $6, $7) \
+         on conflict (tenant_id, name) do update set zone = $3, weekends = $4, holidays = $5, updated_by = $6, hours = $7, revision = logic_calendar.revision + 1, updated_at = now() \
+         returning revision",
+    )
+    .bind(ctx.tenant)
+    .bind(&cal.name)
+    .bind(&cal.zone)
+    .bind(&cal.weekends)
+    .bind(&holidays)
+    .bind(ctx.user)
+    .bind(cal.hours.as_ref().map(|h| json!(h)))
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(revision)
 }
 
 /// Whether a decision fills the task's form: its required fields given, each of its type, choices among the
