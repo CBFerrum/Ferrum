@@ -112,6 +112,15 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   expressions' numbers, not typed money. An automation a pack installs has its `invoke` checked when it
   runs, not at install. The default key holds per record version: a press after any change to the record
   runs the step again, so a step meant once for good names its own `key`.
+- **Service targets** (`add_target`, docs/api.md): at most 8 on an entity, not on lines or ledgers. A target
+  added to an entity that has records starts on each record at its next save: nothing goes back over
+  existing records. A round keeps the open time worked, not a list of pauses, so a calendar changed during a
+  round counts the time before the change as it was counted then. Breaches are marked by the minute loop: up
+  to about a minute and a half after the due moment, at most 200 rounds a pass and 50 of one workspace's
+  (a full pass looks again at once). The breach is saved into the record through the ordinary save; when
+  that save is refused (a rule the record now breaks, a submitted document) the breach stays recorded and the
+  state field shows it from the record's next save. There is no separate breach event, no endpoint per
+  record and no screen yet: the two fields, automations and reports are the way to see them.
 - **Redefining a custom entity** (`redefine_entity`) deletes no data: values of a field that goes stay in
   the records, out of sight, until a field of the same name comes back. A field that comes back with a
   type other than the one its values were saved under is not checked against them. A batch of
