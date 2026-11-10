@@ -39,7 +39,7 @@ const MAX_JSON: usize = 4 << 20;
 const CACHE_TTL: Duration = Duration::from_secs(60);
 const REVOCATIONS_EVERY: Duration = Duration::from_secs(600);
 /// Session advisory lock: one replica polls the revocation lists at a time.
-const REVOCATIONS_LOCK: i64 = 0x6665_7272_756d_0002;
+const REVOCATIONS_LOCK: i64 = 0x6665_7272_756d_0003;
 /// Most apps one plan may look at (the requested app, its dependencies and the installed apps).
 const MAX_APPS: usize = 200;
 const README_MAX: usize = 4_000;

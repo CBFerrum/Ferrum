@@ -166,7 +166,7 @@ notifications on the device (Web Push) and an unread badge.
 ## Apps
 
 Larger business areas are native apps in their own repositories, installed per workspace from
-**Apps** (or the app store) like a WordPress plugin; the server image ships them as cargo features.
+**Apps** (or the app store) like a WordPress plugin; the server image ships them as cargo features (every official app but Control, the fleet control plane of a hosting business: a hosting build adds it with `--features control`).
 Third parties build wasm or metadata apps with the [SDK](https://github.com/CBFerrum/ferrum-sdk)
 (`ferrum-app new`, `pack`, `sign`, `publish`) — an EV-charging (OCPP) back end, a clinic, a school
 or any other vertical is a plugin, not a fork.

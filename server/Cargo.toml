@@ -11,10 +11,11 @@ name = "ferrum"
 path = "src/bin/main.rs"
 
 [features]
-# Native apps compiled into this server (all official ones by default; docs/plan/apps.md). Most live
+# Native apps compiled into this server (all official ones by default except `control`, the hosting
+# business's fleet control plane, which a hosting build adds with `--features control`; docs/plan/apps.md). Most live
 # in their own repositories; a workspace whose installed app is not in a build keeps its data and
 # loses the app until it is back.
-default = ["india", "eu", "de", "be", "es", "fr", "it", "pl", "pt", "ro", "gb", "ca", "us", "sg", "my", "id", "th", "ph", "vn", "sa", "ae", "au", "nz", "jp", "mx", "cn", "crm", "projects", "helpdesk", "pos", "hr", "comms", "commerce", "procurement", "stock-ops", "finance", "mfg-ops", "quality", "wms", "mes", "ops", "edge", "studio", "assets", "bookings", "hospitality", "nonprofit", "education", "restaurant", "property", "construction", "logistics", "healthcare", "government", "retail", "itsm", "grc", "contracts", "objectives", "dam", "metrics", "intelligence", "control", "social", "field-service", "forms", "lms", "drive", "docs", "campaigns", "sign", "developers", "intranet", "website"]
+default = ["india", "eu", "de", "be", "es", "fr", "it", "pl", "pt", "ro", "gb", "ca", "us", "sg", "my", "id", "th", "ph", "vn", "sa", "ae", "au", "nz", "jp", "mx", "cn", "crm", "projects", "helpdesk", "pos", "hr", "comms", "commerce", "procurement", "stock-ops", "finance", "mfg-ops", "quality", "wms", "mes", "ops", "edge", "studio", "assets", "bookings", "hospitality", "nonprofit", "education", "restaurant", "property", "construction", "logistics", "healthcare", "government", "retail", "itsm", "grc", "contracts", "objectives", "dam", "metrics", "intelligence", "social", "field-service", "forms", "lms", "drive", "docs", "campaigns", "sign", "developers", "intranet", "website"]
 # SAML single sign-on, checked by xmlsec1: needs libxml2, libxmlsec1 and libclang to build (the
 # release image has it; docs/operations.md).
 saml = ["ferrum-kernel/saml"]

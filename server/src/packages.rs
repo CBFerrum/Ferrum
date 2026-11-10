@@ -3,15 +3,30 @@
 
 use ferrum_kernel::{HookRegistry, Kernel};
 use ferrum_meta::{Catalog, Package};
+use futures_util::future::BoxFuture;
+use sqlx::PgPool;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::watch;
+use std::time::{Duration, Instant};
+use tokio::sync::{Semaphore, watch};
 
 /// How often package upkeep runs (expiring quotations, SLA clocks, mail polling...).
 const EVERY: Duration = Duration::from_secs(60);
-/// Session advisory lock: one replica runs upkeep at a time; the others skip that round.
-const LOCK: i64 = 0x6665_7272_756d_0001;
+/// Upkeep's advisory locks are session locks of the two-key form (`pg_try_advisory_lock(int, int)`), a key space the
+/// kernel's other locks (one 64-bit key each) never touch: this is the first key, the second comes from the app's id.
+const UPKEEP_NAMESPACE: i32 = 0x6675_706b;
+/// How many apps' upkeep one replica runs at once (`FERRUM_UPKEEP_CONCURRENCY`); each holds a pooled connection.
+const DEFAULT_CONCURRENCY: usize = 2;
+
+/// One piece of upkeep: an app's (or the domain checks') name and what it runs.
+pub type Upkeep = (&'static str, Box<dyn Fn() -> BoxFuture<'static, Result<(), String>> + Send + Sync>);
+
+/// The lock of one piece of upkeep: stable across replicas and releases, because it is made from the name alone
+/// (FNV-1a, which no library upgrade changes).
+fn lock_key(name: &str) -> (i32, i32) {
+    let h = name.bytes().fold(0x811c_9dc5_u32, |h, b| (h ^ u32::from(b)).wrapping_mul(0x0100_0193));
+    (UPKEEP_NAMESPACE, h as i32)
+}
 
 // EU member states other than Germany are apps of one crate on the EU's (localization.md L2).
 #[cfg(feature = "be")]
@@ -105,29 +120,30 @@ macro_rules! apps {
             let _ = hooks;
         }
 
-        /// Runs every compiled app's upkeep once; failures are logged and do not stop the others.
-        pub async fn maintenance(k: &Kernel) {
-            if let Err(e) = ferrum_app_erp::maintenance(k).await {
-                tracing::warn!(app = "erp", "app maintenance failed: {e}");
-            }
+        /// Every compiled app's upkeep, one job each, ERP's first (`round` runs them).
+        pub fn upkeep_jobs(k: &Arc<Kernel>) -> Vec<Upkeep> {
+            let mut jobs: Vec<Upkeep> = Vec::new();
+            let k1 = k.clone();
+            jobs.push(("erp", Box::new(move || { let k = k1.clone(); Box::pin(async move { ferrum_app_erp::maintenance(&k).await.map_err(|e| e.to_string()) }) })));
             $(
                 #[cfg(feature = $nfeature)]
-                if let Err(e) = $nkrate::maintenance(k).await {
-                    tracing::warn!(app = $nfeature, "app maintenance failed: {e}");
+                {
+                    let k1 = k.clone();
+                    jobs.push(($nfeature, Box::new(move || { let k = k1.clone(); Box::pin(async move { $nkrate::maintenance(&k).await.map_err(|e| e.to_string()) }) })));
                 }
             )*
             $(
                 #[cfg(feature = $lfeature)]
-                if let Err(e) = $lkrate::maintenance(k).await {
-                    tracing::warn!(app = $lfeature, "app maintenance failed: {e}");
+                {
+                    let k1 = k.clone();
+                    jobs.push(($lfeature, Box::new(move || { let k = k1.clone(); Box::pin(async move { $lkrate::maintenance(&k).await.map_err(|e| e.to_string()) }) })));
                 }
             )*
             for app in crate::extensions::all() {
-                if let Err(e) = (app.maintenance)(k).await {
-                    tracing::warn!(app = app.id, "app maintenance failed: {e}");
-                }
+                let k1 = k.clone();
+                jobs.push((app.id, Box::new(move || { let k = k1.clone(); Box::pin(async move { (app.maintenance)(&k).await.map_err(|e| e.to_string()) }) })));
             }
-            let _ = k;
+            jobs
         }
 
         /// Every compiled app's reports by name, with the app that gives each.
@@ -457,28 +473,64 @@ pub fn base_catalog(dir: &Path) -> Result<Catalog, String> {
     Catalog::from_packages(pkgs).map_err(|e| e.to_string())
 }
 
-/// Upkeep under the advisory lock, held on one pooled connection for the round.
-async fn locked_round(k: &Kernel) -> Result<(), sqlx::Error> {
-    let mut conn = k.db.pool.acquire().await?;
-    let got: bool = sqlx::query_scalar("select pg_try_advisory_lock($1)").bind(LOCK).fetch_one(&mut *conn).await?;
-    if !got {
-        return Ok(());
+/// One round of upkeep. Each piece has an advisory lock of its own, tried on a connection held while it runs: a replica
+/// that gets it runs it, one that does not leaves it to whoever has it. At most `concurrency` run at once here, in an
+/// order that differs between replicas, so a slow app delays no other and replicas share the work. A failure or a panic
+/// is logged with the app's name and stops nothing.
+pub async fn round(pool: &PgPool, mut jobs: Vec<Upkeep>, concurrency: usize, every: Duration) {
+    // Shuffled with one random key per job: a key that changed between comparisons would not be an order.
+    jobs.sort_by_cached_key(|_| uuid::Uuid::new_v4());
+    let slots = Arc::new(Semaphore::new(concurrency.max(1)));
+    let mut running = tokio::task::JoinSet::new();
+    for (name, run) in jobs {
+        let Ok(slot) = slots.clone().acquire_owned().await else { break };
+        let pool = pool.clone();
+        running.spawn(async move {
+            let _slot = slot;
+            let (a, b) = lock_key(name);
+            let mut conn = match pool.acquire().await {
+                Ok(c) => c,
+                Err(e) => return tracing::warn!(app = name, "upkeep: no connection: {e}"),
+            };
+            match sqlx::query_scalar::<_, bool>("select pg_try_advisory_lock($1, $2)").bind(a).bind(b).fetch_one(&mut *conn).await {
+                Ok(true) => {}
+                Ok(false) => return,
+                Err(e) => return tracing::warn!(app = name, "upkeep: lock: {e}"),
+            }
+            let started = Instant::now();
+            // Its own task, so that a panic is caught here and the lock is released below.
+            match tokio::spawn(run()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::warn!(app = name, "app maintenance failed: {e}"),
+                Err(e) => tracing::error!(app = name, "app maintenance panicked: {e}"),
+            }
+            if started.elapsed() > every {
+                tracing::warn!(app = name, seconds = started.elapsed().as_secs(), "app maintenance took longer than the round's interval");
+            }
+            if sqlx::query("select pg_advisory_unlock($1, $2)").bind(a).bind(b).execute(&mut *conn).await.is_err() {
+                // The lock goes with the connection.
+                let _ = conn.close().await;
+            }
+        });
     }
-    maintenance(k).await;
-    // Custom domains due a check (docs/plan/apps-ui.md §7): verified when they answer their token.
-    if let Err(e) = k.check_hosts().await {
-        tracing::warn!("domain checks: {e}");
-    }
-    sqlx::query("select pg_advisory_unlock($1)").bind(LOCK).execute(&mut *conn).await?;
-    Ok(())
+    while running.join_next().await.is_some() {}
 }
 
 pub fn spawn(k: Arc<Kernel>, mut shutdown: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
+    let concurrency = std::env::var("FERRUM_UPKEEP_CONCURRENCY").ok().and_then(|v| v.trim().parse().ok()).filter(|n| *n > 0).unwrap_or(DEFAULT_CONCURRENCY);
     tokio::spawn(async move {
         loop {
-            if let Err(e) = locked_round(&k).await {
-                tracing::warn!("package maintenance: {e}");
-            }
+            let mut jobs = upkeep_jobs(&k);
+            // Custom domains due a check (docs/plan/apps-ui.md §7): verified when they answer their token.
+            let k1 = k.clone();
+            jobs.push((
+                "domain-checks",
+                Box::new(move || {
+                    let k = k1.clone();
+                    Box::pin(async move { k.check_hosts().await.map(|_| ()).map_err(|e| e.to_string()) })
+                }),
+            ));
+            round(&k.db.pool, jobs, concurrency, EVERY).await;
             tokio::select! {
                 _ = shutdown.changed() => return,
                 _ = tokio::time::sleep(EVERY) => {}
@@ -564,5 +616,86 @@ mod tests {
         super::register(&mut hooks);
         let everywhere: Vec<String> = hooks.scopes().into_iter().filter(|(entity, scope)| scope.is_none() && entity != "*").map(|(e, _)| e).collect();
         assert!(everywhere.is_empty(), "hooks for every workspace on {everywhere:?}");
+    }
+
+    /// Every piece of upkeep has its own lock key.
+    #[test]
+    fn upkeep_locks_differ() {
+        assert_eq!(super::lock_key("erp"), super::lock_key("erp"));
+        let ids = ["erp", "crm", "hr", "domain-checks", "control", "field-service", "social", "forms"];
+        let keys: std::collections::HashSet<_> = ids.iter().map(|i| super::lock_key(i)).collect();
+        assert_eq!(keys.len(), ids.len());
+    }
+
+    use super::{Upkeep, round};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    type Spans = Arc<Mutex<Vec<(&'static str, Instant, Instant)>>>;
+
+    /// An app whose upkeep takes 150 ms and is recorded; `Err` and panics for the ones that fail.
+    fn fake(name: &'static str, spans: &Spans, how: &'static str) -> Upkeep {
+        let spans = spans.clone();
+        (
+            name,
+            Box::new(move || {
+                let spans = spans.clone();
+                Box::pin(async move {
+                    let start = Instant::now();
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                    spans.lock().unwrap().push((name, start, Instant::now()));
+                    match how {
+                        "err" => Err("it failed".to_string()),
+                        "panic" => panic!("it panicked"),
+                        _ => Ok(()),
+                    }
+                })
+            }),
+        )
+    }
+
+    fn overlap(a: &(&str, Instant, Instant), b: &(&str, Instant, Instant)) -> bool {
+        a.1 < b.2 && b.1 < a.2
+    }
+
+    /// Upkeep with a lock per app (`FERRUM_TEST_DATABASE_URL`, nothing in it is touched): two replicas never run one app
+    /// at once, run different apps at once, are not stopped by an app that fails or panics (whose lock is let go), and
+    /// with a limit of one run one app after another.
+    #[tokio::test]
+    async fn replicas_share_upkeep_app_by_app() {
+        let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
+        let pool = || sqlx::postgres::PgPoolOptions::new().max_connections(8).connect(&url);
+        let (one, two) = (pool().await.expect("connect"), pool().await.expect("connect"));
+        let spans: Spans = Default::default();
+        let jobs = || vec![fake("fake-a", &spans, "ok"), fake("fake-b", &spans, "ok"), fake("fake-err", &spans, "err"), fake("fake-panic", &spans, "panic")];
+        let every = Duration::from_secs(60);
+        tokio::join!(round(&one, jobs(), 4, every), round(&two, jobs(), 4, every));
+        let seen = spans.lock().unwrap().clone();
+        for name in ["fake-a", "fake-b", "fake-err", "fake-panic"] {
+            let runs: Vec<_> = seen.iter().filter(|s| s.0 == name).collect();
+            assert!(!runs.is_empty(), "{name} never ran");
+            for (i, x) in runs.iter().enumerate() {
+                assert!(runs[i + 1..].iter().all(|y| !overlap(x, y)), "{name} ran twice at once");
+            }
+        }
+        let a: Vec<_> = seen.iter().filter(|s| s.0 == "fake-a").collect();
+        let b: Vec<_> = seen.iter().filter(|s| s.0 == "fake-b").collect();
+        assert!(a.iter().any(|x| b.iter().any(|y| overlap(x, y))), "different apps did not run at once");
+        // The failed and the panicked apps let their locks go.
+        let mut conn = one.acquire().await.unwrap();
+        for name in ["fake-err", "fake-panic"] {
+            let (k1, k2) = super::lock_key(name);
+            let free: bool = sqlx::query_scalar("select pg_try_advisory_lock($1, $2)").bind(k1).bind(k2).fetch_one(&mut *conn).await.unwrap();
+            assert!(free, "{name} kept its lock");
+        }
+        drop(conn.detach());
+        // One at a time on a replica set to one.
+        spans.lock().unwrap().clear();
+        round(&one, jobs(), 1, every).await;
+        let seen = spans.lock().unwrap().clone();
+        assert_eq!(seen.len(), 4);
+        for (i, x) in seen.iter().enumerate() {
+            assert!(seen[i + 1..].iter().all(|y| !overlap(x, y)), "two apps ran at once with a limit of one");
+        }
     }
 }

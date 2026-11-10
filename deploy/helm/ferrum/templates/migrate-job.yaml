@@ -1,6 +1,7 @@
 {{- if .Values.migrate.enabled }}
 {{- $n := include "ferrum.fullname" . }}
-# Runs before the install or upgrade is applied. Needs a `migrate` task in the server (not built yet).
+# Runs `ferrum task migrate` before the install or upgrade is applied; the server's pods then start with
+# FERRUM_MIGRATE_AT_START=false (migrate.serverEnv) and only check that it ran.
 apiVersion: batch/v1
 kind: Job
 metadata:

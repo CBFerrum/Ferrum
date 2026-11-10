@@ -43,4 +43,17 @@ echo "migration job is a pre-install,pre-upgrade hook, and off by default"
 ! tpl -f "$tmp/digest.yaml" | grep -q 'kind: Job'
 tpl -f "$tmp/digest.yaml" --set migrate.enabled=true | grep -q 'helm.sh/hook: pre-install,pre-upgrade'
 
+echo "enabling it runs the migrate task and stops the server from migrating itself"
+tpl -f "$tmp/digest.yaml" --set migrate.enabled=true > "$tmp/m.yaml"
+python3 - "$tmp/m.yaml" <<'PY'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+job = next(d for d in docs if d["kind"] == "Job")
+assert job["spec"]["template"]["spec"]["containers"][0]["args"] == ["task", "migrate"], job
+dep = next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == "ferrum")
+env = {e["name"]: e.get("value") for e in dep["spec"]["template"]["spec"]["containers"][0]["env"]}
+assert env.get("FERRUM_MIGRATE_AT_START") == "false", env
+PY
+! tpl -f "$tmp/digest.yaml" | grep -q FERRUM_MIGRATE_AT_START
+
 echo "ok"

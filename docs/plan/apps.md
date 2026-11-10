@@ -191,7 +191,8 @@ templates, CI workflow templates and the developer guide.
   repositories (pinned tags), with `[patch]` unifying the platform crates; a build without an app
   refuses to start while that app's packages are in use.
 * Each app's CI tests against the platform version it targets; the platform's CI builds the
-  official image with every official app.
+  official image with every official app except Control (`ferrum-app-control`, a hosting business's fleet
+  control plane): it is the `control` feature, off by default, and a hosting build adds it.
 * Self-hosters build custom images with any set of native apps.
 * An app this repository may not name, a private one, builds its own server instead: a binary in its repository
   that depends on `ferrum-server`, adds the app with `ferrum_server::extensions::extend` (its packages, hooks,

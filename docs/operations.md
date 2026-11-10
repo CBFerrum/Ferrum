@@ -40,6 +40,8 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_FILES_DIR` | no | Local attachment directory (default `/var/lib/ferrum/files`) |
 | `FERRUM_DB_MAX_CONNECTIONS` | no | Pool size per replica (default 30). Below 10, requests wait behind the replica's own job workers and event loops, which can hold seven at once; the server warns as it starts, and `ferrum task doctor` says so |
 | `FERRUM_RUN_BACKGROUND` | no | `false` turns a replica into API-only |
+| `FERRUM_MIGRATE_AT_START` | no | Default `true`: the server migrates the database, syncs the schema and runs the upgrade steps as it starts. `false`: it changes no schema, checks that `ferrum task migrate` has brought the database to this build, and refuses to start, saying so, when it has not. The task does everything either way, and several at once are safe |
+| `FERRUM_UPKEEP_CONCURRENCY` | no | How many apps' periodic upkeep one replica runs at once (default 2). Each app's upkeep has a lock of its own across replicas, so replicas share the apps between them; each running app holds one database connection |
 | `PUBLIC_URL` | recommended | The address people open, scheme and port included (`https://erp.example.com`). Apps' screens name it in their Content Security Policy, which Safari needs when a proxy in front rewrites the host, and links mailed to people outside the workspace (Drive guests) are built on it |
 | `PORT`, `BINDING`, `LOG_LEVEL` | no | Usual meanings; logs are JSON on stdout |
 | `MAILER_*` | no | SMTP for mail: notifications people chose to have by email (at once, or in a daily digest), and apps' mail. Without it, notifications stay in the bar and people cannot choose email |
@@ -152,8 +154,11 @@ helm install ferrum deploy/helm/ferrum --namespace ferrum --create-namespace \
   (create what *Metrics' engine for external sources* lists first) switch on the same components as in `deploy/k8s`.
   The PDF renderer, autoscaler, budget, network policy, `ServiceMonitor`, Gateway, Envoy proxies and database are on by
   default, each behind its own `enabled`.
-* *Migrations.* `migrate.enabled` adds a Helm hook Job that runs `migrate.args` before an install or upgrade. The
-  server has no `migrate` task yet, so leave it off; it still migrates itself at start.
+* *Migrations.* Off by default: every pod migrates itself as it starts. `migrate.enabled` adds a Helm hook Job that runs
+  `ferrum task migrate` before an install or upgrade (`migrate.args`) and sets `FERRUM_MIGRATE_AT_START=false` on the
+  server (`migrate.serverEnv`), so the pods only check that the database is ready and refuse to start, naming the
+  command, when it is not. On a first install with `database.enabled` the hook runs before the database exists and
+  fails: use it for upgrades, or with a database of your own (`database.urlSecret`).
 
 `bash deploy/helm/test.sh` (CI runs it) fails when the chart and `deploy/k8s` differ in resources, environment variables,
 ports, probes, security context or resources.
@@ -302,7 +307,9 @@ the operators' install from one has not run on a cluster without internet.
   `--stamp <id>` records the build they ran at. `scripts/licenses.py check` fails on any image a deploy file names
   that is not an engine approved in docs/registry/engines.yaml, its licence read and its terms stated.
 * Schema changes are forward-only migrations plus a metadata → DDL sync, both run at boot under
-  advisory locks, so rolling several replicas at once is safe. Upgrades only add tables, columns
+  advisory locks, so rolling several replicas at once is safe. Where migrating is a step of its own
+  (`FERRUM_MIGRATE_AT_START=false`, as the Helm chart's migrate Job sets it), `ferrum task migrate` runs them, with the
+  one-time steps below, and the servers only check. Upgrades only add tables, columns
   and indexes; nothing is dropped automatically (orphaned columns are reported in the logs).
 * Indexes the sync adds to entity tables are built concurrently, so writes carry on, and a build that
   failed is dropped and built again at the next start. The release that gave lists an index in their

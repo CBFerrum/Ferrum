@@ -42,17 +42,52 @@ pub const COUNTRY_CODES: &str = "country-codes";
 /// Session advisory lock: one replica runs the steps; the others wait for it.
 const LOCK: i64 = 0x6665_7272_756d_0002;
 
-pub async fn run(k: &Kernel) -> Result<()> {
+/// The steps this build runs, in order (a connector's waits for a build that has its app).
+fn steps(k: &Kernel) -> Vec<&'static str> {
+    let mut out = vec![CORE_SPLIT, PROJECT_RECORDS];
+    out.extend(CONNECTORS.iter().filter(|(_, cs)| cs.iter().all(|(c, _)| k.registry.catalog().package(c).is_some())).map(|(step, _)| *step));
+    out.push(COUNTRY_CODES);
+    out
+}
+
+/// `cluster_state` key naming the steps the cluster has been through: `run` writes this build's, a start that does
+/// not migrate ([`verify`]) compares it. (A workspace made since then needs no step; a new step is a new name.)
+const DONE_KEY: &str = "upgrades_done";
+
+/// For a start that does not run the steps: the database must have been through this build's (`ferrum task migrate`).
+pub async fn verify(k: &Kernel) -> Result<()> {
+    let done: Option<String> = sqlx::query_scalar("select value from cluster_state where key = $1").bind(DONE_KEY).fetch_optional(&k.db.pool).await?;
+    if done.as_deref() == Some(steps(k).join(",").as_str()) {
+        return Ok(());
+    }
+    Err(ferrum_kernel::Error::Invalid(
+        "the database is not ready for this build: its one-time upgrade steps have not run. Run `ferrum task migrate` with this build and the same \
+         environment, or start with FERRUM_MIGRATE_AT_START=true to run them as the server starts"
+            .into(),
+    ))
+}
+
+/// Runs the steps; returns each with the workspaces it was waiting for.
+pub async fn run(k: &Kernel) -> Result<Vec<(&'static str, usize)>> {
     let mut conn = k.db.pool.acquire().await?;
     sqlx::query("select pg_advisory_lock($1)").bind(LOCK).execute(&mut *conn).await?;
     let out = async {
+        let mut waiting = Vec::new();
+        for step in steps(k) {
+            waiting.push((step, pending(k, step).await?.len()));
+        }
         core_split(k).await?;
         project_records(k).await?;
         for (step, connectors) in CONNECTORS {
             connector_step(k, step, connectors).await?;
         }
         country_codes(k).await?;
-        Ok(())
+        sqlx::query("insert into cluster_state (key, value) values ($1, $2) on conflict (key) do update set value = excluded.value, updated_at = now()")
+            .bind(DONE_KEY)
+            .bind(steps(k).join(","))
+            .execute(&k.db.pool)
+            .await?;
+        Ok(waiting)
     }
     .await;
     let _ = sqlx::query("select pg_advisory_unlock($1)").bind(LOCK).execute(&mut *conn).await;
