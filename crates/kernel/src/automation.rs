@@ -733,7 +733,19 @@ pub(crate) async fn execute(
             };
             let inv = crate::capability::Invocation::new(capability.as_str(), Value::Object(values)).key(key);
             // Boxed: an app's action reached through the gate is an action, which may run effects of its own.
-            return Ok(Box::pin(k.invoke_tx(ctx, tx, &inv)).await?.result);
+            return match Box::pin(k.invoke_tx(ctx, tx, &inv)).await {
+                Ok(r) => Ok(r.result),
+                // Whoever pressed (a portal person too) is told in plain words; a key and a capability id are the
+                // workspace's set-up, said to an administrator and the log (docs/api.md, "Once").
+                Err(Error::Refused { code: "input_changed", status, message, pointer }) => {
+                    tracing::info!(capability = %capability, "an invoke effect was refused: {message}");
+                    let step = k.capability(ctx, &capability).map(|c| format!(" ({})", c.label)).unwrap_or_default();
+                    let plain = format!("This step{step} was already done for this record with other details, so it was not done again.");
+                    let message = if user.get("is_admin") == Some(&Value::Bool(true)) { format!("{plain} {message}") } else { plain };
+                    Err(Error::Refused { code: "input_changed", status, message, pointer })
+                }
+                Err(e) => Err(e),
+            };
         }
         AutomationAction::AppendLine { table, values } => {
             let id = record.ok_or_else(|| Error::invalid("append_line needs a record"))?;

@@ -1180,10 +1180,12 @@ async fn scenario() {
         .await
         .unwrap();
     assert_eq!(hers.rows.len(), 2, "a second customer under her address");
-    // DIFFERENT (G9): another name under the same address is refused: the key was used with other input.
+    // DIFFERENT (G9): another name under the same address is refused: the key was used with other input. She is
+    // told in plain words, without the key or the capability.
     let a2 = apply(&ana, signage, "Ana R. Roy").await;
     let e = t.act(&ana, "XPermitApplication", a2, "submit_with_fee", json!({})).await.unwrap_err();
-    assert!(message(&e).contains("was used for parties.customer.create with other input"), "{e}");
+    assert_eq!(e.code(), "input_changed", "{e}");
+    assert!(message(&e).contains("was already done for this record with other details") && !message(&e).contains("parties.customer.create"), "{e}");
     println!("another name under the same address: {} ({e})", e.code());
     // SAME (G21): overturned on appeal, the fee is checked as for an approval.
     t.act(&officer, "XPermitApplication", a1, "take_up", json!({})).await.unwrap();
