@@ -554,7 +554,12 @@ MUTANTS = [
     # Configured actions, update_linked, the day in aggregate filters, and the two faults found with them
     # (docs/api.md, Configured actions; docs/builder/decisions.md BD-11).
     ("configured-effects-run-as-the-runner", "crates/kernel/src/actions.rs", "        is_system: true,\n", "        is_system: false,\n", ACTIONS),
-    ("configured-roles-ignored", "crates/kernel/src/doc.rs", "if !def.roles.is_empty() && !def.roles.iter().any(|r| ctx.has_role(r)) {", "if false {", ACTIONS),
+    ("configured-roles-ignored", "crates/kernel/src/ctx.rs", "if !def.roles.is_empty() && !def.roles.iter().any(|r| ctx.has_role(r)) {", "if false {", ACTIONS),
+    # Changing, removing and describing them (docs/api.md, Configured actions).
+    ("package-action-replaced", "crates/meta/src/effective.rs", "                    if packaged.get(&ov.entity).is_some_and(|(d, _)| d.actions.iter().any(|a| &a.name == name)) =>", "                    if false =>", ACTIONS),
+    ("action-effects-described-to-anyone", "crates/kernel/src/describe.rs", "                if !ctx.is_admin {\n                    m.remove(\"effects\");", "                if false {\n                    m.remove(\"effects\");", ACTIONS),
+    ("may-run-always", "crates/kernel/src/describe.rs", "json!(crate::ctx::action_gate(ctx, ent, a).is_ok())", "json!(true)", ACTIONS),
+    ("mail-template-without-params", "crates/kernel/src/automation.rs", "let mut vars: BTreeMap<&str, &Value> = extra.iter().copied().collect();", "let mut vars: BTreeMap<&str, &Value> = BTreeMap::new();", ACTIONS),
     ("configured-refusals-ignored", "crates/kernel/src/actions.rs", "        if holds == Value::Bool(true) {", "        if false && holds == Value::Bool(true) {", ACTIONS),
     ("configured-effects-write-anything", "crates/kernel/src/actions.rs", "    if !own && (f.read_only || f.read_only_if.is_some() || f.perm_group.is_some()) {", "    if false {", ACTIONS),
     ("configured-effects-unchecked", "crates/kernel/src/customize.rs", "        configured_actions(was, &now)?;\n", "\n", ACTIONS),

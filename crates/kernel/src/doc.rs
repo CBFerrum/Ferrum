@@ -719,15 +719,10 @@ impl Kernel {
         let ent = self.entity(ctx, entity)?;
         guard_kind(&ent)?;
         let def = ent.def.actions.iter().find(|a| a.name == action).ok_or_else(|| Error::NotFound(format!("action {action}")))?;
-        let perm = Action::parse(&def.permission).unwrap_or(Action::Write);
-        let scope = crate::ctx::action_scope(ctx, &ent, action, perm)?;
+        let scope = crate::ctx::action_gate(ctx, &ent, def)?;
         let doc = self.load_marked(tx, ctx, &ent, id, !def.read_only).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
         if !scope.admits(tx, ctx.tenant, &doc).await? {
             return Err(Error::NotFound(ent.def.label.clone()));
-        }
-        // A configured action's roles: one of them, besides its permission (an administrator always may).
-        if !def.roles.is_empty() && !def.roles.iter().any(|r| ctx.has_role(r)) {
-            return Err(Error::Forbidden(format!("'{}' is for {}", def.label, def.roles.join(", "))));
         }
         if !def.docstatus.is_empty() && !def.docstatus.contains(&(docstatus_of(&doc) as i16)) {
             return Err(Error::invalid(format!("'{}' is not available in this document status", def.label)));
