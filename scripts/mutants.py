@@ -599,7 +599,7 @@ MUTANTS = [
     ("target-pause-ignored", "crates/logic/src/target.rs", "        if running && said.pause {", "        if false {", LOGIC_UNIT),
     ("target-late-met-in-time", "crates/logic/src/target.rs", "(Some(m), b, _) if b.is_some() ||", "(Some(m), b, _) if false && b.is_some() ||", LOGIC_UNIT),
     ("target-reopen-stays-met", "crates/logic/src/target.rs", "    if r.met_at.is_some() && !said.met {", "    if false {", LOGIC_UNIT),
-    ("target-shares-a-field", "crates/meta/src/effective.rs", "            if !kept.insert(name.as_str()) {", "            if false {", META_TARGETS),
+    ("target-shares-a-field", "crates/meta/src/effective.rs", "            if !kept.insert(name.as_str()) {", "            if !kept.insert(name.as_str()) && false {", META_TARGETS),
     ("target-keeps-a-packages-field", "crates/meta/src/effective.rs", "OverlayOp::AddTarget { target: t } if !b.custom &&", "OverlayOp::AddTarget { target: t } if false &&", META_TARGETS),
     ("target-breached-twice", "crates/kernel/src/targets.rs", "paused_at is null and breached_at is null and due_at <= $1", "paused_at is null and due_at <= $1", TARGETS),
     ("target-fields-take-input", "crates/kernel/src/doc.rs", "                || ent.target_keeping(k).is_some()\n", "\n", TARGETS),
