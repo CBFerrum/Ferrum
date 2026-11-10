@@ -5,7 +5,7 @@
 //! if they were given them, or lost them. Nothing is changed by asking.
 
 use crate::Kernel;
-use crate::ctx::{Action, Ctx, PermSet, row_scope};
+use crate::ctx::{Access, Action, Ctx, PermSet, row_scope};
 use crate::error::{Error, Result};
 use serde_json::{Value, json};
 use sqlx::AssertSqlSafe;
@@ -104,15 +104,40 @@ impl Kernel {
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(names
-            .into_iter()
-            .filter_map(|n| {
-                let e = ctx.schema.entity(&n)?;
-                Some(json!({
-                    "name": n, "label": e.def.label, "label_plural": e.def.plural_label(), "description": e.def.description, "icon": e.def.icon,
-                    "permissions": crate::describe::permissions(ctx, &n),
-                }))
-            })
-            .collect())
+        Ok(names.iter().filter_map(|n| portal_entity(ctx, n)).collect())
     }
+
+    /// What Studio's generic portal page shows the caller (docs/builder/portal.md): `entities`, as
+    /// [`Self::portal_entities`] gives them; `menus`, the workspace's menus marked for the portal in
+    /// order, each holding only those of its entities that are among them (`create`: the menu offers it
+    /// and their role may create it), a menu holding none left out; `other`, those in no such menu.
+    pub async fn portal_menus(&self, ctx: &Ctx) -> Result<Value> {
+        let entities = self.portal_entities(ctx).await?;
+        let reached = |n: &str| entities.iter().any(|e| e["name"] == n);
+        let mut shown: Vec<&str> = vec![];
+        let mut menus = vec![];
+        for m in ctx.schema.modules.iter().filter(|m| m.package == "tenant" && m.portal) {
+            let mut items = vec![];
+            for name in m.items.iter().filter(|i| reached(i)) {
+                let Some(mut item) = portal_entity(ctx, name) else { continue };
+                item["create"] = json!(m.create.contains(name) && ctx.perms.access(name, Action::Create) != Access::None);
+                items.push(item);
+                shown.push(name);
+            }
+            if !items.is_empty() {
+                menus.push(json!({"name": m.name, "label": m.label, "description": m.description, "icon": m.icon, "color": m.color, "items": items}));
+            }
+        }
+        let other: Vec<&Value> = entities.iter().filter(|e| !shown.contains(&e["name"].as_str().unwrap_or_default())).collect();
+        Ok(json!({"entities": entities, "menus": menus, "other": other}))
+    }
+}
+
+/// An entity as the portal's generic page lists it, with what the caller may do there.
+fn portal_entity(ctx: &Ctx, name: &str) -> Option<Value> {
+    let e = ctx.schema.entity(name)?;
+    Some(json!({
+        "name": name, "label": e.def.label, "label_plural": e.def.plural_label(), "description": e.def.description, "icon": e.def.icon,
+        "permissions": crate::describe::permissions(ctx, name),
+    }))
 }

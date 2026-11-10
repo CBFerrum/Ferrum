@@ -1398,6 +1398,23 @@ pub struct PortalPage<'a> {
     /// The entity whose records it shows, and where under the page one opens (`t/{id}`).
     pub entity: Option<&'a str>,
     pub open: Option<&'a str>,
+    /// A workspace's portal menu shown on Studio's generic page (docs/builder/portal.md), and its icon.
+    pub menu: Option<&'a str>,
+    pub icon: Option<&'a str>,
+}
+
+impl PortalPage<'_> {
+    /// Its address: the app's page, or Studio's generic page for one menu.
+    pub fn url(&self) -> String {
+        match self.menu {
+            Some(m) => format!("/portal/{}/m/{m}", self.id),
+            None => format!("/portal/{}/", self.id),
+        }
+    }
+
+    fn generic(&self) -> bool {
+        self.id == "records" && self.app.id == "studio"
+    }
 }
 
 /// The portal's pages from the workspace's apps; when two apps name the same page, the first keeps it.
@@ -1418,6 +1435,8 @@ pub fn portal_pages(apps: &[ShellApp]) -> Vec<PortalPage<'_>> {
                 description: text("description").unwrap_or_default(),
                 entity: text("entity"),
                 open: text("open"),
+                menu: None,
+                icon: None,
             });
         }
     }
@@ -1430,12 +1449,70 @@ pub fn portal_open(pages: &[PortalPage], entity: &str, id: &str) -> Option<Strin
     Some(format!("/portal/{}/{}", page.id, page.open.unwrap_or_default().replace("{id}", id)))
 }
 
+/// Studio's generic page as the portal's home lists it for someone (docs/builder/portal.md), from what
+/// their portal roles reach (`reached`: the kernel's `portal_menus`): an entry for each portal menu holding
+/// some of it, then the page itself for what is in no menu. Nothing reached, no entry.
+pub fn portal_entries<'a>(ctx: &'a Ctx, pages: Vec<PortalPage<'a>>, reached: &Value) -> Vec<PortalPage<'a>> {
+    let mut out = Vec::with_capacity(pages.len());
+    for p in pages {
+        if !p.generic() {
+            out.push(p);
+            continue;
+        }
+        for m in reached["menus"].as_array().into_iter().flatten().filter_map(|m| menu(ctx, m["name"].as_str()?)) {
+            let description = m.description.as_deref().unwrap_or_default();
+            out.push(PortalPage { title: &m.label, description, menu: Some(&m.name), icon: m.icon.as_deref(), ..p.clone() });
+        }
+        if reached["other"].as_array().is_some_and(|o| !o.is_empty()) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// Where `/open/{entity}[/{id}]` sends someone of `kind`: a portal person to the app's page that shows
+/// the entity, else to Studio's generic page where their portal roles reach it (`reached`, as for
+/// [`portal_entries`]; in the first portal menu holding it), else to the portal's home. A member: nowhere
+/// here, they open records in the apps. `id` comes escaped for a path.
+pub fn portal_open_for(kind: &str, pages: &[PortalPage], reached: &Value, entity: &str, id: Option<&str>) -> Option<String> {
+    if kind != "portal" {
+        return None;
+    }
+    if let Some(to) = id.and_then(|id| portal_open(pages, entity, id)) {
+        return Some(to);
+    }
+    let named = |list: &Value| list.as_array().into_iter().flatten().any(|e| e["name"] == entity);
+    let within = reached["menus"].as_array().into_iter().flatten().find(|m| named(&m["items"]));
+    let generic = pages.iter().find(|p| p.generic());
+    let to = match generic {
+        Some(p) if within.is_some() || named(&reached["other"]) => {
+            let menu = within.and_then(|m| m["name"].as_str()).map(|m| format!("m/{m}/")).unwrap_or_default();
+            let id = id.map(|id| format!("/{id}")).unwrap_or_default();
+            format!("/portal/{}/{menu}e/{entity}{id}", p.id)
+        }
+        _ => "/portal/".to_string(),
+    };
+    Some(to)
+}
+
+/// The portal's home for a portal person with one entry there: straight to it. Members see the home.
+pub fn portal_straight_to(kind: &str, pages: &[PortalPage]) -> Option<String> {
+    match pages {
+        [only] if kind == "portal" => Some(only.url()),
+        _ => None,
+    }
+}
+
 /// The bootstrap's `portal`: the pages the portal's header links to.
 pub fn portal_json(pages: &[PortalPage]) -> Value {
-    json!({
-        "home": "/portal/",
-        "pages": pages.iter().map(|p| json!({"id": p.id, "title": p.title, "url": format!("/portal/{}/", p.id)})).collect::<Vec<_>>(),
-    })
+    let page = |p: &PortalPage| {
+        let mut j = json!({"id": p.id, "title": p.title, "url": p.url()});
+        if let Some(icon) = p.icon {
+            j["icon"] = json!(icon);
+        }
+        j
+    };
+    json!({"home": "/portal/", "pages": pages.iter().map(page).collect::<Vec<_>>()})
 }
 
 /// A portal page of an app: its entry template with the portal's header instead of the bar.
@@ -1454,7 +1531,8 @@ pub fn portal_home(bootstrap: &Value, pages: &[PortalPage]) -> Response {
         .iter()
         .map(|p| {
             let about = if p.description.is_empty() { String::new() } else { format!("<span>{}</span>", esc(p.description)) };
-            format!(r#"<li><a class="ferrum-portal-card" href="/portal/{}/"><strong>{}</strong>{about}</a></li>"#, esc(p.id), esc(p.title))
+            let icon = p.icon.map(|i| format!(r#" data-icon="{}""#, esc(i))).unwrap_or_default();
+            format!(r#"<li><a class="ferrum-portal-card" href="{}"{icon}><strong>{}</strong>{about}</a></li>"#, esc(&p.url()), esc(p.title))
         })
         .collect();
     let body = if pages.is_empty() {
@@ -2045,6 +2123,86 @@ mod tests {
         assert!(html.contains("<title>Acme &lt;Ltd&gt;</title>") && html.contains("Hello, Ana"), "{html}");
         assert!(html.contains(r#"href="/portal/invoices/"><strong>Your invoices</strong><span>Bills and what is due</span>"#), "{html}");
         assert!(page_html(portal_home(&boot, &[])).await.contains("Nothing has been shared with you here yet"));
+    }
+
+    #[tokio::test]
+    async fn portal_menus_on_the_portal_home_and_where_records_open() {
+        let pkg: ferrum_meta::Package = serde_json::from_value(json!({"package": "core", "version": "1", "entities": [
+            {"name": "Risk", "label": "Risk", "kind": "master", "fields": [{"name": "t", "type": "data"}]},
+            {"name": "Finding", "label": "Finding", "kind": "master", "fields": [{"name": "t", "type": "data"}]},
+            {"name": "Policy", "label": "Policy", "kind": "master", "fields": [{"name": "t", "type": "data"}]}]}))
+        .unwrap();
+        let catalog = ferrum_meta::Catalog::from_packages(vec![pkg]).unwrap();
+        let define = |name: &str, label: &str, items: Value, portal: bool| ferrum_meta::Overlay {
+            entity: name.into(),
+            ops: vec![
+                serde_json::from_value(json!({"op": "define_module", "module": {"name": name, "label": label, "icon": "shield",
+                "description": format!("{label} of yours"), "items": items, "portal": portal}}))
+                .unwrap(),
+            ],
+        };
+        let overlays = [
+            define("x_grc", "Governance", json!(["Risk", "Finding"]), true),
+            define("x_pol", "Policies", json!(["Policy"]), true),
+            define("x_staff", "Staff", json!(["Risk", "Policy"]), false),
+        ];
+        let schema = Arc::new(ferrum_meta::effective::build(&catalog, &["core".into()], &overlays, 1).unwrap());
+        let ctx = Ctx::system(Uuid::nil(), schema);
+        let studio = app(&manifest(
+            "studio",
+            "packages: [studio]\nui:\n  dist: ui/dist\ncontributes:\n  shell.app:\n    - {id: studio, route: studio, title: Studio}\n  shell.portal:\n    - {id: records, title: Your records}\n",
+        ));
+        let helpdesk = app(&manifest(
+            "helpdesk",
+            "packages: [helpdesk]\nui:\n  dist: ui/dist\ncontributes:\n  shell.app:\n    - {id: helpdesk, route: helpdesk, title: H}\n  shell.portal:\n    - {id: tickets, title: Your tickets, entity: Ticket, open: \"t/{id}\"}\n",
+        ));
+        // What the kernel's portal_menus says the person reaches.
+        let reached = |menus: &[(&str, &[&str])], other: &[&str]| {
+            let names = |l: &[&str]| l.iter().map(|n| json!({"name": n})).collect::<Vec<_>>();
+            json!({"menus": menus.iter().map(|(m, items)| json!({"name": m, "items": names(items)})).collect::<Vec<_>>(), "other": names(other)})
+        };
+        let only_studio = [studio.clone()];
+        let both = [helpdesk, studio];
+        let entries = |apps: &[ShellApp], r: &Value| -> Vec<(String, String)> {
+            portal_entries(&ctx, portal_pages(apps), r).iter().map(|p| (p.url(), p.title.to_string())).collect()
+        };
+        let e = |u: &str, t: &str| (u.to_string(), t.to_string());
+        // One menu: its entry, and nothing else of Studio's; alone in the portal, the person goes straight there.
+        let one = reached(&[("x_grc", &["Risk"])], &[]);
+        assert_eq!(entries(&only_studio, &one), [e("/portal/records/m/x_grc", "Governance")]);
+        let pages = portal_entries(&ctx, portal_pages(&only_studio), &one);
+        assert_eq!(portal_straight_to("portal", &pages).as_deref(), Some("/portal/records/m/x_grc"));
+        assert_eq!(portal_straight_to("member", &pages), None, "a member looking sees the home");
+        // Two menus, beside an app's page.
+        let two = reached(&[("x_grc", &["Risk", "Finding"]), ("x_pol", &["Policy"])], &[]);
+        assert_eq!(
+            entries(&both, &two),
+            [e("/portal/tickets/", "Your tickets"), e("/portal/records/m/x_grc", "Governance"), e("/portal/records/m/x_pol", "Policies")]
+        );
+        assert_eq!(portal_straight_to("portal", &portal_entries(&ctx, portal_pages(&both), &two)), None);
+        // A menu and what is in none: "Your records" for the rest. Nothing reached: no entry of Studio's.
+        let mixed = reached(&[("x_grc", &["Risk"])], &["Policy"]);
+        assert_eq!(entries(&only_studio, &mixed), [e("/portal/records/m/x_grc", "Governance"), e("/portal/records/", "Your records")]);
+        assert_eq!(entries(&only_studio, &reached(&[], &["Policy"])), [e("/portal/records/", "Your records")]);
+        assert!(entries(&only_studio, &reached(&[], &[])).is_empty());
+        // The home and the header show the menu's label, description and icon.
+        let pages = portal_entries(&ctx, portal_pages(&only_studio), &mixed);
+        let j = portal_json(&pages);
+        assert_eq!(j["pages"][0], json!({"id": "records", "title": "Governance", "url": "/portal/records/m/x_grc", "icon": "shield"}));
+        assert_eq!(j["pages"][1], json!({"id": "records", "title": "Your records", "url": "/portal/records/"}));
+        let html = page_html(portal_home(&json!({"portal": j}), &pages)).await;
+        assert!(html.contains(r#"href="/portal/records/m/x_grc" data-icon="shield"><strong>Governance</strong><span>Governance of yours</span>"#), "{html}");
+        // Links from notifications and mail: an app's page first, then the generic page in the record's menu.
+        let pages = portal_pages(&both);
+        let open = |kind: &str, entity: &str, id: Option<&str>| portal_open_for(kind, &pages, &mixed, entity, id);
+        assert_eq!(open("portal", "Ticket", Some("7")).as_deref(), Some("/portal/tickets/t/7"));
+        assert_eq!(open("portal", "Risk", Some("7")).as_deref(), Some("/portal/records/m/x_grc/e/Risk/7"));
+        assert_eq!(open("portal", "Risk", None).as_deref(), Some("/portal/records/m/x_grc/e/Risk"));
+        assert_eq!(open("portal", "Policy", Some("7")).as_deref(), Some("/portal/records/e/Policy/7"));
+        assert_eq!(open("portal", "Finding", Some("7")).as_deref(), Some("/portal/"), "not reached: the portal's home");
+        assert_eq!(open("member", "Risk", Some("7")), None, "members open records in the apps, never the portal");
+        let no_studio = portal_pages(&both[..1]);
+        assert_eq!(portal_open_for("portal", &no_studio, &mixed, "Risk", Some("7")).as_deref(), Some("/portal/"), "no Studio, no generic page");
     }
 
     async fn page_html(res: Response) -> String {
