@@ -114,6 +114,22 @@ enum Duplicates {
     Skip,
     /// Refused (a batch: a screen's "nothing changed" is not hidden).
     Refuse,
+    /// Left out, as an import does, and a custom entity the workspace already defines otherwise is
+    /// redefined, under the same guards (a pack's install, pack.rs).
+    Merge,
+}
+
+/// What saving one operation did: its label, and `created`, `changed` or `unchanged`.
+pub(crate) type Saved = (String, &'static str);
+
+/// An operation as a plan names it: `XGym: add_field fee`.
+fn label_of(target: &str, raw: &Value) -> String {
+    let what = raw["op"].as_str().unwrap_or("customization");
+    match raw.get("field") {
+        Some(Value::Object(f)) => format!("{target}: {what} {}", f.get("name").and_then(Value::as_str).unwrap_or_default()),
+        Some(Value::String(f)) => format!("{target}: {what} {f}"),
+        _ => format!("{target}: {what}"),
+    }
 }
 
 fn require_admin(ctx: &Ctx) -> Result<()> {
@@ -441,50 +457,7 @@ impl Kernel {
         let none = |e: Error| (None, e);
         require_admin(ctx).map_err(none)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await.map_err(none)?;
-        let mut overlays = self.active_overlays(&mut tx, ctx.tenant).await.map_err(none)?;
-        let mut active: Vec<(String, Value)> = overlays.iter().filter_map(|o| Some((o.entity.clone(), serde_json::to_value(o.ops.first()?).ok()?))).collect();
-        let packaged = self.packaged(ctx).map_err(none)?;
-        let mut was = self.build(ctx, &overlays).map_err(none)?;
-        let mut ids = Vec::new();
-        for (i, it) in items.into_iter().enumerate() {
-            let at = |e: Error| (Some(i), e);
-            let target = match &it.op {
-                OverlayOp::DefineEntity { entity } | OverlayOp::RedefineEntity { entity } => entity.name.clone(),
-                _ => it.entity,
-            };
-            let raw = serde_json::to_value(&it.op).map_err(|e| at(Error::internal(e)))?;
-            if duplicates != Duplicates::Save && active.iter().any(|(e, o)| *e == target && *o == raw) {
-                if duplicates == Duplicates::Skip {
-                    continue;
-                }
-                return Err(at(Error::Conflict(format!("this customization of {target} is already active: nothing would change"))));
-            }
-            overlays.push(Overlay { entity: target.clone(), ops: vec![it.op.clone()] });
-            let now = if stepwise { Some(self.check_step(ctx, &mut tx, &was, &overlays).await.map_err(at)?) } else { None };
-            let id = Uuid::now_v7();
-            let replaced = packaged.entity(&target).and_then(|e| effective::replaced_value(e, &it.op));
-            sqlx::query("insert into meta_overlay (tenant_id, id, entity, op, note, created_by, base) values ($1, $2, $3, $4, $5, $6, $7)")
-                .bind(ctx.tenant)
-                .bind(id)
-                .bind(&target)
-                .bind(&raw)
-                .bind(it.note)
-                .bind((!ctx.user.is_nil()).then_some(ctx.user))
-                .bind(replaced)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| at(e.into()))?;
-            if let Some(now) = now {
-                self.sync_custom_keys(ctx, &mut tx, &was, &now).await.map_err(at)?;
-                was = now;
-            }
-            active.push((target, raw));
-            ids.push(id);
-        }
-        if !stepwise && !ids.is_empty() {
-            let now = self.check_step(ctx, &mut tx, &was, &overlays).await.map_err(none)?;
-            self.sync_custom_keys(ctx, &mut tx, &was, &now).await.map_err(none)?;
-        }
+        let (ids, _, _) = self.save_customizations_in(ctx, &mut tx, items, duplicates, stepwise).await?;
         if dry_run || ids.is_empty() {
             tx.rollback().await.map_err(|e| none(e.into()))?;
             return Ok(ids);
@@ -493,6 +466,103 @@ impl Kernel {
         tx.commit().await.map_err(|e| none(e.into()))?;
         self.registry.invalidate(ctx.tenant);
         Ok(ids)
+    }
+
+    /// A pack's customizations, saved in its install's transaction as an import saves a change set (pack.rs):
+    /// what each did, and the schema they leave, for the rest of the install to work against. The version
+    /// is bumped when anything was saved; the caller drops the caches once it commits.
+    pub(crate) async fn merge_customizations(&self, ctx: &Ctx, tx: &mut crate::db::Tx, items: Vec<NewCustomization>) -> Result<(Vec<Saved>, Schema)> {
+        let (ids, overlays, saved) = self.save_customizations_in(ctx, tx, items, Duplicates::Merge, false).await.map_err(|(_, e)| e)?;
+        if ids.is_empty() {
+            return Ok((saved, (*ctx.schema).clone()));
+        }
+        Registry::bump_version(tx, ctx.tenant).await?;
+        let mut schema = self.build(ctx, &overlays)?;
+        (schema.version, schema.fy_start_month, schema.shell_v2) = (ctx.schema.version, ctx.schema.fy_start_month, ctx.schema.shell_v2);
+        schema.timezone.clone_from(&ctx.schema.timezone);
+        Ok((saved, schema))
+    }
+
+    /// [`Kernel::save_customizations`]'s work in the caller's transaction: the ids saved, the overlays then
+    /// active, and what became of each item.
+    #[allow(clippy::type_complexity)]
+    async fn save_customizations_in(
+        &self,
+        ctx: &Ctx,
+        tx: &mut crate::db::Tx,
+        items: Vec<NewCustomization>,
+        duplicates: Duplicates,
+        stepwise: bool,
+    ) -> std::result::Result<(Vec<Uuid>, Vec<Overlay>, Vec<Saved>), (Option<usize>, Error)> {
+        let none = |e: Error| (None, e);
+        require_admin(ctx).map_err(none)?;
+        let mut overlays = self.active_overlays(tx, ctx.tenant).await.map_err(none)?;
+        let mut active: Vec<(String, Value)> = overlays.iter().filter_map(|o| Some((o.entity.clone(), serde_json::to_value(o.ops.first()?).ok()?))).collect();
+        let packaged = self.packaged(ctx).map_err(none)?;
+        let mut was = self.build(ctx, &overlays).map_err(none)?;
+        let mut ids = Vec::new();
+        let mut saved = Vec::new();
+        for (i, it) in items.into_iter().enumerate() {
+            let at = |e: Error| (Some(i), e);
+            let target = match &it.op {
+                OverlayOp::DefineEntity { entity } | OverlayOp::RedefineEntity { entity } => entity.name.clone(),
+                _ => it.entity,
+            };
+            let mut op = it.op;
+            let mut raw = serde_json::to_value(&op).map_err(|e| at(Error::internal(e)))?;
+            let mut status = "created";
+            // A custom entity this workspace defines already: its latest definition, if the same, leaves
+            // nothing to do; otherwise this one redefines it.
+            if duplicates == Duplicates::Merge
+                && let OverlayOp::DefineEntity { entity } = &op
+                && !active.iter().any(|(e, o)| *e == target && *o == raw)
+            {
+                let defines = |o: &Value| matches!(o["op"].as_str(), Some("define_entity" | "redefine_entity"));
+                if let Some(latest) = active.iter().rev().find(|(e, o)| *e == target && defines(o)).map(|(_, o)| &o["entity"]) {
+                    if *latest == raw["entity"] {
+                        saved.push((label_of(&target, &raw), "unchanged"));
+                        continue;
+                    }
+                    op = OverlayOp::RedefineEntity { entity: entity.clone() };
+                    raw = serde_json::to_value(&op).map_err(|e| at(Error::internal(e)))?;
+                    status = "changed";
+                }
+            }
+            if duplicates != Duplicates::Save && active.iter().any(|(e, o)| *e == target && *o == raw) {
+                if matches!(duplicates, Duplicates::Skip | Duplicates::Merge) {
+                    saved.push((label_of(&target, &raw), "unchanged"));
+                    continue;
+                }
+                return Err(at(Error::Conflict(format!("this customization of {target} is already active: nothing would change"))));
+            }
+            overlays.push(Overlay { entity: target.clone(), ops: vec![op.clone()] });
+            let now = if stepwise { Some(self.check_step(ctx, tx, &was, &overlays).await.map_err(at)?) } else { None };
+            let id = Uuid::now_v7();
+            let replaced = packaged.entity(&target).and_then(|e| effective::replaced_value(e, &op));
+            sqlx::query("insert into meta_overlay (tenant_id, id, entity, op, note, created_by, base) values ($1, $2, $3, $4, $5, $6, $7)")
+                .bind(ctx.tenant)
+                .bind(id)
+                .bind(&target)
+                .bind(&raw)
+                .bind(it.note)
+                .bind((!ctx.user.is_nil()).then_some(ctx.user))
+                .bind(replaced)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| at(e.into()))?;
+            if let Some(now) = now {
+                self.sync_custom_keys(ctx, tx, &was, &now).await.map_err(at)?;
+                was = now;
+            }
+            saved.push((label_of(&target, &raw), status));
+            active.push((target, raw));
+            ids.push(id);
+        }
+        if !stepwise && !ids.is_empty() {
+            let now = self.check_step(ctx, tx, &was, &overlays).await.map_err(none)?;
+            self.sync_custom_keys(ctx, tx, &was, &now).await.map_err(none)?;
+        }
+        Ok((ids, overlays, saved))
     }
 
     /// The schema `overlays` give, refused if it has warnings `was` did not or would damage records.

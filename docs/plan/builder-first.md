@@ -24,7 +24,7 @@ rows as the sign of progress. First walk:
 |---|---|---|
 | Foundations | Custom entities with lines, unique keys and exact totals (BF8, ahead of its place); automations that fire on time (BF6); rules that count and sum other records | Built: PRs 158, 160, 159 |
 | Authoring | Screens for entities, workflows, automations and rules; a batch with a dry run and `redefine_entity`; a mail preview | Built: PRs 161, 162 and Ferrum-Frontend 67 |
-| Packs | One export that carries a whole solution (entities, roles, automations, Studio's items, solutions) and installs elsewhere, as a metadata-only app bundle, not a second format (BF9) | Not started |
+| Packs | One export that carries a whole solution (entities, roles, automations, Studio's items, solutions, chosen reference records) and installs elsewhere, with a plan first (BF9) | Built as a document administrators export and install; signing, uninstalling and the store are not |
 | Engines | One working-hours clock, then service levels, checklists and scheduling bound to any entity | Not started |
 | Proof | The apps that are configuration and nothing else (Government, Retail, GRC) as packs | Not started |
 
