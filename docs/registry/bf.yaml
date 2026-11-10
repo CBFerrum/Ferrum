@@ -1,0 +1,49 @@
+# The builder-first program (BF-*): what each requirement has, by its evidence (docs/builder/README.md).
+# The requirement's text and acceptance case are in docs/builder/catalog.json.
+requirements:
+  - {id: BF-BASE-001, title: "Decisions recorded", workstream: BF0, status: implemented_unverified, files: ["docs/builder/decisions.md"], limits: "Nine decisions recorded before building, each with what it rules out and its gate; each is proven only when its gate lands and its rows here say so"}
+  - {id: BF-BASE-002, title: "Register checked", workstream: BF0, status: verified_software, files: ["scripts/registry.py", "docs/registry/bf.yaml", "docs/builder/catalog.json"], tests: ["scripts/registry.py"], limits: "Checked like the other programs (states, evidence, catalog agreement, limits); its self-test refuses a row verified without tests, partial citing nothing, in another gate, or silent on its limits. A person still decides what a test proves"}
+  - {id: BF-BASE-003, title: "Exact inventory", workstream: BF0, status: verified_software, files: ["scripts/builder_inventory.py", "docs/builder/inventory.md"], tests: ["scripts/test_builder_inventory.py"], limits: "A search of 40 public app repositories at the heads it lists: it finds where a feature is written, not whether it is right, and patterns can miss a feature written another way. The private Cloud repository is left out"}
+  - {id: BF-BASE-004, title: "Closure packages re-scoped", workstream: BF0, status: verified_software, files: ["docs/registry/feo.yaml", "scripts/registry.py", "docs/plan/builder-first.md"], tests: ["scripts/registry.py"], limits: "Twenty open closure packages name the gate taking them over, whole or in part, with what it takes; the check refuses a gate that does not exist (self-test). The other 37 stay with their apps or the platform, unchanged"}
+  - {id: BF-PORTAL-001, title: "Portal roles", workstream: BF1, status: not_started, limits: "Not started"}
+  - {id: BF-PORTAL-002, title: "Ownership through links", workstream: BF1, status: not_started, limits: "Not started"}
+  - {id: BF-PORTAL-003, title: "Fields and actions under portal roles", workstream: BF1, status: not_started, limits: "Not started"}
+  - {id: BF-PORTAL-004, title: "Generic portal pages", workstream: BF1, status: not_started, limits: "Not started"}
+  - {id: BF-PORTAL-005, title: "Portal roles administered and previewed", workstream: BF1, status: not_started, limits: "Not started"}
+  - {id: BF-PORTAL-006, title: "Proof: two portals as configuration", workstream: BF1, status: not_started, limits: "Not started"}
+  - {id: BF-PUBLIC-001, title: "Public pages bound to an entity", workstream: BF2, status: not_started, limits: "Not started"}
+  - {id: BF-PUBLIC-002, title: "Availability", workstream: BF2, status: not_started, limits: "Not started"}
+  - {id: BF-PUBLIC-003, title: "A guest's own link", workstream: BF2, status: not_started, limits: "Not started"}
+  - {id: BF-PUBLIC-004, title: "Mail and limits", workstream: BF2, status: not_started, limits: "Not started"}
+  - {id: BF-PUBLIC-005, title: "Proof: booking pages as configuration", workstream: BF2, status: not_started, limits: "Not started"}
+  - {id: BF-APPROVE-001, title: "Approvals on transitions", workstream: BF3, status: not_started, limits: "Not started"}
+  - {id: BF-APPROVE-002, title: "Independence", workstream: BF3, status: not_started, limits: "Not started"}
+  - {id: BF-APPROVE-003, title: "Delegation and escalation", workstream: BF3, status: not_started, limits: "Not started"}
+  - {id: BF-APPROVE-004, title: "Targets in business time", workstream: BF3, status: not_started, limits: "Not started"}
+  - {id: BF-APPROVE-005, title: "Proof: approvals as configuration", workstream: BF3, status: not_started, limits: "Not started"}
+  - {id: BF-MONEY-001, title: "ERP money and stock steps as capabilities", workstream: BF4, status: not_started, limits: "Not started"}
+  - {id: BF-MONEY-002, title: "Driven by decision tables", workstream: BF4, status: not_started, limits: "Not started"}
+  - {id: BF-MONEY-003, title: "Proof: money policies as configuration", workstream: BF4, status: not_started, limits: "Not started"}
+  - {id: BF-AUTHOR-001, title: "Rules without source", workstream: BF5, status: not_started, limits: "Not started"}
+  - {id: BF-AUTHOR-002, title: "Decision tables without source", workstream: BF5, status: not_started, limits: "Not started"}
+  - {id: BF-AUTHOR-003, title: "Structured steps without source", workstream: BF5, status: not_started, limits: "Not started"}
+  - {id: BF-AUTHOR-004, title: "Lossless round trip", workstream: BF5, status: not_started, limits: "Not started"}
+  - {id: BF-SCHED-001, title: "Relative to a record's date", workstream: BF6, status: not_started, limits: "Not started"}
+  - {id: BF-SCHED-002, title: "Repeating schedules", workstream: BF6, status: not_started, limits: "Not started"}
+  - {id: BF-SCHED-003, title: "When a linked document changes", workstream: BF6, status: not_started, limits: "Not started"}
+  - {id: BF-SCHED-004, title: "Mail templates", workstream: BF6, status: not_started, limits: "Not started"}
+  - {id: BF-SCHED-005, title: "Proof: schedules as configuration", workstream: BF6, status: not_started, limits: "Not started"}
+  - {id: BF-RECON-001, title: "Ledger source in Studio", workstream: BF7, status: not_started, limits: "Not started"}
+  - {id: BF-RECON-002, title: "Records against the books", workstream: BF7, status: not_started, limits: "Not started"}
+  - {id: BF-RECON-003, title: "Certified metrics on dashboards and objectives", workstream: BF7, status: not_started, limits: "Not started"}
+  - {id: BF-RECON-004, title: "Proof: reconciliations as configuration", workstream: BF7, status: not_started, limits: "Not started"}
+  - {id: BF-ENTITY-001, title: "Child tables", workstream: BF8, status: not_started, limits: "Not started"}
+  - {id: BF-ENTITY-002, title: "Unique keys", workstream: BF8, status: not_started, limits: "Not started"}
+  - {id: BF-ENTITY-003, title: "Numbering and totals", workstream: BF8, status: not_started, limits: "Not started"}
+  - {id: BF-ENTITY-004, title: "Links both ways", workstream: BF8, status: not_started, limits: "Not started"}
+  - {id: BF-PACK-001, title: "Pack format", workstream: BF9, status: not_started, limits: "Not started"}
+  - {id: BF-PACK-002, title: "Signed and installed", workstream: BF9, status: not_started, limits: "Not started"}
+  - {id: BF-PACK-003, title: "Upgraded and removed", workstream: BF9, status: not_started, limits: "Not started"}
+  - {id: BF-PACK-004, title: "Exported between workspaces", workstream: BF9, status: not_started, limits: "Not started"}
+  - {id: BF-PACK-005, title: "Proof: a clinic as configuration", workstream: BF9, status: not_started, limits: "Not started"}
+  - {id: BF-PACK-006, title: "A small hotel, and what still needs code", workstream: BF9, status: not_started, limits: "Not started"}

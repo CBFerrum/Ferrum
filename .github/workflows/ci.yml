@@ -158,7 +158,7 @@ jobs:
         run: cargo install cargo-audit --locked && cargo audit
       # Every accepted advisory has an owner, a reason and a review date (scripts/registry.py).
       - name: Requirements registry, accepted advisories and generated documents
-        run: python3 -m pip install --quiet pyyaml && python3 scripts/registry.py check && python3 scripts/test_registry.py && python3 scripts/test_manifests.py && python3 scripts/mutants.py --check && python3 scripts/test_baseline.py && python3 scripts/test_mutation_paths.py
+        run: python3 -m pip install --quiet pyyaml && python3 scripts/registry.py check && python3 scripts/test_registry.py && python3 scripts/test_manifests.py && python3 scripts/mutants.py --check && python3 scripts/test_baseline.py && python3 scripts/test_mutation_paths.py && python3 scripts/test_builder_inventory.py
       # The tools that carry a release to a site without internet (docs/operations.md), against stand-ins.
       - name: Offline bundles
         run: python3 deploy/offline/test_offline.py
