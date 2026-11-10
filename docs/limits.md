@@ -119,8 +119,9 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   link to a later one is refused. A private Studio item arrives owned by the installer. A pack holds at
   most 5 MiB and 10,000 records of one entity. A solution arrives as a draft, and a pack's plan does the
   install and rolls it back, so a large pack is planned at the cost of installing it. A pack carries the
-  workspace's own interface words as `InterfaceWord` records (key `[language, english]`); whether a
-  word shows translated depends on the interface asking for it through its catalog.
+  workspace's own interface words as `InterfaceWord` records (key `[language, english]`); the web pages read
+  them for the names of entities, fields, choices, buttons, workflow states and sections; messages of
+  checks and refusals, mail text and descriptions stay as written.
 - **A workspace's own menus** (`define_module`) are named `x_…` and hold at most 50 items. Each opens
   the records frame at `/data/{menu}/`, never a screen of its own; it gives the bar no search provider
   and its tile no counts. Its tile goes to whoever reads one of its entities, not to chosen roles. An

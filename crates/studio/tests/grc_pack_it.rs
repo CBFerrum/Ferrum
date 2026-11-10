@@ -60,6 +60,35 @@ fn refused<V: std::fmt::Debug>(r: Result<V, Error>, kind: &str, says: &str) {
 
 const REVIEWED_AT: &str = "2026-11-10T00:00:00+00:00";
 
+/// The app's own Arabic and Hindi words (its `ui/src/locales/{ar,hi}.json` and `names/*.json`) for the texts this
+/// pack defines, `{language: {english: words}}`: they travel as `InterfaceWord` records.
+fn words() -> serde_json::Map<String, Value> {
+    serde_json::from_str(&std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packs/grc/words.json")).unwrap()).unwrap()
+}
+
+/// What the pack names that a page shows: entity labels and plurals, field labels, choices, buttons and their
+/// confirmations, the menu's label and description.
+fn texts(pack: &Value) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    for c in pack["customizations"].as_array().unwrap() {
+        let op = &c["op"];
+        match op["op"].as_str().unwrap() {
+            "define_entity" => {
+                let e: ferrum_meta::EntityDef = serde_json::from_value(op["entity"].clone()).unwrap();
+                out.extend([e.label.clone(), e.plural_label()]);
+                for f in &e.fields {
+                    out.insert(f.label());
+                    out.extend(f.options.iter().cloned());
+                }
+            }
+            "add_action" => out.extend(["label", "confirm"].iter().filter_map(|k| op["action"][k].as_str().map(str::to_string))),
+            "define_module" => out.extend(["label", "description"].iter().filter_map(|k| op["module"][k].as_str().map(str::to_string))),
+            _ => {}
+        }
+    }
+    out
+}
+
 fn pack_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packs/grc/grc.pack.json")
 }
@@ -450,10 +479,18 @@ async fn build(k: &Arc<Kernel>) -> Value {
         automation::save(k, &admin, &obj(a)).await.unwrap_or_else(|e| panic!("automation: {}", message(&e)));
     }
     src.insert(&admin, "Space", space()).await;
+    for (language, words) in words() {
+        for (english, said) in words.as_object().unwrap() {
+            src.insert(&admin, "InterfaceWord", json!({"language": language, "english": english, "words": said})).await;
+        }
+    }
     let saved = k.save_release(&admin, &solution()).await.unwrap_or_else(|e| panic!("solution: {}", message(&e)));
     activate(&src, &saved, "admin2@grc-source.test").await;
     let mut pack = k
-        .export_pack(&src.admin().await, &ExportOptions { name: "grc".into(), label: "Governance and Risk".into(), version: 1, records: vec![] })
+        .export_pack(
+            &src.admin().await,
+            &ExportOptions { name: "grc".into(), label: "Governance and Risk".into(), version: 1, records: vec!["InterfaceWord".into()] },
+        )
         .await
         .expect("export");
     pack.as_object_mut().unwrap().remove("exported_at");
@@ -493,6 +530,12 @@ async fn scenario() {
     let committed = std::fs::read_to_string(pack_path()).expect("packs/grc/grc.pack.json");
     assert!(committed == text, "packs/grc/grc.pack.json is not what the builder in this test produces: run it with FERRUM_WRITE_PACKS=1 and commit the file");
     let pack: Value = serde_json::from_str(&committed).unwrap();
+    // Words only for what the pack itself defines.
+    let defined = texts(&pack);
+    for (language, words) in words() {
+        let stray: Vec<&String> = words.as_object().unwrap().keys().filter(|e| !defined.contains(*e)).collect();
+        assert!(stray.is_empty(), "{language}: words for texts the pack does not define: {stray:?}");
+    }
 
     // ───────────── installed in a fresh workspace, from the committed file ─────────────
     let t = workspace(&k, "secure").await;
@@ -501,6 +544,21 @@ async fn scenario() {
     assert_eq!(plan["can_install"], json!(true), "{plan}");
     let done = k.install_pack(&admin, &pack, plan["digest"].as_str().unwrap()).await.expect("install");
     assert_eq!(done["failed"], json!([]));
+    // The workspace's words in Arabic and Hindi (what a page's bootstrap sends) are the app's for the pack's
+    // texts; installed twice, none is duplicated.
+    let ar = k.interface_words(t.tenant, "ar").await.unwrap();
+    let hi = k.interface_words(t.tenant, "hi").await.unwrap();
+    assert_eq!((ar.len(), hi.len()), (words()["ar"].as_object().unwrap().len(), words()["hi"].as_object().unwrap().len()));
+    assert_eq!((ar.get("Risk"), ar.get("Mitigate")), (words()["ar"].get("Risk"), words()["ar"].get("Mitigate")));
+    assert_eq!((hi.get("Risk Acceptance"), hi.get("Critical")), (words()["hi"].get("Risk Acceptance"), words()["hi"].get("Critical")));
+    assert!(ar.get("Risk").is_some_and(|w| w != "Risk") && hi.get("Critical").is_some());
+    let admin = t.admin().await;
+    let again = k.plan_pack(&admin, &pack).await.unwrap();
+    k.install_pack(&admin, &pack, again["digest"].as_str().unwrap()).await.expect("installed again");
+    let mut tx = k.db.tenant_tx(t.tenant).await.unwrap();
+    let rows: i64 = sqlx::query_scalar("select count(*) from e_interface_word where tenant_id = $1").bind(t.tenant).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(rows as usize, ar.len() + hi.len(), "no word twice");
     let admin = t.admin().await;
     let drafts = k.logic_drafts(&admin).await.unwrap();
     assert_eq!(drafts.len(), 1, "the solution arrives as a draft");
