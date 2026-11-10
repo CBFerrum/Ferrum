@@ -34,6 +34,7 @@ pub mod identity;
 pub mod jobs;
 pub mod kms;
 pub mod lifecycle;
+mod links;
 pub mod logic;
 pub mod merge;
 pub mod notify;

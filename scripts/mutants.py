@@ -91,6 +91,8 @@ MANIFEST_UNIT = ("-p", "ferrum-apps", "--lib", "manifest::tests")
 SERVICES = ("-p", "ferrum-server", "--test", "service_apps_it")
 SHELL = ("-p", "ferrum-kernel", "--test", "shell_it")
 APPS_API = ("-p", "ferrum-server", "--test", "apps_api")
+LINKS = ("-p", "ferrum-kernel", "--test", "links_it")
+META_LINKS = ("-p", "ferrum-meta", "--lib", "linked_records")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
@@ -573,7 +575,7 @@ MUTANTS = [
     ("update-linked-unlocked-and-unchecked", "crates/kernel/src/automation.rs", "            let d = k.update_tx(ctx, tx, target, id, patch, None).await?;", "            k.set_values_tx(ctx, tx, target, id, patch.clone()).await?;\n            let d = patch;", ACTIONS),
     ("read-only-if-ignored", "crates/kernel/src/doc.rs", "        (Some(expr), Some(doc)) => expr.eval_bool(&Scope { doc, old: None, parent, user }).unwrap_or(true),", "        (Some(_), Some(_)) => false,", ACTIONS),
     ("whole-numbers-unsigned", "crates/meta/src/expr.rs", "            (Some(i), _) => C::Int(i),", "            (Some(i), _) if i < 0 => C::Int(i),", META_EXPR),
-    ("today-filter-in-utc", "crates/kernel/src/logic.rs", "a.filter_on(hc.ctx.today())", "a.filter_on(chrono::Utc::now().date_naive())", AGGREGATES),
+    ("today-filter-in-utc", "crates/kernel/src/logic.rs", "a.filter_for(hc.ctx.today(), doc)", "a.filter_for(chrono::Utc::now().date_naive(), doc)", AGGREGATES),
     # Automations that fire on time (docs/api.md, Automations).
     ("scheduled-moment-not-rechecked", "crates/kernel/src/automation.rs", "        if !crate::schedule::still_due(k, ev.tenant_id, &schema, &ent, &plan, record, due).await? {", "        if false {", SCHEDULE),
     ("scheduled-ignores-the-zone", "crates/kernel/src/schedule.rs", "    qb.push_bind(tz.to_string()).push(\"::text as tz, \").push_bind(at)", "    qb.push_bind(\"UTC\".to_string()).push(\"::text as tz, \").push_bind(at)", SCHEDULE),
@@ -592,7 +594,7 @@ MUTANTS = [
     ("packs-carry-people", "crates/kernel/src/pack.rs", "    if let Some(why) = not_reference(ctx, &ent) {", "    if let Some(why) = None::<&str> {", PACKS),
     # Another app's steps from configuration (docs/api.md, Calling another app's steps).
     ("invoke-default-key-ignores-the-version", "crates/kernel/src/actions.rs", "def.name, doc.get(\"version\").unwrap_or(&Value::Null));", "def.name, \"0\");", INVOKE),
-    ("invoke-results-not-shown", "crates/kernel/src/actions.rs", "let extra = [(\"params\", &params), (\"results\", &done)];", "let extra = [(\"params\", &params), (\"results\", &Value::Null)];", INVOKE),
+    ("invoke-results-not-shown", "crates/kernel/src/actions.rs", "let extra = [(\"params\", &params), (\"results\", &done), (\"links\", &links)];", "let extra = [(\"params\", &params), (\"results\", &Value::Null), (\"links\", &links)];", INVOKE),
     ("invoke-input-names-unchecked", "crates/kernel/src/automation.rs", "if let Some(n) = input.keys().find(", "if let Some(n) = input.keys().filter(|_| false).find(", INVOKE),
     ("invoke-not-rechecked-as-it-runs", "crates/kernel/src/automation.rs", "            check_invoke(k, ctx, &capability, &input)?;\n", "", INVOKE),
     # Service targets (docs/api.md, Service targets).
@@ -610,6 +612,14 @@ MUTANTS = [
     ("target-breach-through-the-rules", "crates/kernel/src/targets.rs", "match self.keep_targets_tx(&system, &mut tx, entity, record).await {", "match self.update(&system, entity, record, Doc::new(), None).await.map(|_| true) {", TARGETS),
     ("app-webhook-hears-what-changed", "crates/kernel/src/outbox.rs", "else $4 - 'doc' - 'was' end", "else $4 - 'doc' end", SERVICES),
     ("automation-old-unseen", "crates/kernel/src/automation.rs", "(&cel_doc, cel_old.as_ref())", "(&cel_doc, None)", TARGETS),
+    ("links-read-as-the-saver", "crates/kernel/src/links.rs", "let workspace = Ctx::system(ctx.tenant, ctx.schema.clone());", "let workspace = ctx.clone();", LINKS),
+    ("links-keep-secrets", "crates/kernel/src/links.rs", "                    m.remove(&f.name);\n", "\n", LINKS),
+    ("links-inbox-guard-evaluated", "crates/kernel/src/collab.rs", "!g.links().is_empty() || g.eval_bool(", "false || g.eval_bool(", LINKS),
+    ("links-names-unchecked", "crates/meta/src/catalog.rs", "if let Some(n) = e.links().iter().find(|n| !on.fields", "if let Some(n) = e.links().iter().find(|n| false && !on.fields", META_LINKS),
+    ("links-in-browser-expressions", "crates/meta/src/catalog.rs", "    if !reads {\n        return Err(format!(", "    if false {\n        return Err(format!(", META_LINKS),
+    ("line-patch-forgets-lines", "crates/kernel/src/automation.rs", "rows.iter().map(|r| serde_json::json!({\"id\": r.get(\"id\")}))", "rows.iter().map(|_| serde_json::json!({}))", LINKS),
+    ("set-line-takes-the-first", "crates/kernel/src/automation.rs", "                [i] => (i, Some(", "                [i, ..] => (i, Some(", LINKS),
+    ("aggregate-own-field-ignored", "crates/logic/src/solution.rs", "*v = doc.get(f).cloned().unwrap_or(Value::Null);", "*v = Value::Null;", LINKS),
 
 ]
 
