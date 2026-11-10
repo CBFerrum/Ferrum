@@ -31,6 +31,15 @@ pub struct ChildInfo {
     pub table: String,
 }
 
+impl ChildInfo {
+    /// What tells this table's rows apart where they share `custom_record` with every other
+    /// custom record (` and <alias>.entity = '<child>'`); empty for a table of its own. Every
+    /// reader and writer of child rows adds it.
+    pub fn predicate(&self, alias: &str) -> String {
+        if self.table == CUSTOM_RECORD_TABLE { format!(" and {alias}.entity = '{}'", self.entity) } else { String::new() }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Exprs {
     pub default_expr: BTreeMap<String, Expr>,
@@ -97,6 +106,17 @@ impl EffEntity {
 
     pub fn table_fields(&self) -> impl Iterator<Item = &FieldDef> {
         self.def.fields.iter().filter(|f| f.ftype == FieldType::Table)
+    }
+
+    /// The entity's unique keys: each `unique: true` field on its own, then each `unique` group.
+    pub fn unique_keys(&self) -> Vec<Vec<String>> {
+        let mut keys: Vec<Vec<String>> = self.def.fields.iter().filter(|f| f.unique).map(|f| vec![f.name.clone()]).collect();
+        for g in &self.def.unique {
+            if !keys.contains(g) {
+                keys.push(g.clone());
+            }
+        }
+        keys
     }
 
     /// The document as CEL sees it: decimals become floats (comparison only; money math is native).
@@ -447,15 +467,40 @@ fn validate_custom_entity(e: &EntityDef) -> Result<(), String> {
     if !is_entity_name(&e.name) || !e.name.starts_with('X') {
         return Err(format!("custom entity {} must be PascalCase and start with 'X'", e.name));
     }
-    if !matches!(e.kind, EntityKind::Master | EntityKind::Document) {
-        return Err("custom entities must be masters or documents".into());
+    if !matches!(e.kind, EntityKind::Master | EntityKind::Document | EntityKind::Child) {
+        return Err("custom entities must be masters, documents or child (line) entities".into());
     }
-    if e.table.is_some() || !e.unique.is_empty() || !e.indexes.is_empty() || !e.exclusion.is_empty() {
-        return Err("custom entities cannot declare tables, unique keys, indexes or exclusions".into());
+    if e.table.is_some() || !e.indexes.is_empty() || !e.exclusion.is_empty() {
+        return Err("custom entities cannot declare tables, indexes or exclusions".into());
+    }
+    if e.kind == EntityKind::Child && (!e.unique.is_empty() || e.fields.iter().any(|f| f.unique)) {
+        return Err(format!("{} is a child entity: its lines cannot have unique keys", e.name));
     }
     for f in &e.fields {
-        if matches!(f.ftype, FieldType::Table | FieldType::Secret) || f.unique {
-            return Err(format!("custom entity field {} cannot be a table, a secret or unique", f.name));
+        if f.ftype == FieldType::Secret {
+            return Err(format!("custom entity field {} cannot be a secret", f.name));
+        }
+    }
+    Ok(())
+}
+
+/// A custom entity's lines are rows of a custom child entity, and each custom child entity is the
+/// lines of one table field only: its rows share `custom_record`, where the child's name alone tells
+/// one table's rows from another's.
+fn validate_custom_lines(name: &str, building: &BTreeMap<String, Building>) -> Result<(), String> {
+    let Some(b) = building.get(name).filter(|b| b.custom) else { return Ok(()) };
+    for f in b.def.fields.iter().filter(|f| f.ftype == FieldType::Table) {
+        let of = f.of.as_deref().unwrap_or_default();
+        if !building.get(of).is_some_and(|c| c.custom && c.def.kind == EntityKind::Child) {
+            return Err(format!("table field {}: the lines of a custom entity must be a custom child entity, and {of} is not one", f.name));
+        }
+        let first = building
+            .iter()
+            .filter(|(_, o)| o.custom)
+            .flat_map(|(n, o)| o.def.fields.iter().filter(|g| g.ftype == FieldType::Table && g.of.as_deref() == Some(of)).map(move |g| (n, &g.name)))
+            .next();
+        if let Some((owner, table)) = first.filter(|(n, t)| (n.as_str(), t.as_str()) != (name, f.name.as_str())) {
+            return Err(format!("table field {}: {of} is already the lines of {owner}.{table}; a child entity belongs to one table field", f.name));
         }
     }
     Ok(())
@@ -618,7 +663,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
     let all: HashMap<&str, &EntityDef> = defs_snapshot.iter().map(|(k, v)| (k.as_str(), v)).collect();
     let mut broken = Vec::new();
     for (name, b) in &building {
-        if let Err(m) = validate_entity(&b.def, &all) {
+        if let Err(m) = validate_entity(&b.def, &all).and_then(|_| validate_custom_lines(name, &building)) {
             if b.custom {
                 broken.push(name.clone());
             } else if let Some((base, _)) = packaged.get(name) {
@@ -656,10 +701,10 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
 
     let mut entities = BTreeMap::new();
     for (name, b) in building {
-        let table = if b.custom {
-            CUSTOM_RECORD_TABLE.to_string()
-        } else if b.def.kind == EntityKind::Child {
+        let table = if b.def.kind == EntityKind::Child {
             String::new()
+        } else if b.custom {
+            CUSTOM_RECORD_TABLE.to_string()
         } else {
             b.def.table.clone().unwrap_or_else(|| table_for(&name))
         };
@@ -668,7 +713,11 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
             .fields
             .iter()
             .filter(|f| f.ftype == FieldType::Table)
-            .map(|f| (f.name.clone(), ChildInfo { entity: f.of.clone().unwrap_or_default(), table: child_table(&table, &f.name) }))
+            .map(|f| {
+                // A custom entity's lines are custom records too (`ChildInfo::predicate`).
+                let rows = if b.custom { CUSTOM_RECORD_TABLE.to_string() } else { child_table(&table, &f.name) };
+                (f.name.clone(), ChildInfo { entity: f.of.clone().unwrap_or_default(), table: rows })
+            })
             .collect();
         let exprs = compile_exprs(&b.def).map_err(|m| MetaError::Invalid(format!("{name}: {m}")))?;
         let workflow = match b.workflow {

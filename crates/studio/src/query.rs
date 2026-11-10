@@ -1104,7 +1104,8 @@ impl Plan {
         }
         qb.push(format!("{} a", q(&self.base.table)));
         if let Some(g) = &self.grain {
-            qb.push(format!(" join {} c on c.tenant_id = a.tenant_id and c.parent_id = a.id", q(&g.sql_table)));
+            let rows = self.base.children.get(&g.table).map(|i| i.predicate("c")).unwrap_or_default();
+            qb.push(format!(" join {} c on c.tenant_id = a.tenant_id and c.parent_id = a.id{rows}", q(&g.sql_table)));
         }
         for j in &self.joins {
             qb.push(format!(
@@ -1138,7 +1139,7 @@ impl Plan {
                         ));
                         scope.push_sql(qb, la);
                     }
-                    qb.push(format!(" where {alias}.tenant_id = a.tenant_id and {alias}.parent_id = a.id"));
+                    qb.push(format!(" where {alias}.tenant_id = a.tenant_id and {alias}.parent_id = a.id{}", entity_predicate(child, alias)));
                     push_filter(qb, &self.schema, cond_ent, cond_alias, f).map_err(|e| with_at(at, e))?;
                     qb.push(")");
                 }

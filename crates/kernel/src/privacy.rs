@@ -131,13 +131,13 @@ async fn reached(ctx: &Ctx, tx: &mut Tx, emails: &[String], phone: Option<&str>)
             qb.push_bind(ctx.tenant);
             if let Some((table, at)) = def.match_field.split_once('.') {
                 // A record with a row of `table` holding their address.
-                let Some((rows, expr)) = ent.children.get(table).and_then(|c| Some((c.table.clone(), field_expr(ctx.schema.entity(&c.entity)?, at, "c")?)))
-                else {
+                let Some((rows, expr)) = ent.children.get(table).and_then(|c| Some((c, field_expr(ctx.schema.entity(&c.entity)?, at, "c")?))) else {
                     continue;
                 };
                 qb.push(format!(
-                    " and exists (select 1 from {} c where c.tenant_id = a.tenant_id and c.parent_id = a.id and lower(({expr})::text) = any(",
-                    q(&rows)
+                    " and exists (select 1 from {} c where c.tenant_id = a.tenant_id and c.parent_id = a.id{} and lower(({expr})::text) = any(",
+                    q(&rows.table),
+                    rows.predicate("c")
                 ))
                 .push_bind(emails.to_vec())
                 .push("))");
@@ -182,12 +182,13 @@ async fn reached(ctx: &Ctx, tx: &mut Tx, emails: &[String], phone: Option<&str>)
 /// rows (`table.field`); `None` for one that matches the record.
 async fn rows_of(ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, def: &PersonalDataDef, id: Uuid, emails: &[String]) -> Result<Option<(String, Vec<Uuid>)>> {
     let Some((table, at)) = def.match_field.split_once('.') else { return Ok(None) };
-    let Some((rows, expr)) = ent.children.get(table).and_then(|c| Some((c.table.clone(), field_expr(ctx.schema.entity(&c.entity)?, at, "c")?))) else {
+    let Some((rows, expr)) = ent.children.get(table).and_then(|c| Some((c, field_expr(ctx.schema.entity(&c.entity)?, at, "c")?))) else {
         return Ok(Some((table.to_string(), vec![])));
     };
     let ids: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "select c.id from {} c where c.tenant_id = $1 and c.parent_id = $2 and lower(({expr})::text) = any($3) order by c.id",
-        q(&rows)
+        "select c.id from {} c where c.tenant_id = $1 and c.parent_id = $2{} and lower(({expr})::text) = any($3) order by c.id",
+        q(&rows.table),
+        rows.predicate("c")
     )))
     .bind(ctx.tenant)
     .bind(id)
@@ -204,14 +205,19 @@ async fn rows_of(ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, def: &PersonalDataDef,
 async fn erase_rows(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, id: Uuid, table: &str, rows: &[Uuid], erase: &[String], reason: &str) -> Result<()> {
     let entity = &ent.def.name;
     let engine = Ctx::system(ctx.tenant, ctx.schema.clone());
-    let Some((stored, cent)) = ent.children.get(table).and_then(|c| Some((c.table.clone(), ctx.schema.entity(&c.entity)?))) else { return Ok(()) };
+    let Some((info, cent)) = ent.children.get(table).and_then(|c| Some((c, ctx.schema.entity(&c.entity)?))) else { return Ok(()) };
+    let stored = info.table.clone();
     if erase.iter().any(|f| f == table) {
-        sqlx::query(sqlx::AssertSqlSafe(format!("delete from {} where tenant_id = $1 and parent_id = $2 and id = any($3)", q(&stored))))
-            .bind(ctx.tenant)
-            .bind(id)
-            .bind(rows)
-            .execute(&mut **tx)
-            .await?;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "delete from {} c where c.tenant_id = $1 and c.parent_id = $2 and c.id = any($3){}",
+            q(&stored),
+            info.predicate("c")
+        )))
+        .bind(ctx.tenant)
+        .bind(id)
+        .bind(rows)
+        .execute(&mut **tx)
+        .await?;
     } else {
         for row in rows {
             let mut values = Doc::new();

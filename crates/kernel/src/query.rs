@@ -333,7 +333,11 @@ fn push_filter_impl(qb: &mut QueryBuilder<Postgres>, schema: &Schema, ctx: Optio
                 }
                 let kind = kind_of(cent, tail).ok_or_else(unknown)?;
                 let expr = field_expr(cent, tail, "c").ok_or_else(unknown)?;
-                qb.push(format!(" and exists (select 1 from {} c where c.tenant_id = {alias}.tenant_id and c.parent_id = {alias}.id and ", q(&info.table)));
+                qb.push(format!(
+                    " and exists (select 1 from {} c where c.tenant_id = {alias}.tenant_id and c.parent_id = {alias}.id{} and ",
+                    q(&info.table),
+                    info.predicate("c")
+                ));
                 push_condition(qb, &expr, kind, cent.field(tail), f)?;
                 qb.push(")");
             }

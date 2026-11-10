@@ -59,6 +59,8 @@ HOST_UNIT = ("-p", "ferrum-plugins", "--lib", "host::tests")
 SOCKETS_UNIT = ("-p", "ferrum-plugins", "--lib", "sockets::tests")
 EGRESS = ("-p", "ferrum-server", "--test", "assistant_egress_it")
 PORTAL = ("-p", "ferrum-kernel", "--test", "portal_it")
+CUSTOM_LINES = ("-p", "ferrum-kernel", "--test", "custom_lines_it")
+STUDIO_LINES = ("-p", "ferrum-studio", "--test", "custom_lines_it")
 ASSISTANT = ("-p", "ferrum-server", "--test", "assistant_it")
 BOUNDARIES = ("-p", "ferrum-server", "--test", "assistant_boundaries_it")
 ASSISTANT_UNIT = ("-p", "ferrum-server", "--lib", "assistant::tests")
@@ -526,7 +528,7 @@ MUTANTS = [
     ("portal-path-not-looked-up", "crates/kernel/src/ctx.rs", "        Ok(self.reached_by(tx, tenant, doc).await?.is_some())", "        Ok(false)", PORTAL),
     ("portal-path-is-whoever-made-it", "crates/kernel/src/ctx.rs", "        match (&g.via, &self.owner_email) {", "        match (&None::<ViaScope>, &self.owner_email) {", PORTAL),
     ("portal-path-ignores-the-rules-condition", "crates/kernel/src/ctx.rs", "            if !Self::holds(g, doc) {", "            if false {", PORTAL),
-    ("portal-path-matches-case", "crates/kernel/src/ctx.rs", "{c}.parent_id = {alias}.id and lower(trim({expr})) = \",", "{c}.parent_id = {alias}.id and {expr} = \",", PORTAL),
+    ("portal-path-matches-case", "crates/kernel/src/ctx.rs", "{c}.parent_id = {alias}.id{} and lower(trim({expr})) = \",", "{c}.parent_id = {alias}.id{} and {expr} = \",", PORTAL),
     ("portal-people-hold-member-roles", "crates/kernel/src/auth.rs", "and ur.user_id = $2 and r.portal and (ur.expires_at", "and ur.user_id = $2 and (ur.expires_at", PORTAL),
     ("portal-role-holds-anything", "crates/meta/src/types.rs", "    pub fn portal_problem(&self, personal: bool) -> Option<String> {\n", "    pub fn portal_problem(&self, personal: bool) -> Option<String> {\n        return None;\n", PORTAL),
     ("portal-reads-personal-data-whole", "crates/meta/src/types.rs", "            if personal || !reads_only {", "            if !reads_only {", PORTAL),
@@ -535,6 +537,15 @@ MUTANTS = [
     ("portal-people-read-a-records-surroundings", "crates/kernel/src/collab.rs", "return Err(Error::Forbidden(\"a record's comments, files and people are for the workspace's members\".into()));", "return self.get(ctx, entity, id, false).await;", PORTAL),
     ("portal-people-read-a-records-history", "crates/kernel/src/audit.rs", "return Err(Error::Forbidden(\"a record's history is for the workspace's members\".into()));", "let _ = ();", PORTAL),
     ("portal-roles-given-to-anyone", "crates/kernel/src/auth.rs", "                if let Some(other) = roles.iter().find(|r| !portal.contains(r)) {", "                if let Some(other) = None::<&String> {", PORTAL),
+    ("custom-lines-load-mixes-tables", "crates/kernel/src/store.rs", "                info.predicate(\"ci\")\n", "                String::new()\n", CUSTOM_LINES),
+    ("custom-lines-filter-mixes-tables", "crates/kernel/src/query.rs", "                    info.predicate(\"c\")\n", "                    String::new()\n", CUSTOM_LINES),
+    ("custom-lines-portal-path-mixes-tables", "crates/kernel/src/ctx.rs", "                    info.predicate(&c)\n", "                    String::new()\n", CUSTOM_LINES),
+    ("custom-lines-studio-grain-mixes-tables", "crates/studio/src/query.rs", "a.id{rows}\", q(&g.sql_table)", "a.id\", q(&g.sql_table)", STUDIO_LINES),
+    ("custom-lines-studio-filter-mixes-tables", "crates/studio/src/query.rs", "{alias}.parent_id = a.id{}\", entity_predicate(child, alias)", "{alias}.parent_id = a.id{}\", String::new()", STUDIO_LINES),
+    ("custom-keys-not-kept", "crates/kernel/src/store.rs", "    if !ent.custom || keys.is_empty() {", "    if true {", CUSTOM_LINES),
+    ("custom-keys-held-by-cancelled", "crates/kernel/src/store.rs", "a.id = $2 and a.docstatus <> 2 and v.value", "a.id = $2 and v.value", CUSTOM_LINES),
+    ("custom-key-over-duplicates", "crates/kernel/src/customize.rs", "            if !shared.is_empty() {", "            if false {", CUSTOM_LINES),
+    ("rollup-not-computed", "crates/kernel/src/doc.rs", "        roll_up(ent, doc)\n    }", "        Ok(())\n    }", CUSTOM_LINES),
 
 ]
 
