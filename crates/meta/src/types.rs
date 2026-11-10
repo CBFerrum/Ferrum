@@ -501,6 +501,14 @@ impl FieldType {
     pub fn is_decimal(self) -> bool {
         matches!(self, FieldType::Decimal | FieldType::Currency | FieldType::Percent)
     }
+    /// Whether a value stored under `self` still reads as `to` (a custom entity's redefinition may
+    /// change a field this way while records hold values in it): free text among its kinds, a
+    /// choice to free text, a whole number to a decimal one, decimal kinds among themselves.
+    pub fn converts_to(self, to: FieldType) -> bool {
+        use FieldType::*;
+        let free = |t: FieldType| matches!(t, Data | Text | Markdown | Code | Email | Phone | Url);
+        self == to || ((free(self) || self == Select) && free(to)) || ((self == Int || self.is_decimal()) && to.is_decimal())
+    }
     pub fn is_text(self) -> bool {
         matches!(
             self,
@@ -1040,6 +1048,12 @@ pub enum OverlayOp {
     },
     /// Tenant-only: a new entity stored in the generic `custom_record` table (name must start with `X`).
     DefineEntity {
+        entity: Box<EntityDef>,
+    },
+    /// Tenant-only: replaces the definition of an existing custom entity, as an earlier
+    /// `define_entity` (or `redefine_entity`) gave it. Records keep every value: a field that goes
+    /// keeps its values out of sight, and a field of the same name coming back sees them again.
+    RedefineEntity {
         entity: Box<EntityDef>,
     },
     /// Tenant-only: attach (or replace) the approval workflow of an entity.
