@@ -14,7 +14,8 @@
 //! * [`diff`]: what changed between two releases, by meaning, and the power a new one asks for;
 //! * [`refusal`]: the stable codes a refusal carries, whichever path it came by;
 //! * [`rules`]: active releases' rules, run on records the same way by the server and the simulator;
-//! * [`solution`]: a solution's source, read strictly (a key twice, an unknown key or excess depth refused).
+//! * [`solution`]: a solution's source, read strictly (a key twice, an unknown key or excess depth refused);
+//! * [`target`]: a service target's round on a record: started, paused, met or breached, in working time.
 
 pub mod approval;
 pub mod calendar;
@@ -29,5 +30,6 @@ pub mod refusal;
 pub mod rules;
 pub mod simulate;
 pub mod solution;
+pub mod target;
 #[cfg(test)]
 mod testkit;
