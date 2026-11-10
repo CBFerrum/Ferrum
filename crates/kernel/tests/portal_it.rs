@@ -74,6 +74,7 @@ const ENTITIES: &str = r#"
   fields:
     - {name: title, type: data, required: true}
     - {name: email, type: email}
+    - {name: cv, type: attach}
 - name: Claim
   label: Claim
   kind: document
@@ -393,6 +394,7 @@ async fn scenario() {
     assert!(reach(&k, &pia, "ReportCard", &here, "term").await.is_empty(), "nothing of the other workspace's reaches her here");
 
     transitions(&k, &admin).await;
+    files(&k, &admin).await;
 }
 
 /// Who takes a workflow transition: one naming roles, a holder of one who can read the record; one
@@ -464,4 +466,79 @@ async fn transitions(k: &Kernel, admin: &Ctx) {
     k.submit(&ava, "Claim", claim, None).await.expect("she submits her own");
     forbidden(k.cancel(&ava, "Claim", claim, None).await, "an outside person cancelling");
     k.cancel(&editor, "Claim", claim, None).await.expect("a member who may cancel");
+}
+
+/// Objects kept in memory, as the server's storage would keep them.
+#[derive(Default)]
+struct MemFiles(std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>);
+
+#[async_trait]
+impl ferrum_kernel::files::FileStore for MemFiles {
+    async fn put(&self, key: &str, data: &[u8]) -> Result<()> {
+        self.0.lock().unwrap().insert(key.to_string(), data.to_vec());
+        Ok(())
+    }
+    async fn get(&self, key: &str) -> Result<Vec<u8>> {
+        self.0.lock().unwrap().get(key).cloned().ok_or_else(|| Error::NotFound("object".into()))
+    }
+    async fn delete(&self, key: &str) -> Result<()> {
+        self.0.lock().unwrap().remove(key);
+        Ok(())
+    }
+}
+
+/// A file tied to no record is its uploader's (and an administrator's) until a record they save names it in an
+/// `attach` field: then it is that record's, and its readers', and nobody names a file they could not download.
+async fn files(k: &Kernel, admin: &Ctx) {
+    k.set_file_store(Arc::new(MemFiles::default()));
+    let admin = k.load_ctx(admin.tenant, admin.user, None, "it".into()).await.unwrap();
+    let ctx_of = |email: &str| {
+        let email = email.to_string();
+        async move {
+            let id: Uuid = sqlx::query_scalar("select id from app_user where tenant_id = $1 and email = $2")
+                .bind(admin.tenant)
+                .bind(&email)
+                .fetch_one(&mut *k.db.tenant_tx(admin.tenant).await.unwrap())
+                .await
+                .unwrap();
+            k.load_ctx(admin.tenant, id, None, "it".into()).await.unwrap()
+        }
+    };
+    let (viewer, editor, ava) = (ctx_of("viewer@school.test").await, ctx_of("ed@school.test").await, ctx_of("ava@home.test").await);
+    let stranger = {
+        let id = k.create_user(&admin, "stranger@school.test", "Stranger", None, &[], false).await.unwrap();
+        k.load_ctx(admin.tenant, id, None, "it".into()).await.unwrap()
+    };
+    let loose = |ctx: &Ctx, name: &str| {
+        let (ctx, name) = (ctx.clone(), name.to_string());
+        async move { Uuid::parse_str(k.store_file(&ctx, None, &name, "text/plain", b"a cv").await.unwrap()["id"].as_str().unwrap()).unwrap() }
+    };
+    let cv = loose(&editor, "cv.txt").await;
+    k.file_info(&editor, cv).await.expect("its uploader");
+    k.file_info(&admin, cv).await.expect("an administrator");
+    for (who, ctx) in [("another member", &viewer), ("an outside person", &ava)] {
+        let r = k.file_info(ctx, cv).await;
+        assert!(matches!(r, Err(Error::NotFound(_))), "{who} downloaded a file tied to no record: {:?}", r.map(|f| f.name));
+    }
+
+    // Saved in a record's attach field, it is the record's: its readers download it, others do not.
+    let app = id_of(&k.insert(&editor, "Application", obj(json!({"title": "With a cv", "cv": format!("/files/{cv}")}))).await.expect("named by its uploader"));
+    k.file_info(&viewer, cv).await.expect("a reader of the record it is tied to");
+    assert!(k.file_info(&stranger, cv).await.is_err(), "someone who cannot read the record");
+    assert!(k.attachments(&viewer, "Application", app).await.unwrap().iter().any(|f| f["id"] == json!(cv)), "listed with the record's files");
+    // Naming a file the saver could not download is refused: an id is no way to read a file.
+    let viewers = loose(&viewer, "private.txt").await;
+    let named = k.update(&editor, "Application", app, obj(json!({"cv": format!("/files/{viewers}")})), None).await;
+    assert!(matches!(named, Err(Error::Forbidden(_))), "someone else's loose file named: {named:?}");
+    assert!(k.file_info(&editor, viewers).await.is_err(), "and it stays its uploader's");
+    let theirs = k.insert(&ava, "Application", obj(json!({"title": "Hers", "email": "ava@home.test", "cv": format!("/files/{cv}")}))).await;
+    assert!(matches!(theirs, Err(Error::Forbidden(_))), "a file tied to a record she cannot read: {theirs:?}");
+    // A file tied to a record the saver can read may be named again (a copy of the record), and stays where it is.
+    k.insert(&editor, "Application", obj(json!({"title": "A copy", "cv": format!("/files/{cv}")}))).await.expect("a file she can download");
+    // An outside person's own upload goes with her own record.
+    let hers = loose(&ava, "mine.txt").await;
+    let app = id_of(&k.insert(&ava, "Application", obj(json!({"title": "Hers", "email": "ava@home.test", "cv": format!("/files/{hers}")}))).await.unwrap());
+    k.file_info(&ava, hers).await.expect("she reads her own record's file");
+    k.file_info(&editor, hers).await.expect("and so do its other readers");
+    assert!(k.attachments(&editor, "Application", app).await.unwrap().iter().any(|f| f["id"] == json!(hers)));
 }

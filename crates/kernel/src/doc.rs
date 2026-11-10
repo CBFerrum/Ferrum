@@ -433,6 +433,7 @@ impl Kernel {
             doc.insert("number".into(), json!(n));
         }
         store::insert_row(tx, &ctx.schema, &ent, ctx.tenant, &doc).await?;
+        self.claim_files(ctx, tx, &ent, id, &doc, None).await?;
         self.write_secrets(ctx, tx, &ent, id, &secrets).await?;
         let stored = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::internal("insert vanished"))?;
         self.hook_after_save(ctx, tx, &ent, &stored, None).await?;
@@ -490,6 +491,7 @@ impl Kernel {
         doc.insert("version".into(), json!(version));
         doc.insert("updated_by".into(), if !ctx.user.is_nil() { json!(ctx.user.to_string()) } else { Value::Null });
         store::update_row(tx, &ctx.schema, &ent, ctx.tenant, &doc, &old).await?;
+        self.claim_files(ctx, tx, &ent, id, &doc, Some(&old)).await?;
         self.write_secrets(ctx, tx, &ent, id, &secrets).await?;
         let stored = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::internal("update vanished"))?;
         self.hook_after_save(ctx, tx, &ent, &stored, Some(&old)).await?;

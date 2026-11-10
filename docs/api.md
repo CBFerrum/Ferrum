@@ -947,6 +947,9 @@ the app is gone or the person may no longer use it.
 Who may attach and download (the uploads below alike):
 
 * Tying a file to a record (`entity` and `record_id`) needs the right to change that record (write permission, and its scope admits the record), for members and portal people alike: reading it is not enough (`403`). Comments carry no files, so there is no narrower right for them.
+* A file tied to a record is downloaded by whoever may read the record. A file tied to none (an upload for an `attach` field of a record not saved yet) is downloaded only by whoever uploaded it and administrators (`404` for anyone else).
+* Saving a record whose `attach` field (its child tables' included) newly names `/files/<id>` ties a file tied to none to that record when the saver uploaded it (or is an administrator); a file already tied to a record stays there and may be named by someone who may read that record. Naming any other file is refused (`403`), so an id is no way to read a file.
+* Portal people and guests upload at most 20 files tied to no record an hour (`429` past it); sizes are limited as for everyone.
 
 Larger files (up to 2 GB by default, S3-compatible storage only) go straight from the client to the bucket:
 

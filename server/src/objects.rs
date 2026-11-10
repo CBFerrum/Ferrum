@@ -205,8 +205,9 @@ pub async fn start(k: &Kernel, objects: &Objects, ctx: &Ctx, max_bytes: u64, up:
     if up.size == 0 || up.size > max_bytes {
         return Err(Error::field("size", format!("must be between 1 and {max_bytes} bytes")));
     }
-    if let Some((entity, record)) = &up.attach_to {
-        k.may_attach(ctx, entity, *record).await?;
+    match &up.attach_to {
+        Some((entity, record)) => k.may_attach(ctx, entity, *record).await?,
+        None => k.count_loose_upload(ctx).await?,
     }
     let name: String = up.file_name.chars().filter(|c| !c.is_control() && *c != '/' && *c != '\\').take(200).collect();
     let name = if name.trim().is_empty() { "upload.bin".to_string() } else { name };

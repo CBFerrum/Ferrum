@@ -175,6 +175,9 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   (`FERRUM_PUSH_SERVICES`), whatever endpoint a subscription names.
 * Plugins run as WebAssembly without ambient access, with CPU fuel, a memory cap, a host-call
   budget and a nesting limit; a failing plugin fails closed.
+* Files: attaching one to a record needs the right to change the record; one tied to no record is served
+  only to its uploader and administrators until a record they save names it, and a save may not name a
+  file its saver could not download. Portal people's loose uploads are limited to 20 an hour.
 * Request bodies, uploads, exports and list pages have size limits; database statements time out
   (15 s by default).
 
