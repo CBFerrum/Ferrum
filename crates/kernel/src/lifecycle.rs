@@ -184,8 +184,9 @@ async fn named_on(tx: &mut Tx, tenant: Uuid, ent: &EffEntity, schema: &ferrum_me
             let Some(info) = ent.children.get(table) else { return Ok(vec![]) };
             let Some(expr) = schema.entity(&info.entity).and_then(|cent| field_expr(cent, field, "c")) else { return Ok(vec![]) };
             qb.push(format!(
-                " and exists (select 1 from {} c where c.tenant_id = a.tenant_id and c.parent_id = a.id and lower(({expr})::text) = ",
-                q(&info.table)
+                " and exists (select 1 from {} c where c.tenant_id = a.tenant_id and c.parent_id = a.id{} and lower(({expr})::text) = ",
+                q(&info.table),
+                info.predicate("c")
             ));
             qb.push_bind(from.to_string()).push(")");
         }
