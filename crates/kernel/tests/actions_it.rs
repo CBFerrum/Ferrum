@@ -21,7 +21,8 @@ fn catalog() -> Catalog {
     std::fs::write(dir.join("shop/package.yaml"), "package: shop\nversion: 0.1.0\nlabel: Shop\ndepends: [core]\n").unwrap();
     std::fs::write(
         dir.join("shop/entities/shop.yaml"),
-        "- name: Shop\n  label: Shop\n  kind: master\n  fields:\n    - {name: name, type: data}\n    - {name: status, type: data, read_only: true}\n  actions: [{name: lock, label: Lock}]\n",
+        "- name: Shop\n  label: Shop\n  kind: master\n  fields:\n    - {name: name, type: data}\n    - {name: status, type: data, read_only: true}\n  actions: [{name: lock, label: Lock}]\n\
+         - name: Place\n  label: Place\n  kind: master\n  title_field: name\n  fields:\n    - {name: name, type: data}\n    - {name: parent, type: link, to: Place}\n",
     )
     .unwrap();
     let c = Catalog::load_dir(&dir).expect("catalog");
@@ -107,6 +108,7 @@ async fn scenario() {
     let w = workspace(&k, "acme").await;
     faults(&w).await;
     refused_in_words(&w).await;
+    named_cycle(&w).await;
     empty_copies(&workspace(&k, "copies").await).await;
     linked_from_automations(&w).await;
     configured(&k, &w).await;
@@ -212,6 +214,19 @@ async fn refused_in_words(w: &W) {
     k.update(&sys, "XTicket", id, obj(json!({"dish": "Stew", "lines": [{"id": row, "dish": "Cake"}]})), None).await.expect("the system writes");
     let after = w.get("XTicket", id).await;
     assert_eq!((&after["dish"], &after["lines"][0]["dish"]), (&json!("Stew"), &json!("Cake")));
+}
+
+/// A move that would make a hierarchy a loop is refused naming the record and the one it would sit under.
+async fn named_cycle(w: &W) {
+    let k = &w.k;
+    let admin = w.admin().await;
+    let top = id_of(&k.insert(&admin, "Place", obj(json!({"name": "Asia"}))).await.unwrap());
+    let mid = id_of(&k.insert(&admin, "Place", obj(json!({"name": "India", "parent": top.to_string()}))).await.unwrap());
+    let e = k.update(&admin, "Place", top, obj(json!({"parent": mid.to_string()})), None).await.unwrap_err();
+    assert_eq!(
+        message(&e),
+        "parent: Asia cannot sit under India: India is already under Asia, which would make a cycle in the hierarchy"
+    );
 }
 
 /// An effect whose value is only a path to a value copies it as stored, empty included, where an expression
