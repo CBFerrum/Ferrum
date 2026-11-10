@@ -40,6 +40,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_FILES_DIR` | no | Local attachment directory (default `/var/lib/ferrum/files`) |
 | `FERRUM_DB_MAX_CONNECTIONS` | no | Pool size per replica (default 30). Below 10, requests wait behind the replica's own job workers and event loops, which can hold seven at once; the server warns as it starts, and `ferrum task doctor` says so |
 | `FERRUM_RUN_BACKGROUND` | no | `false` turns a replica into API-only |
+| `FERRUM_UPKEEP_CONCURRENCY` | no | How many apps' periodic upkeep one replica runs at once (default 2). Each app's upkeep has a lock of its own across replicas, so replicas share the apps between them; each running app holds one database connection |
 | `PUBLIC_URL` | recommended | The address people open, scheme and port included (`https://erp.example.com`). Apps' screens name it in their Content Security Policy, which Safari needs when a proxy in front rewrites the host, and links mailed to people outside the workspace (Drive guests) are built on it |
 | `PORT`, `BINDING`, `LOG_LEVEL` | no | Usual meanings; logs are JSON on stdout |
 | `MAILER_*` | no | SMTP for mail: notifications people chose to have by email (at once, or in a daily digest), and apps' mail. Without it, notifications stay in the bar and people cannot choose email |
