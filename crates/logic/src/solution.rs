@@ -134,6 +134,10 @@ pub struct Rule {
     /// rights of whoever saves before the rule runs (FLC-HOOK-004).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lookups: Vec<Lookup>,
+    /// Records pointing at this one, or at one it links to, that the rule counts or sums, as
+    /// `aggregates.{name}`: read like lookups, with the saver's rights, before the rule runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aggregates: Vec<Aggregate>,
 }
 
 /// A linked record a rule reads: the record its `link` field points to, and only these fields of it.
@@ -143,6 +147,49 @@ pub struct Lookup {
     pub name: String,
     pub link: String,
     pub fields: Vec<String>,
+}
+
+/// The records of `entity` whose `link` points at the saved record (`to` left out or `self`), or at the record
+/// the saved one's `to` link points at, that match `filter`: counted, summed over `field`, or whether any exist.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Aggregate {
+    pub name: String,
+    pub entity: String,
+    pub link: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// All of these hold: `[field, operator, value]` over the entity's own fields, as a list's filters.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filter: Vec<Condition>,
+    pub op: AggregateOp,
+    /// For `sum`: the number added up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+}
+
+impl Aggregate {
+    /// The link field of the saved record whose target is counted, or `None` for the saved record itself.
+    pub fn to_link(&self) -> Option<&str> {
+        self.to.as_deref().filter(|t| *t != "self")
+    }
+
+    /// What it reads, whatever a rule calls it: rules asking for the same thing in one save share one read.
+    pub fn key(&self) -> String {
+        serde_json::json!([self.entity, self.link, self.to_link(), self.filter, self.op, self.field]).to_string()
+    }
+}
+
+/// One condition of an aggregate's filter: `[field, operator, value]`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Condition(pub String, pub String, pub Value);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AggregateOp {
+    Count,
+    Sum,
+    Exists,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
