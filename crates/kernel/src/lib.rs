@@ -310,6 +310,12 @@ impl Kernel {
             }
         } else {
             // Another step has brought the database here (`ferrum task migrate`): this only checks that it did.
+            // As a migrating start refuses a database a newer build migrated, so does this one.
+            if let Some(newer) = db.unknown_migrations().await?.first() {
+                return Err(Error::Invalid(format!(
+                    "the database was migrated by a newer build than this one: it has migration {newer}, which this build does not know. Start the build that migrated it"
+                )));
+            }
             let pending = db.pending_migrations().await?;
             if !pending.is_empty() {
                 return Err(not_migrated(&format!("{} of this build's database migrations are not applied (the first is {})", pending.len(), pending[0])));

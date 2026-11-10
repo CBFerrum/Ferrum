@@ -186,6 +186,12 @@ impl Db {
         Ok(ours.iter().filter(|m| m.migration_type.is_up_migration() && !applied.contains(&m.version)).map(|m| m.version).collect())
     }
 
+    /// Versions the database has applied that this build does not have: a newer build migrated it.
+    pub async fn unknown_migrations(&self) -> Result<Vec<i64>> {
+        let ours = sqlx::migrate!("./migrations");
+        Ok(self.applied_migrations().await?.into_iter().filter(|v| !ours.iter().any(|m| m.version == *v)).collect())
+    }
+
     /// Counts one request for `key` in the current fixed `window`, shared by every replica
     /// (`rate_window`), and returns the window's count so far.
     pub async fn count_hit(&self, key: &str, window: Duration) -> Result<i64> {
