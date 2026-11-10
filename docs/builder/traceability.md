@@ -5,9 +5,10 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Not started | 36 |
+| Not started | 33 |
+| Partial | 1 |
 | Implemented, unverified | 1 |
-| Verified in software | 9 |
+| Verified in software | 11 |
 | **All** | **46** |
 
 ## BF0: Decisions and inventory
@@ -90,9 +91,9 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
-| BF-ENTITY-001 | Child tables | Not started | AT-BF-ENTITY-001 | 0 | Not started |
-| BF-ENTITY-002 | Unique keys | Not started | AT-BF-ENTITY-002 | 0 | Not started |
-| BF-ENTITY-003 | Numbering and totals | Not started | AT-BF-ENTITY-003 | 0 | Not started |
+| BF-ENTITY-001 | Child tables | Verified in software | AT-BF-ENTITY-001 | 2 | A custom master or document holds tables of custom child entities, their rows in custom_record under the parent, each child entity the lines of one table field only. Two tables of one order never mix through loading, list filters, adding, changing, removing and reordering rows, deleting (rows cascade), the workspace's export, Studio's grouping, measures and filters, or a portal path; rows are validated one by one, rules read the parent, 5,000 rows at most (custom_lines_it in the kernel and Studio; mutants custom-lines-load-mixes-tables, custom-lines-filter-mixes-tables, custom-lines-portal-path-mixes-tables, custom-lines-studio-grain-mixes-tables, custom-lines-studio-filter-mixes-tables). No index on a row's fields, which live in JSON; a row rule reading the parent reads all of it per row, slow near 5,000 rows; a customization adds no table to a package's entity; not walked in a browser |
+| BF-ENTITY-002 | Unique keys | Verified in software | AT-BF-ENTITY-002 | 1 | Unique fields and keys of several fields on a custom master or document are rows of custom_key, written in the record's transaction with its primary key as the guard: of two saves at once one wins and the other is refused naming the fields; a changed, deleted or cancelled record frees its values, empty values hold none, another workspace's are its own; a key defined over records sharing values is refused listing them, and one removed takes its rows (custom_lines_it; mutants custom-keys-not-kept, custom-keys-held-by-cancelled, custom-key-over-duplicates). Values compare as typed (case counts); a child entity holds no keys; engine-kept values (set_values) may not touch a key field |
+| BF-ENTITY-003 | Numbering and totals | Partial | AT-BF-ENTITY-003 | 1 | Totals are done: a field's rollup sums a number field of its own rows, or counts them, in exact decimals at every save and in the draft preview, before validation, on any entity, ignoring what a client sends (custom_lines_it: 0.1 + 0.2 is 0.3, a 19-digit sum is exact; mutant rollup-not-computed). Missing: numbering series on a custom document were not exercised against AT-BF-ENTITY-003; a rollup has no condition and no other operation, and computed fields see the total of the save before |
 | BF-ENTITY-004 | Links both ways | Not started | AT-BF-ENTITY-004 | 0 | Not started |
 
 ## BF9: Packs, and the proof

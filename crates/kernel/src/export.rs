@@ -357,7 +357,8 @@ impl JobHandler for ExportJob {
             .flat_map(|e| std::iter::once(e.table.as_str()).chain(e.children.values().map(|c| c.table.as_str())))
             .chain(engines.iter().map(String::as_str))
             .chain(TABLES.iter().map(|t| t.1))
-            .chain(["audit_event", "file_object", "tenant"])
+            // `custom_key` is what custom records' unique keys hold, made again from the records.
+            .chain(["audit_event", "file_object", "tenant", "custom_key"])
             .collect();
         let left_out: Vec<String> = sqlx::query_scalar(
             "select c.relname::text from pg_class c join pg_attribute a on a.attrelid = c.oid and a.attname = 'tenant_id' and not a.attisdropped \
