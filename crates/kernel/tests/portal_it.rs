@@ -75,6 +75,12 @@ const ENTITIES: &str = r#"
     - {name: title, type: data, required: true}
     - {name: email, type: email}
     - {name: cv, type: attach}
+    - {name: docs, type: table, of: ApplicationDoc}
+- name: ApplicationDoc
+  label: Application Document
+  kind: child
+  fields:
+    - {name: file, type: attach}
 - name: Claim
   label: Claim
   kind: document
@@ -395,6 +401,7 @@ async fn scenario() {
 
     transitions(&k, &admin).await;
     files(&k, &admin).await;
+    backfill(&k, &admin).await;
 }
 
 /// Who takes a workflow transition: one naming roles, a holder of one who can read the record; one
@@ -541,4 +548,64 @@ async fn files(k: &Kernel, admin: &Ctx) {
     k.file_info(&ava, hers).await.expect("she reads her own record's file");
     k.file_info(&editor, hers).await.expect("and so do its other readers");
     assert!(k.attachments(&editor, "Application", app).await.unwrap().iter().any(|f| f["id"] == json!(hers)));
+}
+
+/// The upgrade step for files saved before saves tied them: each file an attach field names (a packaged entity's,
+/// a line's, a custom entity's) goes to the record naming it, the first made when two do; one named by none stays
+/// its uploader's; running it again changes nothing.
+async fn backfill(k: &Kernel, admin: &Ctx) {
+    let note: ferrum_meta::EntityDef = serde_json::from_value(json!({
+        "name": "XNote", "label": "Note", "kind": "master", "title_field": "title",
+        "fields": [{"name": "title", "type": "data"}, {"name": "scan", "type": "attach"}]
+    }))
+    .unwrap();
+    k.add_customization(admin, "XNote", ferrum_meta::OverlayOp::DefineEntity { entity: Box::new(note) }, None).await.unwrap();
+    let admin = k.load_ctx(admin.tenant, admin.user, None, "it".into()).await.unwrap();
+    k.set_role_permission(&admin, "Viewer", &rule(json!({"entity": "XNote", "read": true}))).await.unwrap();
+    let ctx_of = |email: &str| {
+        let email = email.to_string();
+        async move {
+            let id: Uuid = sqlx::query_scalar("select id from app_user where tenant_id = $1 and email = $2")
+                .bind(admin.tenant)
+                .bind(&email)
+                .fetch_one(&mut *k.db.tenant_tx(admin.tenant).await.unwrap())
+                .await
+                .unwrap();
+            k.load_ctx(admin.tenant, id, None, "it".into()).await.unwrap()
+        }
+    };
+    let (viewer, editor, stranger) = (ctx_of("viewer@school.test").await, ctx_of("ed@school.test").await, ctx_of("stranger@school.test").await);
+    let loose = |name: &str| {
+        let (editor, name) = (editor.clone(), name.to_string());
+        async move { Uuid::parse_str(k.store_file(&editor, None, &name, "text/plain", b"kept").await.unwrap()["id"].as_str().unwrap()).unwrap() }
+    };
+    let (own, line, custom, twice, unnamed) =
+        (loose("own.txt").await, loose("line.txt").await, loose("note.txt").await, loose("twice.txt").await, loose("none.txt").await);
+    let url = |f: Uuid| format!("/files/{f}");
+    k.insert(&editor, "Application", obj(json!({"title": "Saved before", "cv": url(own), "docs": [{"file": url(line)}]}))).await.unwrap();
+    k.insert(&admin, "XNote", obj(json!({"title": "A scan", "scan": url(custom)}))).await.unwrap();
+    let first = id_of(&k.insert(&editor, "Application", obj(json!({"title": "First", "cv": url(twice)}))).await.unwrap());
+    k.insert(&editor, "Application", obj(json!({"title": "Second", "cv": url(twice)}))).await.unwrap();
+    // As the code before saves tied them left them: tied to no record.
+    let all = [own, line, custom, twice, unnamed];
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    sqlx::query("update file_object set entity = null, record_id = null where tenant_id = $1 and id = any($2)")
+        .bind(admin.tenant)
+        .bind(&all[..])
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(k.file_info(&viewer, own).await.is_err(), "before the step, a reader of the record loses it");
+
+    let done = k.tie_named_files(admin.tenant).await.unwrap();
+    assert_eq!(done, ferrum_kernel::files::Tied { tied: 4, shared: 1 }, "four named, one of them by two records");
+    for (what, f) in [("a packaged entity's", own), ("a line's", line), ("a custom entity's", custom), ("one two records name", twice)] {
+        k.file_info(&viewer, f).await.unwrap_or_else(|e| panic!("{what} file, for a reader of its record: {e}"));
+        assert!(k.file_info(&stranger, f).await.is_err(), "{what} file, for someone who cannot read its record");
+    }
+    assert!(k.attachments(&editor, "Application", first).await.unwrap().iter().any(|a| a["id"] == json!(twice)), "the first made has it");
+    assert!(k.file_info(&viewer, unnamed).await.is_err(), "named by none, it stays its uploader's");
+    k.file_info(&editor, unnamed).await.expect("its uploader's");
+    assert_eq!(k.tie_named_files(admin.tenant).await.unwrap(), ferrum_kernel::files::Tied::default(), "run again, it changes nothing");
 }
