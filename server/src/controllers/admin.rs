@@ -397,6 +397,28 @@ async fn add_custom(Auth(ctx): Auth, State(app): State<AppContext>, Json(c): Jso
     Ok((StatusCode::CREATED, Json(json!({"id": id}))).into_response())
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Batch {
+    ops: Vec<ferrum_kernel::customize::NewCustomization>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+/// `POST /api/customize/batch`: every operation in order in one transaction, or none; a refusal
+/// is the single endpoint's, with the refused operation's `index`.
+async fn batch_custom(Auth(ctx): Auth, State(app): State<AppContext>, Json(b): Json<Batch>) -> ApiResult<Response> {
+    match app_state(&app)?.kernel.batch_customizations(&ctx, b.ops, b.dry_run).await {
+        Ok(_) if b.dry_run => Ok(Json(json!({"ok": true})).into_response()),
+        Ok(n) => Ok(Json(json!({"applied": n})).into_response()),
+        Err((index, e)) => Ok(refused(index, e)),
+    }
+}
+
+fn refused(index: Option<usize>, e: Error) -> Response {
+    ApiError(e).with(index.map(|i| ("index".to_string(), json!(i))).into_iter().collect())
+}
+
 async fn toggle_custom(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>, Json(a): Json<Active>) -> ApiResult<Response> {
     app_state(&app)?.kernel.set_customization_active(&ctx, id, a.active).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
@@ -772,6 +794,7 @@ pub fn routes() -> Routes {
         .add("/admin/plugins/{id}/config", put(configure_plugin).patch(configure_plugin))
         .add("/customize", get(list_custom).post(add_custom))
         .add("/customize/export", get(export_custom))
+        .add("/customize/batch", post(batch_custom))
         .add("/customize/import", post(import_custom))
         .add("/admin/support", get(support_grants).post(grant_support))
         .add("/admin/support/{id}", delete(revoke_support))
@@ -787,4 +810,37 @@ pub fn routes() -> Routes {
         .add("/customize/conflicts", get(custom_conflicts))
         .add("/customize/{id}/active", put(toggle_custom))
         .add("/customize/{id}/keep", post(keep_custom))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn body(r: Response) -> (StatusCode, Value) {
+        let status = r.status();
+        let bytes = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_refused_batch_is_the_single_endpoints_refusal_with_its_index() {
+        let (status, json) = body(refused(Some(1), Error::invalid("customization rejected: XLine: nope"))).await;
+        let (single, alone) = body(ApiError(Error::invalid("customization rejected: XLine: nope")).into_response()).await;
+        assert_eq!(status, single);
+        assert_eq!((&json["error"], &json["message"]), (&alone["error"], &alone["message"]));
+        assert_eq!(json["index"], json!(1));
+        let (status, json) = body(refused(None, Error::Forbidden("only administrators can customize".into()))).await;
+        assert_eq!((status, json.get("index")), (StatusCode::FORBIDDEN, None));
+    }
+
+    #[test]
+    fn a_batch_names_its_operations_and_nothing_else() {
+        let ok: Batch = serde_json::from_value(
+            json!({"ops": [{"entity": "Customer", "op": {"op": "add_options", "field": "tier", "options": ["Gold"]}}], "dry_run": true}),
+        )
+        .unwrap();
+        assert!(ok.dry_run && ok.ops.len() == 1 && ok.ops[0].note.is_none());
+        assert!(serde_json::from_value::<Batch>(json!({"ops": [], "dryrun": true})).is_err());
+        assert!(serde_json::from_value::<Batch>(json!({"ops": [{"entity": "Customer", "op": {"op": "drop_entity"}}]})).is_err());
+    }
 }

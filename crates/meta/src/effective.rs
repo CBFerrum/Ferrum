@@ -448,7 +448,7 @@ pub(crate) fn apply_op(def: &mut EntityDef, op: &OverlayOp, source: OverlaySourc
             }
             Ok(None)
         }
-        OverlayOp::DefineEntity { .. } | OverlayOp::SetWorkflow { .. } | OverlayOp::SetPrintTemplate { .. } => {
+        OverlayOp::DefineEntity { .. } | OverlayOp::RedefineEntity { .. } | OverlayOp::SetWorkflow { .. } | OverlayOp::SetPrintTemplate { .. } => {
             Err("this operation is only valid as a tenant customization".into())
         }
     }
@@ -597,28 +597,53 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
     let packaged: HashMap<String, (EntityDef, BTreeMap<String, Storage>)> =
         building.iter().map(|(k, b)| (k.clone(), (b.def.clone(), b.storage.clone()))).collect();
 
-    // Tenant: new entities first, so other customizations can target them.
-    for ov in tenant {
+    // Tenant: new entities first, so other customizations can target them; a redefinition replaces
+    // what the definitions before it gave, in order.
+    let mut redefined: HashMap<&str, usize> = HashMap::new();
+    for (at, ov) in tenant.iter().enumerate() {
         for op in &ov.ops {
-            if let OverlayOp::DefineEntity { entity } = op {
-                let res = validate_custom_entity(entity)
-                    .and_then(|_| if building.contains_key(&entity.name) { Err(format!("entity {} already exists", entity.name)) } else { Ok(()) });
-                match res {
-                    Ok(()) => {
-                        let storage = entity.fields.iter().map(|f| (f.name.clone(), Storage::Ext)).collect();
-                        building.insert(
-                            entity.name.clone(),
-                            Building { package: "tenant".into(), def: (**entity).clone(), storage, custom: true, workflow: None, print_template: None },
-                        );
+            match op {
+                OverlayOp::DefineEntity { entity } => {
+                    let res = validate_custom_entity(entity)
+                        .and_then(|_| if building.contains_key(&entity.name) { Err(format!("entity {} already exists", entity.name)) } else { Ok(()) });
+                    match res {
+                        Ok(()) => {
+                            let storage = entity.fields.iter().map(|f| (f.name.clone(), Storage::Ext)).collect();
+                            building.insert(
+                                entity.name.clone(),
+                                Building { package: "tenant".into(), def: (**entity).clone(), storage, custom: true, workflow: None, print_template: None },
+                            );
+                        }
+                        Err(m) => warnings.push(SchemaWarning { entity: entity.name.clone(), message: m }),
                     }
-                    Err(m) => warnings.push(SchemaWarning { entity: entity.name.clone(), message: m }),
                 }
+                OverlayOp::RedefineEntity { entity } => {
+                    let res = match building.get_mut(&entity.name) {
+                        Some(b) if b.custom => validate_custom_entity(entity).map(|_| b),
+                        Some(_) => Err(format!("{} comes with a package: only the workspace's own entities can be redefined", entity.name)),
+                        None => Err(format!("there is no custom entity {} to redefine (define_entity makes a new one)", entity.name)),
+                    };
+                    match res {
+                        Ok(b) => {
+                            b.def = (**entity).clone();
+                            b.storage = entity.fields.iter().map(|f| (f.name.clone(), Storage::Ext)).collect();
+                            redefined.insert(entity.name.as_str(), at);
+                        }
+                        Err(m) => warnings.push(SchemaWarning { entity: entity.name.clone(), message: m }),
+                    }
+                }
+                _ => {}
             }
         }
     }
-    for ov in tenant {
+    for (at, ov) in tenant.iter().enumerate() {
         for op in &ov.ops {
-            if matches!(op, OverlayOp::DefineEntity { .. }) {
+            if matches!(op, OverlayOp::DefineEntity { .. } | OverlayOp::RedefineEntity { .. }) {
+                continue;
+            }
+            // A change to the definition made before its latest redefinition is part of what that
+            // replaced (its workflow and print template are not part of the definition).
+            if redefined.get(ov.entity.as_str()).is_some_and(|r| at < *r) && !matches!(op, OverlayOp::SetWorkflow { .. } | OverlayOp::SetPrintTemplate { .. }) {
                 continue;
             }
             let Some(b) = building.get_mut(&ov.entity) else {
@@ -972,6 +997,46 @@ mod tests {
         let w = s.entity("XWarranty").unwrap();
         assert!(w.custom && w.table == CUSTOM_RECORD_TABLE);
         assert_eq!(s.version, 7);
+    }
+
+    #[test]
+    fn redefinitions_replace_custom_definitions_in_order() {
+        let cat = catalog();
+        let def = |fields: Value| json!({"name": "XThing", "label": "Thing", "kind": "master", "fields": fields});
+        let one = def(json!([{"name": "a", "type": "data"}, {"name": "b", "type": "int"}]));
+        let two = def(json!([{"name": "a", "type": "text"}, {"name": "c", "type": "date"}]));
+        let mut tenant = vec![
+            ov("XThing", json!([{"op": "define_entity", "entity": one}])),
+            ov("XThing", json!([{"op": "set_property", "field": "b", "property": "label", "value": "Bee"}])),
+            ov("XThing", json!([{"op": "redefine_entity", "entity": two}])),
+            ov("XThing", json!([{"op": "set_property", "field": "c", "property": "label", "value": "Sea"}])),
+        ];
+        let s = build(&cat, &["core".into()], &tenant, 1).unwrap();
+        assert!(s.warnings.is_empty(), "a change before the redefinition is part of what it replaced: {:?}", s.warnings);
+        let e = s.entity("XThing").unwrap();
+        assert_eq!(e.def.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["a", "c"]);
+        assert_eq!((e.field("a").unwrap().ftype, e.field("c").unwrap().label.as_deref()), (FieldType::Text, Some("Sea")));
+        assert_eq!(e.storage_of("c"), Some(Storage::Ext));
+        tenant.remove(2);
+        tenant.pop();
+        let s = build(&cat, &["core".into()], &tenant, 1).unwrap();
+        assert_eq!(s.entity("XThing").unwrap().field("b").unwrap().label.as_deref(), Some("Bee"), "without it, the definition before it");
+        for (target, why) in [("Company", "comes with a package"), ("XNone", "there is no custom entity XNone")] {
+            let e = json!({"name": target, "label": "T", "kind": "master", "fields": [{"name": "a", "type": "data"}]});
+            let s = build(&cat, &["core".into()], &[ov(target, json!([{"op": "redefine_entity", "entity": e}]))], 1).unwrap();
+            assert!(s.warnings.iter().any(|w| w.message.contains(why)), "{target}: {:?}", s.warnings);
+        }
+    }
+
+    #[test]
+    fn safe_type_changes() {
+        use FieldType::*;
+        for (from, to) in [(Data, Text), (Markdown, Url), (Select, Data), (Int, Decimal), (Currency, Percent)] {
+            assert!(from.converts_to(to), "{from:?} -> {to:?}");
+        }
+        for (from, to) in [(Text, Select), (Decimal, Int), (Date, Datetime), (Data, Json), (Link, Data), (Data, Table), (Check, Int)] {
+            assert!(!from.converts_to(to), "{from:?} -> {to:?}");
+        }
     }
 
     #[test]

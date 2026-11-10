@@ -96,6 +96,11 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   the scan reaches them (after the servers were down) are skipped, not fired. A moment fires only for the
   automation, the record and the time; it does not wait for a business calendar, and a schedule cannot
   follow a linked document's change (an invoice paid).
+- **Redefining a custom entity** (`redefine_entity`) deletes no data: values of a field that goes stay in
+  the records, out of sight, until a field of the same name comes back. A field that comes back with a
+  type other than the one its values were saved under is not checked against them. A batch of
+  customizations holds at most 100 operations and is validated one operation at a time (a schema build
+  each), so its order matters.
 - **Merging duplicates** is for entities that opt in (customers and suppliers so far). It finds
   duplicates by equal fields, not by resemblance, and is not undone. Append-only history keeps the id
   it was posted under: a report on it must ask `ferrum_kernel::merge::merged_ids`.
