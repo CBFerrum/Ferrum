@@ -10,7 +10,7 @@ and FLC-HUMAN in [traceability.md](traceability.md); the evidence is
 |---|---|
 | `crates/logic/src/compile.rs`, `solution.rs` | The steps, and what the compiler refuses |
 | `crates/logic/src/process.rs` | A run as a pure state machine: what happened in, what to do out |
-| `crates/logic/src/calendar.rs` | Waits as elapsed time or business days, resolved to instants |
+| `crates/logic/src/calendar.rs` | Waits as elapsed time, business days or open time on a calendar, resolved to instants; the working-hours clock (`add_working`, `working_between`, `next_open`, `is_open`) |
 | `crates/kernel/src/process.rs`, migration `20261108000003_logic_process.sql` | Runs, tasks, decisions, waits, signals and calendars: Ferrum's records, and the activities a runtime calls |
 | `crates/process` | The runtime on Temporal, and what starts and signals runs |
 | `server/src/process.rs` | The server's switch: `TEMPORAL_ADDRESS`, with the `process` feature |
@@ -34,7 +34,7 @@ or the blocks around it, and nothing else.
 | `subprocess` | Another process of the release, with its trigger given field by field; it reads nothing of its caller's | No recursion, direct or not |
 | `case` | Its owner's role directs listed tasks, each once its dependencies are done; it closes once the required ones are | 1–32 tasks; no dependency circles |
 | `compensate` | Undoes the run's actions newest first, each through its app's compensating action (the capability's `compensate_with`) | Each compensation must be in `requires` |
-| `delay` | Waits a duration or business days | At most a year, or 260 business days |
+| `delay` | Waits a duration, business days or open time on a calendar | At most a year, 260 business days, or a year of open time that falls within five years |
 | `end` | `completed` or `refused`, with what it hands back; `again` only in a repeat's body | |
 | `suspend` | Waits for an authorized recovery; `resume_to` says where recovery may resume, and only where everything that step reads has run | |
 
@@ -93,6 +93,21 @@ local time of day; a local time skipped by a clock change moves to the first tim
 twice takes the earlier. Each deadline records the calendar, its revision, the zone and the zone data it was
 worked out with: a revised calendar moves deadlines worked out after it, never those before. When a deadline
 passes, the database says whether it or a decision came first, and the run hears that one outcome.
+
+**Open time.** A wait may also count the open time of a calendar: `{"working": "PT8H", "calendar":
+"office"}` (seconds or an ISO 8601 duration, at most a year, within the next five years of the calendar).
+A calendar's `hours` give windows per weekday in its zone, `{"mon": [["09:00", "13:00"], ["14:00",
+"18:00"]], …}`, from `00:00` to at most `24:00`, start before end, not overlapping; a shift over midnight
+is two windows (Monday `22:00`–`24:00`, Tuesday `00:00`–`06:00`). Without `hours` every hour of a business
+day is open. With them a weekday without windows is closed, a weekend day cannot have windows, and a holiday
+is closed whatever its windows say. Open time is real elapsed time. A window starts at the first instant
+its local start shows and ends at the last instant its local end shows; a time a clock change skips is the
+first instant after the gap. So a window across a spring-forward gap is shorter by the gap, one across a
+repeated hour longer by it, and one entirely inside a gap is not there; windows the repeated hour makes
+overlap count their shared time once. The deadline records the calendar, revision, zone and zone data as
+for business days. Apps use the same clock: `ferrum_kernel::load_calendar` reads a workspace's calendar by
+name inside the caller's transaction, and `Calendar::add_working(from, seconds, stopped)` and
+`working_between(from, to, stopped)` leave out the intervals in which a clock stood still.
 
 **Structure.** A race's loser is asked to stop, and what it had in flight is kept: an effect that settles
 after its branch lost, or after the run was cancelled, is recorded and handed to a person. Compensation runs

@@ -109,8 +109,14 @@ async fn deployed(k: &Kernel, slug: &str, timeout: Value) -> (Ctx, Ctx, Ctx) {
     let admin2 = user(k, &admin, &format!("admin2@{slug}.test"), &[], true).await;
     let requester = user(k, &admin, &format!("requester@{slug}.test"), &["Requester"], false).await;
     let reviewer = user(k, &admin, &format!("reviewer@{slug}.test"), &["Reviewer"], false).await;
-    let office =
-        Calendar { name: "office".into(), zone: "Asia/Kolkata".into(), weekends: vec!["sat".into(), "sun".into()], holidays: Default::default(), revision: 0 };
+    let office = Calendar {
+        name: "office".into(),
+        zone: "Asia/Kolkata".into(),
+        weekends: vec!["sat".into(), "sun".into()],
+        holidays: Default::default(),
+        revision: 0,
+        hours: None,
+    };
     k.set_logic_calendar(&admin, &office).await.unwrap();
     let saved = k.save_release(&admin, &source(timeout)).await.expect("release");
     let release: Uuid = saved["id"].as_str().unwrap().parse().unwrap();

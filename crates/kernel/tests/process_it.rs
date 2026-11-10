@@ -472,8 +472,14 @@ async fn scenario() {
     let reviewer3 = user(&k, &admin, "reviewer3@acme.test", &["Reviewer"], false).await;
     let reviewer4 = user(&k, &admin, "reviewer4@acme.test", &["Reviewer"], false).await;
     let outsider = user(&k, &admin, "outsider@acme.test", &[], false).await;
-    let office =
-        Calendar { name: "office".into(), zone: "Asia/Kolkata".into(), weekends: vec!["sat".into(), "sun".into()], holidays: Default::default(), revision: 0 };
+    let office = Calendar {
+        name: "office".into(),
+        zone: "Asia/Kolkata".into(),
+        weekends: vec!["sat".into(), "sun".into()],
+        holidays: Default::default(),
+        revision: 0,
+        hours: None,
+    };
     assert_eq!(k.set_logic_calendar(&admin, &office).await.unwrap(), 1);
     assert_eq!(code(&k.set_logic_calendar(&reviewer, &office).await.unwrap_err()), "forbidden");
     assert_eq!(code(&k.set_logic_calendar(&admin, &Calendar { name: "Office!".into(), ..office.clone() }).await.unwrap_err()), "validation_failed");

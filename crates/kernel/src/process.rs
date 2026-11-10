@@ -1019,20 +1019,9 @@ impl Kernel {
             None => None,
             Some(name) => {
                 let mut tx = self.db.tenant_tx(tenant).await?;
-                let row: Option<(String, Vec<String>, Vec<chrono::NaiveDate>, i64)> =
-                    sqlx::query_as("select zone, weekends, holidays, revision from logic_calendar where tenant_id = $1 and name = $2")
-                        .bind(tenant)
-                        .bind(name)
-                        .fetch_optional(&mut *tx)
-                        .await?;
+                let cal = load_calendar(&mut tx, tenant, name).await?;
                 tx.commit().await?;
-                row.map(|(zone, weekends, holidays, revision)| Calendar {
-                    name: name.into(),
-                    zone,
-                    weekends,
-                    holidays: holidays.into_iter().collect(),
-                    revision,
-                })
+                cal
             }
         };
         calendar::deadline(&w, from, cal.as_ref()).map_err(Error::Invalid)
@@ -2056,6 +2045,29 @@ impl Kernel {
         Ok(())
     }
 
+    /// Sets a business calendar from what an API was sent (`{zone, weekends, holidays, hours}`), named by
+    /// the path: Studio's route and the administration API both come here.
+    pub async fn put_logic_calendar(&self, ctx: &Ctx, name: &str, body: &Value) -> Result<i64> {
+        let mut b = if body.is_object() { body.clone() } else { json!({}) };
+        b["name"] = json!(name);
+        b["revision"] = json!(0);
+        let cal: Calendar = serde_json::from_value(b).map_err(|e| Error::field("calendar", e.to_string()))?;
+        self.set_logic_calendar(ctx, &cal).await
+    }
+
+    /// Deletes a business calendar (administrators). Deadlines already worked out on it stay; a wait that
+    /// names it later is refused, as one naming a calendar the workspace never had.
+    pub async fn delete_logic_calendar(&self, ctx: &Ctx, name: &str) -> Result<()> {
+        require_admin(ctx)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let gone = sqlx::query("delete from logic_calendar where tenant_id = $1 and name = $2").bind(ctx.tenant).bind(name).execute(&mut *tx).await?;
+        tx.commit().await?;
+        if gone.rows_affected() == 0 {
+            return Err(Error::NotFound(format!("calendar {name}")));
+        }
+        Ok(())
+    }
+
     /// Sets a business calendar (administrators); each change is a new revision.
     pub async fn set_logic_calendar(&self, ctx: &Ctx, cal: &Calendar) -> Result<i64> {
         require_admin(ctx)?;
@@ -2067,13 +2079,13 @@ impl Kernel {
             return Err(Error::field("name", "lower_snake_case, at most 64 characters"));
         }
         if let Some(p) = cal.problem() {
-            return Err(Error::field("calendar", p));
+            return Err(Error::field(if p.starts_with("hours:") { "hours" } else { "calendar" }, p));
         }
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let holidays: Vec<chrono::NaiveDate> = cal.holidays.iter().copied().collect();
         let revision: i64 = sqlx::query_scalar(
-            "insert into logic_calendar (tenant_id, name, zone, weekends, holidays, updated_by) values ($1, $2, $3, $4, $5, $6) \
-             on conflict (tenant_id, name) do update set zone = $3, weekends = $4, holidays = $5, updated_by = $6, revision = logic_calendar.revision + 1, updated_at = now() \
+            "insert into logic_calendar (tenant_id, name, zone, weekends, holidays, updated_by, hours) values ($1, $2, $3, $4, $5, $6, $7) \
+             on conflict (tenant_id, name) do update set zone = $3, weekends = $4, holidays = $5, updated_by = $6, hours = $7, revision = logic_calendar.revision + 1, updated_at = now() \
              returning revision",
         )
         .bind(ctx.tenant)
@@ -2082,6 +2094,7 @@ impl Kernel {
         .bind(&cal.weekends)
         .bind(&holidays)
         .bind(ctx.user)
+        .bind(cal.hours.as_ref().map(|h| json!(h)))
         .fetch_one(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -2141,4 +2154,19 @@ async fn case_done(tx: &mut Tx, tenant: Uuid, task: Uuid) -> Result<Value> {
 /// Queues something that happened for a run, in the transaction that made it so: its runtime hands it over.
 pub async fn deliver(tx: &mut Tx, tenant: Uuid, run: Uuid, event: &Event) -> Result<()> {
     outbox::enqueue(tx, tenant, DELIVER_TOPIC, None, None, json!({"run": run, "event": event})).await
+}
+
+/// A workspace's business calendar by name, as the clock and the waits read it; `None` when it has none of
+/// that name. The one loader: an app's hook calls it with its own transaction
+/// (`ferrum_kernel::load_calendar(&mut **hc.tx, hc.ctx.tenant, "office")`).
+pub async fn load_calendar(conn: &mut sqlx::PgConnection, tenant: Uuid, name: &str) -> Result<Option<Calendar>> {
+    let row: Option<(String, Vec<String>, Vec<chrono::NaiveDate>, i64, Option<Value>)> =
+        sqlx::query_as("select zone, weekends, holidays, revision, hours from logic_calendar where tenant_id = $1 and name = $2")
+            .bind(tenant)
+            .bind(name)
+            .fetch_optional(conn)
+            .await?;
+    let Some((zone, weekends, holidays, revision, hours)) = row else { return Ok(None) };
+    let hours = hours.map(serde_json::from_value).transpose().map_err(|e| Error::invalid(format!("the calendar {name}'s hours: {e}")))?;
+    Ok(Some(Calendar { name: name.into(), zone, weekends, holidays: holidays.into_iter().collect(), revision, hours }))
 }
