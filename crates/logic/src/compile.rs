@@ -2014,6 +2014,10 @@ mod tests {
         assert_eq!((&a.source_digest, &a.artifact_digest), (&b.source_digest, &b.artifact_digest));
         assert!(!serde_json::to_string(&b).unwrap().contains("aggregates"), "not written down when there are none");
         let with = compile_value(with_aggregates(), RuntimeProfile::FullProcess).unwrap();
+        let mut bare = with_aggregates();
+        bare["rules"][2]["aggregates"][2].as_object_mut().unwrap().remove("to");
+        let bare = compile_value(bare, RuntimeProfile::FullProcess).unwrap();
+        assert_eq!((&with.source_digest, &with.artifact_digest), (&bare.source_digest, &bare.artifact_digest), "to: self is no to at all");
         let mut other = with_aggregates();
         other["rules"][2]["aggregates"][0]["filter"][0][2] = json!("Held");
         let other = compile_value(other, RuntimeProfile::FullProcess).unwrap();
