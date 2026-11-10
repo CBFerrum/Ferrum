@@ -110,12 +110,16 @@ fn entities() -> Vec<Value> {
     let score = |a: &str| format!("doc.{a}_likelihood * doc.{a}_impact");
     let scale = |name: &str| json!({"name": name, "type": "int", "required": true, "default": 3, "min": 1, "max": 5});
     vec![
+        // A test's evidence: lines of the test, itself a line of its control (lines within lines, BD-06), as the
+        // app's ControlEvidence lines of a ControlTest.
+        json!({"name": "XControlEvidence", "label": "Evidence", "label_plural": "Evidence", "kind": "child", "fields": [
+            {"name": "title", "type": "data", "required": true, "in_list": true, "description": "What the evidence is"},
+            {"name": "file", "type": "attach", "in_list": true}]}),
         json!({"name": "XControlTest", "label": "Control Test", "kind": "child", "fields": [
             {"name": "tested_on", "type": "date", "required": true, "in_list": true},
             {"name": "tester", "type": "email", "read_only": true, "default_expr": "user.email", "in_list": true},
             {"name": "result", "type": "select", "options": RESULTS, "required": true, "in_list": true},
-            {"name": "evidence", "type": "data", "in_list": true, "description": "What the evidence is"},
-            {"name": "evidence_file", "type": "attach", "in_list": true},
+            {"name": "evidence", "type": "table", "of": "XControlEvidence"},
             {"name": "notes", "type": "text"}]}),
         json!({"name": "XControl", "label": "Control", "label_plural": "Controls", "kind": "master", "title_field": "control_name",
             "description": "What is done to keep a risk down. It is effective while its last test passed and is still current.",
@@ -218,7 +222,7 @@ fn checks() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
         (
             "XControlTest",
             "effective_has_evidence",
-            "doc.result != 'Effective' || (has(doc.evidence_file) && doc.evidence_file != null && doc.evidence_file != '')",
+            "doc.result != 'Effective' || doc.evidence.exists(e, has(e.file) && e.file != null && e.file != '')",
             "an effective result has its evidence",
         ),
         (
@@ -597,22 +601,39 @@ async fn scenario() {
     let backups = id_of(
         &t.insert(&rm, "XControl", json!({"control_name": "Nightly backups", "category": "Technical", "status": "In Place", "test_every_days": 90})).await,
     );
-    // DIFFERENT: a test is a line of its control (a test's own evidence cannot be lines of a line), with one
-    // evidence file, recorded by saving the control; there is no Control Tests list of its own.
-    let test = |on: String, result: &str, file: Option<&str>| json!({"tested_on": on, "result": result, "evidence": "Restore log", "evidence_file": file});
-    let proof = Some("/files/restore-log");
-    // SAME: refused while the control is planned, without its evidence, and on a day to come.
-    refused(t.test(&rm, mfa, test(today.to_string(), "Effective", proof)).await, "invalid", "is tested once it is in place");
-    refused(t.test(&rm, backups, test(today.to_string(), "Effective", None)).await, "invalid", "an effective result has its evidence");
-    refused(t.test(&rm, backups, test((today + Duration::days(1)).to_string(), "Effective", proof)).await, "invalid", "is today or before");
+    // DIFFERENT: a test is a line of its control, recorded by saving the control; there is no Control Tests list
+    // of its own. SAME (C4): its evidence is several rows, lines of the test (lines within lines).
+    let test = |on: String, result: &str, evidence: Value| json!({"tested_on": on, "result": result, "evidence": evidence});
+    let proof = json!([{"title": "Restore log", "file": "/files/restore-log"}]);
+    let none = json!([]);
+    // SAME: refused while the control is planned, without its evidence (a row without a file is none), and on a day
+    // to come.
+    refused(t.test(&rm, mfa, test(today.to_string(), "Effective", proof.clone())).await, "invalid", "is tested once it is in place");
+    refused(t.test(&rm, backups, test(today.to_string(), "Effective", json!([{"title": "Said so"}]))).await, "invalid", "an effective result has its evidence");
+    refused(t.test(&rm, backups, test((today + Duration::days(1)).to_string(), "Effective", proof.clone())).await, "invalid", "is today or before");
     // SAME: the tester is whoever records it; the standing follows the latest test.
-    let c = t.test(&rm, backups, test((today - Duration::days(30)).to_string(), "Ineffective", None)).await.unwrap();
+    let c = t.test(&rm, backups, test((today - Duration::days(30)).to_string(), "Ineffective", none.clone())).await.unwrap();
     assert_eq!(c["tests"][0]["tester"], "rm@secure.test");
     assert_eq!((c["effective"].as_bool(), c["last_result"].as_str()), (Some(false), Some("Ineffective")));
-    let c = t.test(&rm, backups, test(today.to_string(), "Effective", proof)).await.unwrap();
+    // C4 (beyond the app's test, which sends one row): several evidence rows on one test, each with its title and
+    // file, kept in order with the test.
+    let several = json!([{"title": "Restore log", "file": "/files/restore-log"}, {"title": "Screenshot of the restored share", "file": "/files/restore-shot"},
+        {"title": "Ticket"}]);
+    let c = t.test(&rm, backups, test(today.to_string(), "Effective", several)).await.unwrap();
     assert_eq!((c["effective"].as_bool(), c["last_tested_on"].as_str()), (Some(true), Some(today.to_string().as_str())));
+    let rows = c["tests"][1]["evidence"].as_array().unwrap();
+    assert_eq!(
+        rows.iter().map(|r| (r["title"].as_str().unwrap(), r["file"].as_str())).collect::<Vec<_>>(),
+        [("Restore log", Some("/files/restore-log")), ("Screenshot of the restored share", Some("/files/restore-shot")), ("Ticket", None)]
+    );
+    let described = ferrum_kernel::describe::describe(&rm, &k.entity(&rm, "XControl").unwrap());
+    assert_eq!(described["children"]["tests"]["children"]["evidence"]["entity"], "XControlEvidence", "the description shows the test's evidence");
+    // A missing title says which test and which row.
+    let e = t.test(&rm, backups, test(today.to_string(), "Ineffective", json!([{"file": "/files/x"}]))).await.unwrap_err();
+    let Error::Validation(f) = &e else { panic!("{e}") };
+    assert_eq!((f[0].field.as_str(), f[0].path.clone()), ("title", Some(vec![("tests".to_string(), 2), ("evidence".to_string(), 0)])));
     // SAME: an older test entered later is not the last one.
-    let c = t.test(&rm, backups, test((today - Duration::days(10)).to_string(), "Ineffective", None)).await.unwrap();
+    let c = t.test(&rm, backups, test((today - Duration::days(10)).to_string(), "Ineffective", none.clone())).await.unwrap();
     assert_eq!(c["effective"], true, "the latest by day stands");
     // SAME: a test 91 days old is stale, found by the daily automation (the app's upkeep). The harness ages
     // the tests by 91 days, then the scanner runs a day.
@@ -621,7 +642,7 @@ async fn scenario() {
     assert_eq!(t.get("XControl", backups).await["effective"], true, "kept until it is looked at again");
     day!();
     assert_eq!(t.get("XControl", backups).await["effective"], false, "a test 91 days old is stale");
-    t.test(&rm, backups, test(today.to_string(), "Effective", proof)).await.unwrap();
+    t.test(&rm, backups, test(today.to_string(), "Effective", proof.clone())).await.unwrap();
     t.set(&rm, "XControl", mfa, json!({"status": "In Place"})).await.unwrap();
 
     // ───────────── risks ─────────────
@@ -778,7 +799,7 @@ async fn scenario() {
     // change the control whose line it is).
     refused(k.insert(&ra, "XRisk", obj(risk("Mine", "ra@secure.test", [1, 1, 1, 1, 1, 1], "Open", json!([])))).await, "forbidden", "");
     refused(k.insert(&reader, "XPolicy", obj(json!({"title": "Mine", "text": "x"}))).await, "forbidden", "");
-    refused(t.test(&ra, backups, test(today.to_string(), "Ineffective", None)).await, "forbidden", "");
+    refused(t.test(&ra, backups, test(today.to_string(), "Ineffective", none.clone())).await, "forbidden", "");
 
     // ───────────── not in the app's tests: its page ─────────────
     // DIFFERENT: the app's own page at /grc/ is a Studio space here, with the same four lists; each person sees
