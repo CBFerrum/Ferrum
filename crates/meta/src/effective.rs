@@ -1348,6 +1348,13 @@ mod tests {
         assert!(bad("{name: x_mine, label: M}").contains("x_ names are a workspace's"));
         assert!(bad("{name: mine, label: M, color: '#000000'}").contains("a workspace's own menu's"));
         assert!(bad("{name: mine, label: M, assistant: {instructions: i}}").contains("a workspace's own menu's"));
+        assert!(bad("{name: mine, label: M, portal: true}").contains("a workspace's own menu's"), "the portal's mark is a workspace's menu's");
+        // Marked for the portal: kept in the schema and written back as it was given; unmarked, not written.
+        let s = built(vec![menu(json!({"portal": true}))]);
+        let m = s.modules.iter().find(|m| m.name == "x_sales").unwrap();
+        assert!(m.portal);
+        assert_eq!(serde_json::to_value(serde_json::from_value::<OverlayOp>(menu(json!({"portal": true}))).unwrap()).unwrap()["module"]["portal"], json!(true));
+        assert!(serde_json::to_value(serde_json::from_value::<OverlayOp>(menu(json!({}))).unwrap()).unwrap()["module"].get("portal").is_none());
         let mut def = cat.packages().next().unwrap().entities[0].clone();
         assert!(apply_op(&mut def, &serde_json::from_value(menu(json!({}))).unwrap(), OverlaySource::Package).is_err());
     }

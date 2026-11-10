@@ -232,12 +232,16 @@ pub struct ModuleDef {
     /// What the assistant is told on the menu's pages, and suggests asking there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assistant: Option<ModuleAssistant>,
+    /// Shown in the workspace's portal too (docs/builder/portal.md): portal people whose portal roles
+    /// reach some of its entities get it as an entry of the portal's home, on Studio's generic page.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub portal: bool,
 }
 
 impl ModuleDef {
     /// Whether it says what only a workspace's own menu may.
     pub fn has_menu_properties(&self) -> bool {
-        self.color.is_some() || self.description.is_some() || !self.create.is_empty() || self.assistant.is_some()
+        self.color.is_some() || self.description.is_some() || !self.create.is_empty() || self.assistant.is_some() || self.portal
     }
 }
 
