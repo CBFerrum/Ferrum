@@ -420,9 +420,9 @@ async fn monthly_rent(k: &Arc<Kernel>) {
 }
 
 /// `every`: the first of the month for records that pass a filter, each Wednesday, and the month's last day;
-/// mail made with a template.
+/// mail made with a template; in Berlin, an hour ahead of UTC in winter.
 async fn every_period(k: &Arc<Kernel>) {
-    let w = workspace(k, "every", "UTC").await;
+    let w = workspace(k, "every", "Europe/Berlin").await;
     for (t, r) in [("N1", "north"), ("N2", "north"), ("S1", "south")] {
         w.visit(t, json!({"region": r})).await;
     }
@@ -447,10 +447,10 @@ async fn every_period(k: &Arc<Kernel>) {
         assert_eq!(w.mails(&format!("monthly {t}")).await, 1, "{t} passes the filter");
     }
     assert_eq!(w.mails("monthly S1").await, 0, "S1 does not");
-    assert_eq!(w.moments(monthly).await, vec![at("2027-03-01T07:00:00Z"); 2]);
-    assert_eq!(w.moments(weekly).await, vec![at("2027-02-24T07:00:00Z"); 3], "Wednesday 24 February");
-    assert_eq!(w.moments(last).await, vec![at("2027-02-28T18:00:00Z"); 3], "28 February, the last day");
-    let days: Vec<At> = ["24", "25", "26", "27", "28"].iter().map(|d| at(&format!("2027-02-{d}T06:30:00Z"))).chain([at("2027-03-01T06:30:00Z")]).collect();
+    assert_eq!(w.moments(monthly).await, vec![at("2027-03-01T06:00:00Z"); 2]);
+    assert_eq!(w.moments(weekly).await, vec![at("2027-02-24T06:00:00Z"); 3], "Wednesday 24 February, 07:00 in Berlin");
+    assert_eq!(w.moments(last).await, vec![at("2027-02-28T17:00:00Z"); 3], "28 February, the last day");
+    let days: Vec<At> = ["24", "25", "26", "27", "28"].iter().map(|d| at(&format!("2027-02-{d}T05:30:00Z"))).chain([at("2027-03-01T05:30:00Z")]).collect();
     assert_eq!(w.moments(daily).await, days, "each day at 06:30, for the one record in the south");
     let html: String = {
         let mut tx = k.db.tenant_tx(w.tenant).await.unwrap();
