@@ -533,11 +533,15 @@ impl Kernel {
         let running: Option<Release> = active.as_ref().and_then(|(_, _, _, r)| serde_json::from_value(r.clone()).ok());
         let changes = diff::diff(running.as_ref().filter(|_| active.as_ref().is_some_and(|(id, ..)| *id != release)), &this);
         let processes: Vec<Value> = this.ir.processes.iter().map(|p| json!({"id": p.id, "label": p.label, "trigger": p.trigger.event})).collect();
+        // What its rules count or sum across the workspace, whoever saves (docs/logic/rules.md): a reviewer reads these.
+        let aggregates: Vec<Value> =
+            this.ir.rules.iter().flat_map(|r| r.aggregates.iter().map(move |a| json!({"rule": r.id, "entity": r.entity, "aggregate": a}))).collect();
         Ok(json!({
             "release": {
                 "id": release, "solution": solution, "version": version, "source_digest": source_digest, "artifact_digest": artifact_digest,
                 "created_by": created_by, "created_at": created_at, "profile": this.profile, "compiler": this.compiler, "lock": this.lock,
                 "notes": this.notes, "rules": this.ir.rules.len(), "decisions": this.ir.decisions.len(), "processes": processes,
+                "aggregates": aggregates,
             },
             "active": active.map(|(id, version, generation, _)| json!({"release": id, "version": version, "generation": generation})),
             "reviews": reviews,

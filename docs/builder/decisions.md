@@ -143,3 +143,20 @@ different workspaces, never for the same records.
   tables, processes); a pack holds solutions.
 * **Portal role**: a role marked for the portal. **Public page**: a Forms page bound to an entity.
 * **Schedule**: a time-based trigger on records. **Approval**: a decision a transition waits for.
+
+## BD-10. A rule's aggregates read as the workspace
+
+Decided 10 November 2026. Qualifies BD-01.
+
+A Logic rule's aggregates (docs/logic/rules.md) count and sum every matching record of the workspace,
+whoever saves: the saver's row scopes, read rights and field groups do not narrow them, and tenant isolation
+is unchanged. A check that depends on who triggers it does not hold: "no visit while charges are unpaid"
+that passes for anyone who cannot see charges is no control. This is how an automation already runs, as the
+administrator who saved it, not as whoever changed the record. A rule's lookups keep reading with the
+saver's rights.
+
+What follows: a `derive` rule can write a total of records its saver cannot open, so whoever reviews a
+release reads its aggregates (listed in the release's review) as reads across the workspace.
+
+**Rules out**: an aggregate scoped to the saver, and any other configured read that widens beyond the
+workspace or reaches a record's fields, not only its counts and sums.

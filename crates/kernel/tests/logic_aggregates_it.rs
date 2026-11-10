@@ -170,14 +170,16 @@ async fn scenario() {
     let clerk = user(&k, &admin, "clerk@club.test", "Clerk", false).await;
     let limited = user(&k, &admin, "limited@club.test", "Limited", false).await;
     let blind = user(&k, &admin, "blind@club.test", "Blind", false).await;
+    let scoped = user(&k, &admin, "scoped@club.test", "Limited", false).await;
     let admin = ctx(&k, tenant, admin.user).await;
     k.set_role_permission(&admin, "Clerk", &PermissionDef { entity: "XFee".into(), read: true, ..Default::default() }).await.unwrap();
-    let (admin, reviewer, clerk, limited, blind) = (
+    let (admin, reviewer, clerk, limited, blind, scoped) = (
         ctx(&k, tenant, admin.user).await,
         ctx(&k, tenant, reviewer).await,
         ctx(&k, tenant, clerk).await,
         ctx(&k, tenant, limited).await,
         ctx(&k, tenant, blind).await,
+        ctx(&k, tenant, scoped).await,
     );
     let e = k.insert(&clerk, "Visit", obj(json!({"reference": "LEGACY"}))).await.unwrap_err();
     assert!(message(&e).contains("The legacy rule ran"), "a release stored before aggregates still loads and runs: {e}");
@@ -228,8 +230,9 @@ async fn scenario() {
     assert_eq!(k.insert(&clerk, "Visit", obj(json!({"reference": "V-3", "member": bala}))).await.unwrap()["x_unpaid"], json!(0));
     assert_eq!(k.insert(&clerk, "Visit", obj(json!({"reference": "V-4"}))).await.unwrap()["x_unpaid"], json!(0), "an empty link counts nothing");
 
-    // A saver counts what they may see: Limited sees only the charge they made; Blind may not read charges at
-    // all and counts none, without an error and without wider rights.
+    // An aggregate reads as the workspace: every matching charge counts whoever saves. Limited sees only the
+    // charge they made, Blind may read no charge at all, Scoped (row-scoped to their own, and they made none)
+    // sees none of them: all count both, and none of them passes the check.
     k.insert(&limited, "Charge", obj(json!({"reference": "C-4", "member": bala, "amount": "1", "status": "Unpaid"}))).await.unwrap();
     k.insert(&admin, "Charge", obj(json!({"reference": "C-5", "member": bala, "amount": "1", "status": "Unpaid"}))).await.unwrap();
     let seen = |c: &Ctx, r: &'static str| {
@@ -237,10 +240,13 @@ async fn scenario() {
         async move { k.insert(&c, "Visit", obj(json!({"reference": r, "member": bala, "x_waived": true}))).await.unwrap()["x_unpaid"].clone() }
     };
     assert_eq!(seen(&clerk, "V-5").await, json!(2));
-    assert_eq!(seen(&limited, "V-6").await, json!(1), "only the charge Limited may see");
-    assert_eq!(seen(&blind, "V-7").await, json!(0), "nothing Blind may see");
-    assert!(k.insert(&limited, "Visit", obj(json!({"reference": "V-8", "member": bala}))).await.is_err());
-    k.insert(&blind, "Visit", obj(json!({"reference": "V-9", "member": bala}))).await.expect("Blind cannot see Bala's charges, so none count");
+    assert_eq!(seen(&limited, "V-6").await, json!(2), "the charge Limited may not see counts too");
+    assert_eq!(seen(&blind, "V-7").await, json!(2), "and for Blind, who may read no charge");
+    assert_eq!(k.list(&scoped, "Charge", &Default::default()).await.unwrap().rows.len(), 0, "Scoped sees no charge");
+    for (who, r) in [(&limited, "V-8"), (&blind, "V-9"), (&scoped, "V-9b")] {
+        let e = k.insert(who, "Visit", obj(json!({"reference": r, "member": bala}))).await.unwrap_err();
+        assert!(message(&e).contains("unpaid charges"), "{} is refused like anyone: {}", who.email, message(&e));
+    }
 
     // `to: self`: a second open membership refuses the member's next save; a closed one does not count.
     k.insert(&admin, "Membership", obj(json!({"reference": "M-2", "member": chen, "status": "Open"}))).await.unwrap();
