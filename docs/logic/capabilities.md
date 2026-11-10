@@ -18,6 +18,9 @@ Nothing is typed in twice. A workspace's capabilities are read from what it has 
 | Each transition of its workflow | `transition.{action}` | transactional action |
 | The platform | `ferrum.notify` (in-app), `ferrum.mail` (queued with the outbox) | transactional action; external effect |
 
+The `body` of `ferrum.mail` (and `ferrum.mail.marketing`) is text: it is escaped and its line breaks kept, so
+nothing a record or a caller passes becomes markup in a mail sent in the workspace's name.
+
 An id is `{package}.{entity}.{operation}`: `procurement.material_request.make_purchase_order`,
 `selling.sales_order.submit`, `stockcap.hold.transition.approve`. Its version is its package's, and its digest
 covers everything it promises. A ledger offers none: its engine posts it, and the API reads it through reports.

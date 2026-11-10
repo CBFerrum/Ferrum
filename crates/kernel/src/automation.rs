@@ -32,7 +32,7 @@ pub enum AutomationAction {
         body: Option<String>,
     },
     /// E-mail, queued with the outbox in the run's transaction: it goes out only if the run commits,
-    /// once per event. All fields are CEL expressions. Marketing (`purpose`) is not sent to someone who
+    /// once per event. All fields are CEL expressions; what `body` gives is text, escaped, its line breaks kept. Marketing (`purpose`) is not sent to someone who
     /// withdrew their consent, asked again as it goes (FEO-015); a transactional notice does not ask.
     Email {
         to: String,
@@ -319,7 +319,8 @@ async fn execute(
         AutomationAction::Email { to, subject, body, purpose } => {
             let to = as_text(eval(&to, doc, user)?);
             let subject = as_text(eval(&subject, doc, user)?);
-            let body = as_text(eval(&body, doc, user)?);
+            // The body is text: nothing a record holds becomes markup in a mail sent in the workspace's name.
+            let body = crate::outbox::text_html(&as_text(eval(&body, doc, user)?));
             // Never sent from here: a later action could still roll the run back (FLC-HOOK-002).
             k.queue_mail_for(tx, ctx.tenant, &to, &subject, &body, &[], purpose).await?;
         }

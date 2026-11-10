@@ -48,6 +48,13 @@ pub const RELEASE_TOPIC: &str = "ferrum.storage.release";
 /// The most a queued mail may attach.
 const MAX_ATTACHED: i64 = 20 << 20;
 
+/// Plain text as a mail's HTML: escaped, its line breaks kept. What a record or a caller says is never markup.
+pub fn text_html(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    crate::coedit::esc(text, &mut out);
+    out.replace("\r\n", "\n").replace('\n', "<br>")
+}
+
 /// What [`Kernel::queue_mail`] accepts: one address, and a one-line subject of at most 300 characters.
 pub fn check_mail(to: &str, subject: &str) -> Result<()> {
     let to = to.trim();
