@@ -112,7 +112,14 @@ A rule may also count or sum other records, as `aggregates.{name}`:
 * `filter`: conditions that must all hold, `[field, operator, value]` over the entity's own fields, with the
   operators a list's filters take (`=`, `!=`, `>`, `>=`, `<`, `<=`, `in`, `not in`, `between`, `like`,
   `not like`, `is` with `set` or `not set`). Values are literals; a decimal is written as text (`"0.5"`), never
-  as a JSON fraction. At most eight conditions.
+  as a JSON fraction. At most eight conditions. The one value that is not a literal is the day:
+  `{"today": 0}`, or `{"today": n}` for n days after it (negative before; at most five years, 1,826 days,
+  either way), compared with a date field only (anything else is a compile error), alone or in an `in` or
+  `between` list. It is the workspace's day in its time zone when the aggregate is read, at each save, so
+  "an approved acceptance whose last day is today or later" is
+  `[["status", "=", "Accepted"], ["expires_on", ">=", {"today": 0}]]` and stops counting the morning after,
+  with no record saved in between. The source keeps `{"today": n}` as written: it is part of the release's
+  canonical form and digest (two offsets, two digests), never a date fixed when it was compiled.
 * `op`: `count` gives a whole number, `exists` yes or no, and `sum` the total of `field`, a number of the
   entity, as an exact decimal (currency amounts too: rules see them as decimals).
 

@@ -765,7 +765,8 @@ async fn aggregated(hc: &mut HookCtx<'_>, active: &Active, phase: Phase, doc: &D
         };
         let workspace = Ctx::system(hc.ctx.tenant, hc.ctx.schema.clone());
         let scope = crate::ctx::row_scope(&workspace, &ent, Action::Read)?;
-        let mut filters = crate::query::parse_filters(&serde_json::to_value(&a.filter).map_err(Error::internal)?)?;
+        // `{"today": n}` is the workspace's day as the aggregate is read, moved n days.
+        let mut filters = crate::query::parse_filters(&serde_json::to_value(a.filter_on(hc.ctx.today())).map_err(Error::internal)?)?;
         filters.push(crate::query::Filter::eq(&a.link, at.to_string()));
         let mut qb = sqlx::QueryBuilder::new(match (a.op, a.field.as_deref().and_then(|f| crate::store::field_expr(&ent, f, "a"))) {
             (AggregateOp::Sum, Some(sum)) => format!("select coalesce(sum({sum}), 0)::text"),
