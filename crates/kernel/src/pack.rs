@@ -34,6 +34,9 @@ pub const FORMAT: &str = "ferrum.pack/1";
 pub const MAX_PACK: usize = 5 * 1024 * 1024;
 /// The most records of one entity a pack carries.
 pub const MAX_ROWS: usize = 10_000;
+/// First key of the advisory lock an install holds (the two-key form, apart from the kernel's 64-bit locks);
+/// the second is made from the workspace.
+const INSTALL_LOCK: i32 = 0x7061_636b;
 /// Studio's items, in the order an install writes them: a report names its space, a chart its report, a
 /// dashboard its charts and cards; a space's blocks, which name any of them, are written last.
 // ponytail: Studio's entities by name, since the kernel does not depend on Studio; a new kind of Studio item
@@ -968,6 +971,9 @@ impl Kernel {
             return Err(Error::field("digest", "is not this pack's: plan the pack again and install what that plan shows"));
         }
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        // One install at a time in a workspace: what a pack brings is matched by name, and two installs
+        // at once would each find the name free. Held to the end of this transaction.
+        sqlx::query("select pg_advisory_xact_lock($1, hashtext($2))").bind(INSTALL_LOCK).bind(ctx.tenant.to_string()).execute(&mut *tx).await?;
         let missing = lacking(&mut tx, ctx.tenant, &pack.requires).await?;
         if !missing.is_empty() {
             return Err(Error::Conflict(format!("this workspace cannot take the pack: {}", missing.join("; "))));
