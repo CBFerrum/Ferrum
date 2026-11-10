@@ -60,6 +60,7 @@ SOCKETS_UNIT = ("-p", "ferrum-plugins", "--lib", "sockets::tests")
 EGRESS = ("-p", "ferrum-server", "--test", "assistant_egress_it")
 PORTAL = ("-p", "ferrum-kernel", "--test", "portal_it")
 CUSTOM_LINES = ("-p", "ferrum-kernel", "--test", "custom_lines_it")
+PACKAGED_LINES = ("-p", "ferrum-kernel", "--test", "packaged_lines_it")
 STUDIO_LINES = ("-p", "ferrum-studio", "--test", "custom_lines_it")
 NESTED_LINES = ("-p", "ferrum-kernel", "--test", "nested_lines_it")
 AUTHORING = ("-p", "ferrum-kernel", "--test", "authoring_it")
@@ -594,7 +595,15 @@ MUTANTS = [
     ("nested-lines-third-level", "crates/meta/src/effective.rs", "if b.def.kind == EntityKind::Child && building.get(of)", "if false && building.get(of)", NESTED_LINES),
     ("nested-lines-move-between-tables", "crates/kernel/src/customize.rs", "                if let Some(of) = elsewhere {", "                if let Some(of) = elsewhere.filter(|_| false) {", NESTED_LINES),
     ("nested-lines-pack-one-level", "crates/kernel/src/pack.rs", "rows.push(Value::Object(Box::pin(self.portable(ctx, tx, &child, r, keys)).await?));", "rows.push(Value::Object(self.portable_values(ctx, tx, &child, r, keys).await?));", NESTED_LINES),
-    ("nested-lines-delete-guard-blind", "crates/kernel/src/doc.rs", "                        checks.push((sub.table.clone(), f.name.clone(), \"id\", own));", "                        let _ = own;", NESTED_LINES),
+    # Lines a workspace adds to a package's entity (docs/builder/decisions.md BD-06, 10 November 2026).
+    ("uninstall-deletes-custom-record-wholesale", "crates/kernel/src/apps.rs", ".filter(|c| c.table != ferrum_meta::effective::CUSTOM_RECORD_TABLE)", ".filter(|_| true)", PACKAGED_LINES),
+    ("uninstall-keeps-packaged-lines", "crates/kernel/src/apps.rs", "         and exists (select 1 from {} p where p.tenant_id = c.tenant_id and p.id = c.parent_id)\",", "         and false and exists (select 1 from {} p where p.tenant_id = c.tenant_id and p.id = c.parent_id)\",", PACKAGED_LINES),
+    ("packaged-record-delete-leaves-lines", "crates/kernel/src/store.rs", "    if !ent.custom {\n        sqlx::query(\"delete from custom_record where tenant_id = $1 and parent_id = $2\")", "    if false {\n        sqlx::query(\"delete from custom_record where tenant_id = $1 and parent_id = $2\")", PACKAGED_LINES),
+    ("packaged-lines-own-table", "crates/meta/src/effective.rs", "let rows = if f.of.as_deref().is_some_and(|c| custom.contains(c)) {", "let rows = if b.custom {", PACKAGED_LINES),
+    ("packaged-lines-two-levels", "crates/meta/src/effective.rs", "        if !b.custom && building.get(of).is_some_and(", "        if false && building.get(of).is_some_and(", PACKAGED_LINES),
+    ("packaged-lines-taken-over", "crates/kernel/src/customize.rs", "and not exists (select 1 from {under} r.tenant_id = c.tenant_id and r.id = c.parent_id)", "and false", PACKAGED_LINES),
+    ("custom-lines-cascade-gone", "crates/kernel/migrations/20261110000010_packaged_lines.sql", "    delete from custom_record c using gone g where c.tenant_id = g.tenant_id and c.parent_id = g.id;", "    perform 1;", CUSTOM_LINES),
+    ("nested-lines-delete-guard-blind","crates/kernel/src/doc.rs", "                        checks.push((sub.table.clone(), f.name.clone(), \"id\", own));", "                        let _ = own;", NESTED_LINES),
     # Configured actions, update_linked, the day in aggregate filters, and the two faults found with them
     # (docs/api.md, Configured actions; docs/builder/decisions.md BD-11).
     ("configured-effects-run-as-the-runner", "crates/kernel/src/actions.rs", "        is_system: true,\n", "        is_system: false,\n", ACTIONS),

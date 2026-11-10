@@ -216,8 +216,8 @@ async fn scenario() {
     let e = k
         .add_customization(&admin, "Shop", OverlayOp::AddField { field: table, after: None, column: false }, None)
         .await
-        .expect_err("lines on a package's entity");
-    assert!(e.to_string().contains("cannot add child tables"), "{e}");
+        .expect_err("another table's lines on a package's entity (packaged_lines_it adds its own)");
+    assert!(e.to_string().contains("XOrderNote is already the lines of XOrder.notes"), "{e}");
     let mut bad_rollup = order_def();
     bad_rollup["name"] = json!("XBadTotal");
     bad_rollup["fields"] = json!([{"name": "code", "type": "data"}, {"name": "total", "type": "int", "rollup": {"table": "lines", "op": "sum", "field": "amount"}},

@@ -430,7 +430,13 @@ pub async fn set_child_rows(tx: &mut Tx, table: &str, cent: &EffEntity, tenant: 
 
 pub async fn delete_row(tx: &mut Tx, ent: &EffEntity, tenant: Uuid, id: Uuid) -> Result<u64> {
     let sql = format!("delete from {} a where a.tenant_id = $1 and a.id = $2{}", q(&ent.table), entity_predicate(ent, "a"));
-    Ok(sqlx::query(AssertSqlSafe(sql)).bind(tenant).bind(id).execute(&mut **tx).await?.rows_affected())
+    let n = sqlx::query(AssertSqlSafe(sql)).bind(tenant).bind(id).execute(&mut **tx).await?.rows_affected();
+    // A package's record takes the lines a customization added to it (custom records under its id, BD-06), also
+    // while that customization is off; a custom record's go by the trigger that cascades in `custom_record`.
+    if !ent.custom {
+        sqlx::query("delete from custom_record where tenant_id = $1 and parent_id = $2").bind(tenant).bind(id).execute(&mut **tx).await?;
+    }
+    Ok(n)
 }
 
 /// Engine-level update of derived fields (no validation, no hooks). For status/progress counters.
