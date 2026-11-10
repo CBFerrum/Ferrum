@@ -3,8 +3,10 @@
 //!
 //! The app `ferrum-app-grc` (risks, controls and their tests, risk acceptances, policies and their
 //! acknowledgements, findings: about 500 lines of Rust hooks and upkeep) is rebuilt here by configuration
-//! alone, with the calls an administrator makes: one customization batch, three roles, four scheduled
-//! automations, a solution with three rules, and a Studio space. It is exported as a pack, which must be
+//! alone, with the calls an administrator makes: one customization batch (entities, checks and six configured
+//! actions), three roles, three scheduled automations, a solution with two rules, and a Studio space. It was
+//! measured first without configured actions (10 November 2026) and again with them, `update_linked` and the
+//! day in aggregate filters: the steps below say how it stands now. It is exported as a pack, which must be
 //! exactly `packs/grc/grc.pack.json` (`FERRUM_WRITE_PACKS=1` writes it), and that committed file is installed
 //! in a fresh workspace where every scenario of the app's `tests/grc_it.rs` is restated, as ordinary users
 //! holding the pack's roles. Each step says whether the pack does it the **same** way, a **different** way
@@ -132,12 +134,14 @@ fn entities() -> Vec<Value> {
             {"name": "risk_owner", "type": "email", "read_only": true, "fetch_from": "risk.owner"},
             {"name": "justification", "type": "text", "required": true},
             {"name": "expires_on", "type": "date", "required": true, "in_list": true},
-            {"name": "status", "type": "select", "options": ["Draft", "Accepted", "Rejected", "Revoked", "Expired"], "default": "Draft", "no_copy": true, "in_list": true, "in_filter": true,
-             "description": "A Risk Approver who does not own the risk sets it to Accepted or Rejected, and an accepted one to Revoked"},
-            {"name": "approver", "type": "email", "no_copy": true, "in_list": true,
-             "computed": "doc.status == 'Draft' ? null : (has(doc.approver) && doc.approver != null && doc.approver != '' ? doc.approver : user.email)"},
-            {"name": "decided_on", "type": "date", "no_copy": true,
-             "computed": "doc.status == 'Draft' ? null : (has(doc.decided_on) && doc.decided_on != null ? doc.decided_on : today)"}],
+            {"name": "decision", "type": "select", "options": ["Accepted", "Rejected", "Revoked"], "read_only": true, "hidden": true, "no_copy": true,
+             "description": "Set by Accept It, Reject It and Revoke It"},
+            {"name": "status", "type": "select", "options": ["Draft", "Accepted", "Rejected", "Revoked", "Expired"], "no_copy": true, "in_list": true, "in_filter": true,
+             "description": "Moved by its decisions, and Expired the day after its last day",
+             "computed": "doc.decision == null || doc.decision == '' ? 'Draft' : (doc.decision == 'Accepted' && doc.expires_on < today ? 'Expired' : doc.decision)"},
+            {"name": "approver", "type": "email", "read_only": true, "no_copy": true, "in_list": true},
+            {"name": "decided_on", "type": "date", "read_only": true, "no_copy": true},
+            {"name": "revoked_on", "type": "date", "read_only": true, "no_copy": true}],
             "list": {"columns": ["number", "risk", "expires_on", "status", "approver"], "sort": "created_at desc"}}),
         json!({"name": "XPolicy", "label": "Policy", "label_plural": "Policies", "kind": "master", "title_field": "title",
             "description": "What people are asked to follow. Published with new text, it is at its next revision, and everyone acknowledges it again.",
@@ -150,9 +154,7 @@ fn entities() -> Vec<Value> {
             {"name": "published_text", "type": "markdown", "read_only": true, "no_copy": true, "description": "The text at its revision"},
             {"name": "published_on", "type": "date", "read_only": true, "no_copy": true, "in_list": true},
             {"name": "review_by", "type": "date"},
-            {"name": "publish", "label": "Publish It", "type": "check", "no_copy": true, "description": "Tick and save to publish the text as it is now"},
-            {"name": "retire", "label": "Retire It", "type": "check", "no_copy": true, "description": "Tick and save to retire a published policy"},
-            {"name": "nothing_new", "type": "check", "hidden": true, "no_copy": true}],
+            {"name": "nothing_new", "type": "check", "hidden": true, "read_only": true, "no_copy": true}],
             "list": {"columns": ["title", "owner", "revision", "status", "published_on"], "sort": "title asc"}}),
         json!({"name": "XPolicyAcknowledgement", "label": "Policy Acknowledgement", "label_plural": "Policy Acknowledgements", "kind": "master", "title_field": "person",
             "unique": [["policy", "revision", "person"]],
@@ -214,39 +216,8 @@ fn checks() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
             "doc.treatment != 'Mitigate' || (has(doc.controls) && size(doc.controls) > 0)",
             "mitigating names the controls that do it",
         ),
-        ("XRiskAcceptance", "new_is_draft", "old != null || doc.status == 'Draft'", "a new acceptance is a draft"),
         ("XRiskAcceptance", "after_today", "doc.status != 'Draft' || doc.expires_on > today", "is after today"),
-        (
-            "XRiskAcceptance",
-            "moves",
-            "old == null || doc.status == old.status || (old.status == 'Draft' && (doc.status == 'Accepted' || doc.status == 'Rejected')) || (old.status == 'Accepted' && (doc.status == 'Revoked' || doc.status == 'Expired'))",
-            "an acceptance goes from Draft to Accepted or Rejected, and from Accepted to Revoked or Expired",
-        ),
-        (
-            "XRiskAcceptance",
-            "approver_decides",
-            "old == null || doc.status == old.status || doc.status == 'Expired' || user.is_admin || 'Risk Approver' in user.roles",
-            "a Risk Approver decides an acceptance",
-        ),
-        (
-            "XRiskAcceptance",
-            "expires_after_its_day",
-            "old == null || doc.status == old.status || doc.status != 'Expired' || doc.expires_on < today",
-            "an acceptance expires the day after its last day",
-        ),
-        (
-            "XRiskAcceptance",
-            "owner_does_not_approve",
-            "old == null || old.status != 'Draft' || doc.status == 'Draft' || !has(doc.risk_owner) || doc.risk_owner == null || doc.risk_owner != user.email",
-            "a risk's owner does not approve taking it on",
-        ),
-        ("XPolicy", "nothing_new", "!has(doc.nothing_new) || doc.nothing_new != true", "the text is as published: there is nothing new to publish"),
-        (
-            "XPolicy",
-            "retired_once_published",
-            "!has(doc.retire) || doc.retire != true || (old != null && (old.status == 'Published' || old.status == 'Retired'))",
-            "a policy is retired once it is published",
-        ),
+        ("XPolicy", "nothing_new", "doc.nothing_new != true", "the text is as published: there is nothing new to publish"),
         (
             "XFinding",
             "closed_says_how",
@@ -256,28 +227,58 @@ fn checks() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
     ]
 }
 
+/// The app's six actions, as configured actions: buttons with their conditions, roles and refusals, whose
+/// effects run as the system through the save pipeline (docs/api.md, "Configured actions").
+fn actions() -> Vec<(&'static str, Value)> {
+    let owner = json!({"when": "doc.risk_owner != null && doc.risk_owner == user.email", "message": "a risk's owner does not approve taking it on"});
+    let decide = |name: &str, label: &str, decision: &str, risk: Option<Value>| {
+        let mut effects = vec![json!({"type": "set_fields", "values": {"decision": format!("'{decision}'"), "approver": "user.email", "decided_on": "today"}})];
+        effects.extend(risk.map(|v| json!({"type": "update_linked", "link": "risk", "values": v})));
+        json!({"name": name, "label": label, "condition": "doc.status == 'Draft'", "roles": ["Risk Approver"], "refuse_if": [owner], "effects": effects})
+    };
+    // A policy's text is published at its next revision; with nothing new, the check `nothing_new` refuses it.
+    let same = "doc.status == 'Published' && doc.text == doc.published_text";
+    vec![
+        ("XRiskAcceptance", decide("accept", "Accept It", "Accepted", Some(json!({"treatment": "'Accept'"})))),
+        ("XRiskAcceptance", decide("reject", "Reject It", "Rejected", None)),
+        (
+            "XRiskAcceptance",
+            json!({"name": "revoke", "label": "Revoke It", "condition": "doc.status == 'Accepted'", "roles": ["Risk Approver"], "confirm": "Revoke this acceptance? The risk is open again unless another acceptance holds it.",
+                "effects": [{"type": "set_fields", "values": {"decision": "'Revoked'", "revoked_on": "today"}},
+                            {"type": "update_linked", "link": "risk", "values": {"recheck": "true"}}]}),
+        ),
+        (
+            "XPolicy",
+            json!({"name": "publish", "label": "Publish It", "condition": "doc.status != 'Retired'",
+                "effects": [{"type": "set_fields", "values": {"nothing_new": same, "status": "'Published'", "revision": "doc.revision + 1",
+                    "published_text": "doc.text", "published_on": "today"}}]}),
+        ),
+        (
+            "XPolicy",
+            json!({"name": "retire", "label": "Retire It", "condition": "doc.status == 'Published'", "confirm": "Retire this policy? It is no longer offered to read.",
+                "effects": [{"type": "set_fields", "values": {"status": "'Retired'"}}]}),
+        ),
+        (
+            "XPolicy",
+            json!({"name": "acknowledge", "label": "I Have Read It", "permission": "read", "condition": "doc.status == 'Published'",
+                "effects": [{"type": "create_document", "entity": "XPolicyAcknowledgement", "values": {"policy": "doc.id", "person": "user.email"}}]}),
+        ),
+    ]
+}
+
 /// The rules a check cannot hold: they count other records, or fill fields from the ones they read.
 fn solution() -> String {
-    let held = json!([{"name": "held", "entity": "XRiskAcceptance", "link": "risk", "filter": [["status", "=", "Accepted"]], "op": "exists"}]);
-    let publish = "has(doc.publish) && doc.publish && !(has(doc.retire) && doc.retire)";
-    let changed = "doc.text != coalesce(doc.published_text, \"\")";
+    // Approved, and its last day today or later: an expired acceptance holds nothing, the day it expires.
+    let held = json!([{"name": "held", "entity": "XRiskAcceptance", "link": "risk", "filter": [["status", "=", "Accepted"], ["expires_on", ">=", {"today": 0}]], "op": "exists"}]);
     json!({"schema_version": "ferrum.solution/1", "kind": "Solution", "id": "grc.rules", "version": "1.0.0", "label": "Governance and Risk rules",
         "parameters": {"tolerance": {"type": "int", "value": 6}},
         "rules": [
         {"id": "accepted_only_with_acceptance", "entity": "XRisk", "phase": "validate", "field": "treatment", "aggregates": held,
          "check": "doc.treatment != \"Accept\" || doc.current_likelihood * doc.current_impact <= parameters.tolerance || aggregates.held",
          "message": "a risk above the tolerance is accepted only with an approved acceptance"},
+        // Revoking or expiring an acceptance asks its risk to look again: open, unless another acceptance holds it.
         {"id": "open_again", "entity": "XRisk", "phase": "derive", "when": "has(doc.recheck) && doc.recheck", "aggregates": held,
-         "writes": {"recheck": "false",
-                    "treatment": "doc.treatment == \"Accept\" && doc.current_likelihood * doc.current_impact > parameters.tolerance && !aggregates.held ? \"Open\" : doc.treatment"}},
-        {"id": "publish", "entity": "XPolicy", "phase": "derive", "when": "(has(doc.publish) && doc.publish) || (has(doc.retire) && doc.retire)",
-         "writes": {
-            "status": "has(doc.retire) && doc.retire ? \"Retired\" : \"Published\"",
-            "revision": format!("{publish} && {changed} ? coalesce(doc.revision, 0) + 1 : coalesce(doc.revision, 0)"),
-            "published_text": format!("{publish} ? doc.text : coalesce(doc.published_text, \"\")"),
-            "published_on": format!("{publish} ? today : coalesce(doc.published_on, today)"),
-            "publish": "false",
-            "nothing_new": format!("{publish} && coalesce(doc.status, \"\") == \"Published\" && !({changed})")}}]})
+         "writes": {"recheck": "false", "treatment": "doc.treatment == \"Accept\" && !aggregates.held ? \"Open\" : doc.treatment"}}]})
     .to_string()
 }
 
@@ -295,19 +296,19 @@ fn roles() -> Vec<(&'static str, Value)> {
         ("Risk Approver", json!({"entity": "XRiskAcceptance", "read": true, "write": true})),
         ("Risk Approver", json!({"entity": "XControl", "read": true})),
         ("Policy Reader", json!({"entity": "XPolicy", "read": true, "where": {"status": ["Published"]}})),
-        ("Policy Reader", json!({"entity": "XPolicyAcknowledgement", "read": true, "create": true, "if_owner": true})),
+        ("Policy Reader", json!({"entity": "XPolicyAcknowledgement", "read": true, "if_owner": true})),
     ]
 }
 
-/// The app's upkeep, as one automation a day per kind of record. A touch (`status` set to itself) saves the
-/// record again, so its computed fields are worked out on that day.
+/// The app's upkeep, as one automation a day per kind of record. A touch (a field set to itself) saves the
+/// record again, so its computed fields are worked out on that day: an acceptance past its last day is
+/// Expired, and its risk is asked to look again at once.
 fn automations() -> Vec<Value> {
     let every = |at: &str, filter: Value| json!({"every": {"period": "day", "at": at, "filter": filter}});
     vec![
         json!({"name": "Acceptances expire", "entity": "XRiskAcceptance", "event": "scheduled", "schedule": every("00:00", json!([["status", "=", "Accepted"]])),
-            "condition": "doc.expires_on < today", "actions": [{"type": "set_fields", "values": {"status": "'Expired'"}}], "is_active": true}),
-        json!({"name": "Accepted risks rechecked", "entity": "XRisk", "event": "scheduled", "schedule": every("00:05", json!([["treatment", "=", "Accept"]])),
-            "actions": [{"type": "set_fields", "values": {"recheck": "true"}}], "is_active": true}),
+            "condition": "doc.expires_on < today", "actions": [{"type": "set_fields", "values": {"justification": "doc.justification"}},
+                                                               {"type": "update_linked", "link": "risk", "values": {"recheck": "true"}}], "is_active": true}),
         json!({"name": "Controls' standing", "entity": "XControl", "event": "scheduled", "schedule": every("00:10", json!([["effective", "=", true]])),
             "actions": [{"type": "set_fields", "values": {"status": "doc.status"}}], "is_active": true}),
         json!({"name": "Findings overdue", "entity": "XFinding", "event": "scheduled", "schedule": every("00:15", json!([["status", "!=", "Closed"], ["overdue", "=", false]])),
@@ -418,6 +419,9 @@ async fn build(k: &Arc<Kernel>) -> Value {
     }
     for (entity, name, check, says) in checks() {
         ops.push(serde_json::from_value(json!({"entity": entity, "op": {"op": "add_rule", "rule": {"name": name, "check": check, "message": says}}})).unwrap());
+    }
+    for (entity, action) in actions() {
+        ops.push(serde_json::from_value(json!({"entity": entity, "op": {"op": "add_action", "action": action}})).unwrap());
     }
     k.batch_customizations(&admin, ops, false).await.unwrap_or_else(|(at, e)| panic!("customization {at:?}: {}", message(&e)));
     let admin = src.admin().await;
@@ -587,54 +591,56 @@ async fn scenario() {
 
     // ───────────── accepting a risk ─────────────
     let acceptance = |risk: Uuid, until: String| json!({"risk": risk.to_string(), "justification": "Insurance covers it this year", "expires_on": until});
+    let act = |ctx: &Ctx, entity: &'static str, id: Uuid, action: &'static str| {
+        let ctx = ctx.clone();
+        async move { k.run_action(&ctx, entity, id, action, json!({})).await }
+    };
     // SAME: an acceptance ends after today.
     refused(k.insert(&rm, "XRiskAcceptance", obj(acceptance(ransom_id, today.to_string()))).await, "invalid", "is after today");
     let acc = id_of(&t.insert(&rm, "XRiskAcceptance", acceptance(ransom_id, (today + Duration::days(30)).to_string())).await);
-    // DIFFERENT: deciding is setting the acceptance's status (no "Accept It" button: an action needs code, and a
-    // workflow's transition is invisible to rules and automations). A manager, or an approver who owns the
-    // risk, is refused as invalid with the app's words, where the app answered forbidden.
-    let decide = |to: &str| json!({"status": to});
-    refused(t.set(&rm, "XRiskAcceptance", acc, decide("Accepted")).await, "invalid", "a Risk Approver decides");
-    refused(t.set(&owner_approver, "XRiskAcceptance", acc, decide("Accepted")).await, "invalid", "owner does not approve");
-    let a = t.set(&ra, "XRiskAcceptance", acc, decide("Accepted")).await.expect("accepted");
+    // SAME: the status is read-only, moved only by decisions and upkeep (a status sent is ignored).
+    t.set(&rm, "XRiskAcceptance", acc, json!({"status": "Accepted"})).await.unwrap();
+    assert_eq!(t.get("XRiskAcceptance", acc).await["status"], "Draft");
+    // SAME, in the platform's words: deciding is a button (Accept It, Reject It, Revoke It) for a Risk Approver,
+    // refused as forbidden to a manager, and to an approver who owns the risk.
+    refused(act(&rm, "XRiskAcceptance", acc, "accept").await, "forbidden", "'Accept It' is for Risk Approver");
+    refused(act(&owner_approver, "XRiskAcceptance", acc, "accept").await, "forbidden", "a risk's owner does not approve taking it on");
+    refused(act(&ra, "XRiskAcceptance", acc, "revoke").await, "invalid", "'Revoke It' is not available");
+    let a = act(&ra, "XRiskAcceptance", acc, "accept").await.expect("accepted");
+    assert_eq!(a["status"], "Accepted", "the answer says the new status: {a}");
+    let a = t.get("XRiskAcceptance", acc).await;
     assert_eq!((a["approver"].as_str(), a["decided_on"].as_str()), (Some("ra@secure.test"), Some(today.to_string().as_str())));
-    // CANNOT: the app sets the risk's treatment to Accept when its acceptance is approved. Nothing configured
-    // writes another record (an automation sets fields of its own record only, and creates new ones), so the
-    // risk stays as it was until its manager sets it, which the approved acceptance now allows.
-    assert_eq!(t.get("XRisk", ransom_id).await["treatment"], "Mitigate", "not changed by the approval");
-    t.set(&rm, "XRisk", ransom_id, json!({"treatment": "Accept"})).await.expect("held by the approved acceptance");
+    // SAME: approving puts the risk's treatment to Accept (the action writes the risk it links to, under the
+    // risk's own rule: the acceptance it is approving holds it).
+    assert_eq!(t.get("XRisk", ransom_id).await["treatment"], "Accept", "accepted by the approval");
     // SAME: an accepted risk is kept.
     t.set(&rm, "XRisk", ransom_id, json!({"description": "Encrypted shares"})).await.expect("an accepted risk is kept");
-    // DIFFERENT: past its day, the acceptance expires at midnight, and the risk is open again at the daily
-    // recheck after it (the app does both in one upkeep). The harness ages it past its day; two days of the
-    // scanner, since the two automations' order within one minute is not fixed.
+    // SAME: past its day, the acceptance expires at the midnight upkeep, which opens the risk again at once
+    // unless another acceptance holds it. The harness ages it past its day; one day of the scanner.
     t.age(&[acc], "expires_on", -31).await;
     day!();
     assert_eq!(t.get("XRiskAcceptance", acc).await["status"], "Expired");
-    day!();
     assert_eq!(t.get("XRisk", ransom_id).await["treatment"], "Open", "open again once its acceptance expired");
     let again = id_of(&t.insert(&rm, "XRiskAcceptance", acceptance(ransom_id, (today + Duration::days(60)).to_string())).await);
-    t.set(&ra, "XRiskAcceptance", again, decide("Accepted")).await.unwrap();
-    // CANNOT (as above): the manager accepts the risk again by hand.
-    t.set(&rm, "XRisk", ransom_id, json!({"treatment": "Accept"})).await.unwrap();
-    // DIFFERENT: refused as invalid, in the words of deciding, where the app answered forbidden.
-    refused(t.set(&rm, "XRiskAcceptance", again, decide("Revoked")).await, "invalid", "a Risk Approver decides");
-    // CANNOT: past its day before the midnight automation has run, an approved acceptance still holds the risk.
-    // A rule counts acceptances with filters of literal values only (no `today`), so "accepted and not past its
-    // day" cannot be counted; a lookup could compare the day, but only of a record the risk links to.
+    act(&ra, "XRiskAcceptance", again, "accept").await.unwrap();
+    assert_eq!(t.get("XRisk", ransom_id).await["treatment"], "Accept");
+    // SAME: revoking is a Risk Approver's (forbidden to the manager).
+    refused(act(&rm, "XRiskAcceptance", again, "revoke").await, "forbidden", "'Revoke It' is for Risk Approver");
+    // SAME: past its day, before the midnight upkeep has run, an approved acceptance no longer holds the risk:
+    // the rule counts approved acceptances whose last day is today or later (the day in the aggregate's filter).
     t.age(&[again], "expires_on", -61).await;
     t.set(&rm, "XRisk", ransom_id, json!({"treatment": "Open"})).await.unwrap();
-    t.set(&rm, "XRisk", ransom_id, json!({"treatment": "Accept"})).await.expect("today: still held, where the app refuses");
+    refused(t.set(&rm, "XRisk", ransom_id, json!({"treatment": "Accept"})).await, "invalid", "only with an approved acceptance");
     t.age(&[again], "expires_on", 61).await;
     t.set(&rm, "XRisk", ransom_id, json!({"treatment": "Accept"})).await.expect("held again once its day is ahead");
-    // DIFFERENT: revoked, the risk is open again at the next daily recheck, not at once.
-    t.set(&ra, "XRiskAcceptance", again, decide("Revoked")).await.expect("revoked");
-    assert_eq!(t.get("XRisk", ransom_id).await["treatment"], "Accept", "until the recheck");
-    day!();
+    // SAME: revoked, the risk is open again at once, and the day revoked is recorded.
+    act(&ra, "XRiskAcceptance", again, "revoke").await.expect("revoked");
+    let r = t.get("XRiskAcceptance", again).await;
+    assert_eq!((r["status"].as_str(), r["revoked_on"].as_str()), (Some("Revoked"), Some(today.to_string().as_str())));
     assert_eq!(t.get("XRisk", ransom_id).await["treatment"], "Open", "open again once revoked");
     // SAME: a rejected acceptance leaves the risk open.
     let no = id_of(&t.insert(&rm, "XRiskAcceptance", acceptance(ransom_id, (today + Duration::days(60)).to_string())).await);
-    t.set(&ra, "XRiskAcceptance", no, decide("Rejected")).await.unwrap();
+    act(&ra, "XRiskAcceptance", no, "reject").await.unwrap();
     assert_eq!(
         (t.get("XRiskAcceptance", no).await["status"].as_str(), t.get("XRisk", ransom_id).await["treatment"].as_str()),
         (Some("Rejected"), Some("Open"))
@@ -644,37 +650,38 @@ async fn scenario() {
     let policy = id_of(&t.insert(&rm, "XPolicy", json!({"title": "Acceptable use", "owner": "rm@secure.test", "text": "Lock your screen."})).await);
     // SAME: a reader does not see a draft.
     refused(k.get(&reader, "XPolicy", policy, false).await, "not found", "");
-    // DIFFERENT: publishing is ticking "Publish It" and saving (the solution's derivation fills the revision,
-    // the text as published and the day, and unticks it), not a button.
-    let p = t.set(&rm, "XPolicy", policy, json!({"publish": true})).await.expect("published");
+    // SAME: publishing is a button (Publish It): the next revision, the text as published, the day.
+    let p = act(&rm, "XPolicy", policy, "publish").await.expect("published");
+    assert_eq!(p["status"], "Published", "{p}");
+    let p = t.get("XPolicy", policy).await;
     assert_eq!((p["revision"].as_i64(), p["published_text"].as_str(), p["status"].as_str()), (Some(1), Some("Lock your screen."), Some("Published")));
-    assert_eq!(p["publish"], false);
     // SAME: nothing new to publish.
-    refused(t.set(&rm, "XPolicy", policy, json!({"publish": true})).await, "invalid", "nothing new to publish");
-    // DIFFERENT: acknowledging is creating an acknowledgement of the policy (its revision, the person and the
-    // moment are filled); the second time the unique key refuses it as a conflict, in the platform's words.
-    let ack = |p: Uuid| json!({"policy": p.to_string()});
-    let first = t.insert(&reader, "XPolicyAcknowledgement", ack(policy)).await;
+    refused(act(&rm, "XPolicy", policy, "publish").await, "invalid", "nothing new to publish");
+    // SAME: "I Have Read It" records my acknowledgement of the current revision (made by the action as the
+    // system: a reader creates none herself).
+    let done = act(&reader, "XPolicy", policy, "acknowledge").await.expect("acknowledged");
+    let first = t.get("XPolicyAcknowledgement", id_of(done["made"][0].as_object().unwrap())).await;
     assert_eq!((first["revision"].as_i64(), first["person"].as_str()), (Some(1), Some("pat@secure.test")));
-    refused(k.insert(&reader, "XPolicyAcknowledgement", obj(ack(policy))).await, "conflict", "already has this Policy and Revision and Person");
+    refused(k.insert(&reader, "XPolicyAcknowledgement", obj(json!({"policy": policy.to_string()}))).await, "forbidden", "");
+    // DIFFERENT: the second time, the unique key refuses it as a conflict, in the platform's words.
+    refused(act(&reader, "XPolicy", policy, "acknowledge").await, "conflict", "already has this Policy and Revision and Person");
     // SAME: what was published stays until published again, at its next revision.
     t.set(&rm, "XPolicy", policy, json!({"text": "Lock your screen. Report lost devices."})).await.unwrap();
     assert_eq!(t.get("XPolicy", policy).await["published_text"], "Lock your screen.", "what was published stays until published again");
-    t.set(&rm, "XPolicy", policy, json!({"publish": true})).await.unwrap();
+    act(&rm, "XPolicy", policy, "publish").await.unwrap();
     assert_eq!(t.get("XPolicy", policy).await["revision"], 2);
-    t.insert(&reader, "XPolicyAcknowledgement", ack(policy)).await;
-    t.insert(&reader2, "XPolicyAcknowledgement", ack(policy)).await;
+    act(&reader, "XPolicy", policy, "acknowledge").await.unwrap();
+    act(&reader2, "XPolicy", policy, "acknowledge").await.unwrap();
     let acks = k.list(&admin, "XPolicyAcknowledgement", &ListQuery::default()).await.unwrap().rows;
     let mut seen: Vec<(String, i64)> = acks.iter().map(|a| (a["person"].as_str().unwrap().to_string(), a["revision"].as_i64().unwrap())).collect();
     seen.sort();
     assert_eq!(seen, [("pat@secure.test".to_string(), 1), ("pat@secure.test".to_string(), 2), ("quinn@secure.test".to_string(), 2)]);
     // SAME: a reader sees her own acknowledgements.
     assert_eq!(k.list(&reader2, "XPolicyAcknowledgement", &ListQuery::default()).await.unwrap().rows.len(), 1, "a reader sees her own acknowledgements");
-    // DIFFERENT: retiring is ticking "Retire It"; a retired policy is refused as a link that cannot be used
-    // (invalid), where the app answered not found.
-    t.set(&rm, "XPolicy", policy, json!({"retire": true})).await.unwrap();
+    // SAME: retiring is a button (Retire It); a retired policy is not found by a reader, so not acknowledged.
+    act(&rm, "XPolicy", policy, "retire").await.unwrap();
     assert_eq!(t.get("XPolicy", policy).await["status"], "Retired");
-    refused(k.insert(&reader, "XPolicyAcknowledgement", obj(ack(policy))).await, "invalid", "cannot be used here");
+    refused(act(&reader, "XPolicy", policy, "acknowledge").await, "not found", "");
     refused(k.get(&reader, "XPolicy", policy, false).await, "not found", "");
 
     // ───────────── findings ─────────────

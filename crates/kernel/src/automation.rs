@@ -37,6 +37,10 @@ pub enum AutomationAction {
     SetFields { values: BTreeMap<String, String> },
     /// Create a new record; each value is a CEL expression over `doc` (the triggering record).
     CreateDocument { entity: String, values: BTreeMap<String, String> },
+    /// Set fields of the record a link field of the triggering record names, saved through the pipeline with that
+    /// record's checks and rules; each value is a CEL expression over `doc` and `linked` (the record written, as it
+    /// was). An empty link does nothing; a link to a record that is not there is an error.
+    UpdateLinked { link: String, values: BTreeMap<String, String> },
     /// In-app notification. `to`: `owner`, `role:<name>`, `user:<uuid>`, or `field:<name>` — the
     /// user whose email is in that field of the record (an assignee, an employee).
     Notify {
@@ -61,7 +65,7 @@ pub enum AutomationAction {
     },
 }
 
-fn check_action(a: &AutomationAction) -> Result<()> {
+pub(crate) fn check_action(a: &AutomationAction) -> Result<()> {
     if let AutomationAction::Notify { to, .. } = a {
         let ok = to == "owner"
             || to.strip_prefix("role:").is_some_and(|r| !r.trim().is_empty())
@@ -72,7 +76,9 @@ fn check_action(a: &AutomationAction) -> Result<()> {
         }
     }
     let exprs: Vec<&String> = match a {
-        AutomationAction::SetFields { values } | AutomationAction::CreateDocument { values, .. } => values.values().collect(),
+        AutomationAction::SetFields { values } | AutomationAction::CreateDocument { values, .. } | AutomationAction::UpdateLinked { values, .. } => {
+            values.values().collect()
+        }
         AutomationAction::Notify { title, body, .. } => std::iter::once(title).chain(body.iter()).collect(),
         AutomationAction::Email { to, subject, body, template, .. } => {
             if let Some(t) = template {
@@ -162,8 +168,44 @@ fn compiled(src: &str) -> Result<Expr> {
 }
 
 fn eval(src: &str, doc: &Value, user: &Value) -> Result<Value> {
+    eval_with(src, doc, user, &[])
+}
+
+/// [`eval`] with more variables: a configured action's `params`, the `linked` record an effect writes.
+fn eval_with(src: &str, doc: &Value, user: &Value, extra: &[(&str, &Value)]) -> Result<Value> {
     let expr = compiled(src)?;
-    expr.eval(&Scope { doc, old: None, parent: None, user }).map_err(|e| Error::invalid(format!("'{src}': {e}")))
+    expr.eval_with(&Scope { doc, old: None, parent: None, user }, extra).map_err(|e| Error::invalid(format!("'{src}': {e}")))
+}
+
+/// What an automation's (or a configured action's) actions write, checked against the entity they run on when
+/// they are saved: `update_linked` names a link field of it, and every field written is a field of the record
+/// written. A refusal names the action by its place.
+pub(crate) fn check_targets(schema: &ferrum_meta::Schema, entity: &str, actions: &[AutomationAction]) -> Result<()> {
+    let ent = schema.entity(entity).ok_or_else(|| Error::field("entity", "unknown entity"))?;
+    for (i, a) in actions.iter().enumerate() {
+        let at = |m: String| Error::Validation(vec![FieldError::new("actions", m).in_row("actions", i)]);
+        let (target, values) = match a {
+            AutomationAction::SetFields { values } => (ent.clone(), values),
+            AutomationAction::CreateDocument { entity, values } => {
+                (schema.entity(entity).cloned().ok_or_else(|| at(format!("unknown entity {entity}")))?, values)
+            }
+            AutomationAction::UpdateLinked { link, values } => {
+                let to = linked_entity(ent, link).ok_or_else(|| at(format!("{link} is not a link field of {}", ent.def.label)))?;
+                (schema.entity(to).cloned().ok_or_else(|| at(format!("{link} links to {to}, which is not installed")))?, values)
+            }
+            AutomationAction::Notify { .. } | AutomationAction::Email { .. } => continue,
+        };
+        // The platform's own keys are ignored when written, as they always were (a configured action refuses them).
+        if let Some(f) = values.keys().find(|f| target.field(f).is_none() && !crate::store::SYSTEM_KEYS.contains(&f.as_str())) {
+            return Err(at(format!("{} has no field {f}", target.def.label)));
+        }
+    }
+    Ok(())
+}
+
+/// The entity a link field of `ent` points at.
+fn linked_entity<'a>(ent: &'a ferrum_meta::EffEntity, link: &str) -> Option<&'a str> {
+    ent.field(link).filter(|f| f.ftype == ferrum_meta::FieldType::Link).and_then(|f| f.to.as_deref())
 }
 
 fn as_text(v: Value) -> String {
@@ -373,7 +415,7 @@ async fn run_one(
     };
     let status = if pass {
         for action in validate_actions(&a.actions)? {
-            execute(k, &ctx, &mut tx, entity, record, cel_doc, &user, action).await?;
+            execute(k, &ctx, &mut tx, entity, record, cel_doc, &user, &[], action).await?;
         }
         "done"
     } else {
@@ -390,8 +432,10 @@ async fn run_one(
     Ok(status)
 }
 
+/// Runs one action as `ctx` in `tx`, its expressions over `doc` (the record as CEL sees it), `user` and `extra`
+/// (a configured action's `params`). Returns the record it made or wrote, `{entity, id, number}`, or null.
 #[allow(clippy::too_many_arguments)]
-async fn execute(
+pub(crate) async fn execute(
     k: &Kernel,
     ctx: &Ctx,
     tx: &mut crate::db::Tx,
@@ -399,27 +443,53 @@ async fn execute(
     record: Option<Uuid>,
     doc: &Value,
     user: &Value,
+    extra: &[(&str, &Value)],
     action: AutomationAction,
-) -> Result<()> {
+) -> Result<Value> {
+    let eval = |src: &str| eval_with(src, doc, user, extra);
+    let made = |entity: &str, d: &Doc| serde_json::json!({"entity": entity, "id": d.get("id"), "number": d.get("number")});
     match action {
         AutomationAction::SetFields { values } => {
             let id = record.ok_or_else(|| Error::invalid("set_fields needs a record"))?;
             let mut patch = Doc::new();
             for (field, expr) in values {
-                patch.insert(field, eval(&expr, doc, user)?);
+                patch.insert(field, eval(&expr)?);
             }
             k.update_tx(ctx, tx, entity, id, patch, None).await?;
         }
         AutomationAction::CreateDocument { entity: target, values } => {
             let mut input = Doc::new();
             for (field, expr) in values {
-                input.insert(field, eval(&expr, doc, user)?);
+                input.insert(field, eval(&expr)?);
             }
-            k.insert_tx(ctx, tx, &target, input).await?;
+            let d = k.insert_tx(ctx, tx, &target, input).await?;
+            return Ok(made(&target, &d));
+        }
+        AutomationAction::UpdateLinked { link, values } => {
+            let ent = ctx.schema.entity(entity).cloned().ok_or_else(|| Error::invalid(format!("unknown entity {entity}")))?;
+            let target = linked_entity(&ent, &link).ok_or_else(|| Error::invalid(format!("update_linked: {link} is not a link field of {}", ent.def.label)))?;
+            let tent = ctx.schema.entity(target).cloned().ok_or_else(|| Error::invalid(format!("update_linked: {target} is not installed")))?;
+            // An empty link names nothing to write.
+            let Some(id) = doc.get(&link).and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok()) else { return Ok(Value::Null) };
+            // Locked for the rest of the transaction, as the save below locks it.
+            let linked = match k.get_tx(ctx, tx, target, id, true).await {
+                Ok(d) => d,
+                Err(Error::NotFound(_)) => return Err(Error::invalid(format!("{link}: the {} it names does not exist", tent.def.label))),
+                Err(e) => return Err(e),
+            };
+            let seen = tent.cel_view(&Value::Object(linked), &ctx.schema);
+            let mut vars = extra.to_vec();
+            vars.push(("linked", &seen));
+            let mut patch = Doc::new();
+            for (field, expr) in values {
+                patch.insert(field, eval_with(&expr, doc, user, &vars)?);
+            }
+            let d = k.update_tx(ctx, tx, target, id, patch, None).await?;
+            return Ok(made(target, &d));
         }
         AutomationAction::Notify { to, title, body } => {
-            let title = as_text(eval(&title, doc, user)?);
-            let body = body.map(|b| eval(&b, doc, user).map(as_text)).transpose()?;
+            let title = as_text(eval(&title)?);
+            let body = body.map(|b| eval(&b).map(as_text)).transpose()?;
             let users: Vec<Uuid> = if to == "owner" {
                 doc.get("created_by").and_then(Value::as_str).and_then(|s| s.parse().ok()).into_iter().collect()
             } else if let Some(role) = to.strip_prefix("role:") {
@@ -449,8 +519,8 @@ async fn execute(
             }
         }
         AutomationAction::Email { to, subject, body, template, purpose } => {
-            let to = as_text(eval(&to, doc, user)?);
-            let subject = as_text(eval(&subject, doc, user)?);
+            let to = as_text(eval(&to)?);
+            let subject = as_text(eval(&subject)?);
             // The body is text: nothing a record holds becomes markup in a mail sent in the workspace's name. A
             // template's own markup is the administrator's; what it prints from the record is escaped.
             let body = render_mail(&body, template.as_deref(), doc, user)?;
@@ -458,7 +528,7 @@ async fn execute(
             k.queue_mail_for(tx, ctx.tenant, &to, &subject, &body, &[], purpose).await?;
         }
     }
-    Ok(())
+    Ok(Value::Null)
 }
 
 /// Validates and stores an automation definition.
@@ -501,7 +571,7 @@ pub(crate) async fn save_in(ctx: &Ctx, tx: &mut crate::db::Tx, input: &Map<Strin
         Expr::compile(c).map_err(|m| Error::field("condition", m))?;
     }
     let actions = input.get("actions").cloned().unwrap_or(Value::Null);
-    validate_actions(&actions)?;
+    check_targets(&ctx.schema, &entity, &validate_actions(&actions)?)?;
     let id = input.get("id").and_then(Value::as_str).and_then(|s| s.parse().ok()).unwrap_or_else(Uuid::now_v7);
     let active = input.get("is_active").and_then(Value::as_bool).unwrap_or(true);
     if active {

@@ -5,7 +5,14 @@
         {
           "type": "set_fields",
           "values": {
-            "status": "'Expired'"
+            "justification": "doc.justification"
+          }
+        },
+        {
+          "link": "risk",
+          "type": "update_linked",
+          "values": {
+            "recheck": "true"
           }
         }
       ],
@@ -22,33 +29,6 @@
               "status",
               "=",
               "Accepted"
-            ]
-          ],
-          "period": "day"
-        }
-      }
-    },
-    {
-      "actions": [
-        {
-          "type": "set_fields",
-          "values": {
-            "recheck": "true"
-          }
-        }
-      ],
-      "entity": "XRisk",
-      "event": "scheduled",
-      "is_active": true,
-      "name": "Accepted risks rechecked",
-      "schedule": {
-        "every": {
-          "at": "00:05",
-          "filter": [
-            [
-              "treatment",
-              "=",
-              "Accept"
             ]
           ],
           "period": "day"
@@ -1642,9 +1622,46 @@
             {
               "computed": null,
               "currency": null,
-              "default": "Draft",
+              "default": null,
               "default_expr": null,
-              "description": "A Risk Approver who does not own the risk sets it to Accepted or Rejected, and an accepted one to Revoked",
+              "description": "Set by Accept It, Reject It and Revoke It",
+              "fetch_from": null,
+              "hidden": true,
+              "in_filter": false,
+              "in_list": false,
+              "index": false,
+              "label": null,
+              "link_filters": null,
+              "locked": false,
+              "max": null,
+              "max_length": null,
+              "min": null,
+              "name": "decision",
+              "no_copy": true,
+              "of": null,
+              "on_delete": "restrict",
+              "options": [
+                "Accepted",
+                "Rejected",
+                "Revoked"
+              ],
+              "perm_group": null,
+              "precision": null,
+              "read_only": true,
+              "read_only_if": null,
+              "required": false,
+              "required_if": null,
+              "to": null,
+              "type": "select",
+              "unique": false,
+              "visible_if": null
+            },
+            {
+              "computed": "doc.decision == null || doc.decision == '' ? 'Draft' : (doc.decision == 'Accepted' && doc.expires_on < today ? 'Expired' : doc.decision)",
+              "currency": null,
+              "default": null,
+              "default_expr": null,
+              "description": "Moved by its decisions, and Expired the day after its last day",
               "fetch_from": null,
               "hidden": false,
               "in_filter": true,
@@ -1679,7 +1696,7 @@
               "visible_if": null
             },
             {
-              "computed": "doc.status == 'Draft' ? null : (has(doc.approver) && doc.approver != null && doc.approver != '' ? doc.approver : user.email)",
+              "computed": null,
               "currency": null,
               "default": null,
               "default_expr": null,
@@ -1702,7 +1719,7 @@
               "options": [],
               "perm_group": null,
               "precision": null,
-              "read_only": false,
+              "read_only": true,
               "read_only_if": null,
               "required": false,
               "required_if": null,
@@ -1712,7 +1729,7 @@
               "visible_if": null
             },
             {
-              "computed": "doc.status == 'Draft' ? null : (has(doc.decided_on) && doc.decided_on != null ? doc.decided_on : today)",
+              "computed": null,
               "currency": null,
               "default": null,
               "default_expr": null,
@@ -1735,7 +1752,40 @@
               "options": [],
               "perm_group": null,
               "precision": null,
-              "read_only": false,
+              "read_only": true,
+              "read_only_if": null,
+              "required": false,
+              "required_if": null,
+              "to": null,
+              "type": "date",
+              "unique": false,
+              "visible_if": null
+            },
+            {
+              "computed": null,
+              "currency": null,
+              "default": null,
+              "default_expr": null,
+              "description": null,
+              "fetch_from": null,
+              "hidden": false,
+              "in_filter": false,
+              "in_list": false,
+              "index": false,
+              "label": null,
+              "link_filters": null,
+              "locked": false,
+              "max": null,
+              "max_length": null,
+              "min": null,
+              "name": "revoked_on",
+              "no_copy": true,
+              "of": null,
+              "on_delete": "restrict",
+              "options": [],
+              "perm_group": null,
+              "precision": null,
+              "read_only": true,
               "read_only_if": null,
               "required": false,
               "required_if": null,
@@ -2063,72 +2113,6 @@
               "currency": null,
               "default": null,
               "default_expr": null,
-              "description": "Tick and save to publish the text as it is now",
-              "fetch_from": null,
-              "hidden": false,
-              "in_filter": false,
-              "in_list": false,
-              "index": false,
-              "label": "Publish It",
-              "link_filters": null,
-              "locked": false,
-              "max": null,
-              "max_length": null,
-              "min": null,
-              "name": "publish",
-              "no_copy": true,
-              "of": null,
-              "on_delete": "restrict",
-              "options": [],
-              "perm_group": null,
-              "precision": null,
-              "read_only": false,
-              "read_only_if": null,
-              "required": false,
-              "required_if": null,
-              "to": null,
-              "type": "check",
-              "unique": false,
-              "visible_if": null
-            },
-            {
-              "computed": null,
-              "currency": null,
-              "default": null,
-              "default_expr": null,
-              "description": "Tick and save to retire a published policy",
-              "fetch_from": null,
-              "hidden": false,
-              "in_filter": false,
-              "in_list": false,
-              "index": false,
-              "label": "Retire It",
-              "link_filters": null,
-              "locked": false,
-              "max": null,
-              "max_length": null,
-              "min": null,
-              "name": "retire",
-              "no_copy": true,
-              "of": null,
-              "on_delete": "restrict",
-              "options": [],
-              "perm_group": null,
-              "precision": null,
-              "read_only": false,
-              "read_only_if": null,
-              "required": false,
-              "required_if": null,
-              "to": null,
-              "type": "check",
-              "unique": false,
-              "visible_if": null
-            },
-            {
-              "computed": null,
-              "currency": null,
-              "default": null,
-              "default_expr": null,
               "description": null,
               "fetch_from": null,
               "hidden": true,
@@ -2148,7 +2132,7 @@
               "options": [],
               "perm_group": null,
               "precision": null,
-              "read_only": false,
+              "read_only": true,
               "read_only_if": null,
               "required": false,
               "required_if": null,
@@ -2800,18 +2784,6 @@
       "op": {
         "op": "add_rule",
         "rule": {
-          "check": "old != null || doc.status == 'Draft'",
-          "message": "a new acceptance is a draft",
-          "name": "new_is_draft",
-          "on": "save"
-        }
-      }
-    },
-    {
-      "entity": "XRiskAcceptance",
-      "op": {
-        "op": "add_rule",
-        "rule": {
           "check": "doc.status != 'Draft' || doc.expires_on > today",
           "message": "is after today",
           "name": "after_today",
@@ -2820,73 +2792,13 @@
       }
     },
     {
-      "entity": "XRiskAcceptance",
-      "op": {
-        "op": "add_rule",
-        "rule": {
-          "check": "old == null || doc.status == old.status || (old.status == 'Draft' && (doc.status == 'Accepted' || doc.status == 'Rejected')) || (old.status == 'Accepted' && (doc.status == 'Revoked' || doc.status == 'Expired'))",
-          "message": "an acceptance goes from Draft to Accepted or Rejected, and from Accepted to Revoked or Expired",
-          "name": "moves",
-          "on": "save"
-        }
-      }
-    },
-    {
-      "entity": "XRiskAcceptance",
-      "op": {
-        "op": "add_rule",
-        "rule": {
-          "check": "old == null || doc.status == old.status || doc.status == 'Expired' || user.is_admin || 'Risk Approver' in user.roles",
-          "message": "a Risk Approver decides an acceptance",
-          "name": "approver_decides",
-          "on": "save"
-        }
-      }
-    },
-    {
-      "entity": "XRiskAcceptance",
-      "op": {
-        "op": "add_rule",
-        "rule": {
-          "check": "old == null || doc.status == old.status || doc.status != 'Expired' || doc.expires_on < today",
-          "message": "an acceptance expires the day after its last day",
-          "name": "expires_after_its_day",
-          "on": "save"
-        }
-      }
-    },
-    {
-      "entity": "XRiskAcceptance",
-      "op": {
-        "op": "add_rule",
-        "rule": {
-          "check": "old == null || old.status != 'Draft' || doc.status == 'Draft' || !has(doc.risk_owner) || doc.risk_owner == null || doc.risk_owner != user.email",
-          "message": "a risk's owner does not approve taking it on",
-          "name": "owner_does_not_approve",
-          "on": "save"
-        }
-      }
-    },
-    {
       "entity": "XPolicy",
       "op": {
         "op": "add_rule",
         "rule": {
-          "check": "!has(doc.nothing_new) || doc.nothing_new != true",
+          "check": "doc.nothing_new != true",
           "message": "the text is as published: there is nothing new to publish",
           "name": "nothing_new",
-          "on": "save"
-        }
-      }
-    },
-    {
-      "entity": "XPolicy",
-      "op": {
-        "op": "add_rule",
-        "rule": {
-          "check": "!has(doc.retire) || doc.retire != true || (old != null && (old.status == 'Published' || old.status == 'Retired'))",
-          "message": "a policy is retired once it is published",
-          "name": "retired_once_published",
           "on": "save"
         }
       }
@@ -2901,6 +2813,184 @@
           "name": "closed_says_how",
           "on": "save"
         }
+      }
+    },
+    {
+      "entity": "XRiskAcceptance",
+      "op": {
+        "action": {
+          "condition": "doc.status == 'Draft'",
+          "confirm": null,
+          "docstatus": [],
+          "effects": [
+            {
+              "type": "set_fields",
+              "values": {
+                "approver": "user.email",
+                "decided_on": "today",
+                "decision": "'Accepted'"
+              }
+            },
+            {
+              "link": "risk",
+              "type": "update_linked",
+              "values": {
+                "treatment": "'Accept'"
+              }
+            }
+          ],
+          "label": "Accept It",
+          "name": "accept",
+          "permission": "write",
+          "refuse_if": [
+            {
+              "message": "a risk's owner does not approve taking it on",
+              "when": "doc.risk_owner != null && doc.risk_owner == user.email"
+            }
+          ],
+          "roles": [
+            "Risk Approver"
+          ]
+        },
+        "op": "add_action"
+      }
+    },
+    {
+      "entity": "XRiskAcceptance",
+      "op": {
+        "action": {
+          "condition": "doc.status == 'Draft'",
+          "confirm": null,
+          "docstatus": [],
+          "effects": [
+            {
+              "type": "set_fields",
+              "values": {
+                "approver": "user.email",
+                "decided_on": "today",
+                "decision": "'Rejected'"
+              }
+            }
+          ],
+          "label": "Reject It",
+          "name": "reject",
+          "permission": "write",
+          "refuse_if": [
+            {
+              "message": "a risk's owner does not approve taking it on",
+              "when": "doc.risk_owner != null && doc.risk_owner == user.email"
+            }
+          ],
+          "roles": [
+            "Risk Approver"
+          ]
+        },
+        "op": "add_action"
+      }
+    },
+    {
+      "entity": "XRiskAcceptance",
+      "op": {
+        "action": {
+          "condition": "doc.status == 'Accepted'",
+          "confirm": "Revoke this acceptance? The risk is open again unless another acceptance holds it.",
+          "docstatus": [],
+          "effects": [
+            {
+              "type": "set_fields",
+              "values": {
+                "decision": "'Revoked'",
+                "revoked_on": "today"
+              }
+            },
+            {
+              "link": "risk",
+              "type": "update_linked",
+              "values": {
+                "recheck": "true"
+              }
+            }
+          ],
+          "label": "Revoke It",
+          "name": "revoke",
+          "permission": "write",
+          "roles": [
+            "Risk Approver"
+          ]
+        },
+        "op": "add_action"
+      }
+    },
+    {
+      "entity": "XPolicy",
+      "op": {
+        "action": {
+          "condition": "doc.status != 'Retired'",
+          "confirm": null,
+          "docstatus": [],
+          "effects": [
+            {
+              "type": "set_fields",
+              "values": {
+                "nothing_new": "doc.status == 'Published' && doc.text == doc.published_text",
+                "published_on": "today",
+                "published_text": "doc.text",
+                "revision": "doc.revision + 1",
+                "status": "'Published'"
+              }
+            }
+          ],
+          "label": "Publish It",
+          "name": "publish",
+          "permission": "write"
+        },
+        "op": "add_action"
+      }
+    },
+    {
+      "entity": "XPolicy",
+      "op": {
+        "action": {
+          "condition": "doc.status == 'Published'",
+          "confirm": "Retire this policy? It is no longer offered to read.",
+          "docstatus": [],
+          "effects": [
+            {
+              "type": "set_fields",
+              "values": {
+                "status": "'Retired'"
+              }
+            }
+          ],
+          "label": "Retire It",
+          "name": "retire",
+          "permission": "write"
+        },
+        "op": "add_action"
+      }
+    },
+    {
+      "entity": "XPolicy",
+      "op": {
+        "action": {
+          "condition": "doc.status == 'Published'",
+          "confirm": null,
+          "docstatus": [],
+          "effects": [
+            {
+              "entity": "XPolicyAcknowledgement",
+              "type": "create_document",
+              "values": {
+                "person": "user.email",
+                "policy": "doc.id"
+              }
+            }
+          ],
+          "label": "I Have Read It",
+          "name": "acknowledge",
+          "permission": "read"
+        },
+        "op": "add_action"
       }
     }
   ],
@@ -2939,7 +3029,7 @@
         },
         {
           "cancel": false,
-          "create": true,
+          "create": false,
           "delete": false,
           "entity": "XPolicyAcknowledgement",
           "export": false,
@@ -3094,7 +3184,7 @@
   ],
   "solutions": [
     {
-      "artifact_digest": "sha256:fce29293cbc627c15a8634b5b005bdaef87c63ae1a7aa3fed6640403860c4dd7",
+      "artifact_digest": "sha256:e139229435c600de035acced3f18ef21d0c383f956fca6ba8ce68de5b140933a",
       "evidence": {
         "compiler": "ferrum-logic/0.1.0",
         "profile": "core",
@@ -3102,7 +3192,7 @@
           {
             "at": "2026-11-10T00:00:00+00:00",
             "decision": "approved",
-            "digest": "sha256:fce29293cbc627c15a8634b5b005bdaef87c63ae1a7aa3fed6640403860c4dd7"
+            "digest": "sha256:e139229435c600de035acced3f18ef21d0c383f956fca6ba8ce68de5b140933a"
           }
         ]
       },
@@ -3114,8 +3204,8 @@
         "events": []
       },
       "solution": "grc.rules",
-      "source": "{\"decisions\":[],\"id\":\"grc.rules\",\"kind\":\"Solution\",\"label\":\"Governance and Risk rules\",\"parameters\":{\"tolerance\":{\"type\":\"int\",\"value\":6}},\"processes\":[],\"requires\":[],\"rules\":[{\"aggregates\":[{\"entity\":\"XRiskAcceptance\",\"filter\":[[\"status\",\"=\",\"Accepted\"]],\"link\":\"risk\",\"name\":\"held\",\"op\":\"exists\"}],\"check\":\"doc.treatment != \\\"Accept\\\" || doc.current_likelihood * doc.current_impact <= parameters.tolerance || aggregates.held\",\"entity\":\"XRisk\",\"field\":\"treatment\",\"id\":\"accepted_only_with_acceptance\",\"message\":\"a risk above the tolerance is accepted only with an approved acceptance\",\"phase\":\"validate\"},{\"aggregates\":[{\"entity\":\"XRiskAcceptance\",\"filter\":[[\"status\",\"=\",\"Accepted\"]],\"link\":\"risk\",\"name\":\"held\",\"op\":\"exists\"}],\"entity\":\"XRisk\",\"id\":\"open_again\",\"phase\":\"derive\",\"when\":\"has(doc.recheck) && doc.recheck\",\"writes\":{\"recheck\":\"false\",\"treatment\":\"doc.treatment == \\\"Accept\\\" && doc.current_likelihood * doc.current_impact > parameters.tolerance && !aggregates.held ? \\\"Open\\\" : doc.treatment\"}},{\"entity\":\"XPolicy\",\"id\":\"publish\",\"phase\":\"derive\",\"when\":\"(has(doc.publish) && doc.publish) || (has(doc.retire) && doc.retire)\",\"writes\":{\"nothing_new\":\"has(doc.publish) && doc.publish && !(has(doc.retire) && doc.retire) && coalesce(doc.status, \\\"\\\") == \\\"Published\\\" && !(doc.text != coalesce(doc.published_text, \\\"\\\"))\",\"publish\":\"false\",\"published_on\":\"has(doc.publish) && doc.publish && !(has(doc.retire) && doc.retire) ? today : coalesce(doc.published_on, today)\",\"published_text\":\"has(doc.publish) && doc.publish && !(has(doc.retire) && doc.retire) ? doc.text : coalesce(doc.published_text, \\\"\\\")\",\"revision\":\"has(doc.publish) && doc.publish && !(has(doc.retire) && doc.retire) && doc.text != coalesce(doc.published_text, \\\"\\\") ? coalesce(doc.revision, 0) + 1 : coalesce(doc.revision, 0)\",\"status\":\"has(doc.retire) && doc.retire ? \\\"Retired\\\" : \\\"Published\\\"\"}}],\"schema_version\":\"ferrum.solution/1\",\"tests\":[],\"ui\":{\"layout\":{}},\"version\":\"1.0.0\"}",
-      "source_digest": "sha256:9fd60b8322643beb50b15ff380a04e00fae1eda06723357bc6adf950e9009c32",
+      "source": "{\"decisions\":[],\"id\":\"grc.rules\",\"kind\":\"Solution\",\"label\":\"Governance and Risk rules\",\"parameters\":{\"tolerance\":{\"type\":\"int\",\"value\":6}},\"processes\":[],\"requires\":[],\"rules\":[{\"aggregates\":[{\"entity\":\"XRiskAcceptance\",\"filter\":[[\"status\",\"=\",\"Accepted\"],[\"expires_on\",\">=\",{\"today\":0}]],\"link\":\"risk\",\"name\":\"held\",\"op\":\"exists\"}],\"check\":\"doc.treatment != \\\"Accept\\\" || doc.current_likelihood * doc.current_impact <= parameters.tolerance || aggregates.held\",\"entity\":\"XRisk\",\"field\":\"treatment\",\"id\":\"accepted_only_with_acceptance\",\"message\":\"a risk above the tolerance is accepted only with an approved acceptance\",\"phase\":\"validate\"},{\"aggregates\":[{\"entity\":\"XRiskAcceptance\",\"filter\":[[\"status\",\"=\",\"Accepted\"],[\"expires_on\",\">=\",{\"today\":0}]],\"link\":\"risk\",\"name\":\"held\",\"op\":\"exists\"}],\"entity\":\"XRisk\",\"id\":\"open_again\",\"phase\":\"derive\",\"when\":\"has(doc.recheck) && doc.recheck\",\"writes\":{\"recheck\":\"false\",\"treatment\":\"doc.treatment == \\\"Accept\\\" && !aggregates.held ? \\\"Open\\\" : doc.treatment\"}}],\"schema_version\":\"ferrum.solution/1\",\"tests\":[],\"ui\":{\"layout\":{}},\"version\":\"1.0.0\"}",
+      "source_digest": "sha256:9bd206b9d9c801058653d8bc1b4b3dac2c816648d093117c4a8e65433db7bb46",
       "version": "1.0.0"
     }
   ],

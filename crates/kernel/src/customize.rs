@@ -125,11 +125,19 @@ pub(crate) type Saved = (String, &'static str);
 /// An operation as a plan names it: `XGym: add_field fee`.
 fn label_of(target: &str, raw: &Value) -> String {
     let what = raw["op"].as_str().unwrap_or("customization");
-    match raw.get("field") {
+    match raw.get("field").or_else(|| raw.get("action")).or_else(|| raw.get("rule")) {
         Some(Value::Object(f)) => format!("{target}: {what} {}", f.get("name").and_then(Value::as_str).unwrap_or_default()),
         Some(Value::String(f)) => format!("{target}: {what} {f}"),
         _ => format!("{target}: {what}"),
     }
+}
+
+/// Refuses what would leave a configured action (actions.rs) writing what it may not, or naming what is not
+/// there, that was not so before.
+fn configured_actions(was: &Schema, now: &Schema) -> Result<()> {
+    let before = crate::actions::problems(was);
+    let new: Vec<String> = crate::actions::problems(now).into_iter().filter(|p| !before.contains(p)).collect();
+    if new.is_empty() { Ok(()) } else { Err(Error::invalid(format!("customization rejected: {}", new.join("; ")))) }
 }
 
 fn require_admin(ctx: &Ctx) -> Result<()> {
@@ -572,6 +580,7 @@ impl Kernel {
             let msgs: Vec<String> = now.warnings[was.warnings.len()..].iter().map(|w| format!("{}: {}", w.entity, w.message)).collect();
             return Err(Error::invalid(format!("customization rejected: {}", msgs.join("; "))));
         }
+        configured_actions(was, &now)?;
         self.guard_records(ctx, tx, was, &now).await?;
         Ok(now)
     }
@@ -616,6 +625,7 @@ impl Kernel {
         }
         // Switching a redefinition off or on changes the definition back or forth: the same guards hold.
         let now = self.build(ctx, &self.active_overlays(&mut tx, ctx.tenant).await?)?;
+        configured_actions(&was, &now)?;
         self.guard_records(ctx, &mut tx, &was, &now).await?;
         self.sync_custom_keys(ctx, &mut tx, &was, &now).await?;
         Registry::bump_version(&mut tx, ctx.tenant).await?;
