@@ -669,7 +669,7 @@ impl Kernel {
             Operation::Mail => {
                 let text = |k: &str| input.get(k).and_then(Value::as_str).unwrap_or_default();
                 let purpose = if cap.id == "ferrum.mail.marketing" { crate::retention::Purpose::Marketing } else { crate::retention::Purpose::Transactional };
-                self.queue_mail_for(tx, ctx.tenant, text("to"), text("subject"), text("body"), &[], purpose).await?;
+                self.queue_mail_for(tx, ctx.tenant, text("to"), text("subject"), &crate::outbox::text_html(text("body")), &[], purpose).await?;
                 json!({"queued": true})
             }
         })
