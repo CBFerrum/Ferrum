@@ -95,13 +95,18 @@ pub(crate) fn check_action(a: &AutomationAction) -> Result<()> {
 
 /// The HTML a mail action sends: its template when it has one, otherwise its body as escaped text. The one
 /// place it is made, so that a preview and a send never differ. A refusal is a field error on `template` or `body`.
-pub fn render_mail(body: &str, template: Option<&str>, doc: &Value, user: &Value) -> Result<String> {
+/// `extra` are more variables, as for the mail's other expressions (a configured action's `params`).
+pub fn render_mail(body: &str, template: Option<&str>, doc: &Value, user: &Value, extra: &[(&str, &Value)]) -> Result<String> {
     match template {
-        Some(t) => mail_template(t)?
-            .get_template("mail")
-            .and_then(|m| m.render(minijinja::context! { doc => minijinja::Value::from_serialize(doc), user => minijinja::Value::from_serialize(user) }))
-            .map_err(|e| Error::field("template", format!("e-mail template failed: {e}"))),
-        None => Ok(crate::outbox::text_html(&as_text(eval(body, doc, user).map_err(|e| Error::field("body", e.to_string()))?))),
+        Some(t) => {
+            let mut vars: BTreeMap<&str, &Value> = extra.iter().copied().collect();
+            vars.extend([("doc", doc), ("user", user)]);
+            mail_template(t)?
+                .get_template("mail")
+                .and_then(|m| m.render(minijinja::Value::from_serialize(&vars)))
+                .map_err(|e| Error::field("template", format!("e-mail template failed: {e}")))
+        }
+        None => Ok(crate::outbox::text_html(&as_text(eval_with(body, doc, user, extra).map_err(|e| Error::field("body", e.to_string()))?))),
     }
 }
 
@@ -128,7 +133,7 @@ pub async fn preview_mail(
     };
     let id = found.as_ref().and_then(|d| d.get("id")).and_then(Value::as_str).and_then(|s| s.parse().ok());
     let doc = ent.cel_view(&Value::Object(found.unwrap_or_default()), &ctx.schema);
-    Ok((render_mail(body.unwrap_or("''"), template, &doc, &ctx.user_value())?, id))
+    Ok((render_mail(body.unwrap_or("''"), template, &doc, &ctx.user_value(), &[])?, id))
 }
 
 pub fn validate_actions(actions: &Value) -> Result<Vec<AutomationAction>> {
@@ -523,7 +528,7 @@ pub(crate) async fn execute(
             let subject = as_text(eval(&subject)?);
             // The body is text: nothing a record holds becomes markup in a mail sent in the workspace's name. A
             // template's own markup is the administrator's; what it prints from the record is escaped.
-            let body = render_mail(&body, template.as_deref(), doc, user)?;
+            let body = render_mail(&body, template.as_deref(), doc, user, extra)?;
             // Never sent from here: a later action could still roll the run back (FLC-HOOK-002).
             k.queue_mail_for(tx, ctx.tenant, &to, &subject, &body, &[], purpose).await?;
         }

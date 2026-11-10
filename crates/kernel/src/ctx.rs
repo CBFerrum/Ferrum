@@ -692,6 +692,17 @@ pub fn action_scope(ctx: &Ctx, ent: &EffEntity, name: &str, perm: Action) -> Res
     }
 }
 
+/// Whether `ctx` may press action `def` of `ent` at all, and on which records: its permission or a rule naming it
+/// ([`action_scope`]), then a configured action's `roles` (an administrator always may). The run path and the
+/// entity's description (`may_run`) both ask this.
+pub fn action_gate(ctx: &Ctx, ent: &EffEntity, def: &ferrum_meta::ActionDef) -> Result<RowScope> {
+    let scope = action_scope(ctx, ent, &def.name, Action::parse(&def.permission).unwrap_or(Action::Write))?;
+    if !def.roles.is_empty() && !def.roles.iter().any(|r| ctx.has_role(r)) {
+        return Err(Error::Forbidden(format!("'{}' is for {}", def.label, def.roles.join(", "))));
+    }
+    Ok(scope)
+}
+
 /// The scope `grants` give on `ent` (`None`: every record), with the user's scopes on top.
 fn scope_of(ctx: &Ctx, ent: &EffEntity, grants: Option<Vec<Grant>>) -> Result<RowScope> {
     if ctx.egress.as_ref().is_some_and(|e| !e.allows_entity(&ent.def)) {
