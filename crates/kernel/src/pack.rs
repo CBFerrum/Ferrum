@@ -64,6 +64,9 @@ pub struct Pack {
     pub exported_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub requires: Requires,
+    /// The business calendars its service targets name, installed where the workspace has none of the name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub calendars: Vec<PackCalendar>,
     #[serde(default)]
     pub customizations: Vec<Customization>,
     #[serde(default)]
@@ -85,6 +88,36 @@ pub struct Requires {
     /// Package → the version the exporter had, the least the installer needs.
     #[serde(default)]
     pub packages: BTreeMap<String, String>,
+}
+
+/// A business calendar as a pack carries it: what `PUT /api/admin/calendars/{name}` takes, with its name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackCalendar {
+    pub name: String,
+    pub zone: String,
+    pub weekends: Vec<String>,
+    #[serde(default)]
+    pub holidays: BTreeSet<chrono::NaiveDate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hours: Option<BTreeMap<String, Vec<(String, String)>>>,
+}
+
+impl PackCalendar {
+    fn calendar(&self) -> ferrum_logic::calendar::Calendar {
+        let PackCalendar { name, zone, weekends, holidays, hours } = self.clone();
+        ferrum_logic::calendar::Calendar { name, zone, weekends, holidays, revision: 0, hours }
+    }
+}
+
+/// The calendars the service targets of a pack's customizations name.
+fn target_calendars(pack: &Pack) -> BTreeSet<String> {
+    let named = |op: &OverlayOp| match op {
+        OverlayOp::AddTarget { target } => target.calendar.iter().cloned().collect::<Vec<_>>(),
+        OverlayOp::DefineEntity { entity } | OverlayOp::RedefineEntity { entity } => entity.targets.iter().filter_map(|t| t.calendar.clone()).collect(),
+        _ => vec![],
+    };
+    pack.customizations.iter().flat_map(|c| named(&c.op)).collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -429,8 +462,15 @@ fn requirements(ctx: &Ctx, pack: &Pack, role_packages: &BTreeSet<String>, instal
     installed.iter().filter(|(n, _)| packages.contains(n)).cloned().collect()
 }
 
-/// What this workspace lacks of what a pack requires.
-async fn lacking(tx: &mut Tx, tenant: Uuid, requires: &Requires) -> Result<Vec<String>> {
+/// What this workspace lacks of what a pack requires: packages, and the calendars its targets name that it
+/// neither carries nor finds here.
+async fn lacking(tx: &mut Tx, tenant: Uuid, pack: &Pack) -> Result<Vec<String>> {
+    let requires = &pack.requires;
+    let carried: BTreeSet<&str> = pack.calendars.iter().map(|c| c.name.as_str()).collect();
+    let wanted: Vec<String> = target_calendars(pack).into_iter().filter(|n| !carried.contains(n.as_str())).collect();
+    let here: Vec<String> =
+        sqlx::query_scalar("select name from logic_calendar where tenant_id = $1 and name = any($2)").bind(tenant).bind(&wanted).fetch_all(&mut **tx).await?;
+    let calendars = wanted.into_iter().filter(|n| !here.contains(n)).map(|n| format!("the business calendar {n} is not here, and the pack does not carry it"));
     let have: HashMap<String, String> =
         sqlx::query_as("select name, version from installed_package where tenant_id = $1").bind(tenant).fetch_all(&mut **tx).await?.into_iter().collect();
     let older = |have: &str, want: &str| match (semver::Version::parse(have), semver::Version::parse(want)) {
@@ -445,6 +485,7 @@ async fn lacking(tx: &mut Tx, tenant: Uuid, requires: &Requires) -> Result<Vec<S
             Some(v) if older(v, want) => Some(format!("the package {p} is at {v} here; the pack needs {want} or later")),
             _ => None,
         })
+        .chain(calendars)
         .collect())
 }
 
@@ -464,6 +505,12 @@ impl Kernel {
                 .await?;
         let customizations: Vec<Customization> =
             overlays.into_iter().filter_map(|(entity, op, note)| Some(Customization { entity, op: serde_json::from_value(op).ok()?, note })).collect();
+        let mut calendars = Vec::new();
+        for name in ctx.schema.entities.values().flat_map(|e| e.def.targets.iter().filter_map(|t| t.calendar.clone())).collect::<BTreeSet<_>>() {
+            if let Some(c) = crate::load_calendar(&mut tx, ctx.tenant, &name).await? {
+                calendars.push(PackCalendar { name, zone: c.zone, weekends: c.weekends, holidays: c.holidays, hours: c.hours });
+            }
+        }
         let (roles, role_packages) = self.export_roles(ctx, &mut tx).await?;
         let automations = export_automations(ctx, &mut tx).await?;
         let studio = self.export_studio(ctx, &mut tx).await?;
@@ -495,6 +542,7 @@ impl Kernel {
             version: o.version,
             exported_at: Some(Utc::now()),
             requires: Requires::default(),
+            calendars,
             customizations,
             roles,
             automations,
@@ -750,6 +798,19 @@ impl Kernel {
     /// Everything but the solutions, in the caller's transaction: what each item did.
     async fn apply(&self, ctx: &Ctx, tx: &mut Tx, pack: &Pack) -> Result<Summary> {
         let mut summary = Summary::new();
+        // Calendars first: the targets that name them are checked against what is here. One of the same name
+        // here is left as it is.
+        for c in &pack.calendars {
+            let what = format!("calendar {}", c.name);
+            let status = match crate::load_calendar(tx, ctx.tenant, &c.name).await? {
+                Some(_) => "unchanged",
+                None => {
+                    crate::process::set_calendar_in(tx, ctx, &c.calendar()).await.map_err(|e| about(&what, e))?;
+                    "created"
+                }
+            };
+            summary.entry("calendars").or_default().add(c.name.clone(), status);
+        }
         let items = pack.customizations.iter().map(|c| NewCustomization { entity: c.entity.clone(), op: c.op.clone(), note: c.note.clone() }).collect();
         let (saved, schema) = self.merge_customizations(ctx, tx, items).await.map_err(|e| about("customizations", e))?;
         let section = summary.entry("customizations").or_default();
@@ -943,7 +1004,7 @@ impl Kernel {
         let pack = parse(raw)?;
         let digest = digest(&pack)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let missing = lacking(&mut tx, ctx.tenant, &pack.requires).await?;
+        let missing = lacking(&mut tx, ctx.tenant, &pack).await?;
         let mut out = json!({
             "name": pack.name, "label": pack.label, "version": pack.version, "digest": digest,
             "requires": pack.requires, "missing": missing, "can_install": missing.is_empty(),
@@ -992,7 +1053,7 @@ impl Kernel {
         // One install at a time in a workspace: what a pack brings is matched by name, and two installs
         // at once would each find the name free. Held to the end of this transaction.
         sqlx::query("select pg_advisory_xact_lock($1, hashtext($2))").bind(INSTALL_LOCK).bind(ctx.tenant.to_string()).execute(&mut *tx).await?;
-        let missing = lacking(&mut tx, ctx.tenant, &pack.requires).await?;
+        let missing = lacking(&mut tx, ctx.tenant, &pack).await?;
         if !missing.is_empty() {
             return Err(Error::Conflict(format!("this workspace cannot take the pack: {}", missing.join("; "))));
         }

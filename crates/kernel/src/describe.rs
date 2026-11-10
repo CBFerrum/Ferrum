@@ -29,6 +29,8 @@ pub fn field_json(ctx: &Ctx, ent: &EffEntity, f: &FieldDef) -> Value {
         m.insert("storage".into(), json!(ent.storage_of(&f.name)));
         m.insert("can_read".into(), json!(ctx.perms.can_read_field(&ent.def.name, f)));
         m.insert("can_write".into(), json!(ctx.perms.can_write_field(&ent.def.name, f)));
+        // Kept by a service target, as a total is: what people send for it is ignored.
+        m.insert("kept_by_target".into(), json!(ent.target_keeping(&f.name).map(|t| &t.name)));
         m.retain(|_, x| !x.is_null() && x != &json!(false) && x != &json!([]));
     }
     v
@@ -112,6 +114,7 @@ pub fn describe(ctx: &Ctx, ent: &EffEntity) -> Value {
         "search_fields": ent.def.search_fields,
         "rules": ent.def.rules,
         "actions": actions(ctx, ent),
+        "targets": ent.def.targets,
         "workflow": ent.workflow.as_ref().map(|w| &w.def),
         "fields": ent.def.fields.iter().map(|f| field_json(ctx, ent, f)).collect::<Vec<_>>(),
         "children": children,
@@ -127,7 +130,12 @@ pub fn entity_schema(ctx: &Ctx, ent: &EffEntity, depth: usize) -> Value {
         if f.hidden && f.ftype != FieldType::Table {
             continue;
         }
-        props.insert(f.name.clone(), field_schema(ctx, f, depth));
+        let mut schema = field_schema(ctx, f, depth);
+        if let Some(t) = ent.target_keeping(&f.name) {
+            schema["readOnly"] = json!(true);
+            schema["description"] = json!(format!("{} (kept by the target {})", schema["description"].as_str().unwrap_or_default(), t.label));
+        }
+        props.insert(f.name.clone(), schema);
         if f.required && f.default.is_none() && f.default_expr.is_none() && f.computed.is_none() && !f.read_only {
             required.push(f.name.clone());
         }

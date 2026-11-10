@@ -71,6 +71,8 @@ SCHEDULE = ("-p", "ferrum-kernel", "--test", "schedule_it")
 PACKS = ("-p", "ferrum-studio", "--test", "pack_it")
 ACTIONS = ("-p", "ferrum-kernel", "--test", "actions_it")
 INVOKE = ("-p", "ferrum-kernel", "--test", "invoke_it")
+TARGETS = ("-p", "ferrum-kernel", "--test", "targets_it")
+META_TARGETS = ("-p", "ferrum-meta", "--lib", "service_targets")
 AGGREGATES = ("-p", "ferrum-kernel", "--test", "logic_aggregates_it")
 SHARES_UNIT = ("-p", "ferrum-server", "--lib", "state::tests")
 EXPORT_UNIT = ("-p", "ferrum-server", "--lib", "controllers::docs::tests")
@@ -593,6 +595,19 @@ MUTANTS = [
     ("invoke-results-not-shown", "crates/kernel/src/actions.rs", "let extra = [(\"params\", &params), (\"results\", &done)];", "let extra = [(\"params\", &params), (\"results\", &Value::Null)];", INVOKE),
     ("invoke-input-names-unchecked", "crates/kernel/src/automation.rs", "if let Some(n) = input.keys().find(", "if let Some(n) = input.keys().filter(|_| false).find(", INVOKE),
     ("invoke-not-rechecked-as-it-runs", "crates/kernel/src/automation.rs", "            check_invoke(k, ctx, &capability, &input)?;\n", "", INVOKE),
+    # Service targets (docs/api.md, Service targets).
+    ("target-pause-ignored", "crates/logic/src/target.rs", "        if running && said.pause {", "        if false {", LOGIC_UNIT),
+    ("target-late-met-in-time", "crates/logic/src/target.rs", "(Some(m), b, _) if b.is_some() ||", "(Some(m), b, _) if false && b.is_some() ||", LOGIC_UNIT),
+    ("target-reopen-stays-met", "crates/logic/src/target.rs", "    if r.met_at.is_some() && !said.met {", "    if false {", LOGIC_UNIT),
+    ("target-shares-a-field", "crates/meta/src/effective.rs", "            if !kept.insert(name.as_str()) {", "            if false {", META_TARGETS),
+    ("target-keeps-a-packages-field", "crates/meta/src/effective.rs", "OverlayOp::AddTarget { target: t } if !b.custom &&", "OverlayOp::AddTarget { target: t } if false &&", META_TARGETS),
+    ("target-breached-twice", "crates/kernel/src/targets.rs", "paused_at is null and breached_at is null and due_at <= $1", "paused_at is null and due_at <= $1", TARGETS),
+    ("target-fields-take-input", "crates/kernel/src/doc.rs", "                || ent.target_keeping(k).is_some()\n", "\n", TARGETS),
+    ("target-calendar-unchecked", "crates/kernel/src/customize.rs", "        crate::targets::check_calendars(tx, ctx.tenant, was, &now).await?;\n", "\n", TARGETS),
+    ("target-calendar-deleted-under-it", "crates/kernel/src/process.rs", "if let Some(by) = crate::targets::naming(&ctx.schema, name) {", "if let Some(by) = None::<String> {", TARGETS),
+    ("target-rounds-outlive-record", "crates/kernel/src/doc.rs", "\"record_secret\", \"record_target\"]", "\"record_secret\"]", TARGETS),
+    ("target-skips-transitions", "crates/kernel/src/doc.rs", "        crate::targets::keep(self, ctx, tx, &ent, id, &mut next).await?;\n", "\n", TARGETS),
+    ("automation-old-unseen", "crates/kernel/src/automation.rs", "(&cel_doc, cel_old.as_ref())", "(&cel_doc, None)", TARGETS),
 
 ]
 
