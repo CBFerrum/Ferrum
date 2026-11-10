@@ -155,9 +155,9 @@ several workspaces in turn and is left as it is.
 * `Field`: `{name, label, type, required?, unique?, read_only?, hidden?, in_list?, in_filter?, options?, to?, of?, precision?, currency?, min?, max?, max_length?, default?, default_expr?, computed?, rollup?, visible_if?, required_if?, read_only_if?, fetch_from?, description?, widget?, link_filters?, storage: "column"|"ext", can_read, can_write}`.
   `rollup` (`{table, op: sum|count, field?}`) is an exact total over the record's own rows of `table`: the sum of a number field of the rows, or their count. The server computes it at every save and in the draft preview, before validation, in exact decimals; a value sent for it is ignored.
   Types: `data text markdown code int decimal currency percent date datetime check select link table json email phone url attach color secret`.
-  `visible_if`/`required_if`/`read_only_if` are CEL over `doc` (and `parent` in child rows); the server is the authority.
+  `visible_if`/`required_if`/`read_only_if` are CEL over `doc` (and `parent` in child rows); the server is the authority. `read_only_if` is judged on the record (or row) as stored before the change: while it holds, the field ignores input exactly as a `read_only` field does for that caller (the system and an amendment's copy still write it); a new record or row has nothing stored, so only `read_only` counts for it, and a condition that cannot be evaluated counts as holding.
   `widget` says how forms edit a field where its type alone does not: `studio_query` on a `json` field holding a Studio query, which forms build with Studio's report builder and show the first rows of (the field's own rules still decide what it may hold).
-  CEL also sees `user` and `today`, `now`, `time` (local to the workspace).
+  CEL also sees `user` and `today`, `now`, `time` (local to the workspace). A record's whole numbers are signed integers, as literals are (`doc.days * 24`, `doc.owed > -100`); decimals are floats for comparison.
 * `GET /api/meta/contributions/{point}` → `{point, items}`: what enabled apps contribute
   ([plugins](plugins.md#extension-points-and-add-ons)). Each item is the contribution plus its
   `app` and `version`. A point is either:
