@@ -139,6 +139,26 @@ real mailer or with a second person.
 34. **The menus screen.** Customize, Menus listed both menus; Gym was opened, given a sixth record type
     and saved, and the index had it. The new-menu form and the calendar dialog at 375 px did not scroll
     sideways.
+35. **An ERP invoice from a button, once** (server at PR 173). A button "Invoice it" on Membership
+    invoked `selling.sales_invoice.create` with a customer, a company, one line and `submit: true`, with
+    a key, then wrote `results[0].number` on the membership. Pressing it raised and submitted one ERP
+    sales invoice (250, Unpaid) with its number on the membership; pressing again went through and
+    raised nothing new; a capability that is not in the catalog was refused when the button was saved.
+36. **Service targets** (server at PR 174, through the API, 15 of 15). On a custom Request entity with
+    a target whose allowance follows the priority: a High request started running with a due moment
+    and ignored what was sent for the two kept fields; Waiting paused it and cleared the due moment;
+    opening it resumed with a later one; a lower priority moved it out; closing met it; re-opening
+    started a new round; a priority with no allowance left no target on the record. A request due in a
+    minute was marked breached by the minute loop, an automation whose condition reads `old` set a note
+    once, and closing it afterwards read `met_late`.
+37. **The targets screen** (Ferrum-Frontend PR 72). Customize, Request, Targets listed the target; a
+    second one ("Resolution", 2 days counted in the `gym_floor` calendar, met when Status is Closed)
+    was made from the screen with both kept fields made for it, and the first target and the entity's
+    other fields were as before. A request's form showed the due moment read-only and the state as a
+    badge ("Met late").
+38. **The step card.** The buttons screen opened "Invoice it" with its step, its inputs, the submit
+    tick and the key; saving it unchanged closed with "Nothing changed". Both forms at 375 px did not
+    scroll sideways.
 
 ## What these later walks found
 
@@ -157,6 +177,12 @@ real mailer or with a second person.
   "لا risk register بعد". Words are now also found by their lower-cased English.
 * Left as they are: the frame's own badge shows a menu's initials, not its icon; the bar's name of a
   menu is not translated.
+* ERP's invoice line takes its price in `price_list_rate`; a `rate` in the step's input is ignored
+  without a word (it is a computed field), and the first invoice raised by the button was submitted at
+  zero. Nothing warns whoever sets the button up. Not fixed.
+* Saving a button, target or menu that was already as saved showed the server's refusal as an error;
+  an optional condition asked for at least one row; "2 days" counted in a calendar is 48 open hours,
+  which the form did not say. Fixed in Ferrum-Frontend PR 72.
 
 ## What still needs code or is not built
 
