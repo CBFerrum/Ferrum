@@ -1,5 +1,7 @@
 //! No-code automations: `event → condition (CEL) → actions`, run after commit from the outbox.
 //! Each (automation, event) runs at most once: the run record commits with the action's effects.
+//! The event is a record's (created, updated, submitted, cancelled, deleted) or, for an automation with a
+//! schedule, a moment of a record coming due (`scheduled`, schedule.rs).
 //! An automation runs as the administrator who saved it, with their rights as they are when it runs:
 //! once they are no longer an active administrator it does not run, and its runs say why, until an
 //! administrator saves it again. One saved by no one (an app's) runs as the system.
@@ -157,6 +159,9 @@ async fn runner(
 pub async fn run_for_event(k: &Kernel, ev: &Event) -> Result<()> {
     let Some((entity, event)) = ev.topic.split_once('.') else { return Ok(()) };
     let depth = ev.payload.get("depth").and_then(Value::as_u64).unwrap_or(0) as u8;
+    if event == "scheduled" {
+        return run_scheduled(k, ev, entity, depth).await;
+    }
     let mut tx = k.db.tenant_tx(ev.tenant_id).await?;
     let autos: Vec<Automation> = sqlx::query_as(
         // The active ones, and those off because the solution imported from each runs in its place: their events
@@ -201,73 +206,7 @@ pub async fn run_for_event(k: &Kernel, ev: &Event) -> Result<()> {
     for a in autos {
         // Whom it would run as, worked out before its transaction holds anything.
         let who = runner(k, ev.tenant_id, &schema, a.created_by, format!("automation-{}-{}", a.id, ev.id)).await;
-        let res: Result<&str> = async {
-            let mut tx = k.db.tenant_tx(ev.tenant_id).await?;
-            // Read again under its lock. An activation handing it over to the solution imported from it waits for
-            // this to finish, or went first, and then the event is the solution's: claimed and started here unless
-            // the solution's own subscriber claimed it already. Each event is run by one of the two (FLC-MIG-003).
-            let active: Option<bool> = sqlx::query_scalar("select is_active from automation where tenant_id = $1 and id = $2 for share")
-                .bind(ev.tenant_id)
-                .bind(a.id)
-                .fetch_optional(&mut *tx)
-                .await?;
-            if active != Some(true) {
-                let handed = k.hand_over_automation_event(&mut tx, ev, a.id).await?;
-                tx.commit().await?;
-                return Ok(if handed { "handed over" } else { "off" });
-            }
-            let done: Option<i32> = sqlx::query_scalar("select 1 from automation_run where tenant_id = $1 and automation_id = $2 and outbox_id = $3")
-                .bind(ev.tenant_id)
-                .bind(a.id)
-                .bind(ev.id)
-                .fetch_optional(&mut *tx)
-                .await?;
-            if done.is_some() {
-                return Ok("already");
-            }
-            let mut ctx = match &who {
-                Ok(ctx) => ctx.clone(),
-                Err(why) => {
-                    // Recorded, so it is not tried again for this event, and an administrator can see why.
-                    sqlx::query(
-                        "insert into automation_run (tenant_id, automation_id, outbox_id, status, error) values ($1, $2, $3, 'failed', $4) on conflict do nothing",
-                    )
-                    .bind(ev.tenant_id)
-                    .bind(a.id)
-                    .bind(ev.id)
-                    .bind(why)
-                    .execute(&mut *tx)
-                    .await?;
-                    tx.commit().await?;
-                    tracing::warn!(automation = %a.id, event = ev.id, "automation not run: {why}");
-                    return Ok("not run");
-                }
-            };
-            ctx.depth = depth + 1;
-            let user = ctx.user_value();
-            let pass = match &a.condition {
-                Some(c) if !c.trim().is_empty() => matches!(eval(c, &cel_doc, &user)?, Value::Bool(true)),
-                _ => true,
-            };
-            let status = if pass {
-                for action in validate_actions(&a.actions)? {
-                    execute(k, &ctx, &mut tx, entity, ev.record_id, &cel_doc, &user, action).await?;
-                }
-                "done"
-            } else {
-                "skipped"
-            };
-            sqlx::query("insert into automation_run (tenant_id, automation_id, outbox_id, status) values ($1, $2, $3, $4)")
-                .bind(ev.tenant_id)
-                .bind(a.id)
-                .bind(ev.id)
-                .bind(status)
-                .execute(&mut *tx)
-                .await?;
-            tx.commit().await?;
-            Ok(status)
-        }
-        .await;
+        let res = run_one(k, ev, entity, &a, &who, depth, ev.record_id, &cel_doc, true).await;
         if let Err(e) = res {
             tracing::warn!(automation = %a.id, event = ev.id, "automation failed: {e}");
             first_error.get_or_insert(e);
@@ -277,6 +216,131 @@ pub async fn run_for_event(k: &Kernel, ev: &Event) -> Result<()> {
         Some(e) => Err(e),
         None => Ok(()),
     }
+}
+
+/// A moment of a record come due (schedule.rs): only the automation it names, with the record as it is now,
+/// read with its saver's rights. Nothing happens when the automation is off or gone, when the record is gone
+/// or no longer readable, or when the moment is no longer one of the record's (its date moved, it no longer
+/// passes the filter); otherwise it runs as for a record's event, its changes one step further in a chain.
+async fn run_scheduled(k: &Kernel, ev: &Event, entity: &str, depth: u8) -> Result<()> {
+    let auto = ev.payload.get("automation").and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok());
+    let due = ev.payload.get("due_at").and_then(Value::as_str).and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok());
+    let (Some(auto), Some(due), Some(record)) = (auto, due, ev.record_id) else { return Ok(()) };
+    let due = due.to_utc();
+    let mut tx = k.db.tenant_tx(ev.tenant_id).await?;
+    let found: Option<(Uuid, Option<String>, Value, Option<Uuid>, bool, Value)> = sqlx::query_as(
+        "select id, condition, actions, created_by, is_active, schedule from automation \
+         where tenant_id = $1 and id = $2 and entity = $3 and event = 'scheduled'",
+    )
+    .bind(ev.tenant_id)
+    .bind(auto)
+    .bind(entity)
+    .fetch_optional(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let Some((id, condition, actions, created_by, is_active, schedule)) = found else { return Ok(()) };
+    if !is_active {
+        return Ok(());
+    }
+    let a = Automation { id, condition, actions, created_by, is_active };
+    let schema = k.registry.schema(ev.tenant_id).await?;
+    let Some(ent) = schema.entity(entity).cloned() else { return Ok(()) };
+    let who = runner(k, ev.tenant_id, &schema, a.created_by, format!("automation-{}-{}", a.id, ev.id)).await;
+    let mut cel_doc = Value::Null;
+    if let Ok(ctx) = &who {
+        let doc = match k.get(ctx, entity, record, false).await {
+            Ok(doc) => doc,
+            Err(Error::NotFound(_) | Error::Forbidden(_)) => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        let Ok(plan) = crate::schedule::plan(&schema, &ent, &schedule) else { return Ok(()) };
+        if !crate::schedule::still_due(k, ev.tenant_id, &schema, &ent, &plan, record, due).await? {
+            return Ok(());
+        }
+        cel_doc = ent.cel_view(&Value::Object(doc), &schema);
+    }
+    run_one(k, ev, entity, &a, &who, depth, Some(record), &cel_doc, false).await.map(|_| ())
+}
+
+/// One automation's run for one event, in its own transaction: nothing if it is off (or the event was handed
+/// over to the solution imported from it) or ran for this event already; otherwise its condition, then its
+/// actions, recorded with their effects.
+#[allow(clippy::too_many_arguments)]
+async fn run_one(
+    k: &Kernel,
+    ev: &Event,
+    entity: &str,
+    a: &Automation,
+    who: &std::result::Result<Ctx, String>,
+    depth: u8,
+    record: Option<Uuid>,
+    cel_doc: &Value,
+    hand_over: bool,
+) -> Result<&'static str> {
+    let mut tx = k.db.tenant_tx(ev.tenant_id).await?;
+    // Read again under its lock. An activation handing it over to the solution imported from it waits for
+    // this to finish, or went first, and then the event is the solution's: claimed and started here unless
+    // the solution's own subscriber claimed it already. Each event is run by one of the two (FLC-MIG-003).
+    let active: Option<bool> = sqlx::query_scalar("select is_active from automation where tenant_id = $1 and id = $2 for share")
+        .bind(ev.tenant_id)
+        .bind(a.id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    if active != Some(true) {
+        let handed = hand_over && k.hand_over_automation_event(&mut tx, ev, a.id).await?;
+        tx.commit().await?;
+        return Ok(if handed { "handed over" } else { "off" });
+    }
+    let done: Option<i32> = sqlx::query_scalar("select 1 from automation_run where tenant_id = $1 and automation_id = $2 and outbox_id = $3")
+        .bind(ev.tenant_id)
+        .bind(a.id)
+        .bind(ev.id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    if done.is_some() {
+        return Ok("already");
+    }
+    let mut ctx = match who {
+        Ok(ctx) => ctx.clone(),
+        Err(why) => {
+            // Recorded, so it is not tried again for this event, and an administrator can see why.
+            sqlx::query(
+                "insert into automation_run (tenant_id, automation_id, outbox_id, status, error) values ($1, $2, $3, 'failed', $4) on conflict do nothing",
+            )
+            .bind(ev.tenant_id)
+            .bind(a.id)
+            .bind(ev.id)
+            .bind(why)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            tracing::warn!(automation = %a.id, event = ev.id, "automation not run: {why}");
+            return Ok("not run");
+        }
+    };
+    ctx.depth = depth + 1;
+    let user = ctx.user_value();
+    let pass = match &a.condition {
+        Some(c) if !c.trim().is_empty() => matches!(eval(c, cel_doc, &user)?, Value::Bool(true)),
+        _ => true,
+    };
+    let status = if pass {
+        for action in validate_actions(&a.actions)? {
+            execute(k, &ctx, &mut tx, entity, record, cel_doc, &user, action).await?;
+        }
+        "done"
+    } else {
+        "skipped"
+    };
+    sqlx::query("insert into automation_run (tenant_id, automation_id, outbox_id, status) values ($1, $2, $3, $4)")
+        .bind(ev.tenant_id)
+        .bind(a.id)
+        .bind(ev.id)
+        .bind(status)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(status)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -371,8 +435,19 @@ pub async fn save(k: &Kernel, ctx: &Ctx, input: &Map<String, Value>) -> Result<U
         return Err(Error::field("entity", "unknown entity"));
     }
     let event = get("event").ok_or_else(|| Error::field("event", "is required"))?;
-    if !["created", "updated", "submitted", "cancelled", "deleted"].contains(&event.as_str()) {
-        return Err(Error::field("event", "must be created, updated, submitted, cancelled or deleted"));
+    if !["created", "updated", "submitted", "cancelled", "deleted", "scheduled"].contains(&event.as_str()) {
+        return Err(Error::field("event", "must be created, updated, submitted, cancelled, deleted or scheduled"));
+    }
+    // A schedule in place of a record event, checked against the entity it is on (schedule.rs).
+    let schedule = input.get("schedule").filter(|v| !v.is_null()).cloned();
+    match (&schedule, event == "scheduled") {
+        (Some(s), true) => {
+            let ent = ctx.schema.entity(&entity).ok_or_else(|| Error::field("entity", "unknown entity"))?;
+            crate::schedule::plan(&ctx.schema, ent, s)?;
+        }
+        (None, true) => return Err(Error::field("schedule", "a scheduled automation needs a schedule")),
+        (Some(_), false) => return Err(Error::field("schedule", "only an automation whose event is scheduled has a schedule")),
+        (None, false) => {}
     }
     let condition = get("condition").filter(|c| !c.trim().is_empty());
     if let Some(c) = &condition {
@@ -399,11 +474,20 @@ pub async fn save(k: &Kernel, ctx: &Ctx, input: &Map<String, Value>) -> Result<U
             )));
         }
     }
+    // A schedule starts from now: when it is new, changed (or its entity), or switched on again, no moment
+    // already past fires.
     sqlx::query(
-        "insert into automation (tenant_id, id, name, entity, event, condition, actions, is_active, created_by) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9) on conflict (tenant_id, id) do update set name = excluded.name, \
+        "insert into automation (tenant_id, id, name, entity, event, condition, actions, is_active, created_by, schedule, scanned_until) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, case when $10::jsonb is null then null else now() end) \
+         on conflict (tenant_id, id) do update set name = excluded.name, \
          entity = excluded.entity, event = excluded.event, condition = excluded.condition, actions = excluded.actions, \
-         is_active = excluded.is_active, created_by = excluded.created_by, updated_at = now()",
+         is_active = excluded.is_active, created_by = excluded.created_by, updated_at = now(), schedule = excluded.schedule, \
+         scanned_until = case when automation.schedule is not distinct from excluded.schedule and automation.entity = excluded.entity \
+           and (automation.is_active or not excluded.is_active) then automation.scanned_until else excluded.scanned_until end, \
+         scan_to = case when automation.schedule is not distinct from excluded.schedule and automation.entity = excluded.entity \
+           and (automation.is_active or not excluded.is_active) then automation.scan_to end, \
+         scan_cursor = case when automation.schedule is not distinct from excluded.schedule and automation.entity = excluded.entity \
+           and (automation.is_active or not excluded.is_active) then automation.scan_cursor end",
     )
     .bind(ctx.tenant)
     .bind(id)
@@ -414,6 +498,7 @@ pub async fn save(k: &Kernel, ctx: &Ctx, input: &Map<String, Value>) -> Result<U
     .bind(actions)
     .bind(active)
     .bind((!ctx.user.is_nil()).then_some(ctx.user))
+    .bind(schedule)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;

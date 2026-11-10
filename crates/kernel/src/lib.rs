@@ -55,6 +55,7 @@ pub mod resources;
 pub mod retention;
 pub mod saga;
 pub mod scan;
+pub mod schedule;
 pub mod scim;
 pub mod secret;
 pub mod service;
@@ -356,7 +357,7 @@ impl Kernel {
         vec![self.registry.spawn_listener(shutdown.clone()), self.spawn_user_listener(shutdown)]
     }
 
-    /// Background work: outbox, webhooks, maintenance. Safe to run concurrently on many replicas
+    /// Background work: outbox, webhooks, scheduled automations, jobs, maintenance. Safe to run concurrently on many replicas
     /// (no single point of failure); replicas that only serve requests may skip it.
     pub fn spawn_background(self: &Arc<Self>, shutdown: watch::Receiver<bool>) -> Vec<tokio::task::JoinHandle<()>> {
         let maintenance = {
@@ -374,7 +375,13 @@ impl Kernel {
                 }
             })
         };
-        vec![self.spawn_outbox_dispatcher(shutdown.clone()), self.spawn_webhook_sender(shutdown.clone()), self.spawn_job_runner(shutdown), maintenance]
+        vec![
+            self.spawn_outbox_dispatcher(shutdown.clone()),
+            self.spawn_webhook_sender(shutdown.clone()),
+            self.spawn_schedule_scanner(shutdown.clone()),
+            self.spawn_job_runner(shutdown),
+            maintenance,
+        ]
     }
 
     /// Hourly: anchor yesterday's audit trail, purge expired events and idempotency keys.
@@ -400,7 +407,8 @@ impl Kernel {
             + self.oauth_purge().await?
             + self.purge_sessions().await?
             + self.purge_exports().await?
-            + self.purge_connection_events().await?;
+            + self.purge_connection_events().await?
+            + self.prune_occurrences().await?;
         if purged > 0 {
             tracing::info!(purged, "old events purged");
         }

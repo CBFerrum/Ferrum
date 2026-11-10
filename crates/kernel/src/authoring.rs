@@ -628,6 +628,11 @@ impl Kernel {
                 out.push(json!({"automation": id, "name": name, "skipped": "imported already"}));
                 continue;
             }
+            if event == "scheduled" {
+                // A solution starts on a record's event; a moment coming due is the kernel's (schedule.rs).
+                out.push(json!({"automation": id, "name": name, "skipped": "a scheduled automation keeps running as it is"}));
+                continue;
+            }
             let Some(ent) = ctx.schema.entity(&entity) else {
                 out.push(json!({"automation": id, "name": name, "skipped": format!("{entity} is not installed")}));
                 continue;
