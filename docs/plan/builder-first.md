@@ -8,6 +8,45 @@ It changes the order of the closure program ([docs/registry/feo.yaml](../registr
 industry packages still open stop being closed one app at a time, in Rust inside each app, and the
 patterns those apps keep writing become the builder's.
 
+## As revised on 10 November 2026
+
+The same day's review of the whole ecosystem changed the order and the measure. Sections 1 to 9 below
+stand as written, except where this section says otherwise.
+
+**The measure.** A business nobody wrote an app for (a gym with memberships), built in the browser by
+an administrator, with no code. It is walked at the end of each step and replaces the count of register
+rows as the sign of progress. First walk:
+[docs/builder/evidence/browser-2026-11-10-gym.md](../builder/evidence/browser-2026-11-10-gym.md).
+
+**The order.** The foundations first, because everything else binds to them:
+
+| Step | What | State |
+|---|---|---|
+| Foundations | Custom entities with lines, unique keys and exact totals (BF8, ahead of its place); automations that fire on time (BF6); rules that count and sum other records | Built: PRs 158, 160, 159 |
+| Authoring | Screens for entities, workflows, automations and rules; a batch with a dry run and `redefine_entity`; a mail preview | Built: PRs 161, 162 and Ferrum-Frontend 67 |
+| Packs | One export that carries a whole solution (entities, roles, automations, Studio's items, solutions) and installs elsewhere, as a metadata-only app bundle, not a second format (BF9) | Not started |
+| Engines | One working-hours clock, then service levels, checklists and scheduling bound to any entity | Not started |
+| Proof | The apps that are configuration and nothing else (Government, Retail, GRC) as packs | Not started |
+
+**What changed in the gates below.**
+
+* BF8 came first, and BD-06 was amended as it was built (`custom_key` carries `record_id`; no
+  `parent_field`).
+* BF6's schedules need no workflow engine: a loop, a table of occurrences and the outbox. With
+  `create_document`, a recurring charge is an automation; a recurring-charges engine waits until a
+  business needs proration or deposits.
+* A rule's aggregates read as the workspace, not as whoever saves (BD-10).
+* BF2's public pages, BF3's approvals by several people and BF4's money as contracted capabilities
+  keep their places after packs.
+
+**Also built on the way.** Mail bodies from automations and `ferrum.mail` are text, with a template for
+formatted mail (PR 156). A Helm chart that renders what `deploy/k8s` renders (PR 155). App upkeep with a
+lock per app, migrations as a step of their own, Control out of the default build (PR 157).
+
+**What stays outside.** Infrastructure services (private networks, VPN, virtual machines) are not
+Ferrum's: Ferrum talks to open interfaces (S3-compatible storage, an OpenAI-compatible model endpoint,
+any PostgreSQL, Vault or OpenBao keys, the Helm chart) and holds no provider's code.
+
 ## 1. Why
 
 Between 9 and 10 November six closure packages were worked in their apps' code, three to verified and
