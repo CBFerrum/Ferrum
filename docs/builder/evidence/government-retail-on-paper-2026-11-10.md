@@ -12,6 +12,9 @@ missing, named in the last column.
 
 ## Government (38 behaviours): 16 same, 11 different, 11 cannot
 
+Measured on a running kernel the next day, as a pack: 23 same, 13 different, 1 cannot, 1 not exercised
+([government-as-a-pack-2026-11-11](government-as-a-pack-2026-11-11.md)).
+
 | # | Behaviour | Verdict | Missing |
 |---|---|---|---|
 | G1 | Permit Type: fields, unique name, documents and stages as lines | same | |

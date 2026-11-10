@@ -8,6 +8,7 @@ that is Rust code today, to measure what configuration can and cannot express.
 | Pack | Rebuilds | Test | Findings |
 |---|---|---|---|
 | [grc](grc/grc.pack.json) | `ferrum-app-grc` 0.1.14 | [grc_pack_it.rs](../crates/studio/tests/grc_pack_it.rs) | [grc-as-a-pack-2026-11-10](../docs/builder/evidence/grc-as-a-pack-2026-11-10.md) |
+| [government](government/government.pack.json) | `ferrum-app-government` 0.3.0 | [government_pack_it.rs](../crates/studio/tests/government_pack_it.rs) | [government-as-a-pack-2026-11-11](../docs/builder/evidence/government-as-a-pack-2026-11-11.md) |
 
 ## How one is checked
 
@@ -22,4 +23,5 @@ After changing the builder, write the file again and commit it:
 
 ```
 FERRUM_WRITE_PACKS=1 cargo test -p ferrum-studio --test grc_pack_it
+FERRUM_WRITE_PACKS=1 cargo test -p ferrum-studio --test government_pack_it
 ```
