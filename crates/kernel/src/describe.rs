@@ -59,6 +59,26 @@ fn linked_from(ctx: &Ctx, entity: &str) -> Vec<Value> {
     out
 }
 
+/// An entity's actions as the caller sees them: each says whether they may press it (`may_run`: its permission or
+/// a rule naming it, and its roles, as the run path asks); what a configured action writes (`effects`) is for an
+/// administrator's designer, not for the person pressing it.
+fn actions(ctx: &Ctx, ent: &EffEntity) -> Vec<Value> {
+    ent.def
+        .actions
+        .iter()
+        .map(|a| {
+            let mut v = serde_json::to_value(a).unwrap_or(Value::Null);
+            if let Value::Object(m) = &mut v {
+                if !ctx.is_admin {
+                    m.remove("effects");
+                }
+                m.insert("may_run".into(), json!(crate::ctx::action_gate(ctx, ent, a).is_ok()));
+            }
+            v
+        })
+        .collect()
+}
+
 pub fn describe(ctx: &Ctx, ent: &EffEntity) -> Value {
     let children: serde_json::Map<String, Value> = ent
         .children
@@ -91,7 +111,7 @@ pub fn describe(ctx: &Ctx, ent: &EffEntity) -> Value {
         "form": ent.def.form,
         "search_fields": ent.def.search_fields,
         "rules": ent.def.rules,
-        "actions": ent.def.actions,
+        "actions": actions(ctx, ent),
         "workflow": ent.workflow.as_ref().map(|w| &w.def),
         "fields": ent.def.fields.iter().map(|f| field_json(ctx, ent, f)).collect::<Vec<_>>(),
         "children": children,

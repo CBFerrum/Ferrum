@@ -28,6 +28,11 @@ pub struct OverlayRow {
     pub is_active: bool,
     pub note: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// An active `add_action` or `remove_action` a later active one of the same action replaced: that one's id,
+    /// where the action's definition now comes from.
+    #[sqlx(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<Uuid>,
 }
 
 /// A customization and an upgrade that parted ways.
@@ -123,9 +128,9 @@ enum Duplicates {
 pub(crate) type Saved = (String, &'static str);
 
 /// An operation as a plan names it: `XGym: add_field fee`.
-fn label_of(target: &str, raw: &Value) -> String {
+pub(crate) fn label_of(target: &str, raw: &Value) -> String {
     let what = raw["op"].as_str().unwrap_or("customization");
-    match raw.get("field").or_else(|| raw.get("action")).or_else(|| raw.get("rule")) {
+    match raw.get("field").or_else(|| raw.get("action")).or_else(|| raw.get("rule")).or_else(|| raw.get("name")) {
         Some(Value::Object(f)) => format!("{target}: {what} {}", f.get("name").and_then(Value::as_str).unwrap_or_default()),
         Some(Value::String(f)) => format!("{target}: {what} {f}"),
         _ => format!("{target}: {what}"),
@@ -588,12 +593,39 @@ impl Kernel {
     pub async fn list_customizations(&self, ctx: &Ctx) -> Result<Vec<OverlayRow>> {
         require_admin(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let rows =
-            sqlx::query_as::<_, OverlayRow>("select id, seq, entity, op, is_active, note, created_at from meta_overlay where tenant_id = $1 order by seq")
-                .bind(ctx.tenant)
-                .fetch_all(&mut *tx)
-                .await?;
+        let rows = Self::overlay_rows(&mut tx, ctx.tenant).await?;
         tx.commit().await?;
+        Ok(rows)
+    }
+
+    /// Every customization in order, each active one replaced by a later one marked `superseded_by` it.
+    pub(crate) async fn overlay_rows(tx: &mut crate::db::Tx, tenant: Uuid) -> Result<Vec<OverlayRow>> {
+        let mut rows =
+            sqlx::query_as::<_, OverlayRow>("select id, seq, entity, op, is_active, note, created_at from meta_overlay where tenant_id = $1 order by seq")
+                .bind(tenant)
+                .fetch_all(&mut **tx)
+                .await?;
+        // An action's definition comes from the latest active customization naming it.
+        let named = |r: &OverlayRow| match r.op["op"].as_str() {
+            Some("add_action") if r.is_active => r.op["action"]["name"].as_str().map(|n| (r.entity.clone(), n.to_string())),
+            Some("remove_action") if r.is_active => r.op["name"].as_str().map(|n| (r.entity.clone(), n.to_string())),
+            _ => None,
+        };
+        let latest: std::collections::HashMap<(String, String), Uuid> = rows.iter().filter_map(|r| Some((named(r)?, r.id))).collect();
+        for r in &mut rows {
+            r.superseded_by = named(r).and_then(|k| latest.get(&k).copied()).filter(|id| *id != r.id);
+        }
+        // A redefinition replaces every definition change before it (the build's own rule, effective::superseded).
+        let active: Vec<usize> = (0..rows.len()).filter(|i| rows[*i].is_active).collect();
+        let overlays: Vec<Overlay> = active
+            .iter()
+            .map(|i| Overlay { entity: rows[*i].entity.clone(), ops: serde_json::from_value::<OverlayOp>(rows[*i].op.clone()).into_iter().collect() })
+            .collect();
+        for (k, by) in effective::superseded(&overlays).into_iter().enumerate() {
+            if let Some(by) = by {
+                rows[active[k]].superseded_by = Some(rows[active[by]].id);
+            }
+        }
         Ok(rows)
     }
 
@@ -632,6 +664,28 @@ impl Kernel {
         tx.commit().await?;
         self.registry.invalidate(ctx.tenant);
         Ok(())
+    }
+
+    /// A custom entity's definition as every active customization leaves it, in the shape `redefine_entity` takes,
+    /// with the definitions of its lines' entities: what a designer starts from, since a redefinition replaces
+    /// every definition change before it. A packaged entity has none a workspace can replace.
+    pub fn custom_definition(&self, ctx: &Ctx, entity: &str) -> Result<Value> {
+        require_admin(ctx)?;
+        let ent = ctx.schema.entity(entity).ok_or_else(|| Error::NotFound(format!("entity {entity}")))?;
+        if !ent.custom {
+            return Err(Error::invalid(format!(
+                "{entity} comes with a package: it has no definition a workspace can replace; customize it one change at a time"
+            )));
+        }
+        let lines: serde_json::Map<String, Value> = ent
+            .def
+            .fields
+            .iter()
+            .filter(|f| f.ftype == ferrum_meta::FieldType::Table)
+            .filter_map(|f| ctx.schema.entity(f.of.as_deref()?))
+            .map(|c| (c.def.name.clone(), json!(c.def)))
+            .collect();
+        Ok(json!({"entity": ent.def, "lines": lines}))
     }
 
     /// Change-set export: every active customization in order.

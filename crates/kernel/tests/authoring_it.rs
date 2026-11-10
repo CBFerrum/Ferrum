@@ -107,6 +107,7 @@ async fn scenario() {
     sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let k = Kernel::boot(db, catalog(), HookRegistry::default(), KernelSettings::default(), None).await.expect("boot");
     let w = workspace(&k, "acme").await;
+    round_trip(&workspace(&k, "gamma").await).await;
 
     // ───────────── a batch: all or nothing, refusals naming their operation ─────────────
     let step = entity("XStep", "child", json!([{"name": "what", "type": "data"}]));
@@ -240,4 +241,66 @@ async fn scenario() {
     };
     assert_eq!(custom(&beta.admin().await), custom(&w.admin().await));
     assert_eq!(k.import_customizations(&beta.admin().await, &set).await.unwrap(), 0, "an import skips what is already active");
+}
+
+/// The definition a designer starts from is the effective one: sent back unchanged as a redefinition, after
+/// every kind of definition change, it changes nothing; and what that redefinition replaced is marked, and
+/// switching it off changes nothing either.
+async fn round_trip(w: &W) {
+    let k = &w.k;
+    let visit = entity("XVisit", "child", json!([{"name": "day", "type": "date"}]));
+    let member = entity(
+        "XMember",
+        "master",
+        json!([{"name": "name", "type": "data"}, {"name": "tier", "type": "select", "options": ["A", "B"]},
+        {"name": "visits", "type": "table", "of": "XVisit"}]),
+    );
+    let change = |entity: &str, op: Value| -> NewCustomization { serde_json::from_value(json!({"entity": entity, "op": op})).unwrap() };
+    w.batch(
+        vec![
+            op("define_entity", visit),
+            op("define_entity", member),
+            change("XMember", json!({"op": "add_field", "field": {"name": "x_note", "type": "data"}})),
+            change("XVisit", json!({"op": "add_field", "field": {"name": "x_mood", "type": "data"}})),
+            change("XMember", json!({"op": "add_rule", "rule": {"name": "named", "check": "doc.name != ''", "message": "a name first"}})),
+            change(
+                "XMember",
+                json!({"op": "add_action", "action": {"name": "x_go", "label": "Go", "effects": [{"type": "set_fields", "values": {"x_note": "'went'"}}]}}),
+            ),
+            change("XMember", json!({"op": "set_property", "field": "tier", "property": "label", "value": "Level"})),
+            change("XMember", json!({"op": "add_options", "field": "tier", "options": ["C"]})),
+            change("XMember", json!({"op": "set_entity_property", "property": "label", "value": "Club member"})),
+        ],
+        false,
+    )
+    .await
+    .unwrap();
+    let admin = w.admin().await;
+    let rec = id_of(&k.insert(&admin, "XMember", obj(json!({"name": "Ann", "tier": "C", "visits": [{"day": "2026-11-10", "x_mood": "fine"}]}))).await.unwrap());
+    let described = |c: &Ctx| {
+        (ferrum_kernel::describe::describe(c, c.schema.entity("XMember").unwrap()), ferrum_kernel::describe::describe(c, c.schema.entity("XVisit").unwrap()))
+    };
+    let before = described(&admin);
+    assert!(k.custom_definition(&admin, "Shop").unwrap_err().to_string().contains("comes with a package"));
+    let def = k.custom_definition(&admin, "XMember").unwrap();
+    assert_eq!(def["lines"].as_object().map(|l| l.keys().cloned().collect::<Vec<_>>()), Some(vec!["XVisit".to_string()]));
+    w.batch(vec![op("redefine_entity", def["lines"]["XVisit"].clone()), op("redefine_entity", def["entity"].clone())], false)
+        .await
+        .expect("sent back unchanged");
+    let admin = w.admin().await;
+    assert_eq!(described(&admin), before, "the description is the same");
+    assert!(admin.schema.warnings.is_empty(), "{:?}", admin.schema.warnings);
+    let got = k.get(&admin, "XMember", rec, false).await.unwrap();
+    assert_eq!((got["tier"].as_str(), got["visits"][0]["x_mood"].as_str()), (Some("C"), Some("fine")), "records still load");
+    let label = |s: &Ctx| s.schema.entity("XMember").unwrap().def.label.clone();
+    assert_eq!(label(&admin), "Club member");
+
+    // Every change before the redefinitions is marked, and switching them off, one after another, changes nothing.
+    let rows = k.list_customizations(&admin).await.unwrap();
+    let marked: Vec<_> = rows.iter().filter(|r| r.superseded_by.is_some()).collect();
+    assert_eq!(marked.len(), 7, "every change but the two define_entity: {rows:#?}");
+    for r in marked {
+        k.set_customization_active(&admin, r.id, false).await.unwrap();
+        assert_eq!(described(&w.admin().await), before, "{:?}", r.op);
+    }
 }
