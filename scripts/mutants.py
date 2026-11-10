@@ -640,6 +640,7 @@ MUTANTS = [
     ("packs-role-seeded-by-one-package", "crates/kernel/src/pack.rs", ".filter_map(|(p, _)| catalog.package(p))", ".filter(|(p, _)| *p == pkg).filter_map(|(p, _)| catalog.package(p))", PACKS),
     # Another app's steps from configuration (docs/api.md, Calling another app's steps).
     ("invoke-default-key-ignores-the-version", "crates/kernel/src/actions.rs", "def.name, doc.get(\"version\").unwrap_or(&Value::Null));", "def.name, \"0\");", INVOKE),
+    ("invoke-refusal-says-the-key-to-anyone", "crates/kernel/src/automation.rs", "let message = if user.get(\"is_admin\") == Some(&Value::Bool(true)) {", "let message = if true {", INVOKE),
     ("invoke-results-not-shown", "crates/kernel/src/actions.rs", "let extra = [(\"params\", &params), (\"results\", &done), (\"links\", &links)];", "let extra = [(\"params\", &params), (\"results\", &Value::Null), (\"links\", &links)];", INVOKE),
     ("invoke-input-names-unchecked", "crates/kernel/src/automation.rs", "if let Some(n) = input.keys().find(", "if let Some(n) = input.keys().filter(|_| false).find(", INVOKE),
     ("invoke-not-rechecked-as-it-runs", "crates/kernel/src/automation.rs", "            check_invoke(k, ctx, &capability, &input)?;\n", "", INVOKE),
