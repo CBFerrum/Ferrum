@@ -29,9 +29,25 @@ use uuid::Uuid;
 /// The app a message was written in: the first segment of the page's path in its context
 /// ("Page: Sales Invoices (/erp/e/SalesInvoice)" was written in `erp`).
 pub fn page_route(context: &str) -> Option<&str> {
+    page_path(context)?.strip_prefix('/')?.split('/').next().filter(|s| !s.is_empty())
+}
+
+/// The page's path in a message's context.
+pub fn page_path(context: &str) -> Option<&str> {
     let line = context.lines().find_map(|l| l.strip_prefix("Page: "))?;
-    let path = line.rsplit_once('(')?.1.strip_suffix(')')?;
-    path.strip_prefix('/')?.split('/').next().filter(|s| !s.is_empty())
+    line.rsplit_once('(')?.1.strip_suffix(')')
+}
+
+/// On the pages of a workspace's own menu (`/data/{menu}/…`), what it tells the assistant, in the
+/// shape of an app's `shell.assistant` item.
+pub fn menu_domain(schema: &ferrum_meta::Schema, path: &str) -> Vec<Value> {
+    let Some(name) = path.strip_prefix("/data/").and_then(|p| p.split('/').next()) else { return vec![] };
+    schema
+        .modules
+        .iter()
+        .filter(|m| m.package == "tenant" && m.name == name)
+        .filter_map(|m| m.assistant.as_ref().map(|a| json!({"title": m.label, "instructions": a.instructions, "suggestions": a.suggestions})))
+        .collect()
 }
 
 /// What the app the person is in says about working there (`shell.assistant`), for the context
@@ -1529,9 +1545,12 @@ async fn run(env: &Env, ctx: &Ctx, thread: Uuid, live: &Live, t: Thread, input: 
     if let Input::Message { text, context } = &input {
         if !context.trim().is_empty() {
             let mut block = context.trim().to_string();
-            if let (Some(apps), Some(route)) = (&env.apps, page_route(context))
-                && let Some(g) = guidance(&apps.assistant_domain(ctx.tenant, route).await.unwrap_or_default())
-            {
+            let mut items = match (&env.apps, page_route(context)) {
+                (Some(apps), Some(route)) => apps.assistant_domain(ctx.tenant, route).await.unwrap_or_default(),
+                _ => vec![],
+            };
+            items.extend(page_path(context).map(|p| menu_domain(&ctx.schema, p)).unwrap_or_default());
+            if let Some(g) = guidance(&items) {
                 block = format!("{block}\n{g}");
             }
             opening.push(json!({"type": "text", "text": format!("<context>\n{block}\n</context>")}));
@@ -2068,6 +2087,23 @@ mod tests {
         let items = [json!({"title": "Accounting", "instructions": "Amounts are in the company currency. "}), json!({"title": "No instructions"})];
         assert_eq!(guidance(&items).unwrap(), "The app this page belongs to says, about its records:\n- Accounting: Amounts are in the company currency.");
         assert_eq!(guidance(&[]), None);
+        // A workspace's own menu says its words on its pages, and nowhere else.
+        let menu: ferrum_meta::ModuleDef = serde_json::from_value(json!({"name": "x_grc", "label": "Governance", "items": [],
+            "assistant": {"instructions": "A Risk is scored.", "suggestions": ["Highest risks?"]}}))
+        .unwrap();
+        let schema = ferrum_meta::Schema { modules: vec![ferrum_meta::ModuleDef { package: "tenant".into(), ..menu.clone() }, menu], ..Default::default() };
+        let at = |ctx: &str| menu_domain(&schema, page_path(ctx).unwrap());
+        assert_eq!(
+            at("Page: Risks (/data/x_grc/e/XRisk)"),
+            [json!({"title": "Governance", "instructions": "A Risk is scored.", "suggestions": ["Highest risks?"]})]
+        );
+        assert_eq!(
+            guidance(&at("Page: Risks (/data/x_grc/)")).unwrap(),
+            "The app this page belongs to says, about its records:\n- Governance: A Risk is scored."
+        );
+        for elsewhere in ["Page: Risks (/data/e/XRisk)", "Page: Home (/)", "Page: Other (/data/x_other/)", "Page: GRC (/grc/x_grc/)"] {
+            assert!(at(elsewhere).is_empty(), "{elsewhere}");
+        }
     }
 
     #[test]
