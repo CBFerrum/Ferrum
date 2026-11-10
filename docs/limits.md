@@ -101,6 +101,15 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   type other than the one its values were saved under is not checked against them. A batch of
   customizations holds at most 100 operations and is validated one operation at a time (a schema build
   each), so its order matters.
+- **Packs** (`/api/admin/pack`) are unsigned JSON, exported and installed by administrators; nothing
+  is uninstalled, and an install never deletes: a customization, rule, automation, Studio item or record
+  the source dropped stays in the target. Automations, Studio's items and records are matched by name,
+  label and key, so two of one name are refused at export. Studio's queries and dashboard filters that
+  hold record ids, and links between records by id inside JSON fields, travel as they are and point at
+  nothing in another workspace. Records of an entity are installed in the order `records` names them: a
+  link to a later one is refused. A private Studio item arrives owned by the installer. A pack holds at
+  most 5 MiB and 10,000 records of one entity. A solution arrives as a draft, and a pack's plan does the
+  install and rolls it back, so a large pack is planned at the cost of installing it.
 - **Merging duplicates** is for entities that opt in (customers and suppliers so far). It finds
   duplicates by equal fields, not by resemblance, and is not undone. Append-only history keeps the id
   it was posted under: a report on it must ask `ferrum_kernel::merge::merged_ids`.

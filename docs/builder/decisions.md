@@ -129,6 +129,24 @@ Amended 10 November 2026, when lines and keys were built (BF-ENTITY-001, BF-ENTI
 
 **Rules out**: packs carrying code, credentials, records other than seeds, or other workspaces' data.
 
+Amended 10 November 2026, when exporting and installing were built (BF-PACK-001 in part, BF-PACK-004):
+
+* What a pack is today: an **unsigned** `ferrum.pack/1` JSON document an administrator exports from one
+  workspace (`GET /api/admin/pack`) and installs in another (docs/api.md, "Packs"). It holds the active
+  customizations (custom entities, fields, rules, workflows, print templates), the roles the workspace
+  made and the rules it added to packaged ones, its automations (schedules and mail templates with them),
+  Studio's items, the running release of each solution as a solution pack, and the reference records the
+  exporter names, matched by key; no publisher yet. Its digest is the platform's canonical digest without
+  `exported_at`, so two exports of an unchanged workspace have one digest.
+* Installing shows a plan (the install, rolled back) and takes the plan's digest; everything but the
+  solutions is applied in one transaction through the admin API's own functions, and each solution arrives
+  as a draft that a second administrator reviews and someone activates. Installing again changes nothing;
+  nothing is removed or deleted.
+* "Records other than seeds" reads as reference records the exporter names, from entities holding no
+  people's data, email, phone or secret.
+* Still to come, inside a signed bundle: the publisher's signature and the trusted keys, upgrades shown
+  through the customization baselines, removal, approvals, public pages and words, and an app store of packs.
+
 ## BD-08. How an app gives way to a pack
 
 An app keeps running until its pack passes the app's acceptance scenarios restated against the pack.
