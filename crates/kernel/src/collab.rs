@@ -438,7 +438,11 @@ impl Kernel {
                     let holds = wf
                         .guards
                         .get(&(t.action.clone(), t.from.clone()))
-                        .is_none_or(|g| g.eval_bool(&ferrum_meta::Scope { doc: &view, old: None, parent: None, user: &user }).unwrap_or(false));
+                        // One that reads linked records is taken to hold here, where no transaction is at hand: the
+                        // person finds out on taking the step (BD-14).
+                        .is_none_or(|g| {
+                            !g.links().is_empty() || g.eval_bool(&ferrum_meta::Scope { doc: &view, old: None, parent: None, user: &user }).unwrap_or(false)
+                        });
                     if !raised && holds {
                         actions.push(t.action.as_str());
                     }

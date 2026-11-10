@@ -707,6 +707,11 @@ impl Kernel {
                         let input = Value::Object(given.iter().map(|(k, v)| (k.clone(), json!(trigger_of(v)))).collect());
                         action(capability.clone(), input, format!("Use {capability}"))
                     }
+                    crate::automation::AutomationAction::AppendLine { table, .. } | crate::automation::AutomationAction::SetLine { table, .. } => {
+                        notes.push(format!("{step}: it wrote one line of {table}, which a process step does not; say what it writes"));
+                        let input = json!({"id": "trigger.id"});
+                        action(format!("{package}.{}.update", ferrum_logic::capability::snake(&entity)), input, format!("Change a line of {table}"))
+                    }
                 });
             }
             if steps.is_empty() {

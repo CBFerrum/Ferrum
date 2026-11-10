@@ -84,11 +84,14 @@ pub(crate) async fn keep(k: &Kernel, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, id
     let user = ctx.user_value();
     let view = ent.cel_view(&Value::Object(doc.clone()), &ctx.schema);
     let scope = Scope { doc: &view, old: None, parent: None, user: &user };
+    let all = ent.exprs.targets.values().flat_map(|x| [x.start_when.as_ref(), Some(&x.within), x.pause_when.as_ref(), Some(&x.met_when)]).flatten();
+    let links = crate::links::load(k, ctx, tx, ent, &view, &crate::links::used(all)).await?;
+    let extra = [("links", &links)];
     for t in &ent.def.targets {
         let x = ent.exprs.targets.get(&t.name).ok_or_else(|| Error::internal(format!("target {} is not compiled", t.name)))?;
         let fail = |m: String| Error::Validation(vec![FieldError::new(&t.state_field, format!("target {} could not be worked out: {m}", t.label))]);
-        let holds = |e: Option<&ferrum_meta::Expr>, none: bool| e.map_or(Ok(none), |e| e.eval_bool(&scope)).map_err(fail);
-        let within = target::within(&x.within.eval(&scope).map_err(fail)?).map_err(fail)?;
+        let holds = |e: Option<&ferrum_meta::Expr>, none: bool| e.map_or(Ok(none), |e| e.eval_bool_with(&scope, &extra)).map_err(fail);
+        let within = target::within(&x.within.eval_with(&scope, &extra).map_err(fail)?).map_err(fail)?;
         let said =
             Said { start: holds(x.start_when.as_ref(), true)?, within, pause: holds(x.pause_when.as_ref(), false)?, met: holds(Some(&x.met_when), false)? };
         let calendar = match (&t.calendar, within) {

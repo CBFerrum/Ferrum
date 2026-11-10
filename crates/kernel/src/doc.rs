@@ -734,7 +734,8 @@ impl Kernel {
         if let Some(expr) = ent.exprs.action_conditions.get(action) {
             let view = ent.cel_view(&Value::Object(doc.clone()), &ctx.schema);
             let user = ctx.user_value();
-            if !expr.eval_bool(&Scope { doc: &view, old: None, parent: None, user: &user }).map_err(Error::invalid)? {
+            let links = crate::links::load(self, ctx, tx, &ent, &view, &crate::links::used([expr])).await?;
+            if !expr.eval_bool_with(&Scope { doc: &view, old: None, parent: None, user: &user }, &[("links", &links)]).map_err(Error::invalid)? {
                 return Err(Error::invalid(format!("'{}' is not available for this document", def.label)));
             }
         }
@@ -804,7 +805,8 @@ impl Kernel {
         if let Some(guard) = wf.guards.get(&(t.action.clone(), t.from.clone())) {
             let view = ent.cel_view(&Value::Object(doc.clone()), &ctx.schema);
             let user = ctx.user_value();
-            if !guard.eval_bool(&Scope { doc: &view, old: None, parent: None, user: &user }).map_err(Error::invalid)? {
+            let links = crate::links::load(self, ctx, tx, &ent, &view, &crate::links::used([guard])).await?;
+            if !guard.eval_bool_with(&Scope { doc: &view, old: None, parent: None, user: &user }, &[("links", &links)]).map_err(Error::invalid)? {
                 return Err(Error::invalid(format!("the conditions for '{action}' are not met")));
             }
         }
@@ -1220,11 +1222,10 @@ impl Kernel {
             }
         }
         self.check_links(ctx, tx, ent, doc, &mut errors, None).await?;
-        for (rule, expr) in &ent.exprs.rules {
-            if rule.on == RuleOn::Submit && on != RuleOn::Submit {
-                continue;
-            }
-            match expr.eval_bool(&Scope { doc: &view, old: old_view.as_ref(), parent: None, user: &user }) {
+        let rules: Vec<_> = ent.exprs.rules.iter().filter(|(rule, _)| rule.on != RuleOn::Submit || on == RuleOn::Submit).collect();
+        let links = crate::links::load(self, ctx, tx, ent, &view, &crate::links::used(rules.iter().map(|(_, e)| e))).await?;
+        for (rule, expr) in rules {
+            match expr.eval_bool_with(&Scope { doc: &view, old: old_view.as_ref(), parent: None, user: &user }, &[("links", &links)]) {
                 Ok(true) => {}
                 Ok(false) => errors.push(FieldError::new(&rule.name, &rule.message)),
                 Err(e) => errors.push(FieldError::new(&rule.name, format!("rule could not be evaluated: {e}"))),
