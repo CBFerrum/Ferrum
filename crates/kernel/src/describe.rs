@@ -81,6 +81,19 @@ fn actions(ctx: &Ctx, ent: &EffEntity) -> Vec<Value> {
         .collect()
 }
 
+/// The entity's workflow as the caller sees it: each transition says whether they may take it (`may_take`, as the
+/// run path asks; the record's own scope, state and guard are still asked when taken).
+fn workflow(ctx: &Ctx, ent: &EffEntity) -> Option<Value> {
+    let def = &ent.workflow.as_ref()?.def;
+    let mut v = serde_json::to_value(def).ok()?;
+    if let Some(ts) = v.get_mut("transitions").and_then(Value::as_array_mut) {
+        for (t, def) in ts.iter_mut().zip(&def.transitions) {
+            t["may_take"] = json!(crate::ctx::transition_gate(ctx, ent, def).is_ok());
+        }
+    }
+    Some(v)
+}
+
 pub fn describe(ctx: &Ctx, ent: &EffEntity) -> Value {
     let children: serde_json::Map<String, Value> = ent
         .children
@@ -115,7 +128,7 @@ pub fn describe(ctx: &Ctx, ent: &EffEntity) -> Value {
         "rules": ent.def.rules,
         "actions": actions(ctx, ent),
         "targets": ent.def.targets,
-        "workflow": ent.workflow.as_ref().map(|w| &w.def),
+        "workflow": workflow(ctx, ent),
         "fields": ent.def.fields.iter().map(|f| field_json(ctx, ent, f)).collect::<Vec<_>>(),
         "children": children,
         "permissions": permissions(ctx, &ent.def.name),

@@ -39,6 +39,11 @@ pub const CONNECTORS: &[Connector] = &[
 /// countries they name; those it does not recognise are logged for an administrator to correct.
 pub const COUNTRY_CODES: &str = "country-codes";
 
+/// Files an `attach` field named while they stayed tied to no record (before saves tied them) are tied to the
+/// record naming them, so that record's readers keep them once a file tied to none is its uploader's alone
+/// (docs/api.md, Files). It runs before this build serves: at start-up, or in `ferrum task migrate`.
+pub const ATTACH_FILES: &str = "attach-files";
+
 /// Session advisory lock: one replica runs the steps; the others wait for it.
 const LOCK: i64 = 0x6665_7272_756d_0002;
 
@@ -47,6 +52,7 @@ fn steps(k: &Kernel) -> Vec<&'static str> {
     let mut out = vec![CORE_SPLIT, PROJECT_RECORDS];
     out.extend(CONNECTORS.iter().filter(|(_, cs)| cs.iter().all(|(c, _)| k.registry.catalog().package(c).is_some())).map(|(step, _)| *step));
     out.push(COUNTRY_CODES);
+    out.push(ATTACH_FILES);
     out
 }
 
@@ -82,6 +88,7 @@ pub async fn run(k: &Kernel) -> Result<Vec<(&'static str, usize)>> {
             connector_step(k, step, connectors).await?;
         }
         country_codes(k).await?;
+        attach_files(k).await?;
         sqlx::query("insert into cluster_state (key, value) values ($1, $2) on conflict (key) do update set value = excluded.value, updated_at = now()")
             .bind(DONE_KEY)
             .bind(steps(k).join(","))
@@ -154,6 +161,24 @@ async fn country_codes(k: &Kernel) -> Result<()> {
         if !unknown.is_empty() {
             tracing::warn!(%tenant, countries = ?unknown, "{COUNTRY_CODES}: no code for these countries; correct them on the workspace's companies and addresses");
         }
+    }
+    Ok(())
+}
+
+async fn attach_files(k: &Kernel) -> Result<()> {
+    for tenant in pending(k, ATTACH_FILES).await? {
+        let done = k.tie_named_files(tenant).await?;
+        let mut tx = k.db.system_tenant_tx(tenant).await?;
+        sqlx::query("insert into upgrade_step (tenant_id, step, installed) values ($1, $2, '{}') on conflict do nothing")
+            .bind(tenant)
+            .bind(ATTACH_FILES)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        if done.shared > 0 {
+            tracing::warn!(%tenant, files = done.shared, "{ATTACH_FILES}: files named by several records went to the first made; the others' readers no longer download them");
+        }
+        tracing::info!(%tenant, files = done.tied, "{ATTACH_FILES}: files tied to the records naming them");
     }
     Ok(())
 }

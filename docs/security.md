@@ -20,7 +20,9 @@ operator to know. Report a vulnerability privately to the maintainers rather tha
   given until a moment, and pairs of roles an administrator declares are never held by one person
   (the database refuses the grant). A field in a group may show those outside it a mask (the last
   four characters) rather than nothing, and a field marked `no_export` is left out of every list
-  export, whoever exports it.
+  export, whoever exports it. A workflow transition naming roles needs one of them and read access to
+  the record; one naming none needs the right to change the record; portal people and guests take only
+  transitions naming a role of theirs.
 
 ## Who can see what
 
@@ -173,6 +175,9 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
   (`FERRUM_PUSH_SERVICES`), whatever endpoint a subscription names.
 * Plugins run as WebAssembly without ambient access, with CPU fuel, a memory cap, a host-call
   budget and a nesting limit; a failing plugin fails closed.
+* Files: attaching one to a record needs the right to change the record; one tied to no record is served
+  only to its uploader and administrators until a record they save names it, and a save may not name a
+  file its saver could not download. Portal people's loose uploads are limited to 20 an hour.
 * Request bodies, uploads, exports and list pages have size limits; database statements time out
   (15 s by default).
 

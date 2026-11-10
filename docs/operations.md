@@ -342,6 +342,27 @@ the operators' install from one has not run on a cluster without internet.
   `project_records` package (ERP's accounting depends on it): a workspace with projects but
   without ERP gets it.
 
+  `attach-files` comes with the release in which a file tied to no record is served only to its
+  uploader and administrators, and saving a record ties the files its `attach` fields name to it
+  ([api](api.md#files)). Before that release a file uploaded for a record not yet saved stayed tied to
+  no record. The step ties each such file to the record whose `attach` field names it (a line's to
+  the record owning the line; custom entities' too), in batches of 1000, so that record's readers keep
+  it. A file several records name goes to the first made: the others' readers no longer download it,
+  and the log counts such files per workspace. A file no record names stays its uploader's. It runs
+  before the new release serves, in each way of running it:
+  * one server migrating as it starts (`FERRUM_MIGRATE_AT_START=true`, the default): migrations, the
+    schema sync, then the steps, before it takes requests. A step that fails is logged and the server
+    serves anyway (the next start tries again): check the log for `attach-files` after upgrading;
+  * `ferrum task migrate`, then a rolling restart: the task runs the step; the new servers refuse to
+    start until it has;
+  * the Helm chart with `migrate.enabled`: the pre-upgrade Job runs `ferrum task migrate` before the
+    Deployment changes; the new pods only check.
+
+  In the last two, and with several replicas in the first, servers of the release before keep taking
+  requests until they are replaced, and a record they save meanwhile leaves its new file tied to no
+  record. To tie those too, once the rollout is over run `ferrum task upgrade_back step:attach-files`
+  and then `ferrum task migrate` (the step is safe to run again and alongside servers taking requests).
+
   To go back to a release before such a step, run `ferrum task upgrade_back step:<name>`
   (`core-split`) with every replica of the newer release stopped, then start the older image. The
   task takes out the packages the step installed and keeps the data.

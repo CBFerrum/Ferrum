@@ -122,16 +122,17 @@ async fn scenario() {
     while k.dispatch_outbox_once().await.unwrap() > 0 {}
     while k.deliver_webhooks_once().await.unwrap() > 0 {}
     let calls = service.calls.lock().unwrap().clone();
-    let (path, headers, body) = calls.iter().find(|c| c.0 == "events").expect("an event was delivered").clone();
+    // Deliveries are not sent in the order their events happened: find each by what it says.
+    let events: Vec<(String, HeaderMap, Bytes, Value)> =
+        calls.iter().filter(|c| c.0 == "events").map(|(p, h, b)| (p.clone(), h.clone(), b.clone(), serde_json::from_slice::<Value>(b).unwrap())).collect();
+    let (path, headers, body, event) = events.iter().find(|e| e.3["event"] == "created").expect("the creation was delivered").clone();
     assert_eq!(path, "events");
-    let event: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!((&event["entity"], &event["id"], &event["event"]), (&json!("Customer"), &globex["id"], &json!("created")), "{event}");
+    assert_eq!((&event["entity"], &event["id"]), (&json!("Customer"), &globex["id"]), "{event}");
     assert!(event.get("doc").is_none(), "the record stays behind: {event}");
     assert!(signed(&secret, &headers, &body), "signed with its secret");
     // A change: which record, never what it held before either.
-    let (_, _, body) = calls.iter().filter(|c| c.0 == "events").nth(1).expect("the change was delivered").clone();
-    let event: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!((&event["event"], event.get("doc"), event.get("was")), (&json!("updated"), None, None), "{event}");
+    let event = &events.iter().find(|e| e.3["event"] == "updated").expect("the change was delivered").3;
+    assert_eq!((&event["id"], event.get("doc"), event.get("was")), (&globex["id"], None, None), "{event}");
 
     // ── turned off, its key and its deliveries stop; on, both work again ──
     manager.set_enabled(&admin, "svc", false).await.unwrap();

@@ -265,8 +265,9 @@ async fn upload(Auth(ctx): Auth, State(app): State<AppContext>, mut mp: Multipar
         return Err(ApiError(Error::field("file", format!("larger than {} bytes", st.settings.upload_max_bytes))));
     }
     let ctype = if BLOCKED_TYPES.contains(&ctype.as_str()) { "application/octet-stream".to_string() } else { ctype };
-    if let (Some(e), Some(r)) = (&entity, record) {
-        st.kernel.get(&ctx, e, r, false).await?;
+    match (&entity, record) {
+        (Some(e), Some(r)) => st.kernel.may_attach(&ctx, e, r).await?,
+        _ => st.kernel.count_loose_upload(&ctx).await?,
     }
     // Public files (served without signing in) must be images or PDFs attached to a record the
     // uploader may edit, so nothing private or active leaks onto the open internet.
@@ -388,18 +389,16 @@ async fn complete_upload(Auth(ctx): Auth, State(app): State<AppContext>, Path(id
 async fn download(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>, headers: HeaderMap) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let mut tx = st.kernel.db.tenant_tx(ctx.tenant).await?;
-    let row: Option<(String, String, String, Option<String>, Option<Uuid>)> =
-        sqlx::query_as("select file_name, content_type, storage_key, entity, record_id from file_object where tenant_id = $1 and id = $2")
+    let row: Option<(String, String, String, Option<String>, Option<Uuid>, Option<Uuid>)> =
+        sqlx::query_as("select file_name, content_type, storage_key, entity, record_id, created_by from file_object where tenant_id = $1 and id = $2")
             .bind(ctx.tenant)
             .bind(id)
             .fetch_optional(&mut *tx)
             .await
             .map_err(Error::from)?;
     tx.commit().await.map_err(Error::from)?;
-    let (name, ctype, key, entity, record) = row.ok_or_else(|| ApiError(Error::NotFound("file".into())))?;
-    if let (Some(e), Some(r)) = (entity, record) {
-        st.kernel.get(&ctx, &e, r, false).await?;
-    }
+    let (name, ctype, key, entity, record, by) = row.ok_or_else(|| ApiError(Error::NotFound("file".into())))?;
+    st.kernel.may_download(&ctx, entity.as_deref(), record, by).await?;
     let mut resp = streamed(&st, &key, &headers).await?;
     let h = resp.headers_mut();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_str(&ctype).unwrap_or(HeaderValue::from_static("application/octet-stream")));
