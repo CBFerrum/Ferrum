@@ -1351,7 +1351,11 @@ impl Kernel {
                 );
                 let cycle: bool = sqlx::query_scalar(AssertSqlSafe(sql)).bind(ctx.tenant).bind(id).bind(self_id).fetch_one(&mut **tx).await?;
                 if cycle {
-                    push(errors, &f.name, "this would create a cycle in the hierarchy".into());
+                    // Named, so that whoever moved it knows which record is in the way.
+                    let under = store::load_many(tx, &ctx.schema, ent, ctx.tenant, &[id]).await?;
+                    let under = under.first().map(|d| crate::collab::record_title(ctx, &ent.def.name, d)).unwrap_or_else(|| id.to_string());
+                    let this = crate::collab::record_title(ctx, &ent.def.name, doc);
+                    push(errors, &f.name, format!("{this} cannot sit under {under}: {under} is already under {this}, which would make a cycle in the hierarchy"));
                 }
             }
         }
