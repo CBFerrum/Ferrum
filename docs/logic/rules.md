@@ -106,7 +106,8 @@ A rule may also count or sum other records, as `aggregates.{name}`:
 ```
 
 * `entity`: whose records are counted. `link`: a link field of that entity. `to`: which record those links
-  point at: left out or `"self"`, the record being saved; otherwise a link field of the saved record, and the
+  point at: left out or `"self"` (the same rule: `"self"` is dropped when the source is read), the record being
+  saved; otherwise a link field of the saved record, and the
   record it links to.
 * `filter`: conditions that must all hold, `[field, operator, value]` over the entity's own fields, with the
   operators a list's filters take (`=`, `!=`, `>`, `>=`, `<`, `<=`, `in`, `not in`, `between`, `like`,
@@ -121,10 +122,14 @@ for a sum and only for a sum, and each operator and value fitting its field. The
 are part of the release's lock. A save reads at most eight different ones for all its entity's rules.
 
 They are read where linked records are: before the rules run, in the save's transaction, one statement each
-through the list query (`select count(*)`, `select coalesce(sum(…), 0)` or `select exists (…)` over the entity
-with the saver's row scope), so a record the saver may not see is not counted. A saver who may not read the
-entity at all counts nothing (zero, or no), and is not refused. A record being created has nothing pointing at
-it yet, and an empty `to` link points at nothing: both count zero. Derivations see the same values.
+through the list query (`select count(*)`, `select coalesce(sum(…), 0)` or `select exists (…)` over the
+entity). Unlike lookups, they are read as the workspace, not as the saver: an aggregate counts every matching
+record of the workspace whoever saves, whatever their row scopes, read rights and field groups (builder decision
+BD-10). That is what makes one usable as a control: "no visit while charges are unpaid" refuses a desk clerk
+who may not open a single charge just as it refuses the manager. It also means a `derive` rule can write down
+a total of records its saver cannot open, so whoever reviews a release should read its aggregates (listed in
+the release's review, `aggregates`) as reads across the workspace. A record being created has nothing pointing
+at it yet, and an empty `to` link points at nothing: both count zero. Derivations see the same values.
 
 Two saves at the same moment do not see each other's records: each can pass a check the other would have made
 fail (two visits at once, each finding no unpaid charge the other is about to add). A rule is a guard for
@@ -172,7 +177,7 @@ automation stopped by it records why.
 
 ## Limits
 
-* Aggregates are read without a lock (see above), and count only what their saver may see.
+* Aggregates are read without a lock (see above), across the workspace whoever saves.
 * Links are typed as text ids: a link to the wrong kind of record is not caught before running.
 * A rule cannot loop, and solutions have no for-each yet; cycles are refused, so iteration is unbounded nowhere.
 * Plugins' own hooks that fill fields are not compared with rules at activation; apps' hooks are.
