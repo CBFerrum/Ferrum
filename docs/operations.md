@@ -132,6 +132,32 @@ Past the limit a request waits for its pool and answers 503; nothing queues with
 Single host: `cp deploy/.env.example deploy/.env`, fill it in, then
 `docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d`.
 
+**Installing with the Helm chart.** `deploy/helm/ferrum` renders what `deploy/k8s` renders, so one command
+replaces step 5 (steps 1 to 3 and 6 to 8 are the same):
+
+```bash
+helm install ferrum deploy/helm/ferrum --namespace ferrum --create-namespace \
+  --set image.digest=sha256:<digest> \
+  --set publicUrl=https://<host> --set gateway.hostname=<host> \
+  --set storage.bucket=<files bucket> --set database.backup.destinationPath=s3://<backup bucket>/ferrum
+```
+
+* *The secret.* The chart creates none. It expects the Secret `ferrum-secrets` (another name: `secrets.existingSecret`)
+  with the keys of `deploy/k8s/secret.example.yaml`, and the backups' Secret `ferrum-backup-s3`.
+* *The image.* Set `image.digest` (a digest wins) or `image.tag` (a commit's full SHA). With neither, the chart refuses to
+  render; there is no default and never `latest`. The same holds for the optional parts' images.
+* *Settings.* `values.yaml` lists them with the environment variable each becomes; `extraEnv` adds any other. With
+  `database.enabled=false` the chart makes no database: name the Secret holding your connection URI in `database.urlSecret`.
+* *Optional parts.* `editors.enabled` (Browser editors; set `editors.host` and its image) and `metricsEngine.enabled`
+  (create what *Metrics' engine for external sources* lists first) switch on the same components as in `deploy/k8s`.
+  The PDF renderer, autoscaler, budget, network policy, `ServiceMonitor`, Gateway, Envoy proxies and database are on by
+  default, each behind its own `enabled`.
+* *Migrations.* `migrate.enabled` adds a Helm hook Job that runs `migrate.args` before an install or upgrade. The
+  server has no `migrate` task yet, so leave it off; it still migrates itself at start.
+
+`bash deploy/helm/test.sh` (CI runs it) fails when the chart and `deploy/k8s` differ in resources, environment variables,
+ports, probes, security context or resources.
+
 **Images.** For each commit on `main` whose images pass every check, CI publishes
 `ghcr.io/cbferrum/ferrum` and `ghcr.io/cbferrum/ferrum-editors` tagged with the commit's full SHA.
 What is published is the image that was tested, promoted by digest, never a new build of it. The
