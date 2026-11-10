@@ -30,6 +30,9 @@ pub(crate) fn invalid<T>(msg: impl Into<String>) -> Result<T, MetaError> {
     Err(MetaError::Invalid(msg.into()))
 }
 
+/// The words a service target writes into its state field.
+pub const TARGET_STATES: [&str; 5] = ["running", "paused", "met", "met_late", "breached"];
+
 /// Columns every entity table has; user fields may not use these names.
 pub const RESERVED_FIELDS: &[&str] = &[
     "id",
