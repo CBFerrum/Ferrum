@@ -422,6 +422,43 @@ impl Task for ImportErpnext {
     }
 }
 
+/// `migrate` — everything a server start does to the database, whatever `FERRUM_MIGRATE_AT_START` says: the kernel's
+/// SQL migrations, Loco's, the schema sync for the packages of this build, and the one-time upgrade steps. It prints what
+/// it did and fails when any step fails. Several at once are safe: each step holds its advisory lock.
+pub struct Migrate;
+
+#[async_trait]
+impl Task for Migrate {
+    fn task(&self) -> TaskInfo {
+        TaskInfo {
+            name: "migrate".into(),
+            detail: "Migrate the database, sync the schema and run the upgrade steps; for a server that starts with FERRUM_MIGRATE_AT_START=false".into(),
+        }
+    }
+    async fn run(&self, ctx: &AppContext, _vars: &Vars) -> Result<()> {
+        let k = kernel(ctx)?;
+        // The kernel did the first two as this task started.
+        match &k.booted.migrations[..] {
+            [] => println!("migrations: none to apply"),
+            applied => println!("migrations: applied {}", applied.iter().map(i64::to_string).collect::<Vec<_>>().join(", ")),
+        }
+        let loco = <migration::Migrator as migration::MigratorTrait>::up(&ctx.db, None).await;
+        loco.map_err(|e| Error::Message(format!("Loco migrations: {e}")))?;
+        let schema = &k.booted.schema;
+        if schema.skipped {
+            println!("schema: already current");
+        } else {
+            println!("schema: synced ({} statements, {} warnings)", schema.statements, schema.warnings.len());
+        }
+        let steps = crate::upgrade::run(&k).await.map_err(|e| Error::Message(format!("upgrade steps: {e}")))?;
+        for (step, n) in steps.iter().filter(|(_, n)| *n > 0) {
+            println!("upgrade {step}: {n} workspaces");
+        }
+        println!("upgrades: {} steps checked, all done", steps.len());
+        Ok(())
+    }
+}
+
 /// `run_maintenance` — anchor audit trails and purge expired events (also runs hourly in-process).
 pub struct RunMaintenance;
 

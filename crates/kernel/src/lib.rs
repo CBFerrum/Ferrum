@@ -162,6 +162,9 @@ pub struct KernelSettings {
     pub process_runtime: bool,
     /// Records one retention rule reaches in a daily run; the next run continues after them.
     pub retention_daily_records: usize,
+    /// Migrate the database and sync the schema as the kernel boots (the default). Off, boot changes no schema and
+    /// refuses to start on a database `ferrum task migrate` has not brought to this build ([`Kernel::boot`]).
+    pub migrate_at_start: bool,
 }
 
 impl Default for KernelSettings {
@@ -187,12 +190,30 @@ impl Default for KernelSettings {
             chain_events: 1000,
             process_runtime: false,
             retention_daily_records: 5000,
+            migrate_at_start: true,
         }
     }
 }
 
+/// The refusal of a start with `migrate_at_start` off on a database that is behind this build.
+fn not_migrated(what: &str) -> Error {
+    Error::Invalid(format!(
+        "the database is not ready for this build: {what}. Run `ferrum task migrate` with this build and the same environment, \
+         or start with FERRUM_MIGRATE_AT_START=true to migrate as the server starts"
+    ))
+}
+
+/// What booting did to the database (`ferrum task migrate` prints it).
+#[derive(Debug, Default, Clone)]
+pub struct BootReport {
+    /// Versions of the SQL migrations it applied.
+    pub migrations: Vec<i64>,
+    pub schema: ddl::SyncReport,
+}
+
 pub struct Kernel {
     pub db: Db,
+    pub booted: BootReport,
     pub registry: Arc<Registry>,
     pub hooks: HookRegistry,
     pub settings: KernelSettings,
@@ -264,19 +285,44 @@ impl Kernel {
                     .into(),
             ));
         }
-        db.migrate().await?;
+        let mut booted = BootReport::default();
         // The platform's packages plus those of apps made available on this cluster.
-        let (full, skipped) = Registry::combine(&catalog.packages().cloned().collect::<Vec<_>>(), Registry::app_packages(&db).await?);
-        for (app, why) in skipped {
-            tracing::error!(app = %app, "app left out of the catalog: {why}");
-        }
-        let report = ddl::sync(&db, &full, false).await?;
-        if !report.skipped {
-            tracing::info!(statements = report.statements, sql = ?report.sql_files_applied, warnings = report.warnings.len(), "schema synced");
+        let combine = |db: &Db| {
+            let db = db.clone();
+            let own = catalog.packages().cloned().collect::<Vec<_>>();
+            async move {
+                let (full, skipped) = Registry::combine(&own, Registry::app_packages(&db).await?);
+                for (app, why) in skipped {
+                    tracing::error!(app = %app, "app left out of the catalog: {why}");
+                }
+                Ok::<_, Error>(full)
+            }
+        };
+        let full;
+        if settings.migrate_at_start {
+            let before = db.applied_migrations().await?;
+            db.migrate().await?;
+            booted.migrations = db.applied_migrations().await?.into_iter().filter(|v| !before.contains(v)).collect();
+            full = combine(&db).await?;
+            booted.schema = ddl::sync(&db, &full, false).await?;
+            if !booted.schema.skipped {
+                tracing::info!(statements = booted.schema.statements, sql = ?booted.schema.sql_files_applied, warnings = booted.schema.warnings.len(), "schema synced");
+            }
+        } else {
+            // Another step has brought the database here (`ferrum task migrate`): this only checks that it did.
+            let pending = db.pending_migrations().await?;
+            if !pending.is_empty() {
+                return Err(not_migrated(&format!("{} of this build's database migrations are not applied (the first is {})", pending.len(), pending[0])));
+            }
+            full = combine(&db).await?;
+            if !ddl::is_current(&db, &full).await? {
+                return Err(not_migrated("the schema was last synced for other packages than this build's"));
+            }
         }
         let registry = Arc::new(Registry::new(&catalog, Arc::new(full), db.clone()));
         let kernel = Arc::new(Kernel {
             db,
+            booted,
             registry,
             hooks,
             settings,
