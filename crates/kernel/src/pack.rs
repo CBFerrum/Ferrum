@@ -428,7 +428,19 @@ fn stops_applying(pack: &Pack, before: &[crate::customize::OverlayRow], after: &
     out
 }
 
-/// The packages whose entities a pack names (or whose roles it adds rules to), at the versions installed here.
+/// The workspace's menus a pack marks for the portal: Studio's generic page shows them (docs/builder/portal.md).
+fn portal_menus(pack: &Pack) -> Vec<&str> {
+    pack.customizations
+        .iter()
+        .filter_map(|c| match &c.op {
+            OverlayOp::DefineModule { module } if module.portal => Some(module.name.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The packages whose entities a pack names (or whose roles it adds rules to), at the versions installed
+/// here; Studio when it marks a menu for the portal.
 fn requirements(ctx: &Ctx, pack: &Pack, role_packages: &BTreeSet<String>, installed: &[(String, String)]) -> BTreeMap<String, String> {
     let mut names: BTreeSet<String> = BTreeSet::new();
     for c in &pack.customizations {
@@ -457,8 +469,15 @@ fn requirements(ctx: &Ctx, pack: &Pack, role_packages: &BTreeSet<String>, instal
         let links = ctx.schema.entity(&r.entity).map(|e| e.def.fields.iter().filter_map(|f| f.to.clone()).collect::<Vec<_>>()).unwrap_or_default();
         names.extend(links);
     }
-    let packages: BTreeSet<String> =
-        names.iter().filter_map(|n| ctx.schema.entity(n)).map(|e| e.package.clone()).filter(|p| p != "tenant").chain(role_packages.iter().cloned()).collect();
+    let studio = (!portal_menus(pack).is_empty()).then(|| "studio".to_string());
+    let packages: BTreeSet<String> = names
+        .iter()
+        .filter_map(|n| ctx.schema.entity(n))
+        .map(|e| e.package.clone())
+        .filter(|p| p != "tenant")
+        .chain(role_packages.iter().cloned())
+        .chain(studio)
+        .collect();
     installed.iter().filter(|(n, _)| packages.contains(n)).cloned().collect()
 }
 
@@ -477,11 +496,20 @@ async fn lacking(tx: &mut Tx, tenant: Uuid, pack: &Pack) -> Result<Vec<String>> 
         (Ok(h), Ok(w)) => h < w,
         _ => have != want,
     };
+    // A portal menu is shown by Studio's generic page, whether the pack names Studio or not.
+    let portal = portal_menus(pack);
+    let studio = (!portal.is_empty() && !have.contains_key("studio") && !requires.packages.contains_key("studio")).then_some(("studio", ""));
+    let why = |p: &str| {
+        if p == "studio" && !portal.is_empty() { format!(": the portal shows the menu {} on Studio's page", portal.join(", ")) } else { String::new() }
+    };
     Ok(requires
         .packages
         .iter()
+        .map(|(p, want)| (p.as_str(), want.as_str()))
+        .chain(studio)
         .filter_map(|(p, want)| match have.get(p) {
-            None => Some(format!("the package {p} ({want} or later) is not installed here")),
+            None if want.is_empty() => Some(format!("the package {p} is not installed here{}", why(p))),
+            None => Some(format!("the package {p} ({want} or later) is not installed here{}", why(p))),
             Some(v) if older(v, want) => Some(format!("the package {p} is at {v} here; the pack needs {want} or later")),
             _ => None,
         })

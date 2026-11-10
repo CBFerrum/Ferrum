@@ -6,6 +6,7 @@
 //! guardian taken off a student. Lists and single records must agree throughout.
 
 use async_trait::async_trait;
+use ferrum_kernel::customize::NewCustomization;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Action, Ctx, Db, DbConfig, Doc, DocHook, Error, HookCtx, HookRegistry, Kernel, KernelSettings, ListQuery, Result};
 use ferrum_meta::{Catalog, PermissionDef};
@@ -399,6 +400,55 @@ async fn scenario() {
     assert_eq!(reach(&k, &pia_there, "ReportCard", &here, "term").await, names(&["cal spring"]), "her records there, and none of here");
     assert!(reach(&k, &pia, "ReportCard", &here, "term").await.is_empty(), "nothing of the other workspace's reaches her here");
 
+    // ───────────── the workspace's menus marked for the portal (docs/builder/portal.md) ─────────────
+    let menu = |name: &str, portal: bool, items: Value, create: Value| -> NewCustomization {
+        serde_json::from_value(json!({"entity": name, "op": {"op": "define_module", "module": {"name": name, "label": format!("Menu {name}"),
+            "description": "What is yours", "icon": "heart-pulse", "items": items, "create": create, "portal": portal}}}))
+        .unwrap()
+    };
+    let defined = k
+        .batch_customizations(
+            &k.load_ctx(tenant, admin.user, None, "it".into()).await.unwrap(),
+            vec![
+                menu("x_care", true, json!(["Patient", "Appointment", "Student"]), json!(["Patient", "Appointment"])),
+                menu("x_terms", true, json!(["Term"]), json!([])),
+                menu("x_inside", false, json!(["Appointment", "ReportCard"]), json!([])),
+            ],
+            false,
+        )
+        .await;
+    assert!(defined.is_ok(), "{:?}", defined.err());
+    let fresh = |c: &Ctx| k.load_ctx(tenant, c.user, None, "it".into());
+    let (mia, pia, nia, teacher) = (fresh(&mia_ctx).await.unwrap(), fresh(&pia).await.unwrap(), fresh(&nia_ctx).await.unwrap(), fresh(&teacher).await.unwrap());
+    let view = |v: &Value| -> (Vec<(String, Vec<(String, bool)>)>, Vec<String>) {
+        let menus = v["menus"].as_array().unwrap().iter().map(|m| {
+            let items = m["items"].as_array().unwrap().iter().map(|i| (i["name"].as_str().unwrap().to_string(), i["create"].as_bool().unwrap())).collect();
+            (m["name"].as_str().unwrap().to_string(), items)
+        });
+        (menus.collect(), v["other"].as_array().unwrap().iter().map(|e| e["name"].as_str().unwrap().to_string()).collect())
+    };
+    let s = |x: &str| x.to_string();
+    // Two of the menu's three; she may book, not add a patient; a menu reaching nothing of hers is not there,
+    // nor one for members only.
+    let care = k.portal_menus(&mia).await.unwrap();
+    assert_eq!(view(&care), (vec![(s("x_care"), vec![(s("Patient"), false), (s("Appointment"), true)])], vec![]), "{care}");
+    assert_eq!(
+        (&care["menus"][0]["label"], &care["menus"][0]["description"], &care["menus"][0]["icon"]),
+        (&json!("Menu x_care"), &json!("What is yours"), &json!("heart-pulse"))
+    );
+    assert_eq!(care["entities"].as_array().unwrap().len(), 2, "the entities as before, for an older page");
+    // Another role, another view: what is in no portal menu is the rest.
+    assert_eq!(view(&k.portal_menus(&pia).await.unwrap()), (vec![(s("x_care"), vec![(s("Student"), false)])], vec![s("ReportCard")]));
+    assert_eq!(view(&k.portal_menus(&nia).await.unwrap()), (vec![(s("x_care"), vec![(s("Appointment"), false)])], vec![]), "her role may not create");
+    // Members: their menus as they were, nothing of the portal's.
+    assert_eq!(view(&k.portal_menus(&teacher).await.unwrap()), (vec![], vec![]));
+    let ours: Vec<(&str, bool)> = teacher.schema.modules.iter().filter(|m| m.package == "tenant").map(|m| (m.name.as_str(), m.portal)).collect();
+    assert_eq!(ours, [("x_care", true), ("x_inside", false), ("x_terms", true)]);
+    // The records behind a menu's item are each person's own, by their roles' rules.
+    let all =
+        [(id_of(&mine), "follow-up"), (id_of(&staff_made), "staff booked"), (id_of(&neds), "his own"), (id_of(&locked), "locked"), (id_of(&hers), "cancelled")];
+    assert_eq!(reach(&k, &mia, "Appointment", &all, "reason").await, names(&["follow-up", "staff booked"]));
+    assert_eq!(reach(&k, &nia, "Appointment", &all, "reason").await, names(&["locked", "cancelled"]));
     transitions(&k, &admin).await;
     files(&k, &admin).await;
     backfill(&k, &admin).await;
