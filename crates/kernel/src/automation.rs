@@ -195,7 +195,8 @@ pub(crate) fn check_targets(schema: &ferrum_meta::Schema, entity: &str, actions:
             }
             AutomationAction::Notify { .. } | AutomationAction::Email { .. } => continue,
         };
-        if let Some(f) = values.keys().find(|f| target.field(f).is_none()) {
+        // The platform's own keys are ignored when written, as they always were (a configured action refuses them).
+        if let Some(f) = values.keys().find(|f| target.field(f).is_none() && !crate::store::SYSTEM_KEYS.contains(&f.as_str())) {
             return Err(at(format!("{} has no field {f}", target.def.label)));
         }
     }
