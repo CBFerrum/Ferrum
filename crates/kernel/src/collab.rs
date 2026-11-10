@@ -203,6 +203,29 @@ impl Kernel {
         Ok(cid)
     }
 
+    /// Mails a record and says so: the mail is queued and `<Entity>.emailed` raised on the outbox in one
+    /// transaction (so webhooks and apps' event sinks hear of every mail that goes, and only those), carrying
+    /// who sent it (`actor`), `to`, `subject`, whether the PDF went along (`pdf`) and the stored `attachments`;
+    /// then the mail is noted on the record's timeline. `files` are stored files, the record's PDF when sent.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn email_record(&self, ctx: &Ctx, entity: &str, doc: &Doc, to: &str, subject: &str, html: &str, files: &[Uuid]) -> Result<()> {
+        let id = doc.get("id").and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok()).ok_or_else(|| Error::Internal("a record without an id".into()))?;
+        let to = to.trim();
+        let actor = (!ctx.user.is_nil()).then_some(ctx.user);
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        self.queue_mail_with(&mut tx, ctx.tenant, to, subject, html, files).await?;
+        let payload = json!({"entity": entity, "id": id, "event": "emailed", "actor": actor, "request_id": ctx.request_id,
+            "to": to, "subject": subject, "pdf": !files.is_empty(), "attachments": files});
+        let company = doc.get("company").and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok());
+        let source = crate::outbox::Source { entity, record_id: id, actor, legal_entity: company, version: None };
+        crate::outbox::enqueue_change(&mut tx, ctx.tenant, &format!("{entity}.emailed"), source, payload).await?;
+        tx.commit().await?;
+        if let Err(e) = self.add_comment(ctx, entity, id, &format!("Emailed to {to}: {subject}"), &[]).await {
+            tracing::warn!(%entity, %id, "could not note the email on the record: {e}");
+        }
+        Ok(())
+    }
+
     /// Changes one's own comment.
     pub async fn edit_comment(&self, ctx: &Ctx, comment: Uuid, body: &str) -> Result<()> {
         let body = body.trim();

@@ -10,7 +10,7 @@ plugins, apps' event sinks, mail and push.
 |---|---|
 | `id` | The event's identity, increasing with time. Consumers deduplicate on it. |
 | `tenant_id` | The workspace. |
-| `topic` | `{Entity}.{created,updated,submitted,cancelled,deleted}`, `plugin.{plugin}.{topic}`, or `ferrum.*` for the platform's own. |
+| `topic` | `{Entity}.{created,updated,submitted,cancelled,deleted}`, `{Entity}.emailed` (the record was mailed from its form: to whom, and whether its PDF went along), `plugin.{plugin}.{topic}`, or `ferrum.*` for the platform's own. |
 | `entity`, `record_id`, `source_version` | The record it is about, and the version that change made. |
 | `actor` | Who made the change; empty for background work. |
 | `legal_entity` | The record's company, when it has one. |
