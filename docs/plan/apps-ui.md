@@ -882,6 +882,16 @@ Rules checked when the store publishes and when a cluster makes a release availa
 * A child that lives inside its parent declares no `shell.app`; it contributes to the parent's points
   (`drive.editor`, `erp.module`) and is listed under the parent in the store.
 
+**A workspace's own menu.** A business built by configuration (custom entities, rules and buttons, moved
+between workspaces as a pack) has no manifest. One customization, `define_module` (docs/api.md,
+"Customization"; BD-12), gives it what a records-only app gets from its manifest: a module grouping its
+entities and reports, a launcher tile (`/data/{menu}/`, with the menu's icon and colour) for whoever
+reads one of its entities, Create entries for the entities it names, and the assistant's notes and
+suggested questions on its pages. `/data/{menu}/` is the records frame scoped to the menu (`scope.modules`),
+and `/open/{entity}` for an entity no app shows goes there. What it cannot be: a screen of its own (its
+pages are the records frame's lists and forms; a Studio space can stand in for a home page), a search
+provider for the bar, or live counts on its tile.
+
 ### 10.2 Entry pages and the bootstrap
 
 `GET /crm/deals/42` on a workspace host:

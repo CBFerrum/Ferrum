@@ -267,6 +267,22 @@ fn actions() -> Vec<(&'static str, Value)> {
 }
 
 /// The rules a check cannot hold: they count other records, or fill fields from the ones they read.
+/// The app's menu, tile, quick create and assistant notes (its `shell.*` contributions and `modules`), as a
+/// workspace's own menu. The instructions are the app's `shell.assistant` text, with the pack's entity names.
+fn menu() -> Value {
+    json!({"name": "x_grc", "label": "Governance and Risk", "description": "Risks, controls, policies and findings", "icon": "clipboard-list",
+        "color": "#7c3aed", "items": ["XRisk", "XControl", "XRiskAcceptance", "XPolicy", "XPolicyAcknowledgement", "XFinding"],
+        "create": ["XRisk", "XFinding"],
+        "assistant": {
+            "instructions": "A Risk (XRisk) is scored on the likelihood and impact matrix, before and after its controls (its Risk Control lines). \
+                A Control (XControl) is Planned, In Place or Retired; its Control Test lines, each with its evidence, show whether it works. \
+                A Risk Acceptance (XRiskAcceptance: Draft, Accepted, Rejected, Revoked, Expired) records who accepted a risk and until when. \
+                A Policy (XPolicy) is Published by revision, and a Policy Acknowledgement (XPolicyAcknowledgement) records who read which \
+                revision. A Finding (XFinding: Open, Remediating, Closed) is a gap found.",
+            "suggestions": ["What are our highest risks after their controls?", "Which controls failed their last test?",
+                "Who has not acknowledged the current revision of a policy?", "Which risk acceptances expire soon?"]}})
+}
+
 fn solution() -> String {
     // Approved, and its last day today or later: an expired acceptance holds nothing, the day it expires.
     let held = json!([{"name": "held", "entity": "XRiskAcceptance", "link": "risk", "filter": [["status", "=", "Accepted"], ["expires_on", ">=", {"today": 0}]], "op": "exists"}]);
@@ -423,6 +439,7 @@ async fn build(k: &Arc<Kernel>) -> Value {
     for (entity, action) in actions() {
         ops.push(serde_json::from_value(json!({"entity": entity, "op": {"op": "add_action", "action": action}})).unwrap());
     }
+    ops.push(serde_json::from_value(json!({"entity": "x_grc", "op": {"op": "define_module", "module": menu()}})).unwrap());
     k.batch_customizations(&admin, ops, false).await.unwrap_or_else(|(at, e)| panic!("customization {at:?}: {}", message(&e)));
     let admin = src.admin().await;
     for (role, rule) in roles() {
@@ -724,4 +741,25 @@ async fn scenario() {
     }
     let page = ferrum_studio::builder::space_data(k, &reader, space).await.expect("the space");
     assert_eq!(labels(&page), ["Policies"], "a reader sees what she may read: {page}");
+
+    // ───────────── not in the app's tests: its tile, quick create, menu and assistant notes ─────────────
+    // A workspace's own menu (define_module). SAME: the menu "Governance and Risk" groups its records (U6), the
+    // Create menu offers a risk and a finding to whoever may create them (U4), and the assistant is told the app's
+    // words and suggests its questions on the menu's pages (U5). DIFFERENT: the tile, with the app's icon and
+    // colour, goes to whoever reads one of its entities (here the three roles, as the app's) and opens the records
+    // pages, not a page of its own (U3, U1).
+    let admin = t.admin().await;
+    let grc = admin.schema.modules.iter().find(|m| m.name == "x_grc").expect("the menu");
+    assert_eq!(
+        (grc.package.as_str(), grc.label.as_str(), grc.icon.as_deref(), grc.color.as_deref()),
+        ("tenant", "Governance and Risk", Some("clipboard-list"), Some("#7c3aed"))
+    );
+    assert_eq!(grc.create, ["XRisk", "XFinding"]);
+    assert_eq!(grc.assistant.as_ref().unwrap().suggestions.len(), 4);
+    assert!(grc.items.iter().all(|i| admin.schema.entity(i).is_some_and(|e| e.def.kind != ferrum_meta::EntityKind::Child)));
+    let reads = |c: &Ctx| grc.items.iter().filter(|i| c.perms.access(i, ferrum_kernel::Action::Read) != ferrum_kernel::Access::None).count();
+    let creates =
+        |c: &Ctx| grc.create.iter().filter(|i| c.perms.access(i, ferrum_kernel::Action::Create) != ferrum_kernel::Access::None).cloned().collect::<Vec<_>>();
+    assert!(reads(&rm) > 0 && reads(&ra) > 0 && reads(&reader) > 0, "each of the three roles gets the tile");
+    assert_eq!((creates(&rm), creates(&ra), creates(&reader)), (vec!["XRisk".to_string(), "XFinding".to_string()], vec![], vec![]));
 }

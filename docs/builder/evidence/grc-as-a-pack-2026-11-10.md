@@ -78,11 +78,11 @@ platform's, said where they differ); **different** means the intent is met anoth
 | X2 | An approver creates no risk and records no test; a reader creates no policy | roles | **same** (a test is a change to the control, C3) | |
 | U1 | Its own page at `/grc/`: risks worst first, controls to test, open findings, published policies | `ui/src/Home.tsx` | **different**: a Studio space shared to the three roles with the same four lists; risks by score rather than level then score, no coloured level badges; each person sees the lists they may read | a list block sorted by two fields and showing a select as a badge (small) |
 | U2 | Every record's list and form | the records frame | **same**: generic record pages in both (the pack's were not opened in a browser) | |
-| U3 | An app tile for the three roles, with icon and colour | `shell.app` | **cannot** | shell contributions in a pack |
-| U4 | Quick create of a risk and a finding | `shell.create` | **cannot** | as U3 |
-| U5 | What the assistant knows of its records, and the questions it suggests | `shell.assistant` | **cannot** | as U3 |
-| U6 | A menu module "Governance and Risk" grouping its records | `modules` in `package.yaml` | **cannot**: no customization defines a module | a module by configuration |
-| U7 | Its names and words in Arabic and Hindi | `ui/src/locales` | **cannot** | words in a pack |
+| U3 | An app tile for the three roles, with icon and colour | `shell.app` | **different** (was cannot): the menu `x_grc`'s tile, same icon and colour, for whoever reads one of its entities (the three roles here, and administrators, as the app's); it opens the records pages at `/data/x_grc/`, not a page of its own | a screen of its own (U1) |
+| U4 | Quick create of a risk and a finding | `shell.create` | **same** (was cannot): the menu's `create`, offered to those who may create them (a Risk Manager), opening a new record's form | |
+| U5 | What the assistant knows of its records, and the questions it suggests | `shell.assistant` | **same** (was cannot): the menu's `assistant`, the app's text with the pack's entity names, on `/data/x_grc/` pages, where `/open` sends its records | |
+| U6 | A menu module "Governance and Risk" grouping its records | `modules` in `package.yaml` | **same** (was cannot): `define_module`; the records frame shows it once the web pages filter on `scope.modules` (with one menu, as now, they show it already) | |
+| U7 | Its names and words in Arabic and Hindi | `ui/src/locales` | **cannot** | a pack can now carry `InterfaceWord` records, but the pack carries none, and entity labels and choices are not interface words |
 | U8 | Reports and notifications | none | **same**: none | |
 | U9 | Uninstall ("ask") and versioned upgrades | app manifest, migrations | **different**: no uninstall; an upgrade is a newer pack installed over it (redefinitions under their guards) | uninstalling a pack (BF-PACK-003) |
 
@@ -232,3 +232,35 @@ One record at a time and across records, the pack is now the app in 46 of 58 beh
 decision, its refusals and what it does to the risk. What keeps the app from being retired is no longer in
 its Rust: it is the shell (tile, quick create, assistant help, menu module), words in other languages, lines
 within lines, and settings by configuration.
+
+## Measured again after a workspace's own menu (10 November 2026, later still)
+
+The platform gained `define_module` (BD-12): one customization giving a workspace a menu with a launcher
+tile, quick create and the assistant's notes; packs carry it, and `InterfaceWord` records travel as
+reference records. The pack now holds 24 customizations (the menu `x_grc` "Governance and Risk": its six
+entities that are not lines, risks first, quick create of a risk and a finding, the app's assistant text
+and its four suggested questions). [grc_pack_it.rs](../../../crates/studio/tests/grc_pack_it.rs) checks the
+installed menu, that each of the three roles reads one of its entities (so gets the tile), and that only the
+Risk Manager is offered the two Create entries.
+
+### Counts
+
+58 behaviours: **49 same, 7 different, 2 cannot** (were 46, 6, 6). The app's own test is unchanged (its
+steps do not reach the shell).
+
+| Moved | Behaviours |
+|---|---|
+| cannot → same | U4 (quick create), U5 (assistant notes and suggestions), U6 (a menu module) |
+| cannot → different | U3 (a tile with the app's icon and colour, opening the records pages) |
+
+### Still different or impossible
+
+- **Different (7)**: R9, C2, C3, P8, U1, U9 as before; U3 (the tile opens records pages).
+- **Cannot (2)**: C4 (lines within lines); U7 (words in other languages: the pack carries no
+  `InterfaceWord` records, and those translate the interface's words, not the pack's entity labels and
+  choices).
+- **What a menu is not**: a screen of its own (the home page is still a Studio space, U1), a search
+  provider in the bar (the app has none either), live counts on its tile.
+- **Not checked**: no browser. `/api/shell`, `/data/x_grc/` and `/open` were checked by the server's unit
+  tests, not on a running server with this pack; the web pages do not yet filter the records frame by
+  `scope.modules` (with one menu it makes no difference).

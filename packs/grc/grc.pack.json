@@ -2992,6 +2992,41 @@
         },
         "op": "add_action"
       }
+    },
+    {
+      "entity": "x_grc",
+      "op": {
+        "module": {
+          "assistant": {
+            "instructions": "A Risk (XRisk) is scored on the likelihood and impact matrix, before and after its controls (its Risk Control lines). A Control (XControl) is Planned, In Place or Retired; its Control Test lines, each with its evidence, show whether it works. A Risk Acceptance (XRiskAcceptance: Draft, Accepted, Rejected, Revoked, Expired) records who accepted a risk and until when. A Policy (XPolicy) is Published by revision, and a Policy Acknowledgement (XPolicyAcknowledgement) records who read which revision. A Finding (XFinding: Open, Remediating, Closed) is a gap found.",
+            "suggestions": [
+              "What are our highest risks after their controls?",
+              "Which controls failed their last test?",
+              "Who has not acknowledged the current revision of a policy?",
+              "Which risk acceptances expire soon?"
+            ]
+          },
+          "color": "#7c3aed",
+          "create": [
+            "XRisk",
+            "XFinding"
+          ],
+          "description": "Risks, controls, policies and findings",
+          "icon": "clipboard-list",
+          "items": [
+            "XRisk",
+            "XControl",
+            "XRiskAcceptance",
+            "XPolicy",
+            "XPolicyAcknowledgement",
+            "XFinding"
+          ],
+          "label": "Governance and Risk",
+          "name": "x_grc",
+          "order": 0
+        },
+        "op": "define_module"
+      }
     }
   ],
   "format": "ferrum.pack/1",

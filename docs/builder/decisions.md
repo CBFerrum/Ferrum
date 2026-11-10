@@ -226,3 +226,23 @@ to who may press it.
 
 **Rules out**: an effect that writes the platform's or a package's own fields, runs another action or a
 script, or skips a check because it runs as the system.
+
+## BD-12. A workspace's own menu
+
+Decided 10 November 2026. Asked for by Governance and Risk as a pack (rows U3–U6 of the
+[evidence](evidence/grc-as-a-pack-2026-11-10.md)).
+
+A coded app gets a home tile, quick create, a menu and the assistant's notes from four parts of its
+manifest. A business built by configuration gets all four from **one definition**, `define_module`: a
+module named `x_…` (packages never take such names) with a label, an icon and a colour, its entities and
+reports in order, the entities it offers to create, and the assistant's instructions and suggestions.
+
+* **One definition, one place.** The properties only a workspace's menu has (`color`, `description`,
+  `create`, `assistant`) are refused on a package's module: an app says these in its manifest, so each
+  thing has one way to be said.
+* **Shown to whoever reads an item.** No second list of roles to keep in step with the role rules: a
+  member who may read one of the menu's entities gets its tile; a Create row needs the right to create.
+* **It names what is there.** A menu naming an entity the workspace lacks is refused; one whose entity
+  goes later (an app uninstalled) loses that item with a schema warning and keeps the rest.
+* **It is records, not a screen.** `/data/{menu}/` is the records frame scoped to the menu, as a
+  records-only app's is. A screen of its own, a search provider and live tile counts stay with apps.
