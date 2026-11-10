@@ -15,6 +15,18 @@ use std::collections::BTreeMap;
 use uuid::Uuid;
 
 pub const MAX_DEPTH: u8 = 3;
+/// The largest mail template an automation keeps, as large as a saved view or preferences may be.
+pub const MAX_TEMPLATE: usize = 64 * 1024;
+
+/// A mail template, compiled in the print formats' engine: refused when too large or when it does not compile.
+fn mail_template(src: &str) -> Result<minijinja::Environment<'_>> {
+    if src.len() > MAX_TEMPLATE {
+        return Err(Error::field("actions", "an e-mail template is larger than 64 KB"));
+    }
+    let mut env = crate::print::environment();
+    env.add_template("mail", src).map_err(|e| Error::field("actions", format!("e-mail template: {e}")))?;
+    Ok(env)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -32,12 +44,16 @@ pub enum AutomationAction {
         body: Option<String>,
     },
     /// E-mail, queued with the outbox in the run's transaction: it goes out only if the run commits,
-    /// once per event. All fields are CEL expressions; what `body` gives is text, escaped, its line breaks kept. Marketing (`purpose`) is not sent to someone who
+    /// once per event. `to`, `subject` and `body` are CEL expressions; what `body` gives is text, escaped, its line
+    /// breaks kept. A `template` (MiniJinja, the print formats' engine) makes formatted mail in its place: its own
+    /// markup stays, every value it prints is escaped, and it sees the record as `doc` and the runner as `user`. Marketing (`purpose`) is not sent to someone who
     /// withdrew their consent, asked again as it goes (FEO-015); a transactional notice does not ask.
     Email {
         to: String,
         subject: String,
         body: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        template: Option<String>,
         #[serde(default)]
         purpose: crate::retention::Purpose,
     },
@@ -61,7 +77,12 @@ pub fn validate_actions(actions: &Value) -> Result<Vec<AutomationAction>> {
         let exprs: Vec<&String> = match a {
             AutomationAction::SetFields { values } | AutomationAction::CreateDocument { values, .. } => values.values().collect(),
             AutomationAction::Notify { title, body, .. } => std::iter::once(title).chain(body.iter()).collect(),
-            AutomationAction::Email { to, subject, body, .. } => vec![to, subject, body],
+            AutomationAction::Email { to, subject, body, template, .. } => {
+                if let Some(t) = template {
+                    mail_template(t)?;
+                }
+                vec![to, subject, body]
+            }
         };
         for e in exprs {
             Expr::compile(e).map_err(|m| Error::invalid(format!("expression '{e}': {m}")))?;
@@ -316,11 +337,20 @@ async fn execute(
                 crate::notify::send_kind(tx, ctx.tenant, u, "automation", "inapp", &title, body.as_deref(), Some(entity), record).await?;
             }
         }
-        AutomationAction::Email { to, subject, body, purpose } => {
+        AutomationAction::Email { to, subject, body, template, purpose } => {
             let to = as_text(eval(&to, doc, user)?);
             let subject = as_text(eval(&subject, doc, user)?);
-            // The body is text: nothing a record holds becomes markup in a mail sent in the workspace's name.
-            let body = crate::outbox::text_html(&as_text(eval(&body, doc, user)?));
+            // The body is text: nothing a record holds becomes markup in a mail sent in the workspace's name. A
+            // template's own markup is the administrator's; what it prints from the record is escaped.
+            let body = match template {
+                Some(t) => mail_template(&t)?
+                    .get_template("mail")
+                    .and_then(|m| {
+                        m.render(minijinja::context! { doc => minijinja::Value::from_serialize(doc), user => minijinja::Value::from_serialize(user) })
+                    })
+                    .map_err(|e| Error::invalid(format!("e-mail template failed: {e}")))?,
+                None => crate::outbox::text_html(&as_text(eval(&body, doc, user)?)),
+            };
             // Never sent from here: a later action could still roll the run back (FLC-HOOK-002).
             k.queue_mail_for(tx, ctx.tenant, &to, &subject, &body, &[], purpose).await?;
         }
