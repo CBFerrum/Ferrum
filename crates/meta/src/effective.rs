@@ -613,6 +613,10 @@ fn validate_custom_lines(name: &str, building: &BTreeMap<String, Building>) -> R
         if let Some((owner, table)) = first.filter(|(n, t)| (n.as_str(), t.as_str()) != (name, f.name.as_str())) {
             return Err(format!("table field {}: {of} is already the lines of {owner}.{table}; a child entity belongs to one table field", f.name));
         }
+        // Lines within lines go two levels deep: a record, its lines, their lines.
+        if b.def.kind == EntityKind::Child && building.get(of).is_some_and(|c| c.def.fields.iter().any(|g| g.ftype == FieldType::Table)) {
+            return Err(format!("table field {}: lines go two levels deep (a record, its lines, their lines), and {of} has lines of its own", f.name));
+        }
     }
     Ok(())
 }
@@ -862,11 +866,11 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
     let all: HashMap<&str, &EntityDef> = defs_snapshot.iter().map(|(k, v)| (k.as_str(), v)).collect();
     let mut broken = Vec::new();
     for (name, b) in &building {
-        if let Err(m) = validate_entity(&b.def, &all).and_then(|_| validate_custom_lines(name, &building)) {
+        if let Err(m) = validate_entity(&b.def, &all, b.custom).and_then(|_| validate_custom_lines(name, &building)) {
             if b.custom {
                 broken.push(name.clone());
             } else if let Some((base, _)) = packaged.get(name) {
-                if validate_entity(base, &all).is_err() {
+                if validate_entity(base, &all, false).is_err() {
                     return invalid(format!("{name}: {m}"));
                 }
                 broken.push(name.clone());

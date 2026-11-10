@@ -674,7 +674,9 @@ pub(crate) fn compile(on: &EntityDef, what: &str, src: Option<&str>, reads: bool
 }
 
 /// Structural validation of one (possibly overlaid) entity against all known entities.
-pub(crate) fn validate_entity(e: &EntityDef, all: &HashMap<&str, &EntityDef>) -> Result<(), String> {
+/// `custom`: a workspace's own entity, whose line entity may hold lines of its own (`effective::validate_custom_lines`
+/// bounds them at two levels); a package's child entity holds no table.
+pub(crate) fn validate_entity(e: &EntityDef, all: &HashMap<&str, &EntityDef>, custom: bool) -> Result<(), String> {
     if e.label.trim().is_empty() {
         return Err("label is required".into());
     }
@@ -700,7 +702,7 @@ pub(crate) fn validate_entity(e: &EntityDef, all: &HashMap<&str, &EntityDef>) ->
         if !names.insert(f.name.as_str()) {
             return Err(format!("duplicate field '{}'", f.name));
         }
-        validate_field(e, f, all)?;
+        validate_field(e, f, all, custom)?;
     }
     let field = |n: &str| e.fields.iter().find(|f| f.name == n);
     let storable = |n: &str| field(n).is_some_and(|f| f.ftype.is_stored());
@@ -897,7 +899,7 @@ fn validate_rollup(e: &EntityDef, f: &FieldDef, r: &RollupDef, all: &HashMap<&st
     }
 }
 
-fn validate_field(e: &EntityDef, f: &FieldDef, all: &HashMap<&str, &EntityDef>) -> Result<(), String> {
+fn validate_field(e: &EntityDef, f: &FieldDef, all: &HashMap<&str, &EntityDef>, custom: bool) -> Result<(), String> {
     let fname = &f.name;
     if f.ftype == FieldType::Secret {
         if e.kind == EntityKind::Child {
@@ -931,7 +933,7 @@ fn validate_field(e: &EntityDef, f: &FieldDef, all: &HashMap<&str, &EntityDef>) 
             if child.kind != EntityKind::Child {
                 return Err(format!("table field '{fname}': {of} is not a child entity"));
             }
-            if e.kind == EntityKind::Child {
+            if e.kind == EntityKind::Child && !custom {
                 return Err(format!("table field '{fname}': child entities cannot nest tables"));
             }
             if f.unique || f.index || f.default.is_some() || f.computed.is_some() {
@@ -1117,7 +1119,7 @@ mod tests {
         };
         let target: EntityDef = serde_json::from_value(serde_json::json!({"name": "XType", "label": "Type", "kind": "master", "fields": []})).unwrap();
         let all = HashMap::from([("XType", &target)]);
-        let check = |extra: serde_json::Value| validate_entity(&def(extra), &all);
+        let check = |extra: serde_json::Value| validate_entity(&def(extra), &all, true);
         let rule = |c: &str| serde_json::json!({"rules": [{"name": "r", "check": c, "message": "m"}]});
         check(rule("links.type == null || links.type.documents.all(d, d.document != '') && links.office != null")).expect("two link fields");
         check(serde_json::json!({"actions": [{"name": "x_go", "label": "Go", "condition": "links.type != null",
@@ -1137,7 +1139,7 @@ mod tests {
         assert!(e.contains("without the linked records"), "{e}");
         let mut line = def(rule("links.type != null"));
         line.kind = EntityKind::Child;
-        assert!(validate_entity(&line, &all).unwrap_err().contains("a line's rules do not read linked records"));
+        assert!(validate_entity(&line, &all, true).unwrap_err().contains("a line's rules do not read linked records"));
         let wf: WorkflowDef = serde_json::from_value(serde_json::json!({"name": "w", "entity": "XApp", "initial_state": "A",
             "states": [{"name": "A"}, {"name": "B"}], "transitions": [{"action": "go", "from": "A", "to": "B", "condition": "links.note != null"}]}))
         .unwrap();
