@@ -652,9 +652,23 @@ fn topo_order(packages: &BTreeMap<String, Package>) -> Result<Vec<String>, MetaE
     Ok(order)
 }
 
-fn compile(what: &str, src: &Option<String>) -> Result<(), String> {
-    if let Some(s) = src {
-        Expr::compile(s).map_err(|e| format!("{what}: {e}"))?;
+/// Compiles an expression of `on`, refusing what it reads through `links` unless `reads` (docs/builder/decisions.md
+/// BD-14): there, each `links.<name>` is a link field of `on`, and `on` is not lines. Without `reads` the expression
+/// is worked out where no transaction is at hand (and in the browser), so it reads no linked record.
+pub(crate) fn compile(on: &EntityDef, what: &str, src: Option<&str>, reads: bool) -> Result<(), String> {
+    let Some(s) = src else { return Ok(()) };
+    let e = Expr::compile(s).map_err(|e| format!("{what}: {e}"))?;
+    let Some(name) = e.links().first() else { return Ok(()) };
+    if !reads {
+        return Err(format!(
+            "{what}: links.{name}: this is worked out without the linked records (also in the browser); rules, conditions, refusals, workflow guards, automations and targets read them"
+        ));
+    }
+    if on.kind == EntityKind::Child {
+        return Err(format!("{what}: links.{name}: a line's rules do not read linked records; write the rule on the record that holds the lines"));
+    }
+    if let Some(n) = e.links().iter().find(|n| !on.fields.iter().any(|f| &f.name == *n && f.ftype == FieldType::Link)) {
+        return Err(format!("{what}: links.{n}: {n} is not a link field of {}", on.name));
     }
     Ok(())
 }
@@ -764,7 +778,7 @@ pub(crate) fn validate_entity(e: &EntityDef, all: &HashMap<&str, &EntityDef>) ->
         if !rule_names.insert(r.name.as_str()) {
             return Err(format!("duplicate rule '{}'", r.name));
         }
-        Expr::compile(&r.check).map_err(|m| format!("rule {}: {m}", r.name))?;
+        compile(e, &format!("rule {}", r.name), Some(&r.check), true)?;
     }
     let mut action_names = HashSet::new();
     for a in &e.actions {
@@ -778,11 +792,11 @@ pub(crate) fn validate_entity(e: &EntityDef, all: &HashMap<&str, &EntityDef>) ->
         if !["read", "write", "create", "submit", "cancel"].contains(&a.permission.as_str()) {
             return Err(format!("action {}: invalid permission {}", a.name, a.permission));
         }
-        compile(&format!("action {}", a.name), &a.condition)?;
+        compile(e, &format!("action {}", a.name), a.condition.as_deref(), true)?;
         if let Some(c) = &a.contract {
             validate_contract(e, a, c)?;
         }
-        validate_configured(a)?;
+        validate_configured(e, a)?;
     }
     if e.actions.iter().filter(|a| !a.effects.is_empty()).count() > MAX_CONFIGURED_ACTIONS {
         return Err(format!("at most {MAX_CONFIGURED_ACTIONS} configured actions on one entity"));
@@ -798,7 +812,7 @@ pub const MAX_CONFIGURED_ACTIONS: usize = 20;
 pub const MAX_EFFECTS: usize = 10;
 
 /// A configured action's own bounds; what its effects write is the kernel's to check (it knows them).
-fn validate_configured(a: &ActionDef) -> Result<(), String> {
+fn validate_configured(e: &EntityDef, a: &ActionDef) -> Result<(), String> {
     if a.effects.is_empty() {
         return if a.roles.is_empty() && a.refuse_if.is_empty() { Ok(()) } else { Err(format!("action {}: roles and refuse_if go with effects", a.name)) };
     }
@@ -818,7 +832,7 @@ fn validate_configured(a: &ActionDef) -> Result<(), String> {
         if r.message.trim().is_empty() {
             return Err(format!("action {}: refuse_if {} says nothing", a.name, i + 1));
         }
-        Expr::compile(&r.when).map_err(|m| format!("action {}: refuse_if {}: {m}", a.name, i + 1))?;
+        compile(e, &format!("action {}: refuse_if {}", a.name, i + 1), Some(&r.when), true)?;
     }
     Ok(())
 }
@@ -979,11 +993,11 @@ fn validate_field(e: &EntityDef, f: &FieldDef, all: &HashMap<&str, &EntityDef>) 
             return Err(format!("field '{fname}': fetch_from target field {target} not found"));
         }
     }
-    compile(&format!("{fname}.default_expr"), &f.default_expr)?;
-    compile(&format!("{fname}.computed"), &f.computed)?;
-    compile(&format!("{fname}.visible_if"), &f.visible_if)?;
-    compile(&format!("{fname}.required_if"), &f.required_if)?;
-    compile(&format!("{fname}.read_only_if"), &f.read_only_if)?;
+    compile(e, &format!("{fname}.default_expr"), f.default_expr.as_deref(), false)?;
+    compile(e, &format!("{fname}.computed"), f.computed.as_deref(), false)?;
+    compile(e, &format!("{fname}.visible_if"), f.visible_if.as_deref(), false)?;
+    compile(e, &format!("{fname}.required_if"), f.required_if.as_deref(), false)?;
+    compile(e, &format!("{fname}.read_only_if"), f.read_only_if.as_deref(), false)?;
     if let Some(g) = &f.perm_group
         && !is_ident(g)
     {
@@ -1060,7 +1074,7 @@ pub(crate) fn validate_workflow(wf: &WorkflowDef, entities: &BTreeMap<String, (S
         if !seen.insert((t.action.as_str(), t.from.as_str())) {
             return Err(format!("duplicate transition {} from {}", t.action, t.from));
         }
-        compile(&format!("transition {}", t.action), &t.condition)?;
+        compile(e, &format!("transition {}", t.action), t.condition.as_deref(), true)?;
         for path in &t.not_creator_of {
             let link = |fields: &[crate::types::FieldDef], name: &str| fields.iter().any(|f| f.name == name && f.ftype == FieldType::Link && f.to.is_some());
             let ok = match path.split_once('.') {
@@ -1084,6 +1098,52 @@ pub(crate) fn validate_workflow(wf: &WorkflowDef, entities: &BTreeMap<String, (S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Linked records in expressions (BD-14): read where a transaction is at hand, by link fields named in the
+    /// expression; refused when saved anywhere else.
+    #[test]
+    fn linked_records_are_read_where_they_may_be() {
+        let def = |extra: serde_json::Value| -> EntityDef {
+            let mut v = serde_json::json!({"name": "XApp", "label": "Application", "kind": "document", "fields": [
+                {"name": "type", "type": "link", "to": "XType"}, {"name": "office", "type": "link", "to": "XType"}, {"name": "note", "type": "data"}]});
+            for (k, x) in extra.as_object().unwrap() {
+                if k == "field" {
+                    v["fields"].as_array_mut().unwrap().push(x.clone());
+                } else {
+                    v[k] = x.clone();
+                }
+            }
+            serde_json::from_value(v).unwrap()
+        };
+        let target: EntityDef = serde_json::from_value(serde_json::json!({"name": "XType", "label": "Type", "kind": "master", "fields": []})).unwrap();
+        let all = HashMap::from([("XType", &target)]);
+        let check = |extra: serde_json::Value| validate_entity(&def(extra), &all);
+        let rule = |c: &str| serde_json::json!({"rules": [{"name": "r", "check": c, "message": "m"}]});
+        check(rule("links.type == null || links.type.documents.all(d, d.document != '') && links.office != null")).expect("two link fields");
+        check(serde_json::json!({"actions": [{"name": "x_go", "label": "Go", "condition": "links.type != null",
+            "refuse_if": [{"when": "links.office == null", "message": "an office"}], "effects": [{"type": "notify", "to": "owner", "title": "'t'"}]}]}))
+        .expect("a condition and a refusal");
+        let e = check(rule("links.note != null")).unwrap_err();
+        assert!(e.contains("links.note: note is not a link field of XApp"), "{e}");
+        let e = check(rule("links['type'] != null")).unwrap_err();
+        assert!(e.contains("links.<link field>"), "{e}");
+        let six = "links.a == null && links.b == null && links.c == null && links.d == null && links.e == null && links.f == null";
+        assert!(check(rule(six)).unwrap_err().contains("at most 5"));
+        for (prop, src) in [("computed", "links.type.name"), ("required_if", "links.type != null"), ("default_expr", "links.type.name")] {
+            let e = check(serde_json::json!({"field": {"name": "x", "type": "data", prop: src}})).unwrap_err();
+            assert!(e.contains("x.") && e.contains("without the linked records"), "{prop}: {e}");
+        }
+        let e = check(serde_json::json!({"form": [{"fields": ["note"], "visible_if": "links.type != null"}]})).unwrap_err();
+        assert!(e.contains("without the linked records"), "{e}");
+        let mut line = def(rule("links.type != null"));
+        line.kind = EntityKind::Child;
+        assert!(validate_entity(&line, &all).unwrap_err().contains("a line's rules do not read linked records"));
+        let wf: WorkflowDef = serde_json::from_value(serde_json::json!({"name": "w", "entity": "XApp", "initial_state": "A",
+            "states": [{"name": "A"}, {"name": "B"}], "transitions": [{"action": "go", "from": "A", "to": "B", "condition": "links.note != null"}]}))
+        .unwrap();
+        let entities = BTreeMap::from([("XApp".to_string(), ("tenant".to_string(), def(serde_json::json!({}))))]);
+        assert!(validate_workflow(&wf, &entities).unwrap_err().contains("note is not a link field"));
+    }
 
     #[test]
     fn an_entity_file_may_start_with_a_comment() {

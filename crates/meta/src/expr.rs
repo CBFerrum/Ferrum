@@ -18,10 +18,15 @@ const MAX_NESTING: usize = 32;
 /// stack (8 November 2026). The longest shipped expression has about twenty.
 const MAX_OPERATORS: usize = 512;
 
+/// Different linked records one expression may read through `links` (docs/builder/decisions.md BD-14).
+pub const MAX_LINKS: usize = 5;
+
 #[derive(Clone)]
 pub struct Expr {
     source: Arc<str>,
     program: Arc<Program>,
+    /// The link fields it reads as `links.<field>`, in the order written.
+    links: Arc<[String]>,
 }
 
 impl fmt::Debug for Expr {
@@ -63,11 +68,21 @@ impl Expr {
             return Err(format!("expression holds more than {MAX_OPERATORS} operators: split it"));
         }
         let program = Program::compile(source).map_err(|e| e.to_string())?;
-        Ok(Expr { source: source.into(), program: Arc::new(program) })
+        let mut links = Vec::new();
+        link_names(program.expression(), &mut links)?;
+        if links.len() > MAX_LINKS {
+            return Err(format!("an expression reads at most {MAX_LINKS} linked records (links.<field>); this one reads {}", links.len()));
+        }
+        Ok(Expr { source: source.into(), program: Arc::new(program), links: links.into() })
     }
 
     pub fn source(&self) -> &str {
         &self.source
+    }
+
+    /// The link fields it reads as `links.<field>`: the caller binds `links` with those records.
+    pub fn links(&self) -> &[String] {
+        &self.links
     }
 
     pub fn eval(&self, scope: &Scope<'_>) -> Result<Value, String> {
@@ -96,12 +111,63 @@ impl Expr {
 
     /// Evaluates to a boolean; `null` counts as `false`.
     pub fn eval_bool(&self, scope: &Scope<'_>) -> Result<bool, String> {
-        match self.eval(scope)? {
+        self.eval_bool_with(scope, &[])
+    }
+
+    /// [`Expr::eval_bool`] with more variables bound by name.
+    pub fn eval_bool_with(&self, scope: &Scope<'_>, extra: &[(&str, &Value)]) -> Result<bool, String> {
+        match self.eval_with(scope, extra)? {
             Value::Bool(b) => Ok(b),
             Value::Null => Ok(false),
             other => Err(format!("expected a boolean, got {other}")),
         }
     }
+}
+
+/// The fields named as `links.<field>` (`has(links.<field>)` too), each once; `links` read any other way (indexed,
+/// passed whole) is refused, so that what an expression reads is known before it runs.
+fn link_names(e: &cel::IdedExpr, out: &mut Vec<String>) -> Result<(), String> {
+    use cel::common::ast::{EntryExpr, Expr as E, IdedEntryExpr};
+    let entries = |entries: &[IdedEntryExpr], out: &mut Vec<String>| -> Result<(), String> {
+        for en in entries {
+            match &en.expr {
+                EntryExpr::StructField(f) => link_names(&f.value, out)?,
+                EntryExpr::MapEntry(m) => {
+                    link_names(&m.key, out)?;
+                    link_names(&m.value, out)?;
+                }
+            }
+        }
+        Ok(())
+    };
+    match &e.expr {
+        E::Select(s) if matches!(&s.operand.expr, E::Ident(n) if n == "links") => {
+            if !out.contains(&s.field) {
+                out.push(s.field.clone());
+            }
+        }
+        E::Ident(n) if n == "links" => return Err("links is read as links.<link field>, naming the field".into()),
+        E::Select(s) => link_names(&s.operand, out)?,
+        E::Call(c) => {
+            for x in c.target.as_deref().into_iter().chain(&c.args) {
+                link_names(x, out)?;
+            }
+        }
+        E::Comprehension(c) => {
+            for x in [&c.iter_range, &c.accu_init, &c.loop_cond, &c.loop_step, &c.result] {
+                link_names(x, out)?;
+            }
+        }
+        E::List(l) => {
+            for x in &l.elements {
+                link_names(x, out)?;
+            }
+        }
+        E::Map(m) => entries(&m.entries, out)?,
+        E::Struct(s) => entries(&s.entries, out)?,
+        E::Ident(_) | E::Literal(_) | E::Unspecified => {}
+    }
+    Ok(())
 }
 
 /// A JSON value as CEL sees it. A whole number is a signed integer, as CEL's own literals are, so that
@@ -214,6 +280,25 @@ mod tests {
         let doc = json!({});
         let user = json!({});
         assert!(Expr::compile("doc.missing > 1").unwrap().eval_bool(&scope(&doc, &user)).is_err());
+    }
+
+    #[test]
+    fn the_linked_records_an_expression_reads_are_found() {
+        let e = Expr::compile("links.type.documents.all(d, doc.documents.exists(r, r.document == d.document)) && has(links.office.name) && links.type != null")
+            .unwrap();
+        assert_eq!(e.links(), ["type", "office"]);
+        assert!(Expr::compile("doc.qty > 0").unwrap().links().is_empty());
+        assert_eq!(Expr::compile("[links.a, {'k': links.b}].size() > 0 && doc.x.map(r, links.c).size() > 0").unwrap().links(), ["a", "b", "c"]);
+        for indexed in ["links['type'] != null", "links != null", "size(links) > 0", "'type' in links"] {
+            assert!(Expr::compile(indexed).unwrap_err().contains("links.<link field>"), "{indexed}");
+        }
+        let six = "links.a == null && links.b == null && links.c == null && links.d == null && links.e == null && links.f == null";
+        assert!(Expr::compile(six).unwrap_err().contains("at most 5"));
+        let user = json!({});
+        let doc = json!({});
+        let linked = json!({"type": {"documents": [{"document": "ID"}]}});
+        let reads = Expr::compile("links.type.documents.size() == 1").unwrap();
+        assert!(reads.eval_bool_with(&scope(&doc, &user), &[("links", &linked)]).unwrap());
     }
 
     #[test]
