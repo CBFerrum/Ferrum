@@ -63,6 +63,16 @@ pub enum AutomationAction {
         #[serde(default)]
         purpose: crate::retention::Purpose,
     },
+    /// Another app's step through the capability gate, in the run's transaction (BD-13): `capability` a catalog id,
+    /// `input` its inputs as CEL expressions, `key` the effect key as an expression. Without `key`, the run's own:
+    /// the same run on the same record version does it once. It gives the receipt's result.
+    Invoke {
+        capability: String,
+        #[serde(default)]
+        input: BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+    },
 }
 
 pub(crate) fn check_action(a: &AutomationAction) -> Result<()> {
@@ -86,6 +96,7 @@ pub(crate) fn check_action(a: &AutomationAction) -> Result<()> {
             }
             vec![to, subject, body]
         }
+        AutomationAction::Invoke { input, key, .. } => input.values().chain(key.iter()).collect(),
     };
     for e in exprs {
         Expr::compile(e).map_err(|m| Error::invalid(format!("expression '{e}': {m}")))?;
@@ -198,12 +209,45 @@ pub(crate) fn check_targets(schema: &ferrum_meta::Schema, entity: &str, actions:
                 let to = linked_entity(ent, link).ok_or_else(|| at(format!("{link} is not a link field of {}", ent.def.label)))?;
                 (schema.entity(to).cloned().ok_or_else(|| at(format!("{link} links to {to}, which is not installed")))?, values)
             }
-            AutomationAction::Notify { .. } | AutomationAction::Email { .. } => continue,
+            AutomationAction::Notify { .. } | AutomationAction::Email { .. } | AutomationAction::Invoke { .. } => continue,
         };
         // The platform's own keys are ignored when written, as they always were (a configured action refuses them).
         if let Some(f) = values.keys().find(|f| target.field(f).is_none() && !crate::store::SYSTEM_KEYS.contains(&f.as_str())) {
             return Err(at(format!("{} has no field {f}", target.def.label)));
         }
+    }
+    Ok(())
+}
+
+/// A refusal that the capability is not in the catalog, said for whoever set the effect up.
+fn gone(e: Error, id: &str) -> Error {
+    match e.code() {
+        "capability_unavailable" => ferrum_logic::refusal::Refusal::new(
+            ferrum_logic::refusal::Code::CapabilityUnavailable,
+            format!("{id} is not a capability here: is its app installed?"),
+        )
+        .into(),
+        _ => e,
+    }
+}
+
+/// An `invoke` checked against the catalog as `ctx` sees it: its capability is there, and its input names are the
+/// capability's, the required ones given.
+pub(crate) fn check_invoke(k: &Kernel, ctx: &Ctx, id: &str, input: &BTreeMap<String, String>) -> Result<()> {
+    let cap = k.capability(ctx, id).map_err(|e| gone(e, id))?;
+    // No effect runs another configured action (BD-11), so a button cannot loop through the gate.
+    if let ferrum_logic::capability::Operation::Action(name) = &cap.operation
+        && cap.entity.as_deref().and_then(|e| ctx.schema.entity(e)).is_some_and(|e| e.def.actions.iter().any(|a| &a.name == name && !a.effects.is_empty()))
+    {
+        return Err(Error::invalid(format!("{id} is a configured action: an effect does not run another one")));
+    }
+    let props = cap.input.get("properties").and_then(Value::as_object);
+    if let Some(n) = input.keys().find(|n| props.is_none_or(|p| !p.contains_key(n.as_str()))) {
+        return Err(Error::invalid(format!("{id} has no input {n}")));
+    }
+    let required = cap.input.get("required").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str);
+    if let Some(r) = required.into_iter().find(|r| !input.contains_key(*r)) {
+        return Err(Error::invalid(format!("{id} needs its input {r}")));
     }
     Ok(())
 }
@@ -419,8 +463,12 @@ async fn run_one(
         _ => true,
     };
     let status = if pass {
-        for action in validate_actions(&a.actions)? {
-            execute(k, &ctx, &mut tx, entity, record, cel_doc, &user, &[], action).await?;
+        // An `invoke` without a key of its own does its step once per automation, record version and place.
+        let origin = format!("automation:{}:{}:v{}:", a.id, record.map(|r| r.to_string()).unwrap_or_default(), cel_doc.get("version").unwrap_or(&Value::Null));
+        let mut results = Vec::new();
+        for (i, action) in validate_actions(&a.actions)?.into_iter().enumerate() {
+            let done = Value::Array(results.clone());
+            results.push(execute(k, &ctx, &mut tx, entity, record, cel_doc, &user, &[("results", &done)], &format!("{origin}{i}"), action).await?);
         }
         "done"
     } else {
@@ -438,7 +486,8 @@ async fn run_one(
 }
 
 /// Runs one action as `ctx` in `tx`, its expressions over `doc` (the record as CEL sees it), `user` and `extra`
-/// (a configured action's `params`). Returns the record it made or wrote, `{entity, id, number}`, or null.
+/// (a configured action's `params`, earlier effects' `results`). Returns the record it made or wrote,
+/// `{entity, id, number}`, an `invoke`'s result (its effect key `key` unless it names one), or null.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute(
     k: &Kernel,
@@ -449,6 +498,7 @@ pub(crate) async fn execute(
     doc: &Value,
     user: &Value,
     extra: &[(&str, &Value)],
+    key: &str,
     action: AutomationAction,
 ) -> Result<Value> {
     let eval = |src: &str| eval_with(src, doc, user, extra);
@@ -532,12 +582,38 @@ pub(crate) async fn execute(
             // Never sent from here: a later action could still roll the run back (FLC-HOOK-002).
             k.queue_mail_for(tx, ctx.tenant, &to, &subject, &body, &[], purpose).await?;
         }
+        AutomationAction::Invoke { capability, input, key: named } => {
+            // Checked again as it runs: the capability's app may have gone since, or its action been configured.
+            check_invoke(k, ctx, &capability, &input)?;
+            let mut values = Map::new();
+            for (name, expr) in input {
+                values.insert(name, eval(&expr)?);
+            }
+            let key = match named {
+                Some(src) => as_text(eval(&src)?),
+                None => key.to_string(),
+            };
+            let inv = crate::capability::Invocation::new(capability.as_str(), Value::Object(values)).key(key);
+            // Boxed: an app's action reached through the gate is an action, which may run effects of its own.
+            return Ok(Box::pin(k.invoke_tx(ctx, tx, &inv)).await?.result);
+        }
     }
     Ok(Value::Null)
 }
 
 /// Validates and stores an automation definition.
 pub async fn save(k: &Kernel, ctx: &Ctx, input: &Map<String, Value>) -> Result<Uuid> {
+    // What an `invoke` names is checked against the catalog here, where the kernel is at hand.
+    // ponytail: a pack's install (save_in) skips this; its invoke is refused when it runs instead.
+    if ctx.is_admin
+        && let Ok(list) = validate_actions(input.get("actions").unwrap_or(&Value::Null))
+    {
+        for (i, a) in list.iter().enumerate() {
+            if let AutomationAction::Invoke { capability, input, .. } = a {
+                check_invoke(k, ctx, capability, input).map_err(|e| Error::Validation(vec![FieldError::new("actions", e.to_string()).in_row("actions", i)]))?;
+            }
+        }
+    }
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let id = save_in(ctx, &mut tx, input).await?;
     tx.commit().await?;

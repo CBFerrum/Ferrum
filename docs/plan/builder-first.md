@@ -187,6 +187,13 @@ evidence; a deliberate break for each new invariant; a walk in the browser as or
 * Decision tables driving them from a process or a rule.
 * **Proof**: Hospitality's deposit policy, Healthcare's insurer share and Nonprofit's restricted
   spending expressed as processes and tables; the books end as their app tests expect.
+* **Built (10 November 2026, BD-13)**: buttons and automations call the capability catalog's record
+  operations, an app's listed (contracted) actions and workflow transitions with `invoke`, through the
+  gate, once per effect key, as the system on the runner's behalf; `results[n]` carries what one effect
+  made to the next; `GET /api/admin/capabilities` lists what may be called. So ERP's sales invoice or
+  delivery note is created with its lines and submitted, posting through ERP's own code, from
+  configuration. **Not built**: contracts on ERP's own actions (crediting an invoice, a return at the
+  original cost, a transfer through transit), typed money tables, and decision tables bound to `invoke`.
 
 ### BF5. Rules without source (FEO-055)
 
