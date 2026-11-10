@@ -1,0 +1,7 @@
+apiVersion: v2
+name: ferrum
+description: "Ferrum, the multi-tenant business platform: the stateless server, its database and the pieces around it."
+type: application
+version: 0.1.0
+# The workspace version in the root Cargo.toml. Images are chosen by image.digest or image.tag, not by this.
+appVersion: "0.1.0"

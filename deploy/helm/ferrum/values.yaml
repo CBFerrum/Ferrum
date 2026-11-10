@@ -1,0 +1,165 @@
+# Ferrum: the stateless server, its PostgreSQL cluster (CloudNativePG), the PDF renderer, the
+# Gateway in front, and two optional parts. The defaults render what deploy/k8s renders
+# (deploy/helm/test.sh checks that). Install: docs/operations.md, "Installing with the Helm chart".
+
+# Names are "<fullnameOverride>", "<fullnameOverride>-pdf", "<fullnameOverride>-db" and so on.
+fullnameOverride: ferrum
+
+# The server's image. Set digest (preferred) or tag; rendering fails when neither is set, and
+# there is no default: `latest` is never used. The digest wins when both are set.
+image:
+  repository: ghcr.io/cbferrum/ferrum
+  digest: ""    # sha256:...
+  tag: ""       # a commit's full SHA
+
+# The address users open; the Gateway's host below should match.
+publicUrl: https://erp.example.com
+logLevel: info
+# Connections each replica may open (plus 4 on the side). Autoscaling's maxReplicas x (this + 4)
+# must fit the database's connectionLimit.
+dbMaxConnections: 30
+
+# Attachments must be shared by all replicas: object storage. The credentials are
+# AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in the Secret below.
+storage:
+  bucket: CHANGE-ME-files-bucket
+  region: ap-south-1
+  endpoint: ""  # MinIO, Cloudflare R2 and other S3-compatible stores: https://<account>.r2.cloudflarestorage.com
+
+# The name of a Secret you created. The chart creates none and holds no secret value. Keys:
+#   JWT_SECRET, FERRUM_SECRET_KEY, FERRUM_BOOTSTRAP_TOKEN, FERRUM_METRICS_TOKEN,
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+# and, optional: FERRUM_CLAMAV_ADDR, FERRUM_CLAMAV_MAX_MB, FERRUM_OPS_TELEMETRY_DAYS,
+#   FERRUM_RETIRED_SECRET_KEYS.
+secrets:
+  existingSecret: ferrum-secrets
+
+# Settings the chart does not know yet: entries of a container's `env`, added to the server.
+extraEnv: []
+# - {name: FERRUM_PROXY_HOPS, value: "2"}
+
+# No replicas are set while autoscaling is enabled: the autoscaler owns the count.
+replicas: 3     # used only when autoscaling.enabled is false
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  # Each replica may open dbMaxConnections + 4 connections; 10 x 34 fits max_connections 400.
+  # Add a PgBouncer pooler before raising this.
+  maxReplicas: 10
+  cpuUtilization: 70
+  scaleDownStabilizationSeconds: 300
+
+resources:
+  requests: {cpu: 250m, memory: 256Mi}
+  limits: {memory: 1Gi}
+
+pdb:
+  enabled: true
+  maxUnavailable: 1
+
+# Only the Gateway's proxies and Prometheus may reach the server; it may reach the database, the
+# PDF renderer, DNS and HTTPS/SMTP endpoints.
+networkPolicy:
+  enabled: true
+  ingressNamespaces: [envoy-gateway-system, monitoring]   # the Gateway's proxies; Prometheus
+
+# Needs the Prometheus operator. Also scrapes the database's exporter when database.enabled.
+serviceMonitor:
+  enabled: true
+  interval: 30s
+
+# Needs a Gateway API implementation and cert-manager. The class and the Envoy proxy settings
+# are Envoy Gateway's (tested with it); for another implementation set gatewayClassName and
+# envoyProxy.enabled: false, and add its proxies' namespace to networkPolicy.ingressNamespaces.
+gateway:
+  enabled: true
+  gatewayClassName: eg
+  hostname: erp.example.com
+  clusterIssuer: letsencrypt
+  tlsSecretName: ferrum-tls
+envoyProxy:
+  enabled: true
+  replicas: 2
+
+# A CloudNativePG Cluster with continuous backups (Barman Cloud plugin). Off: bring your own
+# database and name the Secret holding its connection URI in urlSecret.
+database:
+  enabled: true
+  urlSecret: {name: "", key: uri}   # used when enabled is false
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:17
+  storageSize: 100Gi
+  walStorageSize: 20Gi
+  # What the application role may hold; max_connections minus 30 for administration,
+  # replication and a migration.
+  connectionLimit: 370
+  parameters:
+    max_connections: "400"
+    shared_buffers: 2GB
+    effective_cache_size: 6GB
+    work_mem: 16MB
+    idle_in_transaction_session_timeout: 60s
+    lock_timeout: 15s
+  resources:
+    requests: {cpu: "1", memory: 4Gi}
+    limits: {memory: 8Gi}
+  backup:
+    destinationPath: s3://CHANGE-ME-backup-bucket/ferrum
+    endpointURL: ""                    # S3-compatible stores
+    credentialsSecret: ferrum-backup-s3  # keys ACCESS_KEY_ID, ACCESS_SECRET_KEY
+    retention: 30d
+    schedule: "0 0 2 * * *"            # six fields, seconds first
+
+# The PDF renderer (Gotenberg). The server needs it for print formats.
+pdf:
+  enabled: true
+  replicas: 2
+  image: {repository: gotenberg/gotenberg, digest: "", tag: "8"}
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {memory: 1Gi}
+
+# Browser editors for Drive (docs/operations.md, "Browser editors"): a server on a host of its own.
+editors:
+  enabled: false
+  host: editors.example.com
+  tlsSecretName: ferrum-editors-tls
+  replicas: 2
+  image: {repository: ghcr.io/cbferrum/ferrum-editors, digest: "", tag: ""}
+  resources:
+    requests: {cpu: 10m, memory: 16Mi}
+    limits: {memory: 64Mi}
+
+# Metrics' engine for external sources (docs/operations.md). Create these first: the Secret
+# (key `token`, 32 characters or more), the ConfigMap (key `engine.json`) and a ReadOnlyMany
+# PersistentVolumeClaim holding the datasets.
+metricsEngine:
+  enabled: false
+  replicas: 2
+  image: {repository: ghcr.io/cbferrum/ferrum-metrics-engine, digest: "", tag: ""}
+  tokenSecret: {name: ferrum-metrics-engine, key: token}
+  configMap: ferrum-metrics-engine
+  datasetsClaim: ferrum-metrics-datasets
+  resources:
+    requests: {cpu: 250m, memory: 512Mi}
+    limits: {memory: 3Gi}
+
+# A Job that applies database migrations before an install or upgrade (Helm hook), running the
+# server image with `args`. NOT USABLE YET: the server has no `migrate` task (it is being added
+# separately), so leave this off. Today the server migrates itself when it starts
+# (`database.auto_migrate: true` in server/config/production.yaml, which no environment variable
+# overrides). When the task exists and the server can start without migrating, list that setting
+# in serverEnv: it is added to the server's pods whenever the Job is enabled.
+# With database.enabled, the Cluster does not exist yet on the first install (hooks run first),
+# so the Job suits upgrades and your own database.
+migrate:
+  enabled: false
+  args: ["task", "migrate"]
+  serverEnv: []   # entries of `env`
+  backoffLimit: 2
+  activeDeadlineSeconds: 600
+
+# Create the namespace from the chart: off, use `helm install --create-namespace`. (With it on,
+# do not also pass --create-namespace.)
+namespace:
+  create: false

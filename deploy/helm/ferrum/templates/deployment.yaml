@@ -1,0 +1,200 @@
+# Stateless API replicas. Every replica runs the outbox, webhook and maintenance loops;
+# they coordinate through the database, so any replica can die at any time.
+{{- $n := include "ferrum.fullname" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $n }}
+  labels: {{- include "ferrum.labels" (list . $n) | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicas }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels: {app.kubernetes.io/name: {{ $n }}}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: {{ $n }}}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 40
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {app.kubernetes.io/name: {{ $n }}}
+          matchLabelKeys: [pod-template-hash]
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          nodeTaintsPolicy: Honor
+          labelSelector:
+            matchLabels: {app.kubernetes.io/name: {{ $n }}}
+          matchLabelKeys: [pod-template-hash]
+      containers:
+        - name: ferrum
+          image: {{ include "ferrum.image" (list "image" .Values.image) }}
+          args: ["start"]
+          ports:
+            - {name: http, containerPort: 5150}
+          env:
+            {{- include "ferrum.env" . | nindent 12 }}
+            {{- if .Values.migrate.enabled }}
+            {{- with .Values.migrate.serverEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- end }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+          startupProbe:
+            httpGet: {path: /_ping, port: http}
+            periodSeconds: 2
+            failureThreshold: 90
+          readinessProbe:
+            httpGet: {path: /api/ready, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            # Process health only: a database outage must not restart every replica.
+            httpGet: {path: /_ping, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          lifecycle:
+            preStop:  # the sleep action needs Kubernetes 1.30+
+              sleep: {seconds: 5}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 512Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $n }}
+  labels: {{- include "ferrum.labels" (list . $n) | nindent 4 }}
+spec:
+  selector: {app.kubernetes.io/name: {{ $n }}}
+  ports:
+    - {name: http, port: 80, targetPort: http}
+{{- if .Values.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $n }}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: {{ $n }}}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: {{ .Values.autoscaling.cpuUtilization }}}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: {{ .Values.autoscaling.scaleDownStabilizationSeconds }}
+{{- end }}
+{{- if .Values.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $n }}
+spec:
+  maxUnavailable: {{ .Values.pdb.maxUnavailable }}
+  selector:
+    matchLabels: {app.kubernetes.io/name: {{ $n }}}
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $n }}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: {{ $n }}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        {{- range .Values.networkPolicy.ingressNamespaces }}
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ . }}}
+        {{- end }}
+      ports:
+        - {port: 5150}
+  egress:
+    {{- if .Values.database.enabled }}
+    - to:
+        - podSelector:
+            matchLabels: {cnpg.io/cluster: {{ $n }}-db}
+      ports:
+        - {port: 5432}
+    {{- end }}
+    {{- if .Values.pdf.enabled }}
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: {{ $n }}-pdf}
+      ports:
+        - {port: 3000}
+    {{- end }}
+    - ports:
+        - {port: 53, protocol: UDP}
+        - {port: 53, protocol: TCP}
+    - ports:
+        - {port: 443}
+        - {port: 587}
+    {{- if .Values.metricsEngine.enabled }}
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: {{ $n }}-metrics-engine}
+      ports:
+        - {port: 5180}
+    {{- end }}
+{{- end }}
+{{- if .Values.serviceMonitor.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ $n }}
+spec:
+  selector:
+    matchLabels: {app.kubernetes.io/name: {{ $n }}}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+      authorization:
+        type: Bearer
+        credentials: {name: {{ .Values.secrets.existingSecret }}, key: FERRUM_METRICS_TOKEN}
+{{- if .Values.database.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ $n }}-db
+spec:
+  selector:
+    matchLabels: {cnpg.io/cluster: {{ $n }}-db}
+  podMetricsEndpoints:
+    - port: metrics
+{{- end }}
+{{- end }}
