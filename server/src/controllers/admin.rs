@@ -664,6 +664,23 @@ async fn save_automation(Auth(ctx): Auth, State(app): State<AppContext>, Json(bo
     Ok(Json(json!({"id": id})).into_response())
 }
 
+/// `POST /admin/automations/preview`: a mail action's HTML as it would be sent, against one record.
+pub async fn preview_automation_mail(k: &ferrum_kernel::Kernel, ctx: &Ctx, body: &Value) -> ApiResult<Value> {
+    admin(ctx)?;
+    let text = |key: &str| body.get(key).and_then(Value::as_str);
+    let entity = text("entity").ok_or_else(|| ApiError(Error::field("entity", "is required")))?;
+    let record = match body.get("record_id").filter(|v| !v.is_null()) {
+        Some(v) => Some(v.as_str().and_then(|s| s.parse().ok()).ok_or_else(|| ApiError(Error::field("record_id", "must be an id")))?),
+        None => None,
+    };
+    let (html, id) = ferrum_kernel::automation::preview_mail(k, ctx, entity, text("body"), text("template"), record).await?;
+    Ok(json!({"html": html, "record_id": id}))
+}
+
+async fn preview_automation(Auth(ctx): Auth, State(app): State<AppContext>, Json(body): Json<Value>) -> ApiResult<Response> {
+    Ok(Json(preview_automation_mail(&app_state(&app)?.kernel, &ctx, &body).await?).into_response())
+}
+
 async fn delete_automation(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
     admin(&ctx)?;
     let st = app_state(&app)?;
@@ -787,6 +804,7 @@ pub fn routes() -> Routes {
         .add("/admin/webhooks", get(list_webhooks).post(create_webhook))
         .add("/admin/webhooks/{id}", delete(delete_webhook))
         .add("/admin/automations", get(list_automations).post(save_automation))
+        .add("/admin/automations/preview", post(preview_automation))
         .add("/admin/automations/{id}", delete(delete_automation))
         .add("/admin/plugins", get(list_plugins).post(install_plugin))
         .add("/admin/plugins/{id}", delete(remove_plugin))
