@@ -22,5 +22,6 @@ async fn scenario() {
     assert!(e.to_string().contains("ferrum task migrate"), "{e}");
     let steps = ferrum_server::upgrade::run(&k).await.expect("the steps");
     assert!(steps.iter().any(|(s, _)| *s == "core-split"), "{steps:?}");
+    assert_eq!(steps.last().map(|s| s.0), Some("attach-files"), "files named before saves tied them, tied before this build serves: {steps:?}");
     ferrum_server::upgrade::verify(&k).await.expect("and now they have");
 }

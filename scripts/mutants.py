@@ -93,6 +93,7 @@ SHELL = ("-p", "ferrum-kernel", "--test", "shell_it")
 APPS_API = ("-p", "ferrum-server", "--test", "apps_api")
 LINKS = ("-p", "ferrum-kernel", "--test", "links_it")
 META_LINKS = ("-p", "ferrum-meta", "--lib", "linked_records")
+STREAMED = ("-p", "ferrum-server", "--test", "streamed_files_it")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
@@ -550,6 +551,22 @@ MUTANTS = [
     ("rule-names-an-action-that-is-not-there", "crates/kernel/src/auth.rs", "        if let Some(why) = p.unknown_action(ent.as_ref().map(|e| &e.def)) {", "        if let Some(why) = None::<String> {", PORTAL),
     ("portal-people-read-a-records-surroundings", "crates/kernel/src/collab.rs", "return Err(Error::Forbidden(\"a record's comments, files and people are for the workspace's members\".into()));", "return self.get(ctx, entity, id, false).await;", PORTAL),
     ("portal-people-read-a-records-history", "crates/kernel/src/audit.rs", "return Err(Error::Forbidden(\"a record's history is for the workspace's members\".into()));", "let _ = ();", PORTAL),
+    # Who takes a workflow transition: the run path and the form's `may_take` ask one gate.
+    ("transition-without-roles-for-readers", "crates/kernel/src/ctx.rs", "        return row_scope(ctx, ent, Action::Write);\n    }\n    if !t.roles", "        return row_scope(ctx, ent, Action::Read);\n    }\n    if !t.roles", PORTAL),
+    ("transition-without-roles-for-outsiders", "crates/kernel/src/ctx.rs", "        if ctx.outside {\n            return Err(Error::Forbidden(format!(\"'{}' is for the workspace's members\"", "        if false {\n            return Err(Error::Forbidden(format!(\"'{}' is for the workspace's members\"", PORTAL),
+    ("transition-gate-not-asked", "crates/kernel/src/doc.rs", "        if !crate::ctx::transition_gate(ctx, &ent, t)?.admits(tx, ctx.tenant, &doc).await? {", "        if false {", PORTAL),
+    ("transition-offered-to-anyone", "crates/kernel/src/describe.rs", "json!(crate::ctx::transition_gate(ctx, ent, def).is_ok())", "json!(true)", PORTAL),
+    # Tying a file to a record needs the right to change it.
+    ("attach-on-read", "crates/kernel/src/doc.rs", "        if !scope.admits(&mut tx, ctx.tenant, &doc).await? {\n            return Err(Error::Forbidden(format!(\"only someone who may change", "        if !scope.admits(&mut tx, ctx.tenant, &doc).await? && false {\n            return Err(Error::Forbidden(format!(\"only someone who may change", STREAMED),
+    ("upload-attaches-on-read", "server/src/objects.rs", "Some((entity, record)) => k.may_attach(ctx, entity, *record).await?,", "Some((entity, record)) => k.get(ctx, entity, *record, false).await.map(drop)?,", STREAMED),
+    # A file tied to no record is its uploader's until a record they save names it.
+    ("loose-file-served-to-anyone", "crates/kernel/src/files.rs", "            _ if owns_loose(ctx, by) => Ok(()),", "            _ if true => Ok(()),", PORTAL),
+    ("save-ties-no-file", "crates/kernel/src/files.rs", "update file_object set entity = $3, record_id = $4 where tenant_id = $1 and id = $2\"", "update file_object set entity = $3, record_id = $4 where tenant_id = $1 and id = $2 and false\"", PORTAL),
+    ("upgrade-ties-no-file", "crates/kernel/src/files.rs", "where o.tenant_id = $1 and o.id = pick.file and o.record_id is null returning o.id", "where o.tenant_id = $1 and o.id = pick.file and false returning o.id", PORTAL),
+    ("upgrade-skips-lines", "crates/kernel/src/files.rs", "                for f in c.value_fields().filter(|f| f.ftype == FieldType::Attach) {", "                for f in c.value_fields().filter(|f| f.ftype == FieldType::Attach && false) {", PORTAL),
+    ("upgrade-ties-to-the-last-made", "crates/kernel/src/files.rs", "order by file, at, record)", "order by file, at desc, record)", PORTAL),
+    ("save-names-anyones-file", "crates/kernel/src/files.rs", "                _ => return Err(refused()),", "                _ => {}", PORTAL),
+    ("outsiders-upload-without-limit", "crates/kernel/src/files.rs", "        if !ctx.outside {\n            return Ok(());", "        if !ctx.outside || true {\n            return Ok(());", STREAMED),
     ("portal-roles-given-to-anyone", "crates/kernel/src/auth.rs", "                if let Some(other) = roles.iter().find(|r| !portal.contains(r)) {", "                if let Some(other) = None::<&String> {", PORTAL),
     ("custom-lines-load-mixes-tables", "crates/kernel/src/store.rs", "                info.predicate(\"ci\")\n", "                String::new()\n", CUSTOM_LINES),
     ("custom-lines-filter-mixes-tables", "crates/kernel/src/query.rs", "                    info.predicate(\"c\")\n", "                    String::new()\n", CUSTOM_LINES),

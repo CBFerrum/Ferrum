@@ -3,10 +3,12 @@
 //! they are recorded in `file_object` like any upload, with the same access rules.
 
 use crate::error::{Error, Result};
-use crate::{Ctx, Kernel, Tx};
+use crate::{Ctx, Doc, Kernel, Tx};
 use async_trait::async_trait;
+use ferrum_meta::{EffEntity, FieldType};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -38,6 +40,24 @@ pub struct FileInfo {
     pub content_type: String,
     pub size: i64,
     key: String,
+}
+
+/// A file tied to no record is its uploader's, and an administrator's (and the system's).
+fn owns_loose(ctx: &Ctx, by: Option<Uuid>) -> bool {
+    ctx.is_admin || ctx.is_system || (!ctx.user.is_nil() && by == Some(ctx.user))
+}
+
+/// The stored files a record's `attach` fields name (`/files/{id}`), its child tables' included.
+fn named_files(ctx: &Ctx, ent: &EffEntity, doc: &Doc) -> BTreeSet<Uuid> {
+    let file = |v: Option<&Value>| v.and_then(Value::as_str).and_then(|s| s.strip_prefix("/files/")).and_then(|s| s.parse::<Uuid>().ok());
+    let mut out: BTreeSet<Uuid> = ent.value_fields().filter(|f| f.ftype == FieldType::Attach).filter_map(|f| file(doc.get(&f.name))).collect();
+    for (table, info) in &ent.children {
+        let Some(c) = ctx.schema.entity(&info.entity) else { continue };
+        for row in doc.get(table).and_then(Value::as_array).into_iter().flatten() {
+            out.extend(c.value_fields().filter(|f| f.ftype == FieldType::Attach).filter_map(|f| file(row.get(&f.name))));
+        }
+    }
+    out
 }
 
 /// Content types never served inline as-is (they could run script in the app's origin).
@@ -110,18 +130,71 @@ impl Kernel {
     /// without reading it.
     pub async fn file_info(&self, ctx: &Ctx, id: Uuid) -> Result<FileInfo> {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let row: Option<(String, String, String, Option<String>, Option<Uuid>, i64)> =
-            sqlx::query_as("select file_name, content_type, storage_key, entity, record_id, size_bytes from file_object where tenant_id = $1 and id = $2")
-                .bind(ctx.tenant)
-                .bind(id)
-                .fetch_optional(&mut *tx)
-                .await?;
+        let row: Option<(String, String, String, Option<String>, Option<Uuid>, i64, Option<Uuid>)> = sqlx::query_as(
+            "select file_name, content_type, storage_key, entity, record_id, size_bytes, created_by from file_object where tenant_id = $1 and id = $2",
+        )
+        .bind(ctx.tenant)
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
         tx.commit().await?;
-        let (name, content_type, key, entity, record, size) = row.ok_or_else(|| Error::NotFound("file".into()))?;
-        if let (Some(e), Some(r)) = (entity, record) {
-            self.get(ctx, &e, r, false).await?;
-        }
+        let (name, content_type, key, entity, record, size, by) = row.ok_or_else(|| Error::NotFound("file".into()))?;
+        self.may_download(ctx, entity.as_deref(), record, by).await?;
         Ok(FileInfo { name, content_type, size, key })
+    }
+
+    /// Whether `ctx` may download a file: one tied to a record, whoever may read the record; one tied to none, its
+    /// uploader and administrators (`by`: who uploaded it). Not found otherwise.
+    pub async fn may_download(&self, ctx: &Ctx, entity: Option<&str>, record: Option<Uuid>, by: Option<Uuid>) -> Result<()> {
+        match (entity, record) {
+            (Some(e), Some(r)) => self.get(ctx, e, r, false).await.map(drop),
+            _ if owns_loose(ctx, by) => Ok(()),
+            _ => Err(Error::NotFound("file".into())),
+        }
+    }
+
+    /// Counts an outside person's upload tied to no record against 20 an hour (docs/limits.md); a member's is not
+    /// counted. Size is limited as for everyone, by the route.
+    pub async fn count_loose_upload(&self, ctx: &Ctx) -> Result<()> {
+        if !ctx.outside {
+            return Ok(());
+        }
+        let key = format!("files|loose|{}|{}", ctx.tenant, ctx.user);
+        self.rate_limit(&key, std::time::Duration::from_secs(3600), 20, "too many uploads in an hour; try again later").await
+    }
+
+    /// Ties the files a saved record newly names in its `attach` fields to it, in the save's transaction: one tied to
+    /// no record when the saver uploaded it (or is an administrator or the system); one tied to a record stays there
+    /// when the saver may read that record. Any other is refused, so naming an id is no way to read a file.
+    pub(crate) async fn claim_files(&self, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, id: Uuid, doc: &Doc, old: Option<&Doc>) -> Result<()> {
+        let before = old.map(|o| named_files(ctx, ent, o)).unwrap_or_default();
+        for file in named_files(ctx, ent, doc).difference(&before) {
+            let row: Option<(Option<String>, Option<Uuid>, Option<Uuid>)> =
+                sqlx::query_as("select entity, record_id, created_by from file_object where tenant_id = $1 and id = $2 for update")
+                    .bind(ctx.tenant)
+                    .bind(file)
+                    .fetch_optional(&mut **tx)
+                    .await?;
+            // An id naming no stored file gives nothing away.
+            let Some((entity, record, by)) = row else { continue };
+            let refused = || Error::Forbidden(format!("{} names a file you cannot download", ent.def.label));
+            match (entity, record) {
+                (Some(e), Some(r)) => {
+                    self.get_tx(ctx, tx, &e, r, false).await.map_err(|_| refused())?;
+                }
+                _ if owns_loose(ctx, by) => {
+                    sqlx::query("update file_object set entity = $3, record_id = $4 where tenant_id = $1 and id = $2")
+                        .bind(ctx.tenant)
+                        .bind(file)
+                        .bind(&ent.def.name)
+                        .bind(id)
+                        .execute(&mut **tx)
+                        .await?;
+                }
+                _ => return Err(refused()),
+            }
+        }
+        Ok(())
     }
 
     /// A stored file's name, content type and bytes, if the caller may read the record it is
@@ -181,5 +254,82 @@ impl Kernel {
     pub async fn copy_file(&self, ctx: &Ctx, id: Uuid, attach_to: Option<(&str, Uuid)>) -> Result<Value> {
         let (name, ctype, data) = self.read_file(ctx, id).await?;
         self.store_file(ctx, attach_to, &name, &ctype, &data).await
+    }
+}
+
+/// Files tied, and files several records named, by [`Kernel::tie_named_files`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Tied {
+    pub tied: i64,
+    pub shared: i64,
+}
+
+/// Loose files a batch of [`Kernel::tie_named_files`] looks at, each batch in its own transaction.
+const TIE_BATCH: i64 = 1000;
+
+impl Kernel {
+    /// Ties the files of `tenant` that are tied to no record to the record whose `attach` field names them
+    /// (`/files/{id}`), as a save now does: an entity's own fields, its lines' (tied to the record owning the line)
+    /// and custom entities' alike. A file several records name goes to the first made, and is counted in `shared`.
+    /// Batches of loose files in the order of their ids, each in its own transaction; a file a save ties meanwhile
+    /// is left as the save tied it, and one tied already is never looked at, so running it again changes nothing.
+    // ponytail: each batch scans every table with an attach field (values are not indexed); an upgrade step, once.
+    pub async fn tie_named_files(&self, tenant: Uuid) -> Result<Tied> {
+        let schema = self.registry.schema(tenant).await?;
+        // For each place an attach field lives: the rows, the record a value belongs to and when it was made.
+        let mut sources = Vec::new();
+        for ent in schema.entities.values().filter(|e| !e.table.is_empty() && e.def.kind != ferrum_meta::EntityKind::Child) {
+            let name = ent.def.name.replace('\'', "''");
+            let own = format!("{} a", crate::ddl::q(&ent.table));
+            for f in ent.value_fields().filter(|f| f.ftype == FieldType::Attach) {
+                let Some(expr) = crate::store::field_expr(ent, &f.name, "a") else { continue };
+                sources.push(format!(
+                    "select b.id as file, '{name}'::text as entity, a.id as record, a.created_at as at from {own} join batch b on {expr} = '/files/' || b.id::text \
+                     where a.tenant_id = $1{}",
+                    crate::store::entity_predicate(ent, "a")
+                ));
+            }
+            for info in ent.children.values() {
+                let Some(c) = schema.entity(&info.entity) else { continue };
+                for f in c.value_fields().filter(|f| f.ftype == FieldType::Attach) {
+                    let Some(expr) = crate::store::field_expr(c, &f.name, "l") else { continue };
+                    sources.push(format!(
+                        "select b.id as file, '{name}'::text as entity, a.id as record, a.created_at as at from {} l \
+                         join {own} on a.tenant_id = l.tenant_id and a.id = l.parent_id{} join batch b on {expr} = '/files/' || b.id::text \
+                         where l.tenant_id = $1{}",
+                        crate::ddl::q(&info.table),
+                        crate::store::entity_predicate(ent, "a"),
+                        info.predicate("l")
+                    ));
+                }
+            }
+        }
+        let mut out = Tied::default();
+        if sources.is_empty() {
+            return Ok(out);
+        }
+        let step = format!(
+            "with batch as (select id from file_object where tenant_id = $1 and record_id is null and id > $2 order by id limit $3), \
+             cand as ({}), \
+             pick as (select distinct on (file) file, entity, record from cand order by file, at, record), \
+             tied as (update file_object o set entity = pick.entity, record_id = pick.record from pick \
+                      where o.tenant_id = $1 and o.id = pick.file and o.record_id is null returning o.id) \
+             select (select id from batch order by id desc limit 1), (select count(*) from tied), \
+                    (select count(*) from (select file from cand group by file having count(distinct (entity, record)) > 1) s)",
+            sources.join(" union all ")
+        );
+        let mut after = Uuid::nil();
+        loop {
+            let mut tx = self.db.system_tenant_tx(tenant).await?;
+            let (last, tied, shared): (Option<Uuid>, i64, i64) =
+                sqlx::query_as(sqlx::AssertSqlSafe(step.clone())).bind(tenant).bind(after).bind(TIE_BATCH).fetch_one(&mut *tx).await?;
+            tx.commit().await?;
+            out.tied += tied;
+            out.shared += shared;
+            match last {
+                Some(last) => after = last,
+                None => return Ok(out),
+            }
+        }
     }
 }

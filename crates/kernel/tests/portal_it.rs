@@ -67,6 +67,28 @@ const ENTITIES: &str = r#"
   actions:
     - {name: cancel_it, label: Cancel It, permission: write, condition: 'doc.reason != "locked"'}
     - {name: reschedule, label: Reschedule, permission: write}
+- name: Application
+  label: Application
+  kind: master
+  title_field: title
+  fields:
+    - {name: title, type: data, required: true}
+    - {name: email, type: email}
+    - {name: cv, type: attach}
+    - {name: docs, type: table, of: ApplicationDoc}
+- name: ApplicationDoc
+  label: Application Document
+  kind: child
+  fields:
+    - {name: file, type: attach}
+- name: Claim
+  label: Claim
+  kind: document
+  submittable: true
+  title_field: title
+  fields:
+    - {name: title, type: data, required: true}
+    - {name: email, type: email}
 "#;
 
 fn catalog() -> Catalog {
@@ -376,4 +398,214 @@ async fn scenario() {
     let here = [(id_of(&ann_spring), "ann spring"), (id_of(&bob_spring), "bob spring"), (id_of(&cal_card), "cal spring")];
     assert_eq!(reach(&k, &pia_there, "ReportCard", &here, "term").await, names(&["cal spring"]), "her records there, and none of here");
     assert!(reach(&k, &pia, "ReportCard", &here, "term").await.is_empty(), "nothing of the other workspace's reaches her here");
+
+    transitions(&k, &admin).await;
+    files(&k, &admin).await;
+    backfill(&k, &admin).await;
+}
+
+/// Who takes a workflow transition: one naming roles, a holder of one who can read the record; one
+/// naming none, whoever may change the record; an outside person, only one naming their role.
+async fn transitions(k: &Kernel, admin: &Ctx) {
+    let workflow: ferrum_meta::WorkflowDef = serde_json::from_value(json!({
+        "name": "Applications", "entity": "Application", "initial_state": "Draft",
+        "states": [{"name": "Draft"}, {"name": "Sent"}, {"name": "Approved"}, {"name": "Reviewed"}],
+        "transitions": [
+            {"action": "Send", "from": "Draft", "to": "Sent"},
+            // Its author forgot the roles: still nobody's who may only read it, nor an applicant's.
+            {"action": "Approve", "from": "Sent", "to": "Approved"},
+            {"action": "Withdraw", "from": "Sent", "to": "Draft", "roles": ["Applicants"]},
+            {"action": "Review", "from": "Sent", "to": "Reviewed", "roles": ["Reviewer"]},
+        ],
+    }))
+    .unwrap();
+    k.add_customization(admin, "Application", ferrum_meta::OverlayOp::SetWorkflow { workflow }, None).await.unwrap();
+    for (role, r) in [
+        ("Viewer", json!({"entity": "Application", "read": true})),
+        ("Reviewer", json!({"entity": "Application", "read": true})),
+        ("Editor", json!({"entity": "Application", "read": true, "write": true, "create": true})),
+        ("Applicants", json!({"entity": "Application", "read": true, "write": true, "create": true, "via": "email"})),
+        ("Applicants", json!({"entity": "Claim", "read": true, "write": true, "create": true, "submit": true, "via": "email"})),
+        ("Editor", json!({"entity": "Claim", "read": true, "write": true, "create": true, "submit": true, "cancel": true})),
+    ] {
+        k.set_role_permission(admin, role, &rule(r)).await.unwrap();
+    }
+    k.set_role_portal(admin, "Applicants", true).await.unwrap();
+    let member = |email: &'static str, role: &'static str| async move {
+        let id = k.create_user(admin, email, email, None, &[role.to_string()], false).await.unwrap();
+        k.load_ctx(admin.tenant, id, None, "it".into()).await.unwrap()
+    };
+    let (viewer, reviewer, editor) =
+        (member("viewer@school.test", "Viewer").await, member("rev@school.test", "Reviewer").await, member("ed@school.test", "Editor").await);
+    let ava = portal_person(k, admin, "ava@home.test", &["Applicants"]).await;
+    let hers = id_of(&k.insert(&ava, "Application", obj(json!({"title": "Ava's", "email": "ava@home.test"}))).await.expect("her own application"));
+    let other = id_of(&k.insert(&editor, "Application", obj(json!({"title": "Someone's", "email": "sam@home.test"}))).await.unwrap());
+    let forbidden = |r: Result<Doc>, why: &str| assert!(matches!(r, Err(Error::Forbidden(_))), "{why}: {r:?}");
+
+    forbidden(k.transition(&viewer, "Application", hers, "Send", None).await, "a transition naming no roles, by someone who may only read");
+    forbidden(k.transition(&ava, "Application", hers, "Send", None).await, "a transition naming no roles, by an outside person on her own record");
+    k.transition(&editor, "Application", hers, "Send", None).await.expect("whoever may change the record");
+    forbidden(k.transition(&ava, "Application", hers, "Approve", None).await, "an applicant approving her own application");
+    let theirs = k.transition(&ava, "Application", other, "Withdraw", None).await;
+    assert!(matches!(theirs, Err(Error::NotFound(_))), "someone else's application: {theirs:?}");
+    k.transition(&ava, "Application", hers, "Withdraw", None).await.expect("a transition naming her portal role, on her own record");
+    k.transition(&editor, "Application", hers, "Send", None).await.unwrap();
+    forbidden(k.transition(&viewer, "Application", hers, "Review", None).await, "a named role she does not hold");
+    k.transition(&reviewer, "Application", hers, "Review", None).await.expect("a holder of the named role who may only read");
+    k.transition(&editor, "Application", other, "Send", None).await.unwrap();
+    k.transition(&editor, "Application", other, "Approve", None).await.expect("an editor takes a transition naming no roles");
+
+    // The form offers what the server would take: each transition says whether the caller may.
+    let may = |ctx: &Ctx| -> Vec<(String, bool)> {
+        let d = ferrum_kernel::describe::describe(ctx, ctx.schema.entity("Application").unwrap());
+        d["workflow"]["transitions"].as_array().unwrap().iter().map(|t| (t["action"].as_str().unwrap().to_string(), t["may_take"] == json!(true))).collect()
+    };
+    let expect = |v: [bool; 4]| ["Send", "Approve", "Withdraw", "Review"].iter().map(|a| a.to_string()).zip(v).collect::<Vec<_>>();
+    assert_eq!(may(&viewer), expect([false, false, false, false]), "viewer");
+    assert_eq!(may(&reviewer), expect([false, false, false, true]), "reviewer");
+    assert_eq!(may(&editor), expect([true, true, false, false]), "editor");
+    assert_eq!(may(&ava), expect([false, false, true, false]), "applicant");
+    let admin = k.load_ctx(admin.tenant, admin.user, None, "it".into()).await.unwrap();
+    assert_eq!(may(&admin), expect([true, true, true, true]), "administrator");
+
+    // Submitting and cancelling are as BD-02 has them: her own claim she submits, and cancels none.
+    let claim = id_of(&k.insert(&ava, "Claim", obj(json!({"title": "Ava's claim", "email": "ava@home.test"}))).await.unwrap());
+    k.submit(&ava, "Claim", claim, None).await.expect("she submits her own");
+    forbidden(k.cancel(&ava, "Claim", claim, None).await, "an outside person cancelling");
+    k.cancel(&editor, "Claim", claim, None).await.expect("a member who may cancel");
+}
+
+/// Objects kept in memory, as the server's storage would keep them.
+#[derive(Default)]
+struct MemFiles(std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>);
+
+#[async_trait]
+impl ferrum_kernel::files::FileStore for MemFiles {
+    async fn put(&self, key: &str, data: &[u8]) -> Result<()> {
+        self.0.lock().unwrap().insert(key.to_string(), data.to_vec());
+        Ok(())
+    }
+    async fn get(&self, key: &str) -> Result<Vec<u8>> {
+        self.0.lock().unwrap().get(key).cloned().ok_or_else(|| Error::NotFound("object".into()))
+    }
+    async fn delete(&self, key: &str) -> Result<()> {
+        self.0.lock().unwrap().remove(key);
+        Ok(())
+    }
+}
+
+/// A file tied to no record is its uploader's (and an administrator's) until a record they save names it in an
+/// `attach` field: then it is that record's, and its readers', and nobody names a file they could not download.
+async fn files(k: &Kernel, admin: &Ctx) {
+    k.set_file_store(Arc::new(MemFiles::default()));
+    let admin = k.load_ctx(admin.tenant, admin.user, None, "it".into()).await.unwrap();
+    let ctx_of = |email: &str| {
+        let email = email.to_string();
+        async move {
+            let id: Uuid = sqlx::query_scalar("select id from app_user where tenant_id = $1 and email = $2")
+                .bind(admin.tenant)
+                .bind(&email)
+                .fetch_one(&mut *k.db.tenant_tx(admin.tenant).await.unwrap())
+                .await
+                .unwrap();
+            k.load_ctx(admin.tenant, id, None, "it".into()).await.unwrap()
+        }
+    };
+    let (viewer, editor, ava) = (ctx_of("viewer@school.test").await, ctx_of("ed@school.test").await, ctx_of("ava@home.test").await);
+    let stranger = {
+        let id = k.create_user(&admin, "stranger@school.test", "Stranger", None, &[], false).await.unwrap();
+        k.load_ctx(admin.tenant, id, None, "it".into()).await.unwrap()
+    };
+    let loose = |ctx: &Ctx, name: &str| {
+        let (ctx, name) = (ctx.clone(), name.to_string());
+        async move { Uuid::parse_str(k.store_file(&ctx, None, &name, "text/plain", b"a cv").await.unwrap()["id"].as_str().unwrap()).unwrap() }
+    };
+    let cv = loose(&editor, "cv.txt").await;
+    k.file_info(&editor, cv).await.expect("its uploader");
+    k.file_info(&admin, cv).await.expect("an administrator");
+    for (who, ctx) in [("another member", &viewer), ("an outside person", &ava)] {
+        let r = k.file_info(ctx, cv).await;
+        assert!(matches!(r, Err(Error::NotFound(_))), "{who} downloaded a file tied to no record: {:?}", r.map(|f| f.name));
+    }
+
+    // Saved in a record's attach field, it is the record's: its readers download it, others do not.
+    let app = id_of(&k.insert(&editor, "Application", obj(json!({"title": "With a cv", "cv": format!("/files/{cv}")}))).await.expect("named by its uploader"));
+    k.file_info(&viewer, cv).await.expect("a reader of the record it is tied to");
+    assert!(k.file_info(&stranger, cv).await.is_err(), "someone who cannot read the record");
+    assert!(k.attachments(&viewer, "Application", app).await.unwrap().iter().any(|f| f["id"] == json!(cv)), "listed with the record's files");
+    // Naming a file the saver could not download is refused: an id is no way to read a file.
+    let viewers = loose(&viewer, "private.txt").await;
+    let named = k.update(&editor, "Application", app, obj(json!({"cv": format!("/files/{viewers}")})), None).await;
+    assert!(matches!(named, Err(Error::Forbidden(_))), "someone else's loose file named: {named:?}");
+    assert!(k.file_info(&editor, viewers).await.is_err(), "and it stays its uploader's");
+    let theirs = k.insert(&ava, "Application", obj(json!({"title": "Hers", "email": "ava@home.test", "cv": format!("/files/{cv}")}))).await;
+    assert!(matches!(theirs, Err(Error::Forbidden(_))), "a file tied to a record she cannot read: {theirs:?}");
+    // A file tied to a record the saver can read may be named again (a copy of the record), and stays where it is.
+    k.insert(&editor, "Application", obj(json!({"title": "A copy", "cv": format!("/files/{cv}")}))).await.expect("a file she can download");
+    // An outside person's own upload goes with her own record.
+    let hers = loose(&ava, "mine.txt").await;
+    let app = id_of(&k.insert(&ava, "Application", obj(json!({"title": "Hers", "email": "ava@home.test", "cv": format!("/files/{hers}")}))).await.unwrap());
+    k.file_info(&ava, hers).await.expect("she reads her own record's file");
+    k.file_info(&editor, hers).await.expect("and so do its other readers");
+    assert!(k.attachments(&editor, "Application", app).await.unwrap().iter().any(|f| f["id"] == json!(hers)));
+}
+
+/// The upgrade step for files saved before saves tied them: each file an attach field names (a packaged entity's,
+/// a line's, a custom entity's) goes to the record naming it, the first made when two do; one named by none stays
+/// its uploader's; running it again changes nothing.
+async fn backfill(k: &Kernel, admin: &Ctx) {
+    let note: ferrum_meta::EntityDef = serde_json::from_value(json!({
+        "name": "XNote", "label": "Note", "kind": "master", "title_field": "title",
+        "fields": [{"name": "title", "type": "data"}, {"name": "scan", "type": "attach"}]
+    }))
+    .unwrap();
+    k.add_customization(admin, "XNote", ferrum_meta::OverlayOp::DefineEntity { entity: Box::new(note) }, None).await.unwrap();
+    let admin = k.load_ctx(admin.tenant, admin.user, None, "it".into()).await.unwrap();
+    k.set_role_permission(&admin, "Viewer", &rule(json!({"entity": "XNote", "read": true}))).await.unwrap();
+    let ctx_of = |email: &str| {
+        let email = email.to_string();
+        async move {
+            let id: Uuid = sqlx::query_scalar("select id from app_user where tenant_id = $1 and email = $2")
+                .bind(admin.tenant)
+                .bind(&email)
+                .fetch_one(&mut *k.db.tenant_tx(admin.tenant).await.unwrap())
+                .await
+                .unwrap();
+            k.load_ctx(admin.tenant, id, None, "it".into()).await.unwrap()
+        }
+    };
+    let (viewer, editor, stranger) = (ctx_of("viewer@school.test").await, ctx_of("ed@school.test").await, ctx_of("stranger@school.test").await);
+    let loose = |name: &str| {
+        let (editor, name) = (editor.clone(), name.to_string());
+        async move { Uuid::parse_str(k.store_file(&editor, None, &name, "text/plain", b"kept").await.unwrap()["id"].as_str().unwrap()).unwrap() }
+    };
+    let (own, line, custom, twice, unnamed) =
+        (loose("own.txt").await, loose("line.txt").await, loose("note.txt").await, loose("twice.txt").await, loose("none.txt").await);
+    let url = |f: Uuid| format!("/files/{f}");
+    k.insert(&editor, "Application", obj(json!({"title": "Saved before", "cv": url(own), "docs": [{"file": url(line)}]}))).await.unwrap();
+    k.insert(&admin, "XNote", obj(json!({"title": "A scan", "scan": url(custom)}))).await.unwrap();
+    let first = id_of(&k.insert(&editor, "Application", obj(json!({"title": "First", "cv": url(twice)}))).await.unwrap());
+    k.insert(&editor, "Application", obj(json!({"title": "Second", "cv": url(twice)}))).await.unwrap();
+    // As the code before saves tied them left them: tied to no record.
+    let all = [own, line, custom, twice, unnamed];
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    sqlx::query("update file_object set entity = null, record_id = null where tenant_id = $1 and id = any($2)")
+        .bind(admin.tenant)
+        .bind(&all[..])
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(k.file_info(&viewer, own).await.is_err(), "before the step, a reader of the record loses it");
+
+    let done = k.tie_named_files(admin.tenant).await.unwrap();
+    assert_eq!(done, ferrum_kernel::files::Tied { tied: 4, shared: 1 }, "four named, one of them by two records");
+    for (what, f) in [("a packaged entity's", own), ("a line's", line), ("a custom entity's", custom), ("one two records name", twice)] {
+        k.file_info(&viewer, f).await.unwrap_or_else(|e| panic!("{what} file, for a reader of its record: {e}"));
+        assert!(k.file_info(&stranger, f).await.is_err(), "{what} file, for someone who cannot read its record");
+    }
+    assert!(k.attachments(&editor, "Application", first).await.unwrap().iter().any(|a| a["id"] == json!(twice)), "the first made has it");
+    assert!(k.file_info(&viewer, unnamed).await.is_err(), "named by none, it stays its uploader's");
+    k.file_info(&editor, unnamed).await.expect("its uploader's");
+    assert_eq!(k.tie_named_files(admin.tenant).await.unwrap(), ferrum_kernel::files::Tied::default(), "run again, it changes nothing");
 }

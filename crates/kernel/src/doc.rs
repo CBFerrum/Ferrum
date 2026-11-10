@@ -84,6 +84,21 @@ impl Kernel {
         Ok(self.mask(ctx, &ent, doc))
     }
 
+    /// Whether `ctx` may tie a file to record `id` of `entity` (`POST /api/files`, an upload's start): only whoever
+    /// may change it, as its write scope admits it; reading it is not enough. Not found when they cannot read it.
+    pub async fn may_attach(&self, ctx: &Ctx, entity: &str, id: Uuid) -> Result<()> {
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        self.get_tx(ctx, &mut tx, entity, id, false).await?;
+        let ent = self.entity(ctx, entity)?;
+        let scope = row_scope(ctx, &ent, Action::Write)?;
+        let doc = self.load_marked(&mut tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
+        if !scope.admits(&mut tx, ctx.tenant, &doc).await? {
+            return Err(Error::Forbidden(format!("only someone who may change this {} attaches files to it", ent.def.label.to_lowercase())));
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Removes fields in permission groups the caller cannot read, or leaves the masked form of
     /// those that declare one.
     pub fn mask(&self, ctx: &Ctx, ent: &EffEntity, mut doc: Doc) -> Doc {
@@ -418,6 +433,7 @@ impl Kernel {
             doc.insert("number".into(), json!(n));
         }
         store::insert_row(tx, &ctx.schema, &ent, ctx.tenant, &doc).await?;
+        self.claim_files(ctx, tx, &ent, id, &doc, None).await?;
         self.write_secrets(ctx, tx, &ent, id, &secrets).await?;
         let stored = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::internal("insert vanished"))?;
         self.hook_after_save(ctx, tx, &ent, &stored, None).await?;
@@ -475,6 +491,7 @@ impl Kernel {
         doc.insert("version".into(), json!(version));
         doc.insert("updated_by".into(), if !ctx.user.is_nil() { json!(ctx.user.to_string()) } else { Value::Null });
         store::update_row(tx, &ctx.schema, &ent, ctx.tenant, &doc, &old).await?;
+        self.claim_files(ctx, tx, &ent, id, &doc, Some(&old)).await?;
         self.write_secrets(ctx, tx, &ent, id, &secrets).await?;
         let stored = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::internal("update vanished"))?;
         self.hook_after_save(ctx, tx, &ent, &stored, Some(&old)).await?;
@@ -789,8 +806,8 @@ impl Kernel {
             .iter()
             .find(|t| t.action == action && t.from == current)
             .ok_or_else(|| Error::invalid(format!("'{action}' is not allowed in state '{current}'")))?;
-        if !t.roles.is_empty() && !t.roles.iter().any(|r| ctx.has_role(r)) {
-            return Err(Error::Forbidden(format!("'{action}' requires one of the roles: {}", t.roles.join(", "))));
+        if !crate::ctx::transition_gate(ctx, &ent, t)?.admits(tx, ctx.tenant, &doc).await? {
+            return Err(Error::Forbidden(format!("'{action}' is for whoever may change this {}", ent.def.label.to_lowercase())));
         }
         if t.not_creator && !ctx.is_system && uuid_of(doc.get("created_by")) == Some(ctx.user) {
             return Err(Error::Forbidden("the creator of a document cannot approve it".into()));

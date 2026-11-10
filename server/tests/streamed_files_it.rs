@@ -145,6 +145,52 @@ async fn scenario() {
     assert_eq!(up::sweep(&k, &objects).await.unwrap(), 1);
     assert!(parts_left(&dir), "swept with its parts");
 
+    // ───────────── who ties an upload to a record ─────────────
+    // Only whoever may change the record: a member or an outside person who may only read it may not.
+    let rule = |v: serde_json::Value| serde_json::from_value::<ferrum_meta::PermissionDef>(v).unwrap();
+    k.set_role_permission(&admin, "Reader", &rule(json!({"entity": "Uom", "read": true}))).await.unwrap();
+    k.set_role_permission(&admin, "Writer", &rule(json!({"entity": "Uom", "read": true, "write": true}))).await.unwrap();
+    k.set_role_permission(&admin, "Own writer", &rule(json!({"entity": "Uom", "read": true, "write": true, "create": true, "if_owner": true}))).await.unwrap();
+    k.set_role_permission(&admin, "Visitors", &rule(json!({"entity": "Uom", "read": true}))).await.unwrap();
+    k.set_role_portal(&admin, "Visitors", true).await.expect("units are reference data, read whole");
+    let person = |email: &'static str, role: &'static str, portal: bool| {
+        let (k, admin) = (k.clone(), admin.clone());
+        async move {
+            let id = k.create_user(&admin, email, email, None, &[], false).await.unwrap();
+            if portal {
+                k.set_user_kind(&admin, id, "portal").await.unwrap();
+            }
+            k.set_user_roles_until(&admin, id, &[role.to_string()], &Default::default()).await.unwrap();
+            k.load_ctx(admin.tenant, id, None, "it".into()).await.unwrap()
+        }
+    };
+    let (reader, writer, visitor) = (
+        person("reader@acme.test", "Reader", false).await,
+        person("writer@acme.test", "Writer", false).await,
+        person("visitor@acme.test", "Visitors", true).await,
+    );
+    let uom: uuid::Uuid =
+        k.insert(&admin, "Uom", json!({"uom_name": "Crate of twelve"}).as_object().cloned().unwrap()).await.unwrap()["id"].as_str().unwrap().parse().unwrap();
+    let onto = || NewUpload { attach_to: Some(("Uom".into(), uom)), ..new(true) };
+    k.get(&reader, "Uom", uom, false).await.expect("the reader reads it");
+    let refused = up::start(&k, &objects, &reader, 3 * PART_BYTES, onto()).await;
+    assert!(matches!(refused, Err(Error::Forbidden(_))), "a member who may only read the record attaches to it: {refused:?}");
+    let refused = up::start(&k, &objects, &visitor, 3 * PART_BYTES, onto()).await;
+    assert!(matches!(refused, Err(Error::Forbidden(_))), "an outside person who may only read the record attaches to it: {refused:?}");
+    up::start(&k, &objects, &writer, 3 * PART_BYTES, onto()).await.expect("a member who may change the record");
+    // One who reads every unit and changes only their own: not this one.
+    let own = person("own@acme.test", "Own writer", false).await;
+    k.set_user_roles_until(&admin, own.user, &["Reader".into(), "Own writer".into()], &Default::default()).await.unwrap();
+    let own = k.load_ctx(admin.tenant, own.user, None, "it".into()).await.unwrap();
+    let refused = up::start(&k, &objects, &own, 3 * PART_BYTES, onto()).await;
+    assert!(matches!(refused, Err(Error::Forbidden(_))), "a member who may change only their own units: {refused:?}");
+    // An outside person's uploads tied to nothing are counted: 20 an hour.
+    for _ in 0..20 {
+        up::start(&k, &objects, &visitor, 3 * PART_BYTES, new(true)).await.expect("within the hour's uploads");
+    }
+    assert!(matches!(up::start(&k, &objects, &visitor, 3 * PART_BYTES, new(true)).await, Err(Error::TooManyRequests(_))), "past them");
+    up::start(&k, &objects, &writer, 3 * PART_BYTES, new(true)).await.expect("a member's are not counted");
+
     // ───────────── through S3 ─────────────
     if let Ok(endpoint) = std::env::var("FERRUM_TEST_S3_ENDPOINT") {
         let bucket = std::env::var("FERRUM_TEST_S3_BUCKET").unwrap_or_else(|_| "ferrum-ci".into());
