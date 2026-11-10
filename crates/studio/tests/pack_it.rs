@@ -580,4 +580,29 @@ async fn scenario() {
     );
     assert_eq!(k.interface_words(ta.tenant, "pt").await.unwrap().get("Save"), Some(&json!("Gravar")));
     nothing_to_do(&k.plan_pack(&ta, &pack).await.unwrap()["sections"]);
+    // A menu marked for the portal travels with its mark, and needs Studio, whose page shows it
+    // (docs/builder/portal.md), whatever else the pack names.
+    words.customize("x_desk", json!({"op": "define_module", "module": {"name": "x_desk", "label": "Desk", "items": ["InterfaceWord"], "portal": true}})).await;
+    let wa = words.admin().await;
+    let options = ExportOptions { name: "desk".into(), label: "Desk".into(), version: 1, records: vec![] };
+    let pack = k.export_pack(&wa, &options).await.expect("export");
+    let desk = pack["customizations"].as_array().unwrap().iter().find(|c| c["entity"] == "x_desk").expect("the portal menu").clone();
+    assert_eq!(desk["op"]["module"]["portal"], json!(true));
+    assert!(pack["requires"]["packages"].get("studio").is_some(), "{}", pack["requires"]);
+    let plan = k.plan_pack(&ta, &pack).await.unwrap();
+    assert_eq!(names(&plan, "customizations", "created"), ["x_desk: define_module x_desk"]);
+    k.install_pack(&ta, &pack, plan["digest"].as_str().unwrap()).await.expect("install");
+    assert!(there.admin().await.schema.modules.iter().any(|m| m.name == "x_desk" && m.portal), "the mark came");
+    let bare = workspace(&k, "words-bare", &["core"]).await;
+    let ba = bare.admin().await;
+    let alone = json!({"format": pack["format"], "name": "desk", "label": "Desk", "customizations": [desk]});
+    let plan = k.plan_pack(&ba, &alone).await.unwrap();
+    assert_eq!(
+        (plan["missing"].clone(), plan["can_install"].clone()),
+        (json!(["the package studio is not installed here: the portal shows the menu x_desk on Studio's page"]), json!(false)),
+        "a pack naming no package still needs Studio for its portal menu"
+    );
+    let plan = k.plan_pack(&ba, &pack).await.unwrap();
+    let missing = plan["missing"].to_string();
+    assert!(missing.contains("the package studio (") && missing.contains("on Studio's page"), "{missing}");
 }

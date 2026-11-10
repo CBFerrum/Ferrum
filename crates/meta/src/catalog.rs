@@ -383,7 +383,7 @@ impl Catalog {
                 // One way to do each thing: an app's tile, quick create and assistant notes are in its manifest.
                 if m.has_menu_properties() {
                     return invalid(format!(
-                        "{name}: module {}: color, description, create and assistant are a workspace's own menu's (an app gives them in its manifest)",
+                        "{name}: module {}: color, description, create, assistant and portal are a workspace's own menu's (an app gives them in its manifest)",
                         m.name
                     ));
                 }

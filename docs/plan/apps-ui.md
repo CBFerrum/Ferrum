@@ -892,6 +892,15 @@ and `/open/{entity}` for an entity no app shows goes there. What it cannot be: a
 pages are the records frame's lists and forms; a Studio space can stand in for a home page), a search
 provider for the bar, or live counts on its tile.
 
+A menu marked `portal: true` is also an entry of the portal's home (§9.1) for a portal person whose
+portal roles reach some of its entities: its label, description and icon, leading to Studio's generic
+page for the menu (`/portal/records/m/{menu}`), which lists only the entities they reach and offers
+Create where the menu does and their role may. Studio's "Your records" stays for what they reach in no
+portal menu, and goes when everything is in one; with one entry the portal person goes straight to it.
+`/open/{entity}/{id}` sends a portal person to the app's portal page that declares the entity, else to
+the generic page's record (`/portal/records/m/{menu}/e/{entity}/{id}`, or `/portal/records/e/…` outside
+every menu), else to the portal's home. It has no guided steps and no page of its own.
+
 ### 10.2 Entry pages and the bootstrap
 
 `GET /crm/deals/42` on a workspace host:

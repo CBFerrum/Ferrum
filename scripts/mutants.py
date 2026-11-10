@@ -567,6 +567,9 @@ MUTANTS = [
     ("upgrade-ties-to-the-last-made", "crates/kernel/src/files.rs", "order by file, at, record)", "order by file, at desc, record)", PORTAL),
     ("save-names-anyones-file", "crates/kernel/src/files.rs", "                _ => return Err(refused()),", "                _ => {}", PORTAL),
     ("outsiders-upload-without-limit", "crates/kernel/src/files.rs", "        if !ctx.outside {\n            return Ok(());", "        if !ctx.outside || true {\n            return Ok(());", STREAMED),
+    # A workspace's menu marked for the portal lists only what the person's portal roles reach (docs/builder/portal.md).
+    ("portal-menu-lists-what-the-person-does-not-reach", "crates/kernel/src/access.rs", "for name in m.items.iter().filter(|i| reached(i)) {", "for name in m.items.iter().filter(|_| true) {", PORTAL),
+    ("portal-menu-offers-create-the-role-lacks", "crates/kernel/src/access.rs", "m.create.contains(name) && ctx.perms.access(name, Action::Create) != Access::None", "m.create.contains(name)", PORTAL),
     ("portal-roles-given-to-anyone", "crates/kernel/src/auth.rs", "                if let Some(other) = roles.iter().find(|r| !portal.contains(r)) {", "                if let Some(other) = None::<&String> {", PORTAL),
     ("custom-lines-load-mixes-tables", "crates/kernel/src/store.rs", "                info.predicate(\"ci\")\n", "                String::new()\n", CUSTOM_LINES),
     ("custom-lines-filter-mixes-tables", "crates/kernel/src/query.rs", "                    info.predicate(\"c\")\n", "                    String::new()\n", CUSTOM_LINES),
