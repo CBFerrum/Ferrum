@@ -26,7 +26,8 @@ rows as the sign of progress. First walk:
 | Authoring | Screens for entities, workflows, automations and rules; a batch with a dry run and `redefine_entity`; a mail preview | Built: PRs 161, 162 and Ferrum-Frontend 67 |
 | Packs | One export that carries a whole solution (entities, roles, automations, Studio's items, solutions, chosen reference records) and installs elsewhere, with a plan first (BF9) | Built as a document administrators export and install; signing, uninstalling and the store are not |
 | Engines | One working-hours clock, then service levels, checklists and scheduling bound to any entity | Not started |
-| Proof | The apps that are configuration and nothing else (Government, Retail, GRC) as packs | Not started |
+| Proof | The apps that are configuration and nothing else (Government, Retail, GRC) as packs | Governance and Risk measured ([findings](../builder/evidence/grc-as-a-pack-2026-11-10.md)): of 58 behaviours 33 the same, 16 different, 9 not possible. Not retired |
+| What the proof asks for | Buttons on records set up without code; an effect that writes the record a link names; `today` in aggregate filters; a pack's shell entries and words | Next, ahead of the engines |
 
 **What changed in the gates below.**
 
