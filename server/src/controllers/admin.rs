@@ -397,19 +397,15 @@ async fn add_custom(Auth(ctx): Auth, State(app): State<AppContext>, Json(c): Jso
     Ok((StatusCode::CREATED, Json(json!({"id": id}))).into_response())
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Batch {
-    ops: Vec<ferrum_kernel::customize::NewCustomization>,
-    #[serde(default)]
-    dry_run: bool,
-}
-
 /// `POST /api/customize/batch`: every operation in order in one transaction, or none; a refusal
-/// is the single endpoint's, with the refused operation's `index`.
-async fn batch_custom(Auth(ctx): Auth, State(app): State<AppContext>, Json(b): Json<Batch>) -> ApiResult<Response> {
-    match app_state(&app)?.kernel.batch_customizations(&ctx, b.ops, b.dry_run).await {
-        Ok(_) if b.dry_run => Ok(Json(json!({"ok": true})).into_response()),
+/// is the single endpoint's, with the refused operation's `index`, one that does not parse included.
+async fn batch_custom(Auth(ctx): Auth, State(app): State<AppContext>, body: axum::body::Bytes) -> ApiResult<Response> {
+    let (ops, dry_run) = match ferrum_kernel::customize::parse_batch(&body) {
+        Ok(b) => b,
+        Err((index, e)) => return Ok(refused(index, e)),
+    };
+    match app_state(&app)?.kernel.batch_customizations(&ctx, ops, dry_run).await {
+        Ok(_) if dry_run => Ok(Json(json!({"ok": true})).into_response()),
         Ok(n) => Ok(Json(json!({"applied": n})).into_response()),
         Err((index, e)) => Ok(refused(index, e)),
     }
@@ -967,14 +963,24 @@ mod tests {
         assert_eq!((status, json.get("index")), (StatusCode::FORBIDDEN, None));
     }
 
-    #[test]
-    fn a_batch_names_its_operations_and_nothing_else() {
-        let ok: Batch = serde_json::from_value(
-            json!({"ops": [{"entity": "Customer", "op": {"op": "add_options", "field": "tier", "options": ["Gold"]}}], "dry_run": true}),
-        )
-        .unwrap();
-        assert!(ok.dry_run && ok.ops.len() == 1 && ok.ops[0].note.is_none());
-        assert!(serde_json::from_value::<Batch>(json!({"ops": [], "dryrun": true})).is_err());
-        assert!(serde_json::from_value::<Batch>(json!({"ops": [{"entity": "Customer", "op": {"op": "drop_entity"}}]})).is_err());
+    #[tokio::test]
+    async fn a_batch_names_its_operations_and_nothing_else() {
+        use ferrum_kernel::customize::parse_batch;
+        let parse = |v: Value| parse_batch(v.to_string().as_bytes());
+        let (ops, dry_run) =
+            parse(json!({"ops": [{"entity": "Customer", "op": {"op": "add_options", "field": "tier", "options": ["Gold"]}}], "dry_run": true})).unwrap();
+        assert!(dry_run && ops.len() == 1 && ops[0].note.is_none());
+        assert!(parse(json!({"ops": [], "dryrun": true})).is_err());
+        assert!(parse(json!({"ops": [{"entity": "Customer", "op": {"op": "drop_entity"}}]})).is_err());
+        // An operation that does not parse is refused in the route's own shape, with its index and the property.
+        let (index, e) = parse(json!({"ops": [{"entity": "X", "op": {"op": "add_options", "field": "f", "options": []}},
+            {"entity": "X", "op": {"op": "add_action", "action": {"name": "x_go", "label": "Go", "may_run": true}}}]}))
+        .unwrap_err();
+        let (status, json) = body(refused(index, e)).await;
+        assert_eq!((status, &json["error"], &json["index"]), (StatusCode::UNPROCESSABLE_ENTITY, &json!("invalid"), &json!(1)));
+        assert!(json["message"].as_str().unwrap().contains("may_run"), "{json}");
+        let (index, e) = parse(json!({"dry_run": true})).unwrap_err();
+        let (status, json) = body(refused(index, e)).await;
+        assert_eq!((status, &json["error"], json.get("index")), (StatusCode::UNPROCESSABLE_ENTITY, &json!("invalid"), None));
     }
 }

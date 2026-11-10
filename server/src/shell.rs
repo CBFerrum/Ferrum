@@ -851,6 +851,47 @@ pub fn records_entries(apps: &[ShellApp], ctx: &Ctx) -> Vec<Value> {
         .collect()
 }
 
+// ───────────────────────── a workspace's own menus ─────────────────────────
+
+/// The workspace's own menu called `name` (`define_module`; docs/plan/apps-ui.md §10.2).
+pub fn menu<'a>(ctx: &'a Ctx, name: &str) -> Option<&'a ferrum_meta::ModuleDef> {
+    ctx.schema.modules.iter().find(|m| m.package == "tenant" && m.name == name)
+}
+
+/// Whether the person reads one of the menu's entities (reports don't count): what decides who sees it.
+pub fn menu_reads(ctx: &Ctx, m: &ferrum_meta::ModuleDef) -> bool {
+    m.items.iter().filter(|i| !i.starts_with("report:")).any(|i| ctx.perms.access(i, ferrum_kernel::Action::Read) != ferrum_kernel::Access::None)
+}
+
+/// `/data/{menu}/`'s scope: the records pages showing that menu alone.
+pub fn menu_scope(m: &ferrum_meta::ModuleDef) -> Value {
+    json!({"app": m.name, "title": m.label, "packages": ["tenant"], "modules": [m.name]})
+}
+
+/// The first menu, in order, showing `entity`.
+pub fn menu_of<'a>(ctx: &'a Ctx, entity: &str) -> Option<&'a ferrum_meta::ModuleDef> {
+    ctx.schema.modules.iter().find(|m| m.package == "tenant" && m.items.iter().any(|i| i == entity))
+}
+
+/// The launcher tiles of the menus whose entities the person reads, and the Create menu's rows for
+/// their `create` entities the person may create (a member's).
+pub fn menu_entries(ctx: &Ctx) -> (Vec<Value>, Vec<Value>) {
+    let (mut tiles, mut create) = (Vec::new(), Vec::new());
+    for m in ctx.schema.modules.iter().filter(|m| m.package == "tenant") {
+        if menu_reads(ctx, m) {
+            tiles.push(json!({
+                "id": format!("menu-{}", m.name), "app": m.name, "title": m.label, "description": m.description,
+                "icon": m.icon, "color": m.color, "compact": false, "url": format!("/data/{}/", m.name),
+            }));
+        }
+        for e in m.create.iter().filter(|e| ctx.perms.access(e, ferrum_kernel::Action::Create) != ferrum_kernel::Access::None) {
+            let label = ctx.schema.entity(e).map_or(e.as_str(), |x| x.def.label.as_str());
+            create.push(json!({"app": m.name, "label": label, "entity": e, "url": format!("/data/{}/e/{e}/new", m.name)}));
+        }
+    }
+    (tiles, create)
+}
+
 /// Families (§11.5): an app with an interface of its own heads one when it names one (`ui.family`)
 /// or when its add-ons bring interfaces too; they share its navigation and its launcher group.
 /// Returns each member's family (app → head) and the families in install order.
@@ -1827,6 +1868,58 @@ mod tests {
         for other in ["helpdesk-sla", "helpdesk-erp", "crm", "business", "nothing"] {
             assert!(records_app(&apps, other).is_none(), "{other}");
         }
+    }
+
+    #[test]
+    fn a_workspaces_own_menus_in_the_bar() {
+        use ferrum_kernel::ctx::EntityAccess;
+        use ferrum_kernel::{Access, PermSet};
+        let pkg: ferrum_meta::Package = serde_json::from_value(json!({"package": "core", "version": "1", "entities": [
+            {"name": "Risk", "label": "Risk", "kind": "master", "fields": [{"name": "t", "type": "data"}]},
+            {"name": "Finding", "label": "Finding", "kind": "master", "fields": [{"name": "t", "type": "data"}]},
+            {"name": "Policy", "label": "Policy", "kind": "master", "fields": [{"name": "t", "type": "data"}]}]}))
+        .unwrap();
+        let catalog = ferrum_meta::Catalog::from_packages(vec![pkg]).unwrap();
+        let define = |name: &str, items: Value, create: Value| ferrum_meta::Overlay {
+            entity: name.into(),
+            ops: vec![
+                serde_json::from_value(json!({"op": "define_module", "module": {"name": name, "label": "Governance", "icon": "clipboard-list",
+                "color": "#7c3aed", "description": "Risks and findings", "items": items, "create": create}}))
+                .unwrap(),
+            ],
+        };
+        let overlays =
+            [define("x_grc", json!(["Risk", "Finding", "report:r"]), json!(["Risk", "Finding"])), define("x_pol", json!(["Policy", "Risk"]), json!([]))];
+        let schema = Arc::new(ferrum_meta::effective::build(&catalog, &["core".into()], &overlays, 1).unwrap());
+        let person = |grants: &[(&str, bool, bool)]| {
+            let mut ctx = Ctx::system(Uuid::nil(), schema.clone());
+            ctx.is_admin = false;
+            let level = |yes: bool| if yes { Access::All } else { Access::None };
+            let entities = grants.iter().map(|(e, r, c)| (e.to_string(), EntityAccess { read: level(*r), create: level(*c), ..Default::default() })).collect();
+            ctx.perms = Arc::new(PermSet { admin: false, entities });
+            ctx
+        };
+        // A reader of one item gets the tile; create rows only where they may create.
+        let manager = person(&[("Risk", true, true), ("Finding", true, false)]);
+        let (tiles, create) = menu_entries(&manager);
+        assert_eq!(
+            tiles[0],
+            json!({"id": "menu-x_grc", "app": "x_grc", "title": "Governance", "description": "Risks and findings", "icon": "clipboard-list",
+                "color": "#7c3aed", "compact": false, "url": "/data/x_grc/"})
+        );
+        assert_eq!(tiles.len(), 2, "x_pol shows Risk too");
+        assert_eq!(create, [json!({"app": "x_grc", "label": "Risk", "entity": "Risk", "url": "/data/x_grc/e/Risk/new"})]);
+        let reader = person(&[("Policy", true, false)]);
+        let (tiles, create) = menu_entries(&reader);
+        assert_eq!((tiles.iter().map(|t| t["app"].as_str().unwrap()).collect::<Vec<_>>(), create.len()), (vec!["x_pol"], 0));
+        let nobody = person(&[]);
+        assert_eq!(menu_entries(&nobody), (vec![], vec![]), "reading decides; a report alone gives nothing");
+        assert!(!menu_reads(&nobody, menu(&nobody, "x_grc").unwrap()));
+        // The page's scope, and where /open sends an entity no app shows: the first menu in order.
+        assert_eq!(menu_scope(menu(&reader, "x_pol").unwrap()), json!({"app": "x_pol", "title": "Governance", "packages": ["tenant"], "modules": ["x_pol"]}));
+        assert_eq!(menu_of(&reader, "Risk").map(|m| m.name.as_str()), Some("x_grc"));
+        assert_eq!(menu_of(&reader, "Policy").map(|m| m.name.as_str()), Some("x_pol"));
+        assert!(menu_of(&reader, "Nothing").is_none() && menu(&reader, "core").is_none());
     }
 
     #[tokio::test]
