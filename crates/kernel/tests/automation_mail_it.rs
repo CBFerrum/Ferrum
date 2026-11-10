@@ -144,4 +144,20 @@ async fn scenario() {
     assert!(!html.contains("<a") && !html.contains("<script"), "no tag from the record: {html}");
     assert!(html.contains("&lt;a href=&quot;https://evil.test&quot;&gt;click&lt;/a&gt;&lt;script&gt;"), "the text, escaped: {html}");
     assert!(html.contains("<br>second line"), "a line break kept: {html}");
+
+    // A template makes formatted mail: its own markup stays, and what it prints from the record is escaped.
+    let templated = |template: &str| {
+        auto("formatted", json!([{"type": "email", "to": "'reader@example.com'", "subject": "'Formatted'", "body": "''", "template": template}]))
+    };
+    let refused = automation::save(&k, &admin, &templated("<p>Hello {{ doc.title </p>")).await.unwrap_err();
+    assert!(matches!(refused, ferrum_kernel::Error::Validation(_)), "a template that does not compile is refused: {refused}");
+    let too_large = "x".repeat(automation::MAX_TEMPLATE + 1);
+    assert!(automation::save(&k, &admin, &templated(&too_large)).await.is_err(), "and one too large");
+    automation::save(&k, &admin, &templated("<p>Hello {{ doc.body }}</p>")).await.unwrap();
+    k.insert(&admin, "Note", obj(json!({"title": "Templated", "body": HOSTILE}))).await.unwrap();
+    drain(&k).await;
+    let html = queued_html(&k, &admin, "Formatted").await;
+    assert!(html.starts_with("<p>Hello ") && html.ends_with("</p>"), "the template's markup stays: {html}");
+    assert!(!html.contains("<a") && !html.contains("<script"), "no tag from the record: {html}");
+    assert!(html.contains("&lt;a href=&quot;") && html.contains("&lt;script&gt;x&lt;"), "the value, escaped: {html}");
 }

@@ -653,14 +653,19 @@ impl Kernel {
                         let pkg = ctx.schema.entity(other).map(|e| e.package.clone()).unwrap_or_else(|| package.clone());
                         action(format!("{pkg}.{}.create", ferrum_logic::capability::snake(other)), values(v), format!("Create a {other}"))
                     }
-                    crate::automation::AutomationAction::Email { to, subject, body, purpose } => action(
-                        match purpose {
-                            crate::retention::Purpose::Marketing => "ferrum.mail.marketing".into(),
-                            crate::retention::Purpose::Transactional => "ferrum.mail".into(),
-                        },
-                        json!({"to": trigger_of(to), "subject": trigger_of(subject), "body": trigger_of(body)}),
-                        "Send an e-mail".into(),
-                    ),
+                    crate::automation::AutomationAction::Email { to, subject, body, template, purpose } => {
+                        if template.is_some() {
+                            notes.push(format!("{step}: its e-mail template is not carried over; the mail sends the body as text"));
+                        }
+                        action(
+                            match purpose {
+                                crate::retention::Purpose::Marketing => "ferrum.mail.marketing".into(),
+                                crate::retention::Purpose::Transactional => "ferrum.mail".into(),
+                            },
+                            json!({"to": trigger_of(to), "subject": trigger_of(subject), "body": trigger_of(body)}),
+                            "Send an e-mail".into(),
+                        )
+                    }
                     crate::automation::AutomationAction::Notify { to, title, body } => {
                         let user = match to.strip_prefix("user:") {
                             Some(u) => json!(format!("\"{u}\"")),

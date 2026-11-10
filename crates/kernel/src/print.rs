@@ -91,6 +91,19 @@ fn field_meta(ent: &EffEntity, schema: &ferrum_meta::Schema) -> Value {
     json!({"name": ent.def.name, "label": ent.def.label, "fields": fields})
 }
 
+/// The template engine print formats and automation mail templates share: every value a template prints is
+/// HTML-escaped, its run is bounded by fuel, and `money` formats an amount.
+pub(crate) fn environment() -> Environment<'static> {
+    let mut env = Environment::new();
+    env.set_auto_escape_callback(|_| AutoEscape::Html);
+    env.set_fuel(Some(2_000_000));
+    env.add_filter("money", |v: JValue, precision: Option<u32>| -> String {
+        let j: Value = serde_json::to_value(&v).unwrap_or(Value::Null);
+        format_money(&j, precision.unwrap_or(2))
+    });
+    env
+}
+
 impl Kernel {
     pub async fn render_print(&self, ctx: &Ctx, entity: &str, id: Uuid) -> Result<String> {
         let ent = self.entity(ctx, entity)?;
@@ -106,13 +119,7 @@ impl Kernel {
                 links.insert(f.name.clone(), Value::Object(record));
             }
         }
-        let mut env = Environment::new();
-        env.set_auto_escape_callback(|_| AutoEscape::Html);
-        env.set_fuel(Some(2_000_000));
-        env.add_filter("money", |v: JValue, precision: Option<u32>| -> String {
-            let j: Value = serde_json::to_value(&v).unwrap_or(Value::Null);
-            format_money(&j, precision.unwrap_or(2))
-        });
+        let mut env = environment();
         env.add_function("display", |f: JValue, row: JValue| -> String {
             let f: Value = serde_json::to_value(&f).unwrap_or(Value::Null);
             let row: Value = serde_json::to_value(&row).unwrap_or(Value::Null);
