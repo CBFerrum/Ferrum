@@ -271,11 +271,11 @@ async fn configured(k: &Arc<Kernel>, w: &W) {
     let effects = |e: Value| json!({"name": "x_try", "label": "Try", "effects": e});
     refusal(
         w.batch(vec![add_action("XAcceptance", effects(json!([{"type": "set_fields", "values": {"docstatus": "2"}}])))]).await,
-        "Acceptance has no field docstatus",
+        "docstatus is the platform's: no effect writes it",
     );
     refusal(
         w.batch(vec![add_action("XAcceptance", effects(json!([{"type": "update_linked", "link": "risk", "values": {"id": "doc.id"}}])))]).await,
-        "Risk has no field id",
+        "id is the platform's: no effect writes it",
     );
     refusal(w.batch(vec![add_action("XAcceptance", effects(json!([{"type": "set_fields", "values": {"status": "doc.status +"}}])))]).await, "effect 1");
     refusal(
