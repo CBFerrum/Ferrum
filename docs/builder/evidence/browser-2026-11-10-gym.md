@@ -182,6 +182,25 @@ real mailer or with a second person.
     only Print, none of the members' buttons, no Discussion or Activity, and its links stayed under the
     menu.
 43. **The menus screen's portal tick**: Governance and Risk's menu was ticked and saved from the screen.
+44. **Lines within lines** (server at PR 180, 12 of 12 through the API; Ferrum-Frontend PR 76 in the
+    browser). An Inspection with Checks, each with Evidence rows, was defined in one batch; a third
+    level was refused; totals were exact at both levels and ignored what was sent for them; one
+    sub-line changed with every other row kept; a sub-line under another line was refused; a missing
+    title was refused with the path to it; a dropped line took its sub-lines. In the form the grid
+    showed "1 row" for the line, its dialog held the sub-grid, a second sub-line was added and both
+    totals moved; an invalid amount stopped the save, reopened the dialog and focused that field. The
+    Governance and Risk pack, with evidence rows under each control test, installed in a fresh
+    workspace.
+45. **A published list, with no sign-in** (server at PR 181, 14 of 14). The gym's plans were published;
+    a list showing an email address and a second list of the same name were refused; the JSON held
+    exactly the listed fields in the order asked for; the CSV was headed by the labels; the page had no
+    script, a strict content policy and asked not to be indexed; an unknown list and an unknown
+    workspace answered the same 404; a plan named like a formula with markup was neutralised in the CSV
+    and escaped on the page.
+46. **The public lists screen** (Ferrum-Frontend PR 77). It listed the plans' list with its address,
+    which opened the public page; on Member the form showed its warning and Email under "cannot be
+    published: an email address"; a list of member numbers was saved from the screen and read without
+    credentials with that one field; "Take down" made its address answer 404.
 
 ## What these later walks found
 
@@ -207,6 +226,11 @@ real mailer or with a second person.
   and the page said "Which workspace?". Every portal person on such a host was locked out of the
   browser. Fixed in PR 178. The sign-in script is cached for five minutes and served stale for up to a
   day while it is fetched again, so a returning browser can run the old one after an upgrade.
+* The public lists screen judges a field by its type: the description does not tell the browser about
+  field groups or personal-data declarations, so such a field is offered and then refused by the
+  server on save. A public answer may be kept by a cache for a minute after a list is taken down.
+* A workspace's own entities cannot declare personal data, so erasure does not reach a value stored on
+  their lines or sub-lines.
 * A scoping pass for the portal found three gaps in existing code, each confirmed with a failing test
   and closed in PR 177: a workflow step naming no roles could be taken by anyone who could read the
   record; a file could be attached to a record by someone who could only read it; a file tied to no
