@@ -1,5 +1,5 @@
 //! Tenant administration: users, roles, permissions, packages, customizations, webhooks,
-//! automations. Everything requires an administrator (people's own notifications are in
+//! automations, business calendars. Everything requires an administrator (people's own notifications are in
 //! notifications.rs).
 
 use crate::error::{ApiError, ApiResult};
@@ -723,6 +723,40 @@ async fn delete_webhook(Auth(ctx): Auth, State(app): State<AppContext>, Path(id)
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+// ── business calendars (the same kernel functions Studio's route calls) ──
+
+/// `GET /admin/calendars`, or one by name: `{name, zone, weekends, holidays, hours, revision, updated_by, updated_at}`.
+pub async fn calendars(k: &ferrum_kernel::Kernel, ctx: &Ctx, name: Option<&str>) -> ApiResult<Value> {
+    admin(ctx)?;
+    let all = k.logic_calendars(ctx).await?;
+    Ok(match name {
+        None => json!({"calendars": all}),
+        Some(n) => all.into_iter().find(|c| c["name"] == n).ok_or_else(|| ApiError(Error::NotFound(format!("calendar {n}"))))?,
+    })
+}
+
+/// `PUT /admin/calendars/{name}` `{zone, weekends, holidays, hours?}` → `{revision}`.
+pub async fn put_calendar(k: &ferrum_kernel::Kernel, ctx: &Ctx, name: &str, body: &Value) -> ApiResult<Value> {
+    Ok(json!({"revision": k.put_logic_calendar(ctx, name, body).await?}))
+}
+
+async fn list_calendars(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    Ok(Json(calendars(&app_state(&app)?.kernel, &ctx, None).await?).into_response())
+}
+
+async fn get_calendar(Auth(ctx): Auth, State(app): State<AppContext>, Path(name): Path<String>) -> ApiResult<Response> {
+    Ok(Json(calendars(&app_state(&app)?.kernel, &ctx, Some(&name)).await?).into_response())
+}
+
+async fn save_calendar(Auth(ctx): Auth, State(app): State<AppContext>, Path(name): Path<String>, Json(body): Json<Value>) -> ApiResult<Response> {
+    Ok(Json(put_calendar(&app_state(&app)?.kernel, &ctx, &name, &body).await?).into_response())
+}
+
+async fn delete_calendar(Auth(ctx): Auth, State(app): State<AppContext>, Path(name): Path<String>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.delete_logic_calendar(&ctx, &name).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 // ── automations ──
 
 async fn list_automations(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
@@ -877,6 +911,8 @@ pub fn routes() -> Routes {
         .add("/admin/webhook-deliveries/{id}/replay", post(replay_webhook_delivery))
         .add("/admin/webhooks", get(list_webhooks).post(create_webhook))
         .add("/admin/webhooks/{id}", delete(delete_webhook))
+        .add("/admin/calendars", get(list_calendars))
+        .add("/admin/calendars/{name}", get(get_calendar).put(save_calendar).delete(delete_calendar))
         .add("/admin/automations", get(list_automations).post(save_automation))
         .add("/admin/automations/preview", post(preview_automation))
         .add("/admin/automations/{id}", delete(delete_automation))

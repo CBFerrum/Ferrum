@@ -488,7 +488,7 @@ impl Kernel {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let rows: Vec<Value> = sqlx::query_scalar(
             "select jsonb_build_object('name', name, 'zone', zone, 'weekends', weekends, 'holidays', holidays, 'revision', revision, \
-               'updated_by', updated_by, 'updated_at', updated_at) from logic_calendar where tenant_id = $1 order by name",
+               'hours', hours, 'updated_by', updated_by, 'updated_at', updated_at) from logic_calendar where tenant_id = $1 order by name",
         )
         .bind(ctx.tenant)
         .fetch_all(&mut *tx)
