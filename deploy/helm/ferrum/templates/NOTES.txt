@@ -1,0 +1,3 @@
+Ferrum is installed as {{ include "ferrum.fullname" . }} in namespace {{ .Release.Namespace }}; it needs the Secret {{ .Values.secrets.existingSecret }} (see docs/operations.md).
+Wait for the pods: kubectl -n {{ .Release.Namespace }} get pods
+Create the first tenant: kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "ferrum.fullname" . }} -- ferrum task create_tenant slug:acme name:"Acme Ltd" email:admin@acme.com password:'<strong password>'

@@ -1,0 +1,26 @@
+{{- if and .Values.gateway.enabled .Values.envoyProxy.enabled }}
+{{- $n := include "ferrum.fullname" . }}
+# Envoy Gateway's proxies for the Gateway: on different nodes, at most one down at a time, and the
+# client's own address kept (externalTrafficPolicy: Local), which the server's per-address limits count.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: {{ $n }}
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyDeployment:
+        replicas: {{ .Values.envoyProxy.replicas }}
+        pod:
+          topologySpreadConstraints:
+            - maxSkew: 1
+              topologyKey: kubernetes.io/hostname
+              whenUnsatisfiable: ScheduleAnyway
+              labelSelector:
+                matchLabels: {gateway.envoyproxy.io/owning-gateway-name: {{ $n }}}
+      envoyPDB:
+        minAvailable: 1
+      envoyService:
+        externalTrafficPolicy: Local
+{{- end }}
