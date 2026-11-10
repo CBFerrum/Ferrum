@@ -67,6 +67,21 @@ const ENTITIES: &str = r#"
   actions:
     - {name: cancel_it, label: Cancel It, permission: write, condition: 'doc.reason != "locked"'}
     - {name: reschedule, label: Reschedule, permission: write}
+- name: Application
+  label: Application
+  kind: master
+  title_field: title
+  fields:
+    - {name: title, type: data, required: true}
+    - {name: email, type: email}
+- name: Claim
+  label: Claim
+  kind: document
+  submittable: true
+  title_field: title
+  fields:
+    - {name: title, type: data, required: true}
+    - {name: email, type: email}
 "#;
 
 fn catalog() -> Catalog {
@@ -376,4 +391,77 @@ async fn scenario() {
     let here = [(id_of(&ann_spring), "ann spring"), (id_of(&bob_spring), "bob spring"), (id_of(&cal_card), "cal spring")];
     assert_eq!(reach(&k, &pia_there, "ReportCard", &here, "term").await, names(&["cal spring"]), "her records there, and none of here");
     assert!(reach(&k, &pia, "ReportCard", &here, "term").await.is_empty(), "nothing of the other workspace's reaches her here");
+
+    transitions(&k, &admin).await;
+}
+
+/// Who takes a workflow transition: one naming roles, a holder of one who can read the record; one
+/// naming none, whoever may change the record; an outside person, only one naming their role.
+async fn transitions(k: &Kernel, admin: &Ctx) {
+    let workflow: ferrum_meta::WorkflowDef = serde_json::from_value(json!({
+        "name": "Applications", "entity": "Application", "initial_state": "Draft",
+        "states": [{"name": "Draft"}, {"name": "Sent"}, {"name": "Approved"}, {"name": "Reviewed"}],
+        "transitions": [
+            {"action": "Send", "from": "Draft", "to": "Sent"},
+            // Its author forgot the roles: still nobody's who may only read it, nor an applicant's.
+            {"action": "Approve", "from": "Sent", "to": "Approved"},
+            {"action": "Withdraw", "from": "Sent", "to": "Draft", "roles": ["Applicants"]},
+            {"action": "Review", "from": "Sent", "to": "Reviewed", "roles": ["Reviewer"]},
+        ],
+    }))
+    .unwrap();
+    k.add_customization(admin, "Application", ferrum_meta::OverlayOp::SetWorkflow { workflow }, None).await.unwrap();
+    for (role, r) in [
+        ("Viewer", json!({"entity": "Application", "read": true})),
+        ("Reviewer", json!({"entity": "Application", "read": true})),
+        ("Editor", json!({"entity": "Application", "read": true, "write": true, "create": true})),
+        ("Applicants", json!({"entity": "Application", "read": true, "write": true, "create": true, "via": "email"})),
+        ("Applicants", json!({"entity": "Claim", "read": true, "write": true, "create": true, "submit": true, "via": "email"})),
+        ("Editor", json!({"entity": "Claim", "read": true, "write": true, "create": true, "submit": true, "cancel": true})),
+    ] {
+        k.set_role_permission(admin, role, &rule(r)).await.unwrap();
+    }
+    k.set_role_portal(admin, "Applicants", true).await.unwrap();
+    let member = |email: &'static str, role: &'static str| async move {
+        let id = k.create_user(admin, email, email, None, &[role.to_string()], false).await.unwrap();
+        k.load_ctx(admin.tenant, id, None, "it".into()).await.unwrap()
+    };
+    let (viewer, reviewer, editor) =
+        (member("viewer@school.test", "Viewer").await, member("rev@school.test", "Reviewer").await, member("ed@school.test", "Editor").await);
+    let ava = portal_person(k, admin, "ava@home.test", &["Applicants"]).await;
+    let hers = id_of(&k.insert(&ava, "Application", obj(json!({"title": "Ava's", "email": "ava@home.test"}))).await.expect("her own application"));
+    let other = id_of(&k.insert(&editor, "Application", obj(json!({"title": "Someone's", "email": "sam@home.test"}))).await.unwrap());
+    let forbidden = |r: Result<Doc>, why: &str| assert!(matches!(r, Err(Error::Forbidden(_))), "{why}: {r:?}");
+
+    forbidden(k.transition(&viewer, "Application", hers, "Send", None).await, "a transition naming no roles, by someone who may only read");
+    forbidden(k.transition(&ava, "Application", hers, "Send", None).await, "a transition naming no roles, by an outside person on her own record");
+    k.transition(&editor, "Application", hers, "Send", None).await.expect("whoever may change the record");
+    forbidden(k.transition(&ava, "Application", hers, "Approve", None).await, "an applicant approving her own application");
+    let theirs = k.transition(&ava, "Application", other, "Withdraw", None).await;
+    assert!(matches!(theirs, Err(Error::NotFound(_))), "someone else's application: {theirs:?}");
+    k.transition(&ava, "Application", hers, "Withdraw", None).await.expect("a transition naming her portal role, on her own record");
+    k.transition(&editor, "Application", hers, "Send", None).await.unwrap();
+    forbidden(k.transition(&viewer, "Application", hers, "Review", None).await, "a named role she does not hold");
+    k.transition(&reviewer, "Application", hers, "Review", None).await.expect("a holder of the named role who may only read");
+    k.transition(&editor, "Application", other, "Send", None).await.unwrap();
+    k.transition(&editor, "Application", other, "Approve", None).await.expect("an editor takes a transition naming no roles");
+
+    // The form offers what the server would take: each transition says whether the caller may.
+    let may = |ctx: &Ctx| -> Vec<(String, bool)> {
+        let d = ferrum_kernel::describe::describe(ctx, ctx.schema.entity("Application").unwrap());
+        d["workflow"]["transitions"].as_array().unwrap().iter().map(|t| (t["action"].as_str().unwrap().to_string(), t["may_take"] == json!(true))).collect()
+    };
+    let expect = |v: [bool; 4]| ["Send", "Approve", "Withdraw", "Review"].iter().map(|a| a.to_string()).zip(v).collect::<Vec<_>>();
+    assert_eq!(may(&viewer), expect([false, false, false, false]), "viewer");
+    assert_eq!(may(&reviewer), expect([false, false, false, true]), "reviewer");
+    assert_eq!(may(&editor), expect([true, true, false, false]), "editor");
+    assert_eq!(may(&ava), expect([false, false, true, false]), "applicant");
+    let admin = k.load_ctx(admin.tenant, admin.user, None, "it".into()).await.unwrap();
+    assert_eq!(may(&admin), expect([true, true, true, true]), "administrator");
+
+    // Submitting and cancelling are as BD-02 has them: her own claim she submits, and cancels none.
+    let claim = id_of(&k.insert(&ava, "Claim", obj(json!({"title": "Ava's claim", "email": "ava@home.test"}))).await.unwrap());
+    k.submit(&ava, "Claim", claim, None).await.expect("she submits her own");
+    forbidden(k.cancel(&ava, "Claim", claim, None).await, "an outside person cancelling");
+    k.cancel(&editor, "Claim", claim, None).await.expect("a member who may cancel");
 }

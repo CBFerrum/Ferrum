@@ -43,6 +43,9 @@ portal page shows a customer's invoices.
   each action's own permission asks: a patient cancels a visit without being able to edit it. The
   action's condition and its app's checks still apply (Healthcare holds a patient to the clinic's
   cancellation window; the clinic's people are not).
+* A **workflow transition** is theirs to take only when it names one of their portal roles: one naming
+  no roles is for the workspace's members who may change the record, never for an outside person,
+  whatever their rule lets them write (an applicant cannot take "Approve" on her own application).
 * A record's comments, files, assignments, tags and history are the workspace members' business:
   portal people never reach them, even on their own records.
 * Unscoped reports that sum up every record refuse them; Studio's dashboards compute with their rights.

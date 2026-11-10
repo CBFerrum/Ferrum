@@ -550,6 +550,11 @@ MUTANTS = [
     ("rule-names-an-action-that-is-not-there", "crates/kernel/src/auth.rs", "        if let Some(why) = p.unknown_action(ent.as_ref().map(|e| &e.def)) {", "        if let Some(why) = None::<String> {", PORTAL),
     ("portal-people-read-a-records-surroundings", "crates/kernel/src/collab.rs", "return Err(Error::Forbidden(\"a record's comments, files and people are for the workspace's members\".into()));", "return self.get(ctx, entity, id, false).await;", PORTAL),
     ("portal-people-read-a-records-history", "crates/kernel/src/audit.rs", "return Err(Error::Forbidden(\"a record's history is for the workspace's members\".into()));", "let _ = ();", PORTAL),
+    # Who takes a workflow transition: the run path and the form's `may_take` ask one gate.
+    ("transition-without-roles-for-readers", "crates/kernel/src/ctx.rs", "        return row_scope(ctx, ent, Action::Write);\n    }\n    if !t.roles", "        return row_scope(ctx, ent, Action::Read);\n    }\n    if !t.roles", PORTAL),
+    ("transition-without-roles-for-outsiders", "crates/kernel/src/ctx.rs", "        if ctx.outside {\n            return Err(Error::Forbidden(format!(\"'{}' is for the workspace's members\"", "        if false {\n            return Err(Error::Forbidden(format!(\"'{}' is for the workspace's members\"", PORTAL),
+    ("transition-gate-not-asked", "crates/kernel/src/doc.rs", "        if !crate::ctx::transition_gate(ctx, &ent, t)?.admits(tx, ctx.tenant, &doc).await? {", "        if false {", PORTAL),
+    ("transition-offered-to-anyone", "crates/kernel/src/describe.rs", "json!(crate::ctx::transition_gate(ctx, ent, def).is_ok())", "json!(true)", PORTAL),
     ("portal-roles-given-to-anyone", "crates/kernel/src/auth.rs", "                if let Some(other) = roles.iter().find(|r| !portal.contains(r)) {", "                if let Some(other) = None::<&String> {", PORTAL),
     ("custom-lines-load-mixes-tables", "crates/kernel/src/store.rs", "                info.predicate(\"ci\")\n", "                String::new()\n", CUSTOM_LINES),
     ("custom-lines-filter-mixes-tables", "crates/kernel/src/query.rs", "                    info.predicate(\"c\")\n", "                    String::new()\n", CUSTOM_LINES),

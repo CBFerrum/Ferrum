@@ -789,8 +789,8 @@ impl Kernel {
             .iter()
             .find(|t| t.action == action && t.from == current)
             .ok_or_else(|| Error::invalid(format!("'{action}' is not allowed in state '{current}'")))?;
-        if !t.roles.is_empty() && !t.roles.iter().any(|r| ctx.has_role(r)) {
-            return Err(Error::Forbidden(format!("'{action}' requires one of the roles: {}", t.roles.join(", "))));
+        if !crate::ctx::transition_gate(ctx, &ent, t)?.admits(tx, ctx.tenant, &doc).await? {
+            return Err(Error::Forbidden(format!("'{action}' is for whoever may change this {}", ent.def.label.to_lowercase())));
         }
         if t.not_creator && !ctx.is_system && uuid_of(doc.get("created_by")) == Some(ctx.user) {
             return Err(Error::Forbidden("the creator of a document cannot approve it".into()));

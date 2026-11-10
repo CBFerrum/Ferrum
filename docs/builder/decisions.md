@@ -42,6 +42,10 @@ skipped because a configuration says so.
 * The portal shows generic pages from the person's portal roles (BF-PORTAL-004), beside the pages apps
   contribute. Apps keep their own portal pages until their configured equivalent reaches parity.
 
+* (Added 10 November 2026, from the portal pages' scoping.) An outside person takes a workflow
+  transition only when it names one of their roles; a transition naming no roles is for members who may
+  change the record (write scope), never for one who may only read it.
+
 **Rules out**: precomputed lists of a person's records (stale after a change); member roles for portal
 people; a rule reaching records by anything but the person's own email.
 
