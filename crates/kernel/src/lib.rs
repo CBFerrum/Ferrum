@@ -66,6 +66,7 @@ pub mod signup;
 pub mod sso;
 pub mod store;
 pub mod support;
+pub mod targets;
 pub mod tenant;
 pub mod twofactor;
 pub mod value;
@@ -236,6 +237,8 @@ pub struct Kernel {
     /// Submits, cancels, actions and workflow steps that did not go through, since the process
     /// started: (package, entity, operation, kind) → how many ([`Kernel::failures`]).
     pub(crate) failures: std::sync::Mutex<std::collections::BTreeMap<(String, String, String, &'static str), u64>>,
+    /// What service targets take as now when a test pins it (targets.rs).
+    pub(crate) clock: std::sync::Mutex<Option<chrono::DateTime<chrono::Utc>>>,
 }
 
 impl Kernel {
@@ -345,6 +348,7 @@ impl Kernel {
             directory: std::sync::OnceLock::new(),
             vapid: tokio::sync::OnceCell::new(),
             failures: Default::default(),
+            clock: Default::default(),
         });
         kernel.notice_restore().await?;
         match kernel.adopt_customization_baselines().await {

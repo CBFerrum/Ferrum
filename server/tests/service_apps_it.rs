@@ -116,6 +116,7 @@ async fn scenario() {
     assert!(matches!(write, Err(Error::Forbidden(_))), "and changes none: {write:?}");
     let contact = k.insert(&svc, "Contact", json!({"first_name": "Pat"}).as_object().cloned().unwrap()).await;
     assert!(matches!(contact, Err(Error::Forbidden(_))), "nor anything else: {contact:?}");
+    k.update(&admin, "Customer", id, json!({"customer_name": "Globex Corp"}).as_object().cloned().unwrap(), None).await.unwrap();
 
     // ── it hears which customer changed, signed, without the record ──
     while k.dispatch_outbox_once().await.unwrap() > 0 {}
@@ -127,6 +128,10 @@ async fn scenario() {
     assert_eq!((&event["entity"], &event["id"], &event["event"]), (&json!("Customer"), &globex["id"], &json!("created")), "{event}");
     assert!(event.get("doc").is_none(), "the record stays behind: {event}");
     assert!(signed(&secret, &headers, &body), "signed with its secret");
+    // A change: which record, never what it held before either.
+    let (_, _, body) = calls.iter().filter(|c| c.0 == "events").nth(1).expect("the change was delivered").clone();
+    let event: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!((&event["event"], event.get("doc"), event.get("was")), (&json!("updated"), None, None), "{event}");
 
     // ── turned off, its key and its deliveries stop; on, both work again ──
     manager.set_enabled(&admin, "svc", false).await.unwrap();
@@ -134,7 +139,7 @@ async fn scenario() {
     k.insert(&admin, "Customer", json!({"customer_name": "Hooli"}).as_object().cloned().unwrap()).await.unwrap();
     while k.dispatch_outbox_once().await.unwrap() > 0 {}
     while k.deliver_webhooks_once().await.unwrap() > 0 {}
-    assert_eq!(service.calls.lock().unwrap().iter().filter(|c| c.0 == "events").count(), 1, "nothing delivered while off");
+    assert_eq!(service.calls.lock().unwrap().iter().filter(|c| c.0 == "events").count(), 2, "nothing delivered while off");
     manager.set_enabled(&admin, "svc", true).await.unwrap();
     let (again, _) = k.verify_api_key(&key).await.unwrap();
     assert_eq!(again.user, s.user, "the same key works again");

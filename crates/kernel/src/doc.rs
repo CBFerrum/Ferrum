@@ -408,6 +408,7 @@ impl Kernel {
         check_state_needs(&ent, &doc, None)?;
         self.validate(ctx, tx, &ent, &doc, None, RuleOn::Save).await?;
         self.hook_validate(ctx, tx, &ent, &doc, None).await?;
+        crate::targets::keep(self, ctx, tx, &ent, id, &mut doc).await?;
         let scope = row_scope(ctx, &ent, Action::Create)?;
         if !scope.admits(tx, ctx.tenant, &doc).await? {
             return Err(Error::Forbidden("this record is outside the companies or scopes you are permitted to use".into()));
@@ -466,6 +467,7 @@ impl Kernel {
         check_state_needs(&ent, &doc, None)?;
         self.validate(ctx, tx, &ent, &doc, Some(&old), RuleOn::Save).await?;
         self.hook_validate(ctx, tx, &ent, &doc, Some(&old)).await?;
+        crate::targets::keep(self, ctx, tx, &ent, id, &mut doc).await?;
         if !scope.admits(tx, ctx.tenant, &doc).await? {
             return Err(Error::Forbidden("you cannot move this record outside your permitted scope".into()));
         }
@@ -513,7 +515,7 @@ impl Kernel {
         self.refuse_if_linked_in_ext(ctx, tx, &ent, id).await?;
         store::delete_row(tx, &ent, ctx.tenant, id).await?;
         // Collaboration on the record goes with it (followers are told by the deleted event first).
-        for table in ["record_comment", "record_assignment", "record_tag", "record_secret"] {
+        for table in ["record_comment", "record_assignment", "record_tag", "record_secret", "record_target"] {
             sqlx::query(AssertSqlSafe(format!("delete from {table} where tenant_id = $1 and entity = $2 and record_id = $3")))
                 .bind(ctx.tenant)
                 .bind(&ent.def.name)
@@ -612,6 +614,7 @@ impl Kernel {
         doc.insert("docstatus".into(), json!(1));
         doc.insert("version".into(), json!(version));
         doc.insert("updated_by".into(), if !ctx.user.is_nil() { json!(ctx.user.to_string()) } else { Value::Null });
+        crate::targets::keep(self, ctx, tx, &ent, id, &mut doc).await?;
         store::update_row(tx, &ctx.schema, &ent, ctx.tenant, &doc, &old).await?;
         let stored = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::internal("submit vanished"))?;
         for h in self.hooks.for_tenant(&ent.def.name, &ctx.schema.packages) {
@@ -669,6 +672,7 @@ impl Kernel {
         doc.insert("docstatus".into(), json!(2));
         doc.insert("version".into(), json!(version));
         doc.insert("updated_by".into(), if !ctx.user.is_nil() { json!(ctx.user.to_string()) } else { Value::Null });
+        crate::targets::keep(self, ctx, tx, &ent, id, &mut doc).await?;
         store::update_row(tx, &ctx.schema, &ent, ctx.tenant, &doc, &old).await?;
         let stored = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::internal("cancel vanished"))?;
         for h in self.hooks.for_tenant(&ent.def.name, &ctx.schema.packages) {
@@ -814,8 +818,12 @@ impl Kernel {
             (a, b) if a == b => {}
             _ => return Err(Error::invalid("this workflow transition would move the document backwards")),
         }
-        let mut values = Doc::new();
-        values.insert("workflow_state".into(), json!(t.to));
+        // The record's targets see it in its new state; what they keep is written with it.
+        let mut next = doc.clone();
+        next.insert("workflow_state".into(), json!(t.to));
+        crate::targets::keep(self, ctx, tx, &ent, id, &mut next).await?;
+        let kept: Doc =
+            ent.def.targets.iter().flat_map(|t| [&t.due_field, &t.state_field]).map(|f| (f.clone(), next.get(f).cloned().unwrap_or_default())).collect();
         sqlx::query(AssertSqlSafe(format!(
             "update {} a set workflow_state = $3, version = version + 1, updated_at = now(), updated_by = $4 where a.tenant_id = $1 and a.id = $2{}",
             crate::ddl::q(&ent.table),
@@ -827,9 +835,47 @@ impl Kernel {
         .bind((!ctx.user.is_nil()).then_some(ctx.user))
         .execute(&mut **tx)
         .await?;
+        if !kept.is_empty() {
+            store::set_values(tx, &ent, ctx.tenant, id, &kept).await?;
+        }
         let stored = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::internal("transition vanished"))?;
         self.emit(ctx, tx, &ent, id, "transitioned", &format!("workflow:{action}"), Some(version + 1), Some(&doc), Some(&stored)).await?;
         Ok(self.mask(ctx, &ent, stored))
+    }
+
+    /// The platform's own change to a record's service targets (a breach the sweep marked), in any document status:
+    /// the fields the targets keep are written as a workflow transition writes them, without the rules a person's
+    /// edit meets, with a new version, the audit entry and the record's `updated` event (with `was`). Whether
+    /// anything changed.
+    pub(crate) async fn keep_targets_tx(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid) -> Result<bool> {
+        let ent = self.entity(ctx, entity)?;
+        let Some(old) = self.load_marked(tx, ctx, &ent, id, true).await? else { return Ok(false) };
+        let mut next = old.clone();
+        crate::targets::keep(self, ctx, tx, &ent, id, &mut next).await?;
+        let kept: Doc = ent
+            .def
+            .targets
+            .iter()
+            .flat_map(|t| [&t.due_field, &t.state_field])
+            .filter(|f| next.get(*f) != old.get(*f))
+            .map(|f| (f.clone(), next.get(f).cloned().unwrap_or_default()))
+            .collect();
+        if kept.is_empty() {
+            return Ok(false);
+        }
+        sqlx::query(AssertSqlSafe(format!(
+            "update {} a set version = version + 1, updated_at = now(), updated_by = null where a.tenant_id = $1 and a.id = $2{}",
+            crate::ddl::q(&ent.table),
+            store::entity_predicate(&ent, "a")
+        )))
+        .bind(ctx.tenant)
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+        store::set_values(tx, &ent, ctx.tenant, id, &kept).await?;
+        let stored = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::internal("record vanished"))?;
+        self.emit(ctx, tx, &ent, id, "updated", "target", Some(version_of(&old) + 1), Some(&old), Some(&stored)).await?;
+        Ok(true)
     }
 
     /// Engine-level update of derived fields (status, progress, outstanding). No validation/hooks/audit:
@@ -935,7 +981,11 @@ impl Kernel {
                 errors.push(FieldError::new(k, "unknown field"));
                 continue;
             };
-            if f.computed.is_some() || f.rollup.is_some() || (read_only(ent, f, stored.as_ref(), None, &user) && !ctx.is_system && !trusted) {
+            if f.computed.is_some()
+                || f.rollup.is_some()
+                || ent.target_keeping(k).is_some()
+                || (read_only(ent, f, stored.as_ref(), None, &user) && !ctx.is_system && !trusted)
+            {
                 continue;
             }
             if !trusted && !ctx.perms.can_write_field(&ent.def.name, f) {
@@ -1267,8 +1317,18 @@ impl Kernel {
         });
         if let Some(d) = new.or(old) {
             let v = Value::Object(d.clone());
-            if serde_json::to_vec(&v).map(|b| b.len()).unwrap_or(usize::MAX) <= MAX_EVENT_DOC_BYTES {
+            let size = |v: &Value| serde_json::to_vec(v).map(|b| b.len()).unwrap_or(usize::MAX);
+            let doc_size = size(&v);
+            if doc_size <= MAX_EVENT_DOC_BYTES {
                 payload["doc"] = v;
+                // What the change replaced, field by field, so that a condition can compare with `old`; left out
+                // when the two together would pass the size an event's record may have.
+                if let (Some(o), Some(n)) = (old, new) {
+                    let was = Value::Object(o.iter().filter(|(k, v)| n.get(*k) != Some(*v) && !v.is_array()).map(|(k, v)| (k.clone(), v.clone())).collect());
+                    if doc_size.saturating_add(size(&was)) <= MAX_EVENT_DOC_BYTES {
+                        payload["was"] = was;
+                    }
+                }
             }
         }
         let source = outbox::Source {

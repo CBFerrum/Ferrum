@@ -183,8 +183,8 @@ fn compiled(src: &str) -> Result<Expr> {
     Ok(expr)
 }
 
-fn eval(src: &str, doc: &Value, user: &Value) -> Result<Value> {
-    eval_with(src, doc, user, &[])
+fn eval(src: &str, doc: &Value, old: Option<&Value>, user: &Value) -> Result<Value> {
+    compiled(src)?.eval(&Scope { doc, old, parent: None, user }).map_err(|e| Error::invalid(format!("'{src}': {e}")))
 }
 
 /// [`eval`] with more variables: a configured action's `params`, the `linked` record an effect writes.
@@ -340,11 +340,19 @@ pub async fn run_for_event(k: &Kernel, ev: &Event) -> Result<()> {
     let Some(ent) = schema.entity(entity).cloned() else { return Ok(()) };
     let doc = ev.payload.get("doc").cloned().unwrap_or(Value::Null);
     let cel_doc = ent.cel_view(&doc, &schema);
+    // The record before the change: the record now with what the change replaced (`was`) put back.
+    let cel_old = ev.payload.get("was").and_then(Value::as_object).map(|was| {
+        let mut old = doc.clone();
+        for (k, v) in was {
+            old[k] = v.clone();
+        }
+        ent.cel_view(&old, &schema)
+    });
     let mut first_error = None;
     for a in autos {
         // Whom it would run as, worked out before its transaction holds anything.
         let who = runner(k, ev.tenant_id, &schema, a.created_by, format!("automation-{}-{}", a.id, ev.id)).await;
-        let res = run_one(k, ev, entity, &a, &who, depth, ev.record_id, &cel_doc, true).await;
+        let res = run_one(k, ev, entity, &a, &who, depth, ev.record_id, (&cel_doc, cel_old.as_ref()), true).await;
         if let Err(e) = res {
             tracing::warn!(automation = %a.id, event = ev.id, "automation failed: {e}");
             first_error.get_or_insert(e);
@@ -397,7 +405,7 @@ async fn run_scheduled(k: &Kernel, ev: &Event, entity: &str, depth: u8) -> Resul
         }
         cel_doc = ent.cel_view(&Value::Object(doc), &schema);
     }
-    run_one(k, ev, entity, &a, &who, depth, Some(record), &cel_doc, false).await.map(|_| ())
+    run_one(k, ev, entity, &a, &who, depth, Some(record), (&cel_doc, None), false).await.map(|_| ())
 }
 
 /// One automation's run for one event, in its own transaction: nothing if it is off (or the event was handed
@@ -412,7 +420,7 @@ async fn run_one(
     who: &std::result::Result<Ctx, String>,
     depth: u8,
     record: Option<Uuid>,
-    cel_doc: &Value,
+    (cel_doc, cel_old): (&Value, Option<&Value>),
     hand_over: bool,
 ) -> Result<&'static str> {
     let mut tx = k.db.tenant_tx(ev.tenant_id).await?;
@@ -459,7 +467,7 @@ async fn run_one(
     ctx.depth = depth + 1;
     let user = ctx.user_value();
     let pass = match &a.condition {
-        Some(c) if !c.trim().is_empty() => matches!(eval(c, cel_doc, &user)?, Value::Bool(true)),
+        Some(c) if !c.trim().is_empty() => matches!(eval(c, cel_doc, cel_old, &user)?, Value::Bool(true)),
         _ => true,
     };
     let status = if pass {
@@ -711,7 +719,7 @@ mod tests {
         let src = "doc.title + ' (compiled once)'";
         let before = COMPILES.load(Ordering::Relaxed);
         for _ in 0..3 {
-            assert_eq!(eval(src, &serde_json::json!({"title": "A"}), &Value::Null).unwrap(), "A (compiled once)");
+            assert_eq!(eval(src, &serde_json::json!({"title": "A"}), None, &Value::Null).unwrap(), "A (compiled once)");
         }
         assert_eq!(COMPILES.load(Ordering::Relaxed) - before, 1);
     }

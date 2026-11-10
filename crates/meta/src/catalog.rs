@@ -790,7 +790,7 @@ pub(crate) fn validate_entity(e: &EntityDef, all: &HashMap<&str, &EntityDef>) ->
     if let Some(n) = &e.numbering {
         validate_numbering(e, n)?;
     }
-    Ok(())
+    crate::effective::validate_targets(e)
 }
 
 /// Configured actions one entity holds, and effects and refusals one of them holds.
