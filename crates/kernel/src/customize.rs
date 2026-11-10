@@ -86,6 +86,36 @@ pub(crate) fn now_required(packaged: &Schema, entity: &str, op: &OverlayOp) -> b
     packaged.entity(entity).and_then(|e| e.field(field)).is_some_and(|f| f.required)
 }
 
+/// Whether a custom entity has records (or rows), or, with `field`, records holding a value in it.
+async fn holds(tx: &mut crate::db::Tx, tenant: Uuid, entity: &str, field: Option<&str>) -> Result<bool> {
+    let value = if field.is_some() { " and coalesce(ext->$3, 'null'::jsonb) <> 'null'::jsonb" } else { " and $3::text is null" };
+    let sql = format!("select exists (select 1 from custom_record where tenant_id = $1 and entity = $2{value})");
+    Ok(sqlx::query_scalar(AssertSqlSafe(sql)).bind(tenant).bind(entity).bind(field).fetch_one(&mut **tx).await?)
+}
+
+/// At most this many operations in one batch of customizations.
+pub const MAX_BATCH: usize = 100;
+
+/// One customization to save: `entity` is ignored by the operations that name their entity.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct NewCustomization {
+    pub entity: String,
+    pub op: OverlayOp,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// What an operation that is already active does in a list of customizations to save.
+#[derive(Clone, Copy, PartialEq)]
+enum Duplicates {
+    /// Saved again (one customization at a time).
+    Save,
+    /// Left out (a change set's import).
+    Skip,
+    /// Refused (a batch: a screen's "nothing changed" is not hidden).
+    Refuse,
+}
+
 fn require_admin(ctx: &Ctx) -> Result<()> {
     if ctx.is_admin { Ok(()) } else { Err(Error::Forbidden("only administrators can customize".into())) }
 }
@@ -113,9 +143,7 @@ impl Kernel {
     /// Custom entities' unique keys live in `custom_key`, kept by saves. In the transaction that changes
     /// the customizations (from `before` to what is active now): a key that goes takes its rows with it,
     /// and a key that comes is filled from the records there are, refused while two of them share a value.
-    async fn sync_custom_keys(&self, ctx: &Ctx, tx: &mut crate::db::Tx, before: &[Overlay]) -> Result<()> {
-        let after = self.active_overlays(tx, ctx.tenant).await?;
-        let build = |o: &[Overlay]| effective::build(&self.registry.catalog(), &ctx.schema.packages, o, 0).map_err(|e| Error::invalid(e.to_string()));
+    async fn sync_custom_keys(&self, ctx: &Ctx, tx: &mut crate::db::Tx, before: &Schema, after: &Schema) -> Result<()> {
         let keys = |s: &Schema| -> std::collections::BTreeMap<(String, String), (Vec<String>, String)> {
             s.entities
                 .values()
@@ -123,7 +151,7 @@ impl Kernel {
                 .flat_map(|e| e.unique_keys().into_iter().map(move |k| ((e.def.name.clone(), k.join(",")), (k, e.def.label.clone()))))
                 .collect()
         };
-        let (was, now) = (keys(&build(before)?), keys(&build(&after)?));
+        let (was, now) = (keys(before), keys(after));
         for (entity, key) in was.keys().filter(|k| !now.contains_key(*k)) {
             sqlx::query("delete from custom_key where tenant_id = $1 and entity = $2 and key = $3")
                 .bind(ctx.tenant)
@@ -161,6 +189,40 @@ impl Kernel {
                 .bind(key)
                 .execute(&mut **tx)
                 .await?;
+        }
+        Ok(())
+    }
+
+    fn build(&self, ctx: &Ctx, overlays: &[Overlay]) -> Result<Schema> {
+        effective::build(&self.registry.catalog(), &ctx.schema.packages, overlays, 0).map_err(|e| Error::invalid(e.to_string()))
+    }
+
+    /// What a change of custom entities' definitions (from `before` to `after`) may not do to their
+    /// records: change an entity's kind while it has records, or a field's type other than safely
+    /// ([`ferrum_meta::FieldType::converts_to`]) while records hold values in it. A field that goes
+    /// keeps its values in the records, out of sight, and nothing here deletes any.
+    async fn guard_records(&self, ctx: &Ctx, tx: &mut crate::db::Tx, before: &Schema, after: &Schema) -> Result<()> {
+        for (name, e) in after.entities.iter().filter(|(_, e)| e.custom) {
+            let Some(old) = before.entity(name).filter(|o| o.custom) else { continue };
+            if old.def.kind != e.def.kind && holds(tx, ctx.tenant, name, None).await? {
+                return Err(Error::Conflict(format!(
+                    "{}: its kind cannot change from {} to {} while it has records",
+                    e.def.label,
+                    json!(old.def.kind).as_str().unwrap_or_default(),
+                    json!(e.def.kind).as_str().unwrap_or_default()
+                )));
+            }
+            for f in &e.def.fields {
+                let Some(was) = old.field(&f.name).map(|o| o.ftype).filter(|t| !t.converts_to(f.ftype)) else { continue };
+                if holds(tx, ctx.tenant, name, Some(&f.name)).await? {
+                    return Err(Error::Conflict(format!(
+                        "field {}: records hold values in it, and a {} value does not read as {}; change it while it holds none, or add a new field",
+                        f.name,
+                        json!(was).as_str().unwrap_or_default(),
+                        json!(f.ftype).as_str().unwrap_or_default()
+                    )));
+                }
+            }
         }
         Ok(())
     }
@@ -345,31 +407,87 @@ impl Kernel {
     }
 
     pub async fn add_customization(&self, ctx: &Ctx, entity: &str, op: OverlayOp, note: Option<String>) -> Result<Uuid> {
-        require_admin(ctx)?;
-        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let base = self.active_overlays(&mut tx, ctx.tenant).await?;
-        let target = match &op {
-            OverlayOp::DefineEntity { entity: def } => def.name.clone(),
-            _ => entity.to_string(),
-        };
-        self.check_overlays(ctx, &base, &[Overlay { entity: target.clone(), ops: vec![op.clone()] }])?;
-        let id = Uuid::now_v7();
-        let replaced = self.packaged(ctx)?.entity(&target).and_then(|e| effective::replaced_value(e, &op));
-        sqlx::query("insert into meta_overlay (tenant_id, id, entity, op, note, created_by, base) values ($1, $2, $3, $4, $5, $6, $7)")
-            .bind(ctx.tenant)
-            .bind(id)
-            .bind(&target)
-            .bind(serde_json::to_value(&op).map_err(Error::internal)?)
-            .bind(note)
-            .bind((!ctx.user.is_nil()).then_some(ctx.user))
-            .bind(replaced)
-            .execute(&mut *tx)
-            .await?;
-        self.sync_custom_keys(ctx, &mut tx, &base).await?;
-        Registry::bump_version(&mut tx, ctx.tenant).await?;
-        tx.commit().await?;
+        let one = vec![NewCustomization { entity: entity.to_string(), op, note }];
+        let ids = self.save_customizations(ctx, one, Duplicates::Save, false).await.map_err(|(_, e)| e)?;
+        ids.into_iter().next().ok_or_else(|| Error::internal("no customization saved"))
+    }
+
+    /// Saves `items` in order, in one transaction, or none of them (`POST /api/customize/batch`):
+    /// each is checked against the schema those before it give, so a refusal names the operation
+    /// that caused it (its 0-based index). A `dry_run` does everything, unique keys included, and
+    /// rolls it back. Returns how many were saved.
+    pub async fn batch_customizations(&self, ctx: &Ctx, items: Vec<NewCustomization>, dry_run: bool) -> std::result::Result<usize, (Option<usize>, Error)> {
+        require_admin(ctx).map_err(|e| (None, e))?;
+        if items.len() > MAX_BATCH {
+            return Err((None, Error::invalid(format!("at most {MAX_BATCH} operations in one batch, not {}", items.len()))));
+        }
+        Ok(self.save_customizations(ctx, items, Duplicates::Refuse, dry_run).await?.len())
+    }
+
+    /// The one way customizations are saved: in order, each validated against the whole schema as
+    /// the ones before it leave it, guarded against what it would do to records, with unique keys
+    /// kept in step; then the version is bumped once and caches are dropped (not for a `dry_run`).
+    async fn save_customizations(
+        &self,
+        ctx: &Ctx,
+        items: Vec<NewCustomization>,
+        duplicates: Duplicates,
+        dry_run: bool,
+    ) -> std::result::Result<Vec<Uuid>, (Option<usize>, Error)> {
+        let none = |e: Error| (None, e);
+        require_admin(ctx).map_err(none)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await.map_err(none)?;
+        let mut overlays = self.active_overlays(&mut tx, ctx.tenant).await.map_err(none)?;
+        let mut active: Vec<(String, Value)> = overlays.iter().filter_map(|o| Some((o.entity.clone(), serde_json::to_value(o.ops.first()?).ok()?))).collect();
+        let packaged = self.packaged(ctx).map_err(none)?;
+        let mut was = self.build(ctx, &overlays).map_err(none)?;
+        let mut ids = Vec::new();
+        for (i, it) in items.into_iter().enumerate() {
+            let at = |e: Error| (Some(i), e);
+            let target = match &it.op {
+                OverlayOp::DefineEntity { entity } | OverlayOp::RedefineEntity { entity } => entity.name.clone(),
+                _ => it.entity,
+            };
+            let raw = serde_json::to_value(&it.op).map_err(|e| at(Error::internal(e)))?;
+            if duplicates != Duplicates::Save && active.iter().any(|(e, o)| *e == target && *o == raw) {
+                if duplicates == Duplicates::Skip {
+                    continue;
+                }
+                return Err(at(Error::Conflict(format!("this customization of {target} is already active: nothing would change"))));
+            }
+            overlays.push(Overlay { entity: target.clone(), ops: vec![it.op.clone()] });
+            let now = self.build(ctx, &overlays).map_err(at)?;
+            if now.warnings.len() > was.warnings.len() {
+                let msgs: Vec<String> = now.warnings[was.warnings.len()..].iter().map(|w| format!("{}: {}", w.entity, w.message)).collect();
+                return Err(at(Error::invalid(format!("customization rejected: {}", msgs.join("; ")))));
+            }
+            self.guard_records(ctx, &mut tx, &was, &now).await.map_err(at)?;
+            let id = Uuid::now_v7();
+            let replaced = packaged.entity(&target).and_then(|e| effective::replaced_value(e, &it.op));
+            sqlx::query("insert into meta_overlay (tenant_id, id, entity, op, note, created_by, base) values ($1, $2, $3, $4, $5, $6, $7)")
+                .bind(ctx.tenant)
+                .bind(id)
+                .bind(&target)
+                .bind(&raw)
+                .bind(it.note)
+                .bind((!ctx.user.is_nil()).then_some(ctx.user))
+                .bind(replaced)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| at(e.into()))?;
+            self.sync_custom_keys(ctx, &mut tx, &was, &now).await.map_err(at)?;
+            active.push((target, raw));
+            was = now;
+            ids.push(id);
+        }
+        if dry_run || ids.is_empty() {
+            tx.rollback().await.map_err(|e| none(e.into()))?;
+            return Ok(ids);
+        }
+        Registry::bump_version(&mut tx, ctx.tenant).await.map_err(none)?;
+        tx.commit().await.map_err(|e| none(e.into()))?;
         self.registry.invalidate(ctx.tenant);
-        Ok(id)
+        Ok(ids)
     }
 
     pub async fn list_customizations(&self, ctx: &Ctx) -> Result<Vec<OverlayRow>> {
@@ -389,6 +507,7 @@ impl Kernel {
         require_admin(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let before = self.active_overlays(&mut tx, ctx.tenant).await?;
+        let was = self.build(ctx, &before)?;
         if active {
             let row: Option<(String, Value)> = sqlx::query_as("select entity, op from meta_overlay where tenant_id = $1 and id = $2")
                 .bind(ctx.tenant)
@@ -409,7 +528,10 @@ impl Kernel {
         if n == 0 {
             return Err(Error::NotFound("customization".into()));
         }
-        self.sync_custom_keys(ctx, &mut tx, &before).await?;
+        // Switching a redefinition off or on changes the definition back or forth: the same guards hold.
+        let now = self.build(ctx, &self.active_overlays(&mut tx, ctx.tenant).await?)?;
+        self.guard_records(ctx, &mut tx, &was, &now).await?;
+        self.sync_custom_keys(ctx, &mut tx, &was, &now).await?;
         Registry::bump_version(&mut tx, ctx.tenant).await?;
         tx.commit().await?;
         self.registry.invalidate(ctx.tenant);
@@ -423,49 +545,19 @@ impl Kernel {
         Ok(json!({"format": "ferrum.changeset/1", "packages": ctx.schema.packages, "customizations": ops}))
     }
 
-    /// Change-set import: validated as a whole, applied atomically, skipping exact duplicates.
+    /// Change-set import: applied in order and atomically (as a batch is), skipping exact duplicates.
     pub async fn import_customizations(&self, ctx: &Ctx, bundle: &Value) -> Result<usize> {
         require_admin(ctx)?;
         if bundle.get("format").and_then(Value::as_str) != Some("ferrum.changeset/1") {
             return Err(Error::invalid("not a ferrum.changeset/1 bundle"));
         }
         let items = bundle.get("customizations").and_then(Value::as_array).ok_or_else(|| Error::invalid("customizations missing"))?;
-        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let existing: Vec<(String, Value)> =
-            sqlx::query_as("select entity, op from meta_overlay where tenant_id = $1 and is_active").bind(ctx.tenant).fetch_all(&mut *tx).await?;
         let mut new = Vec::new();
         for it in items {
             let entity = it.get("entity").and_then(Value::as_str).ok_or_else(|| Error::invalid("entity missing"))?.to_string();
-            let op_v = it.get("op").cloned().ok_or_else(|| Error::invalid("op missing"))?;
-            if existing.iter().any(|(e, o)| *e == entity && *o == op_v) {
-                continue;
-            }
-            let op: OverlayOp = serde_json::from_value(op_v.clone()).map_err(|e| Error::invalid(e.to_string()))?;
-            new.push((entity, op, op_v, it.get("note").and_then(Value::as_str).map(str::to_string)));
+            let op = serde_json::from_value(it.get("op").cloned().ok_or_else(|| Error::invalid("op missing"))?).map_err(|e| Error::invalid(e.to_string()))?;
+            new.push(NewCustomization { entity, op, note: it.get("note").and_then(Value::as_str).map(str::to_string) });
         }
-        let base = self.active_overlays(&mut tx, ctx.tenant).await?;
-        let extra: Vec<Overlay> = new.iter().map(|(e, op, _, _)| Overlay { entity: e.clone(), ops: vec![op.clone()] }).collect();
-        self.check_overlays(ctx, &base, &extra)?;
-        let packaged = self.packaged(ctx)?;
-        for (entity, op, op_v, note) in &new {
-            let replaced = packaged.entity(entity).and_then(|e| effective::replaced_value(e, op));
-            sqlx::query("insert into meta_overlay (tenant_id, id, entity, op, note, created_by, base) values ($1, $2, $3, $4, $5, $6, $7)")
-                .bind(ctx.tenant)
-                .bind(Uuid::now_v7())
-                .bind(entity)
-                .bind(op_v)
-                .bind(note)
-                .bind((!ctx.user.is_nil()).then_some(ctx.user))
-                .bind(replaced)
-                .execute(&mut *tx)
-                .await?;
-        }
-        if !new.is_empty() {
-            self.sync_custom_keys(ctx, &mut tx, &base).await?;
-            Registry::bump_version(&mut tx, ctx.tenant).await?;
-        }
-        tx.commit().await?;
-        self.registry.invalidate(ctx.tenant);
-        Ok(new.len())
+        Ok(self.save_customizations(ctx, new, Duplicates::Skip, false).await.map_err(|(_, e)| e)?.len())
     }
 }

@@ -61,6 +61,7 @@ EGRESS = ("-p", "ferrum-server", "--test", "assistant_egress_it")
 PORTAL = ("-p", "ferrum-kernel", "--test", "portal_it")
 CUSTOM_LINES = ("-p", "ferrum-kernel", "--test", "custom_lines_it")
 STUDIO_LINES = ("-p", "ferrum-studio", "--test", "custom_lines_it")
+AUTHORING = ("-p", "ferrum-kernel", "--test", "authoring_it")
 ASSISTANT = ("-p", "ferrum-server", "--test", "assistant_it")
 BOUNDARIES = ("-p", "ferrum-server", "--test", "assistant_boundaries_it")
 ASSISTANT_UNIT = ("-p", "ferrum-server", "--lib", "assistant::tests")
@@ -554,6 +555,10 @@ MUTANTS = [
     ("scheduled-page-repeats-its-cursor", "crates/kernel/src/schedule.rs", "qb.push(\" and a.id > \").push_bind(c);", "qb.push(\" and a.id >= \").push_bind(c);", SCHEDULE),
     ("scheduled-occurrences-never-pruned", "crates/kernel/src/schedule.rs", "\"delete from automation_occurrence where due_at < now() - make_interval(days => $1)\"", "\"delete from automation_occurrence where false and $1 = 0\"", SCHEDULE),
     ("schedule-takes-any-field", "crates/kernel/src/schedule.rs", "Some(_) => Err(bad(format!(\"{at}: {name} is not a date or datetime field\"))),", "Some(_) => Ok(false),", SCHEDULE),
+    ("batch-checked-only-as-a-whole", "crates/kernel/src/customize.rs", "            if now.warnings.len() > was.warnings.len() {", "            if false {", AUTHORING),
+    ("dry-run-kept", "crates/kernel/src/customize.rs", "        if dry_run || ids.is_empty() {", "        if ids.is_empty() {", AUTHORING),
+    ("redefinition-retypes-values", "crates/kernel/src/customize.rs", "                if holds(tx, ctx.tenant, name, Some(&f.name)).await? {", "                if false {", AUTHORING),
+    ("redefinition-changes-kind-under-records", "crates/kernel/src/customize.rs", "if old.def.kind != e.def.kind && holds(", "if false && holds(", AUTHORING),
 
 ]
 
