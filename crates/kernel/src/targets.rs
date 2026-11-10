@@ -222,9 +222,13 @@ impl Kernel {
         if n == 0 {
             return Ok(false);
         }
+        // The breach is the platform's fact, in any document status: written into the record's kept fields as a
+        // transition writes them, with the record's `updated` event. Only a real failure leaves it for the next save.
         let system = Ctx::system(tenant, schema);
-        if let Err(e) = self.update(&system, entity, record, Doc::new(), None).await {
-            tracing::info!(%tenant, %entity, %record, target = %name, "breach recorded; the record's state field catches up at its next save: {e}");
+        let mut tx = self.db.tenant_tx(tenant).await?;
+        match self.keep_targets_tx(&system, &mut tx, entity, record).await {
+            Ok(_) => tx.commit().await?,
+            Err(e) => tracing::warn!(%tenant, %entity, %record, target = %name, "breach recorded; the record's state field catches up at its next save: {e}"),
         }
         Ok(true)
     }

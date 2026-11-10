@@ -843,6 +843,41 @@ impl Kernel {
         Ok(self.mask(ctx, &ent, stored))
     }
 
+    /// The platform's own change to a record's service targets (a breach the sweep marked), in any document status:
+    /// the fields the targets keep are written as a workflow transition writes them, without the rules a person's
+    /// edit meets, with a new version, the audit entry and the record's `updated` event (with `was`). Whether
+    /// anything changed.
+    pub(crate) async fn keep_targets_tx(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid) -> Result<bool> {
+        let ent = self.entity(ctx, entity)?;
+        let Some(old) = self.load_marked(tx, ctx, &ent, id, true).await? else { return Ok(false) };
+        let mut next = old.clone();
+        crate::targets::keep(self, ctx, tx, &ent, id, &mut next).await?;
+        let kept: Doc = ent
+            .def
+            .targets
+            .iter()
+            .flat_map(|t| [&t.due_field, &t.state_field])
+            .filter(|f| next.get(*f) != old.get(*f))
+            .map(|f| (f.clone(), next.get(f).cloned().unwrap_or_default()))
+            .collect();
+        if kept.is_empty() {
+            return Ok(false);
+        }
+        sqlx::query(AssertSqlSafe(format!(
+            "update {} a set version = version + 1, updated_at = now(), updated_by = null where a.tenant_id = $1 and a.id = $2{}",
+            crate::ddl::q(&ent.table),
+            store::entity_predicate(&ent, "a")
+        )))
+        .bind(ctx.tenant)
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+        store::set_values(tx, &ent, ctx.tenant, id, &kept).await?;
+        let stored = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::internal("record vanished"))?;
+        self.emit(ctx, tx, &ent, id, "updated", "target", Some(version_of(&old) + 1), Some(&old), Some(&stored)).await?;
+        Ok(true)
+    }
+
     /// Engine-level update of derived fields (status, progress, outstanding). No validation/hooks/audit:
     /// these are consequences of an audited action in the same transaction.
     pub async fn set_values_tx(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, values: Doc) -> Result<()> {
@@ -1282,13 +1317,17 @@ impl Kernel {
         });
         if let Some(d) = new.or(old) {
             let v = Value::Object(d.clone());
-            if serde_json::to_vec(&v).map(|b| b.len()).unwrap_or(usize::MAX) <= MAX_EVENT_DOC_BYTES {
+            let size = |v: &Value| serde_json::to_vec(v).map(|b| b.len()).unwrap_or(usize::MAX);
+            let doc_size = size(&v);
+            if doc_size <= MAX_EVENT_DOC_BYTES {
                 payload["doc"] = v;
-                // What the change replaced, field by field, so that a condition can compare with `old`.
+                // What the change replaced, field by field, so that a condition can compare with `old`; left out
+                // when the two together would pass the size an event's record may have.
                 if let (Some(o), Some(n)) = (old, new) {
-                    let was: Map<String, Value> =
-                        o.iter().filter(|(k, v)| n.get(*k) != Some(*v) && !v.is_array()).map(|(k, v)| (k.clone(), v.clone())).collect();
-                    payload["was"] = Value::Object(was);
+                    let was = Value::Object(o.iter().filter(|(k, v)| n.get(*k) != Some(*v) && !v.is_array()).map(|(k, v)| (k.clone(), v.clone())).collect());
+                    if doc_size.saturating_add(size(&was)) <= MAX_EVENT_DOC_BYTES {
+                        payload["was"] = was;
+                    }
                 }
             }
         }

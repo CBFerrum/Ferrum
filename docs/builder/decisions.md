@@ -85,8 +85,10 @@ the kernel; tokens stored in plain.
   worked, the seconds allowed, the due moment, and when it was met and breached; no list of intervals. A
   pause adds the open time since the last resume to what was worked; a resume adds what is left from now. A
   re-opened record starts the next round in the same row. The breach is `breached_at`, set by the minute
-  loop with an update that only succeeds while it is empty, so one replica or pass marks it; the record is
-  then saved as the system and automations see the state word change (`old` in their conditions). What a
+  loop with an update that only succeeds while it is empty, so one replica or pass marks it; the two kept
+  fields are then written as a workflow transition writes them, in any document status and past the
+  record's rules, with the record's `updated` event, so automations see the state word change (`old` in
+  their conditions). What a
   save does to a round is one pure function (`ferrum_logic::target::step`).
 * *10 Nov 2026:* hours of the day are built (`logic_calendar.hours`, `crates/logic/src/calendar.rs`):
   windows per weekday in the zone, and `add_working`, `working_between`, `next_open`, `is_open` with

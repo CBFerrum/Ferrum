@@ -152,7 +152,14 @@ pub(crate) type Saved = (String, &'static str);
 /// An operation as a plan names it: `XGym: add_field fee`.
 pub(crate) fn label_of(target: &str, raw: &Value) -> String {
     let what = raw["op"].as_str().unwrap_or("customization");
-    match raw.get("field").or_else(|| raw.get("action")).or_else(|| raw.get("target")).or_else(|| raw.get("rule")).or_else(|| raw.get("module")).or_else(|| raw.get("name")) {
+    match raw
+        .get("field")
+        .or_else(|| raw.get("action"))
+        .or_else(|| raw.get("target"))
+        .or_else(|| raw.get("rule"))
+        .or_else(|| raw.get("module"))
+        .or_else(|| raw.get("name"))
+    {
         Some(Value::Object(f)) => format!("{target}: {what} {}", f.get("name").and_then(Value::as_str).unwrap_or_default()),
         Some(Value::String(f)) => format!("{target}: {what} {f}"),
         _ => format!("{target}: {what}"),

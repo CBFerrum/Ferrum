@@ -234,7 +234,7 @@ MUTANTS = [
     # Large files: an app's whole read has a ceiling.
     ("files-read-whole-past-the-cap", "crates/kernel/src/files.rs", "        if f.size > MAX_READ_WHOLE {\n", "        if false {\n", COLLAB),
     # Services on their publisher's servers.
-    ("service-hears-the-record", "crates/kernel/src/outbox.rs", "case when w.app is null then $4 else $4 - 'doc' end", "$4", SERVICES),
+    ("service-hears-the-record", "crates/kernel/src/outbox.rs", "case when w.app is null then $4 else $4 - 'doc' - 'was' end", "$4", SERVICES),
     ("service-hears-what-it-cannot-read", "crates/apps/src/manifest.rs", "            if !reads(entity) {\n", "            if false {\n", MANIFEST_UNIT),
     ("service-off-still-hears", "crates/kernel/src/service.rs", "update webhook set is_active = $3 where tenant_id = $1 and app = $2", "update webhook set is_active = $3 or true where tenant_id = $1 and app = $2", SERVICES),
     # An app built in elsewhere.
@@ -607,6 +607,8 @@ MUTANTS = [
     ("target-calendar-deleted-under-it", "crates/kernel/src/process.rs", "if let Some(by) = crate::targets::naming(&ctx.schema, name) {", "if let Some(by) = None::<String> {", TARGETS),
     ("target-rounds-outlive-record", "crates/kernel/src/doc.rs", "\"record_secret\", \"record_target\"]", "\"record_secret\"]", TARGETS),
     ("target-skips-transitions", "crates/kernel/src/doc.rs", "        crate::targets::keep(self, ctx, tx, &ent, id, &mut next).await?;\n", "\n", TARGETS),
+    ("target-breach-through-the-rules", "crates/kernel/src/targets.rs", "match self.keep_targets_tx(&system, &mut tx, entity, record).await {", "match self.update(&system, entity, record, Doc::new(), None).await.map(|_| true) {", TARGETS),
+    ("app-webhook-hears-what-changed", "crates/kernel/src/outbox.rs", "else $4 - 'doc' - 'was' end", "else $4 - 'doc' end", SERVICES),
     ("automation-old-unseen", "crates/kernel/src/automation.rs", "(&cel_doc, cel_old.as_ref())", "(&cel_doc, None)", TARGETS),
 
 ]
