@@ -7,7 +7,7 @@
 //! administrator saves it again. One saved by no one (an app's) runs as the system.
 
 use crate::ctx::Ctx;
-use crate::error::{Error, Result};
+use crate::error::{Error, FieldError, Result};
 use crate::outbox::Event;
 use crate::{Doc, Kernel};
 use ferrum_meta::{Expr, Scope};
@@ -23,10 +23,10 @@ pub const MAX_TEMPLATE: usize = 64 * 1024;
 /// A mail template, compiled in the print formats' engine: refused when too large or when it does not compile.
 fn mail_template(src: &str) -> Result<minijinja::Environment<'_>> {
     if src.len() > MAX_TEMPLATE {
-        return Err(Error::field("actions", "an e-mail template is larger than 64 KB"));
+        return Err(Error::field("template", "an e-mail template is larger than 64 KB"));
     }
     let mut env = crate::print::environment();
-    env.add_template("mail", src).map_err(|e| Error::field("actions", format!("e-mail template: {e}")))?;
+    env.add_template("mail", src).map_err(|e| Error::field("template", format!("e-mail template: {e}")))?;
     Ok(env)
 }
 
@@ -61,34 +61,81 @@ pub enum AutomationAction {
     },
 }
 
+fn check_action(a: &AutomationAction) -> Result<()> {
+    if let AutomationAction::Notify { to, .. } = a {
+        let ok = to == "owner"
+            || to.strip_prefix("role:").is_some_and(|r| !r.trim().is_empty())
+            || to.strip_prefix("user:").is_some_and(|u| u.parse::<Uuid>().is_ok())
+            || to.strip_prefix("field:").is_some_and(|f| !f.trim().is_empty());
+        if !ok {
+            return Err(Error::invalid("notify.to must be owner, role:<name>, user:<id> or field:<name>"));
+        }
+    }
+    let exprs: Vec<&String> = match a {
+        AutomationAction::SetFields { values } | AutomationAction::CreateDocument { values, .. } => values.values().collect(),
+        AutomationAction::Notify { title, body, .. } => std::iter::once(title).chain(body.iter()).collect(),
+        AutomationAction::Email { to, subject, body, template, .. } => {
+            if let Some(t) = template {
+                mail_template(t)?;
+            }
+            vec![to, subject, body]
+        }
+    };
+    for e in exprs {
+        Expr::compile(e).map_err(|m| Error::invalid(format!("expression '{e}': {m}")))?;
+    }
+    Ok(())
+}
+
+/// The HTML a mail action sends: its template when it has one, otherwise its body as escaped text. The one
+/// place it is made, so that a preview and a send never differ. A refusal is a field error on `template` or `body`.
+pub fn render_mail(body: &str, template: Option<&str>, doc: &Value, user: &Value) -> Result<String> {
+    match template {
+        Some(t) => mail_template(t)?
+            .get_template("mail")
+            .and_then(|m| m.render(minijinja::context! { doc => minijinja::Value::from_serialize(doc), user => minijinja::Value::from_serialize(user) }))
+            .map_err(|e| Error::field("template", format!("e-mail template failed: {e}"))),
+        None => Ok(crate::outbox::text_html(&as_text(eval(body, doc, user).map_err(|e| Error::field("body", e.to_string()))?))),
+    }
+}
+
+/// A mail as it would be sent, against one record of `entity`: the one named (read with the caller's rights), else
+/// the one most recently changed that they may read, else an empty record. Sends and writes nothing.
+pub async fn preview_mail(
+    k: &Kernel,
+    ctx: &Ctx,
+    entity: &str,
+    body: Option<&str>,
+    template: Option<&str>,
+    record: Option<Uuid>,
+) -> Result<(String, Option<Uuid>)> {
+    if !ctx.is_admin {
+        return Err(Error::Forbidden("administrator access required".into()));
+    }
+    let ent = ctx.schema.entity(entity).ok_or_else(|| Error::field("entity", "unknown entity"))?;
+    let found = match record {
+        Some(id) => Some(k.get(ctx, entity, id, false).await?),
+        None => {
+            let q = crate::query::ListQuery { sort: Some("updated_at desc".into()), limit: Some(1), ..Default::default() };
+            k.list(ctx, entity, &q).await?.rows.into_iter().next()
+        }
+    };
+    let id = found.as_ref().and_then(|d| d.get("id")).and_then(Value::as_str).and_then(|s| s.parse().ok());
+    let doc = ent.cel_view(&Value::Object(found.unwrap_or_default()), &ctx.schema);
+    Ok((render_mail(body.unwrap_or("''"), template, &doc, &ctx.user_value())?, id))
+}
+
 pub fn validate_actions(actions: &Value) -> Result<Vec<AutomationAction>> {
     let list: Vec<AutomationAction> = serde_json::from_value(actions.clone()).map_err(|e| Error::invalid(format!("actions: {e}")))?;
     if list.is_empty() || list.len() > 20 {
         return Err(Error::invalid("an automation needs 1 to 20 actions"));
     }
-    for a in &list {
-        if let AutomationAction::Notify { to, .. } = a {
-            let ok = to == "owner"
-                || to.strip_prefix("role:").is_some_and(|r| !r.trim().is_empty())
-                || to.strip_prefix("user:").is_some_and(|u| u.parse::<Uuid>().is_ok())
-                || to.strip_prefix("field:").is_some_and(|f| !f.trim().is_empty());
-            if !ok {
-                return Err(Error::invalid("notify.to must be owner, role:<name>, user:<id> or field:<name>"));
-            }
-        }
-        let exprs: Vec<&String> = match a {
-            AutomationAction::SetFields { values } | AutomationAction::CreateDocument { values, .. } => values.values().collect(),
-            AutomationAction::Notify { title, body, .. } => std::iter::once(title).chain(body.iter()).collect(),
-            AutomationAction::Email { to, subject, body, template, .. } => {
-                if let Some(t) = template {
-                    mail_template(t)?;
-                }
-                vec![to, subject, body]
-            }
-        };
-        for e in exprs {
-            Expr::compile(e).map_err(|m| Error::invalid(format!("expression '{e}': {m}")))?;
-        }
+    for (i, a) in list.iter().enumerate() {
+        // A refusal is a field error on `actions`, in the row of the action it is about.
+        check_action(a).map_err(|e| match e {
+            Error::Validation(fs) => Error::Validation(fs.into_iter().map(|f| FieldError::new("actions", f.message).in_row("actions", i)).collect()),
+            other => Error::Validation(vec![FieldError::new("actions", other.to_string()).in_row("actions", i)]),
+        })?;
     }
     Ok(list)
 }
@@ -406,15 +453,7 @@ async fn execute(
             let subject = as_text(eval(&subject, doc, user)?);
             // The body is text: nothing a record holds becomes markup in a mail sent in the workspace's name. A
             // template's own markup is the administrator's; what it prints from the record is escaped.
-            let body = match template {
-                Some(t) => mail_template(&t)?
-                    .get_template("mail")
-                    .and_then(|m| {
-                        m.render(minijinja::context! { doc => minijinja::Value::from_serialize(doc), user => minijinja::Value::from_serialize(user) })
-                    })
-                    .map_err(|e| Error::invalid(format!("e-mail template failed: {e}")))?,
-                None => crate::outbox::text_html(&as_text(eval(&body, doc, user)?)),
-            };
+            let body = render_mail(&body, template.as_deref(), doc, user)?;
             // Never sent from here: a later action could still roll the run back (FLC-HOOK-002).
             k.queue_mail_for(tx, ctx.tenant, &to, &subject, &body, &[], purpose).await?;
         }
