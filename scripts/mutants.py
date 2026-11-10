@@ -93,6 +93,7 @@ SHELL = ("-p", "ferrum-kernel", "--test", "shell_it")
 APPS_API = ("-p", "ferrum-server", "--test", "apps_api")
 LINKS = ("-p", "ferrum-kernel", "--test", "links_it")
 META_LINKS = ("-p", "ferrum-meta", "--lib", "linked_records")
+STREAMED = ("-p", "ferrum-server", "--test", "streamed_files_it")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
@@ -555,6 +556,9 @@ MUTANTS = [
     ("transition-without-roles-for-outsiders", "crates/kernel/src/ctx.rs", "        if ctx.outside {\n            return Err(Error::Forbidden(format!(\"'{}' is for the workspace's members\"", "        if false {\n            return Err(Error::Forbidden(format!(\"'{}' is for the workspace's members\"", PORTAL),
     ("transition-gate-not-asked", "crates/kernel/src/doc.rs", "        if !crate::ctx::transition_gate(ctx, &ent, t)?.admits(tx, ctx.tenant, &doc).await? {", "        if false {", PORTAL),
     ("transition-offered-to-anyone", "crates/kernel/src/describe.rs", "json!(crate::ctx::transition_gate(ctx, ent, def).is_ok())", "json!(true)", PORTAL),
+    # Tying a file to a record needs the right to change it.
+    ("attach-on-read", "crates/kernel/src/doc.rs", "        if !scope.admits(&mut tx, ctx.tenant, &doc).await? {\n            return Err(Error::Forbidden(format!(\"only someone who may change", "        if !scope.admits(&mut tx, ctx.tenant, &doc).await? && false {\n            return Err(Error::Forbidden(format!(\"only someone who may change", STREAMED),
+    ("upload-attaches-on-read", "server/src/objects.rs", "k.may_attach(ctx, entity, *record).await?;", "k.get(ctx, entity, *record, false).await?;", STREAMED),
     ("portal-roles-given-to-anyone", "crates/kernel/src/auth.rs", "                if let Some(other) = roles.iter().find(|r| !portal.contains(r)) {", "                if let Some(other) = None::<&String> {", PORTAL),
     ("custom-lines-load-mixes-tables", "crates/kernel/src/store.rs", "                info.predicate(\"ci\")\n", "                String::new()\n", CUSTOM_LINES),
     ("custom-lines-filter-mixes-tables", "crates/kernel/src/query.rs", "                    info.predicate(\"c\")\n", "                    String::new()\n", CUSTOM_LINES),

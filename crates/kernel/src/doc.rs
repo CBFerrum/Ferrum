@@ -84,6 +84,21 @@ impl Kernel {
         Ok(self.mask(ctx, &ent, doc))
     }
 
+    /// Whether `ctx` may tie a file to record `id` of `entity` (`POST /api/files`, an upload's start): only whoever
+    /// may change it, as its write scope admits it; reading it is not enough. Not found when they cannot read it.
+    pub async fn may_attach(&self, ctx: &Ctx, entity: &str, id: Uuid) -> Result<()> {
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        self.get_tx(ctx, &mut tx, entity, id, false).await?;
+        let ent = self.entity(ctx, entity)?;
+        let scope = row_scope(ctx, &ent, Action::Write)?;
+        let doc = self.load_marked(&mut tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
+        if !scope.admits(&mut tx, ctx.tenant, &doc).await? {
+            return Err(Error::Forbidden(format!("only someone who may change this {} attaches files to it", ent.def.label.to_lowercase())));
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Removes fields in permission groups the caller cannot read, or leaves the masked form of
     /// those that declare one.
     pub fn mask(&self, ctx: &Ctx, ent: &EffEntity, mut doc: Doc) -> Doc {

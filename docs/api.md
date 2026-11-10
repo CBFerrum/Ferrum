@@ -944,6 +944,10 @@ the app is gone or the person may no longer use it.
 
 `POST /api/files` (multipart: `file`, optional `entity`, `record_id`, `public`; ≤25 MB) → `{id, url: "/files/<id>", file_name, size, sha256}`; `GET /files/{id}` (authenticated download, streamed; one `Range: bytes=…` answered with 206).
 
+Who may attach and download (the uploads below alike):
+
+* Tying a file to a record (`entity` and `record_id`) needs the right to change that record (write permission, and its scope admits the record), for members and portal people alike: reading it is not enough (`403`). Comments carry no files, so there is no narrower right for them.
+
 Larger files (up to 2 GB by default, S3-compatible storage only) go straight from the client to the bucket:
 
 1. `POST /api/files/uploads` `{file_name, content_type, size, entity?, record_id?}` → `201 {upload_id, method: "PUT", url, headers, expires_at}`. `409` when the server stores files on a local disk.

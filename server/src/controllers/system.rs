@@ -266,7 +266,7 @@ async fn upload(Auth(ctx): Auth, State(app): State<AppContext>, mut mp: Multipar
     }
     let ctype = if BLOCKED_TYPES.contains(&ctype.as_str()) { "application/octet-stream".to_string() } else { ctype };
     if let (Some(e), Some(r)) = (&entity, record) {
-        st.kernel.get(&ctx, e, r, false).await?;
+        st.kernel.may_attach(&ctx, e, r).await?;
     }
     // Public files (served without signing in) must be images or PDFs attached to a record the
     // uploader may edit, so nothing private or active leaks onto the open internet.
