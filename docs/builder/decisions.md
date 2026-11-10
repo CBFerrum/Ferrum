@@ -104,6 +104,16 @@ point; a refund without its reversal.
 
 **Rules out**: generated tables per workspace; uniqueness checked by a read before a write.
 
+Amended 10 November 2026, when lines and keys were built (BF-ENTITY-001, BF-ENTITY-002):
+
+* `custom_record` has no `parent_field` column. A custom child entity is the lines of one table field
+  only (a second use is refused), so the child's name, already in `entity`, tells one table's rows from
+  another's.
+* `custom_key` carries `record_id`, the record holding the value, with a cascade from the record: a
+  save can tell its own value from another record's, and deleting a record frees its keys.
+* Totals over lines are a field property, `rollup` (a sum of a row field, or a count of rows), computed
+  in exact decimals at every save, on any entity.
+
 ## BD-07. Packs (BF9)
 
 * A pack is a **canonical JSON document** (the platform's canonical form and digest): metadata (name,

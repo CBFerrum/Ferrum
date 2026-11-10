@@ -57,7 +57,7 @@ removes it with its private data (records it created stay).
 |---|---|
 | `name`, `version`, `description` | `name`: 2–40 lower-case letters, digits or `-` |
 | `config` | Settings, delivered in every input as `config`; values named in `credentials` stay out of it |
-| `entities` | Entity definitions it brings (masters or documents, names start with `X`), stored without DDL |
+| `entities` | Entity definitions it brings (masters, documents or their child entities, names start with `X`), stored without DDL |
 | `permissions` | `[{entity, read, write, create, delete, submit, cancel}]` — its service user's role, and the most it may do on a user's behalf |
 | `hooks` | `[{entity, stage}]` with stage `before_validate`, `validate`, `before_submit`, `on_submit`, `before_cancel`, `on_cancel`, `before_delete`; entity `*` for all |
 | `routes` | `[{path, public}]`; `/x` or `/x/*`. Signed-in: `/api/ext/{plugin}{path}`; public: `/api/public/{tenant}/{plugin}{path}` |
