@@ -112,7 +112,7 @@ fn children(ctx: &Ctx, ent: &EffEntity) -> serde_json::Map<String, Value> {
 
 pub fn describe(ctx: &Ctx, ent: &EffEntity) -> Value {
     let children = children(ctx, ent);
-    json!({
+    let mut v = json!({
         "name": ent.def.name,
         "label": ent.def.label,
         "label_plural": ent.def.plural_label(),
@@ -138,7 +138,19 @@ pub fn describe(ctx: &Ctx, ent: &EffEntity) -> Value {
         "fields": ent.def.fields.iter().map(|f| field_json(ctx, ent, f)).collect::<Vec<_>>(),
         "children": children,
         "permissions": permissions(ctx, &ent.def.name),
-    })
+    });
+    // What anyone may read of it without signing in: its administrators' to know.
+    if ctx.is_admin {
+        let lists: Vec<Value> = ctx
+            .schema
+            .published_lists
+            .iter()
+            .filter(|l| l.entity == ent.def.name)
+            .map(|l| json!({"name": l.list.name, "label": l.list.label, "fields": l.list.fields, "csv": l.list.csv}))
+            .collect();
+        v["published_lists"] = json!(lists);
+    }
+    v
 }
 
 /// JSON Schema for writing a record of `ent` (child tables nest their row schema).

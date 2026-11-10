@@ -250,6 +250,8 @@ fn describe(op: &OverlayOp) -> String {
         OverlayOp::RemoveModule { name } => format!("removes menu {name}"),
         OverlayOp::AddTarget { target } => format!("adds target {}", target.name),
         OverlayOp::RemoveTarget { name } => format!("removes target {name}"),
+        OverlayOp::PublishList { list } => format!("publishes the list {} to anyone: {}", list.name, list.fields.join(", ")),
+        OverlayOp::UnpublishList { name } => format!("takes down the published list {name}"),
         OverlayOp::AddSection { section, .. } => format!("adds form section {}", section.label.as_deref().unwrap_or("(untitled)")),
     }
 }

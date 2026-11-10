@@ -181,6 +181,26 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
 * Request bodies, uploads, exports and list pages have size limits; database statements time out
   (15 s by default).
 
+**Published lists** ([BD-15](builder/decisions.md#bd-15-published-lists), [api](api.md))
+* A workspace may show some fields of some records to anyone without signing in, read only, at
+  `/api/public/{workspace}/lists/{name}` (JSON, and CSV when offered) and `/public/{workspace}/lists/{name}`.
+  Only the fields the list names are ever sent: never a record's id, owner or timestamps, and a link as
+  the linked record's title. Its filter and order may use other fields; their values are not sent.
+* What cannot be published is refused when the list is saved: email, phone, secret and attachment
+  fields, tables, fields in a permission group, fields never exported, people's personal data a package
+  declares (a field, or a whole entity), and links whose titles are any of these or that name a restricted
+  entity. A later change that makes a listed field unpublishable drops it from the list; a filter field that
+  goes takes the list down rather than widen it. A submittable entity's list shows submitted records only.
+* No such workspace, an inactive one, no such list and a list taken down give one identical 404, so the
+  address does not say which lists exist (the answer's timing still differs a little between a workspace
+  that does not exist and one that does; that a workspace exists is not secret elsewhere either).
+* Each request counts against the public limiter (per address and workspace) before any lookup; the
+  query is capped at the list's limit (1000 rows at most) and a 5-second statement timeout; answers are
+  cacheable for a minute, so a list taken down may be seen for up to a minute where it was cached.
+* The page runs no script, fetches nothing (`default-src 'none'`, its own style by hash), escapes every
+  value, cannot be framed and asks not to be indexed. CSV cells that a spreadsheet would run as a formula
+  are made plain by the one guard the platform's CSV uses.
+
 **Availability**
 * Rate limits held in the database (sign-in, public endpoints, mail) work across replicas and
   fail open if the database is briefly unreachable. Every client address has a request budget too

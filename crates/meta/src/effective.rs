@@ -207,6 +207,8 @@ pub struct Schema {
     /// The tenant's people use the shell and apps with interfaces of their own (docs/plan/apps-ui.md):
     /// every workspace since U4b, whatever its `shell_v2` setting says (kept for the release before).
     pub shell_v2: bool,
+    /// The workspace's published lists (`publish_list`, BD-15), each checked against its entity.
+    pub published_lists: Vec<PublishedList>,
 }
 
 impl Schema {
@@ -260,6 +262,7 @@ impl Default for Schema {
             fy_start_month: 1,
             timezone: "UTC".into(),
             shell_v2: false,
+            published_lists: vec![],
         }
     }
 }
@@ -267,6 +270,11 @@ impl Default for Schema {
 impl Schema {
     pub fn entity(&self, name: &str) -> Option<&Arc<EffEntity>> {
         self.entities.get(name)
+    }
+
+    /// The published list named `name`, if the workspace has one.
+    pub fn published_list(&self, name: &str) -> Option<&PublishedList> {
+        self.published_lists.iter().find(|l| l.list.name == name)
     }
 }
 
@@ -503,7 +511,9 @@ pub(crate) fn apply_op(def: &mut EntityDef, op: &OverlayOp, source: OverlaySourc
         | OverlayOp::SetWorkflow { .. }
         | OverlayOp::SetPrintTemplate { .. }
         | OverlayOp::DefineModule { .. }
-        | OverlayOp::RemoveModule { .. } => Err("this operation is only valid as a tenant customization".into()),
+        | OverlayOp::RemoveModule { .. }
+        | OverlayOp::PublishList { .. }
+        | OverlayOp::UnpublishList { .. } => Err("this operation is only valid as a tenant customization".into()),
     }
 }
 
@@ -626,7 +636,15 @@ fn validate_custom_lines(name: &str, building: &BTreeMap<String, Building>) -> R
 /// template are not part of the definition, and the `define_entity` that made the entity is what lets it be
 /// redefined at all). `build` applies none of these.
 pub fn replaced_by_redefinition(op: &OverlayOp, at: usize, r: usize) -> bool {
-    at < r && !matches!(op, OverlayOp::SetWorkflow { .. } | OverlayOp::SetPrintTemplate { .. } | OverlayOp::DefineEntity { .. })
+    at < r
+        && !matches!(
+            op,
+            OverlayOp::SetWorkflow { .. }
+                | OverlayOp::SetPrintTemplate { .. }
+                | OverlayOp::DefineEntity { .. }
+                | OverlayOp::PublishList { .. }
+                | OverlayOp::UnpublishList { .. }
+        )
 }
 
 /// For each of the tenant's customizations (one operation each, as stored), the place of the later
@@ -778,6 +796,9 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
     // The workspace's own menus, in the order they were first defined; their items are looked up once
     // the entities are settled.
     let mut menus: Vec<ModuleDef> = Vec::new();
+    // The workspace's published lists, by name across the workspace; checked against their entities once
+    // those are settled.
+    let mut lists: Vec<PublishedList> = Vec::new();
     for (at, ov) in tenant.iter().enumerate() {
         for op in &ov.ops {
             if matches!(op, OverlayOp::DefineEntity { .. } | OverlayOp::RedefineEntity { .. }) {
@@ -796,6 +817,14 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
                         Ok(())
                     }
                     None => Err(format!("there is no menu {name} of this workspace to remove")),
+                }),
+                OverlayOp::PublishList { list } => Some(crate::published::collect(&mut lists, &ov.entity, list)),
+                OverlayOp::UnpublishList { name } => Some(match lists.iter().position(|l| &l.list.name == name && l.entity == ov.entity) {
+                    Some(i) => {
+                        lists.remove(i);
+                        Ok(())
+                    }
+                    None => Err(format!("there is no published list {name} of {} to take down", ov.entity)),
                 }),
                 _ => None,
             };
@@ -921,6 +950,19 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         }
     }
 
+    // Each published list as its entity now stands: one that cannot stand goes, and a field that may no
+    // longer be published drops out of it (each with a warning; a new one with any is refused).
+    let declared = |e: &str| personal_data.iter().filter(|d| d.entity == e).collect::<Vec<_>>();
+    let lookup = |e: &str| building.get(e).map(|b| (&b.def, b.custom, declared(e)));
+    let published_lists: Vec<PublishedList> = lists
+        .into_iter()
+        .filter_map(|l| {
+            let (kept, dropped) = crate::published::settle(&l, &lookup);
+            warnings.extend(dropped.into_iter().map(|m| SchemaWarning { entity: l.entity.clone(), message: format!("published list {}: {m}", l.list.name) }));
+            kept
+        })
+        .collect();
+
     let mut entities = BTreeMap::new();
     for (name, b) in building {
         let table = if b.def.kind == EntityKind::Child {
@@ -985,6 +1027,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         fy_start_month: 1,
         timezone: "UTC".into(),
         shell_v2: false,
+        published_lists,
     })
 }
 
