@@ -20,7 +20,9 @@ operator to know. Report a vulnerability privately to the maintainers rather tha
   given until a moment, and pairs of roles an administrator declares are never held by one person
   (the database refuses the grant). A field in a group may show those outside it a mask (the last
   four characters) rather than nothing, and a field marked `no_export` is left out of every list
-  export, whoever exports it.
+  export, whoever exports it. A workflow transition naming roles needs one of them and read access to
+  the record; one naming none needs the right to change the record; portal people and guests take only
+  transitions naming a role of theirs.
 
 ## Who can see what
 

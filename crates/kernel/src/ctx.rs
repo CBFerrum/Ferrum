@@ -703,6 +703,22 @@ pub fn action_gate(ctx: &Ctx, ent: &EffEntity, def: &ferrum_meta::ActionDef) -> 
     Ok(scope)
 }
 
+/// Whether `ctx` may take workflow transition `t` of `ent`, and on which records (the run path and the entity's
+/// description, `may_take`, both ask this): one naming roles, a holder of one, on a record they may read; one
+/// naming none, whoever may change the record. An outside person (BD-02) takes only one naming a role of theirs.
+pub fn transition_gate(ctx: &Ctx, ent: &EffEntity, t: &ferrum_meta::WorkflowTransition) -> Result<RowScope> {
+    if t.roles.is_empty() {
+        if ctx.outside {
+            return Err(Error::Forbidden(format!("'{}' is for the workspace's members", t.action)));
+        }
+        return row_scope(ctx, ent, Action::Write);
+    }
+    if !t.roles.iter().any(|r| ctx.has_role(r)) {
+        return Err(Error::Forbidden(format!("'{}' requires one of the roles: {}", t.action, t.roles.join(", "))));
+    }
+    row_scope(ctx, ent, Action::Read)
+}
+
 /// The scope `grants` give on `ent` (`None`: every record), with the user's scopes on top.
 fn scope_of(ctx: &Ctx, ent: &EffEntity, grants: Option<Vec<Grant>>) -> Result<RowScope> {
     if ctx.egress.as_ref().is_some_and(|e| !e.allows_entity(&ent.def)) {
