@@ -566,6 +566,10 @@ pub struct FieldDef {
     /// CEL computed value; the field becomes read-only. Not for money (CEL has no decimal type).
     #[serde(default)]
     pub computed: Option<String>,
+    /// An exact total over the record's own lines, computed by the server at every save (and in
+    /// the draft preview) before validation; a value sent by a client is overwritten.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollup: Option<RollupDef>,
     #[serde(default)]
     pub options: Vec<String>,
     #[serde(default)]
@@ -610,6 +614,24 @@ pub struct FieldDef {
     /// Static equality filters applied to link candidates and validated on write, e.g. `{is_group: false}`.
     #[serde(default)]
     pub link_filters: Option<serde_json::Map<String, Value>>,
+}
+
+/// `sum` of a numeric field of a table's rows, or `count` of its rows, in exact decimals.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RollupDef {
+    pub table: String,
+    pub op: RollupOp,
+    /// The row field summed; not for `count`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RollupOp {
+    Sum,
+    Count,
 }
 
 impl FieldDef {

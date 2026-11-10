@@ -531,25 +531,26 @@ impl Kernel {
     // heavily referenced records get slow.
     async fn refuse_if_linked_in_ext(&self, ctx: &Ctx, tx: &mut Tx, target: &EffEntity, id: Uuid) -> Result<()> {
         let key = id.to_string();
-        let mut checks: Vec<(String, String, &'static str)> = Vec::new();
+        // Table, field, the column naming the record itself, and what tells the table's rows apart.
+        let mut checks: Vec<(String, String, &'static str, String)> = Vec::new();
         for e in ctx.schema.entities.values().filter(|e| !e.table.is_empty()) {
             for f in e.value_fields().filter(|f| f.ftype == FieldType::Link && f.to.as_deref() == Some(&target.def.name)) {
                 if e.storage_of(&f.name) == Some(ferrum_meta::Storage::Ext) {
-                    checks.push((e.table.clone(), f.name.clone(), "id"));
+                    checks.push((e.table.clone(), f.name.clone(), "id", store::entity_predicate(e, "a")));
                 }
             }
             for info in e.children.values() {
                 let Some(c) = ctx.schema.entity(&info.entity) else { continue };
                 for f in c.value_fields().filter(|f| f.ftype == FieldType::Link && f.to.as_deref() == Some(&target.def.name)) {
                     if c.storage_of(&f.name) == Some(ferrum_meta::Storage::Ext) {
-                        checks.push((info.table.clone(), f.name.clone(), "parent_id"));
+                        checks.push((info.table.clone(), f.name.clone(), "parent_id", info.predicate("a")));
                     }
                 }
             }
         }
-        for (table, field, own) in checks {
+        for (table, field, own, rows) in checks {
             // The record's own rows (a self-link, its child rows) go with it.
-            let sql = format!("select exists(select 1 from {} where tenant_id = $1 and ext->>$2 = $3 and {own} <> $4)", crate::ddl::q(&table));
+            let sql = format!("select exists(select 1 from {} a where a.tenant_id = $1 and a.ext->>$2 = $3 and a.{own} <> $4{rows})", crate::ddl::q(&table));
             let linked: bool = sqlx::query_scalar(AssertSqlSafe(sql)).bind(ctx.tenant).bind(&field).bind(&key).bind(id).fetch_one(&mut **tx).await?;
             if linked {
                 return Err(Error::Conflict(format!("cannot delete this {}: other records link to it ({field})", target.def.label.to_lowercase())));
@@ -928,7 +929,7 @@ impl Kernel {
                 errors.push(FieldError::new(k, "unknown field"));
                 continue;
             };
-            if f.computed.is_some() || (f.read_only && !ctx.is_system && !trusted) {
+            if f.computed.is_some() || f.rollup.is_some() || (f.read_only && !ctx.is_system && !trusted) {
                 continue;
             }
             if !trusted && !ctx.perms.can_write_field(&ent.def.name, f) {
@@ -1110,7 +1111,7 @@ impl Kernel {
         let user = ctx.user_value();
         compute_entity(ent, doc, None, &user, &ctx.schema)?;
         if ent.children.is_empty() {
-            return Ok(());
+            return roll_up(ent, doc);
         }
         let parent_view = ent.cel_view(&Value::Object(doc.clone()), &ctx.schema);
         for (field, info) in &ent.children {
@@ -1126,7 +1127,7 @@ impl Kernel {
                 }
             }
         }
-        Ok(())
+        roll_up(ent, doc)
     }
 
     async fn validate(&self, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: &Doc, old: Option<&Doc>, on: RuleOn) -> Result<()> {
@@ -1326,6 +1327,28 @@ fn compute_entity(ent: &EffEntity, doc: &mut Map<String, Value>, parent: Option<
         let view = ent.cel_view(&Value::Object(doc.clone()), schema);
         let v = expr.eval(&Scope { doc: &view, old: None, parent, user }).map_err(|e| Error::field(name, format!("could not be computed: {e}")))?;
         doc.insert(name.clone(), normalize(f, &v).map_err(|m| Error::field(name, m))?);
+    }
+    Ok(())
+}
+
+/// Rollups: exact totals over the record's own rows (after the rows' computed fields), whatever a
+/// client sent. Before validation, so rules see them.
+fn roll_up(ent: &EffEntity, doc: &mut Map<String, Value>) -> Result<()> {
+    for f in ent.value_fields() {
+        let Some(r) = &f.rollup else { continue };
+        let rows = doc.get(&r.table).and_then(Value::as_array).cloned().unwrap_or_default();
+        let total = match (r.op, r.field.as_deref()) {
+            (ferrum_meta::RollupOp::Sum, Some(rf)) => {
+                let mut total = rust_decimal::Decimal::ZERO;
+                for v in rows.iter().filter_map(|row| row.get(rf)).filter(|v| !v.is_null()) {
+                    let d = crate::value::parse_decimal(v).map_err(|m| Error::field(&f.name, m))?;
+                    total = total.checked_add(d).ok_or_else(|| Error::field(&f.name, "the total is too large"))?;
+                }
+                total
+            }
+            _ => rows.len().into(),
+        };
+        doc.insert(f.name.clone(), normalize(f, &crate::value::decimal_value(total)).map_err(|m| Error::field(&f.name, m))?);
     }
     Ok(())
 }
