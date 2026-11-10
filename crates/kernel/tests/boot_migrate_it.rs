@@ -52,6 +52,16 @@ async fn scenario() {
     boot(true).await.expect("the task syncs it");
     boot(false).await.expect("and the check passes");
 
+    // A database a newer build migrated: it has a migration this build does not know.
+    sqlx::query("insert into _sqlx_migrations (version, description, success, checksum, execution_time) values (99991231000000, 'from a newer build', true, '\\x00', 0)")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let said = refused("a newer build's database", boot(false).await);
+    assert!(said.contains("newer build") && said.contains("99991231000000"), "{said}");
+    sqlx::query("delete from _sqlx_migrations where version = 99991231000000").execute(&db.pool).await.unwrap();
+    boot(false).await.expect("without it, the check passes again");
+
     // A migration the database lacks (the last one, as an older state would).
     sqlx::query("delete from _sqlx_migrations where version = (select max(version) from _sqlx_migrations)").execute(&db.pool).await.unwrap();
     let said = refused("one migration behind", boot(false).await);

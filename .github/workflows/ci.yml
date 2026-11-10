@@ -87,8 +87,9 @@ jobs:
           nohup bao server -dev -dev-root-token-id=ferrum-ci-root -dev-listen-address=127.0.0.1:8200 > openbao.log 2>&1 &
           for i in $(seq 1 30); do curl -fs http://127.0.0.1:8200/v1/sys/health > /dev/null && exit 0; sleep 1; done; cat openbao.log; exit 1
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
+      # Control is not in the default build (the official image leaves it out); CI still builds and tests it.
+      - run: cargo clippy --workspace --all-targets --locked --features ferrum-server/control -- -D warnings
+      - run: cargo test --workspace --locked --features ferrum-server/control
         env:
           FERRUM_KMS_TEST_TRANSIT: http://127.0.0.1:8200
           FERRUM_KMS_TEST_TOKEN: ferrum-ci-root

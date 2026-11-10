@@ -478,7 +478,8 @@ pub fn base_catalog(dir: &Path) -> Result<Catalog, String> {
 /// order that differs between replicas, so a slow app delays no other and replicas share the work. A failure or a panic
 /// is logged with the app's name and stops nothing.
 pub async fn round(pool: &PgPool, mut jobs: Vec<Upkeep>, concurrency: usize, every: Duration) {
-    jobs.sort_by_key(|_| uuid::Uuid::new_v4());
+    // Shuffled with one random key per job: a key that changed between comparisons would not be an order.
+    jobs.sort_by_cached_key(|_| uuid::Uuid::new_v4());
     let slots = Arc::new(Semaphore::new(concurrency.max(1)));
     let mut running = tokio::task::JoinSet::new();
     for (name, run) in jobs {
