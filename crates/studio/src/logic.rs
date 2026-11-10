@@ -41,7 +41,6 @@
 //! | `GET /calendars`, `PUT /calendars/{name}` | `{zone, weekends, holidays}` → `{revision}` |
 
 use ferrum_kernel::{Ctx, Error, Kernel, Result, SiteRequest, SiteResponse};
-use ferrum_logic::calendar::Calendar;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -255,13 +254,7 @@ async fn route(k: &Kernel, ctx: &Ctx, req: &SiteRequest, m: &str, path: &[&str])
             ok(json!({}))
         }
         ("GET", ["calendars"]) => ok(json!(k.logic_calendars(ctx).await?)),
-        ("PUT", ["calendars", name]) => {
-            let mut b = body(req)?;
-            b["name"] = json!(name);
-            b["revision"] = json!(0);
-            let cal: Calendar = serde_json::from_value(b).map_err(|e| Error::field("calendar", e.to_string()))?;
-            ok(json!({"revision": k.set_logic_calendar(ctx, &cal).await?}))
-        }
+        ("PUT", ["calendars", name]) => ok(json!({"revision": k.put_logic_calendar(ctx, name, &body(req)?).await?})),
         _ => return Err(Error::NotFound("endpoint".into())),
     })
 }

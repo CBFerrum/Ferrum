@@ -778,7 +778,9 @@ fn wait_ok(p: &mut Pass, pointer: String, v: &Value, nid: Option<&str>, what: &s
             Code::SchemaInvalid,
             pointer,
             nid,
-            format!("{what} is seconds, an ISO 8601 duration (P2D, PT4H) or {{\"business_days\": n, \"calendar\": name}}, at most a year"),
+            format!(
+                "{what} is seconds, an ISO 8601 duration (P2D, PT4H), {{\"business_days\": n, \"calendar\": name}} or {{\"working\": \"PT8H\", \"calendar\": name}}, at most a year"
+            ),
         ),
         Some(w) => {
             if let Some(c) = w.calendar()
