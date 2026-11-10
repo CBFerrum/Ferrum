@@ -58,6 +58,7 @@ COLLAB = ("-p", "ferrum-kernel", "--test", "collab_it")
 HOST_UNIT = ("-p", "ferrum-plugins", "--lib", "host::tests")
 SOCKETS_UNIT = ("-p", "ferrum-plugins", "--lib", "sockets::tests")
 EGRESS = ("-p", "ferrum-server", "--test", "assistant_egress_it")
+PORTAL = ("-p", "ferrum-kernel", "--test", "portal_it")
 ASSISTANT = ("-p", "ferrum-server", "--test", "assistant_it")
 BOUNDARIES = ("-p", "ferrum-server", "--test", "assistant_boundaries_it")
 ASSISTANT_UNIT = ("-p", "ferrum-server", "--lib", "assistant::tests")
@@ -326,7 +327,7 @@ MUTANTS = [
     ("empty-value-inside-a-range", "crates/kernel/src/ctx.rs", 'let Some(value) = number(&text) else { return false };', 'let Some(value) = number(&text) else { return true };', RULES),
     ("restricted-title-shown", "crates/kernel/src/doc.rs", "Reference::Restricted => match row_scope(ctx, tent, Action::Read) {", "Reference::Restricted => match Ok::<_, Error>(crate::ctx::RowScope::default()) {", RULES),
     ("restricted-title-ignores-rows", "crates/kernel/src/doc.rs", "            if let Some(scope) = &scope {\n                scope.push_sql(&mut qb, \"a\");\n            }\n            let rows: Vec<(Uuid, String)>", "            let _ = &scope;\n            let rows: Vec<(Uuid, String)>", RULES),
-    ("explanation-ignores-the-record", "crates/kernel/src/access.rs", "let reached = scope.matches(&doc);", "let reached = true;", RULES),
+    ("explanation-ignores-the-record", "crates/kernel/src/access.rs", "let reached = by.is_some();", "let reached = true;", RULES),
     ("retired-key-forgotten", "crates/kernel/src/secret.rs", "self.settings.secret_key.iter().chain(&self.settings.retired_secret_keys)", "self.settings.secret_key.iter().chain(&[])", SECRETS),
     ("lost-key-blanks-values", "crates/kernel/src/secret.rs", "                *unopened += 1;\n                Ok(None)", "                *unopened += 1;\n                current.seal(aad, \"\").map(Some)", SECRETS),
     ("webhook-secret-stays-plain", "crates/kernel/src/secret.rs", 'None => Some(format!("{SEALED_WEBHOOK}{}", current.seal(&label, &stored)?)),', "None => None,", SECRETS),
@@ -521,6 +522,19 @@ MUTANTS = [
     ("readings-above-the-maximum-pass", "crates/ops/src/acceptance.rs", ".is_none_or(|m| n <= m)", ".is_none_or(|_| true)", ACCEPTANCE),
     ("import-with-the-callers-schema", "crates/ops/src/acceptance.rs", "    let mut system = Ctx::system(ctx.tenant, k.registry.schema(ctx.tenant).await?);", "    let mut system = Ctx::system(ctx.tenant, ctx.schema.clone());", ACCEPTANCE),
     ("an-upgrade-adds-procedures", "crates/ops/src/acceptance.rs", "        match existing(&mut tx, ctx.tenant, \"e_acceptance_procedure\", &key).await? {", "        match None::<Uuid> {", ACCEPTANCE),
+    # Portal roles (docs/builder/decisions.md BD-02).
+    ("portal-path-not-looked-up", "crates/kernel/src/ctx.rs", "        Ok(self.reached_by(tx, tenant, doc).await?.is_some())", "        Ok(false)", PORTAL),
+    ("portal-path-is-whoever-made-it", "crates/kernel/src/ctx.rs", "        match (&g.via, &self.owner_email) {", "        match (&None::<ViaScope>, &self.owner_email) {", PORTAL),
+    ("portal-path-ignores-the-rules-condition", "crates/kernel/src/ctx.rs", "            if !Self::holds(g, doc) {", "            if false {", PORTAL),
+    ("portal-path-matches-case", "crates/kernel/src/ctx.rs", "{c}.parent_id = {alias}.id and lower(trim({expr})) = \",", "{c}.parent_id = {alias}.id and {expr} = \",", PORTAL),
+    ("portal-people-hold-member-roles", "crates/kernel/src/auth.rs", "and ur.user_id = $2 and r.portal and (ur.expires_at", "and ur.user_id = $2 and (ur.expires_at", PORTAL),
+    ("portal-role-holds-anything", "crates/meta/src/types.rs", "    pub fn portal_problem(&self, personal: bool) -> Option<String> {\n", "    pub fn portal_problem(&self, personal: bool) -> Option<String> {\n        return None;\n", PORTAL),
+    ("portal-reads-personal-data-whole", "crates/meta/src/types.rs", "            if personal || !reads_only {", "            if !reads_only {", PORTAL),
+    ("named-action-runs-on-any-record", "crates/kernel/src/ctx.rs", "            scope_of(ctx, ent, Some(grants))", "            scope_of(ctx, ent, None)", PORTAL),
+    ("rule-names-an-action-that-is-not-there", "crates/kernel/src/auth.rs", "        if let Some(why) = p.unknown_action(ent.as_ref().map(|e| &e.def)) {", "        if let Some(why) = None::<String> {", PORTAL),
+    ("portal-people-read-a-records-surroundings", "crates/kernel/src/collab.rs", "return Err(Error::Forbidden(\"a record's comments, files and people are for the workspace's members\".into()));", "return self.get(ctx, entity, id, false).await;", PORTAL),
+    ("portal-people-read-a-records-history", "crates/kernel/src/audit.rs", "return Err(Error::Forbidden(\"a record's history is for the workspace's members\".into()));", "let _ = ();", PORTAL),
+    ("portal-roles-given-to-anyone", "crates/kernel/src/auth.rs", "                if let Some(other) = roles.iter().find(|r| !portal.contains(r)) {", "                if let Some(other) = None::<&String> {", PORTAL),
 
 ]
 

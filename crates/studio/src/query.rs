@@ -1447,6 +1447,7 @@ pub(crate) mod tests {
             roles: vec![],
             is_admin: false,
             is_system: false,
+            outside: false,
             request_id: "t".into(),
             scopes: BTreeMap::new(),
             default_company: None,

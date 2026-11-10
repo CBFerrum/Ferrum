@@ -7,7 +7,7 @@
 use crate::Doc;
 use crate::ctx::Ctx;
 use crate::db::{Db, Tx};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::value::canonical_json;
 use chrono::{NaiveDate, SecondsFormat, Utc};
 use serde_json::{Map, Value, json};
@@ -174,6 +174,10 @@ impl crate::Kernel {
     pub async fn audit_trail(&self, ctx: &crate::Ctx, entity: &str, id: Uuid) -> Result<Value> {
         // Reading the record proves read permission (and tenant ownership) before showing its history.
         self.get(ctx, entity, id, false).await?;
+        // Who changed it and when is the workspace members' business, not a portal person's (BD-02).
+        if ctx.outside {
+            return Err(Error::Forbidden("a record's history is for the workspace's members".into()));
+        }
         let ent = self.entity(ctx, entity)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let rows: Vec<(i64, chrono::DateTime<chrono::Utc>, Option<Uuid>, String, Option<i32>, Option<Value>, Option<String>)> = sqlx::query_as(

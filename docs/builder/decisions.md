@@ -22,9 +22,12 @@ skipped because a configuration says so.
 
 ## BD-02. Portal access (BF1)
 
-* A role gets a **portal** mark. A portal role holds only own-record rules: no rule for every entity
-  (`*`), no delete, cancel, export or import, and no administrator rights. Field groups are reached
-  only when a rule names them.
+* A role gets a **portal** mark. A portal role holds own-record rules, and read-only rules reaching
+  every record of **reference data** (an entity no package declares as people's personal data and with
+  no email or phone field: consent forms, appointment types), to pick from; never a rule for every
+  entity (`*`), never delete, cancel, export or import, and no administrator rights. Field groups are
+  reached only when a rule names them. (Amended 10 November 2026, from the BF1 walk: a patient giving a
+  consent picks the form, which is nobody's own record.)
 * **Portal people hold only portal roles**; a member role given to one counts for nothing, as all roles
   do today. **Guests hold none.** Members may hold portal roles (an employee who is also a customer).
 * An own-record rule may name a **path** (`via`) from the record to a field holding an email: at most

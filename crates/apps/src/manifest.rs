@@ -385,7 +385,7 @@ impl AccessDef {
             if_owner: self.if_owner,
             read_groups: self.read_groups.clone(),
             write_groups: self.write_groups.clone(),
-            condition: Default::default(),
+            ..Default::default()
         }
     }
 }

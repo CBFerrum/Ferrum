@@ -6,6 +6,7 @@ pub mod catalog;
 pub mod effective;
 pub mod expr;
 pub mod types;
+pub mod via;
 
 pub use catalog::Catalog;
 pub use effective::{ChildInfo, EffEntity, Exprs, Schema, SchemaWarning, Storage};

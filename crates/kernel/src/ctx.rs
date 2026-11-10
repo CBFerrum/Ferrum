@@ -6,10 +6,11 @@
 use crate::Doc;
 use crate::db::Tx;
 use crate::error::{Error, Result};
+use ferrum_meta::via::ViaStep;
 use ferrum_meta::{ConditionRange, EffEntity, FieldDef, FieldType, Schema, Storage};
 use serde::Serialize;
 use serde_json::{Value, json};
-use sqlx::{Postgres, QueryBuilder};
+use sqlx::{AssertSqlSafe, Postgres, QueryBuilder};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -32,6 +33,8 @@ pub struct Grant {
     pub owner: bool,
     pub condition: Vec<(String, Vec<String>)>,
     pub ranges: Vec<(String, ConditionRange)>,
+    /// Own records reached through this path to the person's email (BD-02), not by who made them.
+    pub via: Option<String>,
 }
 
 impl Grant {
@@ -87,6 +90,8 @@ pub struct EntityAccess {
     pub write_groups: BTreeSet<String>,
     /// Per action (in [`Action`] order), the grants of the rules allowing it.
     pub grants: [Vec<Grant>; 8],
+    /// Actions rules name (BD-02), each with the grants of the rules naming it.
+    pub actions: BTreeMap<String, Vec<Grant>>,
 }
 
 fn action_index(a: Action) -> usize {
@@ -168,6 +173,8 @@ struct PermRow {
     read_groups: Vec<String>,
     write_groups: Vec<String>,
     match_rule: Option<Value>,
+    via: Option<String>,
+    actions: Vec<String>,
 }
 
 impl PermSet {
@@ -177,7 +184,7 @@ impl PermSet {
         }
         let rows: Vec<PermRow> = sqlx::query_as(
             "select entity, can_read, can_write, can_create, can_delete, can_submit, can_cancel, can_export, can_import, \
-             if_owner, read_groups, write_groups, match_rule from role_permission where tenant_id = $1 and role = any($2)",
+             if_owner, read_groups, write_groups, match_rule, via, actions from role_permission where tenant_id = $1 and role = any($2)",
         )
         .bind(tenant)
         .bind(roles)
@@ -194,7 +201,9 @@ impl PermSet {
                 }),
             };
             let Some((condition, ranges)) = condition else { continue };
-            let grant = Grant { owner: r.if_owner, condition, ranges };
+            // A path makes a rule an own-record rule whatever its flag says.
+            let via = r.via.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+            let grant = Grant { owner: r.if_owner || via.is_some(), condition, ranges, via };
             let level = if grant.is_whole() { Access::All } else { Access::Own };
             let e = set.entities.entry(r.entity).or_default();
             let allowed = [r.can_read, r.can_write, r.can_create, r.can_delete, r.can_submit, r.can_cancel, r.can_export, r.can_import];
@@ -207,6 +216,12 @@ impl PermSet {
                     if !e.grants[i].contains(&grant) {
                         e.grants[i].push(grant.clone());
                     }
+                }
+            }
+            for a in r.actions {
+                let named = e.actions.entry(a).or_default();
+                if !named.contains(&grant) {
+                    named.push(grant.clone());
                 }
             }
             e.read_groups.extend(r.read_groups);
@@ -234,6 +249,16 @@ impl PermSet {
         out.sort();
         out.dedup();
         Some(out)
+    }
+
+    /// The grants of the rules naming action `action` of `entity` (`None`: none names it).
+    pub fn action_grants(&self, entity: &str, action: &str) -> Option<Vec<Grant>> {
+        self.entities.get(entity).and_then(|e| e.actions.get(action)).cloned()
+    }
+
+    /// The actions of `entity` some rule names, whatever their own permission asks.
+    pub fn named_actions(&self, entity: &str) -> Vec<&str> {
+        self.entities.get(entity).map(|e| e.actions.keys().map(String::as_str).collect()).unwrap_or_default()
     }
 
     fn groups(&self, entity: &str, write: bool) -> BTreeSet<&str> {
@@ -319,6 +344,9 @@ pub struct Ctx {
     pub roles: Vec<String>,
     pub is_admin: bool,
     pub is_system: bool,
+    /// A portal person or a guest (docs/builder/decisions.md BD-02): a record's comments, files,
+    /// assignments and tags are the workspace members' business, never theirs.
+    pub outside: bool,
     pub request_id: String,
     /// Record scopes: entity → allowed record ids (e.g. `Company` → the user's companies).
     pub scopes: BTreeMap<String, Vec<Uuid>>,
@@ -373,6 +401,7 @@ impl Ctx {
             roles: vec![],
             is_admin: true,
             is_system: true,
+            outside: false,
             request_id: format!("sys-{}", Uuid::now_v7()),
             scopes: BTreeMap::new(),
             default_company: None,
@@ -458,6 +487,87 @@ pub struct ScopeGrant {
     pub owner: bool,
     pub fields: Vec<GrantField>,
     pub ranges: Vec<GrantRange>,
+    /// Ownership through a path rather than by creator and owner fields.
+    pub via: Option<ViaScope>,
+}
+
+/// An owner path compiled against the schema in force (BD-02): its SQL from the record (`{a}`, the
+/// person's email bound between `prefix` and `suffix`), and how one record in memory is tested.
+#[derive(Debug, Clone)]
+pub struct ViaScope {
+    pub path: String,
+    prefix: String,
+    suffix: String,
+    first: ViaFirst,
+}
+
+#[derive(Debug, Clone)]
+enum ViaFirst {
+    /// The record's own field holds the email.
+    Field(String),
+    /// A child table's rows hold it: the table field and the row field.
+    Table(String, String),
+    /// It lies past a link: looked up in the database, from the linked record (alias `vt`).
+    Link { field: String, table: String, pred: String, prefix: String, suffix: String },
+}
+
+/// SQL testing an owner path from alias `alias`: a prefix and a suffix the email is bound between.
+/// `None` when the schema no longer holds the path: the rule then reaches nothing.
+fn via_sql(schema: &Schema, from: &EffEntity, steps: &[ViaStep], alias: &str, depth: usize) -> Option<(String, String)> {
+    match steps.first()? {
+        ViaStep::Email { field } => {
+            let expr = crate::store::field_expr(from, field, alias)?;
+            Some((format!("lower(trim({expr})) = "), String::new()))
+        }
+        ViaStep::Table { field, .. } => {
+            let info = from.children.get(field)?;
+            let cent = schema.entity(&info.entity)?;
+            let Some(ViaStep::Email { field: email }) = steps.get(1) else { return None };
+            let c = format!("vc{depth}");
+            let expr = crate::store::field_expr(cent, email, &c)?;
+            Some((
+                format!(
+                    "exists (select 1 from {} {c} where {c}.tenant_id = {alias}.tenant_id and {c}.parent_id = {alias}.id and lower(trim({expr})) = ",
+                    crate::ddl::q(&info.table)
+                ),
+                ")".into(),
+            ))
+        }
+        ViaStep::Link { field, to } => {
+            let target = schema.entity(to)?;
+            if target.table.is_empty() {
+                return None;
+            }
+            let link = crate::store::field_expr(from, field, alias)?;
+            let v = format!("vl{depth}");
+            let (p, s) = via_sql(schema, target, &steps[1..], &v, depth + 1)?;
+            Some((
+                format!(
+                    "exists (select 1 from {} {v} where {v}.tenant_id = {alias}.tenant_id{} and {v}.id = {link} and {p}",
+                    crate::ddl::q(&target.table),
+                    crate::store::entity_predicate(target, &v)
+                ),
+                format!("{s})"),
+            ))
+        }
+    }
+}
+
+/// Compiles rule path `path` for entity `ent` against the schema in force.
+fn compile_via(schema: &Schema, ent: &EffEntity, path: &str) -> Option<ViaScope> {
+    let steps = ferrum_meta::via::resolve(&ent.def.name, path, |n| schema.entity(n).map(|e| &e.def)).ok()?;
+    let (prefix, suffix) = via_sql(schema, ent, &steps, "{a}", 0)?;
+    let first = match &steps[..] {
+        [ViaStep::Email { field }] => ViaFirst::Field(field.clone()),
+        [ViaStep::Table { field, .. }, ViaStep::Email { field: email }] => ViaFirst::Table(field.clone(), email.clone()),
+        [ViaStep::Link { field, to }, rest @ ..] => {
+            let target = schema.entity(to)?;
+            let (prefix, suffix) = via_sql(schema, target, rest, "vt", 1)?;
+            ViaFirst::Link { field: field.clone(), table: crate::ddl::q(&target.table), pred: crate::store::entity_predicate(target, "vt"), prefix, suffix }
+        }
+        _ => return None,
+    };
+    Some(ViaScope { path: path.to_string(), prefix, suffix, first })
 }
 
 /// A field of a grant's condition: its accepted values as text, and its SQL (`{a}`: the alias).
@@ -561,6 +671,27 @@ fn owner_fields(ctx: &Ctx, ent: &EffEntity) -> Vec<OwnerField> {
 
 pub fn row_scope(ctx: &Ctx, ent: &EffEntity, action: Action) -> Result<RowScope> {
     ctx.require(&ent.def.name, action)?;
+    scope_of(ctx, ent, ctx.perms.grants(&ent.def.name, action))
+}
+
+/// The records action `name` of `ent` may run on (BD-02): those of the rules naming it when some
+/// rule does, else those of the action's own permission `perm`, as [`row_scope`] gives them.
+pub fn action_scope(ctx: &Ctx, ent: &EffEntity, name: &str, perm: Action) -> Result<RowScope> {
+    match ctx.perms.action_grants(&ent.def.name, name) {
+        Some(grants) if !ctx.is_admin && !ctx.is_system => {
+            if ctx.read_only && !matches!(perm, Action::Read | Action::Export) {
+                return Err(Error::Forbidden(
+                    "this workspace is read-only now that its account is closed or restricted; you can still read and export everything".into(),
+                ));
+            }
+            scope_of(ctx, ent, Some(grants))
+        }
+        _ => row_scope(ctx, ent, perm),
+    }
+}
+
+/// The scope `grants` give on `ent` (`None`: every record), with the user's scopes on top.
+fn scope_of(ctx: &Ctx, ent: &EffEntity, grants: Option<Vec<Grant>>) -> Result<RowScope> {
     if ctx.egress.as_ref().is_some_and(|e| !e.allows_entity(&ent.def)) {
         return Err(Error::Forbidden(format!("{} stays inside this workspace: it is not sent to the AI provider", ent.def.label)));
     }
@@ -568,7 +699,7 @@ pub fn row_scope(ctx: &Ctx, ent: &EffEntity, action: Action) -> Result<RowScope>
     if ctx.is_admin || ctx.is_system {
         return Ok(scope);
     }
-    if let Some(mut grants) = ctx.perms.grants(&ent.def.name, action) {
+    if let Some(mut grants) = grants {
         if grants.is_empty() {
             // Partial access with no grant recorded (a hand-made permission set): own records.
             grants.push(Grant { owner: true, ..Default::default() });
@@ -589,15 +720,20 @@ pub fn row_scope(ctx: &Ctx, ent: &EffEntity, action: Action) -> Result<RowScope>
                 })
                 .collect();
             let ranges: Option<Vec<GrantRange>> = g.ranges.into_iter().map(|(field, range)| GrantRange::new(ctx, ent, field, range)).collect();
-            // A condition on a field the entity no longer has reaches nothing (never more).
-            if let (Some(fields), Some(ranges)) = (fields, ranges) {
-                scope.grants.push(ScopeGrant { owner: g.owner, fields, ranges });
+            let via = match &g.via {
+                None => Some(None),
+                Some(path) => compile_via(&ctx.schema, ent, path).map(Some),
+            };
+            // A condition on a field the entity no longer has, or a path it no longer holds, reaches
+            // nothing (never more).
+            if let (Some(fields), Some(ranges), Some(via)) = (fields, ranges, via) {
+                scope.grants.push(ScopeGrant { owner: g.owner, fields, ranges, via });
             }
         }
         if scope.grants.is_empty() {
             // Every grant pointed at a missing field: nothing qualifies.
             let nothing = GrantField { field: "id".into(), values: vec![], expr: "{a}.id".into(), check: false };
-            scope.grants.push(ScopeGrant { owner: false, fields: vec![nothing], ranges: vec![] });
+            scope.grants.push(ScopeGrant { owner: false, fields: vec![nothing], ranges: vec![], via: None });
         }
     }
     for (scope_entity, ids) in &ctx.scopes {
@@ -639,19 +775,88 @@ impl RowScope {
         self.owner.is_some_and(|o| created_by == Some(o)) || self.named_owner(doc)
     }
 
+    /// Whether the user owns the record by grant `g`: through its path when it has one (`None`: the
+    /// path goes past a link, which only [`RowScope::admits`] can look up), else as [`RowScope::owns`].
+    fn owns_by(&self, g: &ScopeGrant, doc: &Doc) -> Option<bool> {
+        let Some(via) = &g.via else { return Some(self.owns(doc)) };
+        let Some(email) = &self.owner_email else { return Some(false) };
+        let is_me = |v: Option<&Value>| v.and_then(Value::as_str).is_some_and(|s| s.trim().eq_ignore_ascii_case(email));
+        match &via.first {
+            ViaFirst::Field(f) => Some(is_me(doc.get(f))),
+            ViaFirst::Table(t, f) => Some(doc.get(t).and_then(Value::as_array).is_some_and(|rows| rows.iter().any(|r| is_me(r.get(f))))),
+            ViaFirst::Link { .. } => None,
+        }
+    }
+
+    /// Whether the record's fields satisfy grant `g`'s condition and ranges.
+    fn holds(g: &ScopeGrant, doc: &Doc) -> bool {
+        let field = |f: &GrantField| {
+            let v = doc.get(&f.field).filter(|v| !v.is_null());
+            f.values.contains(&if f.check && v.is_none() { "false".into() } else { condition_text(v) })
+        };
+        g.fields.iter().all(field) && g.ranges.iter().all(|r| r.holds(doc.get(&r.field).filter(|v| !v.is_null())))
+    }
+
+    /// Whether the record is within reach as far as memory tells: an owner path past a link counts
+    /// as not reaching here. Checking one record, use [`RowScope::admits`], which looks that up.
     pub fn matches(&self, doc: &Doc) -> bool {
         if !self.grants.is_empty() {
-            let holds = |f: &GrantField| {
-                let v = doc.get(&f.field).filter(|v| !v.is_null());
-                f.values.contains(&if f.check && v.is_none() { "false".into() } else { condition_text(v) })
-            };
-            let reached = self.grants.iter().any(|g| {
-                (!g.owner || self.owns(doc)) && g.fields.iter().all(holds) && g.ranges.iter().all(|r| r.holds(doc.get(&r.field).filter(|v| !v.is_null())))
-            });
+            let reached = self.grants.iter().any(|g| (!g.owner || self.owns_by(g, doc) == Some(true)) && Self::holds(g, doc));
             if !reached {
                 return false;
             }
         }
+        self.conds_hold(doc)
+    }
+
+    /// The index of the first grant reaching the record, looking up owner paths past a link (for
+    /// explaining access), or `None`.
+    pub async fn reached_by(&self, tx: &mut Tx, tenant: Uuid, doc: &Doc) -> Result<Option<usize>> {
+        if !self.conds_hold(doc) {
+            return Ok(None);
+        }
+        for (i, g) in self.grants.iter().enumerate() {
+            if !Self::holds(g, doc) {
+                continue;
+            }
+            let owned = match self.owns_by(g, doc) {
+                _ if !g.owner => true,
+                Some(known) => known,
+                None => self.owns_past_link(tx, tenant, g, doc).await?,
+            };
+            if owned {
+                return Ok(Some(i));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Whether the record is within reach (BD-02): as [`RowScope::matches`], and where an owner path
+    /// goes past a link, looked up in `tx` from the record's link, never from a cache, so a person
+    /// taken off the linked record loses this one at once. Every check of a single record uses this.
+    pub async fn admits(&self, tx: &mut Tx, tenant: Uuid, doc: &Doc) -> Result<bool> {
+        if self.matches(doc) {
+            return Ok(true);
+        }
+        if !self.grants.iter().any(|g| matches!(g.via, Some(ViaScope { first: ViaFirst::Link { .. }, .. }))) {
+            return Ok(false);
+        }
+        Ok(self.reached_by(tx, tenant, doc).await?.is_some())
+    }
+
+    /// Grant `g`'s owner path past a link, for one record: whether the linked record leads to the
+    /// person's email.
+    async fn owns_past_link(&self, tx: &mut Tx, tenant: Uuid, g: &ScopeGrant, doc: &Doc) -> Result<bool> {
+        let (Some(ViaScope { first: ViaFirst::Link { field, table, pred, prefix, suffix }, .. }), Some(email)) = (&g.via, &self.owner_email) else {
+            return Ok(false);
+        };
+        let Some(id) = doc.get(field).and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok()) else { return Ok(false) };
+        let sql = format!("select exists (select 1 from {table} vt where vt.tenant_id = $1{pred} and vt.id = $2 and {prefix}$3{suffix})");
+        Ok(sqlx::query_scalar::<_, bool>(AssertSqlSafe(sql)).bind(tenant).bind(id).bind(email).fetch_one(&mut **tx).await?)
+    }
+
+    /// Whether the record satisfies the scopes every grant is subject to (companies and the like).
+    fn conds_hold(&self, doc: &Doc) -> bool {
         self.conds.iter().all(|c| {
             let key = c.field.as_deref().unwrap_or("id");
             match doc.get(key).and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok()) {
@@ -659,6 +864,20 @@ impl RowScope {
                 None => !c.strict,
             }
         })
+    }
+
+    /// Grant `g`'s ownership for table alias `alias`: its path to the person's email, or else
+    /// [`RowScope::push_owner`]. Someone with no email owns nothing by a path.
+    fn push_ownership(&self, qb: &mut QueryBuilder<Postgres>, g: &ScopeGrant, alias: &str) {
+        match (&g.via, &self.owner_email) {
+            (None, _) => self.push_owner(qb, alias),
+            (Some(_), None) => {
+                qb.push("false");
+            }
+            (Some(v), Some(email)) => {
+                qb.push(format!("({}", v.prefix.replace("{a}", alias))).push_bind(email.clone()).push(format!("{})", v.suffix));
+            }
+        }
     }
 
     /// `(created_by = user or <owner fields name them>)` for table alias `a`.
@@ -676,7 +895,7 @@ impl RowScope {
     /// `(owner and field = any(values) and range and ...)`.
     fn push_grant(&self, qb: &mut QueryBuilder<Postgres>, g: &ScopeGrant, alias: &str) {
         if g.owner && g.fields.is_empty() && g.ranges.is_empty() {
-            return self.push_owner(qb, alias);
+            return self.push_ownership(qb, g, alias);
         }
         qb.push("(");
         let mut first = true;
@@ -687,7 +906,7 @@ impl RowScope {
         };
         if g.owner {
             and(qb);
-            self.push_owner(qb, alias);
+            self.push_ownership(qb, g, alias);
         }
         for f in &g.fields {
             and(qb);

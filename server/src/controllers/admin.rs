@@ -73,13 +73,21 @@ async fn create_user(Auth(ctx): Auth, State(app): State<AppContext>, Json(u): Js
     if !ferrum_kernel::shell::USER_KINDS.contains(&kind) {
         return Err(ApiError(Error::field("kind", "must be member, guest, portal or service")));
     }
-    // Portal people and guests work through the pages apps give them: no roles, no administration.
-    if matches!(kind, "portal" | "guest") && (u.is_admin || !u.roles.is_empty()) {
-        return Err(ApiError(Error::field("roles", "portal people and guests hold no roles")));
+    // Portal people and guests are never administrators; guests hold no roles, portal people only
+    // portal roles (docs/builder/decisions.md BD-02), given once they are portal people.
+    if matches!(kind, "portal" | "guest") && u.is_admin {
+        return Err(ApiError(Error::field("is_admin", "portal people and guests are not administrators")));
     }
-    let id = st.kernel.create_user(&ctx, &u.email, &u.full_name, u.password.as_deref(), &u.roles, u.is_admin).await?;
+    if kind == "guest" && !u.roles.is_empty() {
+        return Err(ApiError(Error::field("roles", "guests hold no roles")));
+    }
+    let member_roles: &[String] = if kind == "portal" { &[] } else { &u.roles };
+    let id = st.kernel.create_user(&ctx, &u.email, &u.full_name, u.password.as_deref(), member_roles, u.is_admin).await?;
     if kind != "member" {
         st.kernel.set_user_kind(&ctx, id, kind).await?;
+    }
+    if kind == "portal" && !u.roles.is_empty() {
+        st.kernel.set_user_roles_until(&ctx, id, &u.roles, &Default::default()).await?;
     }
     Ok((StatusCode::CREATED, Json(json!({"id": id, "kind": kind}))).into_response())
 }
@@ -188,13 +196,24 @@ async fn list_roles(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult
     let rows = query_json(
         &app,
         &ctx,
-        "select jsonb_build_object('name', r.name, 'description', r.description, 'package', r.package, 'permissions', \
+        "select jsonb_build_object('name', r.name, 'description', r.description, 'package', r.package, 'portal', r.portal, 'permissions', \
          coalesce((select jsonb_agg(to_jsonb(p) - 'tenant_id' - 'role' order by p.entity) from role_permission p \
                    where p.tenant_id = r.tenant_id and p.role = r.name), '[]'::jsonb)) \
          from role r where r.tenant_id = $1 order by r.name",
     )
     .await?;
     Ok(Json(json!({"roles": rows})).into_response())
+}
+
+#[derive(Deserialize)]
+struct Portal {
+    portal: bool,
+}
+
+/// Marks a role for the portal or not (docs/builder/decisions.md BD-02).
+async fn set_role_portal(Auth(ctx): Auth, State(app): State<AppContext>, Path(role): Path<String>, Json(p): Json<Portal>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.set_role_portal(&ctx, role.trim(), p.portal).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 async fn set_permission(Auth(ctx): Auth, State(app): State<AppContext>, Path(role): Path<String>, Json(p): Json<PermissionDef>) -> ApiResult<Response> {
@@ -724,6 +743,7 @@ pub fn routes() -> Routes {
         .add("/admin/sso/{id}", put(update_sso).delete(delete_sso))
         .add("/admin/roles", get(list_roles))
         .add("/admin/roles/{role}/permissions", put(set_permission))
+        .add("/admin/roles/{role}/portal", put(set_role_portal))
         .add("/admin/personal-data", get(personal_data))
         .add("/admin/personal-data/erase", post(erase_personal_data))
         .add("/admin/packages", get(list_packages).post(install))
