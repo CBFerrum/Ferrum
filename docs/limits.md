@@ -104,7 +104,16 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   naming it and its `roles`); `condition` and `refuse_if` are judged on the record by the server when it is
   pressed (a form may judge them first, to explain a button that is off). A workspace replaces or removes only the actions its customizations added,
   never a package's. A rule's aggregate filters on the day as `{"today": n}`, compared with date fields only, never
-  with a datetime.
+  with a datetime, and on the saved record's own field as `{"doc": "<field>"}`, one of the same type, as it
+  stands before derivations.
+- **Linked records in expressions** (`links.<field>`, BD-14): one level (a link of the linked record is an
+  id), at most 5 in one expression, read as the workspace without a lock (a rule sees the linked record as it
+  is when the save runs, and two saves at once can each pass a check the other would have failed). Not in
+  defaults, computed fields, `visible_if`, `required_if`, `read_only_if` or a line's rules; the browser leaves
+  conditions that use them to the server, and the approvals inbox lists a step whose guard uses them.
+- **Effects on lines** (`append_line`, `set_line`): one line per effect, on the record's own tables (not a
+  linked record's, not lines within lines); `set_line` refuses when no line or more than one matches; not on a
+  submitted record; the usual cap on lines.
 - **Another app's steps** (`invoke`, docs/api.md): a button or an automation calls what the capability
   catalog lists (record operations, an app's listed actions, workflow transitions), never a configured
   action. ERP's own money and stock actions carry no contracts yet, so what it reaches there is creating

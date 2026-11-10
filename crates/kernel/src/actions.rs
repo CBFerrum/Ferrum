@@ -50,7 +50,10 @@ fn check_effect<'a>(k: &Kernel, system: &dyn Fn() -> &'a Ctx, schema: &Schema, e
         AutomationAction::CreateDocument { entity, values } => (schema.entity(entity).map(|e| &**e), values),
         AutomationAction::UpdateLinked { link, values } => (ent.field(link).and_then(|f| f.to.as_deref()).and_then(|t| schema.entity(t)).map(|e| &**e), values),
         AutomationAction::Invoke { capability, input, .. } => return automation::check_invoke(k, system(), capability, input).map_err(said),
-        AutomationAction::Notify { .. } | AutomationAction::Email { .. } => return Ok(()),
+        // Their table and line fields are checked with the targets above.
+        AutomationAction::Notify { .. } | AutomationAction::Email { .. } | AutomationAction::AppendLine { .. } | AutomationAction::SetLine { .. } => {
+            return Ok(());
+        }
     };
     let Some(target) = target else { return Ok(()) };
     for name in values.keys() {
@@ -63,7 +66,12 @@ fn check_effect<'a>(k: &Kernel, system: &dyn Fn() -> &'a Ctx, schema: &Schema, e
 /// of a custom entity, an `x_` field of a packaged one; the fields a Logic derivation may fill) and fields a
 /// person may type; never the platform's columns, a computed or rolled-up field, a secret, a package's read-only
 /// field or a field in a permission group.
-fn writable(ent: &EffEntity, field: &str) -> std::result::Result<(), String> {
+pub(crate) fn writable(ent: &EffEntity, field: &str) -> std::result::Result<(), String> {
+    writable_as(ent, field, false)
+}
+
+/// [`writable`], a table field included when `lines` (an effect on one line of it, `append_line` or `set_line`).
+pub(crate) fn writable_as(ent: &EffEntity, field: &str, lines: bool) -> std::result::Result<(), String> {
     let label = &ent.def.label;
     if ferrum_meta::RESERVED_FIELDS.contains(&field) {
         return Err(format!("{field} is the platform's: no effect writes it"));
@@ -72,7 +80,10 @@ fn writable(ent: &EffEntity, field: &str) -> std::result::Result<(), String> {
     if f.computed.is_some() || f.rollup.is_some() || ent.target_keeping(field).is_some() {
         return Err(format!("{label}.{field} is worked out, not written"));
     }
-    if f.ftype == FieldType::Secret || f.ftype == FieldType::Table {
+    if lines && f.ftype != FieldType::Table {
+        return Err(format!("{label}.{field} is not a table of lines"));
+    }
+    if f.ftype == FieldType::Secret || (f.ftype == FieldType::Table && !lines) {
         return Err(format!("{label}.{field} is not written by an effect"));
     }
     let own = ent.custom || field.starts_with("x_");
@@ -103,8 +114,11 @@ pub(crate) async fn run(
     };
     let user = ctx.user_value();
     let view = ent.cel_view(&Value::Object(doc.clone()), &ctx.schema);
-    for (expr, message) in ent.exprs.action_refusals.get(&def.name).into_iter().flatten() {
-        let holds = expr.eval_with(&Scope { doc: &view, old: None, parent: None, user: &user }, &[("params", &params)]).map_err(Error::invalid)?;
+    let refusals = ent.exprs.action_refusals.get(&def.name).map(Vec::as_slice).unwrap_or_default();
+    let links = crate::links::load(k, ctx, tx, ent, &view, &crate::links::used(refusals.iter().map(|(e, _)| e))).await?;
+    for (expr, message) in refusals {
+        let holds =
+            expr.eval_with(&Scope { doc: &view, old: None, parent: None, user: &user }, &[("params", &params), ("links", &links)]).map_err(Error::invalid)?;
         if holds == Value::Bool(true) {
             return Err(Error::Forbidden(message.clone()));
         }
@@ -130,7 +144,8 @@ pub(crate) async fn run(
         let now = k.get_tx(&system, tx, &ent.def.name, id, false).await?;
         let view = ent.cel_view(&Value::Object(now), &ctx.schema);
         let done = Value::Array(results.clone());
-        let extra = [("params", &params), ("results", &done)];
+        let links = crate::links::load(k, ctx, tx, ent, &view, &automation::links_used(&effect)?).await?;
+        let extra = [("params", &params), ("results", &done), ("links", &links)];
         let out = automation::execute(k, &system, tx, &ent.def.name, Some(id), &view, &user, &extra, &format!("{origin}{i}"), effect).await?;
         if creates {
             made.push(out.clone());

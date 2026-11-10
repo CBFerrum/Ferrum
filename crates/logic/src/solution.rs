@@ -160,7 +160,8 @@ pub struct Aggregate {
     /// Read with `"self"` dropped: both spellings of the saved record are one rule, with one digest.
     #[serde(default, deserialize_with = "not_self", skip_serializing_if = "Option::is_none")]
     pub to: Option<String>,
-    /// All of these hold: `[field, operator, value]` over the entity's own fields, as a list's filters.
+    /// All of these hold: `[field, operator, value]` over the entity's own fields, as a list's filters. A value is a
+    /// literal, `{"today": n}`, or `{"doc": "<field>"}`, that field of the saved record.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub filter: Vec<Condition>,
     pub op: AggregateOp,
@@ -198,6 +199,26 @@ impl Aggregate {
             })
             .collect()
     }
+}
+
+impl Aggregate {
+    /// [`Aggregate::filter_on`], each `{"doc": "<field>"}` then that field of `doc`, the record being saved as stored
+    /// (null when it has none).
+    pub fn filter_for(&self, today: chrono::NaiveDate, doc: &serde_json::Map<String, Value>) -> Vec<Condition> {
+        let mut out = self.filter_on(today);
+        for Condition(_, _, v) in &mut out {
+            if let Some(f) = doc_field(v) {
+                *v = doc.get(f).cloned().unwrap_or(Value::Null);
+            }
+        }
+        out
+    }
+}
+
+/// The field of the saved record a filter value names when it is `{"doc": "<field>"}`; `None` for any other value.
+pub fn doc_field(v: &Value) -> Option<&str> {
+    let m = v.as_object().filter(|m| m.len() == 1)?;
+    m.get("doc")?.as_str()
 }
 
 /// Days a filter's `{"today": n}` may reach either way: five years.

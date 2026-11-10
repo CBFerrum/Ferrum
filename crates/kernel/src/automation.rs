@@ -73,6 +73,37 @@ pub enum AutomationAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key: Option<String>,
     },
+    /// Adds one line at the end of `table`, a table field of the record, through the record's ordinary save; each
+    /// value an expression. Every other line keeps its id and values.
+    AppendLine { table: String, values: BTreeMap<String, String> },
+    /// Changes the one line of `table` for which `where` holds (an expression over `row`, the line, besides what the
+    /// values see), only the fields named; no line or more than one is refused. Through the record's ordinary save.
+    SetLine {
+        table: String,
+        #[serde(rename = "where")]
+        when: String,
+        values: BTreeMap<String, String>,
+    },
+}
+
+/// The expressions an action holds.
+fn sources(a: &AutomationAction) -> Vec<&String> {
+    match a {
+        AutomationAction::SetFields { values }
+        | AutomationAction::CreateDocument { values, .. }
+        | AutomationAction::UpdateLinked { values, .. }
+        | AutomationAction::AppendLine { values, .. } => values.values().collect(),
+        AutomationAction::SetLine { when, values, .. } => std::iter::once(when).chain(values.values()).collect(),
+        AutomationAction::Notify { title, body, .. } => std::iter::once(title).chain(body.iter()).collect(),
+        AutomationAction::Email { to, subject, body, .. } => vec![to, subject, body],
+        AutomationAction::Invoke { input, key, .. } => input.values().chain(key.iter()).collect(),
+    }
+}
+
+/// The link fields an action's expressions read as `links.<field>` (BD-14).
+pub(crate) fn links_used(a: &AutomationAction) -> Result<std::collections::BTreeSet<String>> {
+    let exprs = sources(a).into_iter().map(|s| compiled(s)).collect::<Result<Vec<_>>>()?;
+    Ok(crate::links::used(&exprs))
 }
 
 pub(crate) fn check_action(a: &AutomationAction) -> Result<()> {
@@ -85,20 +116,10 @@ pub(crate) fn check_action(a: &AutomationAction) -> Result<()> {
             return Err(Error::invalid("notify.to must be owner, role:<name>, user:<id> or field:<name>"));
         }
     }
-    let exprs: Vec<&String> = match a {
-        AutomationAction::SetFields { values } | AutomationAction::CreateDocument { values, .. } | AutomationAction::UpdateLinked { values, .. } => {
-            values.values().collect()
-        }
-        AutomationAction::Notify { title, body, .. } => std::iter::once(title).chain(body.iter()).collect(),
-        AutomationAction::Email { to, subject, body, template, .. } => {
-            if let Some(t) = template {
-                mail_template(t)?;
-            }
-            vec![to, subject, body]
-        }
-        AutomationAction::Invoke { input, key, .. } => input.values().chain(key.iter()).collect(),
-    };
-    for e in exprs {
+    if let AutomationAction::Email { template: Some(t), .. } = a {
+        mail_template(t)?;
+    }
+    for e in sources(a) {
         Expr::compile(e).map_err(|m| Error::invalid(format!("expression '{e}': {m}")))?;
     }
     Ok(())
@@ -183,8 +204,8 @@ fn compiled(src: &str) -> Result<Expr> {
     Ok(expr)
 }
 
-fn eval(src: &str, doc: &Value, old: Option<&Value>, user: &Value) -> Result<Value> {
-    compiled(src)?.eval(&Scope { doc, old, parent: None, user }).map_err(|e| Error::invalid(format!("'{src}': {e}")))
+fn eval(src: &str, doc: &Value, old: Option<&Value>, user: &Value, extra: &[(&str, &Value)]) -> Result<Value> {
+    compiled(src)?.eval_with(&Scope { doc, old, parent: None, user }, extra).map_err(|e| Error::invalid(format!("'{src}': {e}")))
 }
 
 /// [`eval`] with more variables: a configured action's `params`, the `linked` record an effect writes.
@@ -200,6 +221,10 @@ pub(crate) fn check_targets(schema: &ferrum_meta::Schema, entity: &str, actions:
     let ent = schema.entity(entity).ok_or_else(|| Error::field("entity", "unknown entity"))?;
     for (i, a) in actions.iter().enumerate() {
         let at = |m: String| Error::Validation(vec![FieldError::new("actions", m).in_row("actions", i)]);
+        // What it reads through `links` are link fields of the record it runs on (BD-14).
+        if let Some(n) = links_used(a)?.into_iter().find(|n| linked_entity(ent, n).is_none()) {
+            return Err(at(format!("links.{n}: {n} is not a link field of {}", ent.def.label)));
+        }
         let (target, values) = match a {
             AutomationAction::SetFields { values } => (ent.clone(), values),
             AutomationAction::CreateDocument { entity, values } => {
@@ -208,6 +233,15 @@ pub(crate) fn check_targets(schema: &ferrum_meta::Schema, entity: &str, actions:
             AutomationAction::UpdateLinked { link, values } => {
                 let to = linked_entity(ent, link).ok_or_else(|| at(format!("{link} is not a link field of {}", ent.def.label)))?;
                 (schema.entity(to).cloned().ok_or_else(|| at(format!("{link} links to {to}, which is not installed")))?, values)
+            }
+            AutomationAction::AppendLine { table, values } | AutomationAction::SetLine { table, values, .. } => {
+                crate::actions::writable_as(ent, table, true).map_err(at)?;
+                let of = ent.field(table).and_then(|f| f.of.as_deref()).and_then(|c| schema.entity(c)).cloned();
+                let of = of.ok_or_else(|| at(format!("the lines of {table} are not installed")))?;
+                if let Some(Err(m)) = values.keys().map(|f| crate::actions::writable(&of, f)).find(|r| r.is_err()) {
+                    return Err(at(m));
+                }
+                continue;
             }
             AutomationAction::Notify { .. } | AutomationAction::Email { .. } | AutomationAction::Invoke { .. } => continue,
         };
@@ -466,8 +500,18 @@ async fn run_one(
     };
     ctx.depth = depth + 1;
     let user = ctx.user_value();
-    let pass = match &a.condition {
-        Some(c) if !c.trim().is_empty() => matches!(eval(c, cel_doc, cel_old, &user)?, Value::Bool(true)),
+    // The linked records its condition and actions read, once for the run (BD-14).
+    let condition = a.condition.as_deref().filter(|c| !c.trim().is_empty());
+    let mut names = condition.map(|c| compiled(c).map(|e| crate::links::used([&e]))).transpose()?.unwrap_or_default();
+    for action in validate_actions(&a.actions).into_iter().flatten() {
+        names.extend(links_used(&action)?);
+    }
+    let links = match ctx.schema.entity(entity).cloned() {
+        Some(ent) => crate::links::load(k, &ctx, &mut tx, &ent, cel_doc, &names).await?,
+        None => Value::Object(Map::new()),
+    };
+    let pass = match condition {
+        Some(c) => matches!(eval(c, cel_doc, cel_old, &user, &[("links", &links)])?, Value::Bool(true)),
         _ => true,
     };
     let status = if pass {
@@ -476,7 +520,9 @@ async fn run_one(
         let mut results = Vec::new();
         for (i, action) in validate_actions(&a.actions)?.into_iter().enumerate() {
             let done = Value::Array(results.clone());
-            results.push(execute(k, &ctx, &mut tx, entity, record, cel_doc, &user, &[("results", &done)], &format!("{origin}{i}"), action).await?);
+            results.push(
+                execute(k, &ctx, &mut tx, entity, record, cel_doc, &user, &[("results", &done), ("links", &links)], &format!("{origin}{i}"), action).await?,
+            );
         }
         "done"
     } else {
@@ -605,8 +651,75 @@ pub(crate) async fn execute(
             // Boxed: an app's action reached through the gate is an action, which may run effects of its own.
             return Ok(Box::pin(k.invoke_tx(ctx, tx, &inv)).await?.result);
         }
+        AutomationAction::AppendLine { table, values } => {
+            let id = record.ok_or_else(|| Error::invalid("append_line needs a record"))?;
+            return write_line(k, ctx, tx, entity, id, doc, user, extra, &table, None, values).await;
+        }
+        AutomationAction::SetLine { table, when, values } => {
+            let id = record.ok_or_else(|| Error::invalid("set_line needs a record"))?;
+            return write_line(k, ctx, tx, entity, id, doc, user, extra, &table, Some(&when), values).await;
+        }
     }
     Ok(Value::Null)
+}
+
+/// `append_line` (no `when`) or `set_line` on record `id`: through the record's ordinary save, with a patch that names
+/// every stored line by its id alone, so each keeps what it holds, and gives only the one line its named fields.
+#[allow(clippy::too_many_arguments)]
+async fn write_line(
+    k: &Kernel,
+    ctx: &Ctx,
+    tx: &mut crate::db::Tx,
+    entity: &str,
+    id: Uuid,
+    doc: &Value,
+    user: &Value,
+    extra: &[(&str, &Value)],
+    table: &str,
+    when: Option<&str>,
+    values: BTreeMap<String, String>,
+) -> Result<Value> {
+    let ent = ctx.schema.entity(entity).cloned().ok_or_else(|| Error::invalid(format!("unknown entity {entity}")))?;
+    let field = ent.field(table).filter(|f| f.ftype == ferrum_meta::FieldType::Table);
+    let cent = field.and_then(|f| f.of.as_deref()).and_then(|c| ctx.schema.entity(c)).cloned();
+    let cent = cent.ok_or_else(|| Error::invalid(format!("{table} is not a table field of {}", ent.def.label)))?;
+    let stored = k.get_tx(ctx, tx, entity, id, false).await?;
+    let rows = stored.get(table).and_then(Value::as_array).cloned().unwrap_or_default();
+    let mut lines: Vec<Value> = rows.iter().map(|r| serde_json::json!({"id": r.get("id")})).collect();
+    let (at, row) = match when {
+        None => (lines.len(), None),
+        Some(w) => {
+            let mut hits = Vec::new();
+            for (i, r) in rows.iter().enumerate() {
+                let row = cent.cel_view(r, &ctx.schema);
+                let vars: Vec<(&str, &Value)> = extra.iter().copied().chain([("row", &row)]).collect();
+                if eval_with(w, doc, user, &vars)? == Value::Bool(true) {
+                    hits.push(i);
+                }
+            }
+            match hits[..] {
+                [i] => (i, Some(cent.cel_view(&rows[i], &ctx.schema))),
+                [] => {
+                    return Err(Error::invalid(format!("set_line: no line of {} has {w}", ent.field(table).and_then(|f| f.label.as_deref()).unwrap_or(table))));
+                }
+                _ => {
+                    let which = hits.iter().map(|i| (i + 1).to_string()).collect::<Vec<_>>().join(", ");
+                    return Err(Error::invalid(format!("set_line: lines {which} of {table} all have {w}; it changes one line")));
+                }
+            }
+        }
+    };
+    let vars: Vec<(&str, &Value)> = extra.iter().copied().chain(row.as_ref().map(|r| ("row", r))).collect();
+    let mut line = Map::new();
+    for (f, src) in values {
+        line.insert(f, eval_with(&src, doc, user, &vars)?);
+    }
+    match lines.get_mut(at) {
+        Some(Value::Object(kept)) => kept.extend(line),
+        _ => lines.push(Value::Object(line)),
+    }
+    let d = k.update_tx(ctx, tx, entity, id, Doc::from_iter([(table.to_string(), Value::Array(lines))]), None).await?;
+    Ok(serde_json::json!({"entity": entity, "id": d.get("id"), "number": d.get("number")}))
 }
 
 /// Validates and stores an automation definition.
@@ -657,7 +770,11 @@ pub(crate) async fn save_in(ctx: &Ctx, tx: &mut crate::db::Tx, input: &Map<Strin
     }
     let condition = get("condition").filter(|c| !c.trim().is_empty());
     if let Some(c) = &condition {
-        Expr::compile(c).map_err(|m| Error::field("condition", m))?;
+        let compiled = Expr::compile(c).map_err(|m| Error::field("condition", m))?;
+        let ent = ctx.schema.entity(&entity).ok_or_else(|| Error::field("entity", "unknown entity"))?;
+        if let Some(n) = compiled.links().iter().find(|n| linked_entity(ent, n).is_none()) {
+            return Err(Error::field("condition", format!("links.{n}: {n} is not a link field of {}", ent.def.label)));
+        }
     }
     let actions = input.get("actions").cloned().unwrap_or(Value::Null);
     check_targets(&ctx.schema, &entity, &validate_actions(&actions)?)?;
@@ -719,7 +836,7 @@ mod tests {
         let src = "doc.title + ' (compiled once)'";
         let before = COMPILES.load(Ordering::Relaxed);
         for _ in 0..3 {
-            assert_eq!(eval(src, &serde_json::json!({"title": "A"}), None, &Value::Null).unwrap(), "A (compiled once)");
+            assert_eq!(eval(src, &serde_json::json!({"title": "A"}), None, &Value::Null, &[]).unwrap(), "A (compiled once)");
         }
         assert_eq!(COMPILES.load(Ordering::Relaxed) - before, 1);
     }

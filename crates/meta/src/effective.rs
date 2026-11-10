@@ -1087,9 +1087,7 @@ pub(crate) fn validate_targets(def: &EntityDef) -> Result<(), String> {
             ("pause_when", t.pause_when.as_deref()),
             ("met_when", Some(t.met_when.as_str())),
         ] {
-            if let Some(src) = src {
-                Expr::compile(src).map_err(|m| at(format!("{what}: {m}")))?;
-            }
+            crate::catalog::compile(def, &at(what.into()), src, true)?;
         }
     }
     Ok(())
@@ -1103,9 +1101,7 @@ pub(crate) fn validate_form(def: &EntityDef, form: &[SectionDef]) -> Result<(), 
         if s.columns.is_some_and(|c| !(1..=4).contains(&c)) {
             return Err("a section has 1 to 4 columns".into());
         }
-        if let Some(c) = &s.visible_if {
-            crate::expr::Expr::compile(c).map_err(|e| format!("section condition '{c}': {e}"))?;
-        }
+        crate::catalog::compile(def, &format!("section condition '{}'", s.visible_if.as_deref().unwrap_or_default()), s.visible_if.as_deref(), false)?;
         for f in &s.fields {
             if !def.fields.iter().any(|x| &x.name == f) {
                 return Err(format!("the layout places unknown field {f}"));
