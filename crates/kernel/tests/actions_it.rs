@@ -106,6 +106,7 @@ async fn scenario() {
     let k = Kernel::boot(db, catalog(), HookRegistry::default(), KernelSettings::default(), None).await.expect("boot");
     let w = workspace(&k, "acme").await;
     faults(&w).await;
+    empty_copies(&workspace(&k, "copies").await).await;
     linked_from_automations(&w).await;
     configured(&k, &w).await;
     authored(&k, &w).await;
@@ -153,6 +154,69 @@ async fn faults(w: &W) {
     assert_eq!(w.get("XThing", id).await["note"], "c", "locked: the input is ignored, as for a read-only field");
     let fresh = k.insert(&admin, "XThing", obj(json!({"days": 1, "locked": true, "note": "new"}))).await.unwrap();
     assert_eq!(fresh["note"], "new", "a new record has nothing stored to be read-only by");
+}
+
+/// An effect whose value is only a path to a value copies it as stored, empty included, where an expression
+/// reads an empty number as 0 and an empty tick as false (docs/api.md, "Configured actions"); found rebuilding
+/// Government as a pack (docs/builder/evidence/government-as-a-pack-2026-11-11.md).
+async fn empty_copies(w: &W) {
+    let k = &w.k;
+    let source = json!({"name": "XSource", "label": "Source", "kind": "master", "fields": [{"name": "owed", "type": "int"}, {"name": "twice", "type": "int"}]});
+    let line = json!({"name": "XCopyLine", "label": "Copy Line", "kind": "child", "fields": [{"name": "a", "type": "int"}, {"name": "b", "type": "int"}]});
+    let copy = json!({"name": "XCopy", "label": "Copy", "kind": "master", "fields": [
+        {"name": "name", "type": "data"}, {"name": "from", "type": "link", "to": "XSource"},
+        {"name": "n", "type": "currency"}, {"name": "d", "type": "date"}, {"name": "t", "type": "check"}, {"name": "i", "type": "int"},
+        {"name": "n2", "type": "currency"}, {"name": "d2", "type": "date"}, {"name": "t2", "type": "check"}, {"name": "i2", "type": "int"},
+        {"name": "plus", "type": "int"}, {"name": "lines", "type": "table", "of": "XCopyLine"}]});
+    let copy_all = json!({"n2": "doc.n", "d2": "doc.d", "t2": "doc.t", "plus": "doc.i + 1"});
+    w.batch(vec![
+        define(source),
+        define(line),
+        define(copy),
+        add_action("XCopy", json!({"name": "copy", "label": "Copy", "effects": [{"type": "set_fields", "values": copy_all}]})),
+        add_action("XCopy", json!({"name": "copy_link", "label": "Copy link", "effects": [{"type": "set_fields", "values": {"i2": "links.from.owed"}}]})),
+        add_action(
+            "XCopy",
+            json!({"name": "copy_line", "label": "Copy line", "effects": [{"type": "set_line", "table": "lines", "where": "true", "values": {"b": "row.a"}}]}),
+        ),
+    ])
+    .await
+    .unwrap();
+    let admin = w.admin().await;
+    automation::save(
+        k,
+        &admin,
+        &obj(json!({"name": "Copy", "entity": "XCopy", "event": "created", "condition": "doc.name == 'auto'",
+            "actions": [{"type": "set_fields", "values": copy_all}, {"type": "update_linked", "link": "from", "values": {"owed": "linked.twice"}}]})),
+    )
+    .await
+    .unwrap();
+    // A source whose `owed` and `twice` are empty.
+    let thing = id_of(&k.insert(&admin, "XSource", obj(json!({}))).await.unwrap());
+    let filled = json!({"n2": "5", "d2": "2026-01-01", "t2": true, "i2": 7, "plus": 9, "from": thing.to_string(), "lines": [{"b": 3}]});
+    let empty = |doc: &Doc, what: &str| {
+        assert_eq!((&doc["n2"], &doc["d2"], &doc["i2"]), (&Value::Null, &Value::Null, &Value::Null), "{what}: {doc:?}");
+        assert_eq!(doc["t2"], doc["t"], "{what}: the tick as stored");
+        assert_eq!(doc["plus"], json!(1), "{what}: doc.i + 1 on an empty i is still 1");
+    };
+    let mut button = filled.clone();
+    button["name"] = json!("button");
+    let id = id_of(&k.insert(&admin, "XCopy", obj(button)).await.unwrap());
+    for a in ["copy", "copy_link", "copy_line"] {
+        k.run_action(&admin, "XCopy", id, a, json!({})).await.unwrap_or_else(|e| panic!("{a}: {e:?}"));
+    }
+    let doc = w.get("XCopy", id).await;
+    empty(&doc, "a button");
+    assert_eq!(doc["lines"][0]["b"], Value::Null, "row.a, empty, copied: {doc:?}");
+    // The same through an automation, and `linked`.
+    k.update(&admin, "XSource", thing, obj(json!({"owed": 5})), None).await.unwrap();
+    let mut auto = filled.clone();
+    auto["name"] = json!("auto");
+    auto["i2"] = Value::Null;
+    let id = id_of(&k.insert(&admin, "XCopy", obj(auto)).await.unwrap());
+    while k.dispatch_outbox_once().await.unwrap_or(0) > 0 {}
+    empty(&w.get("XCopy", id).await, "an automation");
+    assert_eq!(w.get("XSource", thing).await["owed"], Value::Null, "linked.twice, empty, copied");
 }
 
 /// An automation's `update_linked` writes the record a link names, as the administrator who saved it (a

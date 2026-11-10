@@ -214,6 +214,87 @@ fn eval_with(src: &str, doc: &Value, user: &Value, extra: &[(&str, &Value)]) -> 
     expr.eval_with(&Scope { doc, old: None, parent: None, user }, extra).map_err(|e| Error::invalid(format!("'{src}': {e}")))
 }
 
+/// The steps of an effect's value that is only a path to a value — `doc.a`, `doc.a.b`, `linked.a`, `links.x.a`,
+/// `row.a`, `params.a`, `results[0].a` — its root first, an index as its digits. Anything else (an operator, a
+/// call, a literal, brackets around it: `doc.a + 0`, `(doc.a)`) is not one.
+fn bare_path(src: &str) -> Option<Vec<&str>> {
+    let ident = |t: &str| t.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    let mut steps = Vec::new();
+    for part in src.trim().split('.') {
+        let (name, mut rest) = match part.split_once('[') {
+            Some((n, r)) => (n, Some(r)),
+            None => (part, None),
+        };
+        if !ident(name) {
+            return None;
+        }
+        steps.push(name);
+        while let Some(r) = rest {
+            let (i, after) = r.split_once(']')?;
+            if i.is_empty() || !i.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            steps.push(i);
+            rest = if after.is_empty() { None } else { Some(after.strip_prefix('[')?) };
+        }
+    }
+    (steps.len() > 1 && ["doc", "linked", "links", "row", "params", "results"].contains(&steps[0])).then_some(steps)
+}
+
+/// Whether `steps` lead to nothing in `stored` (a value as it is stored): a null, or a key it does not have.
+fn stored_empty(stored: &Value, steps: &[&str]) -> bool {
+    let mut at = stored;
+    for s in steps {
+        at = match at {
+            Value::Object(m) => match m.get(*s) {
+                Some(v) => v,
+                None => return true,
+            },
+            Value::Array(a) => match s.parse::<usize>().ok().and_then(|i| a.get(i)) {
+                Some(v) => v,
+                None => return false,
+            },
+            Value::Null => return true,
+            _ => return false,
+        };
+    }
+    at.is_null()
+}
+
+/// What an effect writes for `src`: its value as any expression gives it, except that a bare path ([`bare_path`])
+/// to a value stored empty is empty, not the 0 or false an expression reads there. `stored` gives the roots as
+/// stored (`doc`, `linked`, `row`); `links.x` is read as stored when it matters; `params` and `results` are as given.
+#[allow(clippy::too_many_arguments)]
+async fn effect_value(
+    k: &Kernel,
+    ctx: &Ctx,
+    tx: &mut crate::db::Tx,
+    entity: &str,
+    src: &str,
+    doc: &Value,
+    user: &Value,
+    vars: &[(&str, &Value)],
+    stored: &[(&str, &Value)],
+) -> Result<Value> {
+    let v = eval_with(src, doc, user, vars)?;
+    if v != Value::Bool(false) && v.as_f64() != Some(0.0) {
+        return Ok(v);
+    }
+    let Some(steps) = bare_path(src) else { return Ok(v) };
+    let empty = match (steps[0], stored.iter().find(|(n, _)| *n == steps[0])) {
+        (_, Some((_, root))) => stored_empty(root, &steps[1..]),
+        ("links", None) => {
+            let to = ctx.schema.entity(entity).and_then(|e| linked_entity(e, steps[1])).map(str::to_string);
+            let id = doc.get(steps[1]).and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok());
+            let (Some(to), Some(id)) = (to, id) else { return Ok(v) };
+            let linked = k.get_tx(&Ctx::system(ctx.tenant, ctx.schema.clone()), tx, &to, id, false).await?;
+            stored_empty(&Value::Object(linked), &steps[2..])
+        }
+        _ => false,
+    };
+    Ok(if empty { Value::Null } else { v })
+}
+
 /// What an automation's (or a configured action's) actions write, checked against the entity they run on when
 /// they are saved: `update_linked` names a link field of it, and every field written is a field of the record
 /// written. A refusal names the action by its place.
@@ -386,7 +467,7 @@ pub async fn run_for_event(k: &Kernel, ev: &Event) -> Result<()> {
     for a in autos {
         // Whom it would run as, worked out before its transaction holds anything.
         let who = runner(k, ev.tenant_id, &schema, a.created_by, format!("automation-{}-{}", a.id, ev.id)).await;
-        let res = run_one(k, ev, entity, &a, &who, depth, ev.record_id, (&cel_doc, cel_old.as_ref()), true).await;
+        let res = run_one(k, ev, entity, &a, &who, depth, ev.record_id, (&doc, &cel_doc, cel_old.as_ref()), true).await;
         if let Err(e) = res {
             tracing::warn!(automation = %a.id, event = ev.id, "automation failed: {e}");
             first_error.get_or_insert(e);
@@ -426,7 +507,7 @@ async fn run_scheduled(k: &Kernel, ev: &Event, entity: &str, depth: u8) -> Resul
     let schema = k.registry.schema(ev.tenant_id).await?;
     let Some(ent) = schema.entity(entity).cloned() else { return Ok(()) };
     let who = runner(k, ev.tenant_id, &schema, a.created_by, format!("automation-{}-{}", a.id, ev.id)).await;
-    let mut cel_doc = Value::Null;
+    let (mut raw, mut cel_doc) = (Value::Null, Value::Null);
     if let Ok(ctx) = &who {
         let doc = match k.get(ctx, entity, record, false).await {
             Ok(doc) => doc,
@@ -437,9 +518,10 @@ async fn run_scheduled(k: &Kernel, ev: &Event, entity: &str, depth: u8) -> Resul
         if !crate::schedule::still_due(k, ev.tenant_id, &schema, &ent, &plan, record, due).await? {
             return Ok(());
         }
-        cel_doc = ent.cel_view(&Value::Object(doc), &schema);
+        raw = Value::Object(doc);
+        cel_doc = ent.cel_view(&raw, &schema);
     }
-    run_one(k, ev, entity, &a, &who, depth, Some(record), (&cel_doc, None), false).await.map(|_| ())
+    run_one(k, ev, entity, &a, &who, depth, Some(record), (&raw, &cel_doc, None), false).await.map(|_| ())
 }
 
 /// One automation's run for one event, in its own transaction: nothing if it is off (or the event was handed
@@ -454,7 +536,7 @@ async fn run_one(
     who: &std::result::Result<Ctx, String>,
     depth: u8,
     record: Option<Uuid>,
-    (cel_doc, cel_old): (&Value, Option<&Value>),
+    (raw, cel_doc, cel_old): (&Value, &Value, Option<&Value>),
     hand_over: bool,
 ) -> Result<&'static str> {
     let mut tx = k.db.tenant_tx(ev.tenant_id).await?;
@@ -521,7 +603,8 @@ async fn run_one(
         for (i, action) in validate_actions(&a.actions)?.into_iter().enumerate() {
             let done = Value::Array(results.clone());
             results.push(
-                execute(k, &ctx, &mut tx, entity, record, cel_doc, &user, &[("results", &done), ("links", &links)], &format!("{origin}{i}"), action).await?,
+                execute(k, &ctx, &mut tx, entity, record, (raw, cel_doc), &user, &[("results", &done), ("links", &links)], &format!("{origin}{i}"), action)
+                    .await?,
             );
         }
         "done"
@@ -539,7 +622,7 @@ async fn run_one(
     Ok(status)
 }
 
-/// Runs one action as `ctx` in `tx`, its expressions over `doc` (the record as CEL sees it), `user` and `extra`
+/// Runs one action as `ctx` in `tx`, its expressions over `doc` (the record as CEL sees it; `raw`, as stored), `user` and `extra`
 /// (a configured action's `params`, earlier effects' `results`). Returns the record it made or wrote,
 /// `{entity, id, number}`, an `invoke`'s result (its effect key `key` unless it names one), or null.
 #[allow(clippy::too_many_arguments)]
@@ -549,7 +632,7 @@ pub(crate) async fn execute(
     tx: &mut crate::db::Tx,
     entity: &str,
     record: Option<Uuid>,
-    doc: &Value,
+    (raw, doc): (&Value, &Value),
     user: &Value,
     extra: &[(&str, &Value)],
     key: &str,
@@ -562,14 +645,14 @@ pub(crate) async fn execute(
             let id = record.ok_or_else(|| Error::invalid("set_fields needs a record"))?;
             let mut patch = Doc::new();
             for (field, expr) in values {
-                patch.insert(field, eval(&expr)?);
+                patch.insert(field, effect_value(k, ctx, tx, entity, &expr, doc, user, extra, &[("doc", raw)]).await?);
             }
             k.update_tx(ctx, tx, entity, id, patch, None).await?;
         }
         AutomationAction::CreateDocument { entity: target, values } => {
             let mut input = Doc::new();
             for (field, expr) in values {
-                input.insert(field, eval(&expr)?);
+                input.insert(field, effect_value(k, ctx, tx, entity, &expr, doc, user, extra, &[("doc", raw)]).await?);
             }
             let d = k.insert_tx(ctx, tx, &target, input).await?;
             return Ok(made(&target, &d));
@@ -586,12 +669,13 @@ pub(crate) async fn execute(
                 Err(Error::NotFound(_)) => return Err(Error::invalid(format!("{link}: the {} it names does not exist", tent.def.label))),
                 Err(e) => return Err(e),
             };
-            let seen = tent.cel_view(&Value::Object(linked), &ctx.schema);
+            let linked = Value::Object(linked);
+            let seen = tent.cel_view(&linked, &ctx.schema);
             let mut vars = extra.to_vec();
             vars.push(("linked", &seen));
             let mut patch = Doc::new();
             for (field, expr) in values {
-                patch.insert(field, eval_with(&expr, doc, user, &vars)?);
+                patch.insert(field, effect_value(k, ctx, tx, entity, &expr, doc, user, &vars, &[("doc", raw), ("linked", &linked)]).await?);
             }
             let d = k.update_tx(ctx, tx, target, id, patch, None).await?;
             return Ok(made(target, &d));
@@ -653,11 +737,11 @@ pub(crate) async fn execute(
         }
         AutomationAction::AppendLine { table, values } => {
             let id = record.ok_or_else(|| Error::invalid("append_line needs a record"))?;
-            return write_line(k, ctx, tx, entity, id, doc, user, extra, &table, None, values).await;
+            return write_line(k, ctx, tx, entity, id, (raw, doc), user, extra, &table, None, values).await;
         }
         AutomationAction::SetLine { table, when, values } => {
             let id = record.ok_or_else(|| Error::invalid("set_line needs a record"))?;
-            return write_line(k, ctx, tx, entity, id, doc, user, extra, &table, Some(&when), values).await;
+            return write_line(k, ctx, tx, entity, id, (raw, doc), user, extra, &table, Some(&when), values).await;
         }
     }
     Ok(Value::Null)
@@ -672,7 +756,7 @@ async fn write_line(
     tx: &mut crate::db::Tx,
     entity: &str,
     id: Uuid,
-    doc: &Value,
+    (raw, doc): (&Value, &Value),
     user: &Value,
     extra: &[(&str, &Value)],
     table: &str,
@@ -710,9 +794,10 @@ async fn write_line(
         }
     };
     let vars: Vec<(&str, &Value)> = extra.iter().copied().chain(row.as_ref().map(|r| ("row", r))).collect();
+    let stored_row = rows.get(at).filter(|_| row.is_some()).unwrap_or(&Value::Null);
     let mut line = Map::new();
     for (f, src) in values {
-        line.insert(f, eval_with(&src, doc, user, &vars)?);
+        line.insert(f, effect_value(k, ctx, tx, entity, &src, doc, user, &vars, &[("doc", raw), ("row", stored_row)]).await?);
     }
     match lines.get_mut(at) {
         Some(Value::Object(kept)) => kept.extend(line),
@@ -830,6 +915,44 @@ pub(crate) async fn save_in(ctx: &Ctx, tx: &mut crate::db::Tx, input: &Map<Strin
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
+
+    #[test]
+    fn a_bare_path_is_a_path_to_a_value_alone() {
+        for (src, steps) in [
+            ("doc.a", vec!["doc", "a"]),
+            (" doc.a.b ", vec!["doc", "a", "b"]),
+            ("linked.price", vec!["linked", "price"]),
+            ("links.plan.price", vec!["links", "plan", "price"]),
+            ("row.amount", vec!["row", "amount"]),
+            ("params.x", vec!["params", "x"]),
+            ("results[0].total", vec!["results", "0", "total"]),
+        ] {
+            assert_eq!(bare_path(src), Some(steps), "{src}");
+        }
+        for src in [
+            "doc",
+            "doc.a + 0",
+            "doc.a == null ? null : doc.a",
+            "(doc.a)",
+            "doc.a()",
+            "size(doc.a)",
+            "user.email",
+            "doc.a[x]",
+            "doc.a[]",
+            "doc..a",
+            "0",
+            "'doc.a'",
+        ] {
+            assert_eq!(bare_path(src), None, "{src}");
+        }
+    }
+
+    #[test]
+    fn stored_empty_is_a_null_or_a_missing_key() {
+        let v = serde_json::json!({"a": null, "b": 0, "c": {"d": null}, "e": [false]});
+        assert!(stored_empty(&v, &["a"]) && stored_empty(&v, &["z"]) && stored_empty(&v, &["c", "d"]) && stored_empty(&v, &["a", "x"]));
+        assert!(!stored_empty(&v, &["b"]) && !stored_empty(&v, &["e", "0"]) && !stored_empty(&v, &["e", "5"]) && !stored_empty(&v, &["b", "x"]));
+    }
 
     #[test]
     fn an_expression_is_compiled_once() {
