@@ -248,6 +248,8 @@ fn describe(op: &OverlayOp) -> String {
         OverlayOp::RemoveAction { name } => format!("removes action {name}"),
         OverlayOp::DefineModule { module } => format!("defines menu {}", module.name),
         OverlayOp::RemoveModule { name } => format!("removes menu {name}"),
+        OverlayOp::AddTarget { target } => format!("adds target {}", target.name),
+        OverlayOp::RemoveTarget { name } => format!("removes target {name}"),
         OverlayOp::AddSection { section, .. } => format!("adds form section {}", section.label.as_deref().unwrap_or("(untitled)")),
     }
 }

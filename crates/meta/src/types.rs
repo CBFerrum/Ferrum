@@ -318,6 +318,9 @@ pub struct EntityDef {
     pub search_fields: Vec<String>,
     #[serde(default)]
     pub actions: Vec<ActionDef>,
+    /// Service targets a workspace set with `add_target` (docs/api.md, "Service targets").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<TargetDef>,
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
@@ -472,6 +475,31 @@ pub struct ActionDef {
     /// customization is saved. An action with effects needs no handler.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<Value>,
+}
+
+/// A service target: "this must happen within so much working time" (docs/api.md, "Service targets"). The
+/// expressions see `doc`, `user`, `today` and `now`; the kernel keeps `due_field` and `state_field`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetDef {
+    pub name: String,
+    pub label: String,
+    /// A business calendar's name; none counts plain elapsed time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar: Option<String>,
+    /// The clock starts at the first save on which it holds; without it, when the record is created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_when: Option<String>,
+    /// Seconds or an ISO 8601 duration (`PT8H`); null or empty: the record has no such target.
+    pub within: String,
+    /// While it holds the clock is stopped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_when: Option<String>,
+    pub met_when: String,
+    /// A datetime field: the due moment.
+    pub due_field: String,
+    /// A data or select field: `running`, `paused`, `met`, `met_late` or `breached`.
+    pub state_field: String,
 }
 
 /// A reason a configured action refuses to run: `when` (CEL over `doc`, `user` and `params`) holds.
@@ -1130,6 +1158,14 @@ pub enum OverlayOp {
     },
     /// Tenant-only: removes a workspace's own menu.
     RemoveModule {
+        name: String,
+    },
+    /// Tenant-only: a service target; one named as an earlier one replaces it where it stands.
+    AddTarget {
+        target: TargetDef,
+    },
+    /// Tenant-only: removes a service target.
+    RemoveTarget {
         name: String,
     },
     /// Package-only: a form section for fields the package adds, after the section holding the
