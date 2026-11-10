@@ -159,6 +159,29 @@ real mailer or with a second person.
 38. **The step card.** The buttons screen opened "Invoice it" with its step, its inputs, the submit
     tick and the key; saving it unchanged closed with "Nothing changed". Both forms at 375 px did not
     scroll sideways.
+39. **Linked records and line effects** (server at PR 176, 7 of 7 through the API, then in the browser).
+    On Membership, which links to a Plan and has Charges lines: a button refused "a charge above the
+    plan's price" by reading `links.plan.price` and said "choose a plan first" on a membership without
+    one; "Add a charge" appended a line, kept the other lines' ids and moved the totals; "Rename a
+    charge" changed that one line; a line that is not there was refused, saying so. From the form, the
+    button's dialog asked its two questions and the line was on the record.
+40. **The three gates, as a member who may only read memberships** (server at PR 177). The description
+    told the reader they may take no workflow step; a step naming no roles was refused to them and the
+    record did not move, and someone who may change the record took it; they could not attach a file,
+    and downloaded one the administrator attached; a file tied to no record went to its uploader and
+    not to them.
+41. **A portal menu, as an outside person through the API** (server at PR 178, 12 of 12). The gym's
+    menu was marked for the portal. The member signed in with an emailed code; her portal listed the
+    menu with the two record types her role reaches and not the other four; she listed only her own
+    memberships and another member's was not found; a workflow step naming no roles was refused even on
+    her own record; the members' launcher gave her no tiles.
+42. **The portal in a browser, as the outside person** (Ferrum-Frontend PR 75), the first time the
+    walk used the interface as anyone but an administrator. On the shared host she signed in with a
+    code; the portal home showed "Gym" beside ERP's "Your invoices" and "Your orders"; the menu's page
+    listed Members and Memberships; the list held her four memberships; a record opened read-only with
+    only Print, none of the members' buttons, no Discussion or Activity, and its links stayed under the
+    menu.
+43. **The menus screen's portal tick**: Governance and Risk's menu was ticked and saved from the screen.
 
 ## What these later walks found
 
@@ -180,6 +203,14 @@ real mailer or with a second person.
 * ERP's invoice line takes its price in `price_list_rate`; a `rate` in the step's input is ignored
   without a word (it is a computed field), and the first invoice raised by the button was submitted at
   zero. Nothing warns whoever sets the button up. Not fixed.
+* On a shared host nobody could sign in with an emailed code: the code's step has no workspace box,
+  and the page said "Which workspace?". Every portal person on such a host was locked out of the
+  browser. Fixed in PR 178. The sign-in script is cached for five minutes and served stale for up to a
+  day while it is fetched again, so a returning browser can run the old one after an upgrade.
+* A scoping pass for the portal found three gaps in existing code, each confirmed with a failing test
+  and closed in PR 177: a workflow step naming no roles could be taken by anyone who could read the
+  record; a file could be attached to a record by someone who could only read it; a file tied to no
+  record was served to anyone in the workspace who had its id.
 * Saving a button, target or menu that was already as saved showed the server's refusal as an error;
   an optional condition asked for at least one row; "2 days" counted in a calendar is 48 open hours,
   which the form did not say. Fixed in Ferrum-Frontend PR 72.
