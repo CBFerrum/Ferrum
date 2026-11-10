@@ -3,6 +3,7 @@
 //! read in the save's transaction with the saver's rights, exact to the last digit, and a release kept before
 //! rules could aggregate still running.
 
+use chrono::Timelike;
 use ferrum_kernel::registry::Registry;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings};
@@ -38,6 +39,7 @@ const ENTITIES: &str = r#"
     - {name: membership, type: link, to: Membership}
     - {name: amount, type: decimal}
     - {name: status, type: data}
+    - {name: due_on, type: date}
 - name: Visit
   label: Visit
   kind: document
@@ -80,6 +82,10 @@ fn solution(version: &str, extra: Value) -> String {
         {"id": "balance", "entity": "Membership", "phase": "derive",
          "aggregates": [{"name": "owed", "entity": "Charge", "link": "membership", "to": "self", "op": "sum", "field": "amount"}],
          "writes": {"x_balance": "aggregates.owed"}},
+        // The day the aggregate is read: charges due today or before.
+        {"id": "due", "entity": "Visit", "phase": "derive",
+         "aggregates": [{"name": "due", "entity": "Charge", "link": "member", "to": "member", "filter": [["status", "=", "Unpaid"], ["due_on", "<=", {"today": 0}]], "op": "count"}],
+         "writes": {"x_due": "aggregates.due"}},
         // A rule on the custom entity, to the last digit.
         {"id": "fee_cap", "entity": "XFee", "phase": "validate", "message": "This member owes too much already",
          "aggregates": [{"name": "owed", "entity": "Charge", "link": "member", "to": "member", "filter": [["status", "=", "Unpaid"]], "op": "sum", "field": "amount"}],
@@ -120,7 +126,8 @@ async fn scenario() {
             admin_password: "Correct-Horse-9".into(),
             admin_name: None,
             packages: vec!["club".into()],
-            settings: None,
+            // A zone whose day is not UTC's now, whatever the hour: a day read in UTC would count other charges.
+            settings: Some(json!({"timezone": if chrono::Utc::now().hour() < 10 { "Pacific/Pago_Pago" } else { "Pacific/Kiritimati" }})),
         })
         .await
         .unwrap();
@@ -158,7 +165,8 @@ async fn scenario() {
     k.registry.invalidate(tenant);
 
     // The customer's own fields, and an entity of their own.
-    for (entity, name, ty) in [("Visit", "x_unpaid", "int"), ("Visit", "x_waived", "check"), ("Membership", "x_balance", "decimal")] {
+    for (entity, name, ty) in [("Visit", "x_unpaid", "int"), ("Visit", "x_waived", "check"), ("Visit", "x_due", "int"), ("Membership", "x_balance", "decimal")]
+    {
         let op: OverlayOp = serde_json::from_value(json!({"op": "add_field", "field": {"name": name, "type": ty}})).unwrap();
         k.add_customization(&admin, entity, op, None).await.unwrap();
     }
@@ -188,7 +196,7 @@ async fn scenario() {
     let five: Vec<Value> = (0..5).map(|i| unpaid(&format!("u{i}"))).collect();
     let bad = solution("0.9.0", json!([{"id": "five", "entity": "Visit", "phase": "validate", "message": "m", "check": "true", "aggregates": five}]));
     let faults = k.compile_solution(&admin, &bad).await.unwrap().unwrap_err();
-    assert!(faults.iter().any(|d| d.pointer == "/rules/5/aggregates" && d.message.contains("at most 4")), "{faults:?}");
+    assert!(faults.iter().any(|d| d.pointer == "/rules/6/aggregates" && d.message.contains("at most 4")), "{faults:?}");
     let wrong = solution(
         "0.9.0",
         json!([{"id": "wrong", "entity": "Visit", "phase": "validate", "message": "m", "check": "true",
@@ -196,6 +204,21 @@ async fn scenario() {
     );
     let faults = k.compile_solution(&admin, &wrong).await.unwrap().unwrap_err();
     assert!(faults.iter().any(|d| d.message.contains("Charge.membership is not a link to Member")), "{faults:?}");
+
+    // The day in a filter compares with a date only, and is part of what a release is.
+    let on = |field: &str, day: i64| {
+        solution(
+            "0.9.0",
+            json!([{"id": "on", "entity": "Visit", "phase": "validate", "message": "m", "check": "aggregates.x == 0",
+            "aggregates": [{"name": "x", "entity": "Charge", "link": "member", "to": "member", "filter": [[field, ">", {"today": day}]], "op": "count"}]}]),
+        )
+    };
+    let faults = k.compile_solution(&admin, &on("reference", 0)).await.unwrap().unwrap_err();
+    assert!(faults.iter().any(|d| d.message.contains("does not fit Charge.reference")), "{faults:?}");
+    let digest = |r: ferrum_logic::compile::Release| r.artifact_digest;
+    let (today, tomorrow) =
+        (k.compile_solution(&admin, &on("due_on", 0)).await.unwrap().unwrap(), k.compile_solution(&admin, &on("due_on", 1)).await.unwrap().unwrap());
+    assert_ne!(digest(today), digest(tomorrow), "a day's offset is part of the digest");
 
     let saved = k.save_release(&admin, &solution("1.0.0", json!([]))).await.unwrap();
     let release: Uuid = saved["id"].as_str().unwrap().parse().unwrap();
@@ -268,4 +291,15 @@ async fn scenario() {
     k.insert(&admin, "XFee", obj(json!({"member": chen, "amount": "5", "status": "Unpaid"}))).await.unwrap();
     let e = k.insert(&clerk, "Visit", obj(json!({"reference": "V-11", "member": chen}))).await.unwrap_err();
     assert!(message(&e).contains("unpaid charges"), "an unpaid fee of the custom entity counts: {}", message(&e));
+
+    // The day in a filter is the workspace's, where it is past midnight and UTC is not, or the other way round:
+    // of Dana's charges due on the workspace's today and its tomorrow, one is due.
+    let (local, utc) = (admin.today(), chrono::Utc::now().date_naive());
+    assert_ne!(local, utc, "the workspace's day is not UTC's");
+    let dana = member("Dana").await;
+    for (r, due) in [("D-1", local), ("D-2", local + chrono::Duration::days(1))] {
+        k.insert(&admin, "Charge", obj(json!({"reference": r, "member": dana, "amount": "1", "status": "Unpaid", "due_on": due.to_string()}))).await.unwrap();
+    }
+    let v = k.insert(&clerk, "Visit", obj(json!({"reference": "V-12", "member": dana, "x_waived": true}))).await.unwrap();
+    assert_eq!((v["x_unpaid"].clone(), v["x_due"].clone()), (json!(2), json!(1)), "due today or before, in the workspace's day");
 }

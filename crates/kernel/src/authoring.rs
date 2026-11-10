@@ -662,6 +662,16 @@ impl Kernel {
                         let pkg = ctx.schema.entity(other).map(|e| e.package.clone()).unwrap_or_else(|| package.clone());
                         action(format!("{pkg}.{}.create", ferrum_logic::capability::snake(other)), values(v), format!("Create a {other}"))
                     }
+                    crate::automation::AutomationAction::UpdateLinked { link, values: v } => {
+                        let other = ent.field(link).and_then(|f| f.to.clone()).unwrap_or_default();
+                        let pkg = ctx.schema.entity(&other).map(|e| e.package.clone()).unwrap_or_else(|| package.clone());
+                        if v.values().any(|x| x.contains("linked.")) {
+                            notes.push(format!("{step}: its values read the linked record as `linked`, which a process does not have; say what they read"));
+                        }
+                        let mut input = values(v);
+                        input["id"] = json!(format!("trigger.{link}"));
+                        action(format!("{pkg}.{}.update", ferrum_logic::capability::snake(&other)), input, format!("Set fields on the {other} it links to"))
+                    }
                     crate::automation::AutomationAction::Email { to, subject, body, template, purpose } => {
                         if template.is_some() {
                             notes.push(format!("{step}: its e-mail template is not carried over; the mail sends the body as text"));

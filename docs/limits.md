@@ -96,6 +96,14 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   the scan reaches them (after the servers were down) are skipped, not fired. A moment fires only for the
   automation, the record and the time; it does not wait for a business calendar, and a schedule cannot
   follow a linked document's change (an invoice paid).
+- **Configured actions** (an `add_action` with `effects`, docs/api.md): at most 20 on an entity, 10
+  effects and 10 `refuse_if` on one. Effects run as the system in the action's transaction and write only
+  the workspace's own fields and fields a person may type; each effect reads the record again, and
+  `update_linked` reaches one link of the record (not a child row's, not two links away). An e-mail effect's
+  body and template do not see `params`. The record form shows the button to anyone whose permission
+  allows it: `roles` and `refuse_if` are judged by the server when it is pressed (a refusal, not a hidden
+  button). A rule's aggregate filters on the day as `{"today": n}`, compared with date fields only, never
+  with a datetime.
 - **Redefining a custom entity** (`redefine_entity`) deletes no data: values of a field that goes stay in
   the records, out of sight, until a field of the same name comes back. A field that comes back with a
   type other than the one its values were saved under is not checked against them. A batch of

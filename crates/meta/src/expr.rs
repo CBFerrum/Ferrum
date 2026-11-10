@@ -71,19 +71,24 @@ impl Expr {
     }
 
     pub fn eval(&self, scope: &Scope<'_>) -> Result<Value, String> {
+        self.eval_with(scope, &[])
+    }
+
+    /// [`Expr::eval`] with more variables bound by name (a configured action's `params`, the `linked` record an
+    /// effect writes).
+    pub fn eval_with(&self, scope: &Scope<'_>, extra: &[(&str, &Value)]) -> Result<Value, String> {
         let mut ctx = Context::default();
-        let bind = |ctx: &mut Context, name: &str, v: &Value| -> Result<(), String> {
-            let cv = cel::to_value(v).map_err(|e| format!("cannot bind {name}: {e}"))?;
-            ctx.add_variable_from_value(name.to_string(), cv);
-            Ok(())
-        };
-        bind(&mut ctx, "doc", scope.doc)?;
-        bind(&mut ctx, "old", scope.old.unwrap_or(&Value::Null))?;
-        bind(&mut ctx, "parent", scope.parent.unwrap_or(&Value::Null))?;
-        bind(&mut ctx, "user", scope.user)?;
+        let bind = |ctx: &mut Context, name: &str, v: &Value| ctx.add_variable_from_value(name.to_string(), json_to_cel(v));
+        bind(&mut ctx, "doc", scope.doc);
+        bind(&mut ctx, "old", scope.old.unwrap_or(&Value::Null));
+        bind(&mut ctx, "parent", scope.parent.unwrap_or(&Value::Null));
+        bind(&mut ctx, "user", scope.user);
         // Time is the caller's fact, as the workspace sees it: never a clock read here (FLC-COMP-003).
         for key in ["today", "now", "time"] {
-            bind(&mut ctx, key, scope.user.get(key).unwrap_or(&Value::Null))?;
+            bind(&mut ctx, key, scope.user.get(key).unwrap_or(&Value::Null));
+        }
+        for (name, v) in extra {
+            bind(&mut ctx, name, v);
         }
         let out = self.program.execute(&ctx).map_err(|e| e.to_string())?;
         Ok(cel_to_json(&out))
@@ -95,6 +100,28 @@ impl Expr {
             Value::Bool(b) => Ok(b),
             Value::Null => Ok(false),
             other => Err(format!("expected a boolean, got {other}")),
+        }
+    }
+}
+
+/// A JSON value as CEL sees it. A whole number is a signed integer, as CEL's own literals are, so that
+/// `doc.days * 24` and `doc.qty > -1` work (`cel::to_value` made a positive one unsigned, and CEL does not mix
+/// the two); only one beyond `i64` stays unsigned. Fractions are floats, as before.
+fn json_to_cel(v: &Value) -> cel::Value {
+    use cel::Value as C;
+    match v {
+        Value::Null => C::Null,
+        Value::Bool(b) => C::Bool(*b),
+        Value::Number(n) => match (n.as_i64(), n.as_u64()) {
+            (Some(i), _) => C::Int(i),
+            (None, Some(u)) => C::UInt(u),
+            _ => C::Float(n.as_f64().unwrap_or(f64::NAN)),
+        },
+        Value::String(s) => C::String(Arc::new(s.clone())),
+        Value::Array(items) => C::List(Arc::new(items.iter().map(json_to_cel).collect())),
+        Value::Object(m) => {
+            let map: std::collections::HashMap<cel::objects::Key, C> = m.iter().map(|(k, v)| (k.clone().into(), json_to_cel(v))).collect();
+            C::Map(map.into())
         }
     }
 }
@@ -162,6 +189,21 @@ mod tests {
         assert!(!late.eval_bool(&scope(&doc, &json!({"today": "2026-11-09"}))).unwrap(), "the same input, the same answer");
         let unsupplied = Expr::compile("today == null && now == null && time == null").unwrap();
         assert!(unsupplied.eval_bool(&scope(&doc, &json!({}))).unwrap(), "without the caller's time there is none");
+    }
+
+    /// A record's whole numbers are signed, as literals are (found rebuilding Governance and Risk as a pack).
+    #[test]
+    fn whole_numbers_are_signed() {
+        let doc = json!({"days": 90, "debt": -5, "rate": 1.5, "big": u64::MAX});
+        let user = json!({});
+        let eval = |s: &str| Expr::compile(s).unwrap().eval(&scope(&doc, &user)).unwrap();
+        assert_eq!(eval("doc.days * 24"), json!(2160));
+        assert_eq!(eval("doc.days > 89 && doc.days >= doc.debt && doc.debt < 0"), json!(true));
+        assert_eq!(eval("doc.debt * 2"), json!(-10));
+        assert_eq!(eval("doc.days - 100"), json!(-10));
+        assert_eq!(eval("doc.rate * 2.0"), json!(3.0), "fractions are floats as before");
+        assert_eq!(eval("doc.big"), json!(u64::MAX), "beyond a signed integer, unsigned");
+        assert_eq!(eval("string(doc.days * 24) + 'h'"), json!("2160h"));
     }
 
     #[test]

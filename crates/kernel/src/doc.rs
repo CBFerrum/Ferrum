@@ -698,7 +698,7 @@ impl Kernel {
         .await
     }
 
-    /// Runs a custom action declared in metadata and implemented by a hook.
+    /// Runs a custom action declared in metadata: implemented by a hook, or set up by configuration (actions.rs).
     pub async fn run_action(&self, ctx: &Ctx, entity: &str, id: Uuid, action: &str, params: Value) -> Result<Value> {
         let read_only = self.entity(ctx, entity).is_ok_and(|e| e.def.actions.iter().any(|a| a.name == action && a.read_only));
         with_retry(|| async {
@@ -725,6 +725,10 @@ impl Kernel {
         if !scope.admits(tx, ctx.tenant, &doc).await? {
             return Err(Error::NotFound(ent.def.label.clone()));
         }
+        // A configured action's roles: one of them, besides its permission (an administrator always may).
+        if !def.roles.is_empty() && !def.roles.iter().any(|r| ctx.has_role(r)) {
+            return Err(Error::Forbidden(format!("'{}' is for {}", def.label, def.roles.join(", "))));
+        }
         if !def.docstatus.is_empty() && !def.docstatus.contains(&(docstatus_of(&doc) as i16)) {
             return Err(Error::invalid(format!("'{}' is not available in this document status", def.label)));
         }
@@ -734,6 +738,10 @@ impl Kernel {
             if !expr.eval_bool(&Scope { doc: &view, old: None, parent: None, user: &user }).map_err(Error::invalid)? {
                 return Err(Error::invalid(format!("'{}' is not available for this document", def.label)));
             }
+        }
+        // Set up by configuration: its effects say what it does (actions.rs).
+        if !def.effects.is_empty() {
+            return crate::actions::run(self, ctx, tx, &ent, def, id, &doc, params).await;
         }
         let hooks = self.hooks.for_tenant(&ent.def.name, &ctx.schema.packages);
         for h in &hooks {
@@ -921,6 +929,9 @@ impl Kernel {
         trusted: bool,
         secrets: &mut Vec<crate::secret::SecretChange>,
     ) {
+        let user = ctx.user_value();
+        // The record as stored, for `read_only_if` (its own fields' and its rows').
+        let stored = old.map(|o| ent.cel_view(&Value::Object(o.clone()), &ctx.schema));
         for (k, v) in input {
             if SYSTEM_KEYS.contains(&k.as_str()) || k.starts_with('_') {
                 continue;
@@ -929,7 +940,7 @@ impl Kernel {
                 errors.push(FieldError::new(k, "unknown field"));
                 continue;
             };
-            if f.computed.is_some() || f.rollup.is_some() || (f.read_only && !ctx.is_system && !trusted) {
+            if f.computed.is_some() || f.rollup.is_some() || (read_only(ent, f, stored.as_ref(), None, &user) && !ctx.is_system && !trusted) {
                 continue;
             }
             if !trusted && !ctx.perms.can_write_field(&ent.def.name, f) {
@@ -961,7 +972,7 @@ impl Kernel {
                             continue;
                         }
                         let old_rows = old.and_then(|o| o.get(k)).and_then(Value::as_array).cloned().unwrap_or_default();
-                        let merged = self.merge_rows(ctx, &cent, k, rows, &old_rows, errors, trusted);
+                        let merged = self.merge_rows(ctx, &cent, k, rows, &old_rows, stored.as_ref(), errors, trusted);
                         doc.insert(k.clone(), Value::Array(merged));
                     }
                     _ => errors.push(FieldError::new(k, "must be a list of rows")),
@@ -985,9 +996,11 @@ impl Kernel {
         table: &str,
         rows: &[Value],
         old_rows: &[Value],
+        stored_parent: Option<&Value>,
         errors: &mut Vec<FieldError>,
         trusted: bool,
     ) -> Vec<Value> {
+        let user = ctx.user_value();
         let old_by_id: HashMap<String, &Map<String, Value>> =
             old_rows.iter().filter_map(Value::as_object).filter_map(|r| r.get("id").and_then(Value::as_str).map(|i| (i.to_string(), r))).collect();
         let mut seen = HashSet::new();
@@ -1002,6 +1015,8 @@ impl Kernel {
                 Some(i) if old_by_id.contains_key(&i) && seen.insert(i.clone()) => (i.clone(), old_by_id[&i].clone()),
                 _ => (Uuid::now_v7().to_string(), Map::new()),
             };
+            // A row as stored, for its fields' `read_only_if` (a new row has none stored).
+            let stored = (!base.is_empty() && !cent.exprs.read_only_if.is_empty()).then(|| cent.cel_view(&Value::Object(base.clone()), &ctx.schema));
             let mut row = base;
             for (k, v) in r {
                 if k == "id" || k == "idx" || k.starts_with('_') {
@@ -1011,7 +1026,7 @@ impl Kernel {
                     errors.push(FieldError::new(k, "unknown field").in_row(table, idx));
                     continue;
                 };
-                if f.computed.is_some() || (f.read_only && !ctx.is_system && !trusted) {
+                if f.computed.is_some() || (read_only(cent, f, stored.as_ref(), stored_parent, &user) && !ctx.is_system && !trusted) {
                     continue;
                 }
                 if !trusted && !ctx.perms.can_write_field(&cent.def.name, f) {
@@ -1294,6 +1309,19 @@ impl Kernel {
             h.after_save(&mut hc, doc, old).await?;
         }
         Ok(())
+    }
+}
+
+/// Whether a field ignores this change's input, as `read_only` does: it is read-only, or its `read_only_if` holds
+/// on the record as stored before the change (`stored`, as CEL sees it; `parent` for a row). A new record or row
+/// has nothing stored, so only `read_only` counts for it; a condition that cannot be evaluated counts as holding.
+fn read_only(ent: &EffEntity, f: &FieldDef, stored: Option<&Value>, parent: Option<&Value>, user: &Value) -> bool {
+    if f.read_only {
+        return true;
+    }
+    match (ent.exprs.read_only_if.get(&f.name), stored) {
+        (Some(expr), Some(doc)) => expr.eval_bool(&Scope { doc, old: None, parent, user }).unwrap_or(true),
+        _ => false,
     }
 }
 

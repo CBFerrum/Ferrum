@@ -179,6 +179,35 @@ impl Aggregate {
     pub fn key(&self) -> String {
         serde_json::json!([self.entity, self.link, self.to_link(), self.filter, self.op, self.field]).to_string()
     }
+
+    /// Its filter as read on `today` (the workspace's day when the aggregate is read): each `{"today": n}` is
+    /// that day moved `n` days, as `YYYY-MM-DD`, in a value or a list of values.
+    pub fn filter_on(&self, today: chrono::NaiveDate) -> Vec<Condition> {
+        let day = |v: &Value| match today_offset(v) {
+            Some(n) => Value::String((today + chrono::Duration::days(n)).to_string()),
+            None => v.clone(),
+        };
+        self.filter
+            .iter()
+            .map(|Condition(f, op, v)| {
+                let v = match v {
+                    Value::Array(items) => Value::Array(items.iter().map(day).collect()),
+                    other => day(other),
+                };
+                Condition(f.clone(), op.clone(), v)
+            })
+            .collect()
+    }
+}
+
+/// Days a filter's `{"today": n}` may reach either way: five years.
+pub const MAX_TODAY_OFFSET: i64 = 1826;
+
+/// The days from today a filter value names when it is `{"today": n}` (a whole number, at most five years either
+/// way), the day the aggregate is read moved `n` days; `None` for any other value.
+pub fn today_offset(v: &Value) -> Option<i64> {
+    let m = v.as_object().filter(|m| m.len() == 1)?;
+    m.get("today")?.as_i64().filter(|n| n.abs() <= MAX_TODAY_OFFSET)
 }
 
 fn not_self<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
@@ -670,6 +699,27 @@ mod tests {
         assert_eq!(bare, own);
         assert_eq!(serde_json::to_value(&own).unwrap(), serde_json::to_value(&bare).unwrap(), "one canonical form");
         assert_eq!(read(serde_json::json!("member")).to.as_deref(), Some("member"));
+    }
+
+    #[test]
+    fn the_day_in_a_filter_is_the_day_it_is_read() {
+        let a: Aggregate = serde_json::from_value(serde_json::json!({"name": "held", "entity": "Acceptance", "link": "risk", "op": "exists",
+            "filter": [["status", "=", "Accepted"], ["expires_on", ">=", {"today": 0}], ["decided_on", "between", [{"today": -30}, {"today": 1}]]]}))
+        .unwrap();
+        let day = |d: &str| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").unwrap();
+        let on = |d: &str| serde_json::to_value(a.filter_on(day(d))).unwrap();
+        // Either side of a midnight: the same filter, read a day apart.
+        assert_eq!(on("2026-11-10")[1], serde_json::json!(["expires_on", ">=", "2026-11-10"]));
+        assert_eq!(on("2026-11-11")[1], serde_json::json!(["expires_on", ">=", "2026-11-11"]));
+        assert_eq!(on("2026-03-01")[2], serde_json::json!(["decided_on", "between", ["2026-01-30", "2026-03-02"]]));
+        assert_eq!(on("2026-11-10")[0], serde_json::json!(["status", "=", "Accepted"]), "other values as they are");
+        // Its canonical form is what was written: the day, not a date.
+        assert_eq!(serde_json::to_value(&a).unwrap()["filter"][1][2], serde_json::json!({"today": 0}));
+        for not in
+            [serde_json::json!({"today": 0.5}), serde_json::json!({"today": 2000}), serde_json::json!({"today": 0, "x": 1}), serde_json::json!({"day": 0})]
+        {
+            assert_eq!(today_offset(&not), None, "{not}");
+        }
     }
 
     #[test]
