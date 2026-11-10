@@ -96,8 +96,13 @@ def refused_images(files: dict, engines: list) -> list:
         else:
             approved[e["image"]] = e
     for path, text in sorted(files.items()):
+        # A Helm chart names its images in its values (`repository:`); its templates only put them together.
+        chart = path.startswith("deploy/helm/")
+        if chart and "/templates/" in path:
+            continue
+        pattern = r"[^#]*\brepository:\s*([^\s,}]+)" if chart else r"\s*image:\s*(\S+)"
         for line in text.splitlines():
-            m = re.match(r"\s*image:\s*(\S+)", line)
+            m = re.match(pattern, line)
             if m and image_of(m.group(1)) not in approved:
                 bad.append(f"{path}: {image_of(m.group(1))} is not an engine approved in docs/registry/engines.yaml")
     return bad
@@ -114,6 +119,9 @@ def self_test() -> None:
     engine = {"image": "postgres", "name": "PostgreSQL", "license": "PostgreSQL", "read": "COPYRIGHT", "terms": "none", "decided_in": "x"}
     assert refused_images({"deploy/a.yml": "  image: postgres:17\n"}, [engine]) == []
     assert refused_images({"deploy/a.yml": "  image: redis:7\n"}, [engine]) == ["deploy/a.yml: redis is not an engine approved in docs/registry/engines.yaml"]
+    chart = {"deploy/helm/x/values.yaml": "image:\n  repository: postgres\n  tag: ''\npdf:\n  image: {repository: redis, tag: '7'}\n# repository: mysql\n"}
+    assert refused_images(chart, [engine]) == ["deploy/helm/x/values.yaml: redis is not an engine approved in docs/registry/engines.yaml"], "a chart's images are its values' repositories"
+    assert refused_images({"deploy/helm/x/templates/a.yaml": "  image: {{ include \"x.image\" . }}\n"}, [engine]) == [], "and its templates name none"
     assert refused_images({}, [dict(engine, license="SSPL-1.0")]), "an engine under a licence nobody accepted is not approved"
     assert refused_images({}, [dict(engine, decided_in="")]), "nor one without its decision"
 

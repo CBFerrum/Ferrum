@@ -15,7 +15,7 @@ use loco_rs::environment::Environment;
 use loco_rs::storage::{self, Storage};
 use loco_rs::task::Tasks;
 use loco_rs::{Error, Result};
-use migration::Migrator;
+use migration::{Migrator, MigratorTrait};
 use std::future::IntoFuture;
 use std::path::Path;
 use std::sync::Arc;
@@ -138,6 +138,19 @@ impl Hooks for App {
 
     async fn after_context(ctx: AppContext) -> Result<AppContext> {
         let settings = Settings::from_ctx(&ctx)?;
+        // `ferrum task migrate` is what brings the database up to date, whatever the setting says.
+        let migrating = is_migrate_task(std::env::args());
+        let migrate_now = settings.migrate_at_start || migrating;
+        if !migrate_now {
+            // Loco's own migrator (empty today: the kernel owns the schema): nothing may be waiting for it.
+            let waiting = Migrator::get_pending_migrations(&ctx.db).await.map_err(|e| Error::Message(format!("database: {e}")))?;
+            if !waiting.is_empty() {
+                return Err(Error::Message(format!(
+                    "the database is not ready for this build: {} Loco migrations are not applied. Run `ferrum task migrate`, or start with FERRUM_MIGRATE_AT_START=true",
+                    waiting.len()
+                )));
+            }
+        }
         crate::extract::PROXY_HOPS.store(settings.proxy_hops, std::sync::atomic::Ordering::Relaxed);
         if settings.db_max_connections < ferrum_kernel::doctor::POOL_FLOOR {
             tracing::warn!(
@@ -210,6 +223,7 @@ impl Hooks for App {
                 plans,
                 signup,
                 process_runtime: processes,
+                migrate_at_start: migrate_now,
                 ..Default::default()
             },
             mailer,
@@ -248,8 +262,14 @@ impl Hooks for App {
         let shell = Arc::new(crate::shell::Shell::new(kernel.clone(), storage.clone(), &settings, &ctx.config.server.host));
         // Workspaces from before this release's package layout move onto it (logged, not fatal:
         // the next start tries again).
-        if let Err(e) = crate::upgrade::run(&kernel).await {
-            tracing::error!("moving workspaces onto this release's packages failed: {e}");
+        if migrating {
+            // The task runs the steps itself, to print them and to fail when one fails.
+        } else if migrate_now {
+            if let Err(e) = crate::upgrade::run(&kernel).await {
+                tracing::error!("moving workspaces onto this release's packages failed: {e}");
+            }
+        } else {
+            crate::upgrade::verify(&kernel).await.map_err(|e| Error::Message(e.to_string()))?;
         }
         apps.ensure_native("erp", "accounting").await;
         apps.ensure_native("studio", "studio").await;
@@ -502,6 +522,7 @@ impl Hooks for App {
         tasks.register(crate::tasks::SetPlan);
         tasks.register(crate::tasks::ReapplyErasures);
         tasks.register(crate::tasks::SyncSchema);
+        tasks.register(crate::tasks::Migrate);
         tasks.register(crate::tasks::ImportErpnext);
         tasks.register(crate::tasks::RunMaintenance);
         tasks.register(crate::tasks::SeedDemo);
@@ -709,6 +730,12 @@ fn signup_settings(
     Ok((plans, policy))
 }
 
+/// Whether the command line runs `ferrum task migrate`.
+fn is_migrate_task(args: impl IntoIterator<Item = String>) -> bool {
+    let args: Vec<String> = args.into_iter().collect();
+    args.windows(2).any(|w| w[0] == "task" && w[1] == "migrate")
+}
+
 fn push_services(listed: &str) -> Vec<String> {
     let listed: Vec<String> = listed.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect();
     if listed.is_empty() { ferrum_kernel::webpush::PUSH_SERVICES.iter().map(|s| s.to_string()).collect() } else { listed }
@@ -748,6 +775,15 @@ async fn secret_key(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_migrate_task_is_found_on_the_command_line() {
+        let args = |a: &[&str]| super::is_migrate_task(a.iter().map(|s| s.to_string()));
+        assert!(args(&["ferrum", "task", "migrate"]));
+        assert!(args(&["ferrum", "--environment", "production", "task", "migrate"]));
+        assert!(!args(&["ferrum", "start"]));
+        assert!(!args(&["ferrum", "task", "doctor", "migrate"]));
+    }
+
     use super::*;
 
     /// Round trip through an S3-compatible store. Runs when `FERRUM_TEST_S3_ENDPOINT` is set (CI

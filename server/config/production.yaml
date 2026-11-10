@@ -56,7 +56,7 @@ database:
   idle_timeout: 600000
   min_connections: 1
   max_connections: 2
-  auto_migrate: true
+  auto_migrate: <%= get_env(name="FERRUM_MIGRATE_AT_START", default="true") %>
   dangerously_truncate: false
   dangerously_recreate: false
 
@@ -87,6 +87,7 @@ settings:
   tenant_requests: <%= get_env(name="FERRUM_TENANT_REQUESTS", default="null") %>
   proxy_hops: <%= get_env(name="FERRUM_PROXY_HOPS", default="1") %>
   run_background: <%= get_env(name="FERRUM_RUN_BACKGROUND", default="true") %>
+  migrate_at_start: <%= get_env(name="FERRUM_MIGRATE_AT_START", default="true") %>
   upload_max_bytes: 26214400
   direct_upload_max_bytes: <%= get_env(name="FERRUM_DIRECT_UPLOAD_MAX_BYTES", default="2147483648") %>
   files_dir: <%= get_env(name="FERRUM_FILES_DIR", default="/var/lib/ferrum/files") %>
