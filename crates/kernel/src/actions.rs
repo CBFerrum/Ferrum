@@ -19,13 +19,16 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// What is wrong with `schema`'s configured actions, one line each, naming the entity, action and effect.
-pub fn problems(schema: &Schema) -> Vec<String> {
+/// What is wrong with `schema`'s configured actions in workspace `tenant`, one line each, naming the entity, action
+/// and effect. An `invoke` is checked against the catalog `schema` gives, as the system sees it.
+pub fn problems(k: &Kernel, tenant: Uuid, schema: &Schema) -> Vec<String> {
+    let system = std::cell::OnceCell::new();
+    let system = || system.get_or_init(|| Ctx::system(tenant, Arc::new(schema.clone())));
     let mut out = Vec::new();
     for ent in schema.entities.values() {
         for a in ent.def.actions.iter().filter(|a| !a.effects.is_empty()) {
             for (i, raw) in a.effects.iter().enumerate() {
-                if let Err(m) = check_effect(schema, ent, raw) {
+                if let Err(m) = check_effect(k, &system, schema, ent, raw) {
                     out.push(format!("{}: action {}, effect {}: {m}", ent.def.name, a.name, i + 1));
                 }
             }
@@ -34,7 +37,7 @@ pub fn problems(schema: &Schema) -> Vec<String> {
     out
 }
 
-fn check_effect(schema: &Schema, ent: &EffEntity, raw: &Value) -> std::result::Result<(), String> {
+fn check_effect<'a>(k: &Kernel, system: &dyn Fn() -> &'a Ctx, schema: &Schema, ent: &EffEntity, raw: &Value) -> std::result::Result<(), String> {
     let effect: AutomationAction = serde_json::from_value(raw.clone()).map_err(|e| e.to_string())?;
     let said = |e: Error| match e {
         Error::Validation(fs) => fs.into_iter().map(|f| f.message).collect::<Vec<_>>().join("; "),
@@ -46,6 +49,7 @@ fn check_effect(schema: &Schema, ent: &EffEntity, raw: &Value) -> std::result::R
         AutomationAction::SetFields { values } => (Some(ent), values),
         AutomationAction::CreateDocument { entity, values } => (schema.entity(entity).map(|e| &**e), values),
         AutomationAction::UpdateLinked { link, values } => (ent.field(link).and_then(|f| f.to.as_deref()).and_then(|t| schema.entity(t)).map(|e| &**e), values),
+        AutomationAction::Invoke { capability, input, .. } => return automation::check_invoke(k, system(), capability, input).map_err(said),
         AutomationAction::Notify { .. } | AutomationAction::Email { .. } => return Ok(()),
     };
     let Some(target) = target else { return Ok(()) };
@@ -116,16 +120,22 @@ pub(crate) async fn run(
         ..ctx.clone()
     };
     let effects: Vec<AutomationAction> = serde_json::from_value(Value::Array(def.effects.clone())).map_err(|e| Error::invalid(e.to_string()))?;
+    // An `invoke` without a key of its own does its step once per action, record version (as pressed) and place.
+    let origin = format!("action:{}.{}:{id}:v{}:", ent.def.name, def.name, doc.get("version").unwrap_or(&Value::Null));
     let mut made = Vec::new();
-    for effect in effects {
+    let mut results = Vec::new();
+    for (i, effect) in effects.into_iter().enumerate() {
         let creates = matches!(effect, AutomationAction::CreateDocument { .. });
-        // Each effect sees the record as the ones before it left it.
+        // Each effect sees the record as the ones before it left it, and what each before it gave as `results`.
         let now = k.get_tx(&system, tx, &ent.def.name, id, false).await?;
         let view = ent.cel_view(&Value::Object(now), &ctx.schema);
-        let out = automation::execute(k, &system, tx, &ent.def.name, Some(id), &view, &user, &[("params", &params)], effect).await?;
+        let done = Value::Array(results.clone());
+        let extra = [("params", &params), ("results", &done)];
+        let out = automation::execute(k, &system, tx, &ent.def.name, Some(id), &view, &user, &extra, &format!("{origin}{i}"), effect).await?;
         if creates {
-            made.push(out);
+            made.push(out.clone());
         }
+        results.push(out);
     }
     crate::audit::record(tx, ctx, &ent.def.name, id, &format!("action:{}", def.name), None, params).await?;
     let after = k.get_tx(&system, tx, &ent.def.name, id, false).await?;
