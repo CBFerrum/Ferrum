@@ -589,6 +589,15 @@ entity, record_id, attempts, last_error, created_at, correlation_id}]}`; `POST
 webhook, webhook_name, topic, attempts, response_code, last_error, created_at, updated_at}]}`; `POST
 /api/admin/webhook-deliveries/{id}/replay`.
 
+Business calendars ([processes](logic/processes.md)): `GET /api/admin/calendars` → `{calendars: [{name,
+zone, weekends, holidays, hours, revision, updated_by, updated_at}]}`; `GET /api/admin/calendars/{name}` →
+one of them; `PUT /api/admin/calendars/{name}` `{zone, weekends, holidays, hours?}` → `{revision}`, each
+change a new revision; `DELETE /api/admin/calendars/{name}`. `hours` is windows per weekday in the zone,
+`{"mon": [["09:00", "13:00"], ["14:00", "18:00"]]}`; left out, every hour of a business day is open. Bad
+hours are a field error on `hours`. These are the functions Studio's `/calendars` route calls. Deleting a
+calendar a release's waits name is not refused: deadlines already worked out stay, and a wait that starts
+later on it fails as one naming a calendar the workspace never had.
+
 Personal data, beside `/api/admin/privacy`: `GET`/`POST /api/admin/restrictions`, `POST
 /api/admin/restrictions/lift` `{email}`; `GET`/`POST /api/admin/retention`, `PUT`/`DELETE
 /api/admin/retention/{id}`, `POST /api/admin/retention/{id}/preview` → `{reaches, more}`.

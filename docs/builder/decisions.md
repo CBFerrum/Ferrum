@@ -77,6 +77,12 @@ the kernel; tokens stored in plain.
 * **Business calendars gain hours of the day** (per weekday, in the calendar's zone). Targets on states
   are measured in business time; states marked as pausing stop the clock; a breach is a row written
   once (unique per record, target and round).
+* *10 Nov 2026:* hours of the day are built (`logic_calendar.hours`, `crates/logic/src/calendar.rs`):
+  windows per weekday in the zone, and `add_working`, `working_between`, `next_open`, `is_open` with
+  stopped intervals; waits take `{"working": "PT8H", "calendar": …}`; administrators keep calendars at
+  `/api/admin/calendars`. Daylight saving: open time is real elapsed time, a window runs from the first
+  instant its start shows to the last instant its end shows, and a skipped time is the first instant
+  after the gap. Targets on states, pausing states and breach rows are not built.
 
 **Rules out**: approvals outside the record (an email reply as a decision); a breach computed only when
 someone looks.
