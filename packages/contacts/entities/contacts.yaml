@@ -18,6 +18,9 @@
   kind: master
   module: crm
   title_field: full_name
+  # Two contacts for one person are merged: links to the duplicate move to the one that stays.
+  mergeable: true
+  duplicate_fields: [email, phone, full_name]
   search_fields: [email, phone]
   fields:
     - {name: first_name, type: data, required: true}
