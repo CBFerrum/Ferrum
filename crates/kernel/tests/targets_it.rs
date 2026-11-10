@@ -17,6 +17,8 @@ use uuid::Uuid;
 type At = chrono::DateTime<chrono::Utc>;
 
 const PACKAGE: &str = "package: desk\nversion: 0.1.0\ndepends: [core]\n";
+const SHIPMENTS: &str =
+    "name: Shipment\nlabel: Shipment\nkind: document\nsubmittable: true\ntitle_field: reference\nfields:\n  - {name: reference, type: data, required: true}\n";
 const ENTITIES: &str = "name: Ticket\nlabel: Ticket\nkind: master\ntitle_field: subject\nfields:\n  - {name: subject, type: data, required: true}\n  - {name: priority, type: select, options: [Low, High], default: Low}\n  - {name: status, type: select, options: [Open, Waiting, Closed], default: Open}\n";
 
 fn at(s: &str) -> At {
@@ -167,14 +169,17 @@ async fn scenario() {
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core")).expect("core");
-    let files: BTreeMap<String, String> =
-        [("package.yaml", PACKAGE), ("entities/ticket.yaml", ENTITIES)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    let files: BTreeMap<String, String> = [("package.yaml", PACKAGE), ("entities/ticket.yaml", ENTITIES), ("entities/shipment.yaml", SHIPMENTS)]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
     let desk = ferrum_meta::catalog::load_package_files(&files).expect("package");
     let k = Kernel::boot(db, Catalog::from_packages(vec![core, desk]).unwrap(), HookRegistry::default(), KernelSettings::default(), None).await.expect("boot");
 
     calendars(&k).await;
     a_life(&k).await;
     reminders(&k).await;
+    submitted(&k).await;
     travel(&k).await;
 }
 
@@ -278,14 +283,19 @@ async fn a_life(k: &Arc<Kernel>) {
     assert_eq!(kept(&t, "respond"), running("2026-11-11T10:30:00Z"), "11:00 there plus four office hours, with lunch: 16:00");
     assert_eq!(w.count("select count(*) from record_target where record_id = $1 and round = 2 and breached_at is null", id).await, 2);
 
-    // A breach whose save is refused (the record breaks a rule) stays recorded; the field catches up later.
-    let locked = id_of(&w.ticket("2026-11-11T05:30:00Z", json!({"priority": "High"})).await);
-    w.exec("update e_ticket set subject = 'locked' where id = $1", locked).await;
+    // A breach is the platform's fact: a rule the record now breaks does not keep it out of the field.
+    let ruled = id_of(&w.ticket("2026-11-11T05:30:00Z", json!({"priority": "High"})).await);
+    w.exec("update e_ticket set subject = 'locked' where id = $1", ruled).await;
     assert_eq!(k.sweep_targets_at(at("2026-11-11T06:31:00Z")).await.unwrap(), 1);
+    assert_eq!(kept(&w.get(ruled).await, "respond").1.as_deref(), Some("breached"), "written past the rule");
+    // A real failure (the calendar gone under it) leaves the breach recorded; the field catches up at the next save.
+    let locked = id_of(&w.ticket("2026-11-11T05:40:00Z", json!({"priority": "High"})).await);
+    w.exec("delete from logic_calendar where name = 'office' and $1::uuid is not null", locked).await;
+    assert_eq!(k.sweep_targets_at(at("2026-11-11T06:41:00Z")).await.unwrap(), 1);
     assert_eq!(w.count("select count(*) from record_target where record_id = $1 and target = 'respond' and breached_at is not null", locked).await, 1);
-    assert_eq!(kept(&w.get(locked).await, "respond").1.as_deref(), Some("running"), "the system's save was refused");
-    w.exec("update e_ticket set subject = 'Printer' where id = $1", locked).await;
-    let t = w.set("2026-11-11T06:40:00Z", locked, json!({})).await;
+    assert_eq!(kept(&w.get(locked).await, "respond").1.as_deref(), Some("running"), "the field could not be worked out");
+    k.put_logic_calendar(&w.admin().await, "office", &office()).await.unwrap();
+    let t = w.set("2026-11-11T06:45:00Z", locked, json!({})).await;
     assert_eq!(kept(&t, "respond").1.as_deref(), Some("breached"));
 
     // Another workspace sees none of it; a record's deletion takes its rounds.
@@ -329,6 +339,42 @@ async fn reminders(k: &Arc<Kernel>) {
         .unwrap();
     tx.commit().await.unwrap();
     assert_eq!(fired, [(b, at("2026-11-09T06:30:00Z")), (c, at("2026-11-11T05:30:00Z"))]);
+    k.pin_clock(None);
+}
+
+/// A submitted document cannot be edited, yet its breach reaches its state field and an automation with `old`.
+async fn submitted(k: &Arc<Kernel>) {
+    let w = workspace(k, "ship").await;
+    let field = |name: &str, ty: &str| op("Shipment", json!({"op": "add_field", "field": {"name": name, "type": ty}}));
+    let target = op(
+        "Shipment",
+        json!({"op": "add_target", "target": {"name": "ship", "label": "Shipped", "start_when": "doc.docstatus == 1", "within": "'P2D'",
+        "met_when": "doc.docstatus == 2", "due_field": "x_ship_by", "state_field": "x_ship_state"}}),
+    );
+    k.batch_customizations(&w.admin().await, vec![field("x_ship_by", "datetime"), field("x_ship_state", "data"), target], false)
+        .await
+        .map_err(|(i, e)| format!("{i:?}: {e}"))
+        .unwrap();
+    let mail = json!([{"type": "email", "to": "'yard@example.com'", "subject": "'Late ' + doc.reference", "body": "doc.reference"}]);
+    let input = obj(json!({"name": "late", "entity": "Shipment", "event": "updated",
+        "condition": "doc.x_ship_state == 'breached' && old.x_ship_state != 'breached'", "actions": mail}));
+    automation::save(k, &w.admin().await, &input).await.unwrap();
+    k.pin_clock(Some(at("2026-11-09T10:00:00Z")));
+    let d = k.insert(&w.admin().await, "Shipment", obj(json!({"reference": "S-1"}))).await.unwrap();
+    assert_eq!(d.get("x_ship_state"), Some(&Value::Null), "a draft has not started");
+    let id = id_of(&d);
+    let d = k.submit(&w.admin().await, "Shipment", id, None).await.unwrap();
+    assert_eq!(d["x_ship_state"], json!("running"));
+    // (Other workspaces' overdue rounds are swept in the same pass.)
+    assert!(k.sweep_targets_at(at("2026-11-11T10:01:00Z")).await.unwrap() >= 1);
+    let d = k.get(&w.admin().await, "Shipment", id, false).await.unwrap();
+    assert_eq!((d["x_ship_state"].clone(), d["docstatus"].clone()), (json!("breached"), json!(1)), "still submitted");
+    drain(k).await;
+    let mut tx = k.db.tenant_tx(w.tenant).await.unwrap();
+    let n: i64 =
+        sqlx::query_scalar("select count(*) from outbox where topic = 'ferrum.mail' and payload->>'subject' = 'Late S-1'").fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(n, 1, "the automation saw it once");
     k.pin_clock(None);
 }
 

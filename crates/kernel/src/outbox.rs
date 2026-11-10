@@ -615,11 +615,11 @@ impl Kernel {
         }
         let mut tx = self.db.tenant_tx(ev.tenant_id).await?;
         let entity_wildcard = format!("{}.*", ev.topic.split('.').next().unwrap_or_default());
-        // An app's webhook hears which record, never what it holds: its service reads that with
-        // its own key, as far as its rights go.
+        // An app's webhook hears which record, never what it holds (nor what a change replaced): its
+        // service reads that with its own key, as far as its rights go.
         sqlx::query(
             "insert into webhook_delivery (tenant_id, id, webhook_id, outbox_id, topic, payload) \
-             select w.tenant_id, gen_random_uuid(), w.id, $2, $3, case when w.app is null then $4 else $4 - 'doc' end from webhook w \
+             select w.tenant_id, gen_random_uuid(), w.id, $2, $3, case when w.app is null then $4 else $4 - 'doc' - 'was' end from webhook w \
              where w.tenant_id = $1 and w.is_active and ($3 = any(w.topics) or '*' = any(w.topics) or $5 = any(w.topics)) \
              on conflict (tenant_id, webhook_id, outbox_id) do nothing",
         )
