@@ -359,9 +359,6 @@ pub(crate) fn apply_op(def: &mut EntityDef, op: &OverlayOp, source: OverlaySourc
             if *column && source == OverlaySource::Tenant {
                 return Err("only packages add columns to an entity's table".into());
             }
-            if field.ftype == FieldType::Table && source == OverlaySource::Tenant {
-                return Err("customizations cannot add child tables".into());
-            }
             if field.ftype == FieldType::Secret && source == OverlaySource::Tenant {
                 return Err("secret fields come with packages (they need code that uses them)".into());
             }
@@ -605,19 +602,22 @@ fn validate_custom_entity(e: &EntityDef) -> Result<(), String> {
     Ok(())
 }
 
-/// A custom entity's lines are rows of a custom child entity, and each custom child entity is the
-/// lines of one table field only: its rows share `custom_record`, where the child's name alone tells
-/// one table's rows from another's.
+/// A custom entity's lines, and those a customization adds to a package's entity (an `x_` table field), are rows
+/// of a custom child entity, and each custom child entity is the lines of one table field only: its rows share
+/// `custom_record`, where the child's name alone tells one table's rows from another's.
 fn validate_custom_lines(name: &str, building: &BTreeMap<String, Building>) -> Result<(), String> {
-    let Some(b) = building.get(name).filter(|b| b.custom) else { return Ok(()) };
-    for f in b.def.fields.iter().filter(|f| f.ftype == FieldType::Table) {
+    let Some(b) = building.get(name) else { return Ok(()) };
+    for f in b.def.fields.iter().filter(|f| f.ftype == FieldType::Table && (b.custom || f.name.starts_with("x_"))) {
         let of = f.of.as_deref().unwrap_or_default();
         if !building.get(of).is_some_and(|c| c.custom && c.def.kind == EntityKind::Child) {
-            return Err(format!("table field {}: the lines of a custom entity must be a custom child entity, and {of} is not one", f.name));
+            return Err(format!("table field {}: the lines a workspace adds must be a custom child entity, and {of} is not one", f.name));
         }
+        // A custom entity's table first: where one meets a package's entity's, the package's entity is the one that
+        // falls back to its package's definition (a custom entity that fails goes from the schema altogether).
         let first = building
             .iter()
             .filter(|(_, o)| o.custom)
+            .chain(building.iter().filter(|(_, o)| !o.custom))
             .flat_map(|(n, o)| o.def.fields.iter().filter(|g| g.ftype == FieldType::Table && g.of.as_deref() == Some(of)).map(move |g| (n, &g.name)))
             .next();
         if let Some((owner, table)) = first.filter(|(n, t)| (n.as_str(), t.as_str()) != (name, f.name.as_str())) {
@@ -626,6 +626,13 @@ fn validate_custom_lines(name: &str, building: &BTreeMap<String, Building>) -> R
         // Lines within lines go two levels deep: a record, its lines, their lines.
         if b.def.kind == EntityKind::Child && building.get(of).is_some_and(|c| c.def.fields.iter().any(|g| g.ftype == FieldType::Table)) {
             return Err(format!("table field {}: lines go two levels deep (a record, its lines, their lines), and {of} has lines of its own", f.name));
+        }
+        // On a package's entity, one level: its lines live under a record of the package's table.
+        if !b.custom && building.get(of).is_some_and(|c| c.def.fields.iter().any(|g| g.ftype == FieldType::Table)) {
+            return Err(format!(
+                "table field {}: the lines a workspace adds to {name}, which comes with a package, go one level deep, and {of} has lines of its own",
+                f.name
+            ));
         }
     }
     Ok(())
@@ -875,6 +882,14 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
                 OverlayOp::AddTarget { target: t } if !b.custom && ![&t.due_field, &t.state_field].iter().all(|f| f.starts_with("x_")) => {
                     Err(format!("target {}: {} comes with a package, so the target keeps fields the workspace added (x_…)", t.name, ov.entity))
                 }
+                // Lines a customization adds go on a package's records, one level (BD-06): a custom entity's come with its
+                // definition, and a package's lines or ledger take none.
+                OverlayOp::AddField { field, .. } if field.ftype == FieldType::Table && b.custom => {
+                    Err(format!("table field {}: a custom entity's tables come with its definition (redefine_entity)", field.name))
+                }
+                OverlayOp::AddField { field, .. } if field.ftype == FieldType::Table && matches!(b.def.kind, EntityKind::Child | EntityKind::Ledger) => {
+                    Err(format!("table field {}: {} is the lines of another entity or a ledger, and takes no lines", field.name, ov.entity))
+                }
                 _ => apply_op(&mut b.def, op, OverlaySource::Tenant),
             };
             match res {
@@ -963,6 +978,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         })
         .collect();
 
+    let custom: HashSet<String> = building.iter().filter(|(_, b)| b.custom).map(|(n, _)| n.clone()).collect();
     let mut entities = BTreeMap::new();
     for (name, b) in building {
         let table = if b.def.kind == EntityKind::Child {
@@ -978,8 +994,9 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
             .iter()
             .filter(|f| f.ftype == FieldType::Table)
             .map(|f| {
-                // A custom entity's lines are custom records too (`ChildInfo::predicate`).
-                let rows = if b.custom { CUSTOM_RECORD_TABLE.to_string() } else { child_table(&table, &f.name) };
+                // A custom child entity's rows are custom records (`ChildInfo::predicate`), under a custom record or,
+                // added by a customization, a package's record.
+                let rows = if f.of.as_deref().is_some_and(|c| custom.contains(c)) { CUSTOM_RECORD_TABLE.to_string() } else { child_table(&table, &f.name) };
                 (f.name.clone(), ChildInfo { entity: f.of.clone().unwrap_or_default(), table: rows })
             })
             .collect();
