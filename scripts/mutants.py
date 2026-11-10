@@ -558,7 +558,12 @@ MUTANTS = [
     ("transition-offered-to-anyone", "crates/kernel/src/describe.rs", "json!(crate::ctx::transition_gate(ctx, ent, def).is_ok())", "json!(true)", PORTAL),
     # Tying a file to a record needs the right to change it.
     ("attach-on-read", "crates/kernel/src/doc.rs", "        if !scope.admits(&mut tx, ctx.tenant, &doc).await? {\n            return Err(Error::Forbidden(format!(\"only someone who may change", "        if !scope.admits(&mut tx, ctx.tenant, &doc).await? && false {\n            return Err(Error::Forbidden(format!(\"only someone who may change", STREAMED),
-    ("upload-attaches-on-read", "server/src/objects.rs", "k.may_attach(ctx, entity, *record).await?;", "k.get(ctx, entity, *record, false).await?;", STREAMED),
+    ("upload-attaches-on-read", "server/src/objects.rs", "Some((entity, record)) => k.may_attach(ctx, entity, *record).await?,", "Some((entity, record)) => k.get(ctx, entity, *record, false).await.map(drop)?,", STREAMED),
+    # A file tied to no record is its uploader's until a record they save names it.
+    ("loose-file-served-to-anyone", "crates/kernel/src/files.rs", "            _ if owns_loose(ctx, by) => Ok(()),", "            _ if true => Ok(()),", PORTAL),
+    ("save-ties-no-file", "crates/kernel/src/files.rs", "update file_object set entity = $3, record_id = $4 where tenant_id = $1 and id = $2\"", "update file_object set entity = $3, record_id = $4 where tenant_id = $1 and id = $2 and false\"", PORTAL),
+    ("save-names-anyones-file", "crates/kernel/src/files.rs", "                _ => return Err(refused()),", "                _ => {}", PORTAL),
+    ("outsiders-upload-without-limit", "crates/kernel/src/files.rs", "        if !ctx.outside {\n            return Ok(());", "        if !ctx.outside || true {\n            return Ok(());", STREAMED),
     ("portal-roles-given-to-anyone", "crates/kernel/src/auth.rs", "                if let Some(other) = roles.iter().find(|r| !portal.contains(r)) {", "                if let Some(other) = None::<&String> {", PORTAL),
     ("custom-lines-load-mixes-tables", "crates/kernel/src/store.rs", "                info.predicate(\"ci\")\n", "                String::new()\n", CUSTOM_LINES),
     ("custom-lines-filter-mixes-tables", "crates/kernel/src/query.rs", "                    info.predicate(\"c\")\n", "                    String::new()\n", CUSTOM_LINES),

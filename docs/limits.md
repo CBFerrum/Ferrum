@@ -38,7 +38,10 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   stored file (`SiteResponse::file`), and answer one byte range when asked (`Range: bytes=…`, 206),
   so a video seeks and plays in every browser; several ranges get the whole file. An app that reads a file's bytes (`read_file`) loads them into
   memory, which is refused past 256 MB (the largest an app works on whole, Learn's SCORM packages).
-  Completing an upload reads the object once to record its SHA-256.
+  Completing an upload reads the object once to record its SHA-256. Portal people and guests upload at
+  most 20 files tied to no record an hour (an `attach` field's file before its record is saved).
+  Files named by `attach` fields of records saved before 10 November 2026, whose records were new when
+  the file was uploaded, stay tied to no record: only their uploader and administrators download them.
 - **Stock revaluation** is a stock reconciliation counting the same quantity at the new rate. Like
   every stock posting (and landed costs), it is valued when it is posted: a backdated document
   never re-values the ones after it (there is no reposting).

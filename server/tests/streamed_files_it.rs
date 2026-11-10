@@ -177,6 +177,12 @@ async fn scenario() {
     let refused = up::start(&k, &objects, &visitor, 3 * PART_BYTES, onto()).await;
     assert!(matches!(refused, Err(Error::Forbidden(_))), "an outside person who may only read the record attaches to it: {refused:?}");
     up::start(&k, &objects, &writer, 3 * PART_BYTES, onto()).await.expect("a member who may change the record");
+    // An outside person's uploads tied to nothing are counted: 20 an hour.
+    for _ in 0..20 {
+        up::start(&k, &objects, &visitor, 3 * PART_BYTES, new(true)).await.expect("within the hour's uploads");
+    }
+    assert!(matches!(up::start(&k, &objects, &visitor, 3 * PART_BYTES, new(true)).await, Err(Error::TooManyRequests(_))), "past them");
+    up::start(&k, &objects, &writer, 3 * PART_BYTES, new(true)).await.expect("a member's are not counted");
 
     // ───────────── through S3 ─────────────
     if let Ok(endpoint) = std::env::var("FERRUM_TEST_S3_ENDPOINT") {
