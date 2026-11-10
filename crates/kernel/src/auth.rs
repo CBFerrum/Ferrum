@@ -972,6 +972,16 @@ impl Kernel {
     }
 
     pub async fn set_role_permission(&self, ctx: &Ctx, role: &str, p: &PermissionDef) -> Result<()> {
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        self.set_role_permission_in(ctx, &mut tx, role, p).await?;
+        tx.commit().await?;
+        self.invalidate_tenant_users(ctx.tenant);
+        Ok(())
+    }
+
+    /// [`Kernel::set_role_permission`] in the caller's transaction (a pack's install): the caller drops the
+    /// users' caches once it commits.
+    pub(crate) async fn set_role_permission_in(&self, ctx: &Ctx, tx: &mut Tx, role: &str, p: &PermissionDef) -> Result<()> {
         Self::require_admin(ctx)?;
         if p.entity != "*" && ctx.schema.entity(&p.entity).is_none() {
             return Err(Error::field("entity", "unknown entity"));
@@ -991,10 +1001,9 @@ impl Kernel {
         }
         let p = &PermissionDef { if_owner: p.if_owner || via.is_some(), via, ..p.clone() };
         let condition = (!p.condition.is_empty()).then(|| serde_json::to_value(&p.condition).unwrap_or_default());
-        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        sqlx::query("insert into role (tenant_id, name) values ($1, $2) on conflict do nothing").bind(ctx.tenant).bind(role).execute(&mut *tx).await?;
+        sqlx::query("insert into role (tenant_id, name) values ($1, $2) on conflict do nothing").bind(ctx.tenant).bind(role).execute(&mut **tx).await?;
         let portal: bool =
-            sqlx::query_scalar("select portal from role where tenant_id = $1 and name = $2").bind(ctx.tenant).bind(role).fetch_one(&mut *tx).await?;
+            sqlx::query_scalar("select portal from role where tenant_id = $1 and name = $2").bind(ctx.tenant).bind(role).fetch_one(&mut **tx).await?;
         if let Some(why) = portal.then(|| p.portal_problem(holds_personal(ctx, &p.entity))).flatten() {
             return Err(Error::field("entity", why));
         }
@@ -1025,21 +1034,29 @@ impl Kernel {
         .bind(p.condition_key())
         .bind(&p.via)
         .bind(&p.actions)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
-        notify_users(&mut tx, ctx.tenant, None).await?;
-        tx.commit().await?;
-        self.invalidate_tenant_users(ctx.tenant);
-        Ok(())
+        notify_users(tx, ctx.tenant, None).await
     }
 
     /// Marks a role for the portal or not (BD-02). Marking is refused while any of its rules could
     /// not belong to a portal role, naming them; unmarked, portal people holding it lose it at once.
     pub async fn set_role_portal(&self, ctx: &Ctx, role: &str, portal: bool) -> Result<()> {
-        Self::require_admin(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let exists: bool =
-            sqlx::query_scalar("select exists (select 1 from role where tenant_id = $1 and name = $2)").bind(ctx.tenant).bind(role).fetch_one(&mut *tx).await?;
+        self.set_role_portal_in(ctx, &mut tx, role, portal).await?;
+        tx.commit().await?;
+        self.invalidate_tenant_users(ctx.tenant);
+        Ok(())
+    }
+
+    /// [`Kernel::set_role_portal`] in the caller's transaction (a pack's install).
+    pub(crate) async fn set_role_portal_in(&self, ctx: &Ctx, tx: &mut Tx, role: &str, portal: bool) -> Result<()> {
+        Self::require_admin(ctx)?;
+        let exists: bool = sqlx::query_scalar("select exists (select 1 from role where tenant_id = $1 and name = $2)")
+            .bind(ctx.tenant)
+            .bind(role)
+            .fetch_one(&mut **tx)
+            .await?;
         if !exists {
             return Err(Error::NotFound(format!("role {role}")));
         }
@@ -1051,7 +1068,7 @@ impl Kernel {
             )
             .bind(ctx.tenant)
             .bind(role)
-            .fetch_all(&mut *tx)
+            .fetch_all(&mut **tx)
             .await?;
             let problems: Vec<String> = rules
                 .into_iter()
@@ -1065,11 +1082,8 @@ impl Kernel {
                 return Err(Error::field("portal", format!("its rules must change first: {}", problems.join("; "))));
             }
         }
-        sqlx::query("update role set portal = $3 where tenant_id = $1 and name = $2").bind(ctx.tenant).bind(role).bind(portal).execute(&mut *tx).await?;
-        notify_users(&mut tx, ctx.tenant, None).await?;
-        tx.commit().await?;
-        self.invalidate_tenant_users(ctx.tenant);
-        Ok(())
+        sqlx::query("update role set portal = $3 where tenant_id = $1 and name = $2").bind(ctx.tenant).bind(role).bind(portal).execute(&mut **tx).await?;
+        notify_users(tx, ctx.tenant, None).await
     }
 }
 

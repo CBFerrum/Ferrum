@@ -463,6 +463,14 @@ async fn execute(
 
 /// Validates and stores an automation definition.
 pub async fn save(k: &Kernel, ctx: &Ctx, input: &Map<String, Value>) -> Result<Uuid> {
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let id = save_in(ctx, &mut tx, input).await?;
+    tx.commit().await?;
+    Ok(id)
+}
+
+/// [`save`] in the caller's transaction (a pack's install, pack.rs).
+pub(crate) async fn save_in(ctx: &Ctx, tx: &mut crate::db::Tx, input: &Map<String, Value>) -> Result<Uuid> {
     // What it says runs with an administrator's rights (its saver's), so saying it takes one.
     if !ctx.is_admin {
         return Err(Error::Forbidden("administrator access required".into()));
@@ -496,16 +504,15 @@ pub async fn save(k: &Kernel, ctx: &Ctx, input: &Map<String, Value>) -> Result<U
     validate_actions(&actions)?;
     let id = input.get("id").and_then(Value::as_str).and_then(|s| s.parse().ok()).unwrap_or_else(Uuid::now_v7);
     let active = input.get("is_active").and_then(Value::as_bool).unwrap_or(true);
-    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     if active {
         // Never both: while the solution imported from it runs in its place, it stays off. Its row is locked first,
         // as an activation handing it over locks it, so the two cannot cross (FLC-MIG-003).
-        sqlx::query("select 1 from automation where tenant_id = $1 and id = $2 for update").bind(ctx.tenant).bind(id).execute(&mut *tx).await?;
+        sqlx::query("select 1 from automation where tenant_id = $1 and id = $2 for update").bind(ctx.tenant).bind(id).execute(&mut **tx).await?;
         let solution = crate::authoring::solution_of(id);
         let running: Option<i32> = sqlx::query_scalar("select 1 from logic_activation where tenant_id = $1 and solution = $2")
             .bind(ctx.tenant)
             .bind(&solution)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut **tx)
             .await?;
         if running.is_some() {
             return Err(Error::Conflict(format!(
@@ -538,9 +545,8 @@ pub async fn save(k: &Kernel, ctx: &Ctx, input: &Map<String, Value>) -> Result<U
     .bind(active)
     .bind((!ctx.user.is_nil()).then_some(ctx.user))
     .bind(schedule)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
-    tx.commit().await?;
     Ok(id)
 }
 
