@@ -27,7 +27,7 @@ use ferrum_logic::compile::{self, Diagnostic, EntityShape, FieldShape, Release, 
 use ferrum_logic::expr::Ty;
 use ferrum_logic::refusal::{Code, Refusal};
 use ferrum_logic::rules::{Active, Origin, Record, Refused, Stop};
-use ferrum_logic::solution::{Phase, Solution};
+use ferrum_logic::solution::{AggregateOp, Phase, Solution};
 use ferrum_meta::{EntityKind, FieldDef, FieldType, Schema};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -741,6 +741,57 @@ async fn linked(hc: &mut HookCtx<'_>, active: &Active, phase: Phase, doc: &Doc) 
     Ok(out)
 }
 
+/// What this phase's rules count or sum, by [`ferrum_logic::solution::Aggregate::key`], read like linked records:
+/// in the save's transaction, one statement each through the list query, with the saver's row scope. A record the
+/// saver may not see is not counted, and a saver who may not read the entity at all gets zero (or `false`),
+/// never a count taken with wider rights. Read committed, without a lock: two saves at once can each pass a
+/// check the other would have failed (docs/logic/rules.md).
+async fn aggregated(hc: &mut HookCtx<'_>, active: &Active, phase: Phase, doc: &Doc) -> Result<BTreeMap<String, Value>> {
+    let entity = hc.entity.def.name.clone();
+    let mut out = BTreeMap::new();
+    for (key, a) in active.aggregates(&entity, phase).map_err(stopped)? {
+        let zero = match a.op {
+            AggregateOp::Count => json!(0),
+            AggregateOp::Sum => json!("0"),
+            AggregateOp::Exists => json!(false),
+        };
+        // A record being created has nothing pointing at it yet; an empty link points at nothing.
+        let at = doc.get(a.to_link().unwrap_or("id")).and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok());
+        let ent = hc.ctx.schema.entity(&a.entity).cloned();
+        let (Some(at), Some(ent)) = (at, ent) else {
+            out.insert(key, zero);
+            continue;
+        };
+        let Ok(scope) = crate::ctx::row_scope(hc.ctx, &ent, Action::Read) else {
+            out.insert(key, zero);
+            continue;
+        };
+        let mut filters = crate::query::parse_filters(&serde_json::to_value(&a.filter).map_err(Error::internal)?)?;
+        filters.push(crate::query::Filter::eq(&a.link, at.to_string()));
+        let mut qb = sqlx::QueryBuilder::new(match (a.op, a.field.as_deref().and_then(|f| crate::store::field_expr(&ent, f, "a"))) {
+            (AggregateOp::Sum, Some(sum)) => format!("select coalesce(sum({sum}), 0)::text"),
+            (AggregateOp::Exists, _) => "select exists (select 1".into(),
+            _ => "select count(*)".into(),
+        });
+        match crate::query::push_from_where_for(&mut qb, hc.ctx, &ent, &scope, &filters, None) {
+            Ok(()) => {}
+            // A field of the filter the saver may not read: what they could see of it is nothing.
+            Err(Error::Forbidden(_)) => {
+                out.insert(key, zero);
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+        let value = match a.op {
+            AggregateOp::Count => json!(qb.build_query_scalar::<i64>().fetch_one(&mut **hc.tx).await?),
+            AggregateOp::Sum => json!(qb.build_query_scalar::<String>().fetch_one(&mut **hc.tx).await?),
+            AggregateOp::Exists => json!(qb.push(")").build_query_scalar::<bool>().fetch_one(&mut **hc.tx).await?),
+        };
+        out.insert(key, value);
+    }
+    Ok(out)
+}
+
 fn stopped(s: Stop) -> Error {
     match s {
         Stop::Refused(r) => {
@@ -798,9 +849,10 @@ impl DocHook for TenantRules {
             return Ok(());
         }
         let linked = linked(hc, &active, Phase::Derive, doc).await?;
+        let aggregated = aggregated(hc, &active, Phase::Derive, doc).await?;
         let (user, snapshot) = (user_fact(hc.ctx), Value::Object(doc.clone()));
         // The clock is read here, once, and handed to the rules as a fact (FLC-COMP-003).
-        let rec = Record { doc: &snapshot, old: None, user: &user, now: Utc::now(), today: hc.ctx.today(), linked: &linked };
+        let rec = Record { doc: &snapshot, old: None, user: &user, now: Utc::now(), today: hc.ctx.today(), linked: &linked, aggregated: &aggregated };
         active.derive(&entity, doc, &rec).map_err(stopped)
     }
 
@@ -811,8 +863,9 @@ impl DocHook for TenantRules {
             return Ok(());
         }
         let linked = linked(hc, &active, Phase::Validate, doc).await?;
+        let aggregated = aggregated(hc, &active, Phase::Validate, doc).await?;
         let (user, now, old) = (user_fact(hc.ctx), Value::Object(doc.clone()), old.map(|o| Value::Object(o.clone())));
-        let rec = Record { doc: &now, old: old.as_ref(), user: &user, now: Utc::now(), today: hc.ctx.today(), linked: &linked };
+        let rec = Record { doc: &now, old: old.as_ref(), user: &user, now: Utc::now(), today: hc.ctx.today(), linked: &linked, aggregated: &aggregated };
         match active.validate(&entity, &rec) {
             Ok(()) => Ok(()),
             Err(Stop::Refused(r)) => {
