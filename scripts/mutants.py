@@ -70,6 +70,7 @@ CONSENT = ("-p", "ferrum-kernel", "--test", "consent_it")
 SCHEDULE = ("-p", "ferrum-kernel", "--test", "schedule_it")
 PACKS = ("-p", "ferrum-studio", "--test", "pack_it")
 ACTIONS = ("-p", "ferrum-kernel", "--test", "actions_it")
+INVOKE = ("-p", "ferrum-kernel", "--test", "invoke_it")
 AGGREGATES = ("-p", "ferrum-kernel", "--test", "logic_aggregates_it")
 SHARES_UNIT = ("-p", "ferrum-server", "--lib", "state::tests")
 EXPORT_UNIT = ("-p", "ferrum-server", "--lib", "controllers::docs::tests")
@@ -566,7 +567,7 @@ MUTANTS = [
     ("mail-template-without-params", "crates/kernel/src/automation.rs", "let mut vars: BTreeMap<&str, &Value> = extra.iter().copied().collect();", "let mut vars: BTreeMap<&str, &Value> = BTreeMap::new();", ACTIONS),
     ("configured-refusals-ignored", "crates/kernel/src/actions.rs", "        if holds == Value::Bool(true) {", "        if false && holds == Value::Bool(true) {", ACTIONS),
     ("configured-effects-write-anything", "crates/kernel/src/actions.rs", "    if !own && (f.read_only || f.read_only_if.is_some() || f.perm_group.is_some()) {", "    if false {", ACTIONS),
-    ("configured-effects-unchecked", "crates/kernel/src/customize.rs", "        configured_actions(was, &now)?;\n", "\n", ACTIONS),
+    ("configured-effects-unchecked", "crates/kernel/src/customize.rs", "        configured_actions(self, ctx.tenant, was, &now)?;\n", "\n", ACTIONS),
     ("update-linked-unlocked-and-unchecked", "crates/kernel/src/automation.rs", "            let d = k.update_tx(ctx, tx, target, id, patch, None).await?;", "            k.set_values_tx(ctx, tx, target, id, patch.clone()).await?;\n            let d = patch;", ACTIONS),
     ("read-only-if-ignored", "crates/kernel/src/doc.rs", "        (Some(expr), Some(doc)) => expr.eval_bool(&Scope { doc, old: None, parent, user }).unwrap_or(true),", "        (Some(_), Some(_)) => false,", ACTIONS),
     ("whole-numbers-unsigned", "crates/meta/src/expr.rs", "            (Some(i), _) => C::Int(i),", "            (Some(i), _) if i < 0 => C::Int(i),", META_EXPR),
@@ -587,6 +588,11 @@ MUTANTS = [
     ("packs-plan-kept", "crates/kernel/src/pack.rs", "Self::overlay_rows(&mut tx, ctx.tenant).await?);\n        tx.rollback().await?;", "Self::overlay_rows(&mut tx, ctx.tenant).await?);\n        tx.commit().await?;", PACKS),
     ("packs-automations-duplicated", "crates/kernel/src/pack.rs", "from automation where tenant_id = $1 and name = $2 order by", "from automation where tenant_id = $1 and name = $2 and false order by", PACKS),
     ("packs-carry-people", "crates/kernel/src/pack.rs", "    if let Some(why) = not_reference(ctx, &ent) {", "    if let Some(why) = None::<&str> {", PACKS),
+    # Another app's steps from configuration (docs/api.md, Calling another app's steps).
+    ("invoke-default-key-ignores-the-version", "crates/kernel/src/actions.rs", "def.name, doc.get(\"version\").unwrap_or(&Value::Null));", "def.name, \"0\");", INVOKE),
+    ("invoke-results-not-shown", "crates/kernel/src/actions.rs", "let extra = [(\"params\", &params), (\"results\", &done)];", "let extra = [(\"params\", &params), (\"results\", &Value::Null)];", INVOKE),
+    ("invoke-input-names-unchecked", "crates/kernel/src/automation.rs", "if let Some(n) = input.keys().find(", "if let Some(n) = input.keys().filter(|_| false).find(", INVOKE),
+    ("invoke-not-rechecked-as-it-runs", "crates/kernel/src/automation.rs", "            check_invoke(k, ctx, &capability, &input)?;\n", "", INVOKE),
 
 ]
 

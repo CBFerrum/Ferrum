@@ -700,6 +700,13 @@ impl Kernel {
                         }
                         action("ferrum.notify".into(), input, "Tell someone".into())
                     }
+                    crate::automation::AutomationAction::Invoke { capability, input: given, key } => {
+                        if key.is_some() || given.values().any(|x| x.contains("results")) {
+                            notes.push(format!("{step}: its key and `results` are the automation's; say how the process names the effect and earlier steps"));
+                        }
+                        let input = Value::Object(given.iter().map(|(k, v)| (k.clone(), json!(trigger_of(v)))).collect());
+                        action(capability.clone(), input, format!("Use {capability}"))
+                    }
                 });
             }
             if steps.is_empty() {
