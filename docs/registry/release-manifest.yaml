@@ -16,13 +16,13 @@ components:
   - {repository: CBFerrum/ferrum-app-docs, pinned: 2895bace4aff7ad7067e635b8e38b1e758064886}
   - {repository: CBFerrum/ferrum-app-drive, pinned: 301875bc42e0c9f6ba76c807edd7a413157bc35b}
   - {repository: CBFerrum/ferrum-app-edge, pinned: 867bca95ef30353cc121f8bebe870da52600a596}
-  - {repository: CBFerrum/ferrum-app-education, pinned: a3b7b83f7679308d17ad13ed8cb27f27467f0e3b}
+  - {repository: CBFerrum/ferrum-app-education, pinned: 498bb09fccfaa33fedc6c29ad6d735c256c8a50f}
   - {repository: CBFerrum/ferrum-app-erp, pinned: b93dd61a5a48cb4953d27b9ee4b9375473ea8d51}
   - {repository: CBFerrum/ferrum-app-field-service, pinned: 623271084e80c2f603e197469044dca9e0bfd2bc}
   - {repository: CBFerrum/ferrum-app-forms, pinned: 15a4b55e75026b0a5f2e93336eee6c29383de098}
   - {repository: CBFerrum/ferrum-app-government, pinned: a1dcf1c03be0c9ea0e0c38bb5bdf618289a4994c}
   - {repository: CBFerrum/ferrum-app-grc, pinned: 14aa83eed38003dd5db55254d23183985d1732eb}
-  - {repository: CBFerrum/ferrum-app-healthcare, pinned: fa33be8ef7a0b19c5e8c007760f488eb23d6e20e}
+  - {repository: CBFerrum/ferrum-app-healthcare, pinned: 078d7155de7eedd868b4667cbfee7826217a4196}
   - {repository: CBFerrum/ferrum-app-helpdesk, pinned: 3a3e915576ad7bcdbc76f3f6d012cdf6a627aa8b}
   - {repository: CBFerrum/ferrum-app-hospitality, pinned: e0613a6a687d439b9dca79cf3b250d0359196f18}
   - {repository: CBFerrum/ferrum-app-hr, pinned: a1d86a269b6cba67754dbef4920b27efc3361cc4}
