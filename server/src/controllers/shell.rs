@@ -398,6 +398,14 @@ async fn page(
         "favicon.ico" if rest.is_none() => return Ok(Redirect::permanent("/_shell/v1/icon.svg").into_response()),
         "open" => return open(&st, &headers, &uri, rest.unwrap_or_default(), &q).await,
         "portal" => return portal(&st, &headers, &uri, rest).await,
+        // A workspace's published list (controllers/lists.rs).
+        "public" => {
+            let bound = match st.shell.place(&headers).await? {
+                Place::Workspace(t) => Some(t),
+                _ => None,
+            };
+            return Ok(super::lists::page(&st.kernel, &st.public_limiter, &headers, rest.unwrap_or_default(), bound).await);
+        }
         // Today's web app's addresses (controllers/legacy.rs); `/app/` comes here, slash and all.
         "app" => return Ok(super::legacy::answer(&uri)),
         // The assistant's page (controllers/assistant.rs), the side panel's and a phone's.
