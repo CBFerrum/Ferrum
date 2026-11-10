@@ -390,6 +390,8 @@ fn requirements(ctx: &Ctx, pack: &Pack, role_packages: &BTreeSet<String>, instal
         match &c.op {
             OverlayOp::DefineEntity { entity } | OverlayOp::RedefineEntity { entity } => names.extend(entity.fields.iter().filter_map(|f| f.to.clone())),
             OverlayOp::AddField { field, .. } => names.extend(field.to.clone()),
+            // What a configured action's effects make.
+            OverlayOp::AddAction { action } => names.extend(action.effects.iter().filter_map(|x| x.get("entity").and_then(Value::as_str).map(str::to_string))),
             _ => {}
         }
     }

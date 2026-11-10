@@ -178,3 +178,39 @@ release reads its aggregates (listed in the release's review) as reads across th
 
 **Rules out**: an aggregate scoped to the saver, and any other configured read that widens beyond the
 workspace or reaches a record's fields, not only its counts and sums.
+
+## BD-11. Configured actions
+
+Decided 10 November 2026. Qualifies BD-01. Asked for by rebuilding Governance and Risk as a pack
+([evidence](evidence/grc-as-a-pack-2026-11-10.md)).
+
+A workspace may add an action to an entity by customization (`add_action`) when the action says what it does
+in `effects`: automation actions (`set_fields` on its record, `update_linked`, `create_document`, `notify`,
+`email`) run in order in the action's one transaction. Its runner is checked as any action's is (the
+permission it names on the record or a role's rule naming it, the record's scope, its document status and
+`condition`), then against its `roles` and `refuse_if`, whose refusal is *forbidden* with the administrator's
+words. The effects then run **as the system, on the runner's behalf**: they may write the record's read-only
+fields (a status moved only by buttons, which is the point), records they write say the runner changed them,
+and the audit trail records who ran which action with what parameters.
+
+Why this is not the escape hatch BD-01 rules out:
+
+* **No code and no SQL.** An effect is one of five automation actions whose values are CEL expressions,
+  compiled and checked against the entities when the customization is saved.
+* **Every check applies.** Each write goes through the save pipeline every write uses: computed fields,
+  rollups, checks, Logic rules, unique keys, workflow edit rules and the apps' own hooks and guards on the
+  record written, and the usual events and automations after commit. A refusal undoes the whole action.
+  Running as the system lifts the writer's row scopes and read-only flags, never a check.
+* **Narrow reach.** An effect writes the workspace's own fields (a custom entity's, a packaged entity's
+  `x_` fields: what a Logic derivation may fill) and the fields a person may type; never the platform's
+  columns, a computed, secret or grouped field, or a package's read-only field. A packaged entity's action
+  is named `x_…`. No effect runs another action, so an action cannot loop; events it causes follow the
+  automations' chain rule.
+* **Bounded.** At most 20 configured actions on an entity, 10 effects and 10 refusals on an action.
+
+This is the trust automations already have (they run as the administrator who saved them): an
+administrator decides once, in reviewed configuration, what a button does; the person pressing it is held
+to who may press it.
+
+**Rules out**: an effect that writes the platform's or a package's own fields, runs another action or a
+script, or skips a check because it runs as the system.

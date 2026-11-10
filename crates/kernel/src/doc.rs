@@ -698,7 +698,7 @@ impl Kernel {
         .await
     }
 
-    /// Runs a custom action declared in metadata and implemented by a hook.
+    /// Runs a custom action declared in metadata: implemented by a hook, or set up by configuration (actions.rs).
     pub async fn run_action(&self, ctx: &Ctx, entity: &str, id: Uuid, action: &str, params: Value) -> Result<Value> {
         let read_only = self.entity(ctx, entity).is_ok_and(|e| e.def.actions.iter().any(|a| a.name == action && a.read_only));
         with_retry(|| async {
@@ -725,6 +725,10 @@ impl Kernel {
         if !scope.admits(tx, ctx.tenant, &doc).await? {
             return Err(Error::NotFound(ent.def.label.clone()));
         }
+        // A configured action's roles: one of them, besides its permission (an administrator always may).
+        if !def.roles.is_empty() && !def.roles.iter().any(|r| ctx.has_role(r)) {
+            return Err(Error::Forbidden(format!("'{}' is for {}", def.label, def.roles.join(", "))));
+        }
         if !def.docstatus.is_empty() && !def.docstatus.contains(&(docstatus_of(&doc) as i16)) {
             return Err(Error::invalid(format!("'{}' is not available in this document status", def.label)));
         }
@@ -734,6 +738,10 @@ impl Kernel {
             if !expr.eval_bool(&Scope { doc: &view, old: None, parent: None, user: &user }).map_err(Error::invalid)? {
                 return Err(Error::invalid(format!("'{}' is not available for this document", def.label)));
             }
+        }
+        // Set up by configuration: its effects say what it does (actions.rs).
+        if !def.effects.is_empty() {
+            return crate::actions::run(self, ctx, tx, &ent, def, id, &doc, params).await;
         }
         let hooks = self.hooks.for_tenant(&ent.def.name, &ctx.schema.packages);
         for h in &hooks {

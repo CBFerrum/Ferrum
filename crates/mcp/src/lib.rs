@@ -401,7 +401,7 @@ fn tools(ctx: &Ctx) -> Vec<Value> {
         out.push(tool(
             "customize_entity",
             "Customize entity",
-            "Administrators: change an entity without code. op is one of {\"op\":\"add_field\",\"field\":{name (x_ prefix), type, label, options...}}, {\"op\":\"set_property\",\"field\",\"property\",\"value\"}, {\"op\":\"add_rule\",\"rule\":{name, check (CEL), message}}, {\"op\":\"add_options\",\"field\",\"options\":[...]}, {\"op\":\"set_workflow\",\"workflow\":{...}}, {\"op\":\"set_print_template\",\"template\":\"<html jinja>\"}.",
+            "Administrators: change an entity without code. op is one of {\"op\":\"add_field\",\"field\":{name (x_ prefix), type, label, options...}}, {\"op\":\"set_property\",\"field\",\"property\",\"value\"}, {\"op\":\"add_rule\",\"rule\":{name, check (CEL), message}}, {\"op\":\"add_action\",\"action\":{name (x_ prefix on a packaged entity), label, condition?, roles?, params?, refuse_if?: [{when, message}], effects: [automation actions]}}, {\"op\":\"add_options\",\"field\",\"options\":[...]}, {\"op\":\"set_workflow\",\"workflow\":{...}}, {\"op\":\"set_print_template\",\"template\":\"<html jinja>\"}.",
             json!({"entity": entity_prop(), "op": {"type": "object"}, "note": s("Why (kept with the change)")}),
             &["entity", "op"],
             false,
