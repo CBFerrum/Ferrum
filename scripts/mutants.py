@@ -580,7 +580,7 @@ MUTANTS = [
     ("redefinition-changes-kind-under-records", "crates/kernel/src/customize.rs", "if old.def.kind != e.def.kind && holds(", "if false && holds(", AUTHORING),
     # Packs (docs/api.md, Packs).
     ("packs-digest-not-checked", "crates/kernel/src/pack.rs", "        if given != digest {", "        if given.is_empty() {", PACKS),
-    ("packs-plan-kept", "crates/kernel/src/pack.rs", "        let mut summary = self.apply(ctx, &mut tx, &pack).await?;\n        tx.rollback().await?;", "        let mut summary = self.apply(ctx, &mut tx, &pack).await?;\n        tx.commit().await?;", PACKS),
+    ("packs-plan-kept", "crates/kernel/src/pack.rs", "Self::overlay_rows(&mut tx, ctx.tenant).await?);\n        tx.rollback().await?;", "Self::overlay_rows(&mut tx, ctx.tenant).await?);\n        tx.commit().await?;", PACKS),
     ("packs-automations-duplicated", "crates/kernel/src/pack.rs", "from automation where tenant_id = $1 and name = $2 order by", "from automation where tenant_id = $1 and name = $2 and false order by", PACKS),
     ("packs-carry-people", "crates/kernel/src/pack.rs", "    if let Some(why) = not_reference(ctx, &ent) {", "    if let Some(why) = None::<&str> {", PACKS),
 

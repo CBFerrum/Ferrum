@@ -114,6 +114,12 @@ Amended 10 November 2026, when lines and keys were built (BF-ENTITY-001, BF-ENTI
 * Totals over lines are a field property, `rollup` (a sum of a row field, or a count of rows), computed
   in exact decimals at every save, on any entity.
 
+Amended 10 November 2026, when a designer lost a workspace's later changes: a redefinition (`redefine_entity`)
+replaces every definition change made before it, so a designer starts from the effective definition
+(`GET /api/customize/definition/{Entity}`), never from the latest definition row, and the change list marks
+each customization a later redefinition replaced (`superseded_by`), by the same rule the schema's build applies.
+A pack that would leave the workspace's own changes replaced says so in its plan.
+
 ## BD-07. Packs (BF9)
 
 * A pack is a **canonical JSON document** (the platform's canonical form and digest): metadata (name,
