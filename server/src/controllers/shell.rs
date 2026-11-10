@@ -684,23 +684,18 @@ async fn portal(st: &AppState, headers: &HeaderMap, uri: &Uri, rest: Option<&str
         ));
     }
     let apps = st.apps.shell_apps(ctx.tenant).await?;
-    let mut pages = shell::portal_pages(&apps);
-    // Studio's generic records page shows what portal roles reach (docs/builder/decisions.md BD-02):
-    // nothing to show, no page.
-    let generic = |p: &shell::PortalPage| p.id == "records" && p.app.id == "studio";
-    if pages.iter().any(generic) && st.kernel.portal_entities(&ctx).await?.is_empty() {
-        pages.retain(|p| !generic(p));
-    }
+    // Studio's generic records page shows what portal roles reach (docs/builder/decisions.md BD-02), an
+    // entry per portal menu and one for the rest (docs/builder/portal.md): nothing to show, no entry.
+    let reached = st.kernel.portal_menus(&ctx).await?;
+    let pages = shell::portal_entries(&ctx, shell::portal_pages(&apps), &reached);
     let (id, tail) = match rest.split_once('/') {
         Some((id, tail)) => (id, Some(tail)),
         None => (rest, None),
     };
     if id.is_empty() {
         // One page: straight to it.
-        if let [only] = pages.as_slice()
-            && kind == "portal"
-        {
-            return Ok(Redirect::to(&format!("/portal/{}/", only.id)).into_response());
+        if let Some(to) = shell::portal_straight_to(&kind, &pages) {
+            return Ok(Redirect::to(&to).into_response());
         }
         let (mut boot, _) = match page_bootstrap(st, headers, &ctx, device, json!(null), "portal").await {
             Ok(b) => b,
@@ -1078,9 +1073,11 @@ async fn open(st: &AppState, headers: &HeaderMap, uri: &Uri, rest: &str, q: &[(S
     let apps = st.apps.shell_apps(ctx.tenant).await?;
     // A portal person opens records in the portal, on the page that shows them.
     if kind == "portal" {
-        let pages = shell::portal_pages(&apps);
-        let to = id.as_deref().and_then(|id| shell::portal_open(&pages, entity, &seg(id))).unwrap_or_else(|| "/portal/".to_string());
-        return Ok(Redirect::to(&to).into_response());
+        let reached = st.kernel.portal_menus(&ctx).await?;
+        let id = id.as_deref().map(seg);
+        if let Some(to) = shell::portal_open_for(&kind, &shell::portal_pages(&apps), &reached, entity, id.as_deref()) {
+            return Ok(Redirect::to(&to).into_response());
+        }
     }
     let via = query(q, "via");
     let package = ctx.schema.entity(entity).map(|e| e.package.clone());
