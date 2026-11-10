@@ -53,6 +53,8 @@ use wasmtime::{Config, Engine, ExternType, Module};
 
 pub const STAGES: &[&str] = &["before_validate", "validate", "before_submit", "on_submit", "before_cancel", "on_cancel", "before_delete"];
 const MAX_WASM: usize = 8 << 20;
+/// Names no plugin takes: their place under `/api/public/{workspace}/` is the platform's.
+pub const RESERVED_NAMES: &[&str] = &["lists"];
 const CACHE_TTL: Duration = Duration::from_secs(10);
 /// Compiled modules kept in memory (each is a few MB of machine code).
 const MAX_MODULES: usize = 256;
@@ -653,6 +655,10 @@ impl PluginHost {
             && p.name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
         if !name_ok {
             errors.push(FieldError::new("name", "use 2-40 lower-case letters, digits or '-', starting with a letter"));
+        }
+        // `/api/public/{workspace}/lists/…` is the workspace's published lists (BD-15), not a plugin's.
+        if RESERVED_NAMES.contains(&p.name.as_str()) {
+            errors.push(FieldError::new("name", format!("{} is kept by the platform; choose another name", p.name)));
         }
         let m = &p.manifest;
         if m.hooks.is_empty() && m.routes.is_empty() && m.subscriptions.is_empty() && m.schedules.is_empty() && m.sockets.is_empty() && m.connector.is_none() {

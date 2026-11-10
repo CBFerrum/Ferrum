@@ -506,6 +506,46 @@ pub struct TargetDef {
     pub state_field: String,
 }
 
+/// A published list (`publish_list`, BD-15): the records of an entity that `filter` picks, in the order
+/// `sort` says, showing only `fields`, to anyone at `/api/public/{workspace}/lists/{name}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublishedListDef {
+    /// Lowercase letters, digits and hyphens: part of a public address, one of a kind in the workspace.
+    pub name: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The only fields sent, in this order: the entity's own stored fields (or `number`).
+    pub fields: Vec<String>,
+    /// `[[field, op, value], …]` on any stored field of the entity, as list queries take them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filter: Vec<(String, String, Value)>,
+    /// `[field, "asc" | "desc"]`; newest first without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort: Option<(String, SortDirection)>,
+    /// Also offered as CSV.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub csv: bool,
+    /// Rows at most (200 without it, 1000 at most).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SortDirection {
+    Asc,
+    Desc,
+}
+
+/// A published list and the entity it shows.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PublishedList {
+    pub entity: String,
+    pub list: PublishedListDef,
+}
+
 /// A reason a configured action refuses to run: `when` (CEL over `doc`, `user` and `params`) holds.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1170,6 +1210,15 @@ pub enum OverlayOp {
     },
     /// Tenant-only: removes a service target.
     RemoveTarget {
+        name: String,
+    },
+    /// Tenant-only: a list of some records' chosen fields that anyone may read without signing in
+    /// (docs/builder/decisions.md BD-15); one of the same name replaces it.
+    PublishList {
+        list: PublishedListDef,
+    },
+    /// Tenant-only: takes a published list down.
+    UnpublishList {
         name: String,
     },
     /// Package-only: a form section for fields the package adds, after the section holding the

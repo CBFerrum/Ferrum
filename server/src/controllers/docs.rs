@@ -340,17 +340,8 @@ async fn calc(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Path
     Ok(Json(Value::Object(st.kernel.preview(&ctx, &entity, body_doc(body)?).await?)).into_response())
 }
 
-fn csv_cell(v: &Value) -> String {
-    let raw = match v {
-        Value::Null => String::new(),
-        Value::String(s) => s.clone(),
-        Value::Array(_) | Value::Object(_) => v.to_string(),
-        other => other.to_string(),
-    };
-    // Neutralize spreadsheet formula injection.
-    let safe = if raw.starts_with(['=', '+', '-', '@', '\t', '\r']) && raw.parse::<f64>().is_err() { format!("'{raw}") } else { raw };
-    if safe.contains([',', '"', '\n', '\r']) { format!("\"{}\"", safe.replace('"', "\"\"")) } else { safe }
-}
+// A CSV cell, through the platform's one guard against spreadsheet formulas.
+use ferrum_kernel::published::csv_cell;
 
 async fn export(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Path<String>, Query(p): Query<ListParams>) -> ApiResult<Response> {
     let st = app_state(&app)?;

@@ -12,6 +12,7 @@ pub mod docs;
 pub mod domains;
 pub mod jobs;
 pub mod legacy;
+pub mod lists;
 pub mod mcp;
 pub mod meta;
 pub mod notifications;

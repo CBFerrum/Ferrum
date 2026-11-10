@@ -337,3 +337,32 @@ change the one line an expression picks (`set_line`).
 
 **Rules out**: chains of links, a linked record read with the saver's rights in these places, `links` in
 expressions the browser evaluates, lines within lines, and a role named by data.
+
+## BD-15. Published lists
+
+Decided 10 November 2026. Asked for by the paper measurement of Government and Retail
+([evidence](evidence/government-retail-on-paper-2026-11-10.md)): G33, the public register Government writes in
+its own code today.
+
+A workspace publishes some fields of some records of an entity to anyone, without signing in, by
+configuration (`publish_list`, docs/api.md "Published lists"): a register of issued permits, a price list, the
+classes on offer.
+
+* **A read-only allow-list.** The list names the fields that are sent, and nothing else leaves: not the id,
+  not the owner, not the timestamps; a link shows its record's title. The filter and the order pick and sort
+  rows and are never sent. A submittable entity shows submitted records only.
+* **Refused when saved, not hidden when served.** Email, phone, secret and attachment fields, permission-group
+  fields, fields never exported and declared personal data cannot be named at all, so an administrator learns
+  at once what will not be public. A later change takes away what may no longer be shown, with a warning, and
+  never widens a list.
+* **Read as the workspace.** As BD-10's aggregates: the list is the workspace's statement of what is public,
+  so nobody's permissions decide the rows. That is why the field rules are strict.
+* **One answer for everything not published.** An unknown workspace, an inactive one, an unknown list and one
+  taken down all give the same 404.
+* **Small.** One page of at most 1000 rows, JSON, CSV and a plain page with no script; no paging, no search
+  a visitor types, no page builder.
+
+**Rules out**: public writes (public forms are Forms', BD-03); publishing email addresses, phone numbers,
+secrets, files, permission-group fields or people's declared personal data; content that depends on who is
+looking (per-visitor content, a guest's own records: those are the portal's, BD-02); a list of lines or ledger
+rows.
