@@ -147,10 +147,13 @@ pub fn aggregate_types(rule: &Rule, shape: &EntityShape, target: &dyn Fn(&str) -
 
 /// Whether a filter's operator and literal value fit a field of this type, as a list's filters take them.
 fn condition_fits(ty: &Ty, op: &str, v: &Value) -> Result<bool, String> {
-    // Literal values only, and no floats: a decimal is written as text.
+    // Literal values only, and no floats: a decimal is written as text. The one value that is not a literal is the
+    // day the aggregate is read, `{"today": n}`.
     let scalar = |v: &Value| match v {
         Value::Number(n) if !(n.is_i64() || n.is_u64()) => false,
         Value::Number(_) | Value::String(_) | Value::Bool(_) => !Val::from_json(v, ty).is_unknown(),
+        // The day the aggregate is read, moved some days: only a date is compared with a day.
+        Value::Object(_) => *ty == Ty::Date && crate::solution::today_offset(v).is_some(),
         _ => false,
     };
     let ordered = matches!(ty, Ty::Int | Ty::Decimal | Ty::Date | Ty::Instant | Ty::Text);
@@ -563,6 +566,7 @@ mod tests {
                     ("customer".into(), FieldShape { ty: Ty::Ref("Customer".into()), customer: false, restricted: false, link: Some("Customer".into()) }),
                     ("order".into(), FieldShape { ty: Ty::Ref("SalesOrder".into()), customer: false, restricted: false, link: Some("SalesOrder".into()) }),
                     ("outstanding".into(), FieldShape { ty: Ty::Decimal, customer: false, restricted: false, link: None }),
+                    ("due_on".into(), FieldShape { ty: Ty::Date, customer: false, restricted: false, link: None }),
                 ]),
             }),
             _ => None,
@@ -706,6 +710,18 @@ mod tests {
         let wrong = release(json!([{"id": "w", "entity": "SalesOrder", "phase": "validate", "message": "m", "check": "true",
             "aggregates": [{"name": "x", "entity": "Invoice", "link": "customer", "op": "count"}]}]));
         assert!(Active::prepare(&[(origin("w"), wrong)], &entities).problems()[0].contains("not a link to SalesOrder"));
+        // The day the aggregate is read (`{"today": n}`) is compared with a date and nothing else.
+        let day = |f: &str, v: Value| {
+            release(json!([{"id": "d", "entity": "SalesOrder", "phase": "validate", "message": "m", "check": "aggregates.x > 0",
+                "aggregates": [{"name": "x", "entity": "Invoice", "link": "order", "op": "count", "filter": [[f, ">=", v]]}]}]))
+        };
+        assert_eq!(Active::prepare(&[(origin("d"), day("due_on", json!({"today": -1})))], &entities).problems(), Vec::<String>::new());
+        for (f, v) in
+            [("outstanding", json!({"today": 0})), ("due_on", json!({"today": 0.5})), ("due_on", json!({"today": 9999})), ("due_on", json!({"tomorrow": 0}))]
+        {
+            let problems = Active::prepare(&[(origin("d"), day(f, v.clone()))], &entities).problems();
+            assert!(problems[0].contains(&format!("does not fit Invoice.{f}")), "{f} {v}: {problems:?}");
+        }
     }
 
     #[test]
