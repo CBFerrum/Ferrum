@@ -34,7 +34,8 @@ const MAX_DECISIONS: usize = 64;
 const MAX_WRITES: usize = 32;
 const MAX_STEPS: u32 = 100_000;
 /// Names an expression already has, which no step may take.
-const SCOPE_NAMES: &[&str] = &["trigger", "parameters", "doc", "old", "user", "today", "now", "item", "lookups", "true", "false", "null", "in", "has"];
+const SCOPE_NAMES: &[&str] =
+    &["trigger", "parameters", "doc", "old", "user", "today", "now", "item", "lookups", "aggregates", "true", "false", "null", "in", "has"];
 
 /// A name an expression can refer to: lower_snake_case, at most 64 characters.
 fn name_ok(s: &str) -> bool {
@@ -560,7 +561,28 @@ fn rules(p: &mut Pass, src: &Solution, params: &Ty) -> BTreeMap<String, String> 
         }
         // A rule sees the record as fields it may read: restricted ones are not there to read.
         let restricted: Vec<&String> = shape.fields.iter().filter(|(_, f)| f.restricted).map(|(k, _)| k).collect();
-        let env = crate::rules::env(&shape, r.phase, params, &lookups);
+        let aggregates = match crate::rules::aggregate_types(r, &shape, &|name| resolver.entity(name)) {
+            Ok(a) => a,
+            Err(e) => {
+                let code = if e.contains("restricted") { Code::PermissionDenied } else { Code::SchemaInvalid };
+                p.fault(code, format!("{at}/aggregates"), None, e);
+                BTreeMap::new()
+            }
+        };
+        // What an aggregate reads is locked as a lookup's is: the link it follows and the fields it reads.
+        for a in &r.aggregates {
+            if let Some(to) = a.to_link().and_then(|t| shape.fields.get(t).map(|f| (t, f))) {
+                fields.insert(format!("{}.{}", r.entity, to.0), crate::rules::lock_name(&to.1.ty));
+            }
+            if let Some(of) = resolver.entity(&a.entity) {
+                for f in std::iter::once(&a.link).chain(&a.field).chain(a.filter.iter().map(|c| &c.0)) {
+                    if let Some(t) = of.fields.get(f) {
+                        fields.insert(format!("{}.{f}", a.entity), crate::rules::lock_name(&t.ty));
+                    }
+                }
+            }
+        }
+        let env = crate::rules::env(&shape, r.phase, params, &lookups, &aggregates);
         let check =
             |p: &mut Pass, fields: &mut BTreeMap<String, String>, src_expr: &str, want: &Ty, pointer: String| match expr::compile_as(src_expr, &env, want) {
                 Ok(c) => {
@@ -1886,6 +1908,123 @@ mod tests {
         refused_with(v.clone(), Code::PermissionDenied, "restricted");
         v["rules"][2]["lookups"][0]["link"] = json!("company");
         refused_with(v, Code::SchemaInvalid, "not a link");
+    }
+
+    /// The purchase example with a third rule: no second open charge on this request, and the supplier owes
+    /// at most 100 on unpaid ones.
+    fn with_aggregates() -> Value {
+        let mut v = purchase();
+        v["rules"].as_array_mut().unwrap().push(json!({
+            "id": "charges", "entity": "MaterialRequest", "phase": "validate", "message": "Settle the open charges first",
+            "aggregates": [
+                {"name": "open", "entity": "Charge", "link": "request", "filter": [["status", "=", "Open"]], "op": "count"},
+                {"name": "owed", "entity": "Charge", "link": "supplier", "to": "supplier", "filter": [["paid", "=", false], ["amount", ">", "0"]], "op": "sum", "field": "amount"},
+                {"name": "any", "entity": "Charge", "link": "request", "to": "self", "op": "exists"}
+            ],
+            "check": "aggregates.open < 2 && aggregates.owed <= dec(\"100\") && (aggregates.any || true)"
+        }));
+        v
+    }
+
+    #[test]
+    fn aggregates_are_typed_and_locked() {
+        let r = compile_value(with_aggregates(), RuntimeProfile::FullProcess).unwrap_or_else(|d| panic!("{d:#?}"));
+        for f in ["Charge.request", "Charge.supplier", "Charge.status", "Charge.paid", "Charge.amount", "MaterialRequest.supplier"] {
+            assert!(r.fields.contains_key(f), "{f} is locked: {:?}", r.fields);
+        }
+        // A count is a whole number, a sum a decimal, exists yes/no: each where its type fits, and nowhere else.
+        for wrong in ["aggregates.open == \"two\"", "aggregates.any > 1", "aggregates.owed && true", "aggregates.missing > 0"] {
+            let mut v = with_aggregates();
+            v["rules"][2]["check"] = json!(wrong);
+            assert!(faults(v).iter().any(|d| d.pointer == "/rules/2/check"), "{wrong} is refused");
+        }
+        let mut v = with_aggregates();
+        v["rules"][1]["writes"] = json!({"x_department": "aggregates.open > 0 ? \"busy\" : \"general\""});
+        v["rules"][1]["aggregates"] = v["rules"][2]["aggregates"].clone();
+        compile_value(v, RuntimeProfile::FullProcess).unwrap_or_else(|d| panic!("a derivation reads them too: {d:#?}"));
+    }
+
+    #[test]
+    fn aggregates_are_bounded_and_checked() {
+        let bad = |edit: &dyn Fn(&mut Value), code: Code, words: &str| {
+            let mut v = with_aggregates();
+            edit(&mut v["rules"][2]);
+            refused_with(v, code, words);
+        };
+        bad(
+            &|r| {
+                r["aggregates"] =
+                    json!((0..5).map(|i| json!({"name": format!("n{i}"), "entity": "Charge", "link": "request", "op": "count"})).collect::<Vec<_>>())
+            },
+            Code::SchemaInvalid,
+            "at most 4 sets of records",
+        );
+        bad(&|r| r["aggregates"][0]["entity"] = json!("Invoice"), Code::SchemaInvalid, "Invoice is not an entity");
+        bad(&|r| r["aggregates"][0]["link"] = json!("supplier"), Code::SchemaInvalid, "Charge.supplier is not a link to MaterialRequest");
+        bad(&|r| r["aggregates"][0]["link"] = json!("nothing"), Code::SchemaInvalid, "Charge has no field nothing");
+        bad(&|r| r["aggregates"][1]["to"] = json!("company"), Code::SchemaInvalid, "company is not a link of MaterialRequest");
+        bad(&|r| r["aggregates"][1]["field"] = Value::Null, Code::SchemaInvalid, "names the field it adds up");
+        bad(&|r| r["aggregates"][1]["field"] = json!("status"), Code::SchemaInvalid, "a sum adds up numbers");
+        bad(&|r| r["aggregates"][0]["field"] = json!("amount"), Code::SchemaInvalid, "only a sum names a field");
+        bad(&|r| r["aggregates"][1]["field"] = json!("internal_note"), Code::PermissionDenied, "restricted");
+        bad(&|r| r["aggregates"][0]["filter"] = json!([["internal_note", "=", "x"]]), Code::PermissionDenied, "restricted");
+        bad(&|r| r["aggregates"][0]["filter"] = json!([["colour", "=", "red"]]), Code::SchemaInvalid, "Charge has no field colour");
+        bad(&|r| r["aggregates"][0]["filter"] = json!([["status", "~", "x"]]), Code::SchemaInvalid, "not a filter operator");
+        bad(&|r| r["aggregates"][0]["filter"] = json!([["amount", "like", "1"]]), Code::SchemaInvalid, "does not fit Charge.amount");
+        bad(&|r| r["aggregates"][0]["filter"] = json!([["paid", ">", true]]), Code::SchemaInvalid, "does not fit Charge.paid");
+        bad(&|r| r["aggregates"][0]["filter"] = json!([["amount", ">", 0.1]]), Code::SchemaInvalid, "does not fit");
+        bad(&|r| r["aggregates"][0]["filter"] = json!([["amount", ">", "lots"]]), Code::SchemaInvalid, "does not fit");
+        bad(&|r| r["aggregates"][0]["filter"] = json!([["status", "in", "Open"]]), Code::SchemaInvalid, "does not fit");
+        bad(&|r| r["aggregates"][0]["filter"] = json!([["due", "between", ["2026-01-01"]]]), Code::SchemaInvalid, "does not fit");
+        bad(&|r| r["aggregates"][0]["filter"] = json!([["status", "=", {"a": 1}]]), Code::SchemaInvalid, "does not fit");
+        bad(&|r| r["aggregates"][0]["filter"] = json!(vec![json!(["status", "=", "Open"]); 9]), Code::SchemaInvalid, "at most 8 conditions");
+        bad(&|r| r["aggregates"][2]["name"] = json!("open"), Code::SchemaInvalid, "two lookups or aggregates are called open");
+        bad(
+            &|r| r["lookups"] = json!([{"name": "owed", "link": "supplier", "fields": ["credit_limit"]}]),
+            Code::SchemaInvalid,
+            "two lookups or aggregates are called owed",
+        );
+        // What fits: each operator on a field of its kind.
+        let mut v = with_aggregates();
+        v["rules"][2]["aggregates"][0]["filter"] = json!([
+            ["status", "in", ["Open", "Held"]],
+            ["due", "between", ["2026-01-01", "2026-12-31"]],
+            ["hours", ">=", 2],
+            ["status", "like", "Op"],
+            ["paid", "!=", null],
+            ["due", "is", "set"],
+            ["amount", "<", "10.5"],
+            ["paid", "=", true]
+        ]);
+        compile_value(v, RuntimeProfile::FullProcess).unwrap_or_else(|d| panic!("{d:#?}"));
+        // An unknown key is a typo, not a setting quietly ignored.
+        let mut v = with_aggregates();
+        v["rules"][2]["aggregates"][0]["where"] = json!([]);
+        assert!(Solution::from_value(v).is_err());
+    }
+
+    #[test]
+    fn aggregates_are_meaning_and_their_absence_changes_nothing() {
+        // A source without them reads, writes and digests as it did before they existed.
+        let a = compile_value(purchase(), RuntimeProfile::FullProcess).unwrap();
+        assert_eq!(a.source_digest, "sha256:e2e0e9c70d71514e8e548f00f5f12412be2d087a5a82c2c7288ff3290a8e153f");
+        let mut empty = purchase();
+        empty["rules"][0]["aggregates"] = json!([]);
+        let b = compile_value(empty, RuntimeProfile::FullProcess).unwrap();
+        assert_eq!((&a.source_digest, &a.artifact_digest), (&b.source_digest, &b.artifact_digest));
+        assert!(!serde_json::to_string(&b).unwrap().contains("aggregates"), "not written down when there are none");
+        let with = compile_value(with_aggregates(), RuntimeProfile::FullProcess).unwrap();
+        let mut bare = with_aggregates();
+        bare["rules"][2]["aggregates"][2].as_object_mut().unwrap().remove("to");
+        let bare = compile_value(bare, RuntimeProfile::FullProcess).unwrap();
+        assert_eq!((&with.source_digest, &with.artifact_digest), (&bare.source_digest, &bare.artifact_digest), "to: self is no to at all");
+        let mut other = with_aggregates();
+        other["rules"][2]["aggregates"][0]["filter"][0][2] = json!("Held");
+        let other = compile_value(other, RuntimeProfile::FullProcess).unwrap();
+        assert_ne!(with.source_digest, other.source_digest, "what is counted is meaning");
+        assert_ne!(with.artifact_digest, other.artifact_digest);
+        let changes = crate::diff::diff(Some(&with), &other);
+        assert!(serde_json::to_string(&changes).unwrap().contains("charges"), "the diff names the rule: {changes:?}");
     }
 
     #[test]

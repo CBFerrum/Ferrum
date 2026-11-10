@@ -127,6 +127,21 @@ impl Resolver for Fixture {
                 ]),
             });
         }
+        if name == "Charge" {
+            let f = |ty: Ty, link: Option<&str>, restricted: bool| FieldShape { ty, customer: false, restricted, link: link.map(str::to_string) };
+            return Some(EntityShape {
+                fields: BTreeMap::from([
+                    ("request".into(), f(Ty::Ref("MaterialRequest".into()), Some("MaterialRequest"), false)),
+                    ("supplier".into(), f(Ty::Ref("Supplier".into()), Some("Supplier"), false)),
+                    ("amount".into(), f(Ty::Decimal, None, false)),
+                    ("hours".into(), f(Ty::Int, None, false)),
+                    ("status".into(), f(Ty::Text, None, false)),
+                    ("due".into(), f(Ty::Date, None, false)),
+                    ("paid".into(), f(Ty::Bool, None, false)),
+                    ("internal_note".into(), f(Ty::Text, None, true)),
+                ]),
+            });
+        }
         (name == "MaterialRequest").then(|| EntityShape {
             fields: BTreeMap::from([
                 ("supplier".into(), FieldShape { ty: Ty::Text, customer: false, restricted: false, link: Some("Supplier".into()) }),

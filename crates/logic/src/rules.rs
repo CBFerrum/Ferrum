@@ -12,7 +12,7 @@
 
 use crate::compile::{EntityShape, Release, parameter_type};
 use crate::expr::{self, Env, Facts, Ty, Val};
-use crate::solution::{Phase, Rule};
+use crate::solution::{Aggregate, AggregateOp, Condition, Phase, Rule};
 use chrono::{DateTime, NaiveDate, Utc};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,8 +21,12 @@ use std::sync::Arc;
 /// Linked records one rule may read, and fields of each.
 pub const MAX_LOOKUPS: usize = 4;
 pub const MAX_LOOKUP_FIELDS: usize = 16;
-/// Linked records one save reads for all its entity's rules together.
+/// Linked records one save reads for all its entity's rules together; and, apart, sets of records it counts
+/// or sums.
 pub const MAX_READS_PER_SAVE: usize = 8;
+/// Sets of records one rule counts or sums, and conditions of each.
+pub const MAX_AGGREGATES: usize = 4;
+pub const MAX_FILTER: usize = 8;
 
 /// The person, as rules read them.
 pub fn user_type() -> Ty {
@@ -36,7 +40,7 @@ pub fn readable(shape: &EntityShape) -> Ty {
 
 /// What a rule's expressions may name. `old`, the stored version, only in validation: a derivation computes
 /// from the record as it is.
-pub fn env(shape: &EntityShape, phase: Phase, params: &Ty, lookups: &BTreeMap<String, Ty>) -> Env {
+pub fn env(shape: &EntityShape, phase: Phase, params: &Ty, lookups: &BTreeMap<String, Ty>, aggregates: &BTreeMap<String, Ty>) -> Env {
     let doc = readable(shape);
     let env = Env::default()
         .with("doc", doc.clone())
@@ -44,7 +48,8 @@ pub fn env(shape: &EntityShape, phase: Phase, params: &Ty, lookups: &BTreeMap<St
         .with("user", user_type())
         .with("today", Ty::Date)
         .with("now", Ty::Instant)
-        .with("lookups", Ty::Record(lookups.clone()));
+        .with("lookups", Ty::Record(lookups.clone()))
+        .with("aggregates", Ty::Record(aggregates.clone()));
     if phase == Phase::Validate { env.with("old", doc) } else { env }
 }
 
@@ -87,6 +92,80 @@ pub fn lookup_types(rule: &Rule, shape: &EntityShape, target: &dyn Fn(&str) -> O
     Ok(out)
 }
 
+/// The sets of records a rule counts or sums, typed (`count` a whole number, `exists` yes/no, `sum` a decimal),
+/// or what is wrong with them.
+pub fn aggregate_types(rule: &Rule, shape: &EntityShape, target: &dyn Fn(&str) -> Option<EntityShape>) -> Result<BTreeMap<String, Ty>, String> {
+    let id = &rule.id;
+    if rule.aggregates.len() > MAX_AGGREGATES {
+        return Err(format!("{id}: a rule counts or sums at most {MAX_AGGREGATES} sets of records"));
+    }
+    let mut out = BTreeMap::new();
+    for a in &rule.aggregates {
+        if rule.lookups.iter().any(|l| l.name == a.name) || out.contains_key(&a.name) {
+            return Err(format!("{id}: two lookups or aggregates are called {}", a.name));
+        }
+        let pointed = match a.to_link() {
+            None => rule.entity.clone(),
+            Some(to) => match shape.fields.get(to) {
+                Some(f) if f.restricted => return Err(format!("{id}: {to} is restricted, so a rule may not follow it")),
+                Some(f) if f.link.is_some() => f.link.clone().unwrap_or_default(),
+                _ => return Err(format!("{id}: {to} is not a link of {}", rule.entity)),
+            },
+        };
+        let Some(of) = target(&a.entity) else { return Err(format!("{id}: {} is not an entity a rule can read", a.entity)) };
+        let field = |f: &str| match of.fields.get(f) {
+            Some(s) if s.restricted => Err(format!("{id}: {}.{f} is restricted: a rule may not read it", a.entity)),
+            Some(s) => Ok(s.clone()),
+            None => Err(format!("{id}: {} has no field {f}", a.entity)),
+        };
+        if field(&a.link)?.link.as_deref() != Some(pointed.as_str()) {
+            return Err(format!("{id}: {}.{} is not a link to {pointed}", a.entity, a.link));
+        }
+        let ty = match (a.op, &a.field) {
+            (AggregateOp::Sum, Some(f)) => match field(f)?.ty {
+                Ty::Int | Ty::Decimal => Ty::Decimal,
+                other => return Err(format!("{id}: {}.{f} is {other}: a sum adds up numbers", a.entity)),
+            },
+            (AggregateOp::Sum, None) => return Err(format!("{id}: the sum {} names the field it adds up", a.name)),
+            (_, Some(_)) => return Err(format!("{id}: only a sum names a field ({})", a.name)),
+            (AggregateOp::Count, None) => Ty::Int,
+            (AggregateOp::Exists, None) => Ty::Bool,
+        };
+        if a.filter.len() > MAX_FILTER {
+            return Err(format!("{id}: an aggregate's filter has at most {MAX_FILTER} conditions"));
+        }
+        for Condition(f, op, v) in &a.filter {
+            let fty = field(f)?.ty;
+            if !condition_fits(&fty, op, v)? {
+                return Err(format!("{id}: [{f}, {op}, {v}] does not fit {}.{f}, which is {fty}", a.entity));
+            }
+        }
+        out.insert(a.name.clone(), ty);
+    }
+    Ok(out)
+}
+
+/// Whether a filter's operator and literal value fit a field of this type, as a list's filters take them.
+fn condition_fits(ty: &Ty, op: &str, v: &Value) -> Result<bool, String> {
+    // Literal values only, and no floats: a decimal is written as text.
+    let scalar = |v: &Value| match v {
+        Value::Number(n) if !(n.is_i64() || n.is_u64()) => false,
+        Value::Number(_) | Value::String(_) | Value::Bool(_) => !Val::from_json(v, ty).is_unknown(),
+        _ => false,
+    };
+    let ordered = matches!(ty, Ty::Int | Ty::Decimal | Ty::Date | Ty::Instant | Ty::Text);
+    let list = |n: Option<usize>| v.as_array().is_some_and(|a| n.is_none_or(|n| a.len() == n) && a.len() <= 1000 && a.iter().all(scalar));
+    Ok(match op.trim().to_lowercase().as_str() {
+        "=" | "==" | "eq" | "!=" | "<>" | "ne" => v.is_null() || scalar(v),
+        ">" | "gt" | ">=" | "gte" | "<" | "lt" | "<=" | "lte" => ordered && scalar(v),
+        "in" | "not in" | "not_in" => list(None),
+        "between" => ordered && list(Some(2)),
+        "like" | "not like" | "not_like" => *ty == Ty::Text && v.is_string(),
+        "is" => matches!(v.as_str(), Some("set" | "not set")),
+        other => return Err(format!("'{other}' is not a filter operator")),
+    })
+}
+
 /// Where a rule came from, for its refusals and their evidence (FLC-COMP-010).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Origin {
@@ -111,6 +190,8 @@ struct Prepared {
     params: Val,
     /// name, link field, the declared fields' type.
     lookups: Vec<(String, String, Ty)>,
+    /// What it counts or sums, and its type.
+    aggregates: Vec<(Aggregate, Ty)>,
     /// The record's fields its expressions read.
     reads: BTreeSet<String>,
 }
@@ -122,6 +203,8 @@ struct EntityRules {
     validates: Vec<Prepared>,
     /// Linked records to read first, per phase: link field → (entity, fields).
     reads: BTreeMap<Phase, BTreeMap<String, (String, BTreeSet<String>)>>,
+    /// Sets of records to count or sum first, per phase, by what they read.
+    counts: BTreeMap<Phase, BTreeMap<String, Aggregate>>,
 }
 
 /// Every active release's rules in a workspace, by entity. An entity whose rules cannot run as approved (a
@@ -149,6 +232,8 @@ pub struct Record<'a> {
     pub today: NaiveDate,
     /// By link field: the linked record as read for the rules, or null.
     pub linked: &'a BTreeMap<String, Value>,
+    /// By [`Aggregate::key`]: the count (a whole number), the sum (a decimal as text) or whether any exist.
+    pub aggregated: &'a BTreeMap<String, Value>,
 }
 
 /// Why a save does not go ahead.
@@ -220,7 +305,8 @@ fn prepare_rule(
     }
     let (params_ty, params) = parameters(release)?;
     let lookups = lookup_types(rule, shape, entities).map_err(|e| format!("{who}: {e}"))?;
-    let env = env(shape, rule.phase, &params_ty, &lookups);
+    let aggregates = aggregate_types(rule, shape, entities).map_err(|e| format!("{who}: {e}"))?;
+    let env = env(shape, rule.phase, &params_ty, &lookups, &aggregates);
     let compile = |src: &str, want: &Ty| expr::compile_as(src, &env, want).map_err(|e| format!("{who}: {e}"));
     let when = rule.when.as_deref().map(|w| compile(w, &Ty::Bool)).transpose()?;
     let mut writes = vec![];
@@ -245,6 +331,7 @@ fn prepare_rule(
         audit: rule.audit_refusals,
         params,
         lookups: rule.lookups.iter().map(|l| (l.name.clone(), l.link.clone(), lookups[&l.name].clone())).collect(),
+        aggregates: rule.aggregates.iter().map(|a| (a.clone(), aggregates[&a.name].clone())).collect(),
         reads,
     })
 }
@@ -302,7 +389,13 @@ impl Active {
                     }
                 }
                 let mut reads: BTreeMap<Phase, BTreeMap<String, (String, BTreeSet<String>)>> = BTreeMap::new();
+                let mut counts: BTreeMap<Phase, BTreeMap<String, Aggregate>> = BTreeMap::new();
                 for (phase, list) in [(Phase::Derive, &derives), (Phase::Validate, &validates)] {
+                    let here = counts.entry(phase).or_default();
+                    here.extend(list.iter().flat_map(|r| r.aggregates.iter().map(|(a, _)| (a.key(), a.clone()))));
+                    if here.len() > MAX_READS_PER_SAVE {
+                        return Err(format!("{entity}'s rules count or sum {} sets of records in one save; at most {MAX_READS_PER_SAVE}", here.len()));
+                    }
                     let here = reads.entry(phase).or_default();
                     for r in list.iter() {
                         for (_, link, ty) in &r.lookups {
@@ -316,7 +409,7 @@ impl Active {
                     }
                 }
                 let doc = entities(&entity).map(|s| readable(&s)).unwrap_or(Ty::Any);
-                Ok(EntityRules { doc, derives: ordered(derives)?, validates, reads })
+                Ok(EntityRules { doc, derives: ordered(derives)?, validates, reads, counts })
             });
             out.entities.insert(entity, prepared);
         }
@@ -356,15 +449,27 @@ impl Active {
         }
     }
 
+    /// The sets of records to count or sum before this phase's rules run, by [`Aggregate::key`].
+    pub fn aggregates(&self, entity: &str, phase: Phase) -> Result<Vec<(String, Aggregate)>, Stop> {
+        match self.entities.get(entity) {
+            None => Ok(vec![]),
+            Some(Err(e)) => Err(Stop::Stale(e.clone())),
+            Some(Ok(r)) => Ok(r.counts.get(&phase).into_iter().flatten().map(|(k, a)| (k.clone(), a.clone())).collect()),
+        }
+    }
+
     fn facts(rules: &EntityRules, r: &Prepared, doc: &Value, rec: &Record) -> Facts {
         let lookups = r.lookups.iter().map(|(name, link, ty)| (name.clone(), Val::from_json(rec.linked.get(link).unwrap_or(&Value::Null), ty))).collect();
+        let aggregates =
+            r.aggregates.iter().map(|(a, ty)| (a.name.clone(), Val::from_json(rec.aggregated.get(&a.key()).unwrap_or(&Value::Null), ty))).collect();
         let facts = Facts::default()
             .with("doc", Val::from_json(doc, &rules.doc))
             .with("parameters", r.params.clone())
             .with("user", Val::from_json(rec.user, &user_type()))
             .with("today", Val::Date(rec.today))
             .with("now", Val::Instant(rec.now))
-            .with("lookups", Val::Record(lookups));
+            .with("lookups", Val::Record(lookups))
+            .with("aggregates", Val::Record(aggregates));
         match rec.old {
             Some(old) => facts.with("old", Val::from_json(old, &rules.doc)),
             None => facts.with("old", Val::Null),
@@ -453,6 +558,13 @@ mod tests {
                     ("bank_account".into(), FieldShape { ty: Ty::Text, customer: false, restricted: true, link: None }),
                 ]),
             }),
+            "Invoice" => Some(EntityShape {
+                fields: BTreeMap::from([
+                    ("customer".into(), FieldShape { ty: Ty::Ref("Customer".into()), customer: false, restricted: false, link: Some("Customer".into()) }),
+                    ("order".into(), FieldShape { ty: Ty::Ref("SalesOrder".into()), customer: false, restricted: false, link: Some("SalesOrder".into()) }),
+                    ("outstanding".into(), FieldShape { ty: Ty::Decimal, customer: false, restricted: false, link: None }),
+                ]),
+            }),
             _ => None,
         }
     }
@@ -472,7 +584,8 @@ mod tests {
     }
 
     fn rec<'a>(doc: &'a Value, linked: &'a BTreeMap<String, Value>, user: &'a Value) -> Record<'a> {
-        Record { doc, old: None, user, now: Utc::now(), today: NaiveDate::from_ymd_opt(2026, 11, 8).unwrap(), linked }
+        static NONE: BTreeMap<String, Value> = BTreeMap::new();
+        Record { doc, old: None, user, now: Utc::now(), today: NaiveDate::from_ymd_opt(2026, 11, 8).unwrap(), linked, aggregated: &NONE }
     }
 
     #[test]
@@ -551,6 +664,48 @@ mod tests {
             "lookups": [{"name": "customer", "link": "customer", "fields": ["bank_account"]}]
         }]));
         assert!(Active::prepare(&[(origin("b"), bank)], &entities).problems()[0].contains("restricted"));
+    }
+
+    #[test]
+    fn aggregates_are_read_first_and_given_to_the_rules() {
+        let owed = json!({"name": "owed", "entity": "Invoice", "link": "customer", "to": "customer", "filter": [["outstanding", ">", "0"]], "op": "sum", "field": "outstanding"});
+        let r = release(json!([
+            {"id": "unpaid", "entity": "SalesOrder", "phase": "validate", "message": "The customer has unpaid invoices",
+             "aggregates": [owed, {"name": "invoices", "entity": "Invoice", "link": "order", "op": "count"}],
+             "check": "aggregates.owed == dec(\"0\") || aggregates.invoices > 0"},
+            // The same sum under another name: read once.
+            {"id": "band", "entity": "SalesOrder", "phase": "derive", "aggregates": [{"name": "due", "entity": "Invoice", "link": "customer", "to": "customer", "filter": [["outstanding", ">", "0"]], "op": "sum", "field": "outstanding"}],
+             "writes": {"x_band": "aggregates.due > dec(\"0.3\") ? \"owing\" : \"clear\""}}
+        ]));
+        let active = Active::prepare(&[(origin("a"), r.clone())], &entities);
+        assert!(active.problems().is_empty(), "{:?}", active.problems());
+        let validate = active.aggregates("SalesOrder", Phase::Validate).unwrap();
+        assert_eq!(validate.len(), 2);
+        let derive = active.aggregates("SalesOrder", Phase::Derive).unwrap();
+        assert_eq!(derive.len(), 1);
+        let key = r.ir.rules[0].aggregates[0].key();
+        assert_eq!(derive[0].0, key, "one read whatever the rules call it");
+        let count = r.ir.rules[0].aggregates[1].key();
+        let (linked, user, doc) = (BTreeMap::new(), json!({}), json!({"grand_total": "1"}));
+        // A simulation hands the values in, as the server would have read them.
+        let run = |owed: Value, invoices: Value| {
+            let aggregated = BTreeMap::from([(key.clone(), owed), (count.clone(), invoices)]);
+            active.validate("SalesOrder", &Record { aggregated: &aggregated, ..rec(&doc, &linked, &user) })
+        };
+        assert!(run(json!("0"), json!(0)).is_ok());
+        assert!(run(json!("0.30"), json!(1)).is_ok());
+        let Err(Stop::Refused(refused)) = run(json!("0.30"), json!(0)) else { panic!("unpaid and no invoice of its own") };
+        assert_eq!(refused.outcome, "false");
+        assert!(run(Value::Null, json!(0)).is_err(), "not given is not zero");
+        // Exact: 0.1 + 0.2 summed by the server is 0.3, not more.
+        let mut out = Map::new();
+        let aggregated = BTreeMap::from([(key.clone(), json!("0.3"))]);
+        active.derive("SalesOrder", &mut out, &Record { aggregated: &aggregated, ..rec(&doc, &linked, &user) }).unwrap();
+        assert_eq!(out["x_band"], json!("clear"));
+        // Pointing at the wrong record is found when prepared.
+        let wrong = release(json!([{"id": "w", "entity": "SalesOrder", "phase": "validate", "message": "m", "check": "true",
+            "aggregates": [{"name": "x", "entity": "Invoice", "link": "customer", "op": "count"}]}]));
+        assert!(Active::prepare(&[(origin("w"), wrong)], &entities).problems()[0].contains("not a link to SalesOrder"));
     }
 
     #[test]
