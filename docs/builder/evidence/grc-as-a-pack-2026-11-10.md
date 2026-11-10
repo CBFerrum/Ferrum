@@ -167,3 +167,68 @@ With those four, the remaining differences (tolerance as a reviewed parameter, t
 tests as lines with one evidence file, a key's message, a space for the home page, no uninstall) are ones a
 customer could choose to accept; lines within lines (rank 7) and settings by configuration (rank 4) are
 needed only to remove them.
+
+## Measured again after configured actions (10 November 2026, later)
+
+The platform gained three of the capabilities above, on branch `bf/actions`: **configured actions**
+(`add_action` with `roles`, `refuse_if` and `effects` run as the system through the save pipeline; decision
+BD-11), **`update_linked`** (an effect, and an automation action, that writes the record a link names under
+its own checks and rules), and **the day in aggregate filters** (`{"today": n}`). Two faults found while
+building were fixed on the way: a record's whole numbers are signed in expressions (`doc.days * 24` works),
+and `read_only_if` is enforced by the server (it was not: a test sending input to a field whose condition
+held saw it written).
+
+The pack was rebuilt to use them and the same scenarios restated
+([grc_pack_it.rs](../../../crates/studio/tests/grc_pack_it.rs); the committed pack is regenerated from the
+builder and still checked byte for byte). It now holds 23 customizations (8 entities, 9 checks, 6 configured
+actions), 3 roles, 3 automations, 1 Studio item and 1 solution of 2 rules. What changed in it:
+
+- **Acceptances**: Accept It, Reject It and Revoke It are buttons for a Risk Approver, refused as forbidden to
+  anyone else and, for the first two, to the risk's owner. The status is computed from a hidden, read-only
+  decision the buttons set (Expired the day after its last day), so no one types it; four checks that held
+  the moves and movers went. Approving writes the risk's treatment to Accept; revoking asks the risk to look
+  again, which opens it at once unless another acceptance holds it. The day revoked is recorded.
+- **Expiry**: the midnight automation saves an expired acceptance again (Expired) and asks its risk to look
+  again in the same run; the 00:05 recheck of every accepted risk went. The rule's `held` counts approved
+  acceptances whose last day is today or later, so an expired one stops holding its risk the day it expires,
+  before any automation runs. The derivation that reopens a risk no longer looks at the tolerance, as the
+  app does not.
+- **Policies**: Publish It, Retire It and I Have Read It are buttons. Publishing sets the next revision, the
+  text and the day; with nothing new, the check refuses the whole action in the app's words. Acknowledging
+  creates the acknowledgement as the system, so a Policy Reader no longer creates records herself, and a
+  retired policy is not found by a reader, as in the app. The two tick boxes and the derivation that read
+  them went.
+
+### Counts
+
+58 behaviours: **46 same, 6 different, 6 cannot** (were 33, 16, 9). Of the app's own test, 34 marked steps
+(the read-only status is now a step of its own): 30 same, 4 different, 0 cannot (were 20, 10, 3 of 33).
+
+| Moved | Behaviours |
+|---|---|
+| cannot → same | A5 (decisions are buttons), A9 (approving accepts the risk), R8 (an expired acceptance holds nothing before the upkeep) |
+| different → same | A3, A4 (forbidden, in the platform's words with the administrator's message), A6 (status read-only), A8 (day revoked), A11 (expiry reopens at the upkeep, unless another acceptance holds it, whatever the tolerance), A12 (revoking reopens at once), P2, P5 (publish and retire are buttons), P7 (I Have Read It), P9 (a retired policy is not found) |
+
+### Still different or impossible
+
+- **Different (6)**: R9 and C2 (the tolerance is a reviewed solution parameter, the test interval a field of
+  each control: settings by configuration, rank 4); C3 (tests are lines of their control, rank 5's "latest
+  of other records" and lines within lines); P8 (a key's own message, rank 8: "another Policy Acknowledgement
+  already has this Policy and Revision and Person"); U1 (a Studio space, rank 10); U9 (no uninstall).
+- **Cannot (6)**: C4 (lines within lines, rank 7); U3–U6 (shell contributions in a pack, rank 2); U7 (words in
+  a pack, rank 6).
+- **Still a workaround**: computed fields are worked out at save only, so the pack keeps daily automations
+  that save records again (acceptances, controls, findings). The `today` filter removed the need for one of
+  them (the 00:05 recheck), not for the others.
+- **Not checked**: the record form was not opened in a browser. Reading the frontend (`FormView.tsx`), it
+  shows an entity's actions as buttons from metadata with their conditions, confirmations and parameter
+  dialogs, filtered by the action's permission or a role's rule naming it: a configured action appears
+  without a frontend change, but `roles` and `refuse_if` are judged only by the server, so a Risk Manager
+  sees Accept It and is refused when pressing it.
+
+### Verdict, again
+
+One record at a time and across records, the pack is now the app in 46 of 58 behaviours, including every
+decision, its refusals and what it does to the risk. What keeps the app from being retired is no longer in
+its Rust: it is the shell (tile, quick create, assistant help, menu module), words in other languages, lines
+within lines, and settings by configuration.
