@@ -120,6 +120,32 @@ fn target_calendars(pack: &Pack) -> BTreeSet<String> {
     pack.customizations.iter().flat_map(|c| named(&c.op)).collect()
 }
 
+/// What a pack's published lists show to anyone, said plainly for whoever installs it: "This pack
+/// publishes a list of Permits to anyone: Holder, Type, Issued on."
+fn publishes(ctx: &Ctx, pack: &Pack) -> Vec<String> {
+    let def_of = |entity: &str| {
+        let defined = pack.customizations.iter().rev().find_map(|c| match &c.op {
+            OverlayOp::DefineEntity { entity: e } | OverlayOp::RedefineEntity { entity: e } if e.name == entity => Some((**e).clone()),
+            _ => None,
+        });
+        defined.or_else(|| ctx.schema.entity(entity).map(|e| e.def.clone()))
+    };
+    let mut out = Vec::new();
+    for c in &pack.customizations {
+        let OverlayOp::PublishList { list } = &c.op else { continue };
+        let def = def_of(&c.entity);
+        let label = |f: &str| match def.as_ref().and_then(|d| d.fields.iter().find(|x| x.name == f)) {
+            Some(x) => x.label(),
+            None if f == "number" => "Number".into(),
+            None => ferrum_meta::humanize(f),
+        };
+        let what = def.as_ref().map_or_else(|| c.entity.clone(), |d| d.plural_label());
+        let fields: Vec<String> = list.fields.iter().map(|f| label(f)).collect();
+        out.push(format!("This pack publishes a list of {what} to anyone, without signing in ({}): {}.", list.name, fields.join(", ")));
+    }
+    out
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Customization {
@@ -1054,6 +1080,7 @@ impl Kernel {
         let mut summary = self.apply(ctx, &mut tx, &pack).await?;
         let mut warnings = stops_applying(&pack, &before, &Self::overlay_rows(&mut tx, ctx.tenant).await?);
         tx.rollback().await?;
+        warnings.extend(publishes(ctx, &pack));
         for a in pack.automations.iter().filter(|a| a.schedule.is_some()) {
             let touched = summary.get("automations").is_some_and(|s| s.created.contains(&a.name) || s.changed.contains(&a.name));
             if touched {
