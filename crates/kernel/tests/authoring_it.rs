@@ -215,8 +215,25 @@ async fn scenario() {
     assert!(k.insert(&admin, "XOrder", obj(json!({"code": "B", "region": "south"}))).await.is_err());
 
     // ───────────── a change set with redefinitions gives another workspace the same schema ─────────────
+    // A child entity switched off and defined again sorts after the parent that uses it: the export's
+    // order does not pass operation by operation, yet the workspace's own export imports.
+    let part = entity("XPart", "child", json!([{"name": "sku", "type": "data"}]));
+    let kit = entity("XKit", "master", json!([{"name": "parts", "type": "table", "of": "XPart"}]));
+    w.batch(vec![op("define_entity", part.clone()), op("define_entity", kit.clone())], false).await.unwrap();
+    let rows = k.list_customizations(&w.admin().await).await.unwrap();
+    let first = rows.iter().find(|r| r.entity == "XPart" && r.is_active).unwrap().id;
+    k.set_customization_active(&w.admin().await, first, false).await.unwrap();
+    w.batch(vec![op("define_entity", part.clone())], false).await.expect("defined again, after XKit");
+    let admin = w.admin().await;
+    assert!(admin.schema.entity("XKit").is_some_and(|e| e.children.contains_key("parts")));
     let set = k.export_customizations(&admin).await.unwrap();
+    let order: Vec<&str> =
+        set["customizations"].as_array().unwrap().iter().map(|c| c["entity"].as_str().unwrap()).filter(|e| ["XKit", "XPart"].contains(e)).collect();
+    assert_eq!(order, ["XKit", "XPart"], "the export lists the parent first");
     let beta = workspace(&k, "beta").await;
+    let ops: Vec<NewCustomization> = serde_json::from_value(set["customizations"].clone()).unwrap();
+    let stepwise = beta.batch(ops, true).await;
+    assert!(matches!(&stepwise, Err((Some(_), e)) if e.to_string().contains("XPart")), "one at a time, this order is refused: {stepwise:?}");
     assert!(k.import_customizations(&beta.admin().await, &set).await.unwrap() > 0);
     let custom = |c: &Ctx| -> Value {
         c.schema.canonical()["entities"].as_object().unwrap().iter().filter(|(n, _)| n.starts_with('X')).map(|(n, v)| (n.clone(), v.clone())).collect()

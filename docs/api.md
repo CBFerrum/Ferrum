@@ -504,7 +504,7 @@ An operation exactly like an active customization is refused (409) rather than s
 - no data is deleted. A field that goes keeps its values in the records, out of sight, and a field of the same name that comes back sees them again; a table field that goes leaves its rows the same way. Unique keys that come are filled from the records (refused, listing them, where records share a value) and keys that go take their rows;
 - a field that becomes required, and a new total over lines, apply from each record's next save.
 
-The same guards hold when a redefinition is switched off or on. A change set (`export`, `import`) carries redefinitions like any other operation; an import applies in order and skips what is already active.
+The same guards hold when a redefinition is switched off or on. A change set (`export`, `import`) carries redefinitions like any other operation and skips what is already active. A batch checks its operations in order, one at a time; an import is checked as a whole, once all its operations are applied, since an export's order need not pass step by step.
 
 Plugins (sandboxed WebAssembly, see README): `GET /api/admin/plugins` → `{plugins: [{id, name, version, description, sha256, hooks, fuel_limit, memory_limit_mb, enabled, updated_at}]}`;
 `POST /api/admin/plugins` `{name, version?, description?, hooks: [{entity|"*", stage: before_validate|validate|before_submit|on_submit|before_cancel|on_cancel|before_delete}], fuel_limit?, memory_limit_mb?, wasm_base64}` → `{id}` (same name replaces);
