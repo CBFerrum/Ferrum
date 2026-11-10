@@ -164,9 +164,10 @@ fn load_sql(ent: &EffEntity, schema: &Schema) -> String {
         if let Some(cent) = schema.entity(&info.entity) {
             children.push(format!(
                 "'{field}', (select coalesce(jsonb_agg(to_jsonb(c) order by c.idx), '[]'::jsonb) from \
-                 (select {} from {} ci where ci.tenant_id = x.tenant_id and ci.parent_id = x.id) c)",
+                 (select {} from {} ci where ci.tenant_id = x.tenant_id and ci.parent_id = x.id{}) c)",
                 child_select_list(cent, "ci"),
-                q(&info.table)
+                q(&info.table),
+                info.predicate("ci")
             ));
         }
     }
@@ -292,7 +293,7 @@ pub async fn insert_row(tx: &mut Tx, schema: &Schema, ent: &EffEntity, tenant: U
             upsert_children(tx, cent, &info.table, rows).await?;
         }
     }
-    Ok(())
+    keep_keys(tx, ent, tenant, id).await
 }
 
 pub async fn update_row(tx: &mut Tx, schema: &Schema, ent: &EffEntity, tenant: Uuid, doc: &Doc, old: &Doc) -> Result<()> {
@@ -314,7 +315,7 @@ pub async fn update_row(tx: &mut Tx, schema: &Schema, ent: &EffEntity, tenant: U
         let new_rows = doc.get(field).and_then(Value::as_array).cloned().unwrap_or_default();
         let old_rows = old.get(field).and_then(Value::as_array).cloned().unwrap_or_default();
         let keep: Vec<Uuid> = new_rows.iter().filter_map(|r| r.get("id").and_then(Value::as_str)).filter_map(|s| s.parse().ok()).collect();
-        let sql = format!("delete from {} where tenant_id = $1 and parent_id = $2 and not (id = any($3))", q(&info.table));
+        let sql = format!("delete from {} c where c.tenant_id = $1 and c.parent_id = $2 and not (c.id = any($3)){}", q(&info.table), info.predicate("c"));
         sqlx::query(AssertSqlSafe(sql)).bind(tenant).bind(id).bind(&keep).execute(&mut **tx).await?;
         let old_by_id: HashMap<&str, &Value> = old_rows.iter().filter_map(|r| r.get("id").and_then(Value::as_str).map(|i| (i, r))).collect();
         let changed: Vec<Value> = new_rows
@@ -333,7 +334,7 @@ pub async fn update_row(tx: &mut Tx, schema: &Schema, ent: &EffEntity, tenant: U
         let rows = child_rows_json(cent, Some(&Value::Array(changed)), tenant, id, &ext);
         upsert_children(tx, cent, &info.table, rows).await?;
     }
-    Ok(())
+    keep_keys(tx, ent, tenant, id).await
 }
 
 fn rows_equal(cent: &EffEntity, a: &Value, b: &Value) -> bool {
@@ -357,6 +358,9 @@ fn child_rows_json(cent: &EffEntity, rows: Option<&Value>, tenant: Uuid, parent:
             obj.insert("tenant_id".into(), Value::String(tenant.to_string()));
             obj.insert("id".into(), r.get("id").cloned().unwrap_or(Value::Null));
             obj.insert("parent_id".into(), Value::String(parent.to_string()));
+            if cent.custom {
+                obj.insert("entity".into(), Value::String(cent.def.name.clone()));
+            }
             obj.insert("idx".into(), r.get("idx").cloned().unwrap_or(Value::from(0)));
             let now = chrono::Utc::now().to_rfc3339();
             obj.insert("created_at".into(), Value::String(now.clone()));
@@ -377,8 +381,10 @@ async fn upsert_children(tx: &mut Tx, cent: &EffEntity, table: &str, rows: Vec<V
     let list = row_columns(rows.first().unwrap_or(&Value::Null), &[]);
     let sql = format!(
         "insert into {t} ({list}) select {list} from jsonb_populate_recordset(null::{t}, $1::jsonb) \
-         on conflict (tenant_id, id) do update set {set} where {t}.parent_id = excluded.parent_id",
-        t = q(table)
+         on conflict (tenant_id, id) do update set {set} where {t}.parent_id = excluded.parent_id{same}",
+        t = q(table),
+        // Rows of a custom entity's tables share `custom_record`: a row id from another table stays there.
+        same = if cent.custom { format!(" and {}.entity = excluded.entity", q(table)) } else { String::new() }
     );
     sqlx::query(AssertSqlSafe(sql)).bind(Value::Array(rows)).execute(&mut **tx).await?;
     Ok(())
@@ -387,7 +393,7 @@ async fn upsert_children(tx: &mut Tx, cent: &EffEntity, table: &str, rows: Vec<V
 /// Replaces the rows of one child table of `parent` with `rows` (ids and idx set): engine-kept rows.
 pub async fn set_child_rows(tx: &mut Tx, table: &str, cent: &EffEntity, tenant: Uuid, parent: Uuid, rows: Vec<Value>) -> Result<()> {
     let keep: Vec<Uuid> = rows.iter().filter_map(|r| r.get("id").and_then(Value::as_str)).filter_map(|s| s.parse().ok()).collect();
-    let sql = format!("delete from {} where tenant_id = $1 and parent_id = $2 and not (id = any($3))", q(table));
+    let sql = format!("delete from {} c where c.tenant_id = $1 and c.parent_id = $2 and not (c.id = any($3)){}", q(table), entity_predicate(cent, "c"));
     sqlx::query(AssertSqlSafe(sql)).bind(tenant).bind(parent).bind(&keep).execute(&mut **tx).await?;
     if rows.is_empty() {
         return Ok(());
@@ -409,6 +415,12 @@ pub async fn set_values(tx: &mut Tx, ent: &EffEntity, tenant: Uuid, id: Uuid, va
 
 /// Like `set_values`, for a row of an explicit table (child tables live in per-parent tables).
 pub async fn set_values_in(tx: &mut Tx, table: &str, ent: &EffEntity, tenant: Uuid, id: Uuid, values: &Doc) -> Result<()> {
+    // A custom entity's unique keys are kept by saves (`keep_keys`); derived values never touch them.
+    if ent.custom
+        && let Some(k) = values.keys().find(|k| ent.unique_keys().iter().flatten().any(|f| f == *k))
+    {
+        return Err(crate::Error::Internal(format!("set_values: {k} is part of a unique key of {}; save the record instead", ent.def.name)));
+    }
     let mut sets = Vec::new();
     let mut ext_sets = Map::new();
     for (k, v) in values {
@@ -428,12 +440,7 @@ pub async fn set_values_in(tx: &mut Tx, table: &str, ent: &EffEntity, tenant: Uu
         param += 1;
     }
     assigns.push(format!("ext = a.ext || ${param}::jsonb"));
-    let sql = format!(
-        "update {} a set {} where a.tenant_id = $1 and a.id = $2{}",
-        q(table),
-        assigns.join(", "),
-        if table == ent.table { entity_predicate(ent, "a") } else { String::new() }
-    );
+    let sql = format!("update {} a set {} where a.tenant_id = $1 and a.id = $2{}", q(table), assigns.join(", "), entity_predicate(ent, "a"));
     let mut query = sqlx::query(AssertSqlSafe(sql)).bind(tenant).bind(id);
     if !sets.is_empty() {
         query = query.bind(Value::Object(values.clone()));
@@ -441,6 +448,50 @@ pub async fn set_values_in(tx: &mut Tx, table: &str, ent: &EffEntity, tenant: Uu
     let n = query.bind(Value::Object(ext_sets)).execute(&mut **tx).await?.rows_affected();
     if n == 0 {
         return Err(crate::Error::NotFound(ent.def.name.clone()));
+    }
+    Ok(())
+}
+
+/// One unique key's value in a custom record's row (`a`): its fields' values as a JSON array, or
+/// null when any is empty, as nulls take no part in a SQL unique index. Field names are identifiers.
+pub fn key_value_sql(fields: &[String], alias: &str) -> String {
+    let present = fields.iter().map(|f| format!("coalesce({alias}.ext->>'{f}', '') <> ''")).collect::<Vec<_>>().join(" and ");
+    let values = fields.iter().map(|f| format!("{alias}.ext->'{f}'")).collect::<Vec<_>>().join(", ");
+    format!("case when {present} then jsonb_build_array({values})::text end")
+}
+
+/// The unique keys a custom record holds: each key's value, unless it is cancelled (as unique
+/// indexes leave cancelled documents out). `$1` tenant, `$2` record.
+fn held_keys_sql(keys: &[Vec<String>]) -> String {
+    let values = keys.iter().map(|k| format!("('{}', {})", k.join(","), key_value_sql(k, "a"))).collect::<Vec<_>>().join(", ");
+    format!(
+        "select v.key, v.value from custom_record a cross join lateral (values {values}) v(key, value) \
+         where a.tenant_id = $1 and a.id = $2 and a.docstatus <> 2 and v.value is not null"
+    )
+}
+
+/// Keeps a custom record's unique keys in `custom_key`, in the record's own transaction: drops the
+/// values it no longer holds, writes the ones it does, and refuses when another record holds one.
+/// The primary key decides (a concurrent save waits for the other to finish); nothing is read first.
+async fn keep_keys(tx: &mut Tx, ent: &EffEntity, tenant: Uuid, id: Uuid) -> Result<()> {
+    let keys = ent.unique_keys();
+    if !ent.custom || keys.is_empty() {
+        return Ok(());
+    }
+    let held = held_keys_sql(&keys);
+    let drop = format!("delete from custom_key k where k.tenant_id = $1 and k.record_id = $2 and (k.key, k.value) not in (select key, value from ({held}) h)");
+    sqlx::query(AssertSqlSafe(drop)).bind(tenant).bind(id).execute(&mut **tx).await?;
+    let write =
+        format!("insert into custom_key (tenant_id, entity, key, value, record_id) select $1, $3, h.key, h.value, $2 from ({held}) h on conflict do nothing");
+    sqlx::query(AssertSqlSafe(write)).bind(tenant).bind(id).bind(&ent.def.name).execute(&mut **tx).await?;
+    let taken = format!(
+        "select h.key from ({held}) h where not exists (select 1 from custom_key k where k.tenant_id = $1 and k.entity = $3 \
+         and k.key = h.key and k.value = h.value and k.record_id = $2) order by h.key"
+    );
+    let taken: Vec<String> = sqlx::query_scalar(AssertSqlSafe(taken)).bind(tenant).bind(id).bind(&ent.def.name).fetch_all(&mut **tx).await?;
+    if let Some(key) = taken.first() {
+        let labels: Vec<String> = key.split(',').map(|f| ent.field(f).map(|f| f.label()).unwrap_or_else(|| f.to_string())).collect();
+        return Err(crate::Error::Conflict(format!("another {} already has this {}", ent.def.label, labels.join(" and "))));
     }
     Ok(())
 }

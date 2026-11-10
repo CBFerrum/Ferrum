@@ -527,8 +527,9 @@ fn via_sql(schema: &Schema, from: &EffEntity, steps: &[ViaStep], alias: &str, de
             let expr = crate::store::field_expr(cent, email, &c)?;
             Some((
                 format!(
-                    "exists (select 1 from {} {c} where {c}.tenant_id = {alias}.tenant_id and {c}.parent_id = {alias}.id and lower(trim({expr})) = ",
-                    crate::ddl::q(&info.table)
+                    "exists (select 1 from {} {c} where {c}.tenant_id = {alias}.tenant_id and {c}.parent_id = {alias}.id{} and lower(trim({expr})) = ",
+                    crate::ddl::q(&info.table),
+                    info.predicate(&c)
                 ),
                 ")".into(),
             ))
@@ -659,8 +660,9 @@ fn owner_fields(ctx: &Ctx, ent: &EffEntity) -> Vec<OwnerField> {
                     field: cf.to_string(),
                     child: Some(table.to_string()),
                     prefix: format!(
-                        "exists (select 1 from {} oc where oc.tenant_id = {{a}}.tenant_id and oc.parent_id = {{a}}.id and lower({expr}) = ",
-                        crate::ddl::q(&info.table)
+                        "exists (select 1 from {} oc where oc.tenant_id = {{a}}.tenant_id and oc.parent_id = {{a}}.id{} and lower({expr}) = ",
+                        crate::ddl::q(&info.table),
+                        info.predicate("oc")
                     ),
                     suffix: ")".into(),
                 })
