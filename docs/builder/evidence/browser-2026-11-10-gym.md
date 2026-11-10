@@ -69,15 +69,38 @@ real mailer or with a second person.
 * A new lines table's first field had no name, so the designer refused to save a table nobody had
   touched.
 
+## Walked later the same day
+
+19. **Reports.** Studio's query over Membership grouped by status with a count and a sum of the total,
+    and over its lines (sum of the charges' amounts by description): both answered.
+20. **The member's portal.** A role reading Membership through `member.email` and Member through
+    `email`, marked for the portal; the member as a portal person; signed in with the emailed code (read
+    from the outbox). She listed only her own memberships, another member's was not found, her own
+    opened with its lines, she could not change it, and an entity her role does not name was closed.
+21. **A public sign-up page** (a workspace with Forms). A public form mapped to Member (two questions and
+    a fixed value): opened without signing in at `/api/site/{workspace}/forms/f/join`; a visitor's
+    answers made a Member record with the name as typed, the address lower-cased and the fixed value.
+22. **An ERP invoice from an automation.** "When a Membership is created, create a Sales Invoice" with
+    the customer, the date and one line written as an expression: a draft invoice was made with that
+    customer and item. Its line's rate came out 0, as it did for the same invoice made through the API:
+    ERP prices a line from its price lists.
+23. **The whole setup as a pack** (server built from `bf/packs`). `GET /api/admin/pack?records=XPlan`
+    from the gym's workspace: 13 customizations, 2 roles, 2 automations, 1 solution, the plans; no
+    user's address or token in it; a second export the same but for its time. In a fresh workspace:
+    the plan listed what it would create and saved nothing; a wrong digest was refused; the install
+    brought the entities, the plans, the automations, the portal role and the solution as a draft. A
+    member and a membership with lines were then made there: the key, the exact total, the workflow's
+    first state and the check all held. Installing the same pack again changed nothing, and both
+    installs were on record.
+
 ## What still needs code or is not built
 
-* **A whole solution does not travel.** The export carried the entities, the check and the workflow,
-  but not the automations and not the solution with its rule (packs, BF9).
-* **A public sign-up page** and **the member's portal** were not walked here (Forms was compiled in but
-  not used; portal roles were walked on 10 November, [portal](browser-2026-11-10-portal.md)).
-* **A monthly charge as an ERP invoice** was not walked: the daily automation created a custom record,
-  not a Sales Invoice.
-* **Reports** over the custom entities were not walked.
+* **Record ids written inside an expression do not travel.** The invoice automation of step 22 names a
+  company, a customer and an item by id; it was removed before the export of step 23.
+* **The demo data task** fails on a build without the India add-on (`in_gstin`: unknown field).
+* **Uninstalling a pack, signing one, and the app store** are not built; an install never deletes.
+* **Approvals by several people, public pages bound to any entity without Forms, and money steps as
+  contracted capabilities** keep their places in the plan.
 
 ## Not verified
 

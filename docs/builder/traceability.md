@@ -5,10 +5,10 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Not started | 31 |
-| Partial | 1 |
+| Not started | 29 |
+| Partial | 2 |
 | Implemented, unverified | 1 |
-| Verified in software | 13 |
+| Verified in software | 14 |
 | **All** | **46** |
 
 ## BF0: Decisions and inventory
@@ -100,10 +100,10 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
-| BF-PACK-001 | Pack format | Not started | AT-BF-PACK-001 | 0 | Not started |
+| BF-PACK-001 | Pack format | Partial | AT-BF-PACK-001 | 2 | Done: a ferrum.pack/1 JSON document with a name, a version and the packages it requires, holding custom entities, fields, rules, workflows, print templates, roles and their rules, automations with their schedules and mail templates, Studio items, Logic solutions and reference records (seeds), read strictly (unknown keys refused, 5 MiB at most), with the platform's canonical digest leaving out exported_at: two exports of one definition have one digest, a changed word changes it (pack.rs unit tests, pack_it; mutant packs-digest-not-checked). Missing: approvals, public pages and words (their gates are not built), a publisher, and signing (BF-PACK-002) |
 | BF-PACK-002 | Signed and installed | Not started | AT-BF-PACK-002 | 0 | Not started |
 | BF-PACK-003 | Upgraded and removed | Not started | AT-BF-PACK-003 | 0 | Not started |
-| BF-PACK-004 | Exported between workspaces | Not started | AT-BF-PACK-004 | 0 | Not started |
+| BF-PACK-004 | Exported between workspaces | Verified in software | AT-BF-PACK-004 | 2 | A gym built by configuration (an entity with lines, a key, a total, a check and a workflow; a role and a portal role with a path; an automation on each new record and a daily one with a mail template; a report, chart, card, dashboard and space; a solution whose rule counts; three reference rows) is exported, planned and installed in a fresh workspace, where each works as it did, the solution as a draft a second administrator reviews before it runs; installed again it changes nothing; a field, a condition and a row changed at the source follow, records kept; a wrong digest, an oversized or unknown-keyed pack, a non-administrator, a missing or older package and a refusal half way are each refused with nothing kept (pack_it, pack_api_it; mutants packs-digest-not-checked, packs-plan-kept, packs-automations-duplicated, packs-carry-people). Unsigned and administrator to administrator only; nothing is uninstalled or deleted; Studio queries and JSON fields holding record ids travel as they are; matched by name, label and key; not walked in a browser (no screen yet) |
 | BF-PACK-005 | Proof: a clinic as configuration | Not started | AT-BF-PACK-005 | 0 | Not started |
 | BF-PACK-006 | A small hotel, and what still needs code | Not started | AT-BF-PACK-006 | 0 | Not started |
 

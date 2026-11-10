@@ -27,6 +27,8 @@ dashmap = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 regex = { workspace = true }
+# A pack's required package versions (pack.rs).
+semver = "1"
 argon2 = "0.5"
 rand = "0.9"
 hmac = "0.12"
