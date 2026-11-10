@@ -27,8 +27,9 @@ impl From<serde_json::Error> for ApiError {
     }
 }
 
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
+impl ApiError {
+    /// The response, with `extra`'s keys added to its JSON (a batch's `index`).
+    pub fn with(self, extra: serde_json::Map<String, serde_json::Value>) -> Response {
         let e = self.0;
         let status = StatusCode::from_u16(e.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         // The operation a person quotes to whoever helps them, found under Needs a person (FEO-079).
@@ -54,11 +55,20 @@ impl IntoResponse for ApiError {
         if let (Some(op), Some(b)) = (operation, body.as_object_mut()) {
             b.insert("operation".into(), json!(op));
         }
+        if let Some(b) = body.as_object_mut() {
+            b.extend(extra);
+        }
         let mut resp = (status, axum::Json(body)).into_response();
         if matches!(e, Error::Retryable(_) | Error::Unavailable(_) | Error::TooManyRequests(_) | Error::Wait(..)) {
             resp.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_static("2"));
         }
         resp
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        self.with(serde_json::Map::new())
     }
 }
 
