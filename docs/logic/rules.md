@@ -94,6 +94,44 @@ A rule reads its record's unrestricted fields, `user.id`, `user.email` and `user
 at most four per rule and eight per save, only the fields named, read with the saver's rights before any rule
 runs. A saver who may not read a linked entity is refused before the rule is evaluated.
 
+### Aggregates
+
+A rule may also count or sum other records, as `aggregates.{name}`:
+
+```json
+{"id": "unpaid", "entity": "Visit", "phase": "validate", "field": "member",
+ "aggregates": [{"name": "unpaid", "entity": "Charge", "link": "member", "to": "member",
+                 "filter": [["status", "=", "Unpaid"]], "op": "count"}],
+ "check": "aggregates.unpaid == 0", "message": "This member has unpaid charges"}
+```
+
+* `entity`: whose records are counted. `link`: a link field of that entity. `to`: which record those links
+  point at: left out or `"self"`, the record being saved; otherwise a link field of the saved record, and the
+  record it links to.
+* `filter`: conditions that must all hold, `[field, operator, value]` over the entity's own fields, with the
+  operators a list's filters take (`=`, `!=`, `>`, `>=`, `<`, `<=`, `in`, `not in`, `between`, `like`,
+  `not like`, `is` with `set` or `not set`). Values are literals; a decimal is written as text (`"0.5"`), never
+  as a JSON fraction. At most eight conditions.
+* `op`: `count` gives a whole number, `exists` yes or no, and `sum` the total of `field`, a number of the
+  entity, as an exact decimal (currency amounts too: rules see them as decimals).
+
+Compiling checks them like lookups: at most four per rule, names unique among a rule's lookups and aggregates,
+the entity and every field there and unrestricted, the link pointing at the right kind of record, `field` given
+for a sum and only for a sum, and each operator and value fitting its field. Their link, sum and filter fields
+are part of the release's lock. A save reads at most eight different ones for all its entity's rules.
+
+They are read where linked records are: before the rules run, in the save's transaction, one statement each
+through the list query (`select count(*)`, `select coalesce(sum(…), 0)` or `select exists (…)` over the entity
+with the saver's row scope), so a record the saver may not see is not counted. A saver who may not read the
+entity at all counts nothing (zero, or no), and is not refused. A record being created has nothing pointing at
+it yet, and an empty `to` link points at nothing: both count zero. Derivations see the same values.
+
+Two saves at the same moment do not see each other's records: each can pass a check the other would have made
+fail (two visits at once, each finding no unpaid charge the other is about to add). A rule is a guard for
+people's ordinary work, not a lock. An invariant about money (a balance that must never go below zero, a
+credit limit that must hold under concurrent orders) belongs in the app's own code, which can lock what it
+reads.
+
 A refused save writes nothing. A check that does not hold refuses with the rule's own message, which is plain
 text (nothing from the record is put into it), followed by where it came from:
 
@@ -134,6 +172,7 @@ automation stopped by it records why.
 
 ## Limits
 
+* Aggregates are read without a lock (see above), and count only what their saver may see.
 * Links are typed as text ids: a link to the wrong kind of record is not caught before running.
 * A rule cannot loop, and solutions have no for-each yet; cycles are refused, so iteration is unbounded nowhere.
 * Plugins' own hooks that fill fields are not compared with rules at activation; apps' hooks are.
