@@ -69,6 +69,8 @@ RECEIPTS = ("-p", "ferrum-kernel", "--test", "receipts_it")
 CONSENT = ("-p", "ferrum-kernel", "--test", "consent_it")
 SCHEDULE = ("-p", "ferrum-kernel", "--test", "schedule_it")
 PACKS = ("-p", "ferrum-studio", "--test", "pack_it")
+ACTIONS = ("-p", "ferrum-kernel", "--test", "actions_it")
+AGGREGATES = ("-p", "ferrum-kernel", "--test", "logic_aggregates_it")
 SHARES_UNIT = ("-p", "ferrum-server", "--lib", "state::tests")
 EXPORT_UNIT = ("-p", "ferrum-server", "--lib", "controllers::docs::tests")
 EXTENSIONS = ("-p", "ferrum-server", "--test", "extensions_it")
@@ -144,7 +146,7 @@ MUTANTS = [
     ("requester-closes-case", "crates/kernel/src/process.rs", 'if !ctx.roles.contains(&owner) || exclude.contains(&ctx.user) {', 'if !ctx.roles.contains(&owner) || exclude.is_empty() && exclude.contains(&ctx.user) {', PROCESS_RECORDS),
     ("delegation-goes-back", "crates/kernel/src/process.rs", 'if to == ctx.user || delegated.contains(&to) || exclude.contains(&to) {', 'if to == ctx.user || exclude.contains(&to) {', PROCESS_RECORDS),
     # Batch 2 of closing the registry's open rows (docs/logic/evidence/closing-gaps.md).
-    ("older-cel-reads-the-clock", "crates/meta/src/expr.rs", "bind(&mut ctx, key, scope.user.get(key).unwrap_or(&Value::Null))?;", 'bind(&mut ctx, key, scope.user.get(key).unwrap_or(&Value::String(chrono::Utc::now().to_rfc3339())))?;', META_EXPR),
+    ("older-cel-reads-the-clock", "crates/meta/src/expr.rs", "bind(&mut ctx, key, scope.user.get(key).unwrap_or(&Value::Null));", 'bind(&mut ctx, key, scope.user.get(key).unwrap_or(&Value::String(chrono::Utc::now().to_rfc3339())));', META_EXPR),
     ("rule-writes-the-apps-field", "crates/logic/src/compile.rs", "if !f.customer {", "if false && !f.customer {", LOGIC_UNIT),
     ("deprecation-unsaid", "crates/logic/src/compile.rs", "if let Some(why) = &c.deprecated {", "if let Some(why) = c.deprecated.as_ref().filter(|_| false) {", LOGIC_UNIT),
     ("erasure-misses-run-copies", "crates/kernel/src/privacy.rs", "let runs = crate::process::erase_run_copies(tx, ctx.tenant, entity, id, fields).await?;", "let runs = 0u64;", PROCESS_RECORDS),
@@ -549,6 +551,17 @@ MUTANTS = [
     ("custom-keys-held-by-cancelled", "crates/kernel/src/store.rs", "a.id = $2 and a.docstatus <> 2 and v.value", "a.id = $2 and v.value", CUSTOM_LINES),
     ("custom-key-over-duplicates", "crates/kernel/src/customize.rs", "            if !shared.is_empty() {", "            if false {", CUSTOM_LINES),
     ("rollup-not-computed", "crates/kernel/src/doc.rs", "        roll_up(ent, doc)\n    }", "        Ok(())\n    }", CUSTOM_LINES),
+    # Configured actions, update_linked, the day in aggregate filters, and the two faults found with them
+    # (docs/api.md, Configured actions; docs/builder/decisions.md BD-11).
+    ("configured-effects-run-as-the-runner", "crates/kernel/src/actions.rs", "        is_system: true,\n", "        is_system: false,\n", ACTIONS),
+    ("configured-roles-ignored", "crates/kernel/src/doc.rs", "if !def.roles.is_empty() && !def.roles.iter().any(|r| ctx.has_role(r)) {", "if false {", ACTIONS),
+    ("configured-refusals-ignored", "crates/kernel/src/actions.rs", "        if holds == Value::Bool(true) {", "        if false && holds == Value::Bool(true) {", ACTIONS),
+    ("configured-effects-write-anything", "crates/kernel/src/actions.rs", "    if !own && (f.read_only || f.read_only_if.is_some() || f.perm_group.is_some()) {", "    if false {", ACTIONS),
+    ("configured-effects-unchecked", "crates/kernel/src/customize.rs", "        configured_actions(was, &now)?;\n", "\n", ACTIONS),
+    ("update-linked-unlocked-and-unchecked", "crates/kernel/src/automation.rs", "            let d = k.update_tx(ctx, tx, target, id, patch, None).await?;", "            k.set_values_tx(ctx, tx, target, id, patch.clone()).await?;\n            let d = patch;", ACTIONS),
+    ("read-only-if-ignored", "crates/kernel/src/doc.rs", "        (Some(expr), Some(doc)) => expr.eval_bool(&Scope { doc, old: None, parent, user }).unwrap_or(true),", "        (Some(_), Some(_)) => false,", ACTIONS),
+    ("whole-numbers-unsigned", "crates/meta/src/expr.rs", "            (Some(i), _) => C::Int(i),", "            (Some(i), _) if i < 0 => C::Int(i),", META_EXPR),
+    ("today-filter-in-utc", "crates/kernel/src/logic.rs", "a.filter_on(hc.ctx.today())", "a.filter_on(chrono::Utc::now().date_naive())", AGGREGATES),
     # Automations that fire on time (docs/api.md, Automations).
     ("scheduled-moment-not-rechecked", "crates/kernel/src/automation.rs", "        if !crate::schedule::still_due(k, ev.tenant_id, &schema, &ent, &plan, record, due).await? {", "        if false {", SCHEDULE),
     ("scheduled-ignores-the-zone", "crates/kernel/src/schedule.rs", "    qb.push_bind(tz.to_string()).push(\"::text as tz, \").push_bind(at)", "    qb.push_bind(\"UTC\".to_string()).push(\"::text as tz, \").push_bind(at)", SCHEDULE),
