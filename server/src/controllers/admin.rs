@@ -428,6 +428,11 @@ async fn export_custom(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiRes
     Ok(Json(app_state(&app)?.kernel.export_customizations(&ctx).await?).into_response())
 }
 
+/// `GET /api/customize/definition/{Entity}`: a custom entity's definition as it is now, for a designer to start from.
+async fn custom_definition(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Path<String>) -> ApiResult<Response> {
+    Ok(Json(app_state(&app)?.kernel.custom_definition(&ctx, &entity)?).into_response())
+}
+
 async fn import_custom(Auth(ctx): Auth, State(app): State<AppContext>, Json(bundle): Json<Value>) -> ApiResult<Response> {
     let n = app_state(&app)?.kernel.import_customizations(&ctx, &bundle).await?;
     Ok(Json(json!({"imported": n})).into_response())
@@ -882,6 +887,7 @@ pub fn routes() -> Routes {
         .add("/customize", get(list_custom).post(add_custom))
         .add("/customize/export", get(export_custom))
         .add("/customize/batch", post(batch_custom))
+        .add("/customize/definition/{entity}", get(custom_definition))
         .add("/customize/import", post(import_custom))
         .add("/admin/pack", get(get_pack))
         // A pack is at most 5 MiB; a larger body still reaches the pack's own refusal, which says why.
