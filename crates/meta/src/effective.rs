@@ -49,6 +49,8 @@ pub struct Exprs {
     pub read_only_if: BTreeMap<String, Expr>,
     pub rules: Vec<(RuleDef, Expr)>,
     pub action_conditions: BTreeMap<String, Expr>,
+    /// A configured action's `refuse_if`, compiled, with their messages, in order.
+    pub action_refusals: BTreeMap<String, Vec<(Expr, String)>>,
 }
 
 #[derive(Debug, Clone)]
@@ -285,8 +287,11 @@ pub fn replaced_value(e: &EffEntity, op: &OverlayOp) -> Option<Value> {
 pub(crate) fn apply_op(def: &mut EntityDef, op: &OverlayOp, source: OverlaySource) -> Result<Option<String>, String> {
     match op {
         OverlayOp::AddAction { action } => {
-            if source == OverlaySource::Tenant {
-                return Err("actions need code behind them: only packages can add them".into());
+            if source == OverlaySource::Tenant && action.effects.is_empty() {
+                return Err(format!(
+                    "action {}: a workspace's action says what it does (effects); one without effects needs code behind it, which only packages add",
+                    action.name
+                ));
             }
             if def.actions.iter().any(|a| a.name == action.name) {
                 return Err(format!("action {} already exists", action.name));
@@ -668,6 +673,10 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
                         Ok(None)
                     }
                 }
+                // A packaged entity's actions are its packages' names; the workspace's own start with x_.
+                OverlayOp::AddAction { action } if !b.custom && !action.name.starts_with("x_") => {
+                    Err(format!("action {}: an action added to {}, which comes with a package, is named x_…", action.name, ov.entity))
+                }
                 _ => apply_op(&mut b.def, op, OverlaySource::Tenant),
             };
             match res {
@@ -818,6 +827,10 @@ fn compile_exprs(def: &EntityDef) -> Result<Exprs, String> {
         if let Some(s) = &a.condition {
             x.action_conditions.insert(a.name.clone(), c(s)?);
         }
+        if !a.refuse_if.is_empty() {
+            let refusals = a.refuse_if.iter().map(|r| Ok((c(&r.when)?, r.message.clone()))).collect::<Result<Vec<_>, String>>()?;
+            x.action_refusals.insert(a.name.clone(), refusals);
+        }
     }
     Ok(x)
 }
@@ -943,14 +956,43 @@ mod tests {
     }
 
     #[test]
-    fn only_packages_add_actions() {
+    fn only_packages_add_actions_without_effects() {
         let mut def: EntityDef = serde_yaml::from_str("{name: Project, label: Project, kind: master, fields: [{name: title, type: data}]}").unwrap();
         let op: OverlayOp =
             serde_json::from_value(json!({"op": "add_action", "action": {"name": "make_sales_invoice", "label": "Make Sales Invoice"}})).unwrap();
-        assert!(apply_op(&mut def.clone(), &op, OverlaySource::Tenant).is_err(), "actions need code");
+        assert!(apply_op(&mut def.clone(), &op, OverlaySource::Tenant).is_err(), "actions without effects need code");
         apply_op(&mut def, &op, OverlaySource::Package).unwrap();
         assert_eq!(def.actions[0].permission, "write");
         assert!(apply_op(&mut def, &op, OverlaySource::Package).is_err(), "no duplicates");
+        let configured: OverlayOp = serde_json::from_value(json!({"op": "add_action", "action": {"name": "x_close", "label": "Close",
+            "roles": ["Manager"], "refuse_if": [{"when": "doc.title == ''", "message": "a title first"}],
+            "effects": [{"type": "set_fields", "values": {"title": "'closed'"}}]}}))
+        .unwrap();
+        apply_op(&mut def, &configured, OverlaySource::Tenant).expect("an action with effects is the workspace's to add");
+        assert_eq!(compile_exprs(&def).unwrap().action_refusals["x_close"][0].1, "a title first");
+    }
+
+    #[test]
+    fn configured_actions_are_named_and_bounded() {
+        let cat = catalog();
+        let action = |name: &str, effects: usize| json!({"op": "add_action", "action": {"name": name, "label": "A", "effects": vec![json!({"type": "notify", "to": "owner", "title": "'t'"}); effects]}});
+        let warned = |entity: &str, ops: Vec<Value>| {
+            let tenant: Vec<Overlay> = ops.into_iter().map(|o| ov(entity, json!([o]))).collect();
+            let defines = ov(
+                "XThing",
+                json!([{"op": "define_entity", "entity": {"name": "XThing", "label": "Thing", "kind": "master", "fields": [{"name": "a", "type": "data"}]}}]),
+            );
+            build(&cat, &["core".into()], &[vec![defines], tenant].concat(), 1).unwrap().warnings.iter().map(|w| w.message.clone()).collect::<Vec<_>>()
+        };
+        assert!(warned("Customer", vec![action("close", 1)])[0].contains("is named x_"), "a packaged entity's");
+        assert!(warned("Customer", vec![action("x_close", 1)]).is_empty());
+        assert!(warned("XThing", vec![action("close", 1)]).is_empty(), "a custom entity's are all the workspace's");
+        assert!(warned("XThing", vec![action("close", 11)])[0].contains("at most 10 effects"));
+        assert!(warned("XThing", (0..21).map(|i| action(&format!("a{i}"), 1)).collect())[0].contains("at most 20"));
+        let ro = json!({"op": "add_action", "action": {"name": "peek", "label": "P", "read_only": true, "effects": [{"type": "notify", "to": "owner", "title": "'t'"}]}});
+        assert!(warned("XThing", vec![ro])[0].contains("read-only"));
+        let bad = json!({"op": "add_action", "action": {"name": "x", "label": "X", "refuse_if": [{"when": "doc.a ==", "message": "m"}], "effects": [{"type": "notify", "to": "owner", "title": "'t'"}]}});
+        assert!(warned("XThing", vec![bad])[0].contains("refuse_if"));
     }
 
     #[test]

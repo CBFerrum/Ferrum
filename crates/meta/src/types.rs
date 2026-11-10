@@ -432,6 +432,26 @@ pub struct ActionDef {
     /// What it promises to processes and agents (docs/logic).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contract: Option<ActionContract>,
+    /// A configured action (one with `effects`): the roles one of which its runner holds (an administrator
+    /// always may), besides the permission it names. Empty: the permission alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<String>,
+    /// A configured action: the first of these that holds refuses it, as forbidden, with its message.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refuse_if: Vec<ActionRefusal>,
+    /// What a configured action does, in order, in its one transaction, as the system: automation actions
+    /// (`set_fields`, `update_linked`, `create_document`, `notify`, `email`), checked by the kernel when the
+    /// customization is saved. An action with effects needs no handler.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<Value>,
+}
+
+/// A reason a configured action refuses to run: `when` (CEL over `doc`, `user` and `params`) holds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActionRefusal {
+    pub when: String,
+    pub message: String,
 }
 
 /// One input an action asks for.

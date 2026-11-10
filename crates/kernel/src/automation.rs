@@ -65,7 +65,7 @@ pub enum AutomationAction {
     },
 }
 
-fn check_action(a: &AutomationAction) -> Result<()> {
+pub(crate) fn check_action(a: &AutomationAction) -> Result<()> {
     if let AutomationAction::Notify { to, .. } = a {
         let ok = to == "owner"
             || to.strip_prefix("role:").is_some_and(|r| !r.trim().is_empty())

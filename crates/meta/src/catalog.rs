@@ -775,9 +775,43 @@ pub(crate) fn validate_entity(e: &EntityDef, all: &HashMap<&str, &EntityDef>) ->
         if let Some(c) = &a.contract {
             validate_contract(e, a, c)?;
         }
+        validate_configured(a)?;
+    }
+    if e.actions.iter().filter(|a| !a.effects.is_empty()).count() > MAX_CONFIGURED_ACTIONS {
+        return Err(format!("at most {MAX_CONFIGURED_ACTIONS} configured actions on one entity"));
     }
     if let Some(n) = &e.numbering {
         validate_numbering(e, n)?;
+    }
+    Ok(())
+}
+
+/// Configured actions one entity holds, and effects and refusals one of them holds.
+pub const MAX_CONFIGURED_ACTIONS: usize = 20;
+pub const MAX_EFFECTS: usize = 10;
+
+/// A configured action's own bounds; what its effects write is the kernel's to check (it knows them).
+fn validate_configured(a: &ActionDef) -> Result<(), String> {
+    if a.effects.is_empty() {
+        return if a.roles.is_empty() && a.refuse_if.is_empty() { Ok(()) } else { Err(format!("action {}: roles and refuse_if go with effects", a.name)) };
+    }
+    if a.effects.len() > MAX_EFFECTS {
+        return Err(format!("action {}: at most {MAX_EFFECTS} effects", a.name));
+    }
+    if a.refuse_if.len() > MAX_EFFECTS {
+        return Err(format!("action {}: at most {MAX_EFFECTS} refuse_if", a.name));
+    }
+    if a.read_only {
+        return Err(format!("action {}: a read-only action has no effects", a.name));
+    }
+    if a.roles.iter().any(|r| r.trim().is_empty()) {
+        return Err(format!("action {}: a role without a name", a.name));
+    }
+    for (i, r) in a.refuse_if.iter().enumerate() {
+        if r.message.trim().is_empty() {
+            return Err(format!("action {}: refuse_if {} says nothing", a.name, i + 1));
+        }
+        Expr::compile(&r.when).map_err(|m| format!("action {}: refuse_if {}: {m}", a.name, i + 1))?;
     }
     Ok(())
 }

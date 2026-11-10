@@ -6,6 +6,7 @@
 
 pub mod access;
 pub mod account;
+pub mod actions;
 pub mod apps;
 pub mod audit;
 pub mod auth;
