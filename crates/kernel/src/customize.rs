@@ -408,7 +408,7 @@ impl Kernel {
 
     pub async fn add_customization(&self, ctx: &Ctx, entity: &str, op: OverlayOp, note: Option<String>) -> Result<Uuid> {
         let one = vec![NewCustomization { entity: entity.to_string(), op, note }];
-        let ids = self.save_customizations(ctx, one, Duplicates::Save, false).await.map_err(|(_, e)| e)?;
+        let ids = self.save_customizations(ctx, one, Duplicates::Save, true, false).await.map_err(|(_, e)| e)?;
         ids.into_iter().next().ok_or_else(|| Error::internal("no customization saved"))
     }
 
@@ -421,17 +421,21 @@ impl Kernel {
         if items.len() > MAX_BATCH {
             return Err((None, Error::invalid(format!("at most {MAX_BATCH} operations in one batch, not {}", items.len()))));
         }
-        Ok(self.save_customizations(ctx, items, Duplicates::Refuse, dry_run).await?.len())
+        Ok(self.save_customizations(ctx, items, Duplicates::Refuse, true, dry_run).await?.len())
     }
 
-    /// The one way customizations are saved: in order, each validated against the whole schema as
-    /// the ones before it leave it, guarded against what it would do to records, with unique keys
-    /// kept in step; then the version is bumped once and caches are dropped (not for a `dry_run`).
+    /// The one way customizations are saved, in order: validated against the whole schema, guarded
+    /// against what they would do to records, with unique keys kept in step; then the version is
+    /// bumped once and caches are dropped (not for a `dry_run`). `stepwise` checks each operation as
+    /// the ones before it leave the schema (a batch, whose refusal names its operation); otherwise
+    /// the set is checked once as a whole (an import: an export's stored order need not pass step by
+    /// step, as when a child entity was switched off and defined again after its parent).
     async fn save_customizations(
         &self,
         ctx: &Ctx,
         items: Vec<NewCustomization>,
         duplicates: Duplicates,
+        stepwise: bool,
         dry_run: bool,
     ) -> std::result::Result<Vec<Uuid>, (Option<usize>, Error)> {
         let none = |e: Error| (None, e);
@@ -456,12 +460,7 @@ impl Kernel {
                 return Err(at(Error::Conflict(format!("this customization of {target} is already active: nothing would change"))));
             }
             overlays.push(Overlay { entity: target.clone(), ops: vec![it.op.clone()] });
-            let now = self.build(ctx, &overlays).map_err(at)?;
-            if now.warnings.len() > was.warnings.len() {
-                let msgs: Vec<String> = now.warnings[was.warnings.len()..].iter().map(|w| format!("{}: {}", w.entity, w.message)).collect();
-                return Err(at(Error::invalid(format!("customization rejected: {}", msgs.join("; ")))));
-            }
-            self.guard_records(ctx, &mut tx, &was, &now).await.map_err(at)?;
+            let now = if stepwise { Some(self.check_step(ctx, &mut tx, &was, &overlays).await.map_err(at)?) } else { None };
             let id = Uuid::now_v7();
             let replaced = packaged.entity(&target).and_then(|e| effective::replaced_value(e, &it.op));
             sqlx::query("insert into meta_overlay (tenant_id, id, entity, op, note, created_by, base) values ($1, $2, $3, $4, $5, $6, $7)")
@@ -475,10 +474,16 @@ impl Kernel {
                 .execute(&mut *tx)
                 .await
                 .map_err(|e| at(e.into()))?;
-            self.sync_custom_keys(ctx, &mut tx, &was, &now).await.map_err(at)?;
+            if let Some(now) = now {
+                self.sync_custom_keys(ctx, &mut tx, &was, &now).await.map_err(at)?;
+                was = now;
+            }
             active.push((target, raw));
-            was = now;
             ids.push(id);
+        }
+        if !stepwise && !ids.is_empty() {
+            let now = self.check_step(ctx, &mut tx, &was, &overlays).await.map_err(none)?;
+            self.sync_custom_keys(ctx, &mut tx, &was, &now).await.map_err(none)?;
         }
         if dry_run || ids.is_empty() {
             tx.rollback().await.map_err(|e| none(e.into()))?;
@@ -488,6 +493,17 @@ impl Kernel {
         tx.commit().await.map_err(|e| none(e.into()))?;
         self.registry.invalidate(ctx.tenant);
         Ok(ids)
+    }
+
+    /// The schema `overlays` give, refused if it has warnings `was` did not or would damage records.
+    async fn check_step(&self, ctx: &Ctx, tx: &mut crate::db::Tx, was: &Schema, overlays: &[Overlay]) -> Result<Schema> {
+        let now = self.build(ctx, overlays)?;
+        if now.warnings.len() > was.warnings.len() {
+            let msgs: Vec<String> = now.warnings[was.warnings.len()..].iter().map(|w| format!("{}: {}", w.entity, w.message)).collect();
+            return Err(Error::invalid(format!("customization rejected: {}", msgs.join("; "))));
+        }
+        self.guard_records(ctx, tx, was, &now).await?;
+        Ok(now)
     }
 
     pub async fn list_customizations(&self, ctx: &Ctx) -> Result<Vec<OverlayRow>> {
@@ -545,7 +561,7 @@ impl Kernel {
         Ok(json!({"format": "ferrum.changeset/1", "packages": ctx.schema.packages, "customizations": ops}))
     }
 
-    /// Change-set import: applied in order and atomically (as a batch is), skipping exact duplicates.
+    /// Change-set import: validated as a whole, applied atomically, skipping exact duplicates.
     pub async fn import_customizations(&self, ctx: &Ctx, bundle: &Value) -> Result<usize> {
         require_admin(ctx)?;
         if bundle.get("format").and_then(Value::as_str) != Some("ferrum.changeset/1") {
@@ -558,6 +574,6 @@ impl Kernel {
             let op = serde_json::from_value(it.get("op").cloned().ok_or_else(|| Error::invalid("op missing"))?).map_err(|e| Error::invalid(e.to_string()))?;
             new.push(NewCustomization { entity, op, note: it.get("note").and_then(Value::as_str).map(str::to_string) });
         }
-        Ok(self.save_customizations(ctx, new, Duplicates::Skip, false).await.map_err(|(_, e)| e)?.len())
+        Ok(self.save_customizations(ctx, new, Duplicates::Skip, false, false).await.map_err(|(_, e)| e)?.len())
     }
 }
