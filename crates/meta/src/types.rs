@@ -1084,10 +1084,16 @@ pub enum OverlayOp {
     SetPrintTemplate {
         template: String,
     },
-    /// Package-only: a document action on another package's entity, implemented by the overlaying
-    /// package's hooks (e.g. Projects adds "Make Sales Invoice" to core's Project).
+    /// A package's: a document action on another package's entity, implemented by the overlaying
+    /// package's hooks (e.g. Projects adds "Make Sales Invoice" to core's Project). A workspace's: a
+    /// configured action (one with effects); one named as an action an earlier customization added
+    /// replaces it where it stands.
     AddAction {
         action: ActionDef,
+    },
+    /// Tenant-only: removes an action a customization added (never a package's).
+    RemoveAction {
+        name: String,
     },
     /// Package-only: a form section for fields the package adds, after the section holding the
     /// field `after` (or last).

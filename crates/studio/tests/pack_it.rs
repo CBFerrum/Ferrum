@@ -519,4 +519,17 @@ async fn scenario() {
     );
     assert_eq!(dst.count("select count(*) from logic_draft where tenant_id = $1").await, solutions_after_second, "the solution is there already");
     assert_eq!(k.installed_packs(&target).await.unwrap().len(), 3);
+
+    // ───────────── a pack that redefines an entity says what of the workspace's own stops applying ─────────────
+    dst.customize("XMembership", json!({"op": "add_rule", "rule": {"name": "end_after_start", "check": "doc.code != ''", "message": "a code"}})).await;
+    let mut v3 = membership_def();
+    v3["fields"].as_array_mut().unwrap().push(json!({"name": "notes", "type": "text"}));
+    src.customize("XMembership", json!({"op": "redefine_entity", "entity": v3})).await;
+    let pack3 = k.export_pack(&src.admin().await, &ExportOptions { version: 3, ..export(&["XPlan"]) }).await.unwrap();
+    let target = dst.admin().await;
+    let plan = k.plan_pack(&target, &pack3).await.unwrap();
+    let stops: Vec<&str> = plan["warnings"].as_array().unwrap().iter().filter_map(Value::as_str).filter(|w| w.contains("stops applying")).collect();
+    assert_eq!(stops, ["XMembership: add_rule end_after_start stops applying: the pack redefines XMembership"], "the pack's own x_locker is not named: {plan}");
+    let done = k.install_pack(&target, &pack3, plan["digest"].as_str().unwrap()).await.unwrap();
+    assert_eq!(done["warnings"], json!(stops), "the install says it too");
 }

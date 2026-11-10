@@ -382,6 +382,19 @@ async fn rules_of(tx: &mut Tx, tenant: Uuid, role: Option<&str>) -> Result<Vec<R
     .await?)
 }
 
+/// The workspace's own customizations that installing `pack` leaves replaced (`superseded_by`) when they were
+/// not before, and that the pack does not carry itself, in plain words.
+fn stops_applying(pack: &Pack, before: &[crate::customize::OverlayRow], after: &[crate::customize::OverlayRow]) -> Vec<String> {
+    let carried = |r: &crate::customize::OverlayRow| pack.customizations.iter().any(|c| serde_json::to_value(&c.op).is_ok_and(|op| op == r.op));
+    let mut out = Vec::new();
+    for b in before.iter().filter(|b| b.is_active && b.superseded_by.is_none() && !carried(b)) {
+        let Some(by) = after.iter().find(|a| a.id == b.id).and_then(|a| a.superseded_by).and_then(|id| after.iter().find(|x| x.id == id)) else { continue };
+        let how = if by.op["op"] == "redefine_entity" { format!("the pack redefines {}", by.entity) } else { "the pack replaces it".into() };
+        out.push(format!("{} stops applying: {how}", crate::customize::label_of(&b.entity, &b.op)));
+    }
+    out
+}
+
 /// The packages whose entities a pack names (or whose roles it adds rules to), at the versions installed here.
 fn requirements(ctx: &Ctx, pack: &Pack, role_packages: &BTreeSet<String>, installed: &[(String, String)]) -> BTreeMap<String, String> {
     let mut names: BTreeSet<String> = BTreeSet::new();
@@ -937,9 +950,10 @@ impl Kernel {
             tx.rollback().await?;
             return Ok(out);
         }
+        let before = Self::overlay_rows(&mut tx, ctx.tenant).await?;
         let mut summary = self.apply(ctx, &mut tx, &pack).await?;
+        let mut warnings = stops_applying(&pack, &before, &Self::overlay_rows(&mut tx, ctx.tenant).await?);
         tx.rollback().await?;
-        let mut warnings = Vec::new();
         for a in pack.automations.iter().filter(|a| a.schedule.is_some()) {
             let touched = summary.get("automations").is_some_and(|s| s.created.contains(&a.name) || s.changed.contains(&a.name));
             if touched {
@@ -980,7 +994,9 @@ impl Kernel {
         if !missing.is_empty() {
             return Err(Error::Conflict(format!("this workspace cannot take the pack: {}", missing.join("; "))));
         }
+        let before = Self::overlay_rows(&mut tx, ctx.tenant).await?;
         let mut summary = self.apply(ctx, &mut tx, &pack).await?;
+        let warnings = stops_applying(&pack, &before, &Self::overlay_rows(&mut tx, ctx.tenant).await?);
         let id = Uuid::now_v7();
         sqlx::query("insert into pack_install (tenant_id, id, name, version, digest, installed_by, summary) values ($1, $2, $3, $4, $5, $6, $7)")
             .bind(ctx.tenant)
@@ -1020,7 +1036,7 @@ impl Kernel {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         sqlx::query("update pack_install set summary = $3 where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).bind(&summary).execute(&mut *tx).await?;
         tx.commit().await?;
-        Ok(json!({"id": id, "name": pack.name, "version": pack.version, "digest": digest, "summary": summary, "failed": failed}))
+        Ok(json!({"id": id, "name": pack.name, "version": pack.version, "digest": digest, "summary": summary, "failed": failed, "warnings": warnings}))
     }
 
     /// `GET /api/admin/packs`: the packs installed here, the latest first.

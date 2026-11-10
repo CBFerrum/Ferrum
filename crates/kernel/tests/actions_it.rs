@@ -21,7 +21,7 @@ fn catalog() -> Catalog {
     std::fs::write(dir.join("shop/package.yaml"), "package: shop\nversion: 0.1.0\nlabel: Shop\ndepends: [core]\n").unwrap();
     std::fs::write(
         dir.join("shop/entities/shop.yaml"),
-        "- name: Shop\n  label: Shop\n  kind: master\n  fields:\n    - {name: name, type: data}\n    - {name: status, type: data, read_only: true}\n",
+        "- name: Shop\n  label: Shop\n  kind: master\n  fields:\n    - {name: name, type: data}\n    - {name: status, type: data, read_only: true}\n  actions: [{name: lock, label: Lock}]\n",
     )
     .unwrap();
     let c = Catalog::load_dir(&dir).expect("catalog");
@@ -108,6 +108,7 @@ async fn scenario() {
     faults(&w).await;
     linked_from_automations(&w).await;
     configured(&k, &w).await;
+    authored(&k, &w).await;
 }
 
 /// Whole numbers from a record are signed in checks, computed fields and automations; `read_only_if` ignores
@@ -361,6 +362,18 @@ async fn configured(k: &Arc<Kernel>, w: &W) {
     refused(k.run_action(&manager, "XAcceptance", acc, "accept", note.clone()).await, "forbidden", "'Accept It' is for Approver");
     refused(k.run_action(&owner, "XAcceptance", acc, "accept", note.clone()).await, "forbidden", "a risk's owner does not approve taking it on");
     refused(k.run_action(&approver, "XAcceptance", acc, "nope", note.clone()).await, "not found", "action nope");
+    // The form learns who may press it, as pressing asks; what it writes is for administrators.
+    let accept_as = |ctx: &Ctx| {
+        let d = ferrum_kernel::describe::describe(ctx, ctx.schema.entity("XAcceptance").unwrap());
+        d["actions"].as_array().unwrap().iter().find(|a| a["name"] == "accept").cloned().unwrap()
+    };
+    for (who, ctx, may) in [("manager", &manager, false), ("approver", &approver, true), ("admin", &admin, true)] {
+        let a = accept_as(ctx);
+        assert_eq!(a["may_run"], json!(may), "{who}");
+        assert_eq!(a.get("effects").is_some(), who == "admin", "{who}: effects for an administrator only");
+        let kept = (a["refuse_if"][0]["message"].as_str(), a["roles"][0].as_str(), a["confirm"].is_string(), a["params"][0]["name"].as_str());
+        assert_eq!(kept, (Some("a risk's owner does not approve taking it on"), Some("Approver"), true, Some("note")), "{who}");
+    }
 
     // ───────────── a check the effects break aborts everything ─────────────
     let huge = new_risk("Meteor", 25).await;
@@ -429,6 +442,9 @@ async fn configured(k: &Arc<Kernel>, w: &W) {
     refused(k.run_action(&pia, "XAcceptance", hers, "accept", json!({})).await, "forbidden", "");
     k.run_action(&pia, "XAcceptance", hers, "withdraw", json!({})).await.expect("her own");
     assert_eq!(w.get("XAcceptance", hers).await["status"], "Withdrawn");
+    let mine = ferrum_kernel::describe::describe(&pia, pia.schema.entity("XAcceptance").unwrap());
+    let may: Vec<(&str, bool)> = mine["actions"].as_array().unwrap().iter().map(|a| (a["name"].as_str().unwrap(), a["may_run"] == json!(true))).collect();
+    assert_eq!(may, [("accept", false), ("withdraw", true)], "allowed by name on the entity");
 
     // ───────────── a packaged entity's x_ action ─────────────
     let shop = id_of(&k.insert(&admin, "Shop", obj(json!({"name": "Corner"}))).await.unwrap());
@@ -452,5 +468,84 @@ async fn configured(k: &Arc<Kernel>, w: &W) {
         let x = id_of(&k.insert(&a, "XAcceptance", obj(json!({"risk": r.to_string()}))).await.unwrap());
         k.run_action(&a, "XAcceptance", x, "accept", json!({"note": "there"})).await.expect("runs in the target workspace");
         assert_eq!(target.get("XRisk", r).await["treatment"], "Accept");
+    }
+}
+
+fn remove_action(entity: &str, name: &str) -> NewCustomization {
+    serde_json::from_value(json!({"entity": entity, "op": {"op": "remove_action", "name": name}})).unwrap()
+}
+
+/// An entity's actions as an administrator sees them: name and label, in order.
+fn buttons(ctx: &Ctx, entity: &str) -> Vec<String> {
+    let d = ferrum_kernel::describe::describe(ctx, ctx.schema.entity(entity).unwrap());
+    d["actions"].as_array().unwrap().iter().map(|a| format!("{}:{}", a["name"].as_str().unwrap(), a["label"].as_str().unwrap())).collect()
+}
+
+/// Changing and removing buttons: a replacement keeps its place and runs its own effects, a removal goes and comes
+/// back with its switch, a package's stay as they are, and a change set and a pack carry both.
+async fn authored(k: &Arc<Kernel>, w: &W) {
+    let task = json!({"name": "XTask", "label": "Task", "kind": "master", "fields": [{"name": "title", "type": "data"}, {"name": "state", "type": "data"}]});
+    let mark = |name: &str, label: &str, state: &str| json!({"name": name, "label": label, "roles": ["Doer"], "effects": [{"type": "set_fields", "values": {"state": format!("'{state}'")}}]});
+    w.batch(vec![define(task), add_action("XTask", mark("x_start", "Start", "Started")), add_action("XTask", mark("x_stop", "Stop", "Stopped"))])
+        .await
+        .unwrap();
+    let admin = w.admin().await;
+    let t = id_of(&k.insert(&admin, "XTask", obj(json!({"title": "Paint"}))).await.unwrap());
+
+    // ───────────── replaced where it stands ─────────────
+    let begin = json!({"name": "x_start", "label": "Begin", "roles": ["Doer"], "params": [{"name": "why", "label": "Why", "type": "data"}], "effects": [
+        {"type": "set_fields", "values": {"title": "doc.title + ' (begun)'"}},
+        {"type": "email", "to": "'crew@acme.test'", "subject": "'Begun'", "body": "''", "template": "<p>Begun because {{ params.why }}</p>"}]});
+    w.batch(vec![add_action("XTask", begin.clone())]).await.expect("a workspace's action is replaced");
+    let refusal = w.batch(vec![add_action("XTask", begin)]).await.expect_err("the same again");
+    assert!(refusal.contains("already active"), "{refusal}");
+    let admin = w.admin().await;
+    assert_eq!(buttons(&admin, "XTask"), ["x_start:Begin", "x_stop:Stop"], "in its place");
+    k.run_action(&admin, "XTask", t, "x_start", json!({"why": "spring"})).await.unwrap();
+    let now = w.get("XTask", t).await;
+    assert_eq!((now["title"].as_str(), now["state"].as_str()), (Some("Paint (begun)"), None), "the new effects ran, the old did not");
+    let mailed = "select count(*) from outbox where tenant_id = $1 and topic = 'ferrum.mail' and payload->>'html' like '%Begun because spring%'";
+    assert_eq!(w.count(mailed).await, 1, "the mail's template sees params");
+    let list = k.list_customizations(&admin).await.unwrap();
+    let starts: Vec<_> = list.iter().filter(|r| r.op["action"]["name"] == "x_start").collect();
+    assert_eq!(starts.len(), 2);
+    assert_eq!((starts[0].superseded_by, starts[1].superseded_by), (Some(starts[1].id), None), "the change list says which applies");
+
+    // ───────────── a package's stays ─────────────
+    let lock = json!({"name": "lock", "label": "Mine", "effects": [{"type": "set_fields", "values": {"name": "'x'"}}]});
+    for (op, says) in [
+        (add_action("Shop", lock), "comes with the package"),
+        (remove_action("Shop", "lock"), "comes with the package"),
+        (remove_action("XTask", "x_nope"), "no action x_nope"),
+    ] {
+        let e = w.batch(vec![op]).await.expect_err("refused");
+        assert!(e.contains(says), "expected {says:?}, got {e}");
+    }
+
+    // ───────────── removed, and back with its switch ─────────────
+    w.batch(vec![remove_action("XTask", "x_stop")]).await.unwrap();
+    let admin = w.admin().await;
+    assert_eq!(buttons(&admin, "XTask"), ["x_start:Begin"]);
+    refused(k.run_action(&admin, "XTask", t, "x_stop", json!({})).await, "not found", "action x_stop");
+    let removal = k.list_customizations(&admin).await.unwrap().into_iter().find(|r| r.op["op"] == "remove_action").unwrap();
+    k.set_customization_active(&admin, removal.id, false).await.unwrap();
+    assert_eq!(buttons(&w.admin().await, "XTask"), ["x_start:Begin", "x_stop:Stop"], "switching the removal off brings it back");
+    k.set_customization_active(&admin, removal.id, true).await.unwrap();
+    let admin = w.admin().await;
+    assert_eq!(buttons(&admin, "XTask"), ["x_start:Begin"]);
+
+    // ───────────── carried by a change set and a pack ─────────────
+    let bundle = k.export_customizations(&admin).await.unwrap();
+    let there = workspace(k, "copy2").await;
+    k.import_customizations(&there.admin().await, &bundle).await.expect("imported");
+    let pack = k.export_pack(&admin, &ExportOptions { name: "tasks".into(), label: "Tasks".into(), version: 1, records: vec![] }).await.expect("export");
+    let packed = workspace(k, "packed2").await;
+    let padmin = packed.admin().await;
+    let plan = k.plan_pack(&padmin, &pack).await.expect("plan");
+    k.install_pack(&padmin, &pack, plan["digest"].as_str().unwrap()).await.expect("install");
+    for target in [&there, &packed] {
+        let a = target.admin().await;
+        assert_eq!(buttons(&a, "XTask"), buttons(&admin, "XTask"));
+        assert_eq!(buttons(&a, "Shop"), buttons(&admin, "Shop"));
     }
 }
