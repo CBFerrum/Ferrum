@@ -81,6 +81,13 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   receive OpenID Connect's back-channel logout. Apps do not yet hand over what they keep when someone
   leaves: Drive shares and helpdesk queues stay with them.
 
+- **Custom entities** (`define_entity`) keep every record and every line in one table, `custom_record`,
+  with their fields in JSON: no index is made on a custom field, so filtering a large custom entity by a
+  field reads all its records. Their unique keys live in `custom_key`, kept by saves; a key is a
+  field's exact text (as typed, case and all), and engine-kept values (`set_values`) may not touch one.
+  A child entity holds no unique keys, is the lines of one table field only, and holds no table of its
+  own; customizations add no table field to a package's entity. A total over lines (`rollup`) is a sum
+  or a count, with no condition; computed fields see the total of the previous save.
 - **Merging duplicates** is for entities that opt in (customers and suppliers so far). It finds
   duplicates by equal fields, not by resemblance, and is not undone. Append-only history keeps the id
   it was posted under: a report on it must ask `ferrum_kernel::merge::merged_ids`.
