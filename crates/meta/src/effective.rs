@@ -412,6 +412,7 @@ pub(crate) fn apply_op(def: &mut EntityDef, op: &OverlayOp, source: OverlaySourc
                 "visible_if" => f.visible_if = as_opt_string(value, property)?,
                 "required_if" => f.required_if = as_opt_string(value, property)?,
                 "read_only_if" => f.read_only_if = as_opt_string(value, property)?,
+                "read_only_message" => f.read_only_message = as_opt_string(value, property)?,
                 "max_length" => {
                     let v = value.as_u64().filter(|v| *v > 0 && *v <= 1_000_000).ok_or("max_length must be 1..1000000")? as u32;
                     if f.locked && f.max_length.is_some_and(|m| v > m) {

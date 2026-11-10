@@ -721,6 +721,10 @@ pub struct FieldDef {
     pub required_if: Option<String>,
     #[serde(default)]
     pub read_only_if: Option<String>,
+    /// What a person is told when a change they send is refused because `read_only_if` holds; without it the
+    /// change is ignored, as for a `read_only` field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only_message: Option<String>,
     /// `link_field.target_field`: copied from the linked record when the link changes.
     #[serde(default)]
     pub fetch_from: Option<String>,
