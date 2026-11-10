@@ -293,10 +293,20 @@ pub(crate) fn apply_op(def: &mut EntityDef, op: &OverlayOp, source: OverlaySourc
                     action.name
                 ));
             }
-            if def.actions.iter().any(|a| a.name == action.name) {
-                return Err(format!("action {} already exists", action.name));
+            match def.actions.iter().position(|a| a.name == action.name) {
+                // The workspace's own, from an earlier customization (`build` refuses a package's): replaced where it stands.
+                Some(i) if source == OverlaySource::Tenant => def.actions[i] = action.clone(),
+                Some(_) => return Err(format!("action {} already exists", action.name)),
+                None => def.actions.push(action.clone()),
             }
-            def.actions.push(action.clone());
+            Ok(None)
+        }
+        OverlayOp::RemoveAction { name } => {
+            if source != OverlaySource::Tenant {
+                return Err("this operation is only valid as a tenant customization".into());
+            }
+            let i = def.actions.iter().position(|a| &a.name == name).ok_or(format!("there is no action {name} to remove"))?;
+            def.actions.remove(i);
             Ok(None)
         }
         OverlayOp::AddField { field, after, column } => {
@@ -673,6 +683,12 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
                         Ok(None)
                     }
                 }
+                // A package's action stays as its package says: the workspace replaces or removes only its own.
+                OverlayOp::AddAction { action: ActionDef { name, .. } } | OverlayOp::RemoveAction { name }
+                    if packaged.get(&ov.entity).is_some_and(|(d, _)| d.actions.iter().any(|a| &a.name == name)) =>
+                {
+                    Err(format!("action {name} comes with the package of {}: a customization does not replace or remove it", ov.entity))
+                }
                 // A packaged entity's actions are its packages' names; the workspace's own start with x_.
                 OverlayOp::AddAction { action } if !b.custom && !action.name.starts_with("x_") => {
                     Err(format!("action {}: an action added to {}, which comes with a package, is named x_…", action.name, ov.entity))
@@ -993,6 +1009,28 @@ mod tests {
         assert!(warned("XThing", vec![ro])[0].contains("read-only"));
         let bad = json!({"op": "add_action", "action": {"name": "x", "label": "X", "refuse_if": [{"when": "doc.a ==", "message": "m"}], "effects": [{"type": "notify", "to": "owner", "title": "'t'"}]}});
         assert!(warned("XThing", vec![bad])[0].contains("refuse_if"));
+    }
+
+    #[test]
+    fn workspace_actions_are_replaced_and_removed() {
+        let cat = Catalog::from_packages(vec![package(
+            "{package: core, version: '1'}",
+            "[{name: Customer, label: Customer, kind: master, fields: [{name: n, type: data}], actions: [{name: block, label: Block}]}]",
+        )])
+        .unwrap();
+        let act = |name: &str, label: &str| json!({"op": "add_action", "action": {"name": name, "label": label, "effects": [{"type": "notify", "to": "owner", "title": "'t'"}]}});
+        let remove = |name: &str| json!({"op": "remove_action", "name": name});
+        let built = |ops: Vec<Value>| build(&cat, &["core".into()], &ops.into_iter().map(|o| ov("Customer", json!([o]))).collect::<Vec<_>>(), 1).unwrap();
+        let actions = |s: &Schema| s.entity("Customer").unwrap().def.actions.iter().map(|a| format!("{}:{}", a.name, a.label)).collect::<Vec<_>>();
+        let s = built(vec![act("x_a", "A"), act("x_b", "B"), act("x_a", "A2")]);
+        assert_eq!((actions(&s), s.warnings.len()), (vec!["block:Block".into(), "x_a:A2".into(), "x_b:B".into()], 0), "replaced where it stands");
+        assert_eq!(actions(&built(vec![act("x_a", "A"), remove("x_a")])), ["block:Block"]);
+        for op in [act("block", "Mine"), remove("block")] {
+            assert!(built(vec![op]).warnings[0].message.contains("comes with the package"));
+        }
+        assert!(built(vec![remove("x_z")]).warnings[0].message.contains("no action x_z"));
+        let mut def = cat.packages().next().unwrap().entities[0].clone();
+        assert!(apply_op(&mut def, &serde_json::from_value(remove("block")).unwrap(), OverlaySource::Package).is_err(), "a workspace's operation");
     }
 
     #[test]
