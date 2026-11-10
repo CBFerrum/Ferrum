@@ -50,6 +50,7 @@ pub mod prefs;
 pub mod print;
 pub mod privacy;
 pub mod process;
+pub mod published;
 pub mod query;
 pub mod receipt;
 pub mod recovery;

@@ -45,6 +45,7 @@ pub const RESERVED_ROUTES: &[&str] = &[
     "store",
     "account",
     "portal",
+    "public",
     "accounts",
     "login",
     "logout",
