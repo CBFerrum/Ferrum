@@ -256,3 +256,80 @@ impl Kernel {
         self.store_file(ctx, attach_to, &name, &ctype, &data).await
     }
 }
+
+/// Files tied, and files several records named, by [`Kernel::tie_named_files`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Tied {
+    pub tied: i64,
+    pub shared: i64,
+}
+
+/// Loose files a batch of [`Kernel::tie_named_files`] looks at, each batch in its own transaction.
+const TIE_BATCH: i64 = 1000;
+
+impl Kernel {
+    /// Ties the files of `tenant` that are tied to no record to the record whose `attach` field names them
+    /// (`/files/{id}`), as a save now does: an entity's own fields, its lines' (tied to the record owning the line)
+    /// and custom entities' alike. A file several records name goes to the first made, and is counted in `shared`.
+    /// Batches of loose files in the order of their ids, each in its own transaction; a file a save ties meanwhile
+    /// is left as the save tied it, and one tied already is never looked at, so running it again changes nothing.
+    // ponytail: each batch scans every table with an attach field (values are not indexed); an upgrade step, once.
+    pub async fn tie_named_files(&self, tenant: Uuid) -> Result<Tied> {
+        let schema = self.registry.schema(tenant).await?;
+        // For each place an attach field lives: the rows, the record a value belongs to and when it was made.
+        let mut sources = Vec::new();
+        for ent in schema.entities.values().filter(|e| !e.table.is_empty() && e.def.kind != ferrum_meta::EntityKind::Child) {
+            let name = ent.def.name.replace('\'', "''");
+            let own = format!("{} a", crate::ddl::q(&ent.table));
+            for f in ent.value_fields().filter(|f| f.ftype == FieldType::Attach) {
+                let Some(expr) = crate::store::field_expr(ent, &f.name, "a") else { continue };
+                sources.push(format!(
+                    "select b.id as file, '{name}'::text as entity, a.id as record, a.created_at as at from {own} join batch b on {expr} = '/files/' || b.id::text \
+                     where a.tenant_id = $1{}",
+                    crate::store::entity_predicate(ent, "a")
+                ));
+            }
+            for info in ent.children.values() {
+                let Some(c) = schema.entity(&info.entity) else { continue };
+                for f in c.value_fields().filter(|f| f.ftype == FieldType::Attach) {
+                    let Some(expr) = crate::store::field_expr(c, &f.name, "l") else { continue };
+                    sources.push(format!(
+                        "select b.id as file, '{name}'::text as entity, a.id as record, a.created_at as at from {} l \
+                         join {own} on a.tenant_id = l.tenant_id and a.id = l.parent_id{} join batch b on {expr} = '/files/' || b.id::text \
+                         where l.tenant_id = $1{}",
+                        crate::ddl::q(&info.table),
+                        crate::store::entity_predicate(ent, "a"),
+                        info.predicate("l")
+                    ));
+                }
+            }
+        }
+        let mut out = Tied::default();
+        if sources.is_empty() {
+            return Ok(out);
+        }
+        let step = format!(
+            "with batch as (select id from file_object where tenant_id = $1 and record_id is null and id > $2 order by id limit $3), \
+             cand as ({}), \
+             pick as (select distinct on (file) file, entity, record from cand order by file, at, record), \
+             tied as (update file_object o set entity = pick.entity, record_id = pick.record from pick \
+                      where o.tenant_id = $1 and o.id = pick.file and o.record_id is null returning o.id) \
+             select (select id from batch order by id desc limit 1), (select count(*) from tied), \
+                    (select count(*) from (select file from cand group by file having count(distinct (entity, record)) > 1) s)",
+            sources.join(" union all ")
+        );
+        let mut after = Uuid::nil();
+        loop {
+            let mut tx = self.db.system_tenant_tx(tenant).await?;
+            let (last, tied, shared): (Option<Uuid>, i64, i64) =
+                sqlx::query_as(sqlx::AssertSqlSafe(step.clone())).bind(tenant).bind(after).bind(TIE_BATCH).fetch_one(&mut *tx).await?;
+            tx.commit().await?;
+            out.tied += tied;
+            out.shared += shared;
+            match last {
+                Some(last) => after = last,
+                None => return Ok(out),
+            }
+        }
+    }
+}

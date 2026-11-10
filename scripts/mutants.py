@@ -562,6 +562,9 @@ MUTANTS = [
     # A file tied to no record is its uploader's until a record they save names it.
     ("loose-file-served-to-anyone", "crates/kernel/src/files.rs", "            _ if owns_loose(ctx, by) => Ok(()),", "            _ if true => Ok(()),", PORTAL),
     ("save-ties-no-file", "crates/kernel/src/files.rs", "update file_object set entity = $3, record_id = $4 where tenant_id = $1 and id = $2\"", "update file_object set entity = $3, record_id = $4 where tenant_id = $1 and id = $2 and false\"", PORTAL),
+    ("upgrade-ties-no-file", "crates/kernel/src/files.rs", "where o.tenant_id = $1 and o.id = pick.file and o.record_id is null returning o.id", "where o.tenant_id = $1 and o.id = pick.file and false returning o.id", PORTAL),
+    ("upgrade-skips-lines", "crates/kernel/src/files.rs", "                for f in c.value_fields().filter(|f| f.ftype == FieldType::Attach) {", "                for f in c.value_fields().filter(|f| f.ftype == FieldType::Attach && false) {", PORTAL),
+    ("upgrade-ties-to-the-last-made", "crates/kernel/src/files.rs", "order by file, at, record)", "order by file, at desc, record)", PORTAL),
     ("save-names-anyones-file", "crates/kernel/src/files.rs", "                _ => return Err(refused()),", "                _ => {}", PORTAL),
     ("outsiders-upload-without-limit", "crates/kernel/src/files.rs", "        if !ctx.outside {\n            return Ok(());", "        if !ctx.outside || true {\n            return Ok(());", STREAMED),
     ("portal-roles-given-to-anyone", "crates/kernel/src/auth.rs", "                if let Some(other) = roles.iter().find(|r| !portal.contains(r)) {", "                if let Some(other) = None::<&String> {", PORTAL),
