@@ -159,6 +159,23 @@ refused), `parent` in a line's line is its line, and a field error there carries
 filters, portal and owner paths, personal-data and hand-over declarations and Studio stay one level deep.
 **Rules out**: a third level; nested lines on a package's entity; moving a line's line by its id.
 
+Amended 10 November 2026, for a checklist on any record, sign-offs on an invoice, measurements on a work order:
+**a customization may add a table of lines to a package's entity**, one level deep. The field is `x_…`, `type:
+table`, `of` a custom child entity that is the lines of no other table and holds no table of its own; a package's
+line entity, a ledger and a custom entity (whose tables come with its definition) take none. The rows are
+`custom_record` rows of that child entity with the package's record id in `parent_id`; which table a table's rows
+are in follows the child (`ChildInfo.table`), so load, save, filters, scopes, erasure, merge links and the delete
+guard read them as they read a custom entity's lines. The self foreign key on `parent_id` could not hold a parent
+in a package's table, so it gave way to a statement trigger on `custom_record` doing what its cascade did
+(migration `20261110000010_packaged_lines.sql`, nothing rewritten). **Deleting a package's record** deletes the
+`custom_record` rows under its id, also while the customization is off. **Uninstalling the package** keeping its
+data keeps them, as it keeps its own rows; deleting its data deletes exactly the `custom_record` rows under its
+entities' records, never the table (which holds every custom record of the workspace), and leaves the package's
+own child tables to their own deletes. Switching the customization off hides the lines and keeps them; a package
+upgrade leaves them. Checked by `packaged_lines_it` (an orphan check after each step; mutant
+`uninstall-deletes-custom-record-wholesale`). **Rules out**: a generated table per customization; a package's
+child table holding rows of a custom entity; a second level on a package's entity.
+
 ## BD-07. Packs (BF9)
 
 * A pack is a **canonical JSON document** (the platform's canonical form and digest): metadata (name,

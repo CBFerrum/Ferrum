@@ -592,9 +592,20 @@ async fn delete_entity_rows(tx: &mut Tx, tenant: Uuid, ent: &ferrum_meta::EffEnt
         .fetch_all(&mut **tx)
         .await?;
     crate::outbox::release_objects(tx, tenant, &keys).await?;
-    for child in ent.children.values() {
+    // The package's own child tables are its entity's alone. The lines a customization added to its records are rows
+    // of `custom_record`, which holds every custom record of the workspace: only those under these records go, also
+    // while their customization is off (BD-06).
+    for child in ent.children.values().filter(|c| c.table != ferrum_meta::effective::CUSTOM_RECORD_TABLE) {
         sqlx::query(AssertSqlSafe(format!("delete from {} where tenant_id = $1", ddl::q(&child.table)))).bind(tenant).execute(&mut **tx).await?;
     }
+    sqlx::query(AssertSqlSafe(format!(
+        "delete from custom_record c where c.tenant_id = $1 and c.parent_id is not null \
+         and exists (select 1 from {} p where p.tenant_id = c.tenant_id and p.id = c.parent_id)",
+        ddl::q(&ent.table)
+    )))
+    .bind(tenant)
+    .execute(&mut **tx)
+    .await?;
     sqlx::query(AssertSqlSafe(format!("delete from {} where tenant_id = $1", ddl::q(&ent.table)))).bind(tenant).execute(&mut **tx).await?;
     for table in ["record_comment", "record_assignment", "record_tag", "record_follower", "record_secret", "record_target"] {
         sqlx::query(AssertSqlSafe(format!("delete from {table} where tenant_id = $1 and entity = $2")))

@@ -279,10 +279,19 @@ impl Kernel {
                     .find_map(|o| o.table_fields().find(|f| f.of.as_deref() == Some(name.as_str())).map(|f| (o.def.name.clone(), f.name.clone())))
             };
             if let Some((to, table)) = owner(after).filter(|now| owner(before).as_ref() != Some(now)) {
-                let elsewhere: Option<String> = sqlx::query_scalar(
-                    "select p.entity from custom_record c join custom_record p on p.tenant_id = c.tenant_id and p.id = c.parent_id \
-                     where c.tenant_id = $1 and c.entity = $2 and p.entity <> $3 limit 1",
-                )
+                // Under a custom record of another entity, or under a package's record (lines added to a package's
+                // entity, whose parent is in that package's table).
+                let owner_ent = after.entity(&to).ok_or_else(|| Error::internal("a table's entity vanished"))?;
+                let under = if owner_ent.custom {
+                    "custom_record r where r.entity = $3 and".to_string()
+                } else {
+                    format!("{} r where", crate::ddl::q(&owner_ent.table))
+                };
+                let elsewhere: Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                    "select coalesce(p.entity, 'another app''s') from custom_record c left join custom_record p on p.tenant_id = c.tenant_id and p.id = c.parent_id \
+                     where c.tenant_id = $1 and c.entity = $2 and c.parent_id is not null \
+                     and not exists (select 1 from {under} r.tenant_id = c.tenant_id and r.id = c.parent_id) and $3 = $3 limit 1"
+                )))
                 .bind(ctx.tenant)
                 .bind(name)
                 .bind(&to)
