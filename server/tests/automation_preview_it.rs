@@ -1,6 +1,7 @@
 //! The automations API as an automation editor uses it, against a real PostgreSQL
 //! (`FERRUM_TEST_DATABASE_URL`, reset first): previewing a mail (administrators only; a record of another
-//! workspace is not found) and a refused save naming the action it is about, as the API answers them.
+//! workspace is not found), a refused save naming the action it is about, as the API answers them, and the
+//! capabilities an administrator building a button may `invoke` (`GET /api/admin/capabilities`).
 
 mod common;
 
@@ -8,7 +9,7 @@ use axum::response::IntoResponse;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::Catalog;
-use ferrum_server::controllers::admin::preview_automation_mail;
+use ferrum_server::controllers::admin::{capabilities, preview_automation_mail};
 use ferrum_server::error::ApiError;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -96,4 +97,19 @@ async fn scenario() {
     assert_eq!(body["fields"][0]["field"], "actions");
     assert_eq!(body["fields"][0]["row"], json!(["actions", 1]), "{body}");
     assert!(body["fields"][0]["message"].as_str().unwrap().starts_with("expression 'doc.title +'"), "{body}");
+
+    // What a button may invoke, without Studio: administrators only.
+    let listed = capabilities(&k, &admin).unwrap();
+    let create = listed["capabilities"].as_array().unwrap().iter().find(|c| c["id"] == "notes.note.create").expect("listed").clone();
+    assert_eq!(
+        (create["title"].as_str(), create["effect"].as_str(), create["needs_key"].as_bool()),
+        (Some("Create a Note"), Some("transactional_action"), Some(true)),
+        "{create}"
+    );
+    let values = create["inputs"].as_array().unwrap().iter().find(|i| i["name"] == "values").expect("values").clone();
+    assert_eq!((values["type"].as_str(), values["required"].as_bool()), (Some("object"), Some(true)), "{values}");
+    let read = listed["capabilities"].as_array().unwrap().iter().find(|c| c["id"] == "notes.note.read").expect("read").clone();
+    assert_eq!(read["needs_key"], false, "a read needs no key");
+    let (status, _) = answer(capabilities(&k, &writer).unwrap_err()).await;
+    assert_eq!(status, 403);
 }

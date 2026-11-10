@@ -161,9 +161,9 @@ pub(crate) fn label_of(target: &str, raw: &Value) -> String {
 
 /// Refuses what would leave a configured action (actions.rs) writing what it may not, or naming what is not
 /// there, that was not so before.
-fn configured_actions(was: &Schema, now: &Schema) -> Result<()> {
-    let before = crate::actions::problems(was);
-    let new: Vec<String> = crate::actions::problems(now).into_iter().filter(|p| !before.contains(p)).collect();
+fn configured_actions(k: &Kernel, tenant: Uuid, was: &Schema, now: &Schema) -> Result<()> {
+    let before = crate::actions::problems(k, tenant, was);
+    let new: Vec<String> = crate::actions::problems(k, tenant, now).into_iter().filter(|p| !before.contains(p)).collect();
     if new.is_empty() { Ok(()) } else { Err(Error::invalid(format!("customization rejected: {}", new.join("; ")))) }
 }
 
@@ -610,7 +610,7 @@ impl Kernel {
             let msgs: Vec<String> = now.warnings[was.warnings.len()..].iter().map(|w| format!("{}: {}", w.entity, w.message)).collect();
             return Err(Error::invalid(format!("customization rejected: {}", msgs.join("; "))));
         }
-        configured_actions(was, &now)?;
+        configured_actions(self, ctx.tenant, was, &now)?;
         self.guard_records(ctx, tx, was, &now).await?;
         Ok(now)
     }
@@ -683,7 +683,7 @@ impl Kernel {
         }
         // Switching a redefinition off or on changes the definition back or forth: the same guards hold.
         let now = self.build(ctx, &self.active_overlays(&mut tx, ctx.tenant).await?)?;
-        configured_actions(&was, &now)?;
+        configured_actions(self, ctx.tenant, &was, &now)?;
         self.guard_records(ctx, &mut tx, &was, &now).await?;
         self.sync_custom_keys(ctx, &mut tx, &was, &now).await?;
         Registry::bump_version(&mut tx, ctx.tenant).await?;

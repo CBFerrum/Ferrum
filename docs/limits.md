@@ -105,6 +105,13 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   pressed (a form may judge them first, to explain a button that is off). A workspace replaces or removes only the actions its customizations added,
   never a package's. A rule's aggregate filters on the day as `{"today": n}`, compared with date fields only, never
   with a datetime.
+- **Another app's steps** (`invoke`, docs/api.md): a button or an automation calls what the capability
+  catalog lists (record operations, an app's listed actions, workflow transitions), never a configured
+  action. ERP's own money and stock actions carry no contracts yet, so what it reaches there is creating
+  and submitting its documents (a sales invoice, a delivery note) with the lines given; amounts are the
+  expressions' numbers, not typed money. An automation a pack installs has its `invoke` checked when it
+  runs, not at install. The default key holds per record version: a press after any change to the record
+  runs the step again, so a step meant once for good names its own `key`.
 - **Redefining a custom entity** (`redefine_entity`) deletes no data: values of a field that goes stay in
   the records, out of sight, until a field of the same name comes back. A field that comes back with a
   type other than the one its values were saved under is not checked against them. A batch of

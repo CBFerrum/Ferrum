@@ -246,3 +246,28 @@ reports in order, the entities it offers to create, and the assistant's instruct
   goes later (an app uninstalled) loses that item with a schema warning and keeps the rest.
 * **It is records, not a screen.** `/data/{menu}/` is the records frame scoped to the menu, as a
   records-only app's is. A screen of its own, a search provider and live tile counts stay with apps.
+
+## BD-13. Configuration calls other apps' steps through the capability gate
+
+Decided 10 November 2026. Carries out BD-05's first half and qualifies BD-11. Asked for by the paper
+measurement of Government and Retail ([evidence](evidence/government-retail-on-paper-2026-11-10.md)),
+where one gap blocked nine behaviours: a fee invoiced in ERP, a delivery note posted on hand-over.
+
+A configured action's effect or an automation's action may `invoke` a capability of the workspace's
+catalog (docs/api.md, "Calling another app's steps"): an entity's record operations, its package's
+listed actions, its workflow's transitions.
+
+* **The gate, not a path beside it.** It runs `invoke_tx`: the owning app's operation through the path a
+  person's request takes, every hook, rule, check and posting of that app, in the action's or automation's
+  one transaction. A refusal anywhere refuses the whole press and keeps nothing.
+* **As the system, on the runner's behalf** (BD-11): an administrator decided once, in reviewed
+  configuration, which step a button takes; the person pressing it is held to who may press it.
+* **Once.** A capability that changes something runs once per effect key, the receipt committed with the
+  change: by default per action (or automation), record, record version and effect, or per a `key`
+  expression for good. The same key with other input is refused, never adopted.
+* **Named and checked.** The capability and its input names are checked against the catalog when saved;
+  one that goes later refuses the press, saying so, and breaks nothing else.
+
+**Rules out**: configuration writing an app's tables or ledger lines itself; an effect reaching a
+configured action through the gate (no effect runs another one); a step that changes something without
+an effect key; a new kind of permission for it.

@@ -486,6 +486,28 @@ pub async fn install_pack(k: &ferrum_kernel::Kernel, ctx: &Ctx, body: &Value) ->
     Ok(k.install_pack(ctx, pack, digest).await?)
 }
 
+/// `GET /api/admin/capabilities`: what a configured action or an automation may `invoke` (docs/api.md), from the
+/// kernel's catalog: each capability's id, title, inputs, effect and whether it needs an effect key.
+pub fn capabilities(k: &ferrum_kernel::Kernel, ctx: &Ctx) -> ApiResult<Value> {
+    admin(ctx)?;
+    let list: Vec<Value> = k
+        .catalog(ctx)
+        .into_iter()
+        .map(|c| {
+            let required: Vec<&str> = c.input.get("required").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
+            let inputs: Vec<Value> = c.input.get("properties").and_then(Value::as_object).into_iter().flatten()
+                .map(|(name, s)| json!({"name": name, "type": s.get("type"), "required": required.contains(&name.as_str()), "description": s.get("description")}))
+                .collect();
+            json!({"id": c.id, "title": c.label, "entity": c.entity, "effect": c.effect, "needs_key": c.effect.changes(), "inputs": inputs})
+        })
+        .collect();
+    Ok(json!({"capabilities": list}))
+}
+
+async fn list_capabilities(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    Ok(Json(capabilities(&app_state(&app)?.kernel, &ctx)?).into_response())
+}
+
 async fn get_pack(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query<PackQuery>) -> ApiResult<Response> {
     Ok(Json(export_pack(&app_state(&app)?.kernel, &ctx, &q).await?).into_response())
 }
@@ -926,6 +948,7 @@ pub fn routes() -> Routes {
         .add("/admin/pack/plan", post(post_pack_plan).layer(DefaultBodyLimit::max(2 * ferrum_kernel::pack::MAX_PACK)))
         .add("/admin/pack/install", post(post_pack_install).layer(DefaultBodyLimit::max(2 * ferrum_kernel::pack::MAX_PACK)))
         .add("/admin/packs", get(list_packs))
+        .add("/admin/capabilities", get(list_capabilities))
         .add("/admin/support", get(support_grants).post(grant_support))
         .add("/admin/support/{id}", delete(revoke_support))
         .add("/admin/support/{id}/requests", get(support_activity))
