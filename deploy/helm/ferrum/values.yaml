@@ -144,18 +144,19 @@ metricsEngine:
     requests: {cpu: 250m, memory: 512Mi}
     limits: {memory: 3Gi}
 
-# A Job that applies database migrations before an install or upgrade (Helm hook), running the
-# server image with `args`. NOT USABLE YET: the server has no `migrate` task (it is being added
-# separately), so leave this off. Today the server migrates itself when it starts
-# (`database.auto_migrate: true` in server/config/production.yaml, which no environment variable
-# overrides). When the task exists and the server can start without migrating, list that setting
-# in serverEnv: it is added to the server's pods whenever the Job is enabled.
-# With database.enabled, the Cluster does not exist yet on the first install (hooks run first),
-# so the Job suits upgrades and your own database.
+# A Job that migrates the database before an install or upgrade (Helm hook): it runs the server
+# image with `args`, `task migrate`, which applies the kernel's SQL migrations, syncs the schema and
+# runs the one-time upgrade steps, and fails the release when one fails. While it is enabled the
+# server's pods also get `serverEnv`, FERRUM_MIGRATE_AT_START=false: they no longer migrate as they
+# start, only check that the Job did, and refuse to start (naming the command) when it has not.
+# Off, each pod migrates itself at start, as the Compose files do.
+# With database.enabled the Cluster does not exist yet on the first install (hooks run first), so
+# the Job would fail: enable it for upgrades, or for a database of your own (database.urlSecret).
 migrate:
   enabled: false
   args: ["task", "migrate"]
-  serverEnv: []   # entries of `env`
+  serverEnv:   # entries of `env`, added to the server while the Job is enabled
+    - {name: FERRUM_MIGRATE_AT_START, value: "false"}
   backoffLimit: 2
   activeDeadlineSeconds: 600
 

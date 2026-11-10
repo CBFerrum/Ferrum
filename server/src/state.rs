@@ -76,6 +76,10 @@ pub struct Settings {
     /// Run outbox/webhook/maintenance loops in this process.
     #[serde(default = "default_true")]
     pub run_background: bool,
+    /// Migrate the database as the server starts (`FERRUM_MIGRATE_AT_START`, default on). Off, it checks that
+    /// `ferrum task migrate` has and refuses to start when it has not.
+    #[serde(default = "default_true")]
+    pub migrate_at_start: bool,
     #[serde(default = "default_upload_max")]
     pub upload_max_bytes: usize,
     /// Largest file the browser may upload straight to S3, or in parts through the server

@@ -320,6 +320,16 @@ pub fn cluster_schema(catalog: &Catalog) -> Result<Schema> {
     effective::build(catalog, &all, &[], 0).map_err(|e| Error::Internal(format!("catalog: {e}")))
 }
 
+fn fingerprint(catalog: &Catalog) -> String {
+    format!("{}:{DDL_VERSION}", catalog.fingerprint())
+}
+
+/// Whether the schema was last synced for exactly this catalog: what `sync` would skip. Writes nothing.
+pub async fn is_current(db: &Db, catalog: &Catalog) -> Result<bool> {
+    let current: Option<String> = sqlx::query_scalar("select value from cluster_state where key = 'catalog_fingerprint'").fetch_optional(&db.pool).await?;
+    Ok(current.as_deref() == Some(fingerprint(catalog).as_str()))
+}
+
 pub async fn sync(db: &Db, catalog: &Catalog, force: bool) -> Result<SyncReport> {
     let mut conn = db.pool.acquire().await?;
     sqlx::query("select pg_advisory_lock($1)").bind(SYNC_LOCK).execute(&mut *conn).await?;
@@ -330,7 +340,7 @@ pub async fn sync(db: &Db, catalog: &Catalog, force: bool) -> Result<SyncReport>
 
 async fn sync_locked(conn: &mut PgConnection, catalog: &Catalog, force: bool) -> Result<SyncReport> {
     let current: Option<String> = sqlx::query_scalar("select value from cluster_state where key = 'catalog_fingerprint'").fetch_optional(&mut *conn).await?;
-    let fingerprint = format!("{}:{DDL_VERSION}", catalog.fingerprint());
+    let fingerprint = fingerprint(catalog);
     let schema = cluster_schema(catalog)?;
     constraint_messages(&schema);
     if !force && current.as_deref() == Some(fingerprint.as_str()) {

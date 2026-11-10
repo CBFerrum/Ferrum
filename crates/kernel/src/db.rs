@@ -170,6 +170,22 @@ impl Db {
         sqlx::migrate!("./migrations").run(&self.pool).await.map_err(|e| Error::Internal(format!("kernel migration failed: {e}")))
     }
 
+    /// Versions of the kernel's SQL migrations this database has applied (none for a database no migration has touched).
+    pub async fn applied_migrations(&self) -> Result<Vec<i64>> {
+        let there: bool = sqlx::query_scalar("select to_regclass('_sqlx_migrations') is not null").fetch_one(&self.pool).await?;
+        if !there {
+            return Ok(Vec::new());
+        }
+        Ok(sqlx::query_scalar("select version from _sqlx_migrations where success order by version").fetch_all(&self.pool).await?)
+    }
+
+    /// Versions of this build's SQL migrations the database has not applied.
+    pub async fn pending_migrations(&self) -> Result<Vec<i64>> {
+        let applied = self.applied_migrations().await?;
+        let ours = sqlx::migrate!("./migrations");
+        Ok(ours.iter().filter(|m| m.migration_type.is_up_migration() && !applied.contains(&m.version)).map(|m| m.version).collect())
+    }
+
     /// Counts one request for `key` in the current fixed `window`, shared by every replica
     /// (`rate_window`), and returns the window's count so far.
     pub async fn count_hit(&self, key: &str, window: Duration) -> Result<i64> {
