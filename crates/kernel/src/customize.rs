@@ -270,6 +270,30 @@ impl Kernel {
                     json!(e.def.kind).as_str().unwrap_or_default()
                 )));
             }
+            // Lines hang off the rows of their table's entity: they cannot become another entity's lines (a record's
+            // in place of a line's, BD-06) while there are any, in one step or several.
+            let owner = |s: &Schema| {
+                s.entities
+                    .values()
+                    .find_map(|o| o.table_fields().find(|f| f.of.as_deref() == Some(name.as_str())).map(|f| (o.def.name.clone(), f.name.clone())))
+            };
+            if let Some((to, table)) = owner(after).filter(|now| owner(before).as_ref() != Some(now)) {
+                let elsewhere: Option<String> = sqlx::query_scalar(
+                    "select p.entity from custom_record c join custom_record p on p.tenant_id = c.tenant_id and p.id = c.parent_id \
+                     where c.tenant_id = $1 and c.entity = $2 and p.entity <> $3 limit 1",
+                )
+                .bind(ctx.tenant)
+                .bind(name)
+                .bind(&to)
+                .fetch_optional(&mut **tx)
+                .await?;
+                if let Some(of) = elsewhere {
+                    return Err(Error::Conflict(format!(
+                        "{}: its rows are lines of {of} records; they cannot become the lines of {to}.{table} while there are any",
+                        e.def.label
+                    )));
+                }
+            }
             for f in &e.def.fields {
                 let Some(was) = old.field(&f.name).map(|o| o.ftype).filter(|t| !t.converts_to(f.ftype)) else { continue };
                 if holds(tx, ctx.tenant, name, Some(&f.name)).await? {
@@ -714,14 +738,16 @@ impl Kernel {
                 "{entity} comes with a package: it has no definition a workspace can replace; customize it one change at a time"
             )));
         }
-        let lines: serde_json::Map<String, Value> = ent
-            .def
-            .fields
-            .iter()
-            .filter(|f| f.ftype == ferrum_meta::FieldType::Table)
-            .filter_map(|f| ctx.schema.entity(f.of.as_deref()?))
-            .map(|c| (c.def.name.clone(), json!(c.def)))
-            .collect();
+        // Its lines' entities, and theirs where its lines hold lines of their own (BD-06).
+        let mut lines = serde_json::Map::new();
+        let mut next: Vec<&ferrum_meta::EffEntity> = vec![ent];
+        while let Some(e) = next.pop() {
+            for c in e.children.values().filter_map(|c| ctx.schema.entity(&c.entity)) {
+                if lines.insert(c.def.name.clone(), json!(c.def)).is_none() {
+                    next.push(c);
+                }
+            }
+        }
         Ok(json!({"entity": ent.def, "lines": lines}))
     }
 

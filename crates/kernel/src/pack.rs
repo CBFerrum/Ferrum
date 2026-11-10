@@ -245,7 +245,15 @@ fn key_of(ent: &EffEntity) -> Option<Vec<String>> {
 
 /// Why records of `ent` (and its lines) may not travel as reference data, if they may not.
 fn not_reference(ctx: &Ctx, ent: &EffEntity) -> Option<&'static str> {
-    let children: Vec<&EffEntity> = ent.children.values().filter_map(|c| ctx.schema.entity(&c.entity).map(|e| &**e)).collect();
+    // Its lines' entities, and their own lines' (BD-06).
+    let mut children: Vec<&EffEntity> = Vec::new();
+    let mut next: Vec<&EffEntity> = vec![ent];
+    while let Some(e) = next.pop() {
+        for c in e.children.values().filter_map(|c| ctx.schema.entity(&c.entity).map(|e| &**e)) {
+            children.push(c);
+            next.push(c);
+        }
+    }
     let fields = || ent.def.fields.iter().chain(children.iter().flat_map(|c| c.def.fields.iter()));
     if ctx.schema.personal_data.iter().any(|d| d.entity == ent.def.name) {
         Some("a package declares that it holds people's data")
@@ -717,7 +725,8 @@ impl Kernel {
                     .ok_or_else(|| Error::internal(format!("{}.{} has no rows' entity", ent.def.name, f.name)))?;
             let mut rows = Vec::new();
             for r in doc.get(&f.name).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_object) {
-                rows.push(Value::Object(self.portable_values(ctx, tx, &child, r, keys).await?));
+                // A line with lines of its own (BD-06) carries them the same way.
+                rows.push(Value::Object(Box::pin(self.portable(ctx, tx, &child, r, keys)).await?));
             }
             out.insert(f.name.clone(), Value::Array(rows));
         }
@@ -779,7 +788,7 @@ impl Kernel {
             let mut rows = Vec::new();
             for r in v.as_array().into_iter().flatten() {
                 let r = r.as_object().ok_or_else(|| Error::invalid(format!("{what}: a row of {name} is not an object")))?;
-                rows.push(Value::Object(self.resolve_values(ctx, tx, &child, r, what).await?));
+                rows.push(Value::Object(Box::pin(self.resolve(ctx, tx, &child, r, what)).await?));
             }
             doc.insert(name.clone(), Value::Array(rows));
         }
