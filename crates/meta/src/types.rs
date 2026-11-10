@@ -216,9 +216,37 @@ pub struct ModuleDef {
     /// Entities and reports shown in this module's sidebar, in order.
     #[serde(default)]
     pub items: Vec<String>,
-    /// The package that defines it: set in the effective schema, never written in package.yaml.
+    /// The package that defines it: set in the effective schema, never written in package.yaml
+    /// (`tenant` for a workspace's own menu).
     #[serde(default, skip_deserializing, skip_serializing_if = "String::is_empty")]
     pub package: String,
+    /// A workspace's own menu only (`define_module`): an app gives these through its manifest.
+    /// The launcher tile's colour, `#rrggbb`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Entity items offered in the bar's Create menu.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub create: Vec<String>,
+    /// What the assistant is told on the menu's pages, and suggests asking there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assistant: Option<ModuleAssistant>,
+}
+
+impl ModuleDef {
+    /// Whether it says what only a workspace's own menu may.
+    pub fn has_menu_properties(&self) -> bool {
+        self.color.is_some() || self.description.is_some() || !self.create.is_empty() || self.assistant.is_some()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModuleAssistant {
+    pub instructions: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggestions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1093,6 +1121,15 @@ pub enum OverlayOp {
     },
     /// Tenant-only: removes an action a customization added (never a package's).
     RemoveAction {
+        name: String,
+    },
+    /// Tenant-only: a workspace's own menu (named `x_…`): a launcher tile, a sidebar group, quick
+    /// create and the assistant's notes for its entities. One of the same name replaces it.
+    DefineModule {
+        module: ModuleDef,
+    },
+    /// Tenant-only: removes a workspace's own menu.
+    RemoveModule {
         name: String,
     },
     /// Package-only: a form section for fields the package adds, after the section holding the

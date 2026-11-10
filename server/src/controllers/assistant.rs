@@ -50,7 +50,8 @@ async fn suggestions(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Q
     let st = app_state(&app)?;
     let path = q.get("path").map(String::as_str).unwrap_or("/");
     let route = path.strip_prefix('/').unwrap_or(path).split('/').next().unwrap_or_default();
-    let items = if route.is_empty() { vec![] } else { st.apps.assistant_domain(ctx.tenant, route).await? };
+    let mut items = if route.is_empty() { vec![] } else { st.apps.assistant_domain(ctx.tenant, route).await? };
+    items.extend(assistant::menu_domain(&ctx.schema, path));
     let domains: Vec<serde_json::Value> = items.iter().map(|i| json!({"title": i["title"], "suggestions": i["suggestions"]})).collect();
     Ok(Json(json!({"domains": domains})).into_response())
 }

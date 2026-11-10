@@ -297,6 +297,30 @@ async fn shell_core(st: &AppState, headers: &HeaderMap, uri: &Uri, first: &str, 
     // `/data/{app}/…`: the records of an app without an interface of its own (beside the
     // records of any entity, `e/` and `r/`, and Customize).
     let (app_id, tail) = rest.split_once('/').unwrap_or((rest, ""));
+    // `/data/{menu}/…`: the records of a workspace's own menu, as a records-only app's.
+    if first == "data"
+        && let Some(m) = shell::menu(&ctx, app_id)
+    {
+        let q = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
+        if rest == app_id {
+            return Ok(Redirect::permanent(&format!("/data/{app_id}/{q}")).into_response());
+        }
+        if !shell::menu_reads(&ctx, m) {
+            let boot = match page_bootstrap(st, headers, &ctx, device, json!(null), "status").await {
+                Ok((b, _)) => b,
+                Err(r) => return Ok(r),
+            };
+            return Ok(status_page(
+                StatusCode::FORBIDDEN,
+                "You cannot open this",
+                "You do not have access to this app's records.",
+                &[("Go to Home", "/")],
+                Some(&boot),
+            ));
+        }
+        let scope = Some(shell::menu_scope(m));
+        return shell_page(st, headers, ctx, device, first, scope).await;
+    }
     if first == "data" && !shell::DATA_PAGES.contains(&app_id) {
         let apps = st.apps.shell_apps(ctx.tenant).await?;
         let q = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
@@ -1096,6 +1120,9 @@ async fn open(st: &AppState, headers: &HeaderMap, uri: &Uri, rest: &str, q: &[(S
             apps.iter().find_map(|a| shell::records_app(&apps, &a.id).filter(|(_, p)| package.as_ref().is_some_and(|pk| p.contains(pk))))
         {
             format!("/data/{}/e", a.id)
+        } else if let Some(m) = shell::menu_of(&ctx, entity) {
+            // Shown by a workspace's own menu: in its records.
+            format!("/data/{}/e", m.name)
         } else {
             "/data/e".to_string()
         };
@@ -1225,6 +1252,10 @@ async fn shell_info(Auth(ctx): Auth, State(app): State<AppContext>, headers: Hea
     // Apps without an interface of their own: their records in the shell.
     if kind == "member" {
         launcher.extend(shell::records_entries(&apps, &ctx));
+        // The workspace's own menus: whoever reads one of their entities.
+        let (tiles, rows) = shell::menu_entries(&ctx);
+        launcher.extend(tiles);
+        create.extend(rows);
     }
     let body = json!({
         "v": 1,

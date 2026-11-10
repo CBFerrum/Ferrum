@@ -532,4 +532,52 @@ async fn scenario() {
     assert_eq!(stops, ["XMembership: add_rule end_after_start stops applying: the pack redefines XMembership"], "the pack's own x_locker is not named: {plan}");
     let done = k.install_pack(&target, &pack3, plan["digest"].as_str().unwrap()).await.unwrap();
     assert_eq!(done["warnings"], json!(stops), "the install says it too");
+
+    // ───────────── a menu and the workspace's own words travel too ─────────────
+    let words = workspace(&k, "words-src", &["core", "studio"]).await;
+    let wa = words.admin().await;
+    words
+        .customize(
+            "XPlan",
+            json!({"op": "define_entity", "entity": {"name": "XPlan", "label": "Plan", "kind": "master", "title_field": "name",
+        "fields": [{"name": "name", "type": "data", "unique": true}]}}),
+        )
+        .await;
+    words
+        .customize(
+            "x_gym",
+            json!({"op": "define_module", "module": {"name": "x_gym", "label": "Gym", "icon": "dumbbell", "items": ["XPlan", "Report"],
+        "create": ["XPlan"], "assistant": {"instructions": "Plans are what members buy."}}}),
+        )
+        .await;
+    for (language, english, said) in [("pt", "Save", "Gravar"), ("pt", "Plan", "Plano"), ("hi", "Save", "सहेजें")] {
+        words.insert(&wa, "InterfaceWord", json!({"language": language, "english": english, "words": said})).await;
+    }
+    let wa = words.admin().await;
+    let pack = k
+        .export_pack(&wa, &ExportOptions { name: "words".into(), label: "Words".into(), version: 1, records: vec!["InterfaceWord".into()] })
+        .await
+        .expect("export");
+    assert_eq!(pack["customizations"][1]["entity"], json!("x_gym"));
+    assert_eq!(pack["records"][0]["key"], json!(["language", "english"]));
+    assert_eq!(pack["records"][0]["rows"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        pack["requires"]["packages"].as_object().unwrap().keys().collect::<Vec<_>>(),
+        ["core", "studio"],
+        "InterfaceWord is core's; Report, which only the menu names, Studio's"
+    );
+    let there = workspace(&k, "words-dst", &["core", "studio"]).await;
+    let ta = there.admin().await;
+    let plan = k.plan_pack(&ta, &pack).await.unwrap();
+    assert_eq!(names(&plan, "customizations", "created"), ["XPlan: define_entity", "x_gym: define_module x_gym"]);
+    assert_eq!(names(&plan, "records", "created"), ["InterfaceWord hi / Save", "InterfaceWord pt / Plan", "InterfaceWord pt / Save"]);
+    k.install_pack(&ta, &pack, plan["digest"].as_str().unwrap()).await.expect("install");
+    let ta = there.admin().await;
+    let gym = ta.schema.modules.iter().find(|m| m.name == "x_gym").expect("the menu");
+    assert_eq!(
+        (gym.package.as_str(), gym.items.clone(), gym.create.clone()),
+        ("tenant", vec!["XPlan".to_string(), "Report".to_string()], vec!["XPlan".to_string()])
+    );
+    assert_eq!(k.interface_words(ta.tenant, "pt").await.unwrap().get("Save"), Some(&json!("Gravar")));
+    nothing_to_do(&k.plan_pack(&ta, &pack).await.unwrap()["sections"]);
 }

@@ -149,7 +149,7 @@ several workspaces in turn and is left as it is.
 
 ## Metadata — `/api/meta`
 
-* `GET /api/meta` → `{version, packages, modules: [{name, label, icon, order, items: ["EntityName" | "report:<name>"], package}], entities: [{name, label, label_plural, kind, module, icon, description, submittable, custom, permissions}], warnings}` (`description`: what the record type is for, which the help center at `/data/help/` searches)
+* `GET /api/meta` → `{version, packages, modules: [{name, label, icon, order, items: ["EntityName" | "report:<name>"], package, description?, color?, create?, assistant?: {instructions, suggestions?}}], entities: [{name, label, label_plural, kind, module, icon, description, submittable, custom, permissions}], warnings}` (`description`: what the record type is for, which the help center at `/data/help/` searches). A workspace's own menus (`define_module`, below) are among `modules` with `package: "tenant"` and their own `description`, `color`, `create` and `assistant`; a package's module has none of those.
 * `GET /api/meta/{Entity}` → full description used to render forms and lists:
   `{name, label, label_plural, kind (master|document|child|settings|ledger), module, title_field, submittable, mergeable, linked_from: [{entity, label, field, field_label}] (the lists the caller may read that link here; `field` is a filter path, so `items.item` for a child table's row), company_scoped, numbering, list: {columns, sort}, form: [{label, fields, columns (1-4), collapsible, tab?, visible_if?}], search_fields, rules, actions: [{name, label, docstatus[], permission, confirm?, condition?, read_only?, params?, group?, roles?, refuse_if?, effects? (administrators only), may_run}], workflow?: {initial_state, states: [{name, docstatus, edit_roles, editable? (the only fields a person changes in the state), required? (what it needs to be entered and saved)}], transitions: [{action, from, to, roles, condition?, not_creator, not_creator_of? (links, `field` or `table.field`, whose records the person taking it may not have raised)}]}, fields: [Field], children: {tableField: {entity, label, fields: [Field]}}, permissions: {read|write|create|delete|submit|cancel|export|import: "none"|"own"|"all"}}`
   An action's `may_run` says whether the caller may press it at all: its permission or a role's rule naming it, and its `roles`, as running it checks them (an administrator always may); `condition`, `docstatus` and `refuse_if` are judged per record, so a form evaluates them on the record it shows. A configured action's `effects` (what it writes) go to administrators only.
@@ -324,7 +324,8 @@ Pages, for browsers, with the session cookie:
 * `GET /open/{entity}/{id}` → `303` to the screen of an app that shows the record and that the
   person may use (`?via={app}` first, then `priority`, then install order), else the shell's
   records page if the person may read the entity: the records of the app it belongs to when that
-  app has no interface of its own (`/data/{app}/e/…`), else `/data/e/…` (today's web app for a
+  app has no interface of its own (`/data/{app}/e/…`), else the records of the first workspace menu (in order) that
+  lists it (`/data/{menu}/e/…`), else `/data/e/…` (today's web app for a
   workspace not on the shell); else 403 (404 for an entity the workspace does not have). `GET /open/{entity}` → the same for the list (an app's `shell.open` `list`), except for a
   settings entity that is not per company: its one record once it exists. The rest of the
   query goes along.
@@ -338,6 +339,10 @@ Pages, for browsers, with the session cookie:
   interface now, or is not installed, `e/{entity}[/{id}]` goes to `/open/…` and anything else to
   `/data/`. `/data/e/…`, `/data/r/…` and `/data/customize/…` are the records of any entity, its
   reports and Customize.
+* `GET /data/{menu}/…` → the records of a workspace's own menu (`define_module`), the same frame with
+  `scope: {app: "{menu}", title: <label>, packages: ["tenant"], modules: ["{menu}"]}` (pages show
+  the menu named in `modules`; `packages` is for an older interface). 403 when the person reads none
+  of its entities; `/data/{menu}` redirects to `/data/{menu}/`.
 * `GET /app/…` → `303` to where an address of today's web app (gone since U4b) lives now, with its
   query: `/app/e/{E}[/{id}]` → `/open/…`, `/app/login` → `/login` (the single sign-on return address
   providers have registered), `/app/admin…`, `/app/apps…` → `/admin/…`, `/store/…`, `/app/mail…` and
@@ -374,7 +379,11 @@ For the bar, with the cookie or a token:
   assistant}`: what the caller may use. `family` names the head of the entry's family (`families`
   lists them, heads first). Apps without an interface of their own, without launcher entries of
   their own, get one entry into their records (`/data/{app}/`, the manifest's name and summary) when
-  the person may read one of their entities. `ETag`.
+  the person may read one of their entities. A workspace's own menu gives a member who reads one of
+  its entities a tile `{id: "menu-{name}", app: "{name}", title, description, icon, color, compact:
+  false, url: "/data/{name}/"}`, and a `create` row `{app: "{name}", label: <the entity's label>,
+  entity, url: "/data/{name}/e/{Entity}/new"}` for each of its `create` entities the person may
+  create. Reading decides; there is no list of roles. `ETag`.
 * `GET /api/shell/version?app=` → `{app, version, release}`: the interface release the workspace
   runs, so an open tab can tell it is outdated.
 * `POST /api/shell/app-token` `{app}` (the session cookie, from the site's own pages) →
@@ -487,9 +496,9 @@ An e-mail's `body` gives text: it is escaped and its line breaks kept, so nothin
 A refused action is reported as a field error on `actions` with the action's place as its row, the same `row` that errors in a document's child rows carry: `{"field": "actions", "message": "...", "row": ["actions", 1]}` is the second action (counting from 0), so an editor can show the message on that action.
 `POST /api/admin/automations/preview {entity, body?, template?, record_id?}` (administrators only) renders what an e-mail action would send, as HTML, without sending or writing anything: the `template` when given, otherwise `body` (an expression) as escaped text. It uses the record `record_id` names, read with the caller's rights (not found or not readable: 404), or when none is named the most recently changed record the caller may read, or an empty record when the entity has none. The answer is `{"html": "...", "record_id": "<id>" | null}`. A template that does not compile or fails, or an expression that fails, is a 422 field error on `template` or `body` with the engine's message; a template over 64 KB is refused as when saving.
 
-Customization: `GET /api/customize` → `{customizations: [{id, seq, entity, op, is_active, note, created_at, superseded_by?}], warnings}` (`superseded_by`, on an active customization the schema no longer applies, the id of the one that replaced it: a later active `add_action` or `remove_action` of the same action, or a later active `redefine_entity` of its entity, below);
+Customization: `GET /api/customize` → `{customizations: [{id, seq, entity, op, is_active, note, created_at, superseded_by?}], warnings}` (`superseded_by`, on an active customization the schema no longer applies, the id of the one that replaced it: a later active `add_action` or `remove_action` of the same action, a later active `define_module` or `remove_module` of the same menu, or a later active `redefine_entity` of its entity, below);
 `POST /api/customize` `{entity, op, note?}`; `PUT /api/customize/{id}/active` `{active}`; `GET /api/customize/export`; `POST /api/customize/import`.
-Ops: `{"op":"add_field","field":Field,"after"?:name}` (custom field names start with `x_`), `{"op":"set_property","field","property","value"}` (label, description, required, hidden, read_only, in_list, in_filter, default, default_expr, visible_if, required_if, read_only_if, max_length, min, max), `{"op":"add_rule","rule":{name, check: CEL, message, on: save|submit}}`, `{"op":"add_options","field","options":[...]}`, `{"op":"set_entity_property","property":"label|label_plural|description|icon|title_field|list|search_fields|form|numbering","value"}` (`numbering`: `{template, gapless, on: save|submit, date_field}` with `{seq:<width>}` in the template; a gapless series stays gapless), `{"op":"define_entity","entity":EntityDef}` (name starts with `X`; a master, a document or a child entity; a master or document may have table fields whose rows are a custom child entity, each child entity the rows of one table field only, and unique keys, `unique: true` on a field or `unique: [[fields]]`, which a child entity may not; a save that would repeat another record's key is refused with 409 naming the fields; a cancelled document and empty values hold no key; defining a key over records that already share a value is refused, listing them), `{"op":"set_workflow","workflow":WorkflowDef}`, `{"op":"set_print_template","template":"<jinja html>"}`, `{"op":"redefine_entity","entity":EntityDef}` (below), `{"op":"add_action","action":ActionDef}` (a configured action, below), `{"op":"remove_action","name"}` (below).
+Ops: `{"op":"add_field","field":Field,"after"?:name}` (custom field names start with `x_`), `{"op":"set_property","field","property","value"}` (label, description, required, hidden, read_only, in_list, in_filter, default, default_expr, visible_if, required_if, read_only_if, max_length, min, max), `{"op":"add_rule","rule":{name, check: CEL, message, on: save|submit}}`, `{"op":"add_options","field","options":[...]}`, `{"op":"set_entity_property","property":"label|label_plural|description|icon|title_field|list|search_fields|form|numbering","value"}` (`numbering`: `{template, gapless, on: save|submit, date_field}` with `{seq:<width>}` in the template; a gapless series stays gapless), `{"op":"define_entity","entity":EntityDef}` (name starts with `X`; a master, a document or a child entity; a master or document may have table fields whose rows are a custom child entity, each child entity the rows of one table field only, and unique keys, `unique: true` on a field or `unique: [[fields]]`, which a child entity may not; a save that would repeat another record's key is refused with 409 naming the fields; a cancelled document and empty values hold no key; defining a key over records that already share a value is refused, listing them), `{"op":"set_workflow","workflow":WorkflowDef}`, `{"op":"set_print_template","template":"<jinja html>"}`, `{"op":"redefine_entity","entity":EntityDef}` (below), `{"op":"add_action","action":ActionDef}` (a configured action, below), `{"op":"remove_action","name"}` (below), `{"op":"define_module","module":{...}}` and `{"op":"remove_module","name"}` (a workspace's own menu, below).
 
 **Configured actions.** A workspace adds an action to an entity with `add_action` when the action carries `effects`, so it needs no handler: on a custom entity under any name, on a packaged one named `x_…`. It is an ordinary action (`describe` lists it, the record form shows it as a button with its `condition`, `confirm` and `params` dialog, `POST /api/v1/{E}/{id}/actions/{name}` runs it, a role's rule may name it in `actions`), with three more keys:
 
@@ -515,7 +524,25 @@ Ops: `{"op":"add_field","field":Field,"after"?:name}` (custom field names start 
 * Removing one: `{"entity": "XTask", "op": {"op": "remove_action", "name": "x_stop"}}` removes an action a customization added; refused for a package's action and for a name the entity does not have. Switching it off brings the button back. A role's rule naming a removed action still loads and allows nothing.
 * Change lists, export and import, packs (which carry them as customizations and require the packages whose entities their effects create), conflicts, upgrade impact and the batch endpoint treat `add_action` and `remove_action` as any customization (neither replaces something a package says, so neither parts ways with an upgrade).
 
-An authoring screen saves a whole design at once with `POST /api/customize/batch` `{"ops": [{entity, op, note?}, ...], "dry_run"?: bool}` (administrators; at most 100 operations, in a request body of at most 2 MiB like every JSON request). The operations are applied in order in one transaction, or none is: each is checked against the schema the ones before it leave, so a child entity comes before the entity whose lines it is. Success is `200 {"applied": n}`. A refusal has the status and body `POST /api/customize` would give, plus `index`, the 0-based position of the operation refused:
+A workspace's own menu gives a business built by configuration what an app's manifest gives an app: a launcher tile, a sidebar group, quick create and the assistant's notes:
+
+```json
+{"entity": "x_grc", "op": {"op": "define_module", "module": {
+  "name": "x_grc", "label": "Governance and Risk", "description": "Risks, controls, policies and findings",
+  "icon": "clipboard-list", "color": "#7c3aed", "order": 0,
+  "items": ["XRisk", "XControl", "XPolicy", "XFinding", "report:risk_heatmap"],
+  "create": ["XRisk", "XFinding"],
+  "assistant": {"instructions": "A Risk is scored on likelihood and impact…", "suggestions": ["What are our highest risks?"]}}}}
+```
+
+* `name`: `x_` then lowercase letters, digits and underscores, at most 40 in all; a package's modules never take `x_` names. The customization's `entity` is the menu's name (whatever is sent). A later `define_module` of the same name replaces the earlier one where it stands, and the list marks the earlier `superseded_by` it; `{"op": "remove_module", "name": "x_grc"}` removes it (refused for a name the workspace has no menu of).
+* `label` (required, at most 60 characters), `description` (at most 200), `icon` (a short name such as `clipboard-list`; the bar shows the label's first letter for a name it does not know), `color` (`#rrggbb`), `order` (with the packages' modules).
+* `items`: entities (not line entities) and `report:<name>` entries, in order, at most 50, none twice. Naming an entity the workspace does not have is refused; one that goes later (its app uninstalled) drops out of the menu with a schema warning, and the rest stays.
+* `create`: the entity items the bar's Create menu offers. `assistant`: `instructions` (at most 2000 characters) the assistant is given on the menu's pages (`/data/{name}/…`), and up to 6 `suggestions` (each at most 200) it offers there.
+* `color`, `description`, `create` and `assistant` are refused on a package's module in `package.yaml`: an app gives a tile, quick create and the assistant's notes through its manifest.
+* A menu travels in change sets and packs as any customization does; a pack requires the packages of the entities its menus name.
+
+An authoring screen saves a whole design at once with `POST /api/customize/batch` `{"ops": [{entity, op, note?}, ...], "dry_run"?: bool}` (administrators; at most 100 operations, in a request body of at most 2 MiB like every JSON request). The operations are applied in order in one transaction, or none is: each is checked against the schema the ones before it leave, so a child entity comes before the entity whose lines it is. Success is `200 {"applied": n}`. A refusal has the status and body `POST /api/customize` would give, plus `index`, the 0-based position of the operation refused. An operation that does not parse (an unknown property, a missing one) is refused the same way, `422 {"error": "invalid", "index": n, "message": "unknown field `may_run`, expected …"}`; a body that is not JSON, or whose `ops` is missing or not a list, is `422 {"error": "invalid", "message"}` without an index:
 
 ```json
 POST /api/customize/batch
@@ -772,6 +799,9 @@ these). Off unless the server has `FERRUM_ASSISTANT_API_KEY`.
 * `GET /api/assistant/threads/{id}/live` follows a turn under way from this replica (first event
   `draft`: what it has said so far); 404 when it runs elsewhere.
 * `POST /api/assistant/threads/{id}/stop` → 204; `DELETE /api/assistant/threads/{id}` → 204.
+* On the pages of a workspace's own menu (`/data/{menu}/…`) the menu's `assistant.instructions` are
+  given with the page as an app's `shell.assistant` are, and `GET /api/assistant/suggestions?path=`
+  offers its `suggestions` there.
 * The shell API's `ferrum.shell.assistant(context)` opens it beside a page with what the person is
   looking at (`{entity, id, title}`); `/api/shell` says `assistant: true` and lists the panel when
   the person may use it.
