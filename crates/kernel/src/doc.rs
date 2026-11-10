@@ -110,7 +110,7 @@ impl Kernel {
                     let cent = f.of.as_deref().and_then(|c| ctx.schema.entity(c)).cloned();
                     if let (Some(cent), Some(Value::Array(rows))) = (cent, doc.get_mut(&f.name)) {
                         for m in rows.iter_mut().filter_map(Value::as_object_mut) {
-                            m.retain(|name, _| cent.field(name).is_none_or(|cf| egress.allows_field(cf)));
+                            mask_row(ctx, &cent, m, true);
                         }
                     }
                 }
@@ -130,14 +130,8 @@ impl Kernel {
             } else if f.ftype == FieldType::Table {
                 let cent = f.of.as_deref().and_then(|c| ctx.schema.entity(c)).cloned();
                 if let (Some(cent), Some(Value::Array(rows))) = (cent, doc.get_mut(&f.name)) {
-                    for r in rows.iter_mut() {
-                        if let Value::Object(m) = r {
-                            for cf in &cent.def.fields {
-                                if !ctx.perms.can_read_field(&cent.def.name, cf) {
-                                    m.remove(&cf.name);
-                                }
-                            }
-                        }
+                    for m in rows.iter_mut().filter_map(Value::as_object_mut) {
+                        mask_row(ctx, &cent, m, false);
                     }
                 }
             }
@@ -563,6 +557,18 @@ impl Kernel {
                 for f in c.value_fields().filter(|f| f.ftype == FieldType::Link && f.to.as_deref() == Some(&target.def.name)) {
                     if c.storage_of(&f.name) == Some(ferrum_meta::Storage::Ext) {
                         checks.push((info.table.clone(), f.name.clone(), "parent_id", info.predicate("a")));
+                    }
+                }
+                // A line's own lines (BD-06): the record's own go with it, under its lines.
+                for sub in c.children.values() {
+                    let Some(sc) = ctx.schema.entity(&sub.entity) else { continue };
+                    for f in sc.value_fields().filter(|f| f.ftype == FieldType::Link && f.to.as_deref() == Some(&target.def.name)) {
+                        let own = format!(
+                            "{} and not exists (select 1 from {} l where l.tenant_id = a.tenant_id and l.id = a.parent_id and l.parent_id = $4)",
+                            sub.predicate("a"),
+                            crate::ddl::q(&info.table)
+                        );
+                        checks.push((sub.table.clone(), f.name.clone(), "id", own));
                     }
                 }
             }
@@ -1036,7 +1042,19 @@ impl Kernel {
                             continue;
                         }
                         let old_rows = old.and_then(|o| o.get(k)).and_then(Value::as_array).cloned().unwrap_or_default();
-                        let merged = self.merge_rows(ctx, &cent, k, rows, &old_rows, stored.as_ref(), errors, trusted);
+                        // Where each of the lines' own lines is stored: one stays under its line.
+                        let placed: HashSet<String> = old_rows
+                            .iter()
+                            .flat_map(|r| cent.table_fields().flat_map(move |t| r.get(&t.name).and_then(Value::as_array).into_iter().flatten()))
+                            .filter_map(|r| r.get("id").and_then(Value::as_str).map(str::to_string))
+                            .collect();
+                        let merged = self.merge_rows(ctx, &cent, k, rows, &old_rows, stored.as_ref(), errors, trusted, &[], &placed);
+                        for t in cent.table_fields() {
+                            let n: usize = merged.iter().filter_map(|r| r.get(&t.name).and_then(Value::as_array)).map(Vec::len).sum();
+                            if n > MAX_CHILD_ROWS {
+                                errors.push(FieldError::new(k, format!("at most {MAX_CHILD_ROWS} rows of {} across its lines", t.label())));
+                            }
+                        }
                         doc.insert(k.clone(), Value::Array(merged));
                     }
                     _ => errors.push(FieldError::new(k, "must be a list of rows")),
@@ -1052,6 +1070,10 @@ impl Kernel {
         }
     }
 
+    /// The rows of one table as saved: each kept by its id (with what it held) or new, its fields as sent where they
+    /// may be written, `idx` by place. A custom line's own lines (BD-06) are merged the same way under it, at `at`
+    /// plus its place; `placed` holds the ids of the record's lines' lines as stored, so one sent under another
+    /// line than its own is refused rather than moved or copied.
     #[allow(clippy::too_many_arguments)]
     fn merge_rows(
         &self,
@@ -1063,6 +1085,8 @@ impl Kernel {
         stored_parent: Option<&Value>,
         errors: &mut Vec<FieldError>,
         trusted: bool,
+        at: &[(&str, usize)],
+        placed: &HashSet<String>,
     ) -> Vec<Value> {
         let user = ctx.user_value();
         let old_by_id: HashMap<String, &Map<String, Value>> =
@@ -1070,37 +1094,65 @@ impl Kernel {
         let mut seen = HashSet::new();
         let mut out = Vec::with_capacity(rows.len());
         for (idx, r) in rows.iter().enumerate() {
+            let mut path = at.to_vec();
+            path.push((table, idx));
             let Some(r) = r.as_object() else {
-                errors.push(FieldError::new(table, "each row must be an object").in_row(table, idx));
+                errors.push(FieldError::new(table, "each row must be an object").at(&path));
                 continue;
             };
             let incoming = r.get("id").and_then(Value::as_str).map(str::to_string);
             let (id, base) = match incoming {
                 Some(i) if old_by_id.contains_key(&i) && seen.insert(i.clone()) => (i.clone(), old_by_id[&i].clone()),
+                Some(i) if !at.is_empty() && placed.contains(&i) => {
+                    errors.push(
+                        FieldError::new(table, "this row is stored under another line: a row stays under its line (send it without its id to copy it)")
+                            .at(&path),
+                    );
+                    continue;
+                }
                 _ => (Uuid::now_v7().to_string(), Map::new()),
             };
-            // A row as stored, for its fields' `read_only_if` (a new row has none stored).
-            let stored = (!base.is_empty() && !cent.exprs.read_only_if.is_empty()).then(|| cent.cel_view(&Value::Object(base.clone()), &ctx.schema));
+            // A row as stored, for its fields' `read_only_if` and its own rows' (a new row has none stored).
+            let stored = (!base.is_empty() && (!cent.exprs.read_only_if.is_empty() || !cent.children.is_empty()))
+                .then(|| cent.cel_view(&Value::Object(base.clone()), &ctx.schema));
             let mut row = base;
             for (k, v) in r {
                 if k == "id" || k == "idx" || k.starts_with('_') {
                     continue;
                 }
                 let Some(f) = cent.field(k) else {
-                    errors.push(FieldError::new(k, "unknown field").in_row(table, idx));
+                    errors.push(FieldError::new(k, "unknown field").at(&path));
                     continue;
                 };
-                if f.computed.is_some() || (read_only(cent, f, stored.as_ref(), stored_parent, &user) && !ctx.is_system && !trusted) {
+                if f.computed.is_some() || f.rollup.is_some() || (read_only(cent, f, stored.as_ref(), stored_parent, &user) && !ctx.is_system && !trusted) {
                     continue;
                 }
                 if !trusted && !ctx.perms.can_write_field(&cent.def.name, f) {
+                    continue;
+                }
+                if f.ftype == FieldType::Table {
+                    let Some(sent) = f.of.as_deref().and_then(|c| ctx.schema.entity(c)).cloned() else { continue };
+                    match v {
+                        Value::Null => {
+                            row.insert(k.clone(), Value::Array(vec![]));
+                        }
+                        Value::Array(sub) if sub.len() > MAX_CHILD_ROWS => {
+                            errors.push(FieldError::new(k, format!("at most {MAX_CHILD_ROWS} rows")).at(&path));
+                        }
+                        Value::Array(sub) => {
+                            let old_sub = row.get(k).and_then(Value::as_array).cloned().unwrap_or_default();
+                            let merged = self.merge_rows(ctx, &sent, k, sub, &old_sub, stored.as_ref(), errors, trusted, &path, placed);
+                            row.insert(k.clone(), Value::Array(merged));
+                        }
+                        _ => errors.push(FieldError::new(k, "must be a list of rows").at(&path)),
+                    }
                     continue;
                 }
                 match normalize(f, v) {
                     Ok(n) => {
                         row.insert(k.clone(), n);
                     }
-                    Err(m) => errors.push(FieldError::new(k, m).in_row(table, idx)),
+                    Err(m) => errors.push(FieldError::new(k, m).at(&path)),
                 }
             }
             row.insert("id".into(), json!(id));
@@ -1113,72 +1165,58 @@ impl Kernel {
     fn fill_defaults(&self, ctx: &Ctx, ent: &EffEntity, doc: &mut Doc) -> Result<()> {
         let user = ctx.user_value();
         fill_entity_defaults(ent, doc, None, &user, &ctx.schema)?;
-        let parent_view = ent.cel_view(&Value::Object(doc.clone()), &ctx.schema);
-        for (field, info) in &ent.children {
-            let Some(cent) = ctx.schema.entity(&info.entity) else { continue };
-            if let Some(Value::Array(rows)) = doc.get_mut(field) {
-                for r in rows.iter_mut() {
-                    if let Value::Object(m) = r {
-                        fill_entity_defaults(cent, m, Some(&parent_view), &user, &ctx.schema)?;
-                    }
-                }
-            }
-        }
-        Ok(())
+        fill_row_defaults(ent, doc, &user, &ctx.schema, &HashSet::new())
     }
 
     /// Child rows added while editing get their defaults, like rows of a new document.
     fn fill_new_row_defaults(&self, ctx: &Ctx, ent: &EffEntity, doc: &mut Doc, old: &Doc) -> Result<()> {
-        let user = ctx.user_value();
-        let parent_view = ent.cel_view(&Value::Object(doc.clone()), &ctx.schema);
-        for (field, info) in &ent.children {
-            let Some(cent) = ctx.schema.entity(&info.entity) else { continue };
-            let existing: HashSet<&str> = old
-                .get(field)
-                .and_then(Value::as_array)
-                .map(|rows| rows.iter().filter_map(|r| r.get("id").and_then(Value::as_str)).collect())
-                .unwrap_or_default();
-            if let Some(Value::Array(rows)) = doc.get_mut(field) {
-                for r in rows.iter_mut() {
-                    if let Value::Object(m) = r
-                        && !m.get("id").and_then(Value::as_str).is_some_and(|id| existing.contains(id))
-                    {
-                        fill_entity_defaults(cent, m, Some(&parent_view), &user, &ctx.schema)?;
-                    }
-                }
-            }
-        }
-        Ok(())
+        let mut stored = HashMap::new();
+        collect_rows(ent, old, &ctx.schema, &mut stored);
+        fill_row_defaults(ent, doc, &ctx.user_value(), &ctx.schema, &stored.into_keys().collect())
     }
 
     async fn fetch_links(&self, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: &mut Doc, old: Option<&Doc>) -> Result<()> {
         crate::merge::resolve_links(ctx, tx, ent, doc).await?;
         let empty = Map::new();
         fetch_for(self, ctx, tx, ent, doc, old.unwrap_or(&empty), old.is_none()).await?;
+        // Rows as stored, by id, at either level (ids are unique across them).
+        let mut old_rows: HashMap<String, Map<String, Value>> = HashMap::new();
+        if let Some(o) = old {
+            collect_rows(ent, o, &ctx.schema, &mut old_rows);
+        }
+        self.fetch_rows(ctx, tx, ent, doc, &old_rows).await
+    }
+
+    /// `fetch_from` on the rows of `ent`'s tables in `doc`, and on a line's own lines.
+    async fn fetch_rows(
+        &self,
+        ctx: &Ctx,
+        tx: &mut Tx,
+        ent: &EffEntity,
+        doc: &mut Map<String, Value>,
+        old_rows: &HashMap<String, Map<String, Value>>,
+    ) -> Result<()> {
         for (field, info) in &ent.children {
             let Some(cent) = ctx.schema.entity(&info.entity).cloned() else { continue };
-            if !cent.def.fields.iter().any(|f| f.fetch_from.is_some()) {
+            let fetches = cent.def.fields.iter().any(|f| f.fetch_from.is_some());
+            if !fetches && cent.children.is_empty() {
                 continue;
             }
-            let old_rows: HashMap<String, Map<String, Value>> = old
-                .and_then(|o| o.get(field))
-                .and_then(Value::as_array)
-                .map(|rows| {
-                    rows.iter().filter_map(Value::as_object).filter_map(|r| r.get("id").and_then(Value::as_str).map(|i| (i.to_string(), r.clone()))).collect()
-                })
-                .unwrap_or_default();
             let mut rows = match doc.get(field) {
                 Some(Value::Array(r)) => r.clone(),
                 _ => continue,
             };
-            for r in rows.iter_mut() {
-                if let Value::Object(m) = r {
+            for m in rows.iter_mut().filter_map(Value::as_object_mut) {
+                if fetches {
                     let rid = m.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
                     let (base, is_new) = match old_rows.get(&rid) {
                         Some(o) => (o.clone(), false),
                         None => (Map::new(), true),
                     };
                     fetch_for(self, ctx, tx, &cent, m, &base, is_new).await?;
+                }
+                if !cent.children.is_empty() {
+                    Box::pin(self.fetch_rows(ctx, tx, &cent, m, old_rows)).await?;
                 }
             }
             doc.insert(field.clone(), Value::Array(rows));
@@ -1189,24 +1227,7 @@ impl Kernel {
     fn compute(&self, ctx: &Ctx, ent: &EffEntity, doc: &mut Doc) -> Result<()> {
         let user = ctx.user_value();
         compute_entity(ent, doc, None, &user, &ctx.schema)?;
-        if ent.children.is_empty() {
-            return roll_up(ent, doc);
-        }
-        let parent_view = ent.cel_view(&Value::Object(doc.clone()), &ctx.schema);
-        for (field, info) in &ent.children {
-            let Some(cent) = ctx.schema.entity(&info.entity) else { continue };
-            if cent.exprs.computed.is_empty() {
-                continue;
-            }
-            if let Some(Value::Array(rows)) = doc.get_mut(field) {
-                for r in rows.iter_mut() {
-                    if let Value::Object(m) = r {
-                        compute_entity(cent, m, Some(&parent_view), &user, &ctx.schema)?;
-                    }
-                }
-            }
-        }
-        roll_up(ent, doc)
+        compute_rows(ent, doc, &user, &ctx.schema)
     }
 
     async fn validate(&self, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: &Doc, old: Option<&Doc>, on: RuleOn) -> Result<()> {
@@ -1214,31 +1235,9 @@ impl Kernel {
         let view = ent.cel_view(&Value::Object(doc.clone()), &ctx.schema);
         let old_view = old.map(|o| ent.cel_view(&Value::Object(o.clone()), &ctx.schema));
         let mut errors = Vec::new();
-        check_required(ent, doc, &view, None, old_view.as_ref(), &user, &mut errors, None);
-        for f in ent.table_fields() {
-            let rows = doc.get(&f.name).and_then(Value::as_array).cloned().unwrap_or_default();
-            if f.required && rows.is_empty() {
-                errors.push(FieldError::new(&f.name, "add at least one row"));
-            }
-            let Some(cent) = f.of.as_deref().and_then(|c| ctx.schema.entity(c)).cloned() else { continue };
-            for (i, r) in rows.iter().enumerate() {
-                let Some(rm) = r.as_object() else { continue };
-                let rview = cent.cel_view(r, &ctx.schema);
-                check_required(&cent, rm, &rview, Some(&view), None, &user, &mut errors, Some((&f.name, i)));
-                for (rule, expr) in &cent.exprs.rules {
-                    if rule.on == RuleOn::Submit && on != RuleOn::Submit {
-                        continue;
-                    }
-                    match expr.eval_bool(&Scope { doc: &rview, old: None, parent: Some(&view), user: &user }) {
-                        Ok(true) => {}
-                        Ok(false) => errors.push(FieldError::new(&rule.name, &rule.message).in_row(&f.name, i)),
-                        Err(e) => errors.push(FieldError::new(&rule.name, format!("rule could not be evaluated: {e}")).in_row(&f.name, i)),
-                    }
-                }
-                self.check_links(ctx, tx, &cent, rm, &mut errors, Some((&f.name, i))).await?;
-            }
-        }
-        self.check_links(ctx, tx, ent, doc, &mut errors, None).await?;
+        check_required(ent, doc, &view, None, old_view.as_ref(), &user, &mut errors, &[]);
+        self.validate_rows(ctx, tx, ent, doc, &view, on, &mut errors, &[]).await?;
+        self.check_links(ctx, tx, ent, doc, &mut errors, &[]).await?;
         let rules: Vec<_> = ent.exprs.rules.iter().filter(|(rule, _)| rule.on != RuleOn::Submit || on == RuleOn::Submit).collect();
         let links = crate::links::load(self, ctx, tx, ent, &view, &crate::links::used(rules.iter().map(|(_, e)| e))).await?;
         for (rule, expr) in rules {
@@ -1251,15 +1250,55 @@ impl Kernel {
         if errors.is_empty() { Ok(()) } else { Err(Error::Validation(errors)) }
     }
 
+    /// Each row of `ent`'s tables in `doc` (`view`, as CEL sees it), at `at`: its required fields, its rules with
+    /// `parent` the record or line it is in, its links; then a line's own lines the same way.
+    #[allow(clippy::too_many_arguments)]
+    async fn validate_rows(
+        &self,
+        ctx: &Ctx,
+        tx: &mut Tx,
+        ent: &EffEntity,
+        doc: &Map<String, Value>,
+        view: &Value,
+        on: RuleOn,
+        errors: &mut Vec<FieldError>,
+        at: &[(&str, usize)],
+    ) -> Result<()> {
+        let user = ctx.user_value();
+        for f in ent.table_fields() {
+            let rows = doc.get(&f.name).and_then(Value::as_array).cloned().unwrap_or_default();
+            if f.required && rows.is_empty() {
+                errors.push(FieldError::new(&f.name, "add at least one row").at(at));
+            }
+            let Some(cent) = f.of.as_deref().and_then(|c| ctx.schema.entity(c)).cloned() else { continue };
+            for (i, r) in rows.iter().enumerate() {
+                let Some(rm) = r.as_object() else { continue };
+                let mut path = at.to_vec();
+                path.push((&f.name, i));
+                let rview = cent.cel_view(r, &ctx.schema);
+                check_required(&cent, rm, &rview, Some(view), None, &user, errors, &path);
+                for (rule, expr) in &cent.exprs.rules {
+                    if rule.on == RuleOn::Submit && on != RuleOn::Submit {
+                        continue;
+                    }
+                    match expr.eval_bool(&Scope { doc: &rview, old: None, parent: Some(view), user: &user }) {
+                        Ok(true) => {}
+                        Ok(false) => errors.push(FieldError::new(&rule.name, &rule.message).at(&path)),
+                        Err(e) => errors.push(FieldError::new(&rule.name, format!("rule could not be evaluated: {e}")).at(&path)),
+                    }
+                }
+                self.check_links(ctx, tx, &cent, rm, errors, &path).await?;
+                if !cent.children.is_empty() {
+                    Box::pin(self.validate_rows(ctx, tx, &cent, rm, &rview, on, errors, &path)).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Existence for links without a foreign key, link filters, and tree cycles.
-    async fn check_links(&self, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: &Doc, errors: &mut Vec<FieldError>, row: Option<(&str, usize)>) -> Result<()> {
-        let push = |errors: &mut Vec<FieldError>, f: &str, m: String| {
-            let e = FieldError::new(f, m);
-            errors.push(match row {
-                Some((t, i)) => e.in_row(t, i),
-                None => e,
-            });
-        };
+    async fn check_links(&self, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: &Doc, errors: &mut Vec<FieldError>, at: &[(&str, usize)]) -> Result<()> {
+        let push = |errors: &mut Vec<FieldError>, f: &str, m: String| errors.push(FieldError::new(f, m).at(at));
         for f in ent.value_fields().filter(|f| f.ftype == FieldType::Link) {
             let Some(id) = uuid_of(doc.get(&f.name)) else { continue };
             let Some(target) = f.to.as_deref().and_then(|t| ctx.schema.entity(t)).cloned() else {
@@ -1287,7 +1326,7 @@ impl Kernel {
                     }
                 }
             }
-            if f.to.as_deref() == Some(ent.def.name.as_str()) && ent.storage_of(&f.name) == Some(Storage::Column) && row.is_none() {
+            if f.to.as_deref() == Some(ent.def.name.as_str()) && ent.storage_of(&f.name) == Some(Storage::Column) && at.is_empty() {
                 let self_id = uuid_of(doc.get("id"));
                 if self_id == Some(id) {
                     push(errors, &f.name, "a record cannot be its own parent".into());
@@ -1398,6 +1437,63 @@ fn read_only(ent: &EffEntity, f: &FieldDef, stored: Option<&Value>, parent: Opti
     }
 }
 
+/// A row as `mask` leaves it: what may not leave for an AI provider (`egress`) or what the caller may not read
+/// removed, and its own rows (a line's own lines, BD-06) the same way.
+fn mask_row(ctx: &Ctx, cent: &EffEntity, m: &mut Map<String, Value>, egress: bool) {
+    match ctx.egress.as_ref().filter(|_| egress) {
+        Some(e) => m.retain(|name, _| cent.field(name).is_none_or(|cf| e.allows_field(cf))),
+        None => {
+            for cf in &cent.def.fields {
+                if !ctx.perms.can_read_field(&cent.def.name, cf) {
+                    m.remove(&cf.name);
+                }
+            }
+        }
+    }
+    for f in cent.table_fields() {
+        let Some(sent) = f.of.as_deref().and_then(|c| ctx.schema.entity(c)) else { continue };
+        if let Some(Value::Array(rows)) = m.get_mut(&f.name) {
+            for r in rows.iter_mut().filter_map(Value::as_object_mut) {
+                mask_row(ctx, sent, r, egress);
+            }
+        }
+    }
+}
+
+/// A record's rows by id, its lines' own lines' included.
+fn collect_rows(ent: &EffEntity, doc: &Map<String, Value>, schema: &ferrum_meta::Schema, out: &mut HashMap<String, Map<String, Value>>) {
+    for (field, info) in &ent.children {
+        let Some(cent) = schema.entity(&info.entity) else { continue };
+        for r in doc.get(field).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_object) {
+            if let Some(id) = r.get("id").and_then(Value::as_str) {
+                out.insert(id.to_string(), r.clone());
+            }
+            collect_rows(cent, r, schema, out);
+        }
+    }
+}
+
+/// Defaults of the rows of `ent`'s tables not among `existing`, each with its parent as it stands (a line's own lines
+/// with their line).
+fn fill_row_defaults(ent: &EffEntity, doc: &mut Map<String, Value>, user: &Value, schema: &ferrum_meta::Schema, existing: &HashSet<String>) -> Result<()> {
+    if ent.children.is_empty() {
+        return Ok(());
+    }
+    let parent_view = ent.cel_view(&Value::Object(doc.clone()), schema);
+    for (field, info) in &ent.children {
+        let Some(cent) = schema.entity(&info.entity) else { continue };
+        if let Some(Value::Array(rows)) = doc.get_mut(field) {
+            for m in rows.iter_mut().filter_map(Value::as_object_mut) {
+                if !m.get("id").and_then(Value::as_str).is_some_and(|id| existing.contains(id)) {
+                    fill_entity_defaults(cent, m, Some(&parent_view), user, schema)?;
+                }
+                fill_row_defaults(cent, m, user, schema, existing)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn fill_entity_defaults(ent: &EffEntity, doc: &mut Map<String, Value>, parent: Option<&Value>, user: &Value, schema: &ferrum_meta::Schema) -> Result<()> {
     for f in ent.value_fields() {
         if !doc.get(&f.name).is_none_or(Value::is_null) {
@@ -1432,6 +1528,28 @@ fn compute_entity(ent: &EffEntity, doc: &mut Map<String, Value>, parent: Option<
     Ok(())
 }
 
+/// The computed fields of `ent`'s rows, each with its parent as it stands, then each row's own rows and totals (a
+/// line's own lines before the line's rollups over them), then `ent`'s rollups over its rows.
+fn compute_rows(ent: &EffEntity, doc: &mut Map<String, Value>, user: &Value, schema: &ferrum_meta::Schema) -> Result<()> {
+    if ent.children.is_empty() {
+        return roll_up(ent, doc);
+    }
+    let parent_view = ent.cel_view(&Value::Object(doc.clone()), schema);
+    for (field, info) in &ent.children {
+        let Some(cent) = schema.entity(&info.entity) else { continue };
+        if cent.exprs.computed.is_empty() && cent.children.is_empty() {
+            continue;
+        }
+        if let Some(Value::Array(rows)) = doc.get_mut(field) {
+            for m in rows.iter_mut().filter_map(Value::as_object_mut) {
+                compute_entity(cent, m, Some(&parent_view), user, schema)?;
+                compute_rows(cent, m, user, schema)?;
+            }
+        }
+    }
+    roll_up(ent, doc)
+}
+
 /// Rollups: exact totals over the record's own rows (after the rows' computed fields), whatever a
 /// client sent. Before validation, so rules see them.
 fn roll_up(ent: &EffEntity, doc: &mut Map<String, Value>) -> Result<()> {
@@ -1463,7 +1581,7 @@ fn check_required(
     old: Option<&Value>,
     user: &Value,
     errors: &mut Vec<FieldError>,
-    row: Option<(&str, usize)>,
+    at: &[(&str, usize)],
 ) {
     let scope = Scope { doc: view, old, parent, user };
     for f in ent.value_fields() {
@@ -1476,11 +1594,7 @@ fn check_required(
         }
         let visible = ent.exprs.visible_if.get(&f.name).is_none_or(|e| e.eval_bool(&scope).unwrap_or(true));
         if visible {
-            let e = FieldError::new(&f.name, format!("{} is required", f.label()));
-            errors.push(match row {
-                Some((t, i)) => e.in_row(t, i),
-                None => e,
-            });
+            errors.push(FieldError::new(&f.name, format!("{} is required", f.label())).at(at));
         }
     }
 }
