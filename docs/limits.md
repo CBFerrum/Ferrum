@@ -88,8 +88,14 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   with their fields in JSON: no index is made on a custom field, so filtering a large custom entity by a
   field reads all its records. Their unique keys live in `custom_key`, kept by saves; a key is a
   field's exact text (as typed, case and all), and engine-kept values (`set_values`) may not touch one.
-  A child entity holds no unique keys, is the lines of one table field only, and holds no table of its
-  own; customizations add no table field to a package's entity. A total over lines (`rollup`) is a sum
+  A child entity holds no unique keys and is the lines of one table field only; a custom one may hold
+  lines of its own, two levels deep (a record, its lines, their lines) and no deeper, while a package's
+  child entity holds no table and customizations add no table field to a package's entity. Each table
+  holds at most 5,000 rows at each level, and the lines' own lines of one table at most 5,000 across all
+  its lines. A list filter, a portal or owner path (`via`, `owner_fields`), a personal-data or hand-over
+  declaration and a Studio query reach a record's lines but not their own lines; no workspace declaration
+  makes a custom entity's rows personal data, so an erasure reaches them only in the history and when a
+  declared table is emptied. A total over lines (`rollup`) is a sum
   or a count, with no condition; computed fields see the total of the previous save.
 - **Scheduled automations** look for due moments once a minute: the smallest step is a minute, and a
   moment fires up to about a minute and a half late. A schedule on a custom entity's date (or on any
@@ -115,7 +121,7 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   defaults, computed fields, `visible_if`, `required_if`, `read_only_if` or a line's rules; the browser leaves
   conditions that use them to the server, and the approvals inbox lists a step whose guard uses them.
 - **Effects on lines** (`append_line`, `set_line`): one line per effect, on the record's own tables (not a
-  linked record's, not lines within lines); `set_line` refuses when no line or more than one matches; not on a
+  linked record's; a line's own lines are kept, not written); `set_line` refuses when no line or more than one matches; not on a
   submitted record; the usual cap on lines.
 - **Another app's steps** (`invoke`, docs/api.md): a button or an automation calls what the capability
   catalog lists (record operations, an app's listed actions, workflow transitions), never a configured
