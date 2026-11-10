@@ -1,0 +1,747 @@
+{
+ "source": {
+  "file": "docs/plan/builder-first.md",
+  "prepared": "2026-11-10",
+  "note": "The builder-first program's requirements (BF-*), one acceptance case each, written from the plan's gates BF0 to BF9."
+ },
+ "requirements": [
+  {
+   "id": "BF-BASE-001",
+   "title": "Decisions recorded",
+   "workstream": "BF0",
+   "requirement": "Record the configuration boundary, the portal access model, the public page model, approvals and business time, money through capabilities, custom entity storage, packs, how an app gives way to a pack, and names, before building.",
+   "acceptance": "AT-BF-BASE-001"
+  },
+  {
+   "id": "BF-BASE-002",
+   "title": "Register checked",
+   "workstream": "BF0",
+   "requirement": "Keep the program's requirements in docs/registry/bf.yaml, checked by scripts/registry.py like the platform, Logic and closure programs.",
+   "acceptance": "AT-BF-BASE-002"
+  },
+  {
+   "id": "BF-BASE-003",
+   "title": "Exact inventory",
+   "workstream": "BF0",
+   "requirement": "List, file by file, what the apps write for themselves that a gate takes over, from a script anyone can run again.",
+   "acceptance": "AT-BF-BASE-003"
+  },
+  {
+   "id": "BF-BASE-004",
+   "title": "Closure packages re-scoped",
+   "workstream": "BF0",
+   "requirement": "Each open closure package a gate takes over, in whole or in part, names that gate.",
+   "acceptance": "AT-BF-BASE-004"
+  },
+  {
+   "id": "BF-PORTAL-001",
+   "title": "Portal roles",
+   "workstream": "BF1",
+   "requirement": "A role marked for the portal holds only own-record rules: no rule for every entity, no delete, cancel, export or import. Portal people hold only portal roles, guests none, and neither is an administrator.",
+   "acceptance": "AT-BF-PORTAL-001"
+  },
+  {
+   "id": "BF-PORTAL-002",
+   "title": "Ownership through links",
+   "workstream": "BF1",
+   "requirement": "An own-record rule may name a path of at most two links, then optionally a child table, ending at a field holding the person's email. It is enforced when listing, reading, creating, changing and acting, through every interface.",
+   "acceptance": "AT-BF-PORTAL-002"
+  },
+  {
+   "id": "BF-PORTAL-003",
+   "title": "Fields and actions under portal roles",
+   "workstream": "BF1",
+   "requirement": "A portal person sees no field in a permission group unless a rule grants the group, and runs only the actions their roles allow, under the actions' own conditions.",
+   "acceptance": "AT-BF-PORTAL-003"
+  },
+  {
+   "id": "BF-PORTAL-004",
+   "title": "Generic portal pages",
+   "workstream": "BF1",
+   "requirement": "The portal shows, from a person's portal roles, their records of each entity, each record, forms to create and change what they may, and the actions they may run, with no app code.",
+   "acceptance": "AT-BF-PORTAL-004"
+  },
+  {
+   "id": "BF-PORTAL-005",
+   "title": "Portal roles administered and previewed",
+   "workstream": "BF1",
+   "requirement": "Administrators mark a role for the portal, write its rules with their paths, and see what a given portal person would reach and through which rule before giving it.",
+   "acceptance": "AT-BF-PORTAL-005"
+  },
+  {
+   "id": "BF-PORTAL-006",
+   "title": "Proof: two portals as configuration",
+   "workstream": "BF1",
+   "requirement": "Education's family portal and Healthcare's patient portal, configured as portal roles on the generic pages, reach exactly what the apps' own portal endpoints reach.",
+   "acceptance": "AT-BF-PORTAL-006"
+  },
+  {
+   "id": "BF-PUBLIC-001",
+   "title": "Public pages bound to an entity",
+   "workstream": "BF2",
+   "requirement": "A public page asks the fields chosen for it, checks the answers on the server as a form does, and creates the record through the kernel as the page's own account, with the page's limits.",
+   "acceptance": "AT-BF-PUBLIC-001"
+  },
+  {
+   "id": "BF-PUBLIC-002",
+   "title": "Availability",
+   "workstream": "BF2",
+   "requirement": "Free times come from a resource's hours, a length and the records holding it, or from a capacity per date; a time taken between being shown and being booked is refused.",
+   "acceptance": "AT-BF-PUBLIC-002"
+  },
+  {
+   "id": "BF-PUBLIC-003",
+   "title": "A guest's own link",
+   "workstream": "BF2",
+   "requirement": "A booking gives its guest a link, kept only as a hash, that expires; through it the guest sees, changes or cancels within the window the page sets.",
+   "acceptance": "AT-BF-PUBLIC-003"
+  },
+  {
+   "id": "BF-PUBLIC-004",
+   "title": "Mail and limits",
+   "workstream": "BF2",
+   "requirement": "Confirmation and reminder mails from templates with the record's fields; limits per address and per page; a field only programs fill turns them away.",
+   "acceptance": "AT-BF-PUBLIC-004"
+  },
+  {
+   "id": "BF-PUBLIC-005",
+   "title": "Proof: booking pages as configuration",
+   "workstream": "BF2",
+   "requirement": "Healthcare's and Hospitality's booking pages configured as public pages pass the scenarios of the apps' own booking tests.",
+   "acceptance": "AT-BF-PUBLIC-005"
+  },
+  {
+   "id": "BF-APPROVE-001",
+   "title": "Approvals on transitions",
+   "workstream": "BF3",
+   "requirement": "A transition may need approvals: from a role or the person a field names, N of them, each decision kept with who decided, when and on what version.",
+   "acceptance": "AT-BF-APPROVE-001"
+  },
+  {
+   "id": "BF-APPROVE-002",
+   "title": "Independence",
+   "workstream": "BF3",
+   "requirement": "An approval or transition may bar the record's creator and whoever made a named earlier transition, on every path that makes it.",
+   "acceptance": "AT-BF-APPROVE-002"
+  },
+  {
+   "id": "BF-APPROVE-003",
+   "title": "Delegation and escalation",
+   "workstream": "BF3",
+   "requirement": "An approver away names who decides for them until a date; an approval not decided within its time goes to a named role and says so.",
+   "acceptance": "AT-BF-APPROVE-003"
+  },
+  {
+   "id": "BF-APPROVE-004",
+   "title": "Targets in business time",
+   "workstream": "BF3",
+   "requirement": "Business calendars gain hours of the day; a state may have a target in business time, states may pause the clock, and a breach is recorded once.",
+   "acceptance": "AT-BF-APPROVE-004"
+  },
+  {
+   "id": "BF-APPROVE-005",
+   "title": "Proof: approvals as configuration",
+   "workstream": "BF3",
+   "requirement": "ITSM's change advisory board and incident targets, Hospitality's inspection by someone other than the cleaner, and Government's appeals, configured rather than coded, pass the apps' scenarios.",
+   "acceptance": "AT-BF-APPROVE-005"
+  },
+  {
+   "id": "BF-MONEY-001",
+   "title": "ERP money and stock steps as capabilities",
+   "workstream": "BF4",
+   "requirement": "ERP offers, with contracts, effect keys, reversals and refusals: issue a sales or purchase invoice, credit one, take a payment with deductions, post a balanced journal under a cost center, and issue or receive stock.",
+   "acceptance": "AT-BF-MONEY-001"
+  },
+  {
+   "id": "BF-MONEY-002",
+   "title": "Driven by decision tables",
+   "workstream": "BF4",
+   "requirement": "A process or a rule chooses amounts, accounts and items for those steps from a decision table, typed in money.",
+   "acceptance": "AT-BF-MONEY-002"
+  },
+  {
+   "id": "BF-MONEY-003",
+   "title": "Proof: money policies as configuration",
+   "workstream": "BF4",
+   "requirement": "Hospitality's deposit kept on a late cancellation, Healthcare's insurer share and Nonprofit's restricted spending, as processes and tables, leave the books as the apps' tests expect.",
+   "acceptance": "AT-BF-MONEY-003"
+  },
+  {
+   "id": "BF-AUTHOR-001",
+   "title": "Rules without source",
+   "workstream": "BF5",
+   "requirement": "Derivations and checks are written in typed controls: fields chosen from the record, operators by type, money kept in its currency.",
+   "acceptance": "AT-BF-AUTHOR-001"
+  },
+  {
+   "id": "BF-AUTHOR-002",
+   "title": "Decision tables without source",
+   "workstream": "BF5",
+   "requirement": "Decision tables are edited as tables: inputs, outputs, hit policy, ranges, and the gaps and overlaps shown as they are made.",
+   "acceptance": "AT-BF-AUTHOR-002"
+  },
+  {
+   "id": "BF-AUTHOR-003",
+   "title": "Structured steps without source",
+   "workstream": "BF5",
+   "requirement": "Each kind of process step has its settings in typed controls: what it calls, its input, its routes, its waits and its people.",
+   "acceptance": "AT-BF-AUTHOR-003"
+  },
+  {
+   "id": "BF-AUTHOR-004",
+   "title": "Lossless round trip",
+   "workstream": "BF5",
+   "requirement": "What the controls do not cover stays editable in source and is kept untouched by them; a definition saved from either gives the same digest.",
+   "acceptance": "AT-BF-AUTHOR-004"
+  },
+  {
+   "id": "BF-SCHED-001",
+   "title": "Relative to a record's date",
+   "workstream": "BF6",
+   "requirement": "A schedule runs a set time before or after a date field of each record, once per record and date; a changed date moves it, a cleared one cancels it.",
+   "acceptance": "AT-BF-SCHED-001"
+  },
+  {
+   "id": "BF-SCHED-002",
+   "title": "Repeating schedules",
+   "workstream": "BF6",
+   "requirement": "A schedule runs every day or week at a time in the workspace's zone, once per occurrence across replicas and restarts.",
+   "acceptance": "AT-BF-SCHED-002"
+  },
+  {
+   "id": "BF-SCHED-003",
+   "title": "When a linked document changes",
+   "workstream": "BF6",
+   "requirement": "A schedule runs when a document a record links to reaches a state (an invoice paid), once.",
+   "acceptance": "AT-BF-SCHED-003"
+  },
+  {
+   "id": "BF-SCHED-004",
+   "title": "Mail templates",
+   "workstream": "BF6",
+   "requirement": "Templates with fields of the record and its links, in the recipient's language where kept, sent through the outbox once per key.",
+   "acceptance": "AT-BF-SCHED-004"
+  },
+  {
+   "id": "BF-SCHED-005",
+   "title": "Proof: schedules as configuration",
+   "workstream": "BF6",
+   "requirement": "Appointment reminders, a record paid when its invoice is settled, and a breach sweep run as schedules without an app's upkeep loop.",
+   "acceptance": "AT-BF-SCHED-005"
+  },
+  {
+   "id": "BF-RECON-001",
+   "title": "Ledger source in Studio",
+   "workstream": "BF7",
+   "requirement": "Studio reads journal lines by account, account type, cost center, party and date, under the viewer's rights.",
+   "acceptance": "AT-BF-RECON-001"
+  },
+  {
+   "id": "BF-RECON-002",
+   "title": "Records against the books",
+   "workstream": "BF7",
+   "requirement": "A report sets records' amounts beside ledger balances per dimension and shows the differences.",
+   "acceptance": "AT-BF-RECON-002"
+  },
+  {
+   "id": "BF-RECON-003",
+   "title": "Certified metrics on dashboards and objectives",
+   "workstream": "BF7",
+   "requirement": "A dashboard widget or an objective bound to a certified metric shows its definition's value for the viewer.",
+   "acceptance": "AT-BF-RECON-003"
+  },
+  {
+   "id": "BF-RECON-004",
+   "title": "Proof: reconciliations as configuration",
+   "workstream": "BF7",
+   "requirement": "Nonprofit's fund ledger and Property's owner reconciliation as Studio reports give the apps' own figures.",
+   "acceptance": "AT-BF-RECON-004"
+  },
+  {
+   "id": "BF-ENTITY-001",
+   "title": "Child tables",
+   "workstream": "BF8",
+   "requirement": "A custom entity may hold child tables of custom child entities, validated and saved with their parent.",
+   "acceptance": "AT-BF-ENTITY-001"
+  },
+  {
+   "id": "BF-ENTITY-002",
+   "title": "Unique keys",
+   "workstream": "BF8",
+   "requirement": "A custom entity may declare unique fields and keys of several fields, enforced in the database under concurrency.",
+   "acceptance": "AT-BF-ENTITY-002"
+  },
+  {
+   "id": "BF-ENTITY-003",
+   "title": "Numbering and totals",
+   "workstream": "BF8",
+   "requirement": "Custom documents take numbering series, and totals over their child rows are computed in exact money.",
+   "acceptance": "AT-BF-ENTITY-003"
+  },
+  {
+   "id": "BF-ENTITY-004",
+   "title": "Links both ways",
+   "workstream": "BF8",
+   "requirement": "Custom entities link to packaged entities, and packaged entities gain links to custom ones, with titles, merging and erasure as for any link.",
+   "acceptance": "AT-BF-ENTITY-004"
+  },
+  {
+   "id": "BF-PACK-001",
+   "title": "Pack format",
+   "workstream": "BF9",
+   "requirement": "A pack holds entities, fields, workflows, approvals, roles, public pages, rules, processes, schedules, templates, Studio items, seeds and words, in canonical form with a digest and a version.",
+   "acceptance": "AT-BF-PACK-001"
+  },
+  {
+   "id": "BF-PACK-002",
+   "title": "Signed and installed",
+   "workstream": "BF9",
+   "requirement": "A pack is signed by its publisher and verified when installed; installing it shows its plan and needs consent to that plan's digest.",
+   "acceptance": "AT-BF-PACK-002"
+  },
+  {
+   "id": "BF-PACK-003",
+   "title": "Upgraded and removed",
+   "workstream": "BF9",
+   "requirement": "An upgrade shows what it changes and what of the customer's own changes it affects; removing a pack keeps its records unless the administrator asks otherwise.",
+   "acceptance": "AT-BF-PACK-003"
+  },
+  {
+   "id": "BF-PACK-004",
+   "title": "Exported between workspaces",
+   "workstream": "BF9",
+   "requirement": "A workspace's configuration is exported as a pack and installed in another, behaving the same.",
+   "acceptance": "AT-BF-PACK-004"
+  },
+  {
+   "id": "BF-PACK-005",
+   "title": "Proof: a clinic as configuration",
+   "workstream": "BF9",
+   "requirement": "A clinic pack built with the gates' features only passes Healthcare's scenarios restated against it.",
+   "acceptance": "AT-BF-PACK-005"
+  },
+  {
+   "id": "BF-PACK-006",
+   "title": "A small hotel, and what still needs code",
+   "workstream": "BF9",
+   "requirement": "A small hotel pack passes Hospitality's core scenarios, and what still needed code for either pack is recorded.",
+   "acceptance": "AT-BF-PACK-006"
+  }
+ ],
+ "acceptance": [
+  {
+   "id": "AT-BF-BASE-001",
+   "title": "Decisions recorded",
+   "requirement": "BF-BASE-001",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "Record the configuration boundary, the portal access model, the public page model, approvals and business time, money through capabilities, custom entity storage, packs, how an app gives way to a pack, and names, before building.",
+   "acceptance": "docs/builder/decisions.md holds each decision, what it rules out and the gate that carries it out.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-BASE-002",
+   "title": "Register checked",
+   "requirement": "BF-BASE-002",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "Keep the program's requirements in docs/registry/bf.yaml, checked by scripts/registry.py like the platform, Logic and closure programs.",
+   "acceptance": "A row claiming a state its evidence does not carry, or a requirement missing from the register, fails the check.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-BASE-003",
+   "title": "Exact inventory",
+   "requirement": "BF-BASE-003",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "List, file by file, what the apps write for themselves that a gate takes over, from a script anyone can run again.",
+   "acceptance": "Running scripts/builder_inventory.py over the app repositories at the heads it names writes docs/builder/inventory.md unchanged.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-BASE-004",
+   "title": "Closure packages re-scoped",
+   "requirement": "BF-BASE-004",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "Each open closure package a gate takes over, in whole or in part, names that gate.",
+   "acceptance": "The closure register's gates match the plan's section 7, and a gate that does not exist fails the check.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-PORTAL-001",
+   "title": "Portal roles",
+   "requirement": "BF-PORTAL-001",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "A role marked for the portal holds only own-record rules: no rule for every entity, no delete, cancel, export or import. Portal people hold only portal roles, guests none, and neither is an administrator.",
+   "acceptance": "Each forbidden rule is refused when saved; a member role given to a portal person grants nothing; a portal role grants nothing beyond its own records.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-PORTAL-002",
+   "title": "Ownership through links",
+   "requirement": "BF-PORTAL-002",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "An own-record rule may name a path of at most two links, then optionally a child table, ending at a field holding the person's email. It is enforced when listing, reading, creating, changing and acting, through every interface.",
+   "acceptance": "A guardian reaches their children's report cards and no one else's; moving a record to another student is refused; the same email in another workspace reaches nothing.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-PORTAL-003",
+   "title": "Fields and actions under portal roles",
+   "requirement": "BF-PORTAL-003",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "A portal person sees no field in a permission group unless a rule grants the group, and runs only the actions their roles allow, under the actions' own conditions.",
+   "acceptance": "A restricted field appears in no list, record, search or export of theirs; an action outside its condition is refused.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-PORTAL-004",
+   "title": "Generic portal pages",
+   "requirement": "BF-PORTAL-004",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "The portal shows, from a person's portal roles, their records of each entity, each record, forms to create and change what they may, and the actions they may run, with no app code.",
+   "acceptance": "Walked in a browser signed in as a portal person: lists, a record, a change saved, an action run, and a record of someone else's not reached.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-PORTAL-005",
+   "title": "Portal roles administered and previewed",
+   "requirement": "BF-PORTAL-005",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "Administrators mark a role for the portal, write its rules with their paths, and see what a given portal person would reach and through which rule before giving it.",
+   "acceptance": "The access explanation names the rule and the path a record was reached through, and why another was not.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-PORTAL-006",
+   "title": "Proof: two portals as configuration",
+   "requirement": "BF-PORTAL-006",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "Education's family portal and Healthcare's patient portal, configured as portal roles on the generic pages, reach exactly what the apps' own portal endpoints reach.",
+   "acceptance": "The apps' portal assertions pass against the generic interface; deliberate breaks (a path ignored, a group shown, a condition ignored, another workspace reached) fail them.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-PUBLIC-001",
+   "title": "Public pages bound to an entity",
+   "requirement": "BF-PUBLIC-001",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "A public page asks the fields chosen for it, checks the answers on the server as a form does, and creates the record through the kernel as the page's own account, with the page's limits.",
+   "acceptance": "An answer outside a field's rules is refused with the field named; the record is created with the page's account as its creator and no other rights.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-PUBLIC-002",
+   "title": "Availability",
+   "requirement": "BF-PUBLIC-002",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "Free times come from a resource's hours, a length and the records holding it, or from a capacity per date; a time taken between being shown and being booked is refused.",
+   "acceptance": "Two guests booking the last free time: one succeeds, the other is told it went; times outside hours, on a holiday or in the past are never offered.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-PUBLIC-003",
+   "title": "A guest's own link",
+   "requirement": "BF-PUBLIC-003",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "A booking gives its guest a link, kept only as a hash, that expires; through it the guest sees, changes or cancels within the window the page sets.",
+   "acceptance": "A link used after it expires or outside the window is refused; a guessed or altered link reaches nothing; the stored hash cannot be used as a link.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-PUBLIC-004",
+   "title": "Mail and limits",
+   "requirement": "BF-PUBLIC-004",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "Confirmation and reminder mails from templates with the record's fields; limits per address and per page; a field only programs fill turns them away.",
+   "acceptance": "The limit stops the next request from one address; the trap field stops a program; the confirmation is queued once per booking.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-PUBLIC-005",
+   "title": "Proof: booking pages as configuration",
+   "requirement": "BF-PUBLIC-005",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "Healthcare's and Hospitality's booking pages configured as public pages pass the scenarios of the apps' own booking tests.",
+   "acceptance": "The restated scenarios pass; deliberate breaks (a taken time offered, a link kept in plain, a window ignored, a limit ignored) fail them.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-APPROVE-001",
+   "title": "Approvals on transitions",
+   "requirement": "BF-APPROVE-001",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "A transition may need approvals: from a role or the person a field names, N of them, each decision kept with who decided, when and on what version.",
+   "acceptance": "With two of three needed, one approval leaves the record where it was, the second moves it, and a decision on a changed record is refused.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-APPROVE-002",
+   "title": "Independence",
+   "requirement": "BF-APPROVE-002",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "An approval or transition may bar the record's creator and whoever made a named earlier transition, on every path that makes it.",
+   "acceptance": "The person who raised a change and the one who assessed it are both refused as approvers, through the interface, the API and a process.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-APPROVE-003",
+   "title": "Delegation and escalation",
+   "requirement": "BF-APPROVE-003",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "An approver away names who decides for them until a date; an approval not decided within its time goes to a named role and says so.",
+   "acceptance": "A delegate decides within the dates and not after; an approval past its time appears for the escalation role with the reason.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-APPROVE-004",
+   "title": "Targets in business time",
+   "requirement": "BF-APPROVE-004",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "Business calendars gain hours of the day; a state may have a target in business time, states may pause the clock, and a breach is recorded once.",
+   "acceptance": "A target of four business hours set on Friday at 16:00 falls due on Monday at 11:00 in a calendar of 9 to 17; time on hold is not counted; a breach is recorded once however often it is swept.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-APPROVE-005",
+   "title": "Proof: approvals as configuration",
+   "requirement": "BF-APPROVE-005",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "ITSM's change advisory board and incident targets, Hospitality's inspection by someone other than the cleaner, and Government's appeals, configured rather than coded, pass the apps' scenarios.",
+   "acceptance": "The restated scenarios pass; deliberate breaks (one approval counted twice, the creator approving, the clock counting a pause) fail them.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-MONEY-001",
+   "title": "ERP money and stock steps as capabilities",
+   "requirement": "BF-MONEY-001",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "ERP offers, with contracts, effect keys, reversals and refusals: issue a sales or purchase invoice, credit one, take a payment with deductions, post a balanced journal under a cost center, and issue or receive stock.",
+   "acceptance": "Each runs once under one effect key, refuses what its owner refuses, and its reversal leaves the books as they were.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-MONEY-002",
+   "title": "Driven by decision tables",
+   "requirement": "BF-MONEY-002",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "A process or a rule chooses amounts, accounts and items for those steps from a decision table, typed in money.",
+   "acceptance": "A table row decides the amount and account a process step uses, and a gap or overlap in the table is refused before it runs.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-MONEY-003",
+   "title": "Proof: money policies as configuration",
+   "requirement": "BF-MONEY-003",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "Hospitality's deposit kept on a late cancellation, Healthcare's insurer share and Nonprofit's restricted spending, as processes and tables, leave the books as the apps' tests expect.",
+   "acceptance": "The restated scenarios pass with the same ledger lines; deliberate breaks (a share added twice, a window ignored) fail them.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-AUTHOR-001",
+   "title": "Rules without source",
+   "requirement": "BF-AUTHOR-001",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "Derivations and checks are written in typed controls: fields chosen from the record, operators by type, money kept in its currency.",
+   "acceptance": "A rule made only in the controls compiles to the same release as its source.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-AUTHOR-002",
+   "title": "Decision tables without source",
+   "requirement": "BF-AUTHOR-002",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "Decision tables are edited as tables: inputs, outputs, hit policy, ranges, and the gaps and overlaps shown as they are made.",
+   "acceptance": "A table edited in the controls compiles and shows its gaps and overlaps before it is saved.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-AUTHOR-003",
+   "title": "Structured steps without source",
+   "requirement": "BF-AUTHOR-003",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "Each kind of process step has its settings in typed controls: what it calls, its input, its routes, its waits and its people.",
+   "acceptance": "A process made only in the controls runs the same as its source.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-AUTHOR-004",
+   "title": "Lossless round trip",
+   "requirement": "BF-AUTHOR-004",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "What the controls do not cover stays editable in source and is kept untouched by them; a definition saved from either gives the same digest.",
+   "acceptance": "Editing in the controls a solution holding an unsupported construct keeps that construct byte for byte.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-SCHED-001",
+   "title": "Relative to a record's date",
+   "requirement": "BF-SCHED-001",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "A schedule runs a set time before or after a date field of each record, once per record and date; a changed date moves it, a cleared one cancels it.",
+   "acceptance": "A reminder 24 hours before an appointment is sent once; moving the appointment moves it; cancelling it sends nothing.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-SCHED-002",
+   "title": "Repeating schedules",
+   "requirement": "BF-SCHED-002",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "A schedule runs every day or week at a time in the workspace's zone, once per occurrence across replicas and restarts.",
+   "acceptance": "Two replicas running the sweep make one run per occurrence.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-SCHED-003",
+   "title": "When a linked document changes",
+   "requirement": "BF-SCHED-003",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "A schedule runs when a document a record links to reaches a state (an invoice paid), once.",
+   "acceptance": "A record linked to an invoice is marked paid once when the invoice is paid, and not on later saves.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-SCHED-004",
+   "title": "Mail templates",
+   "requirement": "BF-SCHED-004",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "Templates with fields of the record and its links, in the recipient's language where kept, sent through the outbox once per key.",
+   "acceptance": "A template naming a field the reader may not see is refused when saved; the mail is queued once per record and occurrence.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-SCHED-005",
+   "title": "Proof: schedules as configuration",
+   "requirement": "BF-SCHED-005",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "Appointment reminders, a record paid when its invoice is settled, and a breach sweep run as schedules without an app's upkeep loop.",
+   "acceptance": "The restated scenarios pass; deliberate breaks (a reminder sent twice, a moved date ignored) fail them.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-RECON-001",
+   "title": "Ledger source in Studio",
+   "requirement": "BF-RECON-001",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "Studio reads journal lines by account, account type, cost center, party and date, under the viewer's rights.",
+   "acceptance": "A viewer without rights to the books gets nothing; totals equal the trial balance for the same filters.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-RECON-002",
+   "title": "Records against the books",
+   "requirement": "BF-RECON-002",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "A report sets records' amounts beside ledger balances per dimension and shows the differences.",
+   "acceptance": "A journal entry outside the records shows as a difference; matched ones do not.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-RECON-003",
+   "title": "Certified metrics on dashboards and objectives",
+   "requirement": "BF-RECON-003",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "A dashboard widget or an objective bound to a certified metric shows its definition's value for the viewer.",
+   "acceptance": "Two viewers with different rights see their own values from one definition.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-RECON-004",
+   "title": "Proof: reconciliations as configuration",
+   "requirement": "BF-RECON-004",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "Nonprofit's fund ledger and Property's owner reconciliation as Studio reports give the apps' own figures.",
+   "acceptance": "The reports equal the apps' reports on the same data; a deliberate break (a dimension ignored) differs.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-ENTITY-001",
+   "title": "Child tables",
+   "requirement": "BF-ENTITY-001",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "A custom entity may hold child tables of custom child entities, validated and saved with their parent.",
+   "acceptance": "Lines saved with a custom document come back in order, with their own rules applied, and go with it.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-ENTITY-002",
+   "title": "Unique keys",
+   "requirement": "BF-ENTITY-002",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "A custom entity may declare unique fields and keys of several fields, enforced in the database under concurrency.",
+   "acceptance": "Two concurrent saves of the same key: one succeeds, the other is refused naming the field; adding a key over existing duplicates is refused listing them.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-ENTITY-003",
+   "title": "Numbering and totals",
+   "requirement": "BF-ENTITY-003",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "Custom documents take numbering series, and totals over their child rows are computed in exact money.",
+   "acceptance": "A document's total equals the sum of its lines to the cent; numbers are unique and in sequence per series.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-ENTITY-004",
+   "title": "Links both ways",
+   "requirement": "BF-ENTITY-004",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "Custom entities link to packaged entities, and packaged entities gain links to custom ones, with titles, merging and erasure as for any link.",
+   "acceptance": "A merged customer moves the custom records linking to it; an erasure reaches personal data in custom records.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-PACK-001",
+   "title": "Pack format",
+   "requirement": "BF-PACK-001",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "A pack holds entities, fields, workflows, approvals, roles, public pages, rules, processes, schedules, templates, Studio items, seeds and words, in canonical form with a digest and a version.",
+   "acceptance": "Two packs from the same definition have the same digest; a changed word changes it.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-PACK-002",
+   "title": "Signed and installed",
+   "requirement": "BF-PACK-002",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "A pack is signed by its publisher and verified when installed; installing it shows its plan and needs consent to that plan's digest.",
+   "acceptance": "A pack altered after signing, or signed by an unknown key, is refused; a consent to another plan is refused.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-PACK-003",
+   "title": "Upgraded and removed",
+   "requirement": "BF-PACK-003",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "An upgrade shows what it changes and what of the customer's own changes it affects; removing a pack keeps its records unless the administrator asks otherwise.",
+   "acceptance": "An upgrade over a customer's change shows it and keeps it; removal leaves the records readable.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-PACK-004",
+   "title": "Exported between workspaces",
+   "requirement": "BF-PACK-004",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "A workspace's configuration is exported as a pack and installed in another, behaving the same.",
+   "acceptance": "A pack exported from one workspace and installed in another passes the same scenarios.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-PACK-005",
+   "title": "Proof: a clinic as configuration",
+   "requirement": "BF-PACK-005",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "A clinic pack built with the gates' features only passes Healthcare's scenarios restated against it.",
+   "acceptance": "The restated scenarios pass against the installed pack with no app code; deliberate breaks fail them.",
+   "result": "not_run"
+  },
+  {
+   "id": "AT-BF-PACK-006",
+   "title": "A small hotel, and what still needs code",
+   "requirement": "BF-PACK-006",
+   "setup": "A workspace with ordinary roles and a second workspace where it matters, on the platform at the gate's merge.",
+   "exercise": "A small hotel pack passes Hospitality's core scenarios, and what still needed code for either pack is recorded.",
+   "acceptance": "The restated scenarios pass; the record names each remaining piece of code and why.",
+   "result": "not_run"
+  }
+ ]
+}

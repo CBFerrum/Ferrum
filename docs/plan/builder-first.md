@@ -1,6 +1,8 @@
 # Builder first: industries as configuration, not apps
 
-Plan, 10 November 2026. **Status: proposed, waiting for approval. Nothing below is built.**
+Plan, 10 November 2026. **Status: approved 10 November 2026; in progress.** Decisions in
+[docs/builder/decisions.md](../builder/decisions.md); each requirement's state in
+[docs/builder/traceability.md](../builder/traceability.md).
 
 It changes the order of the closure program ([docs/registry/feo.yaml](../registry/feo.yaml)): the
 industry packages still open stop being closed one app at a time, in Rust inside each app, and the
@@ -15,21 +17,21 @@ Each was tested and each was right for its app, but they kept writing the same t
 public pages with a guest's own link, two more portals, more "someone other than whoever did it"
 checks, more policies that move money through ERP, more hand-written reconciliations.
 
-A rough code search over the 40 apps' sources (regular expressions over `src/`, so counts are
-approximate) finds the same features written again and again:
+A search of the committed code of the 40 public app repositories ([inventory](../builder/inventory.md),
+from `scripts/builder_inventory.py`, each place named) finds the same features written again and again:
 
 | Written in the app itself | Apps |
 |---|---|
-| A site handler for public or portal pages (`impl Site`) | 29 |
-| A scheduled upkeep loop (`maintenance`) | 32 |
-| Report sources of its own (`impl ReportSource`) | 23 |
-| ERP invoices made by its own code | 20 |
-| Approval rules of its own | 17 |
-| Guest links hashed and checked by its own code | 15 |
-| "Someone other than whoever did it" checks | 11 |
-| Mail queued by its own code | 10 |
-| Portal endpoints of its own | 8 |
-| Journal entries posted by its own code | 7 |
+| A scheduled upkeep loop that does something | 32 |
+| Pages or endpoints served by the app's own handler | 29 |
+| Report sources of its own | 23 |
+| ERP invoices made or read by name | 20 |
+| "Someone other than whoever did it" checks | 13 |
+| Approval decisions written in the app | 11 |
+| A page of the workspace's portal | 9 |
+| Mail queued by its own code | 9 |
+| A guest's own link, hashed and checked by the app | 8 |
+| Journal entries posted by the app | 7 |
 
 Every copy behaves a little differently, is fixed one at a time, and is out of a customer's reach. A
 new industry costs a new app, and a customer cannot adapt one without a release. The builder already
