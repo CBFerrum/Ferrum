@@ -150,6 +150,7 @@ async fn scenario() {
     let rule = |v: serde_json::Value| serde_json::from_value::<ferrum_meta::PermissionDef>(v).unwrap();
     k.set_role_permission(&admin, "Reader", &rule(json!({"entity": "Uom", "read": true}))).await.unwrap();
     k.set_role_permission(&admin, "Writer", &rule(json!({"entity": "Uom", "read": true, "write": true}))).await.unwrap();
+    k.set_role_permission(&admin, "Own writer", &rule(json!({"entity": "Uom", "read": true, "write": true, "create": true, "if_owner": true}))).await.unwrap();
     k.set_role_permission(&admin, "Visitors", &rule(json!({"entity": "Uom", "read": true}))).await.unwrap();
     k.set_role_portal(&admin, "Visitors", true).await.expect("units are reference data, read whole");
     let person = |email: &'static str, role: &'static str, portal: bool| {
@@ -177,6 +178,12 @@ async fn scenario() {
     let refused = up::start(&k, &objects, &visitor, 3 * PART_BYTES, onto()).await;
     assert!(matches!(refused, Err(Error::Forbidden(_))), "an outside person who may only read the record attaches to it: {refused:?}");
     up::start(&k, &objects, &writer, 3 * PART_BYTES, onto()).await.expect("a member who may change the record");
+    // One who reads every unit and changes only their own: not this one.
+    let own = person("own@acme.test", "Own writer", false).await;
+    k.set_user_roles_until(&admin, own.user, &["Reader".into(), "Own writer".into()], &Default::default()).await.unwrap();
+    let own = k.load_ctx(admin.tenant, own.user, None, "it".into()).await.unwrap();
+    let refused = up::start(&k, &objects, &own, 3 * PART_BYTES, onto()).await;
+    assert!(matches!(refused, Err(Error::Forbidden(_))), "a member who may change only their own units: {refused:?}");
     // An outside person's uploads tied to nothing are counted: 20 an hour.
     for _ in 0..20 {
         up::start(&k, &objects, &visitor, 3 * PART_BYTES, new(true)).await.expect("within the hour's uploads");
