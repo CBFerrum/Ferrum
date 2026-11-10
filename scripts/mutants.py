@@ -61,6 +61,7 @@ EGRESS = ("-p", "ferrum-server", "--test", "assistant_egress_it")
 PORTAL = ("-p", "ferrum-kernel", "--test", "portal_it")
 CUSTOM_LINES = ("-p", "ferrum-kernel", "--test", "custom_lines_it")
 STUDIO_LINES = ("-p", "ferrum-studio", "--test", "custom_lines_it")
+NESTED_LINES = ("-p", "ferrum-kernel", "--test", "nested_lines_it")
 AUTHORING = ("-p", "ferrum-kernel", "--test", "authoring_it")
 ASSISTANT = ("-p", "ferrum-server", "--test", "assistant_it")
 BOUNDARIES = ("-p", "ferrum-server", "--test", "assistant_boundaries_it")
@@ -571,7 +572,7 @@ MUTANTS = [
     ("portal-menu-lists-what-the-person-does-not-reach", "crates/kernel/src/access.rs", "for name in m.items.iter().filter(|i| reached(i)) {", "for name in m.items.iter().filter(|_| true) {", PORTAL),
     ("portal-menu-offers-create-the-role-lacks", "crates/kernel/src/access.rs", "m.create.contains(name) && ctx.perms.access(name, Action::Create) != Access::None", "m.create.contains(name)", PORTAL),
     ("portal-roles-given-to-anyone", "crates/kernel/src/auth.rs", "                if let Some(other) = roles.iter().find(|r| !portal.contains(r)) {", "                if let Some(other) = None::<&String> {", PORTAL),
-    ("custom-lines-load-mixes-tables", "crates/kernel/src/store.rs", "                info.predicate(\"ci\")\n", "                String::new()\n", CUSTOM_LINES),
+    ("custom-lines-load-mixes-tables", "crates/kernel/src/store.rs", "                info.predicate(&ci)\n", "                String::new()\n", CUSTOM_LINES),
     ("custom-lines-filter-mixes-tables", "crates/kernel/src/query.rs", "                    info.predicate(\"c\")\n", "                    String::new()\n", CUSTOM_LINES),
     ("custom-lines-portal-path-mixes-tables", "crates/kernel/src/ctx.rs", "                    info.predicate(&c)\n", "                    String::new()\n", CUSTOM_LINES),
     ("custom-lines-studio-grain-mixes-tables", "crates/studio/src/query.rs", "a.id{rows}\", q(&g.sql_table)", "a.id\", q(&g.sql_table)", STUDIO_LINES),
@@ -579,7 +580,19 @@ MUTANTS = [
     ("custom-keys-not-kept", "crates/kernel/src/store.rs", "    if !ent.custom || keys.is_empty() {", "    if true {", CUSTOM_LINES),
     ("custom-keys-held-by-cancelled", "crates/kernel/src/store.rs", "a.id = $2 and a.docstatus <> 2 and v.value", "a.id = $2 and v.value", CUSTOM_LINES),
     ("custom-key-over-duplicates", "crates/kernel/src/customize.rs", "            if !shared.is_empty() {", "            if false {", CUSTOM_LINES),
-    ("rollup-not-computed", "crates/kernel/src/doc.rs", "        roll_up(ent, doc)\n    }", "        Ok(())\n    }", CUSTOM_LINES),
+    ("rollup-not-computed", "crates/kernel/src/doc.rs", "    roll_up(ent, doc)\n}", "    Ok(())\n}", CUSTOM_LINES),
+    # Lines within lines (docs/builder/decisions.md BD-06, 11 November 2026).
+    ("nested-lines-load-one-level", "crates/kernel/src/store.rs", "                tables_sql(cent, schema, &c, depth + 1),", "                String::new(),", NESTED_LINES),
+    ("nested-lines-save-one-level", "crates/kernel/src/store.rs", "            Box::pin(write_tables(tx, schema, cent, tenant, &next)).await?;", "            let _ = next;", NESTED_LINES),
+    ("nested-lines-unchanged-rewritten", "crates/kernel/src/store.rs", ".is_none_or(|o| !rows_equal(cent, o, r)))", ".is_none_or(|o| !rows_equal(cent, o, r) || true))", NESTED_LINES),
+    ("nested-lines-rows-move", "crates/kernel/src/doc.rs", "Some(i) if !at.is_empty() && placed.contains(&i) => {", "Some(i) if false && placed.contains(&i) => {", NESTED_LINES),
+    ("nested-lines-not-validated", "crates/kernel/src/doc.rs", "                    Box::pin(self.validate_rows(ctx, tx, &cent, rm, &rview, on, errors, &path)).await?;", "                    let _ = (&rview, &path);", NESTED_LINES),
+    ("nested-lines-no-line-totals", "crates/kernel/src/doc.rs", "                compute_rows(cent, m, user, schema)?;\n", "\n", NESTED_LINES),
+    ("nested-lines-error-without-path", "crates/kernel/src/error.rs", "self.path = (path.len() > 1).then(", "self.path = (path.len() > 9).then(", NESTED_LINES),
+    ("nested-lines-third-level", "crates/meta/src/effective.rs", "if b.def.kind == EntityKind::Child && building.get(of)", "if false && building.get(of)", NESTED_LINES),
+    ("nested-lines-move-between-tables", "crates/kernel/src/customize.rs", "                if let Some(of) = elsewhere {", "                if let Some(of) = elsewhere.filter(|_| false) {", NESTED_LINES),
+    ("nested-lines-pack-one-level", "crates/kernel/src/pack.rs", "rows.push(Value::Object(Box::pin(self.portable(ctx, tx, &child, r, keys)).await?));", "rows.push(Value::Object(self.portable_values(ctx, tx, &child, r, keys).await?));", NESTED_LINES),
+    ("nested-lines-delete-guard-blind", "crates/kernel/src/doc.rs", "                        checks.push((sub.table.clone(), f.name.clone(), \"id\", own));", "                        let _ = own;", NESTED_LINES),
     # Configured actions, update_linked, the day in aggregate filters, and the two faults found with them
     # (docs/api.md, Configured actions; docs/builder/decisions.md BD-11).
     ("configured-effects-run-as-the-runner", "crates/kernel/src/actions.rs", "        is_system: true,\n", "        is_system: false,\n", ACTIONS),

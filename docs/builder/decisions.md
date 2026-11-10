@@ -147,6 +147,18 @@ replaces every definition change made before it, so a designer starts from the e
 each customization a later redefinition replaced (`superseded_by`), by the same rule the schema's build applies.
 A pack that would leave the workspace's own changes replaced says so in its plan.
 
+Amended 11 November 2026, when Governance and Risk's control tests needed several evidence rows each (row C4
+of evidence/grc-as-a-pack-2026-11-10.md): **a custom line entity may hold lines of its own, two levels deep**
+(a record, its lines, their lines). A line's lines are `custom_record` rows whose `parent_id` is their line's
+row, so the self foreign key's cascade takes them with their line and their record; still one table field per
+child entity, so the third level is refused where the schema is built and a package's child entity holds no
+table. Load is one statement (each line's rows nested in it); a save writes each table across all its parents
+in at most three statements (delete what went, read the JSON of the rows changing, write those), whatever the
+number of rows, and leaves unchanged rows alone. A row stays under its line (one sent under another is
+refused), `parent` in a line's line is its line, and a field error there carries `path` beside `row`. List
+filters, portal and owner paths, personal-data and hand-over declarations and Studio stay one level deep.
+**Rules out**: a third level; nested lines on a package's entity; moving a line's line by its id.
+
 ## BD-07. Packs (BF9)
 
 * A pack is a **canonical JSON document** (the platform's canonical form and digest): metadata (name,

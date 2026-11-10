@@ -27,6 +27,10 @@ pub struct Expr {
     program: Arc<Program>,
     /// The link fields it reads as `links.<field>`, in the order written.
     links: Arc<[String]>,
+    /// Whether it reads `old` and `parent`: one it does not read is bound as null, so a line's rule does not
+    /// convert its whole record (lines within lines make that large) for nothing.
+    reads_old: bool,
+    reads_parent: bool,
 }
 
 impl fmt::Debug for Expr {
@@ -73,7 +77,8 @@ impl Expr {
         if links.len() > MAX_LINKS {
             return Err(format!("an expression reads at most {MAX_LINKS} linked records (links.<field>); this one reads {}", links.len()));
         }
-        Ok(Expr { source: source.into(), program: Arc::new(program), links: links.into() })
+        let (reads_old, reads_parent) = (program.references().has_variable("old"), program.references().has_variable("parent"));
+        Ok(Expr { source: source.into(), program: Arc::new(program), links: links.into(), reads_old, reads_parent })
     }
 
     pub fn source(&self) -> &str {
@@ -95,8 +100,8 @@ impl Expr {
         let mut ctx = Context::default();
         let bind = |ctx: &mut Context, name: &str, v: &Value| ctx.add_variable_from_value(name.to_string(), json_to_cel(v));
         bind(&mut ctx, "doc", scope.doc);
-        bind(&mut ctx, "old", scope.old.unwrap_or(&Value::Null));
-        bind(&mut ctx, "parent", scope.parent.unwrap_or(&Value::Null));
+        bind(&mut ctx, "old", scope.old.filter(|_| self.reads_old).unwrap_or(&Value::Null));
+        bind(&mut ctx, "parent", scope.parent.filter(|_| self.reads_parent).unwrap_or(&Value::Null));
         bind(&mut ctx, "user", scope.user);
         // Time is the caller's fact, as the workspace sees it: never a clock read here (FLC-COMP-003).
         for key in ["today", "now", "time"] {

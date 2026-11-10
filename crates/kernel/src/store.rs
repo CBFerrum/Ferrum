@@ -158,22 +158,31 @@ pub fn row_to_doc(ent: &EffEntity, schema: &Schema, row: Value) -> Doc {
     m
 }
 
-fn load_sql(ent: &EffEntity, schema: &Schema) -> String {
+/// ` || jsonb_build_object(…)`: each of `ent`'s tables as its rows in order, under the row aliased `parent`; a row of
+/// a custom entity's lines carries its own lines the same way (lines within lines, two levels at most: BD-06). One
+/// statement, whatever the number of rows.
+fn tables_sql(ent: &EffEntity, schema: &Schema, parent: &str, depth: usize) -> String {
     let mut children = Vec::new();
     for (field, info) in &ent.children {
         if let Some(cent) = schema.entity(&info.entity) {
+            let (ci, c) = (format!("ci{depth}"), format!("c{depth}"));
             children.push(format!(
-                "'{field}', (select coalesce(jsonb_agg(to_jsonb(c) order by c.idx), '[]'::jsonb) from \
-                 (select {} from {} ci where ci.tenant_id = x.tenant_id and ci.parent_id = x.id{}) c)",
-                child_select_list(cent, "ci"),
+                "'{field}', (select coalesce(jsonb_agg(to_jsonb({c}){} order by {c}.idx), '[]'::jsonb) from \
+                 (select {} from {} {ci} where {ci}.tenant_id = x.tenant_id and {ci}.parent_id = {parent}.id{}) {c})",
+                tables_sql(cent, schema, &c, depth + 1),
+                child_select_list(cent, &ci),
                 q(&info.table),
-                info.predicate("ci")
+                info.predicate(&ci)
             ));
         }
     }
-    let build = if children.is_empty() { String::new() } else { format!(" || jsonb_build_object({})", children.join(", ")) };
+    if children.is_empty() { String::new() } else { format!(" || jsonb_build_object({})", children.join(", ")) }
+}
+
+fn load_sql(ent: &EffEntity, schema: &Schema) -> String {
     format!(
-        "select to_jsonb(x){build} from (select {}, a.tenant_id from {} a where a.tenant_id = $1 and a.id = $2{}) x",
+        "select to_jsonb(x){} from (select {}, a.tenant_id from {} a where a.tenant_id = $1 and a.id = $2{}) x",
+        tables_sql(ent, schema, "x", 0),
         select_list(ent, "a"),
         q(&ent.table),
         entity_predicate(ent, "a")
@@ -286,13 +295,7 @@ pub async fn insert_row(tx: &mut Tx, schema: &Schema, ent: &EffEntity, tenant: U
     );
     sqlx::query(AssertSqlSafe(sql)).bind(row).execute(&mut **tx).await?;
     let id = doc_id(doc)?;
-    for (field, info) in &ent.children {
-        let Some(cent) = schema.entity(&info.entity) else { continue };
-        let rows = child_rows_json(cent, doc.get(field), tenant, id, &HashMap::new());
-        if !rows.is_empty() {
-            upsert_children(tx, cent, &info.table, rows).await?;
-        }
-    }
+    write_tables(tx, schema, ent, tenant, &[(id, doc, None)]).await?;
     keep_keys(tx, ent, tenant, id).await
 }
 
@@ -309,35 +312,59 @@ pub async fn update_row(tx: &mut Tx, schema: &Schema, ent: &EffEntity, tenant: U
         t = q(&ent.table)
     );
     sqlx::query(AssertSqlSafe(sql)).bind(row).bind(tenant).bind(id).execute(&mut **tx).await?;
-
-    for (field, info) in &ent.children {
-        let Some(cent) = schema.entity(&info.entity) else { continue };
-        let new_rows = doc.get(field).and_then(Value::as_array).cloned().unwrap_or_default();
-        let old_rows = old.get(field).and_then(Value::as_array).cloned().unwrap_or_default();
-        let keep: Vec<Uuid> = new_rows.iter().filter_map(|r| r.get("id").and_then(Value::as_str)).filter_map(|s| s.parse().ok()).collect();
-        let sql = format!("delete from {} c where c.tenant_id = $1 and c.parent_id = $2 and not (c.id = any($3)){}", q(&info.table), info.predicate("c"));
-        sqlx::query(AssertSqlSafe(sql)).bind(tenant).bind(id).bind(&keep).execute(&mut **tx).await?;
-        let old_by_id: HashMap<&str, &Value> = old_rows.iter().filter_map(|r| r.get("id").and_then(Value::as_str).map(|i| (i, r))).collect();
-        let changed: Vec<Value> = new_rows
-            .iter()
-            .filter(|r| {
-                let rid = r.get("id").and_then(Value::as_str).unwrap_or_default();
-                old_by_id.get(rid).is_none_or(|o| !rows_equal(cent, o, r))
-            })
-            .cloned()
-            .collect();
-        if changed.is_empty() {
-            continue;
-        }
-        let changed_ids: Vec<Uuid> = changed.iter().filter_map(|r| r.get("id").and_then(Value::as_str)).filter_map(|s| s.parse().ok()).collect();
-        let ext = existing_ext(tx, &info.table, tenant, &changed_ids).await?;
-        let rows = child_rows_json(cent, Some(&Value::Array(changed)), tenant, id, &ext);
-        upsert_children(tx, cent, &info.table, rows).await?;
-    }
+    write_tables(tx, schema, ent, tenant, &[(id, doc, Some(old))]).await?;
     keep_keys(tx, ent, tenant, id).await
 }
 
-fn rows_equal(cent: &EffEntity, a: &Value, b: &Value) -> bool {
+/// One parent's rows as saved (`new`) and, for one that was stored, as they were (`old`).
+type Parent<'a> = (Uuid, &'a Map<String, Value>, Option<&'a Map<String, Value>>);
+
+/// Writes `ent`'s tables under `parents`, a table at a time across all of them: rows no longer there are deleted
+/// (their own rows go with them, by the foreign key), new and changed rows written in one statement, unchanged ones
+/// left alone; then, the same way, the tables of those rows (lines within lines: a custom entity's lines may hold
+/// lines of their own, two levels at most, BD-06). At most three statements a table, whatever the number of rows.
+async fn write_tables(tx: &mut Tx, schema: &Schema, ent: &EffEntity, tenant: Uuid, parents: &[Parent<'_>]) -> Result<()> {
+    let rows_of = |d: &'_ Map<String, Value>, field: &str| -> Vec<Map<String, Value>> {
+        d.get(field).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_object).cloned().collect()
+    };
+    for (field, info) in &ent.children {
+        let Some(cent) = schema.entity(&info.entity) else { continue };
+        let stored: Vec<Uuid> = parents.iter().filter(|p| p.2.is_some()).map(|p| p.0).collect();
+        let new_rows: Vec<(Uuid, Map<String, Value>)> = parents.iter().flat_map(|p| rows_of(p.1, field).into_iter().map(move |r| (p.0, r))).collect();
+        let old_rows: Vec<Map<String, Value>> = parents.iter().filter_map(|p| p.2).flat_map(|o| rows_of(o, field)).collect();
+        if !stored.is_empty() {
+            let keep: Vec<Uuid> = new_rows.iter().filter_map(|(_, r)| r.get("id").and_then(Value::as_str)).filter_map(|s| s.parse().ok()).collect();
+            let sql =
+                format!("delete from {} c where c.tenant_id = $1 and c.parent_id = any($2) and not (c.id = any($3)){}", q(&info.table), info.predicate("c"));
+            sqlx::query(AssertSqlSafe(sql)).bind(tenant).bind(&stored).bind(&keep).execute(&mut **tx).await?;
+        }
+        let old_by_id: HashMap<&str, &Map<String, Value>> = old_rows.iter().filter_map(|r| r.get("id").and_then(Value::as_str).map(|i| (i, r))).collect();
+        let changed: Vec<(Uuid, &Map<String, Value>)> = new_rows
+            .iter()
+            .filter(|(_, r)| old_by_id.get(r.get("id").and_then(Value::as_str).unwrap_or_default()).is_none_or(|o| !rows_equal(cent, o, r)))
+            .map(|(p, r)| (*p, r))
+            .collect();
+        if !changed.is_empty() {
+            let ids: Vec<Uuid> = changed.iter().filter_map(|(_, r)| r.get("id").and_then(Value::as_str)).filter_map(|s| s.parse().ok()).collect();
+            let ext = if old_rows.is_empty() { HashMap::new() } else { existing_ext(tx, &info.table, tenant, &ids).await? };
+            upsert_children(tx, cent, &info.table, child_rows_json(cent, &changed, tenant, &ext)).await?;
+        }
+        if !cent.children.is_empty() {
+            let next: Vec<Parent<'_>> = new_rows
+                .iter()
+                .filter_map(|(_, r)| {
+                    let id = r.get("id").and_then(Value::as_str)?;
+                    Some((id.parse().ok()?, r, old_by_id.get(id).copied()))
+                })
+                .collect();
+            Box::pin(write_tables(tx, schema, cent, tenant, &next)).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Whether a row's own values are as stored (its rows' rows are compared on their own).
+fn rows_equal(cent: &EffEntity, a: &Map<String, Value>, b: &Map<String, Value>) -> bool {
     if a.get("idx") != b.get("idx") {
         return false;
     }
@@ -348,11 +375,9 @@ fn rows_equal(cent: &EffEntity, a: &Value, b: &Value) -> bool {
     })
 }
 
-fn child_rows_json(cent: &EffEntity, rows: Option<&Value>, tenant: Uuid, parent: Uuid, ext: &HashMap<Uuid, Value>) -> Vec<Value> {
-    let Some(Value::Array(rows)) = rows else { return vec![] };
+fn child_rows_json(cent: &EffEntity, rows: &[(Uuid, &Map<String, Value>)], tenant: Uuid, ext: &HashMap<Uuid, Value>) -> Vec<Value> {
     rows.iter()
-        .filter_map(|r| r.as_object())
-        .map(|r| {
+        .map(|(parent, r)| {
             let id: Option<Uuid> = r.get("id").and_then(Value::as_str).and_then(|s| s.parse().ok());
             let mut obj = Map::new();
             obj.insert("tenant_id".into(), Value::String(tenant.to_string()));
@@ -399,8 +424,8 @@ pub async fn set_child_rows(tx: &mut Tx, table: &str, cent: &EffEntity, tenant: 
         return Ok(());
     }
     let ext = existing_ext(tx, table, tenant, &keep).await?;
-    let rows = child_rows_json(cent, Some(&Value::Array(rows)), tenant, parent, &ext);
-    upsert_children(tx, cent, table, rows).await
+    let rows: Vec<(Uuid, &Map<String, Value>)> = rows.iter().filter_map(Value::as_object).map(|r| (parent, r)).collect();
+    upsert_children(tx, cent, table, child_rows_json(cent, &rows, tenant, &ext)).await
 }
 
 pub async fn delete_row(tx: &mut Tx, ent: &EffEntity, tenant: Uuid, id: Uuid) -> Result<u64> {

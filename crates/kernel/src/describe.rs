@@ -94,18 +94,24 @@ fn workflow(ctx: &Ctx, ent: &EffEntity) -> Option<Value> {
     Some(v)
 }
 
-pub fn describe(ctx: &Ctx, ent: &EffEntity) -> Value {
-    let children: serde_json::Map<String, Value> = ent
-        .children
+/// An entity's tables: each one's entity, label and fields, and for a line that holds lines of its own (BD-06) its
+/// `children` the same way.
+fn children(ctx: &Ctx, ent: &EffEntity) -> serde_json::Map<String, Value> {
+    ent.children
         .iter()
         .filter_map(|(field, info)| {
             let c = ctx.schema.entity(&info.entity)?;
-            Some((
-                field.clone(),
-                json!({"entity": c.def.name, "label": c.def.label, "fields": c.def.fields.iter().map(|f| field_json(ctx, c, f)).collect::<Vec<_>>()}),
-            ))
+            let mut v = json!({"entity": c.def.name, "label": c.def.label, "fields": c.def.fields.iter().map(|f| field_json(ctx, c, f)).collect::<Vec<_>>()});
+            if !c.children.is_empty() {
+                v["children"] = Value::Object(children(ctx, c));
+            }
+            Some((field.clone(), v))
         })
-        .collect();
+        .collect()
+}
+
+pub fn describe(ctx: &Ctx, ent: &EffEntity) -> Value {
+    let children = children(ctx, ent);
     json!({
         "name": ent.def.name,
         "label": ent.def.label,

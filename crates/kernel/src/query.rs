@@ -328,6 +328,9 @@ fn push_filter_impl(qb: &mut QueryBuilder<Postgres>, schema: &Schema, ctx: Optio
             FieldType::Table => {
                 let info = ent.children.get(head).ok_or_else(unknown)?;
                 let cent = schema.entity(&info.entity).ok_or_else(unknown)?;
+                if tail.split_once('.').is_some_and(|(t, _)| cent.children.contains_key(t)) {
+                    return Err(Error::invalid(format!("cannot filter on '{}': a filter reads a record's lines, not their own lines", f.field)));
+                }
                 if ctx.is_some_and(|c| !readable(c, cent, tail)) {
                     return Err(hidden());
                 }

@@ -6,17 +6,28 @@ use serde::Serialize;
 pub struct FieldError {
     pub field: String,
     pub message: String,
-    /// `(table field, 0-based row index)` for child-row errors.
+    /// `(table field, 0-based row index)` for child-row errors; for an error on a line's own line, the line.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub row: Option<(String, usize)>,
+    /// For an error on a line's own line (lines within lines, BD-06) only: each step from the record, the line's
+    /// table and place, then the sub-line's: `[["tests", 1], ["evidence", 0]]`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<Vec<(String, usize)>>,
 }
 
 impl FieldError {
     pub fn new(field: impl Into<String>, message: impl Into<String>) -> Self {
-        FieldError { field: field.into(), message: message.into(), row: None }
+        FieldError { field: field.into(), message: message.into(), row: None, path: None }
     }
     pub fn in_row(mut self, table: &str, idx: usize) -> Self {
         self.row = Some((table.to_string(), idx));
+        self
+    }
+    /// At `path` from the record: nowhere for the record's own fields, a row for a line, a row and a path for a line's
+    /// own line.
+    pub fn at(mut self, path: &[(&str, usize)]) -> Self {
+        self.row = path.first().map(|(t, i)| (t.to_string(), *i));
+        self.path = (path.len() > 1).then(|| path.iter().map(|(t, i)| (t.to_string(), *i)).collect());
         self
     }
 }
