@@ -5,10 +5,10 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Not started | 33 |
+| Not started | 31 |
 | Partial | 1 |
 | Implemented, unverified | 1 |
-| Verified in software | 11 |
+| Verified in software | 13 |
 | **All** | **46** |
 
 ## BF0: Decisions and inventory
@@ -72,8 +72,8 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
-| BF-SCHED-001 | Relative to a record's date | Not started | AT-BF-SCHED-001 | 0 | Not started |
-| BF-SCHED-002 | Repeating schedules | Not started | AT-BF-SCHED-002 | 0 | Not started |
+| BF-SCHED-001 | Relative to a record's date | Verified in software | AT-BF-SCHED-001 | 2 | An automation with a relative schedule fires at a date or datetime field plus a signed offset of days, hours and minutes, a date field's at a time of day in the workspace's zone, once per record and moment however many replicas look (two scans at once, one run); the run reads the record afresh, so a date moved fires at its new moment (again, if the old one fired), a date cleared or moved away since the scan does not fire, a deleted record is skipped, and the condition is judged then; nothing already past fires for a new automation; right instants in Kolkata and across New York's change to daylight saving (schedule_it; mutants scheduled-moment-not-rechecked, scheduled-ignores-the-zone, schedule-takes-any-field). The smallest step is a minute; a custom field's dates are read out of JSON with no index; moments more than seven days late are skipped; no business calendar; not walked in a browser (the Administration dialog does not offer schedules yet) |
+| BF-SCHED-002 | Repeating schedules | Verified in software | AT-BF-SCHED-002 | 2 | Every day, week (a weekday) or month (a day 1-28 or the last) at a time in the workspace's zone, for each record a filter of at most eight conditions passes, or every day, week, month or year from a record's date until another; each occurrence fires once across replicas, and a scan stopped part way resumes from its cursor, a page at a time, none lost or doubled; after downtime the last seven days are caught up and older moments skipped (schedule_it; mutants scheduled-page-repeats-its-cursor, scheduled-catches-up-forever, scheduled-occurrences-never-pruned). Days 29-31 of a month are not offered (last is); a repeating schedule on a datetime field looks at every started record on each look; the scan runs once a minute, so a moment fires up to about a minute and a half late; not walked in a browser |
 | BF-SCHED-003 | When a linked document changes | Not started | AT-BF-SCHED-003 | 0 | Not started |
 | BF-SCHED-004 | Mail templates | Not started | AT-BF-SCHED-004 | 0 | Not started |
 | BF-SCHED-005 | Proof: schedules as configuration | Not started | AT-BF-SCHED-005 | 0 | Not started |
