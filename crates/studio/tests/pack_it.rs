@@ -168,6 +168,14 @@ async fn scenario() {
     let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core")).expect("core");
     let mut packages = vec![core];
     packages.extend(ferrum_studio::packages().expect("studio packages"));
+    // Two packages that both seed a Clerk role, each with its own rule (as ERP's accounting and selling both
+    // seed Accounts Manager).
+    for (name, entity) in [("alpha", "Currency"), ("beta", "Uom")] {
+        let manifest = format!(
+            "package: {name}\nversion: 0.1.0\nlabel: {name}\ndepends: [core]\nroles:\n  - name: Clerk\n    permissions:\n      - {{entity: {entity}, read: true}}\n"
+        );
+        packages.push(ferrum_meta::catalog::load_package_files(&[("package.yaml".to_string(), manifest)].into()).expect(name));
+    }
     let mut hooks = HookRegistry::default();
     ferrum_studio::register(&mut hooks);
     let k: Arc<Kernel> = Kernel::boot(db, Catalog::from_packages(packages).unwrap(), hooks, KernelSettings::default(), None).await.expect("boot");
@@ -605,4 +613,19 @@ async fn scenario() {
     let plan = k.plan_pack(&ba, &pack).await.unwrap();
     let missing = plan["missing"].to_string();
     assert!(missing.contains("the package studio (") && missing.contains("on Studio's page"), "{missing}");
+
+    // A role several installed packages seed is the packages' own: nothing of it travels until an
+    // administrator adds a rule, which then travels alone.
+    let two = workspace(&k, "two-seeds", &["core", "alpha", "beta"]).await;
+    let wa = two.admin().await;
+    let options = ExportOptions { name: "clerk".into(), label: "Clerk".into(), version: 1, records: vec![] };
+    let pack = k.export_pack(&wa, &options).await.expect("export");
+    assert_eq!(pack["roles"], json!([]), "every rule of Clerk is seeded: {}", pack["roles"]);
+    k.set_role_permission(&wa, "Clerk", &rule(json!({"entity": "Company", "read": true}))).await.unwrap();
+    let pack = k.export_pack(&wa, &options).await.expect("export");
+    let roles = pack["roles"].as_array().unwrap();
+    assert_eq!(roles.len(), 1, "{}", pack["roles"]);
+    assert_eq!(roles[0]["name"], json!("Clerk"));
+    let entities: Vec<&Value> = roles[0]["permissions"].as_array().unwrap().iter().map(|p| &p["entity"]).collect();
+    assert_eq!(entities, [&json!("Company")], "only the administrator's rule: {}", roles[0]);
 }

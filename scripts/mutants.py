@@ -636,6 +636,7 @@ MUTANTS = [
     ("packs-plan-kept", "crates/kernel/src/pack.rs", "Self::overlay_rows(&mut tx, ctx.tenant).await?);\n        tx.rollback().await?;", "Self::overlay_rows(&mut tx, ctx.tenant).await?);\n        tx.commit().await?;", PACKS),
     ("packs-automations-duplicated", "crates/kernel/src/pack.rs", "from automation where tenant_id = $1 and name = $2 order by", "from automation where tenant_id = $1 and name = $2 and false order by", PACKS),
     ("packs-carry-people", "crates/kernel/src/pack.rs", "    if let Some(why) = not_reference(ctx, &ent) {", "    if let Some(why) = None::<&str> {", PACKS),
+    ("packs-role-seeded-by-one-package", "crates/kernel/src/pack.rs", ".filter_map(|(p, _)| catalog.package(p))", ".filter(|(p, _)| *p == pkg).filter_map(|(p, _)| catalog.package(p))", PACKS),
     # Another app's steps from configuration (docs/api.md, Calling another app's steps).
     ("invoke-default-key-ignores-the-version", "crates/kernel/src/actions.rs", "def.name, doc.get(\"version\").unwrap_or(&Value::Null));", "def.name, \"0\");", INVOKE),
     ("invoke-results-not-shown", "crates/kernel/src/actions.rs", "let extra = [(\"params\", &params), (\"results\", &done), (\"links\", &links)];", "let extra = [(\"params\", &params), (\"results\", &Value::Null), (\"links\", &links)];", INVOKE),
