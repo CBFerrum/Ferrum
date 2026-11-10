@@ -3550,6 +3550,7 @@ dependencies = [
  "reqwest 0.12.28",
  "ring",
  "rust_decimal",
+ "semver",
  "serde",
  "serde_json",
  "sha1 0.10.7",

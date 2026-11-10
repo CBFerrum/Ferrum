@@ -6,7 +6,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::extract::{Auth, BrowserSession};
 use crate::state::app_state;
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use ferrum_kernel::retention::RetentionInput;
@@ -433,6 +433,75 @@ async fn import_custom(Auth(ctx): Auth, State(app): State<AppContext>, Json(bund
     Ok(Json(json!({"imported": n})).into_response())
 }
 
+// ── packs ──
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackQuery {
+    /// Comma-separated: entities whose records travel as reference data, in this order.
+    #[serde(default)]
+    pub records: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub version: Option<i64>,
+}
+
+/// `GET /api/admin/pack`: this workspace's configuration as a `ferrum.pack/1` document.
+pub async fn export_pack(k: &ferrum_kernel::Kernel, ctx: &Ctx, q: &PackQuery) -> ApiResult<Value> {
+    admin(ctx)?;
+    let records = q.records.as_deref().unwrap_or_default().split(',').map(str::trim).filter(|r| !r.is_empty()).map(str::to_string).collect();
+    let o = ferrum_kernel::pack::ExportOptions {
+        name: q.name.clone().unwrap_or_else(|| "workspace".into()),
+        label: q.label.clone().unwrap_or_else(|| "Workspace configuration".into()),
+        version: q.version.unwrap_or(1),
+        records,
+    };
+    Ok(k.export_pack(ctx, &o).await?)
+}
+
+/// The pack a request carries, and nothing else beside it but what `allowed` names.
+fn pack_body<'a>(body: &'a Value, allowed: &[&str]) -> ApiResult<&'a Value> {
+    let m = body.as_object().ok_or_else(|| ApiError(Error::invalid("expected an object holding the pack")))?;
+    if let Some(k) = m.keys().find(|k| *k != "pack" && !allowed.contains(&k.as_str())) {
+        return Err(ApiError(Error::field(k.clone(), "is not part of this request")));
+    }
+    m.get("pack").ok_or_else(|| ApiError(Error::field("pack", "is required")))
+}
+
+/// `POST /api/admin/pack/plan` `{pack}`: what installing would do here, doing nothing.
+pub async fn plan_pack(k: &ferrum_kernel::Kernel, ctx: &Ctx, body: &Value) -> ApiResult<Value> {
+    admin(ctx)?;
+    Ok(k.plan_pack(ctx, pack_body(body, &[])?).await?)
+}
+
+/// `POST /api/admin/pack/install` `{pack, digest}`: installs the pack whose plan has that digest.
+pub async fn install_pack(k: &ferrum_kernel::Kernel, ctx: &Ctx, body: &Value) -> ApiResult<Value> {
+    admin(ctx)?;
+    let pack = pack_body(body, &["digest"])?;
+    let digest = body.get("digest").and_then(Value::as_str).ok_or_else(|| ApiError(Error::field("digest", "is required: the digest of the plan installed")))?;
+    Ok(k.install_pack(ctx, pack, digest).await?)
+}
+
+async fn get_pack(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query<PackQuery>) -> ApiResult<Response> {
+    Ok(Json(export_pack(&app_state(&app)?.kernel, &ctx, &q).await?).into_response())
+}
+
+async fn post_pack_plan(Auth(ctx): Auth, State(app): State<AppContext>, Json(body): Json<Value>) -> ApiResult<Response> {
+    Ok(Json(plan_pack(&app_state(&app)?.kernel, &ctx, &body).await?).into_response())
+}
+
+async fn post_pack_install(Auth(ctx): Auth, State(app): State<AppContext>, Json(body): Json<Value>) -> ApiResult<Response> {
+    Ok(Json(install_pack(&app_state(&app)?.kernel, &ctx, &body).await?).into_response())
+}
+
+async fn list_packs(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    admin(&ctx)?;
+    Ok(Json(json!({"packs": app_state(&app)?.kernel.installed_packs(&ctx).await?})).into_response())
+}
+
 // ── legal holds ──
 
 #[derive(Deserialize)]
@@ -814,6 +883,11 @@ pub fn routes() -> Routes {
         .add("/customize/export", get(export_custom))
         .add("/customize/batch", post(batch_custom))
         .add("/customize/import", post(import_custom))
+        .add("/admin/pack", get(get_pack))
+        // A pack is at most 5 MiB; a larger body still reaches the pack's own refusal, which says why.
+        .add("/admin/pack/plan", post(post_pack_plan).layer(DefaultBodyLimit::max(2 * ferrum_kernel::pack::MAX_PACK)))
+        .add("/admin/pack/install", post(post_pack_install).layer(DefaultBodyLimit::max(2 * ferrum_kernel::pack::MAX_PACK)))
+        .add("/admin/packs", get(list_packs))
         .add("/admin/support", get(support_grants).post(grant_support))
         .add("/admin/support/{id}", delete(revoke_support))
         .add("/admin/support/{id}/requests", get(support_activity))

@@ -40,6 +40,7 @@ pub mod numbering;
 pub mod oauth;
 pub mod outbound;
 pub mod outbox;
+pub mod pack;
 pub mod passkey;
 mod pdf;
 pub mod plans;
