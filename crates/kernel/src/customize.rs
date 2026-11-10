@@ -28,8 +28,8 @@ pub struct OverlayRow {
     pub is_active: bool,
     pub note: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
-    /// An active `add_action` or `remove_action` a later active one of the same action replaced: that one's id,
-    /// where the action's definition now comes from.
+    /// An active `add_action` or `remove_action` (`define_module` or `remove_module`) a later active one of the
+    /// same action (menu) replaced: that one's id, where its definition now comes from.
     #[sqlx(skip)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<Uuid>,
@@ -110,6 +110,28 @@ pub struct NewCustomization {
     pub note: Option<String>,
 }
 
+/// The body of `POST /api/customize/batch` (`{ops, dry_run?}`), read loosely so that an operation that
+/// does not parse is refused like any other batch refusal: invalid, with its 0-based index and serde's
+/// words naming the property (none for a body that is not JSON or whose `ops` is not a list).
+pub fn parse_batch(body: &[u8]) -> std::result::Result<(Vec<NewCustomization>, bool), (Option<usize>, Error)> {
+    let body: Value = serde_json::from_slice(body).map_err(|e| (None, Error::invalid(format!("the body is not JSON: {e}"))))?;
+    let obj = body.as_object().ok_or_else(|| (None, Error::invalid("the body is an object: {ops, dry_run}")))?;
+    if let Some(k) = obj.keys().find(|k| !["ops", "dry_run"].contains(&k.as_str())) {
+        return Err((None, Error::invalid(format!("unknown field `{k}`: the body is {{ops, dry_run}}"))));
+    }
+    let ops = obj.get("ops").and_then(Value::as_array).ok_or_else(|| (None, Error::invalid("ops is a list of operations")))?;
+    let dry_run = match obj.get("dry_run") {
+        None | Some(Value::Null) => false,
+        Some(v) => v.as_bool().ok_or_else(|| (None, Error::invalid("dry_run is true or false")))?,
+    };
+    let ops = ops
+        .iter()
+        .enumerate()
+        .map(|(i, op)| serde_json::from_value(op.clone()).map_err(|e| (Some(i), Error::invalid(e.to_string()))))
+        .collect::<std::result::Result<_, _>>()?;
+    Ok((ops, dry_run))
+}
+
 /// What an operation that is already active does in a list of customizations to save.
 #[derive(Clone, Copy, PartialEq)]
 enum Duplicates {
@@ -130,7 +152,7 @@ pub(crate) type Saved = (String, &'static str);
 /// An operation as a plan names it: `XGym: add_field fee`.
 pub(crate) fn label_of(target: &str, raw: &Value) -> String {
     let what = raw["op"].as_str().unwrap_or("customization");
-    match raw.get("field").or_else(|| raw.get("action")).or_else(|| raw.get("rule")).or_else(|| raw.get("name")) {
+    match raw.get("field").or_else(|| raw.get("action")).or_else(|| raw.get("rule")).or_else(|| raw.get("module")).or_else(|| raw.get("name")) {
         Some(Value::Object(f)) => format!("{target}: {what} {}", f.get("name").and_then(Value::as_str).unwrap_or_default()),
         Some(Value::String(f)) => format!("{target}: {what} {f}"),
         _ => format!("{target}: {what}"),
@@ -519,6 +541,9 @@ impl Kernel {
             let at = |e: Error| (Some(i), e);
             let target = match &it.op {
                 OverlayOp::DefineEntity { entity } | OverlayOp::RedefineEntity { entity } => entity.name.clone(),
+                // A menu's customization is known by the menu's name.
+                OverlayOp::DefineModule { module } => module.name.clone(),
+                OverlayOp::RemoveModule { name } => name.clone(),
                 _ => it.entity,
             };
             let mut op = it.op;
@@ -605,10 +630,11 @@ impl Kernel {
                 .bind(tenant)
                 .fetch_all(&mut **tx)
                 .await?;
-        // An action's definition comes from the latest active customization naming it.
+        // An action's (or a menu's) definition comes from the latest active customization naming it.
         let named = |r: &OverlayRow| match r.op["op"].as_str() {
             Some("add_action") if r.is_active => r.op["action"]["name"].as_str().map(|n| (r.entity.clone(), n.to_string())),
-            Some("remove_action") if r.is_active => r.op["name"].as_str().map(|n| (r.entity.clone(), n.to_string())),
+            Some("define_module") if r.is_active => r.op["module"]["name"].as_str().map(|n| (r.entity.clone(), n.to_string())),
+            Some("remove_action" | "remove_module") if r.is_active => r.op["name"].as_str().map(|n| (r.entity.clone(), n.to_string())),
             _ => None,
         };
         let latest: std::collections::HashMap<(String, String), Uuid> = rows.iter().filter_map(|r| Some((named(r)?, r.id))).collect();
