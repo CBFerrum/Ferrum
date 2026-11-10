@@ -308,8 +308,8 @@ pub enum Node {
         /// How far a decision may be handed on: 0, nobody may hand it on.
         #[serde(default, skip_serializing_if = "is_zero")]
         delegation: u32,
-        /// Seconds, an ISO 8601 duration (`P2D`, `PT4H`), or business days on a calendar
-        /// (`{"business_days": 2, "calendar": "india"}`).
+        /// Seconds, an ISO 8601 duration (`P2D`, `PT4H`), business days on a calendar
+        /// (`{"business_days": 2, "calendar": "india"}`) or open time on one (`{"working": "PT8H", "calendar": "india"}`).
         timeout: Value,
         next: String,
         on_reject: String,

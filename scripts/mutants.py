@@ -147,6 +147,10 @@ MUTANTS = [
     ("delegation-goes-back", "crates/kernel/src/process.rs", 'if to == ctx.user || delegated.contains(&to) || exclude.contains(&to) {', 'if to == ctx.user || exclude.contains(&to) {', PROCESS_RECORDS),
     # Batch 2 of closing the registry's open rows (docs/logic/evidence/closing-gaps.md).
     ("older-cel-reads-the-clock", "crates/meta/src/expr.rs", "bind(&mut ctx, key, scope.user.get(key).unwrap_or(&Value::Null));", 'bind(&mut ctx, key, scope.user.get(key).unwrap_or(&Value::String(chrono::Utc::now().to_rfc3339())));', META_EXPR),
+    ("clock-end-takes-earlier", "crates/logic/src/calendar.rs", "Some((at(s, false)?, at(e, true)?))", "Some((at(s, false)?, at(e, false)?))", LOGIC_UNIT),
+    ("clock-repeat-counted-twice", "crates/logic/src/calendar.rs", ".filter(|(s2, _)| *s2 < e)", ".filter(|_| false)", LOGIC_UNIT),
+    ("clock-stopped-ignored", "crates/logic/src/calendar.rs", ".filter(|&(a, b)| a < b && b > from)", ".filter(|_| false)", LOGIC_UNIT),
+    ("clock-holiday-open", "crates/logic/src/calendar.rs", "        if !self.business(d) {\n            return vec![];", "        if false {\n            return vec![];", LOGIC_UNIT),
     ("rule-writes-the-apps-field", "crates/logic/src/compile.rs", "if !f.customer {", "if false && !f.customer {", LOGIC_UNIT),
     ("deprecation-unsaid", "crates/logic/src/compile.rs", "if let Some(why) = &c.deprecated {", "if let Some(why) = c.deprecated.as_ref().filter(|_| false) {", LOGIC_UNIT),
     ("erasure-misses-run-copies", "crates/kernel/src/privacy.rs", "let runs = crate::process::erase_run_copies(tx, ctx.tenant, entity, id, fields).await?;", "let runs = 0u64;", PROCESS_RECORDS),
