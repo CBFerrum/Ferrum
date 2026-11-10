@@ -18,6 +18,7 @@ pub fn permissions(ctx: &Ctx, entity: &str) -> Value {
     json!({
         "read": p(Action::Read), "write": p(Action::Write), "create": p(Action::Create), "delete": p(Action::Delete),
         "submit": p(Action::Submit), "cancel": p(Action::Cancel), "export": p(Action::Export), "import": p(Action::Import),
+        "actions": ctx.perms.named_actions(entity),
     })
 }
 

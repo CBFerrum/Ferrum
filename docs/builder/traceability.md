@@ -5,9 +5,9 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | State | Requirements |
 |---|---|
-| Not started | 42 |
+| Not started | 36 |
 | Implemented, unverified | 1 |
-| Verified in software | 3 |
+| Verified in software | 9 |
 | **All** | **46** |
 
 ## BF0: Decisions and inventory
@@ -23,12 +23,12 @@ Each requirement's acceptance case is in [catalog.json](catalog.json). See [READ
 
 | Id | Requirement | State | Case | Tests | What it does not yet do |
 |---|---|---|---|---|---|
-| BF-PORTAL-001 | Portal roles | Not started | AT-BF-PORTAL-001 | 0 | Not started |
-| BF-PORTAL-002 | Ownership through links | Not started | AT-BF-PORTAL-002 | 0 | Not started |
-| BF-PORTAL-003 | Fields and actions under portal roles | Not started | AT-BF-PORTAL-003 | 0 | Not started |
-| BF-PORTAL-004 | Generic portal pages | Not started | AT-BF-PORTAL-004 | 0 | Not started |
-| BF-PORTAL-005 | Portal roles administered and previewed | Not started | AT-BF-PORTAL-005 | 0 | Not started |
-| BF-PORTAL-006 | Proof: two portals as configuration | Not started | AT-BF-PORTAL-006 | 0 | Not started |
+| BF-PORTAL-001 | Portal roles | Verified in software | AT-BF-PORTAL-001 | 1 | A role marked for the portal holds own-record rules, and read-only rules on reference data (no package declares the entity personal and it keeps no email or phone), never every entity, delete, cancel, export or import; portal people hold portal roles only, guests none, neither an administrator (portal_it; mutants portal-role-holds-anything, portal-reads-personal-data-whole, portal-people-hold-member-roles, portal-roles-given-to-anyone). Whether an entity is reference data is read from declarations and field types: an undeclared entity keeping people's details in a text field counts as reference data |
+| BF-PORTAL-002 | Ownership through links | Verified in software | AT-BF-PORTAL-002 | 2 | Paths of at most two links and a child table to an email or text field, compared trimmed in any case; lists by SQL subqueries, single records looked up in their own transaction, never cached: a guardian taken off a student loses the student's records at once; another workspace's same email reaches nothing (portal_it; mutants portal-path-not-looked-up, portal-path-is-whoever-made-it, portal-path-ignores-the-rules-condition, portal-path-matches-case). Paths go outwards only: a record that links to the person's from elsewhere is not reached. Not measured on soak data (no index is added for the email fields paths end at) |
+| BF-PORTAL-003 | Fields and actions under portal roles | Verified in software | AT-BF-PORTAL-003 | 1 | Grouped fields stay hidden unless a rule names the group; a rule names the actions its holders run whatever the action's permission, under its condition and its app's checks; a record's comments, files, assignments, tags and history are refused to portal people and guests; unscoped reports refuse paths (portal_it; mutants named-action-runs-on-any-record, rule-names-an-action-that-is-not-there, portal-people-read-a-records-surroundings, portal-people-read-a-records-history). Global search was not exercised as a portal person; it goes through the same list scopes |
+| BF-PORTAL-004 | Generic portal pages | Verified in software | AT-BF-PORTAL-004 | 2 | Studio 0.3.0 gives the portal Your records: the entities a person's portal roles reach as theirs, their lists and forms, the actions they may run, without a record's discussion or activity. Walked in a browser as a portal person: lists, a record, a consent created, an action run, someone else's visit not found. A workspace on Studio 0.2.0 gets the page once Studio is upgraded; not walked on a phone |
+| BF-PORTAL-005 | Portal roles administered and previewed | Verified in software | AT-BF-PORTAL-005 | 2 | Administrators mark a role for the portal, give rules their path and actions, and give portal people portal roles only, in Administration (walked); the explanation names the rule's path (portal_it, mutant explanation-ignores-the-record). The explanation screen itself was not walked for a portal person |
+| BF-PORTAL-006 | Proof: two portals as configuration | Verified in software | AT-BF-PORTAL-006 | 2 | Healthcare's Patient Portal and Education's Family roles, shipped as configuration, reach exactly the visits, enrollments, attendance, fees and published report cards the apps' own pages show, with cancelling held to the clinic's window and consents recorded as the pages record them (healthcare_it, education_it). The apps' own portal pages stay until their pages are retired for the generic ones (BD-08); invoices stay on ERP's page |
 
 ## BF2: Public pages
 
