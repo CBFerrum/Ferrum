@@ -136,6 +136,22 @@ pub fn aggregate_types(rule: &Rule, shape: &EntityShape, target: &dyn Fn(&str) -
         }
         for Condition(f, op, v) in &a.filter {
             let fty = field(f)?.ty;
+            // The saved record's own field: one of the same type, compared as one value.
+            if let Some(own) = crate::solution::doc_field(v) {
+                let s = shape.fields.get(own).ok_or_else(|| format!("{id}: {} has no field {own}", rule.entity))?;
+                if s.restricted {
+                    return Err(format!("{id}: {}.{own} is restricted: a rule may not read it", rule.entity));
+                }
+                let compares =
+                    matches!(op.trim().to_lowercase().as_str(), "=" | "==" | "eq" | "!=" | "<>" | "ne" | ">" | "gt" | ">=" | "gte" | "<" | "lt" | "<=" | "lte");
+                if s.ty != fty || !compares {
+                    return Err(format!(
+                        "{id}: [{f}, {op}, {v}] does not fit: {}.{own} is {}, {}.{f} is {fty}, compared with one operator",
+                        rule.entity, s.ty, a.entity
+                    ));
+                }
+                continue;
+            }
             if !condition_fits(&fty, op, v)? {
                 return Err(format!("{id}: [{f}, {op}, {v}] does not fit {}.{f}, which is {fty}", a.entity));
             }

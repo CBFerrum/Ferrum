@@ -119,7 +119,11 @@ A rule may also count or sum other records, as `aggregates.{name}`:
   "an approved acceptance whose last day is today or later" is
   `[["status", "=", "Accepted"], ["expires_on", ">=", {"today": 0}]]` and stops counting the morning after,
   with no record saved in between. The source keeps `{"today": n}` as written: it is part of the release's
-  canonical form and digest (two offsets, two digests), never a date fixed when it was compiled.
+  canonical form and digest (two offsets, two digests), never a date fixed when it was compiled. A value may
+  also be `{"doc": "<field>"}`, that field of the record being saved as it stands when the aggregate is read
+  (before derivations), compared with a field of the same type by one operator (`=`, `!=`, `>`, `>=`, `<`,
+  `<=`): "no other report of this franchisee overlaps these dates" is `to: "franchisee"` with
+  `[["period_from", "<=", {"doc": "period_to"}], ["period_to", ">=", {"doc": "period_from"}], ["id", "!=", {"doc": "id"}]]`.
 * `op`: `count` gives a whole number, `exists` yes or no, and `sum` the total of `field`, a number of the
   entity, as an exact decimal (currency amounts too: rules see them as decimals).
 
