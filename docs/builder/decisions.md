@@ -41,6 +41,10 @@ skipped because a configuration says so.
   from a cache, so a guardian removed from a student loses the student's records at once.
 * The portal shows generic pages from the person's portal roles (BF-PORTAL-004), beside the pages apps
   contribute. Apps keep their own portal pages until their configured equivalent reaches parity.
+* (Added 10 November 2026.) A workspace's own menu may be marked for the portal (`portal: true`). Its
+  entries on the portal's home are filtered by the same test as the generic page (what the person's
+  portal roles reach as theirs), shown on Studio's page, with no page or steps of their own
+  (docs/builder/portal.md, Portal menus).
 
 * (Added 10 November 2026, from the portal pages' scoping.) An outside person takes a workflow
   transition only when it names one of their roles; a transition naming no roles is for members who may
