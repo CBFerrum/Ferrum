@@ -377,8 +377,15 @@ impl Catalog {
                 }
             }
             for m in &p.manifest.modules {
-                if !is_ident(&m.name) {
-                    return invalid(format!("{name}: invalid module name {}", m.name));
+                if !is_ident(&m.name) || m.name.starts_with("x_") {
+                    return invalid(format!("{name}: invalid module name {} (x_ names are a workspace's own menus)", m.name));
+                }
+                // One way to do each thing: an app's tile, quick create and assistant notes are in its manifest.
+                if m.has_menu_properties() {
+                    return invalid(format!(
+                        "{name}: module {}: color, description, create and assistant are a workspace's own menu's (an app gives them in its manifest)",
+                        m.name
+                    ));
                 }
             }
         }
