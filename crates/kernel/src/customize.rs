@@ -110,6 +110,61 @@ impl Kernel {
         Ok(())
     }
 
+    /// Custom entities' unique keys live in `custom_key`, kept by saves. In the transaction that changes
+    /// the customizations (from `before` to what is active now): a key that goes takes its rows with it,
+    /// and a key that comes is filled from the records there are, refused while two of them share a value.
+    async fn sync_custom_keys(&self, ctx: &Ctx, tx: &mut crate::db::Tx, before: &[Overlay]) -> Result<()> {
+        let after = self.active_overlays(tx, ctx.tenant).await?;
+        let build = |o: &[Overlay]| effective::build(&self.registry.catalog(), &ctx.schema.packages, o, 0).map_err(|e| Error::invalid(e.to_string()));
+        let keys = |s: &Schema| -> std::collections::BTreeMap<(String, String), (Vec<String>, String)> {
+            s.entities
+                .values()
+                .filter(|e| e.custom)
+                .flat_map(|e| e.unique_keys().into_iter().map(move |k| ((e.def.name.clone(), k.join(",")), (k, e.def.label.clone()))))
+                .collect()
+        };
+        let (was, now) = (keys(&build(before)?), keys(&build(&after)?));
+        for (entity, key) in was.keys().filter(|k| !now.contains_key(*k)) {
+            sqlx::query("delete from custom_key where tenant_id = $1 and entity = $2 and key = $3")
+                .bind(ctx.tenant)
+                .bind(entity)
+                .bind(key)
+                .execute(&mut **tx)
+                .await?;
+        }
+        for ((entity, key), (fields, label)) in now.iter().filter(|(k, _)| !was.contains_key(*k)) {
+            let value = crate::store::key_value_sql(fields, "a");
+            let from = format!("from custom_record a where a.tenant_id = $1 and a.entity = $2 and a.docstatus <> 2 and {value} is not null");
+            let shared: Vec<String> = sqlx::query_scalar(AssertSqlSafe(format!("select {value} {from} group by 1 having count(*) > 1 order by 1 limit 5")))
+                .bind(ctx.tenant)
+                .bind(entity)
+                .fetch_all(&mut **tx)
+                .await?;
+            if !shared.is_empty() {
+                let shown: Vec<String> = shared
+                    .iter()
+                    .map(|v| match serde_json::from_str::<Vec<Value>>(v) {
+                        Ok(vals) => vals.iter().map(|x| x.as_str().map(str::to_string).unwrap_or_else(|| x.to_string())).collect::<Vec<_>>().join(" / "),
+                        Err(_) => v.clone(),
+                    })
+                    .collect();
+                return Err(Error::Conflict(format!(
+                    "{fields} cannot be unique on {label}: records already share {}{}",
+                    shown.join(", "),
+                    if shared.len() == 5 { " and maybe more" } else { "" },
+                    fields = fields.join(", ")
+                )));
+            }
+            sqlx::query(AssertSqlSafe(format!("insert into custom_key (tenant_id, entity, key, value, record_id) select $1, $2, $3, {value}, a.id {from}")))
+                .bind(ctx.tenant)
+                .bind(entity)
+                .bind(key)
+                .execute(&mut **tx)
+                .await?;
+        }
+        Ok(())
+    }
+
     /// The packages' schema, without this workspace's customizations.
     fn packaged(&self, ctx: &Ctx) -> Result<Schema> {
         effective::build(&self.registry.catalog(), &ctx.schema.packages, &[], 0).map_err(|e| Error::invalid(e.to_string()))
@@ -310,6 +365,7 @@ impl Kernel {
             .bind(replaced)
             .execute(&mut *tx)
             .await?;
+        self.sync_custom_keys(ctx, &mut tx, &base).await?;
         Registry::bump_version(&mut tx, ctx.tenant).await?;
         tx.commit().await?;
         self.registry.invalidate(ctx.tenant);
@@ -332,6 +388,7 @@ impl Kernel {
     pub async fn set_customization_active(&self, ctx: &Ctx, id: Uuid, active: bool) -> Result<()> {
         require_admin(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let before = self.active_overlays(&mut tx, ctx.tenant).await?;
         if active {
             let row: Option<(String, Value)> = sqlx::query_as("select entity, op from meta_overlay where tenant_id = $1 and id = $2")
                 .bind(ctx.tenant)
@@ -340,8 +397,7 @@ impl Kernel {
                 .await?;
             let (entity, op) = row.ok_or_else(|| Error::NotFound("customization".into()))?;
             let op: OverlayOp = serde_json::from_value(op).map_err(|e| Error::invalid(e.to_string()))?;
-            let base = self.active_overlays(&mut tx, ctx.tenant).await?;
-            self.check_overlays(ctx, &base, &[Overlay { entity, ops: vec![op] }])?;
+            self.check_overlays(ctx, &before, &[Overlay { entity, ops: vec![op] }])?;
         }
         let n = sqlx::query("update meta_overlay set is_active = $3 where tenant_id = $1 and id = $2")
             .bind(ctx.tenant)
@@ -353,6 +409,7 @@ impl Kernel {
         if n == 0 {
             return Err(Error::NotFound("customization".into()));
         }
+        self.sync_custom_keys(ctx, &mut tx, &before).await?;
         Registry::bump_version(&mut tx, ctx.tenant).await?;
         tx.commit().await?;
         self.registry.invalidate(ctx.tenant);
@@ -404,6 +461,7 @@ impl Kernel {
                 .await?;
         }
         if !new.is_empty() {
+            self.sync_custom_keys(ctx, &mut tx, &base).await?;
             Registry::bump_version(&mut tx, ctx.tenant).await?;
         }
         tx.commit().await?;
