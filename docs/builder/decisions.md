@@ -77,6 +77,19 @@ the kernel; tokens stored in plain.
 * **Business calendars gain hours of the day** (per weekday, in the calendar's zone). Targets on states
   are measured in business time; states marked as pausing stop the clock; a breach is a row written
   once (unique per record, target and round).
+* *2026-11-10, built (service targets).* A target is a workspace's customization of any entity
+  (`add_target`: a calendar, `start_when`, `within`, `pause_when`, `met_when`, and two fields the kernel
+  keeps: the due moment and a state word). Pausing is an expression on the record (a workflow state, a
+  status), not a mark on states, so a target works on entities with no workflow. Each record keeps one row
+  per target (`record_target`): the round number, when it started, resumed and paused, the open seconds
+  worked, the seconds allowed, the due moment, and when it was met and breached; no list of intervals. A
+  pause adds the open time since the last resume to what was worked; a resume adds what is left from now. A
+  re-opened record starts the next round in the same row. The breach is `breached_at`, set by the minute
+  loop with an update that only succeeds while it is empty, so one replica or pass marks it; the two kept
+  fields are then written as a workflow transition writes them, in any document status and past the
+  record's rules, with the record's `updated` event, so automations see the state word change (`old` in
+  their conditions). What a
+  save does to a round is one pure function (`ferrum_logic::target::step`).
 * *10 Nov 2026:* hours of the day are built (`logic_calendar.hours`, `crates/logic/src/calendar.rs`):
   windows per weekday in the zone, and `add_working`, `working_between`, `next_open`, `is_open` with
   stopped intervals; waits take `{"working": "PT8H", "calendar": …}`; administrators keep calendars at

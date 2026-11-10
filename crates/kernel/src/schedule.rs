@@ -372,6 +372,15 @@ impl Kernel {
                         false
                     }
                 };
+                // Service targets past their due moment (targets.rs); a full pass looks again at once.
+                let more = more
+                    | match k.sweep_targets_at(Utc::now()).await {
+                        Ok(n) => n as i64 >= crate::targets::SWEEP_BATCH,
+                        Err(e) => {
+                            tracing::warn!("service targets: {e}");
+                            false
+                        }
+                    };
                 if more {
                     tokio::task::yield_now().await;
                     if *shutdown.borrow() {

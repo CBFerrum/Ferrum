@@ -51,6 +51,17 @@ pub struct Exprs {
     pub action_conditions: BTreeMap<String, Expr>,
     /// A configured action's `refuse_if`, compiled, with their messages, in order.
     pub action_refusals: BTreeMap<String, Vec<(Expr, String)>>,
+    /// Each service target's expressions, by its name.
+    pub targets: BTreeMap<String, TargetExprs>,
+}
+
+/// A service target's expressions, compiled.
+#[derive(Debug, Clone)]
+pub struct TargetExprs {
+    pub start_when: Option<Expr>,
+    pub within: Expr,
+    pub pause_when: Option<Expr>,
+    pub met_when: Expr,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +98,11 @@ impl EffEntity {
     /// Headed by a link (an appointment by its patient): its title is the linked record's.
     pub fn headed_by_link(&self) -> bool {
         self.def.title_field.as_deref().and_then(|t| self.field(t)).is_some_and(|f| f.ftype == FieldType::Link)
+    }
+
+    /// The service target that keeps `field` (its due moment or its state), if one does.
+    pub fn target_keeping(&self, field: &str) -> Option<&TargetDef> {
+        self.def.targets.iter().find(|t| t.due_field == field || t.state_field == field)
     }
 
     pub fn storage_of(&self, field: &str) -> Option<Storage> {
@@ -307,6 +323,25 @@ pub(crate) fn apply_op(def: &mut EntityDef, op: &OverlayOp, source: OverlaySourc
             }
             let i = def.actions.iter().position(|a| &a.name == name).ok_or(format!("there is no action {name} to remove"))?;
             def.actions.remove(i);
+            Ok(None)
+        }
+        OverlayOp::AddTarget { target } => {
+            if source != OverlaySource::Tenant {
+                return Err("this operation is only valid as a tenant customization".into());
+            }
+            match def.targets.iter().position(|t| t.name == target.name) {
+                Some(i) => def.targets[i] = target.clone(),
+                None => def.targets.push(target.clone()),
+            }
+            validate_targets(def)?;
+            Ok(None)
+        }
+        OverlayOp::RemoveTarget { name } => {
+            if source != OverlaySource::Tenant {
+                return Err("this operation is only valid as a tenant customization".into());
+            }
+            let i = def.targets.iter().position(|t| &t.name == name).ok_or(format!("there is no target {name} to remove"))?;
+            def.targets.remove(i);
             Ok(None)
         }
         OverlayOp::AddField { field, after, column } => {
@@ -803,6 +838,10 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
                 OverlayOp::AddAction { action } if !b.custom && !action.name.starts_with("x_") => {
                     Err(format!("action {}: an action added to {}, which comes with a package, is named x_…", action.name, ov.entity))
                 }
+                // A target keeps fields the workspace added, never a package's own.
+                OverlayOp::AddTarget { target: t } if !b.custom && ![&t.due_field, &t.state_field].iter().all(|f| f.starts_with("x_")) => {
+                    Err(format!("target {}: {} comes with a package, so the target keeps fields the workspace added (x_…)", t.name, ov.entity))
+                }
                 _ => apply_op(&mut b.def, op, OverlaySource::Tenant),
             };
             match res {
@@ -977,7 +1016,83 @@ fn compile_exprs(def: &EntityDef) -> Result<Exprs, String> {
             x.action_refusals.insert(a.name.clone(), refusals);
         }
     }
+    for t in &def.targets {
+        let opt = |s: &Option<String>| s.as_deref().map(c).transpose();
+        let exprs = TargetExprs { start_when: opt(&t.start_when)?, within: c(&t.within)?, pause_when: opt(&t.pause_when)?, met_when: c(&t.met_when)? };
+        x.targets.insert(t.name.clone(), exprs);
+    }
     Ok(x)
+}
+
+/// Service targets an entity holds at most.
+pub const MAX_TARGETS: usize = 8;
+
+/// An entity's service targets: on an entity whose records are saved on their own (not lines, not a ledger), at
+/// most [`MAX_TARGETS`], each keeping a datetime field and a data or select field (one offering the five words)
+/// that no other target keeps and nothing else works out, with expressions that compile.
+pub(crate) fn validate_targets(def: &EntityDef) -> Result<(), String> {
+    if def.targets.is_empty() {
+        return Ok(());
+    }
+    if matches!(def.kind, EntityKind::Child | EntityKind::Ledger) {
+        return Err(format!("{} holds lines or ledger rows: a target is set on an entity whose records are saved on their own", def.name));
+    }
+    if def.targets.len() > MAX_TARGETS {
+        return Err(format!("at most {MAX_TARGETS} targets on one entity"));
+    }
+    let mut kept = HashSet::new();
+    let mut names = HashSet::new();
+    for t in &def.targets {
+        let at = |m: String| format!("target {}: {m}", t.name);
+        if !crate::is_ident(&t.name) || !names.insert(t.name.as_str()) {
+            return Err(at("a target's name is lower_snake_case and one of a kind on the entity".into()));
+        }
+        if t.label.trim().is_empty() {
+            return Err(at("a target needs a label".into()));
+        }
+        if let Some(c) = &t.calendar
+            && !(c.len() <= 64
+                && c.starts_with(|x: char| x.is_ascii_lowercase())
+                && c.chars().all(|x| x.is_ascii_lowercase() || x.is_ascii_digit() || x == '_'))
+        {
+            return Err(at(format!("{c} is not a calendar's name")));
+        }
+        for (role, name) in [("due_field", &t.due_field), ("state_field", &t.state_field)] {
+            let f = def.fields.iter().find(|f| &f.name == name).ok_or_else(|| at(format!("{role} {name} is not a field of {}", def.name)))?;
+            let (fits, what) = match role {
+                "due_field" => (f.ftype == FieldType::Datetime, "a date-time field"),
+                _ => (matches!(f.ftype, FieldType::Data | FieldType::Select), "a data or select field"),
+            };
+            if !fits {
+                return Err(at(format!("{role} {name} must be {what}")));
+            }
+            if f.computed.is_some() || f.rollup.is_some() || f.fetch_from.is_some() {
+                return Err(at(format!("{role} {name} is worked out already: a target keeps a field of its own")));
+            }
+            if f.required {
+                return Err(at(format!("{role} {name} is required: a field a target keeps is empty while the record has no such target")));
+            }
+            if !kept.insert(name.as_str()) {
+                return Err(at(format!("{name} is kept by another target (or twice by this one)")));
+            }
+            if f.ftype == FieldType::Select
+                && let Some(w) = crate::TARGET_STATES.iter().find(|w| !f.options.iter().any(|o| o == *w))
+            {
+                return Err(at(format!("{role} {name} offers no {w}: a select field it keeps offers {}", crate::TARGET_STATES.join(", "))));
+            }
+        }
+        for (what, src) in [
+            ("start_when", t.start_when.as_deref()),
+            ("within", Some(t.within.as_str())),
+            ("pause_when", t.pause_when.as_deref()),
+            ("met_when", Some(t.met_when.as_str())),
+        ] {
+            if let Some(src) = src {
+                Expr::compile(src).map_err(|m| at(format!("{what}: {m}")))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A form layout may only place existing fields, each once, in at most 4 columns per section,
@@ -1334,5 +1449,98 @@ mod tests {
         let v = c.cel_view(&json!({"credit_limit": "1500.50"}), &s);
         assert_eq!(v["credit_limit"], json!(1500.5));
         assert_eq!(v["tier"], Value::Null);
+    }
+
+    #[test]
+    fn service_targets() {
+        let cat = catalog();
+        let target = |name: &str, extra: Value| {
+            let mut t = json!({"name": name, "label": "Respond", "within": "doc.priority == 'High' ? 'PT1H' : 'PT8H'", "met_when": "doc.status == 'Closed'",
+                "due_field": "respond_by", "state_field": "respond_state"});
+            for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+                t[k] = v;
+            }
+            json!([{"op": "add_target", "target": t}])
+        };
+        let fields = json!([{"name": "subject", "type": "data"}, {"name": "priority", "type": "data"}, {"name": "status", "type": "data"},
+            {"name": "respond_by", "type": "datetime"}, {"name": "respond_state", "type": "select", "options": ["running", "paused", "met", "met_late", "breached"]},
+            {"name": "resolve_by", "type": "datetime"}, {"name": "resolve_state", "type": "data"}, {"name": "notes", "type": "text"},
+            {"name": "total", "type": "int", "computed": "1"}, {"name": "shown", "type": "data", "computed": "doc.subject"}, {"name": "lines", "type": "table", "of": "XTicketLine"}]);
+        let base = vec![
+            ov(
+                "XTicketLine",
+                json!([{"op": "define_entity", "entity": {"name": "XTicketLine", "label": "Line", "kind": "child",
+                "fields": [{"name": "at", "type": "datetime"}, {"name": "word", "type": "data"}]}}]),
+            ),
+            ov("XTicket", json!([{"op": "define_entity", "entity": {"name": "XTicket", "label": "Ticket", "kind": "master", "fields": fields}}])),
+            ov("Customer", json!([{"op": "add_field", "field": {"name": "x_due", "type": "datetime"}}])),
+            ov("Customer", json!([{"op": "add_field", "field": {"name": "x_state", "type": "data"}}])),
+        ];
+        let with = |more: &[Overlay]| build(&cat, &["core".into()], &[base.clone(), more.to_vec()].concat(), 1).unwrap();
+        assert!(with(&[]).warnings.is_empty(), "{:?}", with(&[]).warnings);
+        let good = ov("XTicket", target("respond", json!({"calendar": "office", "pause_when": "doc.status == 'Waiting'"})));
+        let s = with(std::slice::from_ref(&good));
+        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+        let e = s.entity("XTicket").unwrap();
+        assert_eq!(e.target_keeping("respond_state").map(|t| t.name.as_str()), Some("respond"));
+        assert!(e.exprs.targets["respond"].pause_when.is_some() && e.exprs.targets["respond"].start_when.is_none());
+
+        // Every refusal is a warning naming why; the schema stands without it.
+        let line = ov(
+            "XTicketLine",
+            json!([{"op": "add_target", "target": {"name": "t", "label": "T", "within": "60", "met_when": "true", "due_field": "at", "state_field": "word"}}]),
+        );
+        let packaged = ov(
+            "Customer",
+            json!([{"op": "add_target", "target": {"name": "t", "label": "T", "within": "60", "met_when": "true", "due_field": "x_due", "state_field": "customer_name"}}]),
+        );
+        let mut nine = Vec::new();
+        for i in 0..9 {
+            let (d, st) = (format!("x_d{i}"), format!("x_s{i}"));
+            nine.push(ov("XTicket", json!([{"op": "add_field", "field": {"name": d, "type": "datetime"}}])));
+            nine.push(ov("XTicket", json!([{"op": "add_field", "field": {"name": st, "type": "data"}}])));
+            nine.push(ov("XTicket", target(&format!("t{i}"), json!({"due_field": d, "state_field": st}))));
+        }
+        for (more, why) in [
+            (vec![line], "holds lines"),
+            (vec![ov("XTicket", target("t", json!({"due_field": "nothing"})))], "due_field nothing is not a field"),
+            (vec![ov("XTicket", target("t", json!({"due_field": "subject"})))], "must be a date-time field"),
+            (vec![ov("XTicket", target("t", json!({"state_field": "notes"})))], "must be a data or select field"),
+            (vec![ov("XTicket", target("t", json!({"state_field": "total"})))], "must be a data or select field"),
+            (vec![ov("XTicket", target("t", json!({"state_field": "shown"})))], "worked out already"),
+            (vec![good.clone(), ov("XTicket", target("other", json!({"state_field": "resolve_state"})))], "kept by another target"),
+            (vec![packaged], "comes with a package"),
+            (nine, "at most 8 targets"),
+            (vec![ov("XTicket", target("t", json!({"met_when": "doc.status ==" })))], "met_when"),
+            (vec![ov("XTicket", target("t", json!({"within": ""})))], "within"),
+            (vec![ov("XTicket", target("t", json!({"calendar": "Office Hours"})))], "not a calendar's name"),
+            (vec![ov("XTicket", json!([{"op": "remove_target", "name": "respond"}]))], "no target respond to remove"),
+        ] {
+            let s = with(&more);
+            assert!(s.warnings.iter().any(|w| w.message.contains(why)), "{why}: {:?}", s.warnings);
+        }
+        // The workspace's own fields on a packaged entity are fine.
+        let own = ov(
+            "Customer",
+            json!([{"op": "add_target", "target": {"name": "t", "label": "T", "within": "60", "met_when": "true", "due_field": "x_due", "state_field": "x_state"}}]),
+        );
+        assert!(with(std::slice::from_ref(&own)).warnings.is_empty());
+
+        // The same name again replaces it where it stands; remove takes it away.
+        let resolve = ov("XTicket", target("resolve", json!({"due_field": "resolve_by", "state_field": "resolve_state"})));
+        let s = with(&[good.clone(), resolve, ov("XTicket", target("respond", json!({"within": "'PT2H'"})))]);
+        let names: Vec<(&str, &str)> = s.entity("XTicket").unwrap().def.targets.iter().map(|t| (t.name.as_str(), t.within.as_str())).collect();
+        assert_eq!(names, [("respond", "'PT2H'"), ("resolve", "doc.priority == 'High' ? 'PT1H' : 'PT8H'")], "{:?}", s.warnings);
+        let s = with(&[good.clone(), ov("XTicket", json!([{"op": "remove_target", "name": "respond"}]))]);
+        assert!(s.warnings.is_empty() && s.entity("XTicket").unwrap().def.targets.is_empty());
+
+        // A target added before a redefinition is part of what it replaced; the definition carries targets.
+        let mut def: Value = serde_json::to_value(&with(std::slice::from_ref(&good)).entity("XTicket").unwrap().def).unwrap();
+        assert_eq!(def["targets"][0]["name"], json!("respond"), "the definition carries its targets");
+        def["targets"] = json!([]);
+        let s = with(&[good.clone(), ov("XTicket", json!([{"op": "redefine_entity", "entity": def.clone()}]))]);
+        assert!(s.warnings.is_empty() && s.entity("XTicket").unwrap().def.targets.is_empty(), "{:?}", s.warnings);
+        let tenant = [base.clone(), vec![good.clone(), ov("XTicket", json!([{"op": "redefine_entity", "entity": def}]))]].concat();
+        assert_eq!(superseded(&tenant)[base.len()], Some(base.len() + 1));
     }
 }

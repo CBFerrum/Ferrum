@@ -69,7 +69,7 @@ fn writable(ent: &EffEntity, field: &str) -> std::result::Result<(), String> {
         return Err(format!("{field} is the platform's: no effect writes it"));
     }
     let Some(f) = ent.field(field) else { return Err(format!("{label} has no field {field}")) };
-    if f.computed.is_some() || f.rollup.is_some() {
+    if f.computed.is_some() || f.rollup.is_some() || ent.target_keeping(field).is_some() {
         return Err(format!("{label}.{field} is worked out, not written"));
     }
     if f.ftype == FieldType::Secret || f.ftype == FieldType::Table {
