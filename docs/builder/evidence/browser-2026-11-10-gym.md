@@ -114,6 +114,31 @@ real mailer or with a second person.
     names" listed the gym's labels, fields, choices and buttons; words were written for "Memberships"
     and "End it"; with the person's language set to Hindi the list's title and the button read in Hindi,
     and "Status", "Member" and "Approve" read as the interface's own Hindi words.
+29. **A menu for the gym** (server at PR 171, through the API, 19 of 19 steps with step 31).
+    `define_module` "Gym" with five record types, two of them offered in the + menu, and notes for the
+    assistant: the metadata index listed it as the workspace's own, `GET /api/shell` had its tile and
+    two Create rows, a menu naming a record type the workspace does not have was refused, and an
+    operation that does not parse was refused in the batch's own shape with its index.
+30. **Calendars with hours.** `PUT /api/admin/calendars/gym_floor` with two windows on Monday and a
+    Saturday until midnight: saved and read back; a window ending before it starts was a field error on
+    `hours`; hours on a weekend day were refused. In Administration, Calendars (Ferrum-Frontend PR 71)
+    the calendar opened in the dialog, "Copy Monday to the other business days" and Save wrote six days
+    of the same windows and kept the holiday.
+31. **Governance and Risk installed as a pack** in a fresh workspace with Studio (without Studio the
+    plan said so and the install was refused): its tile and its two Create rows were in the bar, 94
+    words in each of Arabic and Hindi were the workspace's, and a risk saved through the API came back
+    scored 20, 15 and 8 and levelled High by the pack's rules.
+32. **Two menus side by side in the browser** (the same pack installed in the gym's workspace). Home
+    showed four tiles: ERP, Studio, Governance and Risk, Gym, each menu with its icon and colour. The
+    Gym tile opened `/data/x_gym/`: the frame named Gym, only Gym's group in the sidebar, its card on
+    Home. The + menu's Member entry opened a new Member there. `/open/XRisk` went to
+    `/data/x_grc/e/XRisk`, titled Risk Register, with only that menu's group.
+33. **The pack's pages in Arabic.** With the person's language set to Arabic the Governance and Risk
+    pages read right to left: the list's title, the sidebar's six record types, the frame's name and
+    the search box's label in the pack's words.
+34. **The menus screen.** Customize, Menus listed both menus; Gym was opened, given a sixth record type
+    and saved, and the index had it. The new-menu form and the calendar dialog at 375 px did not scroll
+    sideways.
 
 ## What these later walks found
 
@@ -122,9 +147,16 @@ real mailer or with a second person.
   save, and the list still showed it as active. Fixed in PR 168 and Ferrum-Frontend PR 70.
 * The buttons screen sent the description's `may_run` back and was refused; the refusal reached the
   screen as "Please check your input." because an operation that does not parse is answered in plain
-  text. The first is fixed; the second is not yet.
+  text. Both are fixed (the second in PR 171).
 * `may_run` alone would have shown a button on a record the person may not change (own records only).
 * A choice or a record called `constructor` or `toString` was shown as nothing.
+* The menus screen sent the index's `package` mark back and every save of an existing menu was
+  refused (the batch's new refusal shape put the server's words on the form, which is how it was seen).
+* About twenty sentences lower-case a name before asking for its word ("No {value} yet", "Search
+  {labels}"), so the word was never found, for apps' names as for a workspace's: an empty list read
+  "لا risk register بعد". Words are now also found by their lower-cased English.
+* Left as they are: the frame's own badge shows a menu's initials, not its icon; the bar's name of a
+  menu is not translated.
 
 ## What still needs code or is not built
 
