@@ -141,12 +141,12 @@ pub(crate) async fn run(
     for (i, effect) in effects.into_iter().enumerate() {
         let creates = matches!(effect, AutomationAction::CreateDocument { .. });
         // Each effect sees the record as the ones before it left it, and what each before it gave as `results`.
-        let now = k.get_tx(&system, tx, &ent.def.name, id, false).await?;
-        let view = ent.cel_view(&Value::Object(now), &ctx.schema);
+        let now = Value::Object(k.get_tx(&system, tx, &ent.def.name, id, false).await?);
+        let view = ent.cel_view(&now, &ctx.schema);
         let done = Value::Array(results.clone());
         let links = crate::links::load(k, ctx, tx, ent, &view, &automation::links_used(&effect)?).await?;
         let extra = [("params", &params), ("results", &done), ("links", &links)];
-        let out = automation::execute(k, &system, tx, &ent.def.name, Some(id), &view, &user, &extra, &format!("{origin}{i}"), effect).await?;
+        let out = automation::execute(k, &system, tx, &ent.def.name, Some(id), (&now, &view), &user, &extra, &format!("{origin}{i}"), effect).await?;
         if creates {
             made.push(out.clone());
         }

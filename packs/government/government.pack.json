@@ -6555,7 +6555,6 @@
   ],
   "requires": {
     "packages": {
-      "accounting": "0.3.0",
       "core": "0.2.0",
       "parties": "0.1.0",
       "products": "0.1.0",
@@ -6564,54 +6563,6 @@
     }
   },
   "roles": [
-    {
-      "description": null,
-      "name": "Accounts Manager",
-      "permissions": [
-        {
-          "cancel": false,
-          "create": false,
-          "delete": false,
-          "entity": "DeliveryNote",
-          "export": false,
-          "if_owner": false,
-          "import": false,
-          "read": true,
-          "read_groups": [],
-          "submit": false,
-          "write": false,
-          "write_groups": []
-        },
-        {
-          "cancel": true,
-          "create": true,
-          "delete": true,
-          "entity": "SalesInvoice",
-          "export": true,
-          "if_owner": false,
-          "import": false,
-          "read": true,
-          "read_groups": [],
-          "submit": true,
-          "write": true,
-          "write_groups": []
-        },
-        {
-          "cancel": false,
-          "create": false,
-          "delete": false,
-          "entity": "SalesOrder",
-          "export": false,
-          "if_owner": false,
-          "import": false,
-          "read": true,
-          "read_groups": [],
-          "submit": false,
-          "write": false,
-          "write_groups": []
-        }
-      ]
-    },
     {
       "description": null,
       "name": "Applicant",
