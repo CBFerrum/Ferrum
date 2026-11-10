@@ -241,6 +241,7 @@ fn describe(op: &OverlayOp) -> String {
         OverlayOp::AddOptions { field, options } => format!("adds options to {field}: {}", options.join(", ")),
         OverlayOp::SetEntityProperty { property, value } => format!("sets {property} = {value}"),
         OverlayOp::DefineEntity { entity } => format!("defines entity {}", entity.name),
+        OverlayOp::RedefineEntity { entity } => format!("redefines entity {}", entity.name),
         OverlayOp::SetWorkflow { workflow } => format!("sets workflow {}", workflow.name),
         OverlayOp::SetPrintTemplate { .. } => "replaces the print template".into(),
         OverlayOp::AddAction { action } => format!("adds action {}", action.name),
