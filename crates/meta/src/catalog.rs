@@ -813,6 +813,35 @@ fn validate_contract(e: &EntityDef, a: &ActionDef, c: &ActionContract) -> Result
     Ok(())
 }
 
+/// A rollup totals one of this entity's own tables: a sum of a numeric row field into a numeric field
+/// that can hold it (decimals only into a decimal field), or a count into any numeric field.
+fn validate_rollup(e: &EntityDef, f: &FieldDef, r: &RollupDef, all: &HashMap<&str, &EntityDef>) -> Result<(), String> {
+    let fname = &f.name;
+    if !f.ftype.is_numeric() {
+        return Err(format!("rollup field '{fname}' must be a number field"));
+    }
+    if f.computed.is_some() {
+        return Err(format!("field '{fname}' cannot be both computed and a rollup"));
+    }
+    let table = e.fields.iter().find(|t| t.name == r.table && t.ftype == FieldType::Table);
+    let child = table.and_then(|t| all.get(t.of.as_deref()?)).ok_or_else(|| format!("rollup field '{fname}': {} is not a table of {}", r.table, e.name))?;
+    match (r.op, r.field.as_deref()) {
+        (RollupOp::Count, None) => Ok(()),
+        (RollupOp::Count, Some(_)) => Err(format!("rollup field '{fname}': count takes no field")),
+        (RollupOp::Sum, None) => Err(format!("rollup field '{fname}': sum needs the row field it adds up")),
+        (RollupOp::Sum, Some(rf)) => {
+            let row = child.fields.iter().find(|c| c.name == rf).ok_or_else(|| format!("rollup field '{fname}': {rf} is not a field of {}", child.name))?;
+            if !row.ftype.is_numeric() {
+                return Err(format!("rollup field '{fname}': {}.{rf} is not a number", child.name));
+            }
+            if row.ftype.is_decimal() && !f.ftype.is_decimal() {
+                return Err(format!("rollup field '{fname}': a sum of decimals needs a decimal field"));
+            }
+            Ok(())
+        }
+    }
+}
+
 fn validate_field(e: &EntityDef, f: &FieldDef, all: &HashMap<&str, &EntityDef>) -> Result<(), String> {
     let fname = &f.name;
     if f.ftype == FieldType::Secret {
@@ -859,6 +888,9 @@ fn validate_field(e: &EntityDef, f: &FieldDef, all: &HashMap<&str, &EntityDef>) 
             return Err(format!("currency field '{fname}' cannot be CEL-computed (use a native hook)"));
         }
         _ => {}
+    }
+    if let Some(r) = &f.rollup {
+        validate_rollup(e, f, r, all)?;
     }
     if f.to.is_some() && f.ftype != FieldType::Link {
         return Err(format!("field '{fname}': 'to' is only for links"));
