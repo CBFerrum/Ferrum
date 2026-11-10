@@ -573,7 +573,9 @@ impl Kernel {
                 calendars.push(PackCalendar { name, zone: c.zone, weekends: c.weekends, holidays: c.holidays, hours: c.hours });
             }
         }
-        let (roles, role_packages) = self.export_roles(ctx, &mut tx).await?;
+        let installed: Vec<(String, String)> =
+            sqlx::query_as("select name, version from installed_package where tenant_id = $1 order by name").bind(ctx.tenant).fetch_all(&mut *tx).await?;
+        let (roles, role_packages) = self.export_roles(ctx, &mut tx, &installed).await?;
         let automations = export_automations(ctx, &mut tx).await?;
         let studio = self.export_studio(ctx, &mut tx).await?;
         let mut records = Vec::new();
@@ -586,8 +588,6 @@ impl Kernel {
         }
         let running: Vec<Uuid> =
             sqlx::query_scalar("select release_id from logic_activation where tenant_id = $1 order by solution").bind(ctx.tenant).fetch_all(&mut *tx).await?;
-        let installed: Vec<(String, String)> =
-            sqlx::query_as("select name, version from installed_package where tenant_id = $1 order by name").bind(ctx.tenant).fetch_all(&mut *tx).await?;
         tx.commit().await?;
         let mut solutions = Vec::new();
         for release in running {
@@ -623,8 +623,9 @@ impl Kernel {
 
     /// The roles this workspace made, with their rules, and the rules it added to packaged roles (with their
     /// portal mark when it changed it); and the packages of those packaged roles. A role's `package` column
-    /// says a package seeded it; its seeded rules are its package's manifest's.
-    async fn export_roles(&self, ctx: &Ctx, tx: &mut Tx) -> Result<(Vec<RoleDef>, BTreeSet<String>)> {
+    /// says a package seeded it; its seeded rules are those every installed package's manifest gives a role of
+    /// that name (several packages may seed one role).
+    async fn export_roles(&self, ctx: &Ctx, tx: &mut Tx, installed: &[(String, String)]) -> Result<(Vec<RoleDef>, BTreeSet<String>)> {
         let roles: Vec<(String, Option<String>, Option<String>, bool)> =
             sqlx::query_as("select name, description, package, portal from role where tenant_id = $1 order by name")
                 .bind(ctx.tenant)
@@ -645,7 +646,12 @@ impl Kernel {
                 None => out.push(RoleDef { name, description, permissions, portal }),
                 Some(pkg) => {
                     let seeded = catalog.package(&pkg).and_then(|p| p.manifest.roles.iter().find(|r| r.name == name).cloned());
-                    let kept: Vec<PermissionDef> = seeded.iter().flat_map(|r| r.permissions.iter().map(as_kept)).collect();
+                    let kept: Vec<PermissionDef> = installed
+                        .iter()
+                        .filter_map(|(p, _)| catalog.package(p))
+                        .flat_map(|p| p.manifest.roles.iter().filter(|r| r.name == name))
+                        .flat_map(|r| r.permissions.iter().map(as_kept))
+                        .collect();
                     let added: Vec<PermissionDef> = permissions.into_iter().filter(|p| !kept.contains(p)).collect();
                     if added.is_empty() && seeded.as_ref().map(|r| r.portal) == Some(portal) {
                         continue;

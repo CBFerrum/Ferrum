@@ -238,6 +238,37 @@ async fn scenario() {
     assert_eq!(e.code(), "input_changed", "{e:?}");
     assert!(message(&e).contains(&format!("the key fee:{a} was used for fees.invoice.create with other input")), "{e:?}");
     assert_eq!((w.postings().await, w.invoices().await), (1, 1));
+    // Whoever pressed is told in plain words; the key and the capability are the administrator's, who set it up
+    // and gets both (docs/api.md, "Once").
+    let plain = "was already done for this record with other details, so it was not done again";
+    assert!(message(&e).contains(plain), "{e:?}");
+    w.batch(vec![custom("XApplication", json!({"op": "add_field", "field": {"name": "x_email", "type": "data"}}))]).await.unwrap();
+    let admin = w.admin().await;
+    w.k.update(&admin, "XApplication", a, obj(json!({"x_email": "pia@home.test"})), None).await.unwrap();
+    let rule = |v: Value| serde_json::from_value(v).unwrap();
+    w.k.set_role_permission(&admin, "Clerk", &rule(json!({"entity": "XApplication", "read": true, "write": true}))).await.unwrap();
+    let clerk = w.k.create_user(&admin, "clerk@city.test", "Clerk", None, &["Clerk".into()], false).await.unwrap();
+    w.k.set_role_permission(&admin, "Applicants", &rule(json!({"entity": "XApplication", "read": true, "via": "x_email", "actions": ["invoice_fee"]})))
+        .await
+        .unwrap();
+    w.k.set_role_portal(&admin, "Applicants", true).await.unwrap();
+    let pia = w.k.create_user(&admin, "pia@home.test", "Pia", None, &[], false).await.unwrap();
+    w.k.set_user_kind(&admin, pia, "portal").await.unwrap();
+    w.k.set_user_roles_until(&admin, pia, &["Applicants".into()], &Default::default()).await.unwrap();
+    for who in [clerk, pia] {
+        let ctx = w.k.load_ctx(w.tenant, who, None, "it".into()).await.unwrap();
+        let e = w.k.run_action(&ctx, "XApplication", a, "invoice_fee", json!({})).await.unwrap_err();
+        assert_eq!((e.code(), e.status()), ("input_changed", 409), "{e:?}");
+        let said = message(&e);
+        assert!(said.contains(plain) && !said.contains("fee:") && !said.contains("fees.invoice.create"), "{said}");
+    }
+    assert_eq!((w.postings().await, w.invoices().await), (1, 1));
+    // The gate itself, for processes and agents, keeps the precise refusal.
+    let other = json!({"values": {"customer": "Asha", "lines": [{"item": "Permit fee", "amount": 999}]}, "submit": true});
+    let inv = ferrum_kernel::capability::Invocation::new("fees.invoice.create", other).key(format!("fee:{a}"));
+    let e = w.k.invoke(&admin, inv).await.unwrap_err();
+    assert_eq!(e.code(), "input_changed", "{e:?}");
+    assert!(message(&e).contains(&format!("the key fee:{a} was used for fees.invoice.create with other input")) && !message(&e).contains(plain), "{e:?}");
 
     // ───────────── refused by the owning app: nothing kept ─────────────
     let nothing = w.apply(0).await;
