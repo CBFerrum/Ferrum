@@ -114,18 +114,23 @@ impl Kernel {
             .execute(&mut *tx)
             .await?;
             for role in &pkg.manifest.roles {
-                sqlx::query("insert into role (tenant_id, name, description, package) values ($1, $2, $3, $4) on conflict do nothing")
-                    .bind(tenant)
-                    .bind(&role.name)
-                    .bind(&role.description)
-                    .bind(name)
-                    .execute(&mut *tx)
-                    .await?;
+                // A package's portal mark follows its version (BD-02); its roles stay its own.
+                sqlx::query(
+                    "insert into role (tenant_id, name, description, package, portal) values ($1, $2, $3, $4, $5) \
+                     on conflict (tenant_id, name) do update set portal = excluded.portal where role.package = excluded.package",
+                )
+                .bind(tenant)
+                .bind(&role.name)
+                .bind(&role.description)
+                .bind(name)
+                .bind(role.portal)
+                .execute(&mut *tx)
+                .await?;
                 for p in &role.permissions {
                     sqlx::query(
                         "insert into role_permission (tenant_id, role, entity, can_read, can_write, can_create, can_delete, can_submit, \
-                         can_cancel, can_export, can_import, if_owner, read_groups, write_groups, match_rule, rule_key) \
-                         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) on conflict do nothing",
+                         can_cancel, can_export, can_import, if_owner, read_groups, write_groups, match_rule, rule_key, via, actions) \
+                         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) on conflict do nothing",
                     )
                     .bind(tenant)
                     .bind(&role.name)
@@ -138,11 +143,13 @@ impl Kernel {
                     .bind(p.cancel)
                     .bind(p.export)
                     .bind(p.import)
-                    .bind(p.if_owner)
+                    .bind(p.if_owner || p.via.is_some())
                     .bind(&p.read_groups)
                     .bind(&p.write_groups)
                     .bind((!p.condition.is_empty()).then(|| serde_json::to_value(&p.condition).unwrap_or_default()))
                     .bind(p.condition_key())
+                    .bind(&p.via)
+                    .bind(&p.actions)
                     .execute(&mut *tx)
                     .await?;
                 }

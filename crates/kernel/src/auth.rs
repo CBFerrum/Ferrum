@@ -128,6 +128,8 @@ pub struct CtxCore {
     pub perms: Arc<PermSet>,
     /// When the first of the roles given until a moment ends: a cached context lapses then.
     pub until: Option<DateTime<Utc>>,
+    /// A portal person or a guest.
+    pub outside: bool,
 }
 
 /// A records key's scope (`records:Customer=read+write;SalesInvoice=read`): the entities it may
@@ -521,21 +523,33 @@ impl Kernel {
         if !active {
             return Err(Error::Unauthorized("user or tenant is disabled".into()));
         }
-        // Portal people and guests reach only the pages apps give them (docs/plan/apps-ui.md §9.1),
-        // which answer for them by who they are: whatever roles they were given count for nothing.
+        // Portal people and guests reach the pages apps give them (docs/plan/apps-ui.md §9.1). Portal
+        // people also hold the roles marked for the portal (docs/builder/decisions.md BD-02), which
+        // reach only their own records; any other role given to them counts for nothing, as every
+        // role does for a guest. Neither is ever an administrator.
         let outside = matches!(kind.as_str(), "portal" | "guest");
         let is_admin = is_admin && !outside;
-        let roles: Vec<(String, Option<DateTime<Utc>>)> = if outside {
-            vec![]
-        } else {
-            sqlx::query_as(
-                "select role, expires_at from user_role where tenant_id = $1 and user_id = $2 and (expires_at is null or expires_at > now()) order by role",
-            )
-            .bind(tenant)
-            .bind(user)
-            .fetch_all(&mut *tx)
-            .await?
-        };
+        let roles: Vec<(String, Option<DateTime<Utc>>)> =
+            match kind.as_str() {
+                "guest" => vec![],
+                "portal" => {
+                    sqlx::query_as(
+                        "select ur.role, ur.expires_at from user_role ur join role r on r.tenant_id = ur.tenant_id and r.name = ur.role \
+                     where ur.tenant_id = $1 and ur.user_id = $2 and r.portal and (ur.expires_at is null or ur.expires_at > now()) order by ur.role",
+                    )
+                    .bind(tenant)
+                    .bind(user)
+                    .fetch_all(&mut *tx)
+                    .await?
+                }
+                _ => sqlx::query_as(
+                    "select role, expires_at from user_role where tenant_id = $1 and user_id = $2 and (expires_at is null or expires_at > now()) order by role",
+                )
+                .bind(tenant)
+                .bind(user)
+                .fetch_all(&mut *tx)
+                .await?,
+            };
         let until = roles.iter().filter_map(|r| r.1).min();
         let roles: Vec<String> = roles.into_iter().map(|r| r.0).collect();
         let scope_rows: Vec<(String, Uuid, bool)> = sqlx::query_as("select entity, value, is_default from user_scope where tenant_id = $1 and user_id = $2")
@@ -561,7 +575,20 @@ impl Kernel {
         let perms = PermSet::load(&mut tx, tenant, &roles, is_admin).await?;
         tx.commit().await?;
         let fy_start_month = settings.get("fiscal_year_start_month").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 12) as u32;
-        Ok(CtxCore { read_only, email, full_name, roles, is_admin, token_version, scopes, default_company, fy_start_month, perms: Arc::new(perms), until })
+        Ok(CtxCore {
+            read_only,
+            email,
+            full_name,
+            roles,
+            is_admin,
+            token_version,
+            scopes,
+            default_company,
+            fy_start_month,
+            perms: Arc::new(perms),
+            until,
+            outside,
+        })
     }
 
     /// Builds the request context; `token_version` (from a session token) must match the user's
@@ -594,6 +621,7 @@ impl Kernel {
             roles: core.roles.clone(),
             is_admin: core.is_admin,
             is_system: false,
+            outside: core.outside,
             request_id,
             scopes: core.scopes.clone(),
             default_company: core.default_company,
@@ -800,6 +828,24 @@ impl Kernel {
             }
         }
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        // A guest holds no role, a portal person only portal roles (BD-02): refused here, not left
+        // to count for nothing.
+        let kind: Option<String> =
+            sqlx::query_scalar("select kind from app_user where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(user).fetch_optional(&mut *tx).await?;
+        match kind.as_deref() {
+            Some("guest") if !roles.is_empty() => return Err(Error::field("roles", "guests hold no roles")),
+            Some("portal") => {
+                let portal: Vec<String> = sqlx::query_scalar("select name from role where tenant_id = $1 and portal and name = any($2)")
+                    .bind(ctx.tenant)
+                    .bind(roles)
+                    .fetch_all(&mut *tx)
+                    .await?;
+                if let Some(other) = roles.iter().find(|r| !portal.contains(r)) {
+                    return Err(Error::field("roles", format!("portal people hold only portal roles, and {other} is not one")));
+                }
+            }
+            _ => {}
+        }
         sqlx::query("delete from user_role where tenant_id = $1 and user_id = $2").bind(ctx.tenant).bind(user).execute(&mut *tx).await?;
         for r in roles {
             sqlx::query("insert into user_role (tenant_id, user_id, role, expires_at) values ($1, $2, $3, $4)")
@@ -932,16 +978,34 @@ impl Kernel {
         }
         let ent = ctx.schema.entity(&p.entity).cloned();
         p.check_condition(|f| ent.as_deref().and_then(|e| e.field(f))).map_err(|m| Error::field("where", m))?;
+        // A path is checked against the entities it crosses now, and makes the rule an own-record rule.
+        let via = p.via.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+        if let Some(path) = &via {
+            if p.entity == "*" {
+                return Err(Error::field("via", "a path starts at one entity, not every entity"));
+            }
+            ferrum_meta::via::resolve(&p.entity, path, |n| ctx.schema.entity(n).map(|e| &e.def)).map_err(|m| Error::field("via", m))?;
+        }
+        if let Some(why) = p.unknown_action(ent.as_ref().map(|e| &e.def)) {
+            return Err(Error::field("actions", why));
+        }
+        let p = &PermissionDef { if_owner: p.if_owner || via.is_some(), via, ..p.clone() };
         let condition = (!p.condition.is_empty()).then(|| serde_json::to_value(&p.condition).unwrap_or_default());
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         sqlx::query("insert into role (tenant_id, name) values ($1, $2) on conflict do nothing").bind(ctx.tenant).bind(role).execute(&mut *tx).await?;
+        let portal: bool =
+            sqlx::query_scalar("select portal from role where tenant_id = $1 and name = $2").bind(ctx.tenant).bind(role).fetch_one(&mut *tx).await?;
+        if let Some(why) = portal.then(|| p.portal_problem(holds_personal(ctx, &p.entity))).flatten() {
+            return Err(Error::field("entity", why));
+        }
         sqlx::query(
             "insert into role_permission (tenant_id, role, entity, can_read, can_write, can_create, can_delete, can_submit, can_cancel, \
-             can_export, can_import, if_owner, read_groups, write_groups, match_rule, rule_key) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) \
+             can_export, can_import, if_owner, read_groups, write_groups, match_rule, rule_key, via, actions) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) \
              on conflict (tenant_id, role, entity, if_owner, rule_key) do update set can_read = excluded.can_read, can_write = excluded.can_write, \
              can_create = excluded.can_create, can_delete = excluded.can_delete, can_submit = excluded.can_submit, can_cancel = excluded.can_cancel, \
-             can_export = excluded.can_export, can_import = excluded.can_import, read_groups = excluded.read_groups, write_groups = excluded.write_groups",
+             can_export = excluded.can_export, can_import = excluded.can_import, read_groups = excluded.read_groups, write_groups = excluded.write_groups, \
+             via = excluded.via, actions = excluded.actions",
         )
         .bind(ctx.tenant)
         .bind(role)
@@ -959,6 +1023,8 @@ impl Kernel {
         .bind(&p.write_groups)
         .bind(condition)
         .bind(p.condition_key())
+        .bind(&p.via)
+        .bind(&p.actions)
         .execute(&mut *tx)
         .await?;
         notify_users(&mut tx, ctx.tenant, None).await?;
@@ -966,6 +1032,51 @@ impl Kernel {
         self.invalidate_tenant_users(ctx.tenant);
         Ok(())
     }
+
+    /// Marks a role for the portal or not (BD-02). Marking is refused while any of its rules could
+    /// not belong to a portal role, naming them; unmarked, portal people holding it lose it at once.
+    pub async fn set_role_portal(&self, ctx: &Ctx, role: &str, portal: bool) -> Result<()> {
+        Self::require_admin(ctx)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let exists: bool =
+            sqlx::query_scalar("select exists (select 1 from role where tenant_id = $1 and name = $2)").bind(ctx.tenant).bind(role).fetch_one(&mut *tx).await?;
+        if !exists {
+            return Err(Error::NotFound(format!("role {role}")));
+        }
+        if portal {
+            #[allow(clippy::type_complexity)]
+            let rules: Vec<(String, bool, bool, bool, bool, bool, Option<String>, bool, bool, bool, Vec<String>, Vec<String>)> = sqlx::query_as(
+                "select entity, if_owner, can_delete, can_cancel, can_export, can_import, via, can_write, can_create, can_submit, actions, write_groups \
+                 from role_permission where tenant_id = $1 and role = $2 order by entity",
+            )
+            .bind(ctx.tenant)
+            .bind(role)
+            .fetch_all(&mut *tx)
+            .await?;
+            let problems: Vec<String> = rules
+                .into_iter()
+                .filter_map(|(entity, if_owner, delete, cancel, export, import, via, write, create, submit, actions, write_groups)| {
+                    let personal = holds_personal(ctx, &entity);
+                    PermissionDef { entity, if_owner, delete, cancel, export, import, via, write, create, submit, actions, write_groups, ..Default::default() }
+                        .portal_problem(personal)
+                })
+                .collect();
+            if !problems.is_empty() {
+                return Err(Error::field("portal", format!("its rules must change first: {}", problems.join("; "))));
+            }
+        }
+        sqlx::query("update role set portal = $3 where tenant_id = $1 and name = $2").bind(ctx.tenant).bind(role).bind(portal).execute(&mut *tx).await?;
+        notify_users(&mut tx, ctx.tenant, None).await?;
+        tx.commit().await?;
+        self.invalidate_tenant_users(ctx.tenant);
+        Ok(())
+    }
+}
+
+/// Whether records of `entity` hold personal data in this workspace (see
+/// [`ferrum_meta::holds_personal_data`]); an entity not installed counts as holding it.
+fn holds_personal(ctx: &Ctx, entity: &str) -> bool {
+    ctx.schema.entity(entity).is_none_or(|e| ferrum_meta::holds_personal_data(&e.def, |n| ctx.schema.personal_data.iter().any(|d| d.entity == n)))
 }
 
 #[cfg(test)]

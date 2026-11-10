@@ -39,7 +39,7 @@ impl Kernel {
         }
         let column = format!("can_{}", action.verb());
         let rules: Vec<Value> = sqlx::query_scalar(AssertSqlSafe(format!(
-            "select jsonb_build_object('role', role, 'entity', entity, 'if_owner', if_owner, 'where', match_rule) from role_permission \
+            "select jsonb_build_object('role', role, 'entity', entity, 'if_owner', if_owner, 'where', match_rule, 'via', via) from role_permission \
              where tenant_id = $1 and role = any($2) and entity in ($3, '*') and {column} order by role, rule_key"
         )))
         .bind(ctx.tenant)
@@ -64,15 +64,55 @@ impl Kernel {
         if let Some(id) = record {
             let system = Ctx::system(ctx.tenant, ctx.schema.clone());
             let doc = self.get(&system, entity, id, false).await?;
-            let reached = scope.matches(&doc);
-            answer["allowed"] = json!(reached);
-            answer["reason"] = json!(if reached {
-                format!("a rule of theirs reaches this {entity}")
+            let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+            // Which rule reached it, and through which path (BD-02), looked up as requests do.
+            let by = if scope.grants.is_empty() {
+                if scope.matches(&doc) { Some(None) } else { None }
             } else {
-                format!("their rules reach other records of {entity}, not this one")
+                scope.reached_by(&mut tx, ctx.tenant, &doc).await?.map(Some)
+            };
+            tx.commit().await?;
+            let reached = by.is_some();
+            let via = by.flatten().and_then(|i| scope.grants[i].via.as_ref()).map(|v| v.path.clone());
+            answer["allowed"] = json!(reached);
+            answer["reason"] = json!(match (&via, reached) {
+                (Some(path), _) => format!("a rule of theirs reaches this {entity} through {path}, which leads to their email"),
+                (None, true) => format!("a rule of theirs reaches this {entity}"),
+                (None, false) => format!("their rules reach other records of {entity}, not this one"),
             });
-            answer["record"] = json!({"id": id, "reached": reached});
+            answer["record"] = json!({"id": id, "reached": reached, "via": via});
         }
         Ok(answer)
+    }
+}
+
+impl Kernel {
+    /// The entities whose records the caller's portal roles reach as theirs (docs/builder/decisions.md
+    /// BD-02), for the portal's generic pages, each with what they may do there; reference data they
+    /// may read whole to pick from is not listed. Empty for someone holding none.
+    pub async fn portal_entities(&self, ctx: &Ctx) -> Result<Vec<Value>> {
+        if ctx.roles.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let names: Vec<String> = sqlx::query_scalar(
+            "select distinct p.entity from role_permission p join role r on r.tenant_id = p.tenant_id and r.name = p.role \
+             where p.tenant_id = $1 and r.portal and p.role = any($2) and p.can_read and (p.if_owner or p.via is not null) order by 1",
+        )
+        .bind(ctx.tenant)
+        .bind(&ctx.roles)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(names
+            .into_iter()
+            .filter_map(|n| {
+                let e = ctx.schema.entity(&n)?;
+                Some(json!({
+                    "name": n, "label": e.def.label, "label_plural": e.def.plural_label(), "description": e.def.description, "icon": e.def.icon,
+                    "permissions": crate::describe::permissions(ctx, &n),
+                }))
+            })
+            .collect())
     }
 }

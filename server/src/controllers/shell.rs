@@ -660,7 +660,13 @@ async fn portal(st: &AppState, headers: &HeaderMap, uri: &Uri, rest: Option<&str
         ));
     }
     let apps = st.apps.shell_apps(ctx.tenant).await?;
-    let pages = shell::portal_pages(&apps);
+    let mut pages = shell::portal_pages(&apps);
+    // Studio's generic records page shows what portal roles reach (docs/builder/decisions.md BD-02):
+    // nothing to show, no page.
+    let generic = |p: &shell::PortalPage| p.id == "records" && p.app.id == "studio";
+    if pages.iter().any(generic) && st.kernel.portal_entities(&ctx).await?.is_empty() {
+        pages.retain(|p| !generic(p));
+    }
     let (id, tail) = match rest.split_once('/') {
         Some((id, tail)) => (id, Some(tail)),
         None => (rest, None),

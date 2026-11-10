@@ -641,6 +641,10 @@ pub struct RoleDef {
     pub description: Option<String>,
     #[serde(default)]
     pub permissions: Vec<PermissionDef>,
+    /// For the portal (docs/builder/decisions.md BD-02): portal people hold only such roles, and
+    /// such a role holds only own-record rules (see [`PermissionDef::portal_problem`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub portal: bool,
 }
 
 /// What a record shows of the records it links to.
@@ -690,6 +694,22 @@ pub struct PermissionDef {
     /// entity with different conditions, and a record qualifies through any of them.
     #[serde(default, rename = "where", skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub condition: std::collections::BTreeMap<String, Value>,
+    /// Own records reached through a path rather than by who made them (BD-02): at most two links,
+    /// then optionally a child table, ending at a field holding the person's email (`patient.email`,
+    /// `student.guardians.email`; see [`crate::via`]). Makes the rule an own-record rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+    /// The entity's actions its holders may run on the records this rule reaches, whatever the
+    /// action's own `permission` asks (BD-02: a patient cancels their visit without editing it). The
+    /// action's condition and its app's checks still apply.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<String>,
+}
+
+/// Whether records of `e` hold personal data: a package declares them its people's (`declared`), or
+/// they keep an email or a phone number. A portal role reads such records only as its holders' own.
+pub fn holds_personal_data(e: &EntityDef, declared: impl Fn(&str) -> bool) -> bool {
+    declared(&e.name) || e.fields.iter().any(|f| matches!(f.ftype, FieldType::Email | FieldType::Phone))
 }
 
 /// Field types a permission condition may test (compared as text, so they must be exact).
@@ -824,13 +844,50 @@ impl PermissionDef {
 
     /// The condition in one canonical form, telling apart rules of one role and entity ('' = none).
     pub fn condition_key(&self) -> String {
+        // A rule reaching records through a path is another rule than one reaching them otherwise.
+        let via = self.via.as_deref().map(|v| format!("via:{}", v.trim())).unwrap_or_default();
         if self.condition.is_empty() {
-            return String::new();
+            return via;
         }
-        match self.condition_ranges().filter(|r| !r.is_empty()) {
+        let key = match self.condition_ranges().filter(|r| !r.is_empty()) {
             Some(ranges) => serde_json::to_string(&(self.condition_values(), ranges)).unwrap_or_default(),
             None => serde_json::to_string(&self.condition_values()).unwrap_or_default(),
+        };
+        if via.is_empty() { key } else { format!("{via}|{key}") }
+    }
+
+    /// Whether the actions it names are the entity's: `None` when they are.
+    pub fn unknown_action(&self, entity: Option<&EntityDef>) -> Option<String> {
+        if self.actions.is_empty() {
+            return None;
         }
+        let Some(e) = entity else { return Some("a rule for every entity names no actions".into()) };
+        self.actions.iter().find(|a| !e.actions.iter().any(|d| &d.name == *a)).map(|a| format!("{} has no action {a}", e.name))
+    }
+
+    /// Why this rule cannot belong to a portal role, if it cannot (BD-02): a portal role reaches its
+    /// holders' own records, and reads reference data (`personal`: whether the entity holds personal
+    /// data, see [`holds_personal_data`]) whole; it never deletes, cancels, exports or imports.
+    pub fn portal_problem(&self, personal: bool) -> Option<String> {
+        if self.entity == "*" {
+            return Some("a portal role names each entity it reaches, never every entity".into());
+        }
+        if !self.if_owner && self.via.is_none() {
+            // Reference data (consent forms, appointment types) may be read whole, to pick from.
+            let reads_only = !(self.write || self.create || self.submit || !self.actions.is_empty() || !self.write_groups.is_empty());
+            if personal || !reads_only {
+                return Some(format!(
+                    "a portal role reaches only its holders' own {}: make the rule own records only, or give the path they are reached by \
+                     (every record only to read, and only of an entity holding no personal data)",
+                    self.entity
+                ));
+            }
+        }
+        let refused: Vec<&str> = [(self.delete, "delete"), (self.cancel, "cancel"), (self.export, "export"), (self.import, "import")]
+            .into_iter()
+            .filter_map(|(on, verb)| on.then_some(verb))
+            .collect();
+        (!refused.is_empty()).then(|| format!("a portal role may not {} {}", refused.join(", "), self.entity))
     }
 }
 

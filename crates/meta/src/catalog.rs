@@ -229,6 +229,19 @@ impl Catalog {
                     let def = self.entities.get(&perm.entity).map(|(_, e)| e);
                     perm.check_condition(|f| def.and_then(|e| e.fields.iter().find(|x| x.name == f)))
                         .map_err(|m| MetaError::Invalid(format!("{name}: role {} on {}: {m}", role.name, perm.entity)))?;
+                    if let Some(via) = &perm.via {
+                        crate::via::resolve(&perm.entity, via, |e| self.entities.get(e).map(|(_, d)| d))
+                            .map_err(|m| MetaError::Invalid(format!("{name}: role {} on {}: {m}", role.name, perm.entity)))?;
+                    }
+                    if let Some(why) = perm.unknown_action(def) {
+                        return invalid(format!("{name}: role {} on {}: {why}", role.name, perm.entity));
+                    }
+                    let personal = def.is_some_and(|e| {
+                        crate::holds_personal_data(e, |n| self.packages.values().any(|p| p.manifest.personal_data.iter().any(|d| d.entity == n)))
+                    });
+                    if let Some(why) = role.portal.then(|| perm.portal_problem(personal)).flatten() {
+                        return invalid(format!("{name}: portal role {}: {why}", role.name));
+                    }
                 }
             }
             for wf in &p.manifest.workflows {

@@ -78,7 +78,7 @@ impl Kernel {
         // Asked for by an old id, a merged record answers with what it became.
         let id = if ent.def.mergeable { crate::merge::canonical(tx, ctx.tenant, entity, id).await?.unwrap_or(id) } else { id };
         let doc = self.load_marked(tx, ctx, &ent, id, lock).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
-        if !scope.matches(&doc) {
+        if !scope.admits(tx, ctx.tenant, &doc).await? {
             return Err(Error::NotFound(ent.def.label.clone()));
         }
         Ok(self.mask(ctx, &ent, doc))
@@ -409,7 +409,7 @@ impl Kernel {
         self.validate(ctx, tx, &ent, &doc, None, RuleOn::Save).await?;
         self.hook_validate(ctx, tx, &ent, &doc, None).await?;
         let scope = row_scope(ctx, &ent, Action::Create)?;
-        if !scope.matches(&doc) {
+        if !scope.admits(tx, ctx.tenant, &doc).await? {
             return Err(Error::Forbidden("this record is outside the companies or scopes you are permitted to use".into()));
         }
         if ent.def.numbering.as_ref().is_some_and(|n| n.on == NumberingOn::Insert) {
@@ -439,7 +439,7 @@ impl Kernel {
         guard_kind(&ent)?;
         let scope = row_scope(ctx, &ent, Action::Write)?;
         let old = self.load_marked(tx, ctx, &ent, id, true).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
-        if !scope.matches(&old) {
+        if !scope.admits(tx, ctx.tenant, &old).await? {
             return Err(Error::NotFound(ent.def.label.clone()));
         }
         check_version(&old, expected_version)?;
@@ -466,7 +466,7 @@ impl Kernel {
         check_state_needs(&ent, &doc, None)?;
         self.validate(ctx, tx, &ent, &doc, Some(&old), RuleOn::Save).await?;
         self.hook_validate(ctx, tx, &ent, &doc, Some(&old)).await?;
-        if !scope.matches(&doc) {
+        if !scope.admits(tx, ctx.tenant, &doc).await? {
             return Err(Error::Forbidden("you cannot move this record outside your permitted scope".into()));
         }
         let version = version_of(&old) + 1;
@@ -496,7 +496,7 @@ impl Kernel {
         guard_kind(&ent)?;
         let scope = row_scope(ctx, &ent, Action::Delete)?;
         let old = self.load_marked(tx, ctx, &ent, id, true).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
-        if !scope.matches(&old) {
+        if !scope.admits(tx, ctx.tenant, &old).await? {
             return Err(Error::NotFound(ent.def.label.clone()));
         }
         check_version(&old, expected_version)?;
@@ -584,7 +584,7 @@ impl Kernel {
         }
         let scope = row_scope(ctx, &ent, Action::Submit)?;
         let old = self.load_marked(tx, ctx, &ent, id, true).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
-        if !scope.matches(&old) {
+        if !scope.admits(tx, ctx.tenant, &old).await? {
             return Err(Error::NotFound(ent.def.label.clone()));
         }
         check_version(&old, expected_version)?;
@@ -649,7 +649,7 @@ impl Kernel {
         }
         let scope = row_scope(ctx, &ent, Action::Cancel)?;
         let old = self.load_marked(tx, ctx, &ent, id, true).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
-        if !scope.matches(&old) {
+        if !scope.admits(tx, ctx.tenant, &old).await? {
             return Err(Error::NotFound(ent.def.label.clone()));
         }
         check_version(&old, expected_version)?;
@@ -719,9 +719,9 @@ impl Kernel {
         guard_kind(&ent)?;
         let def = ent.def.actions.iter().find(|a| a.name == action).ok_or_else(|| Error::NotFound(format!("action {action}")))?;
         let perm = Action::parse(&def.permission).unwrap_or(Action::Write);
-        let scope = row_scope(ctx, &ent, perm)?;
+        let scope = crate::ctx::action_scope(ctx, &ent, action, perm)?;
         let doc = self.load_marked(tx, ctx, &ent, id, !def.read_only).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
-        if !scope.matches(&doc) {
+        if !scope.admits(tx, ctx.tenant, &doc).await? {
             return Err(Error::NotFound(ent.def.label.clone()));
         }
         if !def.docstatus.is_empty() && !def.docstatus.contains(&(docstatus_of(&doc) as i16)) {
@@ -769,7 +769,7 @@ impl Kernel {
         let wf = ent.workflow.clone().ok_or_else(|| Error::invalid(format!("{} has no workflow", ent.def.label)))?;
         let scope = row_scope(ctx, &ent, Action::Read)?;
         let doc = self.load_marked(tx, ctx, &ent, id, true).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
-        if !scope.matches(&doc) {
+        if !scope.admits(tx, ctx.tenant, &doc).await? {
             return Err(Error::NotFound(ent.def.label.clone()));
         }
         check_version(&doc, expected_version)?;
