@@ -28,6 +28,11 @@ pub struct OverlayRow {
     pub is_active: bool,
     pub note: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// An active `add_action` or `remove_action` a later active one of the same action replaced: that one's id,
+    /// where the action's definition now comes from.
+    #[sqlx(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<Uuid>,
 }
 
 /// A customization and an upgrade that parted ways.
@@ -125,7 +130,7 @@ pub(crate) type Saved = (String, &'static str);
 /// An operation as a plan names it: `XGym: add_field fee`.
 fn label_of(target: &str, raw: &Value) -> String {
     let what = raw["op"].as_str().unwrap_or("customization");
-    match raw.get("field").or_else(|| raw.get("action")).or_else(|| raw.get("rule")) {
+    match raw.get("field").or_else(|| raw.get("action")).or_else(|| raw.get("rule")).or_else(|| raw.get("name")) {
         Some(Value::Object(f)) => format!("{target}: {what} {}", f.get("name").and_then(Value::as_str).unwrap_or_default()),
         Some(Value::String(f)) => format!("{target}: {what} {f}"),
         _ => format!("{target}: {what}"),
@@ -588,12 +593,23 @@ impl Kernel {
     pub async fn list_customizations(&self, ctx: &Ctx) -> Result<Vec<OverlayRow>> {
         require_admin(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let rows =
+        let mut rows =
             sqlx::query_as::<_, OverlayRow>("select id, seq, entity, op, is_active, note, created_at from meta_overlay where tenant_id = $1 order by seq")
                 .bind(ctx.tenant)
                 .fetch_all(&mut *tx)
                 .await?;
         tx.commit().await?;
+        // An action's definition comes from the latest active customization naming it, as a redefinition replaces
+        // the definition changes before it.
+        let named = |r: &OverlayRow| match r.op["op"].as_str() {
+            Some("add_action") if r.is_active => r.op["action"]["name"].as_str().map(|n| (r.entity.clone(), n.to_string())),
+            Some("remove_action") if r.is_active => r.op["name"].as_str().map(|n| (r.entity.clone(), n.to_string())),
+            _ => None,
+        };
+        let latest: std::collections::HashMap<(String, String), Uuid> = rows.iter().filter_map(|r| Some((named(r)?, r.id))).collect();
+        for r in &mut rows {
+            r.superseded_by = named(r).and_then(|k| latest.get(&k).copied()).filter(|id| *id != r.id);
+        }
         Ok(rows)
     }
 
