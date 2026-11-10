@@ -302,3 +302,43 @@ them. Not checked in a browser.
 
 58 behaviours: **49 same, 8 different, 1 cannot** (were 49, 7, 2). The only "cannot" left is C4 (lines
 within lines).
+
+## Measured again with lines within lines (11 November 2026)
+
+The platform now lets a workspace's own line entity hold lines of its own, two levels deep (BD-06, amended):
+a record, its lines, their lines. The pack's control tests now carry their evidence as lines of the test, as
+the app's `ControlEvidence` lines of a `ControlTest`: a new line entity `XControlEvidence` ("Evidence": a
+required title, "What the evidence is", and a file), and the test's `evidence` and `evidence_file` fields
+gave way to a table `evidence` of it. The check that an effective result has its evidence now asks for an
+evidence row with a file (`doc.evidence.exists(e, has(e.file) && e.file != null && e.file != '')`), as the
+app's hook does: a row without a file is no evidence. The pack holds 25 customizations (9 entities); it is
+80 KB.
+
+[grc_pack_it.rs](../../../crates/studio/tests/grc_pack_it.rs) records a test with three evidence rows and finds
+them in order with their titles and files, refuses an effective test whose only evidence row has no file
+("an effective result has its evidence", as the app's `Said so` row), finds the test's evidence nested in the
+control's description, and refuses an evidence row without a title naming the test and the row
+(`path: [["tests", 2], ["evidence", 0]]`).
+
+**C4: cannot → same.** Several evidence files per test, each with its title, as the app keeps them. A test
+is still a line of its control (C3 stays different: no list of all tests). The texts the pack defines stay
+106, with 94 words in each language: "Evidence File" went and "File" came, which the app's words do not
+name either, so the 12 without a word are the same but for that one.
+
+### Counts
+
+58 behaviours: **50 same, 8 different, 0 cannot** (were 49, 8, 1). The app's own test is unchanged at 34
+marked steps, 30 same and 4 different: its step recording tests stays different for C3 (a test is a line of its
+control), though the evidence it sends is now kept as the app keeps it, rows with a title and a file.
+
+| Moved | Behaviours |
+|---|---|
+| cannot → same | C4 (several evidence rows per test) |
+
+- **Different (8)**: R9, C2 (settings by configuration), C3 (tests are lines of their control: no list of all
+  tests), P8 (a key's own message), U1 (a Studio space), U3 (the tile opens the records pages), U7 (12 texts,
+  descriptions and the home space stay in English), U9 (no uninstall).
+- **Not checked**: no browser. The web's lines grid does not yet show a line's own lines (it shows the table
+  field of a line as nothing editable), so on the records page a test's evidence is read and written through
+  the API only.
+

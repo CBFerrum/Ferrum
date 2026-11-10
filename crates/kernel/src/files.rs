@@ -53,8 +53,9 @@ fn named_files(ctx: &Ctx, ent: &EffEntity, doc: &Doc) -> BTreeSet<Uuid> {
     let mut out: BTreeSet<Uuid> = ent.value_fields().filter(|f| f.ftype == FieldType::Attach).filter_map(|f| file(doc.get(&f.name))).collect();
     for (table, info) in &ent.children {
         let Some(c) = ctx.schema.entity(&info.entity) else { continue };
-        for row in doc.get(table).and_then(Value::as_array).into_iter().flatten() {
-            out.extend(c.value_fields().filter(|f| f.ftype == FieldType::Attach).filter_map(|f| file(row.get(&f.name))));
+        for row in doc.get(table).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_object) {
+            // A line's own fields and its own lines' (BD-06).
+            out.extend(named_files(ctx, c, row));
         }
     }
     out
@@ -301,6 +302,24 @@ impl Kernel {
                         crate::store::entity_predicate(ent, "a"),
                         info.predicate("l")
                     ));
+                }
+                // A line's own lines (BD-06), tied to the record owning their line.
+                for sub in c.children.values() {
+                    let Some(sc) = schema.entity(&sub.entity) else { continue };
+                    for f in sc.value_fields().filter(|f| f.ftype == FieldType::Attach) {
+                        let Some(expr) = crate::store::field_expr(sc, &f.name, "s") else { continue };
+                        sources.push(format!(
+                            "select b.id as file, '{name}'::text as entity, a.id as record, a.created_at as at from {} s \
+                             join {} l on l.tenant_id = s.tenant_id and l.id = s.parent_id{} \
+                             join {own} on a.tenant_id = l.tenant_id and a.id = l.parent_id{} join batch b on {expr} = '/files/' || b.id::text \
+                             where s.tenant_id = $1{}",
+                            crate::ddl::q(&sub.table),
+                            crate::ddl::q(&info.table),
+                            info.predicate("l"),
+                            crate::store::entity_predicate(ent, "a"),
+                            sub.predicate("s")
+                        ));
+                    }
                 }
             }
         }
