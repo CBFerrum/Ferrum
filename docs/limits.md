@@ -90,7 +90,9 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   field's exact text (as typed, case and all), and engine-kept values (`set_values`) may not touch one.
   A child entity holds no unique keys and is the lines of one table field only; a custom one may hold
   lines of its own, two levels deep (a record, its lines, their lines) and no deeper, while a package's
-  child entity holds no table and customizations add no table field to a package's entity. Each table
+  child entity holds no table. A customization may add one level of custom lines to a package's master,
+  document or settings entity (an `x_` table field of a custom child entity, rows in `custom_record` under
+  the package's record), never to its lines or a ledger, and those lines hold no lines of their own. Each table
   holds at most 5,000 rows at each level, and the lines' own lines of one table at most 5,000 across all
   its lines. A list filter, a portal or owner path (`via`, `owner_fields`), a personal-data or hand-over
   declaration and a Studio query reach a record's lines but not their own lines; no workspace declaration
