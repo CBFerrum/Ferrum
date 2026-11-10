@@ -52,6 +52,8 @@ let mode = accounts ? "password" : boot.codes ? "code" : "password";
 const heading = document.querySelector(".ferrum-login h1");
 const title = heading.textContent;
 let codeFor = null;
+// The workspace the code was asked for: the code's step has no workspace box to read it from again.
+let codeAt = null;
 
 function field(name, label, type, value = "", extra = {}) {
   const l = document.createElement("label");
@@ -187,7 +189,7 @@ form.addEventListener("submit", async (e) => {
     } else if (ticket) {
       done(await post("/api/auth/login/second-factor", { ticket, code: form.elements.code.value.trim(), session: "cookie" }));
     } else if (mode === "code") {
-      const tenant = workspace();
+      const tenant = (codeFor && codeAt) || workspace();
       if (!tenant) throw new Error(tr("Which workspace?"));
       store.set("ferrum.workspace", tenant);
       if (codeFor) {
@@ -197,6 +199,7 @@ form.addEventListener("submit", async (e) => {
         if (!email) throw new Error(tr("Your email address?"));
         await post("/api/auth/code", { tenant, email });
         codeFor = email;
+        codeAt = tenant;
         draw();
       }
     } else {
