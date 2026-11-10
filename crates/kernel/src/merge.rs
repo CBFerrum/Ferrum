@@ -18,7 +18,7 @@ use crate::error::{Error, Result};
 use crate::privacy::record_held;
 use crate::query::readable;
 use crate::{Doc, Kernel, audit, outbox};
-use ferrum_meta::{EffEntity, FieldType, Schema, Storage};
+use ferrum_meta::{ChildInfo, EffEntity, FieldType, Schema, Storage};
 use serde_json::{Value, json};
 use sqlx::AssertSqlSafe;
 use uuid::Uuid;
@@ -53,11 +53,14 @@ fn link_columns(schema: &Schema, entity: &str) -> Vec<(String, String, bool, boo
         for f in e.value_fields().filter(|f| f.ftype == FieldType::Link && f.to.as_deref() == Some(entity)) {
             out.push((e.table.clone(), f.name.clone(), e.storage_of(&f.name) == Some(Storage::Ext), e.def.name == entity));
         }
-        for info in e.children.values() {
+        // Its lines, and a line's own lines (BD-06).
+        let mut rows: Vec<&ChildInfo> = e.children.values().collect();
+        while let Some(info) = rows.pop() {
             let Some(c) = schema.entity(&info.entity) else { continue };
             for f in c.value_fields().filter(|f| f.ftype == FieldType::Link && f.to.as_deref() == Some(entity)) {
                 out.push((info.table.clone(), f.name.clone(), c.storage_of(&f.name) == Some(Storage::Ext), false));
             }
+            rows.extend(c.children.values());
         }
     }
     out
