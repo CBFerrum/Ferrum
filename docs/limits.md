@@ -139,6 +139,14 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   status, past its rules, with an `updated` event; when that fails (a calendar gone under it, an expression
   that no longer evaluates) the breach stays recorded and the state field shows it from the record's next save. There is no separate breach event, no endpoint per
   record and no screen yet: the two fields, automations and reports are the way to see them.
+- **Published lists** (`publish_list`, docs/api.md): at most 20 a workspace, 12 fields a list and 1000 rows
+  (200 by default); one page only, no next page and no search or filter a visitor chooses. Fields of type
+  email, phone, secret and attach, permission-group fields, fields never exported and declared personal
+  data are never published, nor any list of an entity a package declares as people's personal data. Not
+  lines, ledgers or settings. The page is in English with the workspace's own labels, not translated; it has
+  no styling of the workspace's own. Answers may be cached for a minute. A redefinition of a custom entity
+  that removes a listed field is refused while the list names it (unpublish or change the list first); a
+  field that goes another way (its customization switched off, a package upgrade) drops out with a warning.
 - **Redefining a custom entity** (`redefine_entity`) deletes no data: values of a field that goes stay in
   the records, out of sight, until a field of the same name comes back. A field that comes back with a
   type other than the one its values were saved under is not checked against them. A batch of

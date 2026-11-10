@@ -79,6 +79,8 @@ SHARES_UNIT = ("-p", "ferrum-server", "--lib", "state::tests")
 EXPORT_UNIT = ("-p", "ferrum-server", "--lib", "controllers::docs::tests")
 EXTENSIONS = ("-p", "ferrum-server", "--test", "extensions_it")
 SUPPORT = ("-p", "ferrum-kernel", "--test", "support_it")
+PUBLISHED = ("-p", "ferrum-server", "--test", "published_lists_it")
+META_PUBLISHED = ("-p", "ferrum-meta", "--lib", "published")
 CONTRACT = ("-p", "ferrum-ops-contract", "--lib")
 OPS = ("-p", "ferrum-ops", "--test", "ops_it")
 RECOVERY = ("-p", "ferrum-kernel", "--test", "recovery_it")
@@ -653,6 +655,13 @@ MUTANTS = [
     ("line-patch-forgets-lines", "crates/kernel/src/automation.rs", "rows.iter().map(|r| serde_json::json!({\"id\": r.get(\"id\")}))", "rows.iter().map(|_| serde_json::json!({}))", LINKS),
     ("set-line-takes-the-first", "crates/kernel/src/automation.rs", "                [i] => (i, Some(", "                [i, ..] => (i, Some(", LINKS),
     ("aggregate-own-field-ignored", "crates/logic/src/solution.rs", "*v = doc.get(f).cloned().unwrap_or(Value::Null);", "*v = Value::Null;", LINKS),
+    # Published lists (docs/api.md, Published lists; BD-15).
+    ("published-unlisted-field-sent", "crates/kernel/src/published.rs", "let doc = row_to_doc(ent, &schema, row);", "let doc = row_to_doc(ent, &schema, row); let fields: Vec<(&str, Option<&FieldDef>)> = doc.keys().map(|k| (k.as_str(), ent.field(k))).collect();", PUBLISHED),
+    ("published-draft-shown", "crates/kernel/src/published.rs", "qb.push(\" and a.docstatus = 1\");", "qb.push(\"\");", PUBLISHED),
+    ("published-csv-guard-skipped", "crates/kernel/src/published.rs", "if raw.starts_with(['=', '+', '-', '@', '\\t', '\\r']) && raw.parse::<f64>().is_err()", "if false", PUBLISHED),
+    ("published-404s-differ", "crates/kernel/src/published.rs", "let Some(l) = schema.published_list(name) else { return Ok(None) };", "let Some(l) = schema.published_list(name) else { return Err(Error::NotFound(format!(\"list {name}\"))) };", PUBLISHED),
+    ("published-inactive-served", "crates/kernel/src/published.rs", ".filter(|(_, status, _)| status == \"active\")", "", PUBLISHED),
+    ("published-email-allowed", "crates/meta/src/published.rs", "if matches!(f.ftype, FieldType::Email | FieldType::Phone | FieldType::Secret | FieldType::Attach) {", "if false {", META_PUBLISHED),
 
 ]
 
