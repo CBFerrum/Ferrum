@@ -31,7 +31,8 @@ Tasks a handler spawns start without a trace; run them under one if their events
 **At least once.** A worker takes a lease on a batch and handles it outside any long transaction. If
 it dies the lease expires and another replica takes the events. Consumers must be idempotent, and
 the platform's are: webhook deliveries are unique per webhook and event, plugin runs per plugin and
-event, automation runs per automation and event. There is no exactly-once, and nothing should
+event, automation runs per automation and event (a scheduled automation's moments per automation, record
+and moment). There is no exactly-once, and nothing should
 assume it.
 
 **Order** holds within a workspace and a priority, until something fails: a retry goes behind later
