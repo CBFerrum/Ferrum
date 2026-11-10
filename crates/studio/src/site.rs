@@ -14,6 +14,7 @@
 //! | `GET /spaces/{id}/data` | every block, resolved for the caller |
 //!
 //! | `GET /catalog` | `?q=&entity=&effect=` → `{capabilities, events}` the caller may use (docs/logic) |
+//! | `GET /portal/entities` | `{entities}` the caller's portal roles reach, with what they may do (docs/builder) |
 //! | `GET /catalog/{id}` | one capability |
 //! | `POST /catalog/{id}/invoke` | `{input, effect_key?, version?}` (or an `Idempotency-Key` header) → its receipt |
 //!
@@ -182,6 +183,8 @@ impl Site for StudioSite {
             }
             ("GET", ["spaces", id, "data"]) => ok(builder::space_data(k, ctx, uuid(id)?).await?),
             ("GET", ["catalog"]) => ok(catalog(k, ctx, &req)),
+            // The portal's generic pages (docs/builder/decisions.md BD-02): what the caller's portal roles reach.
+            ("GET", ["portal", "entities"]) => ok(json!({"entities": k.portal_entities(ctx).await?})),
             ("GET", ["catalog", id]) => ok(serde_json::to_value(k.capability(ctx, id)?).unwrap_or(Value::Null)),
             ("POST", ["catalog", id, "invoke"]) => {
                 let b = body(&req)?;

@@ -71,7 +71,13 @@ async fn followers(tx: &mut Tx, tenant: Uuid, entity: &str, id: Uuid, except: Uu
 
 impl Kernel {
     /// The record as the caller sees it; fails when they cannot read it.
+    /// The record, when its surroundings (comments, files, assignments, tags, following) are the
+    /// caller's to see: a member who can read it. A portal person reading their own record reaches
+    /// the record alone (docs/builder/decisions.md BD-02): what staff say and attach stays theirs.
     async fn readable(&self, ctx: &Ctx, entity: &str, id: Uuid) -> Result<Doc> {
+        if ctx.outside {
+            return Err(Error::Forbidden("a record's comments, files and people are for the workspace's members".into()));
+        }
         self.get(ctx, entity, id, false).await
     }
 
@@ -547,6 +553,9 @@ impl Kernel {
     /// Tags used on an entity with how many records carry each (for filters and suggestions).
     /// Tags of the records the caller can read, with counts (others' records never show).
     pub async fn tag_counts(&self, ctx: &Ctx, entity: &str) -> Result<Vec<Value>> {
+        if ctx.outside {
+            return Err(Error::Forbidden("tags are for the workspace's members".into()));
+        }
         let ent = self.entity(ctx, entity)?;
         let scope = crate::ctx::row_scope(ctx, &ent, Action::Read)?;
         if ent.table.is_empty() {

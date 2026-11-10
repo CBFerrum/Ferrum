@@ -356,8 +356,9 @@ Plan, 30 October 2026, third revision. It replaces the two drafts written earlie
     rendered by the app's package site handler at `/_site/{path}`, with the API's address and the
     site's origin in `x-ferrum-site-api` and `x-ferrum-site-origin` (set by the server, never by the
     caller) and the platform's headers unless the app sets its own; no shell and no session there.
-  * Kinds of people count everywhere (§9.1): portal people and guests hold no roles and no
-    administration, whatever was given them; a portal person's shell and app pages lead to
+  * Kinds of people count everywhere (§9.1): guests hold no roles and no administration, whatever
+    was given them; portal people hold only roles marked for the portal, which reach only their own
+    records (docs/builder/decisions.md BD-02, from 10 November 2026); a portal person's shell and app pages lead to
     `/portal/`, `/open` of a record to the portal page that shows it; no launcher. Administrators add
     portal people and change kinds (`/api/admin/users`, Users in Administration); a change signs the
     person out everywhere.
@@ -766,7 +767,7 @@ The kernel gets one field, `app_user.kind`:
 |---|---|---|
 | member | employees | the shell and the apps they have access to |
 | guest | outside collaborators invited to a file, channel or meeting | only what was shared, through the owning app's guest pages (Drive and Meet do this today with links) |
-| portal | customers, suppliers, students, applicants | the workspace's portal: pages apps contribute (`shell.portal`: Helpdesk "My tickets", ERP "My invoices", LMS "My courses") under its branding |
+| portal | customers, suppliers, students, applicants | the workspace's portal: pages apps contribute (`shell.portal`: Helpdesk "My tickets", ERP "My invoices", LMS "My courses") under its branding, and Studio's "Your records", the records their portal roles reach (docs/builder/decisions.md BD-02) |
 | service | integrations | no UI |
 
 Portal people sign in with emailed codes or SSO, never see the bar or the launcher, and are counted
