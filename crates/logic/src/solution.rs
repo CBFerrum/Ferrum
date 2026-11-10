@@ -157,7 +157,8 @@ pub struct Aggregate {
     pub name: String,
     pub entity: String,
     pub link: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Read with `"self"` dropped: both spellings of the saved record are one rule, with one digest.
+    #[serde(default, deserialize_with = "not_self", skip_serializing_if = "Option::is_none")]
     pub to: Option<String>,
     /// All of these hold: `[field, operator, value]` over the entity's own fields, as a list's filters.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -178,6 +179,10 @@ impl Aggregate {
     pub fn key(&self) -> String {
         serde_json::json!([self.entity, self.link, self.to_link(), self.filter, self.op, self.field]).to_string()
     }
+}
+
+fn not_self<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.filter(|t| t != "self"))
 }
 
 /// One condition of an aggregate's filter: `[field, operator, value]`.
@@ -650,6 +655,21 @@ mod tests {
         assert!(e.message.contains("twice"), "{e}");
         assert!(strict_json(r#"{"a": {"b": 1, "b": 1}}"#).is_err(), "at any depth");
         assert!(strict_json(r#"{"a": 1, "b": 2}"#).is_ok());
+    }
+
+    #[test]
+    fn to_self_and_no_to_are_one_rule() {
+        let read = |to: Value| {
+            let mut a = serde_json::json!({"name": "n", "entity": "Charge", "link": "membership", "op": "count"});
+            if !to.is_null() {
+                a["to"] = to;
+            }
+            serde_json::from_value::<Aggregate>(a).unwrap()
+        };
+        let (bare, own) = (read(Value::Null), read(serde_json::json!("self")));
+        assert_eq!(bare, own);
+        assert_eq!(serde_json::to_value(&own).unwrap(), serde_json::to_value(&bare).unwrap(), "one canonical form");
+        assert_eq!(read(serde_json::json!("member")).to.as_deref(), Some("member"));
     }
 
     #[test]
