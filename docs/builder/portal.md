@@ -56,6 +56,30 @@ Studio gives the portal a **Your records** page (`/portal/records/`): each entit
 reach, its list, each record's form, and the actions they may run. It shows only to people holding a
 portal role that reaches something. Pages apps contribute stay beside it.
 
+## Portal menus
+
+A workspace's own menu (`define_module`, docs/api.md) marked **show it in the portal** (`portal: true`)
+gives a business built by configuration a portal home too. For a portal person, each such menu holding
+an entity their portal roles reach is an entry of the portal's home, with the menu's label,
+description and icon, leading to Studio's page for that menu (`/portal/records/m/{menu}`). It lists
+only the menu's entities they reach, in the menu's order, and offers Create for one the menu offers
+and their role may create. A menu reaching none of theirs is not shown. **Your records** keeps what
+they reach in no portal menu, and is not shown when everything is in one. With a single entry they go
+straight to it.
+
+`GET /api/app/studio/portal/entities` answers `{entities, menus: [{name, label, description, icon,
+color, items: [entity…, with create]}], other}` for the page: `entities` as before, `other` those in no
+portal menu.
+
+What a portal menu is not: no guided steps and no page of its own. Its pages are the records pages
+above: the person's own rows by their roles' rules, and the buttons and workflow steps their roles
+allow. Members see the menu as before. A pack carrying a portal menu requires Studio, and its plan
+says so when Studio is missing.
+
+A link from a notification or a mail (`/open/{entity}/{id}`) takes a portal person to the app page
+that shows the entity, else to the record on Studio's page, inside its menu when one holds it, else to
+the portal's home.
+
 ## Checking before giving
 
 **Explain access** (Administration, Roles & permissions) answers for a person and a record: whether

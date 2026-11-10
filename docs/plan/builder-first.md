@@ -157,6 +157,8 @@ evidence; a deliberate break for each new invariant; a walk in the browser as or
   groups left out unless granted), and the actions it may take under their conditions (cancel a
   visit, give a consent).
 * Defined in Customize, with a preview as a portal person.
+* A workspace's own menu marked for the portal (10 November 2026): its entities a person's portal roles
+  reach, as an entry of the portal's home on Studio's page (docs/builder/portal.md, Portal menus).
 * **Proof**: Education's family portal and Healthcare's patient portal configured, not coded; their
   test assertions pass against the generic endpoints. Breaks: an owner path ignored, a field group
   shown, an action's condition ignored, another tenant's record reached.
