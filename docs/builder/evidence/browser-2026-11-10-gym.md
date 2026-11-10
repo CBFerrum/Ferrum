@@ -92,6 +92,39 @@ real mailer or with a second person.
     member and a membership with lines were then made there: the key, the exact total, the workflow's
     first state and the check all held. Installing the same pack again changed nothing, and both
     installs were on record.
+24. **A button set up by configuration** (server at PR 167). `add_action` "End it" on Membership with a
+    condition, a confirmation and two effects (set the record's status and a note; write a date on the
+    member the record links to). It appeared on the record with no change to the interface; pressing it
+    asked first, then did both; it then disappeared, and a second press through the API was refused.
+25. **Changing a button, and the definition a designer starts from** (server at PR 168, through the API,
+    12 of 12 steps). `add_action` of the same name replaced the button where it stood and the list of
+    changes marked the earlier rows; `remove_action` removed one and refused a missing one;
+    `GET /api/customize/definition/XMembership` held the button, the rule and the lines' entity, and
+    sent back unchanged as a redefinition it left the entity's description identical.
+26. **The buttons screen** (Ferrum-Frontend PR 70). Customize, Membership, Buttons: opened the button
+    made through the API with its condition and refusal read into the builder and its two steps as
+    cards; changed its label, added a refusal, saved. On a record the refusal holds for, the button was
+    shown unavailable with the refusal's message as its description. A new button with a question
+    ("Note") and one step writing the answer to a field: saved, pressed on a record, the answer was in
+    the field; removed from the screen. The new-button form at 375 px did not scroll sideways.
+27. **The designer keeps other screens' changes.** With the button and a rule in place, a field was
+    added in the entity designer and saved: the button, its refusals and the rule were still there, and
+    the list marked the rows the redefinition now carries as replaced.
+28. **Names in Hindi** (Ferrum-Frontend PR 69). Administration, Interface words, "This workspace's own
+    names" listed the gym's labels, fields, choices and buttons; words were written for "Memberships"
+    and "End it"; with the person's language set to Hindi the list's title and the button read in Hindi,
+    and "Status", "Member" and "Approve" read as the interface's own Hindi words.
+
+## What these later walks found
+
+* The entity designer started from the newest definition row, and a redefinition replaces every
+  definition change before it: a check or a button added by another screen was dropped on the next
+  save, and the list still showed it as active. Fixed in PR 168 and Ferrum-Frontend PR 70.
+* The buttons screen sent the description's `may_run` back and was refused; the refusal reached the
+  screen as "Please check your input." because an operation that does not parse is answered in plain
+  text. The first is fixed; the second is not yet.
+* `may_run` alone would have shown a button on a record the person may not change (own records only).
+* A choice or a record called `constructor` or `toString` was shown as nothing.
 
 ## What still needs code or is not built
 
@@ -106,5 +139,6 @@ real mailer or with a second person.
 
 * The mail preview's sandboxed frame was blank in the tool's screenshots although the HTML placed in it
   was right.
-* Keyboard-only use of the new screens.
+* Keyboard-only use of the new screens, and a screen reader on a button shown unavailable.
+* A button as someone without its role: covered by the server's tests, not walked in the browser.
 * A money amount of 12.345 on a line of a custom entity was stored as typed.
