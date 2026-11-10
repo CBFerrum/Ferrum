@@ -105,6 +105,7 @@ async fn scenario() {
     let k = Kernel::boot(db, catalog(), HookRegistry::default(), KernelSettings::default(), None).await.expect("boot");
     let w = workspace(&k, "acme").await;
     faults(&w).await;
+    linked_from_automations(&w).await;
 }
 
 /// Whole numbers from a record are signed in checks, computed fields and automations; `read_only_if` ignores
@@ -149,5 +150,61 @@ async fn faults(w: &W) {
     assert_eq!(w.get("XThing", id).await["note"], "c", "locked: the input is ignored, as for a read-only field");
     let fresh = k.insert(&admin, "XThing", obj(json!({"days": 1, "locked": true, "note": "new"}))).await.unwrap();
     assert_eq!(fresh["note"], "new", "a new record has nothing stored to be read-only by");
-    let _ = w.count("select count(*) from custom_record where tenant_id = $1").await;
+}
+
+/// An automation's `update_linked` writes the record a link names, as the administrator who saved it (a
+/// read-only field stays as it was), through that record's pipeline; a chain of them stops at the depth rule.
+async fn linked_from_automations(w: &W) {
+    let k = &w.k;
+    let parent = json!({"name": "XParent", "label": "Parent", "kind": "master", "fields": [
+        {"name": "note", "type": "data"}, {"name": "status", "type": "data", "read_only": true}, {"name": "pings", "type": "int"},
+        {"name": "last_child", "type": "link", "to": "XChild"}]});
+    let child = json!({"name": "XChild", "label": "Child", "kind": "master", "fields": [
+        {"name": "parent", "type": "link", "to": "XParent"}, {"name": "note", "type": "data"}, {"name": "bounces", "type": "int"}]});
+    // Each refers to the other: defined together, then the link back.
+    w.batch(vec![define(json!({"name": "XChild", "label": "Child", "kind": "master", "fields": [{"name": "note", "type": "data"}]})), define(parent)])
+        .await
+        .unwrap();
+    let redefine: NewCustomization = serde_json::from_value(json!({"entity": "XChild", "op": {"op": "redefine_entity", "entity": child}})).unwrap();
+    w.batch(vec![redefine]).await.unwrap();
+    let admin = w.admin().await;
+    let save = |a: Value| {
+        let (k, admin) = (k.clone(), admin.clone());
+        async move { automation::save(&k, &admin, &obj(a)).await }
+    };
+    let bad =
+        save(json!({"name": "Bad", "entity": "XChild", "event": "created", "actions": [{"type": "update_linked", "link": "note", "values": {"note": "'x'"}}]}))
+            .await;
+    assert!(message(&bad.unwrap_err()).contains("note is not a link field of Child"), "a link field, checked when saved");
+    let bad = save(
+        json!({"name": "Bad", "entity": "XChild", "event": "created", "actions": [{"type": "update_linked", "link": "parent", "values": {"nope": "'x'"}}]}),
+    )
+    .await;
+    assert!(message(&bad.unwrap_err()).contains("Parent has no field nope"));
+    save(json!({"name": "Tell the parent", "entity": "XChild", "event": "created",
+        "actions": [{"type": "update_linked", "link": "parent", "values": {"note": "doc.note + ' (was ' + linked.note + ')'", "status": "'Touched'"}}]}))
+    .await
+    .unwrap();
+    let p = k.insert(&admin, "XParent", obj(json!({"note": "n0"}))).await.unwrap();
+    let c = k.insert(&admin, "XChild", obj(json!({"parent": id_of(&p).to_string(), "note": "hello"}))).await.unwrap();
+    k.insert(&admin, "XChild", obj(json!({"note": "orphan"}))).await.expect("an empty link writes nothing");
+    while k.dispatch_outbox_once().await.unwrap_or(0) > 0 {}
+    let now = w.get("XParent", id_of(&p)).await;
+    assert_eq!(now["note"], "hello (was n0)", "written, seeing the linked record as it was");
+    assert_eq!(now["status"], Value::Null, "the administrator's rights: a read-only field is not theirs to write");
+
+    // A child pings its parent, the parent bounces it back: the chain stops at the depth rule.
+    for a in [
+        json!({"name": "Ping", "entity": "XChild", "event": "updated", "actions": [{"type": "update_linked", "link": "parent", "values": {"pings": "linked.pings + 1"}}]}),
+        json!({"name": "Bounce", "entity": "XParent", "event": "updated", "actions": [{"type": "update_linked", "link": "last_child", "values": {"bounces": "linked.bounces + 1"}}]}),
+    ] {
+        save(a).await.unwrap();
+    }
+    k.update(&admin, "XParent", id_of(&p), obj(json!({"last_child": id_of(&c).to_string()})), None).await.unwrap();
+    while k.dispatch_outbox_once().await.unwrap_or(0) > 0 {}
+    assert_eq!((w.get("XParent", id_of(&p)).await["pings"].as_i64(), w.get("XChild", id_of(&c)).await["bounces"].as_i64()), (Some(1), Some(2)));
+    let stopped = w
+        .count("select count(*) from automation_run where tenant_id = $1 and status = 'failed' and error like 'not run: automations made this change after 3%'")
+        .await;
+    assert_eq!(stopped, 1, "the fourth link of the chain is not run, and says why");
 }
