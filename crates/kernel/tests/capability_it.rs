@@ -259,6 +259,16 @@ async fn scenario() {
     k.invoke(&admin, mail()).await.unwrap();
     let queued = count(&k, &admin, "select count(*) from outbox where topic = 'ferrum.mail' and payload->>'subject' = 'Held'").await;
     assert_eq!(queued, 1, "queued once, in the transaction of its receipt");
+    // A body is text: what the caller passes never becomes markup in a mail sent in the workspace's name.
+    let hostile = "<a href=\"https://evil.test\">click</a><script>x</script>\nsecond line";
+    k.invoke(&admin, Invocation::new("ferrum.mail", json!({"to": "buyer@example.com", "subject": "Hostile", "body": hostile})).key("mail-8")).await.unwrap();
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    let payload: Value =
+        sqlx::query_scalar("select payload from outbox where topic = 'ferrum.mail' and payload->>'subject' = 'Hostile'").fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let html = payload["html"].as_str().unwrap();
+    assert!(!html.contains("<a") && !html.contains("<script"), "no tag from the caller: {html}");
+    assert!(html.contains("&lt;a href=&quot;https://evil.test&quot;&gt;click&lt;/a&gt;") && html.contains("<br>second line"), "{html}");
 
     // Another workspace: its own receipts and records, whatever keys it chooses.
     let (_, beta) = workspace(&k, "beta").await;

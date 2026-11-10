@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 const PACKAGE: &str = "package: notes\nversion: 0.1.0\ndepends: [core]\nroles:\n  - name: Writer\n    permissions:\n      - {entity: Note, read: true, write: true, create: true}\n";
 const ENTITIES: &str =
-    "name: Note\nlabel: Note\nkind: master\ntitle_field: title\nfields:\n  - {name: title, type: data, required: true}\n  - {name: body, type: data}\n";
+    "name: Note\nlabel: Note\nkind: master\ntitle_field: title\nfields:\n  - {name: title, type: data, required: true}\n  - {name: body, type: text}\n";
 
 /// Mail the server's mailer was asked to send.
 static SENT: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -50,6 +50,20 @@ async fn queued(k: &Kernel, ctx: &Ctx, subject: &str) -> i64 {
     tx.commit().await.unwrap();
     n
 }
+
+/// The HTML of the one mail queued with this subject, read from its payload.
+async fn queued_html(k: &Kernel, ctx: &Ctx, subject: &str) -> String {
+    let mut tx = k.db.tenant_tx(ctx.tenant).await.unwrap();
+    let payload: Value = sqlx::query_scalar("select payload from outbox where topic = 'ferrum.mail' and payload->>'subject' = $1")
+        .bind(subject)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    payload["html"].as_str().unwrap().to_string()
+}
+
+const HOSTILE: &str = "<a href=\"https://evil.test\">click</a><script>x</script>";
 
 #[test]
 fn automation_mail_follows_its_run() {
@@ -119,4 +133,31 @@ async fn scenario() {
     drain(&k).await;
     assert_eq!(queued(&k, &admin, "Welcome").await, 1, "queued with its run, once");
     assert_eq!(sent("Welcome"), 1, "and sent once");
+
+    // A body is text: what a record holds (typed into a public form, say) never becomes markup in the mail.
+    automation::save(&k, &admin, &auto("plain", json!([{"type": "email", "to": "'reader@example.com'", "subject": "'Plain'", "body": "doc.body"}])))
+        .await
+        .unwrap();
+    k.insert(&admin, "Note", obj(json!({"title": "Hostile", "body": format!("{HOSTILE}\nsecond line")}))).await.unwrap();
+    drain(&k).await;
+    let html = queued_html(&k, &admin, "Plain").await;
+    assert!(!html.contains("<a") && !html.contains("<script"), "no tag from the record: {html}");
+    assert!(html.contains("&lt;a href=&quot;https://evil.test&quot;&gt;click&lt;/a&gt;&lt;script&gt;"), "the text, escaped: {html}");
+    assert!(html.contains("<br>second line"), "a line break kept: {html}");
+
+    // A template makes formatted mail: its own markup stays, and what it prints from the record is escaped.
+    let templated = |template: &str| {
+        auto("formatted", json!([{"type": "email", "to": "'reader@example.com'", "subject": "'Formatted'", "body": "''", "template": template}]))
+    };
+    let refused = automation::save(&k, &admin, &templated("<p>Hello {{ doc.title </p>")).await.unwrap_err();
+    assert!(matches!(refused, ferrum_kernel::Error::Validation(_)), "a template that does not compile is refused: {refused}");
+    let too_large = "x".repeat(automation::MAX_TEMPLATE + 1);
+    assert!(automation::save(&k, &admin, &templated(&too_large)).await.is_err(), "and one too large");
+    automation::save(&k, &admin, &templated("<p>Hello {{ doc.body }}</p>")).await.unwrap();
+    k.insert(&admin, "Note", obj(json!({"title": "Templated", "body": HOSTILE}))).await.unwrap();
+    drain(&k).await;
+    let html = queued_html(&k, &admin, "Formatted").await;
+    assert!(html.starts_with("<p>Hello ") && html.ends_with("</p>"), "the template's markup stays: {html}");
+    assert!(!html.contains("<a") && !html.contains("<script"), "no tag from the record: {html}");
+    assert!(html.contains("&lt;a href=&quot;") && html.contains("&lt;script&gt;x&lt;"), "the value, escaped: {html}");
 }
