@@ -3,19 +3,17 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router";
 import { formatDateTime, t, isolate } from "@ferrum/client";
-import { Badge, EmptyState, ErrorState, PageLoading, useShellTitle } from "@ferrum/kit";
+import { Badge, LoadFailed, PageLoading, StatePanel } from "@ferrum/kit";
 import { commands } from "./data";
-import { Tabs } from "./Tabs";
+import { Screen } from "./Tabs";
 import { state, STATES } from "./words";
 
 export function Commands() {
-  useShellTitle(t("Commands"));
   const [params, setParams] = useSearchParams();
   const only = params.get("state") ?? "";
   const q = useQuery({ queryKey: ["ops", "commands", only], queryFn: () => commands(only ? { state: only, limit: 200 } : { limit: 200 }), refetchInterval: 15_000 });
   return (
-    <div className="ops-page">
-      <Tabs />
+    <Screen section="commands">
       <label className="ops-filter">
         {t("Show")}{isolate(" ")}
         <select className="select" value={only} onChange={(e) => setParams(e.target.value ? { state: e.target.value } : {})}>
@@ -30,9 +28,9 @@ export function Commands() {
       {q.isPending ? (
         <PageLoading />
       ) : q.isError ? (
-        <ErrorState error={q.error} onRetry={() => void q.refetch()} />
+        <LoadFailed error={q.error} onRetry={() => void q.refetch()} />
       ) : q.data.length === 0 ? (
-        <EmptyState title={only ? t("None like that") : t("No commands yet")} icon="list" />
+        only ? <StatePanel kind="no-matches" title={t("None like that")} onClear={() => setParams({})} /> : <StatePanel kind="empty" title={t("No commands yet")} />
       ) : (
         <ul className="ops-list card">
           {q.data.map((c) => (
@@ -51,6 +49,6 @@ export function Commands() {
           ))}
         </ul>
       )}
-    </div>
+    </Screen>
   );
 }
