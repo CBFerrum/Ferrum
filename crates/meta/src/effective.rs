@@ -44,6 +44,8 @@ impl ChildInfo {
 pub struct Exprs {
     pub default_expr: BTreeMap<String, Expr>,
     pub computed: BTreeMap<String, Expr>,
+    /// The order `computed` is worked out in: a field after those it reads (`doc.<field>`), by name otherwise.
+    pub computed_order: Vec<String>,
     pub visible_if: BTreeMap<String, Expr>,
     pub required_if: BTreeMap<String, Expr>,
     pub read_only_if: BTreeMap<String, Expr>,
@@ -1082,6 +1084,7 @@ fn compile_exprs(def: &EntityDef) -> Result<Exprs, String> {
             x.read_only_if.insert(f.name.clone(), c(s)?);
         }
     }
+    x.computed_order = computed_order(&x.computed)?;
     for r in &def.rules {
         if let Some(f) = r.field.as_deref().filter(|f| !def.fields.iter().any(|d| &d.name == f)) {
             return Err(format!("rule {}: {f} is not a field of {}", r.name, def.name));
@@ -1103,6 +1106,24 @@ fn compile_exprs(def: &EntityDef) -> Result<Exprs, String> {
         x.targets.insert(t.name.clone(), exprs);
     }
     Ok(x)
+}
+
+/// Computed fields in the order they are worked out: each after the computed fields it reads, by name where
+/// nothing decides (as before, when name order was the only order); a field reading itself reads its stored value.
+/// Fields that read each other in a circle are refused.
+fn computed_order(computed: &BTreeMap<String, Expr>) -> Result<Vec<String>, String> {
+    let deps: BTreeMap<&str, Vec<String>> =
+        computed.iter().map(|(n, e)| (n.as_str(), e.doc_fields().into_iter().filter(|d| d != n && computed.contains_key(d)).collect())).collect();
+    let mut order: Vec<String> = Vec::with_capacity(computed.len());
+    while order.len() < computed.len() {
+        let next = deps.iter().find(|(n, d)| !order.iter().any(|o| o == *n) && d.iter().all(|d| order.contains(d)));
+        let Some((n, _)) = next else {
+            let left: Vec<&str> = deps.keys().copied().filter(|n| !order.iter().any(|o| o == n)).collect();
+            return Err(format!("computed fields read each other in a circle: {}", left.join(", ")));
+        };
+        order.push(n.to_string());
+    }
+    Ok(order)
 }
 
 /// Service targets an entity holds at most.
@@ -1558,6 +1579,26 @@ mod tests {
         assert_eq!(eval("size(doc)", &empty), eval("size(doc)", &zero), "the note of what was empty is not part of the record");
         assert_eq!(eval("doc == linked", &empty), json!(true));
         assert_eq!(eval("[isEmpty(''), isEmpty([]), isEmpty(0), coalesce(null, ''), coalesce('', 'x')]", &zero), json!([true, true, false, null, "x"]));
+    }
+
+    /// Computed fields are worked out after those they read, by name otherwise; a circle is refused.
+    #[test]
+    fn computed_fields_in_dependency_order() {
+        let def = |computed: Value| {
+            let fields: Vec<Value> = computed
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(n, c)| json!({"name": n, "type": "data", "computed": c}))
+                .chain([json!({"name": "base", "type": "data"})])
+                .collect();
+            compile_exprs(&serde_json::from_value::<EntityDef>(json!({"name": "XT", "label": "T", "kind": "master", "fields": fields})).unwrap())
+        };
+        let order = |c: Value| def(c).map(|x| x.computed_order);
+        assert_eq!(order(json!({"b": "doc.base", "a": "'x'", "c": "'y'"})).unwrap(), ["a", "b", "c"], "nothing to decide: by name");
+        assert_eq!(order(json!({"a": "doc.z + doc.b", "b": "doc.base", "z": "doc.b + '!'"})).unwrap(), ["b", "z", "a"]);
+        assert_eq!(order(json!({"a": "doc.a != null ? doc.a : doc.base"})).unwrap(), ["a"], "reading itself reads what is stored");
+        assert!(order(json!({"a": "doc.b", "b": "doc.c", "c": "doc.a", "d": "'x'"})).unwrap_err().contains("in a circle: a, b, c"));
     }
 
     #[test]

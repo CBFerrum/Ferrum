@@ -192,8 +192,8 @@ fn permit(permit_and_links: bool) -> Value {
         json!({"name": "holder_email", "type": "email", "read_only": true}),
         json!({"name": "issued_on", "type": "date", "read_only": true, "in_list": true}),
         json!({"name": "valid_months", "type": "int", "read_only": true, "hidden": true, "description": "Its type's months, when it was issued"}),
-        // Computed fields are worked out in the order of their names: expires_on, last_day, on_register, renew_from,
-        // status, each seeing those before it.
+        // Computed fields are worked out each after those it reads (by name where nothing decides): expires_on,
+        // last_day, on_register, renew_from, status.
         json!({"name": "expires_on", "type": "date", "in_list": true, "computed": "addMonths(doc.issued_on, doc.valid_months)"}),
         json!({"name": "status", "type": "select", "options": ["Valid", "Expired", "Revoked"], "no_copy": true, "in_list": true, "in_filter": true,
                "description": "Revoked once revoked; Expired after its last day",
@@ -325,7 +325,7 @@ fn entities() -> Vec<Value> {
             {"name": "officer", "type": "email", "in_list": true, "in_filter": true},
             {"name": "opened_on", "type": "date", "read_only": true, "no_copy": true, "in_list": true, "default_expr": "today"},
             {"name": "days_to_resolve", "type": "int", "read_only": true, "hidden": true, "fetch_from": "category.days_to_resolve"},
-            // In the order of their names: due_on, overdue, resolved_on.
+            // Worked out in this order (each after those it reads): due_on, overdue, resolved_on.
             {"name": "due_on", "type": "date", "no_copy": true, "in_list": true, "computed": days_from("doc.opened_on", '+', "doc.days_to_resolve")},
             {"name": "resolution", "type": "text"},
             // Keeps its first day: the stored value is what the record holds when it is worked out.
