@@ -890,10 +890,20 @@ async fn evidence(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<R
     Ok(([(header::CONTENT_DISPOSITION, name)], Json(pack)).into_response())
 }
 
+/// `GET /api/admin/services` → `{services: [{check, level, detail, fix?}]}`: whether the online editor
+/// (Word, Excel and PowerPoint files in Drive) and the PDF renderer are set up and answer, so that an
+/// administrator can see why files do not open. Addresses and tokens are never part of it.
+async fn services(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    admin(&ctx)?;
+    let st = app_state(&app)?;
+    Ok(Json(json!({"services": crate::doctor::service_findings(&st).await})).into_response())
+}
+
 pub fn routes() -> Routes {
     use axum::routing::{delete, get, post, put};
     Routes::new()
         .prefix("/api")
+        .add("/admin/services", get(services))
         .add("/admin/evidence", get(evidence))
         .add("/admin/settings", get(get_settings).put(put_settings))
         .add("/admin/users", get(list_users).post(create_user))

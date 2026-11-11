@@ -1,5 +1,8 @@
-# Single-host deployment: PostgreSQL + the Ferrum server (every page and the API) + the PDF renderer. For production use the Kubernetes manifests
-# (replicated database, several API replicas, backups) — see docs/operations.md.
+# Single-host deployment: PostgreSQL + the Ferrum server (every page and the API) + the PDF renderer
+# + the online editor for Word, Excel and PowerPoint files (Collabora Online). For production use the
+# Kubernetes manifests (replicated database, several API replicas, backups): docs/operations.md.
+# The renderer and the editor are on by default; each is turned off by one line in deploy/.env
+# (FERRUM_PDF_URL=  and  FERRUM_OFFICE_URL=  , empty), see "Online editing" in docs/operations.md.
 #   cp deploy/.env.example deploy/.env   # then edit the secrets
 #   docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d
 #   docker compose -f deploy/docker-compose.yml exec ferrum ferrum task create_tenant \
@@ -65,7 +68,16 @@ services:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       # PDFs of print formats (Download PDF, apps that attach documents); empty turns them off.
-      FERRUM_PDF_URL: ${FERRUM_PDF_URL:-http://pdf:3000}
+      # Set but empty (FERRUM_PDF_URL=) turns it off, and the renderer then does not start.
+      FERRUM_PDF_URL: ${FERRUM_PDF_URL-http://pdf:3000}
+      # Online editing of Word, Excel and PowerPoint files in Drive (the `office` service below).
+      # FERRUM_OFFICE_URL: the editor as the server reaches it (set but empty turns it off, and the
+      # editor then does not start); FERRUM_OFFICE_WOPI_URL: the server as the editor reaches it;
+      # FERRUM_OFFICE_ORIGIN: the editor as browsers reach it, which Drive's pages may frame.
+      FERRUM_OFFICE_URL: ${FERRUM_OFFICE_URL-http://office:9980}
+      FERRUM_OFFICE_WOPI_URL: ${FERRUM_OFFICE_WOPI_URL:-http://ferrum:5150}
+      FERRUM_OFFICE_ORIGIN: ${OFFICE_PUBLIC_URL:-http://localhost:9980}
+      FERRUM_OFFICE_IPS: ${FERRUM_OFFICE_IPS:-}
       # The largest file in one request (Drive upload, version, editor save), in MB; the server
       # holds it in memory meanwhile. A proxy in front must let bodies that large through.
       FERRUM_DRIVE_MAX_FILE_MB: ${FERRUM_DRIVE_MAX_FILE_MB:-32}
@@ -94,9 +106,52 @@ services:
   pdf:
     image: gotenberg/gotenberg:8
     restart: unless-stopped
+    # One replica, or none when FERRUM_PDF_URL is set but empty (an own renderer: PDF_REPLICAS=0).
+    deploy:
+      replicas: ${PDF_REPLICAS:-${FERRUM_PDF_URL+0}${FERRUM_PDF_URL-1}}
     command: ["gotenberg", "--chromium-disable-javascript=true", "--chromium-allow-list=^(data:|file:///tmp/).*", "--api-timeout=60s"]
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+
+  # The online editor: Collabora Online Development Edition (CODE), a free development edition
+  # without vendor support (docs/operations.md, "Online editing", says what production needs).
+  # It opens and saves Drive's Word, Excel and PowerPoint files over WOPI, with each person's own
+  # rights. Browsers reach it on a port and origin of its own (OFFICE_PORT; behind your TLS proxy,
+  # its own host name): it must never share Ferrum's origin.
+  office:
+    image: collabora/code:${COLLABORA_TAG:-26.04.5.2.1}
+    restart: unless-stopped
+    # One replica, or none when FERRUM_OFFICE_URL is set but empty (an own editor: OFFICE_REPLICAS=0).
+    deploy:
+      replicas: ${OFFICE_REPLICAS:-${FERRUM_OFFICE_URL+0}${FERRUM_OFFICE_URL-1}}
+    environment:
+      # The only WOPI host it serves: Ferrum, as the editor reaches it. Nothing else is accepted.
+      aliasgroup1: ${FERRUM_OFFICE_WOPI_URL:-http://ferrum:5150}
+      # How browsers reach it: the host name (and port) it puts in its editor page addresses.
+      server_name: ${OFFICE_PUBLIC_HOST:-localhost:9980}
+      # Only Ferrum's pages may frame it; no administration console; plain HTTP behind your
+      # TLS proxy (set OFFICE_TLS_TERMINATED=true when the proxy serves it over HTTPS); logs on stdout.
+      extra_params: >-
+        --o:ssl.enable=false
+        --o:ssl.termination=${OFFICE_TLS_TERMINATED:-false}
+        --o:net.frame_ancestors=${PUBLIC_URL:-http://localhost:8080}
+        --o:admin_console.enable=false
+        --o:allow_update_popup=false
+        --o:logging.level=warning
+    volumes:
+      # The WOPI proof key (docs/operations.md): with it, Ferrum refuses any WOPI call the editor did
+      # not sign. deploy/preflight.sh --generate makes it and sets OFFICE_PROOF_KEY. Without one,
+      # /dev/null: the editor logs that it found no key and publishes none.
+      - ${OFFICE_PROOF_KEY:-/dev/null}:/etc/coolwsd/proof_key:ro
+    ports:
+      - "${OFFICE_BIND:-0.0.0.0}:${OFFICE_PORT:-9980}:9980"
+    # Runs as user 1001. It builds a jail for each document, which takes these four capabilities and
+    # file capabilities on its helper, so `no-new-privileges` cannot be set here.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, MKNOD, SYS_CHROOT]
+    # Memory: about 600 MB for the editor itself and about 100 to 250 MB for each open document
+    # (docs/operations.md, "Online editing", Sizing). Collabora closes idle documents before the limit.
+    mem_limit: ${OFFICE_MEMORY:-2g}
 
 volumes:
   db:

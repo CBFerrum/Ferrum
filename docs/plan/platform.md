@@ -269,7 +269,7 @@ Chromium, WebKit and Firefox (Playwright).
 ## 4. Office
 
 **Status, 30 October 2026: Office v1 is built in Drive** (CBFerrum/ferrum-app-drive#1,
-CBFerrum/Ferrum-Frontend#5, `deploy/office.yml`). Since Drive 0.3.0 (ferrum-app-drive#3) documents
+CBFerrum/Ferrum-Frontend#5, the `office` service of `deploy/docker-compose.yml` (on by default since 11 Nov 2026)). Since Drive 0.3.0 (ferrum-app-drive#3) documents
 can be as large as the operator allows (`FERRUM_DRIVE_MAX_FILE_MB`, up to 1 GiB).
 * Drive is its own WOPI host, and the web app has a Files page and an editor page.
 * One editor server per installation, set by the operator.
