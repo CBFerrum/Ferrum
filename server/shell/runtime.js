@@ -314,7 +314,7 @@ button[disabled] { opacity: .5; cursor: not-allowed; }
 .tray .actions { display: flex; justify-content: flex-end; margin-top: 8px; }
 .bell { position: relative; }
 /* A count, not an alarm: the inverse of the page, small, at the corner of its button. */
-.bell .badge { position: absolute; top: 1px; inset-inline-end: 0; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; display: grid; place-items: center;
+.bell .badge { position: absolute; top: -3px; inset-inline-end: -7px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; display: grid; place-items: center;
   background: var(--ferrum-text, #202329); color: var(--ferrum-surface, #fff); font: 600 12px/16px var(--ferrum-font, system-ui, sans-serif); font-variant-numeric: tabular-nums; box-shadow: 0 0 0 2px var(--ferrum-surface, #fff); }
 .bell[aria-expanded="true"] .badge { box-shadow: 0 0 0 2px var(--ferrum-primary-soft, #e9eeff); }
 .inbox { inset-inline-end: 8px; width: min(400px, calc(100vw - 16px)); padding: 4px; }
