@@ -113,6 +113,7 @@ async fn scenario() {
     linked_from_automations(&w).await;
     configured(&k, &w).await;
     authored(&k, &w).await;
+    messages_from_the_record(&k, &w).await;
 }
 
 /// Whole numbers from a record are signed in checks, computed fields and automations; `read_only_if` ignores
@@ -686,4 +687,34 @@ async fn authored(k: &Arc<Kernel>, w: &W) {
         assert_eq!(buttons(&a, "XTask"), buttons(&admin, "XTask"));
         assert_eq!(buttons(&a, "Shop"), buttons(&admin, "Shop"));
     }
+}
+
+/// A rule's message and a button's refusal show values from the record (BL-15), never a field the person told
+/// may not read, and a rule may say which field its refusal is shown on (BL-16).
+async fn messages_from_the_record(k: &Arc<Kernel>, w: &W) {
+    let file = json!({"name": "XFile", "label": "File", "kind": "master", "title_field": "title", "fields": [
+        {"name": "title", "type": "data"}, {"name": "fee", "type": "int"}, {"name": "inner_note", "type": "data", "perm_group": "inner"}]});
+    let rule = |field: &str| {
+        serde_json::from_value::<NewCustomization>(json!({"entity": "XFile", "op": {"op": "add_rule", "rule": {"name": "fee_set", "field": field,
+            "check": "doc.fee > 0", "message": "{{ doc.title }} needs a fee{% if doc.inner_note %} ({{ doc.inner_note }}){% endif %}"}}}))
+        .unwrap()
+    };
+    let close = json!({"name": "x_close", "label": "Close", "refuse_if": [{"when": "doc.fee > 100", "message": "{{ doc.title }} costs {{ doc.fee }}; note: [{{ doc.inner_note }}]"}],
+        "effects": [{"type": "set_fields", "values": {"title": "doc.title + ' (closed)'"}}]});
+    assert!(w.batch(vec![define(file.clone()), rule("no_such_field")]).await.unwrap_err().contains("no_such_field is not a field of XFile"));
+    w.batch(vec![define(file), rule("fee"), add_action("XFile", close)]).await.unwrap();
+    let admin = w.admin().await;
+    k.set_role_permission(&admin, "Clerk", &PermissionDef { entity: "XFile".into(), read: true, write: true, create: true, ..Default::default() })
+        .await
+        .unwrap();
+    let clerk = k.create_user(&admin, "clerk@acme.test", "Clerk", None, &["Clerk".to_string()], false).await.unwrap();
+    let clerk = k.load_ctx(admin.tenant, clerk, None, "it".into()).await.unwrap();
+
+    let e = k.insert(&admin, "XFile", obj(json!({"title": "Shed", "fee": 0, "inner_note": "owner is a councillor"}))).await.unwrap_err();
+    assert_eq!(message(&e), "fee: Shed needs a fee (owner is a councillor)", "on the field the rule names, with what the admin may read");
+    let id = id_of(&k.insert(&admin, "XFile", obj(json!({"title": "Shed", "fee": 150, "inner_note": "owner is a councillor"}))).await.unwrap());
+    let e = k.update(&clerk, "XFile", id, obj(json!({"fee": 0})), None).await.unwrap_err();
+    assert_eq!(message(&e), "fee: Shed needs a fee", "a field the clerk may not read renders empty");
+    refused(k.run_action(&clerk, "XFile", id, "x_close", json!({})).await, "forbidden", "Shed costs 150; note: []");
+    refused(k.run_action(&admin, "XFile", id, "x_close", json!({})).await, "forbidden", "Shed costs 150; note: [owner is a councillor]");
 }

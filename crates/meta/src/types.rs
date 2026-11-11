@@ -385,9 +385,13 @@ pub struct RuleDef {
     pub name: String,
     /// CEL expression that must evaluate to `true`.
     pub check: String,
+    /// What a person is told; it may show the record's values (`{{ doc.title }}`), as that person may read them.
     pub message: String,
     #[serde(default)]
     pub on: RuleOn,
+    /// The field the refusal is shown on (default: the rule's name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

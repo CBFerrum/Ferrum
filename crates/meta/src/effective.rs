@@ -1083,6 +1083,9 @@ fn compile_exprs(def: &EntityDef) -> Result<Exprs, String> {
         }
     }
     for r in &def.rules {
+        if let Some(f) = r.field.as_deref().filter(|f| !def.fields.iter().any(|d| &d.name == f)) {
+            return Err(format!("rule {}: {f} is not a field of {}", r.name, def.name));
+        }
         x.rules.push((r.clone(), c(&r.check)?));
     }
     for a in &def.actions {
