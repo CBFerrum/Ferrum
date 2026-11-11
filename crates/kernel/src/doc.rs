@@ -1251,7 +1251,10 @@ impl Kernel {
         for (rule, expr) in rules {
             match expr.eval_bool_with(&Scope { doc: &view, old: old_view.as_ref(), parent: None, user: &user }, &[("links", &links)]) {
                 Ok(true) => {}
-                Ok(false) => errors.push(FieldError::new(&rule.name, &rule.message)),
+                Ok(false) => errors.push(FieldError::new(
+                    rule.field.as_deref().unwrap_or(&rule.name),
+                    crate::print::message(&rule.message, || told(ctx, ent, doc.clone(), Some(self))),
+                )),
                 Err(e) => errors.push(FieldError::new(&rule.name, format!("rule could not be evaluated: {e}"))),
             }
         }
@@ -1291,7 +1294,13 @@ impl Kernel {
                     }
                     match expr.eval_bool(&Scope { doc: &rview, old: None, parent: Some(view), user: &user }) {
                         Ok(true) => {}
-                        Ok(false) => errors.push(FieldError::new(&rule.name, &rule.message).at(&path)),
+                        Ok(false) => errors.push(
+                            FieldError::new(
+                                rule.field.as_deref().unwrap_or(&rule.name),
+                                crate::print::message(&rule.message, || told(ctx, &cent, rm.clone(), None)),
+                            )
+                            .at(&path),
+                        ),
                         Err(e) => errors.push(FieldError::new(&rule.name, format!("rule could not be evaluated: {e}")).at(&path)),
                     }
                 }
@@ -1462,6 +1471,26 @@ fn refusal<'a>(f: &'a FieldDef, sent: &Value, stored: Option<&Value>) -> Option<
     (normalize(f, sent).ok() != stored).then_some(m)
 }
 
+/// A record (or with no kernel, a line) as the person told about it may read it, for a message built from it
+/// (`crate::print::message`): what [`Kernel::mask`] leaves, secrets never.
+pub(crate) fn told(ctx: &Ctx, ent: &EffEntity, doc: Doc, k: Option<&Kernel>) -> Value {
+    let mut m = match k {
+        Some(k) => k.mask(ctx, ent, doc),
+        None => {
+            let mut m = doc;
+            if ctx.egress.is_some() {
+                mask_row(ctx, ent, &mut m, true);
+            }
+            if !ctx.perms.admin {
+                mask_row(ctx, ent, &mut m, false);
+            }
+            m
+        }
+    };
+    m.retain(|name, _| ent.field(name).is_none_or(|f| f.ftype != FieldType::Secret));
+    Value::Object(m)
+}
+
 /// A row as `mask` leaves it: what may not leave for an AI provider (`egress`) or what the caller may not read
 /// removed, and its own rows (a line's own lines, BD-06) the same way.
 fn mask_row(ctx: &Ctx, cent: &EffEntity, m: &mut Map<String, Value>, egress: bool) {
@@ -1544,8 +1573,8 @@ fn fill_entity_defaults(ent: &EffEntity, doc: &mut Map<String, Value>, parent: O
 }
 
 fn compute_entity(ent: &EffEntity, doc: &mut Map<String, Value>, parent: Option<&Value>, user: &Value, schema: &ferrum_meta::Schema) -> Result<()> {
-    for (name, expr) in &ent.exprs.computed {
-        let Some(f) = ent.field(name) else { continue };
+    for name in &ent.exprs.computed_order {
+        let (Some(f), Some(expr)) = (ent.field(name), ent.exprs.computed.get(name)) else { continue };
         let view = ent.cel_view(&Value::Object(doc.clone()), schema);
         let v = expr.eval(&Scope { doc: &view, old: None, parent, user }).map_err(|e| Error::field(name, format!("could not be computed: {e}")))?;
         doc.insert(name.clone(), normalize(f, &v).map_err(|m| Error::field(name, m))?);

@@ -383,3 +383,24 @@ classes on offer.
 secrets, files, permission-group fields or people's declared personal data; content that depends on who is
 looking (per-visitor content, a guest's own records: those are the portal's, BD-02); a list of lines or ledger
 rows.
+
+## BD-16. Expression functions are additions
+
+Decided 12 November 2026. Asked for by the Government pack ([evidence](evidence/government-as-a-pack-2026-11-11.md)):
+a permit's expiry in calendar months took 2,479 characters, "Check" and "check" could not be told apart, an
+empty number could not be told from 0, and a refusal could not say what was missing.
+
+* **Additions only.** Dates, text, `isEmpty` and `coalesce` are new names, and CEL's strings extension is
+  switched on ([expressions](expressions.md)). Every expression that evaluated before gives the same value; a
+  name CEL already gives a meaning keeps it.
+* **Empty stays readable as 0 unless asked.** An empty number still reads as 0 and an empty tick as false
+  everywhere, so `doc.qty > 0` on a new record and every shipped check keep their answers. Only `isEmpty(x)` and
+  `coalesce(x, ...)` given a field directly see that it was left empty; a value that is only a path still
+  copies an empty value as empty (docs/api.md, "Configured actions").
+* **An empty date gives empty.** A date function given no date gives null rather than failing a rule or a save.
+* **Messages from the record, as the reader sees it.** A rule's or refusal's message may hold `{{ doc.<field> }}`
+  (MiniJinja, as print templates), rendered over the record as the person told may read it; a message with no
+  placeholder is shown as written. A rule may name the field its refusal is shown on.
+
+**Rules out**: changing what an empty value reads as in existing expressions; a message showing a field its
+reader may not read; functions the browser evaluates (it leaves any call to the server).
