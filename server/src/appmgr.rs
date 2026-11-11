@@ -890,8 +890,13 @@ impl AppManager {
     /// Whether the workspace's packages of a native app predate this build's (roles and seed
     /// data of the new version are installed by upgrading).
     fn stale(&self, ws: &Workspace, m: &AppManifest) -> bool {
+        !self.behind(ws, m).is_empty()
+    }
+
+    /// A native app's packages that the workspace has older than this build, as `name have → build`.
+    fn behind(&self, ws: &Workspace, m: &AppManifest) -> Vec<String> {
         let catalog = self.kernel.registry.catalog();
-        m.packages.iter().any(|p| matches!((ws.packages.get(p), catalog.package(p)), (Some(v), Some(pkg)) if *v != pkg.manifest.version))
+        packages_behind(&ws.packages, &m.packages, |p| catalog.package(p).map(|pkg| pkg.manifest.version.clone()))
     }
 
     /// Whether a trusted key (of `role`, or of any role) signed this release's digest.
@@ -2004,11 +2009,17 @@ impl AppManager {
         out
     }
 
-    /// The newest compatible version above the installed one, if any.
-    async fn update_for(&self, id: &str, inst: &Installed, ws: &Workspace, local: &[Release]) -> Option<String> {
+    /// The newest compatible version above the installed one, if any; for a native app, also the
+    /// packages an update brings up to this build's (the app's version may not change).
+    async fn update_for(&self, id: &str, inst: &Installed, ws: &Workspace, local: &[Release]) -> Option<Value> {
         let current = Version::parse(&inst.version).ok()?;
         if let Some(m) = self.native(id) {
-            return (m.version > current || self.stale(ws, m)).then(|| m.version.to_string());
+            let behind = self.behind(ws, m);
+            return match (m.version > current, behind.is_empty()) {
+                (false, true) => None,
+                (_, true) => Some(json!({"version": m.version.to_string()})),
+                _ => Some(json!({"version": m.version.to_string(), "packages": behind})),
+            };
         }
         let mut errors = Vec::new();
         let offers = self.offers_for(id, local, true, &mut errors).await;
@@ -2018,7 +2029,7 @@ impl AppManager {
             .filter(|r| r.version > current && r.version.pre.is_empty() && r.platform.matches(&self.platform))
             .map(|r| r.version)
             .max()
-            .map(|v| v.to_string())
+            .map(|v| json!({"version": v.to_string()}))
     }
 
     /// `GET /api/admin/apps`: installed apps with available updates, apps available here,
@@ -2051,7 +2062,7 @@ impl AppManager {
                 },
             };
             app.version = inst.version.clone();
-            installed.push(InstalledApp { app, enabled: inst.enabled, installed_at: inst.installed_at, update: update.map(|v| json!({"version": v})) });
+            installed.push(InstalledApp { app, enabled: inst.enabled, installed_at: inst.installed_at, update });
         }
         let stores = join_all(self.stores.iter().map(|url| async move {
             match self.store_search(url, "", "").await {
@@ -2709,5 +2720,45 @@ pub mod store {
             })
             .collect();
         Ok(RevocationList { generated_at, entries })
+    }
+}
+
+/// Of `packages`, those `installed` holds older than `build` says this build has, as
+/// `name have → build`. One the workspace has newer (a server rolled back) is not behind: updating
+/// would only stamp it with an older version (`ferrum task doctor` reports those).
+fn packages_behind(installed: &BTreeMap<String, String>, packages: &[String], build: impl Fn(&str) -> Option<String>) -> Vec<String> {
+    packages
+        .iter()
+        .filter_map(|p| {
+            let (have, want) = (installed.get(p)?, build(p)?);
+            ferrum_kernel::tenant::package_behind(have, &want).then(|| format!("{p} {have} → {want}"))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_packages_older_than_the_build_call_for_an_update() {
+        let build = |p: &str| match p {
+            "crm" => Some("0.4.0".to_string()),
+            "crm_erp" => Some("0.1.1".to_string()),
+            "payroll" => Some("0.5.1".to_string()),
+            _ => None,
+        };
+        let have = |rows: &[(&str, &str)]| rows.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect::<BTreeMap<_, _>>();
+        let pkgs = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        // What made the nine apps stale on the showcase workspace: packages from an older build.
+        assert_eq!(packages_behind(&have(&[("crm", "0.2.0")]), &pkgs(&["crm"]), build), vec!["crm 0.2.0 → 0.4.0"]);
+        // Up to date: nothing to offer.
+        assert!(packages_behind(&have(&[("crm", "0.4.0"), ("crm_erp", "0.1.1")]), &pkgs(&["crm", "crm_erp"]), build).is_empty());
+        // Newer than this build (rolled back, or moved from a newer build): no perpetual offer, no downgrade.
+        assert!(packages_behind(&have(&[("crm", "0.5.0")]), &pkgs(&["crm"]), build).is_empty());
+        assert!(packages_behind(&have(&[("payroll", "0.10.0")]), &pkgs(&["payroll"]), build).is_empty(), "compared as versions, not text");
+        // Not installed, or unknown to this build: not for this check.
+        assert!(packages_behind(&have(&[]), &pkgs(&["crm"]), build).is_empty());
+        assert!(packages_behind(&have(&[("other", "1.0.0")]), &pkgs(&["other"]), build).is_empty());
     }
 }
