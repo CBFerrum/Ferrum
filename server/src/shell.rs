@@ -1012,7 +1012,7 @@ pub fn suite_manifest(workspace: &str) -> Value {
         "scope": "/",
         "display": "standalone",
         "background_color": "#ffffff",
-        "theme_color": "#2f5bea",
+        "theme_color": "#3157d5",
         "icons": [
             {"src": "/_shell/v1/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"},
             {"src": "/_shell/v1/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
@@ -1098,7 +1098,7 @@ pub fn lucide(name: &str) -> Option<&'static str> {
 /// An app's icon as its launcher tile shows it (its Lucide icon, else its initial, white on its
 /// colour), for install manifests: square with `mask` (the system shapes it), else rounded.
 pub fn app_icon_svg(icon: &str, colour: &str, letter: &str, mask: bool) -> String {
-    let colour = if colour.len() == 6 && colour.bytes().all(|b| b.is_ascii_hexdigit()) { colour } else { "2f5bea" };
+    let colour = if colour.len() == 6 && colour.bytes().all(|b| b.is_ascii_hexdigit()) { colour } else { "3157d5" };
     let drawing = match lucide(icon) {
         Some(shape) => format!(
             r##"<g transform="translate(128 128) scale(10.6667)" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{shape}</g>"##
@@ -1782,7 +1782,7 @@ mod tests {
         assert!(svg.starts_with(r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#2563eb"/>"##));
         assert!(svg.contains(mail) && !svg.contains("<text"));
         let masked = app_icon_svg("nope", "zzz\"/><script>", "<", true);
-        assert!(masked.contains(r##"rx="0" fill="#2f5bea""##) && masked.contains(">•</text>") && !masked.contains("<script"), "{masked}");
+        assert!(masked.contains(r##"rx="0" fill="#3157d5""##) && masked.contains(">•</text>") && !masked.contains("<script"), "{masked}");
         assert!(app_icon_svg("", "0e7490", "Ä", false).contains(">Ä</text>"));
     }
 
