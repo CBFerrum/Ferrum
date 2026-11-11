@@ -137,7 +137,8 @@ pub async fn report(st: &AppState, ctx: &AppContext) -> Result<Vec<Finding>, fer
     out.sort_by_key(|f| match f.level {
         Level::Blocker => 0,
         Level::Warning => 1,
-        Level::Ok => 2,
+        Level::Off => 2,
+        Level::Ok => 3,
     });
     Ok(out)
 }
@@ -169,11 +170,7 @@ pub const OFFICE_TYPES: [&str; 3] = ["docx", "xlsx", "pptx"];
 pub fn office_findings(url: &str, wopi: &str, discovery: Result<String, String>) -> Vec<Finding> {
     let (url, wopi) = (url.trim(), wopi.trim());
     if url.is_empty() && wopi.is_empty() {
-        return vec![Finding::warning(
-            "office",
-            "online editing is off: Word, Excel and PowerPoint files cannot be opened in Drive",
-            "Set FERRUM_OFFICE_URL and FERRUM_OFFICE_WOPI_URL (docs/operations.md, Online editing).",
-        )];
+        return vec![Finding::off("office", "online editing is off: Word, Excel and PowerPoint files cannot be opened in Drive")];
     }
     if url.is_empty() || wopi.is_empty() {
         return vec![Finding::warning(
@@ -220,7 +217,7 @@ pub fn office_findings(url: &str, wopi: &str, discovery: Result<String, String>)
 /// What to say about the PDF renderer, from its address and what its health check gave.
 pub fn pdf_finding(url: &str, health: Option<Result<u16, ()>>) -> Finding {
     match (url.trim().is_empty(), health) {
-        (true, _) | (_, None) => Finding::warning("pdf", "no PDF renderer: documents print as HTML only", "Set FERRUM_PDF_URL."),
+        (true, _) | (_, None) => Finding::off("pdf", "no PDF renderer: documents print as HTML only"),
         (_, Some(Ok(200..=299))) => Finding::ok("pdf", "the PDF renderer answers"),
         (_, Some(Ok(code))) => Finding::warning("pdf", format!("the PDF renderer answered {code}"), "Check it: printing to PDF fails until it answers."),
         (_, Some(Err(()))) => Finding::warning("pdf", "the PDF renderer cannot be reached", "Check FERRUM_PDF_URL: printing to PDF fails until it answers."),
@@ -258,6 +255,7 @@ pub fn render(findings: &[Finding]) -> String {
         let level = match f.level {
             Level::Blocker => "BLOCKER",
             Level::Warning => "warning",
+            Level::Off => "off",
             Level::Ok => "ok",
         };
         out.push_str(&format!("{level:8} {:24} {}\n", f.check, f.detail));
@@ -266,7 +264,13 @@ pub fn render(findings: &[Finding]) -> String {
         }
     }
     let count = |l: Level| findings.iter().filter(|f| f.level == l).count();
-    out.push_str(&format!("\n{} blockers, {} warnings, {} fine\n", count(Level::Blocker), count(Level::Warning), count(Level::Ok)));
+    out.push_str(&format!(
+        "\n{} blockers, {} warnings, {} switched off, {} fine\n",
+        count(Level::Blocker),
+        count(Level::Warning),
+        count(Level::Off),
+        count(Level::Ok)
+    ));
     out
 }
 
@@ -329,8 +333,9 @@ mod tests {
         let secret = "https://office.internal.example:9980";
         let lv = |f: &[Finding], check: &str| f.iter().find(|f| f.check == check).map(|f| f.level);
         let off = office_findings("", "", Err(String::new()));
-        assert_eq!(lv(&off, "office"), Some(Level::Warning));
-        assert!(off[0].detail.contains("is off"));
+        assert_eq!(lv(&off, "office"), Some(Level::Off), "switched off on purpose: information, not a fault");
+        assert!(off[0].detail.contains("is off") && off[0].fix.is_none(), "{off:?}");
+        assert_eq!(lv(&office_findings(secret, "", Err(String::new())), "office"), Some(Level::Warning), "half set up needs attention");
         assert!(office_findings(secret, "", Err(String::new()))[0].detail.contains("half set up"));
         let down = office_findings(secret, "http://ferrum:5150", Err("connection failed".into()));
         assert_eq!((down.len(), lv(&down, "office")), (1, Some(Level::Warning)));
@@ -345,7 +350,7 @@ mod tests {
 
     #[test]
     fn the_pdf_renderer_report() {
-        assert_eq!(pdf_finding("", None).level, Level::Warning);
+        assert_eq!((pdf_finding("", None).level, pdf_finding("", None).fix), (Level::Off, None));
         assert_eq!(pdf_finding("http://pdf:3000", Some(Ok(200))).level, Level::Ok);
         assert!(pdf_finding("http://pdf:3000", Some(Ok(503))).detail.contains("503"));
         assert!(pdf_finding("http://pdf:3000", Some(Err(()))).detail.contains("cannot be reached"));
@@ -353,7 +358,8 @@ mod tests {
 
     #[test]
     fn it_counts_what_stands_in_the_way() {
-        let text = render(&[Finding::blocker("a", "b", "c"), Finding::ok("d", "e")]);
-        assert!(text.contains("BLOCKER") && text.contains("-> c") && text.contains("1 blockers, 0 warnings, 1 fine"), "{text}");
+        let text = render(&[Finding::blocker("a", "b", "c"), Finding::off("f", "g"), Finding::ok("d", "e")]);
+        assert!(text.contains("BLOCKER") && text.contains("-> c") && text.contains("1 blockers, 0 warnings, 1 switched off, 1 fine"), "{text}");
+        assert!(text.contains("off      f"), "{text}");
     }
 }
