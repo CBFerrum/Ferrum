@@ -381,6 +381,13 @@ async fn upload_part(Auth(ctx): Auth, State(app): State<AppContext>, Path((id, o
     Ok(Json(crate::objects::append(&st.kernel, &st.objects, &ctx, id, offset, part).await?).into_response())
 }
 
+/// Cancels an upload in parts: its parts go now (`204`, also when there is nothing to cancel).
+async fn cancel_upload(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    crate::objects::cancel(&st.kernel, &st.objects, &ctx, id).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 async fn complete_upload(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uuid>) -> ApiResult<Response> {
     let st = app_state(&app)?;
     Ok((StatusCode::CREATED, Json(crate::objects::complete(&st.kernel, &st.objects, &ctx, id).await?)).into_response())
@@ -421,7 +428,7 @@ pub fn routes() -> Routes {
         .add("/api/openapi.json", get(openapi))
         .add("/api/files", post(upload))
         .add("/api/files/uploads", post(start_upload))
-        .add("/api/files/uploads/{id}", get(upload_status))
+        .add("/api/files/uploads/{id}", get(upload_status).delete(cancel_upload))
         .add("/api/files/uploads/{id}/parts/{offset}", put(upload_part).layer(DefaultBodyLimit::max(crate::objects::PART_BYTES as usize + (64 << 10))))
         .add("/api/files/uploads/{id}/complete", post(complete_upload))
         .add("/files/{id}", get(download))
