@@ -109,7 +109,7 @@ def write(code: list, review: list) -> None:
     head = re.sub(r"^\| ([^|]+?) \| \d+ \|", count, head, flags=re.M)
     head = re.sub(r"## The \d+ statements, by kind", f"## The {len(rows)} statements, by kind", head)
     apps = Counter(c[0] for c in code)
-    named = {"erp": "ERP", "pos": "POS", "hr": "HR", "lms": "LMS", "dam": "DAM"}
+    named = {"erp": "ERP", "crm": "CRM", "pos": "POS", "hr": "HR", "lms": "LMS", "dam": "DAM"}
     order = sorted(apps.items(), key=lambda a: (-a[1], a[0]))
     many = [f"{named.get(a, a.replace('-', ' ').title())} {n}" for a, n in order if n > 1]
     ones = [named.get(a, a.replace("-", " ").title()) for a, n in order if n == 1]

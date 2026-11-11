@@ -607,8 +607,8 @@ pub fn grid<T: ReadTxn>(rows: &[Vec<Slot>], txn: &T, cols: usize, text_px: u32) 
     }
     let set: u32 = px.iter().sum();
     let unset = px.iter().filter(|w| **w == 0).count() as u32;
-    if unset > 0 {
-        let share = (text_px.saturating_sub(set) / unset).max(25);
+    if let Some(share) = text_px.saturating_sub(set).checked_div(unset) {
+        let share = share.max(25);
         px.iter_mut().filter(|w| **w == 0).for_each(|w| *w = share);
     }
     let total: u32 = px.iter().sum();

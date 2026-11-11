@@ -156,7 +156,7 @@ MUTANTS = [
     ("requester-closes-case", "crates/kernel/src/process.rs", 'if !ctx.roles.contains(&owner) || exclude.contains(&ctx.user) {', 'if !ctx.roles.contains(&owner) || exclude.is_empty() && exclude.contains(&ctx.user) {', PROCESS_RECORDS),
     ("delegation-goes-back", "crates/kernel/src/process.rs", 'if to == ctx.user || delegated.contains(&to) || exclude.contains(&to) {', 'if to == ctx.user || exclude.contains(&to) {', PROCESS_RECORDS),
     # Batch 2 of closing the registry's open rows (docs/logic/evidence/closing-gaps.md).
-    ("older-cel-reads-the-clock", "crates/meta/src/expr.rs", "bind(&mut ctx, key, scope.user.get(key).unwrap_or(&Value::Null));", 'bind(&mut ctx, key, scope.user.get(key).unwrap_or(&Value::String(chrono::Utc::now().to_rfc3339())));', META_EXPR),
+    ("older-cel-reads-the-clock", "crates/meta/src/expr.rs", "bound.push((key, scope.user.get(key).unwrap_or(&Value::Null)));", 'bound.push((key, scope.user.get(key).unwrap_or(Box::leak(Box::new(Value::String(chrono::Utc::now().to_rfc3339()))))));', META_EXPR),
     ("clock-end-takes-earlier", "crates/logic/src/calendar.rs", "Some((at(s, false)?, at(e, true)?))", "Some((at(s, false)?, at(e, false)?))", LOGIC_UNIT),
     ("clock-repeat-counted-twice", "crates/logic/src/calendar.rs", ".filter(|(s2, _)| *s2 < e)", ".filter(|_| false)", LOGIC_UNIT),
     ("clock-stopped-ignored", "crates/logic/src/calendar.rs", ".filter(|&(a, b)| a < b && b > from)", ".filter(|_| false)", LOGIC_UNIT),
@@ -651,7 +651,7 @@ MUTANTS = [
     ("target-shares-a-field", "crates/meta/src/effective.rs", "            if !kept.insert(name.as_str()) {", "            if !kept.insert(name.as_str()) && false {", META_TARGETS),
     ("target-keeps-a-packages-field", "crates/meta/src/effective.rs", "OverlayOp::AddTarget { target: t } if !b.custom &&", "OverlayOp::AddTarget { target: t } if false &&", META_TARGETS),
     ("target-breached-twice", "crates/kernel/src/targets.rs", "paused_at is null and breached_at is null and due_at <= $1", "paused_at is null and due_at <= $1", TARGETS),
-    ("target-fields-take-input", "crates/kernel/src/doc.rs", "                || ent.target_keeping(k).is_some()\n", "\n", TARGETS),
+    ("target-fields-take-input", "crates/kernel/src/doc.rs", "f.rollup.is_some() || ent.target_keeping(k).is_some() {", "f.rollup.is_some() {", TARGETS),
     ("target-calendar-unchecked", "crates/kernel/src/customize.rs", "        crate::targets::check_calendars(tx, ctx.tenant, was, &now).await?;\n", "\n", TARGETS),
     ("target-calendar-deleted-under-it", "crates/kernel/src/process.rs", "if let Some(by) = crate::targets::naming(&ctx.schema, name) {", "if let Some(by) = None::<String> {", TARGETS),
     ("target-rounds-outlive-record", "crates/kernel/src/doc.rs", "\"record_secret\", \"record_target\"]", "\"record_secret\"]", TARGETS),
