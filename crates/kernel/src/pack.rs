@@ -264,9 +264,18 @@ fn carried(f: &FieldDef) -> bool {
     !f.read_only && f.computed.is_none() && f.rollup.is_none() && f.fetch_from.is_none() && !matches!(f.ftype, FieldType::Secret | FieldType::Attach)
 }
 
-/// The fields a record is known by in a pack: its first unique key, else its title field.
+/// The fields a record is known by in a pack: its first unique key, else its title field; none for the one record of
+/// a workspace's settings (BD-17).
 fn key_of(ent: &EffEntity) -> Option<Vec<String>> {
+    if one_record(ent) {
+        return Some(vec![]);
+    }
     ent.unique_keys().into_iter().next().or_else(|| ent.def.title_field.clone().map(|t| vec![t]))
+}
+
+/// Settings with one record for the workspace: a pack carries that record, keyed by nothing.
+fn one_record(ent: &EffEntity) -> bool {
+    ent.def.kind == ferrum_meta::EntityKind::Settings && !ent.def.company_scoped
 }
 
 /// Why records of `ent` (and its lines) may not travel as reference data, if they may not.
@@ -1013,6 +1022,9 @@ impl Kernel {
     /// Reference records, matched by key: created or updated, never deleted.
     async fn install_records(&self, ctx: &Ctx, tx: &mut Tx, sec: &Records, section: &mut Section) -> Result<()> {
         let ent = reference_entity(ctx, &sec.entity)?;
+        if one_record(&ent) {
+            return self.install_settings(ctx, tx, &ent, sec, section).await;
+        }
         if sec.key.is_empty() || sec.key.iter().any(|k| ent.field(k).is_none_or(|f| !carried(f) || f.ftype == FieldType::Table)) {
             return Err(Error::field("records", format!("records of {}: {} is not a key of its fields here", sec.entity, sec.key.join(", "))));
         }
@@ -1042,6 +1054,23 @@ impl Kernel {
                 _ => return Err(Error::invalid(format!("{what}: more than one record here has this key"))),
             }
         }
+        Ok(())
+    }
+
+    /// A workspace's settings (BD-17): the pack's values when the workspace has no settings record yet; a record it
+    /// has keeps its own values.
+    async fn install_settings(&self, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, sec: &Records, section: &mut Section) -> Result<()> {
+        let what = ent.def.label.clone();
+        let [row] = sec.rows.as_slice() else {
+            return Err(Error::field("records", format!("records of {}: settings travel as one record, and the pack has {}", sec.entity, sec.rows.len())));
+        };
+        if !self.find_tx(ctx, tx, &sec.entity, &[], None, 1).await?.is_empty() {
+            section.add(what, "unchanged");
+            return Ok(());
+        }
+        let doc = self.resolve(ctx, tx, ent, row, &what).await?;
+        self.insert_tx(ctx, tx, &sec.entity, doc).await.map_err(|e| about(&what, e))?;
+        section.add(what, "created");
         Ok(())
     }
 

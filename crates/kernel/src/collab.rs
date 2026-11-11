@@ -461,10 +461,12 @@ impl Kernel {
                     let holds = wf
                         .guards
                         .get(&(t.action.clone(), t.from.clone()))
-                        // One that reads linked records is taken to hold here, where no transaction is at hand: the
-                        // person finds out on taking the step (BD-14).
+                        // One that reads linked records or settings is taken to hold here, where no transaction is at
+                        // hand: the person finds out on taking the step (BD-14, BD-17).
                         .is_none_or(|g| {
-                            !g.links().is_empty() || g.eval_bool(&ferrum_meta::Scope { doc: &view, old: None, parent: None, user: &user }).unwrap_or(false)
+                            !g.links().is_empty()
+                                || !g.settings().is_empty()
+                                || g.eval_bool(&ferrum_meta::Scope { doc: &view, old: None, parent: None, user: &user }).unwrap_or(false)
                         });
                     if !raised && holds {
                         actions.push(t.action.as_str());
