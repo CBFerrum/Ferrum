@@ -63,6 +63,7 @@ pub mod schedule;
 pub mod scim;
 pub mod secret;
 pub mod service;
+pub mod settings;
 pub mod shell;
 pub mod signup;
 pub mod sso;

@@ -363,6 +363,8 @@ impl Kernel {
         guard_kind(&ent)?;
         ctx.require(entity, Action::Read)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let held = crate::settings::with(self, ctx, &mut tx, ctx.schema.settings_read(&ent)).await?;
+        let ctx: &Ctx = &held;
         let existing = match uuid_of(input.get("id")) {
             Some(id) => self.load_marked(&mut tx, ctx, &ent, id, false).await?,
             None => None,
@@ -386,6 +388,9 @@ impl Kernel {
 
     async fn insert_inner(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, input: Doc, amended_from: Option<Uuid>) -> Result<Doc> {
         let ent = self.entity(ctx, entity)?;
+        // The settings its expressions read, once for this save (BD-17).
+        let held = crate::settings::with(self, ctx, tx, ctx.schema.settings_read(&ent)).await?;
+        let ctx: &Ctx = &held;
         guard_kind(&ent)?;
         ctx.require(entity, Action::Create)?;
         let id = match input.get("id") {
@@ -447,6 +452,9 @@ impl Kernel {
 
     pub async fn update_tx(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, patch: Doc, expected_version: Option<i64>) -> Result<Doc> {
         let ent = self.entity(ctx, entity)?;
+        // The settings its expressions read, once for this save (BD-17).
+        let held = crate::settings::with(self, ctx, tx, ctx.schema.settings_read(&ent)).await?;
+        let ctx: &Ctx = &held;
         guard_kind(&ent)?;
         let scope = row_scope(ctx, &ent, Action::Write)?;
         let old = self.load_marked(tx, ctx, &ent, id, true).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
@@ -601,6 +609,9 @@ impl Kernel {
 
     async fn submit_inner(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, expected_version: Option<i64>, workflow_state: Option<String>) -> Result<Doc> {
         let ent = self.entity(ctx, entity)?;
+        // The settings its expressions read, once for this save (BD-17).
+        let held = crate::settings::with(self, ctx, tx, ctx.schema.settings_read(&ent)).await?;
+        let ctx: &Ctx = &held;
         guard_kind(&ent)?;
         if !ent.is_submittable() {
             return Err(Error::invalid(format!("{} is not submittable", ent.def.label)));
@@ -667,6 +678,9 @@ impl Kernel {
 
     async fn cancel_inner(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, expected_version: Option<i64>, workflow_state: Option<String>) -> Result<Doc> {
         let ent = self.entity(ctx, entity)?;
+        // The settings its expressions read, once for this save (BD-17).
+        let held = crate::settings::with(self, ctx, tx, ctx.schema.settings_read(&ent)).await?;
+        let ctx: &Ctx = &held;
         guard_kind(&ent)?;
         if !ent.is_submittable() {
             return Err(Error::invalid(format!("{} is not submittable", ent.def.label)));
@@ -744,6 +758,9 @@ impl Kernel {
 
     pub async fn run_action_tx(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, action: &str, params: &Value) -> Result<Value> {
         let ent = self.entity(ctx, entity)?;
+        // The settings its expressions read, once for this save (BD-17).
+        let held = crate::settings::with(self, ctx, tx, ctx.schema.settings_read(&ent)).await?;
+        let ctx: &Ctx = &held;
         guard_kind(&ent)?;
         let def = ent.def.actions.iter().find(|a| a.name == action).ok_or_else(|| Error::NotFound(format!("action {action}")))?;
         let scope = crate::ctx::action_gate(ctx, &ent, def)?;
@@ -798,6 +815,9 @@ impl Kernel {
 
     pub async fn transition_tx(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, action: &str, expected_version: Option<i64>) -> Result<Doc> {
         let ent = self.entity(ctx, entity)?;
+        // The settings its expressions read, once for this save (BD-17).
+        let held = crate::settings::with(self, ctx, tx, ctx.schema.settings_read(&ent)).await?;
+        let ctx: &Ctx = &held;
         let wf = ent.workflow.clone().ok_or_else(|| Error::invalid(format!("{} has no workflow", ent.def.label)))?;
         let scope = row_scope(ctx, &ent, Action::Read)?;
         let doc = self.load_marked(tx, ctx, &ent, id, true).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
@@ -874,6 +894,9 @@ impl Kernel {
     /// anything changed.
     pub(crate) async fn keep_targets_tx(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid) -> Result<bool> {
         let ent = self.entity(ctx, entity)?;
+        // The settings its expressions read, once for this save (BD-17).
+        let held = crate::settings::with(self, ctx, tx, ctx.schema.settings_read(&ent)).await?;
+        let ctx: &Ctx = &held;
         let Some(old) = self.load_marked(tx, ctx, &ent, id, true).await? else { return Ok(false) };
         let mut next = old.clone();
         crate::targets::keep(self, ctx, tx, &ent, id, &mut next).await?;
