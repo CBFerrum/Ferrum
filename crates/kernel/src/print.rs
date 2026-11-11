@@ -104,6 +104,19 @@ pub(crate) fn environment() -> Environment<'static> {
     env
 }
 
+/// A rule's or a refusal's message with values from the record in it (`still needed: {{ doc.missing }}`). `doc` is
+/// the record as the person told may read it ([`Kernel::mask`]): a field they may not read is not there, and
+/// shows as nothing. Text, not HTML, so nothing is escaped. A message without `{{` or `{%`, or one that cannot be
+/// rendered, is told as written.
+pub(crate) fn message(template: &str, doc: impl FnOnce() -> Value) -> String {
+    if !template.contains("{{") && !template.contains("{%") {
+        return template.to_string();
+    }
+    let mut env = environment();
+    env.set_auto_escape_callback(|_| AutoEscape::None);
+    env.render_str(template, minijinja::context! { doc => doc() }).unwrap_or_else(|_| template.to_string())
+}
+
 impl Kernel {
     pub async fn render_print(&self, ctx: &Ctx, entity: &str, id: Uuid) -> Result<String> {
         let ent = self.entity(ctx, entity)?;

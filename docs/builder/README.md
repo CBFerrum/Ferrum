@@ -3,7 +3,7 @@
 The program that makes industries configuration rather than apps: [the plan](../plan/builder-first.md),
 its [decisions](decisions.md), what the apps write for themselves today ([inventory](inventory.md)), and
 where each requirement stands ([traceability](traceability.md), generated from
-[docs/registry/bf.yaml](../registry/bf.yaml)).
+[docs/registry/bf.yaml](../registry/bf.yaml)). The functions expressions offer are in [expressions](expressions.md).
 
 Requirements are `BF-*`, one acceptance case each, in [catalog.json](catalog.json). Their states are the
 platform program's ([docs/platform/README.md](../platform/README.md)): `verified_software` needs the tests

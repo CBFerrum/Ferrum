@@ -125,19 +125,6 @@ fn days_from(d: &str, sign: char, n: &str) -> String {
     day_of(&format!("({} {sign} duration(string(int({n}) * 24) + 'h'))", ts(d)))
 }
 
-/// `d` plus `n` calendar months, the day kept unless the month is shorter (chrono's `checked_add_months`).
-fn months_from(d: &str, n: &str) -> String {
-    let t = ts(d);
-    let m = format!("({t}.getMonth() + int({n}))");
-    let y = format!("({t}.getFullYear() + {m} / 12)");
-    let mo = format!("({m} % 12 + 1)");
-    let last =
-        format!("({mo} == 2 ? ({y} % 4 == 0 && ({y} % 100 != 0 || {y} % 400 == 0) ? 29 : 28) : ({mo} == 4 || {mo} == 6 || {mo} == 9 || {mo} == 11 ? 30 : 31))");
-    format!(
-        "string({y}) + '-' + ({mo} < 10 ? '0' : '') + string({mo}) + '-' + ({t}.getDate() < 10 ? '0' : '') + string({t}.getDate() < {last} ? {t}.getDate() : {last})"
-    )
-}
-
 /// A configured action's parameter, or null when it was not sent.
 fn p(name: &str) -> String {
     format!("(has(params.{name}) && params.{name} != '' ? params.{name} : null)")
@@ -205,9 +192,9 @@ fn permit(permit_and_links: bool) -> Value {
         json!({"name": "holder_email", "type": "email", "read_only": true}),
         json!({"name": "issued_on", "type": "date", "read_only": true, "in_list": true}),
         json!({"name": "valid_months", "type": "int", "read_only": true, "hidden": true, "description": "Its type's months, when it was issued"}),
-        // Computed fields are worked out in the order of their names: expires_on, last_day, on_register, renew_from,
-        // status, each seeing those before it.
-        json!({"name": "expires_on", "type": "date", "in_list": true, "computed": months_from("doc.issued_on", "doc.valid_months")}),
+        // Computed fields are worked out each after those it reads (by name where nothing decides): expires_on,
+        // last_day, on_register, renew_from, status.
+        json!({"name": "expires_on", "type": "date", "in_list": true, "computed": "addMonths(doc.issued_on, doc.valid_months)"}),
         json!({"name": "status", "type": "select", "options": ["Valid", "Expired", "Revoked"], "no_copy": true, "in_list": true, "in_filter": true,
                "description": "Revoked once revoked; Expired after its last day",
                "computed": "doc.revoked_on != null ? 'Revoked' : (doc.expires_on < today ? 'Expired' : 'Valid')"}),
@@ -338,7 +325,7 @@ fn entities() -> Vec<Value> {
             {"name": "officer", "type": "email", "in_list": true, "in_filter": true},
             {"name": "opened_on", "type": "date", "read_only": true, "no_copy": true, "in_list": true, "default_expr": "today"},
             {"name": "days_to_resolve", "type": "int", "read_only": true, "hidden": true, "fetch_from": "category.days_to_resolve"},
-            // In the order of their names: due_on, overdue, resolved_on.
+            // Worked out in this order (each after those it reads): due_on, overdue, resolved_on.
             {"name": "due_on", "type": "date", "no_copy": true, "in_list": true, "computed": days_from("doc.opened_on", '+', "doc.days_to_resolve")},
             {"name": "resolution", "type": "text"},
             // Keeps its first day: the stored value is what the record holds when it is worked out.
