@@ -11,12 +11,14 @@
 //! own; the contents as Word's TOC field holding the current headings; suggestions as tracked
 //! changes. Every value is checked (`format`) before it is written.
 
+use super::comments::{self, CommentThread, Edge, ptr};
 use super::format::{self, Href, Outline, Page, Slot, any, mark, mark_field};
 use super::{FRAGMENT, IMAGE, number, string, truthy};
 use crate::{Error, Result};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::io::Write as _;
+use yrs::branch::BranchPtr;
 use yrs::types::text::YChange;
 use yrs::{Any, Doc, GetString, Out, ReadTxn, Text, Transact, Xml, XmlElementRef, XmlFragment, XmlOut};
 
@@ -87,6 +89,13 @@ struct Writer<'a> {
     /// Writing a footnote's body: references inside it are not the text's.
     in_note: bool,
     lost: BTreeSet<String>,
+    /// Comment threads, the Word id of each one's first comment, where their ranges go (per text),
+    /// and which ranges have started and ended.
+    threads: &'a [CommentThread],
+    first: Vec<usize>,
+    marks: HashMap<BranchPtr, Vec<(u32, Edge, usize)>>,
+    started: Vec<bool>,
+    ended: Vec<bool>,
 }
 
 /// XML text: escaped, without the control characters XML 1.0 cannot hold.
@@ -199,17 +208,26 @@ impl Writer<'_> {
             }
             "codeBlock" => {
                 let mut code = String::new();
+                // Comments on code cover the whole block: its lines are written as one text.
+                let mut marks = Vec::new();
                 for child in e.children(txn) {
                     if let XmlOut::Text(t) = child {
                         code.push_str(&t.get_string(txn));
+                        marks.extend(self.marks.remove(&ptr(&t)).unwrap_or_default());
                     }
                 }
                 out.push_str("<w:p><w:pPr><w:pStyle w:val=\"Code\"/></w:pPr>");
+                for &(_, edge, n) in marks.iter().filter(|m| m.1 == Edge::Start) {
+                    self.comment_mark(edge, n, out);
+                }
                 for (n, line) in code.split('\n').enumerate() {
                     if n > 0 {
                         out.push_str("<w:r><w:br/></w:r>");
                     }
                     text_run(line, "", "w:t", out);
+                }
+                for &(_, edge, n) in marks.iter().filter(|m| m.1 != Edge::Start) {
+                    self.comment_mark(edge, n, out);
                 }
                 out.push_str("</w:p>");
             }
@@ -382,11 +400,71 @@ impl Writer<'_> {
         }
     }
 
-    /// A text's runs, each chunk with its marks: links as hyperlinks, suggestions as tracked changes.
+    /// A comment range's edge, once.
+    fn comment_mark(&mut self, edge: Edge, n: usize, out: &mut String) {
+        match edge {
+            Edge::Start if !self.started[n] => {
+                self.started[n] = true;
+                comments::starts(self.threads, &self.first, n, out);
+            }
+            Edge::End | Edge::EmptyEnd if self.started[n] && !self.ended[n] => {
+                self.ended[n] = true;
+                comments::ends(self.threads, &self.first, n, out);
+            }
+            _ => {}
+        }
+    }
+
+    /// A text's runs, each chunk with its marks: links as hyperlinks, suggestions as tracked changes;
+    /// cut where a comment's range starts or ends.
     fn runs<T: ReadTxn>(&mut self, t: &yrs::XmlTextRef, txn: &T, bold: bool, out: &mut String) {
+        // A footnote's comments go to the document's start: a range cannot cross into the notes.
+        let marks = if self.in_note { Vec::new() } else { self.marks.remove(&ptr(&t)).unwrap_or_default() };
+        let mut next = 0;
+        let mut pos = 0u32;
         for chunk in t.diff(txn, YChange::identity) {
-            let Out::Any(Any::String(s)) = chunk.insert else { continue };
+            let Out::Any(Any::String(s)) = chunk.insert else {
+                self.flush(&marks, &mut next, pos, out);
+                pos += 1;
+                continue;
+            };
             let attrs = chunk.attributes.as_deref();
+            let mut rest: &str = &s;
+            loop {
+                self.flush(&marks, &mut next, pos, out);
+                let len = rest.encode_utf16().count() as u32;
+                match marks.get(next).map(|m| m.0).filter(|&o| o < pos + len) {
+                    Some(cut) => {
+                        let at = utf16_boundary(rest, (cut - pos) as usize);
+                        self.piece(&rest[..at], attrs, bold, out);
+                        rest = &rest[at..];
+                        pos = cut;
+                    }
+                    None => {
+                        self.piece(rest, attrs, bold, out);
+                        pos += len;
+                        break;
+                    }
+                }
+            }
+        }
+        self.flush(&marks, &mut next, u32::MAX, out);
+    }
+
+    /// The comment edges of `marks` from `next` that are at or before `upto`.
+    fn flush(&mut self, marks: &[(u32, Edge, usize)], next: &mut usize, upto: u32, out: &mut String) {
+        while let Some(&(_, edge, n)) = marks.get(*next).filter(|m| m.0 <= upto) {
+            self.comment_mark(edge, n, out);
+            *next += 1;
+        }
+    }
+
+    /// Words with one set of marks.
+    fn piece(&mut self, s: &str, attrs: Option<&yrs::types::Attrs>, bold: bool, out: &mut String) {
+        if s.is_empty() {
+            return;
+        }
+        {
             let get = |name: &str| mark(attrs, name);
             let link = match format::href(get("link")) {
                 Some(Href::Web(h)) => Some((h, true)),
@@ -457,7 +535,7 @@ impl Writer<'_> {
             }
             let deleted = get("deletion");
             let mut run = String::new();
-            text_run(&s, &rpr, if deleted.is_some() { "w:delText" } else { "w:t" }, &mut run);
+            text_run(s, &rpr, if deleted.is_some() { "w:delText" } else { "w:t" }, &mut run);
             match link {
                 Some((target, true)) => {
                     let id = self.rel("http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink", target, true);
@@ -658,6 +736,52 @@ fn bookmark(anchor: Option<&str>, n: usize) -> String {
     }
 }
 
+/// Puts `marks` at the start of the body's first paragraph (after its properties); a body without
+/// one gets one.
+fn into_first_paragraph(body: &mut String, marks: &str) {
+    if marks.is_empty() {
+        return;
+    }
+    let open = body.find("<w:p>");
+    let empty = body.find("<w:p/>");
+    match (open, empty) {
+        (Some(o), e) if e.is_none_or(|e| o < e) => {
+            let after = o + "<w:p>".len();
+            let at = if body[after..].starts_with("<w:pPr>") { body[after..].find("</w:pPr>").map_or(after, |i| after + i + "</w:pPr>".len()) } else { after };
+            body.insert_str(at, marks);
+        }
+        (_, Some(e)) => body.replace_range(e..e + "<w:p/>".len(), &format!("<w:p>{marks}</w:p>")),
+        _ => body.insert_str(0, &format!("<w:p>{marks}</w:p>")),
+    }
+}
+
+/// Puts `marks` at the end of the body's last paragraph.
+fn into_last_paragraph(body: &mut String, marks: &str) {
+    if marks.is_empty() {
+        return;
+    }
+    if body.ends_with("<w:p/>") {
+        let at = body.len() - "<w:p/>".len();
+        body.replace_range(at.., &format!("<w:p>{marks}</w:p>"));
+    } else if let Some(at) = body.rfind("</w:p>") {
+        body.insert_str(at, marks);
+    } else {
+        body.push_str(&format!("<w:p>{marks}</w:p>"));
+    }
+}
+
+/// The byte index in `s` of its `units`th UTF-16 unit (a character's start; within one, after it).
+fn utf16_boundary(s: &str, units: usize) -> usize {
+    let mut n = 0;
+    for (i, c) in s.char_indices() {
+        if n >= units {
+            return i;
+        }
+        n += c.len_utf16();
+    }
+    s.len()
+}
+
 /// A run of text: tabs as Word's tabs, `tag` `w:t` or (deleted text) `w:delText`.
 fn text_run(s: &str, rpr: &str, tag: &str, out: &mut String) {
     if s.is_empty() {
@@ -706,6 +830,8 @@ const STYLES: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:style w:type="paragraph" w:styleId="TOC4"><w:name w:val="toc 4"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:spacing w:after="60"/><w:ind w:left="660"/></w:pPr></w:style>
 <w:style w:type="paragraph" w:styleId="TOC5"><w:name w:val="toc 5"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:spacing w:after="60"/><w:ind w:left="880"/></w:pPr></w:style>
 <w:style w:type="paragraph" w:styleId="TOC6"><w:name w:val="toc 6"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:spacing w:after="60"/><w:ind w:left="1100"/></w:pPr></w:style>
+<w:style w:type="paragraph" w:styleId="CommentText"><w:name w:val="annotation text"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:rPr><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr></w:style>
+<w:style w:type="character" w:styleId="CommentReference"><w:name w:val="annotation reference"/><w:rPr><w:sz w:val="16"/><w:szCs w:val="16"/></w:rPr></w:style>
 <w:style w:type="character" w:styleId="Hyperlink"><w:name w:val="Hyperlink"/><w:rPr><w:color w:val="0969DA"/><w:u w:val="single"/></w:rPr></w:style>
 <w:style w:type="table" w:styleId="TableGrid"><w:name w:val="Table Grid"/><w:tblPr><w:tblBorders><w:top w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/><w:left w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/><w:bottom w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/><w:right w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/><w:insideH w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/><w:insideV w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/></w:tblBorders><w:tblCellMar><w:left w:w="108" w:type="dxa"/><w:right w:w="108" w:type="dxa"/></w:tblCellMar></w:tblPr></w:style>
 </w:styles>"#;
@@ -753,7 +879,7 @@ fn numbering(lists: &[List]) -> String {
 
 /// The document as a Word file titled `title`; `images` gives an image's bytes by its id.
 pub fn docx(doc: &Doc, title: &str, images: &dyn Fn(&str) -> Option<ImageData>) -> Result<Vec<u8>> {
-    Ok(write(doc, title, None, images)?.0)
+    Ok(write(doc, title, None, images, &[])?.0)
 }
 
 type Rels = Vec<(String, &'static str, String, bool)>;
@@ -772,8 +898,15 @@ fn rels_xml(rels: &[(String, &'static str, String, bool)], fixed: &str) -> Strin
 }
 
 /// See [`super::docx_export`]: the file and what it could not carry.
-pub(super) fn write(doc: &Doc, title: &str, origin: Option<&str>, images: &dyn Fn(&str) -> Option<ImageData>) -> Result<(Vec<u8>, BTreeSet<String>)> {
+pub(super) fn write(
+    doc: &Doc,
+    title: &str,
+    origin: Option<&str>,
+    images: &dyn Fn(&str) -> Option<ImageData>,
+    threads: &[CommentThread],
+) -> Result<(Vec<u8>, BTreeSet<String>)> {
     let txn = doc.transact();
+    let placed = comments::place(threads, &txn);
     let mut w = Writer {
         images,
         origin: format::origin(origin),
@@ -792,10 +925,37 @@ pub(super) fn write(doc: &Doc, title: &str, origin: Option<&str>, images: &dyn F
         notes: 0,
         in_note: false,
         lost: BTreeSet::new(),
+        threads,
+        first: comments::ids(threads),
+        marks: placed.marks,
+        started: vec![false; threads.len()],
+        ended: vec![false; threads.len()],
     };
     let mut body = String::new();
     if let Some(fragment) = txn.get_xml_fragment(FRAGMENT) {
         w.blocks(fragment.children(&txn), &txn, &Place::default(), 0, &mut body);
+    }
+    let any_comments = threads.iter().any(|t| !t.comments.is_empty());
+    if any_comments {
+        // Threads with no place met in the text (on the whole document, their paragraph gone, in a
+        // footnote) at the start; a range whose end was not met ends with the text.
+        let (mut at_start, mut at_end) = (String::new(), String::new());
+        for n in 0..threads.len() {
+            if threads[n].comments.is_empty() {
+                continue;
+            }
+            if !w.started[n] {
+                comments::starts(threads, &w.first, n, &mut at_start);
+                comments::ends(threads, &w.first, n, &mut at_start);
+            } else if !w.ended[n] {
+                comments::ends(threads, &w.first, n, &mut at_end);
+            }
+        }
+        if !placed.removed.is_empty() {
+            w.lost.insert(comments::removed_words(placed.removed.len()));
+        }
+        into_first_paragraph(&mut body, &at_start);
+        into_last_paragraph(&mut body, &at_end);
     }
     // Parts: (path, content type, xml, its relationships).
     let mut parts: Vec<(String, String, String, Rels)> = Vec::new();
@@ -866,6 +1026,16 @@ pub(super) fn write(doc: &Doc, title: &str, origin: Option<&str>, images: &dyn F
             format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<w:footnotes {NS}>{notes}</w:footnotes>"),
             rels,
         ));
+    }
+    if any_comments {
+        let (list, extended) = comments::parts(threads, &placed.removed, attr);
+        let _ = write!(
+            doc_rels,
+            "<Relationship Id=\"rIdComments\" Type=\"{REL}/comments\" Target=\"comments.xml\"/>\
+             <Relationship Id=\"rIdCommentsEx\" Type=\"http://schemas.microsoft.com/office/2011/relationships/commentsExtended\" Target=\"commentsExtended.xml\"/>"
+        );
+        parts.push(("word/comments.xml".into(), format!("{TYPE}.comments+xml"), list, Vec::new()));
+        parts.push(("word/commentsExtended.xml".into(), format!("{TYPE}.commentsExtended+xml"), extended, Vec::new()));
     }
     let orient = if p.landscape { " w:orient=\"landscape\"" } else { "" };
     let title_pg = if p.different_first { "<w:titlePg/>" } else { "" };
@@ -1113,7 +1283,7 @@ mod tests {
     #[test]
     fn a_formatted_document_keeps_its_formatting_in_word() {
         let doc = super::super::format::fixtures::everything();
-        let (file, lost) = write(&doc, "Annual report 2026", Some("https://acme.example.com/"), &images).unwrap();
+        let (file, lost) = write(&doc, "Annual report 2026", Some("https://acme.example.com/"), &images, &[]).unwrap();
         assert!(lost.is_empty(), "{lost:?}");
         let body = part(&file, "word/document.xml");
         for want in [
@@ -1212,7 +1382,7 @@ mod tests {
             assert!(types.contains(&format!("PartName=\"{p}\"")), "{p}");
         }
         // Without the workspace's address a link to another document is its words, and says so.
-        let (_, lost) = write(&doc, "x", None, &|_| None).unwrap();
+        let (_, lost) = write(&doc, "x", None, &|_| None, &[]).unwrap();
         assert!(lost.contains(super::super::html::LOST_DOC_LINKS) && lost.contains(super::super::html::LOST_IMAGES), "{lost:?}");
     }
 
@@ -1244,5 +1414,158 @@ mod tests {
         );
         assert!(body.contains("<w:startOverride") || part(&file, "word/numbering.xml").contains("<w:startOverride w:val=\"32767\"/>"));
         assert!(part(&file, "word/header1.xml").contains("&lt;/style&gt;&lt;script&gt;alert(1)&lt;/script&gt;"));
+    }
+
+    /// Comment threads as Word's comments, anchored as the editor anchors them (Yjs relative
+    /// positions as JSON). `FERRUM_DOCX_COMMENTS=/tmp/c.docx` keeps the file to open it.
+    #[test]
+    fn comment_threads_as_word_comments() {
+        use super::super::{Comment, CommentThread};
+        use yrs::{Assoc, IndexedSequence, Text as _};
+        let doc = new_doc();
+        let fragment = doc.get_or_insert_xml_fragment(FRAGMENT);
+        let at = |t: &yrs::XmlTextRef, i: u32, assoc| serde_json::to_value(t.sticky_index(&doc.transact(), i, assoc).unwrap()).unwrap();
+        let (first, second, gone, code) = {
+            let mut txn = doc.transact_mut();
+            let mut para = |words: &str| {
+                let p = fragment.push_back(&mut txn, XmlElementPrelim::empty("paragraph"));
+                p.push_back(&mut txn, XmlTextPrelim::new(words))
+            };
+            let first = para("Hello world, and 日本 🎉 too.");
+            let second = para("The second paragraph.");
+            let gone = para("A paragraph that goes.");
+            let c = fragment.push_back(&mut txn, XmlElementPrelim::empty("codeBlock"));
+            let code = c.push_back(&mut txn, XmlTextPrelim::new("let x = 1;"));
+            (first, second, gone, code)
+        };
+        let anchor = |from: serde_json::Value, to: serde_json::Value| Some(serde_json::json!({"from": from, "to": to}));
+        let when = |s: &str| Some(s.parse::<chrono::DateTime<chrono::Utc>>().unwrap());
+        let said = |email: &str, name: Option<&str>, body: &str, at: &str| Comment {
+            author_email: email.into(),
+            author_name: name.map(Into::into),
+            at: when(at),
+            body: body.into(),
+        };
+        // "world" (6..11), and "🎉" after the CJK (UTF-16: 20..22) with a reply, and across two paragraphs, resolved.
+        let threads = vec![
+            CommentThread {
+                anchor: anchor(at(&first, 6, Assoc::After), at(&first, 11, Assoc::Before)),
+                quote: Some("world".into()),
+                resolved: false,
+                comments: vec![
+                    said("priya.nair@demo.test", Some("Priya Nair"), "Which world?\nThis one.", "2026-11-11T10:00:00Z"),
+                    said("omar.haddad@demo.test", None, "This & <that> one.", "2026-11-11T10:05:00Z"),
+                ],
+            },
+            CommentThread {
+                anchor: anchor(at(&first, 20, Assoc::After), at(&second, 3, Assoc::Before)),
+                quote: Some("🎉 too. The".into()),
+                resolved: true,
+                comments: vec![said("ana@demo.test", None, "Spans two.", "2026-11-11T11:00:00Z")],
+            },
+            // Its words are deleted below: it stays where they were.
+            CommentThread {
+                anchor: anchor(at(&second, 4, Assoc::After), at(&second, 10, Assoc::Before)),
+                quote: Some("second".into()),
+                resolved: false,
+                comments: vec![said("ana@demo.test", Some("Ana"), "Was here.", "2026-11-11T12:00:00Z")],
+            },
+            // Its paragraph goes: at the start.
+            CommentThread {
+                anchor: anchor(at(&gone, 2, Assoc::After), at(&gone, 11, Assoc::Before)),
+                quote: Some("paragraph".into()),
+                resolved: false,
+                comments: vec![said("ana@demo.test", Some("Ana"), "Gone with it.", "2026-11-11T12:30:00Z")],
+            },
+            CommentThread {
+                anchor: anchor(serde_json::json!({"item": {"client": 1, "clock": 999_999}, "assoc": 0}), serde_json::json!("junk")),
+                quote: Some("?".into()),
+                resolved: false,
+                comments: vec![said("x@demo.test", None, "Unreadable.", "2026-11-11T13:00:00Z")],
+            },
+            CommentThread {
+                anchor: None,
+                quote: None,
+                resolved: false,
+                comments: vec![said("x@demo.test", None, "On the whole file.", "2026-11-11T13:30:00Z")],
+            },
+            CommentThread {
+                anchor: anchor(at(&code, 4, Assoc::After), at(&code, 5, Assoc::Before)),
+                quote: Some("x".into()),
+                resolved: false,
+                comments: vec![said("x@demo.test", None, "On code.", "2026-11-11T14:00:00Z")],
+            },
+            // A thread with no comments is no thread.
+            CommentThread { anchor: None, quote: None, resolved: false, comments: vec![] },
+        ];
+        {
+            let mut txn = doc.transact_mut();
+            second.remove_range(&mut txn, 4, 7);
+            fragment.remove_range(&mut txn, 2, 1);
+        }
+        let (file, lost) = super::super::docx_export_with_comments(&doc, "Comments", None, &|_| None, &threads).unwrap();
+        if let Ok(path) = std::env::var("FERRUM_DOCX_COMMENTS") {
+            std::fs::write(path, &file).unwrap();
+        }
+        assert!(lost.contains(&"3 comments whose text was removed".to_string()), "deleted words, a gone paragraph, an unreadable anchor: {lost:?}");
+        let body = part(&file, "word/document.xml");
+        // Ids 0-1 (a thread and its reply) around "world"; the 🎉 thread (2) from mid-text to "The".
+        assert!(
+            body.contains("<w:t xml:space=\"preserve\">Hello </w:t></w:r><w:commentRangeStart w:id=\"0\"/><w:commentRangeStart w:id=\"1\"/><w:r><w:t xml:space=\"preserve\">world</w:t></w:r><w:commentRangeEnd w:id=\"0\"/>"),
+            "{body}"
+        );
+        assert!(body.contains("日本 </w:t></w:r><w:commentRangeStart w:id=\"2\"/><w:r><w:t xml:space=\"preserve\">🎉 too.</w:t>"), "UTF-16 offsets: {body}");
+        assert!(body.contains("<w:t xml:space=\"preserve\">The</w:t></w:r><w:commentRangeEnd w:id=\"2\"/>"), "{body}");
+        // The deleted words' thread (3) sits where they were, empty.
+        assert!(body.contains("<w:t xml:space=\"preserve\"> </w:t></w:r><w:commentRangeStart w:id=\"3\"/><w:commentRangeEnd w:id=\"3\"/><w:r><w:rPr><w:rStyle w:val=\"CommentReference\"/></w:rPr><w:commentReference w:id=\"3\"/></w:r><w:r><w:t xml:space=\"preserve\">paragraph.</w:t>"), "{body}");
+        // The gone paragraph's (4), the unreadable (5) and the whole file's (6) at the start; code's (7) round its block.
+        let start = body.find("<w:p>").unwrap();
+        for id in 4..=6 {
+            let s = body.find(&format!("<w:commentRangeStart w:id=\"{id}\"/>")).unwrap_or_else(|| panic!("{id}: {body}"));
+            assert!(s < body.find("Hello").unwrap() && s > start, "{id} at the start: {body}");
+        }
+        assert!(body.contains("<w:pStyle w:val=\"Code\"/></w:pPr><w:commentRangeStart w:id=\"7\"/>"), "{body}");
+        // Every comment: one start, one end, one reference.
+        for id in 0..8 {
+            for tag in ["commentRangeStart", "commentRangeEnd", "commentReference"] {
+                assert_eq!(body.matches(&format!("<w:{tag} w:id=\"{id}\"/>")).count(), 1, "{tag} {id}: {body}");
+            }
+        }
+        assert!(!body.contains("w:id=\"8\""));
+        let list = part(&file, "word/comments.xml");
+        assert!(list.contains("<w:comment w:id=\"0\" w:author=\"Priya Nair\" w:initials=\"PN\" w:date=\"2026-11-11T10:00:00Z\">"), "{list}");
+        assert!(list.contains("w:author=\"omar.haddad\" w:initials=\"OH\""), "the email's local part, never more: {list}");
+        assert!(!list.contains("demo.test"), "{list}");
+        assert!(list.contains("This &amp; &lt;that&gt; one."), "{list}");
+        assert!(
+            list.contains("<w:t xml:space=\"preserve\">Which world?</w:t></w:r></w:p><w:p w14:paraId=\"10000000\""),
+            "two lines, the last one named: {list}"
+        );
+        assert!(list.contains("[On text since removed: \u{201C}second\u{201D}]") && list.contains("\u{201C}paragraph\u{201D}"), "{list}");
+        assert!(!list.contains("since removed: \u{201C}x\u{201D}"), "code is still there: {list}");
+        let ex = part(&file, "word/commentsExtended.xml");
+        assert!(ex.contains("<w15:commentEx w15:paraId=\"10000001\" w15:paraIdParent=\"10000000\" w15:done=\"0\"/>"), "the reply in its thread: {ex}");
+        assert!(ex.contains("<w15:commentEx w15:paraId=\"10000002\" w15:done=\"1\"/>"), "resolved: {ex}");
+        let types = part(&file, "[Content_Types].xml");
+        assert!(
+            types.contains(
+                "<Override PartName=\"/word/comments.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml\"/>"
+            ),
+            "{types}"
+        );
+        assert!(
+            types.contains("/word/commentsExtended.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml\""),
+            "{types}"
+        );
+        let rels = part(&file, "word/_rels/document.xml.rels");
+        assert!(
+            rels.contains("relationships/comments\" Target=\"comments.xml\"")
+                && rels.contains("2011/relationships/commentsExtended\" Target=\"commentsExtended.xml\""),
+            "{rels}"
+        );
+        // Without threads, nothing of comments.
+        let (plain, lost) = super::super::docx_export(&doc, "Comments", None, &|_| None).unwrap();
+        assert!(!part(&plain, "[Content_Types].xml").contains("comments") && !part(&plain, "word/document.xml").contains("comment"));
+        assert!(!lost.iter().any(|l| l.contains("comment")));
     }
 }
