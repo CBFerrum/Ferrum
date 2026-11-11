@@ -1,5 +1,5 @@
-//! What record expressions add to CEL's own functions (docs/builder/expressions.md): dates, and CEL's strings
-//! extension. Additions only: a name CEL already gives a meaning keeps it, and every function here answers an
+//! What record expressions add to CEL's own functions (docs/builder/expressions.md): dates, text, and CEL's
+//! strings extension. Additions only: a name CEL already gives a meaning keeps it, and every function here answers an
 //! empty (null or '') date with null rather than failing.
 
 use cel::extractors::Arguments;
@@ -17,8 +17,25 @@ pub(crate) static ENV: LazyLock<Arc<Env>> = LazyLock::new(|| {
 });
 
 /// The functions added, each bound only to the expressions that call it.
-pub(crate) const NAMES: &[&str] =
-    &["addDays", "addMonths", "addYears", "startOfMonth", "endOfMonth", "weekday", "daysBetween", "monthsBetween", "year", "month", "day", "formatDate"];
+pub(crate) const NAMES: &[&str] = &[
+    "addDays",
+    "addMonths",
+    "addYears",
+    "startOfMonth",
+    "endOfMonth",
+    "weekday",
+    "daysBetween",
+    "monthsBetween",
+    "year",
+    "month",
+    "day",
+    "formatDate",
+    "lower",
+    "upper",
+    "padStart",
+    "padEnd",
+    "concat",
+];
 
 /// Binds `name` (one of [`NAMES`]) on `ctx`; it is called as `name(a, b)` or as `a.name(b)`.
 pub(crate) fn bind(ctx: &mut Context, name: &'static str) {
@@ -72,6 +89,47 @@ fn call(name: &str, a: &[C]) -> Result<C, String> {
                 When::Naive(x) => write!(out, "{}", x.format(p)),
             };
             written.map_err(|_| format!("'{p}' is not a pattern this date can be written with"))?;
+            C::String(Arc::new(out))
+        }
+        "lower" | "upper" => match (arity(1).map(|_| &a[0])?, name) {
+            (C::Null, _) => C::Null,
+            (C::String(s), "lower") => C::String(Arc::new(s.to_lowercase())),
+            (C::String(s), _) => C::String(Arc::new(s.to_uppercase())),
+            (other, _) => return Err(format!("expected text, got {other:?}")),
+        },
+        "padStart" | "padEnd" => {
+            if !(2..=3).contains(&a.len()) {
+                return Err(format!("takes 2 or 3 arguments, not {}", a.len()));
+            }
+            let fill = match a.get(2) {
+                None => " ",
+                Some(C::String(f)) if !f.is_empty() => f.as_str(),
+                Some(_) => return Err("the fill is text of at least one character".into()),
+            };
+            let (s, Some(n)) = (&a[0], whole(&a[1])?) else { return Ok(C::Null) };
+            let s = match s {
+                C::Null => return Ok(C::Null),
+                C::String(s) => s.as_str(),
+                other => return Err(format!("expected text, got {other:?}")),
+            };
+            let short = usize::try_from(n).unwrap_or(0).saturating_sub(s.chars().count()).min(10_000);
+            let pad: String = fill.chars().cycle().take(short).collect();
+            C::String(Arc::new(if name == "padStart" { pad + s } else { format!("{s}{pad}") }))
+        }
+        "concat" => {
+            let mut out = String::new();
+            for v in a {
+                match v {
+                    C::Null => {}
+                    C::String(s) => out.push_str(s),
+                    C::Int(i) => out.push_str(&i.to_string()),
+                    C::UInt(u) => out.push_str(&u.to_string()),
+                    C::Float(f) => out.push_str(&f.to_string()),
+                    C::Bool(b) => out.push_str(&b.to_string()),
+                    C::Timestamp(t) => out.push_str(&t.to_rfc3339()),
+                    other => return Err(format!("cannot write {other:?} as text")),
+                }
+            }
             C::String(Arc::new(out))
         }
         _ => return Err("unknown function".into()),
