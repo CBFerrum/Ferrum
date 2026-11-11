@@ -526,10 +526,7 @@ async fn lacking(tx: &mut Tx, tenant: Uuid, pack: &Pack) -> Result<Vec<String>> 
     let calendars = wanted.into_iter().filter(|n| !here.contains(n)).map(|n| format!("the business calendar {n} is not here, and the pack does not carry it"));
     let have: HashMap<String, String> =
         sqlx::query_as("select name, version from installed_package where tenant_id = $1").bind(tenant).fetch_all(&mut **tx).await?.into_iter().collect();
-    let older = |have: &str, want: &str| match (semver::Version::parse(have), semver::Version::parse(want)) {
-        (Ok(h), Ok(w)) => h < w,
-        _ => have != want,
-    };
+    let older = crate::tenant::package_behind;
     // A portal menu is shown by Studio's generic page, whether the pack names Studio or not.
     let portal = portal_menus(pack);
     let studio = (!portal.is_empty() && !have.contains_key("studio") && !requires.packages.contains_key("studio")).then_some(("studio", ""));

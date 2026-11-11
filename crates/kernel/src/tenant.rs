@@ -405,8 +405,27 @@ impl Kernel {
     }
 }
 
+/// Whether a workspace's package at `have` is behind `want`: by semver, or, when either is not one,
+/// by differing at all.
+pub fn package_behind(have: &str, want: &str) -> bool {
+    match (semver::Version::parse(have), semver::Version::parse(want)) {
+        (Ok(h), Ok(w)) => h < w,
+        _ => have != want,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_package_is_behind_only_when_older() {
+        use super::package_behind;
+        assert!(package_behind("0.2.0", "0.4.0"));
+        assert!(package_behind("0.9.0", "0.10.0"), "by semver, not by text");
+        assert!(!package_behind("0.4.0", "0.4.0"));
+        assert!(!package_behind("0.5.0", "0.4.0"), "a newer package (a rolled-back server) is not behind");
+        assert!(package_behind("dev", "0.4.0"), "not a version: differing is all that can be told");
+    }
+
     #[test]
     fn language_tags() {
         for ok in ["hi", "ar", "pt-BR", "zh-Hant-TW", "ckb"] {

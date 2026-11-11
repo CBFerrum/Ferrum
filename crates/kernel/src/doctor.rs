@@ -171,6 +171,10 @@ impl Kernel {
         } else {
             Finding::warning("jobs.running", format!("{lost} jobs lost their workers and nobody took them over"), "No replica is running background work.")
         });
+        let rows: Vec<(String, String, i64)> =
+            sqlx::query_as("select name, version, count(*) from installed_package group by name, version order by name, version").fetch_all(&mut *tx).await?;
+        let catalog = self.registry.catalog();
+        out.push(newer_packages(&rows, |p| catalog.package(p).map(|pkg| pkg.manifest.version.clone())));
         let tenants: Vec<uuid::Uuid> = sqlx::query_scalar("select id from tenant where status = 'active'").fetch_all(&mut *tx).await?;
         tx.commit().await?;
 
@@ -190,5 +194,41 @@ impl Kernel {
             )
         });
         Ok(out)
+    }
+}
+
+/// Workspaces' packages (`name, version, workspaces`) newer than this build's: a server rolled back,
+/// or workspaces moved from a newer build. The App Manager offers no update for them (it would only
+/// stamp them older); their tables and seed data are the newer version's.
+fn newer_packages(rows: &[(String, String, i64)], build: impl Fn(&str) -> Option<String>) -> Finding {
+    let newer: Vec<String> = rows
+        .iter()
+        .filter_map(|(name, have, n)| {
+            let want = build(name)?;
+            (have != &want && !crate::tenant::package_behind(have, &want)).then(|| format!("{name} {have} in {n} workspaces (this build has {want})"))
+        })
+        .collect();
+    if newer.is_empty() {
+        Finding::ok("packages.newer", "no workspace has a package newer than this build's")
+    } else {
+        Finding::warning(
+            "packages.newer",
+            format!("workspaces have packages newer than this build: {}", newer.join(", ")),
+            "Run the build these workspaces came from, or a newer one: this one does not know their newer tables and seed data.",
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn packages_newer_than_the_build_are_reported() {
+        let build = |p: &str| (p == "crm").then(|| "0.4.0".to_string());
+        let rows = |r: &[(&str, &str, i64)]| r.iter().map(|(a, b, n)| (a.to_string(), b.to_string(), *n)).collect::<Vec<_>>();
+        let f = super::newer_packages(&rows(&[("crm", "0.4.0", 3), ("crm", "0.2.0", 1), ("other", "9.0.0", 1)]), build);
+        assert_eq!(f.level, super::Level::Ok, "same or older (the App Manager offers those an update), or unknown here: {}", f.detail);
+        let f = super::newer_packages(&rows(&[("crm", "0.10.0", 2)]), build);
+        assert_eq!(f.level, super::Level::Warning);
+        assert!(f.detail.contains("crm 0.10.0 in 2 workspaces (this build has 0.4.0)"), "{}", f.detail);
     }
 }
