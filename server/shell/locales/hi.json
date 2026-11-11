@@ -324,5 +324,9 @@
   "{v1} GB": "{v1} GB",
   "{v1} KB": "{v1} KB",
   "{v1} MB": "{v1} MB",
-  "{v1} of {v2}": "{v2} में से {v1}"
+  "{v1} of {v2}": "{v2} में से {v1}",
+  "The connection stopped responding.": "कनेक्शन ने जवाब देना बंद कर दिया।",
+  "Waiting for the connection to come back.": "कनेक्शन के लौटने की प्रतीक्षा है।",
+  "The upload stopped: the page sending it was closed or left.": "अपलोड रुक गया: उसे भेजने वाला पेज बंद हुआ या छोड़ दिया गया।",
+  "Trying again…": "फिर से कोशिश हो रही है…"
 }

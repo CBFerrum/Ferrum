@@ -267,8 +267,8 @@ struct Install {
 
 async fn install(Auth(ctx): Auth, State(app): State<AppContext>, Json(req): Json<Install>) -> ApiResult<Response> {
     admin(&ctx)?;
-    let installed = app_state(&app)?.kernel.install_packages(ctx.tenant, &req.packages).await?;
-    Ok(Json(json!({"installed": installed})).into_response())
+    let done = app_state(&app)?.kernel.install_packages_reporting(ctx.tenant, &req.packages).await?;
+    Ok(Json(json!({"installed": done.packages, "kept_newer": done.kept_newer})).into_response())
 }
 
 // ── retention and restriction of processing ──

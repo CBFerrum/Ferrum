@@ -145,6 +145,25 @@ async fn scenario() {
     assert_eq!(up::sweep(&k, &objects).await.unwrap(), 1);
     assert!(parts_left(&dir), "swept with its parts");
 
+    // One cancelled: its parts go now, a part after it is refused and cannot bring it back, and a
+    // second cancel, or anyone else's, changes nothing.
+    let gone = up::start(&k, &objects, &admin, 3 * PART_BYTES, new(true)).await.unwrap();
+    let gone: uuid::Uuid = gone["upload_id"].as_str().unwrap().parse().unwrap();
+    up::append(&k, &objects, &admin, gone, 0, part(0, p)).await.unwrap();
+    let dir = root.join(format!("uploads/{}/{gone}.parts", tenants[0]));
+    up::cancel(&k, &objects, &other, gone).await.expect("another workspace's admin: nothing to cancel");
+    assert!(!parts_left(&dir), "not by someone else");
+    up::cancel(&k, &objects, &admin, gone).await.unwrap();
+    assert!(parts_left(&dir), "the parts go at once");
+    assert!(matches!(up::status(&k, &admin, gone).await, Err(Error::NotFound(_))));
+    assert!(matches!(up::append(&k, &objects, &admin, gone, PART_BYTES, part(p, 2 * p)).await, Err(Error::NotFound(_))), "a late part is refused");
+    assert!(matches!(up::append(&k, &objects, &admin, gone, 0, part(0, p)).await, Err(Error::NotFound(_))), "and does not start it again");
+    assert!(parts_left(&dir), "nor leaves bytes behind");
+    assert!(matches!(up::complete(&k, &objects, &admin, gone).await, Err(Error::NotFound(_))));
+    up::cancel(&k, &objects, &admin, gone).await.expect("cancelling again changes nothing");
+    up::cancel(&k, &objects, &admin, upload).await.expect("a completed upload: nothing to cancel");
+    assert!(std::fs::read(root.join(format!("tenants/{}/{upload}", tenants[0]))).unwrap() == big, "and its file stays");
+
     // ───────────── who ties an upload to a record ─────────────
     // Only whoever may change the record: a member or an outside person who may only read it may not.
     let rule = |v: serde_json::Value| serde_json::from_value::<ferrum_meta::PermissionDef>(v).unwrap();
