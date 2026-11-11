@@ -112,6 +112,11 @@ struct Writer<'a> {
     marks: HashMap<BranchPtr, Vec<(u32, Edge, usize)>>,
     started: Vec<bool>,
     ended: Vec<bool>,
+    /// The next paragraph's proposed boundary (`split` or `join`): this paragraph's mark, inserted
+    /// or deleted (`<w:ins …/>` or `<w:del …/>`).
+    para_mark: Option<String>,
+    /// The last numbered list at each depth, for one that `continues` it.
+    numbered: HashMap<u32, usize>,
 }
 
 /// XML text: escaped, without the control characters XML 1.0 cannot hold.
@@ -177,9 +182,13 @@ impl Writer<'_> {
     }
 
     fn blocks<T: ReadTxn>(&mut self, nodes: impl Iterator<Item = XmlOut>, txn: &T, place: &Place, depth: u32, out: &mut String) {
-        for node in nodes {
+        let mut nodes = nodes.peekable();
+        while let Some(node) = nodes.next() {
             match node {
-                XmlOut::Element(e) => self.block(&e, txn, place, depth, out),
+                XmlOut::Element(e) => {
+                    self.boundary_after(&e, nodes.peek(), txn);
+                    self.block(&e, txn, place, depth, out)
+                }
                 // Text straight in a container (it should not be): a paragraph of its own.
                 XmlOut::Text(t) => {
                     let mut runs = String::new();
@@ -190,6 +199,41 @@ impl Writer<'_> {
                 }
                 XmlOut::Fragment(f) => self.blocks(f.children(txn), txn, place, depth, out),
             }
+        }
+    }
+
+    /// A tracked change's attributes from a suggestion's author record (`{id, name, at}`); with
+    /// `need_id`, nothing for a record without its id (wave 3's rule for its own suggestions).
+    fn change(&mut self, who: &Any, need_id: bool) -> Option<String> {
+        let text = |k: &str| match mark_field(Some(who), k) {
+            Some(Any::String(s)) => Some(s.to_string()),
+            _ => None,
+        };
+        if need_id && text("id").is_none() {
+            return None;
+        }
+        self.changes += 1;
+        let author = text("name").filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "Someone".into());
+        let date = text("at").filter(|d| d.len() >= 10 && d.is_ascii()).map(|d| format!(" w:date=\"{}\"", attr(&d))).unwrap_or_default();
+        Some(format!("w:id=\"{}\" w:author=\"{}\"{date}", self.changes, attr(&author)))
+    }
+
+    /// The boundary before `next` proposed (`split`) or proposed gone (`join`) is the mark of the
+    /// paragraph `e` ends with: kept for it when `e` is one, else it cannot be said.
+    fn boundary_after<T: ReadTxn>(&mut self, e: &XmlElementRef, next: Option<&XmlOut>, txn: &T) {
+        self.para_mark = None;
+        let Some(XmlOut::Element(n)) = next else { return };
+        if !matches!(&**n.tag(), "paragraph" | "heading") {
+            return;
+        }
+        let proposed = [("split", "w:ins"), ("join", "w:del")].into_iter().find_map(|(k, tag)| any(n.get_attribute(txn, k)).map(|who| (who, tag)));
+        let Some((who, tag)) = proposed else { return };
+        if !matches!(&**e.tag(), "paragraph" | "heading") {
+            self.lost.insert("suggested changes".into());
+            return;
+        }
+        if let Some(c) = self.change(&who, true) {
+            self.para_mark = Some(format!("<{tag} {c}/>"));
         }
     }
 
@@ -272,19 +316,32 @@ impl Writer<'_> {
                             "i" => "lowerRoman",
                             _ => "decimal",
                         };
-                        let start = number(e.get_attribute(txn, "start")).unwrap_or(1).clamp(0, 32767);
-                        self.lists.push(List { ordered: true, level, format: fmt, start });
-                        Some(self.lists.len())
+                        // One that `continues` the last numbered list at its depth shares its numbering.
+                        match self.numbered.get(&level).filter(|_| truthy(e.get_attribute(txn, "continues"))) {
+                            Some(&n) => Some(n),
+                            None => {
+                                let start = number(e.get_attribute(txn, "start")).unwrap_or(1).clamp(0, 32767);
+                                self.lists.push(List { ordered: true, level, format: fmt, start });
+                                self.numbered.insert(level, self.lists.len());
+                                Some(self.lists.len())
+                            }
+                        }
                     }
                     _ => None,
                 };
+                // A proposed change of a list's kind or numbering: Word has no tracked one.
+                if attr("formatted").is_some() {
+                    self.lost.insert("suggested changes".into());
+                }
                 for item in e.children(txn) {
                     let XmlOut::Element(li) = item else { continue };
                     let prefix = (list == "taskList").then(|| if truthy(li.get_attribute(txn, "checked")) { "\u{2611} " } else { "\u{2610} " });
                     let indent = if list == "orderedList" { NUMBER_STEP } else { BULLET_STEP } * (level + 1);
                     let mut first = true;
-                    for child in li.children(txn) {
+                    let mut children = li.children(txn).peekable();
+                    while let Some(child) = children.next() {
                         let XmlOut::Element(c) = child else { continue };
+                        self.boundary_after(&c, children.peek(), txn);
                         let nested = matches!(&**c.tag(), "bulletList" | "orderedList" | "taskList");
                         let item_place = Place {
                             num: if first && !nested { num.map(|n| (n, level)) } else { None },
@@ -317,41 +374,39 @@ impl Writer<'_> {
 
     fn paragraph<T: ReadTxn>(&mut self, e: &XmlElementRef, txn: &T, place: &Place, style: Option<&str>, mark_as: Option<&str>, out: &mut String) {
         let attr = |k: &str| any(e.get_attribute(txn, k));
-        let mut ppr = String::new();
-        if let Some(style) = style {
-            let _ = write!(ppr, "<w:pStyle w:val=\"{style}\"/>");
+        let mut words = String::new();
+        for c in e.children(txn) {
+            if let XmlOut::Text(t) = c {
+                words.push_str(&t.get_string(txn));
+                if words.len() > 200 {
+                    break;
+                }
+            }
         }
-        if let Some((num, level)) = place.num {
-            let _ = write!(ppr, "<w:numPr><w:ilvl w:val=\"{level}\"/><w:numId w:val=\"{num}\"/></w:numPr>");
+        let mut ppr = properties(&attr, place, style, &words);
+        if let Some(m) = self.para_mark.take() {
+            let _ = write!(ppr, "<w:rPr>{m}</w:rPr>");
         }
-        if let Some(fill) = place.shade {
-            let _ = write!(ppr, "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"{fill}\"/>");
-        }
-        let mut spacing = String::new();
-        if let Some(tw) = format::space(attr("spaceBefore").as_ref()).map(|pt| pt * 20).or(place.gap.map(|g| g.0)) {
-            let _ = write!(spacing, " w:before=\"{tw}\"");
-        }
-        if let Some(tw) = format::space(attr("spaceAfter").as_ref()).map(|pt| pt * 20).or(place.gap.map(|g| g.1)) {
-            let _ = write!(spacing, " w:after=\"{tw}\"");
-        }
-        if let Some(lh) = format::line_height(attr("lineHeight").as_ref()) {
-            let _ = write!(spacing, " w:line=\"{}\" w:lineRule=\"auto\"", line(lh));
-        }
-        if !spacing.is_empty() {
-            let _ = write!(ppr, "<w:spacing{spacing}/>");
-        }
-        let left = if place.num.is_some() { 0 } else { place.indent + format::indent(attr("indent").as_ref()).unwrap_or(0) * 720 };
-        if left > 0 {
-            let _ = write!(ppr, "<w:ind w:left=\"{left}\"/>");
-        }
-        let jc = match format::text_align(attr("textAlign").as_ref()) {
-            Some("center") => Some("center"),
-            Some("right") => Some("right"),
-            Some("justify") => Some("both"),
-            _ => None,
-        };
-        if let Some(jc) = jc {
-            let _ = write!(ppr, "<w:jc w:val=\"{jc}\"/>");
+        // A proposed change of the paragraph's kind or attributes: what it was.
+        if let Some(who) = attr("formatted")
+            && let Some(c) = self.change(&who, true)
+        {
+            let before = |k: &str| match mark_field(Some(&who), "attrs") {
+                Some(Any::Map(m)) => m.get(k).cloned(),
+                _ => None,
+            };
+            let was = match mark_field(Some(&who), "type") {
+                Some(Any::String(t)) if &**t == "heading" => {
+                    let level = number(before("level").map(Out::Any)).unwrap_or(1).clamp(1, 6) as usize;
+                    Some(["Heading1", "Heading2", "Heading3", "Heading4", "Heading5", "Heading6"][level - 1])
+                }
+                _ => match format::role(before("role").as_ref()) {
+                    Some("title") => Some("Title"),
+                    Some(_) => Some("Subtitle"),
+                    None => place.style,
+                },
+            };
+            let _ = write!(ppr, "<w:pPrChange {c}><w:pPr>{}</w:pPr></w:pPrChange>", properties(&before, place, was, &words));
         }
         out.push_str("<w:p>");
         if !ppr.is_empty() {
@@ -379,6 +434,14 @@ impl Writer<'_> {
                 XmlOut::Text(t) => self.runs(&t, txn, bold, out),
                 XmlOut::Element(c) => match &**c.tag() {
                     "hardBreak" => out.push_str("<w:r><w:br/></w:r>"),
+                    // A date as text: the stored day, in English (the document keeps no language).
+                    "dateChip" => {
+                        if let Some(Any::String(d)) = any(c.get_attribute(txn, "date"))
+                            && let Ok(day) = chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d")
+                        {
+                            text_run(&day.format("%-d %B %Y").to_string(), if bold { "<w:b/>" } else { "" }, "w:t", out);
+                        }
+                    }
                     "footnoteRef" => {
                         let n = self.notes;
                         if !self.in_note {
@@ -495,60 +558,24 @@ impl Writer<'_> {
                 },
                 None => None,
             };
-            // Run properties, in the order the schema has them.
-            let mut rpr = String::new();
-            if link.is_some() {
-                rpr.push_str("<w:rStyle w:val=\"Hyperlink\"/>");
-            }
-            let style = get("textStyle");
-            match format::font_family(mark_field(style, "fontFamily")) {
-                Some(f) => {
-                    let (name, family) = format::word_font(&f);
-                    let n = attr(&name);
-                    let _ = write!(rpr, "<w:rFonts w:ascii=\"{n}\" w:hAnsi=\"{n}\" w:eastAsia=\"{n}\" w:cs=\"{n}\"/>");
-                    self.fonts.insert((name, family));
-                }
-                None if get("code").is_some() => rpr.push_str("<w:rFonts w:ascii=\"Consolas\" w:hAnsi=\"Consolas\" w:cs=\"Consolas\"/>"),
-                None => {}
-            }
-            if bold || get("bold").is_some() {
-                rpr.push_str("<w:b/>");
-            }
-            if get("italic").is_some() {
-                rpr.push_str("<w:i/>");
-            }
-            if get("strike").is_some() {
-                rpr.push_str("<w:strike/>");
-            }
-            if let Some(c) = format::color(mark_field(style, "color")) {
-                let _ = write!(rpr, "<w:color w:val=\"{}\"/>", hex(&c));
-            }
-            if let Some(pt) = format::font_size(mark_field(style, "fontSize")) {
-                let half = (pt * 2.0) as u32;
-                let _ = write!(rpr, "<w:sz w:val=\"{half}\"/><w:szCs w:val=\"{half}\"/>");
-            }
-            let mut shading = None;
-            if let Some(h) = get("highlight") {
-                match format::color(mark_field(Some(h), "color")) {
-                    None => rpr.push_str("<w:highlight w:val=\"yellow\"/>"),
-                    Some(c) => match HIGHLIGHTS.iter().find(|(v, _)| *v == c) {
-                        Some((_, name)) => {
-                            let _ = write!(rpr, "<w:highlight w:val=\"{name}\"/>");
-                        }
-                        None => shading = Some(hex(&c)),
-                    },
-                }
-            }
-            if get("underline").is_some() {
-                rpr.push_str("<w:u w:val=\"single\"/>");
-            }
-            if let Some(fill) = shading {
-                let _ = write!(rpr, "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"{fill}\"/>");
-            }
-            if get("subscript").is_some() {
-                rpr.push_str("<w:vertAlign w:val=\"subscript\"/>");
-            } else if get("superscript").is_some() {
-                rpr.push_str("<w:vertAlign w:val=\"superscript\"/>");
+            let mut rpr = self.run_properties(&get, bold, link.is_some());
+            // A proposed change of formatting: the marks it had before.
+            if let Some(fc) = get("formatChange")
+                && let Some(c) = self.change(fc, true)
+            {
+                let was: HashMap<String, Any> = match mark_field(Some(fc), "before") {
+                    Some(Any::Array(marks)) => marks
+                        .iter()
+                        .filter_map(|m| match (mark_field(Some(m), "type"), mark_field(Some(m), "attrs")) {
+                            (Some(Any::String(t)), attrs) => Some((t.to_string(), attrs.cloned().unwrap_or(Any::Bool(true)))),
+                            _ => None,
+                        })
+                        .collect(),
+                    _ => HashMap::new(),
+                };
+                let before = |name: &str| was.get(name);
+                let old = self.run_properties(&before, bold, was.contains_key("link"));
+                let _ = write!(rpr, "<w:rPrChange {c}><w:rPr>{old}</w:rPr></w:rPrChange>");
             }
             let deleted = get("deletion");
             let mut run = String::new();
@@ -561,20 +588,74 @@ impl Writer<'_> {
                 Some((anchor, false)) => run = format!("<w:hyperlink w:anchor=\"{anchor}\" w:history=\"1\">{run}</w:hyperlink>"),
                 None => {}
             }
-            let change = deleted.map(|v| ("w:del", v)).or_else(|| get("insertion").map(|v| ("w:ins", v)));
-            if let Some((tag, v)) = change {
-                self.changes += 1;
-                let text = |k: &str| match mark_field(Some(v), k) {
-                    Some(Any::String(s)) => Some(s.to_string()),
-                    _ => None,
-                };
-                let author = text("name").filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "Someone".into());
-                let date = text("at").filter(|d| d.len() >= 10 && d.is_ascii()).map(|d| format!(" w:date=\"{}\"", attr(&d))).unwrap_or_default();
-                let _ = write!(out, "<{tag} w:id=\"{}\" w:author=\"{}\"{date}>{run}</{tag}>", self.changes, attr(&author));
-            } else {
-                out.push_str(&run);
+            // Someone's proposed words another proposes to remove: a deletion inside an insertion.
+            if let Some(c) = deleted.and_then(|v| self.change(v, false)) {
+                run = format!("<w:del {c}>{run}</w:del>");
+            }
+            if let Some(c) = get("insertion").and_then(|v| self.change(v, false)) {
+                run = format!("<w:ins {c}>{run}</w:ins>");
+            }
+            out.push_str(&run);
+        }
+    }
+
+    /// Run properties from a text's marks (`get`), in the order the schema has them.
+    fn run_properties<'g>(&mut self, get: &dyn Fn(&str) -> Option<&'g Any>, bold: bool, link: bool) -> String {
+        let mut rpr = String::new();
+        if link {
+            rpr.push_str("<w:rStyle w:val=\"Hyperlink\"/>");
+        }
+        let style = get("textStyle");
+        match format::font_family(mark_field(style, "fontFamily")) {
+            Some(f) => {
+                let (name, family) = format::word_font(&f);
+                let n = attr(&name);
+                let _ = write!(rpr, "<w:rFonts w:ascii=\"{n}\" w:hAnsi=\"{n}\" w:eastAsia=\"{n}\" w:cs=\"{n}\"/>");
+                self.fonts.insert((name, family));
+            }
+            None if get("code").is_some() => rpr.push_str("<w:rFonts w:ascii=\"Consolas\" w:hAnsi=\"Consolas\" w:cs=\"Consolas\"/>"),
+            None => {}
+        }
+        if bold || get("bold").is_some() {
+            rpr.push_str("<w:b/>");
+        }
+        if get("italic").is_some() {
+            rpr.push_str("<w:i/>");
+        }
+        if get("strike").is_some() {
+            rpr.push_str("<w:strike/>");
+        }
+        if let Some(c) = format::color(mark_field(style, "color")) {
+            let _ = write!(rpr, "<w:color w:val=\"{}\"/>", hex(&c));
+        }
+        if let Some(pt) = format::font_size(mark_field(style, "fontSize")) {
+            let half = (pt * 2.0) as u32;
+            let _ = write!(rpr, "<w:sz w:val=\"{half}\"/><w:szCs w:val=\"{half}\"/>");
+        }
+        let mut shading = None;
+        if let Some(h) = get("highlight") {
+            match format::color(mark_field(Some(h), "color")) {
+                None => rpr.push_str("<w:highlight w:val=\"yellow\"/>"),
+                Some(c) => match HIGHLIGHTS.iter().find(|(v, _)| *v == c) {
+                    Some((_, name)) => {
+                        let _ = write!(rpr, "<w:highlight w:val=\"{name}\"/>");
+                    }
+                    None => shading = Some(hex(&c)),
+                },
             }
         }
+        if get("underline").is_some() {
+            rpr.push_str("<w:u w:val=\"single\"/>");
+        }
+        if let Some(fill) = shading {
+            let _ = write!(rpr, "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"{fill}\"/>");
+        }
+        if get("subscript").is_some() {
+            rpr.push_str("<w:vertAlign w:val=\"subscript\"/>");
+        } else if get("superscript").is_some() {
+            rpr.push_str("<w:vertAlign w:val=\"superscript\"/>");
+        }
+        rpr
     }
 
     fn table<T: ReadTxn>(&mut self, e: &XmlElementRef, txn: &T, place: &Place, out: &mut String) {
@@ -590,7 +671,13 @@ impl Writer<'_> {
         let width = |col: usize, span: usize| grid[col.min(cols)..(col + span).min(cols)].iter().sum::<u32>();
         let tbl_w =
             if fixed { format!("<w:tblW w:w=\"{}\" w:type=\"dxa\"/>", grid.iter().sum::<u32>()) } else { "<w:tblW w:w=\"5000\" w:type=\"pct\"/>".into() };
-        let _ = write!(out, "<w:tbl><w:tblPr><w:tblStyle w:val=\"TableGrid\"/>{tbl_w}<w:tblLayout w:type=\"fixed\"/></w:tblPr><w:tblGrid>");
+        // A table drawn without borders.
+        let borders = if matches!(any(e.get_attribute(txn, "borders")), Some(Any::String(b)) if &*b == "none") {
+            "<w:tblBorders><w:top w:val=\"nil\"/><w:left w:val=\"nil\"/><w:bottom w:val=\"nil\"/><w:right w:val=\"nil\"/><w:insideH w:val=\"nil\"/><w:insideV w:val=\"nil\"/></w:tblBorders>"
+        } else {
+            ""
+        };
+        let _ = write!(out, "<w:tbl><w:tblPr><w:tblStyle w:val=\"TableGrid\"/>{tbl_w}{borders}<w:tblLayout w:type=\"fixed\"/></w:tblPr><w:tblGrid>");
         for w in &grid {
             let _ = write!(out, "<w:gridCol w:w=\"{w}\"/>");
         }
@@ -627,6 +714,11 @@ impl Writer<'_> {
                             }
                             None if *header => out.push_str("<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"EFF1F5\"/>"),
                             None => {}
+                        }
+                        match any(el.get_attribute(txn, "verticalAlign")) {
+                            Some(Any::String(v)) if &*v == "middle" => out.push_str("<w:vAlign w:val=\"center\"/>"),
+                            Some(Any::String(v)) if &*v == "bottom" => out.push_str("<w:vAlign w:val=\"bottom\"/>"),
+                            _ => {}
                         }
                         let _ = write!(out, "</w:tcPr>{content}</w:tc>");
                     }
@@ -749,6 +841,67 @@ impl Writer<'_> {
             out.push_str("</w:p>");
         }
     }
+}
+
+/// A paragraph's properties (`w:pPr`'s content but its run mark and change), in the schema's order:
+/// its style, numbering, shading, direction, spacing (a place's gaps where it gives none), indent
+/// (from its start) and alignment (left and right as they look, whatever the direction).
+fn properties(attr: &dyn Fn(&str) -> Option<Any>, place: &Place, style: Option<&str>, words: &str) -> String {
+    let mut ppr = String::new();
+    if let Some(style) = style {
+        let _ = write!(ppr, "<w:pStyle w:val=\"{style}\"/>");
+    }
+    if let Some((num, level)) = place.num {
+        let _ = write!(ppr, "<w:numPr><w:ilvl w:val=\"{level}\"/><w:numId w:val=\"{num}\"/></w:numPr>");
+    }
+    if let Some(fill) = place.shade {
+        let _ = write!(ppr, "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"{fill}\"/>");
+    }
+    // The direction chosen, else the first letter's.
+    let rtl = match attr("dir") {
+        Some(Any::String(d)) if &*d == "rtl" => true,
+        Some(Any::String(d)) if &*d == "ltr" => false,
+        _ => right_to_left(words),
+    };
+    if rtl {
+        ppr.push_str("<w:bidi/>");
+    }
+    let mut spacing = String::new();
+    if let Some(tw) = format::space(attr("spaceBefore").as_ref()).map(|pt| pt * 20).or(place.gap.map(|g| g.0)) {
+        let _ = write!(spacing, " w:before=\"{tw}\"");
+    }
+    if let Some(tw) = format::space(attr("spaceAfter").as_ref()).map(|pt| pt * 20).or(place.gap.map(|g| g.1)) {
+        let _ = write!(spacing, " w:after=\"{tw}\"");
+    }
+    if let Some(lh) = format::line_height(attr("lineHeight").as_ref()) {
+        let _ = write!(spacing, " w:line=\"{}\" w:lineRule=\"auto\"", line(lh));
+    }
+    if !spacing.is_empty() {
+        let _ = write!(ppr, "<w:spacing{spacing}/>");
+    }
+    let indent = if place.num.is_some() { 0 } else { place.indent + format::indent(attr("indent").as_ref()).unwrap_or(0) * 720 };
+    if indent > 0 {
+        let _ = write!(ppr, "<w:ind w:{}=\"{indent}\"/>", if rtl { "start" } else { "left" });
+    }
+    let jc = match (format::text_align(attr("textAlign").as_ref()), rtl) {
+        (Some("center"), _) => Some("center"),
+        (Some("justify"), _) => Some("both"),
+        (Some("right"), false) => Some("right"),
+        // In right-to-left text Word's sides are its start and end.
+        (Some("right"), true) => Some("start"),
+        (Some("left"), true) => Some("end"),
+        _ => None,
+    };
+    if let Some(jc) = jc {
+        let _ = write!(ppr, "<w:jc w:val=\"{jc}\"/>");
+    }
+    ppr
+}
+
+/// Whether words read right to left, by their first letter (HTML's `dir="auto"`): Hebrew, Arabic,
+/// Syriac, Thaana, N'Ko and Adlam do.
+fn right_to_left(words: &str) -> bool {
+    words.chars().find(|c| c.is_alphabetic()).is_some_and(|c| matches!(c as u32, 0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF | 0x1E900..=0x1E95F))
 }
 
 /// A heading's bookmark: `h_<anchor>` when something links to it, else a hidden one by its place.
@@ -953,6 +1106,8 @@ pub(super) fn write(
         marks: placed.marks,
         started: vec![false; threads.len()],
         ended: vec![false; threads.len()],
+        para_mark: None,
+        numbered: HashMap::new(),
     };
     let mut body = String::new();
     if let Some(fragment) = txn.get_xml_fragment(FRAGMENT) {
@@ -1590,6 +1745,119 @@ mod tests {
         let (plain, lost) = super::super::docx_export(&doc, "Comments", None, &|_| None).unwrap();
         assert!(!part(&plain, "[Content_Types].xml").contains("comments") && !part(&plain, "word/document.xml").contains("comment"));
         assert!(!lost.iter().any(|l| l.contains("comment")));
+    }
+
+    /// Wave 3 of the stored format: proposed paragraph boundaries and formatting as tracked
+    /// changes, dates, lists that continue, cell alignment, tables without borders, direction.
+    #[test]
+    fn wave_three_in_word() {
+        let doc = new_doc();
+        let fragment = doc.get_or_insert_xml_fragment(FRAGMENT);
+        let who = |id: Option<&str>| {
+            let mut m = HashMap::from([("name".to_string(), Any::from("Ana")), ("at".to_string(), Any::from("2026-11-12T09:00:00Z"))]);
+            if let Some(id) = id {
+                m.insert("id".into(), Any::from(id));
+            }
+            m
+        };
+        {
+            let mut txn = doc.transact_mut();
+            let para = |txn: &mut yrs::TransactionMut, words: &str, attrs: Vec<(&str, Any)>| {
+                let p = fragment.push_back(txn, XmlElementPrelim::empty("paragraph"));
+                for (k, v) in attrs {
+                    p.insert_attribute(txn, k, v);
+                }
+                p.push_back(txn, XmlTextPrelim::new(words))
+            };
+            para(&mut txn, "First", vec![]);
+            para(&mut txn, "Split off", vec![("split", Any::from(who(Some("s1"))))]);
+            para(&mut txn, "Joined on", vec![("join", Any::from(who(Some("s2"))))]);
+            para(&mut txn, "No id, no change", vec![("split", Any::from(who(None)))]);
+            let mut was = who(Some("f1"));
+            was.insert("type".into(), Any::from("heading"));
+            was.insert("attrs".into(), Any::from(HashMap::from([("level".to_string(), Any::from(2))])));
+            para(&mut txn, "Was a heading", vec![("formatted", Any::from(was))]);
+            let t = para(&mut txn, "plain ", vec![]);
+            let mut fc = who(Some("f2"));
+            fc.insert("before".into(), Any::from(vec![Any::from(HashMap::from([("type".to_string(), Any::from("bold"))]))]));
+            t.insert_with_attributes(
+                &mut txn,
+                6,
+                "now italic",
+                [("italic".into(), Any::from(true)), ("formatChange".into(), Any::from(fc))].into_iter().collect(),
+            );
+            t.insert_with_attributes(
+                &mut txn,
+                16,
+                " both",
+                [("insertion".into(), Any::from(who(Some("i1")))), ("deletion".into(), Any::from(who(Some("d1"))))].into_iter().collect(),
+            );
+            let p = fragment.push_back(&mut txn, XmlElementPrelim::empty("paragraph"));
+            p.push_back(&mut txn, XmlTextPrelim::new("Due "));
+            let d = p.push_back(&mut txn, XmlElementPrelim::empty("dateChip"));
+            d.insert_attribute(&mut txn, "date", "2026-11-12");
+            let d = p.push_back(&mut txn, XmlElementPrelim::empty("dateChip"));
+            d.insert_attribute(&mut txn, "date", "2026-02-30");
+            for continues in [false, true] {
+                let l = fragment.push_back(&mut txn, XmlElementPrelim::empty("orderedList"));
+                l.insert_attribute(&mut txn, "start", Any::from(3));
+                if continues {
+                    l.insert_attribute(&mut txn, "continues", true);
+                }
+                let li = l.push_back(&mut txn, XmlElementPrelim::empty("listItem"));
+                li.push_back(&mut txn, XmlElementPrelim::empty("paragraph")).push_back(&mut txn, XmlTextPrelim::new("item"));
+            }
+            let l = fragment.push_back(&mut txn, XmlElementPrelim::empty("bulletList"));
+            l.insert_attribute(&mut txn, "formatted", Any::from(who(Some("f3"))));
+            let li = l.push_back(&mut txn, XmlElementPrelim::empty("listItem"));
+            li.push_back(&mut txn, XmlElementPrelim::empty("paragraph")).push_back(&mut txn, XmlTextPrelim::new("bullet"));
+            let table = fragment.push_back(&mut txn, XmlElementPrelim::empty("table"));
+            table.insert_attribute(&mut txn, "borders", "none");
+            let r = table.push_back(&mut txn, XmlElementPrelim::empty("tableRow"));
+            let c = r.push_back(&mut txn, XmlElementPrelim::empty("tableCell"));
+            c.insert_attribute(&mut txn, "verticalAlign", "middle");
+            c.push_back(&mut txn, XmlElementPrelim::empty("paragraph")).push_back(&mut txn, XmlTextPrelim::new("mid"));
+            para(&mut txn, "مرحبا بالعالم", vec![]);
+            para(&mut txn, "Hello", vec![("dir", Any::from("rtl")), ("textAlign", Any::from("right")), ("indent", Any::from(1))]);
+            para(&mut txn, "שלום, chosen left to right", vec![("dir", Any::from("ltr"))]);
+        }
+        let (file, lost) = super::super::docx_export(&doc, "Wave 3", None, &|_| None).unwrap();
+        let body = part(&file, "word/document.xml");
+        let c = |n: u32| format!("w:id=\"{n}\" w:author=\"Ana\" w:date=\"2026-11-12T09:00:00Z\"");
+        // The boundary before "Split off" is "First"'s mark, inserted; before "Joined on", deleted.
+        assert!(body.contains(&format!("<w:p><w:pPr><w:rPr><w:ins {}/></w:rPr></w:pPr><w:r><w:t xml:space=\"preserve\">First</w:t>", c(1))), "{body}");
+        assert!(body.contains(&format!("<w:pPr><w:rPr><w:del {}/></w:rPr></w:pPr><w:r><w:t xml:space=\"preserve\">Split off</w:t>", c(2))), "{body}");
+        assert!(body.contains("<w:p><w:r><w:t xml:space=\"preserve\">Joined on</w:t>"), "a record without its id is no change: {body}");
+        assert!(
+            body.contains(&format!(
+                "<w:pPrChange {}><w:pPr><w:pStyle w:val=\"Heading2\"/></w:pPr></w:pPrChange></w:pPr><w:r><w:t xml:space=\"preserve\">Was a heading",
+                c(3)
+            )),
+            "{body}"
+        );
+        assert!(
+            body.contains(&format!(
+                "<w:rPr><w:i/><w:rPrChange {}><w:rPr><w:b/></w:rPr></w:rPrChange></w:rPr><w:t xml:space=\"preserve\">now italic</w:t>",
+                c(4)
+            )),
+            "{body}"
+        );
+        assert!(
+            body.contains(&format!("<w:ins {}><w:del {}><w:r><w:delText xml:space=\"preserve\"> both</w:delText></w:r></w:del></w:ins>", c(6), c(5))),
+            "{body}"
+        );
+        assert!(body.contains("Due </w:t></w:r><w:r><w:t xml:space=\"preserve\">12 November 2026</w:t></w:r></w:p>"), "not a real date: nothing: {body}");
+        let numbering = part(&file, "word/numbering.xml");
+        assert_eq!(body.matches("<w:numId w:val=\"1\"/>").count(), 2, "the list that continues shares the first one's numbering: {body}");
+        assert_eq!(numbering.matches("<w:startOverride").count(), 1, "{numbering}");
+        assert!(lost.contains(&"suggested changes".to_string()), "a list's proposed format: {lost:?}");
+        assert!(body.contains("<w:tblBorders><w:top w:val=\"nil\"/>") && body.contains("<w:vAlign w:val=\"center\"/></w:tcPr>"), "{body}");
+        assert!(body.contains("<w:p><w:pPr><w:bidi/></w:pPr><w:r><w:t xml:space=\"preserve\">مرحبا بالعالم"), "by its first letter: {body}");
+        assert!(
+            body.contains("<w:pPr><w:bidi/><w:ind w:start=\"720\"/><w:jc w:val=\"start\"/></w:pPr><w:r><w:t xml:space=\"preserve\">Hello"),
+            "chosen: {body}"
+        );
+        assert!(body.contains("<w:p><w:r><w:t xml:space=\"preserve\">שלום, chosen"), "chosen left to right: {body}");
     }
 
     /// Real documents' stored states (`*.ystate` in `FERRUM_PARITY_STATES`) as Word files in
