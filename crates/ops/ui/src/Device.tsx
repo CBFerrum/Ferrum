@@ -5,10 +5,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { Link, useParams } from "react-router";
 import { api, docPath, formatDateTime, refusal, relativeTime, t, isolate } from "@ferrum/client";
-import { Alert, Badge, Button, confirmDialog, Dialog, EmptyState, ErrorState, Field, PageLoading, toast, useShellTitle } from "@ferrum/kit";
+import { ChartColumnIcon } from "lucide-react";
+import { Alert, Badge, Button, confirmDialog, Dialog, Field, LoadFailed, PageHeader, PageLoading, StatePanel, StatusBadge, toast } from "@ferrum/kit";
 import { acceptance, enrollment, latest, recordStep, setLifecycle, startRun, type RunDoc, type StepResult } from "./data";
-import { Tabs } from "./Tabs";
-import { canEnroll, canRetire, expectation, named, nextSteps, reading, typed } from "./words";
+import { canEnroll, canRetire, expectation, LIFE_TONES, named, nextSteps, reading, typed } from "./words";
 
 interface DeviceDoc {
   id: string;
@@ -27,7 +27,7 @@ function Code({ device, onClose }: { device: string; onClose: () => void }) {
       {q.isPending ? (
         <PageLoading />
       ) : q.isError ? (
-        <ErrorState error={q.error} />
+        <LoadFailed error={q.error} />
       ) : (
         <div className="stack">
           <p className="muted">{t("Give this to the site once. It is shown only now, and works once, until {value}.", { value: formatDateTime(q.data.expires_at) })}</p>
@@ -122,7 +122,7 @@ function Record({ run, step }: { run: string; step: StepResult }) {
 function Run({ id }: { id: string }) {
   const q = useQuery({ queryKey: ["ops", "run", id], queryFn: () => api.get<RunDoc>(docPath("AcceptanceRun", id)) });
   if (q.isPending) return <PageLoading />;
-  if (q.isError) return <ErrorState error={q.error} onRetry={() => void q.refetch()} />;
+  if (q.isError) return <LoadFailed error={q.error} onRetry={() => void q.refetch()} />;
   const next = q.data.status === "Running" ? q.data.results.find((r) => r.outcome === "Pending") : undefined;
   return (
     <ol className="stack">
@@ -158,28 +158,32 @@ function Acceptance({ device }: { device: string }) {
   });
   if (q.isPending || q.isError || q.data.procedures.length === 0) return null;
   return (
-    <section className="card card-pad stack">
-      <h3>{t("Acceptance on site")}</h3>
-      <p className="muted">{t("Commissioning waits for a passed run of each. A pass records what was checked here, and certifies nothing beyond it.")}</p>
-      {q.data.procedures.map((p) => {
-        const running = q.data.runs.find((r) => r.procedure === p.id && r.status === "Running");
-        const last = q.data.runs.find((r) => r.procedure === p.id && r.status !== "Running");
-        return (
-          <div key={p.id} className="stack">
-            <div className="ops-row-actions">
-              <strong>{isolate(p.name)}</strong>
-              <Badge tone={p.passed ? "green" : "amber"}>{p.passed ? t("Passed") : t("Not passed yet")}</Badge>
-              {last && last.status === "Failed" ? <span className="faint">{t("Last run failed {value}", { value: relativeTime(last.finished_at ?? last.created_at) })}</span> : null}
-              {running ? null : (
-                <Button loading={start.isPending && start.variables === p.id} onClick={() => start.mutate(p.id)}>
-                  {p.passed ? t("Run it again") : t("Start a run")}
-                </Button>
-              )}
+    <section className="card">
+      <div className="card-head">
+        <h2>{t("Acceptance on site")}</h2>
+      </div>
+      <div className="card-body stack">
+        <p className="muted">{t("Commissioning waits for a passed run of each. A pass records what was checked here, and certifies nothing beyond it.")}</p>
+        {q.data.procedures.map((p) => {
+          const running = q.data.runs.find((r) => r.procedure === p.id && r.status === "Running");
+          const last = q.data.runs.find((r) => r.procedure === p.id && r.status !== "Running");
+          return (
+            <div key={p.id} className="stack">
+              <div className="ops-row-actions">
+                <strong>{isolate(p.name)}</strong>
+                <Badge tone={p.passed ? "green" : "amber"}>{p.passed ? t("Passed") : t("Not passed yet")}</Badge>
+                {last && last.status === "Failed" ? <span className="faint">{t("Last run failed {value}", { value: relativeTime(last.finished_at ?? last.created_at) })}</span> : null}
+                {running ? null : (
+                  <Button loading={start.isPending && start.variables === p.id} onClick={() => start.mutate(p.id)}>
+                    {p.passed ? t("Run it again") : t("Start a run")}
+                  </Button>
+                )}
+              </div>
+              {running ? <Run id={running.id} /> : null}
             </div>
-            {running ? <Run id={running.id} /> : null}
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </section>
   );
 }
@@ -190,72 +194,81 @@ export function DevicePage() {
   const metrics = useQuery({ queryKey: ["ops", "latest", id], queryFn: () => latest(id), refetchInterval: 15_000 });
   const [asking, setAsking] = useState<{ to: string; label: string } | null>(null);
   const [code, setCode] = useState(false);
-  useShellTitle(q.data?.device_name ?? t("Device"));
   if (q.isPending) return <PageLoading />;
-  if (q.isError) return <ErrorState error={q.error} onRetry={() => void q.refetch()} />;
+  if (q.isError) return <LoadFailed error={q.error} onRetry={() => void q.refetch()} />;
   const d = q.data;
   return (
-    <div className="ops-page">
-      <Tabs />
-      <header className="ops-site-head">
-        <div>
-          <h2>{isolate(d.device_name)}</h2>
-          <div className="faint">
+    <div>
+      <PageHeader
+        eyebrow={<Link to="/">{t("Operations")}</Link>}
+        title={isolate(d.device_name)}
+        description={
+          <>
             {isolate(d.kind)} · {isolate(d.device_code)}
+          </>
+        }
+        actions={
+          <Link className="btn btn-md" to={`/e/Device/${d.id}`}>
+            {t("Open the record")}
+          </Link>
+        }
+      />
+      <div className="ops-page">
+        <section className="card">
+          <div className="card-head">
+            <h2>{t("Where it is in its life")}</h2>
+            <StatusBadge value={d.lifecycle} tones={LIFE_TONES} label={named(d.lifecycle)} />
           </div>
-        </div>
-        <Link to={`/e/Device/${d.id}`}>{t("Open the record")}</Link>
-      </header>
-      <section className="card card-pad stack">
-        <div>
-          <h3>{t("Where it is in its life")}</h3>
-          <Badge tone={d.lifecycle === "Active" ? "green" : d.lifecycle === "Quarantined" ? "red" : "neutral"}>{named(d.lifecycle)}</Badge>
-        </div>
-        {d.lifecycle === "Quarantined" ? <Alert tone="warning">{t("It may still report, and it gets no work. It comes back only by enrolling a new key.")}</Alert> : null}
-        <div className="ops-row-actions">
-          {canEnroll(d.lifecycle) ? (
-            <Button variant="primary" onClick={() => setCode(true)}>
-              {t("Enroll a key")}
-            </Button>
-          ) : null}
-          {nextSteps(d.lifecycle, d.gateway).map((s) => (
-            <Button key={s.to} variant={s.serious ? "default" : "primary"} onClick={() => setAsking(s)}>
-              {isolate(s.label)}
-            </Button>
-          ))}
-          {canRetire(d.lifecycle) ? (
-            <Button
-              onClick={async () => {
-                const ok = await confirmDialog({ title: t("Retire this device?"), message: t("Its keys stop working, for good. The asset it belonged to keeps its history."), confirmLabel: t("Retire it"), danger: true });
-                if (ok) setAsking({ to: "Retired", label: t("Retire it") });
-              }}
-            >
-              {t("Retire")}
-            </Button>
-          ) : null}
-        </div>
-      </section>
-      <section className="card card-pad">
-        <h3>{t("What it last said")}</h3>
-        {metrics.isPending ? (
-          <PageLoading />
-        ) : metrics.isError ? (
-          <ErrorState error={metrics.error} onRetry={() => void metrics.refetch()} />
-        ) : metrics.data.length === 0 ? (
-          <EmptyState title={t("Nothing yet")} icon="chart" />
-        ) : (
-          <ul className="ops-facts ops-metrics">
-            {metrics.data.map((m) => (
-              <li key={m.metric}>
-                <strong>{isolate(m.metric)}</strong> {isolate(reading(m.value))} <span className={m.age_secs > 600 ? "ops-stale" : "faint"}>{isolate(relativeTime(m.at))}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-      <Acceptance device={d.id} />
-      {code ? <Code device={d.id} onClose={() => setCode(false)} /> : null}
-      {asking ? <Why device={d.id} to={asking.to} label={asking.label} onClose={() => setAsking(null)} /> : null}
+          <div className="card-body stack">
+            {d.lifecycle === "Quarantined" ? <Alert tone="warning">{t("It may still report, and it gets no work. It comes back only by enrolling a new key.")}</Alert> : null}
+            <div className="ops-row-actions">
+              {canEnroll(d.lifecycle) ? (
+                <Button variant="primary" onClick={() => setCode(true)}>
+                  {t("Enroll a key")}
+                </Button>
+              ) : null}
+              {nextSteps(d.lifecycle, d.gateway).map((s) => (
+                <Button key={s.to} variant={s.serious ? "default" : "primary"} onClick={() => setAsking(s)}>
+                  {isolate(s.label)}
+                </Button>
+              ))}
+              {canRetire(d.lifecycle) ? (
+                <Button
+                  onClick={async () => {
+                    const ok = await confirmDialog({ title: t("Retire this device?"), message: t("Its keys stop working, for good. The asset it belonged to keeps its history."), confirmLabel: t("Retire it"), danger: true });
+                    if (ok) setAsking({ to: "Retired", label: t("Retire it") });
+                  }}
+                >
+                  {t("Retire")}
+                </Button>
+              ) : null}
+            </div>
+          </div>
+        </section>
+        <section className="card">
+          <div className="card-head">
+            <h2>{t("What it last said")}</h2>
+          </div>
+          {metrics.isPending ? (
+            <PageLoading />
+          ) : metrics.isError ? (
+            <LoadFailed error={metrics.error} onRetry={() => void metrics.refetch()} />
+          ) : metrics.data.length === 0 ? (
+            <StatePanel kind="empty" icon={ChartColumnIcon} className="pt-4 md:pt-4 pb-6" title={t("Nothing yet")} />
+          ) : (
+            <ul className="ops-facts ops-metrics card-body">
+              {metrics.data.map((m) => (
+                <li key={m.metric}>
+                  <strong>{isolate(m.metric)}</strong> {isolate(reading(m.value))} <span className={m.age_secs > 600 ? "ops-stale" : "faint"}>{isolate(relativeTime(m.at))}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+        <Acceptance device={d.id} />
+        {code ? <Code device={d.id} onClose={() => setCode(false)} /> : null}
+        {asking ? <Why device={d.id} to={asking.to} label={asking.label} onClose={() => setAsking(null)} /> : null}
+      </div>
     </div>
   );
 }

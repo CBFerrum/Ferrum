@@ -1,25 +1,101 @@
 /* The workspace's theme, loaded first on every page of every app (docs/plan/apps-ui.md §12.9):
    design tokens the bar and the kit use, the bar's place, and smooth moves between apps.
-   Apps may read these tokens; their own styles come after and win. */
+   Apps may read these tokens; their own styles come after and win.
+
+   SOURCE OF THE VALUES: Ferrum-Frontend `src/index.css` (the suite's tokens: palette, high contrast,
+   control heights, motion, type roles). This file is the platform's own copy of them under the
+   `--ferrum-*` names, in plain CSS (these pages do not use Tailwind). Change a value there first,
+   then here, so the bar and the suite never drift; `docs/design/FOUNDATIONS.md` there says what each is for. */
+/* The accent (--ferrum-primary*) is the suite's default. A workspace brand accent, once something sets
+   one, is applied inline on <html> after this file (lib/theme.ts's accentTokens) and wins. */
 :root {
   color-scheme: light dark;
-  --ferrum-bg: light-dark(#f5f6f8, #0e1116);
-  --ferrum-surface: light-dark(#ffffff, #161a21);
-  --ferrum-surface-2: light-dark(#eef1f5, #1d222b);
-  --ferrum-border: light-dark(#d9dee5, #2c333f);
-  --ferrum-text: light-dark(#17191d, #e8ebf0);
-  --ferrum-muted: light-dark(#5b6472, #a0a9b8);
-  --ferrum-primary: light-dark(#2f5bea, #6d8ff5);
-  --ferrum-primary-hover: light-dark(#2449c4, #8aa5f8);
-  --ferrum-primary-soft: light-dark(#e7edfd, #1e2a4d);
-  --ferrum-primary-text: light-dark(#ffffff, #0b1020);
-  --ferrum-danger: light-dark(#c62828, #f07070);
-  --ferrum-warning-soft: light-dark(#fff3d6, #352a10);
-  --ferrum-focus-ring: 0 0 0 3px light-dark(rgb(47 91 234 / 0.35), rgb(109 143 245 / 0.45));
+  --ferrum-bg: light-dark(#f6f7f9, #111317);
+  --ferrum-surface: light-dark(#ffffff, #191c22);
+  --ferrum-surface-2: light-dark(#eff1f5, #22262e);
+  --ferrum-surface-3: light-dark(#e3e7ed, #2c313b);
+  /* --ferrum-border and -border-strong are decorative separators; the boundary of a form control is -border-control. */
+  --ferrum-border: light-dark(#dee3ea, #343c48);
+  --ferrum-border-strong: light-dark(#c8cfd9, #454e5c);
+  --ferrum-border-control: light-dark(#7c899c, #7f8da1);
+  --ferrum-text: light-dark(#202329, #eceef2);
+  --ferrum-muted: light-dark(#596273, #b1bac8);
+  --ferrum-faint: light-dark(#5f6a7b, #a3acba);
+  --ferrum-primary: light-dark(#3157d5, #9cb3ff);
+  --ferrum-primary-hover: light-dark(#2447b3, #b6c7ff);
+  --ferrum-primary-soft: light-dark(#e9eeff, #253558);
+  --ferrum-primary-text: light-dark(#ffffff, #111827);
+  --ferrum-danger: light-dark(#b42318, #ffaba4);
+  --ferrum-danger-hover: light-dark(#8f1c13, #ffc6c1);
+  --ferrum-danger-soft: light-dark(#fff0ee, #3e2223);
+  --ferrum-success: light-dark(#167047, #72d9a5);
+  --ferrum-success-soft: light-dark(#e9f7ef, #173326);
+  --ferrum-warning: light-dark(#8f5700, #f5c76e);
+  --ferrum-warning-soft: light-dark(#fff4d6, #382c15);
+  --ferrum-purple: light-dark(#6b3fc4, #c4aff6);
+  --ferrum-purple-soft: light-dark(#f1ebfc, #2b2342);
+  --ferrum-focus-ring: 0 0 0 3px light-dark(rgb(49 87 213 / 0.75), rgb(156 179 255 / 0.8));
+  /* Keyboard focus is this outline, in the accent, on everything the platform draws. */
+  --ferrum-focus-outline: 2px solid var(--ferrum-primary);
+  --ferrum-shadow-sm: 0 1px 2px light-dark(rgb(16 24 40 / 0.06), rgb(0 0 0 / 0.3));
   --ferrum-shadow: 0 8px 28px light-dark(rgb(16 24 40 / 0.14), rgb(0 0 0 / 0.5)), 0 2px 6px light-dark(rgb(16 24 40 / 0.06), rgb(0 0 0 / 0.4));
   --ferrum-radius: 8px;
+  --ferrum-radius-sm: 6px;
+  --ferrum-radius-lg: 12px;
   --ferrum-font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --ferrum-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --ferrum-bar-height: 48px;
+
+  /* Type roles in px (the suite's text-xs ... text-2xl at its 14px root). */
+  --ferrum-text-xs: 12px;
+  --ferrum-text-xs-lh: 16px;
+  --ferrum-text-sm: 13px;
+  --ferrum-text-sm-lh: 18px;
+  --ferrum-text-base: 14px;
+  --ferrum-text-base-lh: 20px;
+  --ferrum-text-lg: 16px;
+  --ferrum-text-lg-lh: 24px;
+  --ferrum-text-xl: 18px;
+  --ferrum-text-xl-lh: 24px;
+  --ferrum-text-2xl: 24px;
+  --ferrum-text-2xl-lh: 32px;
+
+  /* Control heights: 36 comfortable, 32 the small control (the bar's), 44/36 on touch screens. */
+  --ferrum-control-h: 36px;
+  --ferrum-control-h-sm: 32px;
+
+  /* Motion: a state change (hover, press), an overlay opening, a panel sliding. Zero for reduced motion. */
+  --ferrum-duration-state: 100ms;
+  --ferrum-duration-overlay: 140ms;
+  --ferrum-duration-panel: 180ms;
+}
+
+/* High contrast (the person's choice, or the system's: the runtime sets data-contrast on <html>). */
+:root[data-contrast="more"] {
+  --ferrum-text: light-dark(#000000, #ffffff);
+  --ferrum-muted: light-dark(#2e343c, #dde2ea);
+  --ferrum-faint: light-dark(#454c57, #c2c9d4);
+  --ferrum-border: light-dark(#6f7886, #8d97a7);
+  --ferrum-border-strong: light-dark(#454c57, #b3bcca);
+  --ferrum-border-control: light-dark(#454c57, #b3bcca);
+  --ferrum-focus-ring: 0 0 0 3px light-dark(#1d3fb8, #b4c6fb);
+}
+:root[data-density="compact"] {
+  --ferrum-control-h: 32px;
+}
+@media (pointer: coarse) {
+  :root,
+  :root[data-density] {
+    --ferrum-control-h: 44px;
+    --ferrum-control-h-sm: 36px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --ferrum-duration-state: 0ms;
+    --ferrum-duration-overlay: 0ms;
+    --ferrum-duration-panel: 0ms;
+  }
 }
 
 /* The person's theme, once the runtime has put it on <html> (data-theme): the tokens follow it. */
@@ -44,6 +120,22 @@ ferrum-bar[compact] {
   --ferrum-bar-height: 40px;
 }
 
+/* On paper the record is the page: the bar, a side panel's room and the shell's dialogs and cards
+   neither print nor leave their height above the content (apps that offset by the bar's height follow). */
+@media print {
+  :root {
+    --ferrum-bar-height: 0px;
+  }
+  ferrum-bar,
+  dialog[data-ferrum-dialog],
+  [data-ferrum-card] {
+    display: none !important;
+  }
+  :root[data-ferrum-panel] body {
+    margin-inline-end: 0;
+  }
+}
+
 /* A side panel the bar opened (docs/plan/apps-ui.md §11.4) takes room at the end of wide pages and
    floats over narrow ones; the bar stays the page's width above it. Layouts that are fixed to the
    viewport can use the same width. */
@@ -58,15 +150,15 @@ ferrum-bar[compact] {
 
 /* The shell's dialogs (an intent's app, "which app should do this?") over any app's page. */
 dialog[data-ferrum-dialog]::backdrop {
-  background: rgb(10 14 20 / 0.45);
+  background: rgb(0 0 0 / 0.45);
 }
 dialog[data-ferrum-dialog][open] {
-  animation: ferrum-dialog-in 0.16s ease-out;
+  animation: ferrum-dialog-in var(--ferrum-duration-overlay) ease-out;
 }
 @keyframes ferrum-dialog-in {
   from {
     opacity: 0;
-    transform: translateY(6px) scale(0.985);
+    transform: translateY(4px) scale(0.98);
   }
 }
 

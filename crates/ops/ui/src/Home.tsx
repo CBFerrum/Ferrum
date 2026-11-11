@@ -6,11 +6,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { Link } from "react-router";
 import { refusal, relativeTime, t, isolate } from "@ferrum/client";
-import { Alert, Badge, Button, Dialog, EmptyState, ErrorState, Field, PageLoading, toast, useShellTitle } from "@ferrum/kit";
+import { LayoutDashboardIcon } from "lucide-react";
+import { Alert, Badge, Button, Dialog, Field, LoadFailed, PageLoading, StatePanel, StatusBadge, toast } from "@ferrum/kit";
 import { LinkInput } from "@ferrum/records";
 import { type Domain, overview, setPin, type SiteRow, transfer } from "./data";
-import { Tabs } from "./Tabs";
-import { silence } from "./words";
+import { Screen } from "./Tabs";
+import { LIFE_TONES, silence } from "./words";
 
 const megabytes = (bytes?: number) => (bytes === undefined ? null : t("{megabytes} MB free", { megabytes: Math.round(bytes / (1 << 20)) }));
 
@@ -105,7 +106,7 @@ function DomainRow({ d }: { d: Domain }) {
           <strong>{d.holder_name ?? t("No gateway")}</strong> <Badge tone={seen.tone}>{d.holder ? seen.label : t("Nobody holds this")}</Badge>
           <div className="faint">{d.last_seen_at ? t("Last heard {value}", { value: relativeTime(d.last_seen_at) }) : t("Not heard from yet")}</div>
         </div>
-        <Button size="sm" onClick={() => setMoving(true)}>
+        <Button onClick={() => setMoving(true)}>
           {t("Move…")}
         </Button>
       </div>
@@ -140,7 +141,7 @@ function Site({ s }: { s: SiteRow }) {
             {s.needs_person === 1 ? t("1 needs a person") : t("{n} need a person", { n: s.needs_person })}
           </Link>
         ) : (
-          <Button size="sm" onClick={() => setAsking(true)}>
+          <Button onClick={() => setAsking(true)}>
             {t("Console PIN…")}
           </Button>
         )}
@@ -159,9 +160,7 @@ function Site({ s }: { s: SiteRow }) {
       {s.devices ? (
         <div className="ops-life">
           {Object.entries(s.devices).map(([state, n]) => (
-            <Badge key={state} tone={state === "Active" ? "green" : state === "Quarantined" ? "red" : "neutral"}>
-              {n} {isolate(state.toLowerCase())}
-            </Badge>
+            <StatusBadge key={state} value={state} tones={LIFE_TONES} label={<>{n} {isolate(state.toLowerCase())}</>} />
           ))}
         </div>
       ) : null}
@@ -171,21 +170,17 @@ function Site({ s }: { s: SiteRow }) {
 }
 
 export function Home() {
-  useShellTitle(t("Operations"));
   const q = useQuery({ queryKey: ["ops", "overview"], queryFn: overview, refetchInterval: 15_000 });
   const sites = q.data?.sites ?? [];
   const attention = sites.reduce((n, s) => n + s.needs_person, 0);
   return (
-    <div className="ops-page">
-      <Tabs attention={attention} />
+    <Screen section="sites" attention={attention}>
       {q.isPending ? (
         <PageLoading />
       ) : q.isError ? (
-        <ErrorState error={q.error} onRetry={() => void q.refetch()} />
+        <LoadFailed error={q.error} onRetry={() => void q.refetch()} />
       ) : sites.length === 0 ? (
-        <EmptyState title={t("No sites yet")} icon="dashboard">
-          <Link to="/e/Site/new">{t("Add your first site")}</Link>
-        </EmptyState>
+        <StatePanel kind="empty" icon={LayoutDashboardIcon} title={t("No sites yet")} action={<Link className="btn btn-primary btn-md" to="/e/Site/new">{t("Add your first site")}</Link>} />
       ) : (
         <div className="ops-sites">
           {sites.map((s) => (
@@ -193,6 +188,6 @@ export function Home() {
           ))}
         </div>
       )}
-    </div>
+    </Screen>
   );
 }

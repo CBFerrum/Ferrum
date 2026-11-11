@@ -5,9 +5,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { Link } from "react-router";
 import { formatDateTime, refusal, t, isolate } from "@ferrum/client";
-import { Badge, Button, Dialog, EmptyState, ErrorState, Field, PageLoading, toast, useShellTitle } from "@ferrum/kit";
+import { CheckIcon } from "lucide-react";
+import { Badge, Button, Dialog, Field, LoadFailed, PageLoading, StatePanel, toast } from "@ferrum/kit";
 import { act, type CommandRow, commands } from "./data";
-import { Tabs } from "./Tabs";
+import { Screen } from "./Tabs";
 import { state } from "./words";
 
 const ENDINGS = [
@@ -103,19 +104,17 @@ function Row({ c }: { c: CommandRow }) {
 }
 
 export function Attention() {
-  useShellTitle(t("Needs a person"));
   const q = useQuery({ queryKey: ["ops", "attention"], queryFn: () => commands({ needs_person: 1, limit: 200 }), refetchInterval: 15_000 });
   return (
-    <div className="ops-page">
-      <Tabs attention={q.data?.length} />
+    <Screen section="attention" attention={q.data?.length}>
       {q.isPending ? (
         <PageLoading />
       ) : q.isError ? (
-        <ErrorState error={q.error} onRetry={() => void q.refetch()} />
+        <LoadFailed error={q.error} onRetry={() => void q.refetch()} />
       ) : q.data.length === 0 ? (
-        <EmptyState title={t("Nothing needs you")} icon="check">
+        <StatePanel kind="empty" icon={CheckIcon} title={t("Nothing needs you")}>
           {t("Everything on the floor is accounted for.")}
-        </EmptyState>
+        </StatePanel>
       ) : (
         <ul className="ops-list card">
           {q.data.map((c) => (
@@ -123,6 +122,6 @@ export function Attention() {
           ))}
         </ul>
       )}
-    </div>
+    </Screen>
   );
 }
