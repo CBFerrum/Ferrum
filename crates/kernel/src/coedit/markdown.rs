@@ -6,11 +6,11 @@
 //! numbered and task lists, nested by indentation; quotes; fenced code; rules; pipe tables;
 //! bold, italic, strikethrough, code, and links to the web or mail (any other link keeps its text).
 
-use super::FRAGMENT;
-use std::collections::HashMap;
+use super::{FRAGMENT, format};
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use yrs::types::text::YChange;
-use yrs::{Any, Doc, GetString, Out, ReadTxn, Text, Transact, TransactionMut, Xml, XmlElementPrelim, XmlElementRef, XmlFragment, XmlOut, XmlTextPrelim};
+use yrs::{Any, Doc, Out, ReadTxn, Text, Transact, TransactionMut, Xml, XmlElementPrelim, XmlElementRef, XmlFragment, XmlOut, XmlTextPrelim};
 
 // ───────────────────────────── reading Markdown ─────────────────────────────
 
@@ -667,7 +667,69 @@ fn number(v: Option<Out>) -> Option<i64> {
     }
 }
 
-fn inline_md<T: ReadTxn>(el: &XmlElementRef, txn: &T) -> String {
+/// What Markdown cannot say, of what a document may use (`format::features`' words).
+pub(super) const CANNOT: &[&str] = &[
+    "fonts",
+    "text sizes",
+    "text colours",
+    "highlights",
+    "underline",
+    "subscript and superscript",
+    "alignment",
+    "line spacing",
+    "paragraph spacing",
+    "indents",
+    "title and subtitle styles",
+    "callouts",
+    "list styles",
+    "page setup",
+    "header and footer",
+    "page breaks",
+    "cell colours",
+    "column widths",
+    "merged cells",
+    "image sizes",
+    "image alignment",
+    "suggested changes",
+];
+
+/// Images without an address to write.
+const LOST_IMAGES: &str = "images (no address to link them to)";
+
+/// What writing a document needs to know beyond a block: its headings (as anchors a Markdown
+/// reader makes from their words), its footnotes, where its images are.
+struct Cx<'a> {
+    outline: format::Outline,
+    /// Each heading's anchor as Markdown readers make it (GitHub's rule).
+    slugs: Vec<String>,
+    images: &'a dyn Fn(&str) -> Option<String>,
+    origin: Option<&'a str>,
+    notes: usize,
+    in_note: bool,
+    lost: BTreeSet<String>,
+}
+
+/// A heading's anchor as GitHub makes it: lower case, letters, digits, `-` and `_`, spaces as `-`.
+fn slug(text: &str) -> String {
+    text.to_lowercase()
+        .chars()
+        .filter_map(|c| {
+            if c == ' ' {
+                Some('-')
+            } else if c.is_alphanumeric() || c == '-' || c == '_' {
+                Some(c)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn address(href: &str) -> String {
+    href.replace(')', "%29").replace(' ', "%20")
+}
+
+fn inline_md<T: ReadTxn>(el: &XmlElementRef, txn: &T, cx: &mut Cx) -> String {
     let mut out = String::new();
     for child in el.children(txn) {
         match child {
@@ -675,11 +737,21 @@ fn inline_md<T: ReadTxn>(el: &XmlElementRef, txn: &T) -> String {
                 for chunk in t.diff(txn, YChange::identity) {
                     let Out::Any(Any::String(s)) = chunk.insert else { continue };
                     let attrs = chunk.attributes.as_deref();
-                    let on = |name: &str| attrs.and_then(|a| a.get(name)).is_some_and(|v| !matches!(v, Any::Null | Any::Undefined | Any::Bool(false)));
-                    let link = attrs.and_then(|a| a.get("link")).and_then(|v| match v {
-                        Any::Map(m) => m.get("href").and_then(|h| if let Any::String(s) = h { Some(s.to_string()) } else { None }),
-                        _ => None,
-                    });
+                    let on = |name: &str| format::mark(attrs, name).is_some();
+                    let link = match format::href(format::mark(attrs, "link")) {
+                        Some(format::Href::Web(h)) => Some(h),
+                        Some(format::Href::Heading(a)) => {
+                            cx.outline.headings.iter().position(|h| h.anchor.as_deref() == Some(a.as_str())).map(|n| format!("#{}", cx.slugs[n]))
+                        }
+                        Some(format::Href::Doc(id)) => match cx.origin {
+                            Some(o) => Some(format!("{o}/docs/d/{id}")),
+                            None => {
+                                cx.lost.insert(super::html::LOST_DOC_LINKS.into());
+                                None
+                            }
+                        },
+                        None => None,
+                    };
                     let mut piece = String::new();
                     if on("code") {
                         let ticks = if s.contains('`') { "``" } else { "`" };
@@ -700,30 +772,29 @@ fn inline_md<T: ReadTxn>(el: &XmlElementRef, txn: &T) -> String {
                             piece = format!("{lead}{wrapped}{trail}");
                         }
                     }
-                    match link.filter(|h| super::safe_href(h)) {
+                    match link {
                         Some(href) => {
-                            let _ = std::fmt::Write::write_fmt(&mut out, format_args!("[{piece}]({})", href.replace(')', "%29").replace(' ', "%20")));
+                            let _ = std::fmt::Write::write_fmt(&mut out, format_args!("[{piece}]({})", address(&href)));
                         }
                         None => out.push_str(&piece),
                     }
                 }
             }
             XmlOut::Element(e) if &**e.tag() == "hardBreak" => out.push_str("\\\n"),
-            XmlOut::Element(e) => out.push_str(&inline_md(&e, txn)),
+            XmlOut::Element(e) if &**e.tag() == "footnoteRef" => {
+                let n = cx.notes;
+                if !cx.in_note {
+                    cx.notes += 1;
+                    if n < cx.outline.notes.len() {
+                        let _ = std::fmt::Write::write_fmt(&mut out, format_args!("[^{}]", n + 1));
+                    }
+                }
+            }
+            XmlOut::Element(e) => out.push_str(&inline_md(&e, txn, cx)),
             XmlOut::Fragment(_) => {}
         }
     }
     out
-}
-
-fn text_of<T: ReadTxn>(el: &XmlElementRef, txn: &T) -> String {
-    el.children(txn)
-        .map(|c| match c {
-            XmlOut::Text(t) => t.get_string(txn),
-            XmlOut::Element(e) => text_of(&e, txn),
-            XmlOut::Fragment(_) => String::new(),
-        })
-        .collect()
 }
 
 fn indent_lines(text: &str, first: &str, rest: &str) -> String {
@@ -740,13 +811,13 @@ fn indent_lines(text: &str, first: &str, rest: &str) -> String {
     out
 }
 
-fn blocks_md<T: ReadTxn>(children: impl Iterator<Item = XmlOut>, txn: &T) -> Vec<String> {
+fn blocks_md<T: ReadTxn>(children: impl Iterator<Item = XmlOut>, txn: &T, cx: &mut Cx) -> Vec<String> {
     let mut out = Vec::new();
     for child in children {
         let XmlOut::Element(e) = child else { continue };
         let block = match &**e.tag() {
             "paragraph" => {
-                let text = inline_md(&e, txn);
+                let text = inline_md(&e, txn, cx);
                 if text.trim().is_empty() {
                     continue;
                 }
@@ -754,14 +825,14 @@ fn blocks_md<T: ReadTxn>(children: impl Iterator<Item = XmlOut>, txn: &T) -> Vec
             }
             "heading" => {
                 let level = number(e.get_attribute(txn, "level")).unwrap_or(1).clamp(1, 6) as usize;
-                format!("{} {}", "#".repeat(level), inline_md(&e, txn).replace("\\\n", " "))
+                format!("{} {}", "#".repeat(level), inline_md(&e, txn, cx).replace("\\\n", " "))
             }
             "blockquote" => {
-                let inner = blocks_md(e.children(txn), txn).join("\n\n");
+                let inner = blocks_md(e.children(txn), txn, cx).join("\n\n");
                 inner.lines().map(|l| if l.is_empty() { ">".to_string() } else { format!("> {l}") }).collect::<Vec<_>>().join("\n")
             }
             "codeBlock" => {
-                let code = text_of(&e, txn);
+                let code = format::text_of(&e, txn);
                 let lang = match e.get_attribute(txn, "language") {
                     Some(Out::Any(Any::String(s))) => s.to_string(),
                     _ => String::new(),
@@ -770,9 +841,48 @@ fn blocks_md<T: ReadTxn>(children: impl Iterator<Item = XmlOut>, txn: &T) -> Vec
                 let fence = "`".repeat(longest.max(2) + 1);
                 format!("{fence}{lang}\n{code}\n{fence}")
             }
-            "horizontalRule" => "---".to_string(),
-            // Images stay with their document: Markdown (templates, agents) carries the words.
-            super::IMAGE => continue,
+            // A page break is a rule: Markdown has no pages.
+            "horizontalRule" | "pageBreak" => "---".to_string(),
+            "footnote" => continue,
+            "tableOfContents" => {
+                let levels = number(e.get_attribute(txn, "levels")).filter(|l| (1..=6).contains(l)).unwrap_or(3) as u32;
+                let shown: Vec<usize> =
+                    (0..cx.outline.headings.len()).filter(|n| cx.outline.headings[*n].level <= levels && !cx.outline.headings[*n].text.is_empty()).collect();
+                let top = shown.iter().map(|n| cx.outline.headings[*n].level).min().unwrap_or(1);
+                let mut lines = vec!["**Contents**".to_string()];
+                for n in shown {
+                    let h = &cx.outline.headings[n];
+                    let mut text = String::new();
+                    escape(&h.text, &mut text);
+                    lines.push(format!("{}- [{text}](#{})", "  ".repeat((h.level - top) as usize), cx.slugs[n]));
+                }
+                lines.join("\n")
+            }
+            super::IMAGE => {
+                let alt = match e.get_attribute(txn, "alt") {
+                    Some(Out::Any(Any::String(s))) => s.trim().to_string(),
+                    _ => String::new(),
+                };
+                let id = match e.get_attribute(txn, "image") {
+                    Some(Out::Any(Any::String(s))) => s.to_string(),
+                    _ => String::new(),
+                };
+                // Images stay with their document unless the reader is told where they are.
+                let Some(src) = (cx.images)(&id) else {
+                    cx.lost.insert(LOST_IMAGES.into());
+                    continue;
+                };
+                let mut a = String::new();
+                escape(&alt, &mut a);
+                let caption = format::caption(format::any(e.get_attribute(txn, "caption")).as_ref());
+                let mut img = format!("![{a}]({})", address(&src));
+                if !caption.is_empty() {
+                    let mut c = String::new();
+                    escape(&caption, &mut c);
+                    img.push_str(&format!("\\\n*{c}*"));
+                }
+                img
+            }
             tag @ ("bulletList" | "orderedList" | "taskList") => {
                 let start = number(e.get_attribute(txn, "start")).unwrap_or(1);
                 let mut items = Vec::new();
@@ -788,7 +898,7 @@ fn blocks_md<T: ReadTxn>(children: impl Iterator<Item = XmlOut>, txn: &T) -> Vec
                     };
                     let width = if tag == "taskList" { 2 } else { mark.len() };
                     // A tight list: a nested list follows its item's line directly.
-                    let parts = blocks_md(li.children(txn), txn);
+                    let parts = blocks_md(li.children(txn), txn, cx);
                     let tight = parts.iter().skip(1).all(|p| p.starts_with("- ") || p.chars().next().is_some_and(|c| c.is_ascii_digit()));
                     let body = parts.join(if tight { "\n" } else { "\n\n" });
                     items.push(indent_lines(if body.is_empty() { " " } else { &body }, &mark, &" ".repeat(width)).trim_end().to_string());
@@ -796,42 +906,77 @@ fn blocks_md<T: ReadTxn>(children: impl Iterator<Item = XmlOut>, txn: &T) -> Vec
                 items.join("\n")
             }
             "table" => {
-                let rows: Vec<Vec<String>> = e
-                    .children(txn)
-                    .filter_map(|r| match r {
-                        XmlOut::Element(r) => Some(
-                            r.children(txn)
-                                .filter_map(|c| match c {
-                                    XmlOut::Element(c) => Some(blocks_md(c.children(txn), txn).join(" ").replace('\n', " ")),
-                                    _ => None,
-                                })
-                                .collect(),
-                        ),
-                        _ => None,
+                // A merged cell is its words in its first place, the places it covers empty.
+                let (map, width) = format::table_map(&e, txn);
+                if width == 0 {
+                    continue;
+                }
+                let rows: Vec<Vec<String>> = map
+                    .iter()
+                    .map(|row| {
+                        let mut cells = Vec::new();
+                        for slot in row {
+                            match slot {
+                                format::Slot::Covered { span, .. } => cells.extend(std::iter::repeat_n(String::new(), *span)),
+                                format::Slot::Cell { span, el, .. } => {
+                                    cells.push(blocks_md(el.children(txn), txn, cx).join(" ").replace('\n', " "));
+                                    cells.extend(std::iter::repeat_n(String::new(), span - 1));
+                                }
+                            }
+                        }
+                        cells
                     })
                     .collect();
-                let Some(width) = rows.iter().map(Vec::len).max().filter(|w| *w > 0) else { continue };
                 let line = |cells: &[String]| format!("| {} |", (0..width).map(|c| cells.get(c).map_or("", String::as_str)).collect::<Vec<_>>().join(" | "));
                 let mut t = vec![line(&rows[0]), format!("|{}|", vec!["---"; width].join("|"))];
                 t.extend(rows[1..].iter().map(|r| line(r)));
                 t.join("\n")
             }
-            _ => blocks_md(e.children(txn), txn).join("\n\n"),
+            // A node no exporter knows: its words, as a paragraph when it holds text itself.
+            _ if e.children(txn).any(|c| matches!(c, XmlOut::Text(_))) => inline_md(&e, txn, cx),
+            _ => blocks_md(e.children(txn), txn, cx).join("\n\n"),
         };
         out.push(block);
     }
     out
 }
 
-/// The document as Markdown (marks without a Markdown form, such as highlight, keep only their text).
+/// The document as Markdown (marks without a Markdown form, such as highlight, keep only their
+/// text; images are left out: see [`write`]).
 pub(super) fn read(doc: &Doc) -> String {
+    write(doc, None, &|_| None).0
+}
+
+/// The document as Markdown, and what it lost: headings, lists, quotes, code, tables, links, the
+/// contents as links to the headings, footnotes as `[^n]` with their notes at the end, page
+/// breaks as rules, images (where `images` gives their address) with their description and caption.
+pub(super) fn write(doc: &Doc, origin: Option<&str>, images: &dyn Fn(&str) -> Option<String>) -> (String, BTreeSet<String>) {
     let txn = doc.transact();
-    let Some(fragment) = txn.get_xml_fragment(FRAGMENT) else { return String::new() };
-    let mut out = blocks_md(fragment.children(&txn), &txn).join("\n\n");
+    let Some(fragment) = txn.get_xml_fragment(FRAGMENT) else { return (String::new(), BTreeSet::new()) };
+    let outline = format::outline(&txn);
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let slugs = outline
+        .headings
+        .iter()
+        .map(|h| {
+            let s = slug(&h.text);
+            let n = seen.entry(s.clone()).or_insert(0);
+            *n += 1;
+            if *n == 1 { s } else { format!("{s}-{}", *n - 1) }
+        })
+        .collect();
+    let mut cx = Cx { outline, slugs, images, origin: format::origin(origin), notes: 0, in_note: false, lost: BTreeSet::new() };
+    let mut blocks = blocks_md(fragment.children(&txn), &txn, &mut cx);
+    cx.in_note = true;
+    for (n, body) in cx.outline.notes.clone().into_iter().enumerate() {
+        let text = body.map(|b| blocks_md(b.children(&txn), &txn, &mut cx).join("\n\n")).unwrap_or_default();
+        blocks.push(indent_lines(&format!("[^{}]: {text}", n + 1), "", "    "));
+    }
+    let mut out = blocks.join("\n\n");
     if !out.is_empty() {
         out.push('\n');
     }
-    out
+    (out, cx.lost)
 }
 
 #[cfg(test)]
@@ -855,7 +1000,7 @@ mod tests {
         );
         let h = html(&doc);
         for part in [
-            "<h1>Q4 plan</h1>",
+            "<h1 id=\"heading-1\">Q4 plan</h1>",
             "Ship <strong>live </strong><strong><em>documents</em></strong> with <code>code</code>, <s>old</s> and <a href=\"https://example.com/a?b=1\" rel=\"noopener noreferrer nofollow\">a link</a>. Same paragraph.<br>After a break.</p>",
             "<ul><li><p>one</p>\n</li>\n<li><p>two</p>\n<ul><li><p>nested</p>",
             "<ol start=\"3\"><li><p>third</p>",
@@ -915,5 +1060,50 @@ mod tests {
         assert!(html(&doc).contains("<ol><li><p>one</p>"));
         assert_eq!(read(&doc_of("")), "");
         assert_eq!(plain_text(&doc_of("日本 🎉 **émoji**")), "日本 🎉 émoji");
+    }
+
+    #[test]
+    fn a_formatted_document_as_markdown_says_what_it_lost() {
+        let doc = super::super::format::fixtures::everything();
+        let (md, lost) = super::super::markdown_export(&doc, Some("https://acme.example.com"), &|id| {
+            (id == "img1").then(|| "https://acme.example.com/i/1 (a).png".to_string())
+        });
+        for want in [
+            "Annual report 2026\n\nPrepared for the board\n\n**Contents**\n- [Introduction](#introduction)\n  - [Heading level 2](#heading-level-2)\n    - [Heading level 3](#heading-level-3)\n  - [After the page break](#after-the-page-break)\n\n# Introduction",
+            "bold italic***[^1] and the text goes on after the note.",
+            "###### Heading level 6",
+            "Back to the [introduction](#introduction), the [budget document](https://acme.example.com/docs/d/0192f0c4-1c2b-7c3d-8e4f-5a6b7c8d9e0f)",
+            "- A square bullet\n  - A circle inside it",
+            "3. Letter c\n4. Letter d",
+            "> A warning callout.",
+            "| Region | Revenue (two columns) |  |\n|---|---|---|\n| North (two rows) | 12 | 14 |\n|  | 13 | 15 |",
+            "![A blue chart](https://acme.example.com/i/1%20(a%29.png)\\\n*Figure 1: sales by region*",
+            "---\n\n## After the page break\n\nA second note[^2].",
+            "[^1]: The first note, with [a link](https://example.com/note)\n\n[^2]: The second note.\n",
+        ] {
+            assert!(md.contains(want), "missing {want:?}\nin {md}");
+        }
+        assert!(!md.contains("green square"), "an image without an address is left out");
+        for l in [
+            "fonts",
+            "text colours",
+            "highlights",
+            "page setup",
+            "header and footer",
+            "page breaks",
+            "merged cells",
+            "column widths",
+            "image sizes",
+            "title and subtitle styles",
+            "images (no address to link them to)",
+        ] {
+            assert!(lost.iter().any(|x| x == l), "{l} in {lost:?}");
+        }
+        assert!(!lost.iter().any(|x| x == "footnotes" || x == "contents" || x == "image captions"), "{lost:?}");
+        // The agents' Markdown (no image addresses) keeps reading as before.
+        assert!(read(&doc).contains("[^2]: The second note.") && !read(&doc).contains("!["));
+        let (hostile, lost) = super::super::markdown_export(&super::super::format::fixtures::hostile(), None, &|_| None);
+        assert!(hostile.contains("words of an unknown node") && lost.iter().any(|x| x == "unknown node chart3d"), "{hostile} {lost:?}");
+        assert!(!hostile.contains("javascript") && !hostile.contains("data:text"), "{hostile}");
     }
 }
