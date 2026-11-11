@@ -9,7 +9,9 @@
 # database and the attachments are backed up, the stack is deleted with its volumes and restored
 # from the backups, data, sessions and numbering intact, and a person erased after the database's
 # backup is erased again by `ferrum task reapply_erasures`; a short load test runs without errors.
-# Everything is removed afterwards. CI runs it on every image it builds. With FERRUM_EDITORS_IMAGE,
+# The online editor (Collabora, on by default in the stack) opens a docx, xlsx and pptx made in Drive and
+# saves them back, checked at the protocol level by deploy/office_check.py. Everything is removed
+# afterwards. CI runs it on every image it builds. With FERRUM_EDITORS_IMAGE,
 # the browser editors' server (editors.yml) runs beside the stack and is checked too; with
 # SMOKE_MEET=1, the meeting server (meet.yml), which must accept the passes Ferrum signs, and
 # calendar apps signing in with an app password.
@@ -24,6 +26,10 @@ export FERRUM_USER_REQUESTS_PER_MINUTE=${FERRUM_USER_REQUESTS_PER_MINUTE:-0}
 export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-ferrum-smoke}
 # The server's port, as the stack publishes it.
 export FERRUM_PORT=${SMOKE_PORT:-8080}
+# The online editor, as this host reaches it.
+export OFFICE_PORT=${SMOKE_OFFICE_PORT:-9980} OFFICE_BIND=127.0.0.1
+export OFFICE_PUBLIC_HOST=127.0.0.1:$OFFICE_PORT OFFICE_PUBLIC_URL=http://127.0.0.1:$OFFICE_PORT
+OFFICE="http://127.0.0.1:$OFFICE_PORT"
 export POSTGRES_PASSWORD FERRUM_DB_PASSWORD JWT_SECRET FERRUM_SECRET_KEY
 POSTGRES_PASSWORD=$(openssl rand -hex 16)
 FERRUM_DB_PASSWORD=$(openssl rand -hex 16)
@@ -50,7 +56,7 @@ cleanup() {
   status=$?
   if [ "$status" -ne 0 ]; then
     echo "--- smoke test failed; logs:"
-    compose logs --tail 200 ferrum pdf db ${FERRUM_EDITORS_IMAGE:+editors} ${SMOKE_MEET:+meet} || true
+    compose logs --tail 200 ferrum pdf office db ${FERRUM_EDITORS_IMAGE:+editors} ${SMOKE_MEET:+meet} || true
   fi
   compose down -v --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$work"
@@ -84,7 +90,7 @@ if [ -n "${FERRUM_PREVIOUS_IMAGE:-}" ]; then
 fi
 
 step "starting the stack from $FERRUM_IMAGE"
-compose up -d --no-build db ferrum pdf ${FERRUM_EDITORS_IMAGE:+editors} ${SMOKE_MEET:+meet}
+compose up -d --no-build db ferrum pdf office ${FERRUM_EDITORS_IMAGE:+editors} ${SMOKE_MEET:+meet}
 wait_up "$API/_health" "the server"
 
 step "creating, seeding and invoicing a workspace"
@@ -223,6 +229,17 @@ install commerce
 shop=(-H 'host: shop.smoke.test')
 curl -sS -D "$work/shop.h" -o "$work/shop.html" "${shop[@]}" "$API/" || fail "the shop's page"
 grep -q "Opening soon" "$work/shop.html" && grep -qi "^content-security-policy: default-src 'self'" "$work/shop.h" || fail "the shop's host does not serve Commerce's pages"
+
+step "online editing: Word, Excel and PowerPoint files open and save (deploy/office_check.py)"
+for _ in $(seq 1 60); do curl -fsS "$OFFICE/hosting/discovery" >/dev/null 2>&1 && break; sleep 2; done
+[ "$(compose exec -T ferrum printenv FERRUM_OFFICE_ORIGIN)" = "$OFFICE" ] || fail "the server does not know the editor's address"
+[ "$(code "$OFFICE/browser/dist/admin/admin.html")" != 200 ] || fail "the editor's administration console is reachable"
+[ "$(compose ps office --format '{{.Service}}' | wc -l | tr -d ' ')" = 1 ] || fail "the editor is not running"
+report=$(compose exec -T ferrum ferrum task doctor format:json 2>/dev/null || true)
+python3 -c 'import json, sys
+f = [f for f in json.loads(sys.argv[1][sys.argv[1].index("["):]) if f["check"] == "office"]
+sys.exit(not f or f[0]["level"] != "ok")' "$report" || fail "the server's own report does not find the editor working: $report"
+python3 office_check.py --url "$API" --tenant smoke --token "$TOKEN" --office "$OFFICE" || fail "online editing"
 
 if [ -n "${FERRUM_EDITORS_IMAGE:-}" ]; then
   step "the browser editors' server"

@@ -133,22 +133,122 @@ pub async fn report(st: &AppState, ctx: &AppContext) -> Result<Vec<Finding>, fer
     } else {
         Finding::warning("mail", "no mailer is configured: invitations and password resets do not go out", "Set MAILER_* (docs/operations.md).")
     });
-    let pdf = st.settings.pdf_url.trim();
-    out.push(if pdf.is_empty() {
-        Finding::warning("pdf", "no PDF renderer: documents print as HTML only", "Set FERRUM_PDF_URL.")
-    } else {
-        match reqwest::Client::new().get(format!("{}/health", pdf.trim_end_matches('/'))).timeout(std::time::Duration::from_secs(5)).send().await {
-            Ok(r) if r.status().is_success() => Finding::ok("pdf", "the PDF renderer answers"),
-            Ok(r) => Finding::warning("pdf", format!("the PDF renderer answered {}", r.status().as_u16()), "Check it: printing to PDF fails until it answers."),
-            Err(_) => Finding::warning("pdf", "the PDF renderer cannot be reached", "Check FERRUM_PDF_URL: printing to PDF fails until it answers."),
-        }
-    });
+    out.extend(service_findings(st).await);
     out.sort_by_key(|f| match f.level {
         Level::Blocker => 0,
         Level::Warning => 1,
         Level::Ok => 2,
     });
     Ok(out)
+}
+
+/// The extensions a WOPI editor's discovery document offers an `edit` action for, and whether it
+/// publishes a proof key (so that Ferrum can tell its calls from a stolen token's).
+pub fn discovery_summary(xml: &str) -> (std::collections::BTreeSet<String>, bool) {
+    let attr = |tag: &str, name: &str| -> Option<String> {
+        let start = tag.find(&format!("{name}=\""))? + name.len() + 2;
+        Some(tag[start..].split('"').next()?.to_ascii_lowercase())
+    };
+    let mut edit = std::collections::BTreeSet::new();
+    let mut proof = false;
+    for tag in xml.split('<') {
+        if tag.starts_with("proof-key ") {
+            proof = true;
+        } else if tag.starts_with("action ") && attr(tag, "name").as_deref() == Some("edit") {
+            edit.extend(attr(tag, "ext"));
+        }
+    }
+    (edit, proof)
+}
+
+/// The types Drive opens in the online editor: what a person creates from its "New" menu.
+pub const OFFICE_TYPES: [&str; 3] = ["docx", "xlsx", "pptx"];
+
+/// What to say about the online editor, from its settings and what its discovery document gave
+/// (`Err`: why it could not be read). No address or token is ever part of a finding.
+pub fn office_findings(url: &str, wopi: &str, discovery: Result<String, String>) -> Vec<Finding> {
+    let (url, wopi) = (url.trim(), wopi.trim());
+    if url.is_empty() && wopi.is_empty() {
+        return vec![Finding::warning(
+            "office",
+            "online editing is off: Word, Excel and PowerPoint files cannot be opened in Drive",
+            "Set FERRUM_OFFICE_URL and FERRUM_OFFICE_WOPI_URL (docs/operations.md, Online editing).",
+        )];
+    }
+    if url.is_empty() || wopi.is_empty() {
+        return vec![Finding::warning(
+            "office",
+            "online editing is half set up: it needs both FERRUM_OFFICE_URL and FERRUM_OFFICE_WOPI_URL",
+            "Set both, or neither (docs/operations.md, Online editing).",
+        )];
+    }
+    let xml = match discovery {
+        Ok(xml) => xml,
+        Err(why) => {
+            return vec![Finding::warning(
+                "office",
+                format!("the online editor cannot be reached ({why}): Word, Excel and PowerPoint files do not open in Drive"),
+                "Check that it runs and that FERRUM_OFFICE_URL names it (docs/operations.md, Online editing).",
+            )];
+        }
+    };
+    let (edit, proof) = discovery_summary(&xml);
+    let missing: Vec<&str> = OFFICE_TYPES.into_iter().filter(|t| !edit.contains(*t)).collect();
+    let mut out = vec![if edit.is_empty() {
+        Finding::warning("office", "the online editor answers but lists no editors", "Check its image and its logs (docs/operations.md, Online editing).")
+    } else if missing.is_empty() {
+        Finding::ok("office", "the online editor answers and opens docx, xlsx and pptx files")
+    } else {
+        Finding::warning(
+            "office",
+            format!("the online editor answers but cannot edit: {}", missing.join(", ")),
+            "Check its image and its logs (docs/operations.md, Online editing).",
+        )
+    }];
+    out.push(if proof {
+        Finding::ok("office.proof", "the online editor signs its calls (WOPI proof key)")
+    } else {
+        Finding::warning(
+            "office.proof",
+            "the online editor publishes no proof key: its calls to Ferrum are not signed",
+            "Give it one: docs/operations.md, Online editing, Proof key.",
+        )
+    });
+    out
+}
+
+/// What to say about the PDF renderer, from its address and what its health check gave.
+pub fn pdf_finding(url: &str, health: Option<Result<u16, ()>>) -> Finding {
+    match (url.trim().is_empty(), health) {
+        (true, _) | (_, None) => Finding::warning("pdf", "no PDF renderer: documents print as HTML only", "Set FERRUM_PDF_URL."),
+        (_, Some(Ok(200..=299))) => Finding::ok("pdf", "the PDF renderer answers"),
+        (_, Some(Ok(code))) => Finding::warning("pdf", format!("the PDF renderer answered {code}"), "Check it: printing to PDF fails until it answers."),
+        (_, Some(Err(()))) => Finding::warning("pdf", "the PDF renderer cannot be reached", "Check FERRUM_PDF_URL: printing to PDF fails until it answers."),
+    }
+}
+
+/// The services Ferrum depends on for what people do in Drive and print: the online editor and the
+/// PDF renderer, each configured and reachable or not. `ferrum task doctor` and
+/// `GET /api/admin/services` say it.
+pub async fn service_findings(st: &AppState) -> Vec<Finding> {
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(5)).build().unwrap_or_default();
+    let var = |name: &str| std::env::var(name).unwrap_or_default().trim().trim_end_matches('/').to_string();
+    let (office, wopi) = (var("FERRUM_OFFICE_URL"), var("FERRUM_OFFICE_WOPI_URL"));
+    let discovery = if office.is_empty() || wopi.is_empty() {
+        Err(String::new())
+    } else {
+        match client.get(format!("{office}/hosting/discovery")).send().await {
+            Ok(r) if r.status().is_success() => r.text().await.map_err(|_| "its answer could not be read".to_string()),
+            Ok(r) => Err(format!("it answered {}", r.status().as_u16())),
+            Err(e) if e.is_timeout() => Err("it did not answer in time".into()),
+            Err(_) => Err("connection failed".into()),
+        }
+    };
+    let mut out = office_findings(&office, &wopi, discovery);
+    let pdf = st.settings.pdf_url.trim().trim_end_matches('/');
+    let health = if pdf.is_empty() { None } else { Some(client.get(format!("{pdf}/health")).send().await.map(|r| r.status().as_u16()).map_err(|_| ())) };
+    out.push(pdf_finding(pdf, health));
+    out
 }
 
 /// The report as a person reads it.
@@ -208,6 +308,47 @@ mod tests {
         s.bootstrap_token = secret.into();
         let text = render(&settings_findings(true, secret, &s, "https://erp.example.com"));
         assert!(!text.contains(secret), "{text}");
+    }
+
+    const COLLABORA: &str = r#"<wopi-discovery><net-zone name="external-http">
+        <app name="writer"><action default="true" ext="docx" name="edit" urlsrc="http://x/cool.html?"/><action ext="docx" name="view" urlsrc="http://x/cool.html?"/></app>
+        <app name="calc"><action ext="xlsx" name="edit" urlsrc="http://x/cool.html?"/></app>
+        <app name="impress"><action ext="pptx" name="view" urlsrc="http://x/cool.html?"/></app></net-zone></wopi-discovery>"#;
+
+    #[test]
+    fn discovery_says_what_can_be_edited_and_whether_calls_are_signed() {
+        let (edit, proof) = discovery_summary(COLLABORA);
+        assert_eq!(edit.iter().map(String::as_str).collect::<Vec<_>>(), ["docx", "xlsx"], "pptx is only viewable");
+        assert!(!proof);
+        let (_, proof) = discovery_summary(&COLLABORA.replace("<net-zone", r#"<proof-key value="x" modulus="AQ==" exponent="AQAB"/><net-zone"#));
+        assert!(proof);
+    }
+
+    #[test]
+    fn the_editor_report_names_what_is_wrong_and_holds_no_address() {
+        let secret = "https://office.internal.example:9980";
+        let lv = |f: &[Finding], check: &str| f.iter().find(|f| f.check == check).map(|f| f.level);
+        let off = office_findings("", "", Err(String::new()));
+        assert_eq!(lv(&off, "office"), Some(Level::Warning));
+        assert!(off[0].detail.contains("is off"));
+        assert!(office_findings(secret, "", Err(String::new()))[0].detail.contains("half set up"));
+        let down = office_findings(secret, "http://ferrum:5150", Err("connection failed".into()));
+        assert_eq!((down.len(), lv(&down, "office")), (1, Some(Level::Warning)));
+        assert!(down[0].detail.contains("cannot be reached") && !render(&down).contains("internal.example"), "{down:?}");
+        let partial = office_findings(secret, "http://ferrum:5150", Ok(COLLABORA.into()));
+        assert!(partial[0].detail.contains("pptx") && !partial[0].detail.contains("docx"), "{partial:?}");
+        assert_eq!(lv(&partial, "office.proof"), Some(Level::Warning));
+        let full = COLLABORA.replace("</net-zone>", r#"<action ext="pptx" name="edit" urlsrc="http://x/cool.html?"/></net-zone>"#);
+        let good = office_findings(secret, "http://ferrum:5150", Ok(full));
+        assert_eq!(lv(&good, "office"), Some(Level::Ok));
+    }
+
+    #[test]
+    fn the_pdf_renderer_report() {
+        assert_eq!(pdf_finding("", None).level, Level::Warning);
+        assert_eq!(pdf_finding("http://pdf:3000", Some(Ok(200))).level, Level::Ok);
+        assert!(pdf_finding("http://pdf:3000", Some(Ok(503))).detail.contains("503"));
+        assert!(pdf_finding("http://pdf:3000", Some(Err(()))).detail.contains("cannot be reached"));
     }
 
     #[test]

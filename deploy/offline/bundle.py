@@ -10,13 +10,14 @@ without internet"). It writes a directory to carry across:
     bundle.json  the release, each image with its digest, each manifest with where it came from
     SHA256SUMS   every file's checksum; load.py refuses a bundle that does not match it
 
-    deploy/offline/bundle.py <commit> [--kubernetes] [--with editors,mail,meet,office,clamav]
+    deploy/offline/bundle.py <commit> [--kubernetes] [--with editors,mail,meet,clamav]
                              [--platform linux/amd64] [--out ferrum-offline-<commit>]
 
 Needs python3 with PyYAML and skopeo (or docker), signed in to ghcr.io while its packages are
 private; --kubernetes needs kubectl too (kustomize is built in). Images named by a moving tag
 (`latest`, `stable`) are copied as they are that day; pin them with the variables the Compose
-files read (COLLABORA_TAG, STALWART_TAG, CLAMAV_TAG).
+files read (COLLABORA_TAG, STALWART_TAG, CLAMAV_TAG). The online editor (Collabora) and the PDF
+renderer are part of the base stack, so their images are always in the bundle.
 """
 
 import argparse
@@ -43,7 +44,7 @@ DEPLOY = HERE.parent
 REPO = DEPLOY.parent
 
 # The Compose files of each part a site may run beside the server (docs/operations.md).
-COMPOSE = {"editors": "editors.yml", "mail": "mail.yml", "meet": "meet.yml", "office": "office.yml"}
+COMPOSE = {"editors": "editors.yml", "mail": "mail.yml", "meet": "meet.yml"}
 EXTRAS = set(COMPOSE) | {"clamav"}
 
 # Registries an image is named on in full inside another string (an operator's settings, a
@@ -256,7 +257,8 @@ def main() -> None:
     wanted: set[str] = set(a.image)
     manifests: list[dict] = []
     if a.kubernetes:
-        rendered = run("kubectl", "kustomize", str(DEPLOY / "k8s"))
+        # The online editor is a second kustomization, in a namespace of its own.
+        rendered = run("kubectl", "kustomize", str(DEPLOY / "k8s")) + "\n---\n" + run("kubectl", "kustomize", str(DEPLOY / "k8s" / "office"))
         # The server's images are the release's, whatever tag the kustomization names today.
         wanted |= {i for i in images_in(rendered) if not i.startswith(("ghcr.io/cbferrum/ferrum:", "ghcr.io/cbferrum/ferrum-editors:"))}
         wanted.add(server)

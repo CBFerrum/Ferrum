@@ -65,7 +65,7 @@ Production reads `config/production.yaml`, which takes everything from the envir
 | `FERRUM_REGION`, `FERRUM_REGIONS` | no | This cluster's region (`eu`), and the other regions' accounts hosts, `name=https://accounts.example.eu,…`: the sign-in page offers them, and a workspace not found here is looked up there |
 | `FERRUM_DEFAULT_WORKSPACE` | no | The slug of the one workspace this server serves on every host (a single-workspace install): sign-in then asks for no workspace. Empty: a host registered for a workspace leads to it, and elsewhere the workspace is chosen at sign-in |
 | `FERRUM_UI_DIR` | no | Interfaces registered at start-up from a directory with one directory of built files per app id (`<dir>/<app>/index.html`), for apps whose crate carries none: an interface compiled into an app's crate is the one served, and a copy of it here is skipped with a warning. The image sets it to `/app/ui`, which holds the shell's and Studio's (built from Ferrum-Frontend at the commit the Dockerfile pins); point it elsewhere to run others |
-| `FERRUM_OFFICE_ORIGIN` | with online editing | The editor server as browsers reach it (`https://office.example.com`), when that is not `FERRUM_OFFICE_URL`: Drive's pages frame it and post to it, and their Content-Security-Policy names it (`deploy/office.yml` sets it from `OFFICE_PUBLIC_URL`) |
+| `FERRUM_OFFICE_ORIGIN` | with online editing | The editor server as browsers reach it (`https://office.example.com`), when that is not `FERRUM_OFFICE_URL`: Drive's pages frame it and post to it, and their Content-Security-Policy names it (the Compose stack sets it from `OFFICE_PUBLIC_URL`, the Helm chart from `office.host`) |
 | `FERRUM_APPS_BASE` | no | A domain under which isolated apps get origins of their own, `{app}--{workspace}.{base}` (`example-apps.net`); see "Apps with interfaces of their own". Empty (the default): isolated apps run in sandboxed frames. `localhost` works in development |
 | `FERRUM_UI_SOURCE` | no | Development: a server listing built interfaces (`index.json`, as Ferrum-Frontend's `npm run build:apps` writes `dist-apps/`), fetched at start-up and every ten minutes, files checked against their digests |
 
@@ -115,8 +115,11 @@ Past the limit a request waits for its pool and answers 503; nothing queues with
    Create the `letsencrypt` ClusterIssuer the Gateway names, with an ACME HTTP-01 solver of type
    `gatewayHTTPRoute` whose `parentRefs` is the Gateway `ferrum` in namespace `ferrum` (or use a DNS-01
    solver). With a CDN or HTTP load balancer in front of the gateway, set `FERRUM_PROXY_HOPS=2`.
-5. `kubectl apply -k deploy/k8s` and wait for `kubectl -n ferrum get pods` to show the database
-   cluster healthy and the API pods ready (`/api/ready` checks the database).
+5. `kubectl apply -k deploy/k8s`, and `kubectl apply -k deploy/k8s/office` for the online editor (Word, Excel
+   and PowerPoint files in Drive; on by default, in a namespace of its own: replace `office.example.com` in
+   `deploy/k8s/office/office.yaml`, `gateway.yaml` and `deployment.yaml` with its host, see *Online editing*), and
+   wait for `kubectl -n ferrum get pods` to show the database cluster healthy and the API pods ready
+   (`/api/ready` checks the database).
 6. Create the first tenant:
 
    ```bash
@@ -150,6 +153,9 @@ helm install ferrum deploy/helm/ferrum --namespace ferrum --create-namespace \
   render; there is no default and never `latest`. The same holds for the optional parts' images.
 * *Settings.* `values.yaml` lists them with the environment variable each becomes; `extraEnv` adds any other. With
   `database.enabled=false` the chart makes no database: name the Secret holding your connection URI in `database.urlSecret`.
+* *The online editor.* `office.enabled` (on by default): Collabora in the namespace `office.namespace`, on the host
+  `office.host` with its own certificate, with its limits, probes and network policy; see *Online editing*. The image
+  is an exact tag (`office.image`; a digest wins), pinned like the PDF renderer's.
 * *Optional parts.* `editors.enabled` (Browser editors; set `editors.host` and its image) and `metricsEngine.enabled`
   (create what *Metrics' engine for external sources* lists first) switch on the same components as in `deploy/k8s`.
   The PDF renderer, autoscaler, budget, network policy, `ServiceMonitor`, Gateway, Envoy proxies and database are on by
@@ -243,8 +249,8 @@ deploy/offline/bundle.py <commit> --kubernetes --with editors,clamav    # Kubern
 tar -cf ferrum-offline-<commit>.tar ferrum-offline-<commit>/
 ```
 
-The bundle holds every image (the server's at that commit, the database's, the PDF renderer's, and
-what `--with` adds: `editors`, `mail`, `meet`, `office`, `clamav`); with `--kubernetes`, the operators'
+The bundle holds every image (the server's at that commit, the database's, the PDF renderer's, the online editor's, and
+what `--with` adds: `editors`, `mail`, `meet`, `clamav`; the editor, Collabora, is in the stack); with `--kubernetes`, the operators'
 manifests at the versions `deploy/kind/install.sh` names and every image they name, including the ones
 named only in their settings or in a Secret, and the Envoy proxy Envoy Gateway starts, which only its
 code names; this checkout's `deploy/` with these tools, `deploy/k8s` already naming the release;
@@ -737,7 +743,9 @@ changes nothing else. Blockers exit non-zero; warnings do not.
 **Once it runs**, `ferrum task doctor` reports on the deployment itself, blockers apart from warnings,
 each with what to do. It connects to everything: PostgreSQL's version and connection limits, row-level
 security on every workspace table, the clock, object storage (a write, read and delete), the malware
-scanner, the PDF renderer, the queues, and every workspace's customizations. It does not send mail.
+scanner, the PDF renderer, the online editor (set up, answering, offering docx, xlsx and pptx, signing its calls),
+the queues, and every workspace's customizations. It does not send mail. An administrator sees the editor's and the
+renderer's state without a shell at `GET /api/admin/services`.
 
 ```bash
 docker compose -f deploy/docker-compose.yml exec ferrum ferrum task doctor
@@ -998,50 +1006,135 @@ financial history is out of their reach by design.
 
 ## Online editing
 
-Drive opens documents, spreadsheets and presentations in an editor server you run beside Ferrum:
-Collabora Online, or ONLYOFFICE Docs in WOPI mode. The editor reads and saves through Drive's WOPI
-endpoints with each person's own rights, and every save becomes a new version. Details are in the
-Drive app's README.
+Drive opens and co-edits Word, Excel and PowerPoint files (`.docx`, `.xlsx`, `.pptx`, and `.odt`,
+`.ods`, `.odp`, `.rtf`, `.csv`) in an editor server beside Ferrum: Collabora Online, or ONLYOFFICE Docs in
+WOPI mode. **It is on in every deployment this repository ships**, as are the PDF renderer
+(Gotenberg) and, for Drive's "New document, spreadsheet, presentation", nothing else to install. The
+editor reads and saves through Drive's WOPI endpoints with each person's own rights, and every save
+becomes a new version. Details are in the Drive app's README.
+
+**What runs.** The Compose stack has an `office` service (`collabora/code`, an exact tag, `COLLABORA_TAG`)
+and the Helm chart and `deploy/k8s/office` a Deployment `ferrum-office` of the same image. The server
+reads these settings (the stack and the chart set them):
 
 | Setting | On | Value |
 |---|---|---|
-| `FERRUM_OFFICE_URL` | server | the editor as the server reaches it, e.g. `http://office:9980` |
-| `FERRUM_OFFICE_WOPI_URL` | server | the server as the editor reaches it, e.g. `http://ferrum:5150` |
+| `FERRUM_OFFICE_URL` | server | the editor as the server reaches it: `http://office:9980` (Compose), `http://ferrum-office.ferrum-office.svc.cluster.local:9980` (Kubernetes) |
+| `FERRUM_OFFICE_WOPI_URL` | server | the server as the editor reaches it: `http://ferrum:5150`, `http://ferrum.ferrum.svc.cluster.local:80` |
+| `FERRUM_OFFICE_ORIGIN` | server | the editor as browsers reach it, an origin of its own (`https://office.example.com`); Drive's pages may frame it and post to it, and their Content-Security-Policy names exactly it |
 | `FERRUM_OFFICE_IPS` | server | optional: the only addresses WOPI calls are accepted from |
-| `FERRUM_OFFICE_ORIGIN` | server | the editor as browsers reach it; Drive's pages may frame it and post to it |
 
-**Compose.** `deploy/office.yml` adds Collabora:
+**The switches.** One setting turns each service off. *Compose*: in `deploy/.env`, `FERRUM_OFFICE_URL=`
+(set, empty) turns the editor off and its container does not start; `FERRUM_PDF_URL=` does the same for
+the PDF renderer. For an editor of your own, set `FERRUM_OFFICE_URL`, `FERRUM_OFFICE_WOPI_URL` and
+`OFFICE_REPLICAS=0` (the bundled one does not start). *Helm*: `office.enabled: false` and `pdf.enabled: false`;
+nothing of the editor is rendered, and the server is not told about it. *Kustomize*: leave out
+`kubectl apply -k deploy/k8s/office` (the server then says, in Administration, that online editing is
+off) or remove `FERRUM_OFFICE_*` from `deploy/k8s/deployment.yaml`.
 
-    docker compose -f deploy/docker-compose.yml -f deploy/office.yml --env-file deploy/.env up -d
+**The editor's address.** The editor must have an origin of its own: another host name, or on one machine
+another port. It serves a full web application that must never share Ferrum's origin, where it could
+reach people's sessions. So:
 
-Set `OFFICE_PUBLIC_URL` and `OFFICE_PUBLIC_HOST` to the editor's public address.
+* *Compose*: `OFFICE_PORT` (default 9980) is the one published port; set `OFFICE_PUBLIC_URL` and
+  `OFFICE_PUBLIC_HOST` to the address browsers use, and `OFFICE_TLS_TERMINATED=true` when your TLS proxy serves it
+  over HTTPS. Behind your own proxy, publish it on `127.0.0.1` (`OFFICE_BIND`) and give it a host name of its own
+  (`office.example.com`), proxying WebSockets (`/cool/…` carries them, with no overall time limit). Do not proxy
+  `/cool/adminws`, `/cool/getMetrics`, `/cool/convert-to` or `/browser/dist/admin`, and `/hosting/discovery` is
+  for the server, not for browsers.
+* *Kubernetes*: a host of its own next to Ferrum's (`office.example.com`, `office.host`), served by the same
+  Gateway with a certificate cert-manager issues. Its HTTPRoute sends only `/browser` and `/cool` to the editor,
+  without a time limit for the WebSockets, and sends the paths above back to Ferrum's home page.
 
-**Kubernetes.** Run Collabora with its own Helm chart (`collabora-online`). Then:
-* give it `aliasgroup1` (Ferrum's in-cluster URL) and `net.frame_ancestors` (Ferrum's URL);
-* set the four values above on the server;
-* let only the editor's pods reach `/api/site/*/drive/wopi/` (network policy).
+Drive's pages carry a Content-Security-Policy that names this origin in `frame-src` and `form-action` and
+nowhere else (`FERRUM_OFFICE_ORIGIN`); Ferrum's own policy is not widened. The editor's pages carry
+`frame-ancestors` of Ferrum's address alone (`net.frame_ancestors`, from `PUBLIC_URL`).
+
+**Security.**
+* *One WOPI host.* The editor is told Ferrum's address as the only host it serves (`aliasgroup1`, from
+  `FERRUM_OFFICE_WOPI_URL`; no wildcard): a document from any other host is refused. It does not trust the first
+  host that calls, which is its default when none is named.
+* *No console.* The administration console is off (`admin_console.enable=false`) and its paths are not routed.
+* *Proof key.* Give the editor a key and every WOPI call must carry its signature over the token, the URL and the
+  time, so a leaked token alone opens nothing. `deploy/preflight.sh --generate` makes `deploy/office-proof-key` and
+  sets `OFFICE_PROOF_KEY`; or `openssl genrsa -traditional -out proof_key 2048`. On Kubernetes, make a Secret
+  `ferrum-office-proof` with that file as key `proof_key` in the editor's namespace (`kubectl -n ferrum-office create secret generic ferrum-office-proof --from-file=proof_key`)
+  and restart the pod. Without a key the editor logs that it found none, Administration says its calls are not
+  signed, and the defences are the tokens (per person and file, ten hours) and the network (`FERRUM_OFFICE_IPS`, network policy).
+* *Container.* It runs as user 1001 with every capability dropped but the four its document jails take
+  (`CHOWN`, `FOWNER`, `MKNOD`, `SYS_CHROOT`). Its jail helper carries file capabilities, so `no-new-privileges` /
+  `allowPrivilegeEscalation: false` cannot be set (the editor does not start with them). That is why Kubernetes runs it
+  in a namespace of its own at Pod Security level `baseline`: the `ferrum` namespace enforces `restricted`.
+* *Network.* In Kubernetes only the Gateway's proxies and the server reach the editor, and it reaches only the server
+  (`ferrum-office` network policy) and DNS: nothing on the internet. In Compose its one published port is the editor.
+  The server's policy admits the editor's pods on 5150.
+* *Third parties in the browser.* The editor's own pages name `www.zotero.org`, `rating.collaboraonline.com`
+  and `www.collaboraoffice.com` in their policy (citations, a rating frame, branding images). Ferrum sends nothing there.
+* *Conversion service.* The editor can convert uploaded files (`/cool/convert-to`); it admits callers by address
+  and a gateway's address is one it admits. Kubernetes keeps that path off the route; with your own proxy, do too.
+* Logs go to the container's standard output (`warning` level; raise it with `--o:logging.level=` in
+  `extra_params` for a problem). Request logs of the server record paths without query strings, so WOPI tokens never reach them.
+
+**Sizing.** Measured on the local environment (Collabora CODE 26.04.5.2.1, arm64, small files: a budget sheet with a
+chart, a two-slide deck, a one-page policy with a table and a picture): the editor takes about 590 MiB at rest and
+about 50 to 60 MiB more for each open document (six open at once: 921 MiB), and gives it back within about 20 seconds
+of the last person leaving. Two people in one spreadsheet cost no more than one (643 MiB). Large spreadsheets, decks
+with many pictures and long documents cost more; that was not measured, and neither was CPU. The Compose limit is
+`OFFICE_MEMORY` (2 GB), the Kubernetes request 1 GiB and limit 3 GiB (`office.resources`). Plan from the per-document
+figure with room for larger files, and watch the editor's memory in your own monitoring before you trust a number for
+many simultaneous editors. The editor's own configuration frees idle documents when it reaches 80% of its memory limit
+(`memproportion`; taken from its default configuration file, not provoked here). One replica only: it keeps each open
+document in the pod that opened it, and a Gateway cannot route by document, so size the pod up rather than out (above
+one replica the chart adds a PodDisruptionBudget, and each document is then in whichever pod it reached: you need routing
+on `WOPISrc`, which the Gateway API cannot express). Saves are limited by Drive's upload limit
+(`FERRUM_DRIVE_MAX_FILE_MB`, 32 MB unless raised); the editor itself does not limit a file's size
+(`storage.wopi.max_file_size` is 0).
+
+**Licence and support.** The image is Collabora Online Development Edition (CODE). It is free software (MPL-2.0), and
+what it says about itself on opening is that it is "free for you to use, to explore and to use with others in the
+browser" and "aimed at home users and small teams". It has **no vendor support**: Collabora's supported builds are a
+subscription, or you build the project from source; both run in the same place (change `office.image.repository` and
+the tag in Helm, `image:` and `COLLABORA_TAG` in Compose). CODE shows a welcome notice and a tour to each person once
+per browser, and cannot be configured to stop: its configuration file says the welcome screen and feedback pop-ups can only
+be switched off by "home mode", which limits the instance to 20 connections and 10 open documents. That is part of what
+you accept by running CODE for an organization. The tag is exact on purpose (an upgrade is your decision). Whether CODE
+is enough for your use of Ferrum is yours to decide; Ferrum only speaks WOPI to it.
+
+**ONLYOFFICE instead.** Drive speaks WOPI, and ONLYOFFICE Docs has a WOPI mode with its own discovery document at
+`/hosting/discovery`. To use it: set the bundled editor off (`FERRUM_OFFICE_URL=` and run your own, as above),
+run ONLYOFFICE Document Server 8 or later with its WOPI enabled and its allowed WOPI host set to
+`FERRUM_OFFICE_WOPI_URL`, point `FERRUM_OFFICE_URL` and `FERRUM_OFFICE_ORIGIN` at it, and
+check with `deploy/office_check.py` and Administration. Not tested here: Ferrum has no ONLYOFFICE image of its own
+and this repository's checks run against Collabora. ONLYOFFICE publishes no list of participants, so Drive's
+presence shows people from its own heartbeat instead.
+
+**Checking it.** *Before the first start*, `deploy/preflight.sh` checks the settings, makes the proof key, and (once the
+editor runs) that its discovery document offers an editor for docx, xlsx and pptx. *Once it runs*, Administration
+shows whether the editor and the PDF renderer are set up and answering (`GET /api/admin/services`, as an administrator:
+`{services: [{check, level, detail, fix}]}`, with `office`, `office.proof` and `pdf`), and `ferrum task doctor` prints the
+same. `deploy/office_check.py --url … --tenant … --token … --office …` opens a docx, an xlsx and a pptx made in Drive,
+does what the editor does over WOPI (CheckFileInfo, LOCK, GetFile, PutFile, UNLOCK), checks the save became a new
+version, and has the editor load a file itself; `deploy/smoke.sh` runs it on the Compose stack, and `deploy/kind/smoke.sh`
+checks the Kubernetes routes, the network policy and the server's report. With the editor down, Drive's "Open" answers
+that the editor server cannot be reached (it names the failure, not the address); everything else in Drive works, and
+files open in the browser editors if they are installed.
 
 **Things to know**
 * **People in the editor:** the editor tells Drive's page who is in a file. Its Share, version
   history and close buttons open Drive's own, through messages to Ferrum's origin. The server
   names that origin from its `PUBLIC_URL`, which must be the address people open: without it, the
   editor keeps its own buttons.
-* **Production terms:** CODE, the image `deploy/office.yml` uses, is a development edition.
-  Production use means a Collabora Online subscription or a build from source.
-* **Proof key:** give the editor one, and every WOPI call must carry its signature over the token,
-  the URL and the time, so a leaked token alone opens nothing. `deploy/office.yml` mounts
-  `deploy/office-proof-key`; make it with `ssh-keygen -t rsa -N "" -m PEM -f deploy/office-proof-key`.
-  On Kubernetes, mount it at `/etc/coolwsd/proof_key` from a secret.
-* **Without a proof key**, Ferrum relies on the tokens (per person and file, ten hours) and on the
-  network: keep the WOPI endpoints reachable only from the editor (`FERRUM_OFFICE_IPS` or network
-  policy).
 * **Logs:** request logs record paths without query strings, so WOPI tokens and sign-in codes never
   reach them.
-* **Size:** saves are limited by Drive's upload limit, at most the server's
-  `FERRUM_DRIVE_MAX_FILE_MB` (32 MB unless raised). Editor saves go straight to the server.
 * **Rate limits:** the editor calls Ferrum from one address, so the public endpoints' per-address
   limit applies to all of its sessions together. Raise it for busy editors, or exempt the editor's
   address at the ingress.
+* **First use:** Collabora shows a welcome notice and a tour once per browser (see Licence). `allow_update_popup` is
+  off here, since updates are the operator's.
+* **Theme and language:** the editor does not take Ferrum's appearance or language setting. In the checks it followed the
+  browser's colour scheme from the second session on and stayed light in the first, and showed the browser's language (English
+  (UK)). Its address takes `ui_theme=light|dark` and `lang=<code>` (both checked: `lang=ar` mirrors the whole editor);
+  Drive does not send them yet.
 
 ## Browser editors
 

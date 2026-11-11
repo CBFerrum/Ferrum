@@ -63,6 +63,8 @@ settings:
   push_services: "<%= get_env(name="FERRUM_PUSH_SERVICES", default="") %>"
   push_contact: "<%= get_env(name="FERRUM_PUSH_CONTACT", default="") %>"
   packages_dir: <%= get_env(name="FERRUM_PACKAGES_DIR", default="../packages") %>
+  # The PDF renderer, as in production: a development server with Gotenberg beside it prints PDFs.
+  pdf_url: "<%= get_env(name="FERRUM_PDF_URL", default="") %>"
   db_max_connections: <%= get_env(name="FERRUM_DB_MAX_CONNECTIONS", default="20") %>
   bootstrap_token: <%= get_env(name="FERRUM_BOOTSTRAP_TOKEN", default="dev-bootstrap-token") %>
   webhooks_allow_private: true

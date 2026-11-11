@@ -62,6 +62,11 @@ app.kubernetes.io/managed-by: {{ (index . 0).Release.Service }}
 {{- if .Values.pdf.enabled }}
 - {name: FERRUM_PDF_URL, value: "http://{{ include "ferrum.fullname" . }}-pdf:3000"}
 {{- end }}
+{{- if .Values.office.enabled }}
+- {name: FERRUM_OFFICE_URL, value: "http://{{ include "ferrum.fullname" . }}-office.{{ .Values.office.namespace }}.svc.cluster.local:9980"}
+- {name: FERRUM_OFFICE_WOPI_URL, value: "http://{{ include "ferrum.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:80"}
+- {name: FERRUM_OFFICE_ORIGIN, value: "https://{{ .Values.office.host }}"}
+{{- end }}
 - {name: FERRUM_DB_MAX_CONNECTIONS, value: {{ .Values.dbMaxConnections | quote }}}
 - {name: LOG_LEVEL, value: {{ .Values.logLevel | quote }}}
 {{- if .Values.editors.enabled }}
