@@ -120,6 +120,22 @@ ferrum-bar[compact] {
   --ferrum-bar-height: 40px;
 }
 
+/* On paper the record is the page: the bar, a side panel's room and the shell's dialogs and cards
+   neither print nor leave their height above the content (apps that offset by the bar's height follow). */
+@media print {
+  :root {
+    --ferrum-bar-height: 0px;
+  }
+  ferrum-bar,
+  dialog[data-ferrum-dialog],
+  [data-ferrum-card] {
+    display: none !important;
+  }
+  :root[data-ferrum-panel] body {
+    margin-inline-end: 0;
+  }
+}
+
 /* A side panel the bar opened (docs/plan/apps-ui.md §11.4) takes room at the end of wide pages and
    floats over narrow ones; the bar stays the page's width above it. Layouts that are fixed to the
    viewport can use the same width. */

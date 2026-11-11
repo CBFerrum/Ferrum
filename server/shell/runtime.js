@@ -203,10 +203,15 @@ button[disabled] { opacity: .5; cursor: not-allowed; }
 .tools, .indicators { display: inline-flex; align-items: center; gap: 4px; }
 .indicator { height: 24px; min-width: 0; padding: 0 10px; border-radius: 999px; background: var(--ferrum-warning-soft, #fff4d6); color: var(--ferrum-warning, #8f5700); font-size: 12px; line-height: 16px; font-weight: 500; }
 .indicator:hover { background: var(--ferrum-warning-soft, #fff4d6); color: var(--ferrum-warning, #8f5700); filter: brightness(.97); }
-.panel { position: absolute; top: calc(var(--ferrum-bar-height, 48px) + 4px); background: var(--ferrum-surface, #fff);
+.panel { position: absolute; top: calc(var(--ferrum-bar-height, 48px) + 4px);
   border: 1px solid var(--ferrum-border, #dee3ea); border-radius: var(--ferrum-radius-lg, 12px); box-shadow: var(--ferrum-shadow);
-  padding: 8px; max-height: calc(100vh - 72px); overflow: auto; animation: pop var(--ferrum-duration-overlay, 140ms) var(--ease); }
+  padding: 8px; max-height: calc(100vh - 72px); max-height: calc(100dvh - 72px); overflow: auto; overscroll-behavior: contain; animation: pop var(--ferrum-duration-overlay, 140ms) var(--ease); }
+/* Whatever scrolls says so: a soft shade at the edge that has more behind it (the surface slides over it at the ends). */
+.panel, .results, .ilist, .kinds { --sf: var(--ferrum-surface, #fff); --cue: color-mix(in srgb, var(--ferrum-text, #202329) 14%, transparent);
+  background: linear-gradient(var(--sf) 30%, transparent) top / 100% 24px no-repeat local, linear-gradient(transparent, var(--sf) 70%) bottom / 100% 24px no-repeat local,
+    radial-gradient(farthest-side at 50% 0, var(--cue), transparent) top / 100% 8px no-repeat scroll, radial-gradient(farthest-side at 50% 100%, var(--cue), transparent) bottom / 100% 8px no-repeat scroll, var(--sf); }
 @keyframes pop { from { opacity: 0; transform: translateY(-3px) scale(.98); } to { opacity: 1; transform: none; } }
+@media print { :host { display: none !important; } }
 @media (prefers-reduced-motion: reduce) { .panel, .notice { animation: none; } button, a.btn, .home, .app { transition: none; } }
 .launcher { inset-inline-start: 8px; width: min(440px, calc(100vw - 16px)); padding: 12px; }
 .menu { inset-inline-end: 8px; min-width: 248px; padding: 4px; border-radius: var(--ferrum-radius, 8px); }
@@ -268,6 +273,11 @@ button[disabled] { opacity: .5; cursor: not-allowed; }
   background: var(--ferrum-warning-soft, #fff4d6); color: var(--ferrum-warning, #8f5700); border-bottom: 1px solid var(--ferrum-border, #dee3ea); }
 .group-title { font-weight: 600; }
 .create { inset-inline-end: 8px; min-width: 220px; }
+/* One heading per app (its tile and name), its things to create as text rows beneath, aligned with the name. */
+.mgroup { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; padding: 4px 8px; font-size: 12px; line-height: 16px; font-weight: 600; color: var(--ferrum-muted, #596273); }
+.create > div:first-child > .mgroup { margin-top: 0; }
+.mgroup .tile { width: 20px; height: 20px; font-size: 12px; }
+.create a { min-height: 28px; padding-block: 3px; padding-inline-start: 36px; }
 /* The search: a quiet fill with no boundary until it is used, the shortcut as a key cap at its end. */
 .search { flex: 0 1 440px; justify-content: flex-start; gap: 8px; height: var(--h); padding-inline: 10px 6px; margin-inline: 8px; border: 1px solid transparent;
   border-radius: var(--ferrum-radius-sm, 6px); background: var(--ferrum-surface-2, #eff1f5); color: var(--ferrum-muted, #596273); font-size: 14px; min-width: 0;
@@ -1121,6 +1131,16 @@ class FerrumBar extends HTMLElement {
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") this.closePanels(true);
     });
+    // A menu is walked with the arrow keys; focus scrolls the row into view when the menu scrolls.
+    for (const menu of [this.menu, this.createMenu])
+      menu.addEventListener("keydown", (e) => {
+        const to = { ArrowDown: 1, ArrowUp: -1, Home: "first", End: "last" }[e.key];
+        const rows = [...menu.querySelectorAll("a, button")];
+        if (to === undefined || !rows.length) return;
+        e.preventDefault();
+        const at = rows.indexOf(root.activeElement);
+        rows[to === "first" ? 0 : to === "last" ? rows.length - 1 : (at + to + rows.length) % rows.length].focus();
+      });
     document.addEventListener("pointerdown", (e) => {
       if (!e.composedPath().includes(this)) this.closePanels(false);
     });
@@ -1262,10 +1282,20 @@ class FerrumBar extends HTMLElement {
     this.closePanels(false);
     if (!open || !this.createBtn) return;
     const entryOf = (app) => (shellData?.apps ?? []).find((a) => a.app === app);
+    // Grouped by app, in the order the server gave them: the app's tile and name once, then its rows.
+    const groups = new Map();
+    for (const c of shellData?.create ?? []) groups.set(c.app, [...(groups.get(c.app) ?? []), c]);
     this.createMenu.replaceChildren(
-      ...(shellData?.create ?? []).map((c) =>
-        el("a", { role: "menuitem", href: c.url, onclick: (e) => (e.preventDefault(), navigate(c.url)) }, tile(entryOf(c.app) ?? { title: c.label }, true), el("span", { text: c.label })),
-      ),
+      ...[...groups].map(([app, items]) => {
+        const entry = entryOf(app) ?? { title: items[0].label };
+        const name = entry.title ?? app;
+        return el(
+          "div",
+          { role: "group", "aria-label": name },
+          el("div", { class: "mgroup", "aria-hidden": "true" }, tile(entry, true), el("span", { text: name })),
+          ...items.map((c) => el("a", { role: "menuitem", href: c.url, onclick: (e) => (e.preventDefault(), navigate(c.url)) }, el("span", { text: c.label }))),
+        );
+      }),
     );
     this.createMenu.hidden = false;
     this.createBtn.setAttribute("aria-expanded", "true");
