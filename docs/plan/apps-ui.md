@@ -1153,7 +1153,8 @@ the last two.
   apps (POS, editors, meetings) keeps only the launcher and account; on phones a bottom-sheet launcher.
 * Accessibility: a skip link to the main content, landmarks, full keyboard use, focus on the page's
   heading after a load. The bar reserves a few shortcuts (search, launcher, notifications, help); apps
-  own the rest.
+  own the rest, and a page may claim the search's Ctrl/Cmd+K inside an editor (`data-ferrum-keys`,
+  docs/api.md, The shell).
 * If the runtime fails to load, `@ferrum/client` draws a minimal header (Home, account) and the app
   keeps working.
 
