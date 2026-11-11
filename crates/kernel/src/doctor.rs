@@ -11,6 +11,8 @@ use serde::Serialize;
 #[serde(rename_all = "lowercase")]
 pub enum Level {
     Ok,
+    /// Switched off on purpose by the operator: information, not something to fix.
+    Off,
     Warning,
     Blocker,
 }
@@ -27,6 +29,9 @@ pub struct Finding {
 impl Finding {
     pub fn ok(check: &'static str, detail: impl Into<String>) -> Finding {
         Finding { level: Level::Ok, check, detail: detail.into(), fix: None }
+    }
+    pub fn off(check: &'static str, detail: impl Into<String>) -> Finding {
+        Finding { level: Level::Off, check, detail: detail.into(), fix: None }
     }
     pub fn warning(check: &'static str, detail: impl Into<String>, fix: &'static str) -> Finding {
         Finding { level: Level::Warning, check, detail: detail.into(), fix: Some(fix) }

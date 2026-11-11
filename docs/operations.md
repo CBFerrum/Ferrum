@@ -751,7 +751,8 @@ renderer's state without a shell at `GET /api/admin/services`.
 docker compose -f deploy/docker-compose.yml exec ferrum ferrum task doctor
 ```
 
-Add `format:json` for a machine. It exits non-zero on a blocker, so a deployment can run it as a last
+Add `format:json` for a machine. Each finding's level is `ok`, `off` (a service switched off on purpose),
+`warning` or `blocker`. It exits non-zero on a blocker only, so a deployment can run it as a last
 step. The report holds no secret or connection string, so it can be pasted into a ticket.
 
 ## Monitoring
@@ -1111,7 +1112,8 @@ presence shows people from its own heartbeat instead.
 **Checking it.** *Before the first start*, `deploy/preflight.sh` checks the settings, makes the proof key, and (once the
 editor runs) that its discovery document offers an editor for docx, xlsx and pptx. *Once it runs*, Administration
 shows whether the editor and the PDF renderer are set up and answering (`GET /api/admin/services`, as an administrator:
-`{services: [{check, level, detail, fix}]}`, with `office`, `office.proof` and `pdf`), and `ferrum task doctor` prints the
+`{services: [{check, level, detail, fix}]}`, with `office`, `office.proof` and `pdf`; `level` is `ok`, `off` (switched off
+on purpose, its address left empty: information, with no `fix`), `warning` or `blocker`), and `ferrum task doctor` prints the
 same. `deploy/office_check.py --url … --tenant … --token … --office …` opens a docx, an xlsx and a pptx made in Drive,
 does what the editor does over WOPI (CheckFileInfo, LOCK, GetFile, PutFile, UNLOCK), checks the save became a new
 version, and has the editor load a file itself; `deploy/smoke.sh` runs it on the Compose stack, and `deploy/kind/smoke.sh`
