@@ -111,7 +111,7 @@ if [ "$memory_kb" -gt 0 ]; then
   if [ "$memory_kb" -lt 3900000 ]; then blocker "less than 4 GB of memory" "PostgreSQL's shared buffers alone are set to 512 MB; see docs/operations.md, Capacity."
   elif [ "$memory_kb" -lt 7800000 ]; then warning "less than 8 GB of memory" "Enough for a few people; see docs/operations.md, Capacity."
   else ok "memory: $((memory_kb / 1048576)) GB"; fi
-  # The editor takes about 600 MB and 100 to 250 MB for each open document (docs/operations.md, Online editing).
+  # The editor takes about 590 MB at rest and 50 to 60 MB for each small open document (docs/operations.md, Online editing).
   if [ "$memory_kb" -lt 5800000 ] && ! { [ "$office_set" -gt 0 ] && [ -z "$(value FERRUM_OFFICE_URL)" ]; }; then
     warning "less than 6 GB of memory with the online editor on" "Give the host more, or turn the editor off (FERRUM_OFFICE_URL= in deploy/.env)."
   fi

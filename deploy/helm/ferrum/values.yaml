@@ -129,7 +129,7 @@ pdf:
 # origin of its own: it must never share Ferrum's). Only that host's /browser and /cool paths are
 # public; the administration console, metrics and conversion service are sent back to Ferrum.
 # One replica: Collabora keeps each open document in the pod that opened it, and the Gateway API
-# cannot route by document, so size the pod instead (about 600 MiB and 100 to 250 MiB for each open
+# cannot route by document, so size the pod instead (about 590 MiB at rest and 50 to 60 MiB for each small open
 # document). Above 1 the chart adds a PodDisruptionBudget, but a document then lives in whichever
 # pod the Gateway picked: only with routing by WOPISrc of your own.
 office:
