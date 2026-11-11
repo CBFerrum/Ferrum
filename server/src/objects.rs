@@ -423,6 +423,16 @@ pub async fn complete(k: &Kernel, objects: &Objects, ctx: &Ctx, id: Uuid) -> Res
     // Deleting the pending row first makes completion happen once, however many requests race.
     let claimed = sqlx::query("delete from file_upload where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).execute(&mut *tx).await?.rows_affected();
     if claimed == 0 {
+        // Cancelled while it was joined: what was joined goes too. Completed by a racing request
+        // instead, it is that file's, and stays.
+        let recorded: bool = sqlx::query_scalar("select exists (select 1 from file_object where tenant_id = $1 and id = $2)")
+            .bind(ctx.tenant)
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+        if !recorded {
+            objects.delete(&key).await;
+        }
         return Err(Error::NotFound("upload".into()));
     }
     sqlx::query(
@@ -447,6 +457,33 @@ pub async fn complete(k: &Kernel, objects: &Objects, ctx: &Ctx, id: Uuid) -> Res
         objects.drop_parts(ctx.tenant, id).await;
     }
     Ok(json!({"id": id, "url": format!("/files/{id}"), "file_name": name, "size": size, "sha256": sha, "public": false}))
+}
+
+/// Cancels an upload in parts of the caller's: forgets it and deletes the parts that arrived, now.
+/// Idempotent: one already cancelled, completed or never the caller's is left as it is (a
+/// completed upload is a file, deleted as files are). A part waiting for the upload's row lock
+/// stores its bytes first and then the parts go with it; one that comes after finds no upload
+/// (`404`) and cannot bring it back. Nothing is held of the workspace's room for an upload (its
+/// size is checked against what is stored when it starts and again when it completes), so there
+/// is nothing to give back.
+pub async fn cancel(k: &Kernel, objects: &Objects, ctx: &Ctx, id: Uuid) -> Result<()> {
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let parts: Option<bool> = sqlx::query_scalar("select parts from file_upload where tenant_id = $1 and id = $2 and created_by = $3 for update")
+        .bind(ctx.tenant)
+        .bind(id)
+        .bind(ctx.user)
+        .fetch_optional(&mut *tx)
+        .await?;
+    match parts {
+        None => return Ok(()),
+        // Its presigned URL takes bytes for the rest of the hour, which the sweep removes after it.
+        Some(false) => return Err(Error::Conflict("this upload goes straight to object storage: it expires within the hour".into())),
+        Some(true) => {}
+    }
+    sqlx::query("delete from file_upload where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).execute(&mut *tx).await?;
+    tx.commit().await?;
+    objects.drop_parts(ctx.tenant, id).await;
+    Ok(())
 }
 
 async fn forget(k: &Kernel, objects: &Objects, tenant: Uuid, id: Uuid) -> Result<()> {
