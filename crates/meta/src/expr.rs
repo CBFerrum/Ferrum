@@ -6,6 +6,7 @@
 //! workspace's local time, read once per evaluation), never read from a clock here: without it they are null
 //! (FLC-COMP-003). Dates are ISO strings, so `>=` compares them correctly.
 
+use crate::expr_fns::{self, ENV};
 use cel::{Context, Program};
 use serde_json::Value;
 use std::fmt;
@@ -31,6 +32,8 @@ pub struct Expr {
     /// convert its whole record (lines within lines make that large) for nothing.
     reads_old: bool,
     reads_parent: bool,
+    /// The functions of ours it calls (`expr_fns::NAMES`), bound when it runs.
+    uses: Arc<[&'static str]>,
 }
 
 impl fmt::Debug for Expr {
@@ -71,14 +74,16 @@ impl Expr {
         if source.chars().filter(|c| "+-*/%<>=!&|?".contains(*c)).count() > MAX_OPERATORS {
             return Err(format!("expression holds more than {MAX_OPERATORS} operators: split it"));
         }
-        let program = Program::compile(source).map_err(|e| e.to_string())?;
+        let program = ENV.compile(source).map_err(|e| e.to_string())?;
         let mut links = Vec::new();
         link_names(program.expression(), &mut links)?;
         if links.len() > MAX_LINKS {
             return Err(format!("an expression reads at most {MAX_LINKS} linked records (links.<field>); this one reads {}", links.len()));
         }
-        let (reads_old, reads_parent) = (program.references().has_variable("old"), program.references().has_variable("parent"));
-        Ok(Expr { source: source.into(), program: Arc::new(program), links: links.into(), reads_old, reads_parent })
+        let refs = program.references();
+        let (reads_old, reads_parent) = (refs.has_variable("old"), refs.has_variable("parent"));
+        let uses = expr_fns::NAMES.iter().copied().filter(|n| refs.has_function(n)).collect();
+        Ok(Expr { source: source.into(), program: Arc::new(program), links: links.into(), reads_old, reads_parent, uses })
     }
 
     pub fn source(&self) -> &str {
@@ -97,7 +102,10 @@ impl Expr {
     /// [`Expr::eval`] with more variables bound by name (a configured action's `params`, the `linked` record an
     /// effect writes).
     pub fn eval_with(&self, scope: &Scope<'_>, extra: &[(&str, &Value)]) -> Result<Value, String> {
-        let mut ctx = Context::default();
+        let mut ctx = Context::with_env(ENV.clone());
+        for name in self.uses.iter() {
+            expr_fns::bind(&mut ctx, name);
+        }
         let bind = |ctx: &mut Context, name: &str, v: &Value| ctx.add_variable_from_value(name.to_string(), json_to_cel(v));
         bind(&mut ctx, "doc", scope.doc);
         bind(&mut ctx, "old", scope.old.filter(|_| self.reads_old).unwrap_or(&Value::Null));
@@ -304,6 +312,72 @@ mod tests {
         let linked = json!({"type": {"documents": [{"document": "ID"}]}});
         let reads = Expr::compile("links.type.documents.size() == 1").unwrap();
         assert!(reads.eval_bool_with(&scope(&doc, &user), &[("links", &linked)]).unwrap());
+    }
+
+    /// Dates (BL-19): on date and date-time fields, an empty date answering empty, months kept within the month.
+    #[test]
+    fn dates() {
+        let doc = json!({"on": "2024-01-31", "at": "2026-03-15T09:30:00Z", "local": "2026-03-15 09:30:00", "none": null, "blank": "", "n": 13});
+        let user = json!({});
+        let eval = |s: &str| Expr::compile(s).unwrap().eval(&scope(&doc, &user)).unwrap();
+        assert_eq!(eval("addMonths(doc.on, 1)"), json!("2024-02-29"), "31 January + 1 month, a leap year");
+        assert_eq!(eval("addMonths('2025-01-31', 1)"), json!("2025-02-28"));
+        assert_eq!(eval("addMonths(doc.on, -2)"), json!("2023-11-30"));
+        assert_eq!(eval("addMonths(doc.on, doc.n)"), json!("2025-02-28"));
+        assert_eq!(eval("addYears('2024-02-29', 1)"), json!("2025-02-28"));
+        assert_eq!(eval("addDays(doc.on, 1)"), json!("2024-02-01"));
+        assert_eq!(eval("doc.on.addDays(-31)"), json!("2023-12-31"), "as a method too");
+        assert_eq!(eval("addDays(doc.at, 20)"), json!("2026-04-04T09:30:00Z"), "a date-time keeps its time and form");
+        assert_eq!(eval("addMonths(doc.local, 1)"), json!("2026-04-15T09:30:00"));
+        assert_eq!(eval("addDays(timestamp(doc.at), 1) == timestamp('2026-03-16T09:30:00Z')"), json!(true));
+        assert_eq!(eval("[startOfMonth(doc.at), endOfMonth(doc.on), endOfMonth('2026-12-05')]"), json!(["2026-03-01", "2024-01-31", "2026-12-31"]));
+        assert_eq!(eval("[weekday('2026-11-12'), weekday('2026-11-15')]"), json!([4, 7]), "Monday is 1, Sunday 7");
+        assert_eq!(eval("[year(doc.at), month(doc.at), day(doc.on)]"), json!([2026, 3, 31]));
+        assert_eq!(eval("daysBetween(doc.on, '2024-03-01')"), json!(30));
+        assert_eq!(eval("daysBetween('2024-03-01', doc.on)"), json!(-30));
+        assert_eq!(eval("[monthsBetween(doc.on, '2024-02-29'), monthsBetween(doc.on, '2024-02-28'), monthsBetween('2024-03-31', doc.on)]"), json!([1, 0, -2]));
+        assert_eq!(eval("formatDate(doc.on, '%d %B %Y')"), json!("31 January 2024"));
+        assert_eq!(eval("formatDate(doc.at, '%d/%m/%Y %H:%M')"), json!("15/03/2026 09:30"));
+        for empty in [
+            "addMonths(doc.none, 1)",
+            "addDays(doc.blank, 1)",
+            "addDays(doc.on, null)",
+            "endOfMonth(doc.none)",
+            "year(doc.blank)",
+            "daysBetween(doc.none, doc.on)",
+            "formatDate(doc.none, '%Y')",
+        ] {
+            assert_eq!(eval(empty), Value::Null, "{empty}: an empty date is empty, not an error");
+        }
+        let fails = |s: &str| Expr::compile(s).unwrap().eval(&scope(&doc, &user)).unwrap_err();
+        assert!(fails("addDays('31/01/2024', 1)").contains("is not a date"));
+        assert!(fails("addDays(doc.on, 1.5)").contains("whole number"));
+        assert!(fails("formatDate(doc.on, '%H')").contains("pattern"));
+        assert!(fails("addDays(doc.on)").contains("2 arguments"));
+    }
+
+    /// The long form the Government pack wrote before `addMonths` (2,479 characters for a permit's expiry) gives
+    /// the same date, and still works.
+    #[test]
+    fn add_months_agrees_with_the_long_form() {
+        let t = "timestamp(doc.d + 'T00:00:00Z')";
+        let m = format!("({t}.getMonth() + int(doc.n))");
+        let y = format!("({t}.getFullYear() + {m} / 12)");
+        let mo = format!("({m} % 12 + 1)");
+        let last = format!(
+            "({mo} == 2 ? ({y} % 4 == 0 && ({y} % 100 != 0 || {y} % 400 == 0) ? 29 : 28) : ({mo} == 4 || {mo} == 6 || {mo} == 9 || {mo} == 11 ? 30 : 31))"
+        );
+        let long = format!(
+            "string({y}) + '-' + ({mo} < 10 ? '0' : '') + string({mo}) + '-' + ({t}.getDate() < 10 ? '0' : '') + string({t}.getDate() < {last} ? {t}.getDate() : {last})"
+        );
+        let (long, short) = (Expr::compile(&long).unwrap(), Expr::compile("addMonths(doc.d, doc.n)").unwrap());
+        let user = json!({});
+        for d in ["2024-01-31", "2023-01-29", "2100-01-30", "2000-02-29", "2026-08-31", "2026-12-15", "2026-03-01"] {
+            for n in [0, 1, 2, 6, 11, 12, 13, 25, 48] {
+                let doc = json!({"d": d, "n": n});
+                assert_eq!(long.eval(&scope(&doc, &user)).unwrap(), short.eval(&scope(&doc, &user)).unwrap(), "{d} + {n}");
+            }
+        }
     }
 
     #[test]
