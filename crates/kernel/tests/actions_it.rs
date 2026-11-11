@@ -177,7 +177,11 @@ async fn refused_in_words(w: &W) {
     w.batch(vec![define(line), define(ticket)]).await.unwrap();
     let admin = w.admin().await;
     let t = k
-        .insert(&admin, "XTicket", obj(json!({"sent": true, "dish": "Soup", "price": "12.50", "note": "a", "lines": [{"sent": true, "dish": "Bread", "qty": 1}]})))
+        .insert(
+            &admin,
+            "XTicket",
+            obj(json!({"sent": true, "dish": "Soup", "price": "12.50", "note": "a", "lines": [{"sent": true, "dish": "Bread", "qty": 1}]})),
+        )
         .await
         .unwrap();
     let id = id_of(&t);
@@ -223,10 +227,7 @@ async fn named_cycle(w: &W) {
     let top = id_of(&k.insert(&admin, "Place", obj(json!({"name": "Asia"}))).await.unwrap());
     let mid = id_of(&k.insert(&admin, "Place", obj(json!({"name": "India", "parent": top.to_string()}))).await.unwrap());
     let e = k.update(&admin, "Place", top, obj(json!({"parent": mid.to_string()})), None).await.unwrap_err();
-    assert_eq!(
-        message(&e),
-        "parent: Asia cannot sit under India: India is already under Asia, which would make a cycle in the hierarchy"
-    );
+    assert_eq!(message(&e), "parent: Asia cannot sit under India: India is already under Asia, which would make a cycle in the hierarchy");
 }
 
 /// An effect whose value is only a path to a value copies it as stored, empty included, where an expression
