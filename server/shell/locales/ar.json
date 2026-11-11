@@ -326,5 +326,7 @@
   "{v1} MB": "{v1} ميغابايت",
   "{v1} of {v2}": "{v1} من {v2}",
   "The connection stopped responding.": "توقف الاتصال عن الاستجابة.",
-  "Waiting for the connection to come back.": "بانتظار عودة الاتصال."
+  "Waiting for the connection to come back.": "بانتظار عودة الاتصال.",
+  "The upload stopped: the page sending it was closed or left.": "توقف الرفع: أُغلقت الصفحة التي كانت ترسله أو غادرتها.",
+  "Trying again…": "تجري المحاولة مرة أخرى…"
 }

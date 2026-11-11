@@ -323,7 +323,19 @@ contributes:
   `sidepanel.context()` and hears `panel-context`); `uploads.start({file, url})` hands an upload to
   the runtime, which keeps the file in IndexedDB until it is sent, carries on in the next page of any
   app, shows it in the bar's tray and sends `Idempotency-Key` (the upload's id) so a resent upload is
-  stored once where the endpoint honours it; `family()` gives the app's family and its entries (the
+  stored once where the endpoint honours it; a stalled connection (no byte moving for 30 seconds,
+  or no answer 150 seconds after the last byte, the time the server may take to store and scan a
+  file) is taken for a lost one and tried again, an upload waits offline without using up a try, and
+  a failed one keeps its file for Retry until it is dismissed. `uploads.track({label, size, cancel?,
+  retry?})` puts a transfer the app moves itself (a large file in parts, a new version) in the same
+  tray → a handle `{id, progress(bytesDone), retrying(message), sending(), done(), fail(message)}`:
+  the row shows bytes sent of `size`, the note `retrying` gives (cleared by `sending` or the next
+  state), the failure's reason, Stop only when `cancel` was given (it calls it; the row is then
+  Stopped) and Retry only when `retry` was given (it calls it; the app reports through the same
+  handle), and the bar's upload count includes it. Calls after the transfer ended do nothing. It
+  cannot outlive its page: leaving asks first, and once the page is gone the row (in the next page,
+  and other tabs) says the upload stopped, with no Retry. Isolated apps have no `uploads`: their
+  bridge carries no file, so they have no transfer to show; `family()` gives the app's family and its entries (the
   kit's `FamilyNav` draws them); `apps()` the launcher's entries; `on(event, cb)` returns a function
   that stops listening.
 * **Records-only apps**: an app without `ui` and without `shell.app` entries gets a launcher entry
