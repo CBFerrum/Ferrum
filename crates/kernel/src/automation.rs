@@ -17,6 +17,10 @@ use std::collections::BTreeMap;
 use uuid::Uuid;
 
 pub const MAX_DEPTH: u8 = 3;
+/// The most items one `for_each` runs over, and lines one `copy_lines` copies (BD-18): more is refused, never cut.
+pub const MAX_ITEMS: usize = 100;
+/// The most effects one `for_each` runs per item, as an action holds at most 10.
+pub const MAX_LOOP_EFFECTS: usize = 10;
 /// The largest mail template an automation keeps, as large as a saved view or preferences may be.
 pub const MAX_TEMPLATE: usize = 64 * 1024;
 
@@ -28,6 +32,25 @@ fn mail_template(src: &str) -> Result<minijinja::Environment<'_>> {
     let mut env = crate::print::environment();
     env.add_template("mail", src).map_err(|e| Error::field("template", format!("e-mail template: {e}")))?;
     Ok(env)
+}
+
+/// One effect of a configured action or one action of an automation: what it does, and `when` it does it (BD-18).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Step {
+    /// An expression over what its values see; it runs only when this holds. Always when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<String>,
+    #[serde(flatten)]
+    pub action: AutomationAction,
+}
+
+/// Whether `copy_lines` adds to the lines there are or replaces them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CopyMode {
+    #[default]
+    Append,
+    Replace,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,11 +107,71 @@ pub enum AutomationAction {
         when: String,
         values: BTreeMap<String, String>,
     },
+    /// The one record of `entity` whose fields `by` names hold the values given (expressions, none empty). With
+    /// `create`, one is made when none matches (`by`'s values and `create`'s); with `update`, the one found is changed
+    /// (its values see it as `linked`). Two that match refuse the run. Gives `{entity, id, number}`, or null when none
+    /// was found and none made. Runs that may make the same record wait for one another (BD-18).
+    Find {
+        entity: String,
+        by: BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        create: Option<BTreeMap<String, String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        update: Option<BTreeMap<String, String>>,
+    },
+    /// Runs `effects` once per item, the item as `item` in their expressions: each line of `table` (a table field of
+    /// the record), or each record of `entity` whose link field `link` names the record. `where`, over `item`, picks
+    /// which. At most [`MAX_ITEMS`] items; no loop within a loop. Gives each item's results, in order.
+    ForEach {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        table: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        entity: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        link: Option<String>,
+        #[serde(default, rename = "where", skip_serializing_if = "Option::is_none")]
+        filter: Option<String>,
+        effects: Vec<Step>,
+    },
+    /// Copies the lines of `from_table` of another record into `table`, a table field of the record, through the
+    /// record's ordinary save: the record its link field `link` names, or the one an earlier effect gave (`result`, its
+    /// place). Each value an expression over `item` (the line copied) besides what other values see. `mode`
+    /// `append` (the default) or `replace`. Nothing to copy from (an empty link, a null result) copies nothing.
+    CopyLines {
+        table: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        link: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<usize>,
+        from_table: String,
+        values: BTreeMap<String, String>,
+        #[serde(default)]
+        mode: CopyMode,
+    },
+}
+
+/// Every action a list holds, a loop's own effects after it.
+pub(crate) fn every(steps: &[Step]) -> impl Iterator<Item = &AutomationAction> {
+    steps.iter().flat_map(|s| {
+        let inner: &[Step] = match &s.action {
+            AutomationAction::ForEach { effects, .. } => effects,
+            _ => &[],
+        };
+        std::iter::once(&s.action).chain(inner.iter().map(|i| &i.action))
+    })
+}
+
+/// The expressions a step holds, its `when` and a loop's own effects' included.
+fn step_sources(s: &Step) -> Vec<&String> {
+    s.when.iter().chain(sources(&s.action)).collect()
 }
 
 /// The expressions an action holds.
 fn sources(a: &AutomationAction) -> Vec<&String> {
     match a {
+        AutomationAction::Find { by, create, update, .. } => by.values().chain(create.iter().chain(update.iter()).flat_map(|m| m.values())).collect(),
+        AutomationAction::ForEach { filter, effects, .. } => filter.iter().chain(effects.iter().flat_map(step_sources)).collect(),
+        AutomationAction::CopyLines { values, .. } => values.values().collect(),
         AutomationAction::SetFields { values }
         | AutomationAction::CreateDocument { values, .. }
         | AutomationAction::UpdateLinked { values, .. }
@@ -101,20 +184,39 @@ fn sources(a: &AutomationAction) -> Vec<&String> {
 }
 
 /// The link fields an action's expressions read as `links.<field>` (BD-14).
-pub(crate) fn links_used(a: &AutomationAction) -> Result<std::collections::BTreeSet<String>> {
-    let exprs = sources(a).into_iter().map(|s| compiled(s)).collect::<Result<Vec<_>>>()?;
+pub(crate) fn links_used(a: &Step) -> Result<std::collections::BTreeSet<String>> {
+    let exprs = step_sources(a).into_iter().map(|s| compiled(s)).collect::<Result<Vec<_>>>()?;
     Ok(crate::links::used(&exprs))
 }
 
 /// The settings entities an action's expressions read as `settings.<Entity>.<field>` (BD-17).
-pub(crate) fn settings_used(a: &AutomationAction) -> Result<std::collections::BTreeSet<String>> {
-    let exprs = sources(a).into_iter().map(|s| compiled(s)).collect::<Result<Vec<_>>>()?;
+pub(crate) fn settings_used(a: &Step) -> Result<std::collections::BTreeSet<String>> {
+    let exprs = step_sources(a).into_iter().map(|s| compiled(s)).collect::<Result<Vec<_>>>()?;
     Ok(crate::settings::used(&exprs))
 }
 
 /// What is wrong with the settings `src` reads, said by `schema` (BD-17).
 fn settings_problem(schema: &ferrum_meta::Schema, src: &str) -> Result<Option<String>> {
     Ok(schema.settings_problem(&compiled(src)?))
+}
+
+/// [`check_action`] with its `when`, and a loop's own effects: 1 to [`MAX_LOOP_EFFECTS`] of them, none a loop.
+pub(crate) fn check_step(s: &Step) -> Result<()> {
+    if let Some(w) = &s.when {
+        Expr::compile(w).map_err(|m| Error::invalid(format!("when '{w}': {m}")))?;
+    }
+    if let AutomationAction::ForEach { effects, .. } = &s.action {
+        if effects.is_empty() || effects.len() > MAX_LOOP_EFFECTS {
+            return Err(Error::invalid(format!("for_each runs 1 to {MAX_LOOP_EFFECTS} effects per item")));
+        }
+        for (j, e) in effects.iter().enumerate() {
+            if matches!(e.action, AutomationAction::ForEach { .. }) {
+                return Err(Error::invalid(format!("for_each, effect {}: a loop does not hold another loop", j + 1)));
+            }
+            check_step(e).map_err(|e| crate::pack::about(&format!("for_each, effect {}", j + 1), e))?;
+        }
+    }
+    check_action(&s.action)
 }
 
 pub(crate) fn check_action(a: &AutomationAction) -> Result<()> {
@@ -179,14 +281,14 @@ pub async fn preview_mail(
     Ok((render_mail(body.unwrap_or("''"), template, &doc, &ctx.user_value(), &[])?, id))
 }
 
-pub fn validate_actions(actions: &Value) -> Result<Vec<AutomationAction>> {
-    let list: Vec<AutomationAction> = serde_json::from_value(actions.clone()).map_err(|e| Error::invalid(format!("actions: {e}")))?;
+pub fn validate_actions(actions: &Value) -> Result<Vec<Step>> {
+    let list: Vec<Step> = serde_json::from_value(actions.clone()).map_err(|e| Error::invalid(format!("actions: {e}")))?;
     if list.is_empty() || list.len() > 20 {
         return Err(Error::invalid("an automation needs 1 to 20 actions"));
     }
     for (i, a) in list.iter().enumerate() {
         // A refusal is a field error on `actions`, in the row of the action it is about.
-        check_action(a).map_err(|e| match e {
+        check_step(a).map_err(|e| match e {
             Error::Validation(fs) => Error::Validation(fs.into_iter().map(|f| FieldError::new("actions", f.message).in_row("actions", i)).collect()),
             other => Error::Validation(vec![FieldError::new("actions", other.to_string()).in_row("actions", i)]),
         })?;
@@ -249,7 +351,7 @@ fn bare_path(src: &str) -> Option<Vec<&str>> {
             rest = if after.is_empty() { None } else { Some(after.strip_prefix('[')?) };
         }
     }
-    (steps.len() > 1 && ["doc", "linked", "links", "row", "params", "results"].contains(&steps[0])).then_some(steps)
+    (steps.len() > 1 && ["doc", "linked", "links", "row", "params", "results", "item"].contains(&steps[0])).then_some(steps)
 }
 
 /// Whether `steps` lead to nothing in `stored` (a value as it is stored): a null, or a key it does not have.
@@ -309,21 +411,79 @@ async fn effect_value(
 /// What an automation's (or a configured action's) actions write, checked against the entity they run on when
 /// they are saved: `update_linked` names a link field of it, and every field written is a field of the record
 /// written. A refusal names the action by its place.
-pub(crate) fn check_targets(schema: &ferrum_meta::Schema, entity: &str, actions: &[AutomationAction]) -> Result<()> {
+pub(crate) fn check_targets(schema: &ferrum_meta::Schema, entity: &str, actions: &[Step]) -> Result<()> {
     let ent = schema.entity(entity).ok_or_else(|| Error::field("entity", "unknown entity"))?;
-    for (i, a) in actions.iter().enumerate() {
+    for (i, step) in actions.iter().enumerate() {
+        let a = step;
         let at = |m: String| Error::Validation(vec![FieldError::new("actions", m).in_row("actions", i)]);
         // What it reads through `links` are link fields of the record it runs on (BD-14).
         if let Some(n) = links_used(a)?.into_iter().find(|n| linked_entity(ent, n).is_none()) {
             return Err(at(format!("links.{n}: {n} is not a link field of {}", ent.def.label)));
         }
         // What it reads as `settings` is there (BD-17).
-        for src in sources(a) {
+        for src in step_sources(a) {
             if let Some(m) = settings_problem(schema, src)? {
                 return Err(at(m));
             }
         }
-        let (target, values) = match a {
+        let (target, values) = match &step.action {
+            AutomationAction::Find { entity: to, by, create, update } => {
+                let tent = schema.entity(to).cloned().ok_or_else(|| at(format!("find: unknown entity {to}")))?;
+                if by.is_empty() {
+                    return Err(at("find: by names the fields that pick the record".into()));
+                }
+                // `id` picks a record by its id (`item.id` in a loop).
+                let fields = by.keys().filter(|f| *f != "id").chain(create.iter().chain(update.iter()).flat_map(|m| m.keys()));
+                if let Some(f) = fields.clone().find(|f| tent.field(f).is_none_or(|d| d.ftype == ferrum_meta::FieldType::Table)) {
+                    return Err(at(format!("find: {} has no field {f}", tent.def.label)));
+                }
+                continue;
+            }
+            AutomationAction::ForEach { table, entity: over, link, effects, .. } => {
+                match (table, over) {
+                    (Some(t), None) if link.is_none() => {
+                        if !ent.field(t).is_some_and(|f| f.ftype == ferrum_meta::FieldType::Table) {
+                            return Err(at(format!("for_each: {t} is not a table of lines of {}", ent.def.label)));
+                        }
+                    }
+                    (None, Some(o)) => {
+                        let oent = schema.entity(o).ok_or_else(|| at(format!("for_each: unknown entity {o}")))?;
+                        let l = link.as_deref().ok_or_else(|| at(format!("for_each: link names the field of {o} that points here")))?;
+                        if linked_entity(oent, l) != Some(entity) {
+                            return Err(at(format!("for_each: {l} is not a link field of {} to {}", oent.def.label, ent.def.label)));
+                        }
+                    }
+                    _ => return Err(at("for_each runs over a table (`table`) or the records linking here (`entity` and `link`)".into())),
+                }
+                check_targets(schema, entity, effects).map_err(|e| match e {
+                    Error::Validation(fs) => {
+                        at(fs.into_iter().map(|f| format!("for_each, effect {}: {}", f.row.map_or(0, |r| r.1) + 1, f.message)).collect::<Vec<_>>().join("; "))
+                    }
+                    other => other,
+                })?;
+                continue;
+            }
+            AutomationAction::CopyLines { table, link, result, from_table, values, .. } => {
+                crate::actions::writable_as(ent, table, true).map_err(at)?;
+                let source = match (link, result) {
+                    (Some(l), None) => linked_entity(ent, l).ok_or_else(|| at(format!("copy_lines: {l} is not a link field of {}", ent.def.label)))?,
+                    (None, Some(n)) => match actions.get(*n).filter(|_| *n < i).map(|s| &s.action) {
+                        Some(AutomationAction::Find { entity, .. } | AutomationAction::CreateDocument { entity, .. }) => entity.as_str(),
+                        _ => return Err(at(format!("copy_lines: result {n} is not an earlier find or create_document"))),
+                    },
+                    _ => return Err(at("copy_lines copies from the record a link field names (`link`) or an earlier effect gave (`result`)".into())),
+                };
+                let sent = schema.entity(source).ok_or_else(|| at(format!("copy_lines: {source} is not installed")))?;
+                if !sent.field(from_table).is_some_and(|f| f.ftype == ferrum_meta::FieldType::Table) {
+                    return Err(at(format!("copy_lines: {from_table} is not a table of lines of {}", sent.def.label)));
+                }
+                let of = ent.field(table).and_then(|f| f.of.as_deref()).and_then(|c| schema.entity(c)).cloned();
+                let of = of.ok_or_else(|| at(format!("the lines of {table} are not installed")))?;
+                if let Some(Err(m)) = values.keys().map(|f| crate::actions::writable(&of, f)).find(|r| r.is_err()) {
+                    return Err(at(m));
+                }
+                continue;
+            }
             AutomationAction::SetFields { values } => (ent.clone(), values),
             AutomationAction::CreateDocument { entity, values } => {
                 (schema.entity(entity).cloned().ok_or_else(|| at(format!("unknown entity {entity}")))?, values)
@@ -624,7 +784,7 @@ async fn run_one(
         for (i, action) in validate_actions(&a.actions)?.into_iter().enumerate() {
             let done = Value::Array(results.clone());
             results.push(
-                execute(k, &ctx, &mut tx, entity, record, (raw, cel_doc), &user, &[("results", &done), ("links", &links)], &format!("{origin}{i}"), action)
+                run_step(k, &ctx, &mut tx, entity, record, (raw, cel_doc), &user, &[("results", &done), ("links", &links)], &format!("{origin}{i}"), action)
                     .await?,
             );
         }
@@ -641,6 +801,28 @@ async fn run_one(
         .await?;
     tx.commit().await?;
     Ok(status)
+}
+
+/// Runs `step` as [`execute`] does its action, when its `when` holds (it sees what the values see); null otherwise.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_step(
+    k: &Kernel,
+    ctx: &Ctx,
+    tx: &mut crate::db::Tx,
+    entity: &str,
+    record: Option<Uuid>,
+    (raw, doc): (&Value, &Value),
+    user: &Value,
+    extra: &[(&str, &Value)],
+    key: &str,
+    step: Step,
+) -> Result<Value> {
+    if let Some(w) = &step.when
+        && eval_with(w, doc, user, extra)? != Value::Bool(true)
+    {
+        return Ok(Value::Null);
+    }
+    execute(k, ctx, tx, entity, record, (raw, doc), user, extra, key, step.action).await
 }
 
 /// Runs one action as `ctx` in `tx`, its expressions over `doc` (the record as CEL sees it; `raw`, as stored), `user` and `extra`
@@ -776,8 +958,177 @@ pub(crate) async fn execute(
             let id = record.ok_or_else(|| Error::invalid("set_line needs a record"))?;
             return write_line(k, ctx, tx, entity, id, (raw, doc), user, extra, &table, Some(&when), values).await;
         }
+        AutomationAction::Find { entity: target, by, create, update } => {
+            return Box::pin(find(k, ctx, tx, entity, (raw, doc), user, extra, &target, by, create, update)).await.map_err(|e| crate::pack::about("find", e));
+        }
+        AutomationAction::ForEach { table, entity: over, link, filter, effects } => {
+            let id = record.ok_or_else(|| Error::invalid("for_each needs a record"))?;
+            let (what, items) = match (table, over) {
+                (Some(t), _) => {
+                    let ent = ctx.schema.entity(entity).cloned().ok_or_else(|| Error::invalid(format!("unknown entity {entity}")))?;
+                    let cent = ent.field(&t).and_then(|f| f.of.as_deref()).and_then(|c| ctx.schema.entity(c)).cloned();
+                    let cent = cent.ok_or_else(|| Error::invalid(format!("for_each: {t} is not a table of lines of {}", ent.def.label)))?;
+                    let stored = k.get_tx(ctx, tx, entity, id, false).await?;
+                    let rows = stored.get(&t).and_then(Value::as_array).cloned().unwrap_or_default();
+                    (format!("lines of {t}"), rows.iter().map(|r| cent.cel_view(r, &ctx.schema)).collect::<Vec<_>>())
+                }
+                (None, Some(o)) => {
+                    let oent = ctx.schema.entity(&o).cloned().ok_or_else(|| Error::invalid(format!("for_each: {o} is not installed")))?;
+                    let link = link.ok_or_else(|| Error::invalid("for_each: link names the field that points here"))?;
+                    let filters = [crate::query::Filter::eq(&link, id.to_string())];
+                    let found = k.find_tx(ctx, tx, &o, &filters, Some("created_at asc"), MAX_ITEMS as u32 + 1).await?;
+                    (format!("{} records", oent.def.label), found.into_iter().map(|d| oent.cel_view(&Value::Object(d), &ctx.schema)).collect())
+                }
+                (None, None) => return Err(Error::invalid("for_each runs over a table or the records linking here")),
+            };
+            if items.len() > MAX_ITEMS {
+                return Err(Error::invalid(format!("for_each: more than {MAX_ITEMS} {what}, the most one loop runs over; nothing was done")));
+            }
+            let mut out = Vec::new();
+            for (n, item) in items.iter().enumerate() {
+                let mut vars = extra.to_vec();
+                vars.push(("item", item));
+                if let Some(w) = &filter
+                    && eval_with(w, doc, user, &vars)? != Value::Bool(true)
+                {
+                    continue;
+                }
+                let tag = item.get("id").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| n.to_string());
+                let mut here = Vec::new();
+                for (j, s) in effects.iter().cloned().enumerate() {
+                    // Its own effect key per item, so an `invoke` in a loop runs once for each.
+                    let r = Box::pin(run_step(k, ctx, tx, entity, record, (raw, doc), user, &vars, &format!("{key}.{tag}.{j}"), s)).await;
+                    here.push(r.map_err(|e| crate::pack::about(&format!("for_each, item {}, effect {}", n + 1, j + 1), e))?);
+                }
+                out.push(Value::Array(here));
+            }
+            return Ok(Value::Array(out));
+        }
+        AutomationAction::CopyLines { table, link, result, from_table, values, mode } => {
+            let id = record.ok_or_else(|| Error::invalid("copy_lines needs a record"))?;
+            return copy_lines(k, ctx, tx, entity, id, (raw, doc), user, extra, (&table, link, result, &from_table), values, mode)
+                .await
+                .map_err(|e| crate::pack::about("copy_lines", e));
+        }
     }
     Ok(Value::Null)
+}
+
+/// What `find` does (see [`AutomationAction::Find`]).
+#[allow(clippy::too_many_arguments)]
+async fn find(
+    k: &Kernel,
+    ctx: &Ctx,
+    tx: &mut crate::db::Tx,
+    entity: &str,
+    (raw, doc): (&Value, &Value),
+    user: &Value,
+    extra: &[(&str, &Value)],
+    target: &str,
+    by: BTreeMap<String, String>,
+    create: Option<BTreeMap<String, String>>,
+    update: Option<BTreeMap<String, String>>,
+) -> Result<Value> {
+    let tent = ctx.schema.entity(target).cloned().ok_or_else(|| Error::invalid(format!("{target} is not installed")))?;
+    let made = |d: &Doc| serde_json::json!({"entity": target, "id": d.get("id"), "number": d.get("number")});
+    let mut keys = Doc::new();
+    for (f, src) in by {
+        let v = effect_value(k, ctx, tx, entity, &src, doc, user, extra, &[("doc", raw)]).await?;
+        if v.is_null() || v == Value::String(String::new()) {
+            return Err(Error::invalid(format!("{f} is empty, so it picks no {}", tent.def.label)));
+        }
+        keys.insert(f, v);
+    }
+    let said = || keys.iter().map(|(f, v)| format!("{f} {}", as_text(v.clone()))).collect::<Vec<_>>().join(", ");
+    if create.is_some() {
+        // Runs that may make the same record take turns: the second finds what the first made (read committed), where
+        // without this both would find none and make two. A unique key on `by` refuses a second all the same.
+        let lock = format!("find:{}:{target}:{}", ctx.tenant, Value::Object(keys.clone()));
+        sqlx::query("select pg_advisory_xact_lock(hashtextextended($1, 0))").bind(lock).execute(&mut **tx).await?;
+    }
+    let filters: Vec<crate::query::Filter> = keys.iter().map(|(f, v)| crate::query::Filter::eq(f, v.clone())).collect();
+    match k.find_tx(ctx, tx, target, &filters, None, 2).await?.as_slice() {
+        [] => {
+            let Some(values) = create else { return Ok(Value::Null) };
+            let mut input = keys.clone();
+            for (f, src) in values {
+                input.insert(f, effect_value(k, ctx, tx, entity, &src, doc, user, extra, &[("doc", raw)]).await?);
+            }
+            let d = k.insert_tx(ctx, tx, target, input).await?;
+            Ok(made(&d))
+        }
+        [one] => {
+            let Some(values) = update else { return Ok(made(one)) };
+            let id = crate::store::doc_id(one)?;
+            let linked = Value::Object(k.get_tx(ctx, tx, target, id, true).await?);
+            let seen = tent.cel_view(&linked, &ctx.schema);
+            let mut vars = extra.to_vec();
+            vars.push(("linked", &seen));
+            let mut patch = Doc::new();
+            for (f, src) in values {
+                patch.insert(f, effect_value(k, ctx, tx, entity, &src, doc, user, &vars, &[("doc", raw), ("linked", &linked)]).await?);
+            }
+            let d = k.update_tx(ctx, tx, target, id, patch, None).await?;
+            Ok(made(&d))
+        }
+        _ => Err(Error::invalid(format!("more than one {} has {}: it picks one record, never a guess", tent.def.label, said()))),
+    }
+}
+
+/// What `copy_lines` does (see [`AutomationAction::CopyLines`]): one save of the record.
+#[allow(clippy::too_many_arguments)]
+async fn copy_lines(
+    k: &Kernel,
+    ctx: &Ctx,
+    tx: &mut crate::db::Tx,
+    entity: &str,
+    id: Uuid,
+    (raw, doc): (&Value, &Value),
+    user: &Value,
+    extra: &[(&str, &Value)],
+    (table, link, result, from_table): (&str, Option<String>, Option<usize>, &str),
+    values: BTreeMap<String, String>,
+    mode: CopyMode,
+) -> Result<Value> {
+    let ent = ctx.schema.entity(entity).cloned().ok_or_else(|| Error::invalid(format!("unknown entity {entity}")))?;
+    let source = match (link, result) {
+        (Some(l), _) => linked_entity(&ent, &l).map(str::to_string).zip(doc.get(&l).and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok())),
+        (None, Some(n)) => {
+            let given = extra.iter().find(|(name, _)| *name == "results").and_then(|(_, r)| r.get(n)).cloned().unwrap_or_default();
+            given.get("entity").and_then(Value::as_str).map(str::to_string).zip(given.get("id").and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok()))
+        }
+        (None, None) => None,
+    };
+    // Nothing to copy from.
+    let Some((from, from_id)) = source else { return Ok(Value::Null) };
+    let sent = ctx.schema.entity(&from).cloned().ok_or_else(|| Error::invalid(format!("{from} is not installed")))?;
+    let scent = sent.field(from_table).and_then(|f| f.of.as_deref()).and_then(|c| ctx.schema.entity(c)).cloned();
+    let scent = scent.ok_or_else(|| Error::invalid(format!("{from_table} is not a table of lines of {}", sent.def.label)))?;
+    let rows = k.get_tx(ctx, tx, &from, from_id, false).await?.get(from_table).and_then(Value::as_array).cloned().unwrap_or_default();
+    if rows.len() > MAX_ITEMS {
+        return Err(Error::invalid(format!(
+            "{} has {} lines of {from_table}, more than the {MAX_ITEMS} one copy takes; nothing was copied",
+            sent.def.label,
+            rows.len()
+        )));
+    }
+    let stored = k.get_tx(ctx, tx, entity, id, false).await?;
+    let mut lines: Vec<Value> = match mode {
+        CopyMode::Append => stored.get(table).and_then(Value::as_array).into_iter().flatten().map(|r| serde_json::json!({"id": r.get("id")})).collect(),
+        CopyMode::Replace => vec![],
+    };
+    for r in &rows {
+        let item = scent.cel_view(r, &ctx.schema);
+        let mut vars = extra.to_vec();
+        vars.push(("item", &item));
+        let mut line = Map::new();
+        for (f, src) in &values {
+            line.insert(f.clone(), effect_value(k, ctx, tx, entity, src, doc, user, &vars, &[("doc", raw), ("item", r)]).await?);
+        }
+        lines.push(Value::Object(line));
+    }
+    let d = k.update_tx(ctx, tx, entity, id, Doc::from_iter([(table.to_string(), Value::Array(lines))]), None).await?;
+    Ok(serde_json::json!({"entity": entity, "id": d.get("id"), "number": d.get("number"), "copied": rows.len()}))
 }
 
 /// `append_line` (no `when`) or `set_line` on record `id`: through the record's ordinary save, with a patch that names
@@ -847,9 +1198,12 @@ pub async fn save(k: &Kernel, ctx: &Ctx, input: &Map<String, Value>) -> Result<U
     if ctx.is_admin
         && let Ok(list) = validate_actions(input.get("actions").unwrap_or(&Value::Null))
     {
-        for (i, a) in list.iter().enumerate() {
-            if let AutomationAction::Invoke { capability, input, .. } = a {
-                check_invoke(k, ctx, capability, input).map_err(|e| Error::Validation(vec![FieldError::new("actions", e.to_string()).in_row("actions", i)]))?;
+        for (i, s) in list.iter().enumerate() {
+            for a in every(std::slice::from_ref(s)) {
+                if let AutomationAction::Invoke { capability, input, .. } = a {
+                    check_invoke(k, ctx, capability, input)
+                        .map_err(|e| Error::Validation(vec![FieldError::new("actions", e.to_string()).in_row("actions", i)]))?;
+                }
             }
         }
     }

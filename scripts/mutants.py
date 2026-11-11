@@ -72,6 +72,8 @@ CONSENT = ("-p", "ferrum-kernel", "--test", "consent_it")
 SCHEDULE = ("-p", "ferrum-kernel", "--test", "schedule_it")
 PACKS = ("-p", "ferrum-studio", "--test", "pack_it")
 ACTIONS = ("-p", "ferrum-kernel", "--test", "actions_it")
+SETTINGS = ("-p", "ferrum-kernel", "--test", "settings_it")
+EFFECTS = ("-p", "ferrum-kernel", "--test", "effects_it")
 INVOKE = ("-p", "ferrum-kernel", "--test", "invoke_it")
 TARGETS = ("-p", "ferrum-kernel", "--test", "targets_it")
 META_TARGETS = ("-p", "ferrum-meta", "--lib", "service_targets")
@@ -661,7 +663,7 @@ MUTANTS = [
     ("automation-old-unseen", "crates/kernel/src/automation.rs", "(&doc, &cel_doc, cel_old.as_ref())", "(&doc, &cel_doc, None)", TARGETS),
     ("links-read-as-the-saver", "crates/kernel/src/links.rs", "let workspace = Ctx::system(ctx.tenant, ctx.schema.clone());", "let workspace = ctx.clone();", LINKS),
     ("links-keep-secrets", "crates/kernel/src/links.rs", "                    m.remove(&f.name);\n", "\n", LINKS),
-    ("links-inbox-guard-evaluated", "crates/kernel/src/collab.rs", "!g.links().is_empty() || g.eval_bool(", "false || g.eval_bool(", LINKS),
+    ("links-inbox-guard-evaluated", "crates/kernel/src/collab.rs", "!g.links().is_empty()\n                                || !g.settings()", "false\n                                || !g.settings()", LINKS),
     ("links-names-unchecked", "crates/meta/src/catalog.rs", "if let Some(n) = e.links().iter().find(|n| !on.fields", "if let Some(n) = e.links().iter().find(|n| false && !on.fields", META_LINKS),
     ("links-in-browser-expressions", "crates/meta/src/catalog.rs", "    if !reads {\n        return Err(format!(", "    if false {\n        return Err(format!(", META_LINKS),
     ("line-patch-forgets-lines", "crates/kernel/src/automation.rs", "rows.iter().map(|r| serde_json::json!({\"id\": r.get(\"id\")}))", "rows.iter().map(|_| serde_json::json!({}))", LINKS),
@@ -674,6 +676,14 @@ MUTANTS = [
     ("published-404s-differ", "crates/kernel/src/published.rs", "let Some(l) = schema.published_list(name) else { return Ok(None) };", "let Some(l) = schema.published_list(name) else { return Err(Error::NotFound(format!(\"list {name}\"))) };", PUBLISHED),
     ("published-inactive-served", "crates/kernel/src/published.rs", ".filter(|(_, status, _)| status == \"active\")", "", PUBLISHED),
     ("published-email-allowed", "crates/meta/src/published.rs", "if matches!(f.ftype, FieldType::Email | FieldType::Phone | FieldType::Secret | FieldType::Attach) {", "if false {", META_PUBLISHED),
+    # A workspace's settings in expressions (docs/builder/expressions.md, Settings; BD-17).
+    ("settings-read-with-the-savers-rights", "crates/kernel/src/settings.rs", "let workspace = Ctx::system(ctx.tenant, ctx.schema.clone());", "let workspace = ctx.clone();", SETTINGS),
+    ("settings-second-record-allowed", "crates/kernel/src/store.rs", "    if ent.def.kind == EntityKind::Settings {\n        keys.push(vec![]);", "    if false {\n        keys.push(vec![]);", SETTINGS),
+    ("settings-pack-overwrites", "crates/kernel/src/pack.rs", "        if !self.find_tx(ctx, tx, &sec.entity, &[], None, 1).await?.is_empty() {", "        if false {", SETTINGS),
+    # Effects that branch, find and loop (docs/api.md, Configured actions; BD-18).
+    ("effect-when-ignored", "crates/kernel/src/automation.rs", "        && eval_with(w, doc, user, extra)? != Value::Bool(true)\n    {\n        return Ok(Value::Null);", "        && false\n    {\n        return Ok(Value::Null);", EFFECTS),
+    ("find-takes-the-first-of-two", "crates/kernel/src/automation.rs", "        _ => Err(Error::invalid(format!(\"more than one {}", "        [one, ..] => Ok(made(one)),\n        _ => Err(Error::invalid(format!(\"more than one {}", EFFECTS),
+    ("for-each-cut-silently", "crates/kernel/src/automation.rs", "            if items.len() > MAX_ITEMS {", "            if false {", EFFECTS),
 
 ]
 

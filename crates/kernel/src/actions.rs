@@ -9,7 +9,7 @@
 //! effect writes only the workspace's own fields or fields a person may type (never the platform's columns, a
 //! package's read-only or computed fields, a secret or a field group), and no effect runs another action.
 
-use crate::automation::{self, AutomationAction};
+use crate::automation::{self, AutomationAction, Step};
 use crate::ctx::{Ctx, PermSet};
 use crate::error::{Error, Result};
 use crate::{Doc, Kernel};
@@ -27,9 +27,22 @@ pub fn problems(k: &Kernel, tenant: Uuid, schema: &Schema) -> Vec<String> {
     let mut out = Vec::new();
     for ent in schema.entities.values() {
         for a in ent.def.actions.iter().filter(|a| !a.effects.is_empty()) {
+            let mut steps = Vec::new();
             for (i, raw) in a.effects.iter().enumerate() {
-                if let Err(m) = check_effect(k, &system, schema, ent, raw) {
-                    out.push(format!("{}: action {}, effect {}: {m}", ent.def.name, a.name, i + 1));
+                match serde_json::from_value::<Step>(raw.clone()) {
+                    Ok(s) => match check_effect(k, &system, schema, ent, &s) {
+                        Ok(()) => steps.push(s),
+                        Err(m) => out.push(format!("{}: action {}, effect {}: {m}", ent.def.name, a.name, i + 1)),
+                    },
+                    Err(e) => out.push(format!("{}: action {}, effect {}: {e}", ent.def.name, a.name, i + 1)),
+                }
+            }
+            // What one effect reads from another (`copy_lines` from an earlier `find`) is checked across them.
+            if steps.len() == a.effects.len()
+                && let Err(Error::Validation(fs)) = automation::check_targets(schema, &ent.def.name, &steps)
+            {
+                for f in fs {
+                    out.push(format!("{}: action {}, effect {}: {}", ent.def.name, a.name, f.row.map_or(0, |r| r.1) + 1, f.message));
                 }
             }
         }
@@ -37,15 +50,30 @@ pub fn problems(k: &Kernel, tenant: Uuid, schema: &Schema) -> Vec<String> {
     out
 }
 
-fn check_effect<'a>(k: &Kernel, system: &dyn Fn() -> &'a Ctx, schema: &Schema, ent: &EffEntity, raw: &Value) -> std::result::Result<(), String> {
-    let effect: AutomationAction = serde_json::from_value(raw.clone()).map_err(|e| e.to_string())?;
+fn check_effect<'a>(k: &Kernel, system: &dyn Fn() -> &'a Ctx, schema: &Schema, ent: &EffEntity, step: &Step) -> std::result::Result<(), String> {
     let said = |e: Error| match e {
         Error::Validation(fs) => fs.into_iter().map(|f| f.message).collect::<Vec<_>>().join("; "),
         other => other.to_string(),
     };
-    automation::check_action(&effect).map_err(said)?;
-    automation::check_targets(schema, &ent.def.name, std::slice::from_ref(&effect)).map_err(said)?;
-    let (target, values) = match &effect {
+    automation::check_step(step).map_err(said)?;
+    // Each effect alone; one reading an earlier one's result (`copy_lines` from a `find`) is checked with the others.
+    if !matches!(step.action, AutomationAction::CopyLines { result: Some(_), .. }) {
+        automation::check_targets(schema, &ent.def.name, std::slice::from_ref(step)).map_err(said)?;
+    }
+    if let AutomationAction::ForEach { effects, .. } = &step.action {
+        return effects
+            .iter()
+            .enumerate()
+            .try_for_each(|(j, e)| check_effect(k, system, schema, ent, e).map_err(|m| format!("for_each, effect {}: {m}", j + 1)));
+    }
+    let both: BTreeMap<String, String>;
+    let (target, values) = match &step.action {
+        // What it makes or changes is written as the system: fields an effect may write.
+        AutomationAction::Find { entity, by, create, update } => {
+            both = by.iter().filter(|_| create.is_some()).chain(create.iter().chain(update.iter()).flatten()).map(|(k, v)| (k.clone(), v.clone())).collect();
+            (schema.entity(entity).map(|e| &**e), &both)
+        }
+        AutomationAction::CopyLines { .. } | AutomationAction::ForEach { .. } => return Ok(()),
         AutomationAction::SetFields { values } => (Some(ent), values),
         AutomationAction::CreateDocument { entity, values } => (schema.entity(entity).map(|e| &**e), values),
         AutomationAction::UpdateLinked { link, values } => (ent.field(link).and_then(|f| f.to.as_deref()).and_then(|t| schema.entity(t)).map(|e| &**e), values),
@@ -133,13 +161,13 @@ pub(crate) async fn run(
         perms: Arc::new(PermSet { admin: true, entities: BTreeMap::new() }),
         ..ctx.clone()
     };
-    let effects: Vec<AutomationAction> = serde_json::from_value(Value::Array(def.effects.clone())).map_err(|e| Error::invalid(e.to_string()))?;
+    let effects: Vec<Step> = serde_json::from_value(Value::Array(def.effects.clone())).map_err(|e| Error::invalid(e.to_string()))?;
     // An `invoke` without a key of its own does its step once per action, record version (as pressed) and place.
     let origin = format!("action:{}.{}:{id}:v{}:", ent.def.name, def.name, doc.get("version").unwrap_or(&Value::Null));
     let mut made = Vec::new();
     let mut results = Vec::new();
     for (i, effect) in effects.into_iter().enumerate() {
-        let creates = matches!(effect, AutomationAction::CreateDocument { .. });
+        let creates = matches!(effect.action, AutomationAction::CreateDocument { .. });
         // Each effect sees the record as the ones before it left it, and what each before it gave as `results`.
         let now = Value::Object(k.get_tx(&system, tx, &ent.def.name, id, false).await?);
         let view = ent.cel_view(&now, &ctx.schema);
@@ -148,8 +176,8 @@ pub(crate) async fn run(
         // The settings it reads, as the workspace has them now (BD-17).
         let user = crate::settings::with(k, ctx, tx, automation::settings_used(&effect)?).await?.user_value();
         let extra = [("params", &params), ("results", &done), ("links", &links)];
-        let out = automation::execute(k, &system, tx, &ent.def.name, Some(id), (&now, &view), &user, &extra, &format!("{origin}{i}"), effect).await?;
-        if creates {
+        let out = automation::run_step(k, &system, tx, &ent.def.name, Some(id), (&now, &view), &user, &extra, &format!("{origin}{i}"), effect).await?;
+        if creates && !out.is_null() {
             made.push(out.clone());
         }
         results.push(out);
