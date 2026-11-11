@@ -356,6 +356,23 @@ pub fn origin(o: Option<&str>) -> Option<&str> {
     (!rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']'))).then_some(o)
 }
 
+/// Where a mention of a record opens (`{origin}/open/{entity}/{id}`, which checks the reader's
+/// rights), as the editor's `mention.ts` checks its values; None for a person or without an origin.
+pub fn mention_href<T: ReadTxn>(e: &XmlElementRef, txn: &T, origin: Option<&str>) -> Option<String> {
+    let get = |k: &str| match any(e.get_attribute(txn, k)) {
+        Some(Any::String(s)) => Some(s.to_string()),
+        _ => None,
+    };
+    let entity = get("entity").filter(|x| {
+        (1..=64).contains(&x.len()) && x.starts_with(|c: char| c.is_ascii_alphabetic()) && x.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })?;
+    let id = get("id").filter(|x| {
+        (1..=64).contains(&x.len()) && x.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')) && !x.chars().all(|c| c == '.')
+    })?;
+    let origin = origin?;
+    (get("kind").as_deref() == Some("record")).then(|| format!("{origin}/open/{entity}/{id}"))
+}
+
 // ── the page ──
 
 /// A document's page, in twips, as the editor's `cleanSetup` reads it: anything missing or out
@@ -986,6 +1003,11 @@ pub(crate) mod fixtures {
                 (".", Attrs::new()),
             ],
         );
+        let m = el(&mut txn, &links, "mention", &[("kind", Any::from("record")), ("entity", Any::from("Customer")), ("id", Any::from("c-42"))]);
+        m.push_back(&mut txn, XmlTextPrelim::new("@Acme Foods"));
+        runs(&mut txn, &links, &[(" asked ", Attrs::new())]);
+        let m = el(&mut txn, &links, "mention", &[("kind", Any::from("person")), ("id", Any::from("u1"))]);
+        m.push_back(&mut txn, XmlTextPrelim::new("@Priya Nair"));
         let ul = el(&mut txn, &fragment, "bulletList", &[("bullet", Any::from("square"))]);
         let li = el(&mut txn, &ul, "listItem", &[]);
         para(&mut txn, &li, &[], "A square bullet");

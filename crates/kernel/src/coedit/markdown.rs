@@ -790,7 +790,15 @@ fn inline_md<T: ReadTxn>(el: &XmlElementRef, txn: &T, cx: &mut Cx) -> String {
                     }
                 }
             }
-            XmlOut::Element(e) => out.push_str(&inline_md(&e, txn, cx)),
+            XmlOut::Element(e) => {
+                let text = inline_md(&e, txn, cx);
+                match (&**e.tag() == "mention").then(|| format::mention_href(&e, txn, cx.origin)).flatten() {
+                    Some(href) => {
+                        let _ = std::fmt::Write::write_fmt(&mut out, format_args!("[{text}]({})", address(&href)));
+                    }
+                    None => out.push_str(&text),
+                }
+            }
             XmlOut::Fragment(_) => {}
         }
     }
@@ -1073,6 +1081,7 @@ mod tests {
             "bold italic***[^1] and the text goes on after the note.",
             "###### Heading level 6",
             "Back to the [introduction](#introduction), the [budget document](https://acme.example.com/docs/d/0192f0c4-1c2b-7c3d-8e4f-5a6b7c8d9e0f)",
+            "[@Acme Foods](https://acme.example.com/open/Customer/c-42) asked @Priya Nair",
             "- A square bullet\n  - A circle inside it",
             "3. Letter c\n4. Letter d",
             "> A warning callout.",
