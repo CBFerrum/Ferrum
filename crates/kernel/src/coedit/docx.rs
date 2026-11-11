@@ -33,6 +33,19 @@ pub struct ImageData {
 }
 
 const EMU_PER_PX: u64 = 9525;
+/// The editor's line height is a multiple of the font size (CSS); Word's `auto` spacing is a
+/// multiple of the font's own line (Arial's is 1.117 of its size). A ratio as Word writes it.
+fn line(ratio: f64) -> u32 {
+    (ratio / 1.117 * 240.0).round() as u32
+}
+/// The editor's list indents (`padding-left` 1.6em for bullets, 1.8em for numbers, at 11 pt), and
+/// where the bullet or number hangs from it.
+const BULLET_STEP: u32 = 352;
+const NUMBER_STEP: u32 = 396;
+const HANGING: u32 = 260;
+/// A list item's paragraphs (0.15em above and below), and a table cell's.
+const TIGHT: (u32, u32) = (0, 33);
+const CELL: (u32, u32) = (33, 33);
 const EMU_PER_TWIP: u64 = 635;
 const NS: &str = "xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" \
                   xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" \
@@ -56,6 +69,9 @@ struct Place {
     prefix: Option<String>,
     /// A callout's colour.
     shade: Option<&'static str>,
+    /// The space before and after its paragraphs, in twips, where the editor's differs from a
+    /// paragraph's own (list items, table cells); a paragraph's `spaceBefore`/`spaceAfter` win.
+    gap: Option<(u32, u32)>,
 }
 
 /// A list's numbering: bullets or numbers, its level, the glyph or number format, its start.
@@ -265,7 +281,7 @@ impl Writer<'_> {
                 for item in e.children(txn) {
                     let XmlOut::Element(li) = item else { continue };
                     let prefix = (list == "taskList").then(|| if truthy(li.get_attribute(txn, "checked")) { "\u{2611} " } else { "\u{2610} " });
-                    let indent = 720 * (level + 1);
+                    let indent = if list == "orderedList" { NUMBER_STEP } else { BULLET_STEP } * (level + 1);
                     let mut first = true;
                     for child in li.children(txn) {
                         let XmlOut::Element(c) = child else { continue };
@@ -282,6 +298,7 @@ impl Writer<'_> {
                             } else {
                                 None
                             },
+                            gap: place.gap.or(Some(TIGHT)),
                             ..place.clone()
                         };
                         self.block(&c, txn, &item_place, depth + u32::from(nested), out);
@@ -311,14 +328,14 @@ impl Writer<'_> {
             let _ = write!(ppr, "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"{fill}\"/>");
         }
         let mut spacing = String::new();
-        if let Some(pt) = format::space(attr("spaceBefore").as_ref()) {
-            let _ = write!(spacing, " w:before=\"{}\"", pt * 20);
+        if let Some(tw) = format::space(attr("spaceBefore").as_ref()).map(|pt| pt * 20).or(place.gap.map(|g| g.0)) {
+            let _ = write!(spacing, " w:before=\"{tw}\"");
         }
-        if let Some(pt) = format::space(attr("spaceAfter").as_ref()) {
-            let _ = write!(spacing, " w:after=\"{}\"", pt * 20);
+        if let Some(tw) = format::space(attr("spaceAfter").as_ref()).map(|pt| pt * 20).or(place.gap.map(|g| g.1)) {
+            let _ = write!(spacing, " w:after=\"{tw}\"");
         }
         if let Some(lh) = format::line_height(attr("lineHeight").as_ref()) {
-            let _ = write!(spacing, " w:line=\"{}\" w:lineRule=\"auto\"", (lh * 240.0).round() as u32);
+            let _ = write!(spacing, " w:line=\"{}\" w:lineRule=\"auto\"", line(lh));
         }
         if !spacing.is_empty() {
             let _ = write!(ppr, "<w:spacing{spacing}/>");
@@ -591,7 +608,7 @@ impl Writer<'_> {
                     }
                     Slot::Cell { col, span, down, el, header } => {
                         let mut content = String::new();
-                        let inner = Place { bold: *header || place.bold, ..Place::default() };
+                        let inner = Place { bold: *header || place.bold, gap: Some(CELL), ..Place::default() };
                         self.blocks(el.children(txn), txn, &inner, 0, &mut content);
                         if !content.contains("<w:p") {
                             content.push_str("<w:p/>");
@@ -603,8 +620,13 @@ impl Writer<'_> {
                         if *down > 1 {
                             out.push_str("<w:vMerge w:val=\"restart\"/>");
                         }
-                        if let Some(c) = format::color(any(el.get_attribute(txn, "background")).as_ref()) {
-                            let _ = write!(out, "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"{}\"/>", hex(&c));
+                        // A header cell is shaded as the editor draws it, unless it has a colour of its own.
+                        match format::color(any(el.get_attribute(txn, "background")).as_ref()) {
+                            Some(c) => {
+                                let _ = write!(out, "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"{}\"/>", hex(&c));
+                            }
+                            None if *header => out.push_str("<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"EFF1F5\"/>"),
+                            None => {}
                         }
                         let _ = write!(out, "</w:tcPr>{content}</w:tc>");
                     }
@@ -612,7 +634,8 @@ impl Writer<'_> {
             }
             out.push_str("</w:tr>");
         }
-        out.push_str("</w:tbl><w:p/>");
+        // The editor's 1em under a table: a paragraph of that height (Word needs one between tables).
+        out.push_str("</w:tbl><w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\" w:line=\"220\" w:lineRule=\"exact\"/></w:pPr></w:p>");
     }
 
     fn image<T: ReadTxn>(&mut self, e: &XmlElementRef, txn: &T, out: &mut String) {
@@ -806,21 +829,21 @@ fn text_run(s: &str, rpr: &str, tag: &str, out: &mut String) {
 
 const STYLES: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:eastAsia="Calibri" w:cs="Calibri"/><w:sz w:val="22"/><w:szCs w:val="22"/><w:lang w:val="en-US"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="120" w:line="276" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>
+<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:eastAsia="Arial" w:cs="Arial"/><w:sz w:val="22"/><w:szCs w:val="22"/><w:lang w:val="en-US"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:before="0" w:after="121" w:line="344" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>
 <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>
-<w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:after="80" w:line="240" w:lineRule="auto"/></w:pPr><w:rPr><w:sz w:val="52"/><w:szCs w:val="52"/></w:rPr></w:style>
-<w:style w:type="paragraph" w:styleId="Subtitle"><w:name w:val="Subtitle"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:after="240"/></w:pPr><w:rPr><w:color w:val="57606A"/><w:sz w:val="30"/><w:szCs w:val="30"/></w:rPr></w:style>
-<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="360" w:after="120"/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:sz w:val="36"/><w:szCs w:val="36"/></w:rPr></w:style>
-<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="280" w:after="100"/><w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:b/><w:sz w:val="30"/><w:szCs w:val="30"/></w:rPr></w:style>
-<w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="240" w:after="80"/><w:outlineLvl w:val="2"/></w:pPr><w:rPr><w:b/><w:sz w:val="26"/><w:szCs w:val="26"/></w:rPr></w:style>
-<w:style w:type="paragraph" w:styleId="Heading4"><w:name w:val="heading 4"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:outlineLvl w:val="3"/></w:pPr><w:rPr><w:b/><w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr></w:style>
-<w:style w:type="paragraph" w:styleId="Heading5"><w:name w:val="heading 5"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:outlineLvl w:val="4"/></w:pPr><w:rPr><w:b/></w:rPr></w:style>
-<w:style w:type="paragraph" w:styleId="Heading6"><w:name w:val="heading 6"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:outlineLvl w:val="5"/></w:pPr><w:rPr><w:b/><w:i/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="0" w:after="121" w:line="258" w:lineRule="auto"/></w:pPr><w:rPr><w:b/><w:sz w:val="52"/><w:szCs w:val="52"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Subtitle"><w:name w:val="Subtitle"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="0" w:after="210" w:line="279" w:lineRule="auto"/></w:pPr><w:rPr><w:color w:val="57606A"/><w:sz w:val="30"/><w:szCs w:val="30"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="295" w:after="151" w:line="269" w:lineRule="auto"/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:sz w:val="38"/><w:szCs w:val="38"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="202" w:after="121" w:line="279" w:lineRule="auto"/><w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:b/><w:sz w:val="29"/><w:szCs w:val="29"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="145" w:after="121"/><w:outlineLvl w:val="2"/></w:pPr><w:rPr><w:b/><w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading4"><w:name w:val="heading 4"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="122" w:after="121"/><w:outlineLvl w:val="3"/></w:pPr><w:rPr><w:b/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading5"><w:name w:val="heading 5"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="110" w:after="121"/><w:outlineLvl w:val="4"/></w:pPr><w:rPr><w:b/><w:sz w:val="21"/><w:szCs w:val="21"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading6"><w:name w:val="heading 6"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="110" w:after="121"/><w:outlineLvl w:val="5"/></w:pPr><w:rPr><w:b/><w:i/><w:sz w:val="21"/><w:szCs w:val="21"/></w:rPr></w:style>
 <w:style w:type="paragraph" w:styleId="Quote"><w:name w:val="Quote"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:pBdr><w:left w:val="single" w:sz="18" w:space="8" w:color="D0D7DE"/></w:pBdr><w:ind w:left="284"/></w:pPr><w:rPr><w:color w:val="57606A"/></w:rPr></w:style>
 <w:style w:type="paragraph" w:styleId="Code"><w:name w:val="Code"/><w:basedOn w:val="Normal"/><w:pPr><w:shd w:val="clear" w:color="auto" w:fill="F6F8FA"/><w:spacing w:after="120" w:line="240" w:lineRule="auto"/></w:pPr><w:rPr><w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Consolas"/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr></w:style>
 <w:style w:type="paragraph" w:styleId="Caption"><w:name w:val="caption"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="60" w:after="200"/></w:pPr><w:rPr><w:i/><w:color w:val="57606A"/><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr></w:style>
-<w:style w:type="paragraph" w:styleId="Header"><w:name w:val="header"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:rPr><w:color w:val="555555"/><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr></w:style>
-<w:style w:type="paragraph" w:styleId="Footer"><w:name w:val="footer"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:rPr><w:color w:val="555555"/><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Header"><w:name w:val="header"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:before="0" w:after="0" w:line="301" w:lineRule="auto"/></w:pPr><w:rPr><w:color w:val="555555"/><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Footer"><w:name w:val="footer"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:before="0" w:after="0" w:line="301" w:lineRule="auto"/></w:pPr><w:rPr><w:color w:val="555555"/><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr></w:style>
 <w:style w:type="paragraph" w:styleId="FootnoteText"><w:name w:val="footnote text"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:rPr><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr></w:style>
 <w:style w:type="character" w:styleId="FootnoteReference"><w:name w:val="footnote reference"/><w:rPr><w:vertAlign w:val="superscript"/></w:rPr></w:style>
 <w:style w:type="paragraph" w:styleId="TOCHeading"><w:name w:val="TOC Heading"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="240" w:after="120"/></w:pPr><w:rPr><w:b/><w:sz w:val="28"/><w:szCs w:val="28"/></w:rPr></w:style>
@@ -833,7 +856,7 @@ const STYLES: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:style w:type="paragraph" w:styleId="CommentText"><w:name w:val="annotation text"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:rPr><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr></w:style>
 <w:style w:type="character" w:styleId="CommentReference"><w:name w:val="annotation reference"/><w:rPr><w:sz w:val="16"/><w:szCs w:val="16"/></w:rPr></w:style>
 <w:style w:type="character" w:styleId="Hyperlink"><w:name w:val="Hyperlink"/><w:rPr><w:color w:val="0969DA"/><w:u w:val="single"/></w:rPr></w:style>
-<w:style w:type="table" w:styleId="TableGrid"><w:name w:val="Table Grid"/><w:tblPr><w:tblBorders><w:top w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/><w:left w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/><w:bottom w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/><w:right w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/><w:insideH w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/><w:insideV w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/></w:tblBorders><w:tblCellMar><w:left w:w="108" w:type="dxa"/><w:right w:w="108" w:type="dxa"/></w:tblCellMar></w:tblPr></w:style>
+<w:style w:type="table" w:styleId="TableGrid"><w:name w:val="Table Grid"/><w:tblPr><w:tblBorders><w:top w:val="single" w:sz="6" w:space="0" w:color="C8CFD9"/><w:left w:val="single" w:sz="6" w:space="0" w:color="C8CFD9"/><w:bottom w:val="single" w:sz="6" w:space="0" w:color="C8CFD9"/><w:right w:val="single" w:sz="6" w:space="0" w:color="C8CFD9"/><w:insideH w:val="single" w:sz="6" w:space="0" w:color="C8CFD9"/><w:insideV w:val="single" w:sz="6" w:space="0" w:color="C8CFD9"/></w:tblBorders><w:tblCellMar><w:top w:w="88" w:type="dxa"/><w:left w:w="132" w:type="dxa"/><w:bottom w:w="88" w:type="dxa"/><w:right w:w="132" w:type="dxa"/></w:tblCellMar></w:tblPr></w:style>
 </w:styles>"#;
 
 /// The numbering of each list: one definition per kind, level and format, one instance per list
@@ -859,8 +882,8 @@ fn numbering(lists: &[List]) -> String {
             };
             let _ = write!(
                 out,
-                "<w:lvl w:ilvl=\"{l}\"><w:start w:val=\"1\"/><w:numFmt w:val=\"{fmt}\"/><w:lvlText w:val=\"{text}\"/><w:lvlJc w:val=\"left\"/><w:pPr><w:ind w:left=\"{}\" w:hanging=\"360\"/></w:pPr></w:lvl>",
-                720 * (l + 1)
+                "<w:lvl w:ilvl=\"{l}\"><w:start w:val=\"1\"/><w:numFmt w:val=\"{fmt}\"/><w:lvlText w:val=\"{text}\"/><w:lvlJc w:val=\"left\"/><w:pPr><w:ind w:left=\"{}\" w:hanging=\"{HANGING}\"/></w:pPr></w:lvl>",
+                if k.ordered { NUMBER_STEP } else { BULLET_STEP } * (l + 1)
             );
         }
         out.push_str("</w:abstractNum>");
@@ -1061,7 +1084,7 @@ pub(super) fn write(
     let mut fonts = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<w:fonts xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">",
     );
-    w.fonts.insert(("Calibri".into(), "swiss"));
+    w.fonts.insert(("Arial".into(), "swiss"));
     w.fonts.insert(("Consolas".into(), "modern"));
     for (name, family) in &w.fonts {
         let _ = write!(fonts, "<w:font w:name=\"{}\"><w:family w:val=\"{family}\"/></w:font>", attr(name));
@@ -1292,8 +1315,8 @@ mod tests {
             "<w:headerReference w:type=\"default\" r:id=\"rIdPart1\"/><w:footerReference w:type=\"default\" r:id=\"rIdPart2\"/><w:headerReference w:type=\"first\" r:id=\"rIdPart3\"/><w:footerReference w:type=\"first\" r:id=\"rIdPart4\"/>",
             "<w:pStyle w:val=\"Title\"/></w:pPr><w:r><w:t xml:space=\"preserve\">Annual report 2026</w:t>",
             "<w:pStyle w:val=\"Subtitle\"/>",
-            // Spacing in twentieths of a point, line height in 240ths, indent in twips, justified.
-            "<w:pPr><w:spacing w:before=\"120\" w:after=\"240\" w:line=\"360\" w:lineRule=\"auto\"/><w:ind w:left=\"720\"/><w:jc w:val=\"both\"/></w:pPr>",
+            // Spacing in twentieths of a point, line height in 240ths of Arial's line (1.5 of the size), indent in twips, justified.
+            "<w:pPr><w:spacing w:before=\"120\" w:after=\"240\" w:line=\"322\" w:lineRule=\"auto\"/><w:ind w:left=\"720\"/><w:jc w:val=\"both\"/></w:pPr>",
             "<w:rFonts w:ascii=\"Georgia\" w:hAnsi=\"Georgia\" w:eastAsia=\"Georgia\" w:cs=\"Georgia\"/></w:rPr><w:t xml:space=\"preserve\">Georgia</w:t>",
             "<w:rFonts w:ascii=\"Georgia\" w:hAnsi=\"Georgia\" w:eastAsia=\"Georgia\" w:cs=\"Georgia\"/></w:rPr><w:t xml:space=\"preserve\">, serif</w:t>",
             "<w:rFonts w:ascii=\"Courier New\" w:hAnsi=\"Courier New\" w:eastAsia=\"Courier New\" w:cs=\"Courier New\"/></w:rPr><w:t xml:space=\"preserve\">, mono</w:t>",
@@ -1321,7 +1344,7 @@ mod tests {
             // A table: its columns' widths (px × 15), a header row that repeats, merged cells both ways, colours.
             "<w:tblW w:w=\"7200\" w:type=\"dxa\"/><w:tblLayout w:type=\"fixed\"/></w:tblPr><w:tblGrid><w:gridCol w:w=\"3000\"/><w:gridCol w:w=\"1800\"/><w:gridCol w:w=\"2400\"/></w:tblGrid>",
             "<w:tr><w:trPr><w:tblHeader/></w:trPr>",
-            "<w:tcW w:w=\"4200\" w:type=\"dxa\"/><w:gridSpan w:val=\"2\"/></w:tcPr>",
+            "<w:tcW w:w=\"4200\" w:type=\"dxa\"/><w:gridSpan w:val=\"2\"/><w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"EFF1F5\"/></w:tcPr>",
             "<w:tcW w:w=\"3000\" w:type=\"dxa\"/><w:vMerge w:val=\"restart\"/><w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"FDE8E8\"/></w:tcPr>",
             "<w:tcW w:w=\"3000\" w:type=\"dxa\"/><w:vMerge/></w:tcPr><w:p/>",
             "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"E6F4EA\"/>",
@@ -1567,5 +1590,22 @@ mod tests {
         let (plain, lost) = super::super::docx_export(&doc, "Comments", None, &|_| None).unwrap();
         assert!(!part(&plain, "[Content_Types].xml").contains("comments") && !part(&plain, "word/document.xml").contains("comment"));
         assert!(!lost.iter().any(|l| l.contains("comment")));
+    }
+
+    /// Real documents' stored states (`*.ystate` in `FERRUM_PARITY_STATES`) as Word files in
+    /// `FERRUM_PARITY_OUT`, to render them with an office suite beside the editor's print.
+    #[test]
+    fn word_files_of_stored_states() {
+        let (Ok(dir), Ok(out)) = (std::env::var("FERRUM_PARITY_STATES"), std::env::var("FERRUM_PARITY_OUT")) else { return };
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "ystate") {
+                let doc = super::super::decode(&std::fs::read(&path).unwrap());
+                let name = path.file_stem().unwrap().to_string_lossy().to_string();
+                let (file, lost) = super::super::docx_export(&doc, &name, Some("https://acme.example.com"), &|_| None).unwrap();
+                std::fs::write(format!("{out}/{name}.docx"), file).unwrap();
+                eprintln!("{name}: {} words; not carried: {lost:?}", super::super::plain_text(&doc).split_whitespace().count());
+            }
+        }
     }
 }
