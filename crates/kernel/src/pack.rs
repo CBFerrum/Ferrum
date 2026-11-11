@@ -314,7 +314,7 @@ fn reference_entity(ctx: &Ctx, name: &str) -> Result<Arc<EffEntity>> {
 }
 
 /// An error about one item of a pack, saying which.
-fn about(what: &str, e: Error) -> Error {
+pub(crate) fn about(what: &str, e: Error) -> Error {
     match e {
         Error::Validation(fs) => Error::Validation(
             fs.into_iter()

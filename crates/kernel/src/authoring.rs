@@ -642,8 +642,12 @@ impl Kernel {
             let mut notes: Vec<String> = Vec::new();
             let mut steps: Vec<Value> = Vec::new();
             let list = crate::automation::validate_actions(&actions).unwrap_or_default();
-            for (i, a) in list.iter().enumerate() {
-                let step = format!("step_{}", i + 1);
+            for (i, s) in list.iter().enumerate() {
+                let a = &s.action;
+                let step = format!("step_{}", steps.len() + 1);
+                if s.when.is_some() {
+                    notes.push(format!("action {}: it ran only when its `when` held, which a process step does not say; add a decision", i + 1));
+                }
                 let action = |cap: String, input: Value, label: String| {
                     let v = version(&cap);
                     json!({"type": "action", "id": step, "label": label, "capability": {"id": cap, "version": v}, "input": input,
@@ -706,6 +710,12 @@ impl Kernel {
                         }
                         let input = Value::Object(given.iter().map(|(k, v)| (k.clone(), json!(trigger_of(v)))).collect());
                         action(capability.clone(), input, format!("Use {capability}"))
+                    }
+                    crate::automation::AutomationAction::Find { .. }
+                    | crate::automation::AutomationAction::ForEach { .. }
+                    | crate::automation::AutomationAction::CopyLines { .. } => {
+                        notes.push(format!("action {}: a find, loop or copy of lines is not carried over; say what the process does", i + 1));
+                        continue;
                     }
                     crate::automation::AutomationAction::AppendLine { table, .. } | crate::automation::AutomationAction::SetLine { table, .. } => {
                         notes.push(format!("{step}: it wrote one line of {table}, which a process step does not; say what it writes"));
