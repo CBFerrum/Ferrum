@@ -105,7 +105,7 @@ def editor_loads(office, wopi_src, token):
             if m.startswith("error:"):
                 s.close()
                 return False, seen
-            if m.startswith("status:") or m.startswith("statusindicator: ready"):
+            if m.startswith(("status:", "perm:")) or ('"command": "load"' in m and '"success": true' in m):
                 s.close()
                 return True, seen
     s.close()
@@ -180,10 +180,14 @@ def main():
         if status != 200:
             fail(f"LOCK answered {status}")
         status, _, original = call("GET", f"{base}/contents{q}")
-        if status != 200 or not zipfile.is_zipfile(io.BytesIO(original)):
+        # A file made by Drive's New menu is empty until the editor first saves it; save a minimal package then.
+        if status != 200 or (original and not zipfile.is_zipfile(io.BytesIO(original))):
             fail(f"GetFile for .{ext} did not return an Office file ({status})")
         out = io.BytesIO(original)
-        with zipfile.ZipFile(out, "a") as z:
+        with zipfile.ZipFile(out, "a" if original else "w") as z:
+            if not original:
+                z.writestr("[Content_Types].xml", '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/></Types>')
+                z.writestr("_rels/.rels", '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>')
             z.writestr("customXml/ferrum-smoke.txt", f"saved by office_check {stamp}")
         changed = out.getvalue()
         status, headers, _ = call("POST", f"{base}/contents{q}", body=changed, headers={"X-WOPI-Override": "PUT", "X-WOPI-Lock": lock})
