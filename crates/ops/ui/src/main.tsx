@@ -6,7 +6,7 @@ import { StrictMode, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Link, RouterProvider, useRouteError } from "react-router";
 import { addCatalogs, routeBase, shell, t, wordsReady } from "@ferrum/client";
-import { ConfirmHost, EmptyState, ErrorState, Toaster } from "@ferrum/kit";
+import { ConfirmHost, LoadFailed, StatePanel, Toaster } from "@ferrum/kit";
 import { RequireAuth, setFrameMode } from "@ferrum/records/frame";
 import "./styles.css";
 
@@ -18,14 +18,12 @@ const page = (name: "FormView" | "ListView" | "ReportView" | "AppSettingsPage" |
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false, staleTime: 5_000 } } });
 
 function RouteError() {
-  return <ErrorState error={useRouteError()} onRetry={() => window.location.reload()} />;
+  return <LoadFailed error={useRouteError()} onRetry={() => window.location.reload()} />;
 }
 
 function NotFound() {
   return (
-    <EmptyState title={t("Page not found")}>
-      <Link to="/">{t("Go to Operations")}</Link>
-    </EmptyState>
+    <StatePanel kind="empty" title={t("Page not found")} action={<Link className="btn btn-primary btn-md" to="/">{t("Go to Operations")}</Link>} />
   );
 }
 
