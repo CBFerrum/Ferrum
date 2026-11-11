@@ -95,6 +95,39 @@ impl Expr {
         &self.source
     }
 
+    /// The fields of the record it reads as `doc.<field>`, each once, in the order written.
+    pub fn doc_fields(&self) -> Vec<String> {
+        fn walk(e: &cel::IdedExpr, out: &mut Vec<String>) {
+            use cel::common::ast::{EntryExpr, Expr as E};
+            match &e.expr {
+                E::Select(s) if matches!(&s.operand.expr, E::Ident(n) if n == "doc") => {
+                    if !out.contains(&s.field) {
+                        out.push(s.field.clone());
+                    }
+                }
+                E::Select(s) => walk(&s.operand, out),
+                E::Call(c) => c.target.as_deref().into_iter().chain(&c.args).for_each(|x| walk(x, out)),
+                E::Comprehension(c) => [&c.iter_range, &c.accu_init, &c.loop_cond, &c.loop_step, &c.result].into_iter().for_each(|x| walk(x, out)),
+                E::List(l) => l.elements.iter().for_each(|x| walk(x, out)),
+                E::Map(m) => m.entries.iter().for_each(|en| entry(en, out)),
+                E::Struct(s) => s.entries.iter().for_each(|en| entry(en, out)),
+                E::Ident(_) | E::Literal(_) | E::Unspecified => {}
+            }
+            fn entry(en: &cel::common::ast::IdedEntryExpr, out: &mut Vec<String>) {
+                match &en.expr {
+                    EntryExpr::StructField(f) => walk(&f.value, out),
+                    EntryExpr::MapEntry(m) => {
+                        walk(&m.key, out);
+                        walk(&m.value, out);
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(self.program.expression(), &mut out);
+        out
+    }
+
     /// The link fields it reads as `links.<field>`: the caller binds `links` with those records.
     pub fn links(&self) -> &[String] {
         &self.links

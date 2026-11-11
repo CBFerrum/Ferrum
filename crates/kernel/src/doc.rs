@@ -1573,8 +1573,8 @@ fn fill_entity_defaults(ent: &EffEntity, doc: &mut Map<String, Value>, parent: O
 }
 
 fn compute_entity(ent: &EffEntity, doc: &mut Map<String, Value>, parent: Option<&Value>, user: &Value, schema: &ferrum_meta::Schema) -> Result<()> {
-    for (name, expr) in &ent.exprs.computed {
-        let Some(f) = ent.field(name) else { continue };
+    for name in &ent.exprs.computed_order {
+        let (Some(f), Some(expr)) = (ent.field(name), ent.exprs.computed.get(name)) else { continue };
         let view = ent.cel_view(&Value::Object(doc.clone()), schema);
         let v = expr.eval(&Scope { doc: &view, old: None, parent, user }).map_err(|e| Error::field(name, format!("could not be computed: {e}")))?;
         doc.insert(name.clone(), normalize(f, &v).map_err(|m| Error::field(name, m))?);
