@@ -2083,6 +2083,14 @@ const UPLOAD_PERSIST_MAX = 2 * 1024 ** 3;
 const UPLOAD_EXPIRY = 7 * 86400e3;
 const UPLOAD_KEEP_DONE = 3600e3;
 const UPLOAD_TRIES = 6;
+// A connection that stalls neither fails nor finishes: no byte moving for this long while the file
+// goes out, or while the answer comes in, is taken for a lost connection (and tried again).
+const UPLOAD_STALL = 30e3;
+// After the last byte the server stores the file and has it scanned before it answers: the scanner
+// alone may take two minutes (SCAN_TIMEOUT, crates/kernel/src/scan.rs), so the answer gets that and
+// half a minute more before the connection is taken for lost.
+const UPLOAD_ANSWER_WAIT = 150e3;
+const offline = () => navigator.onLine === false;
 const uploadsChannel = "BroadcastChannel" in window ? new BroadcastChannel("ferrum-uploads") : null;
 const uploads = new Map();
 const memoryFiles = new Map();
@@ -2150,9 +2158,10 @@ function changed(item, local = true) {
 
 async function save(item, patch) {
   const next = { ...item, ...patch, updated: Date.now() };
-  // The file stays in the database until the upload is over.
+  // The file stays in the database until the upload is over; a failed one keeps it for Retry
+  // (until it is dismissed, or forgotten with the rest after UPLOAD_EXPIRY).
   const rec = await idbGet(item.id);
-  if (rec) await idbPut(FINISHED.has(next.state) ? brief(next) : { ...next, file: rec.file });
+  if (rec) await idbPut(FINISHED.has(next.state) && next.state !== "failed" ? brief(next) : { ...next, file: rec.file });
   changed(brief(next));
   return next;
 }
@@ -2166,6 +2175,8 @@ function failure(status, text) {
   return Object.assign(new Error(message), { status, retry: status === 0 || status === 408 || status === 429 || status >= 500, signedOut: status === 401 });
 }
 
+const stalled = () => Object.assign(failure(0, ""), { message: tr("The connection stopped responding."), stalled: true });
+
 function send(item, file) {
   return new Promise((resolve, reject) => {
     const x = new XMLHttpRequest();
@@ -2173,14 +2184,40 @@ function send(item, file) {
     for (const [k, v] of Object.entries(item.headers ?? {})) x.setRequestHeader(k, v);
     x.setRequestHeader("idempotency-key", item.id);
     x.setRequestHeader("accept", "application/json");
+    // The watchdog: armed while bytes go out (each one moving re-arms it), given the server's time
+    // once the last has gone, and again while the answer comes in. When it fires the request is
+    // stopped and fails as a lost connection, so the bounded retry below takes over.
+    let timer = 0;
+    let gone = false;
+    let sentAll = false;
+    const arm = (ms) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        gone = true;
+        x.abort();
+      }, ms);
+    };
+    const settle = () => {
+      clearTimeout(timer);
+      running.delete(item.id);
+      watchUploadLeaving();
+    };
     let last = 0;
     x.upload.onprogress = (e) => {
+      if (!sentAll) arm(e.lengthComputable && e.loaded >= e.total ? UPLOAD_ANSWER_WAIT : UPLOAD_STALL);
       if (Date.now() - last < 250 && e.loaded < e.total) return;
       last = Date.now();
       changed({ ...uploads.get(item.id), loaded: e.loaded, updated: Date.now() });
     };
+    x.upload.onload = () => {
+      sentAll = true;
+      arm(UPLOAD_ANSWER_WAIT);
+    };
+    // The answer has begun (headers, then its body): bytes moving again.
+    x.onreadystatechange = () => x.readyState >= 2 && arm(UPLOAD_STALL);
+    x.onprogress = () => arm(UPLOAD_STALL);
     x.onload = () => {
-      running.delete(item.id);
+      settle();
       watchUploadLeaving();
       if (x.status >= 200 && x.status < 300) {
         let result = null;
@@ -2193,17 +2230,16 @@ function send(item, file) {
       } else reject(failure(x.status, x.responseText));
     };
     x.onerror = () => {
-      running.delete(item.id);
-      watchUploadLeaving();
+      settle();
       reject(failure(0, ""));
     };
     x.onabort = () => {
-      running.delete(item.id);
-      watchUploadLeaving();
-      reject(Object.assign(new Error("Stopped."), { aborted: true }));
+      settle();
+      reject(gone ? stalled() : Object.assign(new Error("Stopped."), { aborted: true }));
     };
     running.set(item.id, x);
     watchUploadLeaving();
+    arm(UPLOAD_STALL);
     x.send(file);
   });
 }
@@ -2214,6 +2250,11 @@ async function runUpload(id) {
   const file = item.file;
   if (Date.now() - item.created > UPLOAD_EXPIRY || !file) {
     await save(brief(item), { state: "failed", error: file ? tr("This upload waited too long and was dropped.") : tr("The file is not here any more: upload it again.") });
+    return;
+  }
+  // Offline, it waits for the connection (the `online` event sends it) without using up a try.
+  if (offline()) {
+    if (item.error !== WAITING()) await save(brief(item), { state: "queued", error: WAITING() });
     return;
   }
   item = await save(brief(item), { state: "uploading", attempts: (item.attempts ?? 0) + 1, loaded: 0, error: null });
@@ -2230,15 +2271,21 @@ async function runUpload(id) {
       await save(item, { state: "queued", error: tr("Waiting for you to sign in again.") });
       return;
     }
+    if (e.retry && offline()) {
+      await save(item, { state: "queued", attempts: item.attempts - 1, error: WAITING() });
+      return;
+    }
     if (e.retry && item.attempts < UPLOAD_TRIES) {
       await save(item, { state: "queued", error: e.message });
       setTimeout(pumpUploads, Math.min(60e3, 1000 * 2 ** item.attempts));
       return;
     }
-    memoryFiles.delete(id);
+    // A file only in this page's memory stays while the page does, so Retry can send it again.
     await save(item, { state: "failed", error: e.message });
   }
 }
+
+const WAITING = () => tr("Waiting for the connection to come back.");
 
 let pumping = false;
 async function pumpUploads() {
@@ -2325,10 +2372,10 @@ async function cancelUpload(id) {
 }
 
 async function retryUpload(id) {
-  const rec = await idbGet(id);
-  if (!rec || rec.state !== "failed" || !rec.file) return false;
-  await idbPut({ ...rec, state: "queued", attempts: 0, created: Date.now(), updated: Date.now(), error: null });
-  uploads.set(id, brief({ ...rec, state: "queued", attempts: 0 }));
+  const rec = (await idbGet(id)) ?? (memoryFiles.has(id) && uploads.get(id));
+  if (!rec || rec.state !== "failed" || !(rec.file || memoryFiles.has(id))) return false;
+  if (rec.file) await idbPut({ ...rec, state: "queued", attempts: 0, created: Date.now(), updated: Date.now(), error: null });
+  uploads.set(id, brief({ ...rec, state: "queued", attempts: 0, created: Date.now(), error: null }));
   pumpUploads();
   return true;
 }
@@ -2337,6 +2384,7 @@ async function dismissUpload(id) {
   const u = uploads.get(id);
   if (u && !FINISHED.has(u.state)) return;
   uploads.delete(id);
+  memoryFiles.delete(id);
   await idbDelete(id);
   uploadsChannel?.postMessage({ type: "dismiss", id });
   drawUploads();
@@ -2400,7 +2448,7 @@ function fillTray() {
       u.state === "done" ? tr("Done") : u.state === "failed" ? tr("Failed") : u.state === "cancelled" ? tr("Stopped") : u.state === "queued" ? (u.error ?? tr("Waiting")) : tr("{v1} of {v2}", { v1: sizeText(u.loaded ?? 0), v2: sizeText(u.size) });
     const actions = FINISHED.has(u.state)
       ? [
-          u.state === "failed" && u.kept !== false ? el("button", { type: "button", text: tr("Retry"), onclick: () => retryUpload(u.id) }) : null,
+          u.state === "failed" && (u.kept !== false || memoryFiles.has(u.id)) ? el("button", { type: "button", text: tr("Retry"), onclick: () => retryUpload(u.id) }) : null,
           el("button", { type: "button", "aria-label": tr("Dismiss {label}", { label: u.label }), text: tr("Dismiss"), onclick: () => dismissUpload(u.id) }),
         ]
       : [el("button", { type: "button", "aria-label": tr("Stop uploading {label}", { label: u.label }), text: tr("Stop"), onclick: () => cancelUpload(u.id) })];
