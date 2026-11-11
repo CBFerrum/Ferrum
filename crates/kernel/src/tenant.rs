@@ -92,15 +92,33 @@ impl Kernel {
 
     /// Installs packages (and their dependencies) for a tenant. Idempotent; existing role
     /// permissions and seeded records are left untouched so tenant edits survive reinstalls.
+    /// Returns what it installed: a package the workspace holds newer than this build's is left
+    /// as it is ([`Kernel::install_packages_reporting`] says which).
     pub async fn install_packages(&self, tenant: Uuid, names: &[String]) -> Result<Vec<String>> {
+        Ok(self.install_packages_reporting(tenant, names).await?.packages)
+    }
+
+    /// [`Kernel::install_packages`], saying which packages it left alone because the workspace holds
+    /// them newer than this build's (a server rolled back, or a workspace moved from a newer build):
+    /// their version, roles and seed data stay the newer one's, never stamped or seeded older. The
+    /// others install. This build's definitions are what the workspace runs on either way (the schema
+    /// is built from the catalog, not from the stored version), so going on is no less safe than the
+    /// workspace already is on this build; `ferrum task doctor` reports it as `packages.newer`.
+    pub async fn install_packages_reporting(&self, tenant: Uuid, names: &[String]) -> Result<Installed> {
         let catalog = self.registry.catalog();
         let closure = catalog.closure(names).map_err(|e| Error::invalid(e.to_string()))?;
         let mut tx = self.db.system_tenant_tx(tenant).await?;
+        let have: std::collections::HashMap<String, String> =
+            sqlx::query_as("select name, version from installed_package where tenant_id = $1").bind(tenant).fetch_all(&mut *tx).await?.into_iter().collect();
         // What it would install beside what is there: a hook must not run without one it waits for.
-        let installed: Vec<String> = sqlx::query_scalar("select name from installed_package where tenant_id = $1").bind(tenant).fetch_all(&mut *tx).await?;
-        let unmet = self.hooks.unmet(&installed.into_iter().chain(closure.iter().cloned()).collect::<Vec<_>>());
+        let unmet = self.hooks.unmet(&have.keys().cloned().chain(closure.iter().cloned()).collect::<Vec<_>>());
         if !unmet.is_empty() {
             return Err(Error::invalid(format!("these packages cannot be installed: {}", unmet.join("; "))));
+        }
+        let kept_newer = newer_here(&have, &closure, |p| catalog.package(p).map(|pkg| pkg.manifest.version.clone()));
+        let closure: Vec<String> = closure.into_iter().filter(|p| !kept_newer.iter().any(|k| &k.name == p)).collect();
+        for k in &kept_newer {
+            tracing::warn!(%tenant, package = %k.name, have = %k.version, build = %k.build, "package kept: the workspace has it newer than this build");
         }
         for name in &closure {
             let pkg = catalog.package(name).ok_or_else(|| Error::internal("package vanished"))?;
@@ -171,7 +189,7 @@ impl Kernel {
             }
         }
         self.report_conflicts(tenant).await?;
-        Ok(closure)
+        Ok(Installed { packages: closure, kept_newer })
     }
 
     async fn seed_record(&self, ctx: &Ctx, entity: &str, key: &[String], rec: &serde_json::Map<String, Value>) -> Result<()> {
@@ -405,6 +423,41 @@ impl Kernel {
     }
 }
 
+/// What [`Kernel::install_packages_reporting`] did.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Installed {
+    /// The packages installed (with their dependencies), in installation order.
+    pub packages: Vec<String>,
+    /// The packages left alone: the workspace holds them newer than this build's.
+    pub kept_newer: Vec<KeptNewer>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct KeptNewer {
+    pub name: String,
+    /// The workspace's version, which stays.
+    pub version: String,
+    /// This build's.
+    pub build: String,
+}
+
+/// Of `closure`, the packages `have` holds newer than `build` says this build has.
+fn newer_here(have: &std::collections::HashMap<String, String>, closure: &[String], build: impl Fn(&str) -> Option<String>) -> Vec<KeptNewer> {
+    closure
+        .iter()
+        .filter_map(|p| {
+            let (version, want) = (have.get(p)?, build(p)?);
+            package_newer(version, &want).then(|| KeptNewer { name: p.clone(), version: version.clone(), build: want })
+        })
+        .collect()
+}
+
+/// Whether a workspace's package at `have` is newer than `want`: by semver only (a version that is
+/// not one can only be told to differ, and counts as behind).
+pub fn package_newer(have: &str, want: &str) -> bool {
+    have != want && !package_behind(have, want)
+}
+
 /// Whether a workspace's package at `have` is behind `want`: by semver, or, when either is not one,
 /// by differing at all.
 pub fn package_behind(have: &str, want: &str) -> bool {
@@ -424,6 +477,31 @@ mod tests {
         assert!(!package_behind("0.4.0", "0.4.0"));
         assert!(!package_behind("0.5.0", "0.4.0"), "a newer package (a rolled-back server) is not behind");
         assert!(package_behind("dev", "0.4.0"), "not a version: differing is all that can be told");
+    }
+
+    #[test]
+    fn install_leaves_a_package_the_workspace_has_newer() {
+        let build = |p: &str| match p {
+            "core" => Some("0.5.0".to_string()),
+            "crm" => Some("0.4.0".to_string()),
+            "sales" => Some("0.3.0".to_string()),
+            _ => None,
+        };
+        let have = |r: &[(&str, &str)]| r.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect::<std::collections::HashMap<_, _>>();
+        let closure = |r: &[&str]| r.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let names = |k: Vec<super::KeptNewer>| k.into_iter().map(|k| k.name).collect::<Vec<_>>();
+        // Older on newer: the workspace's crm 0.6.0 stays.
+        let kept = super::newer_here(&have(&[("crm", "0.6.0")]), &closure(&["crm"]), build);
+        assert_eq!(kept, vec![super::KeptNewer { name: "crm".into(), version: "0.6.0".into(), build: "0.4.0".into() }]);
+        // Equal: reinstalled as today.
+        assert!(super::newer_here(&have(&[("crm", "0.4.0")]), &closure(&["crm"]), build).is_empty());
+        // Newer on older (an upgrade) and not installed yet: installed.
+        assert!(super::newer_here(&have(&[("crm", "0.2.0")]), &closure(&["crm", "sales"]), build).is_empty());
+        // A chain: sales depends on crm depends on core; core is newer here, crm behind, sales new.
+        let kept = super::newer_here(&have(&[("core", "0.10.0"), ("crm", "0.3.9")]), &closure(&["core", "crm", "sales"]), build);
+        assert_eq!(names(kept), vec!["core"], "only core is left; crm upgrades and sales installs");
+        // Not a version, or unknown to this build: never kept (as `package_behind` says, differing is all that can be told).
+        assert!(super::newer_here(&have(&[("crm", "dev"), ("gone", "9.0.0")]), &closure(&["crm", "gone"]), build).is_empty());
     }
 
     #[test]
