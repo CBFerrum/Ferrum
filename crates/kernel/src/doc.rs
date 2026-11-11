@@ -1006,11 +1006,13 @@ impl Kernel {
                 errors.push(FieldError::new(k, "unknown field"));
                 continue;
             };
-            if f.computed.is_some()
-                || f.rollup.is_some()
-                || ent.target_keeping(k).is_some()
-                || (read_only(ent, f, stored.as_ref(), None, &user) && !ctx.is_system && !trusted)
-            {
+            if f.computed.is_some() || f.rollup.is_some() || ent.target_keeping(k).is_some() {
+                continue;
+            }
+            if read_only(ent, f, stored.as_ref(), None, &user) && !ctx.is_system && !trusted {
+                if let Some(m) = refusal(f, v, old.and_then(|o| o.get(k))) {
+                    errors.push(FieldError::new(k, m));
+                }
                 continue;
             }
             if !trusted && !ctx.perms.can_write_field(&ent.def.name, f) {
@@ -1124,7 +1126,13 @@ impl Kernel {
                     errors.push(FieldError::new(k, "unknown field").at(&path));
                     continue;
                 };
-                if f.computed.is_some() || f.rollup.is_some() || (read_only(cent, f, stored.as_ref(), stored_parent, &user) && !ctx.is_system && !trusted) {
+                if f.computed.is_some() || f.rollup.is_some() {
+                    continue;
+                }
+                if read_only(cent, f, stored.as_ref(), stored_parent, &user) && !ctx.is_system && !trusted {
+                    if let Some(m) = refusal(f, v, row.get(k)) {
+                        errors.push(FieldError::new(k, m).at(&path));
+                    }
                     continue;
                 }
                 if !trusted && !ctx.perms.can_write_field(&cent.def.name, f) {
@@ -1343,7 +1351,15 @@ impl Kernel {
                 );
                 let cycle: bool = sqlx::query_scalar(AssertSqlSafe(sql)).bind(ctx.tenant).bind(id).bind(self_id).fetch_one(&mut **tx).await?;
                 if cycle {
-                    push(errors, &f.name, "this would create a cycle in the hierarchy".into());
+                    // Named, so that whoever moved it knows which record is in the way.
+                    let under = store::load_many(tx, &ctx.schema, ent, ctx.tenant, &[id]).await?;
+                    let under = under.first().map(|d| crate::collab::record_title(ctx, &ent.def.name, d)).unwrap_or_else(|| id.to_string());
+                    let this = crate::collab::record_title(ctx, &ent.def.name, doc);
+                    push(
+                        errors,
+                        &f.name,
+                        format!("{this} cannot sit under {under}: {under} is already under {this}, which would make a cycle in the hierarchy"),
+                    );
                 }
             }
         }
@@ -1435,6 +1451,15 @@ fn read_only(ent: &EffEntity, f: &FieldDef, stored: Option<&Value>, parent: Opti
         (Some(expr), Some(doc)) => expr.eval_bool(&Scope { doc, old: None, parent, user }).unwrap_or(true),
         _ => false,
     }
+}
+
+/// What a person is told when `read_only_if` turns their change away: the field's `read_only_message`, when the
+/// field is read-only only by its condition and the value sent differs from the one stored (both normalised, so a
+/// form sending the whole record back unchanged passes). `None`: the input is ignored, as before.
+fn refusal<'a>(f: &'a FieldDef, sent: &Value, stored: Option<&Value>) -> Option<&'a str> {
+    let m = f.read_only_message.as_deref().filter(|_| !f.read_only && !matches!(f.ftype, FieldType::Table | FieldType::Secret))?;
+    let stored = normalize(f, stored.unwrap_or(&Value::Null)).ok();
+    (normalize(f, sent).ok() != stored).then_some(m)
 }
 
 /// A row as `mask` leaves it: what may not leave for an AI provider (`egress`) or what the caller may not read

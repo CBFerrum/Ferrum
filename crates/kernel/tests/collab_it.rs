@@ -30,7 +30,25 @@ async fn fresh_kernel() -> Arc<Kernel> {
     packages.push(ferrum_meta::catalog::load_package_files(&credit).expect("credit package"));
     let catalog = Catalog::from_packages(packages).expect("catalog");
     let settings = KernelSettings { pdf_url: Some(fake_pdf_renderer().await), ..Default::default() };
-    Kernel::boot(db, catalog, HookRegistry::default(), settings, Some(Arc::new(Captured))).await.expect("boot")
+    let mut hooks = HookRegistry::default();
+    hooks.add_event_sink(Arc::new(Mailed));
+    Kernel::boot(db, catalog, hooks, settings, Some(Arc::new(Captured))).await.expect("boot")
+}
+
+/// `<Entity>.emailed` events an app's event sink heard, in order.
+static EMAILED: std::sync::Mutex<Vec<ferrum_kernel::outbox::Event>> = std::sync::Mutex::new(Vec::new());
+
+/// Records what CRM listens for to mark a quotation sent.
+struct Mailed;
+
+#[async_trait::async_trait]
+impl ferrum_kernel::EventSink for Mailed {
+    async fn on_event(&self, _: &Kernel, ev: &ferrum_kernel::outbox::Event) -> ferrum_kernel::Result<()> {
+        if ev.topic.ends_with(".emailed") {
+            EMAILED.lock().unwrap().push(ev.clone());
+        }
+        Ok(())
+    }
 }
 
 /// Request bodies the stand-in PDF renderer received.
@@ -359,6 +377,26 @@ async fn scenario() {
     k.set_role_permission(&admin, "Reader", &readers).await.unwrap();
     let rita = k.create_user(&admin, "rita@collab.test", "Rita Reader", Some("Correct-Horse-9"), &["Reader".into()], false).await.unwrap();
     let rita_ctx = k.load_ctx(tenant, rita, None, "it".into()).await.unwrap();
+    // ── a record e-mailed is heard by apps: who sent it, to whom, whether its PDF went along ──
+    let doc = k.get(&bea_ctx, "Customer", cid, false).await.unwrap();
+    let pdf_file = k.store_file(&bea_ctx, Some(("Customer", cid)), "C-1.pdf", "application/pdf", b"%PDF").await.unwrap();
+    let pdf_id: Uuid = pdf_file["id"].as_str().unwrap().parse().unwrap();
+    k.email_record(&bea_ctx, "Customer", &doc, " buyer@globex.test ", "Your quote", "<p>hi</p>", &[pdf_id]).await.unwrap();
+    k.email_record(&bea_ctx, "Customer", &doc, "ap@globex.test", "Customer Globex", "<p>hi</p>", &[]).await.unwrap();
+    drain(&k).await;
+    let heard: Vec<_> = EMAILED.lock().unwrap().clone();
+    assert_eq!(heard.len(), 2, "{heard:?}");
+    let (with, without) = (&heard[0], &heard[1]);
+    assert_eq!((with.topic.as_str(), with.record_id, with.actor), ("Customer.emailed", Some(cid), Some(bea)));
+    assert_eq!((&with.payload["to"], &with.payload["subject"], &with.payload["pdf"]), (&json!("buyer@globex.test"), &json!("Your quote"), &json!(true)));
+    assert_eq!(with.payload["attachments"], json!([pdf_id]));
+    assert_eq!((&without.payload["to"], &without.payload["pdf"]), (&json!("ap@globex.test"), &json!(false)));
+    let timeline = k.comments(&bea_ctx, "Customer", cid).await.unwrap();
+    assert!(timeline.iter().any(|c| c["body"] == "Emailed to buyer@globex.test: Your quote"), "{timeline:?}");
+    assert_eq!(SENT.lock().unwrap().len(), 2, "both went out");
+    assert_eq!(ATTACHED.lock().unwrap().len(), 1, "the PDF with the first");
+    SENT.lock().unwrap().clear();
+    ATTACHED.lock().unwrap().clear();
     let note = k.store_file(&rita_ctx, Some(("Customer", cid)), "note.txt", "text/plain", b"seen").await.unwrap();
     let note_id: Uuid = note["id"].as_str().unwrap().parse().unwrap();
     assert!(matches!(k.remove_file(&rita_ctx, note_id).await, Err(Error::Forbidden(_))));
