@@ -210,7 +210,7 @@ fn newer_packages(rows: &[(String, String, i64)], build: impl Fn(&str) -> Option
         .iter()
         .filter_map(|(name, have, n)| {
             let want = build(name)?;
-            (have != &want && !crate::tenant::package_behind(have, &want)).then(|| format!("{name} {have} in {n} workspaces (this build has {want})"))
+            crate::tenant::package_newer(have, &want).then(|| format!("{name} {have} in {n} workspaces (this build has {want})"))
         })
         .collect();
     if newer.is_empty() {
