@@ -2568,7 +2568,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-commerce"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-commerce?branch=main#451b2cebe5ea4aabb14e6a299a115e91a7a8c221"
+source = "git+https://github.com/CBFerrum/ferrum-app-commerce?branch=main#8606d3ab5a18be541066be56ce36e330f284eb39"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2678,7 +2678,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-crm"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-crm?branch=main#a44b96eb0781ca7bfe4947bb0b50369e914d8d2b"
+source = "git+https://github.com/CBFerrum/ferrum-app-crm?branch=main#1f7e06d91f741e2fff5b94b0a458fb2461818395"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2816,7 +2816,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-erp"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#b93dd61a5a48cb4953d27b9ee4b9375473ea8d51"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7f3ccfb06cc09c51180ededadcbe8365a8cd63fc"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2920,7 +2920,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-healthcare"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-healthcare?branch=main#078d7155de7eedd868b4667cbfee7826217a4196"
+source = "git+https://github.com/CBFerrum/ferrum-app-healthcare?branch=main#f5f82af6134242ccf7266b8e7bac6934bbc71b31"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2978,7 +2978,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-hr"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-hr?branch=main#a1d86a269b6cba67754dbef4920b27efc3361cc4"
+source = "git+https://github.com/CBFerrum/ferrum-app-hr?branch=main#e913a1f4f49aa31f0606246df68d16944fe64ddd"
 dependencies = [
  "async-trait",
  "cel",
@@ -3199,7 +3199,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-restaurant"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-restaurant?branch=main#ee8fdc1300862eac81fe6568e104f47abbfee41f"
+source = "git+https://github.com/CBFerrum/ferrum-app-restaurant?branch=main#a0b748c2ce0898dd0f2d09d772e0592084fa29ed"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3313,7 +3313,7 @@ dependencies = [
 [[package]]
 name = "ferrum-ca"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#a20a9c4ce726f02fa3f30d8ec4fa20ca7411108b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7f3ccfb06cc09c51180ededadcbe8365a8cd63fc"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3343,7 +3343,7 @@ dependencies = [
 [[package]]
 name = "ferrum-countries"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#a20a9c4ce726f02fa3f30d8ec4fa20ca7411108b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7f3ccfb06cc09c51180ededadcbe8365a8cd63fc"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3365,7 +3365,7 @@ dependencies = [
 [[package]]
 name = "ferrum-de"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#a20a9c4ce726f02fa3f30d8ec4fa20ca7411108b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7f3ccfb06cc09c51180ededadcbe8365a8cd63fc"
 dependencies = [
  "async-trait",
  "ferrum-app-erp",
@@ -3415,7 +3415,7 @@ dependencies = [
 [[package]]
 name = "ferrum-eu"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#a20a9c4ce726f02fa3f30d8ec4fa20ca7411108b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7f3ccfb06cc09c51180ededadcbe8365a8cd63fc"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3435,7 +3435,7 @@ dependencies = [
 [[package]]
 name = "ferrum-eu-members"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#a20a9c4ce726f02fa3f30d8ec4fa20ca7411108b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7f3ccfb06cc09c51180ededadcbe8365a8cd63fc"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3459,7 +3459,7 @@ dependencies = [
 [[package]]
 name = "ferrum-finance"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#a20a9c4ce726f02fa3f30d8ec4fa20ca7411108b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7f3ccfb06cc09c51180ededadcbe8365a8cd63fc"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3481,7 +3481,7 @@ dependencies = [
 [[package]]
 name = "ferrum-gb"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#a20a9c4ce726f02fa3f30d8ec4fa20ca7411108b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7f3ccfb06cc09c51180ededadcbe8365a8cd63fc"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3502,7 +3502,7 @@ dependencies = [
 [[package]]
 name = "ferrum-india"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#a20a9c4ce726f02fa3f30d8ec4fa20ca7411108b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7f3ccfb06cc09c51180ededadcbe8365a8cd63fc"
 dependencies = [
  "aes",
  "async-trait",
@@ -3600,7 +3600,7 @@ dependencies = [
 [[package]]
 name = "ferrum-mes"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#a20a9c4ce726f02fa3f30d8ec4fa20ca7411108b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7f3ccfb06cc09c51180ededadcbe8365a8cd63fc"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3638,7 +3638,7 @@ dependencies = [
 [[package]]
 name = "ferrum-mfg-ops"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#a20a9c4ce726f02fa3f30d8ec4fa20ca7411108b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7f3ccfb06cc09c51180ededadcbe8365a8cd63fc"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3751,7 +3751,7 @@ dependencies = [
 [[package]]
 name = "ferrum-procurement"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#a20a9c4ce726f02fa3f30d8ec4fa20ca7411108b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7f3ccfb06cc09c51180ededadcbe8365a8cd63fc"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3775,7 +3775,7 @@ dependencies = [
 [[package]]
 name = "ferrum-quality"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#a20a9c4ce726f02fa3f30d8ec4fa20ca7411108b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7f3ccfb06cc09c51180ededadcbe8365a8cd63fc"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3913,7 +3913,7 @@ dependencies = [
 [[package]]
 name = "ferrum-stock-ops"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#a20a9c4ce726f02fa3f30d8ec4fa20ca7411108b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7f3ccfb06cc09c51180ededadcbe8365a8cd63fc"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3959,7 +3959,7 @@ dependencies = [
 [[package]]
 name = "ferrum-us"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#a20a9c4ce726f02fa3f30d8ec4fa20ca7411108b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7f3ccfb06cc09c51180ededadcbe8365a8cd63fc"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3977,7 +3977,7 @@ dependencies = [
 [[package]]
 name = "ferrum-wms"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#a20a9c4ce726f02fa3f30d8ec4fa20ca7411108b"
+source = "git+https://github.com/CBFerrum/ferrum-app-erp?branch=main#7f3ccfb06cc09c51180ededadcbe8365a8cd63fc"
 dependencies = [
  "async-trait",
  "chrono",
