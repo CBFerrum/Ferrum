@@ -276,6 +276,9 @@ button[disabled] { opacity: .5; cursor: not-allowed; }
 /* One heading per app (its tile and name), its things to create as text rows beneath, aligned with the name. */
 .mgroup { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; padding: 4px 8px; font-size: 12px; line-height: 16px; font-weight: 600; color: var(--ferrum-muted, #596273); }
 .create > div:first-child > .mgroup { margin-top: 0; }
+/* The filter of a long Create menu stays at the top while the rows scroll under it. */
+.cfind { position: sticky; top: -4px; z-index: 1; margin: -4px -4px 4px; padding: 4px; background: var(--ferrum-surface, #fff); }
+.create .rhint { padding: 16px 8px; }
 .mgroup .tile { width: 20px; height: 20px; font-size: 12px; }
 .create a { min-height: 28px; padding-block: 3px; padding-inline-start: 36px; }
 /* The search: a quiet fill with no boundary until it is used, the shortcut as a key cap at its end. */
@@ -1135,10 +1138,15 @@ class FerrumBar extends HTMLElement {
     for (const menu of [this.menu, this.createMenu])
       menu.addEventListener("keydown", (e) => {
         const to = { ArrowDown: 1, ArrowUp: -1, Home: "first", End: "last" }[e.key];
-        const rows = [...menu.querySelectorAll("a, button")];
-        if (to === undefined || !rows.length) return;
+        const at0 = root.activeElement;
+        const typing = at0?.tagName === "INPUT";
+        // The filter field (the Create menu's first stop) keeps Home and End for its text.
+        if (to === undefined || (typing && (to === "first" || to === "last"))) return;
+        const rows = [...menu.querySelectorAll("input, a:not([hidden]), button")];
+        if (!rows.length) return;
         e.preventDefault();
-        const at = rows.indexOf(root.activeElement);
+        const at = rows.indexOf(at0);
+        if (typing && to === -1) return;
         rows[to === "first" ? 0 : to === "last" ? rows.length - 1 : (at + to + rows.length) % rows.length].focus();
       });
     document.addEventListener("pointerdown", (e) => {
@@ -1283,23 +1291,52 @@ class FerrumBar extends HTMLElement {
     if (!open || !this.createBtn) return;
     const entryOf = (app) => (shellData?.apps ?? []).find((a) => a.app === app);
     // Grouped by app, in the order the server gave them: the app's tile and name once, then its rows.
+    const all = shellData?.create ?? [];
     const groups = new Map();
-    for (const c of shellData?.create ?? []) groups.set(c.app, [...(groups.get(c.app) ?? []), c]);
-    this.createMenu.replaceChildren(
-      ...[...groups].map(([app, items]) => {
-        const entry = entryOf(app) ?? { title: items[0].label };
-        const name = entry.title ?? app;
-        return el(
-          "div",
-          { role: "group", "aria-label": name },
-          el("div", { class: "mgroup", "aria-hidden": "true" }, tile(entry, true), el("span", { text: name })),
-          ...items.map((c) => el("a", { role: "menuitem", href: c.url, onclick: (e) => (e.preventDefault(), navigate(c.url)) }, el("span", { text: c.label }))),
-        );
-      }),
-    );
+    for (const c of all) groups.set(c.app, [...(groups.get(c.app) ?? []), c]);
+    const fold = (t) => String(t ?? "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+    const blocks = [...groups].map(([app, items]) => {
+      const entry = entryOf(app) ?? { title: items[0].label };
+      const name = entry.title ?? app;
+      const links = items.map((c) => el("a", { role: "menuitem", href: c.url, "data-k": fold(`${c.label} ${name}`), onclick: (e) => (e.preventDefault(), navigate(c.url)) }, el("span", { text: c.label })));
+      return el("div", { role: "group", "aria-label": name }, el("div", { class: "mgroup", "aria-hidden": "true" }, tile(entry, true), el("span", { text: name })), ...links);
+    });
+    // Past a dozen rows, a field narrows them by item or app name.
+    let field = null;
+    const none = el("p", { class: "rhint", text: tr("Nothing matches"), hidden: true });
+    if (all.length > 12) {
+      const input = el("input", { type: "search", placeholder: tr("Filter"), "aria-label": tr("Filter"), autocomplete: "off" });
+      const rows = () => this.createMenu.querySelectorAll("a:not([hidden])");
+      input.addEventListener("input", () => {
+        const words = fold(input.value).split(/\s+/).filter(Boolean);
+        for (const g of blocks) {
+          let any = false;
+          for (const a of g.querySelectorAll("a")) {
+            const hit = words.every((w) => a.dataset.k.includes(w));
+            a.hidden = !hit;
+            any ||= hit;
+          }
+          g.hidden = !any;
+        }
+        none.hidden = rows().length > 0;
+        this.createMenu.scrollTop = 0;
+      });
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && input.value) {
+          e.stopPropagation();
+          input.value = "";
+          input.dispatchEvent(new Event("input"));
+        } else if (e.key === "Enter" && rows().length === 1) {
+          e.preventDefault();
+          rows()[0].click();
+        }
+      });
+      field = el("div", { class: "find cfind" }, icon("search", 16), input);
+    }
+    this.createMenu.replaceChildren(...[field, ...blocks, none].filter(Boolean));
     this.createMenu.hidden = false;
     this.createBtn.setAttribute("aria-expanded", "true");
-    this.createMenu.querySelector("a")?.focus();
+    (this.createMenu.querySelector("input") ?? this.createMenu.querySelector("a"))?.focus();
   }
 
   async toggleLauncher() {
