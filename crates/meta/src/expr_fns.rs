@@ -2,9 +2,13 @@
 //! strings extension. Additions only: a name CEL already gives a meaning keeps it, and every function here answers an
 //! empty (null or '') date with null rather than failing.
 
+use crate::expr::EMPTY_FIELDS;
+use cel::common::ast::{CallExpr, Expr, IdedExpr, LiteralValue};
 use cel::extractors::Arguments;
+use cel::parser::{Macro, MacroExprHelper};
 use cel::{Context, Env, ExecutionError, FunctionContext, Value as C};
 use chrono::{DateTime, Datelike, FixedOffset, Months, NaiveDate, NaiveDateTime, SecondsFormat};
+use std::collections::HashMap;
 use std::fmt::Write;
 use std::sync::{Arc, LazyLock};
 
@@ -13,6 +17,7 @@ use std::sync::{Arc, LazyLock};
 pub(crate) static ENV: LazyLock<Arc<Env>> = LazyLock::new(|| {
     let mut env = Env::stdlib();
     env.add_extension(cel::extensions::strings).expect("CEL's strings extension");
+    empty_macros(&mut env);
     Arc::new(env)
 });
 
@@ -35,17 +40,74 @@ pub(crate) const NAMES: &[&str] = &[
     "padStart",
     "padEnd",
     "concat",
+    "__isEmpty",
+    "__coalesce",
+    "__entered",
 ];
 
-/// Binds `name` (one of [`NAMES`]) on `ctx`; it is called as `name(a, b)` or as `a.name(b)`.
-pub(crate) fn bind(ctx: &mut Context, name: &'static str) {
+/// Binds `name` (one of [`NAMES`]) on `ctx`; it is called as `name(a, b)` or as `a.name(b)`. `bound` are the
+/// variables the expression is given, which `__entered` reads what was left empty from.
+pub(crate) fn bind(ctx: &mut Context, name: &'static str, bound: &[(&str, &serde_json::Value)]) {
+    // Only names CEL does not declare are listed, so adding them cannot fail.
+    if name == "__entered" {
+        let mut marks = HashMap::new();
+        for (n, v) in bound {
+            empties(n.to_string(), v, &mut marks);
+        }
+        let _ = ctx.add_function(name, move |Arguments(a): Arguments| -> Result<C, ExecutionError> {
+            let left_empty = match (a.get(1), a.get(2)) {
+                (Some(C::String(path)), Some(C::String(field))) => marks.get(path.as_str()).is_some_and(|f: &Vec<String>| f.contains(field)),
+                _ => false,
+            };
+            Ok(if left_empty { C::Null } else { a.first().cloned().unwrap_or(C::Null) })
+        });
+        return;
+    }
     let f = move |ftx: &FunctionContext, Arguments(args): Arguments| -> Result<C, ExecutionError> {
         let this = ftx.this.as_ref().map(|t| C::try_from(t.as_ref())).transpose()?;
         let all: Vec<C> = this.into_iter().chain(args.iter().cloned()).collect();
-        call(name, &all).map_err(|e| ExecutionError::function_error(name, e))
+        call(name, &all).map_err(|e| ExecutionError::function_error(name.trim_start_matches('_'), e))
     };
-    // Only names CEL does not declare are listed, so this cannot fail.
     let _ = ctx.add_function(name, f);
+}
+
+/// The fields each record bound (by its path: `doc`, `links.permit_type`) read as 0 or false for being empty.
+fn empties(path: String, v: &serde_json::Value, out: &mut HashMap<String, Vec<String>>) {
+    let serde_json::Value::Object(m) = v else { return };
+    for (k, child) in m {
+        if k == EMPTY_FIELDS {
+            out.insert(path.clone(), child.as_array().into_iter().flatten().filter_map(|n| n.as_str().map(str::to_string)).collect());
+        } else if child.is_object() {
+            empties(format!("{path}.{k}"), child, out);
+        }
+    }
+}
+
+/// `isEmpty(x)` and `coalesce(x, y, ...)`, rewritten when compiled so that each field they are given directly
+/// (`doc.qty`, `links.type.months`) is read as null when it was left empty: `__entered(doc.qty, 'doc', 'qty')`.
+fn empty_macros(env: &mut Env) {
+    fn path(e: &IdedExpr) -> Option<String> {
+        match &e.expr {
+            Expr::Ident(n) => Some(n.clone()),
+            Expr::Select(s) if !s.test => Some(format!("{}.{}", path(&s.operand)?, s.field)),
+            _ => None,
+        }
+    }
+    fn entered(h: &mut MacroExprHelper, e: IdedExpr) -> IdedExpr {
+        let (Expr::Select(s), false) = (&e.expr, matches!(&e.expr, Expr::Select(s) if s.test)) else { return e };
+        let (Some(at), field) = (path(&s.operand), s.field.clone()) else { return e };
+        let at = h.next_expr(Expr::Literal(LiteralValue::String(at.into())));
+        let field = h.next_expr(Expr::Literal(LiteralValue::String(field.into())));
+        h.next_expr(Expr::Call(CallExpr { func_name: "__entered".into(), target: None, args: vec![e, at, field] }))
+    }
+    let rewrite = |to: &'static str| {
+        move |h: &mut MacroExprHelper, _: &mut Option<IdedExpr>, args: &mut Vec<IdedExpr>| {
+            let args = std::mem::take(args).into_iter().map(|a| entered(h, a)).collect();
+            Ok(Some(h.next_expr(Expr::Call(CallExpr { func_name: to.into(), target: None, args }))))
+        }
+    };
+    env.add_macro(Macro::global("isEmpty", 1, rewrite("__isEmpty"))).expect("isEmpty");
+    env.add_macro(Macro::global_var_arg("coalesce", rewrite("__coalesce"))).expect("coalesce");
 }
 
 fn call(name: &str, a: &[C]) -> Result<C, String> {
@@ -132,8 +194,24 @@ fn call(name: &str, a: &[C]) -> Result<C, String> {
             }
             C::String(Arc::new(out))
         }
+        "__isEmpty" => {
+            arity(1)?;
+            C::Bool(is_empty(&a[0]))
+        }
+        "__coalesce" => a.iter().find(|v| !is_empty(v)).cloned().unwrap_or(C::Null),
         _ => return Err("unknown function".into()),
     })
+}
+
+/// Empty: null, '', or a list or map holding nothing (a field left empty reaches here as null).
+fn is_empty(v: &C) -> bool {
+    match v {
+        C::Null => true,
+        C::String(s) => s.is_empty(),
+        C::List(l) => l.is_empty(),
+        C::Map(m) => m.map.is_empty(),
+        _ => false,
+    }
 }
 
 /// A date as an expression may hold one: a date field (`YYYY-MM-DD`), a date-time field (RFC 3339, or without

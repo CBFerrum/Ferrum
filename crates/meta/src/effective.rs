@@ -148,9 +148,14 @@ impl EffEntity {
             t if t.is_decimal() => Some(Value::from(0.0)),
             _ => None,
         };
+        // Which of them were empty, for `isEmpty` and `coalesce` (expressions do not see this list).
+        let mut left_empty = Vec::new();
         for (k, v) in map {
             let converted = match self.field(k) {
-                Some(f) if v.is_null() && empty(f.ftype).is_some() => empty(f.ftype).unwrap_or_default(),
+                Some(f) if v.is_null() && empty(f.ftype).is_some() => {
+                    left_empty.push(Value::String(k.clone()));
+                    empty(f.ftype).unwrap_or_default()
+                }
                 Some(f) if f.ftype.is_decimal() => match v {
                     Value::String(s) => {
                         Decimal::from_str(s).ok().and_then(|d| d.to_f64()).and_then(serde_json::Number::from_f64).map(Value::Number).unwrap_or(Value::Null)
@@ -170,7 +175,15 @@ impl EffEntity {
         }
         // Expressions may reference any declared field even when the payload omits it.
         for f in self.value_fields() {
-            out.entry(f.name.clone()).or_insert_with(|| empty(f.ftype).unwrap_or(Value::Null));
+            if !out.contains_key(&f.name) {
+                if empty(f.ftype).is_some() {
+                    left_empty.push(Value::String(f.name.clone()));
+                }
+                out.insert(f.name.clone(), empty(f.ftype).unwrap_or(Value::Null));
+            }
+        }
+        if !left_empty.is_empty() {
+            out.insert(crate::expr::EMPTY_FIELDS.into(), Value::Array(left_empty));
         }
         for f in self.table_fields() {
             out.entry(f.name.clone()).or_insert_with(|| Value::Array(vec![]));
@@ -1517,6 +1530,31 @@ mod tests {
         let v = c.cel_view(&json!({"credit_limit": "1500.50"}), &s);
         assert_eq!(v["credit_limit"], json!(1500.5));
         assert_eq!(v["tier"], Value::Null);
+    }
+
+    /// Empty is told from 0 only where asked (BL-21): `isEmpty` and `coalesce` see a field left empty, every other
+    /// expression reads it as 0 as before, and the record CEL sees has no new key.
+    #[test]
+    fn empty_is_told_from_zero_only_when_asked() {
+        let s = build(&catalog(), &["core".into()], &[], 1).unwrap();
+        let c = s.entity("Customer").unwrap();
+        let (empty, zero) = (c.cel_view(&json!({"credit_limit": null}), &s), c.cel_view(&json!({"credit_limit": "0"}), &s));
+        let omitted = c.cel_view(&json!({}), &s);
+        let user = json!({});
+        let eval = |src: &str, doc: &Value| {
+            crate::Expr::compile(src).unwrap().eval_with(&crate::Scope { doc, old: None, parent: None, user: &user }, &[("linked", doc)]).unwrap()
+        };
+        for (doc, was_empty) in [(&empty, true), (&omitted, true), (&zero, false)] {
+            assert_eq!(eval("doc.credit_limit == 0.0 && doc.credit_limit + 1.0 == 1.0", doc), json!(true), "read as 0, as before");
+            assert_eq!(eval("isEmpty(doc.credit_limit)", doc), json!(was_empty));
+            assert_eq!(eval("isEmpty(linked.credit_limit)", doc), json!(was_empty), "any record bound, by its path");
+            assert_eq!(eval("coalesce(doc.credit_limit, 500.0)", doc), json!(if was_empty { 500.0 } else { 0.0 }));
+            assert_eq!(eval("coalesce(doc.tier, doc.customer_name, 'none')", doc), json!("none"), "null and '' are empty");
+            assert_eq!(eval("isEmpty(doc.credit_limit + 0.0)", doc), json!(false), "only a field given directly");
+        }
+        assert_eq!(eval("size(doc)", &empty), eval("size(doc)", &zero), "the note of what was empty is not part of the record");
+        assert_eq!(eval("doc == linked", &empty), json!(true));
+        assert_eq!(eval("[isEmpty(''), isEmpty([]), isEmpty(0), coalesce(null, ''), coalesce('', 'x')]", &zero), json!([true, true, false, null, "x"]));
     }
 
     #[test]

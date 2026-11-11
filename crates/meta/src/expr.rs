@@ -13,6 +13,11 @@ use std::fmt;
 use std::sync::Arc;
 
 pub const MAX_EXPR_LEN: usize = 4096;
+
+/// The key under which `EffEntity::cel_view` lists the fields it read as 0 or false because they were left
+/// empty, so that `isEmpty(doc.qty)` and `coalesce(doc.qty, 1)` can tell them from a 0 entered. No field can
+/// have this name, and expressions never see it.
+pub const EMPTY_FIELDS: &str = "\u{0}empty";
 const MAX_NESTING: usize = 32;
 /// Operator characters one expression may hold. A chain of operators nests as deep as it is long,
 /// parentheses or not, and evaluation recurses that deep: a thousand-term chain overflowed a 2 MiB
@@ -103,20 +108,22 @@ impl Expr {
     /// effect writes).
     pub fn eval_with(&self, scope: &Scope<'_>, extra: &[(&str, &Value)]) -> Result<Value, String> {
         let mut ctx = Context::with_env(ENV.clone());
-        for name in self.uses.iter() {
-            expr_fns::bind(&mut ctx, name);
-        }
-        let bind = |ctx: &mut Context, name: &str, v: &Value| ctx.add_variable_from_value(name.to_string(), json_to_cel(v));
-        bind(&mut ctx, "doc", scope.doc);
-        bind(&mut ctx, "old", scope.old.filter(|_| self.reads_old).unwrap_or(&Value::Null));
-        bind(&mut ctx, "parent", scope.parent.filter(|_| self.reads_parent).unwrap_or(&Value::Null));
-        bind(&mut ctx, "user", scope.user);
+        let mut bound: Vec<(&str, &Value)> = vec![
+            ("doc", scope.doc),
+            ("old", scope.old.filter(|_| self.reads_old).unwrap_or(&Value::Null)),
+            ("parent", scope.parent.filter(|_| self.reads_parent).unwrap_or(&Value::Null)),
+            ("user", scope.user),
+        ];
         // Time is the caller's fact, as the workspace sees it: never a clock read here (FLC-COMP-003).
         for key in ["today", "now", "time"] {
-            bind(&mut ctx, key, scope.user.get(key).unwrap_or(&Value::Null));
+            bound.push((key, scope.user.get(key).unwrap_or(&Value::Null)));
         }
-        for (name, v) in extra {
-            bind(&mut ctx, name, v);
+        bound.extend(extra.iter().copied());
+        for name in self.uses.iter() {
+            expr_fns::bind(&mut ctx, name, &bound);
+        }
+        for (name, v) in bound {
+            ctx.add_variable_from_value(name.to_string(), json_to_cel(v));
         }
         let out = self.program.execute(&ctx).map_err(|e| e.to_string())?;
         Ok(cel_to_json(&out))
@@ -199,7 +206,9 @@ fn json_to_cel(v: &Value) -> cel::Value {
         Value::String(s) => C::String(Arc::new(s.clone())),
         Value::Array(items) => C::List(Arc::new(items.iter().map(json_to_cel).collect())),
         Value::Object(m) => {
-            let map: std::collections::HashMap<cel::objects::Key, C> = m.iter().map(|(k, v)| (k.clone().into(), json_to_cel(v))).collect();
+            // What `EffEntity::cel_view` notes as left empty is for `isEmpty` and `coalesce` alone: CEL never sees it.
+            let map: std::collections::HashMap<cel::objects::Key, C> =
+                m.iter().filter(|(k, _)| *k != EMPTY_FIELDS).map(|(k, v)| (k.clone().into(), json_to_cel(v))).collect();
             C::Map(map.into())
         }
     }
