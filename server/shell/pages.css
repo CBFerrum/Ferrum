@@ -1,41 +1,187 @@
-/* The shell's own pages: sign-in and status (not installed, no access, being updated…). */
+/* The shell's own pages: sign-in, sign-up, consent, the portal's home and status (not installed, no access,
+   being updated…). Tokens come from theme.css (the suite's values); the root is 14px like the suite's
+   screens, and everything here is a role from that scale: 12/13/14/18/24, controls 36 (44 on touch), 6px
+   controls, hairlines, 12px dialogs, the accent only for the primary action, links and focus. */
+html {
+  font-size: 87.5%;
+}
 html,
 body {
   margin: 0;
   min-height: 100%;
   background: var(--ferrum-bg);
   color: var(--ferrum-text);
-  font: 15px/1.5 var(--ferrum-font);
+  font: 1rem/1.4286 var(--ferrum-font);
+  -webkit-font-smoothing: antialiased;
 }
-.ferrum-status,
+:focus-visible {
+  outline: var(--ferrum-focus-outline);
+  outline-offset: 2px;
+}
+
+/* ── the sign-in card (sign-in, sign-up, consent) ── */
 .ferrum-login {
   box-sizing: border-box;
-  max-width: 34rem;
-  margin: clamp(32px, 10vh, 96px) auto;
-  padding: 32px clamp(20px, 5vw, 40px);
+  max-width: 26rem; /* 364px at the 14px root: the card is calm, not wide */
+  margin: clamp(32px, 12vh, 112px) auto 32px;
+  padding: 32px 32px 28px;
   background: var(--ferrum-surface);
   border: 1px solid var(--ferrum-border);
-  border-radius: var(--ferrum-radius);
-}
-.ferrum-login {
-  max-width: 26rem;
-  border-radius: 14px;
-  box-shadow: var(--ferrum-shadow);
+  border-radius: var(--ferrum-radius-lg);
+  box-shadow: var(--ferrum-shadow-sm);
 }
 .ferrum-mark {
   display: block;
-  margin: 0 0 20px;
+  width: 40px;
+  height: 40px;
+  margin: 0 auto 16px;
 }
-.ferrum-status h1,
+.ferrum-login h1,
+.ferrum-status h1 {
+  margin: 0 0 8px;
+  font-size: var(--ferrum-text-2xl);
+  line-height: var(--ferrum-text-2xl-lh);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
 .ferrum-login h1 {
-  margin: 0 0 12px;
-  font-size: 1.35rem;
-  font-weight: 650;
+  margin-bottom: 24px;
+  text-align: center;
 }
-.ferrum-status p {
-  margin: 0 0 16px;
+.ferrum-login p {
+  margin: 0;
+  font-size: var(--ferrum-text-sm);
+  line-height: var(--ferrum-text-sm-lh);
+}
+.ferrum-login form,
+#ferrum-login-fields {
+  display: grid;
+  gap: 16px;
+}
+#ferrum-login-fields:empty {
+  display: none;
+}
+.ferrum-login form {
+  gap: 16px;
+}
+.ferrum-login label {
+  display: grid;
+  gap: 4px;
+  font-size: var(--ferrum-text-sm);
+  line-height: var(--ferrum-text-sm-lh);
+  font-weight: 500;
+}
+.ferrum-login input {
+  box-sizing: border-box;
+  width: 100%;
+  height: var(--ferrum-control-h);
+  padding: 0 10px;
+  border: 1px solid var(--ferrum-border-control);
+  border-radius: var(--ferrum-radius-sm);
+  background: var(--ferrum-surface);
+  color: var(--ferrum-text);
+  font: inherit;
+  font-weight: 400;
+  transition: border-color var(--ferrum-duration-state);
+}
+.ferrum-login input:focus-visible {
+  border-color: var(--ferrum-primary);
+}
+.ferrum-login input[aria-invalid="true"] {
+  border-color: var(--ferrum-danger);
+}
+.ferrum-login input::placeholder {
   color: var(--ferrum-muted);
+  opacity: 1;
 }
+/* A mistake: said beside the fields it concerns, above the button, announced (role="alert"); nothing when empty. */
+.ferrum-error {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--ferrum-radius-sm);
+  background: var(--ferrum-danger-soft);
+  color: var(--ferrum-danger);
+  font-size: var(--ferrum-text-sm);
+  line-height: var(--ferrum-text-sm-lh);
+}
+.ferrum-error:empty {
+  display: none;
+}
+.ferrum-hint {
+  margin: 0;
+  color: var(--ferrum-muted);
+  font-size: var(--ferrum-text-sm);
+  line-height: var(--ferrum-text-sm-lh);
+}
+.ferrum-login p.ferrum-hint {
+  margin-top: 0;
+}
+.ferrum-login form ~ p.ferrum-hint,
+.ferrum-login form ~ .ferrum-regions {
+  margin-top: 16px;
+  text-align: center;
+}
+.ferrum-login p.ferrum-hint a,
+.ferrum-login p a {
+  color: var(--ferrum-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.ferrum-login p.ferrum-hint a:hover,
+.ferrum-login p a:hover {
+  color: var(--ferrum-primary-hover);
+}
+.ferrum-login ul {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 0;
+  list-style: none;
+  color: var(--ferrum-muted);
+  font-size: var(--ferrum-text-sm);
+  line-height: var(--ferrum-text-sm-lh);
+}
+.ferrum-login li {
+  padding-inline-start: 16px;
+  position: relative;
+}
+.ferrum-login li::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: 4px;
+  top: 7px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--ferrum-faint);
+}
+.ferrum-login p + ul {
+  margin-top: 12px;
+}
+.ferrum-login strong {
+  font-weight: 600;
+}
+.ferrum-qr {
+  justify-self: center;
+  box-sizing: content-box;
+  padding: 8px;
+  background: #fff; /* a code is scanned in black on white, in every theme */
+  border: 1px solid var(--ferrum-border);
+  border-radius: var(--ferrum-radius);
+}
+.ferrum-codes {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--ferrum-border);
+  border-radius: var(--ferrum-radius-sm);
+  background: var(--ferrum-surface-2);
+  font: var(--ferrum-text-base) / 24px var(--ferrum-mono);
+  text-align: center;
+  user-select: all;
+}
+
+/* ── buttons ── */
 .ferrum-actions {
   display: flex;
   flex-wrap: wrap;
@@ -45,89 +191,176 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 2.5rem;
-  padding: 0 16px;
-  border: 1px solid transparent;
-  border-radius: 8px;
+  box-sizing: border-box;
+  min-height: var(--ferrum-control-h);
+  padding: 0 12px;
+  border: 1px solid var(--ferrum-primary);
+  border-radius: var(--ferrum-radius-sm);
   background: var(--ferrum-primary);
   color: var(--ferrum-primary-text);
   font: inherit;
-  font-weight: 600;
+  font-size: var(--ferrum-text-base);
+  line-height: var(--ferrum-text-base-lh);
+  font-weight: 500;
   text-decoration: none;
+  white-space: nowrap;
   cursor: pointer;
+  transition: background-color var(--ferrum-duration-state), border-color var(--ferrum-duration-state), color var(--ferrum-duration-state);
 }
-.ferrum-button:hover {
+.ferrum-button:hover,
+.ferrum-button:active {
   background: var(--ferrum-primary-hover);
-}
-.ferrum-button:focus-visible,
-.ferrum-login input:focus-visible {
-  outline: none;
-  box-shadow: var(--ferrum-focus-ring);
+  border-color: var(--ferrum-primary-hover);
 }
 .ferrum-button[disabled] {
-  opacity: 0.6;
+  opacity: 0.5;
   cursor: progress;
 }
 .ferrum-button-quiet {
-  border-color: var(--ferrum-border);
-  background: transparent;
+  border-color: var(--ferrum-border-strong);
+  background: var(--ferrum-surface);
   color: var(--ferrum-text);
 }
 .ferrum-button-quiet:hover {
-  background: var(--ferrum-primary-soft);
+  background: var(--ferrum-surface-2);
+  border-color: var(--ferrum-border-strong);
+}
+.ferrum-button-quiet:active {
+  background: var(--ferrum-surface-3);
+  border-color: var(--ferrum-border-strong);
+}
+.ferrum-button-danger {
+  background: var(--ferrum-danger);
+  border-color: var(--ferrum-danger);
+}
+.ferrum-button-danger:hover,
+.ferrum-button-danger:active {
+  background: var(--ferrum-danger-hover);
+  border-color: var(--ferrum-danger-hover);
+}
+/* In the card the main button fills the width; the other ways in are quiet buttons under it. */
+.ferrum-login form > .ferrum-button,
+.ferrum-login #ferrum-passkey,
+.ferrum-login #ferrum-sso .ferrum-button {
+  width: 100%;
+}
+/* The other ways in sit under a hairline, as quiet buttons (single sign-on is added by the script as a plain button). */
+.ferrum-login #ferrum-sso {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+.ferrum-login #ferrum-sso .ferrum-button,
+.ferrum-login #ferrum-passkey {
+  border-color: var(--ferrum-border-strong);
+  background: var(--ferrum-surface);
+  color: var(--ferrum-text);
+}
+.ferrum-login #ferrum-sso .ferrum-button:hover,
+.ferrum-login #ferrum-passkey:hover {
+  background: var(--ferrum-surface-2);
+  border-color: var(--ferrum-border-strong);
+}
+.ferrum-login #ferrum-sso .ferrum-button:active,
+.ferrum-login #ferrum-passkey:active {
+  background: var(--ferrum-surface-3);
+  border-color: var(--ferrum-border-strong);
+}
+/* The hairline belongs to the form above, never to the button box (padding there pushed the label down). */
+.ferrum-login form:has(+ #ferrum-sso, + #ferrum-passkey, + .ferrum-button) {
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--ferrum-border);
+}
+.ferrum-login form + #ferrum-sso,
+.ferrum-login form + #ferrum-passkey,
+.ferrum-login form + .ferrum-button {
+  margin-top: 16px;
+}
+.ferrum-login #ferrum-sso + #ferrum-passkey {
+  margin-top: 8px;
 }
 .ferrum-login form.ferrum-consent {
   display: flex;
-  justify-content: flex-end;
   gap: 8px;
-  margin-top: 8px;
+  margin-top: 16px;
 }
-.ferrum-login form,
-#ferrum-login-fields {
-  display: grid;
-  gap: 14px;
+.ferrum-login form.ferrum-consent .ferrum-button {
+  flex: 1;
 }
-.ferrum-login label {
-  display: grid;
-  gap: 6px;
-  font-weight: 600;
-  font-size: 0.9rem;
-}
-.ferrum-login input {
-  box-sizing: border-box;
-  width: 100%;
-  min-height: 2.5rem;
-  padding: 0 12px;
-  border: 1px solid var(--ferrum-border);
-  border-radius: 8px;
-  background: var(--ferrum-surface);
-  color: var(--ferrum-text);
+/* The step's quiet link (another way in, another address): a link, so the accent and an underline on hover. */
+.ferrum-login .ferrum-switch {
+  display: block;
+  margin: 16px auto 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ferrum-primary);
   font: inherit;
+  font-size: var(--ferrum-text-sm);
+  line-height: var(--ferrum-text-sm-lh);
+  text-underline-offset: 2px;
+  cursor: pointer;
 }
-.ferrum-error {
-  margin: 0;
-  min-height: 1.2em;
-  color: var(--ferrum-danger);
+.ferrum-login .ferrum-switch:hover {
+  color: var(--ferrum-primary-hover);
+  text-decoration: underline;
 }
-.ferrum-hint {
-  margin: 0;
-  color: var(--ferrum-muted);
-  font-size: 0.9rem;
-}
-.ferrum-qr {
-  justify-self: center;
-  background: #fff;
-  border-radius: 8px;
-}
-.ferrum-codes {
-  margin: 0;
-  padding: 12px;
-  border: 1px solid var(--ferrum-border);
-  border-radius: 8px;
-  font: 1rem/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+
+/* ── status pages: the suite's state panel (icon tile, title, one line, one action) ── */
+.ferrum-status {
+  position: relative;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: 28rem;
+  margin: clamp(48px, 16vh, 144px) auto 32px;
+  padding: 0 16px;
   text-align: center;
 }
-/* The portal's home: the pages the workspace's apps give this person. */
+.ferrum-status::before {
+  content: "";
+  width: 40px;
+  height: 40px;
+  margin-bottom: 8px;
+  border-radius: 10px;
+  background: var(--ferrum-surface-2);
+}
+/* The glyph (Lucide "info", one stroke weight) over the tile, in the muted colour. */
+.ferrum-status::after {
+  content: "";
+  position: absolute;
+  top: 10px;
+  inset-inline-start: calc(50% - 10px);
+  width: 20px;
+  height: 20px;
+  background: var(--ferrum-muted);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 16v-4'/%3E%3Cpath d='M12 8h.01'/%3E%3C/svg%3E") center / 20px 20px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 16v-4'/%3E%3Cpath d='M12 8h.01'/%3E%3C/svg%3E") center / 20px 20px no-repeat;
+}
+.ferrum-status h1 {
+  margin: 0;
+  font-size: var(--ferrum-text-xl);
+  line-height: var(--ferrum-text-xl-lh);
+}
+.ferrum-status p {
+  margin: 0;
+  max-width: 40ch;
+  color: var(--ferrum-muted);
+  font-size: var(--ferrum-text-sm);
+  line-height: var(--ferrum-text-sm-lh);
+  overflow-wrap: anywhere;
+}
+.ferrum-status .ferrum-actions {
+  justify-content: center;
+  margin-top: 8px;
+}
+.ferrum-status .ferrum-actions:empty {
+  display: none;
+}
+
+/* ── the portal's home: the pages the workspace's apps give this person ── */
 .ferrum-portal {
   box-sizing: border-box;
   max-width: 48rem;
@@ -135,12 +368,17 @@ body {
   padding: 0 clamp(16px, 4vw, 32px);
 }
 .ferrum-portal h1 {
-  margin: 0 0 20px;
-  font-size: 1.5rem;
-  font-weight: 650;
+  margin: 0 0 24px;
+  font-size: var(--ferrum-text-2xl);
+  line-height: var(--ferrum-text-2xl-lh);
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 .ferrum-portal > p {
+  margin: 0;
   color: var(--ferrum-muted);
+  font-size: var(--ferrum-text-sm);
+  line-height: var(--ferrum-text-sm-lh);
 }
 .ferrum-portal-cards {
   display: grid;
@@ -152,43 +390,35 @@ body {
 }
 .ferrum-portal-card {
   display: grid;
+  align-content: start;
   gap: 4px;
   height: 100%;
   box-sizing: border-box;
-  padding: 18px 20px;
+  padding: 16px;
   background: var(--ferrum-surface);
   border: 1px solid var(--ferrum-border);
   border-radius: var(--ferrum-radius);
   color: var(--ferrum-text);
   text-decoration: none;
+  transition: background-color var(--ferrum-duration-state), border-color var(--ferrum-duration-state);
+}
+.ferrum-portal-card strong {
+  font-weight: 600;
 }
 .ferrum-portal-card:hover {
-  border-color: var(--ferrum-primary);
+  background: var(--ferrum-surface-2);
+  border-color: var(--ferrum-border-strong);
 }
-.ferrum-portal-card:focus-visible {
-  outline: none;
-  box-shadow: var(--ferrum-focus-ring);
+.ferrum-portal-card:active {
+  background: var(--ferrum-surface-3);
 }
 .ferrum-portal-card span {
   color: var(--ferrum-muted);
-  font-size: 0.9rem;
+  font-size: var(--ferrum-text-sm);
+  line-height: var(--ferrum-text-sm-lh);
 }
-/* "Sign in with a passkey", under the form. */
-.ferrum-login #ferrum-passkey {
-  width: 100%;
-  margin-top: 12px;
-}
-.ferrum-login .ferrum-switch {
-  display: block;
-  margin: 14px 0 0;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--ferrum-primary);
-  font: inherit;
-  cursor: pointer;
-}
-/* An app whose interface runs isolated: its sandboxed frame fills the page below the bar. */
+
+/* ── an app whose interface runs isolated: its sandboxed frame fills the page below the bar ── */
 body.ferrum-isolated {
   overflow: hidden;
 }
@@ -205,19 +435,34 @@ body.ferrum-isolated {
   max-width: 28rem;
   padding: 24px;
   border: 1px solid var(--ferrum-border);
-  border-radius: var(--ferrum-radius);
+  border-radius: var(--ferrum-radius-lg);
   background: var(--ferrum-surface);
   color: var(--ferrum-text);
   box-shadow: var(--ferrum-shadow);
 }
 .ferrum-isolated-confirm h2 {
   margin: 0 0 8px;
-  font-size: 1.1rem;
+  font-size: var(--ferrum-text-xl);
+  line-height: var(--ferrum-text-xl-lh);
+  font-weight: 600;
 }
 .ferrum-isolated-confirm p {
   margin: 0 0 16px;
   color: var(--ferrum-muted);
+  font-size: var(--ferrum-text-sm);
+  line-height: var(--ferrum-text-sm-lh);
 }
-.ferrum-button-danger {
-  background: var(--ferrum-danger);
+
+@media (max-width: 480px) {
+  .ferrum-login {
+    margin-top: 24px;
+    padding: 24px 20px 20px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ferrum-button,
+  .ferrum-login input,
+  .ferrum-portal-card {
+    transition: none;
+  }
 }

@@ -36,6 +36,7 @@ function field(name, label, type, value = "", extra = {}) {
   l.textContent = label;
   const input = document.createElement("input");
   Object.assign(input, { name, type, value, required: true, ...extra });
+  input.setAttribute("aria-describedby", "ferrum-login-error");
   l.append(input);
   fields.append(l);
   return input;

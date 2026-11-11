@@ -43,7 +43,7 @@ function tr(english, vars) {
 const SVG_NS = "http://www.w3.org/2000/svg";
 function icon(name, size = 16) {
   const svg = document.createElementNS(SVG_NS, "svg");
-  for (const [k, v] of Object.entries({ width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" }))
+  for (const [k, v] of Object.entries({ width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": 1.75, "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" }))
     svg.setAttribute(k, String(v));
   svg.innerHTML = ICONS[name] ?? "";
   return svg;
@@ -270,11 +270,11 @@ let menuOpen = false;
 
 const log = el("div", { class: "fa-log", role: "log", "aria-live": "polite", "aria-relevant": "additions" });
 const input = el("textarea", { class: "fa-input", rows: "1", placeholder: tr("Ask about your work…"), "aria-label": tr("Message the assistant"), maxlength: "20000" });
-const sendBtn = el("button", { type: "submit", class: "fa-send", "aria-label": tr("Send"), title: tr("Send") }, icon("arrow-up", 18));
+const sendBtn = el("button", { type: "submit", class: "fa-send", "aria-label": tr("Send"), title: tr("Send") }, icon("arrow-up", 16));
 const titleEl = el("h1", { class: "fa-title", text: tr("Assistant") });
 const menu = el("div", { class: "fa-menu", role: "dialog", "aria-label": tr("Conversations"), hidden: true });
-const historyBtn = el("button", { type: "button", class: "fa-icon-btn", "aria-label": tr("Conversations"), title: tr("Conversations"), "aria-expanded": "false", onclick: () => toggleMenu() }, icon("history", 17));
-const newBtn = el("button", { type: "button", class: "fa-icon-btn", "aria-label": tr("New conversation"), title: tr("New conversation"), onclick: () => fresh() }, icon("plus", 18));
+const historyBtn = el("button", { type: "button", class: "fa-icon-btn", "aria-label": tr("Conversations"), title: tr("Conversations"), "aria-expanded": "false", onclick: () => toggleMenu() }, icon("history", 16));
+const newBtn = el("button", { type: "button", class: "fa-icon-btn", "aria-label": tr("New conversation"), title: tr("New conversation"), onclick: () => fresh() }, icon("plus", 16));
 const form = el(
   "form",
   { class: "fa-compose", onsubmit: (e) => (e.preventDefault(), running() ? stop() : send()) },
@@ -286,7 +286,7 @@ const running = () => thread?.state === "running";
 
 function setBusy() {
   const busy = running();
-  sendBtn.replaceChildren(icon(busy ? "square" : "arrow-up", busy ? 14 : 18));
+  sendBtn.replaceChildren(icon(busy ? "square" : "arrow-up", busy ? 14 : 16));
   sendBtn.setAttribute("aria-label", busy ? tr("Stop") : tr("Send"));
   sendBtn.title = busy ? tr("Stop") : tr("Send");
   sendBtn.classList.toggle("fa-stop", busy);
@@ -516,7 +516,7 @@ function drawThread() {
       el(
         "div",
         { class: "fa-empty" },
-        el("span", { class: "fa-mark" }, icon("sparkles", 22)),
+        el("span", { class: "fa-mark" }, icon("sparkles", 20)),
         el("h2", { text: domains ? tr("How can I help with {title}?", { title: domains[0].title }) : tr("How can I help?") }),
         el("p", { text: tr("Ask about your records, or ask me to do something. I work with your permissions, and I ask before changing anything.") }),
         el(
@@ -874,7 +874,7 @@ async function start() {
       el(
         "div",
         { class: "fa-off" },
-        el("span", { class: "fa-mark" }, icon("sparkles", 22)),
+        el("span", { class: "fa-mark" }, icon("sparkles", 20)),
         el("h2", { text: tr("The assistant is not available") }),
         el("p", { text: status.reason ?? "" }),
         status.admin && /turned the assistant off/.test(status.reason ?? "") ? el("button", { type: "button", class: "fa-btn fa-primary", text: tr("Turn it on"), onclick: () => setWorkspace(true) }) : null,
@@ -883,7 +883,7 @@ async function start() {
     return shell()?.ready?.();
   }
   root.replaceChildren(
-    el("header", { class: "fa-head" }, el("span", { class: "fa-mark fa-small" }, icon("sparkles", 15)), titleEl, historyBtn, newBtn, menu),
+    el("header", { class: "fa-head" }, el("span", { class: "fa-mark fa-small" }, icon("sparkles", 14)), titleEl, historyBtn, newBtn, menu),
     log,
     form,
   );
