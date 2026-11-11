@@ -1,5 +1,6 @@
 # Ferrum: the stateless server, its PostgreSQL cluster (CloudNativePG), the PDF renderer, the
-# Gateway in front, and two optional parts. The defaults render what deploy/k8s renders
+# online editor for Word, Excel and PowerPoint files (Collabora Online), the Gateway in front, and
+# two optional parts. The defaults render what deploy/k8s renders
 # (deploy/helm/test.sh checks that). Install: docs/operations.md, "Installing with the Helm chart".
 
 # Names are "<fullnameOverride>", "<fullnameOverride>-pdf", "<fullnameOverride>-db" and so on.
@@ -118,6 +119,35 @@ pdf:
   resources:
     requests: {cpu: 100m, memory: 256Mi}
     limits: {memory: 1Gi}
+
+# The online editor for Drive: Collabora Online opens and co-edits Word, Excel and PowerPoint files
+# (docs/operations.md, "Online editing"). On by default; `enabled: false` turns it off and takes it
+# out of the server's settings. It is the Development Edition (CODE): free, with no vendor support;
+# a supported build is Collabora's subscription or your own build (set image.repository).
+# It lives in a namespace of its own (the chart creates it) because it needs capabilities the
+# `restricted` Pod Security level refuses, and on a host of its own, a sibling of the server's (an
+# origin of its own: it must never share Ferrum's). Only that host's /browser and /cool paths are
+# public; the administration console, metrics and conversion service are sent back to Ferrum.
+# One replica: Collabora keeps each open document in the pod that opened it, and the Gateway API
+# cannot route by document, so size the pod instead (about 600 MiB and 100 to 250 MiB for each open
+# document). Above 1 the chart adds a PodDisruptionBudget, but a document then lives in whichever
+# pod the Gateway picked: only with routing by WOPISrc of your own.
+office:
+  enabled: true
+  namespace: ferrum-office
+  host: office.example.com
+  tlsSecretName: ferrum-office-tls
+  replicas: 1
+  # The namespaces of the Gateway's proxies, the only pods besides the server that may reach the editor.
+  gatewayNamespaces: [envoy-gateway-system]
+  image: {repository: collabora/code, digest: "", tag: "26.04.5.2.1"}
+  # An optional Secret in the editor's namespace holding the WOPI proof key (key `proof_key`, a
+  # PEM RSA key: openssl genrsa -traditional -out proof_key 2048). With it, Ferrum refuses any WOPI
+  # call the editor did not sign. Create it before the first start, or restart the pod after.
+  proofKeySecret: ferrum-office-proof
+  resources:
+    requests: {cpu: 500m, memory: 1Gi}
+    limits: {memory: 3Gi}
 
 # Browser editors for Drive (docs/operations.md, "Browser editors"): a server on a host of its own.
 editors:

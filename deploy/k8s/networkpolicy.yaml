@@ -1,6 +1,6 @@
 # Only the gateway's proxies (Envoy Gateway runs them in envoy-gateway-system) and Prometheus may
-# reach the API; the API may reach the database, the PDF renderer, DNS and HTTPS endpoints (object
-# storage, webhooks, mail).
+# reach the API, and the online editor's pods (their WOPI calls); the API may reach the database, the
+# PDF renderer, the online editor, DNS and HTTPS endpoints (object storage, webhooks, mail).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -15,6 +15,11 @@ spec:
             matchLabels: {kubernetes.io/metadata.name: envoy-gateway-system}
         - namespaceSelector:
             matchLabels: {kubernetes.io/metadata.name: monitoring}
+        # The online editor's WOPI calls (office/).
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: ferrum-office}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: ferrum-office}
       ports:
         - {port: 5150}
   egress:
@@ -28,6 +33,14 @@ spec:
             matchLabels: {app.kubernetes.io/name: ferrum-pdf}
       ports:
         - {port: 3000}
+    # The online editor: its discovery document and the files it is told to open.
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: ferrum-office}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: ferrum-office}
+      ports:
+        - {port: 9980}
     - ports:
         - {port: 53, protocol: UDP}
         - {port: 53, protocol: TCP}

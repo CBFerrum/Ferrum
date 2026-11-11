@@ -78,6 +78,11 @@ spec:
             # - {name: FERRUM_S3_ENDPOINT, value: "https://<account>.r2.cloudflarestorage.com"}
             - {name: PUBLIC_URL, value: "https://erp.example.com"}
             - {name: FERRUM_PDF_URL, value: "http://ferrum-pdf:3000"}
+            # Online editing of Word, Excel and PowerPoint files (office/): the editor as the server
+            # reaches it, the server as the editor reaches it, and the editor as browsers reach it.
+            - {name: FERRUM_OFFICE_URL, value: "http://ferrum-office.ferrum-office.svc.cluster.local:9980"}
+            - {name: FERRUM_OFFICE_WOPI_URL, value: "http://ferrum.ferrum.svc.cluster.local:80"}
+            - {name: FERRUM_OFFICE_ORIGIN, value: "https://office.example.com"}
             - {name: FERRUM_DB_MAX_CONNECTIONS, value: "30"}
             - {name: LOG_LEVEL, value: "info"}
           resources:

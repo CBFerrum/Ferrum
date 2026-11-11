@@ -1,0 +1,17 @@
+# The online editor for Word, Excel and PowerPoint files in Drive (docs/operations.md, "Online
+# editing"): Collabora Online in a namespace of its own, because it needs capabilities that the
+# `restricted` Pod Security level of the `ferrum` namespace refuses. It is on by default: install it
+# with the rest, and leave it out (or `office.enabled: false` in the Helm chart) to turn it off.
+#   kubectl apply -k deploy/k8s
+#   kubectl apply -k deploy/k8s/office
+# Replace office.example.com in office.yaml (and in ../gateway.yaml, ../deployment.yaml) with the
+# editor's host, and erp.example.com with Ferrum's.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ferrum-office
+resources:
+  - namespace.yaml
+  - office.yaml
+images:
+  - name: collabora/code
+    newTag: 26.04.5.2.1
