@@ -169,6 +169,12 @@ async fn scenario() {
             json!([{"type": "find", "entity": "XParty", "by": {"code": "'ZZ'"}, "create": {"name": "'Gone'"}},
             {"type": "set_fields", "values": {"title": "''"}}]),
         ),
+        action(
+            "XCase",
+            "x_flag_all",
+            json!([{"type": "for_each", "table": "checklist",
+            "effects": [{"type": "set_line", "table": "checklist", "where": "row.id == item.id", "values": {"flagged": "true"}}]}]),
+        ),
         action("XCase", "x_loose", json!([{"type": "find", "entity": "XLoose", "by": {"code": "doc.code"}, "create": {"hits": "1"}}])),
         action(
             "XCase",
@@ -264,6 +270,9 @@ async fn scenario() {
     let c3 = k.insert(&a, "XCase", obj(json!({"title": "Big", "code": "B", "start": "2026-11-01", "template": big["id"]}))).await.unwrap();
     refused(k.run_action(&a, "XCase", id_of(&c3), "x_open", Value::Null).await, "more than the 100 one copy takes");
     assert!(k.get(&a, "XCase", id_of(&c3), false).await.unwrap()["party"].is_null(), "nothing kept");
+    let lines: Vec<Value> = (0..=automation::MAX_ITEMS).map(|i| json!({"title": format!("L{i}")})).collect();
+    let c4 = k.insert(&a, "XCase", obj(json!({"title": "Long", "checklist": lines}))).await.unwrap();
+    refused(k.run_action(&a, "XCase", id_of(&c4), "x_flag_all", Value::Null).await, "for_each: more than 100 lines of checklist");
 
     // ───────────── automations alike ─────────────
     automation::save(
