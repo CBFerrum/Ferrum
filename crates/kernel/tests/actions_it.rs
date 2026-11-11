@@ -21,7 +21,8 @@ fn catalog() -> Catalog {
     std::fs::write(dir.join("shop/package.yaml"), "package: shop\nversion: 0.1.0\nlabel: Shop\ndepends: [core]\n").unwrap();
     std::fs::write(
         dir.join("shop/entities/shop.yaml"),
-        "- name: Shop\n  label: Shop\n  kind: master\n  fields:\n    - {name: name, type: data}\n    - {name: status, type: data, read_only: true}\n  actions: [{name: lock, label: Lock}]\n",
+        "- name: Shop\n  label: Shop\n  kind: master\n  fields:\n    - {name: name, type: data}\n    - {name: status, type: data, read_only: true}\n  actions: [{name: lock, label: Lock}]\n\
+         - name: Place\n  label: Place\n  kind: master\n  title_field: name\n  fields:\n    - {name: name, type: data}\n    - {name: parent, type: link, to: Place}\n",
     )
     .unwrap();
     let c = Catalog::load_dir(&dir).expect("catalog");
@@ -106,6 +107,8 @@ async fn scenario() {
     let k = Kernel::boot(db, catalog(), HookRegistry::default(), KernelSettings::default(), None).await.expect("boot");
     let w = workspace(&k, "acme").await;
     faults(&w).await;
+    refused_in_words(&w).await;
+    named_cycle(&w).await;
     empty_copies(&workspace(&k, "copies").await).await;
     linked_from_automations(&w).await;
     configured(&k, &w).await;
@@ -154,6 +157,77 @@ async fn faults(w: &W) {
     assert_eq!(w.get("XThing", id).await["note"], "c", "locked: the input is ignored, as for a read-only field");
     let fresh = k.insert(&admin, "XThing", obj(json!({"days": 1, "locked": true, "note": "new"}))).await.unwrap();
     assert_eq!(fresh["note"], "new", "a new record has nothing stored to be read-only by");
+}
+
+/// A field whose `read_only_if` holds refuses a person's different value in its own words when it has a
+/// `read_only_message`; the same value sent back, the system's write and a field without the message pass as before.
+async fn refused_in_words(w: &W) {
+    let k = &w.k;
+    let kitchen = "went to the kitchen: void it and order again";
+    let line = json!({"name": "XTicketLine", "label": "Ticket Line", "kind": "child", "fields": [
+        {"name": "sent", "type": "check"},
+        {"name": "dish", "type": "data", "read_only_if": "doc.sent", "read_only_message": kitchen},
+        {"name": "qty", "type": "currency"}]});
+    let ticket = json!({"name": "XTicket", "label": "Ticket", "kind": "master", "fields": [
+        {"name": "sent", "type": "check"},
+        {"name": "dish", "type": "data", "read_only_if": "doc.sent", "read_only_message": kitchen},
+        {"name": "price", "type": "currency", "read_only_if": "doc.sent", "read_only_message": "priced"},
+        {"name": "note", "type": "data", "read_only_if": "doc.sent"},
+        {"name": "lines", "type": "table", "of": "XTicketLine"}]});
+    w.batch(vec![define(line), define(ticket)]).await.unwrap();
+    let admin = w.admin().await;
+    let t = k
+        .insert(
+            &admin,
+            "XTicket",
+            obj(json!({"sent": true, "dish": "Soup", "price": "12.50", "note": "a", "lines": [{"sent": true, "dish": "Bread", "qty": 1}]})),
+        )
+        .await
+        .unwrap();
+    let id = id_of(&t);
+    let row = t["lines"][0]["id"].clone();
+
+    // A top-level field: refused on that field, in its words.
+    let e = k.update(&admin, "XTicket", id, obj(json!({"dish": "Stew"})), None).await.unwrap_err();
+    match &e {
+        Error::Validation(v) => assert!(v.iter().any(|f| f.field == "dish" && f.message == kitchen), "{v:?}"),
+        other => panic!("{other:?}"),
+    }
+    // A line's field: refused on that field and row.
+    let e = k.update(&admin, "XTicket", id, obj(json!({"lines": [{"id": row, "dish": "Cake"}]})), None).await.unwrap_err();
+    match &e {
+        Error::Validation(v) => {
+            let f = v.iter().find(|f| f.field == "dish").unwrap_or_else(|| panic!("{v:?}"));
+            assert_eq!(f.message, kitchen);
+            assert_eq!(f.row, Some(("lines".to_string(), 0)), "the row is named");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(w.get("XTicket", id).await["dish"], "Soup");
+
+    // The whole record sent back unchanged (a price as typed, not as stored) passes.
+    let back = obj(json!({"sent": true, "dish": " Soup ", "price": "12.5", "note": "a", "lines": [{"id": row, "sent": true, "dish": "Bread", "qty": "1.00"}]}));
+    k.update(&admin, "XTicket", id, back, None).await.expect("unchanged resend passes");
+
+    // A field without the message ignores the change, as before.
+    k.update(&admin, "XTicket", id, obj(json!({"note": "b"})), None).await.unwrap();
+    assert_eq!(w.get("XTicket", id).await["note"], "a");
+
+    // The system writes it.
+    let sys = Ctx::system(w.tenant, k.registry.schema(w.tenant).await.unwrap());
+    k.update(&sys, "XTicket", id, obj(json!({"dish": "Stew", "lines": [{"id": row, "dish": "Cake"}]})), None).await.expect("the system writes");
+    let after = w.get("XTicket", id).await;
+    assert_eq!((&after["dish"], &after["lines"][0]["dish"]), (&json!("Stew"), &json!("Cake")));
+}
+
+/// A move that would make a hierarchy a loop is refused naming the record and the one it would sit under.
+async fn named_cycle(w: &W) {
+    let k = &w.k;
+    let admin = w.admin().await;
+    let top = id_of(&k.insert(&admin, "Place", obj(json!({"name": "Asia"}))).await.unwrap());
+    let mid = id_of(&k.insert(&admin, "Place", obj(json!({"name": "India", "parent": top.to_string()}))).await.unwrap());
+    let e = k.update(&admin, "Place", top, obj(json!({"parent": mid.to_string()})), None).await.unwrap_err();
+    assert_eq!(message(&e), "parent: Asia cannot sit under India: India is already under Asia, which would make a cycle in the hierarchy");
 }
 
 /// An effect whose value is only a path to a value copies it as stored, empty included, where an expression
