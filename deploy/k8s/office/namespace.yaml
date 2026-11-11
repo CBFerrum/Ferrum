@@ -1,0 +1,10 @@
+# Collabora builds a jail for each document: it needs CHOWN, FOWNER, MKNOD and SYS_CHROOT and file
+# capabilities on its helper (allowPrivilegeEscalation), which `restricted` refuses and `baseline`
+# allows. Everything else in this namespace is the editor.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ferrum-office
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: baseline

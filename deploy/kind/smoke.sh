@@ -65,7 +65,8 @@ secret ferrum-secrets \
   --from-literal=FERRUM_METRICS_TOKEN="$(openssl rand -hex 32)" \
   --from-literal=AWS_ACCESS_KEY_ID=test --from-literal=AWS_SECRET_ACCESS_KEY=test
 secret ferrum-backup-s3 --from-literal=ACCESS_KEY_ID=test --from-literal=ACCESS_SECRET_KEY=test
-kubectl kustomize . > "$work/manifests.yaml"
+# The online editor is a second kustomization, in a namespace of its own (deploy/k8s/office).
+{ kubectl kustomize .; echo ---; kubectl kustomize ../k8s/office; } > "$work/manifests.yaml"
 for attempt in $(seq 1 20); do
   kubectl apply -f "$work/manifests.yaml" && break
   [ "$attempt" -lt 20 ] || fail "the manifests were not accepted"
@@ -77,9 +78,10 @@ k wait cluster/ferrum-db --for=condition=Ready --timeout=15m
 [ "$(k get cluster ferrum-db -o jsonpath='{.status.readyInstances}')" = 3 ] || fail "not three database instances"
 step "waiting for the server, the PDF renderer and the editor server"
 for d in ferrum ferrum-pdf ferrum-editors; do k rollout status "deploy/$d" --timeout=10m; done
+kubectl -n ferrum-office rollout status deploy/ferrum-office --timeout=10m
 step "waiting for the gateway and its certificate"
 k wait gateway/ferrum --for=condition=Programmed --timeout=5m
-k wait certificate/ferrum-tls certificate/ferrum-editors-tls --for=condition=Ready --timeout=5m
+k wait certificate/ferrum-tls certificate/ferrum-editors-tls certificate/ferrum-office-tls --for=condition=Ready --timeout=5m
 proxies="gateway.envoyproxy.io/owning-gateway-name=ferrum,gateway.envoyproxy.io/owning-gateway-namespace=$NS"
 kubectl -n envoy-gateway-system wait deploy -l "$proxies" --for=condition=Available --timeout=5m
 [ "$(kubectl -n envoy-gateway-system get deploy -l "$proxies" -o jsonpath='{.items[0].status.readyReplicas}')" = 2 ] || fail "not two gateway proxies"
@@ -130,6 +132,19 @@ grep -qi "^content-type: application/wasm" <<<"$(e -fsI "https://$EDITORS:8443/g
 [ "$(k get deploy ferrum -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="FERRUM_EDITORS_URL")].value}')" = "https://$EDITORS" ] ||
   fail "the server does not know the editor server"
 
+step "the online editor (Collabora, its own namespace and host)"
+OFFICE=office.example.com
+o() { curl -sS --max-time 60 --cacert "$work/ca.crt" --resolve "$OFFICE:8443:127.0.0.1" --resolve "$OFFICE:8080:127.0.0.1" -H "Host: $OFFICE" "$@"; }
+[ "$(o -o /dev/null -w '%{http_code} %{redirect_url}' "http://$OFFICE:8080/browser/x")" = "301 https://$OFFICE/browser/x" ] || fail "plain HTTP to the editor is not redirected"
+# What is not for the public is sent back to Ferrum: discovery, the administration console, conversion.
+for path in /hosting/discovery /cool/adminws /cool/convert-to/docx /browser/dist/admin/admin.html; do
+  [ "$(o -o /dev/null -w '%{http_code} %{redirect_url}' "https://$OFFICE:8443$path")" = "302 https://$HOST/" ] || fail "$path is reachable from outside"
+done
+[ "$(k get deploy ferrum -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="FERRUM_OFFICE_ORIGIN")].value}')" = "https://$OFFICE" ] || fail "the server does not know the editor"
+# The server fetches the editor's discovery over the cluster network, and finds the types Drive opens.
+disc=$(k exec deploy/ferrum -- ferrum task doctor format:json 2>/dev/null || true)
+grep -q '"check": "office"' <<<"$disc" || fail "the server's own report says nothing about the editor: $disc"
+
 step "the network policy, metrics and the autoscaler"
 # A pod outside the gateway and monitoring reaches the S3 emulator (which no policy guards) but
 # gets no answer from the API.
@@ -146,6 +161,9 @@ for _ in 1 2 3; do
 done
 for _ in 1 2 3; do
   [ "$(probe "http://ferrum-editors.$NS.svc.cluster.local/healthz")" != 200 ] || fail "a pod outside the gateway reached the editor server"
+done
+for _ in 1 2 3; do
+  [ "$(probe "http://ferrum-office.ferrum-office.svc.cluster.local:9980/hosting/discovery")" != 200 ] || fail "a pod outside the gateway reached the online editor"
 done
 kubectl -n ci-s3 delete pod policy-probe --wait=false >/dev/null
 first=$(k get pods -l app.kubernetes.io/name=ferrum -o name | head -1)

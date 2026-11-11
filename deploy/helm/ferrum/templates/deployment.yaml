@@ -138,6 +138,13 @@ spec:
         - namespaceSelector:
             matchLabels: {kubernetes.io/metadata.name: {{ . }}}
         {{- end }}
+        {{- if .Values.office.enabled }}
+        # The online editor's WOPI calls.
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ .Values.office.namespace }}}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: {{ $n }}-office}
+        {{- end }}
       ports:
         - {port: 5150}
   egress:
@@ -154,6 +161,16 @@ spec:
             matchLabels: {app.kubernetes.io/name: {{ $n }}-pdf}
       ports:
         - {port: 3000}
+    {{- end }}
+    {{- if .Values.office.enabled }}
+    # The online editor: its discovery document and the files it is told to open.
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ .Values.office.namespace }}}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: {{ $n }}-office}
+      ports:
+        - {port: 9980}
     {{- end }}
     - ports:
         - {port: 53, protocol: UDP}
