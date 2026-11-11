@@ -120,7 +120,7 @@ pub(crate) async fn run(
         let holds =
             expr.eval_with(&Scope { doc: &view, old: None, parent: None, user: &user }, &[("params", &params), ("links", &links)]).map_err(Error::invalid)?;
         if holds == Value::Bool(true) {
-            return Err(Error::Forbidden(message.clone()));
+            return Err(Error::Forbidden(crate::print::message(message, || crate::doc::told(ctx, ent, doc.clone(), Some(k)))));
         }
     }
     // The system, acting for the runner: every right, read-only fields included, while the records it writes say
