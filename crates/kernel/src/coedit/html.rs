@@ -247,6 +247,16 @@ impl<T: ReadTxn> Html<'_, T> {
             }
             // Bodies are written at the end, in the order of their references.
             "footnote" => {}
+            "mention" => match format::mention_href(&e, txn, self.origin) {
+                Some(href) => {
+                    out.push_str("<a href=\"");
+                    esc(&href, out);
+                    out.push_str("\" rel=\"noopener noreferrer nofollow\">");
+                    self.children(&e, out, in_code);
+                    out.push_str("</a>");
+                }
+                None => self.children(&e, out, in_code),
+            },
             IMAGE => self.image(&e, out),
             other => {
                 let html = match other {
@@ -653,6 +663,7 @@ mod tests {
             "<a href=\"#h_intro01\">introduction</a>",
             "<a href=\"https://acme.example.com/docs/d/0192f0c4-1c2b-7c3d-8e4f-5a6b7c8d9e0f\" rel=\"noopener noreferrer nofollow\">budget document</a>",
             "<a href=\"https://example.com/a?b=1&amp;c=2\" rel=\"noopener noreferrer nofollow\">the web</a>",
+            "<a href=\"https://acme.example.com/open/Customer/c-42\" rel=\"noopener noreferrer nofollow\">@Acme Foods</a> asked @Priya Nair</p>",
             "<ul style=\"list-style-type:square\"><li><p>A square bullet</p>\n<ul style=\"list-style-type:circle\">",
             "<ol type=\"a\" start=\"3\">",
             "<ol type=\"i\">",

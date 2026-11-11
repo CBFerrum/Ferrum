@@ -364,7 +364,17 @@ impl Writer<'_> {
                         text_run(if shown.is_empty() { " " } else { &shown }, if bold { "<w:b/>" } else { "" }, "w:t", out);
                         out.push_str("</w:fldSimple>");
                     }
-                    // Nodes the editor may add inside a line (mentions, others): their words.
+                    // A mention of a record links to it.
+                    "mention" => match format::mention_href(&c, txn, self.origin) {
+                        Some(href) => {
+                            let mut runs = String::new();
+                            self.inline(&c, txn, bold, &mut runs);
+                            let id = self.rel("http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink", href, true);
+                            let _ = write!(out, "<w:hyperlink r:id=\"{id}\" w:history=\"1\">{runs}</w:hyperlink>");
+                        }
+                        None => self.inline(&c, txn, bold, out),
+                    },
+                    // Nodes the editor may add inside a line (others): their words.
                     _ => self.inline(&c, txn, bold, out),
                 },
                 XmlOut::Fragment(_) => {}
@@ -1159,6 +1169,11 @@ mod tests {
         let rels = part(&file, "word/_rels/document.xml.rels");
         assert!(rels.contains("Target=\"https://acme.example.com/docs/d/0192f0c4-1c2b-7c3d-8e4f-5a6b7c8d9e0f\" TargetMode=\"External\""), "{rels}");
         assert!(rels.contains("Target=\"footnotes.xml\"") && rels.contains("Target=\"header1.xml\"") && rels.contains("Target=\"footer4.xml\""), "{rels}");
+        assert!(
+            rels.contains("Target=\"https://acme.example.com/open/Customer/c-42\" TargetMode=\"External\""),
+            "a record mention links to the record: {rels}"
+        );
+        assert!(body.contains("<w:t xml:space=\"preserve\">@Priya Nair</w:t>") && !rels.contains("/u1"), "a person mention is its words");
         let notes = part(&file, "word/footnotes.xml");
         assert!(
             notes.contains("<w:footnote w:type=\"separator\" w:id=\"-1\">") && notes.contains("<w:footnote w:type=\"continuationSeparator\" w:id=\"0\">"),
