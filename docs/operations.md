@@ -1131,9 +1131,10 @@ files open in the browser editors if they are installed.
   address at the ingress.
 * **First use:** Collabora shows a welcome notice and a tour once per browser (see Licence). `allow_update_popup` is
   off here, since updates are the operator's.
-* **Theme and language:** the editor follows the browser's colour scheme on its own but not Ferrum's setting, and
-  speaks the browser's language, not the person's Ferrum language. Drive can pass `ui_theme=dark` and `lang=<code>` on
-  the editor's address (both work: Drive does not send them yet).
+* **Theme and language:** the editor does not take Ferrum's appearance or language setting. In the checks it followed the
+  browser's colour scheme from the second session on and stayed light in the first, and showed the browser's language (English
+  (UK)). Its address takes `ui_theme=light|dark` and `lang=<code>` (both checked: `lang=ar` mirrors the whole editor);
+  Drive does not send them yet.
 
 ## Browser editors
 
