@@ -106,6 +106,12 @@ function applyAppearance() {
   root.density = a.density === "compact" ? "compact" : "comfortable";
 }
 applyAppearance();
+// The language and direction the person or the workspace chose, on <html> too: an app's own page template
+// brings its own `<html lang>` and no `dir`, so without this its page never mirrors in right-to-left.
+if (boot?.locale?.chosen) {
+  document.documentElement.lang = boot.locale.language;
+  document.documentElement.dir = boot.locale.dir === "rtl" ? "rtl" : "ltr";
+}
 prefersDark.addEventListener("change", applyAppearance);
 prefersMore.addEventListener("change", applyAppearance);
 window.addEventListener("storage", (e) => e.key === "ferrum.appearance" && applyAppearance());
