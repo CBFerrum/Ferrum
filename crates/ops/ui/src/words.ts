@@ -35,6 +35,9 @@ export const STEPS: Record<string, string> = {
   get refuse() { return tr("Refused: it came from a gateway that no longer holds this"); },
 };
 
+/** A device's life stage by the stored id (the lifecycle options of Device): in service is green, set aside for safety is red. */
+export const LIFE_TONES: Record<string, Tone> = { Active: "green", Quarantined: "red" };
+
 const ISSUERS: Record<string, string> = {
   get person() { return tr("A person"); },
   get engine() { return tr("An application"); },

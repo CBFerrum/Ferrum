@@ -1,5 +1,6 @@
 /* The assistant's page (assistant.js): the bar's side panel, or the whole page on a phone. Drawn
-   with the theme's tokens (theme.css), so it follows the person's light or dark theme. */
+   with the theme's tokens (theme.css, the suite's values), so it follows the person's light or dark
+   theme: 14px text, 32px controls, 6px control and 8px menu radius, hairlines, 2px accent focus. */
 
 html,
 body {
@@ -7,7 +8,7 @@ body {
   height: 100%;
   background: var(--ferrum-surface);
   color: var(--ferrum-text);
-  font: 14px/1.5 var(--ferrum-font);
+  font: 14px/20px var(--ferrum-font);
   -webkit-font-smoothing: antialiased;
 }
 * {
@@ -25,8 +26,8 @@ button:focus-visible,
 textarea:focus-visible,
 a:focus-visible,
 summary:focus-visible {
-  outline: none;
-  box-shadow: var(--ferrum-focus-ring);
+  outline: var(--ferrum-focus-outline);
+  outline-offset: 2px;
 }
 
 .fa {
@@ -42,9 +43,9 @@ summary:focus-visible {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   min-height: 48px;
-  padding: 6px 8px 6px 12px;
+  padding: 8px 8px 8px 16px;
   border-bottom: 1px solid var(--ferrum-border);
 }
 .fa-title {
@@ -52,7 +53,8 @@ summary:focus-visible {
   min-width: 0;
   margin: 0;
   font-size: 14px;
-  font-weight: 650;
+  line-height: 20px;
+  font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -60,34 +62,41 @@ summary:focus-visible {
 .fa-mark {
   display: inline-grid;
   place-items: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-  color: #fff;
-  background: linear-gradient(135deg, #7c3aed, var(--ferrum-primary));
-  box-shadow: 0 1px 2px rgb(16 24 40 / 0.15);
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  color: var(--ferrum-primary);
+  background: var(--ferrum-primary-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ferrum-primary) 22%, transparent);
 }
 .fa-mark.fa-small {
-  width: 26px;
-  height: 26px;
-  border-radius: 8px;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
 }
 .fa-icon-btn {
   display: inline-grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
+  width: var(--ferrum-control-h-sm);
+  height: var(--ferrum-control-h-sm);
   padding: 0;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--ferrum-radius-sm);
   background: transparent;
   color: var(--ferrum-muted);
   cursor: pointer;
+  transition: background-color var(--ferrum-duration-state), color var(--ferrum-duration-state);
 }
-.fa-icon-btn:hover,
-.fa-icon-btn[aria-expanded="true"] {
+.fa-icon-btn:hover {
   background: var(--ferrum-surface-2);
   color: var(--ferrum-text);
+}
+.fa-icon-btn:active {
+  background: var(--ferrum-surface-3);
+}
+.fa-icon-btn[aria-expanded="true"] {
+  background: var(--ferrum-primary-soft);
+  color: var(--ferrum-primary);
 }
 
 /* ── conversations menu ── */
@@ -99,21 +108,32 @@ summary:focus-visible {
   width: min(320px, calc(100vw - 16px));
   max-height: 60vh;
   overflow: auto;
-  padding: 6px;
+  padding: 4px;
   background: var(--ferrum-surface);
   border: 1px solid var(--ferrum-border);
-  border-radius: 12px;
+  border-radius: var(--ferrum-radius);
   box-shadow: var(--ferrum-shadow);
+  animation: fa-pop var(--ferrum-duration-overlay) ease-out;
+}
+@keyframes fa-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.98);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fa-menu {
+    animation: none;
+  }
 }
 .fa-menu[hidden] {
   display: none;
 }
 .fa-menu-title {
-  margin: 4px 8px 6px;
-  font-size: 11.5px;
-  font-weight: 650;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  margin: 8px 8px 4px;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
   color: var(--ferrum-muted);
 }
 .fa-menu ul {
@@ -125,19 +145,25 @@ summary:focus-visible {
   display: flex;
   align-items: center;
   gap: 2px;
-  border-radius: 8px;
+  border-radius: var(--ferrum-radius-sm);
 }
-.fa-menu li[aria-current="true"],
 .fa-menu li:hover {
   background: var(--ferrum-surface-2);
+}
+.fa-menu li[aria-current="true"] {
+  background: var(--ferrum-primary-soft);
 }
 .fa-thread {
   flex: 1;
   min-width: 0;
   display: grid;
-  gap: 1px;
-  padding: 7px 8px;
+  gap: 0;
+  min-height: 32px;
+  padding: 6px 8px;
   border: 0;
+  color: inherit;
+  font-size: 13px;
+  line-height: 18px;
   background: none;
   text-align: start;
   cursor: pointer;
@@ -152,6 +178,7 @@ summary:focus-visible {
 .fa-muted {
   color: var(--ferrum-muted);
   font-size: 12px;
+  line-height: 16px;
 }
 .fa-muted {
   margin: 8px;
@@ -165,7 +192,7 @@ summary:focus-visible {
   border-top: 1px solid var(--ferrum-border);
   background: none;
   color: var(--ferrum-muted);
-  font-size: 12.5px;
+  font-size: 13px;
   text-align: start;
   cursor: pointer;
 }
@@ -176,10 +203,10 @@ summary:focus-visible {
 /* ── the conversation ── */
 .fa-log {
   overflow-y: auto;
-  padding: 16px 14px 8px;
+  padding: 16px 16px 8px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
   scroll-behavior: smooth;
 }
 @media (prefers-reduced-motion: reduce) {
@@ -197,7 +224,8 @@ summary:focus-visible {
 }
 .fa-bubble {
   padding: 8px 12px;
-  border-radius: 14px 14px 4px 14px;
+  border-radius: 12px;
+  border-end-end-radius: 4px;
   background: var(--ferrum-primary-soft);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -236,9 +264,9 @@ summary:focus-visible {
 .fa-md h4,
 .fa-md h5,
 .fa-md h6 {
-  margin: 12px 0 6px;
+  margin: 12px 0 4px;
   font-size: 14px;
-  font-weight: 650;
+  font-weight: 600;
 }
 .fa-md a {
   color: var(--ferrum-primary);
@@ -246,13 +274,13 @@ summary:focus-visible {
 }
 .fa-md code {
   padding: 1px 5px;
-  border-radius: 5px;
+  border-radius: 4px;
   background: var(--ferrum-surface-2);
-  font: 12.5px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font: 12px/16px var(--ferrum-mono);
 }
 .fa-md pre {
-  padding: 10px 12px;
-  border-radius: 8px;
+  padding: 12px;
+  border-radius: var(--ferrum-radius-sm);
   background: var(--ferrum-surface-2);
   overflow-x: auto;
 }
@@ -314,9 +342,9 @@ summary:focus-visible {
 }
 .fa-tool {
   border: 1px solid var(--ferrum-border);
-  border-radius: 10px;
-  background: var(--ferrum-bg);
-  font-size: 12.5px;
+  border-radius: var(--ferrum-radius);
+  background: var(--ferrum-surface);
+  font-size: 13px;
 }
 .fa-tool-head {
   display: flex;
@@ -355,7 +383,7 @@ summary:focus-visible {
   max-height: 260px;
   overflow: auto;
   border-top: 1px solid var(--ferrum-border);
-  font: 11.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font: 12px/16px var(--ferrum-mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -377,7 +405,7 @@ summary:focus-visible {
 .fa-confirm {
   padding: 12px;
   border: 1px solid color-mix(in srgb, var(--ferrum-primary) 45%, var(--ferrum-border));
-  border-radius: 12px;
+  border-radius: var(--ferrum-radius);
   background: var(--ferrum-primary-soft);
 }
 .fa-confirm-title {
@@ -413,7 +441,7 @@ summary:focus-visible {
   margin: 0;
   max-height: 180px;
   overflow: auto;
-  font: 11.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font: 12px/16px var(--ferrum-mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: var(--ferrum-muted);
@@ -424,27 +452,34 @@ summary:focus-visible {
   gap: 8px;
 }
 .fa-btn {
-  height: 34px;
-  padding: 0 14px;
-  border: 1px solid var(--ferrum-border);
-  border-radius: 8px;
+  height: var(--ferrum-control-h-sm);
+  padding: 0 12px;
+  border: 1px solid var(--ferrum-border-strong);
+  border-radius: var(--ferrum-radius-sm);
   background: var(--ferrum-surface);
-  font-weight: 550;
+  font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
+  transition: background-color var(--ferrum-duration-state), border-color var(--ferrum-duration-state);
 }
 .fa-btn:hover {
   background: var(--ferrum-surface-2);
 }
+.fa-btn:active {
+  background: var(--ferrum-surface-3);
+}
 .fa-btn.fa-primary {
-  border-color: transparent;
+  border-color: var(--ferrum-primary);
   background: var(--ferrum-primary);
   color: var(--ferrum-primary-text);
 }
-.fa-btn.fa-primary:hover {
+.fa-btn.fa-primary:hover,
+.fa-btn.fa-primary:active {
   background: var(--ferrum-primary-hover);
+  border-color: var(--ferrum-primary-hover);
 }
 .fa-btn:disabled {
-  opacity: 0.6;
+  opacity: 0.5;
   cursor: progress;
 }
 
@@ -480,14 +515,17 @@ summary:focus-visible {
 .fa-empty h2,
 .fa-off h2 {
   margin: 4px 0 0;
-  font-size: 17px;
-  font-weight: 650;
+  font-size: 18px;
+  line-height: 24px;
+  font-weight: 600;
 }
 .fa-empty p,
 .fa-off p {
   max-width: 340px;
   margin: 0;
   color: var(--ferrum-muted);
+  font-size: 13px;
+  line-height: 18px;
 }
 .fa-suggestions {
   display: flex;
@@ -497,36 +535,44 @@ summary:focus-visible {
   margin-top: 8px;
 }
 .fa-chip {
+  min-height: var(--ferrum-control-h-sm);
   padding: 6px 12px;
-  border: 1px solid var(--ferrum-border);
-  border-radius: 999px;
+  border: 1px solid var(--ferrum-border-strong);
+  border-radius: var(--ferrum-radius-sm);
   background: var(--ferrum-surface);
   font-size: 13px;
+  line-height: 18px;
   cursor: pointer;
+  transition: background-color var(--ferrum-duration-state);
 }
 .fa-chip:hover {
-  border-color: color-mix(in srgb, var(--ferrum-primary) 50%, var(--ferrum-border));
-  background: var(--ferrum-primary-soft);
+  background: var(--ferrum-surface-2);
+}
+.fa-chip:active {
+  background: var(--ferrum-surface-3);
 }
 
 /* ── writing ── */
 .fa-compose {
-  padding: 8px 12px 10px;
+  padding: 8px 16px 12px;
   border-top: 1px solid var(--ferrum-border);
 }
 .fa-field {
   display: flex;
   align-items: flex-end;
   gap: 6px;
-  padding: 6px 6px 6px 12px;
-  border: 1px solid var(--ferrum-border);
-  border-radius: 14px;
+  padding: 4px 4px 4px 12px;
+  border: 1px solid var(--ferrum-border-control);
+  border-radius: var(--ferrum-radius);
   background: var(--ferrum-surface);
-  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  transition: border-color var(--ferrum-duration-state);
 }
 .fa-field:focus-within {
-  border-color: color-mix(in srgb, var(--ferrum-primary) 60%, var(--ferrum-border));
-  box-shadow: var(--ferrum-focus-ring);
+  border-color: var(--ferrum-primary);
+}
+.fa-field:has(.fa-input:focus-visible) {
+  outline: var(--ferrum-focus-outline);
+  outline-offset: 2px;
 }
 .fa-input {
   flex: 1;
@@ -542,7 +588,7 @@ summary:focus-visible {
   line-height: 1.45;
 }
 .fa-input:focus-visible {
-  box-shadow: none;
+  outline: none;
 }
 .fa-input:disabled {
   cursor: not-allowed;
@@ -550,13 +596,14 @@ summary:focus-visible {
 .fa-send {
   display: inline-grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
+  width: var(--ferrum-control-h-sm);
+  height: var(--ferrum-control-h-sm);
   border: 0;
-  border-radius: 10px;
+  border-radius: var(--ferrum-radius-sm);
   background: var(--ferrum-primary);
   color: var(--ferrum-primary-text);
   cursor: pointer;
+  transition: background-color var(--ferrum-duration-state);
 }
 .fa-send:hover {
   background: var(--ferrum-primary-hover);
@@ -568,7 +615,8 @@ summary:focus-visible {
 .fa-hint {
   margin: 6px 4px 0;
   color: var(--ferrum-muted);
-  font-size: 11.5px;
+  font-size: 12px;
+  line-height: 16px;
   text-align: center;
 }
 

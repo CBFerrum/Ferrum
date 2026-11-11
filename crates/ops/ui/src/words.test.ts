@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canEnroll, canRetire, expectation, issuer, nextSteps, reading, said, silence, state, STATES, typed } from "./words";
+import { canEnroll, canRetire, expectation, issuer, LIFE_TONES, nextSteps, reading, said, silence, state, STATES, typed } from "./words";
 
 describe("what a command says", () => {
   it("names the person who asked, or what kind of thing did", () => {
@@ -91,5 +91,17 @@ describe("acceptance on site", () => {
     expect(typed("false")).toBe(false);
     expect(typed("OK")).toBe("OK");
     expect(typed("")).toBe("");
+  });
+});
+
+describe("the colour of a state", () => {
+  it("comes from the stored state id, and a state it does not know is neutral", () => {
+    expect(state("Completed").tone).toBe("green");
+    expect(state("Proposed").tone).toBe("amber");
+    expect(state("Failed").tone).toBe("red");
+    expect(state("Not completed").tone).toBe("neutral");
+    expect(LIFE_TONES.Active).toBe("green");
+    expect(LIFE_TONES.Quarantined).toBe("red");
+    expect(LIFE_TONES.Maintenance).toBeUndefined();
   });
 });

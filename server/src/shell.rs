@@ -844,9 +844,15 @@ pub fn records_entries(apps: &[ShellApp], ctx: &Ctx) -> Vec<Value> {
     apps.iter()
         .filter_map(|a| records_app(apps, &a.id))
         .filter(|(_, packages)| reads_any(ctx, packages))
-        .map(|(a, _)| {
+        .map(|(a, packages)| {
             let m = &a.manifest;
-            json!({"id": format!("records-{}", a.id), "app": a.id, "title": m.name, "description": m.summary, "compact": false, "url": format!("/data/{}/", a.id)})
+            // No `shell.app` entry to carry them (it would stop this being a records app): the tile
+            // takes the icon and colour of the first module of its packages that declares one.
+            let first = |f: fn(&ferrum_meta::ModuleDef) -> Option<&String>| ctx.schema.modules.iter().filter(|x| packages.contains(&x.package)).find_map(f);
+            json!({
+                "id": format!("records-{}", a.id), "app": a.id, "title": m.name, "description": m.summary,
+                "icon": first(|x| x.icon.as_ref()), "color": first(|x| x.color.as_ref()), "compact": false, "url": format!("/data/{}/", a.id),
+            })
         })
         .collect()
 }
@@ -1012,7 +1018,7 @@ pub fn suite_manifest(workspace: &str) -> Value {
         "scope": "/",
         "display": "standalone",
         "background_color": "#ffffff",
-        "theme_color": "#2f5bea",
+        "theme_color": "#3157d5",
         "icons": [
             {"src": "/_shell/v1/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"},
             {"src": "/_shell/v1/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
@@ -1098,7 +1104,7 @@ pub fn lucide(name: &str) -> Option<&'static str> {
 /// An app's icon as its launcher tile shows it (its Lucide icon, else its initial, white on its
 /// colour), for install manifests: square with `mask` (the system shapes it), else rounded.
 pub fn app_icon_svg(icon: &str, colour: &str, letter: &str, mask: bool) -> String {
-    let colour = if colour.len() == 6 && colour.bytes().all(|b| b.is_ascii_hexdigit()) { colour } else { "2f5bea" };
+    let colour = if colour.len() == 6 && colour.bytes().all(|b| b.is_ascii_hexdigit()) { colour } else { "3157d5" };
     let drawing = match lucide(icon) {
         Some(shape) => format!(
             r##"<g transform="translate(128 128) scale(10.6667)" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{shape}</g>"##
@@ -1782,7 +1788,7 @@ mod tests {
         assert!(svg.starts_with(r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#2563eb"/>"##));
         assert!(svg.contains(mail) && !svg.contains("<text"));
         let masked = app_icon_svg("nope", "zzz\"/><script>", "<", true);
-        assert!(masked.contains(r##"rx="0" fill="#2f5bea""##) && masked.contains(">•</text>") && !masked.contains("<script"), "{masked}");
+        assert!(masked.contains(r##"rx="0" fill="#3157d5""##) && masked.contains(">•</text>") && !masked.contains("<script"), "{masked}");
         assert!(app_icon_svg("", "0e7490", "Ä", false).contains(">Ä</text>"));
     }
 
@@ -1946,6 +1952,24 @@ mod tests {
         for other in ["helpdesk-sla", "helpdesk-erp", "crm", "business", "nothing"] {
             assert!(records_app(&apps, other).is_none(), "{other}");
         }
+    }
+
+    #[test]
+    fn records_tiles_take_their_modules_icon() {
+        let pkg = |name: &str, ent: &str, icon: Value| -> ferrum_meta::Package {
+            serde_json::from_value(json!({"package": name, "version": "1",
+                "entities": [{"name": ent, "label": "E", "kind": "master", "fields": [{"name": "t", "type": "data"}]}],
+                "modules": [{"name": name, "label": "M", "icon": icon, "items": [ent]}]}))
+            .unwrap()
+        };
+        let catalog = ferrum_meta::Catalog::from_packages(vec![pkg("intel", "Intel", json!("circle-help")), pkg("plain", "Plain", Value::Null)]).unwrap();
+        let schema = Arc::new(ferrum_meta::effective::build(&catalog, &["intel".into(), "plain".into()], &[], 1).unwrap());
+        let ctx = Ctx::system(Uuid::nil(), schema);
+        let apps = [app(&manifest("intel", "packages: [intel]\n")), app(&manifest("plain", "packages: [plain]\n"))];
+        let tiles = records_entries(&apps, &ctx);
+        assert_eq!(tiles.len(), 2, "{tiles:?}");
+        assert_eq!((tiles[0]["icon"].as_str(), tiles[0]["color"].as_str()), (Some("circle-help"), None));
+        assert_eq!(tiles[1]["icon"], Value::Null, "no module declares one: the letter stays");
     }
 
     #[test]

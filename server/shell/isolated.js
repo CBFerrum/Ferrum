@@ -162,7 +162,11 @@ async function handle(method, p) {
         path: here(),
         user: { email: boot?.person?.email ?? "", name: boot?.person?.name ?? "" },
         workspace: boot?.workspace?.name ?? "",
-        locale: navigator.language,
+        locale: boot?.locale?.language ?? navigator.language,
+        // The page's own language and direction (the workspace's or the person's, as this document carries
+        // them), for an app in the sandboxed frame to set on its document: it cannot see this page's.
+        lang: document.documentElement.lang || "en",
+        dir: document.documentElement.dir === "rtl" ? "rtl" : "ltr",
         timezone: boot?.locale?.timezone ?? "",
         theme: theme(),
       };
