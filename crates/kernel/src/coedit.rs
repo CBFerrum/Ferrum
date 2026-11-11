@@ -14,11 +14,13 @@
 //! (`alt`); never an address. Whoever renders a document says where each image's bytes are
 //! ([`html_with`], [`docx`]), so a document cannot point readers anywhere else.
 
+mod comments;
 mod docx;
 pub mod format;
 mod html;
 mod markdown;
 
+pub use comments::{Comment, CommentThread};
 pub use docx::{ImageData, docx};
 
 use crate::{Error, Result, Tx};
@@ -365,9 +367,28 @@ pub fn html_page_export(title: &str, doc: &Doc, origin: Option<&str>, images: &d
 
 /// The document as a Word file and what it could not carry: see [`docx`] and [`not_carried`].
 pub fn docx_export(doc: &Doc, title: &str, origin: Option<&str>, images: &dyn Fn(&str) -> Option<ImageData>) -> Result<(Vec<u8>, Vec<String>)> {
-    let (file, lost) = docx::write(doc, title, origin, images)?;
+    docx_export_with_comments(doc, title, origin, images, &[])
+}
+
+/// [`docx_export`] with the document's comment threads as Word's own comments: each on the text
+/// its anchor holds now, replies threaded under it, a resolved thread marked done. A thread whose
+/// text was removed sits where the text was (or at the document's start when its paragraph went
+/// too) with the words it was on in its first comment, and the list says how many there were.
+/// HTML, PDF and Markdown carry no comments: callers add [`NOT_CARRIED_COMMENTS`] to theirs when
+/// the document has any.
+pub fn docx_export_with_comments(
+    doc: &Doc,
+    title: &str,
+    origin: Option<&str>,
+    images: &dyn Fn(&str) -> Option<ImageData>,
+    threads: &[CommentThread],
+) -> Result<(Vec<u8>, Vec<String>)> {
+    let (file, lost) = docx::write(doc, title, origin, images, threads)?;
     Ok((file, not_carried(doc, &[], lost)))
 }
+
+/// What the "not carried" list says of comments, for exports that carry none (HTML, PDF, Markdown).
+pub const NOT_CARRIED_COMMENTS: &str = "comments";
 
 /// The document as Markdown and what Markdown could not carry: see [`markdown`]. `images` gives
 /// an image's address (none: the image is left out, as [`markdown`] leaves it).
