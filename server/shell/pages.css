@@ -431,6 +431,15 @@ body.ferrum-isolated {
   border: 0;
   background: var(--ferrum-bg);
 }
+@media print {
+  body.ferrum-isolated {
+    overflow: visible;
+  }
+  .ferrum-isolated #ferrum-app {
+    position: static;
+    height: 100vh;
+  }
+}
 .ferrum-isolated-confirm {
   max-width: 28rem;
   padding: 24px;
