@@ -774,6 +774,10 @@ Personal data, beside `/api/admin/privacy`: `GET`/`POST /api/admin/restrictions`
 /api/admin/restrictions/lift` `{email}`; `GET`/`POST /api/admin/retention`, `PUT`/`DELETE
 /api/admin/retention/{id}`, `POST /api/admin/retention/{id}/preview` → `{reaches, more}`.
 
+Services Drive and printing depend on (administrators): `GET /api/admin/services` → `{services: [{check, level, detail, fix?}]}`,
+the online editor (`office`: set up, answering, offering docx, xlsx and pptx; `office.proof`: signing its WOPI calls) and
+the PDF renderer (`pdf`), each `ok`, `warning` or `blocker`; no address or token is in it, so it can be shown as it is.
+
 Customizations and upgrades: `GET /api/customize/conflicts` → `{conflicts: [{id, entity, op, was,
 now, gone, suspended}]}`; `POST /api/customize/{id}/keep` keeps one over what its package says now.
 A customization keeps what it replaced (`was`) when it is made or kept: a field's or the entity's
