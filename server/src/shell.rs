@@ -844,9 +844,15 @@ pub fn records_entries(apps: &[ShellApp], ctx: &Ctx) -> Vec<Value> {
     apps.iter()
         .filter_map(|a| records_app(apps, &a.id))
         .filter(|(_, packages)| reads_any(ctx, packages))
-        .map(|(a, _)| {
+        .map(|(a, packages)| {
             let m = &a.manifest;
-            json!({"id": format!("records-{}", a.id), "app": a.id, "title": m.name, "description": m.summary, "compact": false, "url": format!("/data/{}/", a.id)})
+            // No `shell.app` entry to carry them (it would stop this being a records app): the tile
+            // takes the icon and colour of the first module of its packages that declares one.
+            let first = |f: fn(&ferrum_meta::ModuleDef) -> Option<&String>| ctx.schema.modules.iter().filter(|x| packages.contains(&x.package)).find_map(f);
+            json!({
+                "id": format!("records-{}", a.id), "app": a.id, "title": m.name, "description": m.summary,
+                "icon": first(|x| x.icon.as_ref()), "color": first(|x| x.color.as_ref()), "compact": false, "url": format!("/data/{}/", a.id),
+            })
         })
         .collect()
 }
@@ -1946,6 +1952,24 @@ mod tests {
         for other in ["helpdesk-sla", "helpdesk-erp", "crm", "business", "nothing"] {
             assert!(records_app(&apps, other).is_none(), "{other}");
         }
+    }
+
+    #[test]
+    fn records_tiles_take_their_modules_icon() {
+        let pkg = |name: &str, ent: &str, icon: Value| -> ferrum_meta::Package {
+            serde_json::from_value(json!({"package": name, "version": "1",
+                "entities": [{"name": ent, "label": "E", "kind": "master", "fields": [{"name": "t", "type": "data"}]}],
+                "modules": [{"name": name, "label": "M", "icon": icon, "items": [ent]}]}))
+            .unwrap()
+        };
+        let catalog = ferrum_meta::Catalog::from_packages(vec![pkg("intel", "Intel", json!("circle-help")), pkg("plain", "Plain", Value::Null)]).unwrap();
+        let schema = Arc::new(ferrum_meta::effective::build(&catalog, &["intel".into(), "plain".into()], &[], 1).unwrap());
+        let ctx = Ctx::system(Uuid::nil(), schema);
+        let apps = [app(&manifest("intel", "packages: [intel]\n")), app(&manifest("plain", "packages: [plain]\n"))];
+        let tiles = records_entries(&apps, &ctx);
+        assert_eq!(tiles.len(), 2, "{tiles:?}");
+        assert_eq!((tiles[0]["icon"].as_str(), tiles[0]["color"].as_str()), (Some("circle-help"), None));
+        assert_eq!(tiles[1]["icon"], Value::Null, "no module declares one: the letter stays");
     }
 
     #[test]
