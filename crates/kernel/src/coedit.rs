@@ -15,12 +15,13 @@
 //! ([`html_with`], [`docx`]), so a document cannot point readers anywhere else.
 
 mod docx;
+pub mod format;
+mod html;
 mod markdown;
 
 pub use docx::{ImageData, docx};
 
 use crate::{Error, Result, Tx};
-use std::fmt::Write as _;
 use uuid::Uuid;
 use yrs::types::text::YChange;
 use yrs::updates::decoder::Decode;
@@ -224,14 +225,20 @@ pub fn plain_text(doc: &Doc) -> String {
                     out.push('\n');
                     return;
                 }
-                // An image's description is among the document's words.
+                // An image's description and caption are among the document's words.
                 if &*tag == IMAGE {
                     out.push_str(string(e.get_attribute(txn, "alt")).unwrap_or_default().trim());
+                    let caption = format::caption(format::any(e.get_attribute(txn, "caption")).as_ref());
+                    if !caption.is_empty() {
+                        out.push('\n');
+                        out.push_str(&caption);
+                    }
                 }
                 for child in e.children(txn) {
                     walk(child, txn, out);
                 }
-                if &*tag != "mention" && !out.is_empty() && !out.ends_with('\n') {
+                // Nodes inside a line (a mention, a footnote's number) do not end it.
+                if !matches!(&*tag, "mention" | "footnoteRef" | "pageField") && !out.is_empty() && !out.ends_with('\n') {
                     out.push('\n');
                 }
             }
@@ -327,183 +334,13 @@ pub fn html(doc: &Doc) -> String {
     html_with(doc, &|_| None)
 }
 
-/// The document as HTML (a fragment for a page's body), for exports, previews and PDFs: the nodes
-/// and marks the editor makes as their HTML elements, other nodes as their content; text escaped;
-/// links only to the web and mail; suggestions as `ins` and `del`; images where `images` gives
-/// their address (a `data:` URI for files that travel), else their description; no scripts or
-/// styles beyond text alignment.
+/// The document as HTML (a fragment for a page's body), for previews and agents: the nodes and marks
+/// the editor makes as their HTML elements with their checked styles, other nodes as their content;
+/// text escaped; links to the web, mail and the document's headings; suggestions as `ins` and
+/// `del`; images where `images` gives their address (a `data:` URI for files that travel), else
+/// their description; footnotes at the end; no scripts.
 pub fn html_with(doc: &Doc, images: &dyn Fn(&str) -> Option<String>) -> String {
-    fn marks(attrs: Option<&yrs::types::Attrs>) -> Vec<(&'static str, String)> {
-        let Some(attrs) = attrs else { return Vec::new() };
-        let mut out = Vec::new();
-        for (name, tag) in [
-            ("link", "a"),
-            ("bold", "strong"),
-            ("italic", "em"),
-            ("underline", "u"),
-            ("strike", "s"),
-            ("highlight", "mark"),
-            ("subscript", "sub"),
-            ("superscript", "sup"),
-            ("code", "code"),
-            ("insertion", "ins"),
-            ("deletion", "del"),
-        ] {
-            let Some(v) = attrs.get(name) else { continue };
-            if matches!(v, Any::Null | Any::Undefined | Any::Bool(false)) {
-                continue;
-            }
-            if name == "link" {
-                let href = match v {
-                    Any::Map(m) => m.get("href").and_then(|h| if let Any::String(s) = h { Some(s.to_string()) } else { None }),
-                    _ => None,
-                };
-                if let Some(href) = href.filter(|h| safe_href(h)) {
-                    let mut open = String::from("a href=\"");
-                    esc(&href, &mut open);
-                    open.push_str("\" rel=\"noopener noreferrer nofollow\"");
-                    out.push((tag, open));
-                }
-                continue;
-            }
-            out.push((tag, tag.to_string()));
-        }
-        out
-    }
-    fn align<T: ReadTxn>(e: &yrs::XmlElementRef, txn: &T) -> String {
-        match string(e.get_attribute(txn, "textAlign")).as_deref() {
-            Some(a @ ("center" | "right" | "justify")) => format!(" style=\"text-align:{a}\""),
-            _ => String::new(),
-        }
-    }
-    fn walk<T: ReadTxn>(node: XmlOut, txn: &T, out: &mut String, in_code: bool, images: &dyn Fn(&str) -> Option<String>) {
-        match node {
-            XmlOut::Text(t) => {
-                for chunk in t.diff(txn, YChange::identity) {
-                    let Out::Any(Any::String(s)) = chunk.insert else { continue };
-                    let m = if in_code { Vec::new() } else { marks(chunk.attributes.as_deref()) };
-                    for (_, open) in &m {
-                        let _ = write!(out, "<{open}>");
-                    }
-                    esc(&s, out);
-                    for (tag, _) in m.iter().rev() {
-                        let _ = write!(out, "</{tag}>");
-                    }
-                }
-            }
-            XmlOut::Element(e) => {
-                let tag = e.tag().clone();
-                let inner = |out: &mut String, code: bool| {
-                    for child in e.children(txn) {
-                        walk(child, txn, out, code, images);
-                    }
-                };
-                match &*tag {
-                    "paragraph" => {
-                        let _ = write!(out, "<p{}>", align(&e, txn));
-                        let at = out.len();
-                        inner(out, false);
-                        if out.len() == at {
-                            out.push_str("<br>");
-                        }
-                        out.push_str("</p>\n");
-                    }
-                    "heading" => {
-                        let level = number(e.get_attribute(txn, "level")).unwrap_or(1).clamp(1, 6);
-                        let _ = write!(out, "<h{level}{}>", align(&e, txn));
-                        inner(out, false);
-                        let _ = writeln!(out, "</h{level}>");
-                    }
-                    "codeBlock" => {
-                        out.push_str("<pre><code>");
-                        inner(out, true);
-                        out.push_str("</code></pre>\n");
-                    }
-                    "orderedList" => {
-                        match number(e.get_attribute(txn, "start")).filter(|s| *s != 1) {
-                            Some(start) => {
-                                let _ = write!(out, "<ol start=\"{start}\">");
-                            }
-                            None => out.push_str("<ol>"),
-                        }
-                        inner(out, false);
-                        out.push_str("</ol>\n");
-                    }
-                    "taskList" => {
-                        out.push_str("<ul class=\"tasks\">");
-                        inner(out, false);
-                        out.push_str("</ul>\n");
-                    }
-                    "taskItem" => {
-                        let checked = truthy(e.get_attribute(txn, "checked"));
-                        let _ = write!(out, "<li><input type=\"checkbox\" disabled{}><div>", if checked { " checked" } else { "" });
-                        inner(out, false);
-                        out.push_str("</div></li>\n");
-                    }
-                    "tableHeader" | "tableCell" => {
-                        let cell = if &*tag == "tableHeader" { "th" } else { "td" };
-                        let _ = write!(out, "<{cell}");
-                        for span in ["colspan", "rowspan"] {
-                            if let Some(n) = number(e.get_attribute(txn, span)).filter(|n| *n > 1 && *n < 1000) {
-                                let _ = write!(out, " {span}=\"{n}\"");
-                            }
-                        }
-                        out.push('>');
-                        inner(out, false);
-                        let _ = writeln!(out, "</{cell}>");
-                    }
-                    "hardBreak" => out.push_str("<br>"),
-                    "horizontalRule" => out.push_str("<hr>\n"),
-                    IMAGE => {
-                        let alt = string(e.get_attribute(txn, "alt")).unwrap_or_default();
-                        match string(e.get_attribute(txn, "image")).and_then(|id| images(&id)) {
-                            Some(src) => {
-                                out.push_str("<p class=\"image\"><img src=\"");
-                                esc(&src, out);
-                                out.push_str("\" alt=\"");
-                                esc(&alt, out);
-                                out.push_str("\"></p>\n");
-                            }
-                            None if !alt.trim().is_empty() => {
-                                out.push_str("<p class=\"image-missing\">[");
-                                esc(alt.trim(), out);
-                                out.push_str("]</p>\n");
-                            }
-                            None => {}
-                        }
-                    }
-                    _ => {
-                        let html = match &*tag {
-                            "blockquote" => Some("blockquote"),
-                            "bulletList" => Some("ul"),
-                            "listItem" => Some("li"),
-                            "table" => Some("table"),
-                            "tableRow" => Some("tr"),
-                            _ => None,
-                        };
-                        if let Some(h) = html {
-                            let _ = write!(out, "<{h}>");
-                        }
-                        inner(out, false);
-                        if let Some(h) = html {
-                            let _ = writeln!(out, "</{h}>");
-                        }
-                    }
-                }
-            }
-            XmlOut::Fragment(f) => {
-                for child in f.children(txn) {
-                    walk(child, txn, out, in_code, images);
-                }
-            }
-        }
-    }
-    let txn = doc.transact();
-    let mut out = String::new();
-    for child in children(&txn) {
-        walk(child, &txn, &mut out, false, images);
-    }
-    out
+    html::fragment(doc, images)
 }
 
 /// A whole page for the document without its images: see [`html_page_with`].
@@ -511,23 +348,46 @@ pub fn html_page(title: &str, doc: &Doc) -> String {
     html_page_with(title, doc, &|_| None)
 }
 
-/// A whole page for the document: for downloads and the PDF renderer.
+/// A whole page for the document: for downloads and the PDF renderer. See [`html_page_export`].
 pub fn html_page_with(title: &str, doc: &Doc, images: &dyn Fn(&str) -> Option<String>) -> String {
-    let mut t = String::new();
-    esc(title, &mut t);
-    format!(
-        "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>{t}</title><style>\
-         @page{{size:A4;margin:2cm}}body{{font:11pt/1.55 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;color:#1f2328;max-width:46em;margin:0 auto}}\
-         h1,h2,h3{{line-height:1.25}}pre{{background:#f6f8fa;padding:.75em;border-radius:6px;overflow-x:auto}}code{{font-family:ui-monospace,monospace}}\
-         blockquote{{border-left:3px solid #d0d7de;margin-left:0;padding-left:1em;color:#57606a}}\
-         table{{border-collapse:collapse;width:100%;table-layout:fixed}}th,td{{border:1px solid #d0d7de;padding:.3em .6em;vertical-align:top}}\
-         th{{background:#f6f8fa;text-align:left}}td>p,th>p,li>div>p{{margin:0}}ul.tasks{{list-style:none;padding-left:.2em}}\
-         ul.tasks li{{display:flex;gap:.5em;align-items:baseline}}mark{{background:#fff3b0}}\
-         img{{max-width:100%;height:auto}}.image-missing{{color:#57606a;font-style:italic}}\
-         ins{{color:#1a7f37;text-decoration:underline}}del{{color:#cf222e}}@media screen{{body{{padding:1.5em}}}}\
-         </style></head><body>\n{}</body></html>\n",
-        html_with(doc, images)
-    )
+    html_page_export(title, doc, None, images).0
+}
+
+/// A whole page for the document, for downloads and the PDF renderer (which prints it as the
+/// editor prints: the page's size and margins, the header and footer with page numbers, page
+/// breaks, footnotes at the end), and what it could not carry ([`not_carried`]). `origin` (the
+/// workspace's, `https://acme.example.com`) makes links to other documents links; without it they
+/// are their words.
+pub fn html_page_export(title: &str, doc: &Doc, origin: Option<&str>, images: &dyn Fn(&str) -> Option<String>) -> (String, Vec<String>) {
+    let (page, lost) = html::page(title, doc, origin, images);
+    (page, not_carried(doc, &[], lost))
+}
+
+/// The document as a Word file and what it could not carry: see [`docx`] and [`not_carried`].
+pub fn docx_export(doc: &Doc, title: &str, origin: Option<&str>, images: &dyn Fn(&str) -> Option<ImageData>) -> Result<(Vec<u8>, Vec<String>)> {
+    let (file, lost) = docx::write(doc, title, origin, images)?;
+    Ok((file, not_carried(doc, &[], lost)))
+}
+
+/// The document as Markdown and what Markdown could not carry: see [`markdown`]. `images` gives
+/// an image's address (none: the image is left out, as [`markdown`] leaves it).
+pub fn markdown_export(doc: &Doc, origin: Option<&str>, images: &dyn Fn(&str) -> Option<String>) -> (String, Vec<String>) {
+    let (md, lost) = markdown::write(doc, origin, images);
+    (md, not_carried(doc, markdown::CANNOT, lost))
+}
+
+/// What an export of `doc` could not carry, in words a person reads, for the interface to show
+/// (each is plain ASCII, so the list may travel as a header joined by `; `): of what the document
+/// uses, what the format `cannot` say; what the exporter met and dropped (`lost`); and what no
+/// exporter knows (`unknown node x`, `unknown mark y`: their words are kept, their formatting is not).
+fn not_carried(doc: &Doc, cannot: &[&str], lost: std::collections::BTreeSet<String>) -> Vec<String> {
+    let used = format::features(&doc.transact());
+    let mut out: Vec<String> =
+        used.into_iter().filter(|f| cannot.contains(&f.as_str()) || f.starts_with("unknown ") || f.starts_with("content from a newer")).collect();
+    out.extend(lost);
+    out.sort();
+    out.dedup();
+    out
 }
 
 #[cfg(test)]
@@ -569,7 +429,7 @@ mod tests {
         let doc = sample();
         assert_eq!(plain_text(&doc), "Plan <A&B>\nHello world site trap\n日本 🎉\ndone\n<script>alert(1)</script>");
         let html = html(&doc);
-        assert!(html.starts_with("<h2>Plan &lt;A&amp;B&gt;</h2>\n<p style=\"text-align:center\">Hello <strong>world</strong>"), "{html}");
+        assert!(html.starts_with("<h2 id=\"heading-1\">Plan &lt;A&amp;B&gt;</h2>\n<p style=\"text-align:center\">Hello <strong>world</strong>"), "{html}");
         assert!(html.contains("<a href=\"https://example.com/?a=1&amp;b=2\" rel=\"noopener noreferrer nofollow\"> site</a> trap<br>日本 🎉</p>"), "{html}");
         assert!(html.contains("<li><input type=\"checkbox\" disabled checked><div><p>done</p>\n</div></li>"), "{html}");
         assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;") && !html.contains("<script>"), "unknown nodes are their escaped text");
@@ -586,5 +446,59 @@ mod tests {
         assert!(!is_update(b"%PDF-1.7 not a document"));
         assert_eq!(plain_text(&decode(b"%PDF-1.7 not a document")), "");
         assert_eq!(plain_text(&decode(&[])), "");
+    }
+
+    /// The fixtures' exports, written to `FERRUM_EXPORT_SAMPLES` (a directory) to open them in an
+    /// office suite and a browser: `FERRUM_EXPORT_SAMPLES=/tmp/x cargo test -p ferrum-kernel --lib coedit`.
+    #[test]
+    fn every_export_of_the_fixtures() {
+        use format::fixtures::{BLUE_PNG, GREEN_PNG, everything, hostile, png};
+        let bytes = |id: &str| match id {
+            "img1" => Some(png(BLUE_PNG)),
+            "img2" => Some(png(GREEN_PNG)),
+            _ => None,
+        };
+        let data = |id: &str| bytes(id).map(|b| ImageData { bytes: b, content_type: "image/png".into(), width: 4, height: 2 });
+        let uri = |id: &str| bytes(id).map(|b| format!("data:image/png;base64,{}", base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b)));
+        let origin = Some("https://acme.example.com");
+        // The same text on A4 portrait with 2.5 cm margins and one header for every page.
+        let a4 = everything();
+        {
+            use yrs::Map;
+            let page = a4.get_or_insert_map("page");
+            let mut txn = a4.transact_mut();
+            for (k, v) in [
+                ("size", Any::from("A4")),
+                ("orientation", Any::from("portrait")),
+                ("top", Any::from(1417)),
+                ("bottom", Any::from(1417)),
+                ("differentFirst", Any::from(false)),
+            ] {
+                page.insert(&mut txn, k, v);
+            }
+        }
+        for (name, doc) in [("everything", everything()), ("everything-a4", a4), ("hostile", hostile())] {
+            let (file, lost_docx) = docx_export(&doc, "Annual report 2026", origin, &data).unwrap();
+            let (page, lost_html) = html_page_export("Annual report 2026", &doc, origin, &uri);
+            let (md, lost_md) = markdown_export(&doc, origin, &|id| (id == "img1").then(|| "https://acme.example.com/i/img1.png".to_string()));
+            if let Ok(dir) = std::env::var("FERRUM_EXPORT_SAMPLES") {
+                std::fs::write(format!("{dir}/{name}.docx"), &file).unwrap();
+                std::fs::write(format!("{dir}/{name}.html"), &page).unwrap();
+                std::fs::write(format!("{dir}/{name}.md"), &md).unwrap();
+                std::fs::write(format!("{dir}/{name}.not-carried.txt"), format!("docx: {lost_docx:?}\nhtml: {lost_html:?}\nmarkdown: {lost_md:?}\n")).unwrap();
+            }
+            for list in [&lost_docx, &lost_html, &lost_md] {
+                assert!(list.iter().all(|l| l.is_ascii() && !l.contains(['\n', '\r', ';'])), "a list that can travel as a header: {list:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_words_of_footnotes_captions_and_new_nodes_are_searchable() {
+        let words = plain_text(&format::fixtures::everything());
+        assert!(words.contains("bold italic and the text goes on after the note."), "a note's number does not break the line: {words}");
+        assert!(words.contains("A blue chart\nFigure 1: sales by region"), "{words}");
+        assert!(words.ends_with("The first note, with a link\nThe second note."), "{words}");
+        assert!(plain_text(&format::fixtures::hostile()).contains("words of an unknown node"));
     }
 }

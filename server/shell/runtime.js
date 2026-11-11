@@ -751,11 +751,16 @@ function openFound(item) {
   navigate(item.url);
 }
 
-// The bar keeps the search shortcut (§12.2): before a page's own handlers see it.
+// The bar keeps the search shortcut (§12.2): before a page's own handlers see it, except where the
+// page claims it: inside an element that says `data-ferrum-keys="mod+k"` (an editor's "insert link"),
+// the key is the page's and the palette is the bar's button.
+const claimsKey = (e, key) => e.composedPath().some((n) => n instanceof Element && (n.getAttribute("data-ferrum-keys") ?? "").split(/\s+/).includes(key));
+
 window.addEventListener(
   "keydown",
   (e) => {
     if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "k") return;
+    if (claimsKey(e, "mod+k")) return;
     const b = bar();
     if (!b?.searchBtn || b.hidden) return;
     e.preventDefault();
