@@ -404,3 +404,30 @@ empty number could not be told from 0, and a refusal could not say what was miss
 
 **Rules out**: changing what an empty value reads as in existing expressions; a message showing a field its
 reader may not read; functions the browser evaluates (it leaves any call to the server).
+
+## BD-17. A workspace's settings
+
+Decided 12 November 2026. Asked for by the GRC and Government packs ([GRC](evidence/grc-as-a-pack-2026-11-10.md) R9,
+[Government](evidence/government-as-a-pack-2026-11-11.md)): a threshold or a policy a pack's rules read had to be
+written into each rule, so changing it meant changing configuration.
+
+* **A settings entity of the workspace's own.** `define_entity` takes `"kind": "settings"`, as 23 apps declare
+  theirs: one record for the workspace (a second is refused, `Claim Policy holds one record for the workspace`,
+  kept by a key of no fields in `custom_key`, so two saves at once cannot both make one), edited on its form, with
+  permissions, rules and history like any record. Not per company.
+* **Read as `settings.<Entity>.<field>` everywhere a record expression is** (docs/builder/expressions.md,
+  "Settings"), a workspace's settings and a package's alike, the field's default until the record is saved.
+* **Read as the workspace** (as BD-10's aggregates and BD-14's links): a rule must hold for someone who may not
+  open the settings. Secret fields are never read.
+* **Known before it runs.** Only `settings.<Entity>.<field>`; checked when saved against the schema (the entity of
+  the settings kind, the field there and not a secret), refused naming it. The names come from the expressions, so
+  each place that evaluates (a save, an action's checks, one effect, an automation's run) reads what it names once,
+  in its transaction, and nothing when it names nothing. Nothing is cached: a change is seen by the next
+  evaluation, on every server.
+* **Packs carry them** as they carry entities; a pack carries the record's values only when the exporter names
+  the entity among its reference records, and installing never overwrites a record the workspace already has.
+
+**Rules out**: settings per person or per company in expressions; a settings value read with the saver's rights;
+a secret in an expression; Logic's typed expressions and aggregate filters reading `settings` (they keep solution
+parameters); `settings` read whole or by a computed name.
+

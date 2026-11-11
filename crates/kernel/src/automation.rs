@@ -106,6 +106,17 @@ pub(crate) fn links_used(a: &AutomationAction) -> Result<std::collections::BTree
     Ok(crate::links::used(&exprs))
 }
 
+/// The settings entities an action's expressions read as `settings.<Entity>.<field>` (BD-17).
+pub(crate) fn settings_used(a: &AutomationAction) -> Result<std::collections::BTreeSet<String>> {
+    let exprs = sources(a).into_iter().map(|s| compiled(s)).collect::<Result<Vec<_>>>()?;
+    Ok(crate::settings::used(&exprs))
+}
+
+/// What is wrong with the settings `src` reads, said by `schema` (BD-17).
+fn settings_problem(schema: &ferrum_meta::Schema, src: &str) -> Result<Option<String>> {
+    Ok(schema.settings_problem(&compiled(src)?))
+}
+
 pub(crate) fn check_action(a: &AutomationAction) -> Result<()> {
     if let AutomationAction::Notify { to, .. } = a {
         let ok = to == "owner"
@@ -305,6 +316,12 @@ pub(crate) fn check_targets(schema: &ferrum_meta::Schema, entity: &str, actions:
         // What it reads through `links` are link fields of the record it runs on (BD-14).
         if let Some(n) = links_used(a)?.into_iter().find(|n| linked_entity(ent, n).is_none()) {
             return Err(at(format!("links.{n}: {n} is not a link field of {}", ent.def.label)));
+        }
+        // What it reads as `settings` is there (BD-17).
+        for src in sources(a) {
+            if let Some(m) = settings_problem(schema, src)? {
+                return Err(at(m));
+            }
         }
         let (target, values) = match a {
             AutomationAction::SetFields { values } => (ent.clone(), values),
@@ -581,13 +598,17 @@ async fn run_one(
         }
     };
     ctx.depth = depth + 1;
-    let user = ctx.user_value();
-    // The linked records its condition and actions read, once for the run (BD-14).
+    // The linked records and settings its condition and actions read, once for the run (BD-14, BD-17).
     let condition = a.condition.as_deref().filter(|c| !c.trim().is_empty());
-    let mut names = condition.map(|c| compiled(c).map(|e| crate::links::used([&e]))).transpose()?.unwrap_or_default();
+    let cond = condition.map(compiled).transpose()?;
+    let mut names = crate::links::used(cond.iter());
+    let mut settings = crate::settings::used(cond.iter());
     for action in validate_actions(&a.actions).into_iter().flatten() {
         names.extend(links_used(&action)?);
+        settings.extend(settings_used(&action)?);
     }
+    let ctx = crate::settings::with(k, &ctx, &mut tx, settings).await?.into_owned();
+    let user = ctx.user_value();
     let links = match ctx.schema.entity(entity).cloned() {
         Some(ent) => crate::links::load(k, &ctx, &mut tx, &ent, cel_doc, &names).await?,
         None => Value::Object(Map::new()),
@@ -871,6 +892,9 @@ pub(crate) async fn save_in(ctx: &Ctx, tx: &mut crate::db::Tx, input: &Map<Strin
         let ent = ctx.schema.entity(&entity).ok_or_else(|| Error::field("entity", "unknown entity"))?;
         if let Some(n) = compiled.links().iter().find(|n| linked_entity(ent, n).is_none()) {
             return Err(Error::field("condition", format!("links.{n}: {n} is not a link field of {}", ent.def.label)));
+        }
+        if let Some(m) = ctx.schema.settings_problem(&compiled) {
+            return Err(Error::field("condition", m));
         }
     }
     let actions = input.get("actions").cloned().unwrap_or(Value::Null);

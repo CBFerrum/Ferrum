@@ -486,6 +486,10 @@ pub async fn set_values_in(tx: &mut Tx, table: &str, ent: &EffEntity, tenant: Uu
 /// One unique key's value in a custom record's row (`a`): its fields' values as a JSON array, or
 /// null when any is empty, as nulls take no part in a SQL unique index. Field names are identifiers.
 pub fn key_value_sql(fields: &[String], alias: &str) -> String {
+    // The key of no fields every record of a workspace's settings entity holds alike (`keep_keys`).
+    if fields.is_empty() {
+        return "'[]'".into();
+    }
     let present = fields.iter().map(|f| format!("coalesce({alias}.ext->>'{f}', '') <> ''")).collect::<Vec<_>>().join(" and ");
     let values = fields.iter().map(|f| format!("{alias}.ext->'{f}'")).collect::<Vec<_>>().join(", ");
     format!("case when {present} then jsonb_build_array({values})::text end")
@@ -505,7 +509,11 @@ fn held_keys_sql(keys: &[Vec<String>]) -> String {
 /// values it no longer holds, writes the ones it does, and refuses when another record holds one.
 /// The primary key decides (a concurrent save waits for the other to finish); nothing is read first.
 async fn keep_keys(tx: &mut Tx, ent: &EffEntity, tenant: Uuid, id: Uuid) -> Result<()> {
-    let keys = ent.unique_keys();
+    let mut keys = ent.unique_keys();
+    // A workspace's own settings entity holds one record (BD-17): every record of it holds the same key.
+    if ent.def.kind == EntityKind::Settings {
+        keys.push(vec![]);
+    }
     if !ent.custom || keys.is_empty() {
         return Ok(());
     }
@@ -520,6 +528,9 @@ async fn keep_keys(tx: &mut Tx, ent: &EffEntity, tenant: Uuid, id: Uuid) -> Resu
          and k.key = h.key and k.value = h.value and k.record_id = $2) order by h.key"
     );
     let taken: Vec<String> = sqlx::query_scalar(AssertSqlSafe(taken)).bind(tenant).bind(id).bind(&ent.def.name).fetch_all(&mut **tx).await?;
+    if taken.first().is_some_and(String::is_empty) {
+        return Err(crate::Error::Conflict(format!("{} holds one record for the workspace: change the one there is", ent.def.label)));
+    }
     if let Some(key) = taken.first() {
         let labels: Vec<String> = key.split(',').map(|f| ent.field(f).map(|f| f.label()).unwrap_or_else(|| f.to_string())).collect();
         return Err(crate::Error::Conflict(format!("another {} already has this {}", ent.def.label, labels.join(" and "))));

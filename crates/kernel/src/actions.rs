@@ -145,6 +145,8 @@ pub(crate) async fn run(
         let view = ent.cel_view(&now, &ctx.schema);
         let done = Value::Array(results.clone());
         let links = crate::links::load(k, ctx, tx, ent, &view, &automation::links_used(&effect)?).await?;
+        // The settings it reads, as the workspace has them now (BD-17).
+        let user = crate::settings::with(k, ctx, tx, automation::settings_used(&effect)?).await?.user_value();
         let extra = [("params", &params), ("results", &done), ("links", &links)];
         let out = automation::execute(k, &system, tx, &ent.def.name, Some(id), (&now, &view), &user, &extra, &format!("{origin}{i}"), effect).await?;
         if creates {

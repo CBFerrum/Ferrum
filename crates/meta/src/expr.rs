@@ -39,6 +39,8 @@ pub struct Expr {
     reads_parent: bool,
     /// The functions of ours it calls (`expr_fns::NAMES`), bound when it runs.
     uses: Arc<[&'static str]>,
+    /// The settings it reads as `settings.<Entity>.<field>` (BD-17), each once, in the order written.
+    settings: Arc<[(String, String)]>,
 }
 
 impl fmt::Debug for Expr {
@@ -85,10 +87,12 @@ impl Expr {
         if links.len() > MAX_LINKS {
             return Err(format!("an expression reads at most {MAX_LINKS} linked records (links.<field>); this one reads {}", links.len()));
         }
+        let mut settings = Vec::new();
+        setting_names(program.expression(), &mut settings)?;
         let refs = program.references();
         let (reads_old, reads_parent) = (refs.has_variable("old"), refs.has_variable("parent"));
         let uses = expr_fns::NAMES.iter().copied().filter(|n| refs.has_function(n)).collect();
-        Ok(Expr { source: source.into(), program: Arc::new(program), links: links.into(), reads_old, reads_parent, uses })
+        Ok(Expr { source: source.into(), program: Arc::new(program), links: links.into(), reads_old, reads_parent, uses, settings: settings.into() })
     }
 
     pub fn source(&self) -> &str {
@@ -133,6 +137,12 @@ impl Expr {
         &self.links
     }
 
+    /// The settings it reads as `settings.<Entity>.<field>`: the caller binds `settings` (as `user.settings`) with
+    /// those entities' records.
+    pub fn settings(&self) -> &[(String, String)] {
+        &self.settings
+    }
+
     pub fn eval(&self, scope: &Scope<'_>) -> Result<Value, String> {
         self.eval_with(scope, &[])
     }
@@ -150,6 +160,10 @@ impl Expr {
         // Time is the caller's fact, as the workspace sees it: never a clock read here (FLC-COMP-003).
         for key in ["today", "now", "time"] {
             bound.push((key, scope.user.get(key).unwrap_or(&Value::Null)));
+        }
+        // The workspace's settings, loaded by the caller for what it names (BD-17), as time is.
+        if !self.settings.is_empty() {
+            bound.push(("settings", scope.user.get("settings").unwrap_or(&Value::Null)));
         }
         bound.extend(extra.iter().copied());
         for name in self.uses.iter() {
@@ -221,6 +235,40 @@ fn link_names(e: &cel::IdedExpr, out: &mut Vec<String>) -> Result<(), String> {
         E::Ident(_) | E::Literal(_) | E::Unspecified => {}
     }
     Ok(())
+}
+
+/// The settings named as `settings.<Entity>.<field>` (`has(...)` too), each once; `settings` read any other way
+/// (whole, an entity's record whole, indexed) is refused, so that what an expression reads is known before it runs.
+fn setting_names(e: &cel::IdedExpr, out: &mut Vec<(String, String)>) -> Result<(), String> {
+    use cel::common::ast::{EntryExpr, Expr as E};
+    const HOW: &str = "settings is read as settings.<Entity>.<field>, naming the entity and the field";
+    let mut walk = |x: &cel::IdedExpr| setting_names(x, out);
+    match &e.expr {
+        E::Select(s) => match &s.operand.expr {
+            E::Select(inner) if matches!(&inner.operand.expr, E::Ident(n) if n == "settings") => {
+                let pair = (inner.field.clone(), s.field.clone());
+                if !out.contains(&pair) {
+                    out.push(pair);
+                }
+                Ok(())
+            }
+            E::Ident(n) if n == "settings" => Err(HOW.into()),
+            _ => walk(&s.operand),
+        },
+        E::Ident(n) if n == "settings" => Err(HOW.into()),
+        E::Call(c) => c.target.as_deref().into_iter().chain(&c.args).try_for_each(walk),
+        E::Comprehension(c) => [&c.iter_range, &c.accu_init, &c.loop_cond, &c.loop_step, &c.result].into_iter().try_for_each(walk),
+        E::List(l) => l.elements.iter().try_for_each(walk),
+        E::Map(m) => m.entries.iter().try_for_each(|en| match &en.expr {
+            EntryExpr::StructField(f) => walk(&f.value),
+            EntryExpr::MapEntry(m) => walk(&m.key).and_then(|_| walk(&m.value)),
+        }),
+        E::Struct(s) => s.entries.iter().try_for_each(|en| match &en.expr {
+            EntryExpr::StructField(f) => walk(&f.value),
+            EntryExpr::MapEntry(m) => walk(&m.key).and_then(|_| walk(&m.value)),
+        }),
+        E::Literal(_) | E::Unspecified | E::Ident(_) => Ok(()),
+    }
 }
 
 /// A JSON value as CEL sees it. A whole number is a signed integer, as CEL's own literals are, so that
@@ -357,6 +405,19 @@ mod tests {
     }
 
     /// Dates (BL-19): on date and date-time fields, an empty date answering empty, months kept within the month.
+    #[test]
+    fn the_settings_an_expression_reads_are_found() {
+        let e = Expr::compile("doc.amount > settings.XPolicy.limit && has(settings.XPolicy.note) && [settings.Support.days].size() > 0").unwrap();
+        assert_eq!(e.settings(), [("XPolicy".to_string(), "limit".to_string()), ("XPolicy".into(), "note".into()), ("Support".into(), "days".into())]);
+        assert!(Expr::compile("doc.qty > 0").unwrap().settings().is_empty());
+        for whole in ["settings != null", "settings.XPolicy != null", "size(settings) > 0", "settings['XPolicy'].limit > 0"] {
+            assert!(Expr::compile(whole).unwrap_err().contains("settings.<Entity>.<field>"), "{whole}");
+        }
+        let doc = json!({"amount": 5});
+        let user = json!({"settings": {"XPolicy": {"limit": 3}}});
+        assert!(Expr::compile("doc.amount > settings.XPolicy.limit").unwrap().eval_bool(&scope(&doc, &user)).unwrap());
+    }
+
     #[test]
     fn dates() {
         let doc = json!({"on": "2024-01-31", "at": "2026-03-15T09:30:00Z", "local": "2026-03-15 09:30:00", "none": null, "blank": "", "n": 13});

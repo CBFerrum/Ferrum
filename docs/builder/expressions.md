@@ -57,6 +57,34 @@ these (`doc.qty`, `old.qty`, `links.plan.price`, `linked.price`; not a line of a
 | `isEmpty(x)` | true for a field left empty, null, `''` or an empty list | `isEmpty(doc.valid_months) ? null : addMonths(doc.issued_on, doc.valid_months)` |
 | `coalesce(x, y, ...)` | the first that is not empty, or null | `coalesce(doc.discount, links.customer.discount, 0)` |
 
+## Settings
+
+`settings.<Entity>.<field>` is a field of the workspace's settings: the one record of an entity of the `settings`
+kind, the workspace's own (`define_entity` with `"kind": "settings"`) or a package's alike (Support Settings, CRM
+Settings). Until that record is first saved, each field reads as its `default` (or empty). Decision
+[BD-17](decisions.md#bd-17-a-workspaces-settings).
+
+```
+doc.amount <= settings.XClaimPolicy.limit
+addDays(doc.received, settings.SupportSettings.auto_close_days)
+```
+
+* **Everywhere a record expression is**: rules (a line's too), computed fields, `default_expr`, `visible_if`,
+  `required_if`, `read_only_if`, an action's `condition` and `refuse_if`, workflow guards, effect values,
+  automation conditions and action values, and service targets. Logic solutions keep their own parameters and do
+  not read `settings` (nor do aggregate filters).
+* **Read as the workspace**: a rule over a setting holds for someone who may not open the settings. A secret
+  field is never read.
+* **Named, checked when saved**: only `settings.<Entity>.<field>` (not `settings` or `settings.<Entity>` whole, not
+  `settings['X']`); the entity must be a settings entity with one record for the workspace (not one per company)
+  and the field one of its fields and not a secret. Otherwise the customization, automation or action is refused
+  naming it: `settings.XPolicy.colour: Claim Policy has no field colour`.
+* **Fresh**: each place that evaluates (a save, an action's checks, each effect, an automation's run) reads the
+  settings its expressions name once, in its transaction, and none when they name none; nothing is cached, so a
+  change is seen by the next evaluation on every server.
+* The browser does not read settings: a form leaves a condition that reads them to the server, as it does a
+  function call.
+
 ## Messages
 
 A rule's `message` and a `refuse_if` `message` may show values from the record with MiniJinja, as print
