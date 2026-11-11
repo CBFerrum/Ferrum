@@ -10,7 +10,7 @@ use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -55,6 +55,20 @@ pub struct Exprs {
     pub action_refusals: BTreeMap<String, Vec<(Expr, String)>>,
     /// Each service target's expressions, by its name.
     pub targets: BTreeMap<String, TargetExprs>,
+}
+
+impl Exprs {
+    /// Every expression it holds.
+    pub fn all(&self) -> impl Iterator<Item = &Expr> {
+        let maps = [&self.default_expr, &self.computed, &self.visible_if, &self.required_if, &self.read_only_if, &self.action_conditions];
+        let targets =
+            self.targets.values().flat_map(|t| [t.start_when.as_ref(), Some(&t.within), t.pause_when.as_ref(), Some(&t.met_when)].into_iter().flatten());
+        maps.into_iter()
+            .flat_map(|m| m.values())
+            .chain(self.rules.iter().map(|(_, e)| e))
+            .chain(self.action_refusals.values().flatten().map(|(e, _)| e))
+            .chain(targets)
+    }
 }
 
 /// A service target's expressions, compiled.
@@ -285,6 +299,35 @@ impl Default for Schema {
 impl Schema {
     pub fn entity(&self, name: &str) -> Option<&Arc<EffEntity>> {
         self.entities.get(name)
+    }
+
+    /// What is wrong with the settings `e` reads as `settings.<Entity>.<field>` (BD-17), the first thing: each is a
+    /// field of an entity of the settings kind with one record for the workspace, and not a secret.
+    pub fn settings_problem(&self, e: &Expr) -> Option<String> {
+        e.settings().iter().find_map(|(name, field)| {
+            let what = format!("settings.{name}.{field}");
+            let Some(ent) = self.entity(name) else { return Some(format!("{what}: there is no entity {name}")) };
+            if ent.def.kind != EntityKind::Settings || ent.def.company_scoped {
+                return Some(format!("{what}: {name} is not the workspace's settings (an entity of the settings kind, one record for the workspace)"));
+            }
+            match ent.field(field) {
+                None => Some(format!("{what}: {} has no field {field}", ent.def.label)),
+                Some(f) if f.ftype == FieldType::Secret => Some(format!("{what}: {field} is a secret, which no expression reads")),
+                Some(_) => None,
+            }
+        })
+    }
+
+    /// The settings entities the expressions of `ent` and of its lines read: what its save loads (BD-17).
+    pub fn settings_read(&self, ent: &EffEntity) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        let mut next = vec![ent];
+        while let Some(e) = next.pop() {
+            let guards = e.workflow.iter().flat_map(|w| w.guards.values());
+            out.extend(e.exprs.all().chain(guards).flat_map(|x| x.settings().iter().map(|(n, _)| n.clone())));
+            next.extend(e.children.values().filter_map(|c| self.entity(&c.entity)).map(|c| &**c));
+        }
+        out
     }
 
     /// The published list named `name`, if the workspace has one.
@@ -601,8 +644,12 @@ fn validate_custom_entity(e: &EntityDef) -> Result<(), String> {
     if !is_entity_name(&e.name) || !e.name.starts_with('X') {
         return Err(format!("custom entity {} must be PascalCase and start with 'X'", e.name));
     }
-    if !matches!(e.kind, EntityKind::Master | EntityKind::Document | EntityKind::Child) {
-        return Err("custom entities must be masters, documents or child (line) entities".into());
+    if !matches!(e.kind, EntityKind::Master | EntityKind::Document | EntityKind::Child | EntityKind::Settings) {
+        return Err("custom entities must be masters, documents, settings or child (line) entities".into());
+    }
+    // A workspace's own settings are one record for the workspace (BD-17), read as `settings.<Entity>.<field>`.
+    if e.kind == EntityKind::Settings && e.company_scoped {
+        return Err(format!("{} holds the workspace's settings: one record for the workspace, not one per company", e.name));
     }
     if e.table.is_some() || !e.indexes.is_empty() || !e.exclusion.is_empty() {
         return Err("custom entities cannot declare tables, indexes or exclusions".into());
@@ -1045,7 +1092,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         );
     }
     modules.sort_by(|a, b| a.order.cmp(&b.order).then(a.name.cmp(&b.name)));
-    Ok(Schema {
+    let mut schema = Schema {
         version,
         entities,
         packages,
@@ -1061,7 +1108,16 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         timezone: "UTC".into(),
         shell_v2: false,
         published_lists,
-    })
+    };
+    // What expressions read as `settings` is there (BD-17); otherwise it is said, and a customization saying it refused.
+    let wrong: Vec<SchemaWarning> = schema
+        .entities
+        .values()
+        .flat_map(|e| e.exprs.all().chain(e.workflow.iter().flat_map(|w| w.guards.values())).map(move |x| (e, x)))
+        .filter_map(|(e, x)| schema.settings_problem(x).map(|m| SchemaWarning { entity: e.def.name.clone(), message: m }))
+        .collect();
+    schema.warnings.extend(wrong);
+    Ok(schema)
 }
 
 fn compile_exprs(def: &EntityDef) -> Result<Exprs, String> {

@@ -629,6 +629,7 @@ impl Kernel {
             schema,
             perms: core.perms.clone(),
             depth: 0,
+            settings: None,
         })
     }
 

@@ -356,6 +356,9 @@ pub struct Ctx {
     pub perms: Arc<PermSet>,
     /// Automation recursion depth guard.
     pub depth: u8,
+    /// The workspace's settings the expressions at hand read (BD-17), loaded where they are evaluated
+    /// (`crate::settings::with`) and seen by them as `settings`; none elsewhere.
+    pub settings: Option<Arc<Value>>,
 }
 
 /// What may leave for an AI provider. Being able to read something does not make it yours to send:
@@ -409,6 +412,7 @@ impl Ctx {
             schema,
             perms: Arc::new(PermSet { admin: true, entities: BTreeMap::new() }),
             depth: 0,
+            settings: None,
         }
     }
 
@@ -425,7 +429,7 @@ impl Ctx {
 
     pub fn user_value(&self) -> Value {
         let now = self.now_local();
-        json!({
+        let mut user = json!({
             "today": now.format("%Y-%m-%d").to_string(),
             "now": now.to_rfc3339(),
             "time": now.format("%H:%M:%S").to_string(),
@@ -437,7 +441,12 @@ impl Ctx {
             "is_admin": self.is_admin,
             "companies": self.scopes.get("Company").map(|v| v.iter().map(|u| u.to_string()).collect::<Vec<_>>()).unwrap_or_default(),
             "default_company": self.default_company.map(|u| u.to_string()),
-        })
+        });
+        // Bound as `settings` for the expressions that name them (ferrum_meta::Expr), as time is.
+        if let Some(s) = &self.settings {
+            user["settings"] = (**s).clone();
+        }
+        user
     }
 
     pub fn has_role(&self, role: &str) -> bool {

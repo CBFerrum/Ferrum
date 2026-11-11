@@ -404,3 +404,57 @@ empty number could not be told from 0, and a refusal could not say what was miss
 
 **Rules out**: changing what an empty value reads as in existing expressions; a message showing a field its
 reader may not read; functions the browser evaluates (it leaves any call to the server).
+
+## BD-17. A workspace's settings
+
+Decided 12 November 2026. Asked for by the GRC and Government packs ([GRC](evidence/grc-as-a-pack-2026-11-10.md) R9,
+[Government](evidence/government-as-a-pack-2026-11-11.md)): a threshold or a policy a pack's rules read had to be
+written into each rule, so changing it meant changing configuration.
+
+* **A settings entity of the workspace's own.** `define_entity` takes `"kind": "settings"`, as 23 apps declare
+  theirs: one record for the workspace (a second is refused, `Claim Policy holds one record for the workspace`,
+  kept by a key of no fields in `custom_key`, so two saves at once cannot both make one), edited on its form, with
+  permissions, rules and history like any record. Not per company.
+* **Read as `settings.<Entity>.<field>` everywhere a record expression is** (docs/builder/expressions.md,
+  "Settings"), a workspace's settings and a package's alike, the field's default until the record is saved.
+* **Read as the workspace** (as BD-10's aggregates and BD-14's links): a rule must hold for someone who may not
+  open the settings. Secret fields are never read.
+* **Known before it runs.** Only `settings.<Entity>.<field>`; checked when saved against the schema (the entity of
+  the settings kind, the field there and not a secret), refused naming it. The names come from the expressions, so
+  each place that evaluates (a save, an action's checks, one effect, an automation's run) reads what it names once,
+  in its transaction, and nothing when it names nothing. Nothing is cached: a change is seen by the next
+  evaluation, on every server.
+* **Packs carry them** as they carry entities; a pack carries the record's values only when the exporter names
+  the entity among its reference records, and installing never overwrites a record the workspace already has.
+
+**Rules out**: settings per person or per company in expressions; a settings value read with the saver's rights;
+a secret in an expression; Logic's typed expressions and aggregate filters reading `settings` (they keep solution
+parameters); `settings` read whole or by a computed name.
+
+## BD-18. Effects that branch, find and loop
+
+Decided 12 November 2026. Qualifies BD-11 and BD-14. Asked for by the Government pack
+([evidence](evidence/government-as-a-pack-2026-11-11.md)): Submit and Reject were each two buttons kept in step for
+want of a condition on one effect (G-rows on branching), and a second ERP customer was made under an address it
+already knew (G9) for want of find-or-create; checklists from a template were typed by hand.
+
+* **A `when` on any effect or automation action.** Absent means always, as before; nothing that ran changes.
+* **`find`, with `create` and `update`.** By the fields named, which must pick exactly one record: two matching is a
+  refusal, never a guess, and an empty value picks nothing. Runs that may create the same record take a transaction
+  advisory lock on (workspace, entity, values) first, so the second run finds what the first made; a unique key over
+  the fields refuses a duplicate made any other way. Without one, a record made by hand at the same moment can still
+  be a second, and the next `find` then refuses.
+* **`for_each` over a record's lines or the records linking to it**, the item as `item`; at most 100 items
+  (`MAX_ITEMS`, a refusal beyond, never a silent cut), 10 effects per item, one level (no loop in a loop), and the
+  chain-depth guard unchanged (a loop's writes raise events as any effect's do). An `invoke` in a loop is keyed per
+  item, so each runs once.
+* **`copy_lines` from a template**: the lines of a record a link names or an earlier effect found, mapped by
+  expressions, appended or replacing, in one save; at most 100 lines.
+* **Same trust and pipeline as BD-11**: as the system on the runner's behalf in an action (as the saver in an
+  automation), every write through the save pipeline, in the one transaction; any refusal undoes the run and says
+  which effect (`find:`, `copy_lines:`, `for_each, item 2, effect 1:`). Stored as written, so packs, change lists and
+  `GET /api/customize/definition/{Entity}` carry them unchanged.
+
+**Rules out**: nested loops; loops over a query of arbitrary records (only lines and records linking here); a find
+that picks the first of several; a silent cut at the bound; error paths and compensation (BL-42), approvals, and
+outbound HTTP in effects.
