@@ -54,7 +54,11 @@ async fn contacts_merge() {
     let admin = k.load_ctx(tenant, s.user, None, "it".into()).await.unwrap();
 
     let keep = k
-        .insert(&admin, "Contact", obj(json!({"first_name": "Mira", "last_name": "Sen", "emails": [{"email": "mira@globex.test"}], "phones": [{"phone": "+91 98100 00001"}]})))
+        .insert(
+            &admin,
+            "Contact",
+            obj(json!({"first_name": "Mira", "last_name": "Sen", "emails": [{"email": "mira@globex.test"}], "phones": [{"phone": "+91 98100 00001"}]})),
+        )
         .await
         .unwrap();
     let dup = k
@@ -76,10 +80,7 @@ async fn contacts_merge() {
     // The duplicate's other email comes along as a chosen value; the primary stays the kept one's.
     let mut lines = keep["emails"].as_array().unwrap().clone();
     lines.push(json!({"email": "m.sen@home.test"}));
-    let out = k
-        .merge_records_with(&admin, "Contact", keep_id, dup_id, "the same person", Some((obj(json!({"emails": lines})), None)))
-        .await
-        .expect("merged");
+    let out = k.merge_records_with(&admin, "Contact", keep_id, dup_id, "the same person", Some((obj(json!({"emails": lines})), None))).await.expect("merged");
     assert_eq!(out["links_moved"].as_u64(), Some(1), "{out}");
 
     let now = k.get(&admin, "Contact", keep_id, false).await.unwrap();
