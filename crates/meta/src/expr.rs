@@ -380,6 +380,24 @@ mod tests {
         }
     }
 
+    /// Text (BL-20): CEL's own and its strings extension, with what they lack.
+    #[test]
+    fn text() {
+        let doc = json!({"name": "  Ünal Şahin ", "code": "7", "docs": ["Site plan", "Proof"], "qty": 3, "none": null});
+        let user = json!({});
+        let eval = |s: &str| Expr::compile(s).unwrap().eval(&scope(&doc, &user)).unwrap();
+        assert_eq!(eval("[lower(doc.name.trim()), doc.name.trim().upper(), lower(doc.none)]"), json!(["ünal şahin", "ÜNAL ŞAHIN", null]));
+        assert_eq!(eval("'Check'.lowerAscii() == 'check' && 'a-b'.replace('-', '+') == 'a+b'"), json!(true));
+        assert_eq!(eval("[size(doc.code), doc.name.contains('Şah'), 'APP-1'.startsWith('APP'), 'x.pdf'.endsWith('.pdf')]"), json!([1, true, true, true]));
+        assert_eq!(eval("['a,b'.split(','), 'permit'.substring(0, 3), doc.docs.join(', ')]"), json!([["a", "b"], "per", "Site plan, Proof"]));
+        assert_eq!(
+            eval("[padStart(doc.code, 5, '0'), doc.code.padEnd(3), padStart('abcdef', 3, '0'), padStart(doc.none, 3)]"),
+            json!(["00007", "7  ", "abcdef", null])
+        );
+        assert_eq!(eval("concat('No. ', doc.code, ' of ', doc.qty, doc.none, ': ', 1.5, ' ', true)"), json!("No. 7 of 3: 1.5 true"));
+        assert_eq!(eval("'%s needs %d'.format([doc.code, doc.qty])"), json!("7 needs 3"));
+    }
+
     #[test]
     fn expr_is_shareable() {
         fn assert_send_sync<T: Send + Sync>() {}
