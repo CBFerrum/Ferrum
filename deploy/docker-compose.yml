@@ -149,8 +149,8 @@ services:
     # file capabilities on its helper, so `no-new-privileges` cannot be set here.
     cap_drop: [ALL]
     cap_add: [CHOWN, FOWNER, MKNOD, SYS_CHROOT]
-    # Memory: about 600 MB for the editor itself and about 100 to 250 MB for each open document
-    # (docs/operations.md, "Online editing", Sizing). Collabora closes idle documents before the limit.
+    # Memory: about 590 MiB for the editor at rest and about 50 to 60 MiB for each small open document
+    # (docs/operations.md, "Online editing", Sizing); larger files cost more.
     mem_limit: ${OFFICE_MEMORY:-2g}
 
 volumes:

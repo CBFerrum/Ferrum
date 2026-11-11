@@ -1,3 +1,8 @@
 Ferrum is installed as {{ include "ferrum.fullname" . }} in namespace {{ .Release.Namespace }}; it needs the Secret {{ .Values.secrets.existingSecret }} (see docs/operations.md).
 Wait for the pods: kubectl -n {{ .Release.Namespace }} get pods
 Create the first tenant: kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "ferrum.fullname" . }} -- ferrum task create_tenant slug:acme name:"Acme Ltd" email:admin@acme.com password:'<strong password>'
+{{- if .Values.office.enabled }}
+Online editing (Word, Excel, PowerPoint in Drive) runs as {{ include "ferrum.fullname" . }}-office in namespace {{ .Values.office.namespace }}, on https://{{ .Values.office.host }}. Give the editor a WOPI proof key, so Ferrum can refuse calls it did not sign (then restart its pod):
+  openssl genrsa -traditional -out proof_key 2048 && kubectl -n {{ .Values.office.namespace }} create secret generic {{ .Values.office.proofKeySecret }} --from-file=proof_key
+Check it: Administration shows whether the editor answers, or `kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "ferrum.fullname" . }} -- ferrum task doctor`. It is the Development Edition (docs/operations.md, "Online editing", Licence and support).
+{{- end }}
