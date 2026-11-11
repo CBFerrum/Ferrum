@@ -373,6 +373,12 @@ Pages, for browsers, with the session cookie:
 * `GET /_shell/v1/{file}` → the shell's own files (`runtime.js`, `live-worker.js`, …), the newest of
   v1; `GET /_shell/theme/{hash}.css` → the theme.
 
+**Keys the bar keeps.** The bar takes Ctrl/Cmd+K (its search) before a page's own handlers see it,
+except inside an element that claims it: `data-ferrum-keys="mod+k"` on the editable region or any
+element around it (a space-separated list; `mod` is Cmd on a Mac, Ctrl elsewhere; elements in a
+shadow root count). There the key is the page's (an editor's "insert link") and the search is the
+bar's button. `mod+k` is the only key a page can claim today.
+
 For the bar, with the cookie or a token:
 
 * `GET /api/shell` → `{v, shell, workspace, person, apps: [{id, app, title, description, icon,
