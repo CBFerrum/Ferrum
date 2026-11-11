@@ -1022,7 +1022,9 @@ Or, on any store, through the server in parts that survive a dropped connection 
 3. After a dropped connection, `GET /api/files/uploads/{upload_id}` → `{upload_id, parts, size, offset, part_bytes, expires_at}` says where to go on from.
 4. `POST /api/files/uploads/{upload_id}/complete` once every byte has arrived (`409` before) joins the parts and records the file as above. The parts stay until it is recorded, so a completion that failed (the scanner down) can be asked for again.
 
-Uploads never completed are deleted with their bytes after they expire. `GET /api/version` → `uploads: {max_bytes, direct, direct_max_bytes, parts, parts_max_bytes, part_bytes}` tells clients which way a file goes.
+5. `DELETE /api/files/uploads/{upload_id}` cancels it: the upload is forgotten and its parts deleted at once → `204`. Only the uploader's own upload; cancelling again, or an upload that is not there (completed, swept, someone else's), changes nothing and answers `204` too. A part already being stored when the cancel comes lands first and goes with the rest; a part sent after it, and a completion, find no upload (`404`): a cancelled upload cannot come back. Nothing of the workspace's room is held for an upload (it is checked when the upload starts and again when it completes), so there is nothing to give back. An upload straight to object storage cannot be cancelled (`409`): its URL takes bytes until it expires, an hour after it started.
+
+Uploads never completed are deleted with their bytes after they expire: every ten minutes each replica deletes up to 500 that expired more than five minutes before, with their parts or staged object. `GET /api/version` → `uploads: {max_bytes, direct, direct_max_bytes, parts, parts_max_bytes, part_bytes}` tells clients which way a file goes.
 Public files (`public=true`; images and PDFs only — logos, product photos, brochures) are served without signing in at `GET /files/public/{id}` with an immutable cache and a sandboxing CSP. Files live in S3-compatible storage in production.
 
 ## System
