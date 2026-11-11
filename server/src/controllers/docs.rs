@@ -237,14 +237,17 @@ fn said(done: &mut Value, label: impl Fn(&str, usize) -> String) {
     }
 }
 
+/// Takes a workflow transition; the body, when there is one, is what it asks for (`{"reason": …}`, BD-19).
 async fn transition(
     Auth(ctx): Auth,
     State(app): State<AppContext>,
     Path((entity, id, action)): Path<(String, Uuid, String)>,
     headers: HeaderMap,
+    body: axum::body::Bytes,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    Ok(doc_response(st.kernel.transition(&ctx, &entity, id, &action, if_match(&headers)?).await?, StatusCode::OK))
+    let params: Value = if body.iter().all(u8::is_ascii_whitespace) { Value::Null } else { serde_json::from_slice(&body)? };
+    Ok(doc_response(st.kernel.transition_with(&ctx, &entity, id, &action, if_match(&headers)?, params).await?, StatusCode::OK))
 }
 
 async fn print(

@@ -377,6 +377,9 @@ pub enum RuleOn {
     #[default]
     Save,
     Submit,
+    /// Only when a workflow transition is taken (never on a save or a submit of its own), on the record as it would
+    /// be in its new state; the check also reads `transition`: `{action, from, to, params}` (BD-19).
+    Transition,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1096,6 +1099,14 @@ pub struct WorkflowTransition {
     /// table's links. Whoever raised an order does not approve paying it (FEO-013).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub not_creator_of: Vec<String>,
+    /// What whoever takes it is asked for, declared as a button's are; a required one missing refuses it. Its
+    /// effects read them as `params`, rules `on: transition` as `transition.params`, and the history keeps them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<ActionParam>,
+    /// What it does once taken, in its transaction, as the system on the taker's behalf: a configured action's
+    /// effects (BD-11, BD-19), checked by the kernel when the customization is saved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

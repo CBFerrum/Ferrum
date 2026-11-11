@@ -1,6 +1,6 @@
 //! No-code automations: `event → condition (CEL) → actions`, run after commit from the outbox.
 //! Each (automation, event) runs at most once: the run record commits with the action's effects.
-//! The event is a record's (created, updated, submitted, cancelled, deleted) or, for an automation with a
+//! The event is a record's (created, updated, submitted, cancelled, deleted, transitioned) or, for an automation with a
 //! schedule, a moment of a record coming due (`scheduled`, schedule.rs).
 //! An automation runs as the administrator who saved it, with their rights as they are when it runs:
 //! once they are no longer an active administrator it does not run, and its runs say why, until an
@@ -773,8 +773,10 @@ async fn run_one(
         Some(ent) => crate::links::load(k, &ctx, &mut tx, &ent, cel_doc, &names).await?,
         None => Value::Object(Map::new()),
     };
+    // A transition's event says which, from and to, and by whom (BD-19); null for any other.
+    let transition = ev.payload.get("transition").cloned().unwrap_or(Value::Null);
     let pass = match condition {
-        Some(c) => matches!(eval(c, cel_doc, cel_old, &user, &[("links", &links)])?, Value::Bool(true)),
+        Some(c) => matches!(eval(c, cel_doc, cel_old, &user, &[("links", &links), ("transition", &transition)])?, Value::Bool(true)),
         _ => true,
     };
     let status = if pass {
@@ -784,8 +786,19 @@ async fn run_one(
         for (i, action) in validate_actions(&a.actions)?.into_iter().enumerate() {
             let done = Value::Array(results.clone());
             results.push(
-                run_step(k, &ctx, &mut tx, entity, record, (raw, cel_doc), &user, &[("results", &done), ("links", &links)], &format!("{origin}{i}"), action)
-                    .await?,
+                run_step(
+                    k,
+                    &ctx,
+                    &mut tx,
+                    entity,
+                    record,
+                    (raw, cel_doc),
+                    &user,
+                    &[("results", &done), ("links", &links), ("transition", &transition)],
+                    &format!("{origin}{i}"),
+                    action,
+                )
+                .await?,
             );
         }
         "done"
@@ -1226,8 +1239,8 @@ pub(crate) async fn save_in(ctx: &Ctx, tx: &mut crate::db::Tx, input: &Map<Strin
         return Err(Error::field("entity", "unknown entity"));
     }
     let event = get("event").ok_or_else(|| Error::field("event", "is required"))?;
-    if !["created", "updated", "submitted", "cancelled", "deleted", "scheduled"].contains(&event.as_str()) {
-        return Err(Error::field("event", "must be created, updated, submitted, cancelled, deleted or scheduled"));
+    if !["created", "updated", "submitted", "cancelled", "deleted", "transitioned", "scheduled"].contains(&event.as_str()) {
+        return Err(Error::field("event", "must be created, updated, submitted, cancelled, deleted, transitioned or scheduled"));
     }
     // A schedule in place of a record event, checked against the entity it is on (schedule.rs).
     let schedule = input.get("schedule").filter(|v| !v.is_null()).cloned();

@@ -762,7 +762,8 @@ impl Kernel {
                 }
             }
         }
-        Ok(json!({"entity": ent.def, "lines": lines}))
+        // Its workflow as `set_workflow` takes it, its transitions' parameters, effects and approvals with it (BD-19).
+        Ok(json!({"entity": ent.def, "lines": lines, "workflow": ent.workflow.as_ref().map(|w| &w.def)}))
     }
 
     /// Change-set export: every active customization in order.

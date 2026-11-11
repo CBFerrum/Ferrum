@@ -1077,6 +1077,14 @@ pub(crate) fn validate_workflow(wf: &WorkflowDef, entities: &BTreeMap<String, (S
             return Err(format!("duplicate transition {} from {}", t.action, t.from));
         }
         compile(e, &format!("transition {}", t.action), t.condition.as_deref(), true)?;
+        // What it asks for and does (BD-19): a button's bounds; what effects write is the kernel's to check.
+        if t.effects.len() > MAX_EFFECTS {
+            return Err(format!("transition {}: at most {MAX_EFFECTS} effects", t.action));
+        }
+        let mut names = HashSet::new();
+        if let Some(p) = t.params.iter().find(|p| p.name.trim().is_empty() || !names.insert(p.name.as_str())) {
+            return Err(format!("transition {}: parameter '{}' is unnamed or named twice", t.action, p.name));
+        }
         for path in &t.not_creator_of {
             let link = |fields: &[crate::types::FieldDef], name: &str| fields.iter().any(|f| f.name == name && f.ftype == FieldType::Link && f.to.is_some());
             let ok = match path.split_once('.') {

@@ -803,9 +803,14 @@ impl Kernel {
 
     /// Applies a workflow transition, submitting/cancelling when the target state requires it.
     pub async fn transition(&self, ctx: &Ctx, entity: &str, id: Uuid, action: &str, expected_version: Option<i64>) -> Result<Doc> {
+        self.transition_with(ctx, entity, id, action, expected_version, Value::Null).await
+    }
+
+    /// [`Kernel::transition`] with what the transition asks for (`params`, an object or null; BD-19).
+    pub async fn transition_with(&self, ctx: &Ctx, entity: &str, id: Uuid, action: &str, expected_version: Option<i64>, params: Value) -> Result<Doc> {
         with_retry(|| async {
             let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-            let doc = self.transition_tx(ctx, &mut tx, entity, id, action, expected_version).await?;
+            let doc = self.take_tx(ctx, &mut tx, entity, id, action, expected_version, &params).await?;
             tx.commit().await?;
             Ok(doc)
         })
@@ -814,6 +819,22 @@ impl Kernel {
     }
 
     pub async fn transition_tx(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, action: &str, expected_version: Option<i64>) -> Result<Doc> {
+        self.take_tx(ctx, tx, entity, id, action, expected_version, &Value::Null).await
+    }
+
+    /// Takes transition `action` of record `id` as `ctx`, with `params`: who may, its guard, what its state needs, its
+    /// rules `on: transition`, then the move, its effects and its event (BD-19).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn take_tx(
+        &self,
+        ctx: &Ctx,
+        tx: &mut Tx,
+        entity: &str,
+        id: Uuid,
+        action: &str,
+        expected_version: Option<i64>,
+        params: &Value,
+    ) -> Result<Doc> {
         let ent = self.entity(ctx, entity)?;
         // The settings its expressions read, once for this save (BD-17).
         let held = crate::settings::with(self, ctx, tx, ctx.schema.settings_read(&ent)).await?;
@@ -853,39 +874,83 @@ impl Kernel {
                 return Err(Error::invalid(format!("the conditions for '{action}' are not met")));
             }
         }
+        let params = transition_params(t, params)?;
         let target = wf.def.states.iter().find(|s| s.name == t.to).ok_or_else(|| Error::internal("workflow target state missing"))?;
         check_state_needs(&ent, &doc, Some((target, action)))?;
-        let from_status = docstatus_of(&doc) as i16;
-        let version = version_of(&doc);
-        match (from_status, target.docstatus) {
-            (0, 1) => return self.submit_inner(ctx, tx, entity, id, Some(version), Some(t.to.clone())).await,
-            (1, 2) => return self.cancel_inner(ctx, tx, entity, id, Some(version), Some(t.to.clone())).await,
-            (a, b) if a == b => {}
-            _ => return Err(Error::invalid("this workflow transition would move the document backwards")),
-        }
-        // The record's targets see it in its new state; what they keep is written with it.
         let mut next = doc.clone();
         next.insert("workflow_state".into(), json!(t.to));
-        crate::targets::keep(self, ctx, tx, &ent, id, &mut next).await?;
-        let kept: Doc =
-            ent.def.targets.iter().flat_map(|t| [&t.due_field, &t.state_field]).map(|f| (f.clone(), next.get(f).cloned().unwrap_or_default())).collect();
-        sqlx::query(AssertSqlSafe(format!(
-            "update {} a set workflow_state = $3, version = version + 1, updated_at = now(), updated_by = $4 where a.tenant_id = $1 and a.id = $2{}",
-            crate::ddl::q(&ent.table),
-            store::entity_predicate(&ent, "a")
-        )))
-        .bind(ctx.tenant)
-        .bind(id)
-        .bind(&t.to)
-        .bind((!ctx.user.is_nil()).then_some(ctx.user))
-        .execute(&mut **tx)
-        .await?;
-        if !kept.is_empty() {
-            store::set_values(tx, &ent, ctx.tenant, id, &kept).await?;
+        let moving = json!({"action": t.action, "from": t.from, "to": t.to, "params": params});
+        self.transition_rules(ctx, tx, &ent, &next, &doc, &moving).await?;
+        let from_status = docstatus_of(&doc) as i16;
+        let version = version_of(&doc);
+        let out = match (from_status, target.docstatus) {
+            (0, 1) => self.submit_inner(ctx, tx, entity, id, Some(version), Some(t.to.clone())).await?,
+            (1, 2) => self.cancel_inner(ctx, tx, entity, id, Some(version), Some(t.to.clone())).await?,
+            (a, b) if a == b => {
+                // The record's targets see it in its new state; what they keep is written with it.
+                crate::targets::keep(self, ctx, tx, &ent, id, &mut next).await?;
+                let kept: Doc = ent
+                    .def
+                    .targets
+                    .iter()
+                    .flat_map(|t| [&t.due_field, &t.state_field])
+                    .map(|f| (f.clone(), next.get(f).cloned().unwrap_or_default()))
+                    .collect();
+                sqlx::query(AssertSqlSafe(format!(
+                    "update {} a set workflow_state = $3, version = version + 1, updated_at = now(), updated_by = $4 where a.tenant_id = $1 and a.id = $2{}",
+                    crate::ddl::q(&ent.table),
+                    store::entity_predicate(&ent, "a")
+                )))
+                .bind(ctx.tenant)
+                .bind(id)
+                .bind(&t.to)
+                .bind((!ctx.user.is_nil()).then_some(ctx.user))
+                .execute(&mut **tx)
+                .await?;
+                if !kept.is_empty() {
+                    store::set_values(tx, &ent, ctx.tenant, id, &kept).await?;
+                }
+                let stored = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::internal("transition vanished"))?;
+                self.emit(ctx, tx, &ent, id, "transitioned", &format!("workflow:{action}"), Some(version + 1), Some(&doc), Some(&stored)).await?;
+                self.mask(ctx, &ent, stored)
+            }
+            _ => return Err(Error::invalid("this workflow transition would move the document backwards")),
+        };
+        if params.as_object().is_some_and(|p| !p.is_empty()) {
+            audit::record(tx, ctx, &ent.def.name, id, &format!("workflow:{action}"), None, json!({"params": params})).await?;
         }
+        if t.effects.is_empty() {
+            return Ok(out);
+        }
+        let origin = format!("workflow:{}.{}:{id}:v{version}:", ent.def.name, t.action);
+        crate::actions::run_effects(self, ctx, tx, &ent, id, &t.effects, &params, &origin).await?;
         let stored = self.load_marked(tx, ctx, &ent, id, false).await?.ok_or_else(|| Error::internal("transition vanished"))?;
-        self.emit(ctx, tx, &ent, id, "transitioned", &format!("workflow:{action}"), Some(version + 1), Some(&doc), Some(&stored)).await?;
         Ok(self.mask(ctx, &ent, stored))
+    }
+
+    /// The rules of `ent` that run `on: transition`, on `next` (the record in its new state; `old`, as it was), each
+    /// reading `transition` (`{action, from, to, params}`).
+    async fn transition_rules(&self, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, next: &Doc, old: &Doc, moving: &Value) -> Result<()> {
+        let rules: Vec<_> = ent.exprs.rules.iter().filter(|(rule, _)| rule.on == RuleOn::Transition).collect();
+        if rules.is_empty() {
+            return Ok(());
+        }
+        let user = ctx.user_value();
+        let view = ent.cel_view(&Value::Object(next.clone()), &ctx.schema);
+        let old_view = ent.cel_view(&Value::Object(old.clone()), &ctx.schema);
+        let links = crate::links::load(self, ctx, tx, ent, &view, &crate::links::used(rules.iter().map(|(_, e)| e))).await?;
+        let mut errors = Vec::new();
+        for (rule, expr) in rules {
+            match expr.eval_bool_with(&Scope { doc: &view, old: Some(&old_view), parent: None, user: &user }, &[("links", &links), ("transition", moving)]) {
+                Ok(true) => {}
+                Ok(false) => errors.push(FieldError::new(
+                    rule.field.as_deref().unwrap_or(&rule.name),
+                    crate::print::message(&rule.message, || told(ctx, ent, next.clone(), Some(self))),
+                )),
+                Err(e) => errors.push(FieldError::new(&rule.name, format!("rule could not be evaluated: {e}"))),
+            }
+        }
+        if errors.is_empty() { Ok(()) } else { Err(Error::Validation(errors)) }
     }
 
     /// The platform's own change to a record's service targets (a breach the sweep marked), in any document status:
@@ -1269,7 +1334,7 @@ impl Kernel {
         check_required(ent, doc, &view, None, old_view.as_ref(), &user, &mut errors, &[]);
         self.validate_rows(ctx, tx, ent, doc, &view, on, &mut errors, &[]).await?;
         self.check_links(ctx, tx, ent, doc, &mut errors, &[]).await?;
-        let rules: Vec<_> = ent.exprs.rules.iter().filter(|(rule, _)| rule.on != RuleOn::Submit || on == RuleOn::Submit).collect();
+        let rules: Vec<_> = ent.exprs.rules.iter().filter(|(rule, _)| rule.on == RuleOn::Save || rule.on == on).collect();
         let links = crate::links::load(self, ctx, tx, ent, &view, &crate::links::used(rules.iter().map(|(_, e)| e))).await?;
         for (rule, expr) in rules {
             match expr.eval_bool_with(&Scope { doc: &view, old: old_view.as_ref(), parent: None, user: &user }, &[("links", &links)]) {
@@ -1312,7 +1377,8 @@ impl Kernel {
                 let rview = cent.cel_view(r, &ctx.schema);
                 check_required(&cent, rm, &rview, Some(view), None, &user, errors, &path);
                 for (rule, expr) in &cent.exprs.rules {
-                    if rule.on == RuleOn::Submit && on != RuleOn::Submit {
+                    // A line's rules run on a save or a submit; one `on: transition` is the record's alone.
+                    if rule.on != RuleOn::Save && rule.on != on {
                         continue;
                     }
                     match expr.eval_bool(&Scope { doc: &rview, old: None, parent: Some(view), user: &user }) {
@@ -1420,6 +1486,10 @@ impl Kernel {
             "depth": ctx.depth,
             "request_id": ctx.request_id,
         });
+        // A transition says which, from and to (BD-19): what an automation on `transitioned` reads as `transition`.
+        if let (Some(a), Some(o), Some(n)) = (audit_action.strip_prefix("workflow:"), old, new) {
+            payload["transition"] = json!({"action": a, "from": o.get("workflow_state"), "to": n.get("workflow_state"), "by": payload["actor"]});
+        }
         if let Some(d) = new.or(old) {
             let v = Value::Object(d.clone());
             let size = |v: &Value| serde_json::to_vec(v).map(|b| b.len()).unwrap_or(usize::MAX);
@@ -1808,4 +1878,31 @@ pub(crate) async fn raised_linked(tx: &mut Tx, ctx: &Ctx, ent: &EffEntity, doc: 
     .fetch_one(&mut **tx)
     .await?;
     Ok(raised)
+}
+
+/// What transition `t` is given (an object, or null for nothing), refused when a required one is missing or empty or
+/// one it does not ask for is sent: the server says so, not only the form (BD-19).
+fn transition_params(t: &ferrum_meta::WorkflowTransition, params: &Value) -> Result<Value> {
+    let given = match params {
+        Value::Null => Map::new(),
+        Value::Object(m) => m.clone(),
+        _ => return Err(Error::invalid(format!("'{}' takes its parameters as an object", t.action))),
+    };
+    let mut errors: Vec<FieldError> =
+        given.keys().filter(|k| !t.params.iter().any(|p| &p.name == *k)).map(|k| FieldError::new(k, format!("'{}' does not ask for this", t.action))).collect();
+    errors.extend(
+        t.params
+            .iter()
+            .filter(|p| p.required && given.get(&p.name).is_none_or(is_empty))
+            .map(|p| FieldError::new(&p.name, format!("is needed to {}", t.action))),
+    );
+    if !errors.is_empty() {
+        return Err(Error::Validation(errors));
+    }
+    // One it asks for and was not given reads as null, so an expression may ask about it.
+    let mut given = given;
+    for p in &t.params {
+        given.entry(p.name.clone()).or_insert(Value::Null);
+    }
+    Ok(Value::Object(given))
 }
