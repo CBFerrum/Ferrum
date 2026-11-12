@@ -397,7 +397,7 @@ async fn scenario() {
             json!({"op": "set_workflow", "workflow": {"name": "claims", "entity": "XClaim", "initial_state": "Draft",
                 "states": [{"name": "Draft"}, {"name": "Paid"}],
                 "transitions": [{"action": "Pay", "from": "Draft", "to": "Paid", "approval": {"show": ["salary"], "steps": [
-                    {"label": "First", "approvers": {"field": "approver"}}, {"label": "Second", "approvers": {"field": "second"}}]}}]}}),
+                    {"label": "Both", "approvers": {"expr": "[doc.approver, doc.second]"}, "need": "all"}]}}]}}),
         ),
     ])
     .await
@@ -436,13 +436,13 @@ async fn scenario() {
     assert!(seen.get("bank").is_none(), "a field group not shown stays hidden: {seen:?}");
     assert!(k.audit_trail(&out1c, "XClaim", paid).await.is_ok(), "and its history");
     refused(k.read_record(&out1c, "XClaim", other, false).await, "not permitted");
-    refused(k.read_record(&out2c, "XClaim", paid, false).await, "not permitted");
     refused(k.get(&out1c, "XClaim", paid, false).await, "not permitted");
     refused(k.list(&out1c, "XClaim", &ListQuery::default()).await, "not permitted");
     refused(k.update(&out1c, "XClaim", paid, obj(json!({"title": "Mine"})), None).await, "not permitted");
+    k.read_record(&out2c, "XClaim", paid, false).await.expect("each approver of the open step");
     k.decide_approval(&out1c, "XClaim", paid, true, None).await.expect("the first decides");
     refused(k.read_record(&out1c, "XClaim", paid, false).await, "not permitted");
-    // The second step is theirs: away, their stand-in reads and decides for them.
+    // The step stays open for the second: away, their stand-in reads and decides for them.
     let today = Utc::now().date_naive();
     k.set_away(&out2c, out2, today, today + Duration::days(1), out3, "leave").await.unwrap();
     k.read_record(&out3c, "XClaim", paid, false).await.expect("the stand-in reads it");
