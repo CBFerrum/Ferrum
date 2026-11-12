@@ -86,6 +86,9 @@ pub struct Pack {
     /// Its text and chat-app channel connections, described, never with their secrets; installed turned off.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub channels: Vec<crate::messages::PackChannel>,
+    /// Its connections to outside services (BD-32), described, never with a secret or a token; installed turned off.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<crate::connections::PackConnection>,
     /// The workspace's own document templates and its edited copies of packages' defaults (BD-21).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub documents: Vec<ferrum_meta::DocumentDef>,
@@ -599,6 +602,7 @@ impl Kernel {
         let studio = self.export_studio(ctx, &mut tx).await?;
         let (messages, channels) = crate::messages::for_pack(&mut tx, ctx.tenant).await?;
         let documents = crate::documents::for_pack(&mut tx, ctx.tenant).await?;
+        let connections = crate::connections::for_pack(&mut tx, ctx.tenant).await?;
         let mut records = Vec::new();
         let mut asked: Vec<&String> = Vec::new();
         for e in &o.records {
@@ -635,6 +639,7 @@ impl Kernel {
             messages,
             channels,
             documents,
+            connections,
         };
         pack.requires.packages = requirements(ctx, &pack, &role_packages, &installed);
         let out = serde_json::to_value(&pack).map_err(Error::internal)?;
@@ -968,6 +973,11 @@ impl Kernel {
         for c in &pack.channels {
             let status = crate::messages::install_channel(self, tx, ctx, c).await.map_err(|e| about(&format!("channel {}", c.name), e))?;
             summary.entry("channels").or_default().add(c.name.clone(), status);
+        }
+        for c in &pack.connections {
+            let status =
+                crate::connections::install(self, tx, ctx, c, &format!("pack:{}", pack.name)).await.map_err(|e| about(&format!("connection {}", c.name), e))?;
+            summary.entry("connections").or_default().add(c.name.clone(), status);
         }
         for sec in &pack.records {
             let section = summary.entry("records").or_default();

@@ -963,6 +963,7 @@ impl Kernel {
             return Err(Error::field("secrets", "at most 20, each named as an input is, of at most 16 KB"));
         }
         let id = id.unwrap_or_else(Uuid::now_v7);
+        let source = self.packaged_connections(ctx).into_iter().find(|(_, c)| c.name == input.name).map(|(p, _)| format!("package:{p}"));
         let sealed = match &input.secrets {
             Some(s) => {
                 let key = self
@@ -976,7 +977,7 @@ impl Kernel {
         };
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let n = sqlx::query(
-            "insert into conn (tenant_id, id, name, label, description, sealed, enabled) values ($1, $2, $3, $4, $5, $6, $7) \
+            "insert into conn (tenant_id, id, name, label, description, sealed, enabled, source) values ($1, $2, $3, $4, $5, $6, $7, $8) \
              on conflict (tenant_id, id) do update set name = excluded.name, label = excluded.label, description = excluded.description, \
              sealed = coalesce(excluded.sealed, conn.sealed), enabled = excluded.enabled, updated_at = now()",
         )
@@ -987,6 +988,7 @@ impl Kernel {
         .bind(serde_json::to_value(&input.description).map_err(Error::internal)?)
         .bind(sealed)
         .bind(input.enabled)
+        .bind(source)
         .execute(&mut *tx)
         .await;
         match n {
@@ -1035,6 +1037,13 @@ impl Kernel {
             let account = self.workspace_account(ctx.tenant, id).await?;
             out.push(json!({"id": id, "name": name, "label": label, "description": description, "enabled": enabled, "secrets": names, "account": account,
                             "source": source, "refused": refused, "debug_until": debug_until, "inbound": format!("/api/connections/inbound/{id}")}));
+        }
+        // What packages offer and the workspace has not taken up: turned off, without an id until it is saved.
+        for (package, c) in self.packaged_connections(ctx) {
+            if !out.iter().any(|o| o["name"] == c.name) {
+                out.push(json!({"id": null, "name": c.name, "label": c.label, "description": c.description, "enabled": false, "secrets": [],
+                                "source": format!("package:{package}"), "offered": true}));
+            }
         }
         Ok(out)
     }
@@ -1132,6 +1141,70 @@ impl Kernel {
         n += sqlx::query("delete from conn_signin where expires_at < now()").execute(&mut *tx).await?.rows_affected();
         tx.commit().await?;
         Ok(n)
+    }
+}
+
+// ── packs and packages ──
+
+/// A connection as a pack or a package carries it: its description, never a secret or a token.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackConnection {
+    pub name: String,
+    pub label: String,
+    pub description: Description,
+}
+
+/// The workspace's connections, for a pack.
+pub(crate) async fn for_pack(tx: &mut Tx, tenant: Uuid) -> Result<Vec<PackConnection>> {
+    let rows: Vec<(String, String, Value)> =
+        sqlx::query_as("select name, label, description from conn where tenant_id = $1 order by name").bind(tenant).fetch_all(&mut **tx).await?;
+    Ok(rows.into_iter().filter_map(|(name, label, d)| Some(PackConnection { name, label, description: serde_json::from_value(d).ok()? })).collect())
+}
+
+/// Installs a pack's connection, by name, turned off: one of the name here is left as it is.
+pub(crate) async fn install(k: &Kernel, tx: &mut Tx, ctx: &Ctx, c: &PackConnection, source: &str) -> Result<&'static str> {
+    admin_only(ctx)?;
+    let here: bool =
+        sqlx::query_scalar("select exists (select 1 from conn where tenant_id = $1 and name = $2)").bind(ctx.tenant).bind(&c.name).fetch_one(&mut **tx).await?;
+    if here {
+        return Ok("unchanged");
+    }
+    if !is_name(&c.name) || c.label.trim().is_empty() || c.label.chars().count() > 100 {
+        return Err(Error::field("name", "a name of lower case letters, digits and _, and a label of at most 100 characters"));
+    }
+    if let Some(p) = k.description_problem(&ctx.schema, &c.description) {
+        return Err(Error::field("description", p));
+    }
+    let id = Uuid::now_v7();
+    sqlx::query("insert into conn (tenant_id, id, name, label, description, enabled, source) values ($1, $2, $3, $4, $5, false, $6)")
+        .bind(ctx.tenant)
+        .bind(id)
+        .bind(&c.name)
+        .bind(c.label.trim())
+        .bind(serde_json::to_value(&c.description).map_err(Error::internal)?)
+        .bind(source)
+        .execute(&mut **tx)
+        .await?;
+    k.after_save(tx, ctx.tenant, id, &c.description).await?;
+    Ok("created")
+}
+
+impl Kernel {
+    /// The connections the workspace's packages describe: `(package, connection)`. One that does not read as a
+    /// connection is left out (and said in the log).
+    fn packaged_connections(&self, ctx: &Ctx) -> Vec<(String, PackConnection)> {
+        let mut out = Vec::new();
+        for name in &ctx.schema.packages {
+            let Some(p) = self.registry.catalog().package(name).cloned() else { continue };
+            for v in &p.manifest.connections {
+                match serde_json::from_value::<PackConnection>(v.clone()) {
+                    Ok(c) => out.push((name.clone(), c)),
+                    Err(e) => tracing::warn!(package = %name, "a connection it describes does not read: {e}"),
+                }
+            }
+        }
+        out
     }
 }
 

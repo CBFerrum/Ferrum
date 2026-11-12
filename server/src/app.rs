@@ -209,6 +209,12 @@ impl Hooks for App {
             hooks,
             KernelSettings {
                 webhooks_allow_private: settings.webhooks_allow_private,
+                connection_hosts: std::env::var("FERRUM_CONNECTION_HOSTS")
+                    .unwrap_or_default()
+                    .split(',')
+                    .map(|h| h.trim().to_ascii_lowercase())
+                    .filter(|h| !h.is_empty())
+                    .collect(),
                 sso_allow_private: settings.sso_allow_private,
                 secret_key: Some(secret_key),
                 retired_secret_keys: retired,
@@ -489,6 +495,7 @@ impl Hooks for App {
             .add_route(controllers::jobs::routes())
             .add_route(controllers::connect::routes())
             .add_route(controllers::documents::routes())
+            .add_route(controllers::connections::routes())
             .add_route(controllers::messages::routes())
             .add_route(controllers::apps::routes())
             .add_route(controllers::compat::routes())
