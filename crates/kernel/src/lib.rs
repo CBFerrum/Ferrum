@@ -50,6 +50,7 @@ pub mod pack;
 pub mod passkey;
 mod pdf;
 pub mod plans;
+pub mod portal_signup;
 pub mod prefs;
 pub mod print;
 pub mod privacy;

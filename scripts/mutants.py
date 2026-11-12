@@ -101,6 +101,7 @@ RECOVERY = ("-p", "ferrum-kernel", "--test", "recovery_it")
 KMS = ("-p", "ferrum-kernel", "--test", "kms_it")
 SAGA = ("-p", "ferrum-kernel", "--test", "saga_it")
 SIGNUP = ("-p", "ferrum-kernel", "--test", "signup_it")
+PORTAL_SIGNUP = ("-p", "ferrum-kernel", "--test", "portal_signup_it")
 ACCEPTANCE = ("-p", "ferrum-ops", "--test", "acceptance_it")
 INDUSTRIAL = ("-p", "ferrum-apps", "--lib", "industrial::tests")
 MANIFEST_UNIT = ("-p", "ferrum-apps", "--lib", "manifest::tests")
@@ -750,6 +751,9 @@ MUTANTS = [
     ("effect-refusal-unplaced", "crates/kernel/src/actions.rs", "            .map_err(|e| automation::at_effect(i, &what, e))?;", "            ?;", EFFECTS),
     ("opt-out-outlives-erasure", "crates/kernel/src/messages.rs", "        \"delete from contact_consent where tenant_id = $1", "        \"delete from contact_consent where false and tenant_id = $1", MESSAGES_API),
     ("describe-approvals-to-anyone", "crates/kernel/src/describe.rs", "        if !ctx.is_admin && ctx.perms.access(&ent.def.name, action) == Access::None {", "        if false {", DOCUMENT_APPROVALS),
+    ("portal-signup-without-limit", "crates/kernel/src/portal_signup.rs", "        if theirs >= PER_ADDRESS_HOUR || here >= PER_NETWORK_HOUR {", "        if false {", PORTAL_SIGNUP),
+    ("portal-signup-from-any-domain", "crates/kernel/src/portal_signup.rs", "        if !setting.domains.is_empty() && !setting.domains.iter().any(|d| d == domain) {", "        if false {", PORTAL_SIGNUP),
+    ("portal-signup-without-the-code", "crates/kernel/src/portal_signup.rs", "    if code_hash(id, code) != hash {", "    if false {", PORTAL_SIGNUP),
     # Documents about a query (docs/api.md, A report as a document; BD-21).
     ("query-documents-person-unbounded", "crates/kernel/src/documents.rs", "    if person && total > MAX_GROUPS {", "    if false {", STUDIO_QUERY_DOCUMENTS),
     ("query-documents-cursor-ignored", "crates/kernel/src/documents.rs", "filter(|(id, _)| after.is_none_or(|a| *id > a))", "filter(|_| true)", STUDIO_QUERY_DOCUMENTS),

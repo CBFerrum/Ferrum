@@ -9,6 +9,7 @@ use axum::Json;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use ferrum_kernel::portal_signup::PortalSignup;
 use ferrum_kernel::retention::RetentionInput;
 use ferrum_kernel::support::GrantInput;
 use ferrum_kernel::{Ctx, Error, Kernel};
@@ -213,6 +214,12 @@ struct Portal {
 /// Marks a role for the portal or not (docs/builder/decisions.md BD-02).
 async fn set_role_portal(Auth(ctx): Auth, State(app): State<AppContext>, Path(role): Path<String>, Json(p): Json<Portal>) -> ApiResult<Response> {
     app_state(&app)?.kernel.set_role_portal(&ctx, role.trim(), p.portal).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// `PUT /api/admin/roles/{role}/signup {domains?, passes?}` turns a portal role's public sign-up on; `null` turns it off.
+async fn set_role_signup(Auth(ctx): Auth, State(app): State<AppContext>, Path(role): Path<String>, Json(s): Json<Option<PortalSignup>>) -> ApiResult<Response> {
+    app_state(&app)?.kernel.set_portal_signup(&ctx, role.trim(), s.as_ref()).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -930,6 +937,7 @@ pub fn routes() -> Routes {
         .add("/admin/roles", get(list_roles))
         .add("/admin/roles/{role}/permissions", put(set_permission))
         .add("/admin/roles/{role}/portal", put(set_role_portal))
+        .add("/admin/roles/{role}/signup", put(set_role_signup))
         .add("/admin/personal-data", get(personal_data))
         .add("/admin/personal-data/erase", post(erase_personal_data))
         .add("/admin/packages", get(list_packages).post(install))
