@@ -1197,6 +1197,27 @@ effects read as `results[n]`: a `message` attaches it with `"attachments": ["res
 tx, ctx, &Generate { template, record, name, language, replace, values })` in their own transaction, or
 `Kernel::generate_document(ctx, &Generate)` outside one; the caller must be able to read the record.
 
+**A report as a document.** A template with `query: {"report": "<a saved report's label>", "group_by"?: "<a column
+that links to a record>"}` (its `entity` the report's; no record's default) renders the report's rows: bodies read
+`rows`, `columns`, `group` (the record of the group, its secret fields left out; null without `group_by`), `values`,
+`settings`, `language`, `currencies` and `now`, and compute their totals (`rows|total('amount')`). Checked when saved
+against the report's columns (it is run once to learn them) and the grouped entity. `POST /api/documents/{key}/query
+{params?: {filters, from, to}, values?, language?}` → one file for the whole result (as `render` serves one; a file of
+data needs export permission and is on the audit trail), or with `group_by` `{files: [what generate gives], next:
+null}`, a file kept on each record (the template's earlier one there replaced). The rows are read as the caller may
+(the report path's rights); more than 10,000 rows, or rows for more than 100 records, is refused with the numbers. The
+`report_documents` effect makes the grouped files as the workspace and, with `message`, sends each record its own:
+
+```json
+{"type": "report_documents", "template": "finance.statement", "params": {"from": "2026-10-01", "to": "2026-10-31"},
+ "message": {"template": "finance.statement_mail", "to": "field:email", "channels": ["email"]}}
+```
+
+It queues a job (`platform.document.groups`) in the run's transaction and gives `{job}`; each job does 100 records and
+queues the next after the last record it did, so a run over more is done in turns, never cut. `message.to` takes the
+`message` effect's specs against each record (no `expr:`); the message template is about the grouped entity. Apps call
+`Kernel::render_query_document` / `generate_query_documents` with a `QueryRun {template, params, values, language}`.
+
 **Handing a document to signing.** What `generate` gives is what the Sign app takes: an `invoke` effect after it
 passes `results[0].file` (the stored file) and `results[0].sha256` (its digest, for the signing request to check the
 file it was given is the one generated), with the record's entity and id, to the Sign app's capability. That

@@ -10,7 +10,7 @@ use ferrum_kernel::pack::ExportOptions;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::{Catalog, DocumentDef};
-use ferrum_server::controllers::documents::{RenderQuery, preview_document, render_one};
+use ferrum_server::controllers::documents::{RenderQuery, preview_document, render_one, run_query};
 use ferrum_server::error::ApiError;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -89,6 +89,16 @@ async fn scenario() {
     let (status, _) =
         answer(render_one(&k, &admin, "notes.card", id, &RenderQuery { format: Some("doc".into()), ..Default::default() }).await.unwrap_err()).await;
     assert_eq!(status, 422);
+    // A record's template is no query's; a query's needs the analytics engine (not on this test's server).
+    let (status, body) = answer(run_query(&k, &admin, "notes.card", &Value::Null).await.unwrap_err()).await;
+    assert_eq!(status, 422, "{body}");
+    assert!(body.to_string().contains("is about one record, not a query"), "{body}");
+    let query: DocumentDef = serde_json::from_value(json!({"key": "x.rows", "entity": "Note", "output": "csv", "query": {"report": "Notes"},
+        "languages": {"en": {"body": "x"}}}))
+    .unwrap();
+    let (status, body) = answer(k.save_document_template(&admin, &query).await.map_err(ApiError).unwrap_err()).await;
+    assert_eq!(status, 422, "{body}");
+    assert!(body.to_string().contains("need the analytics engine"), "{body}");
 
     // A pack carries the edited template; installed elsewhere it is that workspace's edit.
     def.languages.get_mut("en").unwrap().body = "<h1>{{ doc.title }}</h1>".into();
