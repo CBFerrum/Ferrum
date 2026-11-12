@@ -97,6 +97,8 @@ pub enum Operation {
     Notify,
     /// An e-mail, queued with the outbox.
     Mail,
+    /// An operation of one of the workspace's connections (the kernel's `connections`).
+    Call,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

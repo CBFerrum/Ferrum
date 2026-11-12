@@ -413,7 +413,29 @@ fn platform_capabilities() -> Vec<Capability> {
     marketing.label = "Send a marketing e-mail".into();
     marketing.completion =
         "Queued in the outbox with this receipt, unless the person withdrew their consent to marketing; the mail server's delivery is not confirmed".into();
-    vec![notify, mail, marketing]
+    // A connection's operation (BD-28): an administrator's, as configuration is; the connection's own roles and apps are
+    // asked again as it runs. The effect key goes to the service as the call's key.
+    let call = capability(
+        "ferrum.call".into(),
+        version,
+        "ferrum",
+        None,
+        Operation::Call,
+        "Call an operation of a connection".into(),
+        Effect::ExternalEffect,
+        vec!["admin".into()],
+        object_schema(
+            Map::from_iter([
+                ("connection".into(), json!({"type": "string", "maxLength": 63})),
+                ("operation".into(), json!({"type": "string", "maxLength": 63})),
+                ("inputs".into(), json!({"type": "object"})),
+            ]),
+            vec!["connection".into(), "operation".into()],
+        ),
+        json!({"type": "object"}),
+        "The service answered; its mapped result is this receipt's",
+    );
+    vec![notify, mail, marketing, call]
 }
 
 impl Kernel {
@@ -535,7 +557,7 @@ impl Kernel {
         }
         cap.check_input(&inv.input)?;
         if !cap.effect.changes() {
-            let result = self.carry_out(ctx, tx, &cap, &inv.input).await?;
+            let result = self.carry_out(ctx, tx, &cap, &inv.input, None).await?;
             return Ok(Receipt { capability: cap.id, version: cap.version, effect_key: None, repeated: false, result, answered_once: None });
         }
         let Some(key) = inv.effect_key.as_deref().filter(|k| !k.trim().is_empty()) else {
@@ -573,7 +595,7 @@ impl Kernel {
         if !claimed {
             return self.repeat(ctx, tx, &cap, &inv.environment, key, &digest).await;
         }
-        let result = self.carry_out(ctx, tx, &cap, &inv.input).await?;
+        let result = self.carry_out(ctx, tx, &cap, &inv.input, Some(key)).await?;
         let record = result.get("id").and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok());
         sqlx::query(
             "update logic_effect set result = $5, record_entity = $6, record_id = $7 \
@@ -630,7 +652,7 @@ impl Kernel {
     }
 
     /// The owning app's operation, through the kernel path a person's request takes.
-    async fn carry_out(&self, ctx: &Ctx, tx: &mut Tx, cap: &Capability, input: &Value) -> Result<Value> {
+    async fn carry_out(&self, ctx: &Ctx, tx: &mut Tx, cap: &Capability, input: &Value, key: Option<&str>) -> Result<Value> {
         let entity = cap.entity.as_deref().unwrap_or_default();
         let id = || -> Result<Uuid> {
             input
@@ -703,6 +725,17 @@ impl Kernel {
                 let purpose = if cap.id == "ferrum.mail.marketing" { crate::retention::Purpose::Marketing } else { crate::retention::Purpose::Transactional };
                 self.queue_mail_for(tx, ctx.tenant, text("to"), text("subject"), &crate::outbox::text_html(text("body")), &[], purpose).await?;
                 json!({"queued": true})
+            }
+            Operation::Call => {
+                let text = |k: &str| input.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+                let c = crate::connections::Call {
+                    connection: text("connection"),
+                    operation: text("operation"),
+                    inputs: input.get("inputs").cloned().unwrap_or(Value::Null),
+                    key: key.map(str::to_string),
+                    ..Default::default()
+                };
+                self.call_connection(ctx, None, &c).await?
             }
         })
     }

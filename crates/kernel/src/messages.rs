@@ -16,6 +16,7 @@
 //!   there are, `contact_consent`), and quiet hours; operational ones always go. Rates are limited per workspace and
 //!   per recipient.
 
+use crate::connections::at;
 use crate::ctx::Ctx;
 use crate::db::Tx;
 use crate::error::{Error, Result};
@@ -37,8 +38,6 @@ use uuid::Uuid;
 pub const DELIVER_KIND: &str = "platform.message.deliver";
 /// Attempts at one text or chat-app message before it counts as failed.
 const DELIVERY_ATTEMPTS: i32 = 8;
-/// The statuses a provider answers that mean "try again later", when its description says none.
-const TEMPORARY: [u16; 7] = [408, 425, 429, 500, 502, 503, 504];
 /// Text and chat-app messages a workspace sends an hour, and one recipient gets, unless its settings say otherwise.
 const PER_HOUR: i64 = 500;
 const PER_RECIPIENT_HOUR: i64 = 10;
@@ -1277,15 +1276,6 @@ pub(crate) fn handler(kind: &str) -> Option<Arc<dyn JobHandler>> {
     (kind == DELIVER_KIND).then(|| Arc::new(Deliver) as Arc<dyn JobHandler>)
 }
 
-/// Where a JSON pointer leads in `v`, as text.
-fn at(v: &Value, pointer: Option<&str>) -> Option<String> {
-    match v.pointer(pointer?)? {
-        Value::String(s) => Some(s.clone()),
-        Value::Null => None,
-        other => Some(other.to_string()),
-    }
-}
-
 impl Kernel {
     async fn settle(&self, tenant: Uuid, id: Uuid, state: &str, provider: Option<&str>, error: Option<&str>, content: Option<Value>) -> Result<()> {
         let mut tx = self.db.system_tenant_tx(tenant).await?;
@@ -1370,28 +1360,29 @@ impl Kernel {
         let vars = json!({"to": to, "text": message["text"], "template_name": message["template_name"], "values": message["values"],
                           "from": desc.from, "secret": secrets, "language": pending["language"]});
         let r = |s: &str| render(s, false, &vars, false);
+        // The described call goes through the connections' guard (BD-28): the address checked hop by hop, a time and size limit.
         let outcome = async {
-            let url = r(&desc.url)?;
-            let (client, parsed) = self.vetted_client(&url, self.settings.webhooks_allow_private, Duration::from_secs(20), "Ferrum-Messages/1").await?;
+            let url = reqwest::Url::parse(&r(&desc.url)?).map_err(|_| Error::invalid("the channel's address is not an address"))?;
             let method = reqwest::Method::from_bytes(desc.method.as_deref().unwrap_or("POST").as_bytes()).map_err(Error::internal)?;
-            let mut req = client.request(method, parsed);
-            for (h, v) in &desc.headers {
-                req = req.header(h.as_str(), r(v)?);
-            }
-            if let Some(b) = &desc.body {
+            let headers = desc.headers.iter().map(|(h, v)| Ok((h.clone(), r(v)?))).collect::<Result<Vec<_>>>()?;
+            let body = if let Some(b) = &desc.body {
                 let body: Value = serde_json::from_str(&r(b)?).map_err(|e| Error::invalid(format!("the channel's body is not JSON: {e}")))?;
-                req = req.json(&body);
+                Some((body.to_string().into_bytes(), "application/json"))
             } else if !desc.form.is_empty() {
-                let form = desc.form.iter().map(|(k, v)| Ok((k.clone(), r(v)?))).collect::<Result<Vec<_>>>()?;
-                req = req.form(&form);
-            }
-            let res = req.send().await.map_err(|e| Error::Unavailable(format!("the provider did not answer: {e}")))?;
-            let status = res.status().as_u16();
-            let text = res.text().await.unwrap_or_default();
-            Ok::<_, Error>((status, serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text))))
+                let mut f = reqwest::Url::parse("http://form/").map_err(Error::internal)?;
+                for (k, v) in &desc.form {
+                    f.query_pairs_mut().append_pair(k, &r(v)?);
+                }
+                Some((f.query().unwrap_or_default().as_bytes().to_vec(), "application/x-www-form-urlencoded"))
+            } else {
+                None
+            };
+            let reach = crate::connections::Reach { hosts: vec![], timeout: Duration::from_secs(20), max_bytes: 1 << 20 };
+            let a = self.fetch(crate::connections::Request { method, url, headers, body }, &reach).await?;
+            Ok::<_, Error>((a.status, a.body))
         }
         .await;
-        let temporary = desc.temporary.clone().unwrap_or_else(|| TEMPORARY.to_vec());
+        let temporary = desc.temporary.clone().unwrap_or_else(|| crate::connections::TEMPORARY.to_vec());
         let last = job.attempts >= job.max_attempts;
         match outcome {
             Ok((status, answer)) if (200..300).contains(&status) => {
