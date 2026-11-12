@@ -415,6 +415,32 @@ impl Kernel {
                     .await?
                     .rows_affected();
             }
+            // A pending approval's secret action parameters (BD-34), each sealed apart.
+            let waiting: Vec<(Uuid, Uuid, serde_json::Value)> =
+                sqlx::query_as("select tenant_id, id, sealed from approval_request where status = 'pending' and sealed is not null and sealed <> '{}'::jsonb")
+                    .fetch_all(&mut *tx)
+                    .await?;
+            for (tenant, id, sealed) in waiting {
+                let mut now = sealed.clone();
+                let mut any = false;
+                for (name, value) in now.as_object_mut().into_iter().flatten() {
+                    let Some(old) = value.as_str() else { continue };
+                    if let Some(new) = self.moved(&crate::approvals::sealed_label(tenant, id, name), old, &mut done.unopened)? {
+                        *value = serde_json::Value::String(new);
+                        any = true;
+                    }
+                }
+                if any {
+                    done.moved += sqlx::query("update approval_request set sealed = $3 where tenant_id = $1 and id = $2 and sealed = $4")
+                        .bind(tenant)
+                        .bind(id)
+                        .bind(&now)
+                        .bind(&sealed)
+                        .execute(&mut *tx)
+                        .await?
+                        .rows_affected();
+                }
+            }
             let server: Vec<(String, String)> = sqlx::query_as("select name, sealed from server_key").fetch_all(&mut *tx).await?;
             for (name, sealed) in server {
                 let Some(new) = self.moved(crate::webpush::VAPID_LABEL, &sealed, &mut done.unopened)? else { continue };

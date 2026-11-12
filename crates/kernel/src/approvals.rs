@@ -141,7 +141,7 @@ fn satisfied(step: &Step, of: &[&Decision], requester: Uuid, allow_requester: bo
 }
 
 /// What binds a request's sealed parameter `name` to it.
-fn sealed_label(tenant: Uuid, request: Uuid, name: &str) -> String {
+pub(crate) fn sealed_label(tenant: Uuid, request: Uuid, name: &str) -> String {
     format!("{tenant}/approval/{request}/{name}")
 }
 
