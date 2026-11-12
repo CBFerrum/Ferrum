@@ -3,12 +3,12 @@
 components:
   - {repository: CBFerrum/Ferrum-Frontend, pinned: 6d4c321058c29eb7d233e9b549018476dd646cca}
   - {repository: CBFerrum/ferrum-app-assets, pinned: 3081bd73a54ad6c62038720a4c7875a85f8d3a1a}
-  - {repository: CBFerrum/ferrum-app-bookings, pinned: 88b2152f0fe10a9093774cd9fcdd6ab08804aa4a}
+  - {repository: CBFerrum/ferrum-app-bookings, pinned: 5158cba4a22c7545f82e03ac7594c7f5d0775a46}
   - {repository: CBFerrum/ferrum-app-campaigns, pinned: eb160a961e4b7259e24de488a6928ac546b1462a}
   - {repository: CBFerrum/ferrum-app-commerce, pinned: f1c88308b17349d55703430a56456f6ce3a64e99}
   - {repository: CBFerrum/ferrum-app-comms, pinned: 5f0e382047e9a8e4bbccf0c9bc836d173543b7c9}
   - {repository: CBFerrum/ferrum-app-construction, pinned: b61041e1c2aef482a8afd890f5ebbf1c565aa8b5}
-  - {repository: CBFerrum/ferrum-app-contracts, pinned: 30f0c94376115c4aaf33bffaf6ee868bf6bc1ae5}
+  - {repository: CBFerrum/ferrum-app-contracts, pinned: 113d868f4c8ceffd85e5a3bb75cd882ef736aaa0}
   - {repository: CBFerrum/ferrum-app-control, pinned: ab7c97e568944d9e319dd53a5a6be70a087f15ee}
   - {repository: CBFerrum/ferrum-app-crm, pinned: 3fb60fb151ebf41343b0798f2c3e562f8ca0ddd6}
   - {repository: CBFerrum/ferrum-app-dam, pinned: 4f83f84d275b195ab3d9ee9bb475147f5898c4b5}
@@ -39,6 +39,6 @@ components:
   - {repository: CBFerrum/ferrum-app-property, pinned: 5bf0e49090587faf008218087b8c895eb9699e1f}
   - {repository: CBFerrum/ferrum-app-restaurant, pinned: d7c2f67713748175f66f4423074f1f1d29efa72f}
   - {repository: CBFerrum/ferrum-app-retail, pinned: b99f1ca3acef74ef79de1b4d4ff42011e9e24335}
-  - {repository: CBFerrum/ferrum-app-sign, pinned: 3a1c1db558cd9a68f06bb48d66554d2695cef885}
+  - {repository: CBFerrum/ferrum-app-sign, pinned: c958c246dd98375fa468a18bdec33698aac58308}
   - {repository: CBFerrum/ferrum-app-social, pinned: ccfb3af76085fde7c896e57fa41967b83e2feb9d}
   - {repository: CBFerrum/ferrum-app-website, pinned: d79b5728743672e8cf55e657e144048de175d7d5}
