@@ -285,7 +285,12 @@ rules and the app's validation; the answer is the document as it is with `_appro
 checked again and the app's hooks run as theirs. Refused then, nothing is submitted and the request's `status` is
 `failed` with `failure` saying why (history `approval:failed`). `on_reject` and `not_who_took` are refused here (no
 states, no transitions); `system_bypass` lets the system go ahead without asking. `GET
-/api/customize/definition/{Entity}` returns them as `approvals: {submit, cancel}`.
+/api/customize/definition/{Entity}` returns them as `approvals: {submit, cancel}`, and what the packages declare (a
+package workflow's transitions) as `package_approvals: [{on, policy, source: "package", package}]`; for a package's
+entity, which has no definition to replace, it answers `{entity, package, approvals: [those]}`. `GET /api/meta/{Entity}`
+says to whoever may submit or cancel whether each asks for approval first: `approvals: {"submit": {"asks": true,
+"steps": ["Manager"]}, "cancel": {"asks": false, "steps": []}}` (the steps' labels, no approver named; an action the
+caller may not take is left out).
 
 ## Collaboration (any record the caller can read)
 
