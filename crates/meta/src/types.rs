@@ -863,8 +863,8 @@ pub struct ActionRefusal {
 pub struct ActionParam {
     pub name: String,
     pub label: String,
-    /// `data` (one line), `text` (several lines), `select` (one of `options`), `int`, `date`, or
-    /// `link` (a record of `to`).
+    /// `data` (one line), `text` (several lines), `select` (one of `options`), `int`, `date`, `check` (yes or no,
+    /// shown as a tick), or `link` (a record of `to`).
     #[serde(rename = "type", default = "default_param_type")]
     pub ptype: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -238,10 +238,73 @@ async fn scenario() {
     assert_eq!(text(file), "Ann|2.25;10.5;|12.75");
     drop(tx);
 
+    // ───────────── a button that asks for the period; one document per linked record ─────────────
+    let doc: DocumentDef =
+        serde_json::from_value(json!({"key": "x.charge_note", "entity": "XCharge", "output": "text", "languages": {"en": {"body": "{{ doc.amount }}"}}}))
+            .unwrap();
+    k.save_document_template(&a, &doc).await.expect("a document per charge");
+    let button = |name: &str, effects: Value| OverlayOp::AddAction {
+        action: serde_json::from_value(json!({"name": name, "label": name, "params": [
+            {"name": "from", "label": "From", "type": "date"}, {"name": "to", "label": "To", "type": "date"}, {"name": "all", "label": "All", "type": "check"}],
+            "effects": effects}))
+        .unwrap(),
+    };
+    k.add_customization(
+        &a,
+        "XCustomer",
+        button(
+            "x_statements_for",
+            json!([{"type": "report_documents", "template": "x.statement", "params": {"filters": []},
+            "params_from": {"from": "params.from", "to": "params.to"}}]),
+        ),
+        None,
+    )
+    .await
+    .expect("the period asked for");
+    k.add_customization(
+        &a,
+        "XCustomer",
+        button(
+            "x_notes",
+            json!([{"type": "for_each", "entity": "XCharge", "link": "customer", "effects": [
+            {"type": "generate", "template": "x.charge_note", "record": "item.id"}]}]),
+        ),
+        None,
+    )
+    .await
+    .expect("a document per charge of the customer");
+    let a = admin().await;
+    let ann_id: Uuid = ann["id"].as_str().unwrap().parse().unwrap();
+    k.run_action(&a, "XCustomer", ann_id, "x_statements_for", json!({"from": "2026-01-01", "to": "2026-03-31", "all": true})).await.expect("queued");
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let run: Value = sqlx::query_scalar("select payload->'run'->'params' from job where kind = 'platform.document.groups' order by created_at desc limit 1")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    drop(tx);
+    assert_eq!(run, json!({"filters": [], "from": "2026-01-01", "to": "2026-03-31"}));
+    let made = k.run_action(&a, "XCustomer", ann_id, "x_notes", json!({})).await.expect("made");
+    let notes: Vec<String> = {
+        let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+        let ids: Vec<Uuid> =
+            sqlx::query_scalar("select id from file_object where document = 'x.charge_note' order by created_at").fetch_all(&mut *tx).await.unwrap();
+        ids.into_iter().map(text).collect()
+    };
+    assert_eq!(notes.len(), 2, "{made}");
+    assert!(notes.contains(&"10.5".to_string()) && notes.contains(&"2.25".to_string()), "{notes:?}");
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let bobs = k.find_tx(&a, &mut tx, "XCharge", &[ferrum_kernel::query::Filter::eq("customer", bob["id"].as_str().unwrap())], None, 1).await.unwrap();
+    drop(tx);
+    let bad = json!([{"type": "generate", "template": "x.charge_note", "record": format!("'{}'", bobs[0]["id"].as_str().unwrap())}]);
+    k.add_customization(&a, "XCustomer", button("x_bad", bad), None).await.expect("saved: what it names is known when it runs");
+    let a = admin().await;
+    let e = k.run_action(&a, "XCustomer", ann_id, "x_bad", json!({})).await.expect_err("not a record this run reaches");
+    assert!(e.to_string().contains("neither this record nor"), "{e}");
+
     // ───────────── a pack with the report and the documents about it installs in one go ─────────────
     let opts = ferrum_kernel::pack::ExportOptions { name: "statements".into(), label: "Statements".into(), version: 1, records: vec![] };
     let pack = k.export_pack(&a, &opts).await.expect("exported");
-    assert!(pack["documents"].as_array().is_some_and(|d| d.len() == 3), "{}", pack["documents"]);
+    assert!(pack["documents"].as_array().is_some_and(|d| d.len() == 4), "{}", pack["documents"]);
     let other = k
         .create_tenant(NewTenant {
             slug: "stmt2".into(),
