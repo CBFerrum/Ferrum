@@ -1150,7 +1150,9 @@ address unless the operator names the host in `FERRUM_CONNECTION_HOSTS` (which a
 | `PUT /api/admin/connections/{id}/debug` | `{minutes}` (0 to 60): the call log keeps the requests and answers, redacted, meanwhile |
 | `GET /api/admin/connections/{id}/log?limit=` | `{calls: [{at, operation, outcome, status, duration_ms, entity, record_id, error, debug}], received: [{delivery, received_at, state, error}]}` |
 | `GET /api/admin/connections/{id}/pulls` | `{pulls: [{name, cursor, last_run, next_run, last_error}]}` |
-| `POST /api/admin/connections/{id}/pulls/{name}` | pulls now → `202 {job}` |
+| `POST /api/admin/connections/{id}/pulls/{name}` | pulls now → `202 {job}` (a person's own connection: one for each person connected) |
+| `PATCH /api/admin/connections/{id}/secrets` | `{set: {name: value}, remove: [name]}`: the rest kept → `{secrets: [names]}`; audited by name |
+| `POST /api/admin/connections/{id}/session` | a session connection signs in now, afresh → `{status, account, expires_at}` |
 
 A pull answered "later" is tried again from where its cursor stood, with backoff, at most four attempts and only before
 its next run; a run that fails (or runs out of attempts) keeps `last_error` and tells the workspace's administrators
@@ -1190,14 +1192,47 @@ and configuration).
                     "set": {"title": "item.summary", "state": "item.status"}, "create": {"source": "'monitor'"}}}
 ```
 
-`verify` may instead be `{type: token, header, secret}`. `delivery_at` (a pointer) names the caller's id when it is in
+`verify` may instead be `{type: token, header, secret}`, or a signature without `timestamp_header` (over the raw
+body), saved only with `delivery_header` or `delivery_at`: then a delivery id or a body taken once is refused again
+([BD-49](builder/decisions.md#bd-49-inbound-without-a-timestamp)). `delivery_at` (a pointer) names the caller's id when it is in
 the body; without either, the digest of what was signed stands for it. `handler: "<app>"` (an app in `apps`, registered
 with `HookRegistry::add_inbound_handler`) takes the payload in place of `map`. Bodies up to `max_bytes` (256 KB, at most
 1 MB), JSON or a form.
 
 **Pulling**: `"pulls": [{"name": "orders", "operation": "list_orders", "every_minutes": 15, "items_at": "/data",
 "cursor": "token", "next_at": "/next", "cursor_input": "cursor", "max_pages": 5, "map": {…}}]` (`cursor: "time"` gives
-the moment the last run began).
+the moment the last run began). `next_at` is a pick (below): `{"header": "x-next-cursor"}`, or `{"link": "next"}`, whose
+address is asked as it is for the next page. On a connection each person signs in to (`owner: person`), a pull runs
+as each person connected, with their sign-in and rights; it stops when their sign-in needs reconnecting (until they
+connect again) or their account is closed. `GET …/pulls` gives each row's `user` (null: the workspace's).
+
+**Picks** ([BD-46](builder/decisions.md#bd-46-answers-beyond-a-json-body)): a `result` value, a mapping's value and
+`next_at` may be a pointer (a key not there reads as null) or `{"at": "/a"}`, `{"header": "Location"}`, `{"link":
+"next"}`, `{"expr": "answer.counts.likes + answer.counts.shares"}` (over `answer`, `headers`, `inputs`, `connection`;
+in a mapping over `payload`, `item`, `connection`), each with `"required": true` to fail the call or the item when it
+is null. In a mapping a plain string that is not a pointer is an expression, as before. From Rust, an object value in
+`Operation.result`, `form` or `body` is `connections::spec(&json!({…}))`. A temporary answer's `Retry-After` sets when
+a queued call or a pull's retry comes back (capped at an hour).
+
+**Files** ([BD-47](builder/decisions.md#bd-47-bodies-beyond-json)): `"form": {"caption": "{{ inputs.text }}", "media":
+{"file": "{{ inputs.photo }}", "max_bytes": 5000000}}` sends `multipart/form-data`; `"body": {"file": "{{ inputs.video
+}}"}` sends the file as the body with its type. The caller must be able to download the file; 10 MB a file unless
+said, 25 MB at most, 25 MB a request. `"result": {"label": {"file": {"from": "/label_url", "name": "label-{{ inputs.ref
+}}.pdf", "max_bytes": 2000000}}}` fetches the address the answer gives (the connection's hosts, no credentials), or
+without `from` keeps the answer itself, stores it as an upload attached to the call's record and gives its id.
+
+**Sessions** ([BD-48](builder/decisions.md#bd-48-sign-in-that-is-not-the-authorisation-code-flow)): `"auth": {"type":
+"session", "login": "create_session", "refresh": "refresh_session", "token_at": "/accessJwt", "refresh_at":
+"/refreshJwt", "expires_at": "/expiresIn", "header": "authorization", "prefix": "Bearer "}`, the two operations
+described like any other (`create_session`'s body from `secret.handle` and `secret.app_password`, `refresh_session`'s
+header `Bearer {{ inputs.refresh_token }}`); they are never called as operations. A refused login or refresh marks it
+needing reconnecting and tells the administrators once. On `auth: oauth`, `provider.dpop: true` binds tokens to the
+connection's own key (DPoP), and `provider.registration_url` without `client_id` registers the platform's client once.
+
+**Operating**: `meta` on a description is an object (16 KB at most) the platform keeps and gives back without reading.
+A mapping's `"outside": true` marks what it writes as fetched from outside: the change's events carry `origin:
+"outside"`, automations read `origin` (empty otherwise), hooks `ctx.origin`; an app's effect for new records that
+reaches people checks it ([BD-50](builder/decisions.md#bd-50-operating-a-connection)).
 
 **Signing in to an account**: `"auth": {"type": "oauth", "owner": "workspace" | "person", "provider": {…}}`, the
 redirect address registered at the provider being `{PUBLIC_URL}/api/connections/callback`. Two worked descriptions, with
@@ -1631,8 +1666,9 @@ CSS, to read. Saves, resets and default changes are audited (`DocumentTemplate/s
 workspace's defaults (`document_defaults`). `GET /api/version` says `print: 2`. A package that uses any of this
 (`layout_file`, `page`, `letterhead`, `copies`, `enabled`, a LetterHead or PrintSettings record in its seed) needs
 the app API version 0.3.3: its app says `platform: ">=0.3.3, <0.4"` (an older server refuses the fields it does not
-know). The app API is 0.3.4 now: what each version carries is in
-[BD-45](builder/decisions.md#bd-45-quorums-from-the-record-absent-parameters-targets-on-every-write-rendering-for-another-transport-and-the-app-api-034).
+know). The app API is 0.3.5 now: what each version carries is in
+[BD-45](builder/decisions.md#bd-45-quorums-from-the-record-absent-parameters-targets-on-every-write-rendering-for-another-transport-and-the-app-api-034)
+(0.3.4) and [BD-51](builder/decisions.md#bd-51-the-connector-hubs-instances-move-and-the-app-api-035) (0.3.5).
 
 ### Moving an app's print layout or file to a document template
 

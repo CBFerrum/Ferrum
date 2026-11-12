@@ -83,6 +83,7 @@ MESSAGES_UNIT = ("-p", "ferrum-kernel", "--lib", "messages::tests")
 CONNECTIONS = ("-p", "ferrum-kernel", "--test", "connections_it")
 CONNECTIONS_UNIT = ("-p", "ferrum-kernel", "--lib", "connections::")
 CONNECTIONS_API = ("-p", "ferrum-server", "--test", "connections_api_it")
+ROUTES = ("-p", "ferrum-server", "--test", "routes_it")
 DOCUMENTS = ("-p", "ferrum-kernel", "--test", "documents_it")
 STUDIO_QUERY_DOCUMENTS = ("-p", "ferrum-studio", "--test", "query_documents_it")
 DOCUMENTS_UNIT = ("-p", "ferrum-kernel", "--lib", "documents::tests")
@@ -132,6 +133,7 @@ DOCUMENTS_API = ("-p", "ferrum-server", "--test", "documents_api_it")
 AUTOMATION_UNIT = ("-p", "ferrum-kernel", "--lib", "automation::tests")
 REQUEST_LOG_UNIT = ("-p", "ferrum-server", "--lib", "request_log::tests")
 RULE_HIDE = ("-p", "ferrum-kernel", "--test", "rule_hide_it")
+PACKAGED_RULES = ("-p", "ferrum-kernel", "--test", "packaged_rules_it")
 APP_CALLS = ("-p", "ferrum-kernel", "--test", "app_calls_it")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
@@ -152,7 +154,7 @@ MUTANTS = [
     ('conn-path-steered', 'crates/kernel/src/connections/mod.rs', 'out.write_str(&pct(&text))', 'out.write_str(&text)', CONNECTIONS_UNIT),
     ('conn-capture-shows-credentials', 'crates/kernel/src/connections/mod.rs', 'if hidden(h) { json!(HIDDEN) }', 'if false { json!(HIDDEN) }', CONNECTIONS),
     # BD-30: an inbound call is verified, fresh and new, or refused alike.
-    ('inbound-unsigned-accepted', 'crates/kernel/src/connections/inbound.rs', 'if !signed(&secret, &[ts.trim().as_bytes(), b".", body], &given, *encoding) {', 'if false {', CONNECTIONS_UNIT),
+    ('inbound-unsigned-accepted', 'crates/kernel/src/connections/inbound.rs', 'if !signed(&secret, &[&what], &given, *encoding) {', 'if false {', CONNECTIONS_UNIT),
     ('inbound-stale-accepted', 'crates/kernel/src/connections/inbound.rs', 'if (now - when).abs() > window_secs.unwrap_or(DEFAULT_WINDOW_SECS) {', 'if false {', CONNECTIONS_UNIT),
     ('inbound-token-unchecked', 'crates/kernel/src/connections/inbound.rs', 'if !crate::messages::subtle_eq(given.as_bytes(), secret.as_bytes()) {', 'if false {', CONNECTIONS_UNIT),
     ('inbound-replay-accepted', 'crates/kernel/src/connections/inbound.rs', '        if !fresh {', '        if false {', CONNECTIONS),
@@ -853,8 +855,8 @@ MUTANTS = [
     ("erasure-leaves-sign-ins-unrevoked", "crates/kernel/src/privacy.rs", "Some(id) if !conns.sign_ins.is_empty() => self.revoke_erased(ctx, id, conns.sign_ins).await,", "Some(_) if false => vec![],", CONNECTIONS),
     ("connection-capture-encoded-missed", "crates/kernel/src/connections/personal.rs", " or strpos(t, replace(e, '@', '%40')) > 0))", "))", CONNECTIONS),
     ("restore-revives-connections", "crates/kernel/src/privacy.rs", "let conns = crate::connections::personal::erase_held(tx, tenant, account, &addresses, &records).await?;", "let conns = crate::connections::personal::Erased::default();", CONNECTIONS),
-    ("pull-later-not-retried", "crates/kernel/src/connections/pull.rs", "        let retry = later\n", "        let retry = false\n", CONNECTIONS),
-    ("pull-failure-told-every-run", "crates/kernel/src/connections/pull.rs", "        if failed && !told {", "        if failed {", CONNECTIONS),
+    ("pull-later-not-retried", "crates/kernel/src/connections/pull.rs", "        let retry = later &&", "        let retry = false &&", CONNECTIONS),
+    ("pull-failure-told-every-run", "crates/kernel/src/connections/pull.rs", "        if failed && !told && !lapsed {", "        if failed && !lapsed {", CONNECTIONS),
     ("generated-html-untyped", "crates/kernel/src/documents.rs", "    let stored_type = content_type;", "    let stored_type = String::from(\"application/octet-stream\");", DOCUMENTS_API),
     ("file-html-inline", "server/src/controllers/system.rs", "    let how = if inline && !runs { \"inline\" } else { \"attachment\" };", "    let how = if inline { \"inline\" } else { \"attachment\" };", DOCUMENTS_API),
     ("link-opened-every-post", "crates/kernel/src/action_link.rs", "where tenant_id = $1 and id = $2 and opened_at is null\")", "where tenant_id = $1 and id = $2\")", ACTION_LINKS),
@@ -874,7 +876,10 @@ MUTANTS = [
     ("hidden-shown-by-whole-rule-ignored", "crates/kernel/src/ctx.rs", "e.hidden.iter().filter(|f| whole_shows(e, f) || every.as_ref().is_some_and(|w| whole_shows(w, f))).cloned().collect();", "Vec::new();", RULE_HIDE),
     ("hidden-field-written", "crates/kernel/src/doc.rs", "if !trusted && ctx.perms.hidden(&ent.def.name).is_some_and(|h| h.contains(k)) {", "if false {", RULE_HIDE),
     ("hide-reach-field-allowed", "crates/meta/src/types.rs", "if self.condition.contains_key(name) || via_head.as_deref() == Some(name.as_str()) {", "if false {", RULE_HIDE),
-    ("packaged-rule-not-updated", "crates/kernel/src/tenant.rs", "hide = case when role_permission.packaged or (role_permission.packaged is null and role_permission.hide = '{}') then excluded.hide", "hide = case when false then excluded.hide", RULE_HIDE),
+    ("packaged-rule-not-updated", "crates/kernel/src/tenant.rs", "hide = case when role_permission.packaged and role_permission.package = excluded.package then excluded.hide", "hide = case when false then excluded.hide", RULE_HIDE),
+    # BD-40 corrected: a packaged rule row follows the package that wrote it, and no other.
+    ("packaged-rule-any-package", "crates/kernel/src/tenant.rs", "can_create = case when role_permission.packaged and role_permission.package = excluded.package then excluded.can_create", "can_create = case when role_permission.packaged then excluded.can_create", PACKAGED_RULES),
+    ("packaged-rule-unrecorded", "crates/kernel/src/tenant.rs", "                    .bind(&p.hide)\n                    .bind(name)", "                    .bind(&p.hide)\n                    .bind(None::<String>)", PACKAGED_RULES),
     ("admin-rule-overwritten", "crates/kernel/src/auth.rs", "shared = excluded.shared, hide = excluded.hide, packaged = false", "shared = excluded.shared, hide = excluded.hide, packaged = true", RULE_HIDE),
     # BD-41: a target counts on the record's calendar and from its start, worked out again once on a change.
     ("target-start-field-ignored", "crates/logic/src/target.rs", "let from = start.filter(|s| *s < now).unwrap_or(now);", "let from = now;", LOGIC_UNIT),
@@ -901,6 +906,35 @@ MUTANTS = [
     ("quorum-follows-record", "crates/kernel/src/approvals.rs", "ApprovalNeed::Expr(_) => (steps[i].asked.unwrap_or(1).max(1) as usize).min(who.len().max(1)),", "ApprovalNeed::Expr(_) => 1,", APPROVALS),
     ("engine-write-skips-targets", "crates/kernel/src/doc.rs", "        store::set_values(tx, &ent, ctx.tenant, id, &normalized).await?;\n        self.follow_targets(ctx, tx, &ent, id).await", "        store::set_values(tx, &ent, ctx.tenant, id, &normalized).await", TARGETS),
     ("render-ignores-opt-out", "crates/kernel/src/messages.rs", "    } else if promotional && k.opted_out(tx, ctx.tenant, channel, &address).await? {", "    } else if false {", MESSAGES),
+    # BD-46: answers beyond a JSON body.
+    ("conn-required-ignored", "crates/kernel/src/connections/mod.rs", "            if p.required && v.is_null() {\n                return Err(Error::invalid(format!(\"the answer has no {name}\")));", "            if false && v.is_null() {\n                return Err(Error::invalid(format!(\"the answer has no {name}\")));", CONNECTIONS),
+    ("map-required-ignored", "crates/kernel/src/connections/inbound.rs", "                if p.required && v.is_null() {", "                if false && v.is_null() {", CONNECTIONS),
+    ("retry-after-ignored", "crates/kernel/src/jobs.rs", "Error::RetryAfter(_, secs) => *secs as f64,", "Error::RetryAfter(_, _) => backoff(job.attempts),", CONNECTIONS),
+    ("retry-after-uncapped", "crates/kernel/src/connections/mod.rs", "    Some(secs.clamp(1, MAX_RETRY_AFTER))", "    Some(secs.max(1))", CONNECTIONS_UNIT),
+    ("answer-expr-reads-secrets", "crates/kernel/src/connections/mod.rs", "let vars = [(\"answer\", &a.body), (\"headers\", &headers), (\"inputs\", inputs), (\"connection\", &connection)];", "let secret = json!(conn.secrets);\n        let vars = [(\"answer\", &a.body), (\"headers\", &headers), (\"inputs\", inputs), (\"connection\", &connection), (\"secret\", &secret)];", CONNECTIONS),
+    # BD-47: files sent are the caller's to read and within the operation's limit; files an answer names are fetched within the connection's hosts.
+    ("sent-file-any-reader", "crates/kernel/src/connections/mod.rs", "let info = self.file_info(ctx, id).await.map_err(", "let info = self.file_info(&Ctx::system(ctx.tenant, ctx.schema.clone()), id).await.map_err(", CONNECTIONS),
+    ("sent-file-uncapped", "crates/kernel/src/connections/mod.rs", "let cap = part.max_bytes.unwrap_or(DEFAULT_FILE_BYTES).min(*budget);", "let cap = MAX_FILE_BYTES;", CONNECTIONS),
+    ("answer-file-off-hosts", "crates/kernel/src/connections/mod.rs", "let reach = Reach { max_bytes: cap, ..conn.reach() };", "let reach = Reach { max_bytes: cap, hosts: vec![], ..conn.reach() };", CONNECTIONS),
+    ("answer-file-uncapped", "crates/kernel/src/connections/mod.rs", "let cap = f.max_bytes.unwrap_or(DEFAULT_FILE_BYTES);", "let cap = MAX_FILE_BYTES;", CONNECTIONS),
+    ("form-part-header-injected", "crates/kernel/src/connections/mod.rs", "let quoted = |s: &str| s.replace('\"', \"%22\").replace('\\r', \"%0D\").replace('\\n', \"%0A\");", "let quoted = |s: &str| s.to_string();", CONNECTIONS_UNIT),
+    # BD-48: a session's login is never called as an operation nor tried on every call; DPoP proofs and a client registered once.
+    ("session-login-callable", "crates/kernel/src/connections/mod.rs", "        if conn.desc.signs_in_with(&c.operation) {", "        if false {", CONNECTIONS),
+    ("session-login-hammered", "crates/kernel/src/connections/oauth.rs", "                self.needs_reconnecting(&mut tx, conn, Uuid::nil()).await?;\n                tx.commit().await?;\n                Err(Error::invalid(format!(\"{} needs reconnecting: the service refused", "                let _ = &mut tx;\n                tx.commit().await?;\n                Err(Error::invalid(format!(\"{} needs reconnecting: the service refused", CONNECTIONS),
+    ("dpop-unbound", "crates/kernel/src/connections/mod.rs", "                if provider.dpop {", "                if false {", CONNECTIONS),
+    ("dpop-without-token-digest", "crates/kernel/src/connections/oauth.rs", "        if let Some(t) = token {\n            claims[\"ath\"]", "        if let Some(t) = token.filter(|_| false) {\n            claims[\"ath\"]", CONNECTIONS),
+    ("client-registered-twice", "crates/kernel/src/connections/oauth.rs", "        if !held.get(REGISTERED_ID).is_some_and(|v| !v.is_empty()) {", "        if true {", CONNECTIONS),
+    # BD-49: a body signed without a timestamp is taken once, and only with a delivery id.
+    ("inbound-untimed-body-twice", "crates/kernel/src/connections/inbound.rs", ".bind(untimed.then(|| hex::encode(Sha256::digest(body))))", ".bind(None::<String>)", CONNECTIONS),
+    ("inbound-untimed-without-delivery", "crates/kernel/src/connections/inbound.rs", "if timestamp_header.is_none() && self.delivery_header.is_none() && self.delivery_at.is_none() {", "if false {", CONNECTIONS_UNIT),
+    # BD-50: operating a connection.
+    ("secrets-merged-by-anyone", "crates/kernel/src/connections/mod.rs", "        admin_only(ctx)?;\n        if set.keys().chain(remove)", "        if set.keys().chain(remove)", CONNECTIONS),
+    ("meta-unbounded", "crates/kernel/src/connections/mod.rs", "if self.meta.as_ref().is_some_and(|m| !m.is_object() || m.to_string().len() > MAX_META) {", "if false {", CONNECTIONS),
+    ("person-pull-as-system", "crates/kernel/src/connections/pull.rs", "self.load_ctx(tenant, user, None, format!(\"pull-{}\", job.id)).await?", "Ctx::system(tenant, self.registry.schema(tenant).await?)", CONNECTIONS),
+    ("person-pull-after-closing", "crates/kernel/src/connections/pull.rs", "                _ => Some(\"delete from conn_pull where tenant_id = $1 and conn_id = $2 and user_id = $3\"),", "                _ => None,", CONNECTIONS),
+    ("pulled-record-not-outside", "crates/kernel/src/connections/inbound.rs", "outside = Ctx { origin: Some(\"outside\".into()), ..ctx.clone() };", "outside = ctx.clone();", CONNECTIONS),
+    # The whole router builds: no path and method mounted twice.
+    ("hub-on-connections-path", "server/src/controllers/connect.rs", ".add(\"/admin/connector-instances\", get(list).post(create))", ".add(\"/admin/connections\", get(list).post(create))", ROUTES),
 
 ]
 
