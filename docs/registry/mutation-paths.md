@@ -27,16 +27,16 @@ progress after a lesson changes.
   its parameters) before its handler runs, so what an action's handler then writes directly is
   under that entry.
 
-## The 151 statements, by kind
+## The 157 statements, by kind
 
 | Kind | How many | What keeps them right |
 |---|---|---|
-| Engine work: delivery and send statuses, counts, queues, upkeep (expiry, overdue, closing) | 88 | Consequences of work the app does, like the kernel's own `set_values_tx`: values the app computes, no person's input; not audited one by one, as derived values are not |
-| Consequence of an audited document operation (a hook of submit, cancel, save or an action) | 39 | The operation that runs the hook is on the record |
-| A person's action on a public link: opens and clicks, subscribe, confirm, unsubscribe, viewing a shared file | 13 | The record they change carries its evidence (the consent's source and time, the link's views) |
+| Engine work: delivery and send statuses, counts, queues, upkeep (expiry, overdue, closing) | 94 | Consequences of work the app does, like the kernel's own `set_values_tx`: values the app computes, no person's input; not audited one by one, as derived values are not |
+| Consequence of an audited document operation (a hook of submit, cancel, save or an action) | 41 | The operation that runs the hook is on the record |
+| A person's action on a public link: opens and clicks, subscribe, confirm, unsubscribe, viewing a shared file | 14 | The record they change carries its evidence (the consent's source and time, the link's views) |
 | Records its own audit or activity entry | 8 | Drive's activity log ("Link Created", "Link Revoked", "Shared With Guest", "Share Expired", "Delete"), Edge's and MES's audit entries |
 
-By app: Campaigns 43, Drive 23, Comms 18, ERP 11, POS 10, CRM 8, Commerce 6, Projects 6, HR 5, LMS 5, Edge 4, Helpdesk 3, Itsm 3, Objectives 2,
+By app: Campaigns 43, Drive 23, Comms 18, ERP 11, POS 10, CRM 8, Commerce 6, Live 6, Projects 6, HR 5, LMS 5, Edge 4, Helpdesk 3, Itsm 3, Objectives 2,
 and one each in Bookings, DAM, Field Service and Forms.
 
 ## Findings
@@ -193,6 +193,12 @@ and one each in Bookings, DAM, Field Service and Forms.
 | itsm | `src/defaults.rs:117` | `update e_it_change` | `ensure_board` | engine work: statuses, counts, queues, upkeep |
 | itsm | `src/defaults.rs:123` | `update e_configuration_item` | `ensure_board` | engine work: statuses, counts, queues, upkeep |
 | itsm | `src/defaults.rs:128` | `update e_configuration_item__relations` | `ensure_board` | engine work: statuses, counts, queues, upkeep |
+| live | `src/links.rs:99` | `update e_broadcast_link` | `revoke_all` | consequence of an audited document operation (hook) |
+| live | `src/links.rs:110` | `update e_broadcast_link` | `take` | a person's action on a public link (tracking, consent, viewing) |
+| live | `src/links.rs:127` | `update e_broadcast_link` | `action` | consequence of an audited document operation (hook) |
+| live | `src/session.rs:139` | `update e_broadcast` | `watch` | engine work: statuses, counts, queues, upkeep |
+| live | `src/session.rs:201` | `update e_broadcast` | `present` | engine work: statuses, counts, queues, upkeep |
+| live | `src/upkeep.rs:104` | `delete from e_broadcast_link` | `retain` | engine work: statuses, counts, queues, upkeep |
 | lms | `src/catalog.rs:316` | `update e_lms_course` | `refresh_course_stats` | consequence of an audited document operation (hook) |
 | lms | `src/certificate.rs:164` | `update e_lms_certificate` | `expire_all` | engine work: statuses, counts, queues, upkeep |
 | lms | `src/enrollment.rs:444` | `update e_lms_enrollment` | `refresh_course` | consequence of an audited document operation (hook) |
