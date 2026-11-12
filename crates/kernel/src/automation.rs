@@ -1072,8 +1072,10 @@ async fn run_one(
     };
     // A transition's event says which, from and to, and by whom (BD-19); null for any other.
     let transition = ev.payload.get("transition").cloned().unwrap_or(Value::Null);
+    // Where the change came from (`outside`: a record a connection fetched, BD-50); empty for any other.
+    let came_from = ev.payload.get("origin").cloned().unwrap_or_else(|| Value::String(String::new()));
     let pass = match condition {
-        Some(c) => matches!(eval(c, cel_doc, cel_old, &user, &[("links", &links), ("transition", &transition)])?, Value::Bool(true)),
+        Some(c) => matches!(eval(c, cel_doc, cel_old, &user, &[("links", &links), ("transition", &transition), ("origin", &came_from)])?, Value::Bool(true)),
         _ => true,
     };
     let status = if pass {
@@ -1092,7 +1094,7 @@ async fn run_one(
                     record,
                     (raw, cel_doc),
                     &user,
-                    &[("results", &done), ("links", &links), ("transition", &transition)],
+                    &[("results", &done), ("links", &links), ("transition", &transition), ("origin", &came_from)],
                     &format!("{origin}{i}"),
                     action,
                 )

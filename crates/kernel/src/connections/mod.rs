@@ -113,7 +113,14 @@ pub struct Description {
     /// Schedules that pull from it (BD-31).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pulls: Vec<pull::Pull>,
+    /// What its author keeps with it (an app's record of what the service can do): an object, kept and given back,
+    /// never read by the platform; at most [`MAX_META`] bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Value>,
 }
+
+/// The most a description's `meta` holds, as JSON.
+const MAX_META: usize = 16 << 10;
 
 /// How a call proves who makes it. Each `secret` names one of the connection's sealed values.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -513,6 +520,9 @@ impl Description {
         }
         if self.max_bytes.is_some_and(|b| b == 0 || b > MAX_BYTES) {
             return Some(format!("max_bytes is 1 to {MAX_BYTES}"));
+        }
+        if self.meta.as_ref().is_some_and(|m| !m.is_object() || m.to_string().len() > MAX_META) {
+            return Some(format!("meta is an object of at most {MAX_META} bytes"));
         }
         if self.roles.iter().chain(&self.apps).any(|r| r.trim().is_empty()) {
             return Some("roles and apps are names".into());
@@ -1588,6 +1598,32 @@ impl Kernel {
             self.forget_session(ctx, id).await?;
         }
         Ok(id)
+    }
+
+    /// Sets or replaces the secrets named in `set` and removes those in `remove`, keeping the rest
+    /// (`PATCH /api/admin/connections/{id}/secrets`); the audit trail names them, never their values. The names the
+    /// connection now has.
+    pub async fn merge_connection_secrets(&self, ctx: &Ctx, id: Uuid, set: &BTreeMap<String, String>, remove: &[String]) -> Result<Vec<String>> {
+        admin_only(ctx)?;
+        if set.keys().chain(remove).any(|n| !is_name(n)) || set.values().any(|v| v.len() > crate::secret::MAX_SECRET) {
+            return Err(Error::field("secrets", "each named as an input is, of at most 16 KB"));
+        }
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let held = lock_secrets(&mut tx, self, ctx.tenant, id).await?;
+        let now = store_secrets(&mut tx, self, ctx.tenant, id, held, set.clone(), remove).await?;
+        let names: Vec<String> = now.into_keys().filter(|n| !kept_by_platform(n)).collect();
+        if names.len() > 20 {
+            return Err(Error::field("secrets", "at most 20"));
+        }
+        let description: Value =
+            sqlx::query_scalar("select description from conn where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).fetch_one(&mut *tx).await?;
+        audit::record(&mut tx, ctx, "Connection", id, "secrets", None, json!({"set": set.keys().collect::<Vec<_>>(), "removed": remove})).await?;
+        tx.commit().await?;
+        // A session signs in again with its secrets changed.
+        if description["auth"]["type"] == "session" {
+            self.forget_session(ctx, id).await?;
+        }
+        Ok(names)
     }
 
     /// What is wrong with a description, its mappings read against the workspace's entities.
