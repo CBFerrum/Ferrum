@@ -1435,6 +1435,10 @@ impl Kernel {
         check_required(ent, doc, &view, None, old_view.as_ref(), &user, &mut errors, &[]);
         self.validate_rows(ctx, tx, ent, doc, &view, on, &mut errors, &[]).await?;
         self.check_links(ctx, tx, ent, doc, &mut errors, &[]).await?;
+        // A letter head's header and footer are layouts (BD-28): checked as a format's are.
+        if ent.def.name == "LetterHead" && ent.package == "core" {
+            errors.extend(crate::documents::letter_head_problems(&ctx.schema, doc));
+        }
         let rules: Vec<_> = ent.exprs.rules.iter().filter(|(rule, _)| rule.on == RuleOn::Save || rule.on == on).collect();
         let links = crate::links::load(self, ctx, tx, ent, &view, &crate::links::used(rules.iter().map(|(_, e)| e))).await?;
         for (rule, expr) in rules {

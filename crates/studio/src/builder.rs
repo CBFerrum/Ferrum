@@ -1175,12 +1175,27 @@ async fn report_data(k: &Kernel, ctx: &Ctx, doc: &Doc, rt: &Runtime) -> Result<V
     Ok(data)
 }
 
-/// The saved report labelled `label`, as `ctx` may open it, found in `tx`.
+/// The one saved report labelled `label` that `ctx` may open, found in `tx`; one it may not open is answered as one
+/// that is not there. A list row carries no `roles` rows, so those are read here before sharing is judged.
 pub(crate) async fn report_labelled(k: &Kernel, tx: &mut ferrum_kernel::Tx, ctx: &Ctx, label: &str) -> Result<Doc> {
     let found = k.find_tx(&system(ctx), tx, REPORT, &[ferrum_kernel::query::Filter::eq("label", label)], None, 2).await?;
     match found.as_slice() {
-        [one] if visible(ctx, REPORT, one) => Ok(one.clone()),
-        [_] | [] => Err(Error::field("query", format!("there is no report {label}"))),
+        [one] => {
+            let mut doc = one.clone();
+            if let (Some(table), Some(id)) =
+                (ctx.schema.entity(REPORT).and_then(|e| e.children.get("roles")).map(|c| c.table.clone()), doc.get("id").and_then(Value::as_str))
+            {
+                let roles: Vec<String> =
+                    sqlx::query_scalar(AssertSqlSafe(format!("select \"role\" from {} where tenant_id = $1 and parent_id = $2::uuid", q(&table))))
+                        .bind(ctx.tenant)
+                        .bind(id)
+                        .fetch_all(&mut **tx)
+                        .await?;
+                doc.insert("roles".into(), roles.into_iter().map(|r| json!({"role": r})).collect());
+            }
+            if visible(ctx, REPORT, &doc) { Ok(doc) } else { Err(Error::field("query", format!("there is no report {label}"))) }
+        }
+        [] => Err(Error::field("query", format!("there is no report {label}"))),
         _ => Err(Error::field("query", format!("more than one report is called {label}: name one by a label of its own"))),
     }
 }

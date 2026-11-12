@@ -130,7 +130,7 @@ TIMEOUT = 600
 
 # name, file, text to replace, what breaks it, test
 MUTANTS = [
-    # BD-28: a connection reaches only public addresses on its own hosts, within its limits, once per key, for whom it says.
+    # BD-29: a connection reaches only public addresses on its own hosts, within its limits, once per key, for whom it says.
     ('conn-private-address-called', 'crates/kernel/src/connections/mod.rs', 'if !open && addrs.iter().any(|a| blocked(a.ip())) {', 'if false && addrs.iter().any(|a| blocked(a.ip())) {', CONNECTIONS),
     ('conn-blocked-ranges-shrunk', 'crates/kernel/src/connections/mod.rs', 'if crate::outbox::is_private(ip) {\n        return true;\n    }', 'if crate::outbox::is_private(ip) {\n        return false;\n    }', CONNECTIONS_UNIT),
     ('conn-other-host-reached', 'crates/kernel/src/connections/mod.rs', 'if !reach.hosts.is_empty() && !reach.hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {', 'if false && !reach.hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {', CONNECTIONS),
@@ -143,15 +143,15 @@ MUTANTS = [
     ('conn-anyone-may-use', 'crates/kernel/src/connections/mod.rs', 'None => ctx.is_system || ctx.is_admin || desc.roles', 'None => true || desc.roles', CONNECTIONS),
     ('conn-path-steered', 'crates/kernel/src/connections/mod.rs', 'out.write_str(&pct(&text))', 'out.write_str(&text)', CONNECTIONS_UNIT),
     ('conn-capture-shows-credentials', 'crates/kernel/src/connections/mod.rs', 'if hidden(h) { json!(HIDDEN) }', 'if false { json!(HIDDEN) }', CONNECTIONS),
-    # BD-29: an inbound call is verified, fresh and new, or refused alike.
+    # BD-30: an inbound call is verified, fresh and new, or refused alike.
     ('inbound-unsigned-accepted', 'crates/kernel/src/connections/inbound.rs', 'if !signed(&secret, &[ts.trim().as_bytes(), b".", body], &given, *encoding) {', 'if false {', CONNECTIONS_UNIT),
     ('inbound-stale-accepted', 'crates/kernel/src/connections/inbound.rs', 'if (now - when).abs() > window_secs.unwrap_or(DEFAULT_WINDOW_SECS) {', 'if false {', CONNECTIONS_UNIT),
     ('inbound-token-unchecked', 'crates/kernel/src/connections/inbound.rs', 'if !crate::messages::subtle_eq(given.as_bytes(), secret.as_bytes()) {', 'if false {', CONNECTIONS_UNIT),
     ('inbound-replay-accepted', 'crates/kernel/src/connections/inbound.rs', '        if !fresh {', '        if false {', CONNECTIONS),
-    # BD-30: a pull keeps its place and its bound.
+    # BD-31: a pull keeps its place and its bound.
     ('pull-cursor-forgotten', 'crates/kernel/src/connections/pull.rs', '(Cursor::Token, Some(n)) => Some(n.clone()),', '(Cursor::Token, Some(_)) => None,', CONNECTIONS),
     ('pull-unbounded', 'crates/kernel/src/connections/pull.rs', 'while pages < pull.max_pages.unwrap_or(DEFAULT_PAGES) {', 'while pages < 100 {', CONNECTIONS),
-    # BD-31: a sign-in is the person's, in their session, once; the workspace's account an administrator's.
+    # BD-32: a sign-in is the person's, in their session, once; the workspace's account an administrator's.
     ('oauth-any-session', 'crates/kernel/src/connections/oauth.rs', 'if user != ctx.user || started_in != session || expires < Utc::now() {', 'if user != ctx.user || expires < Utc::now() {', CONNECTIONS),
     ('oauth-any-person', 'crates/kernel/src/connections/oauth.rs', 'if user != ctx.user || started_in != session || expires < Utc::now() {', 'if started_in != session || expires < Utc::now() {', CONNECTIONS),
     ('oauth-state-reused', 'crates/kernel/src/connections/oauth.rs', '"delete from conn_signin where state_digest = $1 and tenant_id = $2 returning conn_id, user_id, owner_id, session_id, verifier, expires_at",', '"select conn_id, user_id, owner_id, session_id, verifier, expires_at from conn_signin where state_digest = $1 and tenant_id = $2",', CONNECTIONS),

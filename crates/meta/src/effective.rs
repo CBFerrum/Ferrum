@@ -272,9 +272,28 @@ pub struct Schema {
     pub messages: Vec<MessageDef>,
     /// The installed packages' document templates, as they ship them (BD-21).
     pub documents: Vec<DocumentDef>,
+    /// Each installed package's direct dependencies (its manifest's `depends`): which package's default document wins.
+    pub package_depends: BTreeMap<String, Vec<String>>,
 }
 
 impl Schema {
+    /// Whether package `a` depends on package `b`, directly or through others.
+    pub fn package_depends_on(&self, a: &str, b: &str) -> bool {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut todo = vec![a];
+        while let Some(p) = todo.pop() {
+            for d in self.package_depends.get(p).into_iter().flatten() {
+                if d == b {
+                    return true;
+                }
+                if seen.insert(d.as_str()) {
+                    todo.push(d);
+                }
+            }
+        }
+        false
+    }
+
     /// What the schema gives a workspace, without who defines it: equal before and after
     /// entities or fields move between packages if nothing a workspace sees or stores changes
     /// (`ferrum task deps_report schema:…`). Roles are merged by name, as installing them does.
@@ -328,6 +347,7 @@ impl Default for Schema {
             published_lists: vec![],
             messages: vec![],
             documents: vec![],
+            package_depends: BTreeMap::new(),
         }
     }
 }
@@ -793,6 +813,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
     let mut merge_links = Vec::new();
     let mut messages = Vec::new();
     let mut documents = Vec::new();
+    let mut package_depends = BTreeMap::new();
     let mut warnings = Vec::new();
 
     for pkg in catalog.packages().filter(|p| set.contains(p.name())) {
@@ -812,6 +833,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         merge_links.extend(pkg.manifest.merge_links.iter().cloned());
         messages.extend(pkg.manifest.messages.iter().cloned());
         documents.extend(pkg.manifest.documents.iter().cloned());
+        package_depends.insert(pkg.name().to_string(), pkg.manifest.depends.clone());
         if pkg.manifest.personal_data.is_empty() {
             undeclared_personal_data.push(pkg.manifest.package.clone());
         }
@@ -1221,6 +1243,7 @@ pub fn build(catalog: &Catalog, installed: &[String], tenant: &[Overlay], versio
         published_lists,
         messages,
         documents,
+        package_depends,
     };
     // What expressions read as `settings` is there (BD-17); otherwise it is said, and a customization saying it refused.
     let wrong: Vec<SchemaWarning> = schema

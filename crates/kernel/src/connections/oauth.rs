@@ -1,4 +1,4 @@
-//! A person authorises an account (BD-31): a sign-in broker for connections that act for a person, or for the
+//! A person authorises an account (BD-32): a sign-in broker for connections that act for a person, or for the
 //! workspace's own account, at a provider. The provider is a description (its addresses, scopes, client, how it names
 //! the account); the flow is the authorisation code flow with PKCE, its state bound to the person and their browser
 //! session and used once, the redirect address the platform's own and exact. Tokens are sealed, refreshed before they

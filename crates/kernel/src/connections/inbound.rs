@@ -1,4 +1,4 @@
-//! Being called (BD-29): an inbound address per connection (`POST /api/connections/inbound/{id}`). The caller is
+//! Being called (BD-30): an inbound address per connection (`POST /api/connections/inbound/{id}`). The caller is
 //! verified as the connection describes (a signature over the raw body with a timestamp, or a secret both sides hold),
 //! a replay is refused, and what is accepted is recorded once and processed once by a job: mapped to "find a record of
 //! this entity by this key and change it, or make it", or handed to an app registered for the connection.

@@ -1,7 +1,7 @@
 package: core
-version: 0.2.0
+version: 0.3.0
 label: Core
-description: What every app needs — companies, currencies with their exchange rates, units.
+description: What every app needs — companies, currencies with their exchange rates, units, letter heads and print settings.
 
 # The platform's own wording for people outside the workspace (docs/builder/decisions.md BD-22, BD-23): a workspace
 # edits each like any message template.

@@ -1,4 +1,4 @@
-//! Pulling (BD-30): a schedule on a connection that calls one of its operations with a cursor kept between runs (an
+//! Pulling (BD-31): a schedule on a connection that calls one of its operations with a cursor kept between runs (an
 //! opaque token from the last answer, or the moment the last run began), pages through what comes back up to a bound
 //! per run, and maps each item as an inbound call is mapped. A page's records and the cursor past it commit together:
 //! a run that stops half-way starts again at the page it did not finish, and mapping a page again changes nothing new.

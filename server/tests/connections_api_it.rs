@@ -1,4 +1,4 @@
-//! Connections over HTTP and in packs (BD-28 to BD-32), against a real PostgreSQL (`FERRUM_TEST_DATABASE_URL`, reset
+//! Connections over HTTP and in packs (BD-29 to BD-33), against a real PostgreSQL (`FERRUM_TEST_DATABASE_URL`, reset
 //! first): the inbound address on the server's own handler (accepted once, every refusal the same 401), the callback
 //! page (a state not started here goes nowhere), a package's connection offered turned off, and a pack carrying a
 //! connection's description but never its secret, installed turned off.

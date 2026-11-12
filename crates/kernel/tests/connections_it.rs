@@ -1,4 +1,4 @@
-//! Connections (crates/kernel/src/connections, BD-28 to BD-32) against a real PostgreSQL (`FERRUM_TEST_DATABASE_URL`;
+//! Connections (crates/kernel/src/connections, BD-29 to BD-33) against a real PostgreSQL (`FERRUM_TEST_DATABASE_URL`;
 //! the database is reset first) and a stand-in service on 127.0.0.1, the one host the operator names. Every guard is
 //! tried: addresses that are not public, schemes, redirects, time and size limits, retries only for "later", one call
 //! per key, who may use a connection, and secrets resting nowhere, with the debug capture on.

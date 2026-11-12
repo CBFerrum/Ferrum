@@ -189,7 +189,7 @@ pub enum AutomationAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key: Option<String>,
     },
-    /// An operation of a connection (BD-28): `inputs` its inputs as expressions, `key` the call's key as an expression.
+    /// An operation of a connection (BD-29): `inputs` its inputs as expressions, `key` the call's key as an expression.
     /// Without `key`, the run's own: the same run on the same record version calls once. Inline, it gives the operation's
     /// mapped result to later effects (`results[i]`), and a service that refuses refuses the run. With `queue`, it is
     /// called after the run commits, retried while the service says "later", and gives `{queued}` (the job).
