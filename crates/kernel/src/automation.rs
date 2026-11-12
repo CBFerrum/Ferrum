@@ -13,7 +13,7 @@ use crate::{Doc, Kernel};
 use ferrum_meta::{Expr, Scope};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 pub const MAX_DEPTH: u8 = 3;
@@ -643,6 +643,9 @@ pub(crate) fn check_targets(schema: &ferrum_meta::Schema, entity: &str, actions:
                 if let Some(m) = to.iter().filter_map(|t| t.strip_prefix("links:")).find_map(|p| crate::messages::lines_problem(schema, ent, p)) {
                     return Err(at(m));
                 }
+                if let Some(f) = to.iter().filter_map(|t| t.strip_prefix("field:")).find(|f| ent.field(f).is_none()) {
+                    return Err(at(format!("message.to: {} has no field {f}", ent.def.label)));
+                }
                 continue;
             }
             AutomationAction::Generate { .. } | AutomationAction::Invoke { .. } | AutomationAction::ReportDocuments { .. } => continue,
@@ -653,6 +656,33 @@ pub(crate) fn check_targets(schema: &ferrum_meta::Schema, entity: &str, actions:
         }
     }
     Ok(())
+}
+
+/// The message and document templates there are in the workspace: its packages' and its own.
+pub(crate) async fn known_templates(tx: &mut crate::db::Tx, tenant: Uuid, schema: &ferrum_meta::Schema) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
+    let mut messages: BTreeSet<String> = schema.messages.iter().map(|m| m.key.clone()).collect();
+    let mut documents: BTreeSet<String> = schema.documents.iter().map(|d| d.key.clone()).collect();
+    messages.extend(sqlx::query_scalar::<_, String>("select key from message_template where tenant_id = $1").bind(tenant).fetch_all(&mut **tx).await?);
+    documents.extend(sqlx::query_scalar::<_, String>("select key from document_template where tenant_id = $1").bind(tenant).fetch_all(&mut **tx).await?);
+    Ok((messages, documents))
+}
+
+/// The first template `step` (a loop's own effects too) names that is not among `known` (messages, documents).
+pub(crate) fn unknown_template(step: &Step, (messages, documents): &(BTreeSet<String>, BTreeSet<String>)) -> Option<String> {
+    every(std::slice::from_ref(step)).find_map(|a| {
+        let (message, document) = match a {
+            AutomationAction::Message { template, .. } => (Some(template), None),
+            AutomationAction::Notify { message, .. } | AutomationAction::Email { message, .. } => (message.as_ref(), None),
+            AutomationAction::Generate { template, .. } => (None, Some(template)),
+            AutomationAction::ReportDocuments { template, message, .. } => (message.as_ref().map(|m| &m.template), Some(template)),
+            _ => (None, None),
+        };
+        match (message.filter(|m| !messages.contains(*m)), document.filter(|d| !documents.contains(*d))) {
+            (Some(m), _) => Some(format!("there is no message template {m}")),
+            (_, Some(d)) => Some(format!("there is no document template {d}")),
+            _ => None,
+        }
+    })
 }
 
 /// A refusal that the capability is not in the catalog, said for whoever set the effect up.
@@ -1538,7 +1568,12 @@ pub(crate) async fn save_in(ctx: &Ctx, tx: &mut crate::db::Tx, input: &Map<Strin
         }
     }
     let actions = input.get("actions").cloned().unwrap_or(Value::Null);
-    check_targets(&ctx.schema, &entity, &validate_actions(&actions)?)?;
+    let steps = validate_actions(&actions)?;
+    check_targets(&ctx.schema, &entity, &steps)?;
+    let known = known_templates(tx, ctx.tenant, &ctx.schema).await?;
+    if let Some((i, m)) = steps.iter().enumerate().find_map(|(i, s)| unknown_template(s, &known).map(|m| (i, m))) {
+        return Err(Error::Validation(vec![FieldError::new("actions", m).in_row("actions", i)]));
+    }
     let id = input.get("id").and_then(Value::as_str).and_then(|s| s.parse().ok()).unwrap_or_else(Uuid::now_v7);
     let active = input.get("is_active").and_then(Value::as_bool).unwrap_or(true);
     if active {
