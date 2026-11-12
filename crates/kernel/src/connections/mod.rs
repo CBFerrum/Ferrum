@@ -336,6 +336,7 @@ impl Operation {
 /// An address no connection reaches unless the operator names its host: private, loopback, link-local (the cloud
 /// metadata addresses among them), shared, multicast, reserved, benchmarking, and v6 forms carrying one of them.
 pub(crate) fn blocked(ip: IpAddr) -> bool {
+    let ip = ip.to_canonical();
     if crate::outbox::is_private(ip) {
         return true;
     }
@@ -1275,6 +1276,7 @@ mod tests {
             "fe80::1",
             "fd00:ec2::254",
             "::ffff:10.0.0.1",
+            "::ffff:198.18.0.1",
             "64:ff9b::a9fe:a9fe",
             "::127.0.0.1",
             "ff02::1",

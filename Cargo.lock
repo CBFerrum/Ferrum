@@ -2511,7 +2511,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-bookings"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-bookings?branch=main#88b2152f0fe10a9093774cd9fcdd6ab08804aa4a"
+source = "git+https://github.com/CBFerrum/ferrum-app-bookings?branch=main#5158cba4a22c7545f82e03ac7594c7f5d0775a46"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2647,7 +2647,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-contracts"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-contracts?branch=main#30f0c94376115c4aaf33bffaf6ee868bf6bc1ae5"
+source = "git+https://github.com/CBFerrum/ferrum-app-contracts?branch=main#113d868f4c8ceffd85e5a3bb75cd882ef736aaa0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3241,7 +3241,7 @@ dependencies = [
 [[package]]
 name = "ferrum-app-sign"
 version = "0.1.0"
-source = "git+https://github.com/CBFerrum/ferrum-app-sign?branch=main#3a1c1db558cd9a68f06bb48d66554d2695cef885"
+source = "git+https://github.com/CBFerrum/ferrum-app-sign?branch=main#c958c246dd98375fa468a18bdec33698aac58308"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
