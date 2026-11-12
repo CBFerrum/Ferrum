@@ -301,10 +301,42 @@ async fn scenario() {
     let e = k.run_action(&a, "XCustomer", ann_id, "x_bad", json!({})).await.expect_err("not a record this run reaches");
     assert!(e.to_string().contains("neither this record nor"), "{e}");
 
+    // ───────────── a report shared with a role, in one pack; the document about it in a second ─────────────
+    // The report is read as the person who renders, by its label, with the roles it is shared with.
+    let pack_of = |extra: Value| {
+        let mut p = json!({"format": "ferrum.pack/1", "name": "tidy", "label": "Tidy", "version": 1});
+        p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        p
+    };
+    let first = pack_of(json!({"roles": [{"name": "Charge Clerk", "permissions": [{"entity": "XCharge", "read": true, "export": true}]},
+        {"name": "Charge Reader", "permissions": [{"entity": "XCharge", "read": true, "export": true}]}],
+        "studio": [{"entity": "Report", "name": "Clerk charges", "record": {"label": "Clerk charges", "kind": "table", "sharing": "roles",
+            "roles": [{"role": "Charge Clerk"}], "spec": {"entity": "XCharge", "fields": [{"field": "amount"}], "sort": [{"by": "amount"}]}}}]}));
+    let second = pack_of(json!({"documents": [{"key": "x.clerk", "label": "Clerk", "entity": "XCharge", "output": "text", "roles": ["Charge Clerk"],
+        "query": {"report": "Clerk charges"}, "languages": {"en": {"body": "{% for r in rows %}{{ r.amount }};{% endfor %}"}}},
+        {"key": "x.clerk_open", "label": "Clerk, for anyone", "entity": "XCharge", "output": "text",
+        "query": {"report": "Clerk charges"}, "languages": {"en": {"body": "{% for r in rows %}{{ r.amount }};{% endfor %}"}}}]}));
+    for pack in [&first, &second] {
+        let plan = k.plan_pack(&a, pack).await.expect("planned");
+        k.install_pack(&a, pack, plan["digest"].as_str().unwrap()).await.expect("installed, the second over the first's committed report");
+    }
+    let clerk = k.create_user(&a, "charges@stmt.test", "Clerk", Some("Correct-Horse-9"), &["Charge Clerk".to_string()], false).await.unwrap();
+    let clerk = k.load_ctx(tenant, clerk, None, "it".into()).await.unwrap();
+    // Someone who may export the charges but holds no role the report is shared with is told what a missing report says.
+    let reader = k.create_user(&a, "reader@stmt.test", "Reader", Some("Correct-Horse-9"), &["Charge Reader".to_string()], false).await.unwrap();
+    let reader = k.load_ctx(tenant, reader, None, "it".into()).await.unwrap();
+    let e = k.render_query_document(&reader, &QueryRun { template: "x.clerk_open".into(), ..Default::default() }).await.expect_err("not shared with them");
+    assert!(e.to_string().contains("there is no report Clerk charges"), "{e}");
+    k.render_query_document(&clerk, &QueryRun { template: "x.clerk_open".into(), ..Default::default() }).await.expect("their role is the report's");
+    let made = k.render_query_document(&clerk, &QueryRun { template: "x.clerk".into(), ..Default::default() }).await.expect("a report shared with their role");
+    let text = String::from_utf8(made.bytes).unwrap();
+    assert_eq!(text.matches(';').count(), MAX_GROUPS + 3, "every row, not the one the save looked at: {text}");
+    assert!(text.ends_with("2.25;7;10.5;99;"), "{text}");
+
     // ───────────── a pack with the report and the documents about it installs in one go ─────────────
     let opts = ferrum_kernel::pack::ExportOptions { name: "statements".into(), label: "Statements".into(), version: 1, records: vec![] };
     let pack = k.export_pack(&a, &opts).await.expect("exported");
-    assert!(pack["documents"].as_array().is_some_and(|d| d.len() == 4), "{}", pack["documents"]);
+    assert!(pack["documents"].as_array().is_some_and(|d| d.len() == 6), "{}", pack["documents"]);
     let other = k
         .create_tenant(NewTenant {
             slug: "stmt2".into(),

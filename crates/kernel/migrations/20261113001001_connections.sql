@@ -1,4 +1,4 @@
--- Connections to outside services (crates/kernel/src/connections, docs/builder/decisions.md BD-28 to BD-32): a
+-- Connections to outside services (crates/kernel/src/connections, docs/builder/decisions.md BD-29 to BD-33): a
 -- described HTTP service a workspace calls, is called by, pulls from and signs in to. No provider is named in code.
 
 -- A connection: its description (address, authentication, operations, inbound, pulls), its secrets sealed with the
@@ -22,7 +22,7 @@ create table conn (
   unique (tenant_id, name)
 );
 
--- Tokens a person's sign-in at a provider gave (BD-31): the workspace's account (`user_id` nil) or a person's own.
+-- Tokens a person's sign-in at a provider gave (BD-32): the workspace's account (`user_id` nil) or a person's own.
 -- `sealed` holds the access and refresh tokens, sealed; nothing reads them back out. `told` says the owner heard that
 -- it needs reconnecting, so they hear it once.
 create table conn_token (
@@ -93,7 +93,7 @@ create table conn_inbound (
   foreign key (tenant_id, conn_id) references conn (tenant_id, id) on delete cascade
 );
 
--- A pull's place between runs (BD-30).
+-- A pull's place between runs (BD-31).
 create table conn_pull (
   tenant_id uuid not null,
   conn_id uuid not null,

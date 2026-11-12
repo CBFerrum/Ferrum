@@ -413,7 +413,7 @@ fn platform_capabilities() -> Vec<Capability> {
     marketing.label = "Send a marketing e-mail".into();
     marketing.completion =
         "Queued in the outbox with this receipt, unless the person withdrew their consent to marketing; the mail server's delivery is not confirmed".into();
-    // A connection's operation (BD-28): an administrator's, as configuration is; the connection's own roles and apps are
+    // A connection's operation (BD-29): an administrator's, as configuration is; the connection's own roles and apps are
     // asked again as it runs. The effect key goes to the service as the call's key.
     let call = capability(
         "ferrum.call".into(),

@@ -41,8 +41,9 @@
     - {name: country_code, type: data, read_only: true, max_length: 2, label: Country Code, description: "ISO 3166-1 code, from the country"}
     - {name: tax_id, type: data, label: Tax ID}
     - {name: fy_start_month, type: int, default: 4, min: 1, max: 12, label: Fiscal Year Starts In (Month)}
+    - {name: letter_head, type: link, to: LetterHead, label: Letter Head, description: "What this company's documents print on"}
   form:
-    - {label: Company, fields: [company_name, abbr, default_currency, country, country_code, tax_id, fy_start_month]}
+    - {label: Company, fields: [company_name, abbr, default_currency, country, country_code, tax_id, fy_start_month, letter_head]}
     - {label: Policies, fields: [allow_negative_stock, rounding_mode, round_total_to, default_cost_center]}
     - {label: Default Accounts, collapsible: true, fields: [default_receivable_account, default_payable_account, default_income_account,
         default_expense_account, default_cash_account, default_bank_account, default_inventory_account, cogs_account, srbnb_account,

@@ -1,4 +1,4 @@
-//! Connections to outside services (docs/builder/decisions.md BD-28 to BD-32): one described HTTP service a workspace
+//! Connections to outside services (docs/builder/decisions.md BD-29 to BD-33): one described HTTP service a workspace
 //! calls, for apps, configuration and packs alike. No provider is named here: a provider is a description a workspace,
 //! a package or a pack supplies.
 //!
@@ -100,10 +100,10 @@ pub struct Description {
     pub apps: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub operations: BTreeMap<String, Operation>,
-    /// What it takes from outside, on its inbound address (BD-29).
+    /// What it takes from outside, on its inbound address (BD-30).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inbound: Option<inbound::Inbound>,
-    /// Schedules that pull from it (BD-30).
+    /// Schedules that pull from it (BD-31).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pulls: Vec<pull::Pull>,
 }
@@ -140,7 +140,7 @@ pub enum Auth {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         prefix: String,
     },
-    /// Tokens a person's sign-in at the provider gave (BD-31): the workspace's account, or each person's own.
+    /// Tokens a person's sign-in at the provider gave (BD-32): the workspace's account, or each person's own.
     Oauth {
         #[serde(default)]
         owner: oauth::Owner,

@@ -1360,7 +1360,7 @@ impl Kernel {
         let vars = json!({"to": to, "text": message["text"], "template_name": message["template_name"], "values": message["values"],
                           "from": desc.from, "secret": secrets, "language": pending["language"]});
         let r = |s: &str| render(s, false, &vars, false);
-        // The described call goes through the connections' guard (BD-28): the address checked hop by hop, a time and size limit.
+        // The described call goes through the connections' guard (BD-29): the address checked hop by hop, a time and size limit.
         let outcome = async {
             let url = reqwest::Url::parse(&r(&desc.url)?).map_err(|_| Error::invalid("the channel's address is not an address"))?;
             let method = reqwest::Method::from_bytes(desc.method.as_deref().unwrap_or("POST").as_bytes()).map_err(Error::internal)?;

@@ -1,4 +1,4 @@
-//! Connections to outside services (crates/kernel/src/connections, BD-28 to BD-32): administrators describe, test,
+//! Connections to outside services (crates/kernel/src/connections, BD-29 to BD-33): administrators describe, test,
 //! connect and read the log of each here, shaped for an authoring screen; services call in on an inbound address; a
 //! person connects their own account; the provider sends the browser back to one exact address.
 

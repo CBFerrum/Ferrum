@@ -805,7 +805,48 @@ no contract in the last 365 days (a passport, or a contract of two years ago, do
 **Rules out**: absence across more than one link; a period not tied to the run (a fiscal quarter); counting (fewer than
 N records) rather than absence.
 
-## BD-28. One described call, for everyone
+## BD-28. Print formats
+
+Decided 12 November 2026. Asked for by the owner ("print formats like ERPNext, so that people can design and customise
+their prints, like invoices"); designed in `tools/PRINT-FORMATS-SPEC.md` (decisions D1-D17 there). Built in the
+platform (`crates/meta/src/layout.rs`, `crates/kernel/src/layout.rs`, `crates/kernel/src/documents.rs`; the API in
+[api.md](../api.md#print-formats)) for a designer in the interface.
+
+* **A print format is a BD-21 page template, extended**, not a second mechanism: paper and margins, a letter head,
+  copy labels, `enabled`, `based_on`, and a second kind, the **layout** (sections, columns, blocks as JSON). Packages ship
+  standard formats; a workspace duplicates a package's layout to change it, never edits it in place.
+* **One trusted renderer for layouts**, in the platform: it runs no tenant template; every string is escaped by one
+  function, the only inline styles are numbers and colours the check accepted, there is no HTML block. The designer's
+  canvas is this renderer's own output (with marks), so what is designed is what prints.
+* **The workspace picks each entity's default** (`document_default`), a choice apart from the templates: the
+  workspace's choice, else a workspace template flagged default, else a package's, else the print format; each only
+  when enabled and the reader may use it.
+* **Letter heads and print settings are core records** (`LetterHead`, `PrintSettings`, `Company.letter_head`); a page
+  wears the one asked for, the format's, its record's company's, or the workspace's.
+* **Images are the workspace's own files, inlined** as `data:` URLs (the PDF service fetches nothing), capped; drafts
+  and cancelled records carry a watermark and may be refused; the PDF service is told the paper and margins.
+
+**What it adds to BD-21's rule.** BD-21 said who reads what; print formats keep it and say it for what is new:
+* The **record and its links** are read as the person printing may read them, in a layout as in a template, through
+  the same loader (`record_vars`): a field group they may not read and a linked record they may not open are not
+  there. A document **generated for outside** goes through the same page renderer as the workspace holds the record,
+  secrets left out.
+* The **company, the letter head and print settings are read as the workspace**: they are the workspace's branding,
+  printed for whoever may print the record, never their secret fields.
+* **An image is a file of this workspace read as its reader may**: a record's attachment as the person printing, a
+  format's or the company's as the workspace, a letter head's only from that letter head's own attachments. Nothing
+  else is ever fetched or emitted.
+* **A secret field is refused when a format names it** (a layout's path as a template's text), and is never read when
+  one renders: a stored format is checked again as it renders.
+
+**Rules out**: tenant HTML or CSS in a layout; a designer that draws pages its own way; a remote image, another
+workspace's file or an oversized one on paper; a package release overwriting a workspace's customised format; making
+a package's format the default by editing it.
+
+**Not yet**: translations of a layout's own labels (`texts`, kept, not applied); a letter head designed on the canvas
+(slice 3); bulk printing from a list; receipt paper; a font image with more scripts than the PDF service's.
+
+## BD-29. One described call, for everyone
 
 Decided 12 November 2026. Five apps waited on it: Social posts to two networks only, CRM and Bookings cannot reach a
 person's mailbox and calendar, ERP wrote its own "described HTTP call" for carriers, and Campaigns, Commerce and the
@@ -814,7 +855,7 @@ service apps need to call out and be called back. Built once (`crates/kernel/src
 
 * **A connection is configuration**: an address (`base`), how a call proves who makes it (none, a header holding a
   secret, basic, bearer, a request signed with HMAC-SHA256 over `<timestamp>.<body>` or the body, or tokens a sign-in
-  gave, BD-31), default headers, the hosts besides the base's it may reach, a time limit (15 s, at most 60 s) and an
+  gave, BD-32), default headers, the hosts besides the base's it may reach, a time limit (15 s, at most 60 s) and an
   answer size limit (1 MB, at most 10 MB), and who may use it: administrators and configuration always, people holding
   one of its `roles`, apps it lists in `apps`. Its secrets are sealed with the server's key, bound to the connection,
   never read back (the listing gives their names), moved by `reseal_secrets` with the rest. No provider is named in the
@@ -865,11 +906,11 @@ of an answer that is not stated as temporary; an operation that changes somethin
 connection (`url` split into `base` and `path`, `rates_at`… into `result`, `error_at` and `temporary` as they are, the
 `Idempotency-Key: {{ key }}` header into `idempotency_header`), the API Key and API Secret into the connection's
 secrets (`secret.api_key` reads the same), `fixtures` into each operation's `fixture`, `inbound` into the connection's
-inbound (BD-29) with a handler of ERP's. ERP's Rust keeps what is ERP's: making the shipment's values (`shipment`, `to`,
+inbound (BD-30) with a handler of ERP's. ERP's Rust keeps what is ERP's: making the shipment's values (`shipment`, `to`,
 `from`, `rate`) into `inputs`, turning the mapped answer into rates, labels and tracking states, booking the cost. Not
 done here: it is ERP's release.
 
-## BD-29. Being called
+## BD-30. Being called
 
 Decided 12 November 2026. An inbound address per connection, `POST /api/connections/inbound/{id}`, no session.
 
@@ -896,12 +937,12 @@ shared token goes to the app once; a handler the connection does not list is ref
 
 **Rules out**: an inbound call processed while its caller waits; one processed twice; an unverified call.
 
-## BD-30. Pulling
+## BD-31. Pulling
 
 Decided 12 November 2026. `pulls` on a connection: `{name, operation, every_minutes (5 to a week), items_at, cursor:
 token | time, next_at, cursor_input, max_pages (5, at most 50), map}`. The schedule scanner queues a pull when due (one
 job at a time per pull); a run calls the operation (a reading one: one that changes something is refused when saved)
-with the cursor as `cursor_input`, maps each item at `items_at` as BD-29 does (its own `map`, else the inbound one), and
+with the cursor as `cursor_input`, maps each item at `items_at` as BD-30 does (its own `map`, else the inbound one), and
 keeps the cursor: the service's token at `next_at`, page by page, or the moment the last run that finished began. A
 page's records and the cursor past it commit together. An administrator reads each pull's cursor, runs and last error,
 and pulls now.
@@ -909,7 +950,7 @@ and pulls now.
 Tests (`connections_it`): two due at once and not queued twice; one page a run and the next run from the token kept;
 the time cursor given as the next run's `since`; an item pulled again changed, not made twice.
 
-## BD-31. A person authorises an account
+## BD-32. A person authorises an account
 
 Decided 12 November 2026. `docs/plan/integrations.md` named the broker unbuilt; Social, CRM and Bookings waited on it.
 
@@ -945,7 +986,7 @@ the states and the verifiers.
 **Not yet**: a workspace on its own host signs in on the platform's public address (the session cookie must be the
 one that address sees); dynamic client registration; signed JWT client authentication; device flow.
 
-## BD-32. Connections in packages and packs, and their screens
+## BD-33. Connections in packages and packs, and their screens
 
 Decided 12 November 2026. A package describes connections (`connections:` in `package.yaml`, `{name, label,
 description}`); a workspace sees each offered, turned off, until an administrator saves it with its secrets (its

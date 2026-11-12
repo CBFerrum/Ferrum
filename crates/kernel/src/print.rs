@@ -11,7 +11,7 @@ use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-const DEFAULT_TEMPLATE: &str = r#"<!doctype html>
+pub(crate) const DEFAULT_TEMPLATE: &str = r#"<!doctype html>
 <html><head><meta charset="utf-8"><title>{{ entity.label }} {{ doc.number or doc.id }}</title>
 <style>
  body{font:13px/1.45 system-ui,-apple-system,Segoe UI,sans-serif;color:#111;margin:32px}
