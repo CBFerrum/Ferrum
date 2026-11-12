@@ -804,3 +804,44 @@ no contract in the last 365 days (a passport, or a contract of two years ago, do
 
 **Rules out**: absence across more than one link; a period not tied to the run (a fiscal quarter); counting (fewer than
 N records) rather than absence.
+
+## BD-28. Print formats
+
+Decided 12 November 2026. Asked for by the owner ("print formats like ERPNext, so that people can design and customise
+their prints, like invoices"); designed in `tools/PRINT-FORMATS-SPEC.md` (decisions D1-D17 there). Built in the
+platform (`crates/meta/src/layout.rs`, `crates/kernel/src/layout.rs`, `crates/kernel/src/documents.rs`; the API in
+[api.md](../api.md#print-formats)) for a designer in the interface.
+
+* **A print format is a BD-21 page template, extended**, not a second mechanism: paper and margins, a letter head,
+  copy labels, `enabled`, `based_on`, and a second kind, the **layout** (sections, columns, blocks as JSON). Packages ship
+  standard formats; a workspace duplicates a package's layout to change it, never edits it in place.
+* **One trusted renderer for layouts**, in the platform: it runs no tenant template; every string is escaped by one
+  function, the only inline styles are numbers and colours the check accepted, there is no HTML block. The designer's
+  canvas is this renderer's own output (with marks), so what is designed is what prints.
+* **The workspace picks each entity's default** (`document_default`), a choice apart from the templates: the
+  workspace's choice, else a workspace template flagged default, else a package's, else the print format; each only
+  when enabled and the reader may use it.
+* **Letter heads and print settings are core records** (`LetterHead`, `PrintSettings`, `Company.letter_head`); a page
+  wears the one asked for, the format's, its record's company's, or the workspace's.
+* **Images are the workspace's own files, inlined** as `data:` URLs (the PDF service fetches nothing), capped; drafts
+  and cancelled records carry a watermark and may be refused; the PDF service is told the paper and margins.
+
+**What it adds to BD-21's rule.** BD-21 said who reads what; print formats keep it and say it for what is new:
+* The **record and its links** are read as the person printing may read them, in a layout as in a template, through
+  the same loader (`record_vars`): a field group they may not read and a linked record they may not open are not
+  there. A document **generated for outside** goes through the same page renderer as the workspace holds the record,
+  secrets left out.
+* The **company, the letter head and print settings are read as the workspace**: they are the workspace's branding,
+  printed for whoever may print the record, never their secret fields.
+* **An image is a file of this workspace read as its reader may**: a record's attachment as the person printing, a
+  format's or the company's as the workspace, a letter head's only from that letter head's own attachments. Nothing
+  else is ever fetched or emitted.
+* **A secret field is refused when a format names it** (a layout's path as a template's text), and is never read when
+  one renders: a stored format is checked again as it renders.
+
+**Rules out**: tenant HTML or CSS in a layout; a designer that draws pages its own way; a remote image, another
+workspace's file or an oversized one on paper; a package release overwriting a workspace's customised format; making
+a package's format the default by editing it.
+
+**Not yet**: translations of a layout's own labels (`texts`, kept, not applied); a letter head designed on the canvas
+(slice 3); bulk printing from a list; receipt paper; a font image with more scripts than the PDF service's.
