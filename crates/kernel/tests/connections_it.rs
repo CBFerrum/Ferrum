@@ -100,6 +100,14 @@ async fn service(seen: Seen) -> u16 {
                     "/v1/hop-private" => (302, "location: http://10.0.0.1/v1/ok\r\n".into(), String::new()),
                     "/v1/hop-localhost" => (302, format!("location: http://localhost:{}/v1/ok\r\n", s.local_addr().unwrap().port()), String::new()),
                     "/v1/ok" => (200, String::new(), json!({"ok": true}).to_string()),
+                    "/v1/orders" => match path.split_once("cursor=").map(|c| c.1.to_string()).as_deref() {
+                        None | Some("") => {
+                            (200, String::new(), json!({"data": [{"id": "O-1", "title": "First"}, {"id": "O-2", "title": "Second"}], "next": "c2"}).to_string())
+                        }
+                        Some("c2") => (200, String::new(), json!({"data": [{"id": "O-3", "title": "Third"}], "next": null}).to_string()),
+                        Some(_) => (400, String::new(), "{}".into()),
+                    },
+                    "/v1/since" => (200, String::new(), json!({"data": [{"id": "S-1", "title": "Since"}]}).to_string()),
                     _ => (404, String::new(), "{}".into()),
                 };
                 let reply = format!(
@@ -254,6 +262,44 @@ async fn being_called(k: &Kernel, admin: &Ctx) {
         json!({"test": true, "apps": ["depot"], "inbound": {"verify": {"type": "token", "header": "x-token", "secret": "token"}, "handler": "crm"}});
     let e = k.save_connection_def(admin, None, &input("crm", other_app, None)).await.unwrap_err();
     assert!(e.to_string().contains("not one of the apps"), "{e}");
+}
+
+/// Pulling: a cursor kept between runs, pages bounded per run, each item mapped as an inbound call is.
+async fn pulling(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) {
+    let tenant = admin.tenant;
+    let alert = admin.schema.entity("Alert").unwrap().table.clone();
+    let map = json!({"entity": "Alert", "by": {"external_id": "item.id"}, "set": {"title": "item.title", "state": "'pulled'"}});
+    let d = json!({"base": base, "operations": {"orders": {"path": "/orders", "query": {"cursor": "{{ cursor or '' }}"}}, "since": {"path": "/since", "query": {"since": "{{ inputs.cursor }}"}}},
+        "pulls": [{"name": "orders", "operation": "orders", "every_minutes": 15, "items_at": "/data", "next_at": "/next", "max_pages": 1, "map": map},
+                  {"name": "recent", "operation": "since", "every_minutes": 60, "items_at": "/data", "cursor": "time", "map": map}]});
+    let id = k.save_connection_def(admin, None, &input("orders", d.clone(), None)).await.unwrap();
+    let pulled = |n: i64| {
+        let sql = format!("select count(*) from {alert} where tenant_id = $1 and state = 'pulled'");
+        async move { assert_eq!(count(k, tenant, &sql).await, n) }
+    };
+    assert_eq!(k.sweep_pulls_at(chrono::Utc::now()).await.unwrap(), 2, "both due at once when new");
+    assert_eq!(k.sweep_pulls_at(chrono::Utc::now()).await.unwrap(), 0, "and not queued twice");
+    drain(k).await;
+    pulled(3).await; // orders' first page (one page a run) and recent's one item
+    let pulls = k.connection_pulls(admin, id).await.unwrap();
+    let orders = pulls.iter().find(|p| p["name"] == "orders").unwrap();
+    assert_eq!(orders["cursor"], "c2", "the token its answer gave, kept for the next run");
+    let recent = pulls.iter().find(|p| p["name"] == "recent").unwrap();
+    assert!(chrono::DateTime::parse_from_rfc3339(recent["cursor"].as_str().unwrap()).is_ok(), "the moment the run began: {recent}");
+    k.pull_now(admin, id, "orders").await.unwrap();
+    drain(k).await;
+    pulled(4).await;
+    assert!(seen.lock().unwrap().iter().any(|s| s.starts_with("GET /v1/orders?cursor=c2 ")));
+    let since = recent["cursor"].as_str().unwrap().to_string();
+    k.pull_now(admin, id, "recent").await.unwrap();
+    drain(k).await;
+    let asked = seen.lock().unwrap().iter().rev().find(|s| s.starts_with("GET /v1/since")).cloned().unwrap();
+    assert!(asked.contains(&since.replace(':', "%3A").replace('+', "%2B")), "the last run's start is the next one's since: {asked}");
+    pulled(4).await; // S-1 again: changed, not made twice
+    // A pull reads: one that changes something is refused.
+    let mut bad = d.clone();
+    bad["operations"]["orders"]["method"] = json!("POST");
+    assert!(k.save_connection_def(admin, Some(id), &input("orders", bad, None)).await.unwrap_err().to_string().contains("a pull only reads"));
 }
 
 #[test]
@@ -489,6 +535,7 @@ async fn scenario() {
     assert!(log.iter().all(|l| !l.to_string().contains(SECRET)));
 
     being_called(&k, &admin).await;
+    pulling(&k, &admin, &base, &seen).await;
 
     // ── secrets rest nowhere: not the log, the capture, the audit trail, the jobs ──
     assert_eq!(rests(&k, &[SECRET, SIGNING, INBOUND, TOKEN]).await, nowhere);
