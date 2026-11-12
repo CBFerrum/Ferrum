@@ -27,16 +27,16 @@ progress after a lesson changes.
   its parameters) before its handler runs, so what an action's handler then writes directly is
   under that entry.
 
-## The 109 statements, by kind
+## The 114 statements, by kind
 
 | Kind | How many | What keeps them right |
 |---|---|---|
-| Engine work: delivery and send statuses, counts, queues, upkeep (expiry, overdue, closing) | 67 | Consequences of work the app does, like the kernel's own `set_values_tx`: values the app computes, no person's input; not audited one by one, as derived values are not |
-| Consequence of an audited document operation (a hook of submit, cancel, save or an action) | 23 | The operation that runs the hook is on the record |
+| Engine work: delivery and send statuses, counts, queues, upkeep (expiry, overdue, closing) | 69 | Consequences of work the app does, like the kernel's own `set_values_tx`: values the app computes, no person's input; not audited one by one, as derived values are not |
+| Consequence of an audited document operation (a hook of submit, cancel, save or an action) | 26 | The operation that runs the hook is on the record |
 | A person's action on a public link: opens and clicks, subscribe, confirm, unsubscribe, viewing a shared file | 11 | The record they change carries its evidence (the consent's source and time, the link's views) |
 | Records its own audit or activity entry | 8 | Drive's activity log ("Link Created", "Link Revoked", "Shared With Guest", "Share Expired", "Delete"), Edge's and MES's audit entries |
 
-By app: Campaigns 34, Drive 23, Comms 11, ERP 10, Commerce 5, POS 5, Projects 5, Edge 4, HR 3, LMS 3, CRM 2,
+By app: Campaigns 34, Drive 23, Comms 11, ERP 10, Commerce 5, LMS 5, POS 5, Projects 5, Edge 4, Helpdesk 3, HR 3, CRM 2,
 and one each in Bookings, DAM, Field Service and Forms.
 
 ## Findings
@@ -158,11 +158,16 @@ and one each in Bookings, DAM, Field Service and Forms.
 | erp | `addons/wms/src/tasks.rs:518` | `update e_handling_unit` | `place_unit` | engine work: statuses, counts, queues, upkeep |
 | field-service | `src/contract.rs:138` | `update e_service_contract` | `expire` | engine work: statuses, counts, queues, upkeep |
 | forms | `src/form.rs:393` | `update e_form_response` | `after_save` | consequence of an audited document operation (hook) |
+| helpdesk | `src/merge.rs:79` | `update e_ticket__conversation` | `merge` | consequence of an audited document operation (hook) |
+| helpdesk | `src/merge.rs:115` | `insert into e_ticket__conversation` | `merge` | consequence of an audited document operation (hook) |
+| helpdesk | `src/merge.rs:133` | `update e_ticket__conversation` | `merge` | consequence of an audited document operation (hook) |
 | hr | `src/attendance.rs:537` | `update e_employee_checkin` | `on_cancel` | consequence of an audited document operation (hook) |
 | hr | `src/talent.rs:65` | `delete from e_training_record` | `on_cancel` | consequence of an audited document operation (hook) |
 | hr | `src/talent.rs:77` | `update e_job_opening` | `close_openings` | engine work: statuses, counts, queues, upkeep |
 | lms | `src/catalog.rs:315` | `update e_lms_course` | `refresh_course_stats` | consequence of an audited document operation (hook) |
-| lms | `src/enrollment.rs:398` | `update e_lms_enrollment` | `refresh_course` | consequence of an audited document operation (hook) |
+| lms | `src/certificate.rs:164` | `update e_lms_certificate` | `expire_all` | engine work: statuses, counts, queues, upkeep |
+| lms | `src/enrollment.rs:431` | `update e_lms_enrollment` | `refresh_course` | consequence of an audited document operation (hook) |
+| lms | `src/enrollment.rs:674` | `update e_lms_enrollment` | `send_due_reminders` | engine work: statuses, counts, queues, upkeep |
 | lms | `src/live.rs:78` | `update e_lms_cohort__sessions` | `sync` | consequence of an audited document operation (hook) |
 | pos | `src/closing.rs:286` | `update e_pos_invoice` | `on_cancel` | consequence of an audited document operation (hook) |
 | pos | `src/closing.rs:465` | `update e_pos_invoice` | `consolidate` | consequence of an audited document operation (hook) |

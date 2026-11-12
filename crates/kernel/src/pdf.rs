@@ -14,15 +14,18 @@ const MAX_PDF: usize = 50 << 20;
 static CLIENT: LazyLock<reqwest::Client> =
     LazyLock::new(|| reqwest::Client::builder().connect_timeout(Duration::from_secs(5)).timeout(Duration::from_secs(60)).build().unwrap_or_default());
 
-/// A `multipart/form-data` body: the page as `index.html`, then form fields.
-fn form(boundary: &str, html: &str, fields: &[(&str, &str)]) -> Vec<u8> {
-    let mut body = Vec::with_capacity(html.len() + 1024);
-    body.extend_from_slice(
-        format!("--{boundary}\r\nContent-Disposition: form-data; name=\"files\"; filename=\"index.html\"\r\nContent-Type: text/html; charset=utf-8\r\n\r\n")
-            .as_bytes(),
-    );
-    body.extend_from_slice(html.as_bytes());
-    body.extend_from_slice(b"\r\n");
+/// A `multipart/form-data` body: the page as `index.html` (with `header.html` and `footer.html` when there are some),
+/// then form fields.
+fn form(boundary: &str, files: &[(&str, &str)], fields: &[(&str, &str)]) -> Vec<u8> {
+    let mut body = Vec::with_capacity(files.iter().map(|f| f.1.len()).sum::<usize>() + 1024);
+    for (name, html) in files {
+        body.extend_from_slice(
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"files\"; filename=\"{name}\"\r\nContent-Type: text/html; charset=utf-8\r\n\r\n")
+                .as_bytes(),
+        );
+        body.extend_from_slice(html.as_bytes());
+        body.extend_from_slice(b"\r\n");
+    }
     for (name, value) in fields {
         body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n").as_bytes());
     }
@@ -45,6 +48,13 @@ impl Kernel {
     /// Lays out a self-contained HTML page as a PDF: A4 unless the page's CSS (`@page`) says
     /// otherwise, backgrounds printed.
     pub async fn html_to_pdf(&self, html: &str) -> Result<Vec<u8>> {
+        self.page_to_pdf(html, None, None).await
+    }
+
+    /// [`Kernel::html_to_pdf`] with a header and a footer repeated on every page, each a page of its own in which
+    /// `<span class="pageNumber">` and `<span class="totalPages">` are filled in; the margins they sit in are made room
+    /// for.
+    pub async fn page_to_pdf(&self, html: &str, header: Option<&str>, footer: Option<&str>) -> Result<Vec<u8>> {
         let base = self.settings.pdf_url.as_deref().ok_or_else(|| Error::Unavailable("PDF output is not set up on this server (FERRUM_PDF_URL)".into()))?;
         let boundary = format!("ferrum-pdf-{}", Uuid::now_v7().simple());
         let fields = [
@@ -52,8 +62,8 @@ impl Kernel {
             ("printBackground", "true"),
             ("paperWidth", "8.27"),
             ("paperHeight", "11.69"),
-            ("marginTop", "0.4"),
-            ("marginBottom", "0.4"),
+            ("marginTop", if header.is_some() { "0.8" } else { "0.4" }),
+            ("marginBottom", if footer.is_some() { "0.8" } else { "0.4" }),
             ("marginLeft", "0.4"),
             ("marginRight", "0.4"),
         ];
@@ -61,7 +71,11 @@ impl Kernel {
         let mut res = CLIENT
             .post(url)
             .header("content-type", format!("multipart/form-data; boundary={boundary}"))
-            .body(form(&boundary, html, &fields))
+            .body(form(
+                &boundary,
+                &[Some(("index.html", html)), header.map(|h| ("header.html", h)), footer.map(|f| ("footer.html", f))].into_iter().flatten().collect::<Vec<_>>(),
+                &fields,
+            ))
             .send()
             .await
             .map_err(|e| Error::Unavailable(format!("PDF renderer unreachable: {e}")))?;
@@ -88,7 +102,7 @@ mod tests {
 
     #[test]
     fn the_page_and_fields_travel_as_one_form() {
-        let body = String::from_utf8(form("B", "<p>Hi</p>", &[("printBackground", "true")])).unwrap();
+        let body = String::from_utf8(form("B", &[("index.html", "<p>Hi</p>")], &[("printBackground", "true")])).unwrap();
         assert_eq!(
             body,
             "--B\r\nContent-Disposition: form-data; name=\"files\"; filename=\"index.html\"\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>Hi</p>\r\n\
