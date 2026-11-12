@@ -664,7 +664,23 @@ async fn public_page(st: &AppState, headers: &HeaderMap, uri: &Uri, app_id: &str
     if !words.is_empty() {
         boot["locale"]["words"] = Value::Object(words);
     }
-    Ok(not_modified(headers, shell::public_entry_page(&entry, &boot, &shell::csp(Some(app.manifest.as_ref()), &Value::Null))))
+    // Framed by the workspace's own pages, and by the sites set for this page alone (BD-24).
+    let tail = rest.split_once('/').map(|(_, t)| t).unwrap_or_default();
+    let frames = st.kernel.public_frame(tenant, &app.id, &format!("{page}/{tail}")).await?;
+    let csp = framed_by(shell::csp(Some(app.manifest.as_ref()), &Value::Null), &frames);
+    Ok(not_modified(headers, shell::public_entry_page(&entry, &boot, &csp)))
+}
+
+/// A page's policy with `origins` added to the sites that may frame it (none: as it was).
+fn framed_by(csp: String, origins: &[String]) -> String {
+    if origins.is_empty() {
+        return csp;
+    }
+    let others = format!("frame-ancestors 'self' {}", origins.join(" "));
+    match csp.contains("frame-ancestors 'self'") {
+        true => csp.replacen("frame-ancestors 'self'", &others, 1),
+        false => csp.replace("frame-ancestors 'none'", &format!("frame-ancestors {}", origins.join(" "))),
+    }
 }
 
 /// `/portal/…`: the workspace's portal (docs/plan/apps-ui.md §9.1). Its home lists the pages the
@@ -757,6 +773,9 @@ async fn portal(st: &AppState, headers: &HeaderMap, uri: &Uri, rest: Option<&str
 /// pages, rendered on the server by its package's site handler at `/_site/{path}`. No shell, no
 /// session; the handler learns where its public API is and the site's own origin from the
 /// platform (`x-ferrum-site-api`, `x-ferrum-site-origin`), never from the caller.
+/// The policy of an app's site page unless the app says otherwise: unframeable.
+const SITE_CSP: &str = "default-src 'self'; img-src 'self' data: https:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'";
+
 async fn site_page(st: &AppState, tenant: Uuid, app_id: &str, headers: &HeaderMap, uri: &Uri, path: &str, q: Vec<(String, String)>) -> ApiResult<Response> {
     let unavailable = |status: StatusCode, title: &str, message: &str| status_page(status, title, message, &[], None);
     let ws = st.shell.workspace(tenant).await?;
@@ -788,16 +807,22 @@ async fn site_page(st: &AppState, tenant: Uuid, app_id: &str, headers: &HeaderMa
             return Ok(unavailable(StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong", "Try again in a moment."));
         }
     };
-    // What every public page gets unless the app says otherwise.
+    // The sites an app's answer says may frame this page (a form embedded elsewhere), each checked (BD-24).
     let h = res.headers_mut();
-    for (name, value) in [
-        ("x-content-type-options", "nosniff"),
-        ("referrer-policy", "strict-origin-when-cross-origin"),
-        (
-            "content-security-policy",
-            "default-src 'self'; img-src 'self' data: https:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'",
-        ),
-    ] {
+    let frames: Vec<String> = h
+        .remove("x-ferrum-frame-ancestors")
+        .and_then(|v| v.to_str().ok().map(str::to_string))
+        .map(|v| v.split_whitespace().filter_map(ferrum_meta::published::frame_origin).take(10).collect())
+        .unwrap_or_default();
+    if !frames.is_empty() && !h.contains_key("content-security-policy") {
+        let csp = framed_by(SITE_CSP.to_string(), &frames);
+        if let Ok(v) = HeaderValue::from_str(&csp) {
+            h.insert("content-security-policy", v);
+        }
+    }
+    // What every public page gets unless the app says otherwise.
+    for (name, value) in [("x-content-type-options", "nosniff"), ("referrer-policy", "strict-origin-when-cross-origin"), ("content-security-policy", SITE_CSP)]
+    {
         if !h.contains_key(name) {
             h.insert(name, HeaderValue::from_static(value));
         }
@@ -1357,4 +1382,22 @@ pub fn routes() -> Routes {
         .add("/api/shell/words", get(app_words))
         .add("/api/shell/offline", get(offline_lease))
         .add("/api/shell/app-token", axum::routing::post(app_token))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_public_page_is_framed_only_by_the_sites_set_for_it() {
+        // Nothing set: as it was, the workspace's own pages (a shell page) or nobody (a site page).
+        let shell_csp = "default-src 'self'; frame-ancestors 'self'; base-uri 'none'".to_string();
+        assert_eq!(framed_by(shell_csp.clone(), &[]), shell_csp);
+        assert_eq!(framed_by(SITE_CSP.into(), &[]), SITE_CSP);
+        // Set for this page: those sites besides.
+        let shop = ["https://shop.example".to_string()];
+        assert_eq!(framed_by(shell_csp, &shop), "default-src 'self'; frame-ancestors 'self' https://shop.example; base-uri 'none'");
+        let site = framed_by(SITE_CSP.into(), &shop);
+        assert!(site.contains("frame-ancestors https://shop.example;") && !site.contains("'none'; base"), "{site}");
+    }
 }
