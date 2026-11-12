@@ -245,9 +245,21 @@ async fn transition(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> ApiResult<Response> {
-    let st = app_state(&app)?;
-    let params: Value = if body.iter().all(u8::is_ascii_whitespace) { Value::Null } else { serde_json::from_slice(&body)? };
-    Ok(doc_response(st.kernel.transition_with(&ctx, &entity, id, &action, if_match(&headers)?, params).await?, StatusCode::OK))
+    take_transition(&app_state(&app)?.kernel, &ctx, &entity, id, &action, if_match(&headers)?, &body).await
+}
+
+/// What `POST …/{id}/workflow/{action}` answers (callable without the HTTP layer).
+pub async fn take_transition(
+    k: &ferrum_kernel::Kernel,
+    ctx: &ferrum_kernel::Ctx,
+    entity: &str,
+    id: Uuid,
+    action: &str,
+    version: Option<i64>,
+    body: &[u8],
+) -> ApiResult<Response> {
+    let params: Value = if body.iter().all(u8::is_ascii_whitespace) { Value::Null } else { serde_json::from_slice(body)? };
+    Ok(doc_response(k.transition_with(ctx, entity, id, action, version, params).await?, StatusCode::OK))
 }
 
 /// `GET …/{id}/approval`: the record's latest approval request, its steps and decisions (null when none).
@@ -257,7 +269,7 @@ async fn approval(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity, 
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct DecisionBody {
+pub struct DecisionBody {
     /// `approve` or `reject`.
     outcome: String,
     comment: Option<String>,
@@ -265,12 +277,17 @@ struct DecisionBody {
 
 /// `POST …/{id}/approval/decide`: approve, or reject with a reason, the step open for the caller (BD-19).
 async fn decide(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity, id)): Path<(String, Uuid)>, Json(b): Json<DecisionBody>) -> ApiResult<Response> {
+    Ok(Json(decided(&app_state(&app)?.kernel, &ctx, &entity, id, b).await?).into_response())
+}
+
+/// What `POST …/{id}/approval/decide` answers (callable without the HTTP layer).
+pub async fn decided(k: &ferrum_kernel::Kernel, ctx: &ferrum_kernel::Ctx, entity: &str, id: Uuid, b: DecisionBody) -> ApiResult<Value> {
     let approve = match b.outcome.as_str() {
         "approve" => true,
         "reject" => false,
         _ => return Err(ApiError(Error::field("outcome", "approve or reject"))),
     };
-    Ok(Json(app_state(&app)?.kernel.decide_approval(&ctx, &entity, id, approve, b.comment.as_deref()).await?).into_response())
+    Ok(k.decide_approval(ctx, entity, id, approve, b.comment.as_deref()).await?)
 }
 
 /// `POST …/{id}/approval/recall`: whoever asked takes the pending request back.
