@@ -749,6 +749,7 @@ MUTANTS = [
     ("effect-template-unchecked", "crates/kernel/src/automation.rs", "        match (message.filter(|m| !messages.contains(*m)), document.filter(|d| !documents.contains(*d))) {", "        match (None::<&String>, None::<&String>) {", EFFECTS),
     ("effect-refusal-unplaced", "crates/kernel/src/actions.rs", "            .map_err(|e| automation::at_effect(i, &what, e))?;", "            ?;", EFFECTS),
     ("opt-out-outlives-erasure", "crates/kernel/src/messages.rs", "        \"delete from contact_consent where tenant_id = $1", "        \"delete from contact_consent where false and tenant_id = $1", MESSAGES_API),
+    ("describe-approvals-to-anyone", "crates/kernel/src/describe.rs", "        if !ctx.is_admin && ctx.perms.access(&ent.def.name, action) == Access::None {", "        if false {", DOCUMENT_APPROVALS),
     # Documents about a query (docs/api.md, A report as a document; BD-21).
     ("query-documents-person-unbounded", "crates/kernel/src/documents.rs", "    if person && total > MAX_GROUPS {", "    if false {", STUDIO_QUERY_DOCUMENTS),
     ("query-documents-cursor-ignored", "crates/kernel/src/documents.rs", "filter(|(id, _)| after.is_none_or(|a| *id > a))", "filter(|_| true)", STUDIO_QUERY_DOCUMENTS),

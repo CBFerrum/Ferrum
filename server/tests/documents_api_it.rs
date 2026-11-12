@@ -100,6 +100,11 @@ async fn scenario() {
     assert_eq!(status, 422, "{body}");
     assert!(body.to_string().contains("need the analytics engine"), "{body}");
 
+    // A package's entity has no definition to replace: Customize gets the approvals its package declares.
+    let definition = ferrum_server::controllers::admin::definition_of(&k, &admin, "Note").unwrap();
+    assert_eq!(definition, json!({"entity": "Note", "package": "notes", "approvals": []}));
+    assert_eq!(answer(ferrum_server::controllers::admin::definition_of(&k, &writer, "Note").unwrap_err()).await.0, 403);
+
     // A pack carries the edited template; installed elsewhere it is that workspace's edit.
     def.languages.get_mut("en").unwrap().body = "<h1>{{ doc.title }}</h1>".into();
     k.save_document_template(&admin, &def).await.unwrap();
