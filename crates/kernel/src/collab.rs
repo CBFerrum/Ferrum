@@ -732,6 +732,52 @@ impl Kernel {
         Ok(tags)
     }
 
+    /// Adds and removes tags on a record in the caller's transaction (BD-43): an app tagging what it saves. Asked as
+    /// the tags route asks (a member who may change the entity and reads the record; the system always), tags
+    /// normalised the same way, at most [`MAX_TAGS`] on the record. The record's tags after.
+    pub async fn tag_tx(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, add: &[String], remove: &[String]) -> Result<Vec<String>> {
+        if ctx.outside {
+            return Err(Error::Forbidden("a record's comments, files and people are for the workspace's members".into()));
+        }
+        ctx.require(entity, Action::Write)?;
+        self.get_tx(ctx, tx, entity, id, false).await?;
+        let clean = |tags: &[String]| -> Result<Vec<String>> {
+            tags.iter().map(|t| normalize_tag(t).ok_or_else(|| Error::field("tags", "tags have 1 to 60 characters"))).collect()
+        };
+        let (add, remove) = (clean(add)?, clean(remove)?);
+        sqlx::query(
+            "delete from record_tag where tenant_id = $1 and entity = $2 and record_id = $3 and lower(tag) = any(select lower(t) from unnest($4::text[]) t)",
+        )
+        .bind(ctx.tenant)
+        .bind(entity)
+        .bind(id)
+        .bind(&remove)
+        .execute(&mut **tx)
+        .await?;
+        let had = tags_tx(tx, ctx.tenant, entity, id).await?;
+        let new: Vec<String> = add.into_iter().filter(|t| !had.iter().any(|h| h.eq_ignore_ascii_case(t))).fold(Vec::new(), |mut v, t| {
+            if !v.iter().any(|x: &String| x.eq_ignore_ascii_case(&t)) {
+                v.push(t);
+            }
+            v
+        });
+        if had.len() + new.len() > MAX_TAGS {
+            return Err(Error::field("tags", format!("at most {MAX_TAGS} tags per record")));
+        }
+        sqlx::query(
+            "insert into record_tag (tenant_id, entity, record_id, tag, created_by) select $1, $2, $3, t, $5 from unnest($4::text[]) t on conflict do nothing",
+        )
+        .bind(ctx.tenant)
+        .bind(entity)
+        .bind(id)
+        .bind(&new)
+        .bind((!ctx.user.is_nil()).then_some(ctx.user))
+        .execute(&mut **tx)
+        .await?;
+        announce(tx, ctx.tenant, entity, id, "tagged", ctx.user).await?;
+        tags_tx(tx, ctx.tenant, entity, id).await
+    }
+
     /// Tags used on an entity with how many records carry each (for filters and suggestions).
     /// Tags of the records the caller can read, with counts (others' records never show).
     pub async fn tag_counts(&self, ctx: &Ctx, entity: &str) -> Result<Vec<Value>> {

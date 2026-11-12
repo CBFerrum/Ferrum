@@ -56,6 +56,9 @@ pub struct Published {
     pub frame_origins: Vec<String>,
     /// Whether search engines are offered it: a list with a slug.
     pub indexed: bool,
+    /// Whether its record pages count views, and votes (BD-42).
+    pub counts_views: bool,
+    pub counts_votes: bool,
 }
 
 /// What a public read asks of a list: words its text fields must hold, a page, or one record by its address.
@@ -267,6 +270,8 @@ impl Kernel {
             summary: l.list.summary.clone(),
             frame_origins: l.list.frame_origins.clone(),
             indexed: l.list.slug.is_some(),
+            counts_views: l.list.count_views.is_some(),
+            counts_votes: l.list.votes.is_some(),
         }))
     }
 
@@ -296,5 +301,168 @@ impl Kernel {
             }
         }
         Ok(Some(out))
+    }
+}
+
+/// What a visitor's POST-back to a record page counts (BD-42).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Count {
+    View,
+    /// "Was this helpful": yes (`true`) or no.
+    Vote(bool),
+}
+
+/// What a POST-back changed: counted, already counted for this visitor, or refused as too many from one address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Counted {
+    Counted,
+    Already,
+    TooMany,
+}
+
+/// Counted actions one address may make on one workspace's pages in an hour; past it nothing counts.
+pub const MAX_COUNTS_PER_HOUR: i32 = 60;
+
+/// A visitor's or an address's digest under the workspace's key: HMAC-SHA256 of the parts, each length-prefixed.
+fn keyed(key: &[u8], parts: &[&[u8]]) -> Vec<u8> {
+    use hmac::Mac;
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(key).expect("any key length");
+    for p in parts {
+        mac.update(&(p.len() as u64).to_be_bytes());
+        mac.update(p);
+    }
+    mac.finalize().into_bytes().to_vec()
+}
+
+/// One counter field moved by `by` on one record, as SQL: no new version, no audit entry, no event.
+async fn bump(tx: &mut crate::db::Tx, ent: &EffEntity, tenant: Uuid, id: Uuid, field: &str, by: i64) -> Result<()> {
+    let set = match ent.storage_of(field) {
+        Some(ferrum_meta::Storage::Ext) => {
+            format!("ext = jsonb_set(coalesce(ext, '{{}}'), '{{{field}}}', to_jsonb(greatest(coalesce((ext->>'{field}')::bigint, 0) + $3, 0)))")
+        }
+        _ => format!("{c} = greatest(coalesce({c}, 0) + $3, 0)", c = q(field)),
+    };
+    let sql = format!("update {} a set {set} where a.tenant_id = $1 and a.id = $2{}", q(&ent.table), entity_predicate(ent, "a"));
+    sqlx::query(sqlx::AssertSqlSafe(sql)).bind(tenant).bind(id).bind(by).execute(&mut **tx).await?;
+    Ok(())
+}
+
+impl Kernel {
+    /// Counts a view of, or a vote on, the published record at `address` of list `name` (BD-42), for the visitor
+    /// whose first-party cookie holds `visitor`, from network address `from`. `None` when the record is not
+    /// published or the list does not count it. A view counts once a visitor a record a day, a vote once a
+    /// visitor a record (a different answer moves it); one address counts [`MAX_COUNTS_PER_HOUR`] at most.
+    pub async fn published_count(&self, slug: &str, name: &str, address: &str, visitor: &str, from: &str, what: Count) -> Result<Option<Counted>> {
+        let mut tx = self.db.system_tx().await?;
+        let found: Option<(Uuid, String)> =
+            sqlx::query_as("select id, status from tenant where slug = $1").bind(slug.trim().to_lowercase()).fetch_optional(&mut *tx).await?;
+        tx.commit().await?;
+        let Some((tenant, _)) = found.filter(|(_, status)| status == "active") else { return Ok(None) };
+        let schema = self.registry.schema(tenant).await?;
+        let Some(l) = schema.published_list(name) else { return Ok(None) };
+        let Some(ent) = schema.entity(&l.entity) else { return Ok(None) };
+        let field = match what {
+            Count::View => l.list.count_views.clone(),
+            Count::Vote(_) => l.list.votes.as_ref().map(|v| v.up.clone()),
+        };
+        if field.is_none() || visitor.is_empty() || visitor.len() > 200 {
+            return Ok(None);
+        }
+        // The record as a visitor reaches it: published, by its address.
+        let find = Find { address: Some(address.to_string()), ..Default::default() };
+        let Ok(mut qb) = query_with(&schema, ent, l, tenant, &find) else { return Ok(None) };
+        let mut tx = self.db.tenant_tx_with_timeout(tenant, TIMEOUT_MS.min(self.db.config.statement_timeout_ms)).await?;
+        let row: Option<Value> = qb.build_query_scalar().fetch_optional(&mut *tx).await?;
+        let Some(id) = row.as_ref().and_then(|r| r.get("id")).and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok()) else { return Ok(None) };
+        let fresh: Vec<u8> = rand::random::<[u8; 32]>().to_vec();
+        let key: Vec<u8> = sqlx::query_scalar(
+            "insert into published_key (tenant_id, key) values ($1, $2) on conflict (tenant_id) do update set key = published_key.key returning key",
+        )
+        .bind(tenant)
+        .bind(&fresh)
+        .fetch_one(&mut *tx)
+        .await?;
+        let now = self.now();
+        let hour = chrono::DurationRound::duration_trunc(now, chrono::Duration::hours(1)).unwrap_or(now);
+        sqlx::query("delete from published_hit where tenant_id = $1 and hour < $2")
+            .bind(tenant)
+            .bind(hour - chrono::Duration::hours(2))
+            .execute(&mut *tx)
+            .await?;
+        let n: i32 = sqlx::query_scalar(
+            "insert into published_hit (tenant_id, address, hour, n) values ($1, $2, $3, 1) \
+             on conflict (tenant_id, address, hour) do update set n = published_hit.n + 1 returning n",
+        )
+        .bind(tenant)
+        .bind(keyed(&key, &[b"address", from.as_bytes(), hour.to_rfc3339().as_bytes()]))
+        .bind(hour)
+        .fetch_one(&mut *tx)
+        .await?;
+        if n > MAX_COUNTS_PER_HOUR {
+            tx.commit().await?;
+            return Ok(Some(Counted::TooMany));
+        }
+        let record = id.to_string();
+        let counted = match what {
+            Count::View => {
+                let day = now.date_naive();
+                sqlx::query("delete from published_view where tenant_id = $1 and day < $2")
+                    .bind(tenant)
+                    .bind(day - chrono::Duration::days(1))
+                    .execute(&mut *tx)
+                    .await?;
+                let digest = keyed(&key, &[b"view", day.to_string().as_bytes(), visitor.as_bytes()]);
+                let new =
+                    sqlx::query("insert into published_view (tenant_id, list, record_id, day, visitor) values ($1, $2, $3, $4, $5) on conflict do nothing")
+                        .bind(tenant)
+                        .bind(name)
+                        .bind(id)
+                        .bind(day)
+                        .bind(digest)
+                        .execute(&mut *tx)
+                        .await?
+                        .rows_affected()
+                        == 1;
+                if new {
+                    bump(&mut tx, ent, tenant, id, l.list.count_views.as_deref().unwrap_or_default(), 1).await?;
+                }
+                new
+            }
+            Count::Vote(up) => {
+                let votes = l.list.votes.as_ref().ok_or_else(|| Error::internal("votes"))?;
+                let digest = keyed(&key, &[b"vote", record.as_bytes(), visitor.as_bytes()]);
+                let was: Option<bool> =
+                    sqlx::query_scalar("select up from published_vote where tenant_id = $1 and list = $2 and record_id = $3 and visitor = $4 for update")
+                        .bind(tenant)
+                        .bind(name)
+                        .bind(id)
+                        .bind(&digest)
+                        .fetch_optional(&mut *tx)
+                        .await?;
+                if was == Some(up) {
+                    false
+                } else {
+                    sqlx::query(
+                        "insert into published_vote (tenant_id, list, record_id, visitor, up) values ($1, $2, $3, $4, $5) \
+                         on conflict (tenant_id, list, record_id, visitor) do update set up = excluded.up",
+                    )
+                    .bind(tenant)
+                    .bind(name)
+                    .bind(id)
+                    .bind(&digest)
+                    .bind(up)
+                    .execute(&mut *tx)
+                    .await?;
+                    let (to, from_field) = if up { (&votes.up, &votes.down) } else { (&votes.down, &votes.up) };
+                    bump(&mut tx, ent, tenant, id, to, 1).await?;
+                    if was.is_some() {
+                        bump(&mut tx, ent, tenant, id, from_field, -1).await?;
+                    }
+                    true
+                }
+            }
+        };
+        tx.commit().await?;
+        Ok(Some(if counted { Counted::Counted } else { Counted::Already }))
     }
 }

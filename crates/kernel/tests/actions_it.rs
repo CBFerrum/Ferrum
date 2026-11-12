@@ -114,6 +114,27 @@ async fn scenario() {
     configured(&k, &w).await;
     authored(&k, &w).await;
     messages_from_the_record(&k, &w).await;
+    absent_params(&k, &w).await;
+}
+
+/// An optional parameter is asked for with `has()`; given or not, `coalesce` works in an effect (BD-45).
+async fn absent_params(k: &Arc<Kernel>, w: &W) {
+    let note = json!({"name": "XNote", "label": "Note", "kind": "master", "fields": [{"name": "title", "type": "data"}, {"name": "said", "type": "data"},
+        {"name": "count", "type": "int"}],
+        "actions": [{"name": "x_say", "label": "Say", "permission": "write",
+            "params": [{"name": "words", "label": "Words", "type": "data"}, {"name": "times", "label": "Times", "type": "int"}],
+            "refuse_if": [{"when": "has(params.times) && params.times > 9", "message": "at most nine"}],
+            "effects": [{"type": "set_fields", "values": {"said": "coalesce(has(params.words) ? params.words : null, doc.title, 'nothing')", "count": "coalesce(has(params.times) ? params.times : null, 1)"}}]}]});
+    w.batch(vec![define(note)]).await.unwrap();
+    let admin = w.admin().await;
+    let id = id_of(&k.insert(&admin, "XNote", obj(json!({"title": "Hello"}))).await.unwrap());
+    k.run_action(&admin, "XNote", id, "x_say", json!({})).await.expect("neither given");
+    let d = w.get("XNote", id).await;
+    assert_eq!((d["said"].clone(), d["count"].clone()), (json!("Hello"), json!(1)));
+    k.run_action(&admin, "XNote", id, "x_say", json!({"words": "Hi", "times": 3})).await.unwrap();
+    let d = w.get("XNote", id).await;
+    assert_eq!((d["said"].clone(), d["count"].clone()), (json!("Hi"), json!(3)));
+    refused(k.run_action(&admin, "XNote", id, "x_say", json!({"times": 10})).await, "forbidden", "at most nine");
 }
 
 /// Whole numbers from a record are signed in checks, computed fields and automations; `read_only_if` ignores

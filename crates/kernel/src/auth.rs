@@ -1002,6 +1002,9 @@ impl Kernel {
         if let Some(why) = p.unknown_action(ent.as_ref().map(|e| &e.def)) {
             return Err(Error::field("actions", why));
         }
+        if let Some(why) = p.hide_problem(ent.as_ref().map(|e| &e.def)) {
+            return Err(Error::field("hide", why));
+        }
         if let Some(s) = &p.shared {
             if !ferrum_meta::SHARED_REACH.contains(&s.as_str()) {
                 return Err(Error::field("shared", "read (the comments and files staff share) or add (and their own)"));
@@ -1020,12 +1023,12 @@ impl Kernel {
         }
         sqlx::query(
             "insert into role_permission (tenant_id, role, entity, can_read, can_write, can_create, can_delete, can_submit, can_cancel, \
-             can_export, can_import, if_owner, read_groups, write_groups, match_rule, rule_key, via, actions, shared) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) \
+             can_export, can_import, if_owner, read_groups, write_groups, match_rule, rule_key, via, actions, shared, hide, packaged) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, false) \
              on conflict (tenant_id, role, entity, if_owner, rule_key) do update set can_read = excluded.can_read, can_write = excluded.can_write, \
              can_create = excluded.can_create, can_delete = excluded.can_delete, can_submit = excluded.can_submit, can_cancel = excluded.can_cancel, \
              can_export = excluded.can_export, can_import = excluded.can_import, read_groups = excluded.read_groups, write_groups = excluded.write_groups, \
-             via = excluded.via, actions = excluded.actions, shared = excluded.shared",
+             via = excluded.via, actions = excluded.actions, shared = excluded.shared, hide = excluded.hide, packaged = false",
         )
         .bind(ctx.tenant)
         .bind(role)
@@ -1046,6 +1049,7 @@ impl Kernel {
         .bind(&p.via)
         .bind(&p.actions)
         .bind(&p.shared)
+        .bind(&p.hide)
         .execute(&mut **tx)
         .await?;
         notify_users(tx, ctx.tenant, None).await

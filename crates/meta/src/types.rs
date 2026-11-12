@@ -888,6 +888,10 @@ pub struct ActionDef {
     /// CEL condition on `doc` for showing/allowing the action.
     #[serde(default)]
     pub condition: Option<String>,
+    /// What a refusal for `condition` says (BD-44), as a rule's message: `{{ doc.<field> }}` shows the record as its
+    /// reader may read it. Without it, the platform's general words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition_message: Option<String>,
     /// The action only reads (a lookup, a preview): it runs without locking the record or
     /// writing an audit entry, in a read-only transaction when run on its own.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -929,6 +933,14 @@ pub struct TargetDef {
     /// A business calendar's name; none counts plain elapsed time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar: Option<String>,
+    /// Where each record names its calendar (BD-41): a data or select field of the record, or a link and such a
+    /// field of the linked record (`agreement.calendar`). Empty there, `calendar`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_field: Option<String>,
+    /// A date-time field of the record the clock starts from (`opened_at`), never later than the save that starts
+    /// it; empty, the clock starts at that save.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_field: Option<String>,
     /// The clock starts at the first save on which it holds; without it, when the record is created.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_when: Option<String>,
@@ -982,6 +994,29 @@ pub struct PublishedListDef {
     /// Origins that may show its pages in a frame (`https://host[:port]`); none by default (BD-24).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub frame_origins: Vec<String>,
+    /// A whole-number field counting each record page's views by visitors (BD-42): the page's own POST-back, once a
+    /// visitor a record a day.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count_views: Option<String>,
+    /// Whole-number fields counting "was this helpful" answers on each record page (BD-42): once a visitor a record,
+    /// changeable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub votes: Option<ListVotes>,
+}
+
+/// The fields a published list counts its record pages' votes in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListVotes {
+    pub up: String,
+    pub down: String,
+}
+
+impl PublishedListDef {
+    /// The fields the platform counts into for this list.
+    pub fn counters(&self) -> impl Iterator<Item = &String> {
+        self.count_views.iter().chain(self.votes.iter().flat_map(|v| [&v.up, &v.down]))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1029,6 +1064,38 @@ pub struct ActionParam {
     /// only: a transition keeps what it is given.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub secret: bool,
+    /// A `files` parameter (BD-44): the files at most (1 to 10; 1 without it), each at most `max_bytes` (10 MB at most
+    /// and without it), of the content types `accept` lists (`image/*` for a family; any without it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_files: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accept: Vec<String>,
+}
+
+/// The most files a `files` parameter takes, and the largest file.
+pub const MAX_PARAM_FILES: u32 = 10;
+pub const MAX_PARAM_BYTES: u64 = 10 << 20;
+
+impl ActionParam {
+    /// Why a file of `content_type` and `size` bytes, the `n`th given (from 1), may not go to this `files` parameter.
+    pub fn file_problem(&self, n: usize, content_type: &str, size: u64) -> Option<String> {
+        let most = self.max_files.unwrap_or(1).clamp(1, MAX_PARAM_FILES) as usize;
+        if n > most {
+            return Some(format!("{} takes at most {most} file(s)", self.label));
+        }
+        let largest = self.max_bytes.unwrap_or(MAX_PARAM_BYTES).min(MAX_PARAM_BYTES);
+        if size > largest {
+            return Some(format!("{} takes files of at most {largest} bytes", self.label));
+        }
+        let ct = content_type.split(';').next().unwrap_or_default().trim().to_lowercase();
+        let fits = |a: &String| a.strip_suffix("/*").map_or(*a == ct, |family| ct.split('/').next() == Some(family));
+        if !self.accept.is_empty() && !self.accept.iter().any(fits) {
+            return Some(format!("{} takes {}", self.label, self.accept.join(", ")));
+        }
+        None
+    }
 }
 
 /// What a secret parameter is shown as wherever it would be kept.
@@ -1368,6 +1435,10 @@ pub struct PermissionDef {
     /// nothing of it (the default). Members read every comment and file of a record they read, whatever this says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shared: Option<String>,
+    /// Fields and child tables of the entity this rule neither shows nor accepts: a person reaching a record only
+    /// through rules hiding a field does not read it, and nobody holding such a rule writes it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hide: Vec<String>,
 }
 
 /// What a rule's `shared` may say.
@@ -1521,6 +1592,31 @@ impl PermissionDef {
             None => serde_json::to_string(&self.condition_values()).unwrap_or_default(),
         };
         if via.is_empty() { key } else { format!("{via}|{key}") }
+    }
+
+    /// Whether the fields it hides may be hidden (`None`: they may): fields of the entity, never one the rule reaches
+    /// records by (its `where`, the first step of its `via`), the title field or a field of a unique key.
+    pub fn hide_problem(&self, entity: Option<&EntityDef>) -> Option<String> {
+        if self.hide.is_empty() {
+            return None;
+        }
+        let Some(e) = entity else { return Some("a rule for every entity hides nothing".into()) };
+        let via_head = self.via.as_deref().map(|v| v.trim().split('.').next().unwrap_or_default().to_string());
+        for name in &self.hide {
+            if !e.fields.iter().any(|f| &f.name == name) {
+                return Some(format!("{} has no field {name}", e.name));
+            }
+            let keyed = e.title_field.as_deref() == Some(name.as_str())
+                || e.fields.iter().any(|f| &f.name == name && f.unique)
+                || e.unique.iter().any(|k| k.contains(name));
+            if keyed {
+                return Some(format!("{name} names or keys the record; it cannot be hidden"));
+            }
+            if self.condition.contains_key(name) || via_head.as_deref() == Some(name.as_str()) {
+                return Some(format!("{name} is how this rule reaches its records; it cannot be hidden"));
+            }
+        }
+        None
     }
 
     /// Whether the actions it names are the entity's: `None` when they are.
@@ -1717,7 +1813,8 @@ impl DocumentAction {
 pub struct ApprovalStep {
     pub label: String,
     pub approvers: Approvers,
-    /// How many different people must approve: a number, `all` or `any` (the default).
+    /// How many different people must approve: a number, `all`, `any` (the default), or an expression over `doc` and
+    /// `settings` giving a number, worked out when the request is made and kept on it (BD-45).
     #[serde(default, skip_serializing_if = "ApprovalNeed::is_any")]
     pub need: ApprovalNeed,
     /// Over `doc` and `settings`: the step is skipped when it does not hold.
@@ -1758,11 +1855,13 @@ pub struct Approvers {
     pub expr: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ApprovalNeed {
     Count(u32),
     Word(NeedWord),
+    /// An expression giving the number (`doc.quorum`), clamped to 1 and to the approvers found.
+    Expr(String),
 }
 
 impl Default for ApprovalNeed {
