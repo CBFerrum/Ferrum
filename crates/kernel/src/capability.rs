@@ -113,6 +113,7 @@ fn param_schema(ptype: &str, to: Option<&str>, options: &[String]) -> Value {
     match ptype {
         "int" => json!({"type": "integer"}),
         "date" => json!({"type": "string", "format": "date"}),
+        "check" => json!({"type": "boolean"}),
         "select" => json!({"type": "string", "enum": options}),
         "link" => match to {
             Some(to) => json!({"type": "string", "format": "uuid", "x-ferrum-link": to, "description": format!("Id of a {to} record")}),

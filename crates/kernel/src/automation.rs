@@ -135,16 +135,23 @@ pub enum AutomationAction {
         replace: bool,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         values: BTreeMap<String, String>,
+        /// An expression giving the record it is for, of the template's entity: the run's own (the default) or, in a
+        /// `for_each`, the item's (`item.id`); any other is refused when it runs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        record: Option<String>,
     },
     /// Documents about a query that groups by a link (BD-21): one file per record the report's rows link to, kept on it
     /// and, with `message`, sent to it attached (each customer their statement). Read and made as the workspace, in
     /// jobs of [`crate::documents::MAX_GROUPS`] records each, the next queued after the last record done; the first is
-    /// queued in the run's transaction. `params` (the report's `filters`, `from`, `to`) as written; `values` expressions
-    /// the template reads as `values`. Gives `{job}`.
+    /// queued in the run's transaction. `params` (the report's `filters`, `from`, `to`) as written, each of
+    /// `params_from` an expression over what other values see (an action's own `params`) put over them; `values`
+    /// expressions the template reads as `values`. Gives `{job}`.
     ReportDocuments {
         template: String,
         #[serde(default, skip_serializing_if = "Value::is_null")]
         params: Value,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        params_from: BTreeMap<String, String>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         values: BTreeMap<String, String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -272,8 +279,10 @@ fn sources(a: &AutomationAction) -> Vec<&str> {
                 .chain(attachments.iter().map(String::as_str))
                 .collect();
         }
-        AutomationAction::Generate { name, language, values, .. } => name.iter().chain(language.iter()).chain(values.values()).collect(),
-        AutomationAction::ReportDocuments { values, .. } => values.values().collect(),
+        AutomationAction::Generate { name, language, values, record, .. } => {
+            name.iter().chain(language.iter()).chain(values.values()).chain(record.iter()).collect()
+        }
+        AutomationAction::ReportDocuments { values, params_from, .. } => values.values().chain(params_from.values()).collect(),
         AutomationAction::Invoke { input, key, .. } => input.values().chain(key.iter()).collect(),
     };
     all.into_iter().map(String::as_str).collect()
@@ -1156,8 +1165,19 @@ pub(crate) async fn execute(
             };
             return Ok(serde_json::json!(crate::messages::send(k, tx, ctx, &m).await?));
         }
-        AutomationAction::Generate { template, name, language, replace, values } => {
-            let id = record.ok_or_else(|| Error::invalid("generate needs a record"))?;
+        AutomationAction::Generate { template, name, language, replace, values, record: named } => {
+            let id = match named {
+                None => record.ok_or_else(|| Error::invalid("generate needs a record"))?,
+                // The run's own record, or the item a loop is on: nothing else this run did not reach.
+                Some(src) => {
+                    let id = crate::doc::uuid_of(Some(&eval(&src)?)).ok_or_else(|| Error::invalid(format!("generate: {src} gives no record")))?;
+                    let item = extra.iter().find(|(n, _)| *n == "item").and_then(|(_, v)| crate::doc::uuid_of(v.get("id")));
+                    if Some(id) != record && Some(id) != item {
+                        return Err(Error::invalid(format!("generate: {src} names neither this record nor the item of its loop")));
+                    }
+                    id
+                }
+            };
             let mut given = Map::new();
             for (n, expr) in values {
                 given.insert(n, eval(&expr)?);
@@ -1167,10 +1187,16 @@ pub(crate) async fn execute(
             let made = Box::pin(crate::documents::generate(k, tx, ctx, &g)).await.map_err(|e| crate::pack::about("generate", e))?;
             return serde_json::to_value(made).map_err(Error::internal);
         }
-        AutomationAction::ReportDocuments { template, params, values, message } => {
+        AutomationAction::ReportDocuments { template, mut params, params_from, values, message } => {
             let mut given = Map::new();
             for (n, expr) in values {
                 given.insert(n, eval(&expr)?);
+            }
+            if !params_from.is_empty() && !params.is_object() {
+                params = Value::Object(Map::new());
+            }
+            for (n, expr) in params_from {
+                params[n] = eval(&expr)?;
             }
             let run = crate::documents::QueryRun { template, params, values: given, language: None };
             return Ok(serde_json::json!({"job": crate::documents::queue_groups(tx, ctx, run, message).await?}));

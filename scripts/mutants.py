@@ -762,6 +762,7 @@ MUTANTS = [
     # Documents about a query (docs/api.md, A report as a document; BD-21).
     ("query-documents-person-unbounded", "crates/kernel/src/documents.rs", "    if person && total > MAX_GROUPS {", "    if false {", STUDIO_QUERY_DOCUMENTS),
     ("query-documents-cursor-ignored", "crates/kernel/src/documents.rs", "filter(|(id, _)| after.is_none_or(|a| *id > a))", "filter(|_| true)", STUDIO_QUERY_DOCUMENTS),
+    ("generate-any-record", "crates/kernel/src/automation.rs", "if Some(id) != record && Some(id) != item {", "if false {", STUDIO_QUERY_DOCUMENTS),
     # A report is registered by one app, and listed once however often the apps register.
     ("reports-added-again", "crates/domain/src/reports.rs", "*SOURCES.write().map_err(|_| \"the report sources are poisoned\".to_string())? = sources.into_iter().map(|(_, s)| s).collect();", "SOURCES.write().map_err(|_| \"the report sources are poisoned\".to_string())?.extend(sources.into_iter().map(|(_, s)| s));", REPORTS_ONCE),
     ("report-name-twice", "crates/domain/src/reports.rs", "if let Some(other) = by.insert(name.to_string(), who) {", "if let Some(other) = by.insert(name.to_string(), who).filter(|_| false) {", REPORTS_UNIT),
