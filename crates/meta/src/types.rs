@@ -58,6 +58,48 @@ pub struct PackageManifest {
     /// Key `{package}.{name}`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub documents: Vec<DocumentDef>,
+    /// Approval policies on submitting or cancelling this package's own documents (BD-19), as defaults: a workspace
+    /// switches one off, replaces or edits it with `set_approval`, and a release changing it flags the workspace's
+    /// (a transition's default is the `approval` of the package's workflow, changed with `set_transition_approval`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approvals: Vec<PackageApproval>,
+    /// Automations on this package's own entities, installed in each workspace as defaults it may switch off or edit:
+    /// a release changes one the workspace has not edited, and flags one it has.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub automations: Vec<PackageAutomation>,
+}
+
+/// A package's approval policy on submitting or cancelling its documents ([`PackageManifest::approvals`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageApproval {
+    pub entity: String,
+    pub on: DocumentAction,
+    pub policy: ApprovalPolicy,
+}
+
+/// A package's automation ([`PackageManifest::automations`]): what an administrator saves as one, `name` unique in the
+/// package and the workspace's copy found by it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageAutomation {
+    pub name: String,
+    pub entity: String,
+    /// `created`, `updated`, `submitted`, `cancelled`, `deleted`, `transitioned`, or `scheduled` with `schedule`.
+    pub event: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<Value>,
+    pub actions: Vec<Value>,
+}
+
+impl PackageAutomation {
+    /// As a workspace's automation row holds it (what is compared to tell an edited copy).
+    pub fn definition(&self) -> Value {
+        serde_json::json!({"name": self.name, "entity": self.entity, "event": self.event, "condition": self.condition,
+            "schedule": self.schedule, "actions": self.actions})
+    }
 }
 
 /// What a document template makes: a page (HTML, a PDF where the server makes PDFs), text (fixed-width, a label
@@ -1721,6 +1763,13 @@ pub enum OverlayOp {
     /// documents, outside any workflow (BD-19); `approval: null` takes it away.
     SetApproval {
         on: DocumentAction,
+        approval: Option<ApprovalPolicy>,
+    },
+    /// Tenant-only: the approval policy on the workflow's transition `action` from `from` in place of its package's
+    /// (BD-19); `approval: null` switches it off.
+    SetTransitionApproval {
+        action: String,
+        from: String,
         approval: Option<ApprovalPolicy>,
     },
     /// Package-only: a form section for fields the package adds, after the section holding the

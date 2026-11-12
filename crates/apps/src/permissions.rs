@@ -246,6 +246,8 @@ fn describe(op: &OverlayOp) -> String {
         OverlayOp::SetPrintTemplate { .. } => "replaces the print template".into(),
         OverlayOp::SetApproval { on, approval: Some(_) } => format!("asks approval before {}", on.as_str()),
         OverlayOp::SetApproval { on, approval: None } => format!("takes away the approval before {}", on.as_str()),
+        OverlayOp::SetTransitionApproval { action, from, approval: Some(_) } => format!("asks approval before {action} from {from}"),
+        OverlayOp::SetTransitionApproval { action, from, approval: None } => format!("takes away the approval before {action} from {from}"),
         OverlayOp::AddAction { action } => format!("adds action {}", action.name),
         OverlayOp::RemoveAction { name } => format!("removes action {name}"),
         OverlayOp::DefineModule { module } => format!("defines menu {}", module.name),
