@@ -57,6 +57,7 @@ CONNECT = ("-p", "ferrum-kernel", "--test", "connect_it")
 COLLAB = ("-p", "ferrum-kernel", "--test", "collab_it")
 TRANSITIONS = ("-p", "ferrum-kernel", "--test", "transitions_it")
 APPROVALS = ("-p", "ferrum-kernel", "--test", "approvals_it")
+DOCUMENT_APPROVALS = ("-p", "ferrum-kernel", "--test", "document_approvals_it")
 HOST_UNIT = ("-p", "ferrum-plugins", "--lib", "host::tests")
 SOCKETS_UNIT = ("-p", "ferrum-plugins", "--lib", "sockets::tests")
 EGRESS = ("-p", "ferrum-server", "--test", "assistant_egress_it")
@@ -662,6 +663,10 @@ MUTANTS = [
     ("approver-reads-after-deciding", "crates/kernel/src/approvals.rs", "and d.decider = $5))", "and false))", APPROVALS),
     ("approver-reads-any-record", "crates/kernel/src/approvals.rs", "and entity = $2 and record_id = $3 and status = 'pending' and exists (", "and entity = $2 and ($3::uuid is not null) and status = 'pending' and exists (", APPROVALS),
     ("approver-sees-hidden-fields", "crates/kernel/src/approvals.rs", "let mut doc = self.mask(ctx, &ent, full.clone());", "let mut doc = full.clone();", APPROVALS),
+    ("document-approval-skipped", "crates/kernel/src/doc.rs", "let Some(a) = ent.document_approvals.get(&on) else {", "let Some(a) = ent.document_approvals.get(&on).filter(|_| false) else {", DOCUMENT_APPROVALS),
+    ("document-approval-system-bypasses", "crates/kernel/src/doc.rs", "if ctx.is_system && a.policy.system_bypass {", "if ctx.is_system {", DOCUMENT_APPROVALS),
+    ("document-approval-completes-as-system", "crates/kernel/src/approvals.rs", "Some(u) => self.load_ctx(ctx.tenant, u, None, ctx.request_id.clone()).await,", "Some(_) => Ok(crate::actions::system(ctx)),", DOCUMENT_APPROVALS),
+    ("document-approval-lock-ignored", "crates/kernel/src/approvals.rs", "        if policy.lock {", "        if false {", DOCUMENT_APPROVALS),
     ("transition-approval-names-unchecked", "crates/kernel/src/customize.rs", "        crate::approvals::check_names(tx, ctx.tenant, was, &now).await?;\n", "\n", APPROVALS),
     # Service targets (docs/api.md, Service targets).
     ("target-pause-ignored", "crates/logic/src/target.rs", "        if running && said.pause {", "        if false {", LOGIC_UNIT),

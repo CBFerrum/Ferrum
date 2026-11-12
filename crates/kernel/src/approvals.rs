@@ -13,7 +13,7 @@ use crate::error::{Error, FieldError, Result};
 use crate::{Doc, Kernel};
 use chrono::{DateTime, Utc};
 use ferrum_logic::approval::{Decided, Plan};
-use ferrum_meta::{ApprovalNeed, ApprovalPolicy, Approvers, EffEntity, Expr, NeedWord, Schema, Scope, WorkflowTransition};
+use ferrum_meta::{ApprovalNeed, ApprovalPolicy, Approvers, DocumentAction, EffEntity, Expr, NeedWord, Schema, Scope};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -70,9 +70,12 @@ struct Request {
     steps: Value,
     status: String,
     created_at: DateTime<Utc>,
+    /// On the document pipeline's submit or cancel (`action`), not a workflow transition.
+    document: bool,
+    failure: Option<String>,
 }
 
-const COLUMNS: &str = "id, entity, record_id, action, from_state, requester, params, policy, steps, status, created_at";
+const COLUMNS: &str = "id, entity, record_id, action, from_state, requester, params, policy, steps, status, created_at, document, failure";
 
 impl Request {
     fn parts(&self) -> Result<(ApprovalPolicy, Vec<Step>)> {
@@ -372,9 +375,10 @@ async fn open_next(k: &Kernel, ctx: &Ctx, tx: &mut Tx, on: &On<'_>, steps: &mut 
 }
 
 impl Kernel {
-    /// Asks for approval of transition `t` of record `id` (`doc`, locked) under `policy`, as `ctx` (who took it, its
-    /// gates passed): a request with its first stage open, the record left where it is. `None` when every step's
-    /// `when` is false: the transition goes through at once.
+    /// Asks for approval of `action` of record `id` (`doc`, locked) under `policy`, as `ctx` (who took it, its gates
+    /// passed): a workflow transition from state `from`, or with `document` the pipeline's submit or cancel. A request
+    /// with its first stage open, the record left where it is. `None` when every step's `when` is false: the action
+    /// goes through at once.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn request_approval(
         &self,
@@ -383,7 +387,7 @@ impl Kernel {
         ent: &EffEntity,
         id: Uuid,
         doc: &Doc,
-        t: &WorkflowTransition,
+        (action, from, document): (&str, &str, bool),
         policy: &ApprovalPolicy,
         params: &Value,
     ) -> Result<Option<Value>> {
@@ -399,27 +403,28 @@ impl Kernel {
             return Ok(None);
         }
         let request = Uuid::now_v7();
-        let on = On { ent, record: id, doc, request, requester: ctx.user, action: &t.action, policy };
+        let on = On { ent, record: id, doc, request, requester: ctx.user, action, policy };
         open_next(self, ctx, tx, &on, &mut steps).await?;
         let steps_json = serde_json::to_value(&steps).map_err(|e| Error::internal(e.to_string()))?;
         sqlx::query(
-            "insert into approval_request (tenant_id, id, entity, record_id, action, from_state, requester, params, policy, steps, next_due) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+            "insert into approval_request (tenant_id, id, entity, record_id, action, from_state, requester, params, policy, steps, next_due, document) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(ctx.tenant)
         .bind(request)
         .bind(&ent.def.name)
         .bind(id)
-        .bind(&t.action)
-        .bind(&t.from)
+        .bind(action)
+        .bind(from)
         .bind((!ctx.user.is_nil()).then_some(ctx.user))
         .bind(params)
         .bind(serde_json::to_value(policy).map_err(|e| Error::internal(e.to_string()))?)
         .bind(&steps_json)
         .bind(next_due(&steps))
+        .bind(document)
         .execute(&mut **tx)
         .await?;
-        crate::audit::record(tx, ctx, &ent.def.name, id, "approval:requested", None, json!({"request": request, "action": t.action, "params": params})).await?;
+        crate::audit::record(tx, ctx, &ent.def.name, id, "approval:requested", None, json!({"request": request, "action": action, "params": params})).await?;
         let r = by_id(tx, ctx.tenant, request).await?;
         Ok(Some(summary(tx, ctx.tenant, ent, &r).await?))
     }
@@ -527,14 +532,59 @@ impl Kernel {
                 save_steps(tx, ctx.tenant, req.id, &steps, "approved").await?;
                 tell(tx, ctx, &[requester], &format!("Approved: {} {record_title}", req.action), entity, id).await?;
                 // Once, here: the request is no longer pending, so nothing completes it again.
-                let system = self.on_behalf(ctx, req.requester).await;
-                Box::pin(self.take_tx(&system, tx, entity, id, &req.action, None, &req.params, Some(req.id))).await?;
+                if req.document {
+                    self.complete_document(ctx, tx, entity, id, &req, &record_title).await?;
+                } else {
+                    let system = self.on_behalf(ctx, req.requester).await;
+                    Box::pin(self.take_tx(&system, tx, entity, id, &req.action, None, &req.params, Some(req.id))).await?;
+                }
             } else {
                 save_steps(tx, ctx.tenant, req.id, &steps, "pending").await?;
             }
         }
         let r = by_id(tx, ctx.tenant, req.id).await?;
         summary(tx, ctx.tenant, &ent, &r).await
+    }
+
+    /// Completes an approved submit or cancel (`req`) of record `id` as its requester at this moment, not as the system:
+    /// their rights, the app's hooks and checks as if they pressed it now (the system, when the system asked). Where
+    /// that is refused (their rights gone, a check of the app's), nothing of it stays: the request fails, saying why,
+    /// and the requester is told. What may be tried again (a conflict between transactions) is passed on instead.
+    async fn complete_document(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, req: &Request, title: &str) -> Result<()> {
+        let who = match req.requester {
+            Some(u) => self.load_ctx(ctx.tenant, u, None, ctx.request_id.clone()).await,
+            None => Ok(crate::actions::system(&Ctx::system(ctx.tenant, ctx.schema.clone()))),
+        };
+        sqlx::query("savepoint approval_completes").execute(&mut **tx).await?;
+        let done = match who {
+            Ok(mut who) => {
+                who.depth = ctx.depth;
+                if req.action == DocumentAction::Cancel.as_str() {
+                    Box::pin(self.cancel_inner(&who, tx, entity, id, None, None)).await
+                } else {
+                    Box::pin(self.submit_inner(&who, tx, entity, id, None, None)).await
+                }
+            }
+            Err(e) => Err(e),
+        };
+        let why = match done {
+            Ok(_) => {
+                sqlx::query("release savepoint approval_completes").execute(&mut **tx).await?;
+                return Ok(());
+            }
+            Err(e) if e.is_retryable() || matches!(e, Error::Unavailable(_)) => return Err(e),
+            Err(e) => e.to_string(),
+        };
+        sqlx::query("rollback to savepoint approval_completes").execute(&mut **tx).await?;
+        sqlx::query("update approval_request set status = 'failed', failure = $3 where tenant_id = $1 and id = $2")
+            .bind(ctx.tenant)
+            .bind(req.id)
+            .bind(&why)
+            .execute(&mut **tx)
+            .await?;
+        crate::audit::record(tx, ctx, entity, id, "approval:failed", None, json!({"request": req.id, "action": req.action, "failure": why})).await?;
+        let requester = req.requester.into_iter().collect::<Vec<_>>();
+        tell(tx, ctx, &requester, &format!("Approved, but not done: {} {title}: {why}", req.action), entity, id).await
     }
 
     /// The system on `requester`'s behalf: how a transition completes once approved, and a rejection moves its record.
@@ -570,14 +620,29 @@ impl Kernel {
     }
 
     /// A save of record `id` from `old` to `new` while approval is pending: a change to a field the policy names
-    /// cancels the decisions so far and opens its steps again; other edits leave them.
+    /// cancels the decisions so far and opens its steps again; other edits leave them, or, the policy locking the
+    /// record, are refused.
     pub(crate) async fn approval_record_changed(&self, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, id: Uuid, old: &Doc, new: &Doc) -> Result<()> {
-        let watched = ent.workflow.as_ref().is_some_and(|w| w.def.transitions.iter().any(|t| t.approval.as_ref().is_some_and(|p| !p.reset_on.is_empty())));
-        if !watched {
+        let watched = |p: &ApprovalPolicy| !p.reset_on.is_empty() || p.lock;
+        let on_transitions = ent.workflow.iter().flat_map(|w| &w.def.transitions).filter_map(|t| t.approval.as_ref()).any(watched);
+        if !on_transitions && !ent.document_approvals.values().any(|a| watched(&a.policy)) {
             return Ok(());
         }
         let Some(req) = pending(tx, ctx.tenant, &ent.def.name, id).await? else { return Ok(()) };
         let (policy, _) = req.parts()?;
+        if policy.lock {
+            // What the record says, not what the server works out from it (a total of its lines, a formula).
+            let derived = |f: &ferrum_meta::FieldDef| f.computed.is_some() || f.rollup.is_some() || f.fetch_from.is_some();
+            let edited = ent.def.fields.iter().filter(|f| !derived(f) && !policy.reset_on.contains(&f.name)).find(|f| old.get(&f.name) != new.get(&f.name));
+            if let Some(f) = edited {
+                return Err(Error::Conflict(format!(
+                    "this {} is awaiting approval of '{}' and stays as it is meanwhile ({} would change): recall it first",
+                    ent.def.label.to_lowercase(),
+                    req.action,
+                    f.label.as_deref().unwrap_or(&f.name)
+                )));
+            }
+        }
         let changed: Vec<&String> = policy.reset_on.iter().filter(|f| old.get(*f) != new.get(*f)).collect();
         if changed.is_empty() {
             return Ok(());
@@ -602,7 +667,7 @@ impl Kernel {
 
     /// A transition of record `id` completed: a request still pending on it is over.
     pub(crate) async fn approvals_moved(&self, tx: &mut Tx, ctx: &Ctx, ent: &EffEntity, id: Uuid) -> Result<()> {
-        if !ent.workflow.as_ref().is_some_and(|w| w.def.transitions.iter().any(|t| t.approval.is_some())) {
+        if !ent.workflow.as_ref().is_some_and(|w| w.def.transitions.iter().any(|t| t.approval.is_some())) && ent.document_approvals.is_empty() {
             return Ok(());
         }
         sqlx::query(
@@ -830,7 +895,12 @@ async fn by_id(tx: &mut Tx, tenant: Uuid, id: Uuid) -> Result<Request> {
 async fn summary(tx: &mut Tx, tenant: Uuid, ent: &EffEntity, r: &Request) -> Result<Value> {
     let (policy, steps) = r.parts()?;
     let decided = decisions(tx, tenant, r.id).await?;
-    let to = ent.workflow.as_ref().and_then(|w| w.def.transitions.iter().find(|t| t.action == r.action && t.from == r.from_state)).map(|t| t.to.clone());
+    let to = ent
+        .workflow
+        .as_ref()
+        .filter(|_| !r.document)
+        .and_then(|w| w.def.transitions.iter().find(|t| t.action == r.action && t.from == r.from_state))
+        .map(|t| t.to.clone());
     let steps: Vec<Value> = steps
         .iter()
         .zip(&policy.steps)
@@ -842,25 +912,28 @@ async fn summary(tx: &mut Tx, tenant: Uuid, ent: &EffEntity, r: &Request) -> Res
     Ok(json!({
         "id": r.id, "entity": r.entity, "record": r.record_id, "action": r.action, "from": r.from_state, "to": to,
         "requester": r.requester, "requested_at": r.created_at, "status": r.status, "params": r.params,
-        "steps": steps, "decisions": decided,
+        "steps": steps, "decisions": decided, "document": r.document, "failure": r.failure,
     }))
 }
 
 /// Refuses customizations that leave an approval naming a role or a business calendar the workspace does not have,
 /// that `was` did not name already, saying which transition and step.
 pub(crate) async fn check_names(tx: &mut Tx, tenant: Uuid, was: &Schema, now: &Schema) -> Result<()> {
-    // (entity, action, step, kind, name)
+    // (entity, where, step, kind, name)
     let named = |s: &Schema| -> Vec<(String, String, usize, &'static str, String)> {
         let mut out = Vec::new();
         for e in s.entities.values() {
-            for t in e.workflow.iter().flat_map(|w| &w.def.transitions) {
-                for (i, st) in t.approval.iter().flat_map(|p| p.steps.iter().enumerate()) {
+            let on_transitions =
+                e.workflow.iter().flat_map(|w| &w.def.transitions).filter_map(|t| Some((format!("transition {}", t.action), t.approval.as_ref()?)));
+            let on_documents = e.document_approvals.iter().map(|(on, a)| (on.as_str().to_string(), &a.policy));
+            for (action, p) in on_transitions.chain(on_documents) {
+                for (i, st) in p.steps.iter().enumerate() {
                     let roles = st.approvers.role.iter().chain(st.escalate_to.iter().flat_map(|x| x.role.iter()));
                     for r in roles {
-                        out.push((e.def.name.clone(), t.action.clone(), i, "role", r.clone()));
+                        out.push((e.def.name.clone(), action.clone(), i, "role", r.clone()));
                     }
                     if let Some(c) = &st.calendar {
-                        out.push((e.def.name.clone(), t.action.clone(), i, "calendar", c.clone()));
+                        out.push((e.def.name.clone(), action.clone(), i, "calendar", c.clone()));
                     }
                 }
             }
@@ -876,7 +949,7 @@ pub(crate) async fn check_names(tx: &mut Tx, tenant: Uuid, was: &Schema, now: &S
         };
         let there: bool = sqlx::query_scalar(sql).bind(tenant).bind(&name).fetch_one(&mut **tx).await?;
         if !there {
-            return Err(Error::invalid(format!("customization rejected: {entity}: transition {action}, approval step {}: there is no {kind} {name}", i + 1)));
+            return Err(Error::invalid(format!("customization rejected: {entity}: {action}, approval step {}: there is no {kind} {name}", i + 1)));
         }
     }
     Ok(())
