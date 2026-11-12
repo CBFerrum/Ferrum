@@ -257,8 +257,19 @@ async fn awaiting(tx: &mut Tx, ctx: &Ctx, entity: &str, id: Uuid) -> Result<Opti
     policy.map(|p| serde_json::from_value(p).map_err(|e| Error::internal(format!("approval policy: {e}")))).transpose()
 }
 
-/// Tells `users`, and whoever stands in for those of them away today, in the way each chose for approvals.
-async fn tell(tx: &mut Tx, ctx: &Ctx, users: &[Uuid], title: &str, entity: &str, record: Uuid) -> Result<()> {
+/// Tells `users`, and whoever stands in for those of them away today, in the way each chose for approvals; with the
+/// policy's `message`, by that template instead (`notice` says which notice this is).
+#[allow(clippy::too_many_arguments)]
+async fn tell(
+    k: &Kernel,
+    tx: &mut Tx,
+    ctx: &Ctx,
+    (message, notice): (Option<&str>, &str),
+    users: &[Uuid],
+    title: &str,
+    entity: &str,
+    record: Uuid,
+) -> Result<()> {
     let away: Vec<Uuid> =
         sqlx::query_scalar("select substitute from person_away where tenant_id = $1 and user_id = any($2) and current_date between starts_on and ends_on")
             .bind(ctx.tenant)
@@ -266,6 +277,13 @@ async fn tell(tx: &mut Tx, ctx: &Ctx, users: &[Uuid], title: &str, entity: &str,
             .fetch_all(&mut **tx)
             .await?;
     let all: BTreeSet<Uuid> = users.iter().chain(&away).copied().filter(|u| !u.is_nil()).collect();
+    if let Some(template) = message {
+        let values = serde_json::Map::from_iter([("notice".to_string(), json!(notice)), ("title".to_string(), json!(title))]);
+        let to = all.into_iter().map(crate::messages::Recipient::user).collect();
+        let m = crate::messages::Message { template: template.into(), entity: Some(entity.into()), record: Some(record), to, values, ..Default::default() };
+        crate::messages::send(k, tx, ctx, &m).await?;
+        return Ok(());
+    }
     for u in all {
         crate::notify::send_kind(tx, ctx.tenant, u, "approval", "inapp", title, None, Some(entity), Some(record)).await?;
     }
@@ -367,7 +385,7 @@ async fn open_next(k: &Kernel, ctx: &Ctx, tx: &mut Tx, on: &On<'_>, steps: &mut 
             s.escalate_at = due(tx, ctx.tenant, def.calendar.as_deref(), now, def.escalate_after.as_deref()).await?;
             (s.state, s.approvers, s.need, s.opened_at) = ("open".into(), who, need, Some(now));
             let title = format!("Waiting for your approval: {} {} ({})", on.action, crate::collab::record_title(ctx, &on.ent.def.name, on.doc), def.label);
-            tell(tx, ctx, &s.approvers, &title, &on.ent.def.name, on.record).await?;
+            tell(k, tx, ctx, (on.policy.message.as_deref(), "waiting"), &s.approvers, &title, &on.ent.def.name, on.record).await?;
         }
         return Ok(false);
     }
@@ -521,7 +539,8 @@ impl Kernel {
                 let system = self.on_behalf(ctx, req.requester).await;
                 self.write_state(&system, tx, &ent, id, &doc, to, "approval:rejected").await?;
             }
-            tell(tx, ctx, &[requester], &format!("Not approved: {} {record_title}", req.action), entity, id).await?;
+            tell(self, tx, ctx, (policy.message.as_deref(), "rejected"), &[requester], &format!("Not approved: {} {record_title}", req.action), entity, id)
+                .await?;
         } else {
             let decided = decisions(tx, ctx.tenant, req.id).await?;
             let of: Vec<&Decision> = decided.iter().filter(|d| d.step as usize == i).collect();
@@ -530,7 +549,8 @@ impl Kernel {
             }
             if open_next(self, ctx, tx, &on, &mut steps).await? {
                 save_steps(tx, ctx.tenant, req.id, &steps, "approved").await?;
-                tell(tx, ctx, &[requester], &format!("Approved: {} {record_title}", req.action), entity, id).await?;
+                tell(self, tx, ctx, (policy.message.as_deref(), "approved"), &[requester], &format!("Approved: {} {record_title}", req.action), entity, id)
+                    .await?;
                 // Once, here: the request is no longer pending, so nothing completes it again.
                 if req.document {
                     self.complete_document(ctx, tx, entity, id, &req, &record_title).await?;
@@ -584,7 +604,8 @@ impl Kernel {
             .await?;
         crate::audit::record(tx, ctx, entity, id, "approval:failed", None, json!({"request": req.id, "action": req.action, "failure": why})).await?;
         let requester = req.requester.into_iter().collect::<Vec<_>>();
-        tell(tx, ctx, &requester, &format!("Approved, but not done: {} {title}: {why}", req.action), entity, id).await
+        let message = req.parts().ok().and_then(|(p, _)| p.message);
+        tell(self, tx, ctx, (message.as_deref(), "not_done"), &requester, &format!("Approved, but not done: {} {title}: {why}", req.action), entity, id).await
     }
 
     /// The system on `requester`'s behalf: how a transition completes once approved, and a rejection moves its record.
@@ -871,7 +892,8 @@ impl Kernel {
                     .filter(|p| !decided.iter().any(|d| d.step as usize == i && !d.void && d.person() == **p))
                     .copied()
                     .collect();
-                tell(&mut tx, &ctx, &waiting, &format!("Reminder, waiting for your approval: {} {title} ({})", req.action, def.label), entity, record).await?;
+                let said = format!("Reminder, waiting for your approval: {} {title} ({})", req.action, def.label);
+                tell(self, &mut tx, &ctx, (policy.message.as_deref(), "reminder"), &waiting, &said, entity, record).await?;
                 crate::audit::record(&mut tx, &ctx, entity, record, "approval:reminded", None, json!({"request": req.id, "step": i + 1})).await?;
                 did = true;
             }
@@ -880,7 +902,8 @@ impl Kernel {
                 if let Some(to) = &def.escalate_to {
                     let out = excluded(&mut tx, &ctx, &on, i, &decided).await?;
                     let more: Vec<Uuid> = resolve(&ctx, &mut tx, &ent, &doc, to).await?.into_iter().filter(|u| !out.contains(u) && !steps[i].may(*u)).collect();
-                    tell(&mut tx, &ctx, &more, &format!("Escalated to you for approval: {} {title} ({})", req.action, def.label), entity, record).await?;
+                    let said = format!("Escalated to you for approval: {} {title} ({})", req.action, def.label);
+                    tell(self, &mut tx, &ctx, (policy.message.as_deref(), "escalated"), &more, &said, entity, record).await?;
                     steps[i].escalated.extend(more);
                 }
                 crate::audit::record(

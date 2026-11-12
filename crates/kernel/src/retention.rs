@@ -431,7 +431,7 @@ impl Kernel {
         let emails = addresses(tx, tenant, &email).await?;
         let (restricted, withdrawn): (bool, bool) = sqlx::query_as(
             "select exists (select 1 from processing_restriction where tenant_id = $1 and lifted_at is null and lower(email::text) = any($2)), \
-                    exists (select 1 from contact_consent where tenant_id = $1 and purpose = 'marketing' and not granted and lower(email::text) = any($2))",
+                    exists (select 1 from contact_consent where tenant_id = $1 and purpose = 'marketing' and channel = 'email' and not granted and lower(email::text) = any($2))",
         )
         .bind(tenant)
         .bind(&emails)
@@ -451,7 +451,7 @@ impl Kernel {
         let Purpose::Marketing = purpose else { return Err(Error::field("purpose", "consent is recorded for marketing; transactional notices do not ask it")) };
         sqlx::query(
             "insert into contact_consent (tenant_id, email, purpose, granted, source, recorded_by) values ($1, $2, 'marketing', $3, $4, $5) \
-             on conflict (tenant_id, email, purpose) do update set granted = excluded.granted, source = excluded.source, recorded_by = excluded.recorded_by, recorded_at = now()",
+             on conflict (tenant_id, email, purpose, channel) do update set granted = excluded.granted, source = excluded.source, recorded_by = excluded.recorded_by, recorded_at = now()",
         )
         .bind(ctx.tenant)
         .bind(&email)
@@ -507,7 +507,7 @@ pub(crate) async fn carry_contact_choices(
         let consent = sqlx::query(
             "insert into contact_consent (tenant_id, email, purpose, granted, source, recorded_by) \
              select tenant_id, $3, purpose, granted, left('followed from ' || $2 || ': ' || source, 200), $4 from contact_consent \
-             where tenant_id = $1 and email = $2 on conflict (tenant_id, email, purpose) do nothing",
+             where tenant_id = $1 and email = $2 and channel = 'email' on conflict (tenant_id, email, purpose, channel) do nothing",
         )
         .bind(ctx.tenant)
         .bind(&was)

@@ -80,6 +80,12 @@ pub struct Pack {
     pub solutions: Vec<Value>,
     #[serde(default)]
     pub records: Vec<Records>,
+    /// The workspace's own message templates and its edited copies of packages' defaults (BD-20).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<ferrum_meta::MessageDef>,
+    /// Its text and chat-app channel connections, described, never with their secrets; installed turned off.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub channels: Vec<crate::messages::PackChannel>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -586,6 +592,7 @@ impl Kernel {
         let (roles, role_packages) = self.export_roles(ctx, &mut tx, &installed).await?;
         let automations = export_automations(ctx, &mut tx).await?;
         let studio = self.export_studio(ctx, &mut tx).await?;
+        let (messages, channels) = crate::messages::for_pack(&mut tx, ctx.tenant).await?;
         let mut records = Vec::new();
         let mut asked: Vec<&String> = Vec::new();
         for e in &o.records {
@@ -619,6 +626,8 @@ impl Kernel {
             studio,
             solutions,
             records,
+            messages,
+            channels,
         };
         pack.requires.packages = requirements(ctx, &pack, &role_packages, &installed);
         let out = serde_json::to_value(&pack).map_err(Error::internal)?;
@@ -905,6 +914,14 @@ impl Kernel {
             summary.entry("automations").or_default().add(a.name.clone(), status);
         }
         self.install_studio(ctx, tx, &pack.studio, summary.entry("studio").or_default()).await?;
+        for m in &pack.messages {
+            let status = crate::messages::save_template(self, tx, ctx, m).await.map_err(|e| about(&format!("message {}", m.key), e))?;
+            summary.entry("messages").or_default().add(m.key.clone(), status);
+        }
+        for c in &pack.channels {
+            let status = crate::messages::install_channel(self, tx, ctx, c).await.map_err(|e| about(&format!("channel {}", c.name), e))?;
+            summary.entry("channels").or_default().add(c.name.clone(), status);
+        }
         for sec in &pack.records {
             let section = summary.entry("records").or_default();
             self.install_records(ctx, tx, sec, section).await?;

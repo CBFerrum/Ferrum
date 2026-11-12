@@ -43,7 +43,7 @@ pub fn loads() -> usize {
 
 /// `{Entity: record}` for each of `names`: its one record, or its fields' defaults while it has none, as an expression
 /// sees a record, every field present and no secret. A name that is not (or no longer) a settings entity is left out.
-async fn load(k: &Kernel, ctx: &Ctx, tx: &mut Tx, names: &BTreeSet<String>) -> Result<Value> {
+pub(crate) async fn load(k: &Kernel, ctx: &Ctx, tx: &mut Tx, names: &BTreeSet<String>) -> Result<Value> {
     LOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let workspace = Ctx::system(ctx.tenant, ctx.schema.clone());
     let mut out = Map::new();

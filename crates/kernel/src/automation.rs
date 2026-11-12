@@ -68,9 +68,13 @@ pub enum AutomationAction {
     /// user whose email is in that field of the record (an assignee, an employee).
     Notify {
         to: String,
+        #[serde(default)]
         title: String,
         #[serde(default)]
         body: Option<String>,
+        /// A message template (BD-20) told in its place: its in-app body, in each person's language.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
     },
     /// E-mail, queued with the outbox in the run's transaction: it goes out only if the run commits,
     /// once per event. `to`, `subject` and `body` are CEL expressions; what `body` gives is text, escaped, its line
@@ -79,12 +83,32 @@ pub enum AutomationAction {
     /// withdrew their consent, asked again as it goes (FEO-015); a transactional notice does not ask.
     Email {
         to: String,
+        #[serde(default)]
         subject: String,
+        #[serde(default)]
         body: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         template: Option<String>,
         #[serde(default)]
         purpose: crate::retention::Purpose,
+        /// A message template (BD-20) sent in its place: its e-mail body, its category deciding what `purpose` does.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
+    /// A message from a template (BD-20) to each of `to` (`owner`, `user:<id>`, `role:<name>`, `field:<name>`,
+    /// `expr:<expression>` giving an address, a number or `{email, phone, language, time_zone}`), on the first of
+    /// `channels` (else the template's) each can be reached on, or every one with `all`. `values` are expressions the
+    /// template reads as `values`. In the run's transaction: nothing goes unless it commits. Gives the sends.
+    Message {
+        template: String,
+        #[serde(deserialize_with = "one_or_many")]
+        to: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        channels: Vec<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        all: bool,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        values: BTreeMap<String, String>,
     },
     /// Another app's step through the capability gate, in the run's transaction (BD-13): `capability` a catalog id,
     /// `input` its inputs as CEL expressions, `key` the effect key as an expression. Without `key`, the run's own:
@@ -150,6 +174,20 @@ pub enum AutomationAction {
     },
 }
 
+/// One string or a list of them.
+fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Either {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match Either::deserialize(d)? {
+        Either::One(s) => vec![s],
+        Either::Many(v) => v,
+    })
+}
+
 /// Every action a list holds, a loop's own effects after it.
 pub(crate) fn every(steps: &[Step]) -> impl Iterator<Item = &AutomationAction> {
     steps.iter().flat_map(|s| {
@@ -162,36 +200,44 @@ pub(crate) fn every(steps: &[Step]) -> impl Iterator<Item = &AutomationAction> {
 }
 
 /// The expressions a step holds, its `when` and a loop's own effects' included.
-fn step_sources(s: &Step) -> Vec<&String> {
-    s.when.iter().chain(sources(&s.action)).collect()
+fn step_sources(s: &Step) -> Vec<&str> {
+    s.when.iter().map(String::as_str).chain(sources(&s.action)).collect()
 }
 
 /// The expressions an action holds.
-fn sources(a: &AutomationAction) -> Vec<&String> {
-    match a {
+fn sources(a: &AutomationAction) -> Vec<&str> {
+    let all: Vec<&String> = match a {
         AutomationAction::Find { by, create, update, .. } => by.values().chain(create.iter().chain(update.iter()).flat_map(|m| m.values())).collect(),
-        AutomationAction::ForEach { filter, effects, .. } => filter.iter().chain(effects.iter().flat_map(step_sources)).collect(),
+        AutomationAction::ForEach { filter, effects, .. } => {
+            return filter.iter().map(String::as_str).chain(effects.iter().flat_map(step_sources)).collect();
+        }
         AutomationAction::CopyLines { values, .. } => values.values().collect(),
         AutomationAction::SetFields { values }
         | AutomationAction::CreateDocument { values, .. }
         | AutomationAction::UpdateLinked { values, .. }
         | AutomationAction::AppendLine { values, .. } => values.values().collect(),
         AutomationAction::SetLine { when, values, .. } => std::iter::once(when).chain(values.values()).collect(),
+        AutomationAction::Notify { message: Some(_), .. } => vec![],
         AutomationAction::Notify { title, body, .. } => std::iter::once(title).chain(body.iter()).collect(),
+        AutomationAction::Email { to, message: Some(_), .. } => vec![to],
         AutomationAction::Email { to, subject, body, .. } => vec![to, subject, body],
+        AutomationAction::Message { to, values, .. } => {
+            return to.iter().filter_map(|t| t.strip_prefix("expr:")).chain(values.values().map(String::as_str)).collect();
+        }
         AutomationAction::Invoke { input, key, .. } => input.values().chain(key.iter()).collect(),
-    }
+    };
+    all.into_iter().map(String::as_str).collect()
 }
 
 /// The link fields an action's expressions read as `links.<field>` (BD-14).
 pub(crate) fn links_used(a: &Step) -> Result<std::collections::BTreeSet<String>> {
-    let exprs = step_sources(a).into_iter().map(|s| compiled(s)).collect::<Result<Vec<_>>>()?;
+    let exprs = step_sources(a).into_iter().map(compiled).collect::<Result<Vec<_>>>()?;
     Ok(crate::links::used(&exprs))
 }
 
 /// The settings entities an action's expressions read as `settings.<Entity>.<field>` (BD-17).
 pub(crate) fn settings_used(a: &Step) -> Result<std::collections::BTreeSet<String>> {
-    let exprs = step_sources(a).into_iter().map(|s| compiled(s)).collect::<Result<Vec<_>>>()?;
+    let exprs = step_sources(a).into_iter().map(compiled).collect::<Result<Vec<_>>>()?;
     Ok(crate::settings::used(&exprs))
 }
 
@@ -231,6 +277,15 @@ pub(crate) fn check_action(a: &AutomationAction) -> Result<()> {
     }
     if let AutomationAction::Email { template: Some(t), .. } = a {
         mail_template(t)?;
+    }
+    if let AutomationAction::Message { to, channels, .. } = a {
+        let fits = |t: &String| t == "owner" || ["user:", "role:", "field:", "expr:"].iter().any(|p| t.strip_prefix(p).is_some_and(|r| !r.trim().is_empty()));
+        if to.is_empty() || !to.iter().all(fits) {
+            return Err(Error::invalid("message.to is owner, user:<id>, role:<name>, field:<name> or expr:<expression>"));
+        }
+        if let Some(c) = channels.iter().find(|c| !ferrum_meta::MESSAGE_CHANNELS.contains(&c.as_str())) {
+            return Err(Error::invalid(format!("message: {c} is not one of {}", ferrum_meta::MESSAGE_CHANNELS.join(", "))));
+        }
     }
     for e in sources(a) {
         Expr::compile(e).map_err(|m| Error::invalid(format!("expression '{e}': {m}")))?;
@@ -501,7 +556,7 @@ pub(crate) fn check_targets(schema: &ferrum_meta::Schema, entity: &str, actions:
                 }
                 continue;
             }
-            AutomationAction::Notify { .. } | AutomationAction::Email { .. } | AutomationAction::Invoke { .. } => continue,
+            AutomationAction::Notify { .. } | AutomationAction::Email { .. } | AutomationAction::Message { .. } | AutomationAction::Invoke { .. } => continue,
         };
         // The platform's own keys are ignored when written, as they always were (a configured action refuses them).
         if let Some(f) = values.keys().find(|f| target.field(f).is_none() && !crate::store::SYSTEM_KEYS.contains(&f.as_str())) {
@@ -896,7 +951,55 @@ pub(crate) async fn execute(
             let d = k.update_tx(ctx, tx, target, id, patch, None).await?;
             return Ok(made(target, &d));
         }
-        AutomationAction::Notify { to, title, body } => {
+        AutomationAction::Notify { to, message: Some(template), .. } => {
+            let people = Box::pin(crate::messages::recipients(k, tx, ctx, entity, doc, &to)).await?;
+            let m = crate::messages::Message {
+                template,
+                entity: record.map(|_| entity.to_string()),
+                record,
+                to: people,
+                channels: vec!["inapp".into()],
+                ..Default::default()
+            };
+            return Ok(serde_json::json!(crate::messages::send(k, tx, ctx, &m).await?));
+        }
+        AutomationAction::Email { to, message: Some(template), .. } => {
+            let to = as_text(eval(&to)?);
+            let m = crate::messages::Message {
+                template,
+                entity: record.map(|_| entity.to_string()),
+                record,
+                to: vec![crate::messages::Recipient::address(&to)],
+                channels: vec!["email".into()],
+                ..Default::default()
+            };
+            return Ok(serde_json::json!(crate::messages::send(k, tx, ctx, &m).await?));
+        }
+        AutomationAction::Message { template, to, channels, all, values } => {
+            let mut given = Map::new();
+            for (name, expr) in values {
+                given.insert(name, eval(&expr)?);
+            }
+            let mut people = Vec::new();
+            for spec in &to {
+                match spec.strip_prefix("expr:") {
+                    Some(src) => people.push(crate::messages::Recipient::from_value(&eval(src)?)?),
+                    None => people.extend(Box::pin(crate::messages::recipients(k, tx, ctx, entity, doc, spec)).await?),
+                }
+            }
+            let m = crate::messages::Message {
+                template,
+                entity: record.map(|_| entity.to_string()),
+                record,
+                to: people,
+                channels,
+                all,
+                values: given,
+                attachments: vec![],
+            };
+            return Ok(serde_json::json!(crate::messages::send(k, tx, ctx, &m).await?));
+        }
+        AutomationAction::Notify { to, title, body, message: None } => {
             let title = as_text(eval(&title)?);
             let body = body.map(|b| eval(&b).map(as_text)).transpose()?;
             let users: Vec<Uuid> = if to == "owner" {
@@ -927,7 +1030,7 @@ pub(crate) async fn execute(
                 crate::notify::send_kind(tx, ctx.tenant, u, "automation", "inapp", &title, body.as_deref(), Some(entity), record).await?;
             }
         }
-        AutomationAction::Email { to, subject, body, template, purpose } => {
+        AutomationAction::Email { to, subject, body, template, purpose, message: None } => {
             let to = as_text(eval(&to)?);
             let subject = as_text(eval(&subject)?);
             // The body is text: nothing a record holds becomes markup in a mail sent in the workspace's name. A

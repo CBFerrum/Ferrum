@@ -38,6 +38,7 @@ pub mod lifecycle;
 mod links;
 pub mod logic;
 pub mod merge;
+pub mod messages;
 pub mod notify;
 pub mod numbering;
 pub mod oauth;

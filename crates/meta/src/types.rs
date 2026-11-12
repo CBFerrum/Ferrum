@@ -50,6 +50,147 @@ pub struct PackageManifest {
     /// rest), for processes to start on and wait for (docs/logic). Topic `{package}.{name}`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<EventDef>,
+    /// The messages this package sends to people, each a template a workspace may edit (BD-20). Key
+    /// `{package}.{name}`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<MessageDef>,
+}
+
+/// The channels a message can go on, in the order tried when a template names none.
+pub const MESSAGE_CHANNELS: [&str; 4] = ["email", "text", "chat", "inapp"];
+
+/// A message template (docs/builder/decisions.md BD-20): a package's default, or a workspace's own or edited copy.
+/// Bodies are MiniJinja over `doc` (the record), `settings`, `values` (what the sender passes) and `opt_out`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessageDef {
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The entity whose record it is about, when it is about one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity: Option<String>,
+    #[serde(default)]
+    pub category: MessageCategory,
+    /// The channels tried, in order; none: every channel it has a body for, in [`MESSAGE_CHANNELS`] order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub channels: Vec<String>,
+    /// The names of the values its sender passes (`code`, `link`): a body reading another is refused.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<String>,
+    /// Language tag (`en`, `pt-BR`) → its bodies.
+    pub languages: std::collections::BTreeMap<String, MessageBodies>,
+}
+
+/// Operational messages (a confirmation, a code, a receipt) always go; promotional ones respect opt-outs and quiet hours.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageCategory {
+    #[default]
+    Operational,
+    Promotional,
+}
+
+/// A message's bodies in one language, one per channel it has.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessageBodies {
+    /// `subject` (text) and `body` (HTML: every value it prints is escaped).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<MailBody>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<TextBody>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat: Option<ChatBody>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inapp: Option<NoticeBody>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MailBody {
+    pub subject: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextBody {
+    pub text: String,
+}
+
+/// A chat-app message: the provider's pre-approved template by name with its ordered values, or free text where the
+/// provider allows it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatBody {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NoticeBody {
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+impl MessageBodies {
+    /// Whether it has a body for `channel`.
+    pub fn has(&self, channel: &str) -> bool {
+        match channel {
+            "email" => self.email.is_some(),
+            "text" => self.text.is_some(),
+            "chat" => self.chat.is_some(),
+            "inapp" => self.inapp.is_some(),
+            _ => false,
+        }
+    }
+}
+
+impl MessageDef {
+    /// The channels tried, in order.
+    pub fn order(&self) -> Vec<String> {
+        if !self.channels.is_empty() {
+            return self.channels.clone();
+        }
+        MESSAGE_CHANNELS.iter().filter(|c| self.languages.values().any(|b| b.has(c))).map(|c| c.to_string()).collect()
+    }
+
+    /// What is wrong with its shape (its bodies' templates are the kernel's to check): a key `[a-z][a-z0-9_.]*` of at
+    /// most 100 characters, a language with a body, channels it has bodies for, a chat body with a template or text.
+    pub fn problem(&self) -> Option<String> {
+        let k = &self.key;
+        let well_formed = k.len() <= 100
+            && k.starts_with(|c: char| c.is_ascii_lowercase())
+            && k.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.')
+            && !k.ends_with('.')
+            && !k.contains("..");
+        if !well_formed {
+            return Some(format!("message key '{k}' must be written [a-z][a-z0-9_.]*, at most 100 characters"));
+        }
+        if self.languages.is_empty() || self.languages.values().all(|b| MESSAGE_CHANNELS.iter().all(|c| !b.has(c))) {
+            return Some(format!("message {k} has no body in any language"));
+        }
+        if let Some(l) = self.languages.keys().find(|l| l.is_empty() || l.len() > 20 || !l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')) {
+            return Some(format!("message {k}: '{l}' is not a language tag"));
+        }
+        if let Some(c) = self.channels.iter().find(|c| !MESSAGE_CHANNELS.contains(&c.as_str()) || !self.languages.values().any(|b| b.has(c))) {
+            return Some(format!("message {k}: channel '{c}' is not one of {} it has a body for", MESSAGE_CHANNELS.join(", ")));
+        }
+        if self.languages.values().filter_map(|b| b.chat.as_ref()).any(|c| c.template.is_none() == c.text.is_none()) {
+            return Some(format!("message {k}: a chat body has either a provider's template or text"));
+        }
+        if let Some(v) = self.values.iter().find(|v| !crate::is_ident(v)) {
+            return Some(format!("message {k}: value '{v}' is not a name"));
+        }
+        None
+    }
 }
 
 /// A business event a package publishes through the outbox.
@@ -1140,6 +1281,10 @@ pub struct ApprovalPolicy {
     /// Never by default.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub system_bypass: bool,
+    /// A message template (BD-20) its notices are sent with instead of the fixed wording: it reads `values.notice`
+    /// (`waiting`, `reminder`, `escalated`, `approved`, `rejected`, `not_done`) and `values.title`, the fixed wording.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// What a document approval policy is on (`set_approval`, BD-19): submitting a submittable entity's documents, or
