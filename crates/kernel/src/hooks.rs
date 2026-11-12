@@ -197,6 +197,7 @@ pub struct HookRegistry {
     sites: HashMap<String, Arc<dyn Site>>,
     doc_hosts: HashMap<String, Arc<dyn DocHost>>,
     job_handlers: HashMap<&'static str, Arc<dyn crate::jobs::JobHandler>>,
+    inbound_handlers: HashMap<String, Arc<dyn crate::connections::inbound::InboundHandler>>,
     connector_source: Option<Arc<dyn crate::connect::ConnectorSource>>,
     connectors: HashMap<String, Arc<dyn crate::connect::Connector>>,
     resources: Option<Arc<dyn crate::resources::Resources>>,
@@ -359,6 +360,17 @@ impl HookRegistry {
 
     pub fn job_handler(&self, kind: &str) -> Option<&Arc<dyn crate::jobs::JobHandler>> {
         self.job_handlers.get(kind)
+    }
+
+    /// Registers `app` (its package's name) for calls that connections listing it as their inbound `handler` accept
+    /// (crate::connections::inbound).
+    pub fn add_inbound_handler(&mut self, app: &str, handler: Arc<dyn crate::connections::inbound::InboundHandler>) -> &mut Self {
+        self.inbound_handlers.insert(app.to_string(), handler);
+        self
+    }
+
+    pub fn inbound_handler(&self, app: &str) -> Option<&Arc<dyn crate::connections::inbound::InboundHandler>> {
+        self.inbound_handlers.get(app)
     }
 
     /// Adds a provider a workspace can connect to (crate::connect).

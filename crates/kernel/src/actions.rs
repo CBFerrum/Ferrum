@@ -100,6 +100,8 @@ fn check_effect<'a>(k: &Kernel, system: &dyn Fn() -> &'a Ctx, schema: &Schema, e
         AutomationAction::CreateDocument { entity, values } => (schema.entity(entity).map(|e| &**e), values),
         AutomationAction::UpdateLinked { link, values } => (ent.field(link).and_then(|f| f.to.as_deref()).and_then(|t| schema.entity(t)).map(|e| &**e), values),
         AutomationAction::Invoke { capability, input, .. } => return automation::check_invoke(k, system(), capability, input).map_err(said),
+        // What it names is the workspace's configuration, asked when it runs.
+        AutomationAction::Call { .. } => return Ok(()),
         // Their table and line fields are checked with the targets above.
         AutomationAction::Notify { .. }
         | AutomationAction::Email { .. }

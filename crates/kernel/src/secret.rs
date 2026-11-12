@@ -364,6 +364,33 @@ impl Kernel {
                     .await?
                     .rows_affected();
             }
+            let conns: Vec<(Uuid, Uuid, String)> =
+                sqlx::query_as("select tenant_id, id, sealed from conn where sealed is not null").fetch_all(&mut *tx).await?;
+            for (tenant, id, sealed) in conns {
+                let Some(new) = self.moved(&crate::connections::sealed_label(tenant, id), &sealed, &mut done.unopened)? else { continue };
+                done.moved += sqlx::query("update conn set sealed = $3 where tenant_id = $1 and id = $2 and sealed = $4")
+                    .bind(tenant)
+                    .bind(id)
+                    .bind(new)
+                    .bind(&sealed)
+                    .execute(&mut *tx)
+                    .await?
+                    .rows_affected();
+            }
+            let tokens: Vec<(Uuid, Uuid, Uuid, String)> =
+                sqlx::query_as("select tenant_id, conn_id, user_id, sealed from conn_token").fetch_all(&mut *tx).await?;
+            for (tenant, conn, user, sealed) in tokens {
+                let Some(new) = self.moved(&crate::connections::oauth::token_label(tenant, conn, user), &sealed, &mut done.unopened)? else { continue };
+                done.moved += sqlx::query("update conn_token set sealed = $4 where tenant_id = $1 and conn_id = $2 and user_id = $3 and sealed = $5")
+                    .bind(tenant)
+                    .bind(conn)
+                    .bind(user)
+                    .bind(new)
+                    .bind(&sealed)
+                    .execute(&mut *tx)
+                    .await?
+                    .rows_affected();
+            }
             let providers: Vec<(Uuid, Uuid, String)> =
                 sqlx::query_as("select tenant_id, id, client_secret from sso_provider where client_secret is not null").fetch_all(&mut *tx).await?;
             for (tenant, id, sealed) in providers {

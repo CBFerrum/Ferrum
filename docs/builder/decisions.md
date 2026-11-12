@@ -845,3 +845,155 @@ a package's format the default by editing it.
 
 **Not yet**: translations of a layout's own labels (`texts`, kept, not applied); a letter head designed on the canvas
 (slice 3); bulk printing from a list; receipt paper; a font image with more scripts than the PDF service's.
+
+## BD-29. One described call, for everyone
+
+Decided 12 November 2026. Five apps waited on it: Social posts to two networks only, CRM and Bookings cannot reach a
+person's mailbox and calendar, ERP wrote its own "described HTTP call" for carriers, and Campaigns, Commerce and the
+service apps need to call out and be called back. Built once (`crates/kernel/src/connections`; the API in
+[api.md](../api.md#connections)).
+
+* **A connection is configuration**: an address (`base`), how a call proves who makes it (none, a header holding a
+  secret, basic, bearer, a request signed with HMAC-SHA256 over `<timestamp>.<body>` or the body, or tokens a sign-in
+  gave, BD-32), default headers, the hosts besides the base's it may reach, a time limit (15 s, at most 60 s) and an
+  answer size limit (1 MB, at most 10 MB), and who may use it: administrators and configuration always, people holding
+  one of its `roles`, apps it lists in `apps`. Its secrets are sealed with the server's key, bound to the connection,
+  never read back (the listing gives their names), moved by `reseal_secrets` with the rest. No provider is named in the
+  kernel.
+* **Operations are named calls**: method, a path (whose printed values are percent-encoded: an input cannot add a
+  segment, a query or a host), query, headers, a JSON body template (`| json`) or a form, all templates over `inputs`,
+  `secret` and `key`; `result` maps names to JSON pointers in the answer, `error_at` where the refusal is said,
+  `temporary` the statuses meaning "later" (408, 425, 429, 500, 502, 503, 504 unless said), `idempotency_header` where
+  the key goes, `inputs` the inputs it takes. A test connection answers each operation from its `fixture` and calls
+  nobody.
+* **Three ways in, one path**: `connections::call(k, ctx, app, &Call)` for apps (the mapped result; `Unavailable` for
+  "later", `Invalid` for "no"); the `call` effect in buttons, transitions, approvals and automations, inline (its result
+  is `results[i]` for later effects; a refusal refuses the run) or `queue: true` (a job after the run commits, retried
+  only while the service says "later", eight attempts); the platform capability `ferrum.call` through the gate (an
+  administrator's capability; its effect key is the call's key), so a pack's step names an operation.
+* **Once per key**: an operation that changes something (every method but GET unless `changes` says) needs a key; the
+  effect's is the run's own, as `invoke`'s (BD-13). A key that went through keeps its mapped result: the same key again
+  gets it and calls nobody, with other inputs it is refused (`Conflict`). The service gets the same key on every attempt
+  in the idempotency header, which is what makes "once" hold when our record of it is lost with a rolled-back run.
+* **The guard** (`Kernel::fetch`), for every call, message channels' and token addresses' included: `https` only;
+  plain `http` and private addresses only for a host the operator names (`FERRUM_CONNECTION_HOSTS`) or in development
+  (`webhooks_allow_private`); only the connection's hosts; every resolved address refused when loopback, private,
+  link-local (cloud metadata), shared, multicast, reserved, benchmarking or a v6 form of one; the vetted addresses
+  pinned; no user name in an address; redirects followed by hand, at most three, each hop checked again in full
+  (scheme, host, every address), a 303 or a POST's 301/302 made a GET without its body; the answer read up to its limit
+  and refused past it.
+* **Secrets stay put**: never in a template's output that is logged, an error (each is masked with every secret and
+  token, and a client error never carries its URL), the audit trail (`secrets: true`), the call log, a job, an event or
+  a receipt. The call log keeps when, which operation, the outcome (`ok`, `failed`, `temporary`, `refused`), the status,
+  the duration and the record it was about, for 90 days; bodies only while an administrator has the debug capture on (at
+  most an hour), every header that may prove who calls hidden, every secret masked, 4 KB of each body, dropped an hour
+  after.
+* **Message channels call through it**: a channel's described request goes through the same guard (same answers for
+  what worked before; redirects within its own host are now followed and checked, an answer over 1 MB is refused).
+
+Tests (`connections_it`): addresses that are not public (loopback by name and by address, the metadata address, a
+private one, `::1`, a host the description lists that resolves to loopback) and other schemes refused; redirects to
+another host and to a private one refused, one on its own host followed; a slow service is "later", a large answer
+refused; header, basic, bearer and signed requests (the signature checked); a key calls once, another input under it is
+refused; a path and a query cannot be steered; who may use it (a role, an app, neither); a 422 is final and says the
+service's words, a 503 queued is retried and then done, a refused one is not retried; a secret echoed in an error is
+masked; the capability; the log and the redacted capture; every table searched for every secret at the end.
+
+**Rules out**: a provider named in code; a call to a private address without the operator naming its host; a retry
+of an answer that is not stated as temporary; an operation that changes something without a key.
+
+**What ERP's carriers would change**: each of `rate`, `label`, `track` and `cancel` becomes an operation of one
+connection (`url` split into `base` and `path`, `rates_at`… into `result`, `error_at` and `temporary` as they are, the
+`Idempotency-Key: {{ key }}` header into `idempotency_header`), the API Key and API Secret into the connection's
+secrets (`secret.api_key` reads the same), `fixtures` into each operation's `fixture`, `inbound` into the connection's
+inbound (BD-30) with a handler of ERP's. ERP's Rust keeps what is ERP's: making the shipment's values (`shipment`, `to`,
+`from`, `rate`) into `inputs`, turning the mapped answer into rates, labels and tracking states, booking the cost. Not
+done here: it is ERP's release.
+
+## BD-30. Being called
+
+Decided 12 November 2026. An inbound address per connection, `POST /api/connections/inbound/{id}`, no session.
+
+* **Verified as the connection says**: `signature`, HMAC-SHA256 under one of its secrets of `<timestamp>.<raw body>`
+  (the timestamp a header, within `window_secs`, 300 unless said, at most an hour), compared in constant time; or
+  `token`, a secret both sides hold sent as it is in a header, compared in constant time. Mutual TLS is not offered.
+* **Refused alike**: an unknown or turned-off address, an unsigned, wrongly signed or stale call, one past its size
+  limit (256 KB, at most 1 MB) and a replay all get the same 401, `this call was not accepted`; each is counted (on the
+  connection, `refused`; an unknown address in a process-wide counter).
+* **Once**: a delivery is its caller's id (a header or a pointer into the payload), else the digest of what was signed.
+  The row is written once (a second is a replay); a job processes it once, in one transaction with what it changes, and
+  drops the payload. A payload that cannot be taken is marked failed with why and not tried again; a temporary fault is.
+* **Onto records with no app code**: a mapping is "the one record of `entity` whose `by` fields hold these values,
+  changed with `set`; none, and one is made with `by`, `set` and `create`" (unless `update_only`), each value an
+  expression over `payload` and `item` (each element at `items_at`, at most 500). It is the `find` effect (BD-18): the
+  record's own checks, rules and hooks apply, as the system. Checked when saved against the workspace's entities.
+* **Or to an app**: `handler` names an app the connection lists in `apps`, which registered an `InboundHandler` with
+  `HookRegistry::add_inbound_handler`; it runs in the same transaction.
+
+Tests (`connections_it`, `connections_api_it`): alerts in a batch made, one changed and not made again; a replay, a
+wrong signature, a stale one, an unsigned one, one too large and an unknown address answer alike and are counted; the
+same body without a delivery id is a replay; a payload missing a required field fails and is not retried; a form with a
+shared token goes to the app once; a handler the connection does not list is refused when saved; over HTTP the same.
+
+**Rules out**: an inbound call processed while its caller waits; one processed twice; an unverified call.
+
+## BD-31. Pulling
+
+Decided 12 November 2026. `pulls` on a connection: `{name, operation, every_minutes (5 to a week), items_at, cursor:
+token | time, next_at, cursor_input, max_pages (5, at most 50), map}`. The schedule scanner queues a pull when due (one
+job at a time per pull); a run calls the operation (a reading one: one that changes something is refused when saved)
+with the cursor as `cursor_input`, maps each item at `items_at` as BD-30 does (its own `map`, else the inbound one), and
+keeps the cursor: the service's token at `next_at`, page by page, or the moment the last run that finished began. A
+page's records and the cursor past it commit together. An administrator reads each pull's cursor, runs and last error,
+and pulls now.
+
+Tests (`connections_it`): two due at once and not queued twice; one page a run and the next run from the token kept;
+the time cursor given as the next run's `since`; an item pulled again changed, not made twice.
+
+## BD-32. A person authorises an account
+
+Decided 12 November 2026. `docs/plan/integrations.md` named the broker unbuilt; Social, CRM and Bookings waited on it.
+
+* **The provider is a description** in the connection's `auth`: `{type: oauth, owner: workspace | person, provider:
+  {authorize_url, token_url, revoke_url?, scopes, client_id, client_secret? (a secret's name), client_auth: body |
+  basic, params?, account_at?}}`. No provider is named in code.
+* **The flow** is the authorisation code flow with PKCE (S256): `POST /api/connections/{id}/connect` from the browser,
+  signed in, gives the address to send the browser to. Its `state` is 256 random bits, kept only as a digest, bound to
+  the person and to their browser session, used once (a wrong try uses it up too), within ten minutes; the verifier is
+  sealed. The redirect address is the platform's own and exact, `{PUBLIC_URL}/api/connections/callback`, never taken
+  from the request; the callback answers a page and redirects nowhere. A provider's error is told in letters, digits and
+  `_` only.
+* **Whose account**: the workspace's, connected and disconnected by an administrator, or each person's own (their
+  mailbox), connected by them where the connection lets them use it; every call by a person is made with their own.
+* **Tokens are sealed** (bound to the connection and the person), never shown back; the listing gives the status and
+  the account the provider names (`account_at`, `/id_token/<claim>` reading the id token's claims as they came from the
+  token address). A job refreshes them ten minutes ahead; a call refreshes one expiring within the minute, and refreshes
+  once and tries again when a service answers 401. Refreshes take a row lock, so two never race a rotating refresh
+  token. A refresh the provider refuses marks the connection `needs_reconnecting` and tells its owner once (a person's
+  own; the workspace's: who connected it). Disconnecting deletes the tokens here and revokes the refresh token at the
+  provider when it gives a `revoke_url`.
+
+Tests (`connections_it`, against a stand-in provider inside the test): the address the browser is sent to (the exact
+redirect, S256, scopes); a tampered state, another browser session, a state used twice and another person refused; a
+provider's error; the code exchanged with the verifier whose digest was the challenge and the client secret; a call with
+the person's own token, none for another person; a refresh before expiry, after a 401, and by the job; a revoked
+refresh token marks it and tells its owner once over two calls; reconnecting; disconnecting revokes; the workspace's
+account refused to a person; a `javascript:` address refused; every table searched for the client secret, the tokens,
+the states and the verifiers.
+
+**Rules out**: an implicit or password flow; a redirect address from configuration or the request; a token shown back.
+
+**Not yet**: a workspace on its own host signs in on the platform's public address (the session cookie must be the
+one that address sees); dynamic client registration; signed JWT client authentication; device flow.
+
+## BD-33. Connections in packages and packs, and their screens
+
+Decided 12 November 2026. A package describes connections (`connections:` in `package.yaml`, `{name, label,
+description}`); a workspace sees each offered, turned off, until an administrator saves it with its secrets (its
+`source` then says the package). A pack carries the workspace's connections' descriptions, operations, mappings and
+pulls, never a secret or a token, and installs each turned off under a name not taken (`source: pack:<name>`); one of
+the name already there is left as it is. The admin routes (`/api/admin/connections…`) list, create, edit, delete, try an
+operation deliberately, turn the capture on, read the call and inbound logs and the pulls; a person's
+(`/api/connections…`) list theirs, connect and disconnect.
+
+Tests (`connections_api_it`): a package's connection offered; a pack without the secret, installed off, again unchanged.

@@ -7,6 +7,7 @@ pub mod cards;
 pub mod collab;
 pub mod compat;
 pub mod connect;
+pub mod connections;
 pub mod dav;
 pub mod docs;
 pub mod documents;
