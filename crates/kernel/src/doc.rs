@@ -16,7 +16,7 @@ use crate::query::{self, Filter, ListQuery, MAX_LIMIT, MAX_OFFSET, Page};
 use crate::store::{self, SYSTEM_KEYS, field_expr};
 use crate::value::{is_empty, normalize};
 use crate::{Doc, Kernel};
-use ferrum_meta::{EffEntity, EntityKind, FieldDef, FieldType, NumberingOn, Reference, RuleOn, Scope, Storage};
+use ferrum_meta::{DocumentAction, EffEntity, EntityKind, FieldDef, FieldType, NumberingOn, Reference, RuleOn, Scope, Storage};
 use serde_json::{Map, Value, json};
 use sqlx::{AssertSqlSafe, Postgres, QueryBuilder};
 use std::collections::{HashMap, HashSet};
@@ -604,11 +604,67 @@ impl Kernel {
         .inspect_err(|e| self.tally(ctx, entity, "submit", e))
     }
 
+    /// Submits record `id`, or, a policy asking approval first (`set_approval`, BD-19), asks for it: the record stays a
+    /// draft and carries `_approval`. Every submit but a workflow's comes through here (the API, batches, apps).
     pub async fn submit_tx(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, expected_version: Option<i64>) -> Result<Doc> {
-        self.submit_inner(ctx, tx, entity, id, expected_version, None).await
+        if let Some(asked) = self.ask_first(ctx, tx, entity, id, expected_version, DocumentAction::Submit).await? {
+            return Ok(asked);
+        }
+        let out = self.submit_inner(ctx, tx, entity, id, expected_version, None).await?;
+        // A request still pending on it (the system went ahead where the policy lets it) is over.
+        let ent = self.entity(ctx, entity)?;
+        self.approvals_moved(tx, ctx, &ent, id).await?;
+        Ok(out)
     }
 
-    async fn submit_inner(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, expected_version: Option<i64>, workflow_state: Option<String>) -> Result<Doc> {
+    /// Before a submit or cancel of record `id` by `ctx`: when the entity's policy for it asks approval first (unless
+    /// `ctx` is the system and the policy lets the system through), a request, the record as it is with `_approval`.
+    /// Whoever asks must be able to do it now, and a submit must pass the checks it would (rules and the app's
+    /// validation; nothing the app writes on submit runs until it completes). `None`: go ahead.
+    async fn ask_first(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, expected_version: Option<i64>, on: DocumentAction) -> Result<Option<Doc>> {
+        let ent = self.entity(ctx, entity)?;
+        let Some(a) = ent.document_approvals.get(&on) else { return Ok(None) };
+        if ctx.is_system && a.policy.system_bypass {
+            return Ok(None);
+        }
+        let held = crate::settings::with(self, ctx, tx, ctx.schema.settings_read(&ent)).await?;
+        let ctx: &Ctx = &held;
+        guard_kind(&ent)?;
+        let scope = row_scope(ctx, &ent, if on == DocumentAction::Submit { Action::Submit } else { Action::Cancel })?;
+        let doc = self.load_marked(tx, ctx, &ent, id, true).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
+        if !scope.admits(tx, ctx.tenant, &doc).await? {
+            return Err(Error::NotFound(ent.def.label.clone()));
+        }
+        check_version(&doc, expected_version)?;
+        match (on, docstatus_of(&doc)) {
+            (DocumentAction::Submit, 0) => {
+                let mut probe = doc.clone();
+                self.hook_before_validate(ctx, tx, &ent, &mut probe).await?;
+                self.compute(ctx, &ent, &mut probe)?;
+                self.validate(ctx, tx, &ent, &probe, Some(&doc), RuleOn::Submit).await?;
+                self.hook_validate(ctx, tx, &ent, &probe, Some(&doc)).await?;
+            }
+            (DocumentAction::Cancel, 1) => {}
+            (DocumentAction::Submit, _) => return Err(Error::invalid("only draft documents can be submitted")),
+            (DocumentAction::Cancel, _) => return Err(Error::invalid("only submitted documents can be cancelled")),
+        }
+        let Some(asked) = self.request_approval(ctx, tx, &ent, id, &doc, (on.as_str(), "", true), &a.policy, &json!({})).await? else {
+            return Ok(None);
+        };
+        let mut out = self.mask(ctx, &ent, doc);
+        out.insert("_approval".into(), asked);
+        Ok(Some(out))
+    }
+
+    pub(crate) async fn submit_inner(
+        &self,
+        ctx: &Ctx,
+        tx: &mut Tx,
+        entity: &str,
+        id: Uuid,
+        expected_version: Option<i64>,
+        workflow_state: Option<String>,
+    ) -> Result<Doc> {
         let ent = self.entity(ctx, entity)?;
         // The settings its expressions read, once for this save (BD-17).
         let held = crate::settings::with(self, ctx, tx, ctx.schema.settings_read(&ent)).await?;
@@ -673,11 +729,27 @@ impl Kernel {
         .inspect_err(|e| self.tally(ctx, entity, "cancel", e))
     }
 
+    /// Cancels record `id`, or, a policy asking approval first (`set_approval`, BD-19), asks for it: the record stays
+    /// submitted and carries `_approval`.
     pub async fn cancel_tx(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, expected_version: Option<i64>) -> Result<Doc> {
-        self.cancel_inner(ctx, tx, entity, id, expected_version, None).await
+        if let Some(asked) = self.ask_first(ctx, tx, entity, id, expected_version, DocumentAction::Cancel).await? {
+            return Ok(asked);
+        }
+        let out = self.cancel_inner(ctx, tx, entity, id, expected_version, None).await?;
+        let ent = self.entity(ctx, entity)?;
+        self.approvals_moved(tx, ctx, &ent, id).await?;
+        Ok(out)
     }
 
-    async fn cancel_inner(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, expected_version: Option<i64>, workflow_state: Option<String>) -> Result<Doc> {
+    pub(crate) async fn cancel_inner(
+        &self,
+        ctx: &Ctx,
+        tx: &mut Tx,
+        entity: &str,
+        id: Uuid,
+        expected_version: Option<i64>,
+        workflow_state: Option<String>,
+    ) -> Result<Doc> {
         let ent = self.entity(ctx, entity)?;
         // The settings its expressions read, once for this save (BD-17).
         let held = crate::settings::with(self, ctx, tx, ctx.schema.settings_read(&ent)).await?;
@@ -887,7 +959,7 @@ impl Kernel {
         self.transition_rules(ctx, tx, &ent, &next, &doc, &moving).await?;
         // Who must agree first: the record stays, awaiting them (approvals.rs).
         if let (Some(policy), None) = (&t.approval, approved)
-            && let Some(asked) = self.request_approval(ctx, tx, &ent, id, &doc, t, policy, &params).await?
+            && let Some(asked) = self.request_approval(ctx, tx, &ent, id, &doc, (&t.action, &t.from, false), policy, &params).await?
         {
             let mut out = self.mask(ctx, &ent, doc);
             out.insert("_approval".into(), asked);
