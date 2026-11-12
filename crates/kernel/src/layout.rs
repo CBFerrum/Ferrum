@@ -1145,6 +1145,10 @@ pub fn page(p: &Page<'_>) -> String {
     out
 }
 
+/// What Chromium leaves between the paper's edge and a repeated header's (or footer's) box, measured on Gotenberg 8: a
+/// header's first line starts about 5 mm below the edge with no padding of ours. Our padding is the page margin less it.
+const CHROMIUM_EDGE_MM: u32 = 5;
+
 /// A letter head's part as the PDF service repeats it: a page of its own in the page's side margins, our CSS, the
 /// space above (a header) or below (a footer) the page's own margin. One box holds it all, with its classes: Chromium
 /// keeps a header's body's children, not the body itself (its classes, its size), and lays them out in a row.
@@ -1155,9 +1159,9 @@ pub fn margin_page(inside: &str, language: &str, font: &str, side_mm: (u32, u32)
          html,body{{margin:0;padding:0;width:100%}}.pf-margin{{width:100%;padding:{}mm {}mm {}mm {}mm;color:#111;line-height:1.35}}</style></head>\
          <body><div class=\"pf pf-margin pf-font-{font} pf-size-sm\" dir=\"{dir}\">{inside}</div></body></html>",
         esc(language),
-        pad_mm.0,
+        pad_mm.0.saturating_sub(CHROMIUM_EDGE_MM),
         side_mm.1,
-        pad_mm.1,
+        pad_mm.1.saturating_sub(CHROMIUM_EDGE_MM),
         side_mm.0
     )
 }
