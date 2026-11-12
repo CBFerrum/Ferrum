@@ -125,6 +125,12 @@ PACKAGE_DEFAULTS = ("-p", "ferrum-kernel", "--test", "package_defaults_it")
 OVERLAY_RULES = ("-p", "ferrum-kernel", "--test", "overlay_rules_it")
 REPORTS_ONCE = ("-p", "ferrum-server", "--lib", "packages::tests::reports_are_listed_once")
 REPORTS_UNIT = ("-p", "ferrum-domain", "--lib", "reports::tests")
+ACTION_APPROVALS = ("-p", "ferrum-kernel", "--test", "action_approvals_it")
+BACKFILL = ("-p", "ferrum-kernel", "--test", "backfill_it")
+PRINT = ("-p", "ferrum-kernel", "--test", "print_it")
+DOCUMENTS_API = ("-p", "ferrum-server", "--test", "documents_api_it")
+AUTOMATION_UNIT = ("-p", "ferrum-kernel", "--lib", "automation::tests")
+REQUEST_LOG_UNIT = ("-p", "ferrum-server", "--lib", "request_log::tests")
 # Generous enough to compile and run; passing it means the mutant hung the test.
 TIMEOUT = 600
 
@@ -804,7 +810,7 @@ MUTANTS = [
     # What a package ships as defaults: its own names only, the workspace's edits kept.
     ("package-default-names-unchecked", "crates/meta/src/catalog.rs", "match foreign(v, &roles, &templates, &settings) {", "match None::<String> {", PACKAGE_DEFAULTS),
     ("package-automation-edit-overwritten", "crates/kernel/src/automation.rs", "if base.as_ref() != Some(&now) || now == default => return Ok(()),", "if now == default => return Ok(()),", PACKAGE_DEFAULTS),
-    ("package-approval-ignored", "crates/meta/src/effective.rs", "b.approvals.insert(a.on, a.policy.clone());", "let _ = a;", PACKAGE_DEFAULTS),
+    ("package-approval-ignored", "crates/meta/src/effective.rs", "b.approvals.insert(a.on.clone(), a.policy.clone());", "let _ = a;", PACKAGE_DEFAULTS),
     ("rules-blind-to-own-fields", "crates/meta/src/catalog.rs", "seen.get(e).or_else(|| self.entities.get(e).map(|(_, d)| d))", "seen.get(e).filter(|_| false).or_else(|| self.entities.get(e).map(|(_, d)| d))", OVERLAY_RULES),
     # A report is registered by one app, and listed once however often the apps register.
     ("reports-added-again", "crates/domain/src/reports.rs", "*SOURCES.write().map_err(|_| \"the report sources are poisoned\".to_string())? = sources.into_iter().map(|(_, s)| s).collect();", "SOURCES.write().map_err(|_| \"the report sources are poisoned\".to_string())?.extend(sources.into_iter().map(|(_, s)| s));", REPORTS_ONCE),
@@ -819,7 +825,7 @@ MUTANTS = [
 
     # Comments and files shared with outside people (BD-22).
     ("outside-reads-unshared-comments", "crates/kernel/src/collab.rs", "and (c.shared or not $4) order by c.created_at", "and (true or not $4) order by c.created_at", OUTSIDE_SHARED),
-    ("outside-lists-unshared-files", "crates/kernel/src/collab.rs", "and (shared or not $4 or created_by = $5)", "and (true or not $4 or created_by = $5)", OUTSIDE_SHARED),
+    ("outside-lists-unshared-files", "crates/kernel/src/collab.rs", "and (f.shared or not $4 or f.created_by = $5)", "and (true or not $4 or f.created_by = $5)", OUTSIDE_SHARED),
     ("outside-downloads-unshared-file", "crates/kernel/src/files.rs", "let seen = (shared && ctx.perms.shared(e).is_some())", "let seen = true || (shared && ctx.perms.shared(e).is_some())", OUTSIDE_SHARED),
     ("outside-told-of-unshared-comment", "crates/kernel/src/collab.rs", "Ok(other) if other.outside && (!shared || other.perms.shared(entity).is_none()) => false,", "Ok(other) if false => false,", OUTSIDE_SHARED),
     ("outside-follows-records", "crates/kernel/src/collab.rs", "        if ctx.outside {\n            // What an outside person writes", "        if false {\n            // What an outside person writes", OUTSIDE_SHARED),
@@ -830,13 +836,36 @@ MUTANTS = [
     ("link-of-another-workspace", "crates/kernel/src/action_link.rs", "where tenant_id = $1 and digest = $2", "where $1::uuid is not null and digest = $2", ACTION_LINKS),
     ("link-runs-an-action-it-does-not-name", "crates/kernel/src/action_link.rs", "if action == VIEW || !link.actions.iter().any(|a| a == action) {", "if action == VIEW {", ACTION_LINKS),
     ("link-fixed-values-overridden", "crates/kernel/src/action_link.rs", "    out.extend(fixed.clone());", "    let _ = &fixed;", ACTION_LINKS),
-    ("link-shows-any-field", "crates/kernel/src/action_link.rs", "if matches!(f.ftype, FieldType::Secret | FieldType::Table | FieldType::Attach) || f.perm_group.is_some() {", "if false {", ACTION_LINKS),
+    ("link-shows-any-field", "crates/kernel/src/action_link.rs", "            if !public(f) {", "            if false {", ACTION_LINKS),
     ("link-page-framed-by-anyone", "server/src/controllers/links.rs", "if origins.is_empty() { \"frame-ancestors 'none'\".into() }", "if origins.is_empty() { \"frame-ancestors *\".into() }", LINK_PAGE),
     # Published records' pages (BD-25) and schedules by absence (BD-27).
     ("published-search-wildcards", "crates/kernel/src/published.rs", ".replace('%', \"\\\\%\")", ".replace('%', \"%\")", PUBLISHED_FIND),
     ("published-address-of-a-draft", "crates/kernel/src/published.rs", "        // Whatever the filter says: a draft or a cancelled document is never public.\n        qb.push(\" and a.docstatus = 1\");\n    }\n    if let Some(address)", "        qb.push(\"\");\n    }\n    if let Some(address)", PUBLISHED_FIND),
     ("absence-not-asked", "crates/kernel/src/schedule.rs", "    if let Some(a) = absent {\n        push_absent(qb,", "    if let Some(a) = absent.filter(|_| false) {\n        push_absent(qb,", ABSENCE),
     ("absence-fires-every-run", "crates/kernel/src/schedule.rs", "a.within.sql(\"(m.due at time zone prm.tz)\").2)", "\"(m.due at time zone prm.tz)\")", ABSENCE),
+    ("action-approval-not-asked", "crates/kernel/src/doc.rs", "        if !approved\n            && let Some(a) = ent.document_approvals.get(&DocumentAction::Action(def.name.clone()))", "        if false\n            && let Some(a) = ent.document_approvals.get(&DocumentAction::Action(def.name.clone()))", ACTION_APPROVALS),
+    ("action-approval-secret-kept-clear", "crates/kernel/src/approvals.rs", "    Ok((def.redacted(params), Value::Object(sealed)))", "    Ok((params.clone(), Value::Object(sealed)))", ACTION_APPROVALS),
+    ("action-approval-runs-as-system", "crates/kernel/src/approvals.rs", "Box::pin(self.action_given(&who, tx, entity, id, &req.action, &params, true))", "Box::pin(self.action_given(&crate::actions::system(&who), tx, entity, id, &req.action, &params, true))", ACTION_APPROVALS),
+    ("action-approval-reseal-skipped", "crates/kernel/src/secret.rs", "                if any {\n                    done.moved += sqlx::query(\"update approval_request", "                if false {\n                    done.moved += sqlx::query(\"update approval_request", ACTION_APPROVALS),
+    ("erasure-misses-connections", "crates/kernel/src/privacy.rs", "let conns = crate::connections::personal::erase_held(&mut tx, ctx.tenant, account, &emails, &records).await?;", "let conns = crate::connections::personal::Erased::default();", CONNECTIONS),
+    ("erasure-leaves-sign-ins-unrevoked", "crates/kernel/src/privacy.rs", "Some(id) if !conns.sign_ins.is_empty() => self.revoke_erased(ctx, id, conns.sign_ins).await,", "Some(_) if false => vec![],", CONNECTIONS),
+    ("connection-capture-encoded-missed", "crates/kernel/src/connections/personal.rs", " or strpos(t, replace(e, '@', '%40')) > 0))", "))", CONNECTIONS),
+    ("restore-revives-connections", "crates/kernel/src/privacy.rs", "let conns = crate::connections::personal::erase_held(tx, tenant, account, &addresses, &records).await?;", "let conns = crate::connections::personal::Erased::default();", CONNECTIONS),
+    ("pull-later-not-retried", "crates/kernel/src/connections/pull.rs", "        let retry = later\n", "        let retry = false\n", CONNECTIONS),
+    ("pull-failure-told-every-run", "crates/kernel/src/connections/pull.rs", "        if failed && !told {", "        if failed {", CONNECTIONS),
+    ("generated-html-untyped", "crates/kernel/src/documents.rs", "    let stored_type = content_type;", "    let stored_type = String::from(\"application/octet-stream\");", DOCUMENTS_API),
+    ("file-html-inline", "server/src/controllers/system.rs", "    let how = if inline && !runs { \"inline\" } else { \"attachment\" };", "    let how = if inline { \"inline\" } else { \"attachment\" };", DOCUMENTS_API),
+    ("link-opened-every-post", "crates/kernel/src/action_link.rs", "where tenant_id = $1 and id = $2 and opened_at is null\")", "where tenant_id = $1 and id = $2\")", ACTION_LINKS),
+    ("link-revoke-ignores-action", "crates/kernel/src/action_link.rs", "and ($4::text is null or $4 = any(actions)) returning id", "and ($4::text is null or true) returning id", ACTION_LINKS),
+    ("link-columns-unchecked", "crates/kernel/src/action_link.rs", "            if let Some(c) = cols.iter().find(|c| !child.field(c).is_some_and(public)) {", "            if let Some(c) = cols.iter().find(|c| child.field(c).is_none()) {", ACTION_LINKS),
+    ("link-until-uncapped", "crates/kernel/src/automation.rs", "    Ok(Some(by_days.map_or(given, |d| d.min(given)).min(most)))", "    Ok(Some(by_days.map_or(given, |d| d.min(given))))", AUTOMATION_UNIT),
+    ("link-gone-workspace-wording", "crates/kernel/src/action_link.rs", ".find(|m| m.key == GONE).cloned());", ".find(|m| m.key == DONE).cloned());", ACTION_LINKS),
+    ("failed-backfill-not-rerun", "crates/kernel/src/backfill.rs", "        if last_failed(&mut tx, ctx.tenant, package, name).await?.is_some() {\n            queue(", "        if false {\n            queue(", BACKFILL),
+    ("failed-backfill-requeued-for-ever", "crates/kernel/src/backfill.rs", "                    if !changed {\n                        continue;", "                    if false {\n                        continue;", BACKFILL),
+    ("unknown-letterhead-printed", "crates/kernel/src/documents.rs", "            None if ask.letterhead.as_deref().and_then(|s| s.parse::<Uuid>().ok()) == Some(l) => {", "            None if false => {", PRINT),
+    ("outside-upload-listed-unshared", "crates/kernel/src/collab.rs", "f.shared or coalesce(u.kind <> 'member', false) from file_object f", "f.shared and coalesce(u.kind <> 'member', true) from file_object f", OUTSIDE_SHARED),
+    ("list-json-ignores-search", "server/src/controllers/lists.rs", "    let found = match kernel.published_find(workspace, name, &find).await {", "    let found = match kernel.published_list(workspace, name).await {", PUBLISHED),
+    ("expected-503-logged-twice", "server/src/request_log.rs", "    !matches!(class, ServerErrorsFailureClass::StatusCode(s) if s.as_u16() == 503)", "    let _ = class;\n    true", REQUEST_LOG_UNIT),
 ]
 
 

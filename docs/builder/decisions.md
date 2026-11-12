@@ -997,3 +997,126 @@ operation deliberately, turn the capture on, read the call and inbound logs and 
 (`/api/connections…`) list theirs, connect and disconnect.
 
 Tests (`connections_api_it`): a package's connection offered; a pack without the secret, installed off, again unchanged.
+
+## BD-34. Approval before an action runs
+
+Decided 14 November 2026. Apps with plain actions (a button's effects, an app's registered handler) could not ask for
+approval before one ran; a change board waited on it. Extends BD-19.
+
+* **The policy names the action**: `set_approval` and a package's `approvals:` take `on: {action: <name>}` beside
+  `submit` and `cancel`, the same policy (steps, N of M, stand-ins, escalation, conditions, `lock`, `reset_on`,
+  `system_bypass`, `message`). Refused when saved: an action the entity lacks, and a `read_only` one (nothing to agree
+  to). A workflow does not stop it: it is not a transition.
+* **Pressing it asks**: whoever presses must pass the action's own gates now (permission, roles, document status, its
+  `when`, its refusals); the answer is `{_approval}` and nothing of the action runs. The request keeps the parameters
+  as given; a secret one is kept as `[redacted]` and its value sealed apart with the server's key, bound to the request
+  (`approval_request.sealed`), so neither the request's API nor the audit trail can read it, and `reseal_secrets` moves
+  it with the rest. Without the server's key an action given a secret is refused rather than asked.
+* **The last approval runs it once, as the requester at that moment** (BD-19's rule for submit): their context loaded,
+  every gate checked again as theirs, the action given exactly what was asked (secrets unsealed), in the decision's
+  transaction. Refused then (their right gone, the record no longer meeting the action's `when` or a refusal), nothing
+  of it stays, the request ends `failed` with `failure` in the action's own words, secrets masked, and the requester is
+  told. A rejection or a recall runs nothing.
+* **Not tied to the record's state**: a transition or a submit does not end it (`approvals_moved` leaves it), and the
+  record's workflow state is not compared when deciding; the action's own conditions decide at run time.
+
+Tests (`action_approvals_it`): refused when saved; asked, the package's handler given exactly the parameters once as
+the requester; the secret in no table, no request answer and no history; rejected and recalled run nothing; a record
+closed meanwhile fails in the action's words and the requester is told; two approvers at the same moment run it once;
+approval lends no rights; the key rotated while waiting and the action replayed under the new key alone.
+
+**Rules out**: an action run as the system on an approval; a secret kept in the clear for an approver to see.
+
+## BD-35. Connections in a person's data
+
+Decided 14 November 2026. The call log, inbound deliveries, debug captures and sign-ins (BD-29 to BD-32) were outside a
+person's data report and erasure.
+
+* **What is theirs**: a call they made (`conn_call.user_id`, kept from now on), a call about a record of theirs, a call
+  or a delivery whose kept text (error, mapped result, capture, payload) carries one of their addresses, written or
+  percent-encoded, and their own sign-in. The report lists `{kind: call | inbound | sign_in, connection, …}` under app
+  `connections`, never a token, a payload or a body.
+* **Erasure**: a call's line stays (when, which operation, how it went) without who made it, its error, result, capture
+  and input digest; a key's kept result goes with it, so a call again under that key answers nothing rather than their
+  data. A delivery keeps its line without payload or error. Their sign-ins and sign-ins under way are deleted with their
+  sealed tokens, and, once the erasure has committed, each is revoked at its provider where it gives a revoke address,
+  best effort, recorded in the connection's history (`revoke_on_erasure`) and answered as `sign_ins_revoked`. Erasing
+  again from the journal after a restore reaches the same rows (no revocation: it was done).
+
+Tests (`connections_it`): reported (their sign-in, their call, the call about their record, the capture, the delivery);
+erased, revoked at the stand-in provider and recorded; a restore's rows taken again by the journal.
+
+## BD-36. A failed pull is tried again
+
+Decided 14 November 2026. Extends BD-31.
+
+* **"Later"** (a status the operation calls temporary, no answer): the run ends where its last page committed (the
+  cursor never moves past a page not taken) and its job is tried again with the jobs' backoff (10 s, 20 s, 40 s), at most
+  four attempts, each only while it would start before the pull's next scheduled run. The job's dedupe key keeps the
+  schedule from queueing another meanwhile.
+* **A failed run** (a refusal, a mapping that cannot be taken, or "later" past its attempts) is recorded in
+  `last_error`, and the workspace's administrators are told once per streak of failed runs ("Pulling {pull} from
+  {connection} failed", through the notification path); a run that works ends the streak.
+
+Tests (`connections_it`): two "later" answers then done on the third attempt, the cursor unmoved meanwhile and nothing
+queued over the retry; always "later": four attempts, told once; a 422: one attempt, told once over two runs; a run
+that works, then a failure: told again.
+
+## BD-37. Generated documents keep their type
+
+Decided 14 November 2026. A generated HTML agreement was stored as untyped bytes.
+
+* A generated file is stored with the type it was made as (HTML, PDF, text, CSV, XML with their charset).
+* **Served** (`/files/{id}`, `/files/public/{id}`): its type (one stored without a type as `application/octet-stream`,
+  as before), `X-Content-Type-Options: nosniff` and `Content-Disposition` with its name. A type a browser would run
+  (HTML, XHTML, SVG, XML, script) is always an attachment and carries the sandbox the public file route already sends
+  (`default-src 'none'; …; sandbox`), so it never runs on the application's own origin; uploads keep turning such types
+  into bytes as before.
+
+Tests (`documents_api_it`): each kind's type kept; HTML and XML an attachment under the sandbox, CSV an attachment, an
+image inline where it was, a file without a type served as bytes.
+
+## BD-38. Signed links: ended by an app, dated by the record, opened, with lines
+
+Decided 14 November 2026. Extends BD-23; an app had to write `action_link` itself.
+
+* **An app ends a record's links** in its own transaction: `Kernel::revoke_action_links(tx, ctx, entity, record,
+  action)` (those naming `action`, or all), as staff revoking each would, in the record's history.
+* **The `link` effect takes `until`**, an expression over the record giving a date (the link works through that day,
+  UTC) or a moment; with `days` too, the sooner; never past the 90 days a link lives. One already past is refused, as a
+  link with a past expiry is.
+* **Opened** (`action_link.opened_at`): the first time a visitor acts on the page, its first POST-back (sending a code
+  or an action, even one refused), recorded once with the record's `opened` event (`link: {id, recipient}`), which
+  automations (`event: opened`) and apps' subscribers hear. Why the POST-back and not a beacon: the page runs no script,
+  so a beacon would be an image, and mail scanners and link-preview services that render pages fetch images too; none of
+  them submits a form. Reading the page alone is therefore not "opened".
+* **A table field shown read-only**: `show` may list a table field when `columns: {field: [column]}` names 1 to 8 of
+  its columns, each a field a public page may show (never a secret, a file, a table or one in a group); the page shows
+  its rows (at most 200), every value escaped.
+* **A link that does not work** answers the same page, status and headers whether its workspace exists or not: the
+  wording is the platform's `core.link_gone` as shipped, never a workspace's edit, so a stranger learns nothing of which
+  workspaces exist.
+
+Tests (`action_links_it`, links' unit tests): ended by the app's call, the other kept, then all; an outside person ends
+none; `until` from the record's valid-until, a past one refused, the rules of `until` (a unit test); the table shown by
+its columns, five bad `columns` refused; a GET opens nothing, two POST-backs open it once, an automation on `opened`
+hears it; the gone wording.
+
+## BD-39. Faults a walk of a live server found
+
+Decided 14 November 2026 (walk of 12 November, `RESULTS-APPS-3.md` F1 and F3 to F7).
+
+* **A failed backfill runs again**: `POST /api/admin/backfills/{package}/{name}/rerun` queues one whose newest job
+  failed at once, from where it got (a finished one still runs from the start at the next upkeep; one running is still
+  refused). A backfill whose newest job failed is queued again by the upkeep once when its package's installed version
+  differs from the one it was last queued under (`backfill_run.version`): the release that fixes it. Failing again under
+  that version, it waits for an administrator. A job queued since a failure makes it no longer `failed`.
+* **The published list's JSON** takes `?q=` and `?page=` as its page does and says `page` (always) and `q`; a page past
+  the last is a `404`.
+* **An outside person's upload** is shared by nature: stored so by every upload route, and listed so whatever its flag.
+* **A link that does not work** answers alike whether or not its workspace exists (BD-38).
+* **A letter head asked for by id** that is not there or not in use is refused (`422` on `letterhead`) instead of printing
+  without it.
+* **An expected `503`** is logged once, at WARN where it is answered; the request log's ERROR is for other failures.
+
+Tests: `backfill_it`, `published_lists_it`, `outside_shared_it`, `print_it`, `request_log`'s unit test.
