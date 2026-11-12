@@ -488,6 +488,7 @@ impl Hooks for App {
             .add_route(controllers::admin::routes())
             .add_route(controllers::jobs::routes())
             .add_route(controllers::connect::routes())
+            .add_route(controllers::documents::routes())
             .add_route(controllers::messages::routes())
             .add_route(controllers::apps::routes())
             .add_route(controllers::compat::routes())

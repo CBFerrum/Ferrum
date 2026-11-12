@@ -580,3 +580,47 @@ transaction; marketing past an opt-out; a number's country guessed.
 **Not yet**: several connections of one kind with routing between them; reading a provider's template catalogue; MMS
 and attachments outside e-mail; a person choosing channels for a notification kind (BL-48 stays the notifications'
 own); scheduled reminders (an automation on a schedule sends them today).
+
+## BD-21. Documents from data
+
+Decided 12 November 2026. Asked for by the audit of every app against its segment's leaders
+(`gaps-2026-11-12`: HR HR-15, 48, 49, 54, 60, 61, 65, 81; ERP finance FN-12, FN-16, FN-35; Documents DC-33, DC-47,
+DC-57; POS PS-10, PS-54, PS-60; ERP operations OP-20; Builder BL-56, BL-57): an administrator could not design what the
+system prints or files, an entity had one print layout, and there was no amount in words, no barcode and no way to
+write a text or data file from records. Built once in the platform (`crates/kernel/src/documents.rs`, the helpers in
+`crates/kernel/src/docfmt.rs`; the API in [api.md](../api.md#documents)).
+
+* **Every document is a template**, declared by a package (`documents:`, key `{package}.{name}`) or a workspace, edited,
+  reset and told of a changed default as message templates are (BD-20). Several per entity; one is its default; `roles`
+  say who may pick one. A workspace's default changes what its entity prints with; without one a print is the print
+  format as it was, byte for byte.
+* **Four outputs, each escaping for its own syntax**: a page (HTML, a PDF where the server has its PDF service), text,
+  CSV and XML. A file states its encoding (UTF-8, ISO-8859-1, ASCII) and line ends; a character the encoding cannot hold
+  is refused, never replaced.
+* **What a document shows depends on who reads it.** A person printing gets the record as they may read it, the print
+  path's rule. A document the system generates for someone outside (the `generate` effect, an app's `generate`) is
+  rendered as the workspace holds the record, its secret fields left out: BD-20's rule for messages, for the same
+  reason. Secret fields are never rendered: a template naming one is refused when saved.
+* **Language rules are data behind one interface.** Number grouping and marks, dates and month names come from a table
+  of languages (`docfmt::LOCALES`); a currency's decimals and symbol from its record, else ISO's decimals; an amount in
+  words from one function per language (`docfmt::speaker`) and a table of unit names per language and currency. English
+  (with `en-IN` counting lakhs and crores), Hindi and Arabic, the languages the interface ships, are there; another is
+  a row and a function more. Nothing is fixed to one country.
+* **A file of data is an export.** Downloading a text, CSV or XML document needs export permission and is on the
+  record's audit trail with its digest; a page needs read permission, as a print does.
+* **Generated documents are kept and handed on.** `generate` stores the file on the record in the caller's
+  transaction, replaces the template's earlier one when asked (not one a queued mail still waits for), and gives the
+  file and its SHA-256 digest to later effects: a `message` attaches it (a file of the same record only), an `invoke`
+  hands it to the Sign app. Signing itself is the Sign app's.
+* **Bounded**: a body is at most 256 KB and its run fuel-limited as print templates are; one call renders at most 200
+  records, 100 copies each, 1000 in all.
+
+**Rules out**: a document rendered with its causer's rights for someone outside; a secret on paper; a number, date or
+amount in words written in one country's way for everyone; a file whose structure a record's value can break; a
+headless browser on the API server.
+
+**Not yet**: a report or query as a document (one file per group, mailed per party, on a schedule: FN-16 and the
+statutory registers wait for it); a Word or Office file as the source (DC-33); a document generated as a Docs document;
+GS1-128 (FNC1) and other symbologies; amounts in words beyond the three languages; a page's header and footer without
+the PDF service; a label printer reached directly (the template is the printer's language; sending it is the device
+bridge's).
