@@ -33,6 +33,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+pub mod inbound;
+
 pub const CALL_KIND: &str = "platform.connection.call";
 /// Attempts at a queued call while the service says "later".
 const CALL_ATTEMPTS: i32 = 8;
@@ -96,6 +98,9 @@ pub struct Description {
     pub apps: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub operations: BTreeMap<String, Operation>,
+    /// What it takes from outside, on its inbound address (BD-29).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inbound: Option<inbound::Inbound>,
 }
 
 /// How a call proves who makes it. Each `secret` names one of the connection's sealed values.
@@ -201,11 +206,11 @@ fn template_problem(t: &str) -> Option<String> {
     crate::print::environment().template_from_str(t).err().map(|e| format!("'{t}': {e}"))
 }
 
-fn pointer_problem(p: &str) -> Option<String> {
+pub(crate) fn pointer_problem(p: &str) -> Option<String> {
     (!p.is_empty() && !p.starts_with('/')).then(|| format!("{p} is not a JSON pointer (/a/0/b)"))
 }
 
-fn header_problem(h: &str) -> Option<String> {
+pub(crate) fn header_problem(h: &str) -> Option<String> {
     reqwest::header::HeaderName::from_bytes(h.as_bytes()).is_err().then(|| format!("{h} is not a header name"))
 }
 
@@ -265,6 +270,9 @@ impl Description {
             if !is_name(name) {
                 return Some(format!("operation {name}: a name is lower case letters, digits and _"));
             }
+        }
+        if let Some(p) = self.inbound.as_ref().and_then(|i| i.problem(&self.apps)) {
+            return Some(p);
         }
         None
     }
@@ -485,7 +493,7 @@ pub(crate) fn masked(v: &Value, mask: &[String]) -> Value {
     }
 }
 
-fn masked_text(s: &str, mask: &[String]) -> String {
+pub(crate) fn masked_text(s: &str, mask: &[String]) -> String {
     masked(&Value::String(s.to_string()), mask).as_str().unwrap_or_default().chars().take(1000).collect()
 }
 
@@ -903,7 +911,7 @@ impl Kernel {
         if label.is_empty() || label.chars().count() > 100 {
             return Err(Error::field("label", "give it a label of at most 100 characters"));
         }
-        if let Some(p) = self.description_problem(&input.description) {
+        if let Some(p) = self.description_problem(&ctx.schema, &input.description) {
             return Err(Error::field("description", p));
         }
         if let Some(s) = &input.secrets
@@ -949,9 +957,9 @@ impl Kernel {
         Ok(id)
     }
 
-    /// What is wrong with a description, as this server sees it.
-    pub(crate) fn description_problem(&self, d: &Description) -> Option<String> {
-        d.problem()
+    /// What is wrong with a description, its mappings read against the workspace's entities.
+    pub(crate) fn description_problem(&self, schema: &ferrum_meta::Schema, d: &Description) -> Option<String> {
+        d.problem().or_else(|| d.inbound.as_ref().and_then(|i| i.map.as_ref()).and_then(|m| m.problem(schema)))
     }
 
     /// What a saved description sets going (pulls' schedules).
@@ -1118,7 +1126,7 @@ impl JobHandler for Queued {
 }
 
 pub(crate) fn handler(kind: &str) -> Option<Arc<dyn JobHandler>> {
-    (kind == CALL_KIND).then(|| Arc::new(Queued) as Arc<dyn JobHandler>)
+    (kind == CALL_KIND).then(|| Arc::new(Queued) as Arc<dyn JobHandler>).or_else(|| inbound::handler(kind))
 }
 
 #[cfg(test)]
