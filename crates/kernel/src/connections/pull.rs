@@ -4,7 +4,7 @@
 //! a run that stops half-way starts again at the page it did not finish, and mapping a page again changes nothing new.
 
 use super::inbound::Mapping;
-use super::{Outcome, at, is_name};
+use super::{Outcome, Page, Pick, is_name};
 use crate::Kernel;
 use crate::ctx::Ctx;
 use crate::db::Tx;
@@ -55,8 +55,10 @@ pub struct Pull {
     pub items_at: String,
     #[serde(default)]
     pub cursor: Cursor,
+    /// Where each answer gives the next cursor ([`Pick`]): a pointer, a header, or `{"link": "next"}`, whose address
+    /// is then asked as it is for the next page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_at: Option<String>,
+    pub next_at: Option<Pick>,
     /// The input the cursor is given as.
     #[serde(default = "cursor_input")]
     pub cursor_input: String,
@@ -86,7 +88,7 @@ impl Pull {
         if self.max_pages.is_some_and(|p| p == 0 || p > MAX_PAGES) {
             return at(format!("max_pages is 1 to {MAX_PAGES}"));
         }
-        if let Some(p) = super::pointer_problem(&self.items_at).or_else(|| self.next_at.as_deref().and_then(super::pointer_problem)) {
+        if let Some(p) = super::pointer_problem(&self.items_at).or_else(|| self.next_at.as_ref().and_then(|n| n.problem(true))) {
             return at(p);
         }
         if self.cursor == Cursor::Token && self.next_at.is_none() {
@@ -96,6 +98,11 @@ impl Pull {
             return at("it has a map, or the connection's inbound has one".into());
         }
         None
+    }
+
+    /// Whether the next page is the address an answer's `Link` names.
+    fn by_link(&self) -> bool {
+        self.next_at.as_ref().is_some_and(|n| n.spec(false).link.is_some())
     }
 
     fn map(&self, desc: &super::Description) -> Option<Mapping> {
@@ -166,7 +173,7 @@ impl Kernel {
             .await?
             .flatten();
         tx.commit().await?;
-        let (mut items, mut pages, mut error, mut later) = (0usize, 0u32, None, false);
+        let (mut items, mut pages, mut error, mut later, mut wait) = (0usize, 0u32, None, false, None);
         while pages < pull.max_pages.unwrap_or(DEFAULT_PAGES) {
             pages += 1;
             let mut inputs = serde_json::Map::new();
@@ -174,10 +181,11 @@ impl Kernel {
                 inputs.insert(pull.cursor_input.clone(), json!(c));
             }
             let given = json!(cursor);
-            let answer = match self.perform(&ctx, &conn, &pull.operation, &Value::Object(inputs), None, Some(("cursor", &given)), None, None).await? {
+            let page = Page { cursor: &given, address: cursor.as_deref().filter(|_| pull.by_link()) };
+            let answer = match self.perform(&ctx, &conn, &pull.operation, &Value::Object(inputs), None, Some(page), None, None).await? {
                 Outcome::Ok(_, answer) => answer,
-                Outcome::Later(why) => {
-                    (error, later) = (Some(why), true);
+                Outcome::Later(why, after) => {
+                    (error, later, wait) = (Some(why), true, after);
                     break;
                 }
                 Outcome::No(why) => {
@@ -185,12 +193,24 @@ impl Kernel {
                     break;
                 }
             };
-            let next = match pull.cursor {
-                Cursor::Token => at(&answer, pull.next_at.as_deref()).filter(|n| !n.is_empty() && Some(n) != cursor.as_ref()),
-                Cursor::Time => None,
+            let next = match (pull.cursor, &pull.next_at) {
+                (Cursor::Token, Some(n)) => {
+                    let read = answer.read(&n.spec(false), &[("answer", &answer.body), ("connection", &json!({"name": conn.name, "id": conn.id}))]);
+                    match read {
+                        Ok(Value::String(s)) => Some(s),
+                        Ok(Value::Null) => None,
+                        Ok(other) => Some(other.to_string()),
+                        Err(e) => {
+                            error = Some(super::masked_text(&e.to_string(), &conn.mask()));
+                            break;
+                        }
+                    }
+                    .filter(|n| !n.is_empty() && Some(n) != cursor.as_ref())
+                }
+                _ => None,
             };
             let mut tx = self.db.system_tenant_tx(tenant).await?;
-            match self.apply_mapping(&ctx, &mut tx, &map, &answer).await {
+            match self.apply_mapping(&ctx, &mut tx, &map, &answer.body, &conn).await {
                 Ok(n) => items += n,
                 Err(e) => {
                     tx.rollback().await?;
@@ -219,9 +239,9 @@ impl Kernel {
         // "Later": tried again from the page that failed (the cursor stays where the last page committed), while
         // attempts are left and the retry would start before the next scheduled run; the job's dedupe keeps the
         // schedule from queueing another meanwhile.
-        let retry = later
-            && job.attempts < job.max_attempts
-            && Utc::now() + chrono::Duration::milliseconds((crate::jobs::backoff(job.attempts) * 1000.0) as i64) < next_run;
+        // The service's own Retry-After (capped) in place of the backoff when it gave one.
+        let delay = wait.map_or_else(|| crate::jobs::backoff(job.attempts), |s| s as f64);
+        let retry = later && job.attempts < job.max_attempts && Utc::now() + chrono::Duration::milliseconds((delay * 1000.0) as i64) < next_run;
         let mut tx = self.db.system_tenant_tx(tenant).await?;
         let told: bool = sqlx::query_scalar("select told from conn_pull where tenant_id = $1 and conn_id = $2 and name = $3 for update")
             .bind(tenant)
@@ -260,7 +280,10 @@ impl Kernel {
         }
         tx.commit().await?;
         if retry {
-            return Err(Error::Unavailable(error.unwrap_or_default()));
+            return Err(match wait {
+                Some(secs) => Error::RetryAfter(error.unwrap_or_default(), secs),
+                None => Error::Unavailable(error.unwrap_or_default()),
+            });
         }
         Ok(json!({"pages": pages, "items": items, "error": error}))
     }

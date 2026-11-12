@@ -510,7 +510,7 @@ fn eval(src: &str, doc: &Value, old: Option<&Value>, user: &Value, extra: &[(&st
 }
 
 /// [`eval`] with more variables: a configured action's `params`, the `linked` record an effect writes.
-fn eval_with(src: &str, doc: &Value, user: &Value, extra: &[(&str, &Value)]) -> Result<Value> {
+pub(crate) fn eval_with(src: &str, doc: &Value, user: &Value, extra: &[(&str, &Value)]) -> Result<Value> {
     let expr = compiled(src)?;
     expr.eval_with(&Scope { doc, old: None, parent: None, user }, extra).map_err(|e| Error::invalid(format!("'{src}': {e}")))
 }

@@ -5,7 +5,7 @@
 //!
 //! Unknown, unsigned, wrongly signed, stale, too large and replayed calls are answered alike, and counted.
 
-use super::{Encoding, Loaded, at};
+use super::{Encoding, Loaded, Pick, at};
 use crate::Kernel;
 use crate::automation::{AutomationAction, Step};
 use crate::ctx::Ctx;
@@ -85,19 +85,21 @@ pub enum Verify {
 }
 
 /// A payload, or each item of it, onto records: the one record of `entity` whose `by` fields hold the values given is
-/// changed with `set`; none, and one is made with `by`, `set` and `create` (unless `update_only`). Each value an
-/// expression over `payload` (all of it) and `item` (the item, or all of it).
+/// changed with `set`; none, and one is made with `by`, `set` and `create` (unless `update_only`). Each value a
+/// [`Pick`] of the item: a pointer (`/a/b`, null when the key is not there), or an expression over `payload` (all of it),
+/// `item` (the item, or all of it) and `connection` (`{name, id}`); `{"at" | "expr": …, "required": true}` fails the
+/// item when it gives null.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Mapping {
     pub entity: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub items_at: Option<String>,
-    pub by: BTreeMap<String, String>,
+    pub by: BTreeMap<String, Pick>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub set: BTreeMap<String, String>,
+    pub set: BTreeMap<String, Pick>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub create: BTreeMap<String, String>,
+    pub create: BTreeMap<String, Pick>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub update_only: bool,
 }
@@ -109,19 +111,53 @@ pub trait InboundHandler: Send + Sync {
     async fn handle(&self, k: &Kernel, tx: &mut Tx, ctx: &Ctx, connection: &str, payload: &Value) -> Result<()>;
 }
 
+/// The three parts of a mapping, by the name its values are bound under.
+const PARTS: [&str; 3] = ["by", "set", "create"];
+
 impl Mapping {
-    /// The effect it is: a `find` that changes or makes.
+    fn parts(&self) -> [&BTreeMap<String, Pick>; 3] {
+        [&self.by, &self.set, &self.create]
+    }
+
+    /// The effect it is: a `find` that changes or makes, each value read from `picked` (what [`Mapping::pick`] gave).
     fn step(&self) -> Step {
-        let mut create = self.by.clone();
-        create.extend(self.set.clone());
-        create.extend(self.create.clone());
+        let bound = |part: &str, m: &BTreeMap<String, Pick>| -> BTreeMap<String, String> {
+            m.keys().map(|f| (f.clone(), format!("picked[\"{part}\"][\"{f}\"]"))).collect()
+        };
+        let (by, set) = (bound("by", &self.by), bound("set", &self.set));
+        let mut create = by.clone();
+        create.extend(set.clone());
+        create.extend(bound("create", &self.create));
         let action = AutomationAction::Find {
             entity: self.entity.clone(),
-            by: self.by.clone(),
+            by,
             create: (!self.update_only).then_some(create),
-            update: (!self.set.is_empty()).then(|| self.set.clone()),
+            update: (!self.set.is_empty()).then_some(set),
         };
         Step { when: None, action }
+    }
+
+    /// Each value read from `item` (`vars` bound for an expression), by part and field; one `required` and null is
+    /// refused, naming it.
+    fn pick(&self, item: &Value, vars: &[(&str, &Value)]) -> Result<Value> {
+        let mut out = serde_json::Map::new();
+        for (part, m) in PARTS.iter().zip(self.parts()) {
+            let mut got = serde_json::Map::new();
+            for (field, pick) in m {
+                let p = pick.spec(true);
+                let v = match (&p.at, &p.expr) {
+                    (Some(at), _) => item.pointer(at).cloned().unwrap_or(Value::Null),
+                    (None, Some(e)) => crate::automation::eval_with(e, &Value::Null, &Value::Null, vars)?,
+                    _ => Value::Null,
+                };
+                if p.required && v.is_null() {
+                    return Err(Error::invalid(format!("{field} is required and the item gives none")));
+                }
+                got.insert(field.clone(), v);
+            }
+            out.insert(part.to_string(), Value::Object(got));
+        }
+        Ok(Value::Object(out))
     }
 
     pub(crate) fn problem(&self, schema: &ferrum_meta::Schema) -> Option<String> {
@@ -133,6 +169,11 @@ impl Mapping {
         }
         if let Some(p) = self.items_at.as_deref().and_then(super::pointer_problem) {
             return Some(p);
+        }
+        for (part, m) in PARTS.iter().zip(self.parts()) {
+            if let Some((f, p)) = m.iter().find_map(|(f, p)| Some((f, p.problem(false)?))) {
+                return Some(format!("map.{part}.{f}: {p}"));
+            }
         }
         crate::automation::check_step(&self.step()).err().map(|e| format!("map: {e}"))
     }
@@ -282,8 +323,8 @@ impl Kernel {
         Err(refused())
     }
 
-    /// Maps `payload` (each item at `items_at`, or all of it) onto records in `tx`. How many items.
-    pub(crate) async fn apply_mapping(&self, ctx: &Ctx, tx: &mut Tx, map: &Mapping, payload: &Value) -> Result<usize> {
+    /// Maps `payload` (each item at `items_at`, or all of it) onto records in `tx`, for connection `conn`. How many items.
+    pub(crate) async fn apply_mapping(&self, ctx: &Ctx, tx: &mut Tx, map: &Mapping, payload: &Value, conn: &Loaded) -> Result<usize> {
         let items = match map.items_at.as_deref() {
             Some(p) => payload.pointer(p).and_then(Value::as_array).cloned().unwrap_or_default(),
             None => vec![payload.clone()],
@@ -292,11 +333,12 @@ impl Kernel {
             return Err(Error::invalid(format!("{} items, more than the {MAX_ITEMS} one call maps", items.len())));
         }
         let empty = json!({});
+        let connection = json!({"name": conn.name, "id": conn.id});
         for (i, item) in items.iter().enumerate() {
-            let extra = [("payload", payload), ("item", item)];
-            crate::automation::run_step(self, ctx, tx, &map.entity, None, (&empty, &empty), &empty, &extra, "inbound", map.step())
-                .await
-                .map_err(|e| crate::pack::about(&format!("item {}", i + 1), e))?;
+            let at = |e| crate::pack::about(&format!("item {}", i + 1), e);
+            let picked = map.pick(item, &[("payload", payload), ("item", item), ("connection", &connection)]).map_err(at)?;
+            let extra = [("payload", payload), ("item", item), ("picked", &picked), ("connection", &connection)];
+            crate::automation::run_step(self, ctx, tx, &map.entity, None, (&empty, &empty), &empty, &extra, "inbound", map.step()).await.map_err(at)?;
         }
         Ok(items.len())
     }
@@ -321,7 +363,7 @@ impl Kernel {
                 .flatten();
         let Some(payload) = payload else { return Ok(json!({"done": "already"})) };
         let done = match (&inbound.map, &inbound.handler) {
-            (Some(map), _) => self.apply_mapping(&ctx, &mut tx, map, &payload).await.map(|n| json!({"items": n})),
+            (Some(map), _) => self.apply_mapping(&ctx, &mut tx, map, &payload, &conn).await.map(|n| json!({"items": n})),
             (None, Some(app)) if conn.desc.apps.contains(app) => match self.hooks.inbound_handler(app) {
                 Some(h) => h.handle(self, &mut tx, &ctx, &conn.name, &payload).await.map(|()| json!({"handled": app})),
                 None => Err(Error::invalid(format!("{app} has not registered for calls"))),
